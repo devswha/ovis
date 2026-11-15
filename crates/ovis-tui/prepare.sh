@@ -30,14 +30,28 @@ want=$( { printf '%s %s\n' "$HC_TUI_COMMIT" "$GHOSTTY_COMMIT"; for patch in "$he
 [ -n "$want" ] || { echo "prepare.sh: could not hash the pin and the patches" >&2; exit 1; }
 
 # One run at a time: a second one would check a tree the first is replacing.
+# The lock holds the pid of the run that took it: a lock whose run is gone (killed, or a reboot) is
+# taken over instead of stopping every later run.
 lock="$here/.prepare.lock"
-mkdir "$lock" 2>/dev/null || { echo "prepare.sh: another prepare.sh is running here (if none is, one was killed: remove $lock)" >&2; exit 1; }
+take_lock() { mkdir "$lock" 2>/dev/null && echo $$ > "$lock/pid"; }
+if ! take_lock; then
+  holder=$(cat "$lock/pid" 2>/dev/null || true)
+  if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then
+    echo "prepare.sh: another prepare.sh (pid $holder) is running here" >&2
+    exit 1
+  fi
+  rm -rf "$lock"
+  take_lock || { echo "prepare.sh: another prepare.sh took the lock at the same moment" >&2; exit 1; }
+fi
 new="$here/.upstream.new.$$"
-cleanup() { rm -rf "$new"; rmdir "$lock" 2>/dev/null || true; }
+old="$here/.upstream.old.$$"
+# only a lock this run still holds is released: one taken over or removed by hand is left as it is
+cleanup() { rm -rf "$new" "$old"; [ "$(cat "$lock/pid" 2>/dev/null)" != $$ ] || rm -rf "$lock"; }
 trap cleanup EXIT
-trap 'cleanup; exit 130' INT TERM HUP
-# half-made trees of runs that were killed: none is in use while this one holds the lock
-rm -rf "$here"/.upstream.new.*
+# cleaned up once: the EXIT trap is cleared before the signal's exit
+trap 'trap - EXIT; cleanup; exit 130' INT TERM HUP
+# what runs that were killed left: half-made trees, and old trees set aside once checked
+rm -rf "$here"/.upstream.new.* "$here"/.upstream.old.*
 
 # One git query, its answer in $out. A query that fails is reported as work, so a tree git cannot
 # read (a broken index, a git too old for a flag) is never taken for an untouched one.
@@ -153,6 +167,9 @@ if [ -e "$dest" ]; then
   work=$(work_in "$dest")
   [ -z "$work" ] || refuse " (made while this ran; nothing was replaced)" "$work"
 fi
-rm -rf "$dest"
+# set aside, not deleted, until the new tree is in: a run stopped between the two moves leaves no
+# half-deleted tree in its place
+if [ -e "$dest" ]; then mv "$dest" "$old"; fi
 mv "$new" "$dest"
+rm -rf "$old"
 echo "prepare.sh: hc-tui $HC_TUI_TAG ($HC_TUI_COMMIT) with $applied patch(es) is in $dest"
