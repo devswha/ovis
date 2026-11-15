@@ -10,10 +10,10 @@ import { posixHost, windowsHost } from "./remote-host.ts";
 import { SshConnection } from "./ssh.ts";
 import { tunnelRelays } from "./machine-tunnel.fixture.ts";
 
-// Each wait below (a setup settling, the old PC's retries resuming) is bounded by this; every answer the fixture gives
-// is in-process or on loopback. The test itself outlasts its three waits in a row and as long again for the rest, so a
-// stalled wait says what it waited for and `finally` restores the spies: cut short by the runner, they stay installed
-// and break the next case.
+// Each wait below (a setup settling, the switch asking B, the old PC's retries resuming) is bounded by this; every answer
+// the fixture gives is in-process or on loopback. The switch's two waits start together, so the test itself outlasts
+// three of them in a row and as long again for the rest: a stalled wait says what it waited for and `finally` restores
+// the spies. Cut short by the runner, they stay installed and break the next case.
 const SETTLE_MS = 5000;
 
 it.each([
@@ -95,7 +95,9 @@ it.each([
   try {
     expect((await run(a)).phase).toBe("connected");
     if (loss === "before") drop();
-    moving = run(b); await reached.promise;
+    moving = run(b);
+    const asked = set(() => reached.reject(new Error("The switch never asked B")), SETTLE_MS);
+    try { await reached.promise; } finally { clear(asked); }
     if (loss === "during") drop();
     advanceRetries();
     manager.retryNow(id);
