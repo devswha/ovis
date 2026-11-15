@@ -18,7 +18,7 @@ export const COUNTS_BUCKETS = "Button counts per width: installs that used each,
 export const COUNTS_SHOWN = "Controls shown, per width: installs that saw each at least once, the last 7 finished days";
 export const SWITCHES_BY_AGENT = "Chat/terminal switches by kind of agent and width: installs running it that switched on its panes, the last 7 finished days";
 export const SWITCH_DAYS_BY_VERSION = "Install-days with a chat/terminal switch, per version, the last 7 finished days";
-export const COUNTER_SHARES = "Button counts per width: share of installs that used each, and the median range of a day it was used";
+export const COUNTER_SHARES = "Button counts per width: share of installs that used each (of: the installs it is a share of), and the middle install's day, each install counted by the lower middle of its days";
 
 export const COUNTS_PER_INSTALL = "Each install's ranges per counter and width (read for the middle install, never printed)";
 
@@ -40,8 +40,9 @@ export const QUERIES: ReadonlyArray<{ title: string; sql: string; hidden?: boole
   { title: COUNTS_PER_INSTALL, hidden: true, sql: "SELECT w.width, item.key AS counter, c.install_id AS install, group_concat(item.value) AS buckets FROM (SELECT 'narrow' AS width UNION ALL SELECT 'wide') AS w JOIN counts c ON (CASE w.width WHEN 'narrow' THEN c.narrow ELSE c.wide END) IS NOT NULL CROSS JOIN json_each(CASE w.width WHEN 'narrow' THEN c.narrow ELSE c.wide END, '$.counts') AS item WHERE c.day >= date('now', '-7 days') AND c.day < date('now') GROUP BY w.width, item.key, c.install_id;" },
   // every kind of agent, and `shell` for a pane with none: installs running it (from that day's active message) and
   // installs that switched on its panes (from the switch counters' own names); running is either: a day whose active
-  // message named no agent yet still counts an install whose counts name one
-  { title: SWITCHES_BY_AGENT, sql: `SELECT width, agent, running, switched FROM (SELECT w.width AS width, ag.agent AS agent, (SELECT COUNT(*) FROM (SELECT c.install_id FROM counts c JOIN active a ON a.day = c.day AND a.install_id = c.install_id CROSS JOIN json_each(a.harnesses) AS h WHERE c.day >= date('now', '-7 days') AND c.day < date('now') AND h.value = ag.agent AND CASE w.width WHEN 'narrow' THEN c.narrow ELSE c.wide END IS NOT NULL UNION SELECT c.install_id FROM counts c CROSS JOIN json_each(CASE w.width WHEN 'narrow' THEN c.narrow ELSE c.wide END, '$.counts') AS y WHERE c.day >= date('now', '-7 days') AND c.day < date('now') AND CASE w.width WHEN 'narrow' THEN c.narrow ELSE c.wide END IS NOT NULL AND y.key IN ('view_chat_' || ag.agent, 'view_terminal_' || ag.agent))) AS running, (SELECT COUNT(DISTINCT c.install_id) FROM counts c CROSS JOIN json_each(CASE w.width WHEN 'narrow' THEN c.narrow ELSE c.wide END, '$.counts') AS x WHERE c.day >= date('now', '-7 days') AND c.day < date('now') AND CASE w.width WHEN 'narrow' THEN c.narrow ELSE c.wide END IS NOT NULL AND x.key IN ('view_chat_' || ag.agent, 'view_terminal_' || ag.agent)) AS switched FROM (SELECT 'narrow' AS width UNION ALL SELECT 'wide') AS w CROSS JOIN (${[...TELEMETRY_HARNESSES, "shell"].map((agent) => `SELECT '${agent}' AS agent`).join(" UNION ALL ")}) AS ag) WHERE running > 0 OR switched > 0 ORDER BY width, running DESC, agent;` },
+  // message named no agent yet still counts an install whose counts name one. No visit ever names `shell` (it is no
+  // kind of agent), so its running would only repeat its switched: it is left empty, and shell shows switches alone
+  { title: SWITCHES_BY_AGENT, sql: `SELECT width, agent, running, switched FROM (SELECT w.width AS width, ag.agent AS agent, CASE WHEN ag.agent = 'shell' THEN NULL ELSE (SELECT COUNT(*) FROM (SELECT c.install_id FROM counts c JOIN active a ON a.day = c.day AND a.install_id = c.install_id CROSS JOIN json_each(a.harnesses) AS h WHERE c.day >= date('now', '-7 days') AND c.day < date('now') AND h.value = ag.agent AND CASE w.width WHEN 'narrow' THEN c.narrow ELSE c.wide END IS NOT NULL UNION SELECT c.install_id FROM counts c CROSS JOIN json_each(CASE w.width WHEN 'narrow' THEN c.narrow ELSE c.wide END, '$.counts') AS y WHERE c.day >= date('now', '-7 days') AND c.day < date('now') AND CASE w.width WHEN 'narrow' THEN c.narrow ELSE c.wide END IS NOT NULL AND y.key IN ('view_chat_' || ag.agent, 'view_terminal_' || ag.agent))) END AS running, (SELECT COUNT(DISTINCT c.install_id) FROM counts c CROSS JOIN json_each(CASE w.width WHEN 'narrow' THEN c.narrow ELSE c.wide END, '$.counts') AS x WHERE c.day >= date('now', '-7 days') AND c.day < date('now') AND CASE w.width WHEN 'narrow' THEN c.narrow ELSE c.wide END IS NOT NULL AND x.key IN ('view_chat_' || ag.agent, 'view_terminal_' || ag.agent)) AS switched FROM (SELECT 'narrow' AS width UNION ALL SELECT 'wide') AS w CROSS JOIN (${[...TELEMETRY_HARNESSES, "shell"].map((agent) => `SELECT '${agent}' AS agent`).join(" UNION ALL ")}) AS ag) WHERE running > 0 OR switched > 0 ORDER BY width, running DESC, agent;` },
   { title: SWITCH_DAYS_BY_VERSION, sql: "SELECT c.version, COUNT(*) AS days, SUM(EXISTS (SELECT 1 FROM json_each(c.narrow, '$.counts') AS x WHERE x.key GLOB 'view_*_by_*') OR EXISTS (SELECT 1 FROM json_each(c.wide, '$.counts') AS x WHERE x.key GLOB 'view_*_by_*')) AS days_switched FROM counts c WHERE c.day >= date('now', '-7 days') AND c.day < date('now') GROUP BY c.version ORDER BY c.version;" },
 ];
 
@@ -70,8 +71,16 @@ export function counterShares(installs: ReadonlyArray<Record<string, unknown>>, 
       .map((entry) => middles(String(entry["buckets"]).split(",").map(Number))[0]);
     const [low, high] = typical.length === 0 ? [0, 0] : middles(typical);
     const of = total.get(width) ?? 0;
-    return { width, counter, installs: row["installs"], of, percent: of === 0 ? 0 : Math.round(1000 * Number(row["installs"]) / of) / 10, middle_install_day: typical.length === 0 ? "-" : low === high ? BUCKET_RANGES[low - 1]! : `${BUCKET_RANGES[low - 1]} .. ${BUCKET_RANGES[high - 1]}` };
+    return { width, counter, installs: row["installs"], of, percent: of === 0 ? 0 : Math.min(100, Math.round(1000 * Number(row["installs"]) / of) / 10), middle_install_day: typical.length === 0 ? "-" : low === high ? BUCKET_RANGES[low - 1]! : `${BUCKET_RANGES[low - 1]} .. ${BUCKET_RANGES[high - 1]}` };
   });
+}
+
+/**
+ * A query with every `date('now'` replaced by one day: the run works out today once, so its queries, sent one by one,
+ * agree on their window even across UTC midnight
+ */
+export function atDay(sql: string, day: string): string {
+  return sql.replaceAll("date('now'", `date('${day}'`);
 }
 
 const escapeHtml = (value: unknown) => String(value ?? "NULL").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
@@ -126,8 +135,10 @@ if (import.meta.main) {
     process.exit(1);
   }
   const results: Array<{ title: string; rows: Array<Record<string, unknown>> }> = [];
+  // one today for every query of this run
+  const today = new Date().toISOString().slice(0, 10);
   for (const query of QUERIES) {
-    const rows = await d1(query.sql);
+    const rows = await d1(atDay(query.sql, today));
     if (rows === null) {
       console.error(`telemetry report: "${query.title}" failed: run bunx wrangler login first (in telemetry/), with the account that owns herdr-web-ui-telemetry`);
       process.exit(1);

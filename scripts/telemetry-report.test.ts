@@ -3,7 +3,7 @@ import { afterAll, describe, expect, it } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { COUNTER_SHARES, COUNTS_BUCKETS, COUNTS_INSTALLS, COUNTS_PER_INSTALL, COUNTS_SHOWN, SWITCH_DAYS_BY_VERSION, SWITCHES_BY_AGENT, counterShares, html, QUERIES, table } from "./telemetry-report.ts";
+import { atDay, COUNTER_SHARES, COUNTS_BUCKETS, COUNTS_INSTALLS, COUNTS_PER_INSTALL, COUNTS_SHOWN, SWITCH_DAYS_BY_VERSION, SWITCHES_BY_AGENT, counterShares, html, QUERIES, table } from "./telemetry-report.ts";
 
 /** scripts/telemetry-report.ts with a stand-in bunx on a private PATH: no wrangler, no D1. */
 
@@ -120,6 +120,9 @@ describe("telemetry report: button counts", () => {
     expect(shares([["a", [3]], ["b", [3, 2, 3]], ["c", [1]]]).middle_install_day).toBe("10-29");
     // the base it is a share of is printed with it: a share over one install says so
     expect(shares([["a", [2]]])).toMatchObject({ installs: 1, of: 10, percent: 10 });
+    // a row that came between two queries cannot make a share over 100%
+    expect(counterShares([{ width: "wide", installs: 1 }], [{ width: "wide", counter: "chat_send", installs: 2 }], []).at(0)).toMatchObject({ installs: 2, of: 1, percent: 100 });
+    expect(atDay("SELECT 1 WHERE day >= date('now', '-7 days') AND day < date('now')", "2026-11-15")).toBe("SELECT 1 WHERE day >= date('2026-11-15', '-7 days') AND day < date('2026-11-15')");
   });
 
   it("counts an install as running an agent when its counts name it, though its visit named none yet", () => {
@@ -137,7 +140,13 @@ describe("telemetry report: button counts", () => {
     active.run(day, "b", '["claude"]');
     // c opened the app before it started Claude: its active message named no agent
     active.run(day, "c", "[]");
-    expect(db.query(QUERIES.find((query) => query.title === SWITCHES_BY_AGENT)!.sql).all()).toEqual([{ width: "wide", agent: "claude", running: 3, switched: 2 }]);
+    // and a shell pane: no visit names shell, so its row shows switches alone, never a share of 100% by construction
+    counts.run(day, "d", side({ view_terminal_shell: 1 }));
+    active.run(day, "d", "[]");
+    expect(db.query(QUERIES.find((query) => query.title === SWITCHES_BY_AGENT)!.sql).all()).toEqual([
+      { width: "wide", agent: "claude", running: 3, switched: 2 },
+      { width: "wide", agent: "shell", running: null, switched: 1 },
+    ]);
     db.close();
   });
 
@@ -156,7 +165,13 @@ describe.skipIf(process.platform === "win32")("telemetry report", () => {
   it("runs every query read-only against the remote database, one table each, in order", async () => {
     const result = await run(false);
     expect(result.exitCode).toBe(0);
-    expect(result.calls.map((call) => call.split("--command ")[1])).toEqual([
+    const sent = result.calls.map((call) => call.split("--command ")[1]!);
+    // one cut-off day for the whole run, in every query: none works out today for itself
+    const days = new Set(sent.flatMap((sql) => [...sql.matchAll(/date\('(\d{4}-\d{2}-\d{2})'/g)].map((match) => match[1])));
+    expect(days.size).toBe(1);
+    expect(sent.some((sql) => sql.includes("date('now'"))).toBe(false);
+    const [day] = [...days];
+    expect(sent.map((sql) => sql.replaceAll(`date('${day}'`, "date('now'"))).toEqual([
       "SELECT strftime('%Y-%W', day) AS week, COUNT(*) FROM events WHERE event = 'install' GROUP BY week ORDER BY week;",
       "SELECT day, COUNT(*) FROM active GROUP BY day ORDER BY day;",
       "SELECT COUNT(DISTINCT install_id) FROM active WHERE day >= date('now', '-6 days');",

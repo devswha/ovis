@@ -124,7 +124,11 @@ country for the last 28 days and the last 7 finished days' button counts, and wr
   then the middle install is taken, so a few heavy installs do not carry it; only ranges are sent and none is
   averaged, so when the two middle installs differ both ranges are named (`1-2 .. 30+`);
 - the controls shown, and chat/terminal switches by kind of agent: an install runs an agent there when that day's
-  active message or its own switch counts name it, and switched when its counts hold a switch on that agent's panes. The script selects `telemetry/` as Wrangler's working directory.
+  active message or its own switch counts name it, and switched when its counts hold a switch on that agent's panes;
+  `shell` (a pane with no agent) shows switches alone, since no visit names it.
+
+The queries of one run share one cut-off day, worked out once, so a run across UTC midnight still agrees with itself;
+a share is capped at 100% for a row that arrives between two queries. The script selects `telemetry/` as Wrangler's working directory.
 For the individual queries below, stay in `telemetry/`:
 
 ```sh
