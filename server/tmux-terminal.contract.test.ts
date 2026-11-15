@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, expect, it } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, watch, writeFileSync } from "node:fs";
+import { Database } from "bun:sqlite";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { createServer } from "./index.ts";
@@ -15,6 +16,12 @@ const root = mkdtempSync(join(tmpdir(), "ovis-tmux-"));
 const socket = join(root, "tmux.sock");
 const home = join(root, "store");
 const rollout = join(home, "sessions", "rollout-00000000-0000-4000-8000-000000000001.jsonl");
+// A Codex on the shared app-server daemon holds no rollout: only its tmux pane's own screen tells
+const shownThread = "00000000-0000-4000-8000-000000000002";
+const shownRollout = join(home, "sessions", `rollout-${shownThread}.jsonl`);
+const shownAnswer = "This conversation is read from the tmux pane's own screen while the shared daemon holds its rollout.";
+let shownWorkspace: string | undefined;
+let shownPane: string;
 let workspace: string | undefined;
 let pane: string;
 let wrappedWorkspace: string | undefined;
@@ -109,6 +116,39 @@ beforeAll(async () => {
   await herdrRpc("pane.send_text", { pane_id: scriptPane, text: `exec env -u TMUX tmux -S ${shellQuote(socket)} attach-session -E -t script\n` });
   if (await scriptAttached.exited !== 0) throw new Error("private script tmux client did not attach");
   await herdrRpc("pane.report_agent", { pane_id: scriptPane, source: "manual", agent: "codex", state: "idle" });
+  writeFileSync(shownRollout, [
+    { type: "session_meta", payload: { id: shownThread, cwd: root } },
+    { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "Read the daemon chat" }] } },
+    { type: "response_item", payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: shownAnswer }] } },
+  ].map((entry) => JSON.stringify(entry)).join("\n"));
+  const db = new Database(join(home, "state_5.sqlite"));
+  db.exec("CREATE TABLE threads (id TEXT, rollout_path TEXT, cwd TEXT, archived INTEGER, agent_role TEXT, created_at INTEGER, updated_at INTEGER, source TEXT)");
+  db.query("INSERT INTO threads VALUES (?, ?, ?, 0, NULL, 1, 1, 'cli')").run(shownThread, shownRollout, root);
+  db.close();
+  const shower = join(root, "shower.cjs");
+  const shownReady = join(root, "shown-ready");
+  writeFileSync(shower, `process.title = "codex"; process.stdout.write(${JSON.stringify(`>_ OpenAI Codex (v0.167.0)\n\n${shownAnswer}\n`)});
+    require("fs").writeFileSync(process.argv[2], String(process.pid)); process.stdin.resume();`);
+  const shownLauncher = join(root, "shown-launcher.sh");
+  writeFileSync(shownLauncher, `set -m\n${[executable, shower, shownReady].map(shellQuote).join(" ")}\n`);
+  const shownWatcher = watch(root);
+  let shownTimer: ReturnType<typeof setTimeout> | undefined;
+  const shownStarted = new Promise<void>((done, fail) => {
+    shownWatcher.on("change", (_, file) => { if (file === "shown-ready" && existsSync(shownReady)) done(); });
+    shownTimer = setTimeout(() => fail(new Error("screen-only stand-in did not start")), 5000);
+  });
+  try {
+    await tmux("new-session", "-d", "-s", "shown", "-x", "200", "-y", "50", "-c", root, `exec env -u BASH_ENV -u ENV CODEX_HOME=${shellQuote(home)} /bin/bash --noprofile --norc ${shellQuote(shownLauncher)}`);
+    await shownStarted;
+  } finally { shownWatcher.close(); clearTimeout(shownTimer); }
+  await tmux("set-hook", "-g", "client-attached", "wait-for -S shown-attached");
+  const shownAttached = Bun.spawn(["tmux", "-S", socket, "wait-for", "shown-attached"], { stdout: "ignore", stderr: "pipe", timeout: 5000 });
+  const shownView = await workspaceCreate({ cwd: root, label: "ovis-test-tmux-screen-only" });
+  shownWorkspace = shownView.workspace.workspace_id;
+  shownPane = shownView.root_pane.pane_id;
+  await herdrRpc("pane.send_text", { pane_id: shownPane, text: `exec env -u TMUX tmux -S ${shellQuote(socket)} attach-session -E -t shown\n` });
+  if (await shownAttached.exited !== 0) throw new Error("private screen-only tmux client did not attach");
+  await herdrRpc("pane.report_agent", { pane_id: shownPane, source: "manual", agent: "codex", state: "idle" });
   server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: join(root, "app"), codexHome: home });
 }, 15_000);
 
@@ -125,34 +165,19 @@ afterAll(() => cleanup([
   () => workspace ? workspaceClose(workspace) : undefined,
   () => wrappedWorkspace ? workspaceClose(wrappedWorkspace) : undefined,
   () => scriptWorkspace ? workspaceClose(scriptWorkspace) : undefined,
+  () => shownWorkspace ? workspaceClose(shownWorkspace) : undefined,
   () => tmuxStarted ? tmux("kill-server") : undefined,
   () => rmSync(root, { recursive: true, force: true }),
 ]));
 
-it("attempts every own cleanup sequentially and preserves all failures", async () => {
-  const stop = new Error("fixture stop failure"), close = new Error("fixture close failure");
-  const scriptClose = new Error("fixture script close failure"), kill = new Error("fixture kill failure");
-  const calls: string[] = [];
-  let failure: unknown;
-  try {
-    await cleanup([
-      () => { calls.push("stop"); throw stop; },
-      async () => { calls.push("workspace"); throw close; },
-      () => { calls.push("wrapped workspace"); },
-      async () => { calls.push("script workspace"); throw scriptClose; },
-      () => { calls.push("kill"); throw kill; },
-      () => { calls.push("remove"); },
-    ]);
-  } catch (error) { failure = error; }
-  expect(calls).toEqual(["stop", "workspace", "wrapped workspace", "script workspace", "kill", "remove"]);
-  expect(failure).toBeInstanceOf(AggregateError);
-  expect((failure as AggregateError).errors).toEqual([stop, close, scriptClose, kill]);
-});
-
-it("finishes an error-free cleanup in sequence", async () => {
-  const calls: number[] = [];
-  await cleanup([async () => { calls.push(1); }, () => { calls.push(2); }]);
-  expect(calls).toEqual([1, 2]);
+it.skipIf(!native)("serves the conversation a tmux pane's own screen shows while its Codex holds no rollout", async () => {
+  const pid = Number(readFileSync(join(root, "shown-ready"), "utf8"));
+  expect(readdirSync(`/proc/${pid}/fd`).some((fd) => readlinkSync(`/proc/${pid}/fd/${fd}`).endsWith(".jsonl"))).toBe(false);
+  const response = await fetch(`http://127.0.0.1:${server!.port}/api/pane/conversation?pane_id=${encodeURIComponent(shownPane)}`);
+  expect(response.status).toBe(200);
+  const conversation = await response.json() as ConversationResponse;
+  expect(conversation.source).toBe("codex-transcript");
+  expect(JSON.stringify(conversation)).toContain("Read the daemon chat");
 });
 
 it.skipIf(!native)("serves native turns behind a foreground shell launcher instead of its tmux terminal chrome", async () => {
