@@ -1,9 +1,22 @@
 import assert from "node:assert/strict";
-import type { Browser } from "playwright-core";
+import type { Browser, Page } from "playwright-core";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { paneRead, paneSendKeys, paneSendText } from "../server/herdr/client.ts";
+
+/** Resolves once the page's socket says the pane takes input: a key pressed before that is not sent. */
+function inputReady(page: Page, paneId: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${paneId} never became ready for input`)), 15_000);
+    page.on("websocket", (socket) => socket.on("framereceived", ({ payload }) => {
+      const message = JSON.parse(String(payload));
+      if (message.type !== "input-ready" || message.pane_id !== paneId || message.ready === false) return;
+      clearTimeout(timer);
+      resolve();
+    }));
+  });
+}
 
 /** Mac keyboard events in an isolated context, against a pane owned by the UI suite. */
 export async function checkCommandBackspace(browser: Browser, origin: string, paneId: string): Promise<void> {
@@ -20,8 +33,10 @@ export async function checkCommandBackspace(browser: Browser, origin: string, pa
       const message = JSON.parse(String(payload));
       if (message.type === "input") inputs.push(message);
     }));
+    const ready = inputReady(page, paneId);
     await page.goto(`${origin}/?pane=${encodeURIComponent(paneId)}`);
     await page.locator(".conn-live").waitFor();
+    await ready;
     const input = page.locator(".xterm-helper-textarea");
     await input.waitFor();
     for (const [shortcut, expected] of [
@@ -125,8 +140,10 @@ process.stdin.on("data", (data) => {
       const message = JSON.parse(String(payload));
       if (message.type === "input") inputs.push(message.text);
     }));
+    const ready = inputReady(page, paneId);
     await page.goto(`${origin}/?pane=${encodeURIComponent(paneId)}`);
     await page.locator(".conn-live").waitFor();
+    await ready;
     await page.locator(".xterm-helper-textarea").press("Meta+Backspace");
     await page.waitForTimeout(300);
     assert.deepEqual(inputs, ["\x7f"], "non-macOS Meta+Backspace keeps its native sequence");
