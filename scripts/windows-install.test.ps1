@@ -8,7 +8,7 @@ $originalUserProfile = $env:USERPROFILE
 # against a local release folder, near the end
 $originalFromSource = $env:OVIS_FROM_SOURCE
 $env:OVIS_FROM_SOURCE = '1'
-$state = @{ installed = $false; installs = 0; uninstalls = 0; ref = ''; running = $true; started = $false; failInstall = $false; bunVersion = '1.4.2'; failBun = $false; windowsRelease = $true; refId = 'devswha.ovis'; installedId = ''; manifestBlocked = $false; startedLegacy = $false; legacyInstalled = $false; stopStateDirs = @(); handStarted = $false }
+$state = @{ installed = $false; installs = 0; uninstalls = 0; ref = ''; running = $true; started = $false; failInstall = $false; bunVersion = '1.4.2'; failBun = $false; windowsRelease = $true; refId = 'devswha.ovis'; installedId = ''; manifestBlocked = $false; startedLegacy = $false; legacyInstalled = $false; stopStateDirs = @(); handStarted = $false; pluginSource = '' }
 $global:herdrInstallOpened = @()
 # gh is a stand-in .cmd, first on PATH: the installer runs gh as a process, and no real star is read or given.
 # mode.txt beside it is what it answers: starred, not, refuses (the star itself), upstream, signed-out, hangs or
@@ -65,6 +65,8 @@ function herdr {
                 if ($state.failInstall) { $global:LASTEXITCODE = 1; return }
                 # under the id the ref's manifest names
                 $state.installed = $true; $state.installs++; $state.ref = $args[4]; $state.installedId = $state.refId
+                # what herdr's build step (scripts/plugin-launch.ts install) is told: source, or the release's binary
+                $state.pluginSource = "$env:OVIS_FROM_SOURCE"
                 Remove-Item -LiteralPath $pluginRoot -Recurse -Force -ErrorAction SilentlyContinue
                 New-Item -ItemType Directory -Force -Path (Split-Path $launcher) | Out-Null
                 if ($state.windowsRelease) { Set-Content -LiteralPath $launcher -Value '' }
@@ -168,6 +170,11 @@ exit /b 1
     $state.installed = $false; $state.running = $false; $state.started = $false
     & $installer -Ref 'feat/windows-install'
     Assert ($state.ref -eq 'feat/windows-install' -and -not $state.started) 'Explicit ref must install without starting herdr'
+    # without OVIS_FROM_SOURCE, herdr still builds a branch from its own sources, and the caller's variable is left as it was
+    $state.installed = $false; $env:OVIS_FROM_SOURCE = ''
+    & $installer -Ref 'feat/windows-install'
+    Assert ($state.pluginSource -eq '1' -and -not $env:OVIS_FROM_SOURCE) "A branch must be built from its own sources (herdr's build was told '$($state.pluginSource)')"
+    $env:OVIS_FROM_SOURCE = '1'
 
     $state.installed = $false; $state.failInstall = $true; $state.started = $false
     $failed = $false
@@ -522,6 +529,7 @@ console.log(key.publicKey);
     $old = & { try { & $copy -Ref 'v1.2.8' } catch { "THREW $($_.Exception.Message)" } } *>&1 | Out-String
     Assert ($old -match "v1\.2\.8's signed ovis-server\.json has the shape from before this installer" -and $old -match 'ships no compiled server, so it is installed from source') "An old-shape release must go to source: $old"
     Assert ((Get-FileHash $exe).Hash -eq $kept) 'An old-shape release must not touch the installed binary'
+    Assert ($state.ref -eq 'v1.2.8' -and $state.pluginSource -eq '') "A release tag must be built as its release says, not forced to source (herdr's build was told '$($state.pluginSource)')"
     $message = ''; $state.installed = $false; $state.linkedRoot = ''
     try { & $copy -Ref 'v1.2.9' } catch { $message = $_.Exception.Message }
     Assert ($message -match 'is not signed by the key') "An old-shape release signed by another key must be refused: $message"

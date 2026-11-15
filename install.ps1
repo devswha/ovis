@@ -566,7 +566,13 @@ if ($plugin -and -not (Test-WindowsPlugin $plugin)) {
 if (-not $plugin) {
     if (-not $Ref) { $Ref = Get-LatestRef }
     Write-Host "Ovis: installing the plugin at $Ref"
-    Run-Tool herdr @('plugin', 'install', 'devswha/ovis', '--ref', $Ref, '--yes')
+    # a branch builds its own sources, as install.sh has it: the plugin's launcher (scripts/plugin-launch.ts) would
+    # otherwise run the release binary of the branch's package.json version, and the status read below would find a
+    # checkout without its packages; a release tag takes its binary, or its sources without one
+    $givenSource = $env:OVIS_FROM_SOURCE
+    if ($Ref -notmatch '^v\d+\.\d+\.\d+$') { $env:OVIS_FROM_SOURCE = '1' }
+    try { Run-Tool herdr @('plugin', 'install', 'devswha/ovis', '--ref', $Ref, '--yes') }
+    finally { $env:OVIS_FROM_SOURCE = $givenSource }
     $newInstall = $true
     $plugin = Find-Plugin $pluginId
     # the id unknown before the install: the ref may have named the old one
