@@ -6,7 +6,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Browser, BrowserContext } from "playwright-core";
-import { NOTICE_VERSION, type TelemetryActive, type TelemetryChange, type TelemetryEvent, type TelemetrySettings, type TelemetryStatus } from "../shared/telemetry.ts";
+import { type TelemetryActive, type TelemetryChange, type TelemetryEvent, type TelemetrySettings, type TelemetryStatus } from "../shared/telemetry.ts";
+import { NOTICE_VERSION } from "../shared/telemetry-notice.ts";
 import { createServer } from "../server/index.ts";
 import { Telemetry } from "../server/telemetry.ts";
 import { UsageService } from "../server/usage.ts";
@@ -114,7 +115,8 @@ export async function checkTelemetrySettings(browser: Browser): Promise<void> {
     });
 
     await page.goto(origin);
-    const notice = page.locator(".update-notice").filter({ hasText: "Ovis sends anonymous usage counts" }).first();
+    // the notice by its role, not its sentence: a new notice version rewords it, and the version is asserted below
+    const notice = page.locator(".update-notice.is-telemetry[role='status']").first();
     await notice.waitFor({ state: "visible" });
     await until(async () => (await statusAt(origin)).notice_seen, "the visible notice is reacknowledged");
     // the server can hold the acknowledgement a moment before Playwright reports the request that carried it
