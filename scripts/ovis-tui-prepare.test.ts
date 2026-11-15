@@ -56,6 +56,21 @@ function addPatch(dir: string, n: number): void {
   writeFileSync(join(dir, "patches", `000${n}-patch.patch`), git(work, "format-patch", "-1", "--stdout") + "\n");
 }
 
+/** a new hc-tui commit whose vendor/ghostty is a new Ghostty commit, and hc-tui.pin moved to both */
+function bumpPin(dir: string): { ghostty: string } {
+  const ghostty = join(scratch, "ghostty");
+  writeFileSync(join(ghostty, "next.zig"), "// next\n");
+  git(ghostty, "add", "-A");
+  git(ghostty, "commit", "--quiet", "-m", "ghostty next");
+  const hc = join(scratch, "hc-tui");
+  git(join(hc, "vendor", "ghostty"), "pull", "--quiet", "origin", "HEAD");
+  git(hc, "add", "vendor/ghostty");
+  git(hc, "commit", "--quiet", "-m", "hc-tui next");
+  const next = git(ghostty, "rev-parse", "HEAD");
+  writeFileSync(join(dir, "hc-tui.pin"), `HC_TUI_REPO=${hc}\nHC_TUI_TAG=v1\nHC_TUI_COMMIT=${git(hc, "rev-parse", "HEAD")}\nGHOSTTY_COMMIT=${next}\n`);
+  return { ghostty: next };
+}
+
 function prepare(dir: string, extra: Record<string, string> = {}): { code: number; out: string } {
   const run = Bun.spawnSync(["sh", join(dir, "prepare.sh")], {
     env: { PATH: `${join(scratch, "bin")}:${process.env["PATH"] ?? "/usr/bin:/bin"}`, HOME: scratch, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "protocol.file.allow", GIT_CONFIG_VALUE_0: "always", ...extra },
@@ -88,6 +103,16 @@ describe("crates/ovis-tui/prepare.sh", () => {
     const made = git(upstream, "rev-parse", "HEAD");
     expect(prepare(dir).code).toBe(0);
     expect(git(upstream, "rev-parse", "HEAD")).toBe(made);
+  });
+
+  it("moves a clean tree to a new pin whose Ghostty commit differs", () => {
+    const { dir, upstream } = crate(1);
+    expect(prepare(dir).code).toBe(0);
+    const { ghostty } = bumpPin(dir);
+    const ran = prepare(dir);
+    expect(ran.code, ran.out).toBe(0);
+    expect(git(join(upstream, "vendor", "ghostty"), "rev-parse", "HEAD")).toBe(ghostty);
+    expect(existsSync(join(upstream, "patch-1.txt"))).toBe(true);
   });
 
   describe("never deletes work when the patches change", () => {

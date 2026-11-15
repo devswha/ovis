@@ -54,14 +54,16 @@ work_in() {
   git -C "$d" ls-files -v | grep -E '^(S|[a-z]) ' | sed 's/^[^ ]* /file whose edits git hides: /'
   s="$d/vendor/ghostty"
   [ -e "$s/.git" ] || return 0
+  # compared with the commit this tree itself records, which differs from the new pin once the pin moves
+  recorded=$(git -C "$d" ls-tree HEAD vendor/ghostty | awk '{print $3}')
   sub=$(git -C "$s" rev-parse HEAD 2>/dev/null || true)
-  [ "$sub" = "$GHOSTTY_COMMIT" ] || echo "vendor/ghostty: HEAD is $sub, not the pin"
+  [ "$sub" = "$recorded" ] || echo "vendor/ghostty: HEAD is $sub, not the commit this tree records ($recorded)"
   git -C "$s" status --porcelain --untracked-files=normal | sed 's|^|vendor/ghostty changed: |'
   git -C "$s" status --porcelain --untracked-files=normal --ignored=matching | sed -n 's/^!! //p' | grep -v -E '^(zig-pkg|zig-out|\.zig-cache|zig-cache)/' | sed 's|^|vendor/ghostty ignored file kept: |'
   git -C "$s" for-each-ref --format='%(refname)' refs/stash | sed 's|^|vendor/ghostty: |'
   # its clone makes a branch at the remote's head and may follow its tags: only commits no remote
   # has (on a branch, a tag, or held by the reflog alone) are work
-  git -C "$s" rev-list --branches --tags --reflog --not --remotes "$GHOSTTY_COMMIT" -- 2>/dev/null | head -1 | sed 's|^|vendor/ghostty: unpushed commit |'
+  git -C "$s" rev-list --branches --tags --reflog --not --remotes ${recorded:+"$recorded"} -- 2>/dev/null | head -1 | sed 's|^|vendor/ghostty: unpushed commit |'
   [ "$(git -C "$s" worktree list --porcelain | grep -c '^worktree ')" -le 1 ] || echo "vendor/ghostty: another worktree of it"
   git -C "$s" ls-files -v | grep -E '^(S|[a-z]) ' | sed 's|^[^ ]* |vendor/ghostty: file whose edits git hides: |'
 }
