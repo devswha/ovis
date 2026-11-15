@@ -1,11 +1,12 @@
 import { join } from "node:path";
-import type { Machine } from "../../shared/machines.ts";
+import type { HerdrPane } from "../../shared/protocol.ts";
 import { FRIENDS, friendKey, type Friend, type FriendsResponse } from "../../shared/friends.ts";
 import { badRequest, isJsonObject, jsonResponse } from "../http.ts";
 import { readStateDocument, writeStateDocument } from "../state-document.ts";
 
 const MAX_KEYS = 2000;
 const isFriend = (value: unknown): value is Friend => (FRIENDS as readonly unknown[]).includes(value);
+type FriendSource = { id: string; snapshot: { panes: readonly Pick<HerdrPane, "pane_id" | "workspace_id" | "parent_pane_id">[] } | null };
 
 /**
  * Which friend each agent pane wears (shared/friends.ts), kept beside preferences.json so every
@@ -37,7 +38,7 @@ export class FriendStore {
   }
 
   /** Frees the gone agent panes of `machines`, gives each new live one a friend, and answers them all. */
-  see(live: readonly string[], machines: readonly string[], sources: readonly Pick<Machine, "id" | "snapshot">[] = []): FriendsResponse {
+  see(live: readonly string[], machines: readonly string[], sources: readonly FriendSource[] = []): FriendsResponse {
     const seen = new Set(live);
     const ownedBy = (key: string) => machines.some((machine) => key.startsWith(`${machine}:`));
     let changed = false;
@@ -55,7 +56,7 @@ export class FriendStore {
   }
 
   /** The friend a live agent pane wears, given one now if no browser has shown it yet (an alert names it). */
-  friendOf(machineId: string, paneId: string, sources: readonly Pick<Machine, "id" | "snapshot">[] = []): Friend {
+  friendOf(machineId: string, paneId: string, sources: readonly FriendSource[] = []): Friend {
     const key = friendKey(machineId, paneId);
     const project = this.projectFriend(machineId, paneId, sources);
     if (project && this.friends[key] !== project) { this.friends[key] = project; this.save(); }
@@ -66,7 +67,7 @@ export class FriendStore {
     return friend;
   }
 
-  private projectFriend(machineId: string, paneId: string, sources: readonly Pick<Machine, "id" | "snapshot">[]): Friend | undefined {
+  private projectFriend(machineId: string, paneId: string, sources: readonly FriendSource[]): Friend | undefined {
     const panes = sources.find((machine) => machine.id === machineId)?.snapshot?.panes;
     let pane = panes?.find((candidate) => candidate.pane_id === paneId);
     if (!pane) return undefined;
@@ -113,7 +114,7 @@ export class FriendStore {
 }
 
 /** /api/friends: POST what a browser sees, answered with every agent pane's friend. */
-export async function handleFriendsRequest(request: Request, store: FriendStore, sources: () => Promise<readonly Pick<Machine, "id" | "snapshot">[]> = async () => []): Promise<Response> {
+export async function handleFriendsRequest(request: Request, store: FriendStore, sources: () => Promise<readonly FriendSource[]> = async () => []): Promise<Response> {
   if (request.method !== "POST") return jsonResponse({ error: { code: "method_not_allowed", message: "Use POST /api/friends" } }, 405);
   let body: unknown;
   try { body = await request.json(); } catch { return badRequest("invalid_json", "The body is not JSON"); }

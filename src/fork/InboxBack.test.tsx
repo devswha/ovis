@@ -8,9 +8,13 @@ import { ForkInboxBack } from "./InboxBack.tsx";
 const saved = new Map<string, PropertyDescriptor | undefined>();
 let renderer: ReactTestRenderer | undefined;
 beforeEach(() => {
-  for (const key of ["window", "navigator", "IS_REACT_ACT_ENVIRONMENT"]) saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+  for (const key of ["window", "document", "navigator", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT"]) saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
   Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
   Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en"] } });
+  Object.defineProperty(globalThis, "document", { configurable: true, value: {
+    documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } }, querySelector: () => null,
+  } });
+  Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
 });
 afterEach(async () => {
   await act(async () => renderer?.unmount());
@@ -21,9 +25,11 @@ afterEach(async () => {
   }
 });
 function settings(agentFriends: boolean, language = "en") {
-  Object.defineProperty(globalThis, "window", { configurable: true, value: { localStorage: {
-    getItem: (key: string) => key === "ovis:settings" ? JSON.stringify({ agentFriends, language }) : null,
-  } } });
+  const events = new EventTarget();
+  Object.defineProperty(globalThis, "window", { configurable: true, value: {
+    addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events),
+    localStorage: { getItem: (key: string) => key === "ovis:settings" ? JSON.stringify({ agentFriends, language }) : null, setItem() {} },
+  } });
 }
 const draw = (wide: boolean) => renderToStaticMarkup(<SettingsProvider><ForkInboxBack wide={wide} onBack={() => {}}><span>Upstream brand</span></ForkInboxBack></SettingsProvider>);
 

@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { forkInboxRows } from "./inboxRows.ts";
 
 const row = (id: string, parent?: string, machine = "local") => ({ machine: { id: machine }, pane: { pane_id: id, parent_pane_id: parent } });
-const ids = (rows: ReturnType<typeof forkInboxRows>) => rows.map((entry) => `${entry.machine.id}:${entry.pane.pane_id}`);
+const ids = (rows: readonly { machine: { id: string }; pane: { pane_id: string } }[]) => rows.map((entry) => `${entry.machine.id}:${entry.pane.pane_id}`);
 
 test("helpers follow their conductor like the sidebar, moving the family to its first member", () => {
   const rows = [row("child", "root"), row("other"), row("root"), row("grandchild", "child"), row("sibling", "root")];

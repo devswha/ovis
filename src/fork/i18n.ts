@@ -1,6 +1,7 @@
 /** Fork-only UI strings; leave upstream's dictionaries unchanged. */
 export const FORK_I18N = {
   ja: {
+    "Back|fork inbox": "戻る",
     "Square corners": "角を直角にする",
     "View toggle in More": "その他メニューで表示を切り替える",
     "Agent friends": "エージェントのフレンド",
@@ -12,6 +13,7 @@ export const FORK_I18N = {
     "Pull requests": "プルリクエスト",
   },
   ko: {
+    "Back|fork inbox": "뒤로",
     "Square corners": "직각 모서리",
     "View toggle in More": "더 보기에서 화면 전환",
     "Agent friends": "에이전트 친구",
@@ -23,6 +25,7 @@ export const FORK_I18N = {
     "Pull requests": "풀 리퀘스트",
   },
   zh: {
+    "Back|fork inbox": "返回",
     "Square corners": "直角边框",
     "View toggle in More": "在更多菜单中切换视图",
     "Agent friends": "代理好友",

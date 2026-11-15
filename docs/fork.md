@@ -26,12 +26,24 @@ filtered-out conductor leaves a normal row. IDs are machine-scoped. Fork CSS dra
 connector; pictures keep their normal full color. This follows the existing Ovis sidebar rather than
 introducing a competing agent-group interaction.
 
+`src/fork/InboxBack.tsx` replaces inbox branding with an accessible, fork-translated Back arrow on
+wide windows only. Both App's header slot and the inbox's actual desktop rail use the existing exit
+action. The classic shell never mounts an arrow; a phone's inbox home mounts neither arrow nor brand.
+When Agent friends is off both slots keep their upstream contents. Fork CSS alone hides the classic
+sidebar brand (no App hook), removing its flex gap while keeping New workspace and Collapse sidebar.
+The footer's Open agent inbox entry and the menu remain reachable.
+
 Hooks added/changed by this task (upstream files only):
 - `server/index.ts`: one existing `friendOf` callback line also passes the cached machine roster;
   the fork looks up workspace/parent metadata for alerts, including before a browser lists a pane.
   Fork diff vs `upstream/main` before/after: **+12/-5 → +12/-5** (unchanged hook footprint).
 - `src/components/InboxList.tsx`: one import, one `forkInboxRows(..., settings.agentFriends)`
   wrapper, one row-class suffix. Fork diff **+2/-1 → +6/-4**.
+- `src/App.tsx`: one import plus one `ForkInboxBack` mount in the existing inbox-only branch.
+  Fork diff **+43/-62 → +45/-63**.
+- `src/components/InboxRail.tsx`: one import plus a two-line `ForkInboxBack` wrapper around
+  upstream's exit button (its fallback). Fork diff **0 → +3/-0**. Upstream now hides App's header in
+  inbox mode, so this additional mount is needed for the requested desktop exit to actually appear.
 - `src/lib/agentRoster.ts`: export the already-generic `nestRows` helper (one changed line, no
   behavior change), avoiding a duplicate algorithm in the fork. Fork diff **0 → +1/-1**.
 - `server/fork/routes.ts` (fork-owned): supplies cached snapshots, or a local snapshot when the
@@ -47,6 +59,31 @@ implementation. Server conventions (`bun test server/conventions.test.ts`, same 
 (16 tests). `TMPDIR="$HOME/.cache/ovis-tmp/inbox-agent-clarity" bun test
 server/fork/fork-friends.test.ts server/friends.test.ts` exited 0 (6 tests). No Bigpowers timing or
 RED-isolation scripts exist in this checkout; the failing test-only commit records RED directly.
+
+Final scoped verification: `TMPDIR="$HOME/.cache/ovis-tmp/inbox-agent-clarity" bun test
+src/fork/*.test.ts* server/fork/fork-friends.test.ts server/friends.test.ts
+src/components/InboxList.test.tsx src/components/InboxMode.test.tsx src/components/InboxRail.test.tsx
+src/lib/agentRoster.test.ts src/conventions.test.ts server/conventions.test.ts` exited 0 (166 tests,
+18 files). Back-button RED exited 1 before implementation; its first GREEN attempt exposed an
+incomplete browser stub in the new test. Adding the SettingsProvider's DOM/event boundary fixed it
+(33 tests passed, including InboxMode and InboxRail). Scoped TypeScript over the changed TS/TSX roots
+exited 0, after generating the vendor declarations as `scripts/typecheck.ts` does. An initial scoped
+config without that vendor reference checked upstream vendor sources under app strictness; the same
+16 vendor errors reproduced on base `ae7bb1e2`. That diagnostic setup was corrected, not vendor code.
+
+The three inbox browser regressions (`inbox-mode-demo-regression.ts`, `inbox-mode-panes-demo-regression.ts`,
+`inbox-mode-rail-demo-regression.ts`) each exited 0 in `herdr-ci-runner:local` as user `runner`, with no
+host network or credentials. A separate demo-only capture exited 0 at 1440px and 390px with Agent
+friends on: the desktop arrow leaves the inbox, classic has no arrow/logo or empty brand gap, the
+footer entry is visible, and phone home has no arrow/logo. Evidence remains under
+`$HOME/.cache/ovis-tmp/inbox-agent-clarity/screenshots/fork/` (the demo's per-pane friend fixtures are
+not evidence of server project assignment). All browser TMPDIRs were under the runner's home cache.
+Whole-project typecheck, `bun run check fast` and `bun run build` were skipped per implementer scope;
+the browser regressions built their own disposable demo bundles. No push, PR, deployment or merge.
+
+Self-audit: no auth/API shape changes, secrets, dependencies, generated-source edits or tint; retained
+old cache format and protect unknown project documents. Ordering reuses upstream's cycle-safe helper.
+Minimal upstream hooks and disabled-state fallback verified. No Bigpowers state/plan files created.
 
 ## Three piles
 
