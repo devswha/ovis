@@ -2942,7 +2942,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   const footer = <>
       <p className={waitWords === null ? "visually-hidden" : "chat-inline-state"} role="status">{waitWords}</p>
       {sentWaiting.length > 0 && state.source === "conversation" && <SentWaitingList sends={sentWaiting} paneKey={waitKey} agent={agent}
-        resting={workStatus === "idle" || workStatus === "done"} onOpenTerminal={onOpenTerminal ? () => onOpenTerminal("") : undefined} />}
+        resting={workStatus === "idle" || workStatus === "done"} onOpenTerminal={openTerminal} />}
       {error !== null && !waiting && (errorStatus === 401
         ? <p className="chat-inline-state chat-inline-error" role="alert">{t("locked — the token gate is asking again")}</p>
         : <FailureLine action={t("Couldn't load the conversation")} failure={error} onRetry={retryRead} />)}
