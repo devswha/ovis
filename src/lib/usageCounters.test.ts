@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { TelemetryCountsChange, TelemetryStatus } from "../../shared/telemetry.ts";
 import { NOTICE_VERSION } from "../../shared/telemetry-notice.ts";
-import { actionUse, createUsageCounters, usageCounters } from "./usageCounters.ts";
+import { actionsCan, actionUse, createUsageCounters, usageCounters } from "./usageCounters.ts";
 
 const status = (overrides: Partial<TelemetryStatus> = {}) => ({ enabled: true, blocked_by_env: false, notice_seen: true, ...overrides }) as TelemetryStatus;
 
@@ -287,5 +287,16 @@ describe("usage counters", () => {
     counters.flush(false);
     await settle();
     expect(sent.map((counts) => Object.keys(counts.add))).toEqual([["chat_send"]]);
+  });
+
+  test("what App can do now decides what is counted: no new tab in the inbox or without a workspace, no sidebar in the mode", () => {
+    const now = { split: true, closePane: true, files: true, inboxShown: false, inMode: false, tabTarget: true };
+    expect(actionsCan(now)).toEqual({ split: true, close_pane: true, files: true, new_tab: true, sidebar: true });
+    expect(actionsCan({ ...now, inboxShown: true })).toMatchObject({ new_tab: false, sidebar: true });
+    expect(actionsCan({ ...now, inMode: true })).toMatchObject({ new_tab: false, sidebar: false });
+    expect(actionsCan({ ...now, tabTarget: false, split: false, closePane: false, files: false })).toEqual({ split: false, close_pane: false, files: false, new_tab: false, sidebar: true });
+    // and actionUse counts nothing App cannot do: a sidebar shortcut in the mode is no use of the sidebar
+    expect(actionUse("sidebar", "shortcut", { machineId: "local", can: actionsCan({ ...now, inMode: true }) })).toBeNull();
+    expect(actionUse("files", "menu", { machineId: "local", can: actionsCan(now) })).toBe("files_by_menu");
   });
 });

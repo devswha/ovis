@@ -207,6 +207,15 @@ export function actionUse(action: TelemetryAction, source: TelemetryActionSource
   return `${action}_by_${source}`;
 }
 
+/**
+ * Which counted actions would do something now, as App knows it (actionUse's `can`): no split, close or Files with
+ * nothing offered, no new tab in the agent inbox (its list or its mode) or with no workspace to add it to, and no
+ * sidebar in the mode.
+ */
+export function actionsCan(now: { split: boolean; closePane: boolean; files: boolean; inboxShown: boolean; inMode: boolean; tabTarget: boolean }): Partial<Record<TelemetryAction, boolean>> {
+  return { split: now.split, close_pane: now.closePane, files: now.files, new_tab: !now.inboxShown && !now.inMode && now.tabTarget, sidebar: !now.inMode };
+}
+
 /** A count that never stands in the way of what was pressed: a failure is logged, and the action goes on. */
 export function tally(count: () => void): void {
   try { count(); } catch (error) { console.error("usage counts", error); }
