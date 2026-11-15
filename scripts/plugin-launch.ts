@@ -18,7 +18,7 @@
  * remembers the second case for this version, so later commands ask no server. A manifest that exists and fails a
  * check, a server error or a network failure is a failure, never a reason to build from source.
  * .ovis/server/source-build is what that build came to (install.ps1 reads it): `started` from its first step, and the
- * version and the checkout's commit only once every step returned 0.
+ * version and the checkout's commit (the version alone where git cannot tell it) only once every step returned 0.
  * This file imports nothing outside scripts/ and shared/.
  */
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -58,7 +58,7 @@ async function fromSource(command: string, args: string[]): Promise<number> {
 /** The checkout's commit, or "" where git cannot tell (no git, or not a git checkout). */
 async function headCommit(): Promise<string> {
   try {
-    const git = Bun.spawn(["git", "-C", root, "rev-parse", "HEAD"], { stdin: "ignore", stdout: "pipe", stderr: "ignore" });
+    const git = Bun.spawn(["git", "-C", root, "rev-parse", "HEAD"], { env: process.env, stdin: "ignore", stdout: "pipe", stderr: "ignore" });
     const [out, code] = await Promise.all([new Response(git.stdout).text(), git.exited]);
     return code === 0 ? out.trim() : "";
   } catch {

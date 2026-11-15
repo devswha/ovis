@@ -138,6 +138,17 @@ describe("the herdr plugin's launcher", () => {
     expect(await build(0, notFound)).toEqual({ code: 0, during: "started\n", after: finished });
   });
 
+  it("stamps the version alone where git cannot tell the commit", async () => {
+    process.env["OVIS_FROM_SOURCE"] = "1";
+    // git pointed at no repository fails as it does in a folder that is no git checkout
+    process.env["GIT_DIR"] = join(scratch, "no-git");
+    try {
+      expect(await build(0)).toEqual({ code: 0, during: "started\n", after: `${version}\n` });
+    } finally {
+      delete process.env["GIT_DIR"];
+    }
+  });
+
   it("leaves a build that fails or is cut off unfinished, over an earlier finished one too", async () => {
     process.env["OVIS_FROM_SOURCE"] = "1";
     expect(await build(0)).toMatchObject({ after: finished });

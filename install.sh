@@ -1312,8 +1312,8 @@ EOF
 # said with its commit, without asking GitHub
 ref_not_moved() {
   [ -n "${OVIS_REF:-${HERDR_WEB_UI_REF:-}}" ] || return 0
-  installed_at=$(git -C "$1" rev-parse --short=12 HEAD 2>/dev/null </dev/null) || installed_at=""
-  say "${installed_at:+the installed checkout is at commit $installed_at; }OVIS_REF does not move an installed Ovis (INSTALL.md, Update)"
+  ref_not_moved_at=$(git -C "$1" rev-parse --short=12 HEAD 2>/dev/null </dev/null) || ref_not_moved_at=""
+  say "${ref_not_moved_at:+the installed checkout is at commit $ref_not_moved_at; }OVIS_REF does not move an installed Ovis (INSTALL.md, Update)"
 }
 
 # Ovis on herdr-core, without herdr or its plugin: its own checkout in APP_DIR, built with herdr-plugin.toml's
