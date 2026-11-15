@@ -16,7 +16,7 @@ import { checkForUpdates, debInstallCommand, downloadsUpdate, nextOffer, NO_OFFE
 import { extractedAppDir, othersRunFrom } from "./appimage.ts";
 import { desktopLocale, desktopText } from "./text.ts";
 import { hideWindow } from "./windowClose.ts";
-import { argvLinkQuery, LINK_SCHEME, openLinkQuery } from "./openLink.ts";
+import { argvLinkQuery, LINK_SCHEME, openLinkQuery, tellsLink } from "./openLink.ts";
 
 type StepState = "pending" | "ok" | "failed";
 export interface Status {
@@ -129,15 +129,11 @@ function openLink(query: string): void {
   tellLink();
 }
 
-/**
- * To the server's page alone, once it has loaded (`loaded`: its did-finish-load): a page still loading
- * would lose it. preload.ts holds it until the page listens. Only the page itself counts as loading:
- * a frame in it (a web panel, a file's preview) may load for long after, and did-finish-load, which
- * would tell the link then, is the page's alone.
- */
+/** To the server's page alone, once it has loaded (openLink.ts tellsLink); preload.ts holds it until the page listens. */
 function tellLink(loaded = false): void {
   const contents = window?.webContents;
-  if (pendingLink === null || !contents || (!loaded && contents.isLoadingMainFrame()) || !ours(contents.getURL())) return;
+  const page = contents ? { ours: ours(contents.getURL()), loadingMainFrame: contents.isLoadingMainFrame() } : null;
+  if (!contents || !tellsLink(pendingLink, page, loaded)) return;
   contents.send("ovis:open-link", pendingLink);
   pendingLink = null;
 }
@@ -667,9 +663,13 @@ if (!app.requestSingleInstanceLock()) {
   void app.whenReady().then(() => {
     text = desktopText(desktopLocale(app.getLocale()));
     // Windows opens a link by starting the app with it: the installer does not register the scheme, so
-    // the app does (a Mac's Info.plist and Linux's .desktop file name it: electron-builder.yml `protocols`).
-    // The `--` ends Chromium's switches, so a link is never read as one
-    if (app.isPackaged && process.platform === "win32") app.setAsDefaultProtocolClient(LINK_SCHEME, process.execPath, ["--"]);
+    // the app does (a Mac's Info.plist and Linux's .desktop file name it: electron-builder.yml `protocols`),
+    // and only while no program has it: another program's ovis:// stays its own, and this app's own
+    // registration needs no writing again. The `--` ends Chromium's switches, so a link is never read as
+    // one. The uninstaller removes the registration only when it starts this install (windows/installer.nsh)
+    if (app.isPackaged && process.platform === "win32" && !app.getApplicationNameForProtocol(`${LINK_SCHEME}://`)) {
+      app.setAsDefaultProtocolClient(LINK_SCHEME, process.execPath, ["--"]);
+    }
     pendingLink ??= argvLinkQuery(process.argv);
     allowPermissions();
     createMenu();

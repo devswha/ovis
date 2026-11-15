@@ -51,8 +51,9 @@ when the Ovis pages have it (Korean, Japanese, Chinese; `src/text.ts`), English 
 - **Links to a pane**: another program on the PC shows a pane in the window, instead of a browser
   tab, with an `ovis://open` link: `ws` (the workspace's id), `pane`, and optionally `view`
   (`terminal` or `chat`) and `machine` (another PC), as the server's own deep links name them. The
-  window comes forward and selects the pane without reloading, as a tapped notification does; a pane
-  that has closed opens its workspace. A link starts the app when it is not running.
+  window comes forward and selects the pane without reloading, as the address bar's own link does:
+  only once the PC's list says the pane is in the workspace the link names, and no pane until then;
+  a pane that has closed opens its workspace. A link starts the app when it is not running.
 
   ```sh
   open "ovis://open?ws=3&pane=t3&view=terminal"                      # macOS
@@ -64,6 +65,9 @@ when the Ovis pages have it (Korean, Japanese, Chinese; `src/text.ts`), English 
   another address, a file, a dialog or Settings, and one that names no pane does nothing. `ws` may
   carry the workspace's slug (`3-my-app`), as the address bar writes it: herdr hands its ids out
   again, and the slug picks the workspace meant, as a deep link's does.
+
+  On Windows the app registers the scheme for the user as it starts, and only while no program has
+  it; removing the app removes the registration only when it still starts that install.
 
   The scheme is shared by host: `ovis://open` is the desktop app's, `ovis://account/callback` the
   phone apps' sign-in (`src/lib/account/native.ts`); any other host only brings the window forward.

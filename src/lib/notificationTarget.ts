@@ -1,12 +1,14 @@
-import { readLink, type AppLink } from "./deepLink.ts";
+import type { SessionSnapshot } from "../../shared/protocol.ts";
+import { readLink, resolveLink, type AppLink } from "./deepLink.ts";
 import { desktopLinks, type DesktopLinks } from "./desktopLink.ts";
 
 export type NotificationPaneView = "chat" | "terminal";
 /**
  * `workspace_id`: the workspace the pane was last seen in (server/push.ts), so an ended pane's tap opens it.
- * `workspace_slug`: a desktop link's slug of that workspace (lib/deepLink.ts `ws`), a check of its id.
+ * `link`: a desktop link's place, as the address's own link reads it (lib/desktopLink.ts): it lands as
+ * that link does (linkLanding), never by its pane id alone.
  */
-export type NotificationTarget = { machine_id: string; pane_id: string; view?: NotificationPaneView; workspace_id?: string; workspace_slug?: string };
+export type NotificationTarget = { machine_id: string; pane_id: string; view?: NotificationPaneView; workspace_id?: string; link?: AppLink };
 type Target = NotificationTarget;
 type Select = (target: Target) => void;
 
@@ -47,34 +49,44 @@ type RosterMachine = { id: string; snapshot?: { panes: readonly { pane_id: strin
  */
 export function notificationLanding(roster: readonly RosterMachine[], target: NotificationTarget): { kind: "select" } | { kind: "link"; link: AppLink; stale: boolean } {
   const machine = roster.find((candidate) => candidate.id === target.machine_id);
-  // a desktop link that names its workspace by slug always settles as a deep link does (resolveLink):
-  // herdr hands its short ids out again, and the slug says which workspace, and so which pane, was meant
-  if (!target.workspace_slug && machine?.snapshot?.panes.some((pane) => pane.pane_id === target.pane_id)) return { kind: "select" };
-  const link: AppLink = {
-    machine: target.machine_id, workspace: target.workspace_id ?? null, ...(target.workspace_slug ? { workspaceSlug: target.workspace_slug } : {}),
-    pane: target.pane_id, view: target.view ?? null, settings: null,
-  };
+  if (machine?.snapshot?.panes.some((pane) => pane.pane_id === target.pane_id)) return { kind: "select" };
+  const link: AppLink = { machine: target.machine_id, workspace: target.workspace_id ?? null, pane: target.pane_id, view: target.view ?? null, settings: null };
   return { kind: "link", link, stale: machineMissing(roster, target.machine_id) };
 }
 
-/** The same place: a second delivery of one tap (public/sw.js names it before and after focus). */
+type LinkRoster = { id: string; snapshot?: Pick<SessionSnapshot, "workspaces" | "panes" | "layouts"> | null };
+
+/**
+ * Where a desktop link lands: as the address's own link does (lib/deepLink.ts resolveLink, as
+ * lib/useAddressBar.ts lands a Back), its pane is selected only when its PC's roster lists it in the
+ * workspace the link names, by id and slug. Anything else selects no pane yet: the link waits as the
+ * address's does, settled once its PC's roster is in, with its note (lib/useSelection.ts). `stale`:
+ * as notificationLanding's.
+ */
+export function linkLanding(roster: readonly LinkRoster[], link: AppLink): { kind: "select"; pane: string } | { kind: "wait"; stale: boolean } {
+  const snapshot = roster.find((candidate) => candidate.id === link.machine)?.snapshot;
+  const landed = snapshot ? resolveLink(snapshot, link) : null;
+  if (landed?.pane && !landed.note) return { kind: "select", pane: landed.pane };
+  return { kind: "wait", stale: machineMissing(roster, link.machine) };
+}
+
+/** The same place: a second delivery of one tap (public/sw.js names it before and after focus), or of one link (its slug too). */
 export function sameLink(a: AppLink | null, b: AppLink): boolean {
-  return a !== null && a.machine === b.machine && a.pane === b.pane && (a.workspace ?? null) === (b.workspace ?? null) && (a.view ?? null) === (b.view ?? null);
+  return a !== null && a.machine === b.machine && a.pane === b.pane && (a.workspace ?? null) === (b.workspace ?? null)
+    && (a.workspaceSlug ?? null) === (b.workspaceSlug ?? null) && (a.view ?? null) === (b.view ?? null);
 }
 
 type MessageSource = { addEventListener: (type: "message", listener: (event: MessageEvent) => void) => void };
 
 /**
- * The pane a desktop link names, landing as a tapped notification's does (the workspace for when
- * the pane has closed). A link that names no pane is no target.
+ * The pane a desktop link names, with the place as the address's own link reads it (`link`), which
+ * is how it lands (linkLanding). A link that names no pane is no target.
  */
 export function linkTarget(query: string): NotificationTarget | null {
   const link = readLink(query);
   if (!link.pane) return null;
-  return {
-    machine_id: link.machine, pane_id: link.pane, ...(link.view ? { view: link.view } : {}),
-    ...(link.workspace ? { workspace_id: link.workspace } : {}), ...(link.workspace && link.workspaceSlug ? { workspace_slug: link.workspaceSlug } : {}),
-  };
+  const place: AppLink = { machine: link.machine, workspace: link.workspace, workspaceSlug: link.workspaceSlug ?? null, pane: link.pane, view: link.view, settings: null };
+  return { machine_id: link.machine, pane_id: link.pane, ...(link.view ? { view: link.view } : {}), link: place };
 }
 
 /** Keep the newest target until App is ready, then deliver new selections directly: a tapped notification's, or a desktop link's. */

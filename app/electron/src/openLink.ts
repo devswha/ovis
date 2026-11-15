@@ -57,3 +57,39 @@ export function argvLinkQuery(argv: readonly string[]): string | null {
   }
   return null;
 }
+
+/** What main reads of its window's page as a link waits (main.ts tellLink): null with no window. */
+export type LinkPage = { ours: boolean; loadingMainFrame: boolean };
+
+/**
+ * Whether main tells the waiting link to its window's page now: only to its own server's page, and
+ * only once that page itself has loaded (`loaded`: its did-finish-load), as a page still loading
+ * would lose it. A frame in the page (a web panel, a file's preview) may load for long after, so
+ * only the page's own load counts: isLoadingMainFrame, never isLoading.
+ */
+export function tellsLink(pending: string | null, page: LinkPage | null, loaded: boolean): boolean {
+  return pending !== null && page !== null && page.ours && (loaded || !page.loadingMainFrame);
+}
+
+/**
+ * The preload's side of a link (preload.ts `ovisLink`): main tells a link as soon as the page has
+ * loaded, which may be before the page listens, so the newest one that came before is held for the
+ * listener and told to it as it starts listening. A listener set later takes the place of the last.
+ */
+export function linkHold(): { receive(query: unknown): void; onOpen(listener: (query: string) => void): void } {
+  let held: string | null = null;
+  let listening: ((query: string) => void) | null = null;
+  return {
+    receive(query) {
+      if (typeof query !== "string") return;
+      if (listening) listening(query);
+      else held = query;
+    },
+    onOpen(listener) {
+      listening = listener;
+      const waiting = held;
+      held = null;
+      if (waiting !== null) listener(waiting);
+    },
+  };
+}
