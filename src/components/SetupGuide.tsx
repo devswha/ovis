@@ -29,7 +29,7 @@ import { createRequest, newSessionLaunch } from "../lib/newSession.ts";
 import { pairThisBrowser, UnconfirmedPairing } from "../lib/pairing.ts";
 import { isLoopbackHost, phonePlan } from "../lib/phone.ts";
 import { recentDirectories } from "../lib/recent-directories.ts";
-import { useSettings } from "../lib/settings.ts";
+import { useSettings, type Settings } from "../lib/settings.ts";
 import { useAlertFilters } from "../lib/alertFilters.ts";
 import { alertMeWhenChips } from "./AlertChips.tsx";
 import { pageNotifications, showTestNotification, type NotificationState } from "../lib/notifications.ts";
@@ -48,6 +48,8 @@ import { AgentTile } from "./AgentTile.tsx";
 import { OvisMark } from "./OvisMark.tsx";
 import { ChipToggles, Segmented } from "./SettingsControls.tsx";
 import { ThemeCard, THEME_NAMES } from "./ThemeCard.tsx";
+import { themeLabel } from "./ThemeFiles.tsx";
+import { chosenTheme } from "../lib/customThemes.ts";
 import { TelemetryNotice } from "./TelemetryControls.tsx";
 import { UsageSignInDialog } from "./UsageSignInDialog.tsx";
 import { QrCode } from "./QrCode.tsx";
@@ -461,8 +463,7 @@ function Steps({ page, setPage, onEnableAlerts, notifications, catalog, ready, m
   const signInChosen = chosen !== null && unsigned.some((agent) => agent.id === chosen.id);
   const systemDark = useMediaQuery("(prefers-color-scheme: dark)");
   const drawnSide: Mode = settings.theme === "system" ? (systemDark ? "dark" : "light") : settings.theme;
-  const drawnTheme = settings.customThemes[drawnSide] === null ? THEME_NAMES[drawnSide === "dark" ? settings.darkTheme : settings.lightTheme] : null;
-  const themeSummary = [t(settings.theme === "system" ? "System" : settings.theme === "dark" ? "Dark" : "Light"), drawnTheme === null ? null : t(drawnTheme)].filter(Boolean).join(" · ");
+  const themeSummary = [t(settings.theme === "system" ? "System" : settings.theme === "dark" ? "Dark" : "Light"), drawnThemeName(t, settings, drawnSide)].filter(Boolean).join(" · ");
   // a device other than this browser: paired before the guide (the server's list), or from its box just now.
   // This browser pairing itself (onPaired) is not one
   const pairedBefore = useOtherDevice(page === "phone" || page === "done");
@@ -737,6 +738,13 @@ const THEMES_FIRST = 6;
  * now. A pick changes the whole app at once, the dialog and the app behind it, so the app itself is the preview;
  * the side panel shows the chosen theme larger. The theme is a shared setting: every device of this Ovis takes it.
  */
+/** The theme drawn on a side, by its name: a built-in one's, or an imported one's as Settings names it; null when an imported one is gone. */
+function drawnThemeName(t: Translate, settings: Settings, side: Mode): string | null {
+  if (settings.customThemes[side] === null) return t(THEME_NAMES[side === "dark" ? settings.darkTheme : settings.lightTheme]);
+  const imported = chosenTheme(settings.customThemes, side);
+  return imported === undefined ? null : themeLabel(t, imported, settings.customThemes.themes);
+}
+
 function ThemeStep({ firstFocus, children }: { firstFocus: FirstFocus; children: ReactNode }) {
   const t = useT();
   const { settings, update } = useSettings();
@@ -748,7 +756,10 @@ function ThemeStep({ firstFocus, children }: { firstFocus: FirstFocus; children:
   const current: ThemeId | null = settings.customThemes[side] === null ? (side === "dark" ? settings.darkTheme : settings.lightTheme) : null;
   const own = THEME_IDS.filter((id) => rowFor(id, side).mode === side);
   const others = THEME_IDS.filter((id) => rowFor(id, side).mode !== side);
-  const shown = all ? [...own, ...others] : own.slice(0, THEMES_FIRST).concat(current !== null && !own.slice(0, THEMES_FIRST).includes(current) ? [current] : []);
+  // a theme saved outside the first six keeps its card for as long as the step is open, though the keyboard moves off it
+  const kept = useRef(new Set<ThemeId>());
+  if (current !== null && !own.slice(0, THEMES_FIRST).includes(current)) kept.current.add(current);
+  const shown = all ? [...own, ...others] : own.slice(0, THEMES_FIRST).concat(own.slice(THEMES_FIRST).filter((id) => kept.current.has(id)));
   const pick = (id: ThemeId): void => update((latest) => ({ ...pickTheme(latest, side, id), customThemes: { ...latest.customThemes, [side]: null } }));
   // a radio group's arrows pick as they move
   const step = (event: ReactKeyboardEvent<HTMLDivElement>): void => {
@@ -794,7 +805,7 @@ function ThemeStep({ firstFocus, children }: { firstFocus: FirstFocus; children:
       <aside className="setup-side" aria-labelledby="setup-theme-preview">
         <span className="setup-label" id="setup-theme-preview">{t("Preview")}</span>
         <ThemePreview />
-        <p className="setup-text">{current === null ? sideLabel : `${t(side === "dark" ? "Dark" : "Light")} · ${t(THEME_NAMES[current])}`}</p>
+        <p className="setup-text">{[t(side === "dark" ? "Dark" : "Light"), drawnThemeName(t, settings, side)].filter(Boolean).join(" · ") || sideLabel}</p>
       </aside>
     </div>
   );

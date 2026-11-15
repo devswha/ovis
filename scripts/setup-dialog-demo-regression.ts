@@ -225,6 +225,49 @@ try {
           assert.equal(await dialog.getAttribute("aria-modal"), "true", `resumed, the guide is a modal dialog again ${at}`);
           console.log(`PASS a stepped-aside guide is no modal dialog, and Back to setup makes it one again (${at})`);
 
+          if (theme === "dark") {
+            // the theme step's keys and links: Home and End pick the first and last card, Show all themes reveals the
+            // rest with the keyboard on the first revealed, a theme saved beyond the first six keeps its card after an
+            // arrow moves off it, and the mode switch draws the other side's cards (#3885 review)
+            await page.evaluate((guide) => localStorage.setItem("ovis:setup-guide", guide), WELCOME);
+            await page.reload();
+            await dialog.getByRole("button", { name: /^I'm new to Ovis/ }).click();
+            await title.waitFor();
+            await dialog.locator(".setup-foot").getByRole("button", { name: "Continue", exact: true }).click();
+            await dialog.getByRole("heading", { name: "Pick a look", exact: true }).waitFor();
+            const grid = dialog.getByRole("radiogroup", { name: "Dark theme", exact: true });
+            const radios = grid.getByRole("radio");
+            await grid.getByRole("radio", { checked: true }).focus();
+            await page.keyboard.press("End");
+            assert.equal(await grid.getByRole("radio", { checked: true }).innerText(), await radios.last().innerText(), `End picks the last card ${at}`);
+            await page.keyboard.press("Home");
+            assert.equal(await grid.getByRole("radio", { checked: true }).innerText(), await radios.first().innerText(), `Home picks the first card ${at}`);
+            const six = await radios.count();
+            await dialog.getByRole("button", { name: "Show all themes", exact: true }).click();
+            await page.waitForFunction((count) => document.querySelectorAll(".setup-theme-cards [role='radio']").length > count, six);
+            const firstSix = (await radios.allInnerTexts()).slice(0, six);
+            assert.ok(!firstSix.includes(await focusedName(page)), `Show all themes puts the keyboard on the first theme it revealed ${at}`);
+            await grid.locator("[data-theme-card='nord']").click();
+            // back and on again: the grid is six again, with Nord kept as the saved one
+            await dialog.locator(".setup-foot").getByRole("button", { name: "Back", exact: true }).click();
+            await title.waitFor();
+            await dialog.locator(".setup-foot").getByRole("button", { name: "Continue", exact: true }).click();
+            await dialog.getByRole("heading", { name: "Pick a look", exact: true }).waitFor();
+            const nord = grid.locator("[data-theme-card='nord']");
+            assert.equal(await nord.getAttribute("aria-checked"), "true", `Nord is checked ${at}`);
+            await nord.focus();
+            await page.keyboard.press("ArrowRight");
+            await page.waitForFunction(() => document.querySelector("[data-theme-card='nord']")?.getAttribute("aria-checked") === "false");
+            assert.equal(await nord.count(), 1, `a saved theme beyond the first six keeps its card after an arrow moves off it ${at}`);
+            // the mode switch draws the light side's cards, and back
+            const mode = dialog.getByRole("group", { name: "Theme", exact: true });
+            await mode.getByRole("button", { name: "Light", exact: true }).click();
+            await dialog.getByRole("radiogroup", { name: "Light theme", exact: true }).waitFor();
+            await mode.getByRole("button", { name: "Dark", exact: true }).click();
+            await grid.waitFor();
+            console.log(`PASS the theme step's Home and End, Show all themes, a saved theme beyond the first six, and the mode switch (${at})`);
+          }
+
           // a device paired before the guide (the demo's list) is the phone: the step and Done name it. That this
           // browser alone is no phone is a unit test (setupGuideFlow.test.ts otherDevice)
           const other = await context.newPage();
