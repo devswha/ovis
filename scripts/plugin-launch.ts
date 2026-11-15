@@ -18,7 +18,8 @@
  * remembers the second case for this version, so later commands ask no server. A manifest that exists and fails a
  * check, a server error or a network failure is a failure, never a reason to build from source.
  * .ovis/server/source-build is what that build came to (install.ps1 reads it): `started` from its first step, and the
- * version and the checkout's commit (the version alone where git cannot tell it) only once every step returned 0.
+ * version and the checkout's commit (the version alone where git cannot tell it) only once every step returned 0, and
+ * only when that commit is still the one the build started from.
  * This file imports nothing outside scripts/ and shared/.
  */
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -66,8 +67,8 @@ async function headCommit(): Promise<string> {
   }
 }
 
-/** the tests': the install folder, what stands in for the source path, and how a file is fetched */
-export async function main(args: string[], { home = join(root, ".ovis", "server"), source = fromSource, fetchFile, sources = sourceTrees(root) }: { home?: string; source?: typeof fromSource; fetchFile?: typeof fetch; sources?: ReturnType<typeof sourceTrees> } = {}): Promise<number> {
+/** the tests': the install folder, what stands in for the source path, how a file is fetched, and how the commit is read */
+export async function main(args: string[], { home = join(root, ".ovis", "server"), source = fromSource, fetchFile, sources = sourceTrees(root), commit = headCommit }: { home?: string; source?: typeof fromSource; fetchFile?: typeof fetch; sources?: ReturnType<typeof sourceTrees>; commit?: typeof headCommit } = {}): Promise<number> {
   const [command, ...rest] = args;
   if (command === undefined || ["--help", "-h", "help"].includes(command)) {
     console.log(USAGE);
@@ -84,14 +85,19 @@ export async function main(args: string[], { home = join(root, ".ovis", "server"
   // The marker is the choice, written before the build; the stamp says whether the build finished. It says `started`
   // before the marker is written and names the version and commit only after every step returned 0, so a build that
   // failed or was cut off (in bun install, or over the packages and client of an earlier build) is never taken as
-  // finished. A checkout without a stamp was built by a launcher from before it, or took the release's binary.
+  // finished. A checkout without a stamp was built by a launcher from before it, or took the release's binary. The
+  // commit is the one the build started from: a checkout that moved meanwhile (a pull while bun install ran) holds
+  // sources other than the ones built, and its build stays `started`.
   const stamp = join(home, "source-build");
   const build = async () => {
     mkdirSync(home, { recursive: true });
     writeFileSync(stamp, "started\n");
     remember();
+    const builtFrom = await commit();
     const code = await source("install", rest);
-    if (code === 0) writeFileSync(stamp, `${[version, await headCommit()].filter(Boolean).join(" ")}\n`);
+    if (code !== 0) return code;
+    if (await commit() === builtFrom) writeFileSync(stamp, `${[version, builtFrom].filter(Boolean).join(" ")}\n`);
+    else console.error("Ovis: the checkout moved to another commit while it was built, so the build is not marked finished");
     return code;
   };
   if (command === "install") {

@@ -160,6 +160,18 @@ describe("the herdr plugin's launcher", () => {
     expect(existsSync(join(scratch, "server", "source-build"))).toBe(false);
   });
 
+  it("stamps the commit the build started from, and leaves the build unfinished when the checkout moved while it ran", async () => {
+    process.env["OVIS_FROM_SOURCE"] = "1";
+    const home = join(scratch, "server");
+    const stamped = async (commits: string[]) => {
+      const code = await main(["install"], { home, source: async () => 0, commit: async () => commits.shift() ?? "" });
+      return { code, after: readFileSync(join(home, "source-build"), "utf8") };
+    };
+    expect(await stamped(["a".repeat(40), "a".repeat(40)])).toEqual({ code: 0, after: `${version} ${"a".repeat(40)}\n` });
+    // a pull while bun install ran: the sources built are not the commit's that HEAD now names
+    expect(await stamped(["a".repeat(40), "b".repeat(40)])).toEqual({ code: 0, after: "started\n" });
+  });
+
   it("keeps running from source a checkout an older launcher built: a marker and no stamp", async () => {
     const home = join(scratch, "server");
     mkdirSync(home, { recursive: true });
