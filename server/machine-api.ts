@@ -14,7 +14,7 @@ import { TailnetPcError } from "./tailnet-pcs.ts";
 import { canSendSecret, sameOrigin } from "./machine-security.ts";
 import { isJsonObject, jsonResponse, setRequestRoute } from "./http.ts";
 import { updateRequestAllowed } from "./update-api.ts";
-import { crossSiteFileRead } from "./file-view.ts";
+import { crossSiteFileRead, FILE_POLICY, pagePolicy } from "./file-view.ts";
 import { snapshotWithoutHiddenTokens, withoutHiddenTokens } from "./herdr-sidebar.ts";
 import { parseJson, readCapped, REMOTE_LIMITS, RemoteResponseInvalid, RemoteResponseTooLarge } from "./remote-json.ts";
 import { HIDDEN_HEARTBEAT_MS, hiddenEvents } from "./hidden-events.ts";
@@ -582,11 +582,24 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
         if (range) headers.set("range", range);
         try {
           const response = await fetch(`${endpoint.url}/api/${path}${url.search}`, { method: request.method, headers, redirect: "error", signal: request.signal });
-          const passed = new Headers({ "cache-control": "private, no-store" });
-          for (const name of ["content-type", "content-length", "content-range", "accept-ranges", "content-disposition", "content-security-policy", "x-content-type-options"]) {
+          const passed = new Headers({ "cache-control": "private, no-store", "x-content-type-options": "nosniff" });
+          for (const name of ["content-type", "content-length", "content-range", "accept-ranges", "content-disposition"]) {
             const value = response.headers.get(name);
             if (value) passed.set(name, value);
           }
+          // That PC's answer opens as this app's origin, so its own policy is never what holds here.
+          // A PDF is drawn by the browser's viewer (which refuses a sandbox), as the local route does;
+          // only an HTML answer asked to render is a page, named as HTML and nothing else: whatever
+          // policy that PC names, the page policy this server gives its own pages (as that PC's bridge
+          // answers, with no media address) is added after it, and of two policies the stricter holds;
+          // anything else, an SVG asked to render too, gets the local route's policy.
+          const type = passed.get("content-type")?.split(";")[0]?.trim().toLowerCase();
+          if (type === "application/pdf") passed.set("content-type", "application/pdf");
+          else if (type === "text/html" && url.searchParams.get("render") === "1") {
+            const theirs = response.headers.get("content-security-policy");
+            passed.set("content-type", "text/html; charset=utf-8");
+            passed.set("content-security-policy", theirs ? `${theirs}, ${pagePolicy(null)}` : pagePolicy(null));
+          } else passed.set("content-security-policy", FILE_POLICY);
           return new Response(response.body, { status: response.status, headers: passed });
         } catch (error) { return transportFailure(id, path, error); }
       }
@@ -633,6 +646,8 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
         }
         return new Response(body, { status: response.status, headers: {
           "content-type": response.headers.get("content-type") ?? "application/json", "cache-control": "no-store", ...(etag ? { etag } : {}),
+          // whatever type that PC names, its answer never runs as this app's origin
+          "x-content-type-options": "nosniff", "content-security-policy": "sandbox; default-src 'none'",
           ...(retryAfter ? { "retry-after": retryAfter } : {}), ...(serverTime ? { "x-server-time": serverTime } : {}),
         } });
       } catch (error) {
