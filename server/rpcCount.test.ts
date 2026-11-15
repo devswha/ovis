@@ -2,7 +2,7 @@ import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { herdrRpc, herdrRpcCountRequested, herdrRpcCounts, herdrRpcCountingForTests } from "./herdr/client.ts";
+import { herdrRpc, herdrRpcCountRequested, herdrRpcCounts, herdrRpcCountingForTests, subscribeEvents } from "./herdr/client.ts";
 
 // A path no herdr is listening on: herdrRpc still counts the attempt on entry, which is the
 // whole reason the counter is taken there. So none of these cases needs a live herdr, which is
@@ -12,12 +12,12 @@ const DEAD_SOCKET = join(dir, "no-such-herdr.sock");
 const call = (method: string, socket = DEAD_SOCKET, guard?: () => boolean) => herdrRpc(method, {}, socket, 2000, guard);
 const callDead = (method: string) => call(method).catch(() => undefined);
 
-/** client.ts loaded in a process of its own with `env`, as the server loads it: one call, then process.exit as the server's shutdown does. */
-async function loadAlone(env: Record<string, string | undefined>) {
+/** client.ts loaded in a process of its own with `env`, as the server loads it: `calls` calls, then process.exit as the server's shutdown does. */
+async function loadAlone(env: Record<string, string | undefined>, calls = 1) {
   const script = `const before = process.listenerCount("exit");
 const client = await import(${JSON.stringify(join(import.meta.dir, "herdr", "client.ts"))});
 const added = process.listenerCount("exit") - before;
-await client.herdrRpc("pane.read", {}, ${JSON.stringify(DEAD_SOCKET)}, 2000).catch(() => undefined);
+for (let i = 0; i < ${calls}; i++) await client.herdrRpc("pane.read", {}, ${JSON.stringify(DEAD_SOCKET)}, 2000).catch(() => undefined);
 console.log(JSON.stringify({ added, counts: client.herdrRpcCounts() }));
 process.exit(0);`;
   const child = Bun.spawn([process.execPath, "-e", script], { env, stdout: "pipe", stderr: "pipe", timeout: 20_000 });
@@ -47,6 +47,32 @@ describe("herdr rpc counter", () => {
     expect(run.added).toBe(1);
     expect(run.counts).toEqual({ "pane.read": 1 });
     expect(run.lines).toEqual([{ time: expect.any(String), event: "herdr.rpc.counts", counts: { "pane.read": 1 } }]);
+  });
+
+  it("with HERDR_RPC_COUNT=1, a process that made no request (the plugin's supervisor) writes no line", async () => {
+    expect(await loadAlone({ ...withoutSetting, HERDR_RPC_COUNT: "1" }, 0)).toEqual({ added: 1, counts: {}, lines: [] });
+  });
+
+  it("counts events.subscribe, the first subscription and a repeated one, like any other request", async () => {
+    const socket = join(dir, "herdr-events.sock");
+    const requests: string[] = [];
+    const { promise: bothArrived, resolve } = Promise.withResolvers<void>();
+    const stub = Bun.listen({ unix: socket, socket: { data(_socket, chunk) {
+      requests.push(...chunk.toString().split("\n").filter(Boolean));
+      if (requests.length === 2) resolve();
+    } } });
+    herdrRpcCountingForTests(true);
+    const first = subscribeEvents([], { onEvent() {} }, socket);
+    const again = subscribeEvents([], { onEvent() {} }, socket);
+    try {
+      await bothArrived;
+      expect(requests.map((request) => (JSON.parse(request) as { method: string }).method)).toEqual(["events.subscribe", "events.subscribe"]);
+      expect(herdrRpcCounts()).toEqual({ "events.subscribe": 2 });
+    } finally {
+      first.close();
+      again.close();
+      stub.stop(true);
+    }
   });
 
   it("counts attempts, not successes: a call that fails is still tallied", async () => {

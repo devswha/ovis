@@ -107,7 +107,8 @@ export function herdrRpcCountRequested(env: Record<string, string | undefined> =
   return env["HERDR_RPC_COUNT"] === "1";
 }
 
-// Opt-in per-method tally of herdrRpc traffic, for measuring what a poll actually costs: null
+// Opt-in per-method tally of the requests this module writes to herdr's socket (herdrRpc's and
+// subscribeEvents'), for measuring what a poll actually costs: null
 // (off) unless HERDR_RPC_COUNT=1 when this module loads. Only tests switch it after that
 // (herdrRpcCountingForTests), so a running server cannot flip it mid-run.
 let rpcCounts: Map<string, number> | null = null;
@@ -126,11 +127,14 @@ export function herdrRpcCountingForTests(enabled: boolean): void {
  * The tally's one reader: as the process exits (the server's shutdown ends in process.exit), one
  * JSON line on stderr, the sink herdr.rpc's ConnectionDiagnostics writes to, e.g.
  * {"time":"…","event":"herdr.rpc.counts","counts":{"pane.read":42}}. Counts and method names
- * only, which are code-owned literals; nothing else reads them or sends them anywhere.
+ * only, which are code-owned literals; nothing else reads them or sends them anywhere. A process
+ * that made no request (the plugin's supervisor imports this module too) writes nothing.
  */
 if (herdrRpcCountRequested()) {
   rpcCounts = new Map();
-  process.once("exit", () => console.warn(JSON.stringify({ time: new Date().toISOString(), event: "herdr.rpc.counts", counts: herdrRpcCounts() })));
+  process.once("exit", () => {
+    if (rpcCounts?.size) console.warn(JSON.stringify({ time: new Date().toISOString(), event: "herdr.rpc.counts", counts: herdrRpcCounts() }));
+  });
 }
 
 /**
@@ -1194,6 +1198,8 @@ export function subscribeEvents(
   handlers: SubscribeHandlers,
   socketPath: string = herdrSocketPath(),
 ): Subscription {
+  // counted as herdrRpc counts: on entry, so a reconnect that fails is counted too
+  if (rpcCounts) rpcCounts.set("events.subscribe", (rpcCounts.get("events.subscribe") ?? 0) + 1);
   let closed = false;
   let socket: { end: () => void } | null = null;
   let started = false;
