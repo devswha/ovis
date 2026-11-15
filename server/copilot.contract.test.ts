@@ -66,8 +66,13 @@ async function recordAgentEvents(pane: string): Promise<{ events: { at: number; 
   return { events, close: () => subscription?.close() };
 }
 
+/**
+ * Runs the stand-in under the name `copilot`, as the real CLI's own binary runs: herdr names a pane's agent by the
+ * process's name or argv[0], and takes `node <script>` for the script's agent only while the process is called `node`.
+ * Node 24 calls its main thread `MainThread`, so a `node copilot.js` there is never labelled.
+ */
 async function startFixture(pane: string, session: string, flags = "") {
-  await herdrRpc("pane.send_text", { pane_id: pane, text: `COPILOT_HOME=${home} node ${executable} ${session}${flags ? ` ${flags}` : ""}\n` });
+  await herdrRpc("pane.send_text", { pane_id: pane, text: `(COPILOT_HOME=${home} exec -a copilot node ${executable} ${session}${flags ? ` ${flags}` : ""})\n` });
   for (const deadline = Date.now() + 10_000;;) {
     if ((await sessionSnapshot()).panes.find((p) => p.pane_id === pane)?.agent === "copilot" && await fixtureInFront(pane, session) !== undefined) return;
     if (Date.now() > deadline) throw new Error(`isolated Copilot stand-in not detected in ${pane}`);
@@ -129,7 +134,7 @@ let child;
 if (process.argv.includes("--handoff")) {
   if (!process.argv.includes("--initial-unregister")) appendFileSync(log, new Date().toISOString() + " [INFO] Registering foreground session: " + selected + "\\n");
   appendFileSync(log, new Date().toISOString() + " [INFO] Unregistering foreground session: " + selected + "\\n");
-  child = spawn(process.execPath, [process.argv[1], selected, "--prefer-version", "1.0.104-3", "--session-id", selected, "--handoff-child"], { stdio: "inherit" });
+  child = spawn(process.execPath, [process.argv[1], selected, "--prefer-version", "1.0.104-3", "--session-id", selected, "--handoff-child"], { stdio: "inherit", argv0: "copilot" });
   process.on("exit", () => child.kill());
 }
 if (process.argv.includes("--handoff-child")) setInterval(() => {}, 1000);

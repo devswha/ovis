@@ -7,8 +7,9 @@ import { testShellEnv } from "./test-shell.ts";
 
 /** Its own XDG config isolates the global plugin registry as well as the owned herdr panes. */
 it("herdr loads the Phone setup entrypoint and keeps its QR and code visible in a pane", async () => {
-  // the session socket lives under root: macOS's temp dir is too deep for a socket path (104 bytes)
-  const root = mkdtempSync(join(process.platform === "darwin" ? "/tmp" : tmpdir(), "herdr-phone-pane-"));
+  // the session socket lives under root: a temp dir (macOS's, or a TMPDIR set deeper by hand) is too deep for a socket
+  // path (104 bytes on macOS, 108 on Linux), and herdr then refuses to start
+  const root = mkdtempSync(join(process.platform === "win32" ? tmpdir() : "/tmp", "herdr-phone-pane-"));
   const source = join(import.meta.dir, "..");
   const config = join(root, "config");
   const plugin = join(root, "plugin");
