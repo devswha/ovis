@@ -188,12 +188,12 @@ function workspaceTabs({ machine, entry }: AgentRow): TabInfo[] {
  * A one-line row leads with what the agent is on (the pane's label, else a tab the user named, else that title): that
  * is `drawn` there, and `title` in a two-line row.
  */
-export function agentRowTitle(row: AgentRow, oneLine: boolean): { own: string; title: string; replaced: boolean; drawn: string } {
+export function agentRowTitle(row: AgentRow, oneLine: boolean, namedTabs = false): { own: string; title: string; replaced: boolean; drawn: string } {
   const { pane, workspace, tab } = row.entry;
   const own = rowTitle(row.entry);
   const label = pane.label?.trim() || null;
   const worktree = workspace.worktree?.is_linked_worktree === true;
-  const tabTitle = label === null ? givenTabName(tab, workspaceTabs(row)) : null;
+  const tabTitle = namedTabs && label === null ? givenTabName(tab, workspaceTabs(row)) : null;
   const replaced = label === null && tabTitle === null && titleOnlyNamesAgent(own, markNames(row.entry));
   const title = tabTitle ?? (replaced ? worktree ? compactWorktreeName(workspace.label) : workspace.label : own);
   if (!oneLine) return { own, title, replaced, drawn: title };
@@ -352,9 +352,9 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     sort: settings.agentGroupSort,
     status: rowStatus,
     // by the title the row draws, not the one it gave way to
-    name: (row) => agentRowTitle(row, settings.sidebarRows === "one").drawn,
+    name: (row) => agentRowTitle(row, settings.sidebarRows === "one", settings.agentNamedTabs).drawn,
     seqs: activity.seqs,
-  }), [settings.agentGroupSort, settings.sidebarRows, rowStatus, activity]);
+  }), [settings.agentGroupSort, settings.sidebarRows, settings.agentNamedTabs, rowStatus, activity]);
   // Settings → Named agent groups (shared): the unpinned rows in the groups the user named, the ungrouped last
   // (lib/namedAgentGroups.ts); grouped by state as well, each named group lists its rows needs-you first, without headings
   const groupNames = settings.agentNamedGroups ? settings.agentGroupNames : [];
@@ -527,8 +527,8 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     const tabs = workspaceTabs(row);
     const mark = paneMark(entry);
     const markAgent = mark && hasAgentMark(mark) ? mark : null;
-    const { own: said, title, replaced, drawn } = agentRowTitle(row, compact);
-    const tabTitle = pane.label?.trim() ? null : givenTabName(tab, tabs);
+    const { own: said, title, replaced, drawn } = agentRowTitle(row, compact, settings.agentNamedTabs);
+    const tabTitle = !settings.agentNamedTabs || pane.label?.trim() ? null : givenTabName(tab, tabs);
     // the title the row gave way from, which its tooltip still says
     const ownTitle = replaced || tabTitle !== null ? said : null;
     // nor does the line spend words on the agent's kind beside its mark (a screen reader still hears it, as markKind):
@@ -902,7 +902,7 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
         run: () => toggleMute(menuRow.machine.id, menuRow.entry.pane.pane_id),
       }]),
       // the pane's own close (PaneCanvas), behind the same confirm: the agent stops mid-turn
-      ...(menuRow === undefined ? [] : [{
+      ...(!settings.sidebarActions || menuRow === undefined ? [] : [{
         id: "close", label: t("Close pane"), icon: X, danger: true, divider: true, disabled: watching,
         run: () => setClosing({ machineId: menuRow.machine.id, paneId: menuRow.entry.pane.pane_id, title: menuShown.title }),
       }]),

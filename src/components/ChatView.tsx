@@ -1,7 +1,7 @@
 import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentType } from "react";
 import { createPortal, flushSync } from "react-dom";
 import {
-  ArrowDown, BookOpen, Check, ChevronDown, ChevronRight, Circle, CircleAlert, CircleCheck, CircleDot, CircleQuestionMark, CircleSlash, CircleX, Copy, Hourglass, Layers, LoaderCircle, Pause, Play, Square, SquareTerminal, Target, Volume2, VolumeX,
+  ArrowDown, BookOpen, Check, ChevronDown, ChevronRight, Circle, CircleAlert, CircleCheck, CircleDot, CircleQuestionMark, CircleSlash, CircleX, Copy, Hourglass, Layers, SquareTerminal, Target,
   type LucideProps,
 } from "lucide-react";
 
@@ -31,12 +31,14 @@ import { useWholeOutput as useScopedOutput } from "../lib/useWholeOutput.ts";
 import { turnSkills } from "../lib/skillActivity.ts";
 import { ApiError, pinPaneConversation, unpinPaneConversation } from "../lib/api.ts";
 import { copyText } from "../lib/clipboard.ts";
-import { speak, stopSpeech, toggleSpeechPause, useSpeechStatus } from "../lib/speech.ts";
+import { SpeakButton } from "../fork/SpeakButton.tsx";
+import { WorkRun, workItems } from "../fork/workRuns.tsx";
+import { useSendMotion, withoutEmptyLiveTurn } from "../fork/chatPresentation.ts";
 import type { GalleryImage } from "../lib/imageViewer.ts";
 import { toolGalleryImage, userGalleryImages } from "../lib/chatImages.ts";
 import { useMachineApi } from "../lib/machineContext.tsx";
 import { toTranscriptMessages, type TranscriptMessage } from "../lib/transcript.ts";
-import { answerItems, endedOnAnswer, foldedRequestsMatch, isLiveWorkTurn, isWaitingWorkTurn, formatWorkDuration, runCounts, runNames, splitTurn, turnSegments, type WorkSegment, todoGroups, visibleWorkParts, workBlockStartsOpen, workFailed, workItems, workSummary, type RunCount, type ThinkingPart, type TodoAttempt, type TodoGroup, type ToolPart as ToolPartType } from "../lib/workBlocks.ts";
+import { answerItems, endedOnAnswer, foldedRequestsMatch, isLiveWorkTurn, isWaitingWorkTurn, formatWorkDuration, runNames, splitTurn, turnSegments, type WorkSegment, todoGroups, visibleWorkParts, workBlockStartsOpen, workFailed, workSummary, type ThinkingPart, type TodoAttempt, type TodoGroup, type ToolPart as ToolPartType } from "../lib/workBlocks.ts";
 import { phaseRows, planRows, taskRows, todoRows, type ChecklistRow } from "../lib/checklist.ts";
 import { isTodoTool, parseTodoAnswer, todoCallSummary, type TodoItem, type TodoStatus } from "../lib/todos.ts";
 import { formatGoalTime, goalWaitSources, goalWaitUntil, turnGoal, type GoalState, type GoalStatus } from "../lib/goals.ts";
@@ -147,8 +149,6 @@ function FailureLine({ action, failure, onRetry }: { action: string; failure: Us
 
 const TRANSCRIPT_LINES = 400;
 const PROMPT_POLL_MS = 2000;
-/** how long after a send the first user turn read still comes out of the composer */
-const POP_MS = 4000;
 /**
  * herdr can say blocked before the agent has drawn its question: while the pane waits and no read
  * has found the question yet, the next reads come this soon, this many times, before the poll's 2 s.
@@ -356,32 +356,6 @@ function plainText(markdown: string): string {
     .replace(/(?:\*\*|__|~~|`)(.*?)(?:\*\*|__|~~|`)/g, "$1")
     .replace(/^#{1,3}\s+/gm, "")
     .replace(/^>\s?/gm, "");
-}
-
-/**
- * Reads an agent's reply aloud on this device: a tap pauses and resumes it, the square beside it stops it, and a
- * tap on another reply reads that one instead.
- */
-function SpeakButton({ id, text }: { id: string; text: string }) {
-  const t = useT();
-  const { settings } = useSettings();
-  const status = useSpeechStatus(id);
-  const started = status === "playing" || status === "paused";
-  const busy = started || status === "loading";
-  const label = status === "loading" ? t("Preparing the voice…") : status === "playing" ? t("Pause reading") : status === "paused" ? t("Resume reading") : status === "failed" ? t("Couldn't read this aloud. Tap to try again.") : t("Read aloud");
-  const tap = () => (started ? toggleSpeechPause() : status === "loading" ? stopSpeech() : speak(id, text, settings.speechVoice));
-  return (
-    <>
-      <button type="button" className={busy ? "chat-meta-btn chat-speak is-active" : "chat-meta-btn chat-speak"} aria-label={label} title={label} aria-pressed={busy} onClick={tap}>
-        {status === "loading" ? <LoaderCircle className="chat-speak-progress" aria-hidden="true" /> : status === "playing" ? <Pause aria-hidden="true" /> : status === "paused" ? <Play aria-hidden="true" /> : status === "failed" ? <VolumeX aria-hidden="true" /> : <Volume2 aria-hidden="true" />}
-      </button>
-      {started && (
-        <button type="button" className="chat-meta-btn chat-speak" aria-label={t("Stop reading")} title={t("Stop reading")} onClick={stopSpeech}>
-          <Square aria-hidden="true" />
-        </button>
-      )}
-    </>
-  );
 }
 
 /** A quiet text button that copies and says "Copied" for a moment. */
@@ -864,21 +838,10 @@ function ThinkingRow({ text, stateKey, defaultOpen }: { text: string; stateKey: 
 function WorkRunRow({ paneId, run, work, stateKeyOf, live, expandThinking }: { paneId: string; run: (ToolPartType | ThinkingPart)[]; work: TurnWork; stateKeyOf: (part: ConversationPart) => string; live: boolean; expandThinking: boolean }) {
   const { at } = work;
   const [chosen, setOpen] = useChatRowToggle(`run:${at.get(run[0]!)}`, null);
-  // with Expand thinking on, a run that holds reasoning starts open, so the reasoning shows
-  const open = chosen ?? (expandThinking && run.some((part) => part.kind === "thinking"));
-  const { done, failed, running } = runCounts(run, live);
-  const counts = (list: RunCount[]) => list.map(({ name, count }) => `${name} ×${count}`).join(", ");
-  const groupsShown = [["done", "✓", done], ["failed", "✗", failed], ["running", "•", running]] as const;
-  return <div className="work-row work-run">
-    <button type="button" className="work-run-head" aria-expanded={open} onClick={() => setOpen(!open)}>
-      <span className="work-row-caret" aria-hidden="true">{open ? <ChevronDown /> : <ChevronRight />}</span>
-      <span className="work-run-counts">{groupsShown.filter(([, , list]) => list.length > 0).map(([outcome, mark, list], index) =>
-        <span key={outcome} className={`work-run-${outcome}`}>{index > 0 && " · "}<span className="work-run-mark">{mark}</span> {counts(list)}</span>)}</span>
-    </button>
-    {open && <div className="work-run-rows">{run.map((part) =>
-      part.kind === "thinking" ? <ThinkingRow key={`thinking:${at.get(part)}`} stateKey={`thinking:${at.get(part)}`} text={part.text} defaultOpen={expandThinking} />
-        : <WorkRow key={stateKeyOf(part)} stateKey={stateKeyOf(part)} paneId={paneId} part={part} />)}</div>}
-  </div>;
+  return <WorkRun run={run} live={live} expandThinking={expandThinking} chosen={chosen} setOpen={setOpen}>
+    {run.map((part) => part.kind === "thinking" ? <ThinkingRow key={`thinking:${at.get(part)}`} stateKey={`thinking:${at.get(part)}`} text={part.text} defaultOpen={expandThinking} />
+      : <WorkRow key={stateKeyOf(part)} stateKey={stateKeyOf(part)} paneId={paneId} part={part} />)}
+  </WorkRun>;
 }
 
 /**
@@ -942,6 +905,7 @@ function WorkBlockView({ paneId, parts, work, memoryKey, duration, startedAt = n
   const toolKey = (part: ConversationPart) => `tool:${at.get(part)}`;
   const images = useMemo(() => linePictures(parts), [parts]);
   const visible = visibleWorkParts(parts, showThinking);
+  const compact = useSettings().settings.compactWorkRuns;
   if (visible.length === 0) return live && !waiting && pendingHead ? <PendingWorkHead title={t("Working…")} /> : null;
   const summary = workSummary(parts);
   const failed = workFailed(parts);
@@ -962,8 +926,10 @@ function WorkBlockView({ paneId, parts, work, memoryKey, duration, startedAt = n
     </div>
     {/* the rows open and fold at the block's measured height; folded and settled, they are not drawn */}
     <AnimatedHeight open={open} animateContent={false}>
-      <div className="work-block-rows" onFocus={keepOpen} onPointerDown={keepOpen}>{workItems(visible.filter((part) => !grouped.has(part)), parts, (part) => part.kind === "tool" && groups.has(part)).map((item) =>
+      <div className="work-block-rows" onFocus={keepOpen} onPointerDown={keepOpen}>{workItems(visible.filter((part) => !grouped.has(part)), parts, (part) => part.kind === "tool" && groups.has(part) || !compact).map((item) =>
         item.kind === "run" ? <WorkRunRow key={`run:${at.get(item.parts[0]!)}`} paneId={paneId} run={item.parts} work={work} stateKeyOf={toolKey} live={live} expandThinking={expandThinking} />
+          : item.part.kind === "thinking" ? <ThinkingRow key={`thinking:${at.get(item.part)}`} stateKey={`thinking:${at.get(item.part)}`} text={item.part.text} defaultOpen={expandThinking} />
+          : item.part.kind === "tool" && !groups.has(item.part) ? <WorkRow key={toolKey(item.part)} stateKey={toolKey(item.part)} paneId={paneId} part={item.part} />
           : item.part.kind === "text" ? <div key={`text:${at.get(item.part)}`} className="work-narration"><Markdown>{item.part.text}</Markdown></div>
             // a run of todo updates keeps its own row (TodoGroupRow), between the runs it breaks
             : item.part.kind === "tool" && groups.has(item.part) ? <TodoGroupRow key={groups.get(item.part)!.id} paneId={paneId} group={groups.get(item.part)!} stateKeyOf={toolKey} /> : null)}
@@ -1323,7 +1289,8 @@ function GoalWaitRow({ wait }: { wait: GoalWait }) {
 export const Turn = memo(function Turn({ paneId, turn, rowKey, fresh = false, live, streaming = false, waiting, showThinking, openLiveWork = true, expandThinking = false, foldWork = false, requestDetails = false, skills = null, userSkills = null, outcome = null, outcomeActions = null }: TurnProps) {
   const t = useT();
   const article = useRef<HTMLElement>(null);
-  useFadeIn(article, streaming, turn);
+  const { settings: fork } = useSettings();
+  useFadeIn(article, fork.chatMotion && streaming, turn);
   const memory = useContext(ChatRowMemoryContext);
   // what the drawn runs, and the runs that drew no block, were named, by part index; the row's
   // memory takes it once the turn is drawn
@@ -1391,7 +1358,7 @@ export const Turn = memo(function Turn({ paneId, turn, rowKey, fresh = false, li
       <div className="chat-turn-meta">{time}<CopyButton text={text} label={t("Copy message")} onResult={copied} /></div>
       {copyError}
     </section>;
-    return <article className={`chat-turn chat-turn-user${fresh ? " chat-turn-new" : ""}`}>
+    return <article className={`chat-turn chat-turn-user${fork.chatMotion && fresh ? " chat-turn-new" : ""}`}>
       <UserImages paneId={paneId} parts={turn.parts} text={text} />
       {/* one row: with a mouse the time and copy sit beside the bubble, on touch under it */}
       <div className="chat-user-row">
@@ -1432,7 +1399,7 @@ export const Turn = memo(function Turn({ paneId, turn, rowKey, fresh = false, li
       duration={isHead ? formatWorkDuration(turn.ts, turn.end_ts ?? null) : null} startedAt={isHead ? turn.ts : null} live={live && isHead} waiting={waiting && isHead}
       // a settled turn folds its work, unless words the agent said last are in its final run
       defaultOpen={!foldWork && (live || streaming) && isHead ? openLiveWork
-        : workBlockStartsOpen({ live: false, waiting: waiting && isHead, last: run !== null && run === segments.at(-1) }, turn.parts, foldWork)}
+        : workBlockStartsOpen({ live: live && isHead, waiting: waiting && isHead, last: run !== null && run === segments.at(-1) }, turn.parts, foldWork)}
       showThinking={showThinking} expandThinking={expandThinking} pendingHead={isHead && answer.length === 0} />;
   };
   return <article ref={article} className="chat-turn chat-turn-agent">
@@ -1610,7 +1577,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   // polls pause while the page or the pane is hidden and pick up at once when it is back
   const pageVisible = usePageVisible();
   const visible = paneVisible && pageVisible;
-  const liveShown = useHeldLive(live);
+  const liveShown = useHeldLive(settings.chatMotion ? live : null);
   /** the answer last laid out: an unchanged poll (a 304) hands back this very object */
   const lastAnswer = useRef<ConversationResponse | null>(null);
   const [conversationRefresh] = useState(() => new ConversationRefresh());
@@ -1829,14 +1796,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   /** the newest page as rendered: an earlier page loaded above it does not move the transcript */
   const heldPage = useRef<ConversationTurn[]>([]);
   const seenSent = useRef(sentKey);
-  /** where the turns ended when a message was last sent from here, for POP_MS: the first user turn read after it pops */
-  const [popFrom, setPopFrom] = useState<number | null>(null);
   const shownCount = useRef(0);
-  useEffect(() => {
-    if (popFrom === null) return;
-    const timer = setTimeout(() => setPopFrom(null), POP_MS);
-    return () => clearTimeout(timer);
-  }, [popFrom]);
   const seenUnsent = useRef(unsentKey);
   const seenStatus = useRef<{ pane: string; status: AgentStatus | undefined }>({ pane: paneId, status: agentStatus });
   const seenSession = useRef({ pane: paneId, session: agentSession });
@@ -1918,9 +1878,6 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   useEffect(() => {
     if (seenSent.current === sentKey) return;
     seenSent.current = sentKey;
-    setPopFrom(shownCount.current);
-    // sending reads on from the end, as in any chat: the message pops in where the reader is
-    scrollToBottom();
     // sent into a run (a queued message sent now): that turn is the one running, not one to finish
     const page = heldPage.current;
     const last = page[page.length - 1];
@@ -2696,8 +2653,10 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     const read = older.length > 0 ? [...older, ...state.turns] : state.turns;
     return state.source === "conversation" ? withLiveTurn(read, liveShown) : read;
   }, [older, state.turns, state.source, liveShown]);
-  const { turns, revealing: typing } = useRevealedTurns(mergedTurns, state.source === "conversation" ? live : null, visible, settings.showThinking);
+  const popFrom = useSendMotion(sentKey, shownCount, scrollToBottom, settings.chatMotion);
+  const { turns: revealedTurns, revealing: typing } = useRevealedTurns(mergedTurns, settings.chatMotion && state.source === "conversation" ? live : null, visible, settings.showThinking);
   const streamingLast = typing || (state.source === "conversation" && liveShown !== null);
+  const turns = useMemo(() => withoutEmptyLiveTurn(revealedTurns, streamingLast, settings.showThinking), [revealedTurns, streamingLast, settings.showThinking]);
   // A cancelled send back in the agent's input box is no sent turn: the transcript still holds it
   // (empty, blank, held and onRead keep the turns as read), but the rendered list drops it while
   // the last turn is that very send — matching the terminal, which shows it only as typed text.
@@ -2709,14 +2668,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   const hiddenTurn = stopped ?? (endsWithTurn(turns, cancelledAtSend) ? cancelledAtSend : null)
     ?? (goneOut && endsWithTurn(turns, goingCancel.turn) ? goingCancel.turn : null);
   const hiddenSend = restored ?? hiddenTurn?.text ?? null;
-  const shownTurns = useMemo(() => {
-    const last = turns[turns.length - 1];
-    // A reply under way shows from its first word, tool or shown thinking: until then the footer's
-    // Working stays put instead of moving into an empty turn for a moment.
-    const streamed = streamingLast && last?.role === "assistant" ? splitTurn(last.parts) : null;
-    if (streamed !== null && streamed.answer.length === 0 && visibleWorkParts(streamed.work, settings.showThinking).length === 0) return turns.slice(0, -1);
-    return hiddenTurn !== null ? turns.slice(0, -1) : turns;
-  }, [turns, hiddenTurn, streamingLast, settings.showThinking]);
+  const shownTurns = useMemo(() => hiddenTurn !== null ? turns.slice(0, -1) : turns, [turns, hiddenTurn]);
   heldPage.current = state.turns;
   shownCount.current = shownTurns.length;
   const popRow = popFrom === null ? -1 : shownTurns.findIndex((turn, index) => index >= popFrom && turn.role === "user");

@@ -8,7 +8,6 @@ import { chromium, type Page } from "playwright-core";
 import { transcriptPage } from "../server/conversation.ts";
 import type { ConversationResponse } from "../shared/protocol.ts";
 import { chromePath } from "./chrome-path.ts";
-import { openWorkRuns } from "./work-runs.ts";
 
 const root = mkdtempSync(join(tmpdir(), "herdr-image-browser-"));
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
@@ -164,7 +163,6 @@ try {
   // opened, the block's line gives its pictures to its rows, each on its own line; an opened row
   // shows them larger in its detail
   await page.locator(".work-block-head").click();
-  await openWorkRuns(page);
   assert.equal(await page.locator(".work-block-line .work-images").count(), 0, "an open block's line carries none");
   assert.equal(await page.locator(".work-row-line .work-images").count(), 2);
   assert.equal(await page.locator(".work-row-line .work-images").first().locator(".work-image").count(), 2, "the first row's two");

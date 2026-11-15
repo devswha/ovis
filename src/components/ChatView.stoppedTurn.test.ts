@@ -11,19 +11,14 @@ import type { ConversationTurn } from "../../shared/protocol.ts";
 const source = readFileSync(join(import.meta.dir, "ChatView.tsx"), "utf8");
 const sentEffect = source.match(/useEffect\(\(\) => \{\s*if \(seenSent\.current === sentKey\) return;[\s\S]*?\}, \[sentKey, agentStatus\]\);/)?.[0];
 const unsentEffect = source.match(/useEffect\(\(\) => \{\s*if \(seenUnsent\.current === unsentKey\) return;[\s\S]*?\}, \[unsentKey\]\);/)?.[0];
-const selection = source.match(/const stopped = useMemo\(\(\) => stoppedTurn\(turns, restored\)[\s\S]*?const shownTurns = useMemo\([\s\S]*?\n  \}, \[turns, hiddenTurn[^\n]*\]\);\n/)?.[0];
+const selection = source.match(/const stopped = useMemo\(\(\) => stoppedTurn\(turns, restored\)[\s\S]*?const shownTurns = useMemo\([^\n]*\n/)?.[0];
 if (!sentEffect || !unsentEffect || !selection) throw new Error("ChatView's send effects or turn selection moved");
 const body = new Bun.Transpiler({ loader: "ts" }).transformSync(`
   const { turns, restored, sentKey, unsentKey } = props;
   const agentStatus = "idle", pendingRows = [], goingCancel = null;
-  // no reply streams in this host (the selection's early return for an empty one never runs)
-  const streamingLast = false, settings = { showThinking: false };
   const seenSent = useRef(0), seenUnsent = useRef(0), heldPage = useRef(turns), lastStopped = useRef(null);
   const [cancelledAtSend, setCancelledAtSend] = useState(null);
   const [, setSentOver] = useState(null);
-  // the send effect also pops the new bubble in and follows to the end: neither is under test here
-  const shownCount = useRef(0), scrollToBottom = () => {};
-  const [, setPopFrom] = useState(null);
   ${sentEffect}
   ${unsentEffect}
   ${selection}

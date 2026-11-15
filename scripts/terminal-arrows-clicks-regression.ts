@@ -447,24 +447,6 @@ try {
     await s.close();
   }
 
-  // 4b. zoe is no agent: the title it sets is what tells its pane, and its graph pans and its
-  // timeline scrubs by a plain drag.
-  {
-    const s = await open(browser, attached, "zoe", "\\033]0;zoe\\007\\033[?1049h\\033[?1000h\\033[?1002h\\033[?1006hgraph\\r\\n");
-    await mouseReporting(s);
-    const from = await s.point(20, 6);
-    const to = await s.point(300, 60);
-    await s.page.mouse.move(from.x, from.y);
-    await s.page.mouse.down();
-    await s.page.mouse.move(to.x, to.y, { steps: 8 });
-    await s.page.mouse.up();
-    const drag = /\x1b\[<0;\d+;\d+M(?:[\s\S]*?\x1b\[<32;\d+;\d+M)+[\s\S]*?\x1b\[<0;\d+;\d+m/;
-    let got = "";
-    await until(() => drag.test(got += s.received()), () => `zoe: a plain drag received as press, moves and release (read ${JSON.stringify(got)})`);
-    assert.equal(await s.page.locator(".xterm-selection div").count(), 0, "zoe: a plain drag selects nothing here");
-    await s.close();
-  }
-
   // 5. A mirrored pane: arrows are named keys there too, and a click sends nothing, since the
   // browser was never told the program reads the mouse and herdr has no pty to report it to.
   {

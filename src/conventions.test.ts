@@ -2,27 +2,20 @@ import { describe, expect, it } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fail, lineOf, files as scan, read, repo, stripComments } from "../scripts/source-scan.ts";
-import { FRIENDS } from "../shared/friends.ts";
 
 // Client conventions from AGENTS.md and src/AGENTS.md that used to be prose only. Each failure
 // says what to change; server rules are in server/conventions.test.ts, repo-wide ones in
 // scripts/conventions.test.ts.
 
-/** Every declaration (`prop: value;`) as [prop, value], comments and quoted strings removed; selectors and at-rule preludes are left out. */
-function declarations(css: string): [string, string][] {
-  const found: [string, string][] = [];
+/** The value of every declaration (`prop: value;`), comments and quoted strings removed; selectors and at-rule preludes are left out. */
+function declarationValues(css: string): string[] {
+  const values: string[] = [];
   for (const [, piece, end] of css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^;{}]*)([;{}])/g)) {
     if (end === "{") continue;
     const colon = piece!.indexOf(":");
     if (colon < 0 || piece!.trim().startsWith("@")) continue;
-    found.push([piece!.slice(0, colon).trim(), piece!.slice(colon + 1).replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, "\"\"").replace(/\s+/g, " ").trim()]);
+    values.push(piece!.slice(colon + 1).replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, "\"\"").replace(/\s+/g, " ").trim());
   }
-  return found;
-}
-
-/** The value of every declaration, as declarations() reads it. */
-function declarationValues(css: string): string[] {
-  const values = declarations(css).map(([, value]) => value);
   return values;
 }
 
@@ -51,15 +44,6 @@ describe("component CSS", () => {
       ];
     });
     fail(offenders, "Component CSS takes colors from the tokens in src/styles.css (var(--…), or color-mix() of tokens) and wins by order at the same specificity, never by !important. Add a token to src/styles.css (both themes) and DESIGN.md if none fits.");
-  });
-
-  // This fork draws every box square: the radius ladder in src/styles.css is all 0 and only
-  // --radius-circle rounds. A literal radius would bring one corner back on its own.
-  it("takes radii from the ladder only: no literal radius outside its tokens", () => {
-    const offenders = scan("src/**/*.css").flatMap((file) => declarations(read(file))
-      .filter(([prop, value]) => /radius$/.test(prop) && !/^--radius-[\w-]+$/.test(prop) && /(?<![\w.-])(?!0+(?:\.0+)?(?:px|r?em|%|v[wh])?(?![\d.]))\d*\.?\d+(?:px|r?em|%|v[wh])/.test(value))
-      .map(([prop, value]) => `${file}: ${prop}: ${value}`));
-    fail(offenders, "A radius in CSS is a --radius-* token from src/styles.css, 0, inherit, or calc() of those: --radius-circle for a disc, any other step for a box (all 0 on this fork).");
   });
 
   it("reads declaration values, not selectors or comments", () => {
@@ -196,22 +180,6 @@ describe("icon cache", () => {
   });
 });
 
-describe("Android friend pictures", () => {
-  it("keeps every friend in the Android app, byte for byte, and named in FriendIcon.java", () => {
-    const res = "app/android/ovis-push/src/main/res/drawable-nodpi";
-    const icon = read("app/android/ovis-push/src/main/java/sh/ovis/push/FriendIcon.java");
-    fail(FRIENDS.flatMap((friend) => {
-      const source = readFileSync(join(repo, `src/assets/friends/${friend}.png`));
-      let copy: Buffer | null = null;
-      try { copy = readFileSync(join(repo, res, `friend_${friend}.png`)); } catch { /* missing */ }
-      return [
-        ...(copy?.equals(source) ? [] : [`${res}/friend_${friend}.png`]),
-        ...(icon.includes(`R.drawable.friend_${friend}`) ? [] : [`FriendIcon.java: case "${friend}"`]),
-      ];
-    }), "A phone notification shows the same friend as the sidebar: copy src/assets/friends/<id>.png to the Android app's drawable-nodpi/friend_<id>.png and add its case to FriendIcon.java's switch.");
-  });
-});
-
 describe("UI wording", () => {
   // "Session" means the herdr server session or an agent's history; the dialog that makes a
   // workspace says "New workspace" (AGENTS.md).
@@ -259,7 +227,7 @@ const TAKES_PART = /\b(?:usePhoneSheetBack|useSheetHistory|recordSettings)\(/;
  * A module's top-level functions and components: each one's name, and its source with the comments
  * blanked, up to the next one. What comes before the first is `(module)`, so no line is left unread.
  */
-function sourceDeclarations(source: string): Array<{ name: string; code: string }> {
+function declarations(source: string): Array<{ name: string; code: string }> {
   const code = stripComments(source);
   const starts = [...code.matchAll(/^(?:export )?(?:default )?(?:async )?function\s+(\w+)|^(?:export )?const\s+(\w+)\b[^=\n]*=\s*(?:memo\(|forwardRef\b|\(|function\b|async\b)/gm)];
   return [
@@ -282,7 +250,7 @@ describe("surfaces over the app", () => {
     "src/components/Composer.tsx#Composer": "the / and @ lists follow what is typed and come and go with every key; the keyboard takes the first Back",
   };
   const surfaces = scan("src/**/*.tsx").filter((name) => !/\.test\./.test(name))
-    .flatMap((file) => sourceDeclarations(read(file)).filter(({ code }) => SURFACE.test(code)).map(({ name, code }) => ({ id: `${file}#${name}`, takesPart: TAKES_PART.test(code) })));
+    .flatMap((file) => declarations(read(file)).filter(({ code }) => SURFACE.test(code)).map(({ name, code }) => ({ id: `${file}#${name}`, takesPart: TAKES_PART.test(code) })));
 
   it("take part in Back", () => {
     // the scan reads the code as it is written: a surface of each kind is among those it finds
@@ -310,7 +278,7 @@ describe("surfaces over the app", () => {
     expect(found("node.closest('[role=\"dialog\"], [aria-modal=\"true\"]')")).toBe(false);
     expect(found("// <div role=\"menu\">")).toBe(false);
     expect(found("<span role=\"tooltip\">")).toBe(false);
-    expect(sourceDeclarations("const menu = <div role=\"menu\" />;\nexport function A() { return menu; }\nfunction b() {}\nexport const C = forwardRef(function C() { return null; });").map(({ name, code }) => [name, SURFACE.test(code)])).toEqual([["(module)", true], ["A", false], ["b", false], ["C", false]]);
+    expect(declarations("const menu = <div role=\"menu\" />;\nexport function A() { return menu; }\nfunction b() {}\nexport const C = forwardRef(function C() { return null; });").map(({ name, code }) => [name, SURFACE.test(code)])).toEqual([["(module)", true], ["A", false], ["b", false], ["C", false]]);
   });
 });
 

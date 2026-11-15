@@ -2,9 +2,37 @@ import { isPiVoice, PI_VOICES } from "../../shared/pi-voice.ts";
 import { SPEECH_VOICES, type SpeechVoice } from "../../shared/speech.ts";
 import { useT } from "../lib/i18n.ts";
 import { useSettings } from "../lib/settings.ts";
-import { SettingsRow, SettingsSelect, Toggle } from "./SettingsControls.tsx";
+import { SettingsGroup, SettingsRow, SettingsSelect, Toggle } from "../components/SettingsControls.tsx";
 
-/** Settings rows only this fork has, kept apart from SettingsDialog.tsx so an upstream merge never meets them. */
+/** Settings rows only this fork has, kept apart from SettingsDialog.tsx. */
+export function ForkFeatures() {
+  const { settings, update } = useSettings();
+  const t = useT();
+  const choices = [
+    ["squareCorners", t("Square corners")],
+    ["moreViewToggle", t("View toggle in More")],
+    ["agentNamedTabs", t("Agent names on tabs")],
+    ["agentFriends", t("Agent friends")],
+    ["composerExtras", t("Composer extras")],
+    ["compactWorkRuns", t("Compact work runs")],
+    ["chatMotion", t("Animated replies")],
+    ["piLiveVoice", t("Pi live voice")],
+    ["computerView", t("Computer view")],
+    ["pullRequests", t("Pull requests")],
+    ["readAloud", t("Read aloud")],
+    ["headerBranch", t("Branch in the header")],
+    ["collapseOfflinePcs", t("Collapse offline PCs")],
+    ["expandedPrompts", t("Taller prompt cards")],
+    ["compactTabMenus", t("Compact tab menus")],
+    ["steadyKeyboardTabs", t("Keep tabs while keyboard opens")],
+    ["sidebarActions", t("Sidebar pane actions")],
+  ] as const;
+  return <SettingsGroup title={t("Fork features")} section="fork-features">
+    {choices.map(([key, label]) => <SettingsRow key={key} label={label} reset={[key]}>
+      <Toggle label={label} checked={settings[key]} onChange={(checked) => update({ [key]: checked })} />
+    </SettingsRow>)}
+  </SettingsGroup>;
+}
 
 /**
  * Settings → Appearance → Follow Omarchy: offered on a device whose theme-set hook sent its Omarchy

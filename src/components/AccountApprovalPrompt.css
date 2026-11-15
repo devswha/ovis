@@ -15,7 +15,7 @@
   width: calc(var(--touch-target) + var(--space-2));
   height: calc(var(--touch-target) + var(--space-2));
   margin: 0 auto var(--space-4);
-  border-radius: var(--radius-circle);
+  border-radius: 50%;
   background: var(--bg-input);
   color: var(--accent);
 }

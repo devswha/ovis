@@ -225,8 +225,7 @@ try {
       await find.waitFor({ state: "detached" });
       await stillHere(page, origin, shown, "the terminal's find bar");
       assert.equal(await page.locator(".pane-column.is-chat").count(), 0, "the terminal's find bar: Back closes the bar and leaves the terminal shown");
-      await page.locator(".header-more-button").tap();
-      await page.locator('.row-sheet [data-item="view"]').tap();
+      await page.locator(".lens-toggle").tap();
       await page.locator(".pane-column.is-chat").waitFor();
 
       // another pane opened first: Back with the drawer open closes the drawer, and does not go to the pane before

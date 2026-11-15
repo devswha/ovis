@@ -29,7 +29,7 @@ if (evidence) mkdirSync(evidence, { recursive: true });
 /** the agents the demo PC has (site/demo/fixtures.ts DEMO_INSTALLED), in the catalog's order */
 const INSTALLED = ["Claude Code", "Codex", "Oh My Pi", "pi", "Hermes"];
 const ADD_ROW = "Add another agent…";
-const settled = (page: Page) => page.evaluate(() => Promise.all(document.getAnimations().filter((animation) => animation.effect?.getComputedTiming().endTime !== Infinity).map((animation) => animation.finished.catch(() => undefined))).then(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done())))));
+const settled = (page: Page) => page.evaluate(() => Promise.all(document.getAnimations().map((animation) => animation.finished.catch(() => undefined))).then(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done())))));
 
 let server: ReturnType<typeof Bun.serve> | undefined;
 let browser: Browser | undefined;

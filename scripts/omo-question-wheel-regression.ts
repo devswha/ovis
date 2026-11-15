@@ -210,9 +210,9 @@ process.stdout.write(Array.from({ length: 400 }, (_, n) => "history " + n + "\\r
       await Promise.race([settled.promise, new Promise<never>((_resolve, reject) => {
         AbortSignal.timeout(10000).addEventListener("abort", () => reject(new Error("question settlement status did not arrive")), { once: true });
       })]);
-      // The frame is heard before React renders it. Wait for the sidebar's status to update before
-      // exercising PaneTerminal's wheelStateRef; this fork draws agent friends instead of tab dots.
-      await page.locator(`.sidebar .workspace-select[data-pane=${JSON.stringify(pane)}] .sidebar-status[data-status="working"]`).waitFor({ state: "attached" });
+      // the frame is heard before the page has drawn it: the wheel decides by what the pane was last drawn with
+      // (PaneTerminal's wheelStateRef), so it goes once the tab's own mark shows the question settled
+      await page.locator('.tab-strip-item.is-active .tab-strip-dot[data-status="working"]').waitFor();
       const backToApp = waitOutput(pane, "WHEEL_RECEIVED");
       const desktop = await screen.boundingBox();
       assert.ok(desktop);

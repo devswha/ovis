@@ -178,7 +178,7 @@ describe("AgentSidebar one-line row titles", () => {
     expect(texts(render([rows]), "agent-title")).toEqual(["alpha", "Beta task", "zulu"]);
     store(grouped);
     expect(texts(render([rows]), "agent-title")).toEqual(["alpha", "Beta task", "zulu"]);
-    // a tab the user named leads its row, and so places it, on either row layout
+    // on one line a tab the user named leads its row, and so places it; on two lines the row's own title does
     const tabbed = machine([
       pane("w1:p1", { tab_id: "w1:t1", agent_status: "working", title: "Mid task" }),
       pane("w1:p2", { tab_id: "w1:t2", agent_status: "working", title: "Zeta task" }),
@@ -189,7 +189,7 @@ describe("AgentSidebar one-line row titles", () => {
     ];
     expect(texts(render([tabbed]), "agent-title")).toEqual(["apple", "Mid task"]);
     store({ ...grouped, ...twoLines });
-    expect(texts(render([tabbed]), "agent-title")).toEqual(["apple", "Mid task"]);
+    expect(texts(render([tabbed]), "agent-title")).toEqual(["Mid task", "Zeta task"]);
   });
 
   test("a two-line row titled by a worktree herdr named does not say that workspace again under its title", () => {

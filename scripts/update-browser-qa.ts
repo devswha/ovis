@@ -10,7 +10,6 @@ import { workspaceCreate, workspaceClose, sessionSnapshot } from "../server/herd
 import type { UpdateStatus } from "../shared/update.ts";
 import { openSettingsPage } from "./settings-page.ts";
 import { chromePath } from "./chrome-path.ts";
-import { pickLens } from "./view-toggle.ts";
 
 const source = resolve(import.meta.dir, "..");
 const temp = mkdtempSync(join(tmpdir(), "herdr-update-browser-"));
@@ -65,7 +64,7 @@ try {
   page.on("pageerror", error => errors.push(error.message));
   page.setDefaultTimeout(60_000);
   await page.goto(`${origin}/?pane=${encodeURIComponent(paneId)}`);
-  await pickLens(page, "chat");
+  await page.getByRole("button", { name: "Chat", exact: true }).click();
   const draft = page.getByRole("textbox", { name: "Message", exact: true });
   await draft.fill("Unsent draft preserved across update");
   await page.locator(".sidebar-footer").getByRole("button", { name: "Settings", exact: true }).click();

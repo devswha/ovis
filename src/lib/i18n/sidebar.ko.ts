@@ -81,7 +81,6 @@ export const SIDEBAR_KO: Record<string, string> = {
   "Agent state unknown": "에이전트 상태 알 수 없음",
   "Move to {group}": "{group}(으)로 옮기기",
   "Remove from {group}": "{group}에서 빼기",
-  "Pull requests…": "풀 리퀘스트…",
   "{count} working": "작업 중 {count}개",
   "On this device, an agent's helpers fold into one line under it in the Agents list, with their count. A helper that needs you and the one you selected stay in sight.": "이 기기의 에이전트 목록에서 에이전트의 도우미들을 그 아래 한 줄로 접고 개수를 보여 줍니다. 내 응답이 필요한 도우미와 선택한 도우미는 계속 보입니다.",
 };

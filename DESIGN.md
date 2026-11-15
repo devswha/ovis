@@ -936,21 +936,17 @@ All spacing derives from a 4px base.
 
 ### Radii
 
-Every box draws square: the ladder keeps its names, so a rule still says which step it is on, but
-each step is `0`. Only a disc (a status dot, an orb, a step mark, a slider knob, the spinner) rounds,
-with `--radius-circle`, and the chat composer's Send, Voice and Stop button keeps its circle with
-`--radius-round`. Component CSS writes a radius only as one of these tokens or `0`.
+Upstream's radius ladder is the default. The fork's opt-in Square corners setting overrides
+it in `src/fork/styles.css`; semantic discs remain round there.
 
 | Token | Value | Usage |
 |-------|-------|-------|
-| `--radius-sm` | `0` | Chips and inner controls |
-| `--radius-md` | `0` | Buttons, inputs, selected rows |
-| `--radius-lg` | `0` | Menus and chat surfaces |
-| `--radius-xl` | `0` | Modals and bottom sheets |
-| `--radius-2xl` | `0` | The composer's input card |
-| `--radius-pill` | `0` | Pills, chips, toggles and meters |
-| `--radius-circle` | `50%` | Status dots, orbs, step marks, slider knobs, the spinner |
-| `--radius-round` | `999px` | The chat composer's Send, Voice and Stop button |
+| `--radius-sm` | `6px` | Chips and inner controls |
+| `--radius-md` | `8px` | Buttons, inputs, selected rows |
+| `--radius-lg` | `12px` | Menus and chat surfaces |
+| `--radius-xl` | `16px` | Modals and bottom sheets |
+| `--radius-2xl` | `24px` | The composer's input card |
+| `--radius-pill` | `999px` | Pills, chips, toggles and meters |
 
 ### Sizes
 

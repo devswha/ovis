@@ -320,5 +320,4 @@ export const SETTINGS_ZH: Record<string, string> = {
 
   // Settings → Alerts → Also send to, when the server could not say what it holds (design pass G-111)
   "Could not read this PC's alert destination ({error}). Close Settings and open it again.": "无法读取此 PC 的外部提醒设置（{error}）。请关闭设置后重新打开。",
-  "Chat": "聊天",
 };

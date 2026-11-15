@@ -77,7 +77,7 @@ describe("saved theme migration", () => {
       fileBrowser: "panel", foldWork: true, expandThinking: true, composerArtifacts: true, followOmarchy: true });
     expect(loadSettings()).toMatchObject({ uiFontFamily: "", sidebarFilter: true, terminalMirrorWrap: null,
       filesPanel: false, foldWork: false, expandThinking: false, composerArtifacts: false,
-      followOmarchy: true });
+      followOmarchy: false });
     expect(sanitizeSettings({ fileBrowser: "panel", filesPanel: false }).filesPanel).toBe(false);
   });
 
@@ -156,7 +156,7 @@ describe("saved theme migration", () => {
   });
 
   it("keeps Tabs on a phone in its own key, out of an old tab's whole-record save", () => {
-    expect(loadSettings().phoneTabs).toBe("header");
+    expect(loadSettings().phoneTabs).toBe("row");
     saveSettings(sanitizeSettings({ phoneTabs: "header" }));
     expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("phoneTabs");
     expect(records.get("ovis:phone-tabs")).toBe(JSON.stringify("header"));
@@ -166,7 +166,7 @@ describe("saved theme migration", () => {
     saveSettings({ ...loadSettings(), phoneTabs: "row" });
     expect(loadSettings().phoneTabs).toBe("row");
     records.set("ovis:phone-tabs", "not json");
-    expect(loadSettings().phoneTabs).toBe("header");
+    expect(loadSettings().phoneTabs).toBe("row");
     records.set("ovis:settings", JSON.stringify({ phoneTabs: "row" }));
     records.delete("ovis:phone-tabs");
     expect(loadSettings().phoneTabs).toBe("row");
@@ -833,10 +833,10 @@ describe("telemetry settings snapshot", () => {
     }
   });
 
-  it("defaults to tabs in the header and keeps the configurable row", () => {
-    expect(sanitizeSettings({}).phoneTabs).toBe("header");
-    expect(sanitizeSettings({ phoneTabs: "row" }).phoneTabs).toBe("row");
-    expect(sanitizeSettings({ phoneTabs: "sheet" }).phoneTabs).toBe("header");
+  it("keeps a phone's tabs under the header unless In the header was chosen", () => {
+    expect(sanitizeSettings({}).phoneTabs).toBe("row");
+    expect(sanitizeSettings({ phoneTabs: "header" }).phoneTabs).toBe("header");
+    expect(sanitizeSettings({ phoneTabs: "sheet" }).phoneTabs).toBe("row");
   });
 
   it("reports every status indicator choice in a valid snapshot", () => {

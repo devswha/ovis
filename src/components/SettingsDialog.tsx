@@ -30,7 +30,7 @@ import { FileTextSizeRow } from "./FileTextSizeRow.tsx";
 import { FoldHelpersRow } from "./FoldHelpersRow.tsx";
 import { FilesPanelRow } from "./FilesPanelRow.tsx";
 import { onSettingsHistory, recordSettings, settingsEntry, settingsLevels, type SettingsLevel } from "../lib/settingsHistory.ts";
-import { ContextCircleRow, LiveVoiceRow, OmarchyRow, OpenLiveWorkRow, ReadAloudVoiceRow } from "./ForkSettingsRows.tsx";
+import { ContextCircleRow, ForkFeatures, LiveVoiceRow, OmarchyRow, OpenLiveWorkRow, ReadAloudVoiceRow } from "../fork/SettingsRows.tsx";
 import { ThemeFiles, themeLabel } from "./ThemeFiles.tsx";
 import { ChipToggles, SettingsBare, Segmented, SettingsFold, SettingsGroup, SettingsQuery, SettingsRow, SettingsSelect, Stepper, Toggle, settingsQueryWords, useSettingsRowSentence } from "./SettingsControls.tsx";
 import { PcLoadSetting } from "./MachineStats.tsx";
@@ -660,6 +660,7 @@ function ChatPage() {
         </SettingsRow>
         <OpenLiveWorkRow />
       </SettingsGroup>
+      <ForkFeatures />
 
       <SettingsGroup title={t("Composer")} section="composer">
         <SettingsRow icon={CornerDownLeft} label={touch ? t("Return inserts a new line") : t("Enter sends")} description={touch ? t("On, Return starts a new line on this device and the Send button sends. Off, Return sends the message.") : t("On, Enter sends the message on this device and Shift+Enter starts a new line. Off, Enter starts a new line and Ctrl+Enter (⌘+Enter on a Mac) sends.")} reset={["enterSends"]}>

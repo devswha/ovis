@@ -10,7 +10,6 @@ import { transcriptPage } from "../server/conversation.ts";
 import { grokImage } from "../server/grok.ts";
 import type { ConversationResponse } from "../shared/protocol.ts";
 import { chromePath } from "./chrome-path.ts";
-import { openWorkRuns } from "./work-runs.ts";
 
 // canonical: grokImage serves only a session file by its real path, and macOS tmpdir() is under /var, a link
 const root = realpathSync(mkdtempSync(join(tmpdir(), "herdr-grok-image-browser-")));
@@ -71,7 +70,6 @@ try {
       mkdirSync(evidence, { recursive: true });
       await page.screenshot({ path: join(evidence, `grok-images-${label}.png`) });
       await page.locator(".work-block-head").click();
-      await openWorkRuns(page);
       await page.locator(".work-row-head").first().click();
       assert.deepEqual(await decoded(page, ".chat-tool-images img"), [[48, 48]]);
       await page.screenshot({ path: join(evidence, `grok-images-${label}-open.png`) });

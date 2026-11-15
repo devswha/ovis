@@ -9,7 +9,7 @@ import { createServer } from "../server/index.ts";
 import { workspaceCreate, workspaceClose, paneSendText, paneSendKeys, paneRead } from "../server/herdr/client.ts";
 import { openSettingsPage } from "./settings-page.ts";
 import { chromePath } from "./chrome-path.ts";
-import { pickLens } from "./view-toggle.ts";
+import { openLens } from "./header-lens.ts";
 
 const root = mkdtempSync(join(tmpdir(), "herdr-sticky-qa-"));
 const owned: string[] = [];
@@ -246,8 +246,8 @@ try {
     previousMask = 0;
     assert.equal(await page.locator('[data-key="Alt"]').getAttribute("aria-pressed"), "false");
     // Leaving the terminal lens clears held state on the same pane.
-    await pickLens(page, "chat", { tap: true });
-    await pickLens(page, "terminal", { tap: true });
+    await openLens(page, "chat", "tap");
+    await openLens(page, "terminal", "tap");
     await until(async () => !(await ctrl.isDisabled()), "terminal lens ready again");
     for (const key of ["Control", "Alt", "Shift"]) assert.equal(await page.locator(`[data-key="${key}"]`).getAttribute("aria-pressed"), "false");
     previousMask = 0;

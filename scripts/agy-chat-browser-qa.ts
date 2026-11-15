@@ -61,7 +61,7 @@ try {
     const box = await activity.boundingBox();
     assert.ok(box && box.y >= 0 && box.y + box.height <= viewport.height, "activity is visible above the composer");
     add("PLANNER_RESPONSE", "", { tool_calls: [{ name: "view_file", args: { AbsolutePath: "/fiction.txt" } }] });
-    await log.locator(".work-block.is-live .work-run-head").last().waitFor({ state: "visible" });
+    await log.locator(".work-block.is-live .work-row-head").last().waitFor({ state: "visible" });
     add("GENERIC", "Fictional tool result");
     // the open work block's head says Working now: the line under it goes
     await log.locator(".work-block.is-live .work-block-title", { hasText: "Working…" }).waitFor();

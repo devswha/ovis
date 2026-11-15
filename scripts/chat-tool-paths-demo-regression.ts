@@ -7,7 +7,6 @@ import { appFaces } from "./app-faces.ts";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
-import { openWorkRuns } from "./work-runs.ts";
 
 // A tool card's file labels read from the pane's folder (`/work/app/src/a.ts` as `app/src/a.ts`),
 // on the unmodified app over the demo's fixture transport: the title, the viewer's request and
@@ -101,7 +100,6 @@ async function expandCards(scope: Locator): Promise<void> {
   await head.click();
   if (await head.getAttribute("aria-expanded") === "false") await head.click();
   await scope.locator('button.work-block-head[aria-expanded="true"]').waitFor();
-  await openWorkRuns(scope);
   const rows = scope.locator(".work-row-head");
   await rows.first().waitFor();
   // a single pass over the rows left the last one folded on a busy run (a click that did not take,

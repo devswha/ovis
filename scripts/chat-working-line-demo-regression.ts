@@ -7,7 +7,6 @@ import panes from "../site/demo/fixtures/panes.json";
 import type { ConversationTurn } from "../shared/protocol.ts";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
-import { pickLens } from "./view-toggle.ts";
 
 // The chat's Working line, on the unmodified app over the demo's fixture transport: the demo's
 // "api" Claude pane works, and the "flaky" one rests on a finished turn, to which the script adds
@@ -355,7 +354,7 @@ try {
       await row.waitFor({ state: "attached" });
       await row.evaluate((node: HTMLElement) => node.click());
       await page.locator(`.pane-select[title^="${blank} \u2014"][aria-current="true"]`).first().waitFor({ state: "attached" });
-      await pickLens(page, "chat");
+      await page.locator(".view-switch").getByRole("button", { name: "Chat", exact: true }).click();
       const greeting = page.locator(".pane-frame.is-current .composer-greeting");
       // the demo's new agent works for a moment first: it is greeted once it rests
       await greeting.waitFor({ timeout: 8_000 });

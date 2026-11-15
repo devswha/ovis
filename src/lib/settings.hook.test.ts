@@ -297,12 +297,12 @@ describe("settings across tabs", () => {
 
   it("moves a phone's tabs where another tab placed them", async () => {
     await open();
-    expect(settings.phoneTabs).toBe("header");
+    expect(settings.phoneTabs).toBe("row");
 
-    records.set(PHONE_TABS_STORAGE_KEY, JSON.stringify("row"));
+    records.set(PHONE_TABS_STORAGE_KEY, JSON.stringify("header"));
     await storage(PHONE_TABS_STORAGE_KEY);
 
-    expect(settings.phoneTabs).toBe("row");
+    expect(settings.phoneTabs).toBe("header");
     expect(writes).toBe(0);
   });
 

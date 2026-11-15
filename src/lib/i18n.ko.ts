@@ -1,3 +1,5 @@
+import { FORK_KO } from "../fork/i18n.ko.ts";
+import { withForkI18n } from "../fork/i18nParts.ts";
 import { SETTINGS_KO } from "./i18n/settings.ko.ts";
 import { SETTINGS_ACCESS_KO } from "./i18n/settings-access.ko.ts";
 import { SETTINGS_AGENTS_KO } from "./i18n/settings-agents.ko.ts";
@@ -19,7 +21,6 @@ import { UPDATES_KO } from "./i18n/updates.ko.ts";
 import { PALETTE_KO } from "./i18n/palette.ko.ts";
 import { RELAY_KO } from "./i18n/relay.ko.ts";
 import { DASHBOARD_KO } from "./i18n/dashboard.ko.ts";
-import { FORK_KO } from "./i18n/fork.ko.ts";
 import { RUNTIME_MOVE_KO } from "./i18n/runtime-move.ko.ts";
 
 /**
@@ -115,6 +116,7 @@ const BASE: Record<string, string> = {
   // ---- settings ----
   "Settings": "설정",
   "PCs": "PC",
+  "Chat": "채팅",
   "Agent default": "에이전트 기본값",
   "Devices and PCs": "기기와 PC",
   "Access token": "접속 토큰",
@@ -154,7 +156,10 @@ const BASE: Record<string, string> = {
   "Close this half": "이쪽 화면 닫기",
   "Remove from the split": "분할에서 빼기",
   "Resize the split": "분할 크기 조절",
+  "Chat transcript": "채팅 기록",
+  "Live terminal": "실시간 터미널",
   "Live terminal: coming to Windows PCs once herdr can attach there": "실시간 터미널: herdr가 Windows에서 attach를 지원하면 열립니다",
+  "soon": "준비 중",
   "Terminal": "터미널",
   "herdr {version} · protocol {protocol}": "herdr {version} · 프로토콜 {protocol}",
   "herdr-core {version} · protocol {protocol}": "herdr-core {version} · 프로토콜 {protocol}",
@@ -576,56 +581,13 @@ const BASE: Record<string, string> = {
   "{name} is ready to open on this device.": "이제 이 기기에서 {name}에 연결할 준비가 됐습니다.",
   "In your account": "계정에 추가됨",
   "Devices added: {count}": "추가된 기기: {count}대",
-  "Draft": "초안",
-  "Switch to chat (⌘⇧J)": "채팅으로 전환 (⌘⇧J)",
-  "Switch to terminal (⌘⇧J)": "터미널로 전환 (⌘⇧J)",
-  "This PC's desktop can't be shown.": "이 PC의 데스크톱을 표시할 수 없습니다.",
-  "Full screen": "전체 화면",
-  "Exit full screen": "전체 화면 종료",
-  "View settings": "보기 설정",
-  "View on this device": "이 기기에서의 보기",
-  "Fit": "맞춤",
-  "Resize the PC": "PC 크기 조정",
-  "Keep its size": "크기 유지",
-  "Sharpness": "선명도",
-  "Zoom": "확대/축소",
-  "Smaller shows more of the PC": "작게 하면 PC 화면이 더 많이 보입니다",
-  "Quality": "화질",
-  "Low": "낮음",
-  "Medium": "보통",
-  "High": "높음",
-  "Touch": "터치",
-  "Trackpad": "트랙패드",
-  "Tap to click": "탭하여 클릭",
-  "Trackpad speed": "트랙패드 속도",
-  "Slow": "느림",
-  "Normal": "보통 속도",
-  "Fast": "빠름",
-  "Keep connected": "연결 유지",
-  "Round trip": "왕복 시간",
-  "From this device to the PC": "이 기기에서 PC까지",
-  "{ms} ms": "{ms}ms",
-  "After you switch to Chat or Terminal": "채팅이나 터미널로 전환한 뒤",
-  "2 min": "2분",
-  "5 min": "5분",
-  "10 min": "10분",
-  "Sound": "소리",
-  "Type on {name}": "{name}에 입력",
-  "{name}'s desktop": "{name}의 데스크톱",
-  "Read aloud": "소리 내어 읽기",
-  "Live voice": "실시간 음성",
-  "soon": "곧 지원",
-  "Mute": "음소거",
-  "Unmute": "음소거 해제",
-  "Close pane {name}?": "{name} 패널을 닫을까요?",
-  "The pane's running processes will stop. Closing its last pane also closes the workspace.": "패널에서 실행 중인 프로세스가 종료됩니다. 마지막 패널을 닫으면 워크스페이스도 닫힙니다.",
   "Plan · {plan}": "플랜 · {plan}",
   "{used}/{max} PCs": "PC {used}/{max}대",
   "{used} / {cap} relay data": "릴레이 데이터 {used} / {cap}",
 };
 
 /** The parts KO is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */
-export const KO_PARTS: Record<string, Record<string, string>> = {
+export const KO_PARTS: Record<string, Record<string, string>> = withForkI18n({
   base: BASE,
   settings: { ...SETTINGS_KO, ...SETTINGS_ACCESS_KO, ...SETTINGS_COMPOSER_KO, ...SETTINGS_LAYOUT_KO, ...SETTINGS_AGENTS_KO, ...SETTINGS_HELP_KO },
   terminal: TERMINAL_KO,
@@ -643,8 +605,7 @@ export const KO_PARTS: Record<string, Record<string, string>> = {
   palette: PALETTE_KO,
   relay: RELAY_KO,
   dashboard: DASHBOARD_KO,
-  fork: FORK_KO,
   "runtime-move": RUNTIME_MOVE_KO,
-};
+}, FORK_KO);
 
 export const KO: Record<string, string> = Object.assign({}, ...Object.values(KO_PARTS));

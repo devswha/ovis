@@ -7,7 +7,7 @@ import { chromium, type Browser } from "playwright-core";
 import { createServer } from "../server/index.ts";
 import { paneRead, paneSendText, workspaceCreate, workspaceClose } from "../server/herdr/client.ts";
 import { chromePath } from "./chrome-path.ts";
-import { pickLens } from "./view-toggle.ts";
+import { openLens } from "./header-lens.ts";
 
 /** Only owned no-echo fixtures; assert delivery without storing the entered value. */
 export async function checkSecretInput(browser: Browser, origin: string): Promise<void> {
@@ -79,7 +79,7 @@ process.stdin.on("data", chunk => {
     assert.equal(await field.evaluate((element) => element.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", keyCode: 229, bubbles: true, cancelable: true }))), false);
     assert.equal(await page.locator("body").innerText().then((text) => text.includes("fixture-secret")), false);
     assert.equal(await page.evaluate(() => JSON.stringify({ ...localStorage }).includes("fixture-secret")), false);
-    await pickLens(page, "chat");
+    await openLens(page, "chat");
     await field.waitFor();
     // the same field across the lens switch: a remount would have dropped what was typed
     assert.equal(await field.inputValue(), "fixture-secret", "switching lenses keeps the masked input mounted");
@@ -174,7 +174,7 @@ process.stdin.on("data", chunk => {
     assert.deepEqual(sent, ["secret", "secret", "secret", "secret", "secret", "secret", "secret"]);
     await paneSendText(pane, "\u0010");
     await field.waitFor();
-    await pickLens(page, "terminal");
+    await openLens(page, "terminal");
     await page.setViewportSize({ width: 1280, height: 800 });
     if (process.env.UI_EVIDENCE_DIR) await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, "secret-input-desktop.png") });
     await field.fill("discarded-secret");

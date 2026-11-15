@@ -14,7 +14,7 @@
 /* one fact of the line (where it is read, the plan, the limit): wraps whole when it fits a line of its own */
 .usage-account-fact { display: inline-block; }
 .usage-account-status { display: inline-flex; align-items: center; gap: var(--space-1); }
-.usage-account-status::before { content: ""; width: var(--space-1); height: var(--space-1); border-radius: var(--radius-circle); background: var(--status-done); }
+.usage-account-status::before { content: ""; width: var(--space-1); height: var(--space-1); border-radius: var(--radius-pill); background: var(--status-done); }
 .usage-account-status.has-problem::before { background: var(--status-blocked); }
 /* another tool's record: no sign-in of ours to be well or broken */
 .usage-account-status.is-recorded::before { background: var(--text-dim); }

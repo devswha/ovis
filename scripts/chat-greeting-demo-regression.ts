@@ -7,7 +7,7 @@ import { appFaces } from "./app-faces.ts";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
-import { pickLens } from "./view-toggle.ts";
+import { openLens } from "./header-lens.ts";
 
 // An empty chat's greeting, on the unmodified app over the demo's fixture transport: a workspace
 // the demo creates starts with a conversation of no turns. All files and HTTP traffic stay in
@@ -67,7 +67,7 @@ const select = async (page: Page, pane: string): Promise<void> => {
   await row.waitFor({ state: "attached" });
   await row.evaluate((node: HTMLElement) => node.click());
   await page.locator(`.pane-select[title^="${pane} —"][aria-current="true"]`).first().waitFor({ state: "attached" });
-  await pickLens(page, "chat");
+  await openLens(page, "chat");
   await page.locator(".pane-frame.is-current .terminal-stack.is-chat").waitFor();
 };
 
@@ -215,9 +215,9 @@ try {
         await holdSendLock();
         await pressSend();
         await greeting.waitFor({ state: "detached" });
-        await pickLens(page, "terminal");
+        await page.locator(".view-switch").getByRole("button", { name: "Terminal", exact: true }).click();
         await page.locator(".pane-frame.is-current .terminal-stack:not(.is-chat)").waitFor();
-        await pickLens(page, "chat");
+        await page.locator(".view-switch").getByRole("button", { name: "Chat", exact: true }).click();
         await greeting.waitFor({ timeout: 5_000 });
         await page.evaluate(() => (window as unknown as { releaseSendLock: () => void }).releaseSendLock());
         // the lock taken after it queues behind the left claim: once it is granted, that claim has run (and sent nothing)
@@ -264,9 +264,9 @@ try {
 
         // still nothing heard back: another lens and back, and a conversation read again, do not
         // bring the greeting back over a message already sent
-        await pickLens(page, "terminal");
+        await page.locator(".view-switch").getByRole("button", { name: "Terminal", exact: true }).click();
         await page.locator(".pane-frame.is-current .terminal-stack:not(.is-chat)").waitFor();
-        await pickLens(page, "chat");
+        await page.locator(".view-switch").getByRole("button", { name: "Chat", exact: true }).click();
         await page.locator(".pane-frame.is-current .terminal-stack.is-chat").waitFor();
         // the conversation was read again and is presented
         await page.locator(".pane-frame.is-current .chat-frame[data-pane-content]").waitFor({ state: "attached" });

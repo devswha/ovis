@@ -185,7 +185,7 @@ try {
           const stripOf = (): Promise<{ left: number; max: number; open: boolean }> => strip.evaluate((node) => {
             const view = node.getBoundingClientRect();
             const item = node.querySelector(".tab-strip-item.is-active")!.getBoundingClientRect();
-            const end = node.parentElement!.querySelector(".tab-strip-add")!.getBoundingClientRect().left;
+            const end = node.querySelector(".tab-strip-add")!.getBoundingClientRect().left;
             return { left: node.scrollLeft, max: node.scrollWidth - node.clientWidth, open: item.left >= view.left - 1 && item.right <= end + 1 };
           });
           const tabs = strip.locator('[role="tab"]');

@@ -592,7 +592,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   }
 }
 
-/* the selected row is marked by its fill alone, as an agent row is (AgentSidebar.css) */
 .workspace-group.is-selected > .workspace-header {
   background: var(--side-selected);
 }
@@ -654,6 +653,9 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
 
 .workspace-name { flex: 0 1 auto; }
 
+/* Settings → Sidebar rows → Two lines: a row says what its pane is doing, and where under it,
+   on the height and in the type of an agent's row. */
+.machine-workspaces.is-two-line .workspace-header { min-height: var(--side-row-2); }
 
 .workspace-copy.is-two-line {
   flex-direction: column;
@@ -679,7 +681,7 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   white-space: nowrap;
 }
 
-/* a workspace's branch follows its name on the same line, and gives way first */
+/* a worktree workspace's own name follows its branch on the same line, and gives way first */
 .worktree-workspace-label {
   flex: 1 1 0;
   min-width: 0;
@@ -879,7 +881,7 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
 .sidebar-status-dot {
   width: var(--space-2);
   height: var(--space-2);
-  border-radius: var(--radius-circle);
+  border-radius: var(--radius-pill);
   background: currentColor;
 }
 
@@ -1003,6 +1005,28 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
 
 @media (hover: hover) {
   .sidebar-footer-action:hover:not(:disabled) { background: var(--side-hover); }
+}
+
+/* which PC of the phone's several this is, and the way back to their list: a row above the gear */
+.sidebar-footer-pc {
+  min-height: var(--side-row);
+  margin-bottom: var(--space-1);
+}
+
+.sidebar-footer-pc-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-align: start;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-footer-pc-action {
+  flex: 0 0 auto;
+  margin-inline-start: var(--space-2);
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
 }
 
 /* the gear first, the plan meters filling the rest */

@@ -149,8 +149,7 @@ async function phone(browser: Browser, theme: "light" | "dark"): Promise<void> {
     await page.getByText("Browse files", { exact: true }).click();
     await page.locator(".modal-scrim .files-dialog").waitFor();
     // the menu's sheet drops while the Files sheet rises: the picture waits for both to land
-    // (the status dots and the blocked agent's friend loop for as long as they are drawn, so only the finite ones settle)
-    await page.waitForFunction(() => document.getAnimations().every((animation) => animation.playState !== "running" || animation.effect?.getComputedTiming().iterations === Infinity));
+    await page.waitForFunction(() => document.getAnimations().every((animation) => animation.playState !== "running"));
     await page.getByText("package.json").waitFor();
     assert.equal(await page.locator("aside.files-panel").count(), 0);
     await shot(page, `files-dialog-390-${theme}`);

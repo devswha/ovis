@@ -24,6 +24,7 @@ import "./SidebarSections.css";
 import { useT } from "../lib/i18n.ts";
 import { asksChoice, FoundHerdrChoices } from "./FoundHerdrChoices.tsx";
 import { useSettings } from "../lib/settings.ts";
+import { ComputerButton } from "../fork/ComputerButton.tsx";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { machineErrorText, saysHerdrAway, sshFailure } from "../lib/userError.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
@@ -240,7 +241,8 @@ export function MachineSidebar(props: Props) {
   const loadingWords = useAnnouncedText(props.machines.length === 0 ? t("Loading PCs…") : null);
   // PCs Tailscale says are offline wait behind one row, unless one of them is the PC in view
   const [showOffline, setShowOffline] = useState(false);
-  const offline = props.machines.filter((machine) => machine.tailnet_offline && machine.id !== props.selectedMachineId);
+  const collapseOffline = useSettings().settings.collapseOfflinePcs;
+  const offline = collapseOffline ? props.machines.filter((machine) => machine.tailnet_offline && machine.id !== props.selectedMachineId) : [];
   const online = props.machines.filter((machine) => !offline.includes(machine));
   // a PC whose roster has not come was not searched: the line says the answer is only of the PCs that answered
   const unanswered = props.machines.some((machine) => machine.snapshot === null);
@@ -484,7 +486,7 @@ function MachineGroup({ machine, headerless = false, canHide, onHide, ...props }
       {online && agentCount > 0 && <SidebarCount className="machine-agent-count" n={agentCount} words={agentCount === 1 ? t("1 agent") : t("{n} agents", { n: agentCount })} tooltip={false} />}
       {machine.kind !== "local" && <button ref={manageButton} type="button" className="sidebar-row-action machine-manage" aria-label={t("Manage {name}", { name: machine.name })} title={t("Manage PC")} aria-haspopup={sheet ? "dialog" : "menu"} aria-expanded={menu !== null} onClick={(event) => setMenu(menu === null ? event.currentTarget : null)}><SlidersHorizontal aria-hidden="true" /></button>}
       {/* its desktop opens over the pane area, as a picked agent does; picking anything closes it */}
-      <button className="sidebar-row-action machine-screen" disabled={!online} aria-pressed={screen} aria-label={t(screen ? "Close {name}'s screen" : "Open {name}'s screen", { name: machine.name })} title={t(screen ? "Close screen" : "Open screen")} onClick={() => props.onScreen(machine.id)}><Monitor aria-hidden="true" /></button>
+      <ComputerButton name={machine.name} open={screen} online={online} onClick={() => props.onScreen(machine.id)} />
       {/* the fold's caret beside the +: it draws the title button's state and presses as it does, out of the keyboard's
           and a screen reader's way, since the title is the one fold control (G-036) */}
       <button className="sidebar-row-action machine-toggle" tabIndex={-1} aria-hidden="true" aria-expanded={!folded} aria-label={foldLabel} title={foldLabel} onClick={toggle}>{folded ? <ChevronRight aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}</button>
@@ -523,7 +525,7 @@ function MachineGroup({ machine, headerless = false, canHide, onHide, ...props }
         A desktop's one-line rows leave it out: the + beside the logo starts one there (App.tsx) */}
     {headerless && (!compact || drawer) && online && machine.snapshot?.workspaces.length !== 0 && !filter.active && <button type="button" className="machine-new-row" disabled={!canCreate} title={props.watching ? createTitle : undefined} onClick={() => props.onNew(machine.id)}><span className="sidebar-mark" aria-hidden="true"><Plus /></span><span className="machine-new-row-label">{t("New workspace")}</span></button>}
     {/* and the header's screen button, the only way to this PC's desktop */}
-    {headerless && online && !filter.active && <button type="button" className="machine-screen-row machine-screen" aria-pressed={screen} aria-label={t(screen ? "Close {name}'s screen" : "Open {name}'s screen", { name: machine.name })} onClick={() => props.onScreen(machine.id)}><span className="sidebar-mark" aria-hidden="true"><Monitor /></span><span className="machine-new-row-label">{t(screen ? "Close screen" : "Open screen")}</span></button>}
+    {headerless && online && !filter.active && <ComputerButton row name={machine.name} open={screen} online={online} onClick={() => props.onScreen(machine.id)} />}
   </section>;
 }
 

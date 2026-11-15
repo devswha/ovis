@@ -182,7 +182,7 @@ try {
     () => page.locator(paneSelector(other.paneId)).click(), "selecting the split workspace shows its strip");
   assert.equal(await page.locator('.tab-strip [role="tab"]').textContent(), "Tab 1", "a tab herdr named by its number reads as Tab 1");
   // at this width the header over the pane is the pane's surface, and the strip under it is
-  // the same one (the strip is transparent over the header), not a band of the panel's colour between header and pane
+  // the same one, not a band of the panel's colour between header and pane
   const surfaces = await page.evaluate(() => {
     const header = document.querySelector(".app-header")!;
     const column = document.querySelector(".pane-column")!;
@@ -197,10 +197,10 @@ try {
     };
   });
   assert.equal(surfaces.columnChat, surfaces.headerChat, "the header and the pane column agree on the lens");
-  assert.ok(surfaces.strip === surfaces.header || surfaces.strip === "rgba(0, 0, 0, 0)", "the strip is the header's surface, or transparent over it");
+  assert.equal(surfaces.strip, surfaces.header, "the strip is the header's surface");
   if (surfaces.tabRow) {
     assert.equal(surfaces.openTab, surfaces.elevated, "the open tab is a raised pill, whatever the lens");
-    assert.notEqual(surfaces.openTab, surfaces.header, "the open tab stands apart from the header it sits on");
+    assert.notEqual(surfaces.openTab, surfaces.strip, "the open tab stands apart from the strip it sits on");
   } else if (surfaces.headerChat) assert.equal(surfaces.chat, surfaces.header, "which under the chat lens is the transcript's");
   await page.getByRole("tab", { name: "Tab 1", exact: true }).click({ button: "right" });
   const tabMenu = page.getByRole("menu", { name: "Tab 1", exact: true });
@@ -254,9 +254,10 @@ try {
   assert.equal((await sessionSnapshot()).panes.find((pane) => pane.pane_id === split.pane.pane_id)?.label, renamedSplit);
   assert.equal((await sessionSnapshot()).workspaces.find((workspace) => workspace.workspace_id === other.workspaceId)?.label, other.label,
     "renaming a pane leaves herdr's workspace name unchanged");
-  // a workspace row says the workspace's own name: its agents are listed apart, under Agents
-  assert.equal(await page.locator(`${otherWorkspace} .workspace-name`).textContent(), other.label,
-    "the workspace row keeps the workspace's name after one of its panes is renamed");
+  await page.waitForFunction(({ selector, title }) => document.querySelector(selector)?.textContent === title,
+    { selector: `${otherWorkspace} .workspace-name`, title: renamedSplit });
+  assert.ok((await page.locator(`${otherWorkspace} .workspace-place`).textContent())?.includes(other.label),
+    "the task row shows its representative pane title and keeps the workspace name beneath it");
   for (const width of [1280, 768, 375]) {
     await page.setViewportSize({ width, height: 900 });
     if (await page.locator(".drawer-toggle").isVisible()

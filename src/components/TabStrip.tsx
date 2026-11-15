@@ -44,9 +44,8 @@ import { SHEET_QUERY } from "../lib/sheets.ts";
 import { useTabReorder } from "../lib/useTabReorder.ts";
 import { indicatorGlyph, paneStatus, rollupStatus, STATUS_WORD, type KnownStatus } from "../lib/status.ts";
 import { useSettings } from "../lib/settings.ts";
-import { friendKey } from "../../shared/friends.ts";
-import { useFriends } from "../lib/friends.ts";
-import { AgentFriend } from "./AgentFriend.tsx";
+import { TabFriends } from "../fork/TabFriends.tsx";
+import { paneMenuItems, tabMenuHeader } from "../fork/tabMenus.tsx";
 import { AgentMark } from "./AgentMark.tsx";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { displayPaneTitle } from "./Sidebar.tsx";
@@ -232,7 +231,6 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
       move: paneDrag.move, back: paneDrag.back, drop: paneDrag.drop, cancel: paneDrag.cancel,
     } : undefined,
   });
-  const friends = useFriends();
   const firstLines = useSyncExternalStore(subscribeTabLabels, shownTabLabels, shownTabLabels);
   const placeOf = (tab: HerdrTab): number => tabs.findIndex((candidate) => candidate.tab_id === tab.tab_id) + 1;
   // a tab herdr still names by its number shows a few words of its first message (#2019); never herdr's own label
@@ -245,7 +243,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   const nameOf = (tab: HerdrTab): string => {
     if (sent?.tabId === tab.tab_id) return sent.label;
     const agents = panesOf(tab).filter((pane) => pane.agent);
-    return customTabLabel(tab, placeOf(tab)) ?? (agents.length === 1 ? displayPaneTitle(agents[0]!) : autoOf(tab) ?? givenName(tab));
+    return settings.agentNamedTabs ? customTabLabel(tab, placeOf(tab)) ?? (agents.length === 1 ? displayPaneTitle(agents[0]!) : autoOf(tab) ?? givenName(tab)) : autoOf(tab) ?? givenName(tab);
   };
 
   useEffect(() => {
@@ -626,19 +624,17 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
     const own = soloPanes ? panesOf(tab) : [];
     const layout = snapshot.layouts?.find((entry) => entry.tab_id === tab.tab_id);
     // the pane's menu can carry the tab's own actions too (where More holds them): the tab's group says them once
+    const tabItems = tabActions(tab);
     const paneItems = touch && tab.tab_id === selectedPane.tab_id
-      ? (paneActions?.(selectedPane.pane_id) ?? []).filter((item) => !soloPanes
-        || (item.id === "zoom" ? layout?.zoomed : item.id !== "split-right" && item.id !== "split-down")) : [];
-    // a one-pane tab is renamed and closed as a tab: its pane's Rename and Close would only repeat them
-    const lone = panesOf(tab).length === 1;
+      ? paneMenuItems(paneActions?.(selectedPane.pane_id) ?? [], tabItems, settings.compactTabMenus, panesOf(tab).length === 1, soloPanes, Boolean(layout?.zoomed)) : [];
     const groups: RowMenuItem[][] = [
       own.length < 2 ? [] : own.map((pane): RowMenuItem => ({
         id: `pane:${pane.pane_id}`, label: displayPaneTitle(pane), icon: Terminal,
         glyph: pane.agent ? <AgentMark agent={pane.agent} size={16} /> : undefined,
         current: pane.pane_id === selectedPane.pane_id, run: () => onSelectPane(pane.pane_id),
       })),
-      paneItems.filter((item) => !lone || (item.id !== "rename" && item.id !== "close")),
-      tabActions(tab),
+      paneItems,
+      tabItems,
     ].filter((group) => group.length > 0);
     return groups.flatMap((group, at) => at === 0 ? group : group.map((item, index) => index === 0 ? { ...item, divider: true } : item));
   };
@@ -781,20 +777,12 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
                   // the middle button closes a tab, as it does a browser's
                   onAuxClick={(event) => { if (event.button === 1 && closable) { event.preventDefault(); requestClose(tab); } }}
                 >
-                  {/* a tab's agents show as their friends, which move with their state; a split shows two.
-                      Named by the tab's own words alone: a screen reader hears the tab, not the agent's logo */}
-                  {own.some((pane) => pane.agent) ? <span className={`tab-strip-faces${own.filter((pane) => pane.agent).length > 1 ? " is-split" : ""}`} aria-hidden="true">
-                    {own.filter((pane) => pane.agent).slice(0, 2).map((pane) => {
-                      const friend = friends[friendKey(machineId, pane.pane_id)];
-                      const paneState = paneStatus(pane as HerdrPane);
-                      return friend
-                        ? <AgentFriend key={pane.pane_id} friend={friend} agent={pane.agent!} status={paneState === "waiting" ? "working" : paneState === "unknown" ? undefined : paneState} />
-                        : <AgentMark key={pane.pane_id} agent={pane.agent!} size={16} />;
-                    })}
-                  </span> : <>
+                  <TabFriends panes={own}>
                     {busyStatus(status) && statusMark(status)}
-                    {browserTabs && <span className="tab-strip-agent is-shell" aria-hidden="true"><Terminal /></span>}
-                  </>}
+                    {/* named by the tab's own words alone: a screen reader hears the tab, not the agent's logo */}
+                    {agentOf(tab) ? <span className="tab-strip-agent" aria-hidden="true"><AgentMark agent={agentOf(tab)!} size={14} /></span>
+                      : (browserTabs || phoneRow) && <span className="tab-strip-agent is-shell" aria-hidden="true"><Terminal /></span>}
+                  </TabFriends>
                   <span className="tab-strip-label">{name}</span>
                   {/* a split tab's open pane, as the title's 1/2 says it: the header's row stands in the title's place */}
                   {phoneRow && active && own.length > 1 && (() => {
@@ -861,8 +849,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
       {rowShown && error && popup === "dialog" && <p className="pane-notice tab-strip-notice" role="alert">{error}</p>}
       {picker && <RowMenu key={picker.workspaces ? "workspaces" : "tab"} anchor={picker.anchor} point={picker.point} restoreFocusTo={picker.previousFocus}
         title={picker.workspaces ? t("Move {tab} to", { tab: nameOf(picker.tab) }) : nameOf(picker.tab)}
-        subtitle={picker.workspaces ? undefined : place}
-        header={picker.workspaces || sheetWidth ? undefined : <span className="tab-menu-place" title={place}>{place}</span>}
+        {...tabMenuHeader(settings.compactTabMenus, picker.workspaces ? t("Move {tab} to", { tab: nameOf(picker.tab) }) : nameOf(picker.tab), place, picker.workspaces === true, sheetWidth)}
         items={picker.workspaces ? workspaceItems(picker.tab) : pickerItems(picker.tab, picker.touch)} align="start" onClose={() => setPicker(null)} />}
       {moreAnchor && leftOut.length > 0 && <RowMenu anchor={moreAnchor} restoreFocusTo={moreAnchor} title={t("More tabs")} items={leftOut.map(tabItem)} align="start" onClose={() => setMoreAnchor(null)} />}
       {sheet && onSheetClose && <RowMenu anchor={sheet} title={t("Tabs of {workspace}", { workspace: workspace.label })} items={sheetItems()} onClose={onSheetClose} />}

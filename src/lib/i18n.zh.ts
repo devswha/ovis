@@ -1,3 +1,5 @@
+import { FORK_ZH } from "../fork/i18n.zh.ts";
+import { withForkI18n } from "../fork/i18nParts.ts";
 import { SETTINGS_ZH } from "./i18n/settings.zh.ts";
 import { SETTINGS_ACCESS_ZH } from "./i18n/settings-access.zh.ts";
 import { SETTINGS_AGENTS_ZH } from "./i18n/settings-agents.zh.ts";
@@ -19,7 +21,6 @@ import { UPDATES_ZH } from "./i18n/updates.zh.ts";
 import { PALETTE_ZH } from "./i18n/palette.zh.ts";
 import { RELAY_ZH } from "./i18n/relay.zh.ts";
 import { DASHBOARD_ZH } from "./i18n/dashboard.zh.ts";
-import { FORK_ZH } from "./i18n/fork.zh.ts";
 import { RUNTIME_MOVE_ZH } from "./i18n/runtime-move.zh.ts";
 
 /**
@@ -119,6 +120,7 @@ const BASE: Record<string, string> = {
   // ---- settings ----
   "Settings": "设置",
   "PCs": "PC",
+  "Chat": "聊天",
   "Agent default": "Agent 默认",
   "Devices and PCs": "设备和电脑",
   "Access token": "访问 Token",
@@ -158,7 +160,10 @@ const BASE: Record<string, string> = {
   "Close this half": "关闭这一半",
   "Remove from the split": "从拆分中移除",
   "Resize the split": "调整拆分大小",
+  "Chat transcript": "聊天记录",
+  "Live terminal": "实时终端",
   "Live terminal: coming to Windows PCs once herdr can attach there": "实时终端：待 herdr 支持在 Windows 上附加终端后开放",
+  "soon": "即将",
   "Terminal": "终端",
   "herdr {version} · protocol {protocol}": "herdr {version} · 协议 {protocol}",
   "herdr-core {version} · protocol {protocol}": "herdr-core {version} · 协议 {protocol}",
@@ -580,56 +585,13 @@ const BASE: Record<string, string> = {
   "{name} is ready to open on this device.": "此设备已准备好打开 {name}。",
   "In your account": "已加入你的账户",
   "Devices added: {count}": "已添加的设备：{count}台",
-  "Draft": "草稿",
-  "Switch to chat (⌘⇧J)": "切换到聊天 (⌘⇧J)",
-  "Switch to terminal (⌘⇧J)": "切换到终端 (⌘⇧J)",
-  "This PC's desktop can't be shown.": "无法显示这台 PC 的桌面。",
-  "Full screen": "全屏",
-  "Exit full screen": "退出全屏",
-  "View settings": "视图设置",
-  "View on this device": "此设备上的视图",
-  "Fit": "适配",
-  "Resize the PC": "调整 PC 大小",
-  "Keep its size": "保持其大小",
-  "Sharpness": "清晰度",
-  "Zoom": "缩放",
-  "Smaller shows more of the PC": "调小可显示更多 PC 内容",
-  "Quality": "画质",
-  "Low": "低",
-  "Medium": "中",
-  "High": "高",
-  "Touch": "触控",
-  "Trackpad": "触控板",
-  "Tap to click": "点按即点击",
-  "Trackpad speed": "触控板速度",
-  "Slow": "慢",
-  "Normal": "正常",
-  "Fast": "快",
-  "Keep connected": "保持连接",
-  "Round trip": "往返时间",
-  "From this device to the PC": "从此设备到电脑",
-  "{ms} ms": "{ms} 毫秒",
-  "After you switch to Chat or Terminal": "切换到聊天或终端之后",
-  "2 min": "2 分钟",
-  "5 min": "5 分钟",
-  "10 min": "10 分钟",
-  "Sound": "声音",
-  "Type on {name}": "在 {name} 上输入",
-  "{name}'s desktop": "{name} 的桌面",
-  "Read aloud": "朗读",
-  "Live voice": "实时语音",
-  "soon": "即将支持",
-  "Mute": "静音",
-  "Unmute": "取消静音",
-  "Close pane {name}?": "关闭面板 {name}？",
-  "The pane's running processes will stop. Closing its last pane also closes the workspace.": "面板中运行的进程将停止。关闭最后一个面板也会关闭工作区。",
   "Plan · {plan}": "方案 · {plan}",
   "{used}/{max} PCs": "{used}/{max} 台电脑",
   "{used} / {cap} relay data": "中继流量 {used} / {cap}",
 };
 
 /** The parts ZH is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */
-export const ZH_PARTS: Record<string, Record<string, string>> = {
+export const ZH_PARTS: Record<string, Record<string, string>> = withForkI18n({
   base: BASE,
   settings: { ...SETTINGS_ZH, ...SETTINGS_ACCESS_ZH, ...SETTINGS_COMPOSER_ZH, ...SETTINGS_LAYOUT_ZH, ...SETTINGS_AGENTS_ZH, ...SETTINGS_HELP_ZH },
   terminal: TERMINAL_ZH,
@@ -647,8 +609,7 @@ export const ZH_PARTS: Record<string, Record<string, string>> = {
   palette: PALETTE_ZH,
   relay: RELAY_ZH,
   dashboard: DASHBOARD_ZH,
-  fork: FORK_ZH,
   "runtime-move": RUNTIME_MOVE_ZH,
-};
+}, FORK_ZH);
 
 export const ZH: Record<string, string> = Object.assign({}, ...Object.values(ZH_PARTS));

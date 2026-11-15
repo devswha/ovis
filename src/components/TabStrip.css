@@ -362,40 +362,6 @@
 .tab-strip-item.is-drop-before::before { left: 0; }
 .tab-strip-item.is-drop-after::after { right: 0; }
 
-/* a tab's agents as their friends, in place of its status dot: a split's two sit overlapped */
-.tab-strip-faces {
-  display: inline-flex;
-  align-items: center;
-  flex: 0 0 auto;
-}
-
-.tab-strip-faces .agent-friend {
-  width: 18px;
-  height: 18px;
-}
-
-.tab-strip-faces .agent-friend-badge {
-  display: none;
-}
-
-.tab-strip-faces.is-split .agent-friend {
-  width: 15px;
-  height: 15px;
-}
-
-.tab-strip-faces.is-split > * + * {
-  margin-left: -4px;
-}
-
-/* the head of a tab's menu: its workspace and branch, dim, cut at the menu's width */
-.tab-menu-place {
-  display: block;
-  overflow: hidden;
-  color: var(--text-dim);
-  font-size: var(--fs-xs);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 /* the tab's menu names the tab it is for above its items, where the menu covers the row (G-022); a phone's sheet draws it as its title */
 .tab-strip-menu-target {
   display: block;

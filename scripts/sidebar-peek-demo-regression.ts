@@ -224,7 +224,7 @@ try {
             await page.getByRole("button", { name: "Open workspace list", exact: true }).tap();
             await page.locator("#workspace-drawer.is-open").waitFor();
             assert.equal(await peeking(page).count(), 0, "the drawer is no peek");
-            await page.waitForFunction(() => document.getAnimations().every((animation) => animation.playState !== "running" || animation.effect?.getComputedTiming().iterations === Infinity));
+            await page.waitForFunction(() => document.getAnimations().every((animation) => animation.playState !== "running"));
             if (evidence) await page.screenshot({ path: join(evidence, `sidebar-peek-390-${theme}.png`) });
             assert.deepEqual(errors, []);
             console.log(`PASS phone ${theme}: with the setting on, the drawer opens and closes by tap as before`);

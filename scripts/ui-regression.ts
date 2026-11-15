@@ -37,7 +37,7 @@ import type { CspWatch } from "./csp-violations.ts";
 import { browserEvidencePage, browserEvidenceTracing, startBrowserEvidence } from "./browser-evidence.ts";
 import type { BrowserEvidenceSession } from "./browser-evidence.ts";
 import { chromePath } from "./chrome-path.ts";
-import { pickLens, VIEW_BUTTON } from "./view-toggle.ts";
+import { openLens } from "./header-lens.ts";
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), "ovis-ui-")));
 const workspaces: string[] = [];
@@ -345,8 +345,7 @@ try {
   await paletteSearch.press("ArrowUp");
   await until(async () => await page.evaluate(() => (window as unknown as { paletteHovered: string[] }).paletteHovered.some((id) => id !== "" && id !== "palette-item-0")),
     "the scroll moves another option under the resting pointer");
-  // ArrowUp wrapped to the last option, read now: the list may have grown since it opened
-  assert.equal(await paletteSearch.getAttribute("aria-activedescendant"), await palette.getByRole("option").last().getAttribute("id"),
+  assert.equal(await paletteSearch.getAttribute("aria-activedescendant"), `palette-item-${restingOptionCount - 1}`,
     "a scroll under a resting pointer leaves the arrow's selection alone");
   const hoveredId = await page.evaluate(() => (window as unknown as { paletteHovered: string[] }).paletteHovered.findLast((id) => id !== "")!);
   const hoveredBox = (await palette.locator(`#${hoveredId}`).boundingBox())!;
@@ -421,12 +420,12 @@ try {
   const finishKey = `ovis:finish:local:${encodeURIComponent(completionSnapshot!.finish_epoch!)}:${encodeURIComponent(paneA)}`;
   assert.equal(await page.locator(".pane-frame.is-current [data-pane-content]").count(), 0, "an unavailable conversation is not presented content");
   assert.equal(await page.evaluate((key) => localStorage.getItem(key), finishKey), null, "an unavailable chat does not acknowledge its finish");
-  await pickLens(page, "terminal");
+  await page.locator(".view-switch").getByRole("button", { name: "Terminal", exact: true }).click();
   await page.locator(".pane-frame.is-current .terminal-stack[data-pane-content]").waitFor();
   await agentRow(paneA).locator('.badge[data-status="idle"]').waitFor();
   assert.equal(await page.evaluate((key) => JSON.parse(localStorage.getItem(key) ?? "null")?.id, finishKey), completion.finish_id,
     "presenting terminal output acknowledges exactly the bridge's completed turn");
-  await pickLens(page, "chat");
+  await page.locator(".view-switch").getByRole("button", { name: "Chat", exact: true }).click();
   console.log("PASS delayed machines poll preserves newer status; unavailable chat keeps DONE until terminal content is presented");
 
   // Agents is global to the sidebar: explicit pane selection from that list keeps its machine and pane target.
@@ -489,7 +488,7 @@ try {
     assert.equal(await offlinePage.evaluate(() => sessionStorage.getItem("ovis:selection")), selectionBefore,
       "offline Agent clicks leave the current selection unchanged");
     // the linked pane is shown from the cache, and offers no plan it could not read
-    await offlinePage.locator(VIEW_BUTTON).waitFor();
+    await offlinePage.locator(".view-switch").waitFor();
     assert.equal(await offlinePage.locator(".bg-tasks-plan").count(), 0, "an offline PC's cached plan offers no plan chip");
   } catch (error) {
     await offlineEvidence?.captureFailure(error);
@@ -559,9 +558,8 @@ try {
   await page.locator('.composer-status[data-status="waiting"] strong.visually-hidden', { hasText: "BG" }).waitFor();
   for (const peer of ["working", "done", "blocked", "idle"] as const) {
     await readBackground(peer);
-    // an agent's tab shows its friend, whose mood is the state: waiting, as working, moves it
-    const mood = peer === "done" ? "is-done" : peer === "blocked" ? "is-blocked" : "is-working";
-    await page.locator(`.tab-strip-tab[aria-selected="true"] .tab-strip-faces .agent-friend.${mood}`).waitFor();
+    const expected = peer === "idle" ? "waiting" : peer;
+    await page.locator(`.tab-strip-tab[aria-selected="true"] .tab-strip-dot[data-status="${expected}"]`).waitFor();
   }
   await readBackground(null);
   if (process.env.UI_EVIDENCE_DIR) {
@@ -669,7 +667,7 @@ try {
   // Use a real browser paste: keydown must not send Ctrl+V (0x16) to the agent,
   // where it can trigger image paste against the server's unrelated clipboard.
   await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin });
-  await pickLens(page, "terminal");
+  await page.locator(".view-switch").getByRole("button", { name: "Terminal", exact: true }).click();
   await pendingReady(paneA);
   const fileInputSocket = inputStates.get(paneA)?.socket;
   assert.ok(fileInputSocket, "the current pane has an input-ready attachment");
@@ -779,7 +777,7 @@ try {
     await page.locator(`.pane-select[title^="${paneA} —"]`).click();
     await until(async () => (await selectedTitle())?.startsWith(`${paneA} —`) === true, "back on the first pane");
   }
-  await pickLens(page, "chat");
+  await page.locator(".view-switch").getByRole("button", { name: "Chat", exact: true }).click();
   await composer.waitFor();
   // the empty message box has no text to select: the pane shortcut switches panes from it too
   await composer.focus();
@@ -864,18 +862,22 @@ try {
   assert.deepEqual(await sidebarWidths(), defaultWidths, "a double-click goes back to the default width and forgets the stored one");
   console.log("PASS the sidebar's edge drags, steps from the keyboard, remembers its width and resets on a double-click");
 
-  // Sidebar rows: an agent row is its title until Settings → Sidebar rows → Two lines says
-  // what it is doing over its place, on a taller row; workspace rows stay one line
+  // Sidebar rows: a workspace row is its name until Settings → Sidebar rows → Two lines says
+  // what its pane is doing over its place, on a taller row
+  const oneLineHeight = await page.locator(".workspace-header").first().evaluate((row) => row.getBoundingClientRect().height);
   const oneLineAgentHeight = await page.locator(".agents-sidebar .agent-row").first().evaluate((row) => row.getBoundingClientRect().height);
+  assert.equal(await page.locator(".workspace-copy.is-two-line").count(), 0, "rows are one line until two are chosen");
   assert.equal(await page.locator(".agents-sidebar.is-one-line").count(), 1, "agent rows follow the one-line choice");
   await page.keyboard.press("ControlOrMeta+Shift+Comma");
   const rowsSetting = page.locator('.settings-dialog .segmented[aria-label="Sidebar rows"]');
   await rowsSetting.getByRole("button", { name: "Two lines", exact: true }).click();
+  await page.locator(".workspace-copy.is-two-line").first().waitFor();
   assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem("ovis:settings") ?? "{}").sidebarRows), "two");
+  assert.ok(await page.locator(".workspace-header").first().evaluate((row) => row.getBoundingClientRect().height) > oneLineHeight, "a two-line row is taller");
   await page.locator(".agents-sidebar.is-one-line").waitFor({ state: "detached" });
   assert.ok(await page.locator(".agents-sidebar .agent-row").first().evaluate((row) => row.getBoundingClientRect().height) > oneLineAgentHeight, "a two-line agent row is taller");
   await rowsSetting.getByRole("button", { name: "One line", exact: true }).click();
-  await page.locator(".agents-sidebar.is-one-line").waitFor();
+  await page.locator(".workspace-copy.is-two-line").first().waitFor({ state: "detached" });
   await page.getByRole("button", { name: "Close settings", exact: true }).click();
   console.log("PASS sidebar rows switch between one line and two");
 
@@ -997,7 +999,7 @@ try {
   const reportPending = (state: string) => herdrRpc("pane.report_agent", { pane_id: pendingPane, source: "manual", agent: "claude", state });
   await reportPending("working");
   await page.locator(`.pane-select[title^="${pendingPane} —"]`).click();
-  await pickLens(page, "chat");
+  await page.locator(".view-switch").getByRole("button", { name: "Chat", exact: true }).click();
   await page.locator('.composer-status[data-status="working"]').waitFor();
   await until(async () => await page.locator(".composer-agent-label").innerText() === "Claude", "foreground agent identity reached the composer");
   await pendingReady(pendingPane);
@@ -1161,9 +1163,10 @@ try {
   await until(async () => await page.locator(".composer-queue-text").count() === 3, "queue restored");
   assert.equal(await page.locator(".composer-queue-text").nth(1).inputValue(), "# edited second message");
   // the queue belongs to the chat lens: the terminal lens hides it and keeps it for the return
-  await pickLens(page, "terminal");
+  const lens = page.locator(".view-switch");
+  await lens.getByRole("button", { name: "Terminal", exact: true }).click();
   await until(async () => await page.locator(".composer-queue").count() === 0, "queue hidden in the terminal lens");
-  await pickLens(page, "chat");
+  await lens.getByRole("button", { name: "Chat", exact: true }).click();
   await until(async () => await page.locator(".composer-queue-text").count() === 3, "queue back in the chat lens");
   await page.locator(`.pane-select[title^="${paneB} —"]`).click();
   await until(async () => await page.locator(".composer-queue-text").count() === 0, "other pane has no queue");
@@ -1653,7 +1656,7 @@ try {
   const repoMenu = page.getByRole("menu");
   await repoMenu.waitFor();
   const repoActions = await repoMenu.getByRole("menuitem").allTextContents();
-  assert.deepEqual(repoActions, ["Pin workspace", "Rename workspace", "Earlier sessions…", "Close group", "New worktree", "Open worktree…", "Pull requests…", "Expand"],
+  assert.deepEqual(repoActions, ["Pin workspace", "New tab with agent…", "Rename workspace", "Earlier sessions…", "Close group", "New worktree", "Open worktree…", "Expand"],
     "a folded repository group has native workspace and worktree actions");
   await page.keyboard.press("Escape");
   await repoMenu.waitFor({ state: "detached" });
@@ -1782,7 +1785,7 @@ try {
   const childMenu = page.getByRole("menu");
   await childMenu.waitFor();
   const childActions = await childMenu.getByRole("menuitem").allTextContents();
-  assert.deepEqual(childActions, ["Pin workspace", "Rename workspace", "Earlier sessions…", "Close workspace", "Pull requests…", "Delete worktree checkout…"], "a worktree workspace's menu");
+  assert.deepEqual(childActions, ["Pin workspace", "New tab with agent…", "Rename workspace", "Earlier sessions…", "Close workspace", "Delete worktree checkout…"], "a worktree workspace's menu");
   await page.keyboard.press("Escape");
   await childMenu.waitFor({ state: "detached" });
   await childHeader.locator(".workspace-select").click({ button: "right" });
@@ -2027,7 +2030,7 @@ try {
   await tabSheet.waitFor();
   const touchTabItems = await tabSheet.getByRole("menuitem").allTextContents();
   assert.deepEqual(touchTabItems.slice(-6), ["Move tab left", "Move tab right", "Move to workspace…", "New tab with agent…", "Rename tab", "Close tab"], "a tab between siblings offers both adjacent moves on touch");
-  assert.ok(!touchTabItems.includes("Rename pane") && !touchTabItems.includes("Close pane"), "a one-pane tab's touch menu acts on the tab alone");
+  assert.ok(touchTabItems.includes("Rename pane") && touchTabItems.includes("Close pane"), "the touch menu carries the open pane's actions");
   await tabPhonePage.keyboard.press("Escape");
   await tabSheet.waitFor({ state: "detached" });
   if (tabPhoneEvidence) await tabPhoneEvidence.finish();
@@ -2036,7 +2039,7 @@ try {
   await until(async () => (await tabsInHerdr()).join() === "first,build", "the extra neighbour is closed again");
   // a tab whose agent is at work asks before it closes; a no leaves it
   await herdrRpc("pane.report_agent", { pane_id: createdTab.pane_id, source: "manual", agent: "codex", state: "working" });
-  await strip.locator(".tab-strip-faces .agent-friend.is-working").waitFor();
+  await strip.locator('.tab-strip-dot[data-status="working"]').waitFor();
   await strip.getByRole("tab", { name: "build", exact: true }).click({ button: "right" });
   await page.getByRole("menu", { name: "build", exact: true }).getByRole("menuitem", { name: "Close tab", exact: true }).click();
   const closeTabDialog = page.getByRole("alertdialog", { name: "Close tab build?", exact: true });
@@ -2046,7 +2049,7 @@ try {
   assert.equal((await tabsInHerdr()).join(), "first,build");
   // A tab whose agent has finished closes at once from its menu, and the tab beside it opens.
   await herdrRpc("pane.report_agent", { pane_id: createdTab.pane_id, source: "manual", agent: "codex", state: "idle" });
-  await strip.locator(".tab-strip-faces .agent-friend.is-working").waitFor({ state: "detached" });
+  await strip.locator('.tab-strip-dot[data-status="working"]').waitFor({ state: "detached" });
   await herdrRpc("tab.create", { workspace_id: created.workspace_id, label: "third", focus: false });
   const third = strip.getByRole("tab", { name: "third", exact: true });
   await third.click();
@@ -2282,9 +2285,9 @@ try {
   mobilePage.on("pageerror", (error) => errors.push(error.message));
   await mobilePage.goto(`${origin}/?pane=${encodeURIComponent(paneB)}`);
   await mobilePage.locator(".conn-live").waitFor();
-  const tapHighlight = await mobilePage.locator(VIEW_BUTTON).evaluate((node) => getComputedStyle(node).getPropertyValue("-webkit-tap-highlight-color"));
+  const tapHighlight = await mobilePage.locator(".app-header .lens-toggle").evaluate((node) => getComputedStyle(node).getPropertyValue("-webkit-tap-highlight-color"));
   assert.equal(tapHighlight, "rgba(0, 0, 0, 0)", "native tap overlays do not obscure selection");
-  await pickLens(mobilePage, "chat");
+  await openLens(mobilePage, "chat");
   await mobilePage.getByRole("textbox", { name: "Message", exact: true }).fill("mobile draft");
   await mobilePage.locator(".chat-terminal-fallback").waitFor();
   assert.equal(await mobilePage.locator(".chat-terminal-fallback").getAttribute("open"), null, "missing native history is labeled, not presented as broken chat");
@@ -2347,10 +2350,10 @@ try {
   await mobilePage.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   await mobilePage.waitForTimeout(NO_SEND_WAIT_MS); // fixed wait: a picked pane may not take the keyboard
   assert.equal(await typing(mobilePage), false, "a pane picked on a phone does not take the keyboard");
-  await pickLens(mobilePage, "terminal");
+  await openLens(mobilePage, "terminal");
   await mobilePage.waitForTimeout(NO_SEND_WAIT_MS); // fixed wait: switching the lens may not take the keyboard
   assert.equal(await typing(mobilePage), false, "nor does switching its lens");
-  await pickLens(mobilePage, "chat");
+  await openLens(mobilePage, "chat");
   await mobilePage.getByRole("textbox", { name: "Message", exact: true }).tap();
   await until(() => typing(mobilePage), "a tap on the message box takes the keyboard");
   await mobilePage.getByRole("textbox", { name: "Message", exact: true }).blur();
@@ -2414,7 +2417,7 @@ try {
   }));
   await touchPage.goto(`${origin}/?pane=${encodeURIComponent(paneB)}`);
   await touchPage.locator(".conn-live").waitFor();
-  await pickLens(touchPage, "terminal");
+  await openLens(touchPage, "terminal");
   await touchPage.locator("[data-direct-typing]").waitFor();
   assert.equal(await touchPage.locator(".terminal-input").count(), 0, "a phone starts in direct typing");
   assert.equal(await touchPage.evaluate(() => document.activeElement?.classList.contains("xterm-helper-textarea") ?? false), false,

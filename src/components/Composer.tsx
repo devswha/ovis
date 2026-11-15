@@ -11,7 +11,9 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from "react";
-import { flushSync, createPortal } from "react-dom";
+import { flushSync } from "react-dom";
+import { ContextRing } from "../fork/ContextRing.tsx";
+import { ComposerContext } from "../fork/ComposerContext.tsx";
 import { ArrowUp, ClipboardPaste, FileText, FolderGit2, LoaderCircle, Package, Plus, Puzzle, Square, TriangleAlert, UserRound, X, type LucideIcon, AudioLines, ChevronDown, Cpu } from "lucide-react";
 
 import "./Composer.css";
@@ -38,10 +40,8 @@ import {
   composerStatusCompact,
   composerStatusHint,
   composerStatusWord,
-  contextLeftPercent,
   type DraftRefusal,
   draftSendNote,
-  formatTokens,
   imageMention,
   insertLeadingMention,
   MAX_COMPOSER_CHARS,
@@ -66,7 +66,8 @@ import { composerUsage, formatPercent, formatResetIn, HIGH_PERCENT, isCurrent, m
 import { Artifacts } from "./Artifacts.tsx";
 import { OmpBtw } from "./OmpBtw.tsx";
 import { BackgroundTasks } from "./BackgroundTasks.tsx";
-import { AgentMark, modelMark } from "./AgentMark.tsx";
+import { AgentMark } from "./AgentMark.tsx";
+import { modelMark } from "../fork/modelMark.ts";
 import { RowMenu } from "./RowMenu.tsx";
 import { ThinkingSlider } from "./ThinkingSlider.tsx";
 import { MicButton, VoiceRecordingPill, useDictation } from "./VoiceInput.tsx";
@@ -112,8 +113,9 @@ export interface ComposerProps {
   inert?: boolean;
   /** opens the folder's earlier sessions instead of submitting /resume */
   onOpenHistory?: () => void;
-  /** the pane's working folder: a live voice call is named after it */
   cwd?: string | null;
+  branch?: string | null;
+  worktreeRepo?: string | null;
   /** true: sent, clear the box; a string: keep the text and say why; a DraftRefusal: the same, and the
    * note offers to send again with `clearDraft`, which clears that draft from the terminal first, or,
    * where it named none, with `sendAnyway`; a promise settles to any of them */
@@ -178,59 +180,6 @@ function readSlashUsage(): Record<string, number> {
   }
 }
 
-/**
- * What is left of the context, as a ring filled by what is used (as Codex's app shows it):
- * red when little is left. The number is on hover, and on a tap on the ring (a touch screen has no
- * hover): a bubble over it, drawn through a portal so the card's clipping cannot cut it, which a
- * press anywhere else closes. A window the transcript does not name draws no ring.
- */
-function ContextRing({ context }: { context: NonNullable<ConversationMetadata["context"]> }) {
-  const t = useT();
-  const button = useRef<HTMLButtonElement>(null);
-  const bubble = useRef<HTMLDivElement>(null);
-  const [tip, setTip] = useState<{ left: number; bottom: number } | null>(null);
-  useEffect(() => {
-    if (tip === null) return;
-    const inside = (target: EventTarget | null) => target instanceof Node && (button.current?.contains(target) || bubble.current?.contains(target));
-    const press = (event: PointerEvent) => { if (!inside(event.target)) setTip(null); };
-    const close = () => setTip(null);
-    window.addEventListener("pointerdown", press, true);
-    window.addEventListener("resize", close);
-    window.addEventListener("scroll", close, true);
-    return () => {
-      window.removeEventListener("pointerdown", press, true);
-      window.removeEventListener("resize", close);
-      window.removeEventListener("scroll", close, true);
-    };
-  }, [tip]);
-  const left = contextLeftPercent(context);
-  if (left === null || context.window === null) return null;
-  const detail = `${t("Context {percent}% left", { percent: left })} · ${t("{used} of {window} tokens", { used: formatTokens(context.used), window: formatTokens(context.window) })}`;
-  const radius = 6;
-  const circumference = 2 * Math.PI * radius;
-  const toggle = (): void => {
-    const rect = button.current?.getBoundingClientRect();
-    setTip(tip !== null || !rect ? null : { left: rect.left + rect.width / 2, bottom: window.innerHeight - rect.top + 6 });
-  };
-  return (
-    <>
-    <button ref={button} type="button" className={`composer-context${left <= 20 ? " is-low" : ""}`} aria-label={detail} title={detail} aria-expanded={tip !== null} onClick={toggle}>
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <circle className="composer-context-track" cx="8" cy="8" r={radius} />
-        <circle className="composer-context-used" cx="8" cy="8" r={radius}
-          strokeDasharray={`${circumference * (100 - left) / 100} ${circumference}`} transform="rotate(-90 8 8)" />
-      </svg>
-    </button>
-    {tip && createPortal(
-      <div ref={bubble} className="composer-context-tip" role="status" style={{ left: tip.left, bottom: tip.bottom }}>
-        <span>{detail}</span>
-      </div>,
-      document.body,
-    )}
-    </>
-  );
-}
-
 /** a model's maker's mark for the model menu; the menu's chip icon stands for a maker without one */
 function markGlyph(model: string): ReactNode {
   const mark = modelMark(model);
@@ -273,6 +222,8 @@ export function Composer({
   inert = false,
   onOpenHistory,
   cwd = null,
+  branch = null,
+  worktreeRepo = null,
   onSend,
   onClaim,
   onAbort,
@@ -1227,7 +1178,7 @@ export function Composer({
   // an orb where there is nothing to send: a live call with the Pi in this pane, from a phone or a PC alike
   const primaryAction = composerPrimaryAction({ sending: sending || carried.length > 0, working: isWorking, text, hasAttachments: attachments.length > 0, canStartVoice: voiceAvailable && role !== "observe" && connected });
   const hint = composerStatusHint({ uploading, connected, text, noRoom: roomless !== undefined });
-  const models = agent === "pi" && role !== "observe" && metadata?.models?.length ? metadata.models : undefined;
+  const models = settings.composerExtras && agent === "pi" && role !== "observe" && metadata?.models?.length ? metadata.models : undefined;
   // a switch shows at once: pi applies it in a moment, but its transcript reaches the pill a read later
   // (seconds for a long one or a far phone). The pick holds until the transcript says the same, or 8s
   const recordedModel = models?.find((entry) => entry.current);
@@ -1244,7 +1195,7 @@ export function Composer({
   const modelId = pickedModel ? pickedModel.id.slice(pickedModel.id.indexOf("/") + 1) : metadata?.model;
   const modelShown = Boolean(modelId || effort);
   // the ring leads the pill, in the place a maker's mark had: the header already says which agent this is
-  const ring = metadata?.context && settings.contextCircle ? <ContextRing context={metadata.context} /> : null;
+  const ring = metadata?.context && settings.contextCircle ? <ContextRing context={metadata.context} interactive={settings.composerExtras} /> : null;
   // an id modelLabel cannot name takes the name pi gives it, where pi's extension recorded one
   const label = modelId ? modelLabel(modelId) : null;
   const model = label && !label.named && currentModel ? { ...label, text: currentModel.name, named: true } : label;
@@ -1658,7 +1609,8 @@ export function Composer({
               </span>
             ) : (
               <span className={`composer-pill${metadata?.model ? "" : " is-bare"}`}>
-              {ring}
+              {!settings.composerExtras && agent && <AgentMark agent={agent} size={14} />}
+              {settings.composerExtras && ring}
               {modelShown && <span className="composer-model-info" aria-label={t("Model and reasoning")}>
                 {/* a name only for an id modelLabel can name for certain; any other id is drawn as received, in the identifier face */}
                 <span className={`composer-model${model ? model.named ? "" : " is-id" : " is-none"}`} title={modelId ?? t("Model not available")}>{model?.text ?? t("Model —")}</span>
@@ -1673,7 +1625,8 @@ export function Composer({
                   </>}
                 </span>
               </span>}
-              {usage !== undefined && usage.problem === null && usageLimit !== undefined && <span
+              {!settings.composerExtras && ring}
+              {usage !== undefined && isCurrent(usage) && usageLimit !== undefined && <span
                 className={`composer-usage${usageLimit.used_percent >= HIGH_PERCENT ? " is-high" : ""}${usage.problem ? " has-problem" : ""}`}
                 title={`${usageName(usage)}\n${usageDetail}`}
               >
@@ -1741,6 +1694,7 @@ export function Composer({
           )}
         </div>
       </div>
+      {!settings.headerBranch && <ComposerContext cwd={cwd} branch={branch} repo={worktreeRepo} mobile={mobile} facesLoaded={facesLoaded} />}
       {/* above the whole composer: inside the surface it would cover the text being dictated */}
       {dictation.shown && <VoiceRecordingPill dictation={dictation} align="start" />}
     </div>

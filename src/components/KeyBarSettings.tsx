@@ -239,7 +239,7 @@ export function KeyBarSettings() {
           </label>}
         </div>
         <div className="key-bar-settings-modifiers" role="group" aria-label={t("Combination modifiers")}>
-          {MODIFIERS.map((modifier) => <button type="button" className="key-bar-settings-modifier" key={modifier} aria-pressed={!!comboModifiers[modifier]} onClick={() => setComboModifiers((current) => ({ ...current, [modifier]: !current[modifier] }))}>{MODIFIER_CAPS[modifier]}</button>)}
+          {MODIFIERS.filter((modifier) => modifier !== "super" || settings.computerView).map((modifier) => <button type="button" className="key-bar-settings-modifier" key={modifier} aria-pressed={!!comboModifiers[modifier]} onClick={() => setComboModifiers((current) => ({ ...current, [modifier]: !current[modifier] }))}>{MODIFIER_CAPS[modifier]}</button>)}
         </div>
         <div className="key-bar-settings-combo-actions">
           <span className="key-bar-settings-preview" aria-live="polite">{characterValid ? keyBarItemLabel(combo) : t("Enter one character.")}</span>

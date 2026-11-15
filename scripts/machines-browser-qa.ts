@@ -7,7 +7,6 @@ import { herdrRpc } from "../server/herdr/client.ts";
 import { paneStorageId } from "../shared/machines.ts";
 import { openSettingsPage } from "./settings-page.ts";
 import { chromePath } from "./chrome-path.ts";
-import { pickLens } from "./view-toggle.ts";
 const fixture = JSON.parse(readFileSync(process.argv[2]!, "utf8")) as { root: string; remoteHome: string; port: number; machineId: string; secondMachineId: string; paneId: string };
 const { machineId: a, secondMachineId: b, paneId } = fixture;
 const origin = `http://127.0.0.1:${fixture.port}`;
@@ -35,7 +34,7 @@ async function select(name: string) {
   const group = page.getByRole("region", { name: `PC ${name}`, exact: true });
   await group.locator(`.pane-select[title^="${paneId} —"]`).click();
   await page.locator(".context .machine-context-name").filter({ hasText: name }).waitFor();
-  await pickLens(page, "chat");
+  await page.getByRole("button", { name: "Chat", exact: true }).click();
   await page.getByRole("textbox", { name: "Message", exact: true }).waitFor();
 }
 /** Add PC from Add a connection's SSH tab (a phone opens the sheet on Phones and devices): an address typed, then Add */
@@ -52,7 +51,7 @@ let pendingProgramRunning = false;
 try {
   await page.goto(`${origin}/?machine=${a}&pane=${encodeURIComponent(paneId)}`);
   await page.locator(".conn-live").waitFor();
-  await pickLens(page, "chat");
+  await page.getByRole("button", { name: "Chat", exact: true }).click();
   await composer.fill("PC A draft");
   await select("QA second PC");
   assert.equal(await composer.inputValue(), "");

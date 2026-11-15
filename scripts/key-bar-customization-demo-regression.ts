@@ -19,7 +19,7 @@ const evidence = process.env.UI_EVIDENCE_DIR;
 const SETTINGS_KEY = "ovis:settings";
 // the touch key bar's fixed keys lead: the Input line toggle, Paste into the input line, then the keyboard control
 const MIGRATED_KEYS = ["direct", "paste", "keyboard", "Escape", "Tab", "BackTab", "Control", "Alt", "Shift", "Enter", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown", "ctrl-c", "ctrl-d", "ctrl-z", "pipe", "tilde", "slash"];
-const DEFAULT_KEY_BAR_KEYS = ["direct", "paste", "keyboard", "Escape", "Tab", "ctrl-c", "Control", "Alt", "Shift", "Super", "Enter", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"];
+const DEFAULT_KEY_BAR_KEYS = ["direct", "paste", "keyboard", "Escape", "Tab", "ctrl-c", "Control", "Alt", "Shift", "Enter", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"];
 
 interface InputFrame { type: "input" | "keys"; pane_id: string; text?: string; keys?: string[] }
 const framesOf = (page: Page): Promise<InputFrame[]> => page.evaluate(() => (window as unknown as { keyBarFrames: InputFrame[] }).keyBarFrames);

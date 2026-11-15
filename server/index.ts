@@ -3,8 +3,7 @@ import type { SshCandidatesOptions } from "./ssh-candidates.ts";
 import "./adopt-legacy-env.ts";
 import type { RelaySocket } from "../shared/relay-channel.ts";
 import { createCore, type SocketData } from "./core/index.ts";
-import { withScreenSockets, type ScreenSocketData } from "./screen.ts";
-import { PiVoiceHub, type PiVoiceSocketData, withPiVoiceSockets } from "./pi-voice.ts";
+import { createForkServices, withForkSockets, type ForkSocketData, type ForkServices } from "./fork/services.ts";
 import { ClientConnectionLog } from "./client-connection-log.ts";
 import { RequestLog } from "./request-log.ts";
 import { RelayReceiptIds } from "./machine-relay.ts";
@@ -18,9 +17,7 @@ import type { PendingMessage, SessionSnapshot } from "../shared/protocol.ts";
 import { DEFAULT_PORT } from "../shared/protocol.ts";
 import { isLoopbackBind, lanExposed } from "./access.ts";
 import { DeviceStore, mergeAccountTombstones } from "./devices.ts";
-import { OmarchyThemeStore } from "./omarchy-themes.ts";
 import { PreferenceStore } from "./preferences.ts";
-import { FriendStore } from "./friends.ts";
 import { readOmpHeldFilesSetting } from "./omp.ts";
 import { SeenStore } from "./seen.ts";
 import type { SeenFinish } from "../shared/seen.ts";
@@ -62,7 +59,6 @@ import { CLIProxyService } from "./cliproxy.ts";
 import { CLIProxyRoutes } from "./cliproxy-routes.ts";
 import { UsageLoginService } from "./usage-login.ts";
 import { UsageAccountList } from "./usage-account-list.ts";
-import { SpeechService } from "./speech.ts";
 import { VoiceService } from "./voice.ts";
 import { loopbackRelay, registerBridge, relayTarget } from "./bridge.ts";
 import { PiSessionReader } from "./pi-session-metadata.ts";
@@ -213,7 +209,7 @@ export function createServer(
     /** voice input's key, provider and models; tests pass one with their own env and fetch */
     voice?: VoiceService;
     /** read aloud's Kokoro; tests pass one with a stand-in engine */
-    speech?: SpeechService;
+    speech?: ForkServices["speech"];
     machines?: boolean;
     /** how PCs added through the relay reach it (server/relay-pc.ts); tests point it at a local relay */
     relayPcSocket?: (url: string) => RelaySocket;
@@ -305,8 +301,8 @@ export function createServer(
   }
   const devices = new DeviceStore(stateDir, merge?.devicesBlocked ?? null, accountBlocked);
   const preferences = new PreferenceStore(stateDir);
-  const omarchyThemes = new OmarchyThemeStore(stateDir);
-  const friends = new FriendStore(stateDir);
+  const forkServices = createForkServices(stateDir, devices, options.speech);
+  const { friends } = forkServices;
   // Settings -> Experimental -> OMP on macOS herdr-core: chat from the session it holds open
   readOmpHeldFilesSetting(() => preferences.get().settings.ompHeldFiles === true);
   // on herdr-core an agent pinned here is pinned in the Herdr app and its other clients too
@@ -362,7 +358,6 @@ export function createServer(
     }
   });
   const voice = options.voice ?? new VoiceService({ stateDir, env: process.env, fetch });
-  const speech = options.speech ?? new SpeechService({ stateDir });
   /** a login named here is taken as it is: a tagged node has none of its own to read (OVIS_TAILSCALE_OWNER) */
   const namedOwner = options.tailscaleOwner !== undefined ? options.tailscaleOwner : process.env["OVIS_TAILSCALE_OWNER"]?.trim() || undefined;
   const tailnet = options.tailnet ?? new TailnetIdentitySource();
@@ -447,8 +442,7 @@ export function createServer(
 
   const envPort = process.env["PORT"];
   const clientConnectionLog = new ClientConnectionLog();
-  const piVoice = new PiVoiceHub({ onRevoke: (id, close) => devices.onRevoke(id, close) });
-  const socketContext = (bunServer: Bun.Server<SocketData | ScreenSocketData | PiVoiceSocketData>): ServerContext => ({
+  const socketContext = (bunServer: Bun.Server<SocketData | ForkSocketData>): ServerContext => ({
     requestIP: (request) => bunServer.requestIP(request),
     timeout: (request, seconds) => { bunServer.timeout(request, seconds); },
     upgrade: (request, options) => bunServer.upgrade(request, options),
@@ -457,14 +451,14 @@ export function createServer(
     services,
     server: bunServer,
   });
-  const server = Bun.serve<SocketData | ScreenSocketData | PiVoiceSocketData>({
+  const server = Bun.serve<SocketData | ForkSocketData>({
     port: options.port ?? (envPort ? Number(envPort) : DEFAULT_PORT),
     hostname,
     maxRequestBodySize: BUN_BODY_CEILING,
 
     fetch: (request, bunServer) => handleRequest(request, socketContext(bunServer)),
 
-    websocket: withPiVoiceSockets(withScreenSockets(core.websocket), piVoice),
+    websocket: withForkSockets(core.websocket, forkServices),
   });
   // bound before anything else opens, so a failed ::1 bind leaves only what a failed primary bind would
   let ipv6: Bun.Server<SocketData> | null = null;
@@ -505,7 +499,7 @@ export function createServer(
       switchRuntime: () => { const answer = options.runtimeService!.request("herdr-core"); return answer.ok ? null : answer.message; },
       ...(options.herdrCoreInstaller ? { installer: options.herdrCoreInstaller } : {}),
     }) : null,
-    options, relay: ovisRelay, relayReceiptIds: new RelayReceiptIds(), hostname, token, bridgeToken, bootId, devices, accountMailbox, accountIntroductions: new AccountIntroductions(Date.now, join(stateDir, "account-introductions.json")), accountHolds, preferences, omarchyThemes, herdrSidebar, identityOf, serveOnly, portalGuards, shellAgents, agentDetector, agentOffered, agentInstaller, openCodeState, cliProxyRoutes, usageLogin, usage, usageAccounts, voice, speech, friends, piVoice, browserSnapshot, core, seen, piReader, orderSequence, clientConnectionLog, requestLog, portalStartup,
+    options, relay: ovisRelay, relayReceiptIds: new RelayReceiptIds(), hostname, token, bridgeToken, bootId, devices, accountMailbox, accountIntroductions: new AccountIntroductions(Date.now, join(stateDir, "account-introductions.json")), accountHolds, preferences, herdrSidebar, identityOf, serveOnly, portalGuards, shellAgents, agentDetector, agentOffered, agentInstaller, openCodeState, cliProxyRoutes, usageLogin, usage, usageAccounts, voice, ...forkServices, browserSnapshot, core, seen, piReader, orderSequence, clientConnectionLog, requestLog, portalStartup,
     systemSampler, fontsDir: join(stateDir, "fonts"),
     get portalStartupResult() { return portalStartupResult; },
   };

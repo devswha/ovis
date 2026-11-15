@@ -9,7 +9,6 @@ import { createServer } from "../server/index.ts";
 import { PtySession } from "../server/pty/session.ts";
 import { herdrRpc, herdrSocketPath, type WorkspaceCreateResult, paneRead, paneSendKeys, paneSendText, tabCreate, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
 import { chromePath } from "./chrome-path.ts";
-import { pickLens, VIEW_BUTTON } from "./view-toggle.ts";
 import { shownRow, shownRows } from "./shown-rows.ts";
 import { clickTab } from "./tab-pick.ts";
 import { openLens } from "./header-lens.ts";
@@ -157,8 +156,7 @@ export async function checkChatKeepsTerminalSize(browser: Browser, origin: strin
     await attached(desktop);
     const desktopSize = await size();
 
-    // shorter than a common phone: its grid must differ from the desktop's in rows as well as columns
-    const phone = await open({ viewport: { width: 390, height: 760 }, isMobile: true, hasTouch: true }, { language: "en", defaultView: "chat" });
+    const phone = await open({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true }, { language: "en", defaultView: "chat" });
     await phone.locator(".terminal-stack.is-chat").waitFor({ state: "attached" });
     await attached(phone);
     // the chat lens attaches without driving the grid, and sends no resize of its own
@@ -168,7 +166,8 @@ export async function checkChatKeepsTerminalSize(browser: Browser, origin: strin
     console.log(`PASS a phone's chat lens leaves the shared grid at the desktop's ${desktopSize}`);
 
     // the phone's terminal lens fits the grid to the phone: the shell sees it change
-    await pickLens(phone, "terminal", { tap: true });
+    // On a phone the label is hidden, but the lens keeps its accessible name.
+    await openLens(phone, "terminal", "tap");
     await phone.waitForFunction(() => (window as unknown as { frames_: { dir: string; type: string }[] }).frames_.some((f) => f.dir === "out" && f.type === "resize"), undefined, { timeout: 10_000 });
     const deadline = Date.now() + 10_000;
     let phoneSize = desktopSize;
@@ -209,13 +208,8 @@ export async function checkChatKeepsTerminalSize(browser: Browser, origin: strin
       }
       socket.addEventListener("message", receive);
     }, desktopSize.split(" ").map(Number));
-    // the budget runs from the switch itself: the click on the toggle, not the tap that opens More or the menu settling
-    await phone.locator(VIEW_BUTTON).tap();
-    const toggle = phone.locator(".row-menu, .row-sheet").locator("button:has(.row-menu-switch-track)");
-    await toggle.evaluate((node) => node.addEventListener("click", () => Object.assign(window, { switchedAt_: Date.now() }), { capture: true, once: true }));
-    await toggle.tap();
-    await phone.locator(`${VIEW_BUTTON}[data-view="chat"]`).waitFor();
-    const chatAt = await phone.evaluate(() => (window as unknown as { switchedAt_: number }).switchedAt_);
+    const chatAt = Date.now();
+    await openLens(phone, "chat", "tap");
     const restoredAt = await desktop.evaluate(() => (window as unknown as { gridRestored_: Promise<number> }).gridRestored_);
     assert.ok(restoredAt - chatAt <= 1_000, "phone Chat restores the visible desktop grid within 1 s");
     // pane-geometry announces the resize before the sidecar applies it to herdr's pty.
@@ -225,7 +219,7 @@ export async function checkChatKeepsTerminalSize(browser: Browser, origin: strin
     assert.equal(restoredSize, desktopSize, "the unfocused desktop's grid is restored in the real pty");
     assert.ok(Date.now() - chatAt <= 1_000, "the real pty restores the desktop grid within 1 s");
     console.log(`PASS phone Chat restores the visible unfocused desktop's ${desktopSize}`);
-    await pickLens(phone, "terminal", { tap: true });
+    await openLens(phone, "terminal", "tap");
     let reclaimedSize = "";
     const reclaimDeadline = Date.now() + 10_000;
     while (Date.now() < reclaimDeadline && reclaimedSize !== phoneSize) reclaimedSize = await size();
@@ -237,7 +231,7 @@ export async function checkChatKeepsTerminalSize(browser: Browser, origin: strin
     const hiddenRows = () => desktop.locator(shownRow()).count();
     const phoneRows = Number(phoneSize.split(" ")[0]);
     assert.notEqual(await hiddenRows(), phoneRows, "the desktop's terminal lens kept its own grid");
-    await pickLens(desktop, "chat");
+    await desktop.locator(".view-switch").getByRole("button", { name: "Chat", exact: true }).click();
     await desktop.locator(".terminal-stack.is-chat").waitFor({ state: "attached" });
     const adopted = Date.now() + 10_000;
     while (await hiddenRows() !== phoneRows && Date.now() < adopted) await Bun.sleep(100);

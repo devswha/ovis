@@ -9,8 +9,7 @@ import type { TelemetrySettings } from "../../shared/telemetry.ts";
 import { MAX_PINS, mirrorPalette, SHARED_SETTING_KEYS, type SharedSettingKey } from "../../shared/preferences.ts";
 import { createContext, createElement, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode, useSyncExternalStore } from "react";
 import { DEFAULT_THEME, terminalColors, themeColor as themeTableColor, type ThemeId, type DrawnTheme } from "./themes.ts";
-import { SPEECH_DEFAULT_VOICE, SPEECH_VOICES, type SpeechVoice } from "../../shared/speech.ts";
-import { isPiVoice, type PiVoice } from "../../shared/pi-voice.ts";
+import { applyForkSettings, FORK_DEFAULTS, FORK_SCOPE, loadForkSettings, migrateForkSettings, sanitizeForkSettings, saveForkSettings, type ForkSettings } from "../fork/settings.ts";
 import { currentOmarchyTheme, drawnOmarchyTheme, subscribeOmarchyTheme } from "./omarchyTheme.ts";
 import type { OmarchyTheme } from "../../shared/omarchy-theme.ts";
 import { bootRows, drawnTheme, NO_CUSTOM_THEMES, sanitizeCustomThemes, type CustomThemes } from "./customThemes.ts";
@@ -79,7 +78,7 @@ import { WEB_LINK_TARGETS, type WebLinkTarget } from "./webPanel.ts";
 import { FILE_OPEN_TARGETS, type FilePresentation } from "./filePresentation.ts";
 import { CLAUDE_EFFORTS, CLAUDE_LAUNCH_MODES, CODEX_EFFORTS, CODEX_LAUNCH_MODES, launchChoiceFault, type ClaudeLaunchMode, type CodexLaunchMode } from "./agentLaunchMode.ts";
 
-export interface Settings {
+export interface Settings extends ForkSettings {
   terminalInputMode: "auto" | "line" | "direct";
   /** Kept for migration of the old fixed-order bar. New layouts use keyBarItems. */
   keyBarExtras: KeyBarExtra[];
@@ -142,8 +141,6 @@ export interface Settings {
   paletteDark: Palette;
   darkTheme: ThemeId;
   lightTheme: ThemeId;
-  /** draw this device in its own Omarchy theme, when its theme-set hook sends one (lib/omarchyTheme.ts), over the chosen theme */
-  followOmarchy: boolean;
   /** the themes imported from a file, and the one drawn on either side in place of that side's theme above (lib/customThemes.ts) */
   customThemes: CustomThemes;
   /** xterm font size in px */
@@ -221,8 +218,6 @@ export interface Settings {
   autoSendQueued: boolean;
   /** true: a tab herdr still names by its number shows a few words of its first message (lib/tabLabels.ts); false keeps tabs as they are */
   autoTabNames: boolean;
-  /** the ring beside the model pill that shows how full the model's context is */
-  contextCircle: boolean;
   /** the Artifacts chip in a Claude Code pane's composer, listing the pages its session published; off until chosen,
    *  so the composer's row stays minimal */
   composerArtifacts: boolean;
@@ -237,8 +232,6 @@ export interface Settings {
   suggestionChip: boolean;
   /** show the agent's folded reasoning blocks in the chat view */
   showThinking: boolean;
-  /** a running turn's work block opens by itself; off, it shows only its "Working…" row until tapped */
-  openLiveWork: boolean;
   /** the reasoning showThinking shows starts open instead of folded (#2346); a row the reader opens or folds stays so for its message */
   expandThinking: boolean;
   /** a turn's work blocks start folded to their head line, the running one included, but the one that waits on the user (#2228);
@@ -278,10 +271,6 @@ export interface Settings {
   voicePolishChat: boolean;
   /** off by default: a terminal line is usually a command, kept as spoken */
   voicePolishTerminal: boolean;
-  /** the Kokoro voice an agent's reply is read aloud in (shared/speech.ts) */
-  speechVoice: SpeechVoice;
-  /** the voice a live call with a Pi pane speaks in; "pi": the one set in Pi's /openai-settings */
-  liveVoice: PiVoice | "pi";
   /** the file viewer wraps long lines instead of scrolling sideways */
   wrapCode: boolean;
   /** off by default: the file viewer offers Edit for a text file in the pane's folder, saved after a confirm (#771) */
@@ -320,7 +309,7 @@ export type DiffStyle = (typeof DIFF_STYLES)[number];
  * keyBarExpanded, herdrPrefixKeys, agentLocks, lockedAgents, opencodeParentEnds, ompHeldFiles, restoreReplacedServer, the named agent groups, fileOpen, reopenFileOnReturn, webLinks, reuseExternalLinkTab, the launch modes, followHerdrFocus, followOmarchy, contextCircle, speechVoice, liveVoice, openLiveWork, sidebarPeek, sidebarBackgroundWorkspaces, codexDrag, autoTabNames, composerArtifacts, composerPasteSend, composerBtw, terminalMirrorWrap, terminalImages, terminalAttachButton, terminalKeyboardOnRequest, terminalFoldKeyBar, sidebarFilter, sidebarContext, sidebarAgentTree, foldHelpers, pcLoad, voiceEngine, the agent groups, the
  * interface font, the file text size and the folds its blocks start in are not collected: the telemetry schema
  * (shared/telemetry.ts) does not carry them. */
-type TelemetrySourceSettings = Omit<Settings,
+type TelemetrySourceSettings = Omit<Settings, keyof ForkSettings |
   "keyBarExtras" | "keyBarItems" | "keyBarExpanded" | "shortcutOverrides" | "herdrPrefixKeys" | "terminalFontFamily" | "chatFontFamily" | "uiFontFamily"
   | "quickReplies" | "agentLocks" | "lockedAgents" | "opencodeParentEnds" | "ompHeldFiles" | "restoreReplacedServer" | "agentNamedGroups" | "agentGroupNames" | "agentGroupOf" | "usageOrder" | "usageHidden" | "fileOpen" | "filesPanel" | "webLinks" | "reuseExternalLinkTab" | "claudeLaunchMode" | "codexLaunchMode"
   | "claudeLaunchModel" | "claudeLaunchEffort" | "codexLaunchModel" | "codexLaunchEffort"
@@ -401,11 +390,12 @@ export function telemetrySettingsSnapshot(settings: Settings): TelemetrySettings
  * must be placed here, or the build fails; when in doubt it is the device's.
  */
 export const SETTING_SCOPE = {
+  ...FORK_SCOPE,
   theme: "shared", palette: "shared", darkTheme: "shared", lightTheme: "shared", language: "shared", sidebarRows: "shared", agentOrder: "shared",
   agentMarks: "shared", agentLocks: "shared", lockedAgents: "shared", opencodeParentEnds: "shared", ompHeldFiles: "shared", restoreReplacedServer: "shared", agentNamedGroups: "shared", agentGroupNames: "shared", agentGroupOf: "shared", autoSendQueued: "shared", autoTabNames: "shared", showThinking: "shared", quickReplies: "shared",
   showQuickReplies: "shared", showUsage: "shared", usageCount: "shared",
   usageGlance: "shared", usageOrder: "shared", usageHidden: "shared", defaultView: "device", suggestionChip: "device",
-  openLiveWork: "device", terminalInputMode: "device", keyBarExtras: "device", keyBarItems: "device", keyBarExpanded: "device", shortcutOverrides: "device", density: "device",
+  terminalInputMode: "device", keyBarExtras: "device", keyBarItems: "device", keyBarExpanded: "device", shortcutOverrides: "device", density: "device",
   herdrPrefixKeys: "device", phoneTabs: "device",
   terminalFontSize: "device",
   terminalWheelSpeed: "device", terminalFontFamily: "device", paneClipboard: "device", releasePaneAway: "device",
@@ -433,7 +423,6 @@ export const SETTING_SCOPE = {
   // the chat's starting folds are this screen's, as its width: a phone may fold the work a desk keeps open
   expandThinking: "device", foldWork: "device",
   // the theme of the machine this browser runs on: a phone never has one
-  followOmarchy: "device",
   // a desk's composer button: a phone never shows it
   // the composer's row is this screen's: a phone may keep it bare while a desk shows the chip
   composerArtifacts: "device",
@@ -441,7 +430,6 @@ export const SETTING_SCOPE = {
   composerBtw: "device",
   // a desk with a keyboard may do without the field a phone keeps, as with the PCs it shows (lib/hiddenMachines.ts)
   sidebarFilter: "device",
-  contextCircle: "shared",
   // a phone's narrow rows may do without the ring a desk shows, as with the filter
   sidebarContext: "device",
   // a phone's short list may fold the helpers a desk lists, as with the ring
@@ -454,7 +442,7 @@ export const SETTING_SCOPE = {
   agentGroups: "device", agentGroupSort: "device",
   keepScreenOn: "device", alertsOn: "device", alertInput: "device", alertDone: "device", alertSound: "device",
   paletteLight: "device", paletteDark: "device", statusIndicators: "device",
-  voiceInput: "device", voiceLanguage: "device", voiceEngine: "device", voicePolishChat: "device", voicePolishTerminal: "device", speechVoice: "device", liveVoice: "device",
+  voiceInput: "device", voiceLanguage: "device", voiceEngine: "device", voicePolishChat: "device", voicePolishTerminal: "device",
   // Viewer layout follows this screen, as chatWidth does.
   wrapCode: "device", editTextFiles: "device", reopenFileOnReturn: "device", diffStyle: "device", fileOpen: "device", filesPanel: "device", webLinks: "device", reuseExternalLinkTab: "device",
   // a new agent starts the same way whichever device opened it
@@ -479,7 +467,7 @@ export const DEFAULT_SETTINGS: Settings = {
   // the startup default (themeBoot.ts defaultThemeSetting): Reset puts back what a fresh device is drawn in
   theme: "system",
   density: "comfortable",
-  phoneTabs: "header",
+  phoneTabs: "row",
   sidebarRows: "one",
   sidebarFilter: false,
   sidebarContext: false,
@@ -531,16 +519,13 @@ export const DEFAULT_SETTINGS: Settings = {
   enterSends: null,
   autoSendQueued: true,
   autoTabNames: true,
-  contextCircle: true,
   composerArtifacts: false,
   composerPasteSend: false,
   composerBtw: false,
   suggestionChip: false,
   showThinking: false,
-  openLiveWork: true,
   expandThinking: false,
   foldWork: false,
-  followOmarchy: false,
   keepScreenOn: false,
   language: "system",
   alertsOn: true,
@@ -560,8 +545,7 @@ export const DEFAULT_SETTINGS: Settings = {
   voiceEngine: "auto",
   voicePolishChat: true,
   voicePolishTerminal: false,
-  speechVoice: SPEECH_DEFAULT_VOICE,
-  liveVoice: "pi",
+  ...FORK_DEFAULTS,
   wrapCode: false,
   editTextFiles: false,
   reopenFileOnReturn: false,
@@ -772,16 +756,13 @@ export function sanitizeSettings(raw: unknown): Settings {
     enterSends: typeof record["enterSends"] === "boolean" ? record["enterSends"] : null,
     autoSendQueued: typeof record["autoSendQueued"] === "boolean" ? record["autoSendQueued"] : DEFAULT_SETTINGS.autoSendQueued,
     autoTabNames: typeof record["autoTabNames"] === "boolean" ? record["autoTabNames"] : DEFAULT_SETTINGS.autoTabNames,
-    contextCircle: typeof record["contextCircle"] === "boolean" ? record["contextCircle"] : DEFAULT_SETTINGS.contextCircle,
     composerArtifacts: typeof record["composerArtifacts"] === "boolean" ? record["composerArtifacts"] : DEFAULT_SETTINGS.composerArtifacts,
     composerPasteSend: typeof record["composerPasteSend"] === "boolean" ? record["composerPasteSend"] : DEFAULT_SETTINGS.composerPasteSend,
     composerBtw: typeof record["composerBtw"] === "boolean" ? record["composerBtw"] : DEFAULT_SETTINGS.composerBtw,
     suggestionChip: typeof record["suggestionChip"] === "boolean" ? record["suggestionChip"] : DEFAULT_SETTINGS.suggestionChip,
     showThinking: typeof record["showThinking"] === "boolean" ? record["showThinking"] : DEFAULT_SETTINGS.showThinking,
-    openLiveWork: typeof record["openLiveWork"] === "boolean" ? record["openLiveWork"] : DEFAULT_SETTINGS.openLiveWork,
     expandThinking: typeof record["expandThinking"] === "boolean" ? record["expandThinking"] : DEFAULT_SETTINGS.expandThinking,
     foldWork: typeof record["foldWork"] === "boolean" ? record["foldWork"] : DEFAULT_SETTINGS.foldWork,
-    followOmarchy: record["followOmarchy"] === true,
     keepScreenOn: typeof record["keepScreenOn"] === "boolean" ? record["keepScreenOn"] : DEFAULT_SETTINGS.keepScreenOn,
     language: LANGUAGE_SETTINGS.includes(record["language"] as LanguageSetting) ? record["language"] as LanguageSetting : DEFAULT_SETTINGS.language,
     alertsOn: typeof record["alertsOn"] === "boolean" ? record["alertsOn"] : DEFAULT_SETTINGS.alertsOn,
@@ -804,8 +785,7 @@ export function sanitizeSettings(raw: unknown): Settings {
     voiceEngine: VOICE_ENGINES.includes(record["voiceEngine"] as VoiceEngineChoice) ? record["voiceEngine"] as VoiceEngineChoice : DEFAULT_SETTINGS.voiceEngine,
     voicePolishChat: typeof record["voicePolishChat"] === "boolean" ? record["voicePolishChat"] : DEFAULT_SETTINGS.voicePolishChat,
     voicePolishTerminal: typeof record["voicePolishTerminal"] === "boolean" ? record["voicePolishTerminal"] : DEFAULT_SETTINGS.voicePolishTerminal,
-    speechVoice: SPEECH_VOICES.includes(record["speechVoice"] as SpeechVoice) ? record["speechVoice"] as SpeechVoice : DEFAULT_SETTINGS.speechVoice,
-    liveVoice: isPiVoice(record["liveVoice"]) ? record["liveVoice"] : DEFAULT_SETTINGS.liveVoice,
+    ...sanitizeForkSettings(record),
     wrapCode: typeof record["wrapCode"] === "boolean" ? record["wrapCode"] : DEFAULT_SETTINGS.wrapCode,
     editTextFiles: typeof record["editTextFiles"] === "boolean" ? record["editTextFiles"] : DEFAULT_SETTINGS.editTextFiles,
     reopenFileOnReturn: record["reopenFileOnReturn"] === true,
@@ -1092,7 +1072,7 @@ export function loadSettings(): Settings {
   // read as the page's boot script reads them (themeBoot.ts), so React starts on the row the first frame showed
   const stored = readStoredAppearance(() => window.localStorage);
   // no main record: the same theme the boot script draws (the hosted shell follows the system)
-  const settings = stored.main === null ? { ...DEFAULT_SETTINGS, theme: defaultThemeSetting() } : sanitizeSettings(stored.main.value);
+  const settings = stored.main === null ? { ...DEFAULT_SETTINGS, theme: defaultThemeSetting() } : sanitizeSettings(migrateForkSettings(stored.main.value));
   const merged = stored.themes === null ? settings : sanitizeSettings({ ...settings, ...stored.themes });
   // A key of its own wins only once it exists. Earlier fork versions kept these choices in
   // the main record; an absent new key must not replace a saved choice with today's default.
@@ -1101,7 +1081,7 @@ export function loadSettings(): Settings {
     catch { return fallback; }
     return read();
   };
-  return { ...merged, enterSends: readEnterSends(merged.enterSends, legacyEnterSends(stored.main?.value)),
+  return { ...merged, ...loadForkSettings(merged), enterSends: readEnterSends(merged.enterSends, legacyEnterSends(stored.main?.value)),
     uiFontFamily: device(UI_FONT_STORAGE_KEY, merged.uiFontFamily, readUiFontFamily),
     terminalMirrorWrap: device(MIRROR_WRAP_STORAGE_KEY, merged.terminalMirrorWrap, readMirrorWrap),
     sidebarFilter: device(SIDEBAR_FILTER_STORAGE_KEY, merged.sidebarFilter, readSidebarFilter),
@@ -1131,6 +1111,7 @@ export function loadSettings(): Settings {
 export function saveSettings(settings: Settings): boolean {
   const mirrored = sanitizeSettings(settings);
   try {
+    saveForkSettings(mirrored);
     window.localStorage.setItem(THEMES_STORAGE_KEY, JSON.stringify({
       darkTheme: mirrored.darkTheme, lightTheme: mirrored.lightTheme,
       mirror: { palette: mirrored.palette, paletteDark: mirrored.paletteDark, paletteLight: mirrored.paletteLight },
@@ -1207,6 +1188,7 @@ export function applyToDocument(settings: Settings, entry: DrawnTheme, language:
   // (an imported row sets --bg itself, so there the stylesheet is told by a token only it sets)
   if (getComputedStyle(root).getPropertyValue(entry.vars === undefined ? "--bg" : "--pdf-page").trim() !== "") root.style.removeProperty("background-color");
   else root.style.backgroundColor = entry.bg;
+  applyForkSettings(settings, root);
   root.dataset["density"] = settings.density;
   root.dataset["chatWidth"] = settings.chatWidth;
   // src/components/AgentMark.css keys the mono logos on it

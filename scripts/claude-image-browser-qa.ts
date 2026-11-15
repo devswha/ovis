@@ -13,7 +13,6 @@ import { claudeProjectDir } from "../server/claude-store.ts";
 import { createServer } from "../server/index.ts";
 import { herdrRpc, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
 import { chromePath } from "./chrome-path.ts";
-import { openWorkRuns } from "./work-runs.ts";
 
 if (process.platform !== "linux" && process.platform !== "darwin") { console.log("SKIP the Claude stand-in needs a Unix process table"); process.exit(0); }
 
@@ -146,7 +145,6 @@ try {
 
   // opened, the row carries it on its own line, and larger in its detail once the row opens
   await work.click();
-  await openWorkRuns(log);
   assert.equal(await log.locator(".work-block-line .work-images").count(), 0);
   assert.equal(await log.locator(".work-row-line .work-image").count(), 1);
   await log.locator(".work-row-head").first().click();
@@ -178,7 +176,6 @@ try {
     const line = await smallLog.locator(".work-block-line .work-image").boundingBox();
     assert.ok(head !== null && line !== null && Math.abs((line.y + line.height / 2) - (head.y + head.height / 2)) < 2, "the thumbnail sits on the folded line");
     await smallLog.locator(".work-block-head").click();
-    await openWorkRuns(smallLog);
     await smallLog.locator(".work-row-head").first().click();
     await smallLog.locator(".chat-tool-images img").scrollIntoViewIfNeeded();
     await small.waitForFunction(() => document.querySelector<HTMLImageElement>(".chat-tool-images img")?.naturalWidth === 1);

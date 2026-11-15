@@ -1,3 +1,5 @@
+import { FORK_JA } from "../fork/i18n.ja.ts";
+import { withForkI18n } from "../fork/i18nParts.ts";
 import { SETTINGS_JA } from "./i18n/settings.ja.ts";
 import { SETTINGS_ACCESS_JA } from "./i18n/settings-access.ja.ts";
 import { SETTINGS_AGENTS_JA } from "./i18n/settings-agents.ja.ts";
@@ -19,7 +21,6 @@ import { UPDATES_JA } from "./i18n/updates.ja.ts";
 import { PALETTE_JA } from "./i18n/palette.ja.ts";
 import { RELAY_JA } from "./i18n/relay.ja.ts";
 import { DASHBOARD_JA } from "./i18n/dashboard.ja.ts";
-import { FORK_JA } from "./i18n/fork.ja.ts";
 import { RUNTIME_MOVE_JA } from "./i18n/runtime-move.ja.ts";
 
 /**
@@ -117,6 +118,7 @@ const BASE: Record<string, string> = {
   // ---- settings ----
   "Settings": "設定",
   "PCs": "PC",
+  "Chat": "チャット",
   "Agent default": "エージェントの既定",
   "Devices and PCs": "デバイスと PC",
   "Access token": "アクセストークン",
@@ -156,7 +158,10 @@ const BASE: Record<string, string> = {
   "Close this half": "この半分を閉じる",
   "Remove from the split": "分割から外す",
   "Resize the split": "分割のサイズを変更",
+  "Chat transcript": "チャット履歴",
+  "Live terminal": "ライブターミナル",
   "Live terminal: coming to Windows PCs once herdr can attach there": "ライブターミナル: herdr が Windows でアタッチに対応したら使えます",
+  "soon": "近日",
   "Terminal": "ターミナル",
   "herdr {version} · protocol {protocol}": "herdr {version} · プロトコル {protocol}",
   "herdr-core {version} · protocol {protocol}": "herdr-core {version} · プロトコル {protocol}",
@@ -578,56 +583,13 @@ const BASE: Record<string, string> = {
   "{name} is ready to open on this device.": "このデバイスで {name} を開く準備ができました。",
   "In your account": "アカウントに追加済み",
   "Devices added: {count}": "追加したデバイス: {count}台",
-  "Draft": "ドラフト",
-  "Switch to chat (⌘⇧J)": "チャットに切り替え (⌘⇧J)",
-  "Switch to terminal (⌘⇧J)": "ターミナルに切り替え (⌘⇧J)",
-  "This PC's desktop can't be shown.": "このPCのデスクトップを表示できません。",
-  "Full screen": "全画面表示",
-  "Exit full screen": "全画面表示を終了",
-  "View settings": "表示の設定",
-  "View on this device": "このデバイスでの表示",
-  "Fit": "フィット",
-  "Resize the PC": "PCをリサイズ",
-  "Keep its size": "サイズを保つ",
-  "Sharpness": "鮮明さ",
-  "Zoom": "ズーム",
-  "Smaller shows more of the PC": "小さくするとPCの表示範囲が広がります",
-  "Quality": "画質",
-  "Low": "低",
-  "Medium": "中",
-  "High": "高",
-  "Touch": "タッチ",
-  "Trackpad": "トラックパッド",
-  "Tap to click": "タップでクリック",
-  "Trackpad speed": "トラックパッドの速さ",
-  "Slow": "遅い",
-  "Normal": "標準",
-  "Fast": "速い",
-  "Keep connected": "接続を保つ",
-  "Round trip": "往復時間",
-  "From this device to the PC": "この端末から PC まで",
-  "{ms} ms": "{ms} ms",
-  "After you switch to Chat or Terminal": "チャットかターミナルに切り替えた後",
-  "2 min": "2分",
-  "5 min": "5分",
-  "10 min": "10分",
-  "Sound": "サウンド",
-  "Type on {name}": "{name} に入力",
-  "{name}'s desktop": "{name}のデスクトップ",
-  "Read aloud": "読み上げ",
-  "Live voice": "ライブ音声",
-  "soon": "近日対応",
-  "Mute": "ミュート",
-  "Unmute": "ミュート解除",
-  "Close pane {name}?": "ペイン{name}を閉じますか？",
-  "The pane's running processes will stop. Closing its last pane also closes the workspace.": "ペインで実行中のプロセスが停止します。最後のペインを閉じるとワークスペースも閉じます。",
   "Plan · {plan}": "プラン · {plan}",
   "{used}/{max} PCs": "PC {used}/{max}台",
   "{used} / {cap} relay data": "リレーデータ {used} / {cap}",
 };
 
 /** The parts JA is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */
-export const JA_PARTS: Record<string, Record<string, string>> = {
+export const JA_PARTS: Record<string, Record<string, string>> = withForkI18n({
   base: BASE,
   settings: { ...SETTINGS_JA, ...SETTINGS_ACCESS_JA, ...SETTINGS_COMPOSER_JA, ...SETTINGS_LAYOUT_JA, ...SETTINGS_AGENTS_JA, ...SETTINGS_HELP_JA },
   terminal: TERMINAL_JA,
@@ -645,8 +607,7 @@ export const JA_PARTS: Record<string, Record<string, string>> = {
   palette: PALETTE_JA,
   relay: RELAY_JA,
   dashboard: DASHBOARD_JA,
-  fork: FORK_JA,
   "runtime-move": RUNTIME_MOVE_JA,
-};
+}, FORK_JA);
 
 export const JA: Record<string, string> = Object.assign({}, ...Object.values(JA_PARTS));

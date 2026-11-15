@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { pickLens } from "./view-toggle.ts";
 import { mkdirSync, mkdtempSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -254,8 +253,8 @@ try {
           return { text: paragraph.textContent!, offset: paragraph.getBoundingClientRect().top - view.top, gap: node.scrollHeight - node.clientHeight - node.scrollTop };
         });
         assert.ok(reading.gap > 48, "the reader is away from the end before changing lenses");
-        await pickLens(page, "terminal");
-        await pickLens(page, "chat");
+        await openLens(page, "terminal");
+        await openLens(page, "chat");
         await page.waitForFunction((saved) => {
           const node = document.querySelector(".chat-view");
           if (!node) return false;
@@ -265,18 +264,18 @@ try {
         }, reading);
         assert.equal(await box.inputValue(), draft, "the unsent draft survives the terminal/chat round trip");
         await page.getByRole("button", { name: "Jump to latest", exact: true }).waitFor();
-        // Leave in the same task, before the list's deferred scroll updates memory.
+        // Leave in the same task: the list's deferred scroll cannot update memory first.
         await page.evaluate(() => {
           document.querySelector<HTMLButtonElement>('button[title="Jump to latest"]')!.click();
-          window.dispatchEvent(new KeyboardEvent("keydown", { key: "J", code: "KeyJ", ctrlKey: true, shiftKey: true, bubbles: true }));
+          document.querySelector<HTMLButtonElement>('.view-switch .is-terminal, .lens-toggle[data-view="chat"]')!.click();
         });
-        await pickLens(page, "chat");
+        await openLens(page, "chat");
         await page.waitForFunction(() => {
           const node = document.querySelector(".chat-view")!;
           return node.scrollHeight - node.clientHeight - node.scrollTop <= 1;
         }, undefined, { timeout: 5_000 });
-        await pickLens(page, "terminal");
-        await pickLens(page, "chat");
+        await openLens(page, "terminal");
+        await openLens(page, "chat");
         await page.waitForFunction(() => {
           const node = document.querySelector(".chat-view")!;
           return node.scrollHeight - node.clientHeight - node.scrollTop <= 1;

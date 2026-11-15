@@ -150,6 +150,7 @@ export const FILES_KO: Record<string, string> = {
   "Already merged.": "이미 머지되었습니다.",
   "Checks": "검사",
   "Closed without merging": "머지 없이 닫힘",
+  "Draft": "초안",
   "GitHub CLI (gh) is not installed on this PC. Install it and sign in with gh auth login to see pull requests here.": "이 PC에 GitHub CLI(gh)가 설치되어 있지 않습니다. 설치한 뒤 gh auth login으로 로그인하면 여기에서 풀 리퀘스트를 볼 수 있습니다.",
   "GitHub CLI (gh) on this PC is not signed in. Run gh auth login there to see pull requests here.": "이 PC의 GitHub CLI(gh)가 로그인되어 있지 않습니다. 그 PC에서 gh auth login을 실행하면 여기에서 풀 리퀘스트를 볼 수 있습니다.",
   "GitHub is still working out whether it can merge; refresh in a moment.": "GitHub가 아직 머지 가능 여부를 확인하고 있습니다. 잠시 후 새로고침하세요.",

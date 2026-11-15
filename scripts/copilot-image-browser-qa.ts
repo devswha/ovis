@@ -10,7 +10,6 @@ import { transcriptPage } from "../server/conversation.ts";
 import { copilotImage } from "../server/copilot.ts";
 import type { ConversationResponse } from "../shared/protocol.ts";
 import { chromePath } from "./chrome-path.ts";
-import { openWorkRuns } from "./work-runs.ts";
 
 const root = mkdtempSync(join(tmpdir(), "herdr-copilot-image-browser-"));
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
@@ -69,7 +68,6 @@ try {
       mkdirSync(evidence, { recursive: true });
       await page.screenshot({ path: join(evidence, `copilot-images-${label}.png`) });
       await page.locator(".work-block-head").click();
-      await openWorkRuns(page);
       await page.locator(".work-row-head").first().click();
       assert.deepEqual(await decoded(page, ".chat-tool-images img"), [[48, 48]]);
       await page.screenshot({ path: join(evidence, `copilot-images-${label}-open.png`) });

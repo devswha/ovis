@@ -63,7 +63,7 @@ const measure = (page: Page) => page.evaluate(() => {
       const style = getComputedStyle(pill);
       return {
         width: box.width, height: box.height, inRow: box.left >= row.left - 0.5 && box.right <= row.right + 0.5,
-        holds: inside(".composer-model") && (pill.querySelector(".composer-context") === null || inside(".composer-context"))
+        holds: inside(".agent-mark") && inside(".composer-model") && (pill.querySelector(".composer-context") === null || inside(".composer-context"))
           // the level too, wherever it is drawn (stepped out or not recorded it is a 1px box that is only read)
           && ((pill.querySelector<HTMLElement>(".composer-reasoning")?.getBoundingClientRect().width ?? 0) <= 1.5 || inside(".composer-reasoning")),
         // it only shows: nothing about it says it can be pressed

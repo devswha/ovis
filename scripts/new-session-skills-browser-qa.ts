@@ -25,7 +25,7 @@ import { chromium, type Browser, type Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
-import { pickLens } from "./view-toggle.ts";
+import { openLens } from "./header-lens.ts";
 
 const repo = join(import.meta.dir, "..");
 const app = mkdtempSync(join(tmpdir(), "herdr-new-session-skills-"));
@@ -35,7 +35,7 @@ mkdirSync(evidence, { recursive: true });
 interface Recorded { url: string; body: Record<string, unknown> }
 interface QaWindow { qaRequests: Recorded[]; qaHold: boolean; qaRelease: () => void; qaSubmits: string[]; qaDrop: () => void; qaSockets: WebSocket[]; qaOldBridge: boolean; qaSkillsBusy: Record<string, number>; qaSkillsBusyServed: number }
 
-const settled = (page: Page) => page.evaluate(() => Promise.all(document.getAnimations().filter((animation) => animation.effect?.getComputedTiming().endTime !== Infinity).map((animation) => animation.finished.catch(() => undefined))).then(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done())))));
+const settled = (page: Page) => page.evaluate(() => Promise.all(document.getAnimations().map((animation) => animation.finished.catch(() => undefined))).then(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done())))));
 const recorded = (page: Page) => page.evaluate(() => (window as unknown as QaWindow).qaRequests);
 const submits = (page: Page) => page.evaluate(() => (window as unknown as QaWindow).qaSubmits);
 
@@ -43,7 +43,7 @@ const submits = (page: Page) => page.evaluate(() => (window as unknown as QaWind
 async function openChat(page: Page, url: string): Promise<void> {
   await page.goto(url);
   await page.locator(".conn-live").waitFor({ state: "attached" });
-  await pickLens(page, "chat");
+  await openLens(page, "chat");
   await page.locator(".pane-frame.is-current .terminal-stack.is-chat").waitFor();
 }
 

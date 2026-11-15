@@ -5,7 +5,6 @@ import { join } from "node:path";
 import type { Browser, BrowserContext, Page, Route, WebSocket } from "playwright-core";
 import { herdrRpc, paneFocus, paneRead, paneSplit, sessionSnapshot, tabCreate, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
 import type { TabMovedToWorkspace } from "../shared/protocol.ts";
-import { shownLens } from "./view-toggle.ts";
 import { shownRows } from "./shown-rows.ts";
 
 /**
@@ -762,7 +761,7 @@ export async function checkSplitView(browser: Browser, origin: string): Promise<
       await half(page, "left").locator(".terminal-host").click({ position: { x: 40, y: 40 } });
       await isActive(page, "left");
       await settled(page);
-      assert.equal(await shownLens(page), "terminal",
+      assert.equal(await page.locator('.view-switch button[aria-pressed="true"]').innerText(), "Terminal",
         "activating the half keeps the in-memory lens choice");
       assert.deepEqual(errors, []);
       console.log("PASS an inactive-half lens choice works and survives activation when storage writes fail");

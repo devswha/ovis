@@ -11,7 +11,6 @@ import { codexTranscriptImage } from "../server/codex-images.ts";
 import { codexToolImage, ompTranscriptImage, transcriptPage } from "../server/conversation.ts";
 import type { ConversationResponse } from "../shared/protocol.ts";
 import { chromePath } from "./chrome-path.ts";
-import { openWorkRuns } from "./work-runs.ts";
 
 const root = mkdtempSync(join(tmpdir(), "herdr-omp-codex-image-browser-"));
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
@@ -151,7 +150,6 @@ try {
   assert.equal(await codexView.locator('img[src*="codex-tool%3A"]').count(), 0, "no picture element asks for the tool's picture while its row is folded");
   assert.equal(served.filter((ref) => ref.startsWith("codex-tool:")).length, 0, "nothing was fetched while the row is folded");
   await codexView.locator(".work-block-head").last().click();
-  await openWorkRuns(codexView);
   const row = codexView.locator(".work-row-head").filter({ hasText: "exec" });
   await row.first().click();
   assert.deepEqual(await decoded(codexView, ".chat-tool-images img"), [[32, 32]], "Chrome decoded view_image's 32x32 PNG from the endpoint's bytes");

@@ -306,56 +306,6 @@ export function visibleWorkParts(parts: ConversationPart[], showThinking: boolea
 }
 
 /**
- * A work block's rows the way pi-minimalist folds pi's own transcript: each stretch of calls and
- * thinking between two pieces of narration is one run (`✓ think ×3, bash ×2`), opened by a tap.
- * `start` is the run's first part's index in the turn: a run that grows keeps its row's state.
- * A part `apart` names (a run of todo updates) keeps a row of its own and ends the run before it.
- */
-export type WorkItem =
-  | { kind: "run"; start: number; parts: (ToolPart | ThinkingPart)[] }
-  | { kind: "part"; part: ConversationPart };
-
-export function workItems(visible: ConversationPart[], parts: ConversationPart[], apart: (part: ConversationPart) => boolean = () => false): WorkItem[] {
-  const items: WorkItem[] = [];
-  for (const part of visible) {
-    const last = items.at(-1);
-    if ((part.kind !== "tool" && part.kind !== "thinking") || apart(part)) items.push({ kind: "part", part });
-    else if (last?.kind === "run") last.parts.push(part);
-    else items.push({ kind: "run", start: parts.indexOf(part), parts: [part] });
-  }
-  return items;
-}
-
-export interface RunCount { name: string; count: number }
-
-/**
- * A run's calls by outcome, each in first-seen order (read, edit, read → read ×2, edit ×1). A call
- * with no result is running only in a live block: in a settled one it was cut off, and counts done.
- */
-export function runCounts(run: readonly (ToolPart | ThinkingPart)[], live: boolean): { done: RunCount[]; failed: RunCount[]; running: RunCount[] } {
-  const outcomes = { done: new Map<string, number>(), failed: new Map<string, number>(), running: new Map<string, number>() };
-  for (const part of run) {
-    const outcome = part.kind === "tool" && part.error ? "failed" : part.kind === "tool" && part.running && live ? "running" : "done";
-    const name = runName(part);
-    outcomes[outcome].set(name, (outcomes[outcome].get(name) ?? 0) + 1);
-  }
-  const list = (counts: Map<string, number>) => [...counts].map(([name, count]) => ({ name, count }));
-  return { done: list(outcomes.done), failed: list(outcomes.failed), running: list(outcomes.running) };
-}
-
-/** pi-minimalist's names: `think`, the tool's own name, and the MCP tool an `mcp` call reaches */
-function runName(part: ToolPart | ThinkingPart): string {
-  if (part.kind === "thinking") return "think";
-  if (part.name !== "mcp") return part.name;
-  try {
-    const tool = (JSON.parse(part.input) as { tool?: unknown }).tool;
-    return typeof tool === "string" && tool.length > 0 ? tool : part.name;
-  } catch {
-    return part.name;
-  }
-}
-
-/**
  * Whether the open work block's head says the agent waits for the user ("Needs you") instead of
  * "Working…". By the pane's status, not by a parsed prompt: a blocked pane whose menu no reader
  * knows waits just the same, and a question in Codex's queue leaves Codex working.

@@ -1,0 +1,37 @@
+@import "./chat.css";
+@import "./composer.css";
+@import "./component-overrides.css";
+
+/* Semantic discs used by fork-owned components, independent of box corners. */
+:root {
+  --radius-circle: 50%;
+  --radius-round: 999px;
+}
+
+:root[data-fork-square-corners="true"] {
+  --radius-sm: 0;
+  --radius-md: 0;
+  --radius-lg: 0;
+  --radius-xl: 0;
+  --radius-2xl: 0;
+  --radius-pill: 0;
+}
+
+:root[data-fork-square-corners="true"] :is(.conn-dot, .header-more-dot),
+:root[data-fork-square-corners="true"] .badge-working::before {
+  border-radius: var(--radius-circle);
+}
+
+:root[data-fork-square-corners="true"] .header-tabs .tab-strip {
+  --strip-bg: transparent;
+  align-items: flex-end;
+  gap: 0;
+}
+
+:root[data-fork-square-corners="true"] .header-tabs .tab-strip-item {
+  border: 0;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+}
+
+:root[data-fork-header-branch="true"] .context.has-branch { max-height: none; }
+:root[data-fork-header-branch="true"] .context.has-branch .context-title { min-height: 0; }

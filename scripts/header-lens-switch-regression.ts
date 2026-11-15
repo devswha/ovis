@@ -1,35 +1,23 @@
-/** More holds the Terminal switch on desktop and touch; the old header toggle is gone. */
+/**
+ * The touch header's Chat/Terminal switch. From 641px it is a compact segmented control: its track sits
+ * inside the header bar with clear space above and below (never edge to edge), and each option still
+ * offers a touch target at least 44px tall and wide through its invisible expander, which stays inside
+ * the bar. On a phone (640px and below) it is one 44px button inside the bar that names the other lens
+ * and switches to it, and the header counts no running or finished sessions beside More. Folded (412)
+ * and unfolded (720) foldable widths, a short landscape phone, a notched screen and the compact density.
+ * On the isolated test herdr; UI_EVIDENCE_DIR=<dir> keeps the screenshots.
+ */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Browser, Page } from "playwright-core";
+import type { Browser } from "playwright-core";
 import { workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
 import { chromePath } from "./chrome-path.ts";
-import { pickLens, shownLens, VIEW_BUTTON } from "./view-toggle.ts";
+import { openLens } from "./header-lens.ts";
 
-async function checkTabSurface(page: Page, width: number): Promise<void> {
-  if (width <= 640) {
-    // This fork's phone default keeps the tabs and their list in the header.
-    await page.locator(".app-header .header-tabs-sheet").waitFor();
-    await page.locator(".header-tabs .tab-strip").waitFor();
-    assert.equal(await page.locator(".pane-slot .tab-strip").count(), 0, "a phone has no second tab row over the pane");
-    return;
-  }
-  // the header takes the tabs from 769px; a tablet below that keeps its row over the pane
-  if (width < 769) {
-    await page.locator(".tab-strip .tab-strip-add").waitFor();
-    assert.equal(await page.locator(".header-tabs").count(), 0, "a tablet keeps the tabs out of its header");
-    return;
-  }
-  await page.locator(".header-tabs .tab-strip-add").waitFor();
-  const backgrounds = await page.locator(".header-tabs .tab-strip-row, .header-tabs .tab-strip, .header-tabs .tab-strip-add")
-    .evaluateAll((nodes) => nodes.map((node) => getComputedStyle(node).backgroundColor));
-  assert.ok(backgrounds.length >= 2, "the strip and the + are in the header");
-  assert.deepEqual(backgrounds, backgrounds.map(() => "rgba(0, 0, 0, 0)"), "the tabs and + share the header's surface, without an opaque band");
-  // the header's row lists what does not fit behind More instead of scrolling, so the + needs no opaque cover
-  assert.equal(await page.locator(".header-tabs .tab-strip").evaluate((node) => node.scrollWidth <= node.clientWidth), true, "the header's tabs do not scroll under the +");
-}
+const TOUCH_TARGET = 44;
+const CLEARANCE = 6;
 
 export async function checkHeaderLensSwitch(browser: Browser, origin: string, evidence?: string): Promise<void> {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "ovis-lens-switch-")));
@@ -37,56 +25,127 @@ export async function checkHeaderLensSwitch(browser: Browser, origin: string, ev
   try {
     const created = await workspaceCreate({ cwd: root, label: "ovis-test-lens-switch" });
     workspaceId = created.workspace.workspace_id;
-    for (const width of [390, 412, 720, 1280]) {
-      const touch = width < 769;
-      const sheet = width <= 640;
-      const context = await browser.newContext({ viewport: { width, height: 900 }, isMobile: touch, hasTouch: touch, locale: "en-US" });
+    for (const size of [
+      { label: "folded 412x915", width: 412, height: 915, inset: 0 },
+      { label: "notched 412x915", width: 412, height: 915, inset: 28 },
+      { label: "unfolded 720x870", width: 720, height: 870, inset: 0 },
+      { label: "landscape 740x360", width: 740, height: 360, inset: 0 },
+      { label: "compact density 412x915", width: 412, height: 915, inset: 0, density: "compact" },
+    ] as Array<{ label: string; width: number; height: number; inset: number; density?: string }>) {
+      const context = await browser.newContext({ viewport: { width: size.width, height: size.height }, isMobile: true, hasTouch: true, deviceScaleFactor: 2, locale: "en-US" });
+      try {
+        await context.addInitScript((density) => {
+          if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", ...(density ? { density } : {}) }));
+        }, size.density ?? null);
+        const page = await context.newPage();
+        if (size.inset > 0) {
+          const cdp = await context.newCDPSession(page);
+          await cdp.send("Emulation.setSafeAreaInsetsOverride" as never, { insets: { top: size.inset, topMax: size.inset, left: 0, leftMax: 0, bottom: 0, bottomMax: 0, right: 0, rightMax: 0 } } as never);
+        }
+        await page.goto(`${origin}/?pane=${encodeURIComponent(created.root_pane.pane_id)}`);
+        if (size.width <= 640) {
+          const toggle = page.locator(".app-header .lens-toggle");
+          await toggle.waitFor();
+          const placed = await page.evaluate(() => {
+            const header = document.querySelector(".app-header")!;
+            return { header: header.getBoundingClientRect().toJSON() as DOMRect, button: document.querySelector(".app-header .lens-toggle")!.getBoundingClientRect().toJSON() as DOMRect,
+              insetTop: parseFloat(getComputedStyle(header).paddingTop), track: document.querySelector(".app-header .view-switch") !== null, counts: document.querySelector(".app-header .header-counts") !== null };
+          });
+          const bar = { top: placed.header.top + placed.insetTop, bottom: placed.header.bottom };
+          assert.ok(Math.abs(placed.insetTop - size.inset) <= 0.5, `${size.label}: the header's top padding is the emulated safe-area inset, ${size.inset}px (${placed.insetTop}px)`);
+          assert.equal(placed.track, false, `${size.label}: a phone draws no two-option track`);
+          assert.equal(placed.counts, false, `${size.label}: a phone's header counts no running or finished sessions`);
+          assert.ok(placed.button.width >= TOUCH_TARGET - 0.5 && placed.button.height >= TOUCH_TARGET - 0.5, `${size.label}: the lens button is a finger's ${TOUCH_TARGET}px (${JSON.stringify(placed.button)})`);
+          assert.ok(placed.button.top >= bar.top - 0.5 && placed.button.bottom <= bar.bottom + 0.5, `${size.label}: the lens button stays inside the bar`);
+          // a press opens the lens the button names, and the button then names the other one
+          for (let press = 0; press < 2; press++) {
+            const before = await toggle.getAttribute("data-view");
+            const after = before === "chat" ? "terminal" : "chat";
+            assert.equal(await toggle.getAttribute("aria-label"), `Switch to ${after}`, `${size.label}: the button names the lens a press opens`);
+            await toggle.tap();
+            await page.locator(`.app-header .lens-toggle[data-view="${after}"]`).waitFor();
+            assert.equal(await toggle.getAttribute("aria-label"), `Switch to ${before}`, `${size.label}: after a press the button names the lens it left`);
+          }
+          if (evidence) await page.screenshot({ path: join(evidence, `lens-switch-${size.label.replace(/\s+/g, "-")}.png`), clip: { x: 0, y: 0, width: size.width, height: 140 } });
+          continue;
+        }
+        await page.locator(".app-header .view-switch").waitFor();
+        const geometry = await page.evaluate(() => {
+          const box = (node: Element) => node.getBoundingClientRect();
+          const header = document.querySelector(".app-header")!;
+          const track = document.querySelector(".app-header .view-switch")!;
+          const options = [...track.querySelectorAll(":scope > button")].map((button) => {
+            const own = box(button);
+            const expander = getComputedStyle(button, "::before");
+            const grow = expander.content === "none" ? 0 : -parseFloat(expander.top);
+            return { top: own.top - grow, bottom: own.bottom + grow, width: own.width };
+          });
+          return { header: box(header), track: box(track), options, insetTop: parseFloat(getComputedStyle(header).paddingTop),
+            density: document.documentElement.dataset["density"] ?? null, controlH: parseFloat(getComputedStyle(track).getPropertyValue("--control-h")) };
+        });
+        assert.ok(Math.abs(geometry.insetTop - size.inset) <= 0.5, `${size.label}: the header's top padding is the emulated safe-area inset, ${size.inset}px (${geometry.insetTop}px)`);
+        assert.equal(geometry.density, size.density ?? "comfortable", `${size.label}: the page runs in the ${size.density ?? "comfortable"} density`);
+        const bar = { top: geometry.header.top + geometry.insetTop, bottom: geometry.header.bottom };
+        assert.ok(geometry.track.top - bar.top >= CLEARANCE && bar.bottom - geometry.track.bottom >= CLEARANCE,
+          `${size.label}: the switch leaves room above and below in the bar (${JSON.stringify({ bar, track: geometry.track })})`);
+        // the density's segmented track: as tall as the density's --control-h, as every .segmented is
+        assert.ok(Math.abs(geometry.track.height - geometry.controlH) <= 0.5, `${size.label}: the track is the density's --control-h, ${geometry.controlH}px (${geometry.track.height}px)`);
+        for (const option of geometry.options) {
+          assert.ok(option.bottom - option.top >= TOUCH_TARGET - 0.5, `${size.label}: an option's touch target is ${TOUCH_TARGET}px tall (${option.bottom - option.top})`);
+          assert.ok(option.width >= TOUCH_TARGET - 0.5, `${size.label}: an option is a finger wide (${option.width})`);
+          assert.ok(option.top >= bar.top - 0.5 && option.bottom <= bar.bottom + 0.5, `${size.label}: the touch target stays inside the bar`);
+        }
+        if (evidence) await page.screenshot({ path: join(evidence, `lens-switch-${size.label.replace(/\s+/g, "-")}.png`), clip: { x: 0, y: 0, width: size.width, height: 140 } });
+      } finally { await context.close(); }
+    }
+    // openLens picks the control by the width the page has now, never by what is drawn that instant: here the page has
+    // narrowed to a phone's width while the header still draws the wide switch (its media-query change is held), as
+    // it does for a frame after a rotation. The held change is let go when openLens asks the width, or when the wide
+    // switch is clicked; a click there fails the check, whichever came first
+    {
+      const context = await browser.newContext({ viewport: { width: 720, height: 870 }, isMobile: true, hasTouch: true, locale: "en-US" });
       try {
         await context.addInitScript(() => {
-          if (!localStorage.getItem("ovis:settings")) localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" }));
+          if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" }));
+          const qa = window as unknown as { holdMedia: boolean; wideClicks: number; heldMedia: Array<() => void>; releaseMedia: () => void };
+          qa.holdMedia = false;
+          qa.wideClicks = 0;
+          qa.heldMedia = [];
+          qa.releaseMedia = () => { qa.holdMedia = false; for (const run of qa.heldMedia.splice(0)) run(); };
+          const add = MediaQueryList.prototype.addEventListener;
+          MediaQueryList.prototype.addEventListener = function (this: MediaQueryList, type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | AddEventListenerOptions) {
+            if (type !== "change" || !listener) return add.call(this, type, listener, options);
+            const query = this;
+            const wrapped = (event: Event) => {
+              const deliver = () => typeof listener === "function" ? listener.call(query, event) : listener.handleEvent(event);
+              if (qa.holdMedia) qa.heldMedia.push(deliver);
+              else deliver();
+            };
+            return add.call(this, type, wrapped, options);
+          } as typeof MediaQueryList.prototype.addEventListener;
+          const matchMediaOwn = window.matchMedia.bind(window);
+          window.matchMedia = (query: string) => {
+            // openLens asking the width while the change is held: let it go after this answer
+            if (qa.holdMedia && query === "(max-width: 640px)") queueMicrotask(qa.releaseMedia);
+            return matchMediaOwn(query);
+          };
+          document.addEventListener("click", (event) => {
+            if ((event.target as Element | null)?.closest?.(".app-header .view-switch")) { qa.wideClicks += 1; if (qa.holdMedia) qa.releaseMedia(); }
+          }, true);
         });
         const page = await context.newPage();
         await page.goto(`${origin}/?pane=${encodeURIComponent(created.root_pane.pane_id)}`);
-        await page.locator(VIEW_BUTTON).waitFor();
-        assert.equal(await page.locator(".app-header .view-toggle").count(), 0, "the old header toggle is removed");
-        await pickLens(page, "chat", { tap: touch });
-        await checkTabSurface(page, width);
-        if (touch) await page.locator(".drawer-toggle").click();
-        const sidebarMenu = page.locator(".sidebar-row-action.row-menu-toggle").first();
-        await sidebarMenu.waitFor({ state: "attached" });
-        if (touch) assert.equal(await sidebarMenu.isVisible(), true, "the phone drawer shows its row menus");
-        assert.deepEqual(await sidebarMenu.evaluate((button) => {
-          const style = getComputedStyle(button);
-          return { border: style.borderTopWidth, background: style.backgroundColor };
-        }), { border: "0px", background: "rgba(0, 0, 0, 0)" }, "sidebar menu triggers stay borderless and transparent, not styled as switches");
-        if (touch) await page.locator(".drawer-toggle").click();
-        await page.locator(VIEW_BUTTON).click();
-        const menu = page.locator(sheet ? ".row-sheet" : ".row-menu");
-        const toggle = menu.locator("button:has(.row-menu-switch-track)");
-        await toggle.waitFor();
-        assert.equal(await toggle.getAttribute(sheet ? "aria-pressed" : "aria-checked"), "false", "Chat means Terminal is off");
-        const bounds = await toggle.boundingBox();
-        if (sheet) assert.ok(bounds && bounds.height >= 44, "the sheet switch has a finger-sized target");
-        if (evidence) await page.screenshot({ path: join(evidence, `terminal-menu-${width}.png`) });
-        // The menu focuses its first item in a frame; let that settle before sending a key to another.
-        await page.waitForFunction(() => Boolean(document.activeElement?.closest(".row-menu, .row-sheet")));
-        await toggle.press("Space");
-        await menu.waitFor({ state: "detached" });
-        await page.locator(`${VIEW_BUTTON}[data-view="terminal"]`).waitFor();
-        assert.equal(await shownLens(page), "terminal");
-        await checkTabSurface(page, width);
-        await page.reload();
-        await page.locator(`${VIEW_BUTTON}[data-view="terminal"]`).waitFor();
-        await page.locator(VIEW_BUTTON).click();
-        await toggle.waitFor();
-        assert.equal(await toggle.getAttribute(sheet ? "aria-pressed" : "aria-checked"), "true", "the switch remembers Terminal");
-        await page.keyboard.press("Escape");
-        assert.equal(await shownLens(page), "terminal", "dismissing More does not change the lens");
-        await page.keyboard.press("ControlOrMeta+Shift+J");
-        await page.locator(`${VIEW_BUTTON}[data-view="chat"]`).waitFor();
+        await page.locator(".app-header .view-switch").waitFor();
+        await page.evaluate(() => { (window as unknown as { holdMedia: boolean }).holdMedia = true; });
+        await page.setViewportSize({ width: 412, height: 915 });
+        assert.equal(await page.evaluate(() => matchMedia("(min-width: 641px)").matches), false, "the page is a phone's width");
+        assert.equal(await page.locator(".app-header .view-switch").count(), 1, "the wide switch is still drawn: its change is held");
+        await openLens(page, "terminal");
+        await page.locator('.app-header .lens-toggle[data-view="terminal"]').waitFor();
+        assert.equal(await page.evaluate(() => (window as unknown as { wideClicks: number }).wideClicks), 0, "openLens never clicks the wide switch a phone's width no longer shows");
       } finally { await context.close(); }
     }
-    console.log("PASS Terminal switch in More, keyboard and touch, persisted selection and shortcut at 390, 412, 720 and 1280px");
+    console.log("PASS the touch header's Chat/Terminal switch: from 641px a compact track with room above and below and 44px touch targets inside the bar, on a phone one 44px button inside the bar that switches the lens and no session counts, folded, unfolded, landscape, under a notch and in the compact density");
   } finally {
     if (workspaceId) await workspaceClose(workspaceId).catch(() => {});
     rmSync(root, { recursive: true, force: true });
@@ -103,6 +162,11 @@ if (import.meta.main) {
   if (evidence) mkdirSync(evidence, { recursive: true });
   const server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: state, usage: new UsageService(undefined, []) });
   const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
-  try { await checkHeaderLensSwitch(browser, `http://127.0.0.1:${server.port}`, evidence); }
-  finally { await browser.close(); server.stop(); rmSync(state, { recursive: true, force: true }); }
+  try {
+    await checkHeaderLensSwitch(browser, `http://127.0.0.1:${server.port}`, evidence);
+  } finally {
+    await browser.close();
+    server.stop();
+    rmSync(state, { recursive: true, force: true });
+  }
 }

@@ -1,0 +1,42 @@
+[data-fork-composer-extras="true"] .composer-status[data-model="no-effort"] .composer-reasoning,
+[data-fork-composer-extras="true"] .composer-status[data-model="no-name"] .composer-model,
+[data-fork-composer-extras="true"] .composer-status[data-model="no-name"] .composer-reasoning-dot { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); text-overflow: clip; white-space: nowrap; border: 0; }
+[data-fork-composer-extras="true"] button.composer-context { padding: 0; border: 0; background: none; cursor: pointer; }
+[data-fork-pi-live-voice="true"] .composer-voice { --composer-action-fill: var(--primary); }
+[data-fork-pi-live-voice="true"] .composer-voice { border-radius: var(--radius-round); }
+[data-fork-square-corners="true"] .composer-send { border-radius: var(--radius-round); }
+[data-fork-composer-extras="true"] .composer-pill-menu {
+  display: flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  overflow: hidden;
+  cursor: pointer;
+}
+[data-fork-composer-extras="true"] .composer-pill-menu:disabled { cursor: default; opacity: 0.6; }
+[data-fork-composer-extras="true"] .composer-pill-chevron { width: 14px; height: 14px; flex: none; margin-inline-start: calc(var(--space-1) * -1); color: var(--text-dim); }
+[data-fork-composer-extras="true"] .composer-context-tip {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: calc(100vw - 16px);
+  padding: var(--space-1) var(--space-2);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-pop);
+  color: var(--text-strong);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  transform: translateX(-50%);
+}
+@media (hover: hover) { [data-fork-pi-live-voice="true"] .composer-voice:hover { --composer-action-fill: var(--primary-hover); } }

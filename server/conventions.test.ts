@@ -162,8 +162,8 @@ describe("herdr socket", () => {
     "server/herdr-marker.ts": "a liveness probe: connects and ends at once, sends no request",
   };
   const NET_CONNECT_ALLOWED: Record<string, string> = {
+    "server/fork/pi-voice.ts": "the pane's Pi live bridge socket, not herdr's",
     "server/ssh-askpass.ts": "the SSH askpass helper's own private socket, not herdr's",
-    "server/pi-voice.ts": "the pane's Pi live bridge socket, not herdr's",
     "server/herdr-core/adapter.ts": "a liveness probe of the core adapter's own socket before startup: sends no request",
     "server/herdr-core/runtime.ts": "a liveness probe of herdr-core's socket, not herdr's: connects and closes, sends nothing",
     "server/runtime-move-lock.ts": "the herdr-core move's own lock socket, not herdr's: asks which Ovis server holds it",

@@ -1,0 +1,10 @@
+name: Fork full (manual)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  upstream:
+    name: Upstream full suite
+    uses: ./.github/workflows/ci.yml

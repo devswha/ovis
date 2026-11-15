@@ -8,11 +8,11 @@ import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 
-// A message the reader sends from this browser's composer brings the chat back to its end at once,
-// as in any chat, and the accepted receipt keeps it following, unless the reader scrolls, pages or
-// jumps before the receipt or before the transcript shows the turn. A refusal, an uncertain receipt,
-// a pane switch or a reconnect leaves the view at the end the send went to, never sends again, and
-// keeps a refused message in the box; a remote send and a queued one keep the reader's place. Run on the unmodified app over the demo's fixture transport, with the
+// A message the reader sends from this browser's composer brings the chat back to its end once
+// the bridge has accepted it (an immediate submit-result with ok and no pending), unless the reader
+// scrolls, pages or jumps before the receipt or before the transcript shows the turn. Remote
+// sends, queued and Send now deliveries, refusals, uncertain receipts, a pane switch and a reconnect
+// keep the reader's place. Run on the unmodified app over the demo's fixture transport, with the
 // submit receipts and the transcript reads gated so each ordering is forced rather than timed.
 // All files and HTTP traffic stay in this disposable, loopback-only app; no herdr session is opened.
 const app = mkdtempSync(join(tmpdir(), "herdr-local-follow-demo-"));
@@ -299,8 +299,7 @@ try {
           await send(text);
           await until(page, "lab.held.length === 1");
           const pending = await geometry(page);
-          // sending reads on from the end, as in any chat: the view goes there before the receipt
-          assert.ok(pending.gap <= 40, `a local send brings the view to the end at once (gap ${pending.gap})`);
+          assert.ok(pending.gap > 400, "nothing moves before the bridge accepted the message");
           step = "accepted immediate local send resumes follow: the accepted receipt brings the view to the end";
           await lab(page, (l) => { l.holdReceipts = false; return l.releaseReceipts(); });
           // the follow is engaged at once: the end of what the transcript holds so far
@@ -425,16 +424,14 @@ try {
           await page.locator(".composer-note").waitFor(WAIT);
           await until(page, "lab.receipts >= 1 && lab.held.length === 0");
           await frames(page);
-          // the send took the reader to the end at once, and a refusal leaves them there
-          const refused = await geometry(page);
-          assert.ok(refused.gap <= 40, `a refused send stays at the end it went to (gap ${refused.gap})`);
+          sameAnchor(before, await geometry(page), "refused send");
           assert.equal(await composer.inputValue(), "Local follow: refused", "a refused message stays in the box");
           await lab(page, (l) => { l.refuse = null; });
           kept.refused = true;
           step = "remote pending refused and hydrated sends preserve place: uncertain";
 
           // uncertain: the bridge could not say whether it was typed. The demo did take it, so the
-          // transcript moves, the view stays at the end the send took it to, and nothing is sent again
+          // transcript moves; the view does not, and nothing is sent again
           await composer.fill("");
           before = await geometry(page);
           const submits = await lab(page, (l) => l.submits);
@@ -442,19 +439,15 @@ try {
           await send("Local follow: uncertain");
           await committed(page, before.scrollHeight);
           await page.locator(".composer-note").waitFor(WAIT);
-          const uncertain = await geometry(page);
-          assert.ok(uncertain.gap <= 40, `an uncertain send stays at the end it went to (gap ${uncertain.gap})`);
+          sameAnchor(before, await geometry(page), "uncertain send");
           assert.equal(await lab(page, (l) => l.submits), submits + 1, "an uncertain message is never sent again by itself");
           await lab(page, (l) => { l.uncertain = null; });
           await idle(page);
           kept.uncertain = true;
           step = "remote pending refused and hydrated sends preserve place: remote";
 
-          // another browser's message (a remote prompt) moves the transcript, not this reader, who
-          // reads up again: the sends above left them at the end
+          // another browser's message (a remote prompt) moves the transcript, not this reader
           await composer.fill("");
-          await settled(page);
-          await wheelUp(page, 2400);
           before = await geometry(page);
           await lab(page, (l) => l.remoteSend("Local follow: from another browser"));
           await committed(page, before.scrollHeight);
@@ -462,8 +455,8 @@ try {
           kept.remote = true;
           step = "remote pending refused and hydrated sends preserve place: queued and Send now";
 
-          // while the agent works the box queues: an accepted pending receipt is no local follow; its
-          // Send now delivery is a send, which reads on from the end
+          // while the agent works the box queues: an accepted pending receipt is no local follow,
+          // and neither is its Send now delivery
           await until(page, `lab.status === "working"`);
           before = await geometry(page);
           const delivered = await lab(page, (l) => l.delivered);
@@ -475,14 +468,14 @@ try {
           sameAnchor(before, await geometry(page), "queued send");
           await sendNow.click();
           await committed(page, before.scrollHeight);
-          const sentNow = await geometry(page);
-          assert.ok(sentNow.gap <= 40, `Send now brings the view to the end (gap ${sentNow.gap})`);
+          sameAnchor(before, await geometry(page), "Send now");
           await idle(page);
           kept.queued = true;
           step = "remote pending refused and hydrated sends preserve place: pane switch";
 
           // a pane switch before the receipt: the receipt lands on no chat, the other pane is not
-          // repinned, and coming back hydrates the remembered place: the end the send went to
+          // repinned, and coming back hydrates the remembered place rather than the end
+          before = await geometry(page);
           await lab(page, (l) => { l.holdReceipts = true; });
           await send("Local follow: switched away");
           await until(page, "lab.held.length === 1");
@@ -502,14 +495,16 @@ try {
           await until(page, `lab.readsServed > ${served}`);
           await frames(page);
           const back = await geometry(page);
-          assert.ok(back.gap <= 40, `the remembered place is the end the send went to (gap ${back.gap})`);
+          assert.ok(back.gap > 200, `the remembered place is hydrated, not the end (gap ${back.gap})`);
+          assert.equal(back.anchor?.text, before.anchor?.text, "the remembered top row comes back");
           await idle(page);
           kept.paneSwitch = { other: other.scrollTop, otherAfter: otherAfter.scrollTop, back: back.anchor };
           step = "remote pending refused and hydrated sends preserve place: reconnect";
 
           // a reconnect before the receipt: the old connection's answer never arrives, nothing is
-          // sent again by itself, and the view stays at the end the send went to
+          // sent again by itself, and the view stays
           await composer.fill("");
+          before = await geometry(page);
           const sentBefore = await lab(page, (l) => l.submits);
           await lab(page, (l) => { l.holdReceipts = true; });
           await send("Local follow: reconnect");
@@ -518,8 +513,7 @@ try {
           await page.locator(".conn-live").waitFor({ state: "attached", ...WAIT });
           await lab(page, (l) => { l.holdReceipts = false; return l.releaseReceipts(); });
           await frames(page);
-          const reconnected = await geometry(page);
-          assert.ok(reconnected.gap <= 40, `a reconnect leaves the view at the end the send went to (gap ${reconnected.gap})`);
+          sameAnchor(before, await geometry(page), "reconnect");
           assert.equal(await lab(page, (l) => l.submits), sentBefore + 1, "nothing is sent again after the reconnect");
           kept.reconnect = true;
           await shot(page, "local-follow-1280-dark-kept");

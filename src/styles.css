@@ -147,16 +147,13 @@
   --space-6: 24px;
   --space-8: 32px;
 
-  /* radii: this fork draws every box square, so the ladder is all 0 and only a disc rounds */
-  --radius-sm: 0;
-  --radius-md: 0;
-  --radius-lg: 0;
-  --radius-xl: 0;
-  --radius-2xl: 0;
-  --radius-pill: 0;
-  --radius-circle: 50%;
-  /* kept round on purpose: the composer's Send, Voice and Stop button */
-  --radius-round: 999px;
+  /* radii */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-2xl: 24px;
+  --radius-pill: 999px;
 
   /* sizes */
   --header-h: 52px;
@@ -1761,7 +1758,7 @@ body {
   height: 28px;
   border: 3px solid var(--border);
   border-top-color: var(--text-dim);
-  border-radius: var(--radius-circle);
+  border-radius: 50%;
   animation: boot-spin var(--dur-spin) steps(8) infinite;
 }
 
@@ -2076,7 +2073,7 @@ button {
   white-space: nowrap;
 }
 
-/* the column's grip: the free end of its row, which drags its pane to a column (App), with its close */
+/* the half's grip: the free end of its row, which drags its pane to a half (App), with its close */
 .pane-slot-grip {
   display: flex;
   align-items: center;
@@ -2102,7 +2099,7 @@ button {
   height: 14px;
 }
 
-/* the inactive columns are a step quieter, so the one keys go to reads at a glance */
+/* the inactive half is a step quieter, so the one keys go to reads at a glance */
 .pane-slot.is-inactive .terminal-host {
   opacity: 0.88;
 }
@@ -2241,16 +2238,6 @@ button {
 .context-sub .machine-context-name {
   max-width: none;
   overflow: visible;
-}
-
-/* The header names the pane's branch on a dim line under the title instead of the crumb
-   (HeaderBranch.tsx), lined up with the name: the two lines share the one-line header's height */
-.context.has-branch {
-  max-height: none;
-}
-
-.context.has-branch .context-title {
-  min-height: 0;
 }
 
 /* the connection said in the crumb's place (App.tsx, lib/headerConnection.ts): it shares the title's
@@ -2591,11 +2578,10 @@ button {
   padding-right: var(--space-4);
 }
 
-/* the header's own surface in either lens, a phone's glass header included: no tinted band behind the tabs */
 .header-tabs .tab-strip {
-  --strip-bg: transparent;
-  align-items: flex-end;
-  gap: 0;
+  --strip-bg: var(--strip-tint);
+  align-items: center;
+  gap: var(--space-px-3);
   flex: 1 1 auto;
   min-width: 0;
   height: 100%;
@@ -2614,7 +2600,8 @@ button {
   max-width: var(--tab-max-w);
   height: var(--tab-h);
   margin-bottom: 0;
-  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  border: var(--hairline) solid transparent;
+  border-radius: var(--radius-sm);
 }
 
 @media (hover: hover) {
@@ -2924,7 +2911,7 @@ button {
   flex: 0 0 auto;
   width: var(--dot-size);
   height: var(--dot-size);
-  border-radius: var(--radius-circle);
+  border-radius: var(--radius-pill);
   background: var(--status-done);
 }
 
@@ -3001,7 +2988,7 @@ button {
   right: var(--space-1);
   width: var(--dot-size);
   height: var(--dot-size);
-  border-radius: var(--radius-circle);
+  border-radius: var(--radius-pill);
   background: var(--accent);
   pointer-events: none;
 }
@@ -3367,7 +3354,7 @@ button {
   content: "";
   width: 5px;
   height: 5px;
-  border-radius: var(--radius-circle);
+  border-radius: var(--radius-pill);
   background: currentColor;
   animation: badge-breathe var(--dur-breathe) steps(6) infinite;
 }
@@ -4008,8 +3995,7 @@ button {
    up under itself by its own height (--header-over), and the stack gives that height back above
    everything in it, so a prompt card, the held messages and the composer never go under the bar:
    only the transcript reaches up into it (ChatView.css), its first line still below it, and the
-   banners start below it (PaneTerminal.css). The terminal lens keeps the bar in the flow as before, and so does
-   the Computer view, whose column is no chat's (App.tsx): a desktop under the bar would lose its top. */
+   banners start below it (PaneTerminal.css). The terminal lens keeps the bar in the flow as before. */
 @media (max-width: 768px) {
   .app:has(> .app-body > .pane-column.is-chat > .pane-split:first-child > .pane-slot > .terminal-host:first-child) {
     --header-over: calc(var(--header-h) + env(safe-area-inset-top, 0px));

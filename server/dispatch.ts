@@ -2,9 +2,9 @@ import { handleWorkspaceRequest } from "./workspace-routes.ts";
 import { handleAlertWebhookRequest } from "./alert-webhook.ts";
 import { connectionData, type createCore, type SocketData } from "./core/index.ts";
 import type { Server } from "bun";
-import { handleScreenOpen, handleScreenRequest, isScreenPath, type ScreenSocketData } from "./screen.ts";
-import { handlePiVoiceRequest, type PiVoiceHub, type PiVoiceSocketData } from "./pi-voice.ts";
-import { PI_VOICE_PATH, PI_VOICE_STATUS_PATH } from "../shared/pi-voice.ts";
+import { routeForkApi, routeForkScreen } from "./fork/routes.ts";
+import type { ForkServices, ForkSocketData } from "./fork/services.ts";
+import { PI_VOICE_PATH } from "../shared/pi-voice.ts";
 import type { ClientConnectionLog } from "./client-connection-log.ts";
 import type { RequestLog } from "./request-log.ts";
 import { handlePaneRequest } from "./pane-routes.ts";
@@ -18,7 +18,6 @@ import { type DeviceStore, handleDeviceRequest, newStreamKey, sameBrowser, strea
 import type { OmarchyThemeStore } from "./omarchy-themes.ts";
 import { handlePreferencesRequest, type PreferenceStore } from "./preferences.ts";
 import { handleSeenRequest, type SeenStore } from "./seen.ts";
-import { type FriendStore, handleFriendsRequest } from "./friends.ts";
 import { remoteAccess } from "./tailscale.ts";
 import { badRequest, errorResponse, jsonResponse, setRequestRoute } from "./http.ts";
 import { requestOrigin, serveStatic } from "./static.ts";
@@ -64,7 +63,6 @@ import { handleUserFontsRequest } from "./user-fonts.ts";
 import { USER_FONTS_PATH } from "../shared/user-fonts.ts";
 import type { UsageAccountList } from "./usage-account-list.ts";
 import { handleVoiceRequest } from "./voice.ts";
-import { handleSpeechRequest, type SpeechService } from "./speech.ts";
 import { BRIDGE_PROTOCOL, type MachineEvent } from "../shared/machines.ts";
 import { bridgeIdentity } from "./bridge.ts";
 import { discoverHerdrSessions } from "./herdr-discovery.ts";
@@ -86,7 +84,7 @@ import type { VoiceService } from "./voice.ts";
 type PortalStartup = { ok: true } | { ok: false; error: unknown };
 
 /** Per-server services shared by socket requests and other dispatch callers. */
-export interface RequestServices {
+export interface RequestServices extends ForkServices {
   /** the move of herdr's session to herdr-core, where the runtime can be switched from here */
   readonly runtimeMove: MoveService | null;
   readonly relay: RelayService;
@@ -101,7 +99,6 @@ export interface RequestServices {
   readonly accountIntroductions: AccountIntroductions;
   readonly accountHolds: AccountHolds;
   readonly preferences: PreferenceStore;
-  readonly omarchyThemes: OmarchyThemeStore;
   readonly herdrSidebar: HerdrSidebarConfig;
   /** `loginPath`: the request states a Tailscale login, so the PC's own login must be known, not merely cached as unknown */
   readonly identityOf: (grantPath: boolean, host: string | null, loginPath?: boolean) => Promise<TailnetIdentity>;
@@ -120,9 +117,6 @@ export interface RequestServices {
   /** the state folder's fonts/, served to every device that may read this PC (server/user-fonts.ts) */
   readonly fontsDir: string;
   readonly voice: VoiceService;
-  readonly speech: SpeechService;
-  readonly friends: FriendStore;
-  readonly piVoice: PiVoiceHub;
   readonly browserSnapshot: <S extends SessionSnapshot>(snapshot: S) => S;
   readonly core: ReturnType<typeof createCore>;
   readonly seen: SeenStore;
@@ -145,7 +139,7 @@ export interface ServerContext {
   readonly services: RequestServices;
   readonly relayBodyBudget?: EventStreamBudget;
   /** the Bun server itself, for the routes that upgrade to sockets of their own (the Computer view, a Pi voice call); none over a relay */
-  readonly server?: Server<SocketData | ScreenSocketData | PiVoiceSocketData>;
+  readonly server?: Server<SocketData | ForkSocketData>;
   /**
    * The request came to the opt-in LAN HTTPS listener (server/lan-https.ts), from a private IPv4 peer:
    * it gets in only with the token or a paired device, never as an open install, by the bridge token,
@@ -158,7 +152,7 @@ export interface ServerContext {
 const OTHER_MACHINE_FILES = /^\/api\/(?:fs\/|pane\/(?:files|docs|image)$|workspace\/(?:diff\/|git\/|directories$|pr(?:$|\/)))/;
 
 export async function handleRequest(request: Request, ctx: ServerContext): Promise<Response | undefined> {
-  const { options, hostname, token, bridgeToken, bootId, devices, preferences, herdrSidebar, identityOf, serveOnly, portalGuards, shellAgents, agentDetector, agentOffered, agentInstaller, openCodeState, cliProxyRoutes, usageLogin, usage, voice, browserSnapshot, core, seen, piReader, orderSequence, clientConnectionLog, requestLog, portalStartupResult, portalStartup, omarchyThemes, speech, friends, piVoice } = ctx.services;
+  const { options, hostname, token, bridgeToken, bootId, devices, preferences, herdrSidebar, identityOf, serveOnly, portalGuards, shellAgents, agentDetector, agentOffered, agentInstaller, openCodeState, cliProxyRoutes, usageLogin, usage, voice, browserSnapshot, core, seen, piReader, orderSequence, clientConnectionLog, requestLog, portalStartupResult, portalStartup, omarchyThemes } = ctx.services;
   const { sidecar, serialize, push, alertWebhook, logPushError, omo, claudeAgents, opencodeAgents, plans, clientSnapshot, machines, broadcastAll, collector, queueFirstMessage } = core;
   return requestLog.handle(request, async (headers) => {
   const startup = portalStartupResult ?? await portalStartup;
@@ -366,19 +360,8 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   // so an unauthenticated client cannot hold idle sockets for a minute.
   if (pathname.startsWith("/api/") && authenticated) ctx.timeout(request, 60);
 
-  // the Computer view (server/screen.ts): a PC's desktop is driven, so a watching device gets none
-  // of it, and only this app's pages reach it past a page load, as the bridge's own origin check
-  // sees this server instead
-  if (pathname === "/api/screen" || isScreenPath(pathname)) {
-    setRequestRoute(pathname === "/api/screen" ? pathname : "/screen");
-    if (readOnly) return jsonResponse({ error: { code: "read_only", message: "This device only watches" } }, 403);
-    const pageLoad = request.method === "GET" && request.headers.get("upgrade") === null;
-    if (!pageLoad && !sameOrigin(request)) return jsonResponse({ error: { code: "invalid_origin", message: "Use controls from this app" } }, 403);
-    if (pathname === "/api/screen") return handleScreenOpen(request, machines?.list() ?? []);
-    if (!ctx.server) return jsonResponse({ error: { code: "not_found", message: "not found" } }, 404);
-    ctx.timeout(request, 0);
-    return handleScreenRequest(request, url, ctx.server);
-  }
+  const forkScreen = routeForkScreen(request, url, ctx, readOnly);
+  if (forkScreen !== null) return forkScreen;
   // the panes' files are on another machine: this disk's would be shown, listed, diffed or written as theirs
   if (options.localFiles === false && OTHER_MACHINE_FILES.test(pathname)) {
     setRequestRoute(pathname);
@@ -513,20 +496,8 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     return new Response("websocket upgrade required", { status: 426 });
   }
 
-  // a live voice call with the Pi in a pane (server/pi-voice.ts), and whether the pane can take one
-  if (pathname === PI_VOICE_PATH || pathname === PI_VOICE_STATUS_PATH) {
-    if (!ctx.server) return jsonResponse({ error: { code: "not_found", message: "not found" } }, 404);
-    const deviceId = access.level === "full" ? access.device?.id : undefined;
-    // a pane on another PC is called through that PC's server; its status comes through the PC proxy
-    const machineId = pathname === PI_VOICE_PATH ? url.searchParams.get("machine_id") : null;
-    if (machineId && machineId !== "local") {
-      const endpoint = machines?.endpoint(machineId);
-      if (!endpoint) return jsonResponse({ error: { code: "machine_offline", message: "This PC is disconnected" } }, 503);
-      const machine = { endpoint, track: (close: () => void) => machines!.trackTerminal(machineId, close) };
-      return handlePiVoiceRequest(request, url, ctx.server, piVoice, { readOnly, deviceId, headers, machine });
-    }
-    return handlePiVoiceRequest(request, url, ctx.server, piVoice, { readOnly, deviceId, headers });
-  }
+  const forkApi = routeForkApi(request, url, ctx, { readOnly, deviceId: access.level === "full" ? access.device?.id : undefined, headers });
+  if (forkApi !== null) return forkApi;
 
   if (pathname === "/api/auth") {
     setRequestRoute(pathname);
@@ -585,8 +556,6 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   if (pathname === "/api/preferences") { setRequestRoute(pathname); return handlePreferencesRequest(request, preferences); }
   // the finishes read in some browser of this server; a watching device reads them and cannot add to them (above)
   if (pathname === "/api/seen") { setRequestRoute(pathname); return handleSeenRequest(request, seen); }
-  // the friend each workspace wears in the sidebar, the same in every browser of this server
-  if (pathname === "/api/friends") { setRequestRoute(pathname); return handleFriendsRequest(request, friends); }
 
   if (pathname === "/api/system") { setRequestRoute(pathname); return handleSystemRequest(request, ctx.services.systemSampler); }
   if (pathname === USER_FONTS_PATH || pathname.startsWith(`${USER_FONTS_PATH}/`)) return handleUserFontsRequest(request, pathname, ctx.services.fontsDir, url.search);
@@ -600,8 +569,6 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   if (pathname === "/api/cliproxy" || pathname.startsWith("/api/cliproxy/")) { ctx.timeout(request, 60); return cliProxyRoutes.handle(request); }
   // a long clip can keep the provider silent past Bun's 10 s idle limit before the first line
   if (pathname === "/api/voice" || pathname.startsWith("/api/voice/")) { ctx.timeout(request, 120); return handleVoiceRequest(request, pathname, voice); }
-  // the first request installs Kokoro and downloads its model: minutes, not seconds
-  if (pathname === "/api/speech") { ctx.timeout(request, 0); return handleSpeechRequest(request, speech); }
 
   // Settings → Alerts → Also send to: one destination this PC also posts its alerts to (a watching device: none, above)
   if (pathname === "/api/alerts/webhook" || pathname === "/api/alerts/webhook/test") {

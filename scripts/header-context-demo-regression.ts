@@ -35,7 +35,6 @@ try {
         try {
           await context.addInitScript(({ width, theme }) => {
             localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme }));
-            localStorage.setItem("ovis:phone-tabs", JSON.stringify("row"));
             if (width === 1440) sessionStorage.setItem("ovis:split", JSON.stringify({ other: { machineId: "local", paneId: "w1C:p1" }, bSide: "right", active: "a" }));
           }, { width, theme });
           for (const pane of [

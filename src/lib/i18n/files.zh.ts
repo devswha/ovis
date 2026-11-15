@@ -150,6 +150,7 @@ export const FILES_ZH: Record<string, string> = {
   "Already merged.": "已合并。",
   "Checks": "检查",
   "Closed without merging": "未合并即关闭",
+  "Draft": "草稿",
   "GitHub CLI (gh) is not installed on this PC. Install it and sign in with gh auth login to see pull requests here.": "此电脑未安装 GitHub CLI (gh)。安装后用 gh auth login 登录，即可在此查看拉取请求。",
   "GitHub CLI (gh) on this PC is not signed in. Run gh auth login there to see pull requests here.": "此电脑上的 GitHub CLI (gh) 未登录。在那台电脑上运行 gh auth login 后即可在此查看拉取请求。",
   "GitHub is still working out whether it can merge; refresh in a moment.": "GitHub 仍在判断能否合并，请稍后刷新。",

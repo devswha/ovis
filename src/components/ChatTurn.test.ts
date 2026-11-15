@@ -96,9 +96,8 @@ describe("the folds Settings → Chat starts a turn with", () => {
     const open = render(parts, { live: true }, "assistant", { showThinking: true, expandThinking: true });
     expect(thoughtsOpen(open)).toEqual([true]);
     expect(open).toContain("Weighing it.");
-    // folded, the reasoning stays in its run's one line (`✓ think ×1, ls ×1`), drawn only once the run opens
     const folded = render(parts, { live: true }, "assistant", { showThinking: true });
-    expect(thoughtsOpen(folded)).toEqual([]);
+    expect(thoughtsOpen(folded)).toEqual([false]);
     expect(folded).not.toContain("Weighing it.");
     // reasoning the chat does not show stays out, whatever it would start as
     expect(thoughtsOpen(render(parts, { live: true }, "assistant", { expandThinking: true }))).toEqual([]);
@@ -253,7 +252,7 @@ describe("an agent turn's folded work, drawn again", () => {
     await nextMessage([reasoning, tool("ls")], expand);
     expect(thoughtOpened()).toEqual([true]);
     await draw([reasoning, tool("ls")], { showThinking: true });
-    expect(thoughtOpened()).toEqual([]);
+    expect(thoughtOpened()).toEqual([false]);
   });
 
   beforeEach(() => {

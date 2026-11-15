@@ -225,7 +225,7 @@ async function loneHostWatching(browser: Browser, scene: Scene): Promise<void> {
     assert.equal(await row.isDisabled(), true, "a watching device's New workspace row is off");
     const mark = Number(await row.locator(".sidebar-mark").evaluate((mark) => getComputedStyle(mark).opacity));
     assert.ok(mark < 1, `its + is dimmed (${mark})`);
-    assert.equal(await page.locator(".app-header .context-watch, .app-header .header-tabs-watch").isVisible(), true, "the header over the drawer says the device only watches");
+    assert.equal(await page.locator(".app-header .context-watch").isVisible(), true, "the header over the drawer says the device only watches");
     await capture(page, scene, "lone-host-watching");
     assert.deepEqual(errors, []);
     console.log(`PASS ${sceneName(scene)}: a watching device's lone Host keeps its New workspace row, off`);

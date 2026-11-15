@@ -185,7 +185,7 @@
   flex: none;
   width: var(--dot-size);
   height: var(--dot-size);
-  border-radius: var(--radius-circle);
+  border-radius: var(--radius-pill);
   background: var(--accent);
   transition: opacity var(--dur-fast) var(--ease-out);
 }

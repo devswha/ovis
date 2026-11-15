@@ -6,7 +6,6 @@ import { chromium, type Browser, type Page } from "playwright-core";
 import { appFaces } from "./app-faces.ts";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
-import { pickLens, VIEW_BUTTON } from "./view-toggle.ts";
 import type { Machine } from "../shared/machines.ts";
 import type { AgentStatus } from "../shared/protocol.ts";
 import { SHEET_HISTORY_KEY } from "../src/lib/historyKeys.ts";
@@ -657,7 +656,7 @@ try {
           await shot(page, `inbox-mode-thread-more-390-${theme}.png`);
           await page.locator('.row-sheet [data-item="exit-inbox"]').tap();
           await page.locator("#drawer-toggle").waitFor();
-          await page.locator(".app-header .context-title-text, .app-header .tab-strip").first().waitFor();
+          await page.locator(".context-title-text").waitFor();
           await sheetClosed(page);
           await addressIs(page, { app: null, pane: WORKING }, "left from a thread, the classic app opens on that thread's pane");
           await page.goBack();
@@ -739,7 +738,7 @@ try {
         }, { width: 1280, height: 900 });
 
         await withPage(browser, base, off, "/", block("the Settings row"), async (page) => {
-          await page.locator(".app-header .context-title-text, .app-header .tab-strip").first().waitFor();
+          await page.locator(".context-title-text").waitFor();
           await page.locator("#drawer-toggle").tap();
           await page.locator(".sidebar").getByRole("button", { name: /^Settings/ }).first().tap();
           const settings = page.locator(".settings-dialog");
@@ -906,7 +905,7 @@ try {
             wideRows.forEach((item, index) => {
               near(item.bottom - item.top, 56, 2, "a wide row's height");
               near(item.left - column.x, 12, 1, "a row's inset at the column's start"); near(column.right - item.right, 12, 1, "a row's inset at the column's end");
-              assert.equal(item.radius, "0px", "the fork's inbox rows keep square corners");
+              assert.equal(item.radius, "12px");
               assert.deepEqual(item.avatar, [32, 32, 8], "the mark is 32px, 8px inside the row");
               assert.deepEqual([item.nameSize, item.wordsSize], ["14px", "13px"]);
               if (index > 0) near(item.top - wideRows[index - 1]!.bottom, 4, 1, "between two rows");
@@ -1334,7 +1333,7 @@ try {
         await page.waitForFunction(() => document.activeElement?.id === "drawer-toggle", undefined, { timeout: 5_000 });
         await page.reload();
         await page.locator("#drawer-toggle").waitFor();
-        await page.locator(".app-header .context-title-text, .app-header .tab-strip").first().waitFor();
+        await page.locator(".context-title-text").waitFor();
         assert.equal(await page.locator(".mode-inbox").count(), 0, "a reload of the classic app the phone went back to does not start the mode again");
         await addressIs(page, { app: null }, "the reloaded address is still the classic app's");
         console.log("PASS with Start in the agent inbox on a phone on, a phone that went Back to Ovis is still in the classic app after a reload");
@@ -1704,7 +1703,7 @@ try {
       const spokeThen = (drawn: string | null | undefined, spoke: string | null): boolean =>
         drawn !== null && drawn !== undefined && spoke !== null && Math.abs(Date.parse(drawn) - Date.parse(spoke)) <= 2_000;
       await withPage(browser, base, light, `/?pane=${encodeURIComponent(DONE)}&view=chat`, "the time of a wait the page saw begin", async (page) => {
-        await page.locator(".app-header .context-title-text, .app-header .tab-strip").first().waitFor();
+        await page.locator(".context-title-text").waitFor();
         const seen = await page.evaluate(() => window.inboxFixture.rosters);
         const began = await page.evaluate(() => Date.now());
         await page.evaluate((pane) => window.inboxFixture.set(pane, "blocked"), WORKING);
@@ -1805,7 +1804,7 @@ try {
             // over the rows it is a small round pill on the round controls' raised surface, on their centre line
             assert.deepEqual(drawn.surface, drawn.round, "a phone's line is drawn on the round controls' surface: their fill, hairline edge and shadow");
             assert.notEqual(drawn.surface.shadow, "none", "the pill casts the controls' shadow");
-            assert.equal(drawn.radius, 0, "the fork's connection notice keeps square corners");
+            assert.ok(drawn.radius >= drawn.height / 2, `the pill is fully round: a radius of ${drawn.radius} for a height of ${drawn.height}`);
             assert.ok(drawn.discMiddle !== null, "a round control stands in a phone's top row");
             near(drawn.middle, drawn.discMiddle, 0.5, "the pill stands on the round controls' centre line");
           }
@@ -2010,7 +2009,7 @@ try {
         assert.deepEqual(await sent(before), [], "entering from a pane on its terminal sends no attach, detach, size or release");
         await page.locator(".inbox-exit").click();
         await page.locator(".app-header.is-zoned").waitFor();
-        await page.locator(`${VIEW_BUTTON}[data-view="terminal"]`).waitFor();
+        await page.locator('.view-switch .lens-option.is-terminal[aria-pressed="true"]').waitFor();
         await addressIs(page, { app: null, pane: WORKING }, "Back to Ovis shows the pane the classic app was on");
         sameBox(await terminalBox(page), classic, "back in the classic app the terminal has the box it had");
         // fixed wait: nothing may be sent for the pane shown again as it was
@@ -2051,7 +2050,7 @@ try {
         await page.evaluate(() => (window as unknown as { __herdrDemoOrder: { addPc: () => string } }).__herdrDemoOrder.addPc());
         for (const pane of IDLE) await page.evaluate((idle) => window.inboxFixture.set(idle, "done"), pane);
         await composer.fill(draftX);
-        await page.locator(`${VIEW_BUTTON}[data-view="chat"]`).waitFor();
+        await page.locator('.view-switch .lens-option.is-chat[aria-pressed="true"]').waitFor();
         const framesBefore = await page.evaluate(() => window.inboxFixture.frames.length);
 
         // classic -> the mode: the pane the app is on, on its chat, is the thread open, with its draft
@@ -2128,7 +2127,7 @@ try {
       ]) {
         await withPage(browser, base, light, setup.path, `the way in from ${setup.name} opens the list`, async (page) => {
           await page.locator(".app-header.is-zoned").waitFor();
-          const chatOn = page.locator(`${VIEW_BUTTON}[data-view="chat"]`);
+          const chatOn = page.locator('.view-switch .lens-option.is-chat[aria-pressed="true"]');
           if (setup.name.startsWith("a herdr")) {
             await page.keyboard.press("Control+Shift+K");
             await page.getByRole("searchbox", { name: "Search panes and actions", exact: true }).fill("Split pane right");
@@ -2141,8 +2140,8 @@ try {
             await page.locator(".app-header.is-zoned").waitFor();
             await page.locator('.pane-slot[data-slot="b"]').click({ position: { x: 40, y: 80 } });
             await addressIs(page, { pane: BLOCKED }, "the other half is the selected pane");
-            await pickLens(page, "terminal");
-            await page.locator(`${VIEW_BUTTON}[data-view="terminal"]`).waitFor();
+            await page.locator(".view-switch .lens-option.is-terminal").click();
+            await page.locator('.view-switch .lens-option.is-terminal[aria-pressed="true"]').waitFor();
             await page.locator('.pane-slot[data-slot="a"] .chat-view').click({ position: { x: 20, y: 20 } });
           } else {
             await page.getByRole("textbox", { name: "Message", exact: true }).fill("/btw is the retry test flaky on CI too?");

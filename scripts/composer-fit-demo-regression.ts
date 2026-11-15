@@ -30,7 +30,7 @@ try {
       });
       // Typography is applied by SettingsProvider after the render. At this fixed card width,
       // the larger interface font must step effort out without needing a viewport resize.
-      await withCard(browser, 1000, { agent: "codex", model: LONG_MODEL }, async (page) => {
+      await withCard(browser, 1075, { agent: "codex", model: LONG_MODEL }, async (page) => {
         const before = await measure(page);
         assert.equal(before.draw, "full");
         assert.equal(before.model?.clipped, false);
@@ -131,23 +131,22 @@ try {
       for (const agent of ["claude", "codex"] as const) for (const width of [350, 390, 800, 1440]) for (const mic of [false, true]) await withCard(browser, width, { agent, model: "gpt-5.6", mic }, async (page) => {
         const rest = await measure(page);
         assert.ok(rest.stop && !rest.send && !rest.sendOptions && !rest.queue, JSON.stringify(rest));
-        // a phone has no hover: the ring is a button whose tap shows the numbers, as a desktop's is
+        // the ring only shows: a span with its number in a tooltip, nothing to press, open or focus
         assert.equal(await page.locator(".composer-context").evaluate((node) =>
-          node.tagName === "BUTTON" && node.getAttribute("aria-expanded") === "false" && node.getAttribute("title")?.includes("%") === true), true, "the context ring is a button a tap opens");
+          node.tagName === "SPAN" && node.getAttribute("title")?.includes("%") === true && !node.hasAttribute("aria-expanded") && !node.hasAttribute("tabindex")), true, "the context ring is display-only");
         await draft(page);
         const row = await measure(page);
         await drawn(page, row.draw as Draw, `${agent} ${width}px, a written follow-up`);
         assert.ok(row.send && !row.stop && !row.sendOptions && !row.queue && row.ring, JSON.stringify(row));
         assert.equal(row.card.height, rest.card.height, "Send replaces Stop on the same row");
-        // a tap opens the numbers in a bubble without changing the row's geometry
-        await page.locator(".composer-context").click();
-        assert.equal(await page.locator(".composer-context").getAttribute("aria-expanded"), "true");
-        assert.match(await page.locator(".composer-context-tip").textContent() ?? "", /tokens/, "the bubble holds the token counts");
-        const pressed = await measure(page);
-        assert.equal(pressed.draw, row.draw, `${agent} ${width}px: the bubble leaves the row as drawn`);
-        assert.equal(pressed.card.height, row.card.height);
-        await page.mouse.click(2, 2);
-        assert.equal(await page.locator(".composer-context-tip").count(), 0, "a press elsewhere closes the bubble");
+        if (width >= 800) {
+          // a press on the ring does nothing: no number opens and the row is drawn as before
+          await page.locator(".composer-context").click();
+          const pressed = await measure(page);
+          assert.equal(pressed.draw, row.draw, `${agent} ${width}px: a press on the ring leaves the row as drawn`);
+          assert.equal(pressed.card.height, row.card.height);
+          assert.equal(await page.locator(".composer-context-text").count(), 0, "a press opens no context number");
+        }
         await page.getByRole("textbox", { name: "Message", exact: true }).fill("");
         assert.equal((await measure(page)).stop, true);
       });
@@ -300,7 +299,7 @@ try {
       });
       await withCard(browser, 390, { agent: "codex", model: "gpt-5.6", showUsage: true }, async (page) => {
         assert.equal(await page.locator(".composer-status .composer-usage").count(), 0, "mobile omits the desktop quota even when sidebar limits are enabled");
-        assert.equal(await page.locator(".composer-context").evaluate((node) => node.tagName === "BUTTON" && node.getAttribute("aria-expanded") === "false"), true, "mobile keeps the context ring a tap opens");
+        assert.equal(await page.locator(".composer-context").evaluate((node) => node.tagName === "SPAN" && !node.hasAttribute("aria-expanded")), true);
       });
       // a pi pane draws on the plan of the provider its conversation runs at, and on none without one
       for (const [agent, provider, text, account] of [["pi", "openai-codex", "5h 22%", /sam@work\.example/], ["omo", "anthropic-subscription", "5h 38%", /Claude · sam@example\.com/]] as const) {

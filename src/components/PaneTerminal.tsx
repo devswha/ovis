@@ -29,6 +29,7 @@ import { FrameGate, inputRowState, readScreen, readScreenLines, readsInputRow, t
 import { outcomeCommand } from "../lib/outcomeChip.ts";
 import { composerLift, greetingMemory, greetingFits, greetingFolder, roomOverComposer, showsGreeting } from "../lib/greeting.ts";
 import { answerHint } from "../lib/promptAnswer.ts";
+import { DETACHED, usePaneBranch } from "../lib/paneBranch.ts";
 import { composerPayload } from "../lib/compose.ts";
 import { composerDrafts } from "../lib/composerDraft.ts";
 import { appendQuote, formatTerminalQuote } from "../lib/terminalQuote.ts";
@@ -234,6 +235,7 @@ export function PaneTerminal({
   const openWebPage = useContext(WebPanelContext);
   const machineId = useMachineId();
   const commands = usePaneCommands(paneId, agent);
+  const branchWord = usePaneBranch(machineId, workspaceId);
   const openWebRef = useRef((uri: string, shiftKey: boolean) => openWebPage?.(uri, shiftKey, machineId) ?? false);
   openWebRef.current = (uri, shiftKey) => openWebPage?.(uri, shiftKey, machineId) ?? false;
   const machineSessions = useMachineSessions();
@@ -1499,6 +1501,8 @@ export function PaneTerminal({
           paneId={paneId}
           inert={peek !== null}
           cwd={cwd}
+          branch={branchWord === DETACHED ? t("Detached HEAD") : branchWord}
+          worktreeRepo={worktreeRepo}
           autoFocus={active && !autoSelected && !coarse}
           active={active}
           agent={agent}

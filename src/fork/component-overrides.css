@@ -1,0 +1,236 @@
+/* Fork component overrides. Upstream component styles remain unchanged. */
+
+/* src/components/AccountApprovalPrompt.css */
+[data-fork-square-corners="true"] .account-approval-mark {
+  border-radius: var(--radius-circle);
+}
+
+/* src/components/AgentSetupCard.css */
+[data-fork-square-corners="true"] .agent-setup-dot {
+  border-radius: var(--radius-circle);
+}
+
+/* src/components/AgentSidebar.css */
+[data-fork-square-corners="true"] .agent-named-group-dot {
+  border-radius: var(--radius-circle);
+}
+
+/* src/components/AgentsSettings.css */
+[data-fork-square-corners="true"] .agents-state.is-ok::before,
+[data-fork-square-corners="true"] .agents-state.is-warn::before,
+[data-fork-square-corners="true"] .agents-state.is-none::before {
+  border-radius: var(--radius-circle);
+}
+
+/* src/components/Droplet.css */
+[data-fork-square-corners="true"] .droplet {
+  --droplet-radius: var(--radius-2xl);
+}
+
+[data-fork-square-corners="true"] .droplet-mark {
+  border-radius: var(--radius-circle);
+}
+
+[data-fork-square-corners="true"] .droplet-mark-blank {
+  border-radius: var(--radius-circle);
+}
+
+[data-fork-square-corners="true"] .droplet-dot {
+  border-radius: var(--radius-circle);
+}
+
+@media (max-width: 768px) {
+[data-fork-square-corners="true"] .droplet {
+  --droplet-radius: var(--radius-2xl);
+}
+}
+
+/* src/components/Machines.css */
+[data-fork-collapse-offline-pcs="true"] .machine-offline-toggle {
+  margin: var(--space-4) 0 0 var(--side-gutter);
+  gap: var(--space-2);
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+}
+
+[data-fork-collapse-offline-pcs="true"] .machine-offline-toggle + .machine-group {
+  margin-top: var(--space-2);
+}
+
+[data-fork-collapse-offline-pcs="true"] .machine-offline-toggle svg {
+  width: 14px;
+  height: 14px;
+}
+
+[data-fork-square-corners="true"] .machine-dot {
+  border-radius: var(--radius-circle);
+}
+
+[data-fork-computer-view="true"] .machine-group.is-screen > .machine-header {
+  background: var(--side-selected);
+}
+
+[data-fork-computer-view="true"] .machine-screen[aria-pressed="true"] {
+  color: var(--accent);
+}
+
+@media (forced-colors: active) {
+[data-fork-computer-view="true"] .machine-group.is-screen > .machine-header {
+  outline: var(--hairline) solid Highlight;
+  outline-offset: calc(-1 * var(--hairline));
+}
+}
+
+[data-fork-computer-view="true"] .machine-new-row,
+[data-fork-computer-view="true"] .machine-screen-row {
+  display: flex;
+  align-items: center;
+  width: calc(100% - var(--side-gutter) * 2);
+  min-height: var(--side-row);
+  margin: 0 var(--side-gutter);
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-md);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: var(--fs-md);
+  line-height: var(--lh-tight);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+
+[data-fork-computer-view="true"] .machine-new-row:focus-visible,
+[data-fork-computer-view="true"] .machine-screen-row:focus-visible {
+  outline-offset: calc(var(--ring-offset) * -1);
+}
+
+@media (hover: hover) {
+[data-fork-computer-view="true"] .machine-new-row:hover,
+[data-fork-computer-view="true"] .machine-screen-row:hover {
+  background: var(--side-hover);
+  color: var(--text);
+}
+}
+
+@media (pointer: coarse) {
+[data-fork-computer-view="true"] .machine-new-row,
+[data-fork-computer-view="true"] .machine-screen-row {
+  min-height: var(--touch-target);
+}
+}
+
+/* src/components/PaneCanvas.css */
+[data-fork-more-view-toggle="true"] .pane-column:has(.tab-strip-menu) .pane-frame.is-single > .pane-frame-head,
+:root[data-fork-more-view-toggle="true"]:has(.header-tabs .tab-strip-menu) .pane-frame.is-single > .pane-frame-head {
+  display: none;
+}
+
+/* src/components/PromptCard.css */
+[data-fork-expanded-prompts="true"] .prompt-card {
+  max-height: max(calc(var(--app-height, 100dvh) * 0.6), calc(var(--touch-target) * 6));
+}
+
+[data-fork-square-corners="true"] .prompt-card-step-mark {
+  border-radius: var(--radius-circle);
+}
+
+@media (min-width: 769px) {
+[data-fork-expanded-prompts="true"] .prompt-card {
+  max-height: max(calc((var(--app-height, 100dvh) - var(--control-h)) * 0.6), calc(var(--touch-target) * 6));
+}
+}
+
+/* src/components/RowMenu.css */
+[data-fork-more-view-toggle="true"] .row-menu-switch-track {
+  flex: none;
+  display: flex;
+  align-items: center;
+  width: calc(var(--space-6) + var(--space-4));
+  height: calc(var(--space-4) + 4px);
+  padding: 2px;
+  border: var(--hairline) solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: var(--bg-input);
+}
+
+[data-fork-more-view-toggle="true"] .row-menu-switch-track > span {
+  width: var(--space-4);
+  height: var(--space-4);
+  border-radius: var(--radius-pill);
+  background: var(--text-dim);
+}
+
+[data-fork-more-view-toggle="true"] .row-menu-switch-track[data-checked="true"] {
+  justify-content: flex-end;
+  border-color: var(--primary);
+  background: var(--primary-tint);
+}
+
+[data-fork-more-view-toggle="true"] .row-menu-switch-track[data-checked="true"] > span {
+  background: var(--primary);
+}
+
+/* src/components/SettingsControls.css */
+[data-fork-square-corners="true"] .theme-card-art b {
+  border-radius: var(--radius-circle);
+}
+
+[data-fork-square-corners="true"] .theme-strip-arrow {
+  border-radius: var(--radius-circle);
+}
+
+/* src/components/SetupGuide.css */
+[data-fork-square-corners="true"] .setup-done-head > svg {
+  border-radius: var(--radius-circle);
+}
+
+/* src/components/Sidebar.css */
+[data-fork-square-corners="true"] .sidebar-status-dot {
+  border-radius: var(--radius-circle);
+}
+
+/* src/components/TabStrip.css */
+[data-fork-agent-friends="true"] .tab-strip-faces {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+[data-fork-agent-friends="true"] .tab-strip-faces .agent-friend {
+  width: 18px;
+  height: 18px;
+}
+
+[data-fork-agent-friends="true"] .tab-strip-faces .agent-friend-badge {
+  display: none;
+}
+
+[data-fork-agent-friends="true"] .tab-strip-faces.is-split .agent-friend {
+  width: 15px;
+  height: 15px;
+}
+
+[data-fork-agent-friends="true"] .tab-strip-faces.is-split > * + * {
+  margin-left: -4px;
+}
+
+[data-fork-compact-tab-menus="true"] .tab-menu-place {
+  display: block;
+  overflow: hidden;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* src/components/UsageSettings.css */
+[data-fork-square-corners="true"] .usage-account-status::before {
+  border-radius: var(--radius-circle);
+}
+
+/* src/components/VoiceInput.css */
+[data-fork-square-corners="true"] .voice-pill-dot {
+  border-radius: var(--radius-circle);
+}

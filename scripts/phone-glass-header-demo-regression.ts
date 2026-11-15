@@ -6,7 +6,6 @@ import { chromium, type Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
-import { pickLens } from "./view-toggle.ts";
 import { openMoreGroup } from "./header-more.ts";
 import { openLens } from "./header-lens.ts";
 
@@ -102,7 +101,7 @@ try {
         await page.locator('.sidebar .sidebar-status[data-status="working"]').first().waitFor({ state: "attached" });
         assert.equal(await page.locator(".app-header .header-counts, .app-header .header-count").count(), 0, "a phone's header counts no running or finished sessions");
 
-        await pickLens(page, "chat");
+        await openLens(page, "chat");
         const message = page.getByRole("textbox", { name: "Message", exact: true });
         await message.waitFor();
 

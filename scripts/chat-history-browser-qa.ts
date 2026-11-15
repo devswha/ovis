@@ -10,7 +10,6 @@ import type {} from "./chat-history-fixture.tsx";
 import { parseAgyTranscript } from "../server/agy.ts";
 import { buildXtermSource, xtermSourcePlugin } from "./build-xterm.ts";
 import { chromePath } from "./chrome-path.ts";
-import { openWorkRuns } from "./work-runs.ts";
 
 const root = mkdtempSync(join(tmpdir(), "herdr-history-browser-"));
 let server: ReturnType<typeof Bun.serve> | undefined;
@@ -158,7 +157,6 @@ try {
   await page.getByText("old newest", { exact: true }).waitFor();
   const refresh = () => page.evaluate(() => window.qa.refresh());
   await page.locator(".work-block-head").click();
-  await openWorkRuns(page);
   await page.locator(".work-row-head").click();
   const retainedTurn = await page.getByText("old newest", { exact: true }).elementHandle();
   for (const gap of [false, true]) {
@@ -236,7 +234,6 @@ try {
   await page.getByText(newest, { exact: true }).waitFor();
   // a settled turn's work is folded: open the block, then its row
   await page.locator(".work-block-head").click();
-  await openWorkRuns(page);
   await page.locator(".work-row-head").click();
   await page.locator(".chat-tool-more").click();
   const requestIndex = await page.evaluate(() => window.qa.requests.length - 1);
@@ -248,7 +245,6 @@ try {
   // the cleared history brought a new turn, folded like any settled one
   assert.equal(await page.locator(".work-block-head").getAttribute("aria-expanded"), "false");
   await page.locator(".work-block-head").click();
-  await openWorkRuns(page);
   await page.locator(".work-row-head").click();
   assert.equal(await page.getByText("STALE TOOL OUTPUT", { exact: true }).count(), 0);
   assert.equal(await page.locator(".chat-tool-more").count(), 1);
@@ -266,7 +262,6 @@ try {
   await page.evaluate(() => window.qa.chat("notice"));
   await page.getByText(newest, { exact: true }).waitFor();
   await page.locator(".work-block-head").click();
-  await openWorkRuns(page);
   await page.locator(".work-row-head").click();
   const openedWork = await page.locator(".work-block-head").elementHandle();
   notice = true;
@@ -336,7 +331,6 @@ try {
     await page.locator(".chat-older").click();
     await page.getByText("old earlier", { exact: true }).waitFor();
     await page.locator(".work-block-head").click();
-    await openWorkRuns(page);
     await page.locator(".work-row-head").click();
     await page.locator(".chat-tool-more").click();
     const lateOutput = await page.evaluate(() => window.qa.requests.length - 1);
@@ -406,16 +400,7 @@ try {
   terminalText = Array.from({ length: 100 }, (_, i) => `Fictional terminal line ${i}`).join("\n");
   await refresh();
   await page.getByText(/Fictional terminal line 99/).waitFor();
-  // a wheel up, not a bare scrollTop: a move up without input right after the footer got shorter is the layout's (FOOTER_SHRINK_MS)
-  const log = page.getByRole("log");
-  const logBox = (await log.boundingBox())!;
-  await page.mouse.move(logBox.x + logBox.width / 2, logBox.y + logBox.height / 2);
-  await page.mouse.wheel(0, -100_000);
-  await log.evaluate((node) => new Promise<void>((resolve, reject) => {
-    const started = performance.now();
-    const check = () => node.scrollTop === 0 ? resolve() : performance.now() - started > 5_000 ? reject(new Error(`the wheel left the chat at ${node.scrollTop}`)) : requestAnimationFrame(check);
-    check();
-  }));
+  await page.getByRole("log").evaluate((node) => { node.scrollTop = 0; node.dispatchEvent(new Event("scroll")); });
   terminalText += "\nFictional terminal appended line";
   await refresh();
   await page.getByText(/Fictional terminal appended line/).waitFor();
@@ -472,7 +457,6 @@ try {
   await page.getByText("Synthetic Devin prompt", { exact: true }).waitFor();
   await page.getByText("Synthetic Devin answer", { exact: true }).waitFor();
   await page.locator(".work-block-head").click();
-  await openWorkRuns(page);
   assert.equal(await page.locator(".work-row-name").filter({ hasText: "synthetic_tool" }).count(), 1);
   await page.locator(".work-row-head").click();
   await page.getByText("synthetic result", { exact: true }).waitFor();
@@ -491,7 +475,6 @@ try {
   await page.getByText("Summarize the last three fictional commits.", { exact: true }).waitFor();
   await page.getByText("Synthetic Agy answer", { exact: true }).waitFor();
   await page.locator(".work-block-head").click();
-  await openWorkRuns(page);
   assert.equal(await page.locator(".work-row-head").count(), 2, "Agy planner call and independent result remain separate");
   await page.locator(".work-row-head").last().click();
   await page.getByText("Fictional commit log", { exact: true }).waitFor();

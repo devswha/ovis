@@ -188,25 +188,6 @@ export function hasAgentMark(agent: string): boolean {
   return DRAWN_MARKS.has(agent) || Object.hasOwn(AGENT_SVG_MARKS, agent);
 }
 
-/** a model's maker, by the start of its name, as the agent whose mark stands for it */
-const MODEL_MARKS: [RegExp, string][] = [
-  [/^claude/, "claude"],
-  [/^(gpt|o\d|codex)/, "codex"],
-  [/^gemini/, "gemini"],
-  [/^grok/, "grok"],
-  [/^kimi/, "kimi"],
-  [/^qwen/, "qwen"],
-];
-
-/**
- * The mark for a model ("provider/id" or a bare id), read from its name rather than its provider, so a
- * Claude model through a bridge or a router keeps Claude's mark. Null for a maker without one.
- */
-export function modelMark(model: string): string | null {
-  const id = model.slice(model.lastIndexOf("/") + 1).toLowerCase();
-  return MODEL_MARKS.find(([pattern]) => pattern.test(id))?.[1] ?? null;
-}
-
 export function AgentMark({ agent, size = 16, className }: AgentMarkProps) {
   const mark =
     agent === "claude" ? (

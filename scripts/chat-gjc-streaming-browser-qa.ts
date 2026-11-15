@@ -199,15 +199,11 @@ try {
         const errors: string[] = [];
         page.on("pageerror", (error) => errors.push(error.message));
         await page.goto(`http://127.0.0.1:${server.port}/`);
-        // the turn's calls are folded into one line of counts until a reader opens it
-        await page.locator(".work-run-head").first().waitFor();
+        await page.locator(".work-row-head", { hasText: "beta.ts" }).waitFor();
         await page.waitForFunction(() => { const node = document.querySelector(".chat-view"); return node !== null && node.scrollHeight - node.clientHeight - node.scrollTop <= 1; });
         await still(page, {});
         let track: Track = {};
         if (opens) {
-          // opening the line is the reader's first act: in place, as a tap would, with no scroll
-          await page.locator('.work-run-head[aria-expanded="false"]').evaluateAll((heads) => { for (const head of heads) (head as HTMLElement).click(); });
-          await page.locator(".work-row-head", { hasText: "beta.ts" }).waitFor();
           track = scenario === "todo" ? { head: "plan ·", group: true } : { head: "beta.ts" };
           await page.locator(".work-row-head", { hasText: track.head }).click();
         } else if (scenario === "scrolled") {

@@ -89,18 +89,21 @@ describe("the sidebar on a PC the Herdr app lays out", () => {
   };
   const row = (id: string) => renderer!.root.findByProps({ "data-pane": `${id}:p` });
 
-  it("offers a TUI PC's rows their rename, worktree and delete items", async () => {
+  it.each([false, true])("offers a TUI PC's rows their rename, worktree and delete items (pull requests: %s)", async (pullRequests) => {
+    stored.set("ovis:settings", JSON.stringify({ pullRequests }));
+    const optional = pullRequests ? ["pull-requests"] : [];
     await draw(roster([workspace("root", worktree(false)), workspace("child", worktree(true))]), TUI);
-    expect(await menuOf("root")).toEqual(["pin-workspace", "rename-workspace", "session-history", "close", "new-worktree", "open-worktree", "pull-requests", "fold"]);
-    expect(await menuOf("child")).toEqual(["pin-workspace", "rename-workspace", "session-history", "close", "pull-requests", "delete-worktree"]);
+    expect(await menuOf("root")).toEqual(["pin-workspace", "rename-workspace", "session-history", "close", "new-worktree", "open-worktree", ...optional, "fold"]);
+    expect(await menuOf("child")).toEqual(["pin-workspace", "rename-workspace", "session-history", "close", ...optional, "delete-worktree"]);
   });
 
-  it("offers no close or delete for a workspace, or its repository's group, holding a locked pinned agent (#2432)", async () => {
-    stored.set("ovis:settings", JSON.stringify({ agentLocks: true, lockedAgents: ["local:child:p"] }));
+  it.each([false, true])("offers no close or delete for a locked pinned agent (#2432, pull requests: %s)", async (pullRequests) => {
+    stored.set("ovis:settings", JSON.stringify({ agentLocks: true, lockedAgents: ["local:child:p"], pullRequests }));
+    const optional = pullRequests ? ["pull-requests"] : [];
     setSidebarPins(["local:child:p"]);
     await draw(roster([workspace("root", worktree(false)), workspace("child", worktree(true)), workspace("other")]), TUI);
-    expect(await menuOf("root")).toEqual(["pin-workspace", "rename-workspace", "session-history", "new-worktree", "open-worktree", "pull-requests", "fold"]);
-    expect(await menuOf("child")).toEqual(["pin-workspace", "rename-workspace", "session-history", "pull-requests"]);
+    expect(await menuOf("root")).toEqual(["pin-workspace", "rename-workspace", "session-history", "new-worktree", "open-worktree", ...optional, "fold"]);
+    expect(await menuOf("child")).toEqual(["pin-workspace", "rename-workspace", "session-history", ...optional]);
     expect(await menuOf("other")).toContain("close");
   });
 
@@ -148,10 +151,12 @@ describe("the sidebar on a PC the Herdr app lays out", () => {
     expect(await menuOf("child")).toEqual(["pin-workspace", "session-history", "close"]);
   });
 
-  it("offers a core PC's rows their rename and worktree items where Ovis keeps its layout", async () => {
+  it.each([false, true])("offers a core PC's rows their rename and worktree items where Ovis keeps its layout (pull requests: %s)", async (pullRequests) => {
+    stored.set("ovis:settings", JSON.stringify({ pullRequests }));
+    const optional = pullRequests ? ["pull-requests"] : [];
     await draw(roster([workspace("root", worktree(false)), workspace("child", worktree(true))]), OVIS_CORE);
-    expect(await menuOf("root")).toEqual(["pin-workspace", "rename-workspace", "session-history", "close", "new-worktree", "open-worktree", "pull-requests", "fold"]);
-    expect(await menuOf("child")).toEqual(["pin-workspace", "rename-workspace", "session-history", "close", "pull-requests", "delete-worktree"]);
+    expect(await menuOf("root")).toEqual(["pin-workspace", "rename-workspace", "session-history", "close", "new-worktree", "open-worktree", ...optional, "fold"]);
+    expect(await menuOf("child")).toEqual(["pin-workspace", "rename-workspace", "session-history", "close", ...optional, "delete-worktree"]);
   });
 
   it("offers no rename for a core's Other terminals, which has no name to change (#2806)", async () => {

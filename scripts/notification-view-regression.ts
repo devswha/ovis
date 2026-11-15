@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Browser } from "playwright-core";
 import { herdrRpc, paneClose, paneFocus, paneSplit, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
-import { type Lens } from "./view-toggle.ts";
 
 /** A tapped pane alert shows an agent pane's chat once: the lens the pane remembered stays its own, and a shell keeps its terminal. */
 export async function checkNotificationView(browser: Browser, origin: string): Promise<void> {
@@ -32,9 +31,9 @@ export async function checkNotificationView(browser: Browser, origin: string): P
     page.on("pageerror", (error) => errors.push(error.message));
     const saved = () => page.evaluate((pane) => localStorage.getItem(`ovis:view:${pane}`), agent);
     /** the selected row and the lens drawn with it, both from the page: the stored selection is written before the render */
-    const shows = (pane: string, lens: Lens) => page.waitForFunction(([id, view]) =>
+    const shows = (pane: string, lens: "Chat transcript" | "Live terminal") => page.waitForFunction(([id, title]) =>
       document.querySelector(".pane-select[aria-current='true']")?.getAttribute("title")?.startsWith(`${id} —`) === true
-      && document.querySelector(".app-header .header-more-button")?.getAttribute("data-view") === view, [pane, lens]);
+      && document.querySelector(".view-switch button[aria-pressed='true']")?.getAttribute("title")?.startsWith(title!) === true, [pane, lens]);
     /** what public/sw.js posts to an open window when a pane's alert is tapped */
     const tapAlert = (pane: string, workspace?: string) => page.evaluate(([id, ws]) => {
       navigator.serviceWorker.dispatchEvent(new MessageEvent("message", { data: { type: "select-pane", machine_id: "local", pane_id: id, view: "chat", ...(ws ? { workspace_id: ws } : {}) } }));
@@ -44,7 +43,7 @@ export async function checkNotificationView(browser: Browser, origin: string): P
     // a closed app opens on the alert's address
     await page.goto(`${origin}/?pane=${encodeURIComponent(agent)}&view=chat`);
     await page.locator(".conn-live").waitFor();
-    await shows(agent, "chat");
+    await shows(agent, "Chat transcript");
     assert.equal(await saved(), "terminal", "an alert does not replace the lens the pane remembered");
     // the address is a deep link like any other (lib/deepLink.ts): it names the pane and the lens shown
     await page.waitForFunction((id) => { const query = new URLSearchParams(window.location.search); return query.get("pane") === id && query.get("view") === "chat"; }, agent);
@@ -54,23 +53,23 @@ export async function checkNotificationView(browser: Browser, origin: string): P
     }
     // picking the pane by hand ends the alert's turn: its own lens is back without a reload
     await row(agent).click();
-    await shows(agent, "terminal");
+    await shows(agent, "Live terminal");
 
     // an open window is told by the worker; a shell has no conversation, so its alert opens the terminal
     await tapAlert(shell);
-    await shows(shell, "terminal");
+    await shows(shell, "Live terminal");
     await tapAlert(agent);
-    await shows(agent, "chat");
+    await shows(agent, "Chat transcript");
     assert.equal(await saved(), "terminal");
     await row(shell).click();
     await row(agent).click();
-    await shows(agent, "terminal");
+    await shows(agent, "Live terminal");
 
     // An ended pane's alert, which the worker names twice (before and after focus), while the
     // app still asks herdr whether the pane is gone: the second delivery must not strand the
     // first's lookup. The alert names the workspace the pane was in, so that workspace opens.
     await row(shell).click();
-    await shows(shell, "terminal");
+    await shows(shell, "Live terminal");
     let asked!: () => void;
     const lookup = new Promise<void>((resolve) => { asked = resolve; });
     let release!: () => void;
@@ -98,9 +97,9 @@ export async function checkNotificationView(browser: Browser, origin: string): P
     const sibling = (await paneSplit(agent, "right", false)).pane_id;
     await paneFocus(shell);
     await row(shell).click();
-    await shows(shell, "terminal");
+    await shows(shell, "Live terminal");
     await tapAlert(agent, workspaces[0]);
-    await shows(agent, "chat");
+    await shows(agent, "Chat transcript");
     await paneClose(agent);
     // a shell beside an agent has no sidebar row of its own: its frame is the one shown as current
     await page.locator(`.pane-frame.is-current[data-layout-pane="${sibling}"]`).waitFor({ timeout: 8000 });

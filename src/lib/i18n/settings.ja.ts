@@ -320,5 +320,4 @@ export const SETTINGS_JA: Record<string, string> = {
 
   // Settings → Alerts → Also send to, when the server could not say what it holds (design pass G-111)
   "Could not read this PC's alert destination ({error}). Close Settings and open it again.": "この PC の外部通知の設定を読み取れませんでした（{error}）。設定を閉じてもう一度開いてください。",
-  "Chat": "チャット",
 };

@@ -69,9 +69,8 @@ const patch = `(() => {
 let origin = "";
 const pane = encodeURIComponent(panes.web);
 const workGroup = (page: Page) => page.locator('section.machine-group[aria-label="PC Work PC"]');
-// a screenshot waits for the drawer and the sheet to finish moving, so it shows where they come to rest;
-// an agent friend's wave never ends, so a loop is no motion to wait for
-const still = (page: Page): Promise<unknown> => page.waitForFunction(() => document.getAnimations().every((animation) => animation.playState !== "running" || animation.effect?.getComputedTiming().endTime === Infinity));
+// a screenshot waits for the drawer and the sheet to finish moving, so it shows where they come to rest
+const still = (page: Page): Promise<unknown> => page.waitForFunction(() => document.getAnimations().every((animation) => animation.playState !== "running"));
 const selection = (page: Page): Promise<string | null> => page.evaluate(() => JSON.parse(localStorage.getItem("ovis:selection") ?? "null")?.machine_id ?? null);
 
 type Theme = "light" | "dark";
@@ -161,7 +160,9 @@ try {
           // closing Settings steps back over its history entries, onto the one that named Work PC's pane:
           // once it has landed, the address says the pane picked meanwhile, not Work PC's
           await page.waitForFunction(() => !(history.state !== null && typeof history.state === "object" && "ovis:settings" in history.state) && !location.search.includes("machine=work"));
+          await page.locator(".machine-context-name").first().waitFor({ state: "attached" });
           assert.equal(await selection(page), "local", "the selection stays off the hidden PC after Settings closes");
+          assert.equal(await page.locator(".machine-context-name").first().innerText(), "Laptop");
           await sidebar(page, phone);
           assert.equal(await workGroup(page).count(), 0, "a hidden PC leaves the sidebar");
           assert.equal(await page.locator('.agent-item[data-machine="work"]').count(), 0, "and the Agents list");
@@ -189,6 +190,7 @@ try {
           await page.goto(`${origin}/?machine=work&pane=${pane}`);
           await page.locator(".conn-live").waitFor({ state: "attached" });
           await page.waitForFunction(() => JSON.parse(localStorage.getItem("ovis:selection") ?? "null")?.machine_id === "work");
+          await page.locator(".machine-context-name", { hasText: "Work PC" }).first().waitFor({ state: "attached" });
           assert.equal(await page.getByText("That link's PC is not set up here").count(), 0);
           assert.equal(await selection(page), "work");
           await sidebar(page, phone);

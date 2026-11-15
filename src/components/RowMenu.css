@@ -383,35 +383,6 @@
   opacity: 1;
 }
 
-.row-menu-switch-track {
-  flex: none;
-  display: flex;
-  align-items: center;
-  width: calc(var(--space-6) + var(--space-4));
-  height: calc(var(--space-4) + 4px);
-  padding: 2px;
-  border: var(--hairline) solid var(--border-strong);
-  border-radius: var(--radius-pill);
-  background: var(--bg-input);
-}
-
-.row-menu-switch-track > span {
-  width: var(--space-4);
-  height: var(--space-4);
-  border-radius: var(--radius-pill);
-  background: var(--text-dim);
-}
-
-.row-menu-switch-track[data-checked="true"] {
-  justify-content: flex-end;
-  border-color: var(--primary);
-  background: var(--primary-tint);
-}
-
-.row-menu-switch-track[data-checked="true"] > span {
-  background: var(--primary);
-}
-
 /* Cancel keeps a finger's height however long the list above it is (G-048): the list alone shrinks */
 .row-sheet-cancel {
   flex: 0 0 auto;

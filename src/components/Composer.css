@@ -225,10 +225,10 @@
   display: contents;
 }
 
-/* the ring, the model and the level in one quiet pill, as tall as a control. It is a surface,
-   not a control: no border, no hover, no cursor; the ring and pi's model menu are what to press.
-   It shrinks before its neighbours do, so a name that does not fit is measured clipped inside it
-   (Composer.tsx) and the label steps out */
+/* the mark, the model, the level and the ring in one quiet pill, as tall as a control. It is a
+   surface, not a control: no border, no hover, no cursor, and the ring inside it is the only
+   thing to press. It shrinks before its neighbours do, so a name that does not fit is measured
+   clipped inside it (Composer.tsx) and the label steps out */
 .composer-pill {
   display: flex;
   flex: 0 1 auto;
@@ -255,9 +255,7 @@
 
 /* stepped out: read, not drawn (the properties of .visually-hidden, set from the measured row) */
 .composer-status[data-model="out"] .composer-model-info,
-.composer-status[data-model="no-effort"] .composer-reasoning,
-.composer-status[data-model="no-name"] .composer-model,
-.composer-status[data-model="no-name"] .composer-reasoning-dot {
+.composer-status[data-model="no-effort"] .composer-reasoning {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -324,16 +322,12 @@
   text-transform: uppercase;
 }
 
-/* what is left of the context: a ring a tap opens the number of, red when little is left */
+/* what is left of the context: a ring that only shows (its number is in the tooltip), red when little is left */
 .composer-context {
   display: inline-flex;
   flex: none;
   align-items: center;
-  padding: 0;
-  border: 0;
-  background: none;
   color: var(--text-dim);
-  cursor: pointer;
 }
 
 .composer-context svg {
@@ -573,7 +567,7 @@
   height: var(--space-8);
   padding: 0;
   border: 0;
-  border-radius: var(--radius-round);
+  border-radius: var(--radius-pill);
   background: transparent;
   color: var(--primary-text);
 }
@@ -607,11 +601,6 @@
 }
 
 .composer-send {
-  --composer-action-fill: var(--primary);
-}
-
-/* a live call where there is nothing to send: Send's circle with a waveform, as in the agents app */
-.composer-voice {
   --composer-action-fill: var(--primary);
 }
 
@@ -655,8 +644,7 @@
 }
 
 @media (hover: hover) {
-  .composer-send:hover:not(:disabled),
-  .composer-voice:hover {
+  .composer-send:hover:not(:disabled) {
     --composer-action-fill: var(--primary-hover);
   }
 
@@ -1595,79 +1583,5 @@
       -webkit-backdrop-filter: none;
       backdrop-filter: none;
     }
-  }
-}
-
-/* pi's pill opens its model menu: everything in it after the ring is one button, on the pill's fill */
-.composer-pill-menu {
-  display: flex;
-  flex: 0 1 auto;
-  align-items: center;
-  gap: var(--space-2);
-  min-width: 0;
-  height: 100%;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: inherit;
-  font: inherit;
-  overflow: hidden;
-  cursor: pointer;
-}
-
-.composer-pill-menu:disabled {
-  cursor: default;
-  opacity: 0.6;
-}
-
-.composer-pill-chevron {
-  width: 14px;
-  height: 14px;
-  flex: none;
-  margin-inline-start: calc(var(--space-1) * -1);
-  color: var(--text-dim);
-}
-
-/* the ring's numbers, over it: drawn in the body, so the card cannot clip it */
-.composer-context-tip {
-  position: fixed;
-  z-index: 60;
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  max-width: calc(100vw - 16px);
-  padding: var(--space-1) var(--space-2);
-  border: var(--hairline) solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--bg-panel);
-  box-shadow: var(--shadow-pop);
-  color: var(--text-strong);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  transform: translateX(-50%);
-}
-
-/* Only the suggested words receive taps. Blank input space and scroll gestures stay native. */
-.composer-inline-suggestion {
-  display: none;
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  color: var(--text-dim);
-  white-space: pre-wrap;
-}
-
-@media (pointer: coarse) {
-  .composer-text.has-suggestion::placeholder {
-    color: transparent;
-  }
-
-  .composer-inline-suggestion {
-    display: block;
-  }
-
-  .composer-inline-suggestion > span {
-    pointer-events: auto;
-    cursor: pointer;
   }
 }

@@ -9,7 +9,6 @@ import { createServer } from "../server/index.ts";
 import { herdrRpc, paneProcessInfo, paneRead, sessionSnapshot, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
 import { UsageService } from "../server/usage.ts";
 import { chromePath } from "./chrome-path.ts";
-import { openWorkRuns } from "./work-runs.ts";
 
 if (process.platform !== "linux") {
   console.log("SKIP native Copilot store requires Linux process descriptors");
@@ -99,7 +98,6 @@ console.log("fixture ready");`);
   assert.equal((await log.innerText()).includes("not visible"), false);
   const head = log.locator(".work-block-head").first();
   if (await head.getAttribute("aria-expanded") !== "true") await head.click();
-  await openWorkRuns(log);
   await log.locator(".work-row-head").first().click();
   await log.locator(".chat-tool-more").click();
   // a long whole output opens folded to its head: its own Show all unfolds it
@@ -109,10 +107,6 @@ console.log("fixture ready");`);
   await log.getByText("Proceed with this choice?").waitFor();
   await log.locator(".chat-ask-options").getByText("Yes", { exact: true }).waitFor();
   await log.locator(".chat-ask-options").getByText("No", { exact: true }).waitFor();
-  // Return from the expanded output to following the end before testing new turns.
-  if (await head.getAttribute("aria-expanded") === "true") await head.click();
-  const jump = page.getByRole("button", { name: "Jump to latest", exact: true });
-  if (await jump.isVisible()) await jump.click();
   appendFileSync(transcript, event("session.resume", { selectedModel: "fixture-model" })
     + event("user.message", { content: "Follow-up prompt" })
     + event("assistant.message", { content: "Follow-up answer.", phase: "final_answer", model: "fixture-model" }));

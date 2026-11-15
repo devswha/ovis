@@ -22,6 +22,7 @@ import { shellMode } from "./lib/shellMode.ts";
 import { isReportableWindowError } from "./lib/uncaughtErrors.ts";
 import "./lib/viewport.ts";
 import { watchSheetExits } from "./lib/sheets.ts";
+import "./fork/styles.css";
 
 // a phone's sheets drop back down however they close (lib/sheets.ts)
 watchSheetExits();

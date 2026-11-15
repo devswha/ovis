@@ -150,6 +150,7 @@ export const FILES_JA: Record<string, string> = {
   "Already merged.": "マージ済みです。",
   "Checks": "チェック",
   "Closed without merging": "マージせずにクローズ",
+  "Draft": "ドラフト",
   "GitHub CLI (gh) is not installed on this PC. Install it and sign in with gh auth login to see pull requests here.": "この PC に GitHub CLI (gh) がインストールされていません。インストールして gh auth login でサインインすると、ここでプルリクエストを確認できます。",
   "GitHub CLI (gh) on this PC is not signed in. Run gh auth login there to see pull requests here.": "この PC の GitHub CLI (gh) はサインインしていません。その PC で gh auth login を実行すると、ここでプルリクエストを確認できます。",
   "GitHub is still working out whether it can merge; refresh in a moment.": "GitHub がまだマージできるか確認しています。少ししてから更新してください。",

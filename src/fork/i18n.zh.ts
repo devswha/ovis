@@ -2,7 +2,12 @@
  * Keys only this fork's Settings rows use: components/ForkSettingsRows.tsx.
  * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
  */
+import { FORK_I18N } from "./i18n.ts";
+import { FORK_FEATURE_I18N } from "./featureI18n.ts";
+
 export const FORK_ZH: Record<string, string> = {
+  ...FORK_FEATURE_I18N.zh,
+  ...FORK_I18N.zh,
   "Context circle": "上下文圆环",
   "A ring beside the model shows how full its context is. Tap it for the numbers.": "模型旁的圆环显示上下文用量。点按可查看数字。",
   "Follow Omarchy": "跟随 Omarchy",

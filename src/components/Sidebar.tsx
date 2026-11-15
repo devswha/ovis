@@ -308,7 +308,7 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
   // the unmarked workspaces git answers for: a repository's folder, where the first worktree starts
   // (lib/repositoryWorkspaces.ts, shared with the palette)
   const { repositoryWorkspaces, notCheckout } = useRepositoryWorkspaces({ machineId, snapshot, online, watching, offered: worktreesOffered, listWorktrees });
-  const { branches, rememberOpened } = useWorktreeBranches(snapshot, online, true, repositoryWorkspaces, watching, notCheckout);
+  const { branches, rememberOpened } = useWorktreeBranches(snapshot, online, true, repositoryWorkspaces, watching, notCheckout, settings.headerBranch);
   // the sidebar's filter (lib/sidebarFilter.ts): which rows stay, which are context; it learns the branch
   // each row says from here, since the inventory is this roster's. What it last said outlives a fold of the
   // PC (which unmounts this roster), so a branch stays findable on a PC drawn folded
@@ -573,7 +573,7 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
       { id: "open-worktree", label: t("Open worktree…"), icon: FolderOpen, run: () => setWorktreeDialog({ mode: "open", workspace }) },
     ] : [];
     // a pull request's checkout is made from any checkout of the repository: a linked worktree lists them too
-    const pullRequestItems: RowMenuItem[] = (workspace.worktree || repositoryWorkspaces.has(workspace.workspace_id)) && !watching && worktreesOffered ? [
+    const pullRequestItems: RowMenuItem[] = settings.pullRequests && (workspace.worktree || repositoryWorkspaces.has(workspace.workspace_id)) && !watching && worktreesOffered ? [
       { id: "pull-requests", label: t("Pull requests…"), icon: GitPullRequest, run: () => setPullRequestsFor(workspace) },
     ] : [];
     const closes = [workspace.workspace_id, ...sameRepo.map((candidate) => candidate.workspace_id)];

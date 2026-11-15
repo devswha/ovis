@@ -16,7 +16,6 @@ import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 import { readableColor } from "../src/lib/terminalFold.ts";
 import { openSettingsPage } from "./settings-page.ts";
-import { pickLens } from "./view-toggle.ts";
 
 interface Frame { type: string; pane_id?: string; data?: string; text?: string; features?: string[] }
 interface GhosttyFixture { inputs: Frame[]; print(data: string): void; geometry(cols: number, rows: number): void }
@@ -340,7 +339,7 @@ try {
           await columnsKept(`a ${width}px window after a fit against the old screen`);
         }
         for (const view of ["Chat", "Terminal", "Chat", "Terminal"]) {
-          await pickLens(page, view === "Chat" ? "chat" : "terminal");
+          await page.getByRole("radio", { name: view, exact: true }).or(page.getByRole("button", { name: view, exact: true })).first().click();
           if (view === "Terminal") {
             await page.locator(".pane-frame.is-current .pane-terminal[data-renderer='ghostty']").waitFor();
             await columnsKept("back from Chat");
@@ -356,14 +355,14 @@ try {
           const cell = (name: string) => parseFloat(getComputedStyle(layer).getPropertyValue(name));
           return { cols: Math.round(screen.offsetWidth / cell("--ghostty-cw")), rows: Math.round(screen.offsetHeight / cell("--ghostty-ch")), width: screen.style.width };
         });
-        await pickLens(page, "chat");
+        await page.getByRole("radio", { name: "Chat", exact: true }).or(page.getByRole("button", { name: "Chat", exact: true })).first().click();
         // the grid is hidden under the lens, and xterm has seen it leave view, before another device sizes it
         await page.waitForFunction(() => getComputedStyle(document.querySelector(".pane-frame.is-current .pane-terminal")!).contentVisibility === "hidden", undefined, { timeout: 5000 });
         await settled(page);
         await page.evaluate(({ cols, rows }) => window.ghosttyFixture.geometry(cols * 3, rows), grid);
         await page.waitForFunction((width) => document.querySelector<HTMLElement>(".pane-frame.is-current .xterm-screen")!.style.width !== width, grid.width);
         await page.evaluate(({ cols, rows }) => window.ghosttyFixture.geometry(cols, rows), grid);
-        await pickLens(page, "terminal");
+        await page.getByRole("radio", { name: "Terminal", exact: true }).or(page.getByRole("button", { name: "Terminal", exact: true })).first().click();
         await page.locator(".pane-frame.is-current .pane-terminal[data-renderer='ghostty']").waitFor();
         // xterm resizes its screen from an idle task: compare cells once the screen is the given-back grid's again
         await page.waitForFunction((width) => document.querySelector<HTMLElement>(".pane-frame.is-current .xterm-screen")!.style.width === width, grid.width, { timeout: 5000 });

@@ -190,9 +190,6 @@ const storageView = (page: Page) => page.evaluate(() => {
   return { local: read(localStorage), session: read(sessionStorage) };
 });
 
-/** The storage view without the branch cache, which forgets a workspace that is removed, as it should. */
-const withoutBranches = ({ local, session }: Awaited<ReturnType<typeof storageView>>) => ({ local: Object.fromEntries(Object.entries(local).filter(([key]) => !key.startsWith("ovis:branches:"))), session });
-
 const transportText = (page: Page) => page.evaluate(() => {
   const calls = (window as unknown as { sidebarFilterCalls: { requests: { method: string; url: string; body: string | null }[]; frames: string[]; focus: number; moves: number } }).sidebarFilterCalls;
   return { text: JSON.stringify(calls.requests) + calls.frames.join("\n") + location.href, focus: calls.focus, moves: calls.moves };
@@ -663,7 +660,7 @@ async function liveOfflineRoster(browser: Browser, scene: Scene): Promise<void> 
   const { context, page, errors } = await newPage(browser, scene, `pane=${encodeURIComponent(WEB)}&long=1&loading=1&error=1`, { "ovis:sidebar-agent-pins": pins });
   try {
     const before = await rosterView(page);
-    const storageBefore = withoutBranches(await storageView(page));
+    const storageBefore = await storageView(page);
     assert.deepEqual(before.groups.map((group) => group.name), ["Laptop", "Build PC", "Old PC", "Rack PC"], `${name}: two connected PCs, one loading, one in error`);
     await page.locator(".machine-list .workspace-group", { hasText: LONG_LABEL }).first().scrollIntoViewIfNeeded();
     await capture(page, scene, "long-labels");
@@ -700,7 +697,7 @@ async function liveOfflineRoster(browser: Browser, scene: Scene): Promise<void> 
     await waitWorkspaceIds(page, 'ids.join(",") === "w1K,w1C,w1D,w1J,w1C"');
     const removed = await rosterView(page);
     assert.ok(!removed.agents.some((row) => row.machine === "local" && row.pane === panes.hermes), `${name}: a removed pane's agent row is gone too`);
-    assert.deepEqual(withoutBranches(await storageView(page)), storageBefore, `${name}: the removal prunes no pin and writes no fold`);
+    assert.deepEqual(await storageView(page), storageBefore, `${name}: the removal prunes no pin and writes no fold`);
     // the build PC goes away: its rows stay, say so, and cannot be driven
     await fixture(page, `disconnect("build")`);
     const buildGroup = machineGroup(page, "Build PC");
@@ -723,7 +720,7 @@ async function liveOfflineRoster(browser: Browser, scene: Scene): Promise<void> 
     assert.equal(pathOnly.empty, "No workspaces or agents match on the PCs that answered\nTry other words, or clear the filter.", `${name}: the line says only the PCs that answered were searched`);
     await clearButton(page).click();
     await waitWorkspaceIds(page, 'ids.includes("w1C") && ids.length >= 6');
-    assert.deepEqual(withoutBranches(await storageView(page)), storageBefore, `${name}: nothing in storage changed through all of it`);
+    assert.deepEqual(await storageView(page), storageBefore, `${name}: nothing in storage changed through all of it`);
     const transport = await transportText(page);
     assert.equal(transport.focus, 0, `${name}: nothing called pane.focus`);
     assert.equal(transport.moves, 0, `${name}: nothing moved a workspace`);

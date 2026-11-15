@@ -320,7 +320,7 @@
   height: var(--pointer-target);
   padding: var(--space-px-3);
   border: var(--space-half) solid var(--status-done);
-  border-radius: var(--radius-circle);
+  border-radius: 50%;
   color: var(--status-done);
 }
 

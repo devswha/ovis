@@ -15,7 +15,7 @@ import { terminalTheme } from "../src/lib/settings.ts";
 import { rowFor, THEME_IDS, type ThemeId } from "../src/lib/themes.ts";
 import baseline from "../src/lib/themes.legacy-baseline.json";
 import { comboKey, LEGACY_COMBOS } from "./theme-baseline.ts";
-import { pickLens } from "./view-toggle.ts";
+import { openLens } from "./header-lens.ts";
 
 // Settings on the unmodified app over the demo's fixture transport: every page fits a phone, and
 // the browser's Back button steps out of the dialog instead of out of the app. All files and
@@ -203,12 +203,12 @@ try {
           await page.locator(".conn-live").waitFor({ state: "attached" });
           const terminal = page.locator(".pane-terminal");
           await terminal.waitFor({ state: "attached" });
-          await pickLens(page, "terminal", { tap: true });
+          await openLens(page, "terminal", "tap");
           assert.equal(await terminal.getAttribute("role"), "region");
           assert.equal(await terminal.getAttribute("aria-roledescription"), label("Terminal"));
           assert.equal(await terminal.getAttribute("aria-label"), label("Terminal for {title}").replace("{title}", "Idempotent payments"));
           assert.equal(await terminal.getAttribute("tabindex"), null, "the wrapper adds no empty keyboard stop");
-          await pickLens(page, "chat", { tap: true });
+          await openLens(page, "chat", "tap");
           assert.equal(await terminal.getAttribute("role"), null, "chat exposes no empty terminal landmark");
           assert.equal(await terminal.getAttribute("aria-label"), null);
           await openSettings(page);

@@ -1,0 +1,117 @@
+name: Fork CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: fork-ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  typecheck-build:
+    name: Fork typecheck and build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ci
+        with:
+          node: 'true'
+      - run: bun install --frozen-lockfile
+      # check.ts has no step selection: use exactly its fast freshness/typecheck/build commands.
+      - run: bun run generate:types --check
+      - run: bun run generate:themes --check
+      - run: bun run typecheck
+      - run: bun run build
+  unit:
+    name: Fork unit tests (${{ matrix.shard }}/4)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    env:
+      UNIT_TEST_WORKERS: 4
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ci
+        with:
+          node: 'true'
+      - run: bun install --frozen-lockfile
+      - run: bun scripts/fork-unit-shard.ts --shard ${{ matrix.shard }}/4
+  browser:
+    name: Fork browser
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      CHECK_DIR: ${{ github.workspace }}/.ci
+      BROWSER_WORKERS: 3
+      BROWSER_RETRY: 0
+      FORK_BROWSER_EVENT: ${{ github.event_name }}
+      FORK_BROWSER_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ci
+        with:
+          node: 'true'
+          herdr: 'true'
+      - run: bun install --frozen-lockfile
+      - name: Fetch upstream browser baseline
+        id: upstream
+        run: |
+          if git fetch --depth=1 https://github.com/devswha/ovis.git main; then
+            echo "sha=$(git rev-parse FETCH_HEAD)" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Could not fetch upstream; running all changed browser scripts"
+          fi
+      - name: Get Playwright version
+        id: playwright-version
+        run: echo "version=$(bun -e 'console.log(require("playwright-core/package.json").version)')" >> "$GITHUB_OUTPUT"
+      - name: Cache Playwright browser
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .ci-cache/playwright
+          key: playwright-workspace-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright-version.outputs.version }}
+      - run: bun run build
+      # The upstream runner calls ci-chromium.sh to install hosted dependencies and Chromium.
+      # check run supplies the same disposable herdr/config/session isolation as upstream CI.
+      - run: bun run check run -- bun scripts/fork-browser.ts
+        env:
+          FORK_BROWSER_UPSTREAM: ${{ steps.upstream.outputs.sha }}
+      - name: Preserve browser logs and evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fork-browser-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .ci/report.json
+            .ci/browser-logs/**
+            .ci/browser-evidence/**
+          include-hidden-files: true
+          if-no-files-found: ignore
+  fork-ci:
+    name: Fork CI
+    needs: [typecheck-build, unit, browser]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Require every fork job to succeed
+        env:
+          BUILD_RESULT: ${{ needs.typecheck-build.result }}
+          UNIT_RESULT: ${{ needs.unit.result }}
+          BROWSER_RESULT: ${{ needs.browser.result }}
+        run: |
+          test "$BUILD_RESULT" = success
+          test "$UNIT_RESULT" = success
+          test "$BROWSER_RESULT" = success

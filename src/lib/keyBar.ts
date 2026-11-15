@@ -60,7 +60,7 @@ export function migrateKeyBarItems(extras: readonly KeyBarExtra[]): KeyBarItem[]
 export const DEFAULT_KEY_BAR_ITEMS: KeyBarItem[] = [
   { type: "key", key: "Escape" }, { type: "key", key: "Tab" }, { type: "key", key: "ctrl-c" },
   { type: "modifier", modifier: "ctrl" }, { type: "modifier", modifier: "alt" }, { type: "modifier", modifier: "shift" },
-  { type: "modifier", modifier: "super" }, { type: "key", key: "Enter" },
+  { type: "key", key: "Enter" },
   { type: "key", key: "ArrowUp" }, { type: "key", key: "ArrowDown" }, { type: "key", key: "ArrowLeft" }, { type: "key", key: "ArrowRight" },
 ];
 

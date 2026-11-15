@@ -20,7 +20,7 @@ describe("default key bar", () => {
   const caps = (items: KeyBarItem[]) => items.map(keyBarItemLabel);
 
   it("prioritizes core keys ahead of modifiers and navigation", () => {
-    expect(caps(DEFAULT_KEY_BAR_ITEMS)).toEqual(["Esc", "Tab", "^C", "Ctrl", "Alt", "Shift", "Super", "Enter", "↑", "↓", "←", "→"]);
+    expect(caps(DEFAULT_KEY_BAR_ITEMS)).toEqual(["Esc", "Tab", "^C", "Ctrl", "Alt", "Shift", "Enter", "↑", "↓", "←", "→"]);
     expect(caps(sanitizeKeyBarItems(undefined))).toEqual(caps(DEFAULT_KEY_BAR_ITEMS));
   });
 });
@@ -100,7 +100,7 @@ describe("keyBarRowItems", () => {
     const combination: KeyBarItem = { type: "key", key: "ArrowLeft", modifiers: { ctrl: true, alt: false, shift: false } };
     const items: KeyBarItem[] = [...DEFAULT_KEY_BAR_ITEMS, { type: "key", key: "pipe" }, { type: "key", key: "-" }, { type: "key", key: "Home" }, combination];
     expect(keyBarRowItems(items, true).map(keyBarItemId)).toEqual([
-      "key:\"ctrl-c\":held", "modifier:ctrl", "modifier:alt", "modifier:shift", "modifier:super", "key:\"Enter\":held", "key:\"Home\":held", keyBarItemId(combination),
+      "key:\"ctrl-c\":held", "modifier:ctrl", "modifier:alt", "modifier:shift", "key:\"Enter\":held", "key:\"Home\":held", keyBarItemId(combination),
     ]);
   });
 

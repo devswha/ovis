@@ -349,7 +349,7 @@
   height: var(--space-2);
   margin-top: auto;
   margin-left: auto;
-  border-radius: var(--radius-circle);
+  border-radius: var(--radius-pill);
 }
 
 .theme-card-name {
@@ -393,7 +393,7 @@
   width: 28px;
   height: 28px;
   border: var(--hairline) solid var(--border-strong);
-  border-radius: var(--radius-circle);
+  border-radius: var(--radius-pill);
   background: var(--bg-elevated);
   box-shadow: var(--shadow-card);
 }

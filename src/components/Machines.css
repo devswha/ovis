@@ -13,21 +13,6 @@
 
 .machine-list > .tree-state { padding-left: calc(var(--side-gutter) + var(--side-box)); }
 
-/* the PCs Tailscale says are offline, behind one quiet row (MachineSidebar) */
-.machine-offline-toggle {
-  margin: var(--space-4) 0 0 var(--side-gutter);
-  gap: var(--space-2);
-  color: var(--text-dim);
-  font-size: var(--fs-sm);
-}
-
-.machine-offline-toggle + .machine-group { margin-top: var(--space-2); }
-
-.machine-offline-toggle svg {
-  width: 14px;
-  height: 14px;
-}
-
 .machine-group {
   --machine-indent: calc(var(--side-gutter) + var(--side-box));
 }
@@ -136,7 +121,7 @@ button.machine-title:focus-visible { outline-offset: calc(var(--ring-offset) * -
   width: var(--dot-size);
   height: var(--dot-size);
   margin-left: var(--space-2);
-  border-radius: var(--radius-circle);
+  border-radius: var(--radius-pill);
   background: var(--status-idle);
 }
 
@@ -149,22 +134,13 @@ button.machine-title:focus-visible { outline-offset: calc(var(--ring-offset) * -
   animation: pulse var(--dur-pulse) var(--ease-pulse) infinite;
 }
 
-/* the PC whose desktop is open is marked as a picked row is, and its screen button is lit */
-.machine-group.is-screen > .machine-header { background: var(--side-selected); }
-.machine-screen[aria-pressed="true"] { color: var(--accent); }
-
-@media (forced-colors: active) {
-  .machine-group.is-screen > .machine-header { outline: var(--hairline) solid Highlight; outline-offset: calc(-1 * var(--hairline)); }
-}
-
 /* the + fills the rows' status cell */
 .machine-new { width: var(--side-box); }
 
 /* The lone Host's group has no header (MachineSidebar.tsx): its + is this last row of the list, on the rows'
    grid, the + in the folders' leading cell and its words as dim as a section head's, so it reads as an action
    and not as one more workspace. Hover and focus are a row's. */
-.machine-new-row,
-.machine-screen-row {
+.machine-new-row {
   display: flex;
   align-items: center;
   width: calc(100% - var(--side-gutter) * 2);
@@ -190,20 +166,17 @@ button.machine-title:focus-visible { outline-offset: calc(var(--ring-offset) * -
   white-space: nowrap;
 }
 
-.machine-new-row:focus-visible,
-.machine-screen-row:focus-visible { outline-offset: calc(var(--ring-offset) * -1); }
+.machine-new-row:focus-visible { outline-offset: calc(var(--ring-offset) * -1); }
 
 @media (hover: hover) {
-  .machine-new-row:hover,
-  .machine-screen-row:hover {
+  .machine-new-row:hover {
     background: var(--side-hover);
     color: var(--text);
   }
 }
 
 @media (pointer: coarse) {
-  .machine-new-row,
-  .machine-screen-row { min-height: var(--touch-target); }
+  .machine-new-row { min-height: var(--touch-target); }
 }
 
 /* An SSH PC's manage button takes no room until its header is hovered or focused, its menu is

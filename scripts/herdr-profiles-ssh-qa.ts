@@ -9,8 +9,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createServer } from "../server/index.ts";
 import { parseHerdrProfiles } from "../server/herdr-profiles.ts";
-import type { Machine, SetupJob } from "../shared/machines.ts";
-import { REMOTE_BUNDLE_VERSION } from "../server/bundle-version.ts";
+import { REMOTE_BUNDLE_VERSION, type Machine, type SetupJob } from "../shared/machines.ts";
 import type { ServerMessage, SessionSnapshot, WorkspaceCreated } from "../shared/protocol.ts";
 
 const archive = resolve(process.env.HERDR_SSH_QA_BUNDLE ?? "");
@@ -94,7 +93,7 @@ try {
   command(["ln", "-s", archive, join(root, filename)]);
   const platform = remote("uname -m") === "x86_64" ? "linux-x64" : "linux-arm64";
   const manifest = join(root, "manifest.json");
-  writeFileSync(manifest, JSON.stringify({ version: REMOTE_BUNDLE_VERSION.split("+")[0], revision: REMOTE_BUNDLE_VERSION, assets: { [platform]: { url: filename, sha256 } } }));
+  writeFileSync(manifest, JSON.stringify({ version: REMOTE_BUNDLE_VERSION, assets: { [platform]: { url: filename, sha256 } } }));
   process.env.OVIS_BUNDLE_MANIFEST = manifest;
   rows = [{ ...catalog[0]!, target: { ...catalog[0]!.target!, destination: "herdr-profile-fixture", port } }];
   assert.equal(rows[0]!.target!.session, undefined);

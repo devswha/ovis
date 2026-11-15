@@ -111,9 +111,6 @@ try {
           node.style.height = "100.25px"; node.style.bottom = "auto"; node.style.padding = "0";
           const content = node.firstElementChild as HTMLElement;
           content.style.minHeight = "0"; content.style.height = "200.75px"; content.style.overflow = "hidden";
-          // the list places its rows absolutely: positioned, the content clips them, so the scroll
-          // height is its own 200.75px and not however tall the demo's transcript happens to be
-          content.style.position = "relative";
           const style = document.createElement("style");
           // a line taller than the view leaves each page one pixel
           style.textContent = "[data-fractional-paging]::before { display: none; } [data-fractional-paging] :is(.chat-turn-agent > .markdown, .chat-bubble) { line-height: 1000px; }";

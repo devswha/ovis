@@ -7,7 +7,6 @@ import { chromium } from "playwright-core";
 import { build as viteBuild } from "vite";
 import { CONTENT_SECURITY_POLICY } from "../server/static.ts";
 import { chromePath } from "./chrome-path.ts";
-import { openWorkRuns } from "./work-runs.ts";
 import { parseClaudeTranscript } from "../server/conversation.ts";
 import type { ConversationTurn, InteractivePrompt } from "../shared/protocol.ts";
 import type {} from "./chat-fallback-fixture.tsx";
@@ -183,7 +182,6 @@ try {
     assert.equal(await page.locator(".chat-turn-agent").count(), 2, "hook continuation answers have separate bubbles");
     assert.equal(await page.getByText(/Stop hook feedback:/).count(), 0, "injected hook context is not a user message");
     await head.click();
-    await openWorkRuns(work);
     assert.equal(await work.locator(".work-row-head").count(), 1, "the tool stays inside work");
     await head.click();
     if (process.env.UI_EVIDENCE_DIR) await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, "claude-hook-separate-replies.png") });

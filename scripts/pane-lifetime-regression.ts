@@ -14,7 +14,6 @@ import { chromium, type Browser, type BrowserContext, type Page, type WebSocket 
 import type { ServerMessage } from "../shared/protocol.ts";
 import { chromePath } from "./chrome-path.ts";
 import { SOCKET_PATH_MAX } from "./check.ts";
-import { pickLens, shownLens } from "./view-toggle.ts";
 
 // This script stops its herdr, so it must not share even the browser lane's test session.
 const root = mkdtempSync(join(tmpdir(), "pane-lifetime-"));
@@ -91,6 +90,8 @@ const stored = (page: Page): Promise<Record<string, string>> => page.evaluate(()
   Object.keys(localStorage).filter((key) => /^ovis:(composer-draft|terminal-line|terminal-draft|view|pane-lifetime|unsent):/.test(key))
     .map((key) => [key, localStorage.getItem(key) ?? ""]),
 ));
+const lens = (page: Page): Promise<string | null> => page.evaluate(() => document.querySelector(".view-switch button[aria-pressed='true']")?.getAttribute("title") ?? null);
+const chatButton = (page: Page) => page.locator(".view-switch button[title^='Chat transcript']");
 const box = (page: Page) => page.locator(".composer-text");
 
 async function select(page: Page, pane: string): Promise<void> {
@@ -157,7 +158,7 @@ try {
   // Given a message draft in each pane's box, typed in the chat lens picked by hand.
   for (const [pane, text] of [[one, "for the old one"], [two, "for the old two"]] as const) {
     await select(page, pane);
-    await pickLens(page, "chat");
+    await chatButton(page).click();
     await box(page).fill(text);
   }
   await select(page, one);
@@ -175,7 +176,7 @@ try {
   await page.reload();
   await box(page).waitFor();
   assert.equal(await box(page).inputValue(), "for the old one", "a server restart leaves the draft stored");
-  assert.equal(await shownLens(page), "chat", "a server restart leaves the lens picked");
+  assert.match(await lens(page) ?? "", /^Chat transcript/, "a server restart leaves the lens picked");
   assert.deepEqual(await stored(page), before, "a server restart retires nothing");
   console.log("PASS a web server restart keeps the draft and the lens");
 
@@ -188,7 +189,7 @@ try {
   await page.waitForFunction((was) => { const now = localStorage.getItem("ovis:pane-lifetime:local"); return now !== null && now !== was; },
     before["ovis:pane-lifetime:local"] ?? null, { timeout: 60_000 });
   // Then the page shows each pane as the new herdr has it: its default lens, and an empty box.
-  await page.waitForFunction(() => document.querySelector(".app-header .header-more-button")?.getAttribute("data-view") === "terminal",
+  await page.waitForFunction(() => document.querySelector(".view-switch button[aria-pressed='true']")?.getAttribute("title")?.startsWith("Live terminal") === true,
     undefined, { timeout: 20_000 }).catch(async (error: unknown) => {
     const roster = await (await fetch(`${origin}/api/machines`)).json() as { machines: { id: string; state: string; snapshot: { herdr_lifetime?: string; panes: { pane_id: string; agent?: string }[] } | null }[] };
     console.log("After the herdr restart", JSON.stringify({
@@ -197,11 +198,11 @@ try {
     }));
     throw error;
   });
-  await pickLens(page, "chat");
+  await chatButton(page).click();
   assert.equal(await box(page).inputValue(), "", "the pane of the new herdr starts with an empty box");
   await select(page, two);
-  assert.equal(await shownLens(page), "terminal", "the other pane is back on its default lens too");
-  await pickLens(page, "chat");
+  assert.match(await lens(page) ?? "", /^Live terminal/, "the other pane is back on its default lens too");
+  await chatButton(page).click();
   assert.equal(await box(page).inputValue(), "", "the other pane's box is empty too");
   const after = await stored(page);
   assert.notEqual(after["ovis:pane-lifetime:local"], before["ovis:pane-lifetime:local"], "the new herdr has a lifetime of its own");
@@ -220,7 +221,7 @@ try {
   await oldOne.getByRole("button", { name: "Put in message box" }).click();
   await box(page).waitFor();
   assert.equal(await box(page).inputValue(), "for the old one", "Recover fills the box");
-  assert.equal(await shownLens(page), "chat", "Recover shows the box it filled");
+  assert.match(await lens(page) ?? "", /^Chat transcript/, "Recover shows the box it filled");
   assert.deepEqual(submits, [], "nothing was sent");
   assert.doesNotMatch((await paneRead({ paneId: one, source: "visible" }, socketPath)).text, /for the old one/);
   // And Discard removes the other: with nothing left, the dialog closes and the pane menu offers no recovery.
@@ -230,8 +231,7 @@ try {
   await dialog.waitFor({ state: "detached" });
   assert.equal(Object.keys(await stored(page)).filter((key) => key.startsWith("ovis:unsent:")).length, 0);
   await openPaneMenu(page);
-  // a one-pane tab's menu: it is closed as a tab
-  await page.getByRole("menuitem", { name: "Close tab" }).waitFor();
+  await page.getByRole("menuitem", { name: "Close pane" }).waitFor();
   assert.equal(await page.getByRole("menuitem", { name: "Recover unsent text" }).count(), 0);
   await page.keyboard.press("Escape");
   console.log("PASS Recover fills the box without sending, Discard removes the text");
@@ -244,7 +244,7 @@ try {
   await older.addInitScript(() => { localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", alertsOn: false })); });
   const legacy = await newPage(older, `${origin}/?pane=${encodeURIComponent(one)}`, errors);
   await select(legacy.page, one);
-  await pickLens(legacy.page, "chat");
+  await chatButton(legacy.page).click();
   await box(legacy.page).fill("typed under an older bridge");
   assert.deepEqual(await stored(legacy.page), {}, "neither the draft nor the lens is stored");
   await server.stop();
