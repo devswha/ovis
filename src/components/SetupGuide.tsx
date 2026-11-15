@@ -164,6 +164,8 @@ export function SetupGuide(props: SetupGuideProps) {
   useEffect(() => {
     if (viewBefore.current === view) return;
     viewBefore.current = view;
+    // a dialog over the guide (Settings, a sign-in) keeps the keyboard: Escape there must not close the guide
+    if (focusInOtherModal(surface.current)) return;
     // the control that had focus went with the view it was in, or the dialog opened on the check and gave it
     // to its close button: the new view's heading takes it
     const active = document.activeElement;
@@ -393,7 +395,8 @@ function Steps({ catalog, ready, machineId, reopened, notice, dispatch, onClose,
   // the workspace made, when the agent did not start in it: opening it shows why, in its terminal
   const [madeWithout, setMadeWithout] = useState<string | null>(null);
 
-  // a reply after the screen is gone (Skip setup, the guide closed in another tab) opens nothing
+  // a reply after the screen is gone (Escape, the guide closed in another tab) changes nothing on it; a workspace it
+  // made is still shown, as Start asked
   const alive = useRef(true);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   const start = async (): Promise<void> => {
@@ -406,7 +409,8 @@ function Steps({ catalog, ready, machineId, reopened, notice, dispatch, onClose,
     if ("fault" in launch) { setOpening(false); setError(t("{agent} can't start from here. Open a workspace from the sidebar instead.", { agent: chosen.name })); return; }
     try {
       const result = await openInFolder((directory) => createWorkspace(createRequest({ tab: null, directory, name: "" }, launch, null)), folder, HOME, (reason) => alive.current && reason instanceof ApiError && reason.code === "invalid_cwd");
-      if (!alive.current) return;
+      // the guide closed while it was being made (Escape): the workspace exists, so it is still the one shown
+      if (!alive.current) { if (result.agent_started !== false) onOpened(result.pane_id, true); return; }
       if (result.agent_started === false) {
         setOpening(false);
         setMadeWithout(result.pane_id);
