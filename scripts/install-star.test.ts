@@ -412,6 +412,19 @@ describe.skipIf(platform() === "win32")("install.sh without a terminal", () => {
     expect(pc.ghCalls()).toEqual([]);
   });
 
+  it.concurrent("says the installed commit on a rerun with OVIS_REF, and installs nothing", async () => {
+    const pc = new Pc().installed();
+    const plugin = join(pc.scratch, "plugin");
+    for (const args of [["init", "-q"], ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "x"]]) {
+      expect(await Bun.spawn(["git", "-C", plugin, ...args], { stdout: "ignore", stderr: "inherit" }).exited).toBe(0);
+    }
+    const head = (await new Response(Bun.spawn(["git", "-C", plugin, "rev-parse", "HEAD"], { stdout: "pipe" }).stdout).text()).trim();
+    const { out, exitCode } = await pc.unattended({ OVIS_REF: "feat/x" });
+    expect(exitCode, out).toBe(0);
+    expect(out).toContain(head.slice(0, 12));
+    expect(existsSync(join(pc.scratch, "plugin-source"))).toBe(false);
+  });
+
   // gh sleeps 60 seconds: the installer ended within RUN_ENDS_WITHIN_MS, so it did not wait for gh, and gh is gone
   it.concurrent("goes on with the link when gh does not answer", async () => {
     const pc = new Pc("hangs");

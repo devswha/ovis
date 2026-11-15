@@ -590,20 +590,28 @@ if (-not $plugin) {
     # fresh install of a branch is (scripts/plugin-launch.ts install under OVIS_FROM_SOURCE=1, which leaves
     # .ovis/server/from-source naming its version), after the binary's server is stopped, so the start below runs them.
     $launcherScript = Join-Path $plugin.plugin_root 'scripts\plugin-launch.ts'
+    $repairing = $false
     if ($Ref -and $Ref -cnotmatch '^v\d+\.\d+\.\d+$' -and (Test-Path -LiteralPath $launcherScript)) {
         $checkoutVersion = (Get-Content -Raw -LiteralPath (Join-Path $plugin.plugin_root 'package.json') | ConvertFrom-Json).version
         $marker = Join-Path $plugin.plugin_root '.ovis\server\from-source'
         $chosen = if (Test-Path -LiteralPath $marker) { (Get-Content -Raw -LiteralPath $marker).Trim() } else { '' }
-        # the launcher names the version in the marker before it builds, so the marker alone also stands for a build cut off
-        # where no finally ran (a closed window, a restart): a finished build has left the packages and the built client too
-        $sourceBuilt = $chosen -eq $checkoutVersion -and (Test-Path -LiteralPath (Join-Path $plugin.plugin_root 'node_modules')) -and
-            (Test-Path -LiteralPath (Join-Path $plugin.plugin_root 'dist\index.html'))
-        if (-not $sourceBuilt) {
+        $installedCommit = "$(Run-Tool git @('-C', $plugin.plugin_root, 'rev-parse', 'HEAD'))".Trim()
+        # the launcher names the version in the marker before it builds, and in its stamp (.ovis/server/source-build) the
+        # version and commit only once the build finished: `started` there is a build that failed or was cut off, in bun
+        # install or over the packages and client of an earlier build. A checkout without a stamp was built by a launcher
+        # from before it, whose finished build has left the packages and the built client.
+        $stamp = Join-Path $plugin.plugin_root '.ovis\server\source-build'
+        $sourceBuilt = $chosen -eq $checkoutVersion -and $(if (Test-Path -LiteralPath $stamp) {
+                (Get-Content -Raw -LiteralPath $stamp).Trim() -eq "$checkoutVersion $installedCommit"
+            } else {
+                (Test-Path -LiteralPath (Join-Path $plugin.plugin_root 'node_modules')) -and (Test-Path -LiteralPath (Join-Path $plugin.plugin_root 'dist\index.html'))
+            })
+        $repairing = -not $sourceBuilt
+        if ($repairing) {
             # herdr checks the ref out detached, so the checkout knows its commit, not the branch: the ref is the installed
             # checkout only when it names that commit (a commit id, short ones too, among the checkout's objects, never a ref
             # of that name there, or a branch or tag whose commit on GitHub is it). A rerun keeps the installed plugin, so
             # another ref, or a branch that moved since, is said and nothing is touched.
-            $installedCommit = "$(Run-Tool git @('-C', $plugin.plugin_root, 'rev-parse', 'HEAD'))".Trim()
             $commitId = $Ref -match '^[0-9a-fA-F]{4,40}$'
             $objects = if ($commitId) { @(& git -C $plugin.plugin_root rev-parse "--disambiguate=$($Ref.ToLowerInvariant())") } else { @() }
             if ($installedCommit -notin $objects) {
@@ -633,7 +641,14 @@ if (-not $plugin) {
                 if ((Test-Path -LiteralPath (Join-Path $kept 'ovis-server.exe')) -or (Test-Path -LiteralPath (Join-Path $plugin.plugin_root 'node_modules'))) {
                     $env:OVIS_FROM_SOURCE = $null
                     & bun $launcherScript stop | Out-Null
-                    if ($LASTEXITCODE -ne 0) { throw "Could not stop the Ovis the release's binary runs, so the branch was not built. Stop it (herdr plugin action invoke $pluginId.stop-windows, or restart herdr), then run this again." }
+                    # A stop that fails with neither the release's binary nor a built client is a build cut off in bun install,
+                    # whose packages cannot load the stop: no server runs from them, since a server of an earlier build loses
+                    # its client only once vite builds, after bun install finished. With either, something may still run, and
+                    # a rebuild under it would leave it running (on Windows bun install fails on the files it holds open).
+                    if ($LASTEXITCODE -ne 0 -and ((Test-Path -LiteralPath (Join-Path $kept 'ovis-server.exe')) -or (Test-Path -LiteralPath (Join-Path $plugin.plugin_root 'dist\index.html')))) {
+                        throw "Could not stop the Ovis the release's binary runs, so the branch was not built. Stop it (herdr plugin action invoke $pluginId.stop-windows, or restart herdr), then run this again."
+                    }
+                    if ($LASTEXITCODE -ne 0) { Write-Host 'Ovis: the stop could not load the packages of a build cut off, and nothing runs from them; building it' }
                 }
                 $env:OVIS_FROM_SOURCE = '1'
                 & bun $launcherScript install
@@ -653,11 +668,17 @@ if (-not $plugin) {
             } finally {
                 $env:OVIS_FROM_SOURCE = $givenSource
                 # the launcher names this version in the marker before it builds: a build that did not finish, failed or
-                # cut off (Ctrl+C reaches finally, not catch), takes it back, so the next run builds again instead of
-                # starting sources that were never built
+                # cut off (Ctrl+C reaches finally, not catch), takes it back, so the launcher's start does not run sources
+                # that were never built, and the next run builds again also where the launcher writes no stamp
                 if (-not $built) { Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue }
             }
         }
+    }
+    # another ref is not installed over a checkout that needs no build, nor is a release tag: said, without asking GitHub
+    if ($Ref -and -not $repairing) {
+        $at = "$(& git -C $plugin.plugin_root rev-parse HEAD)".Trim()
+        $at = if ($LASTEXITCODE -eq 0 -and $at.Length -ge 12) { "the installed plugin is at commit $($at.Substring(0, 12)); " } else { '' }
+        Write-Host "Ovis: ${at}OVIS_REF does not move an installed plugin (INSTALL.md, Update)"
     }
 }
 if ($legacy) {

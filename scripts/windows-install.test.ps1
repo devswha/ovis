@@ -70,24 +70,27 @@ function bun {
     }
     # the plugin's launcher: its command, and whether it was told to build from source. As scripts/plugin-launch.ts does,
     # a stop under OVIS_FROM_SOURCE=1, with a marker naming this version, or without the release's binary in
-    # .ovis/server/bin (a branch's sources are not the release's) goes to scripts/plugin.ts, which fails without the
-    # packages, and an install under it names the version in .ovis/server/from-source before it builds the packages and
-    # the client
+    # .ovis/server/bin (a branch's sources are not the release's) goes to scripts/plugin.ts, which fails without all the
+    # packages (node_modules\all-installed stands for bun install's end), and an install under it says `started` in
+    # .ovis/server/source-build and names the version in .ovis/server/from-source before it builds the packages and the
+    # client, and the version and commit in source-build once they are built
     elseif ($args[0] -like '*\scripts\plugin-launch.ts') {
         $state.launcherCalls += "$($args[-1]) $env:OVIS_FROM_SOURCE".Trim()
         $root = Split-Path (Split-Path $args[0])
         $serverDir = Join-Path $root '.ovis\server'
         $marked = (Test-Path -LiteralPath (Join-Path $serverDir 'from-source')) -and (Get-Content -Raw -LiteralPath (Join-Path $serverDir 'from-source')).Trim() -eq '1.2.3'
         $toSource = $marked -or -not (Test-Path -LiteralPath (Join-Path $serverDir 'bin\ovis-server.exe'))
-        if ($args[-1] -eq 'stop' -and ($env:OVIS_FROM_SOURCE -eq '1' -or ($toSource -and -not (Test-Path -LiteralPath (Join-Path $root 'node_modules'))))) { $global:LASTEXITCODE = 1 }
+        if ($args[-1] -eq 'stop' -and ($env:OVIS_FROM_SOURCE -eq '1' -or ($toSource -and -not (Test-Path -LiteralPath (Join-Path $root 'node_modules\all-installed'))))) { $global:LASTEXITCODE = 1 }
         if ($env:OVIS_FROM_SOURCE -eq '1' -and $args[-1] -eq 'install') {
             New-Item -ItemType Directory -Force -Path $serverDir | Out-Null
+            Set-Content -LiteralPath (Join-Path $serverDir 'source-build') -Value 'started'
             Set-Content -LiteralPath (Join-Path $serverDir 'from-source') -Value '1.2.3'
             if ($state.failBuild) { $global:LASTEXITCODE = 1; return }
             # a build cut off: it says the marker is written, then runs until the test stops the installer, as Ctrl+C does
             if ($state.cutBuild) { $null = $state.cutBuild.Set(); Start-Sleep -Seconds 60 }
             New-Item -ItemType Directory -Force -Path (Join-Path $root 'node_modules'), (Join-Path $root 'dist') | Out-Null
-            Set-Content -LiteralPath (Join-Path $root 'dist\index.html') -Value ''
+            Set-Content -LiteralPath (Join-Path $root 'node_modules\all-installed'), (Join-Path $root 'dist\index.html') -Value ''
+            Set-Content -LiteralPath (Join-Path $serverDir 'source-build') -Value "1.2.3 $(Get-TestCommit $state.ref)"
         }
     }
     else { throw "Unexpected Bun command: $args" }
@@ -231,6 +234,7 @@ exit /b 1
     Set-Content -LiteralPath (Join-Path $pluginRoot 'scripts\plugin-launch.ts') -Value ''
     Set-Content -LiteralPath (Join-Path $pluginRoot 'package.json') -Value '{ "version": "1.2.3" }'
     $fromSource = Join-Path $pluginRoot '.ovis\server\from-source'
+    $sourceBuild = Join-Path $pluginRoot '.ovis\server\source-build'
     # no build of this checkout: no marker, packages or built client
     $unbuilt = { foreach ($name in '.ovis', 'node_modules', 'dist') { Remove-Item -LiteralPath (Join-Path $pluginRoot $name) -Recurse -Force -ErrorAction SilentlyContinue } }
     # a checkout on the release's binary: unbuilt, with that version's binary and client kept in .ovis/server/bin
@@ -325,13 +329,39 @@ exit /b 1
         $state.annotated = @(); $state.ref = 'feat/windows-install'
         Assert (($state.launcherCalls -join ',') -eq 'stop,install 1' -and (Test-Path -LiteralPath $fromSource)) "$($case.ref) names the installed commit and must build that checkout (launcher: $($state.launcherCalls -join ','))"
     }
-    # a release tag keeps its binary, and a checkout whose marker names its version was built from source already
+    # a release tag keeps its binary
     $state.launcherCalls = @()
     & $installer -Ref 'v1.10.0'
-    New-Item -ItemType Directory -Force -Path (Join-Path $pluginRoot '.ovis\server') | Out-Null
-    Set-Content -LiteralPath (Join-Path $pluginRoot '.ovis\server\from-source') -Value '1.2.3'
-    & $installer -Ref 'feat/windows-install'
-    Assert ($state.launcherCalls.Count -eq 0 -and $state.installs -eq $installs) "Nothing must be rebuilt for a release tag or a branch built from source (launcher: $($state.launcherCalls -join ','))"
+    Assert ($state.launcherCalls.Count -eq 0 -and $state.installs -eq $installs) "Nothing must be rebuilt for a release tag (launcher: $($state.launcherCalls -join ','))"
+    # what a source build left, the marker naming this version: only a build the stamp says finished at the installed
+    # commit, or one an older launcher left (no stamp) with all the packages and the client, needs none, and the installed
+    # commit is said. A stop that cannot load the packages is passed over only with neither a client nor a release binary.
+    $finished = "1.2.3 $(Get-TestCommit 'feat/windows-install')"
+    foreach ($case in @(
+        @{ name = 'a build cut off in bun install'; packages = 'some'; stamp = 'started'; calls = 'stop,install 1' },
+        @{ name = 'a build cut off over the packages and client of an earlier one'; packages = 'all'; client = $true; stamp = 'started'; calls = 'stop,install 1' },
+        @{ name = 'a finished build of another commit'; packages = 'all'; client = $true; stamp = "1.2.3 $(Get-TestCommit 'earlier')"; calls = 'stop,install 1' },
+        @{ name = 'a build cut off in bun install over the client of an earlier one'; packages = 'some'; client = $true; stamp = 'started'; calls = 'stop'; refused = $true },
+        @{ name = 'a finished build of an older launcher'; packages = 'all'; client = $true; calls = '' },
+        @{ name = 'a finished build'; packages = 'all'; client = $true; stamp = $finished; calls = '' }
+    )) {
+        & $unbuilt; $state.launcherCalls = @()
+        New-Item -ItemType Directory -Force -Path (Join-Path $pluginRoot '.ovis\server') | Out-Null
+        Set-Content -LiteralPath $fromSource -Value '1.2.3'
+        if ($case.stamp) { Set-Content -LiteralPath $sourceBuild -Value $case.stamp }
+        New-Item -ItemType Directory -Force -Path (Join-Path $pluginRoot 'node_modules') | Out-Null
+        if ($case.packages -eq 'all') { Set-Content -LiteralPath (Join-Path $pluginRoot 'node_modules\all-installed') -Value '' }
+        if ($case.client) {
+            New-Item -ItemType Directory -Force -Path (Join-Path $pluginRoot 'dist') | Out-Null
+            Set-Content -LiteralPath (Join-Path $pluginRoot 'dist\index.html') -Value ''
+        }
+        $message = ''; $said = ''
+        try { $said = & $installer -Ref 'feat/windows-install' 6>&1 | Out-String } catch { $message = $_.Exception.Message }
+        Assert (($state.launcherCalls -join ',') -eq $case.calls) "$($case.name): the launcher must get '$($case.calls)', not '$($state.launcherCalls -join ',')': $message"
+        if ($case.refused) { Assert ($message -match 'Could not stop' -and -not (Test-Path -LiteralPath $fromSource)) "$($case.name): a stop that fails with a client there must stop the run: $message" }
+        elseif ($case.calls) { Assert (-not $message -and (Get-Content -Raw -LiteralPath $sourceBuild).Trim() -eq $finished) "$($case.name): must be built and stamped: $message" }
+        else { Assert (-not $message -and $said.Contains($finished.Substring(6, 12))) "$($case.name): must be kept, saying the installed commit: $message $said" }
+    }
     Remove-Item -LiteralPath (Join-Path $pluginRoot 'scripts\plugin-launch.ts'), (Join-Path $pluginRoot 'package.json') -Force; & $unbuilt
     $state.running = $false
     $env:OVIS_FROM_SOURCE = '1'
