@@ -106,8 +106,7 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 - An agent row's menu says first what a waiting agent waits for, on a line of its own, in a phone's
   sheet and in the menu of a wider screen.
   ([#3777](https://github.com/devswha/ovis/pull/3777))
-- The Android app is out on Google Play. ovis.sh and the READMEs link to it with Google's badge,
- .
+- The Android app is out on Google Play. ovis.sh and the READMEs link to it with Google's badge.
   ([#3801](https://github.com/devswha/ovis/pull/3801))
 - On a phone the `+` for a new workspace is on each PC's own row in the workspace drawer, at the row's
   right end over its rows' status marks, and starts the workspace on that PC, a folded one too. The
@@ -145,7 +144,7 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   ([#3776](https://github.com/devswha/ovis/pull/3776))
 - Remote PC bundles and the desktop app now run the server as one compiled binary instead of its
   sources on Bun, and each release attaches that binary for five platforms with a signed manifest
-  of their SHA-256 sums. Remote PCs are offered a bridge update to bundle 47.
+  of their SHA-256 sums. Remote PCs are offered a bridge update to bundle 48.
   ([#3739](https://github.com/devswha/ovis/pull/3739))
 - Every setting's explanation is rewritten against what the app does, in English, Korean, Japanese
   and Chinese, and the rows that had none (most of Terminal and Alerts, parts of About) now have one.

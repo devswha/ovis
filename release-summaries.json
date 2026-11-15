@@ -13,7 +13,7 @@
         "On a phone, the tabs are a row under the header again.",
         "On a phone, the + for a new workspace is on each PC's row.",
         "The Android app is on Google Play and the iPhone app on the App Store.",
-        "Agents are grouped by state, with how long each has been in it."
+        "Every agent row shows how long its agent has been in its state."
       ],
       "fixed": [
         "Ovis asks to pair when this PC opens it by a name other than localhost",
@@ -36,7 +36,7 @@
         "휴대폰에서 탭이 다시 헤더 아래 한 줄로 보여요.",
         "휴대폰에서 새 워크스페이스 + 가 각 PC 줄에 있어요.",
         "Android 앱이 Google Play에, iPhone 앱이 App Store에 나왔어요.",
-        "에이전트가 상태별로 묶이고, 그 상태로 얼마나 있었는지 보여요."
+        "에이전트 줄마다 지금 상태로 얼마나 있었는지 보여요."
       ],
       "fixed": [
         "이 PC에서 localhost가 아닌 이름으로 열면 먼저 페어링을 요청해요.",
@@ -59,7 +59,7 @@
         "スマホで、タブが再びヘッダーの下に 1 列で並びます。",
         "スマホで、新しいワークスペースの + が各 PC の行にあります。",
         "Android アプリは Google Play、iPhone アプリは App Store で公開されました。",
-        "エージェントが状態ごとにまとまり、その状態の長さが出ます。"
+        "各エージェントの行に、今の状態がどれだけ続いているかが出ます。"
       ],
       "fixed": [
         "このPCで localhost 以外の名前で開くと、先にペアリングを求めます。",
@@ -82,7 +82,7 @@
         "在手机上，标签页重新显示为页眉下的一行。",
         "在手机上，新建工作区的 + 位于每台 PC 的行上。",
         "Android 应用已上架 Google Play，iPhone 应用已上架 App Store。",
-        "智能体按状态分组，并显示各自处于该状态的时长。"
+        "每个智能体行都会显示它处于当前状态的时长。"
       ],
       "fixed": [
         "在本机用 localhost 以外的名称打开时，会先要求配对。",
