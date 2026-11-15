@@ -7,7 +7,7 @@ import type { SessionSnapshot, WorkspaceInfo } from "../../shared/protocol.ts";
 import type { AppActions } from "../lib/actions.ts";
 import { AppLayoutContext, appLayoutOf, type LayoutOffer, ReorderContext } from "../lib/machineContext.tsx";
 import { SettingsProvider } from "../lib/settings.ts";
-import { inactiveSidebarFilter } from "../lib/sidebarFilter.ts";
+import { inactiveSidebarFilter, type SidebarFilter } from "../lib/sidebarFilter.ts";
 import { SidebarFilterProvider } from "../lib/sidebarFilterContext.ts";
 import { currentSidebarPins, setSidebarPins } from "../lib/sidebarPins.ts";
 import { ReorderCoordinator } from "../lib/workspaceOrder.ts";
@@ -74,10 +74,10 @@ describe("the sidebar on a PC the Herdr app lays out", () => {
     }
   });
 
-  async function draw(snapshot: SessionSnapshot, offer: LayoutOffer, online = false, given: { actions?: AppActions; watching?: boolean } = {}): Promise<ReorderCoordinator> {
+  async function draw(snapshot: SessionSnapshot, offer: LayoutOffer, online = false, given: { actions?: AppActions; watching?: boolean; filter?: SidebarFilter } = {}): Promise<ReorderCoordinator> {
     const coordinator = new ReorderCoordinator();
     await act(async () => {
-      renderer = create(createElement(SettingsProvider, null, createElement(SidebarFilterProvider, { value: { filter: inactiveSidebarFilter(), reportBranches: () => {} } },
+      renderer = create(createElement(SettingsProvider, null, createElement(SidebarFilterProvider, { value: { filter: given.filter ?? inactiveSidebarFilter(), reportBranches: () => {} } },
         createElement(AppLayoutContext.Provider, { value: offer }, createElement(ReorderContext.Provider, { value: coordinator },
           createElement(Sidebar, { snapshot, online, selectedPaneId: `${snapshot.workspaces[0]!.workspace_id}:p`, actions: given.actions ?? actions, watching: given.watching }))))), { createNodeMock: node });
     });
@@ -208,6 +208,26 @@ describe("the sidebar on a PC the Herdr app lays out", () => {
       await menuOf("a");
       await act(async () => { (renderer!.root.findByType(RowMenu).props.items as { id: string; run: () => void }[]).find((item) => item.id === "new-tab")!.run(); renderer!.root.findByType(RowMenu).props.onClose(); });
       expect(opened).toEqual([{ machineId: "local", workspaceId: "a" }]);
+      expect(stored.get("ovis:workspace-agents-folded:local")).toBe(JSON.stringify([]));
+    } finally {
+      fetch.mockRestore();
+    }
+  });
+
+  it("drops a workspace's saved fold when New tab with agent… makes an agent there while the sidebar filter is on", async () => {
+    stored.set("ovis:sidebar-agent-tree", "true");
+    stored.set("ovis:workspace-agents-folded:local", JSON.stringify(["a"]));
+    const kept = new Set(["a"]);
+    const filter: SidebarFilter = { query: "a", active: true, matches: 1, machines: new Map([["local", { shown: true, matched: false, workspaces: kept, matchedWorkspaces: kept, revealedWorkspaces: kept, panes: new Set(["a:p"]), matchedPanes: new Set() }]]) };
+    const fetch = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async () => Response.json({ error: "not_found" }, { status: 404 }), { preconnect: globalThis.fetch.preconnect }));
+    try {
+      const opened: unknown[] = [];
+      const spying = new Proxy({}, { get: (_, name) => name === "openNewTab" ? (target: unknown) => opened.push(target) : () => {} }) as AppActions;
+      await draw(roster([workspace("a"), workspace("b")]), TUI, true, { actions: spying, filter });
+      await menuOf("a");
+      await act(async () => { (renderer!.root.findByType(RowMenu).props.items as { id: string; run: () => void }[]).find((item) => item.id === "new-tab")!.run(); renderer!.root.findByType(RowMenu).props.onClose(); });
+      expect(opened).toEqual([{ machineId: "local", workspaceId: "a" }]);
+      // the saved fold is gone, so clearing the filter does not hide the new agent again
       expect(stored.get("ovis:workspace-agents-folded:local")).toBe(JSON.stringify([]));
     } finally {
       fetch.mockRestore();

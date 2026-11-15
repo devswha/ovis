@@ -419,13 +419,24 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
     if (filtered === null) return foldedAgents.has(workspaceId);
     return filterFolds.get(`agents:${workspaceId}`) ?? (foldedAgents.has(workspaceId) && !workers.some((entry) => filtered.matchedPanes.has(entry.pane.pane_id)));
   };
-  const toggleAgents = (workspaceId: string, folded: boolean): void => {
-    if (filtered !== null) { setFilterFolds((current) => new Map(current).set(`agents:${workspaceId}`, !folded)); return; }
+  const saveAgentsFold = (workspaceId: string, collapsed: boolean): void => {
     const live = new Set(snapshot?.workspaces.map((workspace) => workspace.workspace_id) ?? []);
     const next = new Set([...foldedAgents].filter((id) => live.has(id) && id !== workspaceId));
-    if (!folded) next.add(workspaceId);
+    if (collapsed) next.add(workspaceId);
     setFoldedAgents(next);
     try { localStorage.setItem(agentsFoldKey(machineId), JSON.stringify([...next])); } catch { /* storage denied: this page keeps it */ }
+  };
+  const toggleAgents = (workspaceId: string, folded: boolean): void => {
+    if (filtered !== null) { setFilterFolds((current) => new Map(current).set(`agents:${workspaceId}`, !folded)); return; }
+    saveAgentsFold(workspaceId, !folded);
+  };
+  /** a new agent is made in this row: open it as drawn and drop its saved fold, also under a filter, so the agent stays in
+   *  sight once the filter is cleared */
+  const unfoldForNewAgent = (workspaceId: string, repoKey: string | undefined): void => {
+    const key = repoKey ?? `agents:${workspaceId}`;
+    if (filtered !== null) setFilterFolds((current) => new Map(current).set(key, false));
+    if (repoKey !== undefined) setWorktreeCollapsed(repoKey, false);
+    else if (foldedAgents.has(workspaceId)) saveAgentsFold(workspaceId, false);
   };
 
   useEffect(() => {
@@ -623,7 +634,10 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
       // the new agent is in sight (#3771), also when the fold was saved while an agent that has since gone was there; with it
       // off no agent is drawn under the row, so every saved fold stays as it is
       ...(online && !watching ? [{ id: "new-tab", label: t("New tab with agent…"), icon: Bot, run: () => {
-        if (agentTree) { if (worktrees.length > 0 && repoKey) { if (folded) toggleWorktrees(repoKey, true); } else if (agentsAway || foldedAgents.has(workspace.workspace_id)) toggleAgents(workspace.workspace_id, true); }
+        if (agentTree) {
+          if (worktrees.length > 0 && repoKey) { if (folded || collapsedWorktrees.has(repoKey)) unfoldForNewAgent(workspace.workspace_id, repoKey); }
+          else if (agentsAway || foldedAgents.has(workspace.workspace_id)) unfoldForNewAgent(workspace.workspace_id, undefined);
+        }
         actions.openNewTab({ machineId, workspaceId: workspace.workspace_id });
       } }] : []),
       ...(!renameOffered || !renamesWorkspace(workspace.workspace_id) ? [] : [{ id: "rename-workspace", label: t("Rename workspace"), icon: Pencil, run: () => beginWorkspaceRename(workspace) }]),
