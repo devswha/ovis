@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
-import { act, createElement } from "react";
+import { act, createElement, Profiler } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 
 import type { ConversationResponse } from "../../shared/protocol.ts";
-import { forgetWaitingSends, rememberWaitingSend, waitingKey } from "../lib/sentWaiting.ts";
+import { currentWaitingSends, forgetWaitingSends, rememberWaitingSend, WAITING_SEND_MS, waitingKey } from "../lib/sentWaiting.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { ChatView } from "./ChatView.tsx";
 import { SentWaitingList } from "./SentWaiting.tsx";
@@ -65,6 +65,13 @@ beforeEach(() => {
     String(input).includes("pane/conversation?") ? Response.json(answer) : Response.json({ commands: [], prompt: null }), { preconnect: globalThis.fetch.preconnect }));
 });
 
+/** `signal`, or a failure once `ms` have passed without it */
+async function within(signal: Promise<void>, ms: number, what: string): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`${what} did not come within ${ms} ms`)), ms); });
+  try { await Promise.race([signal, late]); } finally { clearTimeout(timer); }
+}
+
 afterEach(async () => {
   await act(async () => renderer?.unmount());
   renderer = undefined;
@@ -83,16 +90,46 @@ test.each([["working", false], ["idle", true]] as const)(
     answer = { source: "grok-transcript", activity, turns: [{ role: "assistant", ts: new Date(Date.now() - 10_000).toISOString(), parts: [{ kind: "text", text: "earlier" }] }] };
     rememberWaitingSend(waitingKey("local", paneId), "fix the bug");
     try {
+      // the chat lays out a read's answer in one go: its metadata (onMetadata), then its turns and activity
+      let applied!: () => void;
+      const read = new Promise<void>((resolve) => { applied = resolve; });
       await act(async () => {
         renderer = create(createElement(SettingsProvider, null, createElement(ChatView, {
-          paneId, refreshKey: 0, connected: true, ended: false, agent: "grok", agentStatus: "idle",
+          paneId, refreshKey: 0, connected: true, ended: false, agent: "grok", agentStatus: "idle", onMetadata: () => { applied(); },
         })), { createNodeMock: () => new Node() });
-        // the reads the chat made as it mounted, answered: their state lands in this act
-        await Promise.all(fetchSpy.mock.results.map((result) => result.value));
       });
+      // the conversation read, started as the chat mounted, applied: what it set is rendered as this act ends
+      await act(async () => { await within(read, 5_000, "the conversation read"); });
       if (renderer === undefined) throw new Error("Chat did not mount");
       // a send is said unanswered only while the agent rests: one at work may still take it
       expect(renderer.root.findByType(SentWaitingList).props.resting).toBe(resting);
     } finally { act(() => { forgetWaitingSends(waitingKey("local", paneId)); }); }
   },
 );
+
+test("says no send unanswered when the chat opens on an agent its conversation says is working, whatever herdr's idle says", async () => {
+  const paneId = "opened-working";
+  const key = waitingKey("local", paneId);
+  answer = { source: "grok-transcript", activity: "working", turns: [{ role: "assistant", ts: new Date(Date.now() - 10 * WAITING_SEND_MS).toISOString(), parts: [{ kind: "text", text: "earlier" }] }] };
+  // sent two minutes ago, its chat closed since; the agent works on a turn before it, which herdr reports idle
+  rememberWaitingSend(key, "next, run the tests", Date.now() - 2 * WAITING_SEND_MS);
+  // as a browser renders it: React's own scheduler, no act, so a read's effects run in a browser's order
+  Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, writable: true, value: false });
+  let applied!: () => void;
+  const read = new Promise<void>((resolve) => { applied = resolve; });
+  let committed: (() => void) | null = null;
+  const commit = () => new Promise<void>((resolve) => { committed = resolve; });
+  const chat = create(createElement(Profiler, { id: "chat", onRender: () => { committed?.(); } }, createElement(SettingsProvider, null, createElement(ChatView, {
+    paneId, refreshKey: 0, connected: true, ended: false, agent: "grok", agentStatus: "idle", onMetadata: () => { applied(); },
+  }))), { createNodeMock: () => new Node() });
+  try {
+    await within(read, 5_000, "the conversation read");
+    // the render that lays out that read, then the judgement its layout queued
+    await within(commit(), 5_000, "the chat's render of the read");
+    await Promise.resolve();
+    expect(currentWaitingSends(key).map((send) => send.unanswered)).toEqual([undefined]);
+  } finally {
+    chat.unmount();
+    forgetWaitingSends(key);
+  }
+});
