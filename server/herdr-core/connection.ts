@@ -13,9 +13,11 @@
  * Calls are typed by hc's own schema (hc-api.generated.ts, `bun run generate:types`).
  */
 
+import { createConnection } from "node:net";
+import { Readable } from "node:stream";
 import { homedir } from "node:os";
 import { liveSessionsRefused, sameSocket } from "../herdr/client.ts";
-import { coreSocket } from "./discovery.ts";
+import { coreSocket, coreSocketStatus } from "./discovery.ts";
 import type { HcMethod, HcMethods } from "./hc-api.generated.ts";
 
 /** The calls that answer with a stream of their own. */
@@ -150,7 +152,7 @@ interface OpenChannel {
 
 /** What spawns `hc connect`: tests hand in a fake core. */
 export interface HcTransport {
-  readable: ReadableStream<Uint8Array>;
+  readable: ReadableStream<Uint8Array> | import("node:stream/web").ReadableStream<Uint8Array>;
   write: (bytes: Uint8Array) => void;
   exited: Promise<unknown>;
   kill: () => void;
@@ -173,13 +175,27 @@ function userCore(env: Record<string, string | undefined>): boolean {
 export const SERVER_ENV = /^(?:PORT|HOST|OVIS_.*|HERDR_WEB_.*|HERDR_PLUGIN_.*|HERDR_(?:ENV|PANE_ID|TAB_ID|WORKSPACE_ID|SOCKET_PATH|AGENT|BIN_PATH))$/i;
 
 /** `hc connect` as a child process (in `env`, else this process's, either without SERVER_ENV); a program that cannot be started is an HcError (`closed`). */
-export function spawnHcConnect(bin: string, env?: Record<string, string | undefined>): HcTransport {
-  // runtime.ts hands out this path that cannot exist while a moved hc is found again
-  if (bin === "/dev/null/herdr-core-moved") throw new HcError("closed", "herdr-core moved (an update?), and Ovis is looking for it again: try again in a moment");
+export function spawnHcConnect(bin: string, env?: Record<string, string | undefined>, existingOnly = false): HcTransport {
   // a process that asked for an isolated herdr never reaches the user's default core, however it is named
   if (liveSessionsRefused(process.env) && userCore(env ?? process.env)) {
     throw new HcError("live_core_refused", "HERDR_TEST_SESSION is set, but hc would reach the user's own herdr-core: give it HC_SOCKET or an HC_SESSION of its own, or set OVIS_ALLOW_LIVE_HERDR=1");
   }
+  // Fleet clients must never invoke hc's auto-start path, including after a dead line. A probe
+  // followed by `hc connect` would still race a core exit. Connect to the selected native socket
+  // itself: its framed protocol is the one hc connect forwards, and refusal cannot start a core.
+  if (existingOnly) {
+    // its whole path is the owner's, and the connection goes to the real path the check reached: a link
+    // another account changes between the check and the connect cannot send it elsewhere
+    const checked = coreSocketStatus(coreSocket({ env: env ?? process.env }).path);
+    if (checked.status !== "socket") throw new HcError("unavailable", "The selected herdr-core native socket is absent or refused");
+    const socket = createConnection(checked.real);
+    const { promise: exited, resolve } = Promise.withResolvers<void>();
+    const readable = Readable.toWeb(socket);
+    socket.once("close", () => resolve());
+    return { readable, write: (bytes) => { if (!socket.destroyed) socket.write(bytes); }, exited, kill: () => { socket.destroy(); } };
+  }
+  // runtime.ts hands out this path that cannot exist while a moved hc is found again
+  if (bin === "/dev/null/herdr-core-moved") throw new HcError("closed", "herdr-core moved (an update?), and Ovis is looking for it again: try again in a moment");
   let child: Bun.Subprocess<"pipe", "pipe", "ignore">;
   try {
     const hcEnv = Object.fromEntries(Object.entries(env ?? process.env).filter((entry): entry is [string, string] => entry[1] !== undefined && !SERVER_ENV.test(entry[0])));
@@ -308,6 +324,11 @@ export class HcConnection {
         },
       },
     };
+  }
+
+  /** hc's framed event stream, separate from the herdr status collector's one-RPC subscription. */
+  events(params: HcMethods["events.subscribe"]["params"], handlers: ChannelHandlers, timeoutMs = DEFAULT_TIMEOUT_MS) {
+    return this.open("events.subscribe", params, handlers, timeoutMs);
   }
 
   close(): void {

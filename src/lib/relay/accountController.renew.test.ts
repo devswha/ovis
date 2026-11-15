@@ -5,7 +5,7 @@ import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import { memoryAccountStore } from "../account/store.ts";
 import { createAccountController } from "./accountController.ts";
 import type { RelayDeviceStore, SavedDevice } from "./device.ts";
-import { createShellTestPage } from "./shell.test.tsx";
+import { createShellTestPage } from "./shellTestPage.fixture.ts";
 import { RelayTransport } from "./transport.ts";
 
 describe("account carrier renewal", () => {

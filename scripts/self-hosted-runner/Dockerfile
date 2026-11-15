@@ -86,6 +86,8 @@ COPY job-started.sh /opt/runner-hooks/job-started.sh
 RUN chmod 0755 /opt/runner-hooks/job-started.sh
 ENV ACTIONS_RUNNER_HOOK_JOB_STARTED=/opt/runner-hooks/job-started.sh
 
+# the container has HOME but no USER; tools that read the login name from it need it
+ENV USER=runner
 USER runner
 ENV USER=runner
 WORKDIR /home/runner/actions-runner

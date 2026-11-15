@@ -334,7 +334,8 @@ function Install-OvisBinaryLocked([string]$Version) {
         }
         $manifest = [IO.File]::ReadAllText($manifestFile) | ConvertFrom-Json
         if ($manifest.version -cne $Version) { throw "ovis-server.json is for version $($manifest.version), not $Version" }
-        if ($manifest.schema -ne 1) { throw 'ovis-server.json is of a schema this installer does not know; a newer install.ps1 reads it' }
+        # schema 2 adds the extra binaries, which Windows does not get: the server, the client and the hosts read as in 1
+        if ($manifest.schema -notin 1, 2) { throw 'ovis-server.json is of a schema this installer does not know; a newer install.ps1 reads it' }
         Save-CheckedFile $at $manifest.assets.'windows-x64' 'ovis-server-windows-x64.exe' (Join-Path $stage 'ovis-server.exe')
         $archive = Join-Path $stage 'ovis-dist.tar.gz'
         Save-CheckedFile $at $manifest.dist 'ovis-dist.tar.gz' $archive

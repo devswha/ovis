@@ -58,11 +58,13 @@ export function startBunRelay(options: BunRelayOptions = {}): BunRelay {
         close: (socket: Socket, code: number, reason: string) => { socket.close(code, reason); },
         now: () => Date.now(),
       };
+      // what `sync` names, and the room every PC of this relay gets (core.ts roomLimits)
+      const sized = { perAddressPerMinute: limits.perAddressPerMinute, maxClients: limits.maxClientsPerServer };
       // a room's pass authorization lives as long as the room, which a reconnecting PC opens again with its pass
       let until: RoomAuthorization | null = null;
       const room = "kind" in request
         ? new PairRoom<Socket>({ ...common, info: (socket) => socket.data.info as PairInfo | null, setInfo: (socket, info) => { socket.data.info = info; }, ...(pass ? { pass } : {}) }, options.pairGuestGapMs ?? PAIR_GUEST_GAP_MS)
-        : new Room<Socket>({ ...common, info: (socket) => socket.data.info as SocketInfo | null, setInfo: (socket, info) => { socket.data.info = info; },
+        : new Room<Socket>({ ...common, ...sized, info: (socket) => socket.data.info as SocketInfo | null, setInfo: (socket, info) => { socket.data.info = info; },
           ...(pass ? { pass: { policy: pass, until: () => until, setUntil: (value: RoomAuthorization) => { until = value; } } } : {}) });
       entry = { room, sockets, pending: 0 };
       rooms.set(key, entry);

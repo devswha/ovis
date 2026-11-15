@@ -489,7 +489,7 @@ describe("which account service a page signs in with", () => {
   it("signs a browser in from app.ovis.sh alone, the one page the service sends it back to, and the phone app anywhere", () => {
     const hosted = page("https://account.ovis.sh");
     expect(shellAccountServiceOf(hosted, "https://app.ovis.sh", false)).toBe("https://account.ovis.sh");
-    for (const copy of ["https://app-ap.ovis.sh", "https://preview.ovis-app.pages.dev", "http://127.0.0.1:7421"]) {
+    for (const copy of ["https://app-ap.ovis.sh", "https://preview.ovis-shell.pages.dev", "http://127.0.0.1:7421"]) {
       expect(shellAccountServiceOf(hosted, copy, false)).toBeNull();
       expect(shellAccountServiceOf(hosted, copy, true)).toBe("https://account.ovis.sh");
     }

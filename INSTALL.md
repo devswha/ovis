@@ -63,7 +63,11 @@ longer runs, one breaker at a time. A release
 from before the compiled server, a branch in `OVIS_REF`, an install from source already on the PC, or
 `OVIS_FROM_SOURCE=1` install from source as before ([one rule](#binary-or-source)) (Bun, herdr's plugin checkout, and Node 22 only where
 the Rust PTY host cannot run). `OVIS_RELEASES_URL` (an https:// address, or a `file://` folder) points
-it at another place for releases; plain http is refused. On a first install it prints a link
+it at another place for releases, a [release mirror](docs/development.md#a-release-mirror); plain http is refused.
+The latest release there is a `file://` folder's newest `v<version>` folder, or an https mirror's `latest` file; on a
+mirror a run without `OVIS_REF` never installs a release older than the one installed, and a release without its
+signed `ovis-server.json` is refused, never installed from source. Whoever serves install.sh is trusted with
+everything: take it from a trusted copy unless the mirror is your own. On a first install it prints a link
 for a GitHub star, unless the account gh is signed in to has starred the repository already. It
 asks whether to give one only at a terminal, and goes on by itself after 20 seconds: do not answer
 the question, and do not star the repository for the user.

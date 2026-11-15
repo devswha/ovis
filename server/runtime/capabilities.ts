@@ -54,6 +54,20 @@ export const HERDR_CORE: RuntimeCapabilities = {
   runtime: "herdr-core", attach: "hc", agents: "reported", foreground: "leader", seen: "label", pins: true, machines: true, spawner: "core",
 };
 
+/** A runtime's own writer of the seen marker, with herdr-core's SeenMarker `mark`. */
+export interface RuntimeSeenMarker {
+  mark(paneId: string, again?: boolean): Promise<void>;
+}
+
+/**
+ * The marker the server marks a read finish through: none where the runtime keeps no seen marker, else
+ * herdr-core's (`coreMarker`, server/herdr-core/runtime.ts coreSeenMarker, made only when asked).
+ */
+export function runtimeSeenMarker(coreMarker: () => RuntimeSeenMarker): RuntimeSeenMarker | null {
+  if (capabilities().seen !== "label") return null;
+  return coreMarker();
+}
+
 /** what the runtime this process started says of itself; null until one does */
 let served: RuntimeCapabilities | null = null;
 

@@ -66,7 +66,7 @@ describe("server entries", () => {
 
   it("serves every entry the installers, bundles and Windows task name", () => {
     // the binary's command line: `ovis-server <name>` is what launchers and other processes run
-    expect(Object.keys(ENTRIES).sort()).toEqual(["askpass", "machine", "managed", "plugin", "remote", "serve", "supervisor", "windows-launch"]);
+    expect(Object.keys(ENTRIES).sort()).toEqual(["askpass", "fleet", "machine", "managed", "plugin", "remote", "serve", "supervisor", "windows-launch"]);
   });
 
   it("roots the server in its checkout from source and in the binary's folder when compiled", () => {

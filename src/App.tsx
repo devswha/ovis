@@ -47,6 +47,7 @@ import { useAgentStateStamping } from "./lib/useAgentStateSince.ts";
 import { FilePanelResizer } from "./components/FilePanelResizer.tsx";
 import { openPresentation } from "./lib/filePresentation.ts";
 import { MachineDialog } from "./components/MachineDialog.tsx";
+import { FleetView } from "./components/FleetView.tsx";
 import { RowMenu, type RowMenuItem } from "./components/RowMenu.tsx";
 import { headerCrumb, showsChat } from "./lib/headerCrumb.ts";
 import { LOCAL_MACHINE, paneStorageId } from "../shared/machines.ts";
@@ -79,6 +80,7 @@ import { PushHealthNotice } from "./components/PushHealthNotice.tsx";
 import { RelayNotice } from "./components/RelayNotice.tsx";
 import { InstallHint } from "./components/InstallHint.tsx";
 import { DevicePairedNotice, DeviceRemovedNotice } from "./components/DevicePairedNotice.tsx";
+import { OpenPcEnrollmentNotice } from "./components/EnrollmentNotice.tsx";
 import { RelayPairingPrompt } from "./components/RelayPairingPrompt.tsx";
 import { AccountApprovals } from "./components/AccountApprovals.tsx";
 import { TelemetryNotice } from "./components/TelemetryControls.tsx";
@@ -248,7 +250,7 @@ export function App() {
   const { selectedMachineId, setSelectedMachineId, selectedMachine, snapshot } = useSelectedMachine({ initialLink, machines });
   const { machinesRef } = useMachinesRef({ machines });
   const [updateRemote, setUpdateRemote] = useState(false);
-  const { machineDialog, setMachineDialog, addPcPreset, setAddPcPreset, addPcFocusReturn, closeMachineDialog } = useMachineDialog();
+  const { machineDialog, setMachineDialog, addPcPreset, setAddPcPreset, addPcFocusReturn, closeMachineDialog, fleetOpen, setFleetOpen, closeFleet } = useMachineDialog();
   const { newSessionMachineId, setNewSessionMachineId } = useNewSessionMachine();
   const { health, localFreshness, shownHealth, readLocalHealth } = useLocalHealth();
   const exposure = health?.lan_exposure ?? health?.direct_exposure;
@@ -533,10 +535,10 @@ export function App() {
   // covered by something (closing it brings the pane into view again), or in view with its content still loading
   const panePresence = useCallback((): PanePresence => !(locked === false && linkLanded && pendingFile.current === null && pendingCreate.current === null
     && !drawerOpen && !settingsOpen && !newSessionOpen
-    && !(filesOpen && !filesDocked) && !machineDialog && !paletteOpen && !diffViewing && !(viewing && !fileDocked)
+    && !(filesOpen && !filesDocked) && !machineDialog && !fleetOpen && !paletteOpen && !diffViewing && !(viewing && !fileDocked)
     && !dialogCover && !paneCovered() && !inbox.shown) ? "covered"
     : contentReady && paneContentPresented(contentKey) ? "front" : "loading",
-  [locked, linkLanded, inbox.shown, drawerOpen, settingsOpen, newSessionOpen, filesOpen, filesDocked, machineDialog, paletteOpen, diffViewing, viewing, fileDocked, dialogCover, contentReady, contentKey]);
+  [locked, linkLanded, inbox.shown, drawerOpen, settingsOpen, newSessionOpen, filesOpen, filesDocked, machineDialog, fleetOpen, paletteOpen, diffViewing, viewing, fileDocked, dialogCover, contentReady, contentKey]);
   // one source for the sidebar's two lists: live counters per PC and finishes looked at here
   const activity = useSidebarActivityState(machines, selectedMachineId, presentedPaneId, panePresence, shareSeen);
   // and one for how long each agent has been in its state: stamped here, read by the lists (lib/useAgentStateSince.ts)
@@ -769,6 +771,11 @@ export function App() {
         addPcFocusReturn.current = true;
         setAddPcPreset(preset ?? null);
         setMachineDialog("new");
+      },
+      openFleet: () => {
+        setSettingsOpen(false);
+        setDrawerOpen(false);
+        setFleetOpen(true);
       },
       connectPc: (machine) => {
         setSettingsOpen(false);
@@ -1344,6 +1351,8 @@ export function App() {
         {remotePairings.length > 0 && <AccountApprovals pairings={remotePairings} />}
         {pairedNotices.length > 0 && <DevicePairedNotice events={pairedNotices} onDismiss={dismissPairedNotice} onOpen={(event) => { dismissPairedNotice(event); setSettingsLinkPage("devices"); setSettingsOpen(true); }} />}
         {removedNotices.length > 0 && <DeviceRemovedNotice events={removedNotices} onDismiss={dismissRemovedNotice} />}
+        {/* this PC's account enrollment, while the page that pairs it has it under way (the hosted shell only) */}
+        <OpenPcEnrollmentNotice />
         {/* the pane's tab, or two tabs side by side (lib/split.ts): a tab dragged down out of its strip,
             or a sidebar row dragged over this area, opens its pane in the half it is dropped on */}
         {/* kept mounted while it steps aside, so a sign-in or a workspace being made goes on where it was; it is this PC's setup */}
@@ -1606,6 +1615,7 @@ export function App() {
           void load();
         }}
       /></MachineContext.Provider>}
+      {fleetOpen && <FleetView auth={auth} onClose={closeFleet} />}
       {machineDialog && <MachineDialog updateRemote={updateRemote} machine={machineDialog === "new" ? undefined : machineDialog} preset={machineDialog === "new" ? addPcPreset ?? undefined : undefined} onClose={closeMachineDialog} onConnected={(id) => { closeMachineDialog(); selectTarget(id, null); void load(); }} />}
       <Droplet onOpen={(machineId, paneId) => {
         // an ended pane's card outlives the pane: the refetch has dropped it, and selecting it attaches nothing
@@ -1614,7 +1624,7 @@ export function App() {
         setFilesOpen(false);
         selectTargetRef.current(machineId, paneId);
       }} />
-      <SettingsDialog machines={machines} auth={auth} picturesByDefault={picturesByDefault} herdrVersion={shownHealth?.herdr?.version ?? null} herdrRuntime={shownHealth?.herdr ? shownHealth.herdr.runtime ?? "herdr" : null} herdrCore={shownHealth?.herdr_core ?? null} herdrRuntimeFacts={shownHealth?.herdr_runtime ?? null} bootId={shownHealth?.web_ui?.boot_id ?? null} onServerRestarted={() => { void readLocalHealth(); void readBridgeHealth(); void load(); }} security={security} open={settingsOpen} section={settingsSection} linkPage={settingsLinkPage} linkSection={settingsLinkSection} onPage={onSettingsPage} onClose={closeSettings} onUsageLogin={(paneId) => { closeSettings(); selectTarget("local", paneId, "terminal"); void load(); }} onOpenPane={(machineId, paneId) => { closeSettings(); selectTarget(machineId, paneId, "terminal"); void load(); }} actions={actions} updates={updates} onEnableNotifications={enableNotifications} saveError={settingsSaveError} savePaused={settingsSavePaused} saveRetrying={settingsSaveRetrying} onRetrySave={retrySettingsSave} overPreview={(viewing !== null && !fileDocked) || diffViewing !== null || (webPage !== null && !filePanelAvailable)} />
+      <SettingsDialog machines={machines} auth={auth} picturesByDefault={picturesByDefault} herdrVersion={shownHealth?.herdr?.version ?? null} herdrRuntime={shownHealth?.herdr ? shownHealth.herdr.runtime ?? "herdr" : null} herdrCore={shownHealth?.herdr_core ?? null} herdrRuntimeFacts={shownHealth?.herdr_runtime ?? null} fleetPreview={shownHealth?.fleet_preview === true} bootId={shownHealth?.web_ui?.boot_id ?? null} onServerRestarted={() => { void readLocalHealth(); void readBridgeHealth(); void load(); }} security={security} open={settingsOpen} section={settingsSection} linkPage={settingsLinkPage} linkSection={settingsLinkSection} onPage={onSettingsPage} onClose={closeSettings} onUsageLogin={(paneId) => { closeSettings(); selectTarget("local", paneId, "terminal"); void load(); }} onOpenPane={(machineId, paneId) => { closeSettings(); selectTarget(machineId, paneId, "terminal"); void load(); }} actions={actions} updates={updates} onEnableNotifications={enableNotifications} saveError={settingsSaveError} savePaused={settingsSavePaused} saveRetrying={settingsSaveRetrying} onRetrySave={retrySettingsSave} overPreview={(viewing !== null && !fileDocked) || diffViewing !== null || (webPage !== null && !filePanelAvailable)} />
       {filesOpen && !filesDocked && filesDialog(false)}
       {diffViewing !== null && <MachineContext.Provider value={diffViewing.machineId}>
         <RepoDiffViewer key={`${diffViewing.scope}:${diffViewing.path}`} target={diffViewing} onClose={closeDiff} onOpenFile={async (path) => {

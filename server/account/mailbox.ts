@@ -34,6 +34,24 @@ function scope(account: string, serverId: string, key: string): string {
 /** Pages one pull reads at most; the rest waits for the next pull. */
 const MAX_PAGES = 20;
 
+/** Retry-After as whole seconds whose value is 0 to 3600 (leading zeroes allowed); null for anything else (an HTTP date, a longer wait, none). */
+function retryAfterSeconds(value: string | null): number | null {
+  if (value === null || !/^\d+$/.test(value)) return null;
+  const seconds = Number(value);
+  return seconds <= 3600 ? seconds : null;
+}
+
+/** The account service answered a PC call with an HTTP error: its status, and its Retry-After (retryAfterSeconds). */
+export class AccountServiceRefusal extends Error {
+  constructor(readonly status: number, path: string, readonly retryAfterS: number | null) {
+    super(`The account service answered ${status} to ${path}`);
+    this.name = "AccountServiceRefusal";
+  }
+}
+
+/** What /api/account/status says of a pull the account service refused (docs/account.md, "PC API"). */
+export interface MailboxRefusal { readonly status: number; readonly retry_after_s: number | null }
+
 /** The account service was turned off on purpose (OVIS_ACCOUNT_SERVICE_URL=off): no mailbox exists, unlike one that is only unusable. */
 export class AccountServiceOff extends Error {
   constructor() {
@@ -110,6 +128,8 @@ export class AccountMailbox {
   private drainedAt: number | null = null;
   private drainedScope: string | null = null;
   error: string | null = null;
+  /** The account service's refusal of the last pull that ended, when it refused it with an HTTP status; kept while the next one runs. */
+  refused: MailboxRefusal | null = null;
   private timer: ReturnType<typeof setInterval> | undefined;
   private pulling: Promise<number> | undefined;
 
@@ -318,13 +338,14 @@ export class AccountMailbox {
     let identity: RelayIdentity | undefined;
     try { identity = this.options.identity(); } catch (error) {
       this.error = error instanceof Error ? error.message : String(error);
+      this.refused = null;
       return 0;
     }
     if (account === null || !identity) return 0;
-    if (this.options.service instanceof Error) { this.error = this.options.service.message; return 0; }
+    if (this.options.service instanceof Error) { this.error = this.options.service.message; this.refused = null; return 0; }
     // a removal refused for a local reason would be acknowledged and lost: collect nothing until it is fixed
-    if (this.options.devices.accountError !== null) { this.error = this.options.devices.accountError; return 0; }
-    if (this.pendingError !== null) { this.error = this.pendingError; return 0; }
+    if (this.options.devices.accountError !== null) { this.error = this.options.devices.accountError; this.refused = null; return 0; }
+    if (this.pendingError !== null) { this.error = this.pendingError; this.refused = null; return 0; }
     let applied = 0;
     let ack: number | null = null;
     // waiting on a signer, the barrier or a remove: a later add, in this pull or a later one, may let it apply
@@ -374,9 +395,12 @@ export class AccountMailbox {
       this.admissions = admissions;
       this.lastPullAt = new Date().toISOString();
       this.error = null;
+      this.refused = null;
       if (complete) { this.drainedAt = Date.now(); this.drainedScope = scope(account, identity.server_id, ""); }
     } catch (error) {
       this.error = error instanceof Error ? error.message : String(error);
+      // a refusal replaces the one kept; any other failure says nothing of a refusal
+      this.refused = error instanceof AccountServiceRefusal ? { status: error.status, retry_after_s: error.retryAfterS } : null;
       try { save(); } catch { /* the pull's own error is the one to show; what waits stays in memory */ }
       this.pending = [...early, ...this.pending];
       this.draining = [];
@@ -405,7 +429,7 @@ export class AccountMailbox {
       const response = await (this.options.fetch ?? fetch)(new Request(String(this.options.service) + path, {
         method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000),
       }));
-      if (!response.ok) throw new Error(`The account service answered ${response.status} to ${path}`);
+      if (!response.ok) throw new AccountServiceRefusal(response.status, path, retryAfterSeconds(response.headers.get("retry-after")));
       return await response.json() as Record<string, unknown>;
     };
     const publicKey = bytesToHex(importPublicKey(identity.public_key));

@@ -81,6 +81,14 @@ const notQueued = (error: unknown): { error: { code: string; message: string } }
   message: error instanceof Error ? error.message : String(error),
 } });
 
+/**
+ * POST /api/workspace/create with `program` or `first_message_wait_ms` (todo 32's `ovis start`): no runtime this server
+ * serves runs a program that way, so it is refused, as it always was on herdr and herdr-core.
+ */
+function programCreate(): Response {
+  return jsonResponse({ error: { code: "unsupported_runtime", message: "program and first_message_wait_ms are not served yet: no engine starts a program that way" } }, 409);
+}
+
 /** The answer for a workspace route, or null when the path is not one. */
 export async function handleWorkspaceRequest(request: Request, url: URL, pathname: string, bunServer: Pick<ServerContext, "timeout">, broadcastAll: (message: ServerMessage) => void,
   queueFirstMessage: (paneId: string, text: string, kind: string, requester: string | null, launchedPid: number | null) => Promise<PendingMessage>,
@@ -179,8 +187,9 @@ export async function handleWorkspaceRequest(request: Request, url: URL, pathnam
     setRequestRoute(pathname);
     const inWorkspace = pathname === "/api/tab/create";
     if (request.method !== "POST") return badRequest("method_not_allowed", "use POST");
-    const payload = await readJsonObject<{ workspace_id?: unknown; cwd?: unknown; label?: unknown; agent?: { kind?: unknown; name?: unknown; args?: unknown } | null; first_message?: unknown; first_message_connection?: unknown; env?: unknown }>(request);
+    const payload = await readJsonObject<{ workspace_id?: unknown; cwd?: unknown; label?: unknown; agent?: { kind?: unknown; name?: unknown; args?: unknown } | null; first_message?: unknown; first_message_connection?: unknown; env?: unknown; program?: unknown; first_message_wait_ms?: unknown }>(request);
     if (payload instanceof Response) return payload;
+    if (!inWorkspace && (payload.program !== undefined || payload.first_message_wait_ms !== undefined)) return programCreate();
     if (inWorkspace && (typeof payload.workspace_id !== "string" || payload.workspace_id.trim() === "")) {
       return badRequest("missing_workspace_id", "workspace_id is required");
     }

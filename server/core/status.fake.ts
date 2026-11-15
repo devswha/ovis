@@ -67,7 +67,7 @@ let hubs = 0;
  * The status hub with herdr, OpenCode's service and the Claude lookup stood in for; what a browser and web push are sent.
  * `herdrIdentity`: what the stood-in herdr's socket reads as (server/finishes.ts), when a test needs one.
  */
-export function hub<Owner = unknown, Lease = unknown>(path = transcript, queued?: PendingInputs<Owner, Lease>, drain?: (paneId: string) => void, herdrIdentity?: () => string | null) {
+export function hub<Owner = unknown, Lease = unknown>(path = transcript, queued?: PendingInputs<Owner, Lease>, drain?: (paneId: string) => void, herdrIdentity?: () => string | null, stateDir?: string) {
   let panes: unknown[] = [];
   let gate: Promise<void> | null = null;
   let reading: (() => void) | undefined;
@@ -86,13 +86,17 @@ export function hub<Owner = unknown, Lease = unknown>(path = transcript, queued?
   );
   const frames: { type: string; agent_status?: string; background_tasks?: number; background_wait?: boolean }[] = [];
   const client: Client = { data: connectionData({ deviceId: undefined, readOnly: false }), readyState: WebSocket.OPEN, getBufferedAmount: () => 0, send: (encoded: string) => { frames.push(JSON.parse(encoded)); return 1; }, close: () => {} };
+  /** the connections whose page is in use (visible and focused): none until a test adds the client */
+  const present = new Set<Client>();
+  /** one tick of the card reads, as their timer would run it */
+  let cardTick: () => Promise<void> = () => Promise.resolve();
   const pending = queued ?? new PendingInputs<Owner, Lease>(() => {});
   /** panes whose held messages were turned away, and why */
   const held: { paneId: string; code: string }[] = [];
   const status = createStatusHub({
-    options: { stateDir: join(root, `state${++hubs}`), opencodeDb: store, machines: false, ...(herdrIdentity ? { herdrIdentity } : {}) },
+    options: { stateDir: stateDir ?? join(root, `state${++hubs}`), opencodeDb: store, machines: false, ...(herdrIdentity ? { herdrIdentity } : {}), cardTimer: (tick) => { cardTick = tick; return () => {}; } },
     devices: { gated: false, has: () => true, onPaired: () => {} } as never, preferences: { get: () => ({ revision: 0, settings: {}, muted_panes: [] }), subscribe: () => () => {} } as never,
-    clients: new Set([client]), present: new Set(), pending, drainPending: drain ?? (() => {}), holdPendingPane: (paneId, fault) => { held.push({ paneId, code: fault.code }); },
+    clients: new Set([client]), present, pending, drainPending: drain ?? (() => {}), holdPendingPane: (paneId, fault) => { held.push({ paneId, code: fault.code }); },
     usage: { invalidate() {} } as never, usageLogin: { ended: () => false } as never,
   });
   const alerts: string[] = [];
@@ -103,11 +107,13 @@ export function hub<Owner = unknown, Lease = unknown>(path = transcript, queued?
   const ended: string[] = [];
   stubs.push(spyOn(status.push, "onEnded").mockImplementation(async (paneId: string) => { ended.push(paneId); }));
   return {
-    alerts, pending, status, held,
+    alerts, pending, status, held, client, present,
+    /** one tick of the card reads' timer, its read awaited */
+    tickCards: () => cardTick(),
     /** "terminal ended" alerts sent: push's and the pane-exited frames clients alert from */
     ended: () => ({ push: [...ended], frames: frames.filter((seen) => seen.type === "pane-exited").length }),
     /** herdr's panes from now on, as a snapshot or a pane lookup reads them */
-    herdrSays: (pane: unknown) => { panes = [pane]; },
+    herdrSays: (...shown: unknown[]) => { panes = shown; },
     /** a snapshot, both trackers reading it (Claude's lookup awaited) */
     snapshot: async () => { const snapshot = await status.clientSnapshot(); await status.claudeAgents.refresh(panes as HerdrPane[]); return snapshot; },
     /** a snapshot whose read begins now and is answered when `open` is called */

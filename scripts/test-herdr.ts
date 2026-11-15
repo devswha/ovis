@@ -10,7 +10,7 @@
  * HERDR_TEST_MODE=unit points HERDR_SOCKET at a socket that does not exist, so a test that
  * reaches for herdr in a unit run fails instead of working in the user's herdr.
  */
-import { chmodSync, existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { ping, sessionSnapshot, workspaceCreate } from "../server/herdr/client.ts";
@@ -19,6 +19,15 @@ import { testShellEnv } from "./test-shell.ts";
 // macOS's temp dir is behind a symlink (/var -> /private/var): herdr reports a pane's cwd
 // resolved, so a fixture made under the unresolved path never matches the pane it is for
 process.env["TMPDIR"] = realpathSync(tmpdir());
+
+// a fleet's witness lives outside its state folder, in the user's state home (server/fleet/witness.ts): under bun test it
+// lives in a folder of this run instead, removed when the run ends, so no test writes the user's
+if (process.env["NODE_ENV"] === "test") {
+  const witnesses = mkdtempSync(join(realpathSync(tmpdir()), "ovis-fleet-witness-"));
+  process.env["OVIS_FLEET_WITNESS_DIR"] = witnesses;
+  const { afterAll } = await import("bun:test");
+  afterAll(() => { rmSync(witnesses, { recursive: true, force: true }); });
+}
 
 // the config folder this run started with: the live-herdr guard (server/herdr/client.ts) refuses its
 // herdr socket, in this process and the children tests spawn, whatever XDG_CONFIG_HOME a test sets later

@@ -8,6 +8,7 @@
 import { ACCOUNT_RECORDS_MAX, AccountRecordError, isAccountKey, readAccountRecord, type AccountRecord } from "./account-records.ts";
 import { accountOsOf, type AccountOs, type AccountPlace } from "./account-asker.ts";
 import { isWssOrigin } from "./relay-offer.ts";
+import { RELAY_PASS_MAX_FLEET } from "./relay-pass.ts";
 import { deriveServerId, proofKey, serverChallenge, verifyServerProof } from "./relay-server-proof.ts";
 
 export const CHALLENGE_TTL_MS = 60_000;
@@ -71,6 +72,33 @@ export const ADMISSION_TTL_MS = 10 * 60_000;
 
 interface Mail { seq: number; record: AccountRecord; at: number }
 
+/**
+ * One limit on a PC's calls: at most `max` in each fixed window of `periodMs`, counted per caller address or per
+ * server_id. Limits that share a `name` share one count, as one limiter binding of the service does.
+ */
+export interface PcCallLimit { readonly name: string; readonly per: "address" | "server_id"; readonly max: number; readonly periodMs: number }
+
+/**
+ * Limits on the two calls a PC makes, `/v1/pc/challenge` and `/v1/pc/mailbox`. An `address` limit is spent first, before
+ * the body is read (the service's `byAddress`); a `server_id` limit only once the PC's key is proven: on a challenge once
+ * its key gives that server_id, on a mailbox pull once its proof holds. `address` says who the caller is; by default the
+ * cf-connecting-ip header, else the connection's remote address (`serve`), else "unknown".
+ */
+export interface PcLimits {
+  readonly challenge: readonly PcCallLimit[];
+  readonly mailbox: readonly PcCallLimit[];
+  readonly address?: (request: Request, remote: string | null) => string;
+}
+
+const PC_LIMITER: PcCallLimit = { name: "PC_LIMITER", per: "address", max: 60, periodMs: 60_000 };
+/** What the account service limits today (its wrangler.toml PC_LIMITER): both calls spend one limiter per address, 60 a minute. */
+export const PC_LIMITS: PcLimits = { challenge: [PC_LIMITER], mailbox: [PC_LIMITER] };
+
+/** What a Bun server passes beside the request: where the connection comes from. */
+interface ServedBy { requestIP(request: Request): { readonly address: string } | null }
+
+const callerAddress = (request: Request, remote: string | null): string => request.headers.get("cf-connecting-ip") ?? remote ?? "unknown";
+
 export class FakeAccountService {
   private readonly tokens = new Map<string, Session>();
   /** `link`: the sign-in (account and refresh family) a linking sign-in adds this identity to, once that sign-in redeems the code */
@@ -107,7 +135,8 @@ export class FakeAccountService {
   /** Every request the fake answered, oldest first: `METHOD /path`. */
   readonly requests: string[] = [];
 
-  constructor(private readonly now: () => number = Date.now) {}
+  /** `pcLimits`: limit the PC's calls as the service does (PC_LIMITS, or a test's own numbers); none unless given. */
+  constructor(private readonly now: () => number = Date.now, private readonly pcLimits: PcLimits | null = null) {}
 
   /** A bearer token for `account`, as if its owner had just signed in. */
   issueToken(account: string): string {
@@ -118,10 +147,17 @@ export class FakeAccountService {
     return token;
   }
 
-  /** Sets the limits `GET /v1/account/limits` answers for `account`. */
+  /**
+   * Sets the limits `GET /v1/account/limits` answers for `account`. They carry `fleet_max`, the fleet allowance, as the
+   * service's do: 0 unless given, and only an integer from 0 to RELAY_PASS_MAX_FLEET, which the owner alone sets there.
+   */
   setLimits(account: string, limits: Record<string, unknown> | null): void {
-    if (limits === null) this.accountLimits.delete(account);
-    else this.accountLimits.set(account, limits);
+    if (limits === null) { this.accountLimits.delete(account); return; }
+    const fleet = limits["fleet_max"] ?? 0;
+    if (typeof fleet !== "number" || !Number.isSafeInteger(fleet) || fleet < 0 || fleet > RELAY_PASS_MAX_FLEET || limits["fleet_max"] === null) {
+      throw new Error(`fleet_max is an integer from 0 to ${RELAY_PASS_MAX_FLEET}, not ${JSON.stringify(limits["fleet_max"])}`);
+    }
+    this.accountLimits.set(account, { ...limits, fleet_max: fleet });
   }
 
   /** Who the next sign-in with `provider` turns out to be; unset, `acct_<provider>`. */
@@ -184,11 +220,11 @@ export class FakeAccountService {
     for (const [owner, push] of this.pushes) if (push.account === account && owner !== family) this.ringList.push({ account, endpoint: push.endpoint, payload: ACCOUNT_RING });
   }
 
-  /** Counts one more of `key` in its 10-minute window; false past `max`. */
-  private spend(key: string, max: number): boolean {
+  /** Counts one more of `key` in its window (10 minutes unless given); false past `max`. */
+  private spend(key: string, max: number, windowMs = LIMIT_WINDOW_MS): boolean {
     const now = this.now();
     const counter = this.counters.get(key);
-    if (!counter || now - counter.start >= LIMIT_WINDOW_MS) { this.counters.set(key, { start: now, count: 1 }); return true; }
+    if (!counter || now - counter.start >= windowMs) { this.counters.set(key, { start: now, count: 1 }); return true; }
     counter.count += 1;
     return counter.count <= max;
   }
@@ -336,12 +372,17 @@ export class FakeAccountService {
   }
 
   /** Answers like the service: pass it as the PC's or app's `fetch`. */
-  readonly fetch = async (input: Request | string | URL, init?: RequestInit): Promise<Response> => {
-    const request = input instanceof Request ? input : new Request(input, init);
+  readonly fetch = async (input: Request | string | URL, init?: RequestInit): Promise<Response> =>
+    this.answer(input instanceof Request ? input : new Request(input, init), null);
+
+  /** The same, as Bun.serve's `fetch`: the connection's remote address is then who the caller is, unless a header says. */
+  readonly serve = (request: Request, server: ServedBy): Promise<Response> => this.answer(request, server.requestIP(request)?.address ?? null);
+
+  private async answer(request: Request, remote: string | null): Promise<Response> {
     const url = new URL(request.url);
     this.requests.push(`${request.method} ${url.pathname}`);
     try {
-      if (url.pathname.startsWith("/v1/pc/")) return await this.pc(request, url.pathname);
+      if (url.pathname.startsWith("/v1/pc/")) return await this.pc(request, url.pathname, remote);
       const provider = /^\/v1\/signin\/([a-z]+)$/.exec(url.pathname)?.[1];
       if (provider !== undefined && request.method === "GET") return this.signIn(url, provider);
       if (url.pathname === "/v1/token" && request.method === "POST") return await this.token(request);
@@ -386,7 +427,7 @@ export class FakeAccountService {
       if (error instanceof SyntaxError) return problem(400, "invalid_json", "The body is not JSON");
       throw error;
     }
-  };
+  }
 
   private async client(request: Request, path: string): Promise<Response> {
     const bearer = /^Bearer (\S+)$/.exec(request.headers.get("authorization") ?? "")?.[1];
@@ -508,12 +549,18 @@ export class FakeAccountService {
     return problem(404, "not_found", "Unknown request");
   }
 
-  private async pc(request: Request, path: string): Promise<Response> {
+  private async pc(request: Request, path: string, remote: string | null): Promise<Response> {
     if (request.method !== "POST") return problem(404, "not_found", "Unknown request");
+    const limits = path === "/v1/pc/challenge" ? this.pcLimits?.challenge : path === "/v1/pc/mailbox" ? this.pcLimits?.mailbox : undefined;
+    // the service's order: the address limiter before anything else is read
+    const crowded = limits && this.pcRefusal(limits, "address", (this.pcLimits?.address ?? callerAddress)(request, remote));
+    if (crowded) return crowded;
     const body = await request.json() as Record<string, unknown>;
     if (path === "/v1/pc/challenge") {
       const key = proofKey(body.public_key);
       if (!key || typeof body.server_id !== "string" || deriveServerId(key) !== body.server_id) return problem(401, "server_key_mismatch", "That key does not give that server_id");
+      const busy = limits && this.pcRefusal(limits, "server_id", body.server_id);
+      if (busy) return busy;
       const challengeId = randomHex(16);
       const { expected, frame } = serverChallenge(key, { server_id: body.server_id, role: "account", connection_id: challengeId });
       this.challenges.set(challengeId, { server_id: body.server_id, expected, expires: this.now() + CHALLENGE_TTL_MS });
@@ -525,6 +572,8 @@ export class FakeAccountService {
       if (!challenge || challenge.server_id !== body.server_id || this.now() > challenge.expires || !verifyServerProof(body.proof, challenge.expected)) {
         return problem(401, "proof_invalid", "Ask for a new challenge and answer it");
       }
+      const busy = limits && this.pcRefusal(limits, "server_id", challenge.server_id);
+      if (busy) return busy;
       if (typeof body.account !== "string") return problem(400, "invalid_account", "Name the account this PC belongs to");
       this.expire();
       const key = box(challenge.server_id, body.account);
@@ -542,6 +591,14 @@ export class FakeAccountService {
       return json({ records: rest.slice(0, MAILBOX_PAGE).map(({ seq, record }) => ({ seq, record })), more: rest.length > MAILBOX_PAGE, admissions });
     }
     return problem(404, "not_found", "Unknown request");
+  }
+
+  /** Spends each of `limits` counted `per` that kind for `who`; the service's refusal at the first past its `max`, else null. */
+  private pcRefusal(limits: readonly PcCallLimit[], per: PcCallLimit["per"], who: string): Response | null {
+    for (const limit of limits) {
+      if (limit.per === per && !this.spend(`pc:${limit.name}:${who}`, limit.max, limit.periodMs)) return rateLimited();
+    }
+    return null;
   }
 
   private expire(): void {
@@ -563,6 +620,13 @@ function json(body: unknown, status = 200): Response {
 
 function problem(status: number, code: string, message: string): Response {
   return json({ error: { code, message } }, status);
+}
+
+/** The service's refusal from a limiter (its limits.ts byAddress, answered by http.ts problemResponse), whatever the window. */
+function rateLimited(): Response {
+  return new Response(JSON.stringify({ error: { code: "rate_limited", message: "Too many requests; try again in a minute" } }), {
+    status: 429, headers: { "content-type": "application/json", "cache-control": "no-store", "retry-after": "60" },
+  });
 }
 
 function randomHex(bytes: number): string {

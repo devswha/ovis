@@ -265,12 +265,13 @@ export function createSystemSampler(io: SystemIo = realIo, options: { diskCapMs?
  * this server runs here for another machine (a herdr-core machine's server, machine-bridge.ts), so
  * this PC's load is not that machine's; it answers 404 as a server without the route does.
  */
-export async function handleSystemRequest(request: Request, sampler: SystemSampler | null): Promise<Response> {
+export async function handleSystemRequest(request: Request, sampler: SystemSampler | null, terminalsEndWithServer = false): Promise<Response> {
   if (request.method !== "GET" && request.method !== "HEAD") {
     return jsonResponse({ error: { code: "method_not_allowed", message: "Use GET" } }, 405);
   }
   if (sampler === null) return jsonResponse({ error: { code: "system_unavailable", message: "This machine's load is not read from here" } }, 404);
-  const response = jsonResponse(await sampler.read());
+  const report = await sampler.read();
+  const response = jsonResponse(terminalsEndWithServer ? { ...report, terminals_end_with_server: true } : report);
   response.headers.set("cache-control", "no-store");
   return response;
 }

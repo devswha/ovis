@@ -3,6 +3,7 @@ import type { SharedPreferences } from "./preferences.ts";
 import type { HealthAuth, SecuritySummary, ServerMessage, SessionSnapshot } from "./protocol.ts";
 import type { MoveStatus, MoveUnavailable } from "./runtime-move.ts";
 import type { SeenFinish } from "./seen.ts";
+import type { FleetCause } from "./fleet-cause.ts";
 
 export const LOCAL_MACHINE = "local";
 export const BRIDGE_PROTOCOL = 1;
@@ -25,8 +26,23 @@ export interface Machine {
   herdr_profile_id?: string;
   id: string;
   name: string;
-  /** hc: another machine of this PC's herdr-core (`hc machine add`), reached through that core */
-  kind: "local" | "ssh" | "relay" | "hc";
+  /**
+   * hc: another machine of this PC's herdr-core (`hc machine add`), reached through that core; fleet: a machine of this
+   * PC's fleet (docs/fleet-link.md), reached through its link agent's session, never saved with the PCs added here
+   */
+  kind: "local" | "ssh" | "relay" | "hc" | "fleet";
+  /**
+   * A fleet machine: its key's fingerprint and the runtime id its advert names (null before its first). On an SSH,
+   * relay or herdr-core PC it says the same runtime is also a fleet machine: one PC, both routes.
+   */
+  fleet?: {
+    machine_id: string; runtime_id: string | null;
+    /**
+     * A fleet machine's row only: why it cannot be used now (shared/fleet-cause.ts, as GET /api/fleet/machines says it),
+     * or null while nothing stops it. Its `error` is that cause's English sentence.
+     */
+    cause?: FleetCause | null;
+  };
   target?: SshTarget;
   /** a PC added through the Ovis relay (no SSH): its relay ID and the relay it is reached through */
   relay?: { server_id: string; relay: string };
@@ -267,11 +283,9 @@ export interface HerdrCoreLayout {
  */
 export const HC_OTHER_WORKSPACE_ID = "hc-other";
 /**
- * A runtime a server can be asked to serve: herdr's TUI server, herdr-core (the Herdr app's core), or
- * `alt-runtime`. `alt-runtime` is never picked from what the PC has, only by OVIS_RUNTIME or a choice
- * saved from Settings, and a saved choice of it that cannot start falls back to herdr.
+ * A runtime a server can be asked to serve: herdr's TUI server or herdr-core (the Herdr app's core).
  */
-export type RuntimeName = "herdr" | "herdr-core" | "alt-runtime";
+export type RuntimeName = "herdr" | "herdr-core";
 /** where this server's runtime came from: OVIS_RUNTIME, the choice saved from Settings, or what the PC has */
 export type RuntimeSource = "env" | "saved" | "detected";
 /** why Settings cannot switch the runtime: OVIS_RUNTIME decides, the server was not started by Ovis's launcher, or herdr-core is not served on this OS */
@@ -279,8 +293,10 @@ export type RuntimeLock = "env" | "unmanaged" | "platform";
 /**
  * Which runtime this server serves and what Settings may switch it to (GET /api/health, a driving
  * owner only). `switch_to`: the other runtime when this PC has it and nothing locks the choice.
- * `fallback`: the saved choice was herdr-core, but no herdr-core answered (`no_herdr_core`), or it was
- * alt-runtime, which could not start (`no_alt_runtime`), so herdr is served.
+ * `switch_options`: every runtime Settings may switch to (empty while locked), `switch_to` among them;
+ * a server from before it sends none, and a client from before it reads `switch_to` alone.
+ * `fallback`: the saved choice was herdr-core, but no herdr-core answered (`no_herdr_core`), so herdr is
+ * served.
  */
 export interface HerdrRuntimeFacts {
   serving: RuntimeName;
@@ -288,8 +304,9 @@ export interface HerdrRuntimeFacts {
   tui: { installed: boolean; running: boolean };
   app_installed: boolean;
   switch_to: RuntimeName | null;
+  switch_options?: RuntimeName[];
   locked: RuntimeLock | null;
-  fallback?: "no_herdr_core" | "no_alt_runtime";
+  fallback?: "no_herdr_core";
 }
 /**
  * What this PC has of herdr-core, the Herdr app's runtime, whichever runtime the server serves
@@ -461,7 +478,18 @@ export interface RemotePairingsEvent { type: "remote-pairings"; pairings: Remote
  * serves. `accepted`: its launcher took it as its own past the startup check (absent when no launcher
  * runs it). All three absent from older servers.
  */
-export interface BridgeHealth { ok: true; auth: HealthAuth; bridge_protocol: number; security?: SecuritySummary; web_ui?: { boot_id: string }; runtime?: RuntimeName; accepted?: boolean; /** a driving owner only, as on the whole answer */ herdr_runtime?: HerdrRuntimeFacts }
+/** Authenticated fleet bridge health, available even when its selected engine is down. No credentials. */
+export interface FleetBridgeHealth {
+  engine: RuntimeName;
+  terminal_mode: "attach" | "mirror";
+  socket_path: string | null;
+  runtime_id: string;
+  boot_id: string;
+  runtime_down: boolean;
+  reason: "herdr_setting_invalid" | "herdr_connecting" | "herdr_session_gone" | "herdr_sessions_found" | "herdr_socket_refused" | "herdr_unsupported" | "hc_setting_invalid" | "hc_connecting" | "hc_session_gone" | "hc_sessions_found" | "hc_socket_refused" | "hc_discovery_refused" | "hc_unsupported" | "hc_not_found" | null;
+  message: string | null;
+}
+export interface BridgeHealth { fleet_bridge?: FleetBridgeHealth; ok: true; auth: HealthAuth; bridge_protocol: number; security?: SecuritySummary; web_ui?: { boot_id: string }; runtime?: RuntimeName; accepted?: boolean; /** a driving owner only, as on the whole answer */ herdr_runtime?: HerdrRuntimeFacts }
 export interface BridgeIdentity {
   /** Only on an authenticated /api/bridge?discover=herdr request. */
   found_herdr_sessions?: FoundHerdrSession[];

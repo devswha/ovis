@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { createHash, createPrivateKey, sign } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DIST_ARCHIVE, generateKeyPair, MANIFEST, releaseFile, PTY_ASSETS, ptyFile, SERVER_PLATFORMS, signManifest, writeManifest } from "./server-manifest.ts";
+import { binaryName, EXTRA_PLATFORMS, extraFile, DIST_ARCHIVE, generateKeyPair, MANIFEST, releaseFile, PTY_ASSETS, ptyFile, SERVER_PLATFORMS, signManifest, writeManifest } from "./server-manifest.ts";
+import { EXTRA_BINARIES } from "./release-binaries.ts";
 import { download, installServer, NoBinaryRelease, releasesBase, verifiedInstall } from "./server-install.ts";
 
 /**
@@ -30,13 +31,14 @@ function release(base: string, version: string, privateKeyPem: string, client: R
   mkdirSync(dir, { recursive: true });
   for (const platform of SERVER_PLATFORMS) writeFileSync(join(dir, releaseFile(platform)), `#!/bin/sh\necho ovis-server ${version} ${platform}\n`);
   for (const build of PTY_ASSETS) writeFileSync(join(dir, ptyFile(build)), host ?? `pty host ${build}\n`);
+  for (const binary of EXTRA_BINARIES) for (const platform of EXTRA_PLATFORMS) writeFileSync(join(dir, extraFile(binary, platform)), `${binary} ${version} ${platform}\n`);
   const tree = join(base, `client-${version}`);
   mkdirSync(tree, { recursive: true });
   for (const [name, text] of Object.entries(client)) writeFileSync(join(tree, name), text);
   const tar = Bun.spawnSync(["tar", "-czf", join(dir, DIST_ARCHIVE), "-C", tree, "."]);
   expect(tar.exitCode).toBe(0);
   rmSync(tree, { recursive: true });
-  writeManifest(dir, { version, sources });
+  writeManifest(dir, { version, sources, binaries: EXTRA_BINARIES });
   signManifest(dir, privateKeyPem);
   return dir;
 }
@@ -126,7 +128,7 @@ describe.skipIf(process.platform === "win32")("installing the server from a rele
     ["a client archive that does not match", (dir) => writeFileSync(join(dir, DIST_ARCHIVE), "x"), DIST_ARCHIVE],
     ["a manifest signed by another key", (dir) => signManifest(dir, generateKeyPair().privateKeyPem), "is not a signature of this ovis-server.json"],
     ["a manifest for another version, signed by the right key", (dir, privateKeyPem) => {
-      writeManifest(dir, { version: "1.2.2", sources });
+      writeManifest(dir, { version: "1.2.2", sources, binaries: EXTRA_BINARIES });
       signManifest(dir, privateKeyPem);
     }, "is for version 1.2.2, not the expected 1.2.4"],
   ];
@@ -149,7 +151,7 @@ describe.skipIf(process.platform === "win32")("installing the server from a rele
     writeFileSync(join(outside, "escaped"), "x");
     // a member named ../escaped, as an archive crafted to write outside the folder holds it
     expect(Bun.spawnSync(["tar", "-czPf", join(dir, DIST_ARCHIVE), "-C", join(outside, "inner"), "../escaped"]).exitCode).toBe(0);
-    writeManifest(dir, { version: "1.2.3", sources });
+    writeManifest(dir, { version: "1.2.3", sources, binaries: EXTRA_BINARIES });
     signManifest(dir, key.privateKeyPem);
     await expect(install()).rejects.toThrow("outside");
     expect(existsSync(join(home, "escaped"))).toBe(false);
@@ -209,7 +211,7 @@ describe.skipIf(process.platform === "win32")("installing the server from a rele
     const key = generateKeyPair();
     oldShape(releases, "0.5.4", key.privateKeyPem);
     oldShape(releases, "0.5.5", generateKeyPair().privateKeyPem);
-    oldShape(releases, "0.5.6", key.privateKeyPem, (manifest) => { manifest["schema"] = 2; });
+    oldShape(releases, "0.5.6", key.privateKeyPem, (manifest) => { manifest["schema"] = 3; });
     const install = (version: string) => installServer({ home: join(root, "home"), version, platform: PLATFORM, releases: `file://${releases}`, publicKey: key.publicKey });
     await expect(install("0.5.4")).rejects.toBeInstanceOf(NoBinaryRelease);
     await expect(install("0.5.4")).rejects.toThrow("ships no compiled server this installer runs");
@@ -218,7 +220,7 @@ describe.skipIf(process.platform === "win32")("installing the server from a rele
     expect(String(badSignature)).toContain("not a signature");
     const newer = await install("0.5.6").catch((error: unknown) => error);
     expect(newer).not.toBeInstanceOf(NoBinaryRelease);
-    expect(String(newer)).toContain("schema 2");
+    expect(String(newer)).toContain("schema 3");
     expect(existsSync(join(root, "home", "bin"))).toBe(false);
   });
 

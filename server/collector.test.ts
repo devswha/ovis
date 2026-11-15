@@ -1161,3 +1161,189 @@ describe("startStatusCollector recovery", () => {
     expect(log.resyncs).toEqual([]);
   });
 });
+
+describe("the first status change of a pane created while the collector listens", () => {
+  beforeEach(() => { jest.useFakeTimers(); });
+  afterEach(() => { jest.useRealTimers(); });
+
+  /** herdr's own pane_created frame (live, 0.9.5): the pane as it was created */
+  const created = (pane_id: string): EventFrame => ({ event: "pane_created", data: { type: "pane_created", pane: { pane_id, agent_status: "unknown" } } });
+
+  /** a fake herdr that can be absent: its snapshots fail, what was open closes, and nothing it is asked for connects */
+  function stoppableHerdr(initial: HerdrPane[], running: boolean) {
+    const herdr = fakeHerdr(initial);
+    let up = running;
+    const closed = new Set<FakeSubscription>();
+    const drop = (record: FakeSubscription, code: string) => { closed.add(record); record.drop(code); };
+    const deps: Partial<StatusCollectorDeps> = {
+      ...herdr.deps,
+      snapshot: () => up ? herdr.deps.snapshot!() : Promise.reject(new HerdrError("connect_failed", "herdr is not running")),
+      subscribe: (subs, handlers) => {
+        const subscription = herdr.deps.subscribe!(subs, handlers);
+        const record = herdr.subscriptions.at(-1)!;
+        if (!up) queueMicrotask(() => drop(record, "connect_failed"));
+        return subscription;
+      },
+    };
+    const open = () => herdr.subscriptions.filter((s) => !s.closedByCollector && !closed.has(s));
+    return {
+      herdr,
+      deps,
+      stop: () => { up = false; for (const record of open()) drop(record, "socket_error"); },
+      /** herdr answers again; the lifecycle and focus subscriptions it reopens start */
+      async start(panes: HerdrPane[]) {
+        herdr.setPanes(panes);
+        up = true;
+        await elapse(60);
+        for (const record of open()) if (record.types[0] !== "pane.agent_status_changed") record.start();
+        await elapse(20);
+      },
+    };
+  }
+
+  for (const [absence, ms] of [["a short", 10], ["a long", 2_000]] as const) {
+    it(`tells it after ${absence} engine absence at the server's start, and a pane already there stays its own baseline`, async () => {
+      // Given: herdr is not running when the collector starts, and stays away for a while
+      const engine = stoppableHerdr([], false);
+      const { log, handlers } = recorder();
+      const collector = startStatusCollector(handlers, engine.deps);
+      let ready = false;
+      void Promise.all([collector.ready, collector.structureReady]).then(() => { ready = true; });
+      try {
+        await elapse(ms);
+        expect(ready).toBe(false);
+        // herdr starts with a pane someone opened before this server reached it; the bridge's recheck asks again
+        await engine.start([paneOf("w1:p1", "working")]);
+        collector.refresh();
+        await elapse(20);
+        engine.herdr.status()!.start();
+        await elapse(20);
+        expect(ready).toBe(true);
+        expect(log.statuses).toEqual([]);
+        // When: a pane is created and its agent reports before any snapshot shows the pane
+        engine.herdr.lifecycle().emit(created("w2:p1"));
+        engine.herdr.setPanes([paneOf("w1:p1", "working"), paneOf("w2:p1", "working")]);
+        await elapse(20);
+        engine.herdr.status()!.start();
+        await elapse(20);
+        // Then: that first change is told, measured against the pane as herdr created it; the next comes as an event
+        expect(log.statuses).toEqual(["w2:p1:working (was unknown)"]);
+        engine.herdr.status()!.emit(statusFrame("w2:p1", "idle"));
+        engine.herdr.status()!.emit(statusFrame("w1:p1", "idle"));
+        expect(log.statuses).toEqual(["w2:p1:working (was unknown)", "w2:p1:idle", "w1:p1:idle"]);
+      } finally { collector.stop(); }
+    });
+  }
+
+  // herdr focuses a pane created focused (the first workspace of an engine is, even asked `focus:false`), on the focus
+  // connection: which of the two frames is read first is a race
+  for (const [order, reports] of [["pane_created, then pane_focused", true], ["pane_focused, then pane_created", true], ["pane_created, then pane_focused", false]] as const) {
+    it(`${reports ? "tells it" : "tells nothing of a focus alone"} when herdr's frames come as ${order}`, async () => {
+      // Given: herdr runs, empty, and every subscription is live
+      const herdr = fakeHerdr([]);
+      const { log, handlers } = recorder();
+      const collector = startStatusCollector(handlers, herdr.deps);
+      const focus = () => herdr.subscriptions.filter((s) => s.types[0] === "pane.focused").at(-1)!;
+      try {
+        await elapse();
+        herdr.lifecycle().start();
+        focus().start();
+        await elapse(20);
+        // When: the pane is created focused, and its agent reports (or not) before any snapshot shows the pane
+        const focused: EventFrame = { event: "pane_focused", data: { type: "pane_focused", pane_id: "w1:p1" } };
+        if (order.startsWith("pane_created")) { herdr.lifecycle().emit(created("w1:p1")); focus().emit(focused); }
+        else { focus().emit(focused); herdr.lifecycle().emit(created("w1:p1")); }
+        herdr.setPanes([paneOf("w1:p1", reports ? "working" : "unknown")]);
+        await elapse(20);
+        herdr.status()!.start();
+        await elapse(20);
+        // Then
+        expect(log.statuses).toEqual(reports ? ["w1:p1:working (was unknown)"] : []);
+      } finally { collector.stop(); }
+    });
+  }
+
+  it("tells it when a snapshot asked for before the pane was created answers after its creation was heard", async () => {
+    // Given: herdr runs, empty, and a snapshot is on its way
+    const herdr = fakeHerdr([]);
+    const { log, handlers } = recorder();
+    const collector = startStatusCollector(handlers, herdr.deps);
+    try {
+      await elapse();
+      herdr.lifecycle().start();
+      await elapse(20);
+      herdr.hold();
+      collector.refresh();
+      await elapse();
+      // When: the pane is created and that snapshot, read before it, answers without it; then the agent reports
+      herdr.lifecycle().emit(created("w1:p1"));
+      herdr.answerAll();
+      await elapse();
+      herdr.setPanes([paneOf("w1:p1", "working")]);
+      for (let i = 0; i < 4; i++) { await elapse(10); herdr.answerAll(); }
+      herdr.status()!.start();
+      for (let i = 0; i < 4; i++) { await elapse(10); herdr.answerAll(); }
+      // Then
+      expect(log.statuses).toEqual(["w1:p1:working (was unknown)"]);
+    } finally { collector.stop(); }
+  });
+
+  it("tells nothing of panes herdr restores after coming back with none for a moment, and forgets the panes it lost", async () => {
+    // Given: a pane at work when herdr goes away
+    const engine = stoppableHerdr([paneOf("w1:p1", "working")], true);
+    const { log, handlers } = recorder();
+    const collector = startStatusCollector(handlers, engine.deps);
+    try {
+      await elapse();
+      engine.herdr.lifecycle().start();
+      engine.herdr.status()!.start();
+      await elapse(20);
+      engine.stop();
+      await elapse(200);
+      // When: herdr answers with no pane at first (herdr 0.9.3, for up to about 0.9 s), then brings its saved pane back
+      await engine.start([]);
+      engine.herdr.setPanes([paneOf("w1:p1", "unknown")]);
+      collector.refresh();
+      await elapse(20);
+      engine.herdr.status()!.start();
+      await elapse(20);
+      // Then: the empty answer is the recovery's truth (the lost pane is gone), and the restored pane is no change
+      expect(log.resyncs).toEqual([{ panes: [], newer: [] }]);
+      expect(log.statuses).toEqual([]);
+      engine.herdr.status()!.emit(statusFrame("w1:p1", "working"));
+      expect(log.statuses).toEqual(["w1:p1:working"]);
+    } finally { collector.stop(); }
+  });
+
+  it("tells it for the first pane after the server's start and after each of two engine restarts", async () => {
+    // Given: herdr runs when the collector starts, with a pane that was there before it
+    const engine = stoppableHerdr([paneOf("w0:p1", "working")], true);
+    const { log, handlers } = recorder();
+    const collector = startStatusCollector(handlers, engine.deps);
+    try {
+      await elapse();
+      engine.herdr.lifecycle().start();
+      engine.herdr.status()!.start();
+      await elapse(20);
+      expect(log.statuses).toEqual([]);
+      const told: string[] = [];
+      for (const round of [1, 2, 3]) {
+        // When: a pane is created and reports before any snapshot shows it
+        const pane = `w${round}:p1`;
+        engine.herdr.lifecycle().emit(created(pane));
+        engine.herdr.setPanes([...(round === 1 ? [paneOf("w0:p1", "working")] : []), paneOf(pane, "working")]);
+        await elapse(20);
+        engine.herdr.status()!.start();
+        await elapse(20);
+        // Then
+        told.push(`${pane}:working (was unknown)`);
+        expect(log.statuses).toEqual(told);
+        if (round === 3) break;
+        // herdr goes away for a while and comes back with nothing open (herdr 0.9.3 restores no pane)
+        engine.stop();
+        await elapse(200);
+        await engine.start([]);
+      }
+    } finally { collector.stop(); }
+  });
+});

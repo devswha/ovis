@@ -66,6 +66,13 @@ namespace_id = "1704"
   limit = 30
   period = 60
 
+# Relay passes (README.md, "Relay pass"): grace with no enforce date lets every PC in exactly as off does, and reads
+# a pass a PC presents for its fleet number (the room's size). RELAY_PASS_KEYS, the account service's public key, is
+# not in this file: the owner sets it with `wrangler secret put RELAY_PASS_KEYS` before the deploy that carries this.
+# Without it the Worker logs relay.pass.settings_invalid and runs with passes off, as before.
+[vars]
+RELAY_PASS_MODE = "grace"
+
 # A staging copy for end-to-end checks, deployed by hand with `--env staging` (README.md, "Staging").
 # It takes its workers.dev address only: an environment inherits the routes above unless it names
 # its own. No binding is inherited, so each is named again, with limiters and a usage dataset apart

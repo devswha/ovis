@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-666666?labelColor=333333" alt="MIT license"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT%20%2B%20FSL--1.1--MIT-666666?labelColor=333333" alt="MIT license, with the account layer under FSL-1.1-MIT"></a>
   <a href="https://github.com/devswha/ovis/releases/latest"><img src="https://img.shields.io/github/v/release/devswha/ovis?label=release&labelColor=333333&color=666666" alt="Latest release"></a>
   <a href="https://github.com/devswha/ovis/stargazers"><img src="https://img.shields.io/github/stars/devswha/ovis?labelColor=333333&color=666666&logo=github" alt="GitHub stars"></a>
   <a href="https://github.com/herdrdev/herdr"><img src="https://img.shields.io/badge/herdr-0.9.0%2B-666666?labelColor=333333" alt="herdr 0.9.0+"></a>
@@ -93,4 +93,4 @@ Built on [herdr](https://github.com/herdrdev/herdr), with inspiration from [chat
 
 ## License
 
-[MIT](LICENSE). Copyright © 2026 devswha.
+[MIT](LICENSE), except the account layer, `shared/account-list*`, which is source available under the Functional Source License (FSL-1.1-MIT) in [LICENSES/ACCOUNT-LAYER.md](LICENSES/ACCOUNT-LAYER.md). Copyright © 2026 devswha.

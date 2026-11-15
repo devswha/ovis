@@ -1,9 +1,10 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { createHash, createPrivateKey, sign } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DIST_ARCHIVE, generateKeyPair, RELEASE_PUBLIC_KEY, releaseFile, PTY_ASSETS, ptyFile, SERVER_PLATFORMS, signManifest, writeManifest } from "./server-manifest.ts";
+import { EXTRA_PLATFORMS, extraFile, DIST_ARCHIVE, generateKeyPair, MANIFEST, RELEASE_PUBLIC_KEY, releaseFile, PTY_ASSETS, ptyFile, SERVER_PLATFORMS, signManifest, writeManifest } from "./server-manifest.ts";
+import { RELEASE_BINARIES } from "./release-binaries.ts";
 
 /**
  * install.sh's binary install (install_binary), run under /bin/sh from a copy of the script whose one pinned key line
@@ -34,12 +35,13 @@ function release(base: string, version: string, privateKeyPem: string, host?: st
   mkdirSync(dir, { recursive: true });
   for (const platform of SERVER_PLATFORMS) writeFileSync(join(dir, releaseFile(platform)), `#!/bin/sh\necho ovis-server ${version} "$@"\n`);
   for (const build of PTY_ASSETS) writeFileSync(join(dir, ptyFile(build)), host ?? `pty host ${build}\n`, { mode: 0o755 });
+  for (const binary of RELEASE_BINARIES) for (const platform of EXTRA_PLATFORMS) writeFileSync(join(dir, extraFile(binary, platform)), `#!/bin/sh\necho ${binary} ${version} ${platform}\n`, { mode: 0o755 });
   const client = join(base, `client-${version}`);
   mkdirSync(client, { recursive: true });
   writeFileSync(join(client, "index.html"), `<!doctype html><title>${version}</title>`);
   expect(Bun.spawnSync(["tar", "-czf", join(dir, DIST_ARCHIVE), "-C", client, "."]).exitCode).toBe(0);
   rmSync(client, { recursive: true });
-  writeManifest(dir, { version, sources });
+  writeManifest(dir, { version, sources, binaries: RELEASE_BINARIES });
   signManifest(dir, privateKeyPem);
   return dir;
 }
@@ -74,7 +76,10 @@ function pc({ lockWait }: { lockWait?: number } = {}) {
   const key = generateKeyPair();
   const copy = lockWait === undefined ? testCopy(key.publicKey) : testCopy(key.publicKey).replace("\nINSTALL_LOCK_WAIT=600\n", `\nINSTALL_LOCK_WAIT=${lockWait}\n`);
   if (lockWait !== undefined) expect(copy).toContain(`\nINSTALL_LOCK_WAIT=${lockWait}\n`);
-  const argv = (call: string) => ["/bin/sh", "-c", `set -eu\nos=${PLATFORM.split("-")[0]}; arch=${PLATFORM.split("-")[1]}; platform=${PLATFORM}\n${copy}\n${call}`];
+  // sourced from a file: the script is longer than one argument may be (Linux's 128 KiB)
+  const script = join(scratch, "install.sh");
+  writeFileSync(script, copy);
+  const argv = (call: string) => ["/bin/sh", "-c", `set -eu\nos=${PLATFORM.split("-")[0]}; arch=${PLATFORM.split("-")[1]}; platform=${PLATFORM}\n. '${script}'\n${call}`];
   const environment = (env: Record<string, string>) => ({ HOME: home, PATH: `${stand}:${process.env["PATH"]}`, OVIS_RELEASES_URL: `file://${releases}`, ...env });
   const run = (call: string, env: Record<string, string> = {}) => {
     const result = Bun.spawnSync(argv(call), { env: environment(env), stdout: "pipe", stderr: "pipe", timeout: 60_000 });
@@ -91,7 +96,17 @@ function pc({ lockWait }: { lockWait?: number } = {}) {
   // check: Bun's node:crypto stands in, so these tests never reach the network
   if (!Bun.which("node")) standIn("node", `exec "${process.execPath}" "$@"`);
   const dropStandIn = (name: string) => rmSync(join(stand, name));
-  return { home, releases, key, run, start, standIn, dropStandIn, binary: join(home, ".local/share/ovis/bin/ovis-server"), ovis: join(home, ".local/share/ovis") };
+  /**
+   * GitHub's own address, the default with no OVIS_RELEASES_URL, served from this PC's release folder: a curl that
+   * reads GitHub's download address as that folder, so install.sh's GitHub path runs with no network
+   */
+  const github = () => {
+    const curl = Bun.which("curl", { PATH: process.env["PATH"] ?? "" });
+    expect(curl).not.toBeNull();
+    standIn("curl", `for a do shift; case $a in https://github.com/devswha/ovis/releases/download/*) a="file://${releases}/\${a#https://github.com/devswha/ovis/releases/download/}" ;; esac; set -- "$@" "$a"; done; exec '${curl}' "$@"`);
+    return { OVIS_RELEASES_URL: "" };
+  };
+  return { home, releases, key, run, start, standIn, dropStandIn, github, binary: join(home, ".local/share/ovis/bin/ovis-server"), ovis: join(home, ".local/share/ovis") };
 }
 
 /** every file and link under `dir`, with its SHA-256 or target */
@@ -129,7 +144,7 @@ describe.skipIf(process.platform === "win32")("install.sh installs the release's
     ["a corrupt client archive", (dir) => writeFileSync(join(dir, DIST_ARCHIVE), "x"), DIST_ARCHIVE],
     ["a manifest signed by another key", (dir) => signManifest(dir, generateKeyPair().privateKeyPem), "signature"],
     ["a manifest for another version", (dir, privateKeyPem) => {
-      writeManifest(dir, { version: "1.2.2", sources });
+      writeManifest(dir, { version: "1.2.2", sources, binaries: RELEASE_BINARIES });
       signManifest(dir, privateKeyPem);
     }, "is for version 1.2.2, not 1.2.4"],
     ["a manifest edited after it was signed", (dir) => writeFileSync(join(dir, "ovis-server.json"), readFileSync(join(dir, "ovis-server.json"), "utf8").replace('"version": "1.2.4"', '"version": "1.2.5"')), "signature"],
@@ -169,7 +184,7 @@ describe.skipIf(process.platform === "win32")("install.sh installs the release's
     mkdirSync(evil, { recursive: true });
     writeFileSync(join(evil, "..", "escaped"), "x");
     expect(Bun.spawnSync(["tar", "-czPf", join(dir, DIST_ARCHIVE), "-C", evil, "../escaped"]).exitCode).toBe(0);
-    writeManifest(dir, { version: "1.2.3", sources });
+    writeManifest(dir, { version: "1.2.3", sources, binaries: RELEASE_BINARIES });
     signManifest(dir, key.privateKeyPem);
     const result = run("install_binary 1.2.3");
     expect(result.code).not.toBe(0);
@@ -189,7 +204,7 @@ describe.skipIf(process.platform === "win32")("install.sh installs the release's
     writeFileSync(join(client, "index.html"), "<!doctype html>");
     symlinkSync("/etc/passwd", join(client, "passwd"));
     expect(Bun.spawnSync(["tar", "-czf", join(dir, DIST_ARCHIVE), "-C", client, "."]).exitCode).toBe(0);
-    writeManifest(dir, { version: "1.2.4", sources });
+    writeManifest(dir, { version: "1.2.4", sources, binaries: RELEASE_BINARIES });
     signManifest(dir, key.privateKeyPem);
     const result = run("install_binary 1.2.4");
     expect(result.code).not.toBe(0);
@@ -200,7 +215,7 @@ describe.skipIf(process.platform === "win32")("install.sh installs the release's
   it("refuses a manifest of a schema it does not know, though the right key signed it", () => {
     const { releases, key, run, ovis } = pc();
     const dir = release(releases, "1.2.3", key.privateKeyPem);
-    writeFileSync(join(dir, "ovis-server.json"), readFileSync(join(dir, "ovis-server.json"), "utf8").replace('"schema": 1,', '"schema": 2,'));
+    writeFileSync(join(dir, "ovis-server.json"), readFileSync(join(dir, "ovis-server.json"), "utf8").replace('"schema": 2,', '"schema": 3,'));
     signManifest(dir, key.privateKeyPem);
     const result = run("install_binary 1.2.3");
     expect(result.code).not.toBe(0);
@@ -494,14 +509,20 @@ exec "${Bun.which("cat")}" "$@"`);
   });
 
   it("picks the binary for a release that ships it, the newest in a file:// folder, and the source path otherwise", () => {
-    const { releases, key, run, home } = pc();
+    const { releases, key, run, home, github, standIn } = pc();
     release(releases, "1.2.3", key.privateKeyPem);
     release(releases, "1.10.0", key.privateKeyPem);
     mkdirSync(join(releases, "v1.9.9"));
     const pick = (env: Record<string, string> = {}) => run('pick_install; echo "PICKED binary=$binary version=${version:-} ref=$ref"', { PATH: `${join(home, "no-herdr")}:/usr/bin:/bin`, ...env }).out;
     expect(pick()).toContain("PICKED binary=1 version=1.10.0 ref=v1.10.0");
     expect(pick({ OVIS_REF: "v1.2.3" })).toContain("PICKED binary=1 version=1.2.3");
-    const old = pick({ OVIS_REF: "v1.9.9" });
+    // a mirror's release without ovis-server.json is refused; only GitHub's own address reads it as one from before the
+    // compiled server and installs its source
+    const refused = pick({ OVIS_REF: "v1.9.9" });
+    expect(refused).toContain("has no signed release v1.9.9");
+    expect(refused).not.toContain("PICKED");
+    standIn("herdr", "exit 1");
+    const old = run('pick_install; echo "PICKED binary=$binary version=${version:-} ref=$ref"', { ...github(), OVIS_REF: "v1.9.9" }).out;
     expect(old).toContain("ships no compiled server, so it is installed from source");
     expect(old).toContain("PICKED binary=0");
     expect(pick({ OVIS_REF: "main" })).toContain("PICKED binary=0");
@@ -562,28 +583,36 @@ exec "${Bun.which("cat")}" "$@"`);
     expect(JSON.parse(readFileSync(join(ovis, "bin", "bin", "ovis-pty-sidecar.json"), "utf8"))).toEqual({ sha256: sha256(host), version: "1.2.3" });
   });
 
-  it("never runs a PTY host other than the one the signed manifest names, and installs the server without it", () => {
+  it("refuses a release whose PTY host is not the one the signed manifest names, runs it never and leaves the install as it was", () => {
     const { releases, key, run, ovis, home } = pc();
     const ranAt = join(home, "host-ran");
     const signed = (marker: string) => `#!/bin/sh\n: > "${marker}"\n[ $# -gt 0 ] && exit 0\necho "pty-sidecar: usage: ovis-pty-sidecar" >&2\nexit 2\n`;
+    release(releases, "1.2.2", key.privateKeyPem, signed(join(home, "host-RAN")));
+    expect(run("install_binary 1.2.2").code).toBe(0);
+    const before = snapshot(ovis);
     const dir = release(releases, "1.2.3", key.privateKeyPem, signed(join(home, "host-RAN")));
     // a mirror's host of the very same size: it would run, and say so, were it taken
     for (const build of PTY_ASSETS) writeFileSync(join(dir, ptyFile(build)), signed(ranAt), { mode: 0o755 });
     expect(signed(ranAt).length).toBe(signed(join(home, "host-RAN")).length);
     const result = run("install_binary 1.2.3");
-    expect(result.code, result.out).toBe(0);
-    expect(result.out).toContain("does not match its SHA-256 and size in ovis-server.json, so it is not run");
+    expect(result.code, result.out).not.toBe(0);
+    expect(result.out).toContain("does not match its SHA-256 in ovis-server.json");
+    expect(result.out).toContain("nothing was changed");
     expect(existsSync(ranAt)).toBe(false);
-    expect(existsSync(join(ovis, "bin", "bin", "ovis-pty-sidecar"))).toBe(false);
-    expect(existsSync(join(ovis, "bin", "ovis-server"))).toBe(true);
+    expect(snapshot(ovis)).toEqual(before);
   });
 
   it("installs from source a release whose signed manifest has the shape from before schema 1, and refuses one badly signed or of an unknown schema", () => {
-    const { releases, key, run, ovis } = pc();
+    const { releases, key, run, ovis, github, standIn } = pc();
     oldShape(releases, "0.5.4", key.privateKeyPem);
     oldShape(releases, "0.5.5", generateKeyPair().privateKeyPem);
-    oldShape(releases, "0.5.6", key.privateKeyPem, (manifest) => { manifest["schema"] = 2; });
-    const old = run('pick_install; echo "binary=$binary"', { OVIS_REF: "v0.5.4" });
+    oldShape(releases, "0.5.6", key.privateKeyPem, (manifest) => { manifest["schema"] = 3; });
+    // on a mirror a release with no compiled server is refused, however it is signed
+    const mirrored = run('pick_install; echo "binary=$binary"', { OVIS_REF: "v0.5.4" });
+    expect(mirrored.code).toBe(1);
+    expect(mirrored.out).toContain("has no signed release v0.5.4");
+    standIn("herdr", "exit 1");
+    const old = run('pick_install; echo "binary=$binary"', { ...github(), OVIS_REF: "v0.5.4" });
     expect(old.code, old.out).toBe(0);
     expect(old.out).toContain("v0.5.4's signed ovis-server.json has the shape from before this installer");
     expect(old.out).toContain("ships no compiled server, so it is installed from source");
@@ -627,6 +656,20 @@ exec "${Bun.which("cat")}" "$@"`);
     expect(snapshot(ovis)).toEqual(before);
   });
 
+  it("installs no extra binary, even from a release whose signed manifest names one", () => {
+    const { releases, key, run, ovis } = pc();
+    const dir = release(releases, "1.2.3", key.privateKeyPem);
+    const extra = ["ovis-link"];
+    for (const binary of extra) for (const platform of EXTRA_PLATFORMS) writeFileSync(join(dir, extraFile(binary, platform)), `${binary} ${platform}\n`, { mode: 0o755 });
+    writeManifest(dir, { version: "1.2.3", sources, binaries: extra });
+    signManifest(dir, key.privateKeyPem);
+    const result = run("install_binary 1.2.3");
+    expect(result.code, result.out).toBe(0);
+    expect(readdirSync(join(ovis, "bin")).sort()).toEqual(["dist", "ovis-server", "ovis-server.json", "ovis-server.json.sig"]);
+    expect(result.out).not.toContain("ovis-link");
+    expect(run("install_binary 1.2.3").out).toContain("nothing to do");
+  });
+
   it("replaces nothing that is not its own: a bin folder someone made stays", () => {
     const { releases, key, run, ovis } = pc();
     release(releases, "1.2.3", key.privateKeyPem);
@@ -635,5 +678,175 @@ exec "${Bun.which("cat")}" "$@"`);
     const result = run("install_binary 1.2.3");
     expect(result.code).not.toBe(0);
     expect(readFileSync(join(ovis, "bin", "mine"), "utf8")).toBe("x");
+  });
+});
+
+/**
+ * A release mirror (OVIS_RELEASES_URL): a file:// folder, or an https
+ * address served here with a certificate made for the test (curl trusts it through CURL_CA_BUNDLE). The mirror is not
+ * trusted: only what the test key signed for the version asked for is installed, and its latest never goes back.
+ */
+describe.skipIf(process.platform === "win32")("install.sh from a release mirror", () => {
+  const tls = mkdtempSync(join(tmpdir(), "ovis-mirror-tls-"));
+  const root = { dir: "" };
+  let server: ReturnType<typeof Bun.serve> | undefined;
+  beforeAll(() => {
+    const made = Bun.spawnSync(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes", "-days", "1", "-subj", "/CN=127.0.0.1",
+      "-addext", "subjectAltName=IP:127.0.0.1", "-keyout", join(tls, "key.pem"), "-out", join(tls, "cert.pem")], { stdout: "pipe", stderr: "pipe" });
+    expect(made.exitCode, made.stderr.toString()).toBe(0);
+    server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      tls: { cert: readFileSync(join(tls, "cert.pem"), "utf8"), key: readFileSync(join(tls, "key.pem"), "utf8") },
+      fetch(request) {
+        const path = join(root.dir, decodeURIComponent(new URL(request.url).pathname));
+        return path.startsWith(root.dir) && existsSync(path) && lstatSync(path).isFile() ? new Response(Bun.file(path)) : new Response("Not Found", { status: 404 });
+      },
+    });
+  });
+  afterAll(() => {
+    server?.stop(true);
+    rmSync(tls, { recursive: true, force: true });
+  });
+
+  /** one PC whose mirror is `scheme`'s: run() resolves the latest release as install.sh's main does, then installs it */
+  function mirrored(scheme: "file" | "https") {
+    const machine = pc();
+    root.dir = machine.releases;
+    // the PC's own herdr must not decide the install; git would mean GitHub's tags were asked
+    machine.standIn("herdr", "exit 1");
+    machine.standIn("git", "echo git-was-asked >&2; exit 1");
+    const url = scheme === "https" ? `https://127.0.0.1:${server!.port}` : `file://${machine.releases}`;
+    const install = (env: Record<string, string> = {}) =>
+      machine.start('pick_install; [ "$binary" = 1 ] || exit 9; install_binary "$version"', { OVIS_RELEASES_URL: url, CURL_CA_BUNDLE: join(tls, "cert.pem"), ...env });
+    // an https mirror names its latest; a file:// one is read from its folders
+    const latest = (version: string) => {
+      writeFileSync(join(machine.releases, "latest"), `v${version}\n`);
+      if (scheme === "file") for (const entry of readdirSync(machine.releases)) if (/^v\d/.test(entry) && entry !== `v${version}`) rmSync(join(machine.releases, entry), { recursive: true });
+    };
+    return { ...machine, url, install, latest };
+  }
+
+  for (const scheme of ["file", "https"] as const) {
+    it(`${scheme}: installs the mirror's latest release, then updates to the next, never asking GitHub`, async () => {
+      const { releases, key, install, latest, binary } = mirrored(scheme);
+      release(releases, "1.2.0", key.privateKeyPem);
+      latest("1.2.0");
+      const first = await install();
+      expect(first.code, first.out).toBe(0);
+      expect(first.out).toContain("installed Ovis 1.2.0");
+      release(releases, "1.3.0", key.privateKeyPem);
+      latest("1.3.0");
+      const update = await install();
+      expect(update.code, update.out).toBe(0);
+      expect(update.out).toContain("installed Ovis 1.3.0");
+      expect(sha256(binary)).toBe(sha256(join(releases, "v1.3.0", releaseFile(PLATFORM))));
+      expect(`${first.out}${update.out}`).not.toContain("git-was-asked");
+    });
+
+    it(`${scheme}: takes no older release the mirror names as its latest, though signed, unless OVIS_REF asks for it`, async () => {
+      const { releases, key, install, latest, ovis } = mirrored(scheme);
+      release(releases, "1.3.0", key.privateKeyPem);
+      latest("1.3.0");
+      expect((await install()).code).toBe(0);
+      const before = snapshot(ovis);
+      release(releases, "1.2.0", key.privateKeyPem);
+      latest("1.2.0");
+      const back = await install();
+      expect(back.code, back.out).toBe(0);
+      expect(back.out).toContain("older than the installed 1.3.0; the installed Ovis stays as it is, nothing was changed");
+      expect(snapshot(ovis)).toEqual(before);
+      const asked = await install({ OVIS_REF: "v1.2.0" });
+      expect(asked.code, asked.out).toBe(0);
+      expect(asked.out).toContain("installed Ovis 1.2.0");
+    });
+
+    it(`${scheme}: refuses a tampered binary and a tampered manifest, and changes nothing`, async () => {
+      const { releases, key, install, latest, ovis } = mirrored(scheme);
+      release(releases, "1.2.0", key.privateKeyPem);
+      latest("1.2.0");
+      expect((await install()).code).toBe(0);
+      const before = snapshot(ovis);
+      const dir = release(releases, "1.3.0", key.privateKeyPem);
+      latest("1.3.0");
+      // the same size, one byte changed: only the SHA-256 the signed manifest names tells it apart
+      writeFileSync(join(dir, releaseFile(PLATFORM)), readFileSync(join(dir, releaseFile(PLATFORM))).map((byte, index) => (index === 12 ? byte ^ 1 : byte)));
+      const binary = await install();
+      expect(binary.code).not.toBe(0);
+      expect(binary.out).toContain("does not match its SHA-256");
+      release(releases, "1.3.0", key.privateKeyPem);
+      writeFileSync(join(dir, MANIFEST), readFileSync(join(dir, MANIFEST), "utf8").replace(/"sha256": "[0-9a-f]{64}"/, `"sha256": "${"0".repeat(64)}"`));
+      const manifest = await install();
+      expect(manifest.code).not.toBe(0);
+      expect(manifest.out).toContain("is not a valid signature");
+      expect(snapshot(ovis)).toEqual(before);
+    });
+
+    it(`${scheme}: refuses a fresh machine whose mirror has no ovis-server.json for its latest, never installing from source`, async () => {
+      const { releases, install, latest, home } = mirrored(scheme);
+      // the latest names a folder with no signed manifest: a mirror's, not a release from before the compiled server
+      mkdirSync(join(releases, "v1.3.0"), { recursive: true });
+      writeFileSync(join(releases, "v1.3.0", releaseFile(PLATFORM)), "#!/bin/sh\necho unsigned\n");
+      latest("1.3.0");
+      const result = await install();
+      expect(result.code, result.out).toBe(1);
+      expect(result.out).toContain(`has no signed release v1.3.0`);
+      expect(result.out).not.toContain("from source");
+      expect(result.out).not.toContain("git-was-asked");
+      expect(existsSync(join(home, ".local/share/ovis"))).toBe(false);
+    });
+
+    it(`${scheme}: a refused first install leaves no releases folder behind`, async () => {
+      const { releases, key, install, latest, ovis } = mirrored(scheme);
+      const dir = release(releases, "1.3.0", key.privateKeyPem);
+      latest("1.3.0");
+      writeFileSync(join(dir, releaseFile(PLATFORM)), readFileSync(join(dir, releaseFile(PLATFORM))).map((byte, index) => (index === 12 ? byte ^ 1 : byte)));
+      const result = await install();
+      expect(result.code).not.toBe(0);
+      expect(result.out).toContain("does not match its SHA-256");
+      expect(existsSync(join(ovis, "releases"))).toBe(false);
+      expect(existsSync(join(ovis, "bin"))).toBe(false);
+    });
+
+    it(`${scheme}: refuses a release missing one of its files, and a mirror that names no latest`, async () => {
+      const { releases, key, install, latest, ovis } = mirrored(scheme);
+      release(releases, "1.2.0", key.privateKeyPem);
+      latest("1.2.0");
+      expect((await install()).code).toBe(0);
+      const before = snapshot(ovis);
+      const dir = release(releases, "1.3.0", key.privateKeyPem);
+      latest("1.3.0");
+      rmSync(join(dir, DIST_ARCHIVE));
+      const missing = await install();
+      expect(missing.code).not.toBe(0);
+      expect(missing.out).toContain(`could not download`);
+      expect(snapshot(ovis)).toEqual(before);
+      for (const entry of readdirSync(releases)) rmSync(join(releases, entry), { recursive: true });
+      const none = await install();
+      expect(none.code).not.toBe(0);
+      expect(none.out).toContain("could not find the latest release in");
+    });
+  }
+});
+
+/**
+ * GitHub's own address is not a mirror: its behaviour stays main's. A PC whose installed release is newer than the
+ * public repository's highest tag goes on to that tag's release, as before (its download is cut here by a proxy that
+ * answers nothing, so the test reaches no network and stops at the download it was about to make).
+ */
+describe.skipIf(process.platform === "win32")("install.sh from GitHub's own address", () => {
+  it("goes on to the public repository's highest tag even when the installed release is newer, as main does", () => {
+    const { releases, key, run, standIn } = pc();
+    release(releases, "1.3.0", key.privateKeyPem);
+    expect(run("install_binary 1.3.0").code).toBe(0);
+    standIn("herdr", "exit 1");
+    standIn("git", `printf '%s\\trefs/tags/v1.1.0\\n%s\\trefs/tags/v1.2.0\\n' ${"a".repeat(40)} ${"b".repeat(40)}`);
+    const offline = { https_proxy: "http://127.0.0.1:9", HTTPS_PROXY: "http://127.0.0.1:9", no_proxy: "", NO_PROXY: "" };
+    for (const address of ["", "https://github.com/devswha/ovis/releases/download", "https://github.com/devswha/ovis/releases/download/"]) {
+      const result = run('pick_install; echo "PICKED binary=$binary version=$version"', { OVIS_RELEASES_URL: address, ...offline });
+      expect(result.out).not.toContain("older than the installed");
+      expect(result.out).toContain("could not reach https://github.com/devswha/ovis/releases/download/v1.2.0");
+      expect(result.code).toBe(1);
+    }
   });
 });

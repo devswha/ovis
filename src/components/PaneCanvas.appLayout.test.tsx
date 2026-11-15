@@ -16,7 +16,7 @@ const { PaneCanvas } = await import("./PaneCanvas.tsx");
 /** herdr's TUI server, a herdr-core PC the Herdr app lays out, and one whose layout Ovis keeps (lib/machineContext.tsx) */
 const TUI = appLayoutOf({ version: "0.9.5", protocol: 22 });
 const APP_CORE = appLayoutOf({ version: "0.1.17", protocol: 22, runtime: "herdr-core" });
-const OVIS_CORE = appLayoutOf({ version: "0.1.17", protocol: 22, runtime: "herdr-core", layout: { rename: true, split: true, move: true, arrange: true, worktrees: true } });
+const HERDR_CORE = appLayoutOf({ version: "0.1.17", protocol: 22, runtime: "herdr-core", layout: { rename: true, split: true, move: true, arrange: true, worktrees: true } });
 
 const pane = (id: string, label?: string): HerdrPane =>
   ({ pane_id: id, workspace_id: "w1", tab_id: "t1", terminal_id: `${id}:term`, revision: 1, focused: id === "p1", agent_status: "idle", label }) as HerdrPane;
@@ -89,7 +89,7 @@ describe("the pane canvas on a PC the Herdr app lays out", () => {
 
   it("offers no split on a core whose layout Ovis keeps for a pane in a tab of its own terminal (#2806)", async () => {
     const own: SessionSnapshot = { ...snapshot, panes: [{ ...pane("p1", "named"), own_tab: true }, pane("p2")] };
-    const itemsOf = await draw(OVIS_CORE, own);
+    const itemsOf = await draw(HERDR_CORE, own);
     expect(itemsOf(own.panes[0] as HerdrPane)).toEqual(["rename", "clear-name", "zoom", "close"]);
     expect(itemsOf(own.panes[1] as HerdrPane)).toEqual(["rename", "swap-focused", "split-right", "split-down", "zoom", "close"]);
   });
@@ -125,7 +125,7 @@ describe("the pane canvas on a PC the Herdr app lays out", () => {
 
   it("gives a lone tab with no row on a core whose layout Ovis keeps the same menu as herdr's TUI", async () => {
     phone = true;
-    const itemsOf = await draw(OVIS_CORE, movable);
+    const itemsOf = await draw(HERDR_CORE, movable);
     expect(itemsOf(movable.panes[0] as HerdrPane)).toEqual(["rename", "close", "new-terminal", "move-workspace", "new-agent-tab", "rename-tab", "close-tab"]);
   });
 
@@ -336,7 +336,7 @@ describe("the pane canvas on a PC the Herdr app lays out", () => {
   });
 
   it("counts its Close pane as the menu's only when the menu was pressed, and closes even when the count fails", async () => {
-    await draw(OVIS_CORE);
+    await draw(HERDR_CORE);
     const told: string[] = [];
     const counting = spyOn(usageCounters, "paneUse").mockImplementation((name) => { told.push(name); });
     const close = (options?: { counted?: boolean }) => actionsRef.current!(snapshot.panes[1] as HerdrPane, options).find((item) => item.id === "close")!;

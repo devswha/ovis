@@ -1,6 +1,6 @@
 import { chmodSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { startHerdrCoreAdapter, type HerdrCoreAdapter } from "./adapter.ts";
-import { HcConnection, spawnHcConnect } from "./connection.ts";
+import { HcConnection, HcError, spawnHcConnect } from "./connection.ts";
 import { MachineScopedConnection } from "./machine-scope.ts";
 import { SeenMarker } from "./seen-label.ts";
 import { coreStartEnv, terminalEnvFor, userTerminalEnv } from "./terminal-env.ts";
@@ -16,7 +16,7 @@ import type { RuntimeName } from "../../shared/machines.ts";
  * Which runtime this PC's terminals run on. `OVIS_RUNTIME=herdr-core` serves the terminals of
  * herdr-core (`hc`), the core the Herdr desktop app runs on, in place of herdr's TUI server; unset,
  * or `herdr`, keeps herdr; without it, the choice saved from Settings or what the PC has decides
- * (runtime-choice.ts). `alt-runtime` is known, but this Ovis cannot start it yet (startRuntime).
+ * (runtime-choice.ts).
  * Settled once per process: a server does not change runtime while it runs.
  */
 export type Runtime = RuntimeName;
@@ -24,16 +24,23 @@ export type Runtime = RuntimeName;
 /** the runtime the server chose as it started (runtime-choice.ts); unset, OVIS_RUNTIME decides */
 let chosen: Runtime | null = null;
 
-export function setRuntime(runtime: Runtime | null): void {
+/** Entries beside an owner-managed engine may only open its existing native socket. */
+export type EngineLifecyclePolicy = "ordinary" | "existing-only";
+let enginePolicy: EngineLifecyclePolicy = "ordinary";
+
+/** The policy has no default: an entry that forgets it would start a core as ordinary serve does. */
+export function setRuntime(runtime: Runtime | null, policy: EngineLifecyclePolicy): void {
   chosen = runtime;
+  enginePolicy = policy;
+  connection?.close();
 }
 
 export function runtime(): Runtime {
   if (chosen !== null) return chosen;
   const value = process.env["OVIS_RUNTIME"];
   if (value === undefined || value === "" || value === "herdr") return "herdr";
-  if (value === "herdr-core" || value === "alt-runtime") return value;
-  throw new Error(`OVIS_RUNTIME=${value} is not a runtime Ovis knows: use herdr (the default), herdr-core or alt-runtime`);
+  if (value === "herdr-core") return value;
+  throw new Error(`OVIS_RUNTIME=${value} is not a runtime Ovis knows: use herdr (the default) or herdr-core`);
 }
 
 /** the hc startRuntime found (server/herdr-core/discovery.ts); null before it ran */
@@ -83,14 +90,6 @@ export class NoHerdrCoreError extends Error {
   }
 }
 
-/** alt-runtime was chosen, but this Ovis cannot start it: a choice saved in Settings falls back from it as from NoHerdrCoreError. */
-export class NoAltRuntimeError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "NoAltRuntimeError";
-  }
-}
-
 /**
  * The other machine of the core this server shows as a PC of its own (OVIS_HC_MACHINE, set by
  * machine-bridge.ts for the server it starts per machine); null for the core's own terminals.
@@ -104,8 +103,11 @@ export function hcMachine(): { name: string; id: string } | null {
 /**
  * What `hc connect` runs in: a machine's server runs with a home of its own (machine-bridge.ts), and
  * OVIS_HC_ENV holds what finds the core (HOME, HC_*, XDG_*) as the server that started it has them.
+ * Under the existing-only policy it is ignored: those entries (the machine profile, the fleet bridge)
+ * check one socket and connect to exactly that one, which only this process's own environment names.
  */
 export function hcEnv(): Record<string, string | undefined> | undefined {
+  if (enginePolicy === "existing-only") return undefined;
   const kept = process.env["OVIS_HC_ENV"];
   return kept ? { ...process.env, ...(JSON.parse(kept) as Record<string, string>) } : undefined;
 }
@@ -119,7 +121,7 @@ export function coreSocketPath(): string {
  * Whether a core answers on `path`: a connect, not the file, decides, as a core that crashed or was
  * killed leaves its socket file (on macOS in the state folder, also across a reboot).
  */
-function coreAnswers(path: string): Promise<boolean> {
+export function coreAnswers(path: string): Promise<boolean> {
   return new Promise((resolve) => {
     const probe = createConnection(path);
     const done = (answers: boolean) => { probe.destroy(); resolve(answers); };
@@ -149,7 +151,7 @@ export function coreSeenMarker(): SeenMarker {
 
 /** The server's one line to hc, which the adapter answers through and live terminals stream on. */
 export function coreConnection(): HcConnection {
-  const spawn = () => spawnHcConnect(hcBin(), coreStartEnv({ ...(hcEnv() ?? process.env), ...herdrSocketBefore }, terminalEnvironment));
+  const spawn = () => spawnHcConnect(hcBin(), coreStartEnv({ ...(hcEnv() ?? process.env), ...herdrSocketBefore }, terminalEnvironment), enginePolicy === "existing-only");
   const machine = hcMachine();
   connection ??= machine === null ? new HcConnection(spawn) : new MachineScopedConnection(spawn, machine.name, machine.id);
   return connection;
@@ -163,13 +165,12 @@ export function coreConnection(): HcConnection {
  */
 export async function startRuntime(stateDir: string, find: (onRefused?: (bin: string, reason: string) => void) => Promise<FoundHc | null> = (onRefused) => findHc(onRefused ? { onRefused } : {}),
   terminalEnv: () => Promise<Record<string, string>> = () => userTerminalEnv(hcEnv() ?? process.env)): Promise<HerdrCoreAdapter | null> {
-  // never serve herdr in its place under its name: the server says which runtime it serves
-  if (runtime() === "alt-runtime") throw new NoAltRuntimeError("this Ovis cannot start alt-runtime yet");
   if (runtime() !== "herdr-core") return null;
   const platform = process.platform;
   if (platform !== "linux" && platform !== "darwin" && platform !== "win32") {
     throw new Error(`OVIS_RUNTIME=herdr-core is served on Linux, macOS and Windows, not ${platform}`);
   }
+  if (enginePolicy === "existing-only" && !(await coreAnswers(coreSocketPath()))) throw new HcError("unavailable", "The selected herdr-core is not running");
   // The terminals' environment is read while hc is looked for (both run a login shell); another machine's
   // terminals are not this PC's user's, and keep that machine's own. Every way out before the adapter waits
   // for the read, so none outlives a start that gives up. One that fails is handled at once (no unhandled
@@ -204,6 +205,7 @@ export async function startRuntime(stateDir: string, find: (onRefused?: (bin: st
   // One already running has its own, and its terminals wait for the read themselves (terminalEnvFor), so
   // the server does not wait on a slow profile at its start
   const coreRuns = await coreAnswers(coreSocketPath());
+  if (!coreRuns && enginePolicy === "existing-only") { await reading; throw new HcError("unavailable", "The selected herdr-core stopped before its adapter started"); }
   if (!coreRuns) terminalEnvironment = await reading;
   const hc = coreConnection();
   if (coreRuns) void reading.then((env) => { if (connection === hc) terminalEnvironment = env; });

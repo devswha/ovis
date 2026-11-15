@@ -1490,3 +1490,46 @@ describe("carrier loss never resends", () => {
     expect(e.closes).toEqual([4000]);
   });
 });
+
+describe("a client opened early on early_open", () => {
+  const early = () => {
+    const closed = deferred<MuxProtocolError>();
+    const sessions: number[] = [];
+    const engine = new MuxEngine({
+      role: "client", clock: new Clock(), send: async () => {}, close: () => {}, outboundWireByteLength: (bytes) => bytes.length + 24,
+      routingOverhead: 0, maxWireMessageBytes: 32 * KiB, onClose: (error) => closed.resolve(error), onSession: (frame) => { sessions.push(frame.type); },
+    });
+    engines.push(engine);
+    engine.authenticateEarly(device);
+    return { engine, sessions, closed: closed.promise };
+  };
+  const authOk = (id = device) => frame({ type: FrameType.AUTH_OK, flags: 0, stream_id: 0, payload: { session_id: "a".repeat(32), device_id: id, role: "drive" } });
+
+  it("opens a stream at once and reads its answer once AUTH_OK came", async () => {
+    const e = early();
+    const stream = e.engine.openHttp({ method: "GET", target: "/api/test", headers: [], body: "none" });
+    const status = deferred<number>();
+    stream.onHeaders = ({ status: code }) => status.resolve(code);
+    await e.engine.flush();
+    e.engine.receive(authOk());
+    e.engine.receive(headers(1, 204));
+    expect(await status.promise).toBe(204);
+    expect(e.sessions).toEqual([FrameType.AUTH_OK]);
+    expect(e.engine.active).toBe(true);
+  });
+
+  it("takes no stream frame before AUTH_OK", async () => {
+    const e = early();
+    e.engine.openHttp({ method: "GET", target: "/api/test", headers: [], body: "none" });
+    await e.engine.flush();
+    e.engine.receive(headers(1));
+    expect((await e.closed).code).toBe("protocol_error");
+  });
+
+  it("ends with auth_failed on an AUTH_OK for another device", async () => {
+    const e = early();
+    e.engine.receive(authOk("fedcba9876543210"));
+    expect((await e.closed).code).toBe("auth_failed");
+    expect(e.sessions).toEqual([]);
+  });
+});

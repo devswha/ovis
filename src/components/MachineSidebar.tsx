@@ -2,6 +2,7 @@ import { tally } from "../lib/usageCounters.ts";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type FocusEvent, type KeyboardEvent, type ReactNode } from "react";
 import { ArrowLeftRight, ChevronDown, ChevronRight, Download, EyeOff, Monitor, Pencil, Plug, Plus, RefreshCw, Search, Settings, SlidersHorizontal, Trash2, Unplug, X } from "lucide-react";
 import { OWN_UPDATE_OFFER, type Machine, type MachineState, type MachineUpdate, type RemoteOvis } from "../../shared/machines.ts";
+import { FLEET_CAUSE_SENTENCE } from "../../shared/fleet-cause.ts";
 import { copyText } from "../lib/clipboard.ts";
 import { AppLayoutContext, FULL_LAYOUT, MachineContext, type LayoutOffer } from "../lib/machineContext.tsx";
 import { answerMachineSetup, machineRequest } from "../lib/api.ts";
@@ -56,6 +57,14 @@ export function pcListExit(page: { nativeApp: boolean; relayShell: boolean; path
  *  line and the line under the header never call a question an error, nor what was chosen and is gone a question */
 function asksWhatToConnect(machine: Machine): boolean {
   return machine.action_required === "choose_herdr" && asksChoice(machine.error, machine.found_herdr_sessions ?? [], machine.found_ovis ?? []);
+}
+
+/** A PC's state word; a fleet machine without its link session is offline, not disconnected by anyone here. */
+const stateWordOf = (machine: Pick<Machine, "kind" | "state">): string => machine.kind === "fleet" && machine.state === "disconnected" ? "Offline" : STATE_WORD[machine.state];
+
+/** The fleet's machines, under one group in the PCs' list: by name, then by id. */
+export function fleetRows(machines: readonly Machine[]): Machine[] {
+  return machines.filter((machine) => machine.kind === "fleet").sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
 }
 
 export const STATE_WORD: Readonly<Record<MachineState, string>> = {
@@ -262,7 +271,8 @@ export function MachineSidebar(props: Props) {
   // no top bar: a workspace starts from its PC's header (the lone Host's New workspace row), and Add PC lives in
   // Settings → Devices and PCs. The filter above the lists is a row of the same grid, one field and its clear, never
   // taller than a row.
-  const agentList = <AgentSidebar key="agents" foldRequest={agentsFold} listId={agentsListId} machines={props.machines} selectedMachineId={props.selectedMachineId} selectedPaneId={props.selectedPaneId} stateWord={(machine) => t(STATE_WORD[machine.state])} watching={props.watching} onSelect={props.onSelect} />;
+  const fleet = useMemo(() => fleetRows(props.machines), [props.machines]);
+  const agentList = <AgentSidebar key="agents" foldRequest={agentsFold} listId={agentsListId} machines={props.machines} selectedMachineId={props.selectedMachineId} selectedPaneId={props.selectedPaneId} stateWord={(machine) => t(stateWordOf(machine))} watching={props.watching} onSelect={props.onSelect} />;
   return <SidebarActivityProvider value={activity}><SidebarFilterProvider value={filterView}><div ref={shell} className={`sidebar-shell${order === "agents" ? " is-agents-first" : ""}`} onBlur={onSidebarBlur} onKeyDown={stepRows}>
     {filterShown && <div className="sidebar-filter" role="search" aria-label={t("Filter workspaces and agents")}>
       {/* a glass in the field says what it is, as VS Code's and macOS's search fields do: no word beside it */}
@@ -280,7 +290,17 @@ export function MachineSidebar(props: Props) {
     <section className="pcs-sidebar" aria-label={t("PCs")}>
       <div ref={machineList} className="machine-list" id={listId} aria-label={t("PCs and workspaces")}>
         <p className={noMatchWords === null ? "visually-hidden" : "tree-state sidebar-filter-empty"} role="status">{noMatchWords}</p>
-        {props.machines.map((machine) => <MachineGroup key={machine.id} {...props} machine={machine} headerless={machine.id === loneHost} canHide={canHideMachine(roster, hiddenIds, machine.id)} onHide={() => hideMachine(machine.id)} />)}
+        {props.machines.filter((machine) => machine.kind !== "fleet").map((machine) => <MachineGroup key={machine.id} {...props} machine={machine} headerless={machine.id === loneHost} canHide={canHideMachine(roster, hiddenIds, machine.id)} onHide={() => hideMachine(machine.id)} />)}
+        {fleet.length > 0 && <section className="fleet-group" aria-label={t("Fleet machines")}>
+          <h3 className="fleet-group-head">
+            {/* the caption opens the Fleet screen, where machines are confirmed and removed */}
+            <button type="button" className="fleet-group-open" title={t("Open fleet")} onClick={props.actions.openFleet}>
+              <span className="fleet-group-name">{t("Fleet machines")}</span>
+              <SidebarCount className="fleet-group-count" n={fleet.length} words={fleet.length === 1 ? t("1 fleet machine") : t("{n} fleet machines", { n: fleet.length })} />
+            </button>
+          </h3>
+          {fleet.map((machine) => <MachineGroup key={machine.id} {...props} machine={machine} canHide={canHideMachine(roster, hiddenIds, machine.id)} onHide={() => hideMachine(machine.id)} />)}
+        </section>}
         <p className={loadingWords === null ? "visually-hidden" : "tree-state"} role="status">{loadingWords}</p>
       </div>
     </section>
@@ -327,7 +347,7 @@ export type ManageAction = "rename" | "toggle" | "setup" | "update" | "hide" | "
  * canHideMachine).
  */
 export function manageActions(machine: Pick<Machine, "kind" | "herdr_profile_id" | "enabled" | "target" | "action_required">, { busy, canHide }: { busy: boolean; canHide: boolean }): { id: ManageAction; disabled: boolean }[] {
-  const own = !machine.herdr_profile_id && machine.kind !== "hc";
+  const own = !machine.herdr_profile_id && machine.kind !== "hc" && machine.kind !== "fleet";
   const reachable = machine.enabled && Boolean(machine.target);
   const actions: { id: ManageAction; disabled: boolean }[] = [];
   if (own) actions.push({ id: "rename", disabled: busy }, { id: "toggle", disabled: busy });
@@ -370,10 +390,12 @@ function MachineGroup({ machine, headerless = false, canHide, onHide, ...props }
   // the state line under the name is a live region in the group from its first render, kept through the
   // notice (clipped and empty while it shows): its word lands a frame after the line (lib/useAnnouncedText.ts),
   // and every later state change, or the notice clearing, at once
-  const stateWord = useAnnouncedText(noticed ? null : t(STATE_WORD[machine.state]));
+  const stateWord = useAnnouncedText(noticed ? null : t(stateWordOf(machine)));
   // an SSH failure ssh itself named (lib/userError.ts sshFailure): said in plain words with the host and port it
   // tried, ssh's own line kept under it to select and copy (G-031); the way back is the PC's Manage menu (G-032)
   const ssh = !noticed && machine.kind === "ssh" && machine.error !== null ? sshFailure(machine.error) : null;
+  // a fleet machine says why in the fleet's own sentence (shared/fleet-cause.ts), as its Fleet row does
+  const errorWords = machine.kind === "fleet" && machine.fleet?.cause ? t(FLEET_CAUSE_SENTENCE[machine.fleet.cause]) : machine.error === null ? null : machineErrorText(machine.error, t);
   const sshWords = ssh === null ? null : (() => {
     const where = ssh.host === null ? machine.name : ssh.port === null ? ssh.host : `${ssh.host}:${ssh.port}`;
     switch (ssh.reason) {
@@ -422,9 +444,12 @@ function MachineGroup({ machine, headerless = false, canHide, onHide, ...props }
   };
   // how the PC is reached follows its state word; a machine of herdr-core says where it is managed instead
   // a PC waiting on a choice (choose_herdr) or a setup waits on the user: neither is told as a connection error
-  const stateWords = machine.action_required === "setup" ? t("Setup needed") : asksWhatToConnect(machine) ? t("Choose what to connect to") : t(STATE_WORD[machine.state]);
-  const stateLine = machine.kind === "hc" ? stateWords : `${stateWords} · ${machine.kind === "relay" ? t("through the relay") : t("over SSH")}`;
-  const manageNote = machine.kind === "hc" ? t("A machine of herdr-core. Add, rename or remove it with hc machine or in the Herdr app.") : machine.herdr_profile_id ? t("Managed by herdr. Rename, disable or remove it there.") : null;
+  const stateWords = machine.action_required === "setup" ? t("Setup needed") : asksWhatToConnect(machine) ? t("Choose what to connect to") : t(stateWordOf(machine));
+  // a PC that is also a fleet machine names both routes
+  const routes = [machine.kind === "hc" ? null : machine.kind === "fleet" ? t("through the fleet link") : machine.kind === "relay" ? t("through the relay") : t("over SSH"),
+    machine.kind !== "fleet" && machine.fleet ? t("through the fleet link") : null].filter((route) => route !== null);
+  const stateLine = [stateWords, ...routes].join(" · ");
+  const manageNote = machine.kind === "hc" ? t("A machine of herdr-core. Add, rename or remove it with hc machine or in the Herdr app.") : machine.kind === "fleet" ? t("A fleet machine. It is enrolled and removed in the fleet, not here.") : machine.herdr_profile_id ? t("Managed by herdr. Rename, disable or remove it there.") : null;
   const manageItems = (): RowMenuItem[] => manageActions(machine, { busy, canHide }).map(({ id, disabled }): RowMenuItem => {
     switch (id) {
       case "rename": return { id, disabled, label: t("Rename…"), icon: Pencil, run: () => { setName(machine.name); setRenaming(true); } };
@@ -509,9 +534,9 @@ function MachineGroup({ machine, headerless = false, canHide, onHide, ...props }
     {/* connected is the norm and says nothing new; every other state is spelled out. A failure is an alert, a
         connection in progress a status (G-044): one live region, its role following the state */}
     {noticed && <MachineActionNotice machine={machine} onSetup={props.onSetup} />}
-    <p className={`machine-state is-${machine.state}${online || stateWord === null ? " visually-hidden" : ""}`} role={machine.state === "error" ? "alert" : "status"} title={noticed || machine.error === null ? undefined : machineErrorText(machine.error, t)}>
+    <p className={`machine-state is-${machine.state}${online || stateWord === null ? " visually-hidden" : ""}`} role={machine.state === "error" ? "alert" : "status"} title={noticed || errorWords === null ? undefined : errorWords}>
       <span className="machine-state-word">{stateWord}</span>
-      {!noticed && machine.error && <span className="machine-state-detail">{sshWords ?? machineErrorText(machine.error, t)}</span>}
+      {!noticed && errorWords && <span className="machine-state-detail">{sshWords ?? errorWords}</span>}
       {/* ssh's own words, whole, to select and copy (G-030, G-031) */}
       {sshWords !== null && <code className="machine-state-raw">{machine.error}</code>}
       {nextStep !== null && <span className="machine-state-next">{nextStep}</span>}

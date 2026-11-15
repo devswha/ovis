@@ -56,6 +56,12 @@ export type FrameType = typeof FrameType[keyof typeof FrameType];
 export const PAIR_SAS_FEATURE = "pair-sas";
 /** The PC has `/api/account/*` and applies account records (docs/account.md, "Negotiation"). */
 export const ACCOUNT_FEATURE = "account";
+/**
+ * What a PC whose WELCOME said `early_open` holds of a phone's stream frames between a well-formed AUTH for a device
+ * it knows and its AUTH_OK: past either bound the session ends `resource_exhausted`. It runs them only once AUTH holds.
+ */
+export const EARLY_OPEN_FRAMES = 64;
+export const EARLY_OPEN_BYTES = 256 * 1024;
 /** What a comparison asks for, offered with `pair-sas` (at most one) and shown in the approval prompt. */
 export const PAIR_INTENT_PC = "pair-intent-pc";
 export const PAIR_INTENT_ACCOUNT = "pair-intent-account";
@@ -152,11 +158,11 @@ type Method = "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS";
 type JsonObject = { readonly [key: string]: unknown };
 type Payloads = {
   readonly 0x01: { readonly protocol: "ovis-mux"; readonly versions: readonly number[]; readonly features: readonly string[]; readonly required_features: readonly string[] };
-  readonly 0x02: { readonly protocol: "ovis-mux"; readonly version: 1; readonly features: readonly string[]; readonly limits: LimitsV1; readonly nonce: string; readonly server_version: string; readonly relay_protocol: number; readonly min_supported_client: string; readonly provisional?: true };
+  readonly 0x02: { readonly protocol: "ovis-mux"; readonly version: 1; readonly features: readonly string[]; readonly limits: LimitsV1; readonly nonce: string; readonly server_version: string; readonly relay_protocol: number; readonly min_supported_client: string; readonly provisional?: true; readonly early_open?: true };
   readonly 0x03: { readonly scheme: "device-key"; readonly device_id: string; readonly signature: string };
   readonly 0x04: { readonly session_id: string; readonly device_id: string; readonly role: "drive" | "watch"; readonly relays?: readonly string[]; readonly direct?: readonly string[] };
   readonly 0x05: { readonly code: SessionError; readonly message: string };
-  readonly 0x06: { readonly code: "shutdown" | "id_exhausted"; readonly last_open_id: number; readonly drain_ms: number };
+  readonly 0x06: { readonly code: "shutdown" | "id_exhausted"; readonly last_open_id: number; readonly drain_ms: number; readonly reason?: string };
   readonly 0x07: bigint;
   readonly 0x08: bigint;
   readonly 0x09: bigint;
@@ -182,6 +188,46 @@ export type MuxFrame = {
   [T in FrameType]: { readonly type: T; readonly flags: number; readonly stream_id: number; readonly payload: Payloads[T] }
 }[FrameType];
 
+/** Frame types a registered MuxExtension may own. Without one each is a protocol error, as any type not in FrameType. */
+export const EXTENSION_FRAME_TYPES = { first: 0x40, last: 0x4f } as const;
+/**
+ * A frame a registered MuxExtension read: never a MuxFrame, so code that knows only this mux cannot take one for its
+ * own. Its `type` is AUTH, AUTH_OK or one of EXTENSION_FRAME_TYPES; its payload is what the extension returned.
+ */
+export interface ExtensionFrame {
+  readonly extension: true;
+  readonly type: number;
+  readonly flags: number;
+  readonly stream_id: number;
+  readonly payload: unknown;
+}
+/**
+ * A private addition to this mux, given to the codec (and through MuxOptions to the engine) by the side that has one.
+ * It owns an AUTH whose `scheme` is not `device-key`, an AUTH_OK whose `role` is neither `drive` nor `watch`, and the
+ * types of EXTENSION_FRAME_TYPES. Each reader returns undefined for what is not its own, which stays a protocol error
+ * as without an extension, and throws MuxProtocolError to refuse a payload.
+ */
+export interface MuxExtension {
+  /** AUTH or AUTH_OK, after the envelope and strict JSON checks every metadata frame passes. */
+  readonly metadata?: (type: number, input: { readonly [key: string]: unknown }) => unknown;
+  /** A type of EXTENSION_FRAME_TYPES: the envelope fields and the raw payload, whose length is at most MAX_FRAME_BYTES - 8. */
+  readonly frame?: (type: number, flags: number, streamId: number, payload: Uint8Array) => unknown;
+  /** The payload bytes of one of its own frames; encodeExtensionFrame decodes the result again before it goes out. */
+  readonly encode: (frame: ExtensionFrame) => Uint8Array;
+  /** Limits WELCOME names after the v1 ones. A peer that does not know them ignores them, as `limits` does here. */
+  readonly limits?: { readonly [key: string]: number };
+  /**
+   * Streams of the extension's own (relay-mux-engine.ts ExtensionStream): only the server opens them, with the frame
+   * type `open`, on even ids 2, 4, ... in the order the opens go out. The whole payload of a `data` frame counts
+   * against the windows, as HTTP_DATA does; a RESET on one carries a code of `resets` or is a protocol error. With
+   * streams, CREDIT and RESET name even ids and GOAWAY an even watermark (or 0); without, every id stays odd.
+   */
+  readonly streams?: { readonly open: number; readonly data: number; readonly resets: readonly StreamError[] };
+}
+export function isExtensionFrame(frame: MuxFrame | ExtensionFrame): frame is ExtensionFrame {
+  return "extension" in frame;
+}
+
 function requireProtocol(condition: unknown, message: string): asserts condition {
   if (!condition) throw new MuxProtocolError("protocol_error", message);
 }
@@ -204,6 +250,11 @@ function utf8Bytes(value: string): number {
 
 function text(value: unknown, maxBytes = MAX_FRAME_BYTES): string {
   requireProtocol(typeof value === "string" && value.length <= maxBytes && utf8Bytes(value) <= maxBytes, "Invalid string");
+  return value;
+}
+/** GOAWAY's optional `reason`: a name of 1 to 32 bytes `a-z0-9_-`; one the reader does not act on is kept and ignored. */
+function goAwayReason(value: unknown): string {
+  requireProtocol(typeof value === "string" && /^[a-z0-9_-]{1,32}$/.test(value), "Invalid GOAWAY reason");
   return value;
 }
 function isObject(value: unknown): value is JsonObject {
@@ -366,9 +417,9 @@ function limits(value: unknown): LimitsV1 {
     max_sse_streams: integer(v.max_sse_streams, 1, 4),
   };
 }
-function streamId(value: unknown, allowZero: boolean): number {
+function streamId(value: unknown, allowZero: boolean, even = false): number {
   const id = integer(value, allowZero ? 0 : 1, 0x7fffffff);
-  requireProtocol(id === 0 || id % 2 === 1, "Reserved stream id");
+  requireProtocol(id === 0 || id % 2 === (even ? 0 : 1), "Reserved stream id");
   return id;
 }
 function frameLimit(type: FrameType): number {
@@ -380,19 +431,20 @@ function frameLimit(type: FrameType): number {
     default: return 1024;
   }
 }
-function envelope(type: unknown, flags: unknown, id: unknown, size: number): FrameType {
+/** `even`: the session has an extension's streams (MuxExtension.streams), so CREDIT and RESET name even ids. */
+function envelope(type: unknown, flags: unknown, id: unknown, size: number, even = false): FrameType {
   const t = choice(type, Object.values(FrameType));
   requireProtocol(size >= ENVELOPE_BYTES && size <= MAX_FRAME_BYTES && size <= frameLimit(t), "Invalid frame length");
   const f = integer(flags, 0, 0xffff);
   const mask = t === FrameType.HTTP_END ? 1 : t === FrameType.WS_DATA ? 7 : 0;
   requireProtocol((f & ~mask) === 0 && (t !== FrameType.WS_DATA || !(f & 4) || !!(f & 1)), "Reserved flags");
   if (t < FrameType.HTTP_OPEN) requireProtocol(id === 0, "Session frame needs stream zero");
-  else streamId(id, false);
+  else streamId(id, false, even && (t === FrameType.CREDIT || t === FrameType.RESET));
   return t;
 }
 
 /** Only payload-local rules live here; ordering, reassembly and credit belong to the engine. */
-function metadata(type: FrameType, flags: number, stream_id: number, input: unknown, filterRequestHeaders = false): MuxFrame {
+function metadata(type: FrameType, flags: number, stream_id: number, input: unknown, filterRequestHeaders = false, even = false): MuxFrame {
   const v = object(input);
   const common = { flags, stream_id };
   switch (type) {
@@ -411,7 +463,9 @@ function metadata(type: FrameType, flags: number, stream_id: number, input: unkn
       return { ...common, type, payload: { protocol: "ovis-mux", version: 1, features: list(v.features, 16, feature), limits: limits(v.limits),
         nonce: base64url(v.nonce, 32), server_version: text(v.server_version, 64), relay_protocol: integer(v.relay_protocol, 1, 65535), min_supported_client: text(v.min_supported_client, 64),
         // sent before HELLO: a phone pairing by comparing digits waits for the WELCOME that answers its HELLO
-        ...(v.provisional === undefined ? {} : (requireProtocol(v.provisional === true, "Invalid provisional welcome"), { provisional: true as const })) } };
+        ...(v.provisional === undefined ? {} : (requireProtocol(v.provisional === true, "Invalid provisional welcome"), { provisional: true as const })),
+        // a phone with a saved device id may send its first OPEN frames behind AUTH (EARLY_OPEN_FRAMES)
+        ...(v.early_open === undefined ? {} : (requireProtocol(v.early_open === true, "Invalid early_open welcome"), { early_open: true as const })) } };
     case FrameType.AUTH:
       requireProtocol(v.scheme === "device-key", "Invalid auth scheme");
       return { ...common, type, payload: { scheme: "device-key", device_id: hex(v.device_id, 16), signature: base64url(v.signature, 64) } };
@@ -434,7 +488,8 @@ function metadata(type: FrameType, flags: number, stream_id: number, input: unkn
     case FrameType.SESSION_ERROR:
       return { ...common, type, payload: { code: choice(v.code, SESSION_ERRORS), message: text(v.message, 256) } };
     case FrameType.GOAWAY:
-      return { ...common, type, payload: { code: choice(v.code, ["shutdown", "id_exhausted"]), last_open_id: streamId(v.last_open_id, true), drain_ms: integer(v.drain_ms, 0, 5000) } };
+      return { ...common, type, payload: { code: choice(v.code, ["shutdown", "id_exhausted"]), last_open_id: streamId(v.last_open_id, true, even), drain_ms: integer(v.drain_ms, 0, 5000),
+        ...(v.reason === undefined ? {} : { reason: goAwayReason(v.reason) }) } };
     case FrameType.HTTP_OPEN: {
       const method = choice(v.method, ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]);
       const body = choice(v.body, ["none", "stream"]);
@@ -481,7 +536,7 @@ function wsFragment(flags: number, data: Uint8Array, total: unknown): Payloads[0
 }
 
 /** Iterative scan catches escaped duplicate keys, including unknown nested metadata. */
-function parseMetadata(bytes: Uint8Array): unknown {
+export function parseMetadata(bytes: Uint8Array): unknown {
   let source: string;
   try { source = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes); }
   catch (error) {
@@ -516,14 +571,44 @@ function parseMetadata(bytes: Uint8Array): unknown {
   }
 }
 
-export function decodeFrame(bytes: Uint8Array, filterRequestHeaders = false): MuxFrame {
+/** An extension's own frame, or undefined for one the public codec reads (every frame, without an extension). */
+function extensionFrame(bytes: Uint8Array, flags: number, stream_id: number, extension: MuxExtension): ExtensionFrame | undefined {
+  const type = bytes[1] ?? 0;
+  if (type >= EXTENSION_FRAME_TYPES.first && type <= EXTENSION_FRAME_TYPES.last) {
+    const payload = extension.frame?.(type, flags, stream_id, bytes.subarray(ENVELOPE_BYTES));
+    requireProtocol(payload !== undefined, "Unknown extension frame");
+    return { extension: true, type, flags, stream_id, payload };
+  }
+  if (type !== FrameType.AUTH && type !== FrameType.AUTH_OK) return;
+  envelope(type, flags, stream_id, bytes.byteLength);
+  const input = object(parseMetadata(bytes.subarray(ENVELOPE_BYTES)));
+  if (type === FrameType.AUTH ? input.scheme === "device-key" : input.role === "drive" || input.role === "watch") return;
+  const payload = extension.metadata?.(type, input);
+  requireProtocol(payload !== undefined, type === FrameType.AUTH ? "Invalid auth scheme" : "Invalid value");
+  return { extension: true, type, flags, stream_id, payload };
+}
+
+export function decodeFrame(bytes: Uint8Array, filterRequestHeaders?: boolean): MuxFrame;
+export function decodeFrame(bytes: Uint8Array, filterRequestHeaders: boolean, extension: MuxExtension | undefined): MuxFrame | ExtensionFrame;
+export function decodeFrame(bytes: Uint8Array, filterRequestHeaders = false, extension?: MuxExtension): MuxFrame | ExtensionFrame {
+  // the gates of readFrame come first; past them, an extension's own frame never reaches the public reader
+  const gated = bytes instanceof Uint8Array && bytes.byteLength >= ENVELOPE_BYTES && bytes.byteLength <= MAX_FRAME_BYTES && bytes[0] === RELAY_PROTOCOL;
+  if (extension && gated) {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const own = extensionFrame(bytes, view.getUint16(2), view.getUint32(4), extension);
+    if (own) return own;
+  }
+  return readFrame(bytes, filterRequestHeaders, extension?.streams !== undefined);
+}
+
+function readFrame(bytes: Uint8Array, filterRequestHeaders: boolean, even = false): MuxFrame {
   // These gates precede views, slices, UTF-8 decoding and JSON parsing.
   requireProtocol(bytes instanceof Uint8Array && bytes.byteLength >= ENVELOPE_BYTES && bytes.byteLength <= MAX_FRAME_BYTES, "Invalid frame length");
   if (bytes[0] !== RELAY_PROTOCOL) throw new MuxProtocolError("unsupported_version", "Unsupported envelope version");
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const flags = view.getUint16(2);
   const stream_id = view.getUint32(4);
-  const type = envelope(bytes[1], flags, stream_id, bytes.byteLength);
+  const type = envelope(bytes[1], flags, stream_id, bytes.byteLength, even);
   const payload = bytes.subarray(ENVELOPE_BYTES);
   switch (type) {
     case FrameType.HTTP_ACCEPT: case FrameType.HTTP_STOP_REQUEST:
@@ -540,7 +625,7 @@ export function decodeFrame(bytes: Uint8Array, filterRequestHeaders = false): Mu
       requireProtocol(!start || payload.byteLength >= 4, "Missing START length");
       return { type, flags, stream_id, payload: wsFragment(flags, start ? payload.subarray(4) : payload, start ? view.getUint32(8) : undefined) };
     }
-    default: return metadata(type, flags, stream_id, parseMetadata(payload), filterRequestHeaders);
+    default: return metadata(type, flags, stream_id, parseMetadata(payload), filterRequestHeaders, even);
   }
 }
 
@@ -564,9 +649,33 @@ function jsonBytes(value: unknown): number {
   return 2 + Math.max(0, entries.length - 1) + entries.reduce((sum, [key, entry]) => sum + jsonBytes(key) + 1 + jsonBytes(entry), 0);
 }
 
-export function encodeFrame(frame: MuxFrame): Uint8Array {
+/** The v1 limits, then an extension's own: never one that would change a v1 limit. */
+function welcomeLimits(limits: JsonObject, extra: { readonly [key: string]: number }): JsonObject {
+  for (const [key, value] of Object.entries(extra)) {
+    requireProtocol(!(key in limits) && /^[a-z0-9_]{1,32}$/.test(key) && Number.isSafeInteger(value) && value >= 0, "Invalid extension limit");
+  }
+  return { ...limits, ...extra };
+}
+
+/** An extension's own frame on the wire: the envelope and its payload bytes, refused unless they decode as its own. */
+export function encodeExtensionFrame(frame: ExtensionFrame, extension: MuxExtension): Uint8Array {
+  const payload = extension.encode(frame);
+  requireProtocol(payload.byteLength <= MAX_FRAME_BYTES - ENVELOPE_BYTES, "Invalid frame length");
+  const result = new Uint8Array(ENVELOPE_BYTES + payload.byteLength);
+  const view = new DataView(result.buffer);
+  result[0] = RELAY_PROTOCOL; result[1] = integer(frame.type, 0, 0xff);
+  view.setUint16(2, integer(frame.flags, 0, 0xffff)); view.setUint32(4, integer(frame.stream_id, 0, 0x7fffffff));
+  result.set(payload, ENVELOPE_BYTES);
+  const decoded = decodeFrame(result, false, extension);
+  requireProtocol(isExtensionFrame(decoded) && decoded.type === frame.type, "Not an extension frame");
+  return result;
+}
+
+/** With `extension`: its streams' ids and its WELCOME limits (MuxExtension); without, as the public mux alone. */
+export function encodeFrame(frame: MuxFrame, extension?: MuxExtension): Uint8Array {
   const { flags, stream_id } = frame;
-  const type = envelope(frame.type, flags, stream_id, ENVELOPE_BYTES);
+  const even = extension?.streams !== undefined;
+  const type = envelope(frame.type, flags, stream_id, ENVELOPE_BYTES, even);
   let payload: Uint8Array | bigint | JsonObject | null;
   let size: number;
   let startLength: number | undefined;
@@ -588,10 +697,11 @@ export function encodeFrame(frame: MuxFrame): Uint8Array {
       break;
     }
     default:
-      payload = object(metadata(type, flags, stream_id, frame.payload).payload);
+      payload = object(metadata(type, flags, stream_id, frame.payload, false, even).payload);
+      if (type === FrameType.WELCOME && extension?.limits) payload = { ...payload, limits: welcomeLimits(object(payload.limits), extension.limits) };
       size = jsonBytes(payload);
   }
-  envelope(type, flags, stream_id, size + ENVELOPE_BYTES);
+  envelope(type, flags, stream_id, size + ENVELOPE_BYTES, even);
   const result = new Uint8Array(size + ENVELOPE_BYTES);
   const view = new DataView(result.buffer);
   result[0] = RELAY_PROTOCOL; result[1] = type;

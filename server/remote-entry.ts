@@ -18,7 +18,7 @@ import { chosenHerdrSocketStatus, discoverHerdrSessions, validHerdrSocket } from
 // What setup asks the installed runtime before a bridge runs (server/remote-host.ts): the bundle carries no sources a
 // `bun -e` could import, so the answers come from this entry, and nothing below runs for them
 const [request, socketArgument, ...extra] = process.argv.slice(2);
-const REMOTE_USAGE = "usage: ovis-server remote [--discover | --socket-status <herdr socket>]\n  with no argument: the bridge for the herdr session HERDR_REMOTE_SESSION names, started over SSH";
+const REMOTE_USAGE = "usage: ovis-server remote [--discover | --socket-status <herdr socket>]\n  with no argument: the bridge for the herdr session HERDR_REMOTE_SESSION names, started over SSH\n  OVIS_FLEET_BRIDGE=1 OVIS_RUNTIME=herdr|herdr-core: fleet bridge beside an existing session";
 if (request === "--help") {
   console.log(REMOTE_USAGE);
   process.exit(0);
@@ -42,6 +42,14 @@ const windows = process.platform === "win32";
 if (windows && !process.env["HOME"]) process.env["HOME"] = homedir();
 const bundle = ROOT;
 process.env["PATH"] = `${join(bundle, "bin")}${delimiter}${process.env["PATH"] ?? "/usr/bin:/bin"}`;
+if (process.env["OVIS_FLEET_BRIDGE"] === "1") {
+  if (!["herdr", "herdr-core"].includes(process.env["OVIS_RUNTIME"] ?? "")) throw new Error("OVIS_FLEET_BRIDGE=1 requires OVIS_RUNTIME=herdr or herdr-core");
+  const { startProductBridge } = await import("./fleet/product-bridge.ts");
+  const bridge = await startProductBridge();
+  const close = () => { void bridge.stop().finally(() => process.exit(0)); };
+  process.on("SIGTERM", close);
+  process.on("SIGINT", close);
+} else {
 const session = process.env["HERDR_REMOTE_SESSION"];
 // herdr puts its sockets under XDG_CONFIG_HOME when it is set (GitHub's Linux runners and some
 // desktops set it), so the bridge must look where the daemon it starts will listen; on
@@ -49,7 +57,8 @@ const session = process.env["HERDR_REMOTE_SESSION"];
 const herdrConfig = windows ? join(process.env["XDG_CONFIG_HOME"] || process.env["APPDATA"] || join(homedir(), "AppData", "Roaming"), "herdr") : join(process.env["XDG_CONFIG_HOME"] || join(homedir(), ".config"), "herdr");
 process.env["HERDR_SOCKET"] = session ? join(herdrConfig, "sessions", session, "herdr.sock") : join(herdrConfig, "herdr.sock");
 const chosenSocket = windows ? undefined : process.env["HERDR_REMOTE_SOCKET"];
-if (chosenSocket) {
+// Fleet selection is validated by its health-serving entry, including malformed settings.
+if (chosenSocket && process.env["OVIS_FLEET_BRIDGE"] !== "1") {
   if (!validHerdrSocket(chosenSocket)) throw new Error("The herdr socket must be an absolute path ending in /herdr.sock");
   process.env["HERDR_SOCKET"] = chosenSocket;
 }
@@ -64,8 +73,9 @@ function staleWindowsMarker(path: string): boolean {
 }
 
 const descriptor = descriptorPath();
-mkdirSync(dirname(descriptor), { recursive: true, mode: 0o700 });
 async function startBridge(): Promise<void> {
+// the herdr bridge's registry folder
+mkdirSync(dirname(descriptor), { recursive: true, mode: 0o700 });
 const resultDirectory = dirname(descriptor);
 const currentResult = process.env["HERDR_REMOTE_RESULT"];
 try {
@@ -164,3 +174,4 @@ try {
 } finally { lock.release(); }
 }
 await startBridge();
+}

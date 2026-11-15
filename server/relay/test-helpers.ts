@@ -102,7 +102,7 @@ export async function relayPhone(transport: Transport, serverPublicKey: string) 
   };
 }
 
-class DuplexTransport implements Transport {
+export class DuplexTransport implements Transport {
   onmessage: Transport["onmessage"] = null;
   onclose: Transport["onclose"] = null;
   onerror: Transport["onerror"] = null;

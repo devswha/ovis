@@ -267,6 +267,16 @@ describe("metadata constraints", () => {
     const { nonce: _nonce, ...missingNonce } = welcome.payload;
     rejects(() => decodeFrame(wire(FrameType.WELCOME, JSON.stringify(missingNonce))));
   });
+  it("reads a WELCOME's provisional and early_open only as true", () => {
+    const welcome = frames.find((f) => f.type === FrameType.WELCOME);
+    if (!welcome || welcome.type !== FrameType.WELCOME) throw new Error("Missing welcome");
+    expect(decodeFrame(encodeFrame(welcome))).not.toHaveProperty("payload.early_open");
+    for (const flag of ["provisional", "early_open"] as const) {
+      const flagged = { ...welcome, payload: { ...welcome.payload, [flag]: true } };
+      expect(decodeFrame(encodeFrame(flagged))).toEqual(flagged);
+      for (const value of [false, 1, "true", null]) rejects(() => decodeFrame(wire(FrameType.WELCOME, JSON.stringify({ ...welcome.payload, [flag]: value }))));
+    }
+  });
   for (const code of [1000, 1008, 1012, 3000, 4008, 4999, null]) {
     it(`preserves legal WS close ${code}`, () => {
       const frame: MuxFrame = { ...stream, type: FrameType.WS_CLOSE, payload: { code, reason: "", abort: false } };

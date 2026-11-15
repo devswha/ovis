@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { WORKER_PER_ADDRESS_PER_MINUTE } from "./worker.ts";
 
-interface Limiter { name: string; namespace_id: string }
+interface Limiter { name: string; namespace_id: string; simple: { limit: number; period: number } }
 interface WorkerConfig {
   name?: string;
   routes?: unknown[];
@@ -10,6 +11,7 @@ interface WorkerConfig {
   durable_objects?: { bindings: { name: string; class_name: string }[] };
   ratelimits?: Limiter[];
   analytics_engine_datasets?: { binding: string; dataset: string }[];
+  vars?: Record<string, string>;
 }
 
 const config = Bun.TOML.parse(readFileSync(join(import.meta.dir, "wrangler.toml"), "utf8")) as WorkerConfig & { env?: Record<string, WorkerConfig> };
@@ -31,4 +33,15 @@ test("the staging Worker binds what the Worker reads (an environment inherits no
   expect(staging.analytics_engine_datasets?.map((dataset) => dataset.binding)).toEqual(config.analytics_engine_datasets!.map((dataset) => dataset.binding));
   const counted = new Set(config.analytics_engine_datasets!.map((dataset) => dataset.dataset));
   expect(staging.analytics_engine_datasets!.filter((dataset) => counted.has(dataset.dataset))).toEqual([]);
+});
+
+test("the per-address budget a Worker names in sync is the one its limiter counts", () => {
+  const limiter = config.ratelimits!.find((entry) => entry.name === "RELAY_LIMITER")!;
+  expect([limiter.simple.limit, limiter.simple.period]).toEqual([WORKER_PER_ADDRESS_PER_MINUTE, 60]);
+});
+
+test("relay.ovis.sh reads passes in grace with no enforce date, and its key is no part of this file", () => {
+  expect(config.vars?.["RELAY_PASS_MODE"]).toBe("grace");
+  expect(config.vars).not.toHaveProperty("RELAY_PASS_ENFORCE_AT");
+  expect(config.vars).not.toHaveProperty("RELAY_PASS_KEYS");
 });

@@ -225,6 +225,8 @@ describe("the account's limits", () => {
     await expect(service.limits()).rejects.toMatchObject({ status: 404 });
     fake.setLimits("acct_1", { plan: "personal", pcs_max: 3, data_cap_bytes: 5_000, data_used_bytes: 500, data_metering: "on" });
     expect(await service.limits()).toEqual({ plan: "personal", pcs_max: 3, data_cap_bytes: 5_000, data_used_bytes: 500 });
+    fake.setLimits("acct_1", { plan: "pro", pcs_max: 10, fleet_max: 100 });
+    expect(await service.limits()).toEqual({ plan: "pro", pcs_max: 10, fleet_max: 100 });
   });
 
   it("drops used data while metering is off, and refuses a malformed answer", () => {
@@ -232,6 +234,13 @@ describe("the account's limits", () => {
     expect(parseAccountLimits({ plan: "", pcs_max: 3 })).toBeNull();
     expect(parseAccountLimits({ plan: "personal", pcs_max: -1 })).toBeNull();
     expect(parseAccountLimits(null)).toBeNull();
+  });
+
+  it("keeps a fleet allowance above 0, leaves out 0, and refuses one that is not an integer from 0 to 1000", () => {
+    const base = { plan: "pro", pcs_max: 10 };
+    for (const fleet of [1, 100, 1000]) expect(parseAccountLimits({ ...base, fleet_max: fleet })).toEqual({ ...base, fleet_max: fleet });
+    for (const fleet of [0, null, undefined]) expect(parseAccountLimits({ ...base, fleet_max: fleet })).toEqual(base);
+    for (const fleet of [1001, -1, 1.5, "100"]) expect(parseAccountLimits({ ...base, fleet_max: fleet })).toBeNull();
   });
 
   it("keeps the limits when the plan name is long, shortening only the name", () => {

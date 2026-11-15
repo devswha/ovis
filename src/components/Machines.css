@@ -17,6 +17,46 @@
   --machine-indent: calc(var(--side-gutter) + var(--side-box));
 }
 
+/* The fleet's machines come last, under one small caption with their count, as a group of channels does in a
+   chat app's sidebar; each machine is then a PC group of its own. */
+.fleet-group-head {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+
+/* the caption is the Fleet screen's way in */
+.fleet-group-open {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: var(--side-row);
+  padding: 0 var(--side-gutter);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+@media (hover: hover) {
+  .fleet-group-open:hover { background: var(--bg-hover); color: var(--text); }
+}
+.fleet-group-open:focus-visible { outline: var(--ring); outline-offset: var(--ring-inset-offset); }
+
+.fleet-group-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fleet-group-count { font-variant-numeric: tabular-nums; }
+
 /* A folded PC is one row, with no gap to the next: a gap of its own made each about a row and a half
    (issue 2617). An open PC's workspaces end with a short gap before the next PC's header. A PC the
    filter hides stays in the list, hidden, and keeps no gap. */

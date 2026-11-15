@@ -16,6 +16,7 @@ export const ENTRIES = {
   plugin: "scripts/plugin.ts",
   askpass: "server/ssh-askpass.ts",
   "windows-launch": "server/windows-launch.ts",
+  fleet: "server/fleet/cli.ts",
 } as const;
 
 export type EntryName = keyof typeof ENTRIES;

@@ -86,7 +86,11 @@ async function paneReason(paneId: string, reason: ReturnType<typeof unavailableR
 }
 
 /** the native stores createServer was given; unset, each reader finds its own */
-export type PaneStores = { codexHome?: string; grokHome?: string; museData?: string; opencodeDb?: string; devinDbPath?: string; hermesHome?: string; openCodeStateDir?: string };
+export type PaneStores = {
+  codexHome?: string; grokHome?: string; museData?: string; opencodeDb?: string; devinDbPath?: string; hermesHome?: string; openCodeStateDir?: string;
+  /** the page's refusal while another web bridge holds this pane's attach slot, as this server's attachment knows it; null when it does not (core attachHeld) */
+  attachHeld?: (paneId: string) => string | null;
+};
 
 /** the sides herdr's pane.swap and pane.resize take, and a move's side of its target; anything else is refused before the RPC, which would answer invalid_request */
 const isPaneDirection = (value: unknown): value is PaneDirection => value === "left" || value === "right" || value === "up" || value === "down";
@@ -477,6 +481,9 @@ export async function handlePaneRequest(request: Request, url: URL, pathname: st
     if (payload instanceof Response) return payload;
     if (typeof payload.pane_id !== "string" || !payload.pane_id.trim()) return badRequest("missing_pane_id", "pane_id is required");
     try {
+      // the page's own refusal (core/input.ts): nothing is typed into a pane another web bridge holds
+      const held = options.attachHeld?.(payload.pane_id) ?? null;
+      if (held !== null) throw new HerdrError("attach_held", held);
       if (pathname === "/api/pane/input") {
         if (typeof payload.text !== "string") return badRequest("missing_text", "text is required");
         // text over Claude Code's rewind dialog would land in a Summarize row's add-context field

@@ -84,6 +84,8 @@ export type AccountView =
 
 /** Counts only devices this enrollment confirmed, never every member of the account. */
 export interface EnrollmentCompletion { readonly state: "complete"; readonly admitted?: number }
+/** A pending enrollment that waits this many seconds for the account service before it asks a PC again. */
+export interface EnrollmentWait { readonly state: "waiting"; readonly seconds: number }
 
 export type RelayShellState =
   | { kind: "list"; devices: RelayDevice[]; account?: AccountView | null }
@@ -98,7 +100,7 @@ export type RelayShellState =
    */
   | { kind: "confirm"; offer: RelayOffer; account?: "checking" | "unlisted" | "listed"; pressed?: "unlisted" | "listed" | "own" }
   | { kind: "connecting"; name: string | null }
-  | { kind: "ready"; name: string | null; server_id: string; enrollment?: EnrollmentState | "local" | EnrollmentCompletion }
+  | { kind: "ready"; name: string | null; server_id: string; enrollment?: EnrollmentState | "local" | EnrollmentCompletion | EnrollmentWait }
   /** Pair with a code: the field to type it in, with why the last code gave no PC */
   | { kind: "code-entry"; failure: TypedCodeFailure | null }
   | { kind: "code-looking" }

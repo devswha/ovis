@@ -1,0 +1,92 @@
+name: Fleet link agent binaries
+# Builds the fleet link agent (crates/fleet-link) for Linux and macOS, for M1's test build: a static (musl)
+# binary for linux-x64 and linux-arm64 and one per macOS CPU, each by scripts/build-link.ts, plus
+# ovis-link.json (version, the commit, SHA-256 and size per platform) from scripts/release-binaries.ts.
+# A release carries no link agent (a machine of the account runs the server and the PTY host alone): it runs only by
+# hand, and its binaries are this run's artifacts. Windows gets none.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Commit to build'
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  build:
+    name: build (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # darwin-x64 is built on the Apple silicon runner for the x86_64 target: no Intel Mac is needed
+        include:
+          - { platform: linux-x64, os: ubuntu-24.04 }
+          - { platform: linux-arm64, os: ubuntu-24.04-arm }
+          - { platform: darwin-arm64, os: macos-15 }
+          - { platform: darwin-x64, os: macos-15 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+      - name: Rust toolchain
+        run: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl -fsSL --proto '=https' --tlsv1.2 https://sh.rustup.rs | sh -s -- -y --profile minimal
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          fi
+      - name: Rust unit tests
+        run: cargo test --locked --manifest-path crates/fleet-link/Cargo.toml
+      - name: Build ${{ matrix.platform }}
+        run: bun scripts/build-link.ts ${{ matrix.platform }} out
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ovis-link-${{ matrix.platform }}
+          path: out/ovis-link-${{ matrix.platform }}
+          if-no-files-found: error
+  manifest:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: ovis-link-*
+          path: out
+          merge-multiple: true
+      - run: bun scripts/release-binaries.ts manifest ovis-link out
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ovis-link
+          path: out/*
+          if-no-files-found: error
+  # signs each binary's build provenance, as pty-sidecar.yml's attest job does
+  attest:
+    needs: manifest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ovis-link
+          path: out
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: out/ovis-link-*

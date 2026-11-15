@@ -27,8 +27,9 @@ export class Peer {
     this.ready = Promise.race([new Promise<void>((resolve) => socket.addEventListener("open", () => resolve())), this.closed.then(() => undefined)]);
   }
 
-  static async open(url: string): Promise<Peer> {
-    const peer = new Peer(new WebSocket(url));
+  /** `headers` go with the upgrade (a PC socket's relay pass) */
+  static async open(url: string, headers?: Record<string, string>): Promise<Peer> {
+    const peer = new Peer(new WebSocket(url, (headers ? { headers } : undefined) as unknown as string[]));
     await within(peer.ready, `open ${url}`);
     return peer;
   }
@@ -94,8 +95,8 @@ export function relayUrls(base: string, server: TestServer) {
 }
 
 /** Opens a PC socket (control, or data for `connectionId`) and answers the relay's challenge with the PC's key. */
-export async function openServer(url: string, server: TestServer, connectionId: string | null = null): Promise<Peer> {
-  const peer = await Peer.open(url);
+export async function openServer(url: string, server: TestServer, connectionId: string | null = null, headers?: Record<string, string>): Promise<Peer> {
+  const peer = await Peer.open(url, headers);
   const answer = answerChallenge(await peer.next("server_challenge"), server, connectionId);
   if (!answer) throw new Error("the relay sent no server_challenge");
   peer.socket.send(answer);

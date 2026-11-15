@@ -40,9 +40,11 @@
 #
 # Run it again at any time: what is already there is kept, and step 3 is repeated.
 #   OVIS_REF=<branch or tag>   install that ref instead of the latest release (a branch: from source)
-#   OVIS_RELEASES_URL=<https:// address or file:// folder>   where releases are downloaded from,
+#   OVIS_RELEASES_URL=<https:// address or file:// folder>   where releases are downloaded from (a mirror),
 #     laid out as GitHub's (<url>/v<version>/<file>); the pinned key checks the server, its client and the
-#     Rust PTY host from any of them the same
+#     Rust PTY host from any of them the same. The latest release is a file:// folder's newest v<version>
+#     folder, or an https mirror's <url>/latest (one line, vX.Y.Z); a run without OVIS_REF never installs a
+#     release older than the one installed
 #   OVIS_FROM_SOURCE=1   install from source as before the compiled server
 #   OVIS_RUNTIME=herdr|herdr-core   pick the runtime instead of going by what is installed
 #   OVIS_TAILSCALE_HTTPS_PORT=<port>   serve the app on that HTTPS port only, keeping 443 free
@@ -855,6 +857,23 @@ releases_base() {
   esac
 }
 
+# The newest release (vX.Y.Z) where $releases points: a file:// folder's newest v<version> folder, an https mirror's
+# <releases>/latest (one line naming it: https lists no folders), or GitHub's newest public tag. It names a version
+# only: whatever it names is installed once its ovis-server.json is signed for that very version, never before.
+releases_latest() {
+  case "$releases" in
+    file://*) find "${releases#file://}" -mindepth 1 -maxdepth 1 -type d -name 'v*' 2>/dev/null | sed -n 's|.*/\(v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)$|\1|p' | sort -t. -k1.2,1n -k2,2n -k3,3n | tail -n 1 ;;
+    "https://github.com/$REPO/releases/download") latest_release ;;
+    *)
+      latest_file=$(mktemp) || return 0
+      if fetch "$releases/latest" "$latest_file" 64 2>/dev/null; then
+        sed -n '1s/^\(v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)$/\1/p' "$latest_file"
+      fi
+      rm -f "$latest_file"
+      ;;
+  esac
+}
+
 # fetch <url> <file> <most bytes>: curl over https (a redirect to anything else is refused) or from a
 # file:// folder, stopped past the size it is given. Its exit code is curl's: 63 for a file too large.
 fetch() {
@@ -909,13 +928,19 @@ pick_checker() {
   checker_name="Node $NODE_VERSION, fetched for this check"
 }
 
-# The entry for $2 (a platform, or dist for the client) in the checked manifest $1, as scripts/server-manifest.ts
+# The entry for $2 (a platform, dist for the client, pty-<build> for a PTY host, or bin-<binary>-<platform> for an extra
+# binary) in the checked manifest $1, as scripts/server-manifest.ts
 # writes it (two-space JSON, which the signature vouches for byte for byte): $entry_file, $entry_sha, $entry_size.
 manifest_entry() {
   # by section: the PTY hosts' keys repeat platform names
   case "$2" in
     dist) entry=$(sed -n '/^  "dist": {$/,/^  }/p' "$1") ;;
     pty-*) entry=$(sed -n '/^  "pty": {$/,/^  }/p' "$1" | sed -n "/^    \"${2#pty-}\": {\$/,/^    }/p") ;;
+    bin-*)
+      entry_binary=${2#bin-}
+      entry_binary=${entry_binary%-*-*}
+      entry=$(sed -n '/^  "binaries": {$/,/^  }/p' "$1" | sed -n "/^    \"$entry_binary\": {\$/,/^    }/p" | sed -n "/^      \"${2#bin-"$entry_binary"-}\": {\$/,/^      }/p")
+      ;;
     *) entry=$(sed -n '/^  "assets": {$/,/^  }/p' "$1" | sed -n "/^    \"$2\": {\$/,/^    }/p") ;;
   esac
   entry_file=$(printf '%s\n' "$entry" | sed -n 's/^ *"file": "\([^"]*\)",$/\1/p')
@@ -926,6 +951,8 @@ manifest_entry() {
 # Refuses this install: the folder it downloaded into goes, and the one that runs was never touched
 refuse() {
   [ -z "${stage:-}" ] || rm -rf "$stage"
+  # a first install leaves no empty releases folder behind; one that holds the release that runs stays
+  if [ -d "$OVIS_HOME/releases" ] && [ -z "$(ls -A "$OVIS_HOME/releases")" ]; then rmdir "$OVIS_HOME/releases"; fi
   fail "$*; nothing was changed"
 }
 
@@ -947,7 +974,8 @@ take() {
 
 # The release's Rust PTY host into $stage/bin, only the one the signed ovis-server.json names (its SHA-256 and size
 # there, never another file's word for it), run once here; the record beside it is what the server checks before it
-# runs it (server/pty/host.ts). Without one that runs, terminals are mirrored: nothing here fails the install.
+# runs it (server/pty/host.ts). A host that does not download or does not match refuses the whole release, leaving the
+# install as it was; a release that names none for this PC, or a host that does not run here, mirrors terminals.
 binary_pty_host() {
   case "$platform" in
     linux-x64 | linux-arm64) pty_asset=$platform ;;
@@ -961,12 +989,7 @@ binary_pty_host() {
     return 0
   fi
   mkdir -p "$stage/bin"
-  if ! fetch "$at/$pty_file" "$stage/bin/ovis-pty-sidecar" "$pty_size" || [ "$(wc -c <"$stage/bin/ovis-pty-sidecar" | tr -d ' ')" != "$pty_size" ] ||
-    [ "$(sha256 "$stage/bin/ovis-pty-sidecar")" != "$pty_sha" ]; then
-    rm -rf "$stage/bin"
-    say "the Rust PTY host did not download or does not match its SHA-256 and size in ovis-server.json, so it is not run and terminals are mirrored"
-    return 0
-  fi
+  take "$pty_file" bin/ovis-pty-sidecar "pty-$pty_asset"
   chmod 755 "$stage/bin/ovis-pty-sidecar"
   if ! rust_host_runs "$stage/bin/ovis-pty-sidecar"; then
     rm -rf "$stage/bin"
@@ -1083,7 +1106,7 @@ install_binary() {
     || refuse "ovis-server.json.sig is not a valid signature of the release's ovis-server.json by the key $RELEASE_PUBLIC_KEY"
   manifest_version=$(sed -n 's/^  "version": "\([^"]*\)",$/\1/p' "$stage/ovis-server.json")
   [ "$manifest_version" = "$version" ] || refuse "ovis-server.json is for version $manifest_version, not $version"
-  grep -qx '  "schema": 1,' "$stage/ovis-server.json" || refuse "ovis-server.json is of a schema this installer does not know; a newer install.sh reads it"
+  grep -Eqx '  "schema": (1|2),' "$stage/ovis-server.json" || refuse "ovis-server.json is of a schema this installer does not know; a newer install.sh reads it"
   say "checked the signature with $checker_name"
   take "ovis-server-$platform" ovis-server "$platform"
   take ovis-dist.tar.gz ovis-dist.tar.gz dist
@@ -1510,10 +1533,8 @@ pick_install() {
   fi
   releases_base
   if [ -z "$ref" ]; then
-    case "$releases" in
-      file://*) ref=$(find "${releases#file://}" -mindepth 1 -maxdepth 1 -type d -name 'v*' 2>/dev/null | sed -n 's|.*/\(v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)$|\1|p' | sort -t. -k1.2,1n -k2,2n -k3,3n | tail -n 1) ;;
-      *) need git; ref=$(latest_release) ;;
-    esac
+    [ "$releases" != "https://github.com/$REPO/releases/download" ] || need git
+    ref=$(releases_latest)
     [ -n "$ref" ] || fail "could not find the latest release in $releases. Check the connection and run this again."
   fi
   case "$ref" in
@@ -1523,6 +1544,15 @@ pick_install() {
       return 0
       ;;
   esac
+  # the latest a mirror names is no reason to go back: a release older than the installed one, though validly signed,
+  # is installed only when OVIS_REF asks for it by name. GitHub's own address keeps what it always did
+  if [ "$releases" != "https://github.com/$REPO/releases/download" ] && [ "$binary_home" = 1 ] && [ -z "${OVIS_REF:-${HERDR_WEB_UI_REF:-}}" ]; then
+    installed_version=$(sed -n 's/^  "version": "\([^"]*\)",$/\1/p' "$OVIS_HOME/bin/ovis-server.json" 2>/dev/null) || installed_version=""
+    if [ -n "$installed_version" ] && ! at_least "$installed_version" "$version"; then
+      say "the latest release in $releases is $ref, older than the installed $installed_version; the installed Ovis stays as it is, nothing was changed"
+      exit 0
+    fi
+  fi
   probe=$(mktemp) || fail "could not make a temporary file"
   probe_status=0
   fetch "$releases/$ref/ovis-server.json" "$probe" 65536 2>/dev/null || probe_status=$?
@@ -1539,6 +1569,11 @@ pick_install() {
     # any HTTP error (curl -f's 22) or no such file (37) reads as a release from before the compiled server: the source
     # of the same tag over TLS. Todo 7 (the updater) narrows this to 404 only, as scripts/plugin-launch.ts has it
     22 | 37)
+      # a mirror serves only signed releases: one without its ovis-server.json is refused, never read as a release from
+      # before the compiled server, whose source would come from the public repository, which the release key never signed
+      if [ "$releases" != "https://github.com/$REPO/releases/download" ] && [ "$binary_home" = 0 ]; then
+        fail "the mirror $releases has no signed release $ref (no ovis-server.json for it, curl exit $probe_status); nothing was installed"
+      fi
       [ "$old_shape" = 0 ] || say "Ovis $ref's signed ovis-server.json has the shape from before this installer"
       if [ "$binary_home" = 1 ]; then
         # an explicit tag without the binary asks for source; the latest release unreachable keeps what runs

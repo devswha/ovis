@@ -68,6 +68,9 @@ its whole size against the same 12 MiB bound when its START arrives, credits
 each fragment as it is copied in, and releases the reservation once the message
 is handed over. One that does not fit closes its WS with 1009; the session goes
 on. Inbound payload stays within reservations, so the bound below holds as is.
+The streams of a registered extension (`MuxExtension.streams`) reserve their
+window against the same 12 MiB when admitted and queue within the same outgoing
+bounds, so they change none of the terms below.
 
 The shell queues up to 64 HTTP requests when local stream admission is full.
 Requests resume in order after a stream retires and releases its reservation.

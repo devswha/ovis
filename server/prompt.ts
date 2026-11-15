@@ -1463,6 +1463,50 @@ export async function shownPromptText(pane: HerdrPane, panes: HerdrPane[], optio
   return shown !== null && draft ? `${shown}\0${JSON.stringify(draft)}` : shown;
 }
 
+/**
+ * The readers whose card is the agent asking its user something it waits on: a permission, a question, a plan to
+ * approve, a confirmation or a menu it opened by itself (Claude's folder trust, Codex's continue menu). Not a picker
+ * the user opened (a `/model` or `/effort` list, Claude's goal dialog), not a held message, and never a fallback card,
+ * which only stands for a status someone reported. pi is not read here (shownPromptText).
+ */
+const WAITING_RESPONDERS: ReadonlySet<string> = new Set([
+  "claude-approval", "claude-confirm", "claude-plan", "claude-question", "claude-submit", "cmd-question",
+  "codex-approval", "codex-question", "codex-async-question", "codex-queued-question", "codex-menu",
+  "agy-question", "hermes-approval", "hermes-question", "hermes-input", "omo-question", "omo-review", "omo-pending",
+  "omp-approval", "omp-question", "omp-submit", "opencode-v1-question", "opencode-question",
+]);
+
+/** What the waiting a card stands for is about, in the words an agent's own report uses (`kind`); null: it does not say. */
+export function waitingKindOf(prompt: InteractivePrompt): "permission" | "question" | null | undefined {
+  if (!WAITING_RESPONDERS.has(parsedByPublicPrompt.get(prompt)?.responder ?? "")) return undefined;
+  return prompt.kind === "approval" || prompt.kind === "plan" ? "permission" : prompt.kind === "question" ? "question" : null;
+}
+
+/**
+ * Whether the agent on a pane's screen waits for its user (server/card-waits.ts): the kind of the card a reader
+ * returns for it now, null when no such card shows, undefined when the read says nothing (it raced a change, or
+ * failed). Read as a prompt watch reads (shownPromptText), with the caller's own OpenCode and omp state, so it starts
+ * and ends no asking; no fallback card counts, and a pi pane is not read.
+ */
+export async function waitingCard(pane: HerdrPane, panes: HerdrPane[], options: { codexHome?: string; openCodeStateDir?: string; openCodeState: OpenCodePromptState; ompLookups: OmpLookups }): Promise<{ kind: "permission" | "question" | null; id: string } | null | undefined> {
+  const agent = pane.agent;
+  if (!agent || agent === "pi") return undefined;
+  const known = await readKnownPrompt(pane.pane_id, pane, agent, options.codexHome, panes, options.openCodeStateDir, options.openCodeState, undefined, false, false, options.ompLookups).catch(() => undefined);
+  if (known === undefined || known.stale || known.inputUnverified) return undefined;
+  if (!known.prompt) return null;
+  const kind = waitingKindOf(known.prompt);
+  const id = contentId(known.prompt);
+  return kind === undefined || id === undefined ? null : { kind, id };
+}
+
+type AnsweredListener = (paneId: string) => void;
+const answeredListeners = new Set<AnsweredListener>();
+/** Told the pane of each answer a card's button delivered (POST /api/pane/prompt/answer). */
+export function onPromptAnswered(listener: AnsweredListener): () => void {
+  answeredListeners.add(listener);
+  return () => { answeredListeners.delete(listener); };
+}
+
 /** What each agent suggests typing next, read from its screen (an ANSI read of the viewport), by herdr's agent name. */
 const SUGGESTION_PARSERS: Readonly<Record<string, (ansi: string) => string | null>> = {
   claude: parseClaudeSuggestion,
@@ -2295,7 +2339,10 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
     // the wait for the form's next step only reads the pane: after the pane's turn, so a message
     // queued for it meanwhile is not held up behind the polls
     if (form.still !== undefined) await formMovedOn(body.pane_id, form.still, options.codexHome, options.openCodeStateDir);
-    if (response.ok && delivered) options.onAnswered?.();
+    if (response.ok && delivered) {
+      options.onAnswered?.();
+      for (const listener of answeredListeners) listener(body.pane_id);
+    }
     await logAnswer(log, response);
     return response;
   } catch (error) {

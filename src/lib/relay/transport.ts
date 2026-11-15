@@ -235,6 +235,9 @@ export class RelayTransport implements Transport {
       ...this.options, signal: this.abort.signal,
       // a reconnect runs behind the app, not on a waiting screen: it waits at the relay nearly as long as the relay holds it
       ...(generation === 1 ? {} : { pcAnswerMs: RECONNECT_PC_ANSWER_MS }),
+      // a reconnect's requests and sockets go out with its AUTH where the PC offers early_open; the first connection
+      // waits for AUTH_OK, as the shell reads what the PC said of itself the moment it resolves
+      ...(generation === 1 ? {} : { early: true }),
       onClose: (error) => {
         if (generation !== this.generation || this.stopped) return;
         const switching = this.switching !== undefined && this.switching === this.channel;
@@ -264,6 +267,10 @@ export class RelayTransport implements Transport {
     channel.mux.onStreamAvailable = () => {
       for (const pending of this.waitingHttp) if (!pending.run()) break;
     };
+    // what AUTH_OK and the PC's answer to HELLO said, once they came on a channel opened early; one that ended
+    // before told its onClose why
+    try { await channel.admitted; } catch { return; }
+    if (this.channel !== channel) return;
     this.known = channel.server;
     this.cancelRetry?.();
     this.cancelRetry = undefined;

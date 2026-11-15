@@ -905,7 +905,7 @@ describe("managed source updates with real Git repositories and builds", () => {
     expect(older.urls).toEqual(["?scope=bridge", ""]);
     expect(older.sent.filter((message) => message.type === "bridge-accepted")).toHaveLength(1);
     // a runtime the bridge starts itself must answer, whichever it is: none is taken on the bridge's word alone
-    for (const runtime of ["herdr-core", "alt-runtime"]) expect((await asked(false, undefined, runtime)).urls).toEqual(["?scope=bridge", ""]);
+    for (const runtime of ["herdr-core"]) expect((await asked(false, undefined, runtime)).urls).toEqual(["?scope=bridge", ""]);
     if (process.platform === "win32") return; // herdr's socket is a named pipe there: no unix socket file is left behind
     // a socket file a killed herdr left behind refuses the connect: herdr is stopped, as with no socket (#2670)
     const stale = join(mkdtempSync(join(directory, "stale-")), "herdr.sock");

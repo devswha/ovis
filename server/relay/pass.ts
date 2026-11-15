@@ -55,6 +55,21 @@ export interface RelayPassKeeperOptions {
   readonly clock?: RelayPassClock;
   /** A new pass: the links send it to their relays. */
   readonly onPass: (pass: string) => void;
+  /** The pass forms to name when asking (`passVersionsFor`), read at each request; [1, 2] when not given. */
+  readonly passVersions?: () => readonly number[];
+}
+
+/** The pass forms every PC reads (shared/relay-pass.ts), and v3 beside them. */
+const PASS_VERSIONS: readonly number[] = [1, 2];
+const PASS_VERSIONS_V3: readonly number[] = [1, 2, 3];
+
+/**
+ * The pass forms to name in a pass request, from what each relay the pass goes to said in its last `sync`
+ * (`pass_versions`; null when it said nothing yet): v3 only when every one of them reads it, since a relay that does not
+ * refuses a v3 pass, and the same pass goes to all of them. With no relay heard from yet (the first pass), none is v3.
+ */
+export function passVersionsFor(relays: readonly (readonly unknown[] | null)[]): readonly number[] {
+  return relays.length > 0 && relays.every((heard) => heard !== null && heard.includes(3)) ? PASS_VERSIONS_V3 : PASS_VERSIONS;
 }
 
 /** A Retry-After in ms, seconds or an HTTP date, at most RETRY_AFTER_CAP_MS; 0 when there is none that parses. */
@@ -230,8 +245,10 @@ export class RelayPassKeeper {
       const { challenge_id: challengeId, frame } = await challenge.json() as { challenge_id?: unknown; frame?: unknown };
       const answer = answerServerChallenge(frame, importSecretKey(identity.secret_key), { server_id: identity.server_id, role: "account", connection_id: typeof challengeId === "string" ? challengeId : null });
       if (!answer || typeof challengeId !== "string") return this.failed(null);
-      // the pass forms this PC reads (shared/relay-pass.ts): the service signs v2 only for a PC that names it
-      const response = await post("/v1/pc/relay-pass", { server_id: identity.server_id, challenge_id: challengeId, proof: answer, account, pass_versions: [1, 2] });
+      // the pass forms this PC reads (shared/relay-pass.ts): the service signs v2 only for a PC that names it, and v3 (a
+      // fleet allowance) only for one that names 3, which it does only while all its relays read v3
+      const passVersions = this.options.passVersions?.() ?? PASS_VERSIONS;
+      const response = await post("/v1/pc/relay-pass", { server_id: identity.server_id, challenge_id: challengeId, proof: answer, account, pass_versions: passVersions });
       if (this.stopped) return;
       if (response.status === 403 || response.status === 409) {
         const code = ((await response.json().catch(() => null)) as { error?: { code?: unknown } } | null)?.error?.code;

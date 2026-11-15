@@ -58,13 +58,23 @@ export interface PcAccountStatus {
   readonly blockedAll?: boolean;
   /** it waits for its first member's enrollment; absent from an Ovis from before enrollments */
   readonly enrolling?: boolean;
+  /** its last pull was refused by the account service: the HTTP status, and the Retry-After in whole seconds (0..3600) or null */
+  readonly refused?: { readonly status: number; readonly retryAfterS: number | null };
+}
+
+function refusalOf(value: unknown): PcAccountStatus["refused"] {
+  if (typeof value !== "object" || value === null) return undefined;
+  const { status, retry_after_s: seconds } = value as { status?: unknown; retry_after_s?: unknown };
+  if (!Number.isInteger(status) || !(seconds === null || (Number.isInteger(seconds) && Number(seconds) >= 0 && Number(seconds) <= 3600))) return undefined;
+  return { status: Number(status), retryAfterS: seconds === null ? null : Number(seconds) };
 }
 
 /** `fresh`: the PC reads its mailbox first, so a removal waiting there is counted (docs/account.md, "PC API"). */
 export async function pcAccountStatus(fetch: PcFetch, options: { fresh?: boolean } = {}): Promise<PcAccountStatus> {
   const response = await fetch(options.fresh ? "/api/account/status?fresh=1" : "/api/account/status");
   if (!response.ok) throw await refusal(response);
-  const body = await response.json() as { account?: unknown; unlinked?: unknown; removals?: unknown; adds?: unknown; blocked?: unknown };
+  const body = await response.json() as { account?: unknown; unlinked?: unknown; removals?: unknown; adds?: unknown; blocked?: unknown; mailbox?: { refused?: unknown } };
+  const refused = refusalOf(typeof body.mailbox === "object" && body.mailbox !== null ? body.mailbox.refused : undefined);
   const unlinked = Array.isArray(body.unlinked) ? body.unlinked.filter((id): id is string => typeof id === "string") : [];
   return {
     account: typeof body.account === "string" ? body.account : null, unlinked,
@@ -74,6 +84,7 @@ export async function pcAccountStatus(fetch: PcFetch, options: { fresh?: boolean
     ...(options.fresh && "fresh" in body ? { fresh: (body as { fresh?: unknown }).fresh === true } : {}),
     ...((body as { blocked_all?: unknown }).blocked_all === true ? { blockedAll: true } : {}),
     ...(typeof (body as { enrolling?: unknown }).enrolling === "boolean" ? { enrolling: (body as { enrolling: boolean }).enrolling } : {}),
+    ...(refused ? { refused } : {}),
   };
 }
 
@@ -343,6 +354,15 @@ export interface AccountPeer { readonly serverId: string; readonly fetch: PcFetc
 
 /** How long an enrollment waits for another PC of the account to say what it keeps out, before it counts that PC as not checked. */
 export const PEER_STATUS_MS = 8_000;
+/** The longest Retry-After an enrollment waits out before it asks a PC again whose pull the account service limited. */
+export const REFUSED_WAIT_MAX_S = 60;
+
+/** The seconds to wait before asking this PC again: only after the account service limited its pull (429) and named a wait of at most REFUSED_WAIT_MAX_S. */
+function waitBeforeAgain(status: PcAccountStatus | null, account: string): number | null {
+  const refused = status?.account === account && status.fresh === false ? status.refused : undefined;
+  return refused?.status === 429 && refused.retryAfterS !== null && refused.retryAfterS <= REFUSED_WAIT_MAX_S ? refused.retryAfterS : null;
+}
+
 /** Keys one enrollment holds at most (server/account/holds.ts ACCOUNT_HELD_MAX). */
 const HELD_MAX = 4096;
 
@@ -390,30 +410,56 @@ export async function enrollPc(options: {
   listed?: number;
   /** the new PC is from before enrollments (its status has no `enrolling`): removes only, through records */
   legacyTarget?: boolean;
+  /** told the seconds of the longest wait for a limited PC when the waits start (REFUSED_WAIT_MAX_S at most), and null when they end */
+  waiting?: (seconds: number | null) => Promise<void>;
+  wait?: (ms: number) => Promise<void>;
 }): Promise<Enrollment> {
   const others = options.others ?? [];
+  // fixed wait: the Retry-After a limited PC's pull named, at most REFUSED_WAIT_MAX_S, before that PC is asked once more
+  const wait = options.wait ?? ((ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms); }));
   const planned = (await options.store.get("enrolls"))?.[options.serverId];
   if (planned === undefined || planned.account !== options.account) return { finished: true, checked: 0, of: others.length, admitted: [] };
   // enrolled already: only introductions some PCs did not take are left
   if (planned.introduce !== undefined) return { finished: await introduceLeft(options, others), checked: 0, of: others.length, admitted: planned.introduce.keys };
+  const read = (peer: AccountPeer): Promise<PcAccountStatus | null> => within(PEER_STATUS_MS, pcAccountStatus(peer.fetch, { fresh: true })).catch((error: unknown) => {
+    console.warn("Ovis: a PC of the account was not checked before the enrollment", error instanceof Error ? error.name : error);
+    return null;
+  });
+  const first = await Promise.all(others.map(async (peer) => ({ peer, status: await read(peer) })));
+  // a PC whose pull the account service limited is asked once more, after the wait the service named; such PCs wait side
+  // by side. A second refusal, no answer, or no wait named (an older PC, a longer wait, another refusal): as without the wait
+  const waits = first.map(({ status }) => waitBeforeAgain(status, options.account));
+  const longest = Math.max(-1, ...waits.map((seconds) => seconds ?? -1));
+  if (longest >= 0) await options.waiting?.(longest);
+  const reads = await Promise.all(first.map(async (entry, index) => {
+    const seconds = waits[index];
+    if (seconds === null || seconds === undefined) return entry;
+    await wait(seconds * 1000);
+    return { peer: entry.peer, status: (await read(entry.peer)) ?? entry.status };
+  }));
+  if (longest >= 0) await options.waiting?.(null);
+  // what a PC said before the longest wait ended may be stale: a removal may have reached it meanwhile. So every PC of the
+  // account read earlier is read again before its answer lets anyone in; one that does not answer then can vouch for its
+  // mailbox no longer (its removals still go, no add does)
+  const current = longest < 0 ? reads : await Promise.all(reads.map(async (entry, index) => {
+    if (entry.status === null || entry.status.account !== options.account || waits[index] === longest) return entry;
+    return { peer: entry.peer, status: (await read(entry.peer)) ?? { ...entry.status, fresh: false } };
+  }));
   const answered: AccountPeer[] = [];
   const seen: PcAccountStatus[] = [];
   /** PCs that cannot say they read their whole mailbox (from before enrollments, or whose read failed): their removals are relayed, and no add goes */
   let legacy = 0;
   let unvouched = 0;
-  await Promise.all(others.map(async (peer) => {
-    try {
-      const status = await within(PEER_STATUS_MS, pcAccountStatus(peer.fetch, { fresh: true }));
-      if (status.account !== options.account) return;
-      // from before enrollments: its removals count, but it cannot vouch for its mailbox
-      if (status.fresh === undefined) { legacy++; seen.push(status); return; }
-      // a PC whose mailbox read failed or stopped short may hold a removal it does not list yet: its removals
-      // go, no add does, and the new PC keeps its wait until a later connection finds that PC read whole
-      if (status.fresh !== true) { unvouched++; seen.push(status); return; }
-      answered.push(peer);
-      seen.push(status);
-    } catch (error) { console.warn("Ovis: a PC of the account was not checked before the enrollment", error instanceof Error ? error.name : error); }
-  }));
+  for (const { peer, status } of current) {
+    if (status === null || status.account !== options.account) continue;
+    // from before enrollments: its removals count, but it cannot vouch for its mailbox
+    if (status.fresh === undefined) { legacy++; seen.push(status); continue; }
+    // a PC whose mailbox read failed or stopped short may hold a removal it does not list yet: its removals
+    // go, no add does, and the new PC keeps its wait until a later connection finds that PC read whole
+    if (status.fresh !== true) { unvouched++; seen.push(status); continue; }
+    answered.push(peer);
+    seen.push(status);
+  }
   if (others.length > 0 && answered.length === 0 && legacy === 0 && unvouched === 0) return { finished: false, checked: 0, of: others.length, admitted: [] };
   await keepRemovals({ store: options.store, account: options.account, removals: seen.flatMap((status) => status.removals) });
   const collected = await verified(seen.flatMap((status) => [...status.removals, ...status.adds]), options.account);
@@ -572,7 +618,7 @@ async function introduce(peer: AccountPeer, keys: readonly string[], pc: Introdu
  * once the PC says it belongs to the account (the link went through), enrollPc. `fetch` is a session
  * signed in with the account key there. The PC's status gives this client no record to sign.
  */
-export async function enrollOnPc(options: { fetch: PcFetch; store: AccountStore; account: string; serverId: string; others?: readonly AccountPeer[]; pc?: IntroducedPc; listed?: number; assertOwned?: () => Promise<void> }): Promise<Enrollment | null> {
+export async function enrollOnPc(options: { fetch: PcFetch; store: AccountStore; account: string; serverId: string; others?: readonly AccountPeer[]; pc?: IntroducedPc; listed?: number; assertOwned?: () => Promise<void>; waiting?: (seconds: number | null) => Promise<void> }): Promise<Enrollment | null> {
   const status = await pcAccountStatus(options.fetch);
   if (status.account !== options.account) return null;
   return enrollPc({ ...options, legacyTarget: status.enrolling === undefined });

@@ -151,7 +151,8 @@ async function bench(): Promise<void> {
         let messages = 0;
         const start = performance.now();
         const channel = await openRelayChannel(saved, {
-          store,
+          // as the app reconnects: its first request goes out with AUTH where the PC offers early_open
+          store, early: true,
           socket: (address) => {
             const target = new URL(address);
             const socket = new WebSocket(localWs ? `${localWs}${target.pathname}${target.search}` : address);

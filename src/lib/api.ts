@@ -922,6 +922,8 @@ export interface HealthInfo {
   herdr: HerdrIdentity;
   /** this Ovis server's version (`0.5.3`), authenticated only; absent from an older server */
   version?: string;
+  /** present, authenticated only, while the server runs with OVIS_PREVIEW=fleet: Settings shows the Fleet screen's entry */
+  fleet_preview?: true;
   /** `server_id`: this PC's relay ID, told to an authenticated browser where the PC has one; absent from an older server */
   web_ui?: { boot_id: string | null; revision: string | null; server_id?: string };
   /** Absent only on a server that predates the token gate. */

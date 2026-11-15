@@ -165,7 +165,9 @@ describe("herdr socket", () => {
     "server/ssh-askpass.ts": "the SSH askpass helper's own private socket, not herdr's",
     "server/herdr-core/adapter.ts": "a liveness probe of the core adapter's own socket before startup: sends no request",
     "server/herdr-core/runtime.ts": "a liveness probe of herdr-core's socket, not herdr's: connects and closes, sends nothing",
+    "server/herdr-core/connection.ts": "herdr-core's generation 1 framed socket, not herdr's RPC socket: fleet connects directly so hc connect cannot auto-start a core",
     "server/runtime-move-lock.ts": "the herdr-core move's own lock socket, not herdr's: asks which Ovis server holds it",
+    "server/fleet/test-helpers.ts": "the link agent's stand-in in tests, to a test's own Unix echo socket, not herdr's",
   };
 
   it("opens herdr's socket only in server/herdr/client.ts", () => {
@@ -220,10 +222,11 @@ describe("herdr socket", () => {
     const subscribers = matches(serverCode(), /\bsubscribeEvents\b/).filter((match) => match.file !== "server/herdr/client.ts" && match.file !== "server/collector.ts");
     // server/herdr-core/adapter.ts is the other end: it answers herdr's events.subscribe (the
     // collector's own, reaching it through HERDR_SOCKET) from hc's event stream of the same name;
-    // hc's generated types, their generator and the hc connection only name that hc method as a type
+    // hc's generated types and their generator name that method as a type; the hc connection owns its typed framed event method
     // server/herdr-core/pin-label.ts reads hc's own `labels` events for pins, never a pane's status;
-    // server/herdr-core/machine-scope.ts only narrows hc's stream to one machine's events for that adapter
-    const HC_STREAM_TYPES = ["server/herdr-core/adapter.ts", "server/herdr-core/hc-api.generated.ts", "scripts/hc-types.ts", "server/herdr-core/connection.ts", "server/herdr-core/pin-label.ts", "server/herdr-core/machine-scope.ts"];
+    // server/herdr-core/machine-scope.ts only narrows hc's stream to one machine's events for that adapter;
+    // server/runtime/boundary.ts only names herdr's method as a type of the runtime boundary
+    const HC_STREAM_TYPES = ["server/herdr-core/adapter.ts", "server/herdr-core/hc-api.generated.ts", "scripts/hc-types.ts", "server/herdr-core/connection.ts", "server/herdr-core/pin-label.ts", "server/herdr-core/machine-scope.ts", "server/runtime/boundary.ts"];
     const raw = matches(files("{server,src,shared,scripts}/**/*.{ts,tsx,mjs,js}").filter((file) => !file.endsWith(".test.ts")), /["']events\.subscribe["']/).filter((match) => match.file !== "server/herdr/client.ts" && !HC_STREAM_TYPES.includes(match.file));
     fail([...subscribers, ...raw].map((match) => match.at),
       "server/collector.ts is the only status subscription (startStatusCollector), and `events.subscribe` is sent only by subscribeEvents in server/herdr/client.ts: take pane status from the collector's callbacks (onStatus, onPaneEnded, onBaseline) in server/index.ts instead of subscribing again.");
@@ -245,6 +248,7 @@ describe("runtime gates", () => {
     "server/runtime-move-run.ts": "the move goes from herdr to herdr-core",
     "server/runtime-move-service.ts": "the move goes from herdr to herdr-core",
     "server/index.ts": "a saved choice of herdr-core falls back to herdr when no hc is found",
+    "server/fleet/product-bridge.ts": "selects the configured product engine at startup, before an adapter installs its capabilities",
     "server/machines.ts": "a remote PC's own Ovis is taken by the runtime its identity names",
     "server/conversation.ts": "the name of hc's program in an attach client's argv",
     "server/agents-routes.ts": "herdr itself starts two agent kinds without a manifest",

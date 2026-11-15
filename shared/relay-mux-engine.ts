@@ -1,8 +1,8 @@
 import {
-  decodeFrame, encodeFrame, FrameType, HTTP_END_FLAGS, LIMITS_V1, MAX_FRAME_BYTES, MAX_LARGE_WS_MESSAGE_BYTES,
-  MuxProtocolError, WS_CONTINUATION_CAPACITY, WS_DATA_FLAGS, WS_START_CAPACITY,
+  decodeFrame, EARLY_OPEN_BYTES, EARLY_OPEN_FRAMES, encodeExtensionFrame, encodeFrame, ENVELOPE_BYTES, FrameType, HTTP_END_FLAGS, isExtensionFrame, LIMITS_V1, MAX_FRAME_BYTES,
+  MAX_LARGE_WS_MESSAGE_BYTES, MuxProtocolError, WS_CONTINUATION_CAPACITY, WS_DATA_FLAGS, WS_START_CAPACITY,
 } from "./relay-mux.ts";
-import type { HeaderList, LimitsV1, MuxFrame, SessionError, StreamError } from "./relay-mux.ts";
+import type { ExtensionFrame, HeaderList, LimitsV1, MuxExtension, MuxFrame, SessionError, StreamError } from "./relay-mux.ts";
 
 type Payload<T extends MuxFrame["type"]> = Extract<MuxFrame, { type: T }>["payload"];
 export type HttpRequest = Payload<typeof FrameType.HTTP_OPEN>;
@@ -48,6 +48,10 @@ export interface MuxOptions {
   readonly requestTimeoutMs?: (request: HttpRequest) => number;
   /** Server adapters may drop untrusted identity headers, after syntax and size validation. */
   readonly filterRequestHeaders?: boolean;
+  /** A private addition to the codec (shared/relay-mux.ts MuxExtension); without one every frame is read as before. */
+  readonly extension?: MuxExtension;
+  /** Each frame the extension read: its AUTH and AUTH_OK pass the same setup checks as the device ones. */
+  readonly onExtension?: (frame: ExtensionFrame) => void;
 }
 
 export class MuxStreamError extends Error {
@@ -81,13 +85,15 @@ function classify(request: HttpRequest | WsRequest): "interactive" | "bulk" {
 // All state below is per-channel mutable accounting. No counter or queue survives carrierLost().
 interface Entry {
   readonly bytes: Uint8Array;
-  readonly type: MuxFrame["type"];
+  readonly type: number;
   readonly owner?: MuxStream;
   readonly traffic: Traffic;
   readonly payloadBytes: number;
   readonly wire: number;
   readonly committed?: () => void;
   readonly failed?: (error: MuxStreamError) => void;
+  /** The frame that opens an extension's stream: its even id is assigned as it goes out. */
+  readonly open?: boolean;
 }
 interface Flight {
   readonly through: bigint;
@@ -143,10 +149,10 @@ abstract class MuxStream {
   /** Adapters abort their Request, detach backends and cancel subscriptions here. */
   onDispose: ((error?: MuxStreamError) => void | Promise<void>) | undefined;
 
-  constructor(readonly engine: MuxEngine, readonly request: HttpRequest | WsRequest) {
+  constructor(readonly engine: MuxEngine, readonly request: HttpRequest | WsRequest | undefined) {
     this.generation = engine.generation;
-    this.traffic = classify(request);
-    this.terminal = request.target.split("?")[0]?.startsWith("/ws") ?? false;
+    this.traffic = request ? classify(request) : "interactive";
+    this.terminal = request?.target.split("?")[0]?.startsWith("/ws") ?? false;
   }
   get live(): boolean {
     return !this.cancelled && !this.retired && this.engine.generation === this.generation && this.engine.active;
@@ -342,6 +348,20 @@ export class HttpStream extends MuxStream {
     this.failBody(error);
     this.cancelSource();
   }
+}
+
+/**
+ * A stream of a registered extension (MuxExtension.streams): opened only by the server (MuxEngine.openExtension), on
+ * even ids 2, 4, ... in the order the opens go out, and taken by the client inside onExtension
+ * (MuxEngine.admitExtension). It reserves `window` at admission like an HTTP or WS stream, is credited by CREDIT,
+ * scheduled as interactive traffic and reset by RESET. Before the open is answered (`accepted`) nothing but a RESET
+ * goes out on it. The engine checks a DATA frame's state and credit; a subclass reads its frames in `receive` and
+ * throws MuxProtocolError to end the session.
+ */
+export abstract class ExtensionStream extends MuxStream {
+  accepted = false;
+  constructor(engine: MuxEngine, readonly window: number) { super(engine, undefined); }
+  abstract receive(frame: ExtensionFrame): void;
 }
 
 export interface WsClose {
@@ -562,7 +582,22 @@ export class MuxEngine {
   generation = 0;
   private state: "active" | "failing" | "closed" = "active";
   private deviceId: string | undefined;
+  /**
+   * The second authenticated state: a principal an extension signed in (authenticateExtension). It is no device, so
+   * deviceId stays undefined and every OPEN stays refused, both ways.
+   */
+  private extensionId: string | undefined;
+  /** The codec addition in force: the one the session started with, or the one useExtension chose before sign-in. */
+  private extension: MuxExtension | undefined;
+  /** A client that opened early (authenticateEarly) and has not read AUTH_OK yet. */
+  private early = false;
+  /** The stream frames it sent meanwhile: the PC holds no more than EARLY_OPEN_FRAMES and EARLY_OPEN_BYTES of them. */
+  private readonly earlySent = { frames: 0, bytes: 0 };
   private lastOpenId = 0;
+  /** The even ids of an extension's streams, as lastOpenId counts the odd ones. */
+  private lastServerOpenId = 0;
+  /** The id and size of the extension's open being handed to onExtension, for admitExtension. */
+  private opening: { readonly id: number; readonly size: number } | undefined;
   private goaway = false;
   private readonly streams = new Set<MuxStream>();
   private readonly urgent: Entry[] = [];
@@ -602,6 +637,7 @@ export class MuxEngine {
 
   constructor(readonly options: MuxOptions) {
     this.limits = options.limits ?? LIMITS_V1;
+    this.extension = options.extension;
     for (const key of ["max_streams", "max_ws_streams", "max_sse_streams"] as const) {
       check(Number.isInteger(this.limits[key]) && this.limits[key] > 0 && this.limits[key] <= LIMITS_V1[key], "Invalid concurrency limit");
     }
@@ -637,17 +673,54 @@ export class MuxEngine {
   }
   /** Called once, only after the session layer verified AUTH/PAIR and AUTH_OK. */
   authenticate(deviceId: string): void {
-    check(this.active && this.deviceId === undefined && /^[0-9a-f]{16}$/.test(deviceId), "Invalid authentication transition");
+    check(this.active && !this.signedIn && /^[0-9a-f]{16}$/.test(deviceId), "Invalid authentication transition");
     this.deviceId = deviceId;
     this.setupTimer();
     this.refreshIdle();
+  }
+  /** Called once, only after the session layer verified an extension's sign-in and its AUTH_OK: setup ends, no stream opens. */
+  authenticateExtension(id: string): void {
+    check(this.active && !this.signedIn && /^[0-9a-f]{16,64}$/.test(id), "Invalid authentication transition");
+    this.extensionId = id;
+    this.setupTimer();
+    this.refreshIdle();
+  }
+  /**
+   * Client only: AUTH went out on a WELCOME that offered `early_open`. Streams open now, ahead of AUTH_OK, and until it
+   * comes the PC's frames are setup frames and receipts only; AUTH_OK for this device ends setup as authenticate does.
+   */
+  authenticateEarly(deviceId: string): void {
+    check(this.active && !this.signedIn && this.options.role === "client" && /^[0-9a-f]{16}$/.test(deviceId), "Invalid authentication transition");
+    this.deviceId = deviceId;
+    this.early = true;
+  }
+  /** A device or an extension's principal signed in: setup is over. */
+  private get signedIn(): boolean { return this.deviceId !== undefined || this.extensionId !== undefined; }
+  /** Before sign-in, replaces the extension the session started with: negotiation chose the part of it this session uses. */
+  useExtension(extension: MuxExtension): void {
+    check(this.active && !this.signedIn && this.options.extension !== undefined, "Cannot change the extension");
+    this.extension = extension;
+  }
+  /** The server opens an extension's stream with `frame`; it throws MuxStreamError `refused` when the stream cannot be admitted. */
+  openExtension(stream: ExtensionStream, frame: ExtensionFrame): void {
+    const streams = this.extension?.streams;
+    check(this.active && !this.goaway && this.options.role === "server" && this.extensionId !== undefined && frame.type === streams?.open, "Cannot open a stream");
+    if (!this.admit(stream, this.entry(frame, "control").bytes.length)) throw new MuxStreamError("refused");
+    this.enqueue(stream, frame);
+  }
+  /** Inside onExtension, for the open it hands over: admits `stream` under that open's id, or false (the engine then refuses the open). */
+  admitExtension(stream: ExtensionStream): boolean {
+    const opening = this.opening;
+    check(opening !== undefined && stream.engine === this, "No stream is opening");
+    stream.id = opening.id;
+    return this.admit(stream, opening.size);
   }
   /**
    * Replaces the setup deadline: a pairing by comparing digits waits for a person on both ends
    * (shared/relay-pair-sas.ts PAIR_APPROVAL_MS), not the 10 seconds a code or a signature takes.
    */
   extendSetup(ms: number): void {
-    check(this.active && this.deviceId === undefined, "Session setup already ended");
+    check(this.active && !this.signedIn, "Session setup already ended");
     this.setupTimer();
     this.setupTimer = this.timer(() => this.fail("timeout", "Mux setup timed out"), ms);
   }
@@ -671,8 +744,9 @@ export class MuxEngine {
     this.reserved -= bytes;
     queueMicrotask(() => { if (this.active) this.onStreamAvailable?.(); });
   }
-  sendSession(frame: SessionFrame): void {
-    check(this.active && this.deviceId === undefined, "Session setup already ended");
+  sendSession(frame: SessionFrame | ExtensionFrame): void {
+    check(this.active && !this.signedIn, "Session setup already ended");
+    check(!isExtensionFrame(frame) || frame.type === FrameType.AUTH || frame.type === FrameType.AUTH_OK, "Not a setup frame");
     const clientFrame = CLIENT_SETUP.includes(frame.type);
     check(clientFrame === (this.options.role === "client"), "Wrong setup direction");
     this.enqueueControl(frame);
@@ -726,7 +800,7 @@ export class MuxEngine {
   private admit(stream: MuxStream, metadata: number): boolean {
     const ws = stream instanceof WsStream;
     const sse = stream instanceof HttpStream && stream.request.method === "GET" && stream.request.target.split("?")[0] === "/api/machines/events";
-    const reservation = ws ? LIMITS_V1.ws_window_bytes : LIMITS_V1.http_window_bytes;
+    const reservation = stream instanceof ExtensionStream ? stream.window : ws ? LIMITS_V1.ws_window_bytes : LIMITS_V1.http_window_bytes;
     if (this.streams.size >= this.limits.max_streams
       || ws && [...this.streams].filter((s) => s instanceof WsStream).length >= this.limits.max_ws_streams
       || sse && [...this.streams].filter((s) => s instanceof HttpStream && s.sse).length >= this.limits.max_sse_streams
@@ -771,14 +845,23 @@ export class MuxEngine {
   canQueue(stream: MuxStream, bytes: number): boolean {
     return this.queued + bytes <= QUEUE.outgoing && (stream.terminal || this.nonterminalQueued + bytes <= QUEUE.nonterminal);
   }
-  private entry(frame: MuxFrame, traffic: Traffic, owner?: MuxStream, committed?: () => void, failed?: Entry["failed"]): Entry {
-    const bytes = encodeFrame(frame);
+  private entry(frame: MuxFrame | ExtensionFrame, traffic: Traffic, owner?: MuxStream, committed?: () => void, failed?: Entry["failed"]): Entry {
+    if (isExtensionFrame(frame)) {
+      check(this.extension !== undefined, "No extension registered");
+      const bytes = encodeExtensionFrame(frame, this.extension);
+      const wire = this.options.outboundWireByteLength(bytes) + this.options.routingOverhead;
+      check(Number.isSafeInteger(wire) && wire >= bytes.length && wire <= this.options.maxWireMessageBytes, "Invalid wire cost", "unsupported_transport");
+      const streams = this.extension.streams;
+      const payloadBytes = frame.type === streams?.data ? bytes.length - ENVELOPE_BYTES : 0;
+      return { bytes, type: frame.type, owner, traffic, payloadBytes, wire, committed, failed, open: frame.type === streams?.open };
+    }
+    const bytes = encodeFrame(frame, this.extension);
     const payloadBytes = frame.type === FrameType.HTTP_DATA ? frame.payload.length : frame.type === FrameType.WS_DATA ? frame.payload.data.length : 0;
     const wire = this.options.outboundWireByteLength(bytes) + this.options.routingOverhead;
     check(Number.isSafeInteger(wire) && wire >= bytes.length && wire <= this.options.maxWireMessageBytes, "Invalid wire cost", "unsupported_transport");
     return { bytes, type: frame.type, owner, traffic, payloadBytes, wire, committed, failed };
   }
-  enqueue(stream: MuxStream, frame: MuxFrame, committed?: () => void, failed?: Entry["failed"]): void {
+  enqueue(stream: MuxStream, frame: MuxFrame | ExtensionFrame, committed?: () => void, failed?: Entry["failed"]): void {
     if (!stream.live) { failed?.(new MuxStreamError("cancelled")); return; }
     const entry = this.entry(frame, frame.type === FrameType.WS_CLOSE ? "control" : stream.traffic, stream, committed, failed);
     const metadata = entry.bytes.length - entry.payloadBytes;
@@ -793,7 +876,7 @@ export class MuxEngine {
     if (!stream.terminal) this.nonterminalQueued += entry.payloadBytes;
     this.kick();
   }
-  enqueueControl(frame: MuxFrame, stream?: MuxStream, committed?: () => void): void {
+  enqueueControl(frame: MuxFrame | ExtensionFrame, stream?: MuxStream, committed?: () => void): void {
     if (!this.active) return;
     const entry = this.entry(frame, "control", stream, committed);
     // Coalesce consumption reports; duplicate CREDIT is not useful work.
@@ -814,6 +897,9 @@ export class MuxEngine {
     Promise.resolve().then(() => { this.scheduled = false; return this.pump(); });
   }
   private fits(entry: Entry): boolean {
+    // opened early: a stream frame past what the PC holds before AUTH_OK waits here for it
+    if (this.early && entry.type >= FrameType.HTTP_OPEN
+      && (this.earlySent.frames >= EARLY_OPEN_FRAMES || this.earlySent.bytes + entry.bytes.length > EARLY_OPEN_BYTES)) return false;
     if (entry.traffic === "control") return this.controlFlight + entry.wire <= MUX_FLIGHT.control;
     return this.ordinaryFlight + entry.wire <= MUX_FLIGHT.ordinary
       && (entry.traffic !== "bulk" || this.bulkFlight + entry.wire <= MUX_FLIGHT.bulk);
@@ -822,6 +908,7 @@ export class MuxEngine {
     if (stream instanceof HttpStream && this.options.role === "client"
       && entry.type !== FrameType.HTTP_OPEN && !stream.accepted && !stream.stopped) return false;
     if (stream instanceof WsStream && entry.type === FrameType.WS_DATA && !stream.accepted) return false;
+    if (stream instanceof ExtensionStream && !entry.open && !stream.accepted) return false;
     if (entry.payloadBytes > 0) {
       const blocked = stream.sent - stream.peerConsumed + BigInt(entry.payloadBytes) > BigInt(stream.sendWindow);
       if (blocked) {
@@ -896,11 +983,20 @@ export class MuxEngine {
         }
         const entry = this.select();
         if (!entry) return;
+        if (this.early && entry.type >= FrameType.HTTP_OPEN) {
+          this.earlySent.frames++;
+          this.earlySent.bytes += entry.bytes.length;
+        }
         const stream = entry.owner;
         if (stream && (entry.type === FrameType.HTTP_OPEN || entry.type === FrameType.WS_OPEN)) {
           stream.id = this.lastOpenId === 0 ? 1 : this.lastOpenId + 2;
           this.lastOpenId = stream.id;
           if (stream.id === 0x7fffffff) this.goAway("id_exhausted", 5000);
+        }
+        if (stream && entry.open) {
+          stream.id = this.lastServerOpenId + 2;
+          this.lastServerOpenId = stream.id;
+          if (stream.id === 0x7ffffffe) this.goAway("id_exhausted", 5000);
         }
         if (stream?.id !== undefined) {
           const id = stream.id;
@@ -979,9 +1075,12 @@ export class MuxEngine {
         this.kick();
         return;
       }
-      const frame = decodeFrame(bytes, this.options.filterRequestHeaders);
+      const frame = this.extension
+        ? decodeFrame(bytes, this.options.filterRequestHeaders ?? false, this.extension)
+        : decodeFrame(bytes, this.options.filterRequestHeaders);
       this.refreshIdle();
-      this.dispatch(frame, bytes.length);
+      if (isExtensionFrame(frame)) this.extensionFrame(frame, bytes.length);
+      else this.dispatch(frame, bytes.length);
       if (frame.type !== FrameType.RECEIVED && this.active) {
         this.receivedFrames = add64(this.receivedFrames, 1);
         this.kick();
@@ -1012,7 +1111,48 @@ export class MuxEngine {
     this.refreshIdle();
     return true;
   }
+  private extensionFrame(frame: ExtensionFrame, size: number): void {
+    if (frame.type === FrameType.AUTH || frame.type === FrameType.AUTH_OK) {
+      check(!this.signedIn && (frame.type === FrameType.AUTH) === (this.options.role === "server"), "Unexpected setup frame");
+    }
+    const streams = this.extension?.streams;
+    if (streams && frame.stream_id !== 0) { this.extensionStreamFrame(frame, size, streams); return; }
+    check(this.options.onExtension !== undefined, "Unexpected extension frame");
+    this.options.onExtension(frame);
+  }
+  /** A frame on an extension's stream: an open (only from the server, to a signed-in client, in id order), or a stream's own. */
+  private extensionStreamFrame(frame: ExtensionFrame, size: number, streams: NonNullable<MuxExtension["streams"]>): void {
+    if (frame.type === streams.open) {
+      check(this.options.role === "client" && this.extensionId !== undefined, "Unexpected OPEN");
+      check(frame.stream_id === this.lastServerOpenId + 2, "Nonconsecutive OPEN");
+      this.lastServerOpenId = frame.stream_id;
+      check(this.openBucket.take(this.options.clock.now()), "OPEN rate exceeded", "resource_exhausted");
+      if (!this.goaway) {
+        this.opening = { id: frame.stream_id, size };
+        try { this.options.onExtension?.(frame); } finally { this.opening = undefined; }
+      }
+      if (this.active && ![...this.streams].some((stream) => stream.id === frame.stream_id)) {
+        this.enqueueControl({ type: FrameType.RESET, flags: 0, stream_id: frame.stream_id, payload: { code: "refused", message: "" } });
+      }
+      return;
+    }
+    check(frame.stream_id <= this.lastServerOpenId, "Frame for future stream");
+    const stream = [...this.streams].find((candidate) => candidate.id === frame.stream_id);
+    if (!stream || stream.cancelled) return;
+    check(stream instanceof ExtensionStream, "Not an extension stream");
+    if (frame.type === streams.data) {
+      check(stream.accepted && !stream.endedIn, "Unexpected DATA");
+      const next = add64(stream.received, size - ENVELOPE_BYTES);
+      check(next - stream.granted <= BigInt(stream.receiveWindow), "DATA exceeds granted credit", "flow_control_error");
+      stream.received = next;
+    }
+    stream.receive(frame);
+  }
+  /** The highest id this end has seen opened, in the id space the session's streams use: what GOAWAY carries. */
+  private get watermark(): number { return this.extension?.streams ? this.lastServerOpenId : this.lastOpenId; }
   private dispatch(frame: MuxFrame, size: number): void {
+    check(!this.early || frame.type === FrameType.RECEIVED || frame.type === FrameType.SESSION_ERROR
+      || frame.type === FrameType.WELCOME || frame.type === FrameType.AUTH_OK, "Frame before AUTH_OK");
     switch (frame.type) {
       case FrameType.RECEIVED: this.receipt(frame.payload); return;
       case FrameType.SESSION_ERROR: this.shutdown(new MuxProtocolError(frame.payload.code, frame.payload.message)); return;
@@ -1027,7 +1167,7 @@ export class MuxEngine {
         }
         return;
       case FrameType.GOAWAY:
-        check(frame.payload.last_open_id <= this.lastOpenId, "Future GOAWAY watermark");
+        check(frame.payload.last_open_id <= this.watermark, "Future GOAWAY watermark");
         this.goaway = true;
         for (const stream of this.streams) if (stream.id === undefined || stream.id > frame.payload.last_open_id) this.reset(stream, "refused", false);
         this.timer(() => this.carrierLost(new MuxProtocolError("timeout", "GOAWAY drained")), frame.payload.drain_ms);
@@ -1035,7 +1175,15 @@ export class MuxEngine {
       case FrameType.HELLO: case FrameType.WELCOME: case FrameType.AUTH: case FrameType.AUTH_OK: case FrameType.PAIR:
       case FrameType.PAIR_REQUEST: case FrameType.PAIR_CHALLENGE: case FrameType.PAIR_REVEAL: case FrameType.PAIR_CONFIRM: {
         const clientFrame = CLIENT_SETUP.includes(frame.type);
-        check(this.deviceId === undefined && clientFrame === (this.options.role === "server"), "Unexpected setup frame");
+        check((!this.signedIn || this.early) && clientFrame === (this.options.role === "server"), "Unexpected setup frame");
+        if (this.early && frame.type === FrameType.AUTH_OK) {
+          check(frame.payload.device_id === this.deviceId, "AUTH_OK named a different device", "auth_failed");
+          this.early = false;
+          this.setupTimer();
+          this.refreshIdle();
+          // what waited past the PC's bounds goes now
+          this.kick();
+        }
         this.options.onSession?.(frame);
         return;
       }
@@ -1061,7 +1209,9 @@ export class MuxEngine {
       }
       default: break;
     }
-    check(frame.stream_id <= this.lastOpenId, "Frame for future stream");
+    const even = frame.stream_id % 2 === 0;
+    check(frame.stream_id <= (even ? this.lastServerOpenId : this.lastOpenId), "Frame for future stream");
+    if (even && frame.type === FrameType.RESET) check(this.extension?.streams?.resets.includes(frame.payload.code), "Invalid RESET code");
     const stream = [...this.streams].find((candidate) => candidate.id === frame.stream_id);
     if (!stream || stream.cancelled) return;
     this.touch(stream);
@@ -1199,6 +1349,8 @@ export class MuxEngine {
   }
   reset(stream: MuxStream, code: StreamError, transmit = true): void {
     if (stream.cancelled || stream.retired) return;
+    // an extension's stream takes only its own codes: any other failure of this end is its own
+    if (stream instanceof ExtensionStream && !this.extension?.streams?.resets.includes(code)) code = "internal_error";
     const error = new MuxStreamError(code);
     stream.cancelled = true;
     this.dropQueue(stream, error);
@@ -1238,15 +1390,17 @@ export class MuxEngine {
     stream.reservation = 0;
     queueMicrotask(() => { if (this.active) this.onStreamAvailable?.(); });
   }
-  goAway(code: "shutdown" | "id_exhausted" = "shutdown", drainMs = 5000): void {
+  /** `reason`: why, for a peer that acts on it (a fleet machine's `confirmed`, docs/fleet-link.md); others ignore it. */
+  goAway(code: "shutdown" | "id_exhausted" = "shutdown", drainMs = 5000, reason?: string): void {
     if (!this.active) return;
     this.goaway = true;
     for (const stream of this.streams) if (stream.id === undefined) this.reset(stream, "refused", false);
-    this.enqueueControl({ type: FrameType.GOAWAY, flags: 0, stream_id: 0, payload: { code, last_open_id: this.lastOpenId, drain_ms: drainMs } });
+    this.enqueueControl({ type: FrameType.GOAWAY, flags: 0, stream_id: 0, payload: { code, last_open_id: this.watermark, drain_ms: drainMs, ...reason === undefined ? {} : { reason } } });
     this.timer(() => this.carrierLost(new MuxProtocolError("timeout", "GOAWAY drained")), drainMs);
   }
   private refreshIdle(): void {
-    if (!this.deviceId || this.hidden || this.probe !== undefined || !this.active) return;
+    // a device or an extension's principal: either way the server end pings after 20 s of silence
+    if (!this.signedIn || this.hidden || this.probe !== undefined || !this.active) return;
     this.idleTimer?.();
     if (this.options.role === "server") this.idleTimer = this.timer(() => this.ping(), 20_000);
   }

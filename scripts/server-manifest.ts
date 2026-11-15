@@ -1,7 +1,8 @@
 /**
  * The release's server binaries and what vouches for them: `ovis-server.json` (the version, the git trees of server/
  * and shared/ they were built from, the SHA-256 and size of each platform's file and of the built client,
- * `ovis-dist.tar.gz`), `ovis-server.SHA256SUMS`, and `ovis-server.json.sig`, an Ed25519 signature over the
+ * `ovis-dist.tar.gz`, the Rust PTY hosts and, from schema 2, the extra binaries of each Linux and macOS platform),
+ * `ovis-server.SHA256SUMS`, and `ovis-server.json.sig`, an Ed25519 signature over the
  * manifest's exact bytes, base64 on one line.
  *
  * The private key lives only in the secret OVIS_SERVER_SIGNING_KEY (a PKCS#8 PEM) of the environment release-signing, which
@@ -42,13 +43,25 @@ export const ptyFile = (asset: PtyAsset): string => `ovis-pty-sidecar-${asset}`;
 export const ptyAssetFor = (platform: ServerPlatform): PtyAsset | null =>
   platform === "windows-x64" ? null : platform.startsWith("darwin-") ? "darwin-universal" : platform as PtyAsset;
 
+/**
+ * The extra binaries a release carries beside the server, for Linux and macOS only (Windows gets none). Which ones is
+ * the release's to say (its build passes the list to writeManifest): a reader takes the plain names the signed manifest
+ * gives, each for every platform below as the file `<name>-<platform>`, and an installer asks for the ones it places.
+ */
+const BINARY_NAME = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
+export const EXTRA_PLATFORMS = ["linux-x64", "linux-arm64", "darwin-arm64", "darwin-x64"] as const;
+export type ExtraPlatform = typeof EXTRA_PLATFORMS[number];
+export const extraFile = (binary: string, platform: ExtraPlatform): string => `${binary}-${platform}`;
+
 export const binaryName = (platform: ServerPlatform): string => (platform === "windows-x64" ? "ovis-server.exe" : "ovis-server");
 
 export interface ReleaseAsset { file: string; sha256: string; size: number }
 /** the manifest's shape: a reader refuses any other, so a later shape can never be read as this one */
-export const MANIFEST_SCHEMA = 1;
+export const MANIFEST_SCHEMA = 2;
+/** the schemas a reader takes: 1 is a release from before the extra binaries, which it names none of */
+const READ_SCHEMAS: readonly number[] = [1, MANIFEST_SCHEMA];
 export interface ServerManifest {
-  schema: typeof MANIFEST_SCHEMA;
+  schema: 1 | typeof MANIFEST_SCHEMA;
   version: string;
   /** git tree ids of server/ and shared/ the binaries were built from */
   sources: { server: string; shared: string };
@@ -56,9 +69,14 @@ export interface ServerManifest {
   dist: ReleaseAsset;
   /** the Rust PTY hosts, signed with the server: an installer runs no host but the one named here */
   pty: Record<PtyAsset, ReleaseAsset>;
+  /** schema 2: each extra binary the release carries, for every Linux and macOS platform; absent in schema 1 */
+  binaries?: Record<string, Record<ExtraPlatform, ReleaseAsset>>;
 }
 /** every file the manifest vouches for, in the order the sums file lists them */
-const RELEASE_FILES = (): string[] => [...SERVER_PLATFORMS.map(releaseFile), DIST_ARCHIVE, ...PTY_ASSETS.map(ptyFile)];
+const RELEASE_FILES = (binaries: readonly string[]): string[] => [...SERVER_PLATFORMS.map(releaseFile), DIST_ARCHIVE, ...PTY_ASSETS.map(ptyFile), ...binaries.flatMap((binary) => EXTRA_PLATFORMS.map((platform) => extraFile(binary, platform)))];
+/** every extra binary entry of a manifest, as [binary, platform, asset], in the manifest's order */
+const extraEntries = (manifest: ServerManifest): [string, ExtraPlatform, ReleaseAsset][] =>
+  Object.entries(manifest.binaries ?? {}).flatMap(([binary, entries]) => EXTRA_PLATFORMS.map((platform) => [binary, platform, entries[platform]] as [string, ExtraPlatform, ReleaseAsset]));
 
 const root = resolve(import.meta.dir, "..");
 const sha256 = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
@@ -76,9 +94,11 @@ export function sourceTrees(cwd = root): { server: string; shared: string } | { 
   return { server: server!, shared: shared! };
 }
 
-/** Writes the manifest and the sums for the five binaries and the client archive in `dir`, and drops a signature an earlier manifest had. */
-export function writeManifest(dir: string, release: { version: string; sources: ServerManifest["sources"] }): ServerManifest {
-  const names = new Set(RELEASE_FILES());
+/** Writes the manifest and the sums for the five binaries, the client archive, the PTY hosts and the extra binaries in `dir`, and drops a signature an earlier manifest had. */
+export function writeManifest(dir: string, release: { version: string; sources: ServerManifest["sources"]; binaries: readonly string[] }): ServerManifest {
+  const bad = release.binaries.filter((binary) => !BINARY_NAME.test(binary));
+  if (bad.length > 0) throw new Error(`not plain binary names: ${bad.join(", ")}`);
+  const names = new Set(RELEASE_FILES(release.binaries));
   const missing = [...names].filter((name) => !existsSync(join(dir, name)));
   if (missing.length > 0) throw new Error(`${dir} has no ${missing.join(", ")}`);
   const extra = readdirSync(dir).filter((name) => !names.has(name) && name !== MANIFEST && name !== SUMS && name !== SIGNATURE);
@@ -89,7 +109,8 @@ export function writeManifest(dir: string, release: { version: string; sources: 
   };
   const assets = Object.fromEntries(SERVER_PLATFORMS.map((platform) => [platform, asset(releaseFile(platform))])) as ServerManifest["assets"];
   const pty = Object.fromEntries(PTY_ASSETS.map((build) => [build, asset(ptyFile(build))])) as ServerManifest["pty"];
-  const manifest: ServerManifest = { schema: MANIFEST_SCHEMA, version: release.version, sources: release.sources, assets, dist: asset(DIST_ARCHIVE), pty };
+  const binaries = Object.fromEntries(release.binaries.map((binary) => [binary, Object.fromEntries(EXTRA_PLATFORMS.map((platform) => [platform, asset(extraFile(binary, platform))]))])) as ServerManifest["binaries"];
+  const manifest: ServerManifest = { schema: MANIFEST_SCHEMA, version: release.version, sources: release.sources, assets, dist: asset(DIST_ARCHIVE), pty, binaries };
   rmSync(join(dir, SIGNATURE), { force: true });
   writeFileSync(join(dir, MANIFEST), `${JSON.stringify(manifest, null, 2)}\n`);
   writeFileSync(join(dir, SUMS), sumsOf(manifest));
@@ -136,7 +157,7 @@ export function signManifest(dir: string, privateKeyPem: string): string {
 }
 
 /** the sums file a manifest goes with: one line per file, as sha256sum writes them */
-const sumsOf = (manifest: ServerManifest): string => [...SERVER_PLATFORMS.map((platform) => manifest.assets[platform]), manifest.dist, ...PTY_ASSETS.map((build) => manifest.pty[build])].map(({ sha256: digest, file }) => `${digest}  ${file}\n`).join("");
+const sumsOf = (manifest: ServerManifest): string => [...SERVER_PLATFORMS.map((platform) => manifest.assets[platform]), manifest.dist, ...PTY_ASSETS.map((build) => manifest.pty[build]), ...extraEntries(manifest).map(([, , entry]) => entry)].map(({ sha256: digest, file }) => `${digest}  ${file}\n`).join("");
 
 const sameKeys = (value: unknown, keys: readonly string[]): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value) && JSON.stringify(Object.keys(value)) === JSON.stringify(keys);
@@ -158,10 +179,12 @@ function canonicalManifest(bytes: Buffer): ServerManifest | string {
     return `${MANIFEST} is not JSON`;
   }
   // a manifest of another schema is of a newer release (or not one at all): said before the fields it holds
-  if (typeof parsed === "object" && parsed !== null && "schema" in parsed && (parsed as Record<string, unknown>)["schema"] !== MANIFEST_SCHEMA) {
-    return `${MANIFEST} is schema ${JSON.stringify((parsed as Record<string, unknown>)["schema"])}, and this reader knows only schema ${MANIFEST_SCHEMA}; a newer installer reads it`;
+  const schema = typeof parsed === "object" && parsed !== null && "schema" in parsed ? (parsed as Record<string, unknown>)["schema"] : MANIFEST_SCHEMA;
+  if (!READ_SCHEMAS.includes(schema as number)) {
+    return `${MANIFEST} is schema ${JSON.stringify(schema)}, and this reader knows only schemas ${READ_SCHEMAS.join(" and ")}; a newer installer reads it`;
   }
-  if (!sameKeys(parsed, ["schema", "version", "sources", "assets", "dist", "pty"])) return `${MANIFEST} must hold exactly schema, version, sources, assets, dist and pty`;
+  const keys = schema === 1 ? ["schema", "version", "sources", "assets", "dist", "pty"] : ["schema", "version", "sources", "assets", "dist", "pty", "binaries"];
+  if (!sameKeys(parsed, keys)) return `${MANIFEST} must hold exactly ${keys.slice(0, -1).join(", ")} and ${keys.at(-1)}`;
   if (typeof parsed["version"] !== "string" || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(parsed["version"])) return `${MANIFEST} names no version`;
   const sources = parsed["sources"];
   if (!sameKeys(sources, ["server", "shared"]) || !Object.values(sources).every((tree) => typeof tree === "string" && /^[0-9a-f]{40}$/.test(tree))) return `${MANIFEST} must name exactly the git trees of server and shared`;
@@ -175,6 +198,21 @@ function canonicalManifest(bytes: Buffer): ServerManifest | string {
   if (!sameKeys(pty, PTY_ASSETS)) return `${MANIFEST} must name exactly the Rust PTY hosts ${PTY_ASSETS.join(", ")}`;
   for (const build of PTY_ASSETS) {
     if (!isAsset(pty[build], ptyFile(build))) return `${build}: ${MANIFEST} must name ${ptyFile(build)}, its SHA-256 and its size, and nothing else`;
+  }
+  if (schema !== 1) {
+    const binaries = parsed["binaries"];
+    // the release names its binaries; each must be a plain name, so its files stay plain names in the release folder
+    if (typeof binaries !== "object" || binaries === null || Array.isArray(binaries)) return `${MANIFEST} must hold its binaries as an object`;
+    const names = Object.keys(binaries);
+    const bad = names.filter((binary) => !BINARY_NAME.test(binary));
+    if (bad.length > 0) return `${MANIFEST} names binaries that are not plain names: ${bad.map((name) => JSON.stringify(name)).join(", ")}`;
+    for (const binary of names) {
+      const entries = (binaries as Record<string, unknown>)[binary];
+      if (!sameKeys(entries, EXTRA_PLATFORMS)) return `${binary}: ${MANIFEST} must name exactly the platforms ${EXTRA_PLATFORMS.join(", ")}`;
+      for (const platform of EXTRA_PLATFORMS) {
+        if (!isAsset(entries[platform], extraFile(binary, platform))) return `${binary} ${platform}: ${MANIFEST} must name ${extraFile(binary, platform)}, its SHA-256 and its size, and nothing else`;
+      }
+    }
   }
   if (bytes.toString("utf8") !== `${JSON.stringify(parsed, null, 2)}\n`) return `${MANIFEST} is not in its canonical form (a duplicate key, other spacing or another encoding)`;
   return parsed as unknown as ServerManifest;
@@ -219,7 +257,8 @@ export function checkManifest(bytes: Buffer, signatureText: string, publicKey: s
 
 /**
  * Checks `dir` as an installer will, and stops at the first part that fails:
- * - the folder holds exactly the five binaries, the manifest, its signature and the sums file;
+ * - the folder holds exactly the five binaries, the client, the PTY hosts, the extra binaries, the manifest, its
+ *   signature and the sums file;
  * - the signature, by `publicKey`, over the manifest's exact bytes (both strictly base64); only a manifest that passes is read;
  * - the manifest in its canonical form, and, when `expected.version` is given, for that version: a signature alone
  *   does not stop an older release, signed by the same key, from being offered as a newer one;
@@ -229,16 +268,17 @@ export function checkManifest(bytes: Buffer, signatureText: string, publicKey: s
 export function verifyRelease(dir: string, publicKey: string, expected: { version?: string } = {}): { ok: boolean; problems: string[] } {
   try {
     publicKeyObject(publicKey);
-    const allowed = new Set([...RELEASE_FILES(), MANIFEST, SIGNATURE, SUMS]);
     const present = readdirSync(dir);
-    const extra = present.filter((name) => !allowed.has(name));
-    if (extra.length > 0) return { ok: false, problems: [`${dir} holds files a release does not: ${extra.join(", ")}`] };
     const missing = [MANIFEST, SIGNATURE, SUMS].filter((name) => !present.includes(name));
     if (missing.length > 0) return { ok: false, problems: [`${dir} has no ${missing.join(", ")}`] };
     const manifest = checkManifest(readFileSync(join(dir, MANIFEST)), readFileSync(join(dir, SIGNATURE), "utf8"), publicKey, expected);
     if (typeof manifest === "string") return { ok: false, problems: [manifest] };
+    // the files a release holds are the ones its signed manifest names, and nothing else
+    const allowed = new Set([...RELEASE_FILES(Object.keys(manifest.binaries ?? {})), MANIFEST, SIGNATURE, SUMS]);
+    const extra = present.filter((name) => !allowed.has(name));
+    if (extra.length > 0) return { ok: false, problems: [`${dir} holds files a release does not: ${extra.join(", ")}`] };
     const problems: string[] = [];
-    for (const [name, { file, sha256: digest, size }] of [...SERVER_PLATFORMS.map((platform) => [platform, manifest.assets[platform]] as const), ["client", manifest.dist] as const, ...PTY_ASSETS.map((build) => [`PTY host ${build}`, manifest.pty[build]] as const)]) {
+    for (const [name, { file, sha256: digest, size }] of [...SERVER_PLATFORMS.map((platform) => [platform, manifest.assets[platform]] as const), ["client", manifest.dist] as const, ...PTY_ASSETS.map((build) => [`PTY host ${build}`, manifest.pty[build]] as const), ...extraEntries(manifest).map(([binary, platform, entry]) => [`${binary} ${platform}`, entry] as const)]) {
       if (!present.includes(file)) problems.push(`${name}: ${file} is missing`);
       else {
         const bytes = readFileSync(join(dir, file));

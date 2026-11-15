@@ -53,7 +53,7 @@ export function formatRelayBytes(bytes: number): string {
   return `${rounded} GB`;
 }
 
-/** The server-provided plan name, PC slots (used/max), and relay data (used/cap when present) as one line. */
+/** The server-provided plan name, PC slots (used/max), relay data (used/cap when present) and fleet machines (above 0 only) as one line. */
 export function formatAccountLimits(t: Translate, limits: AccountLimits, listedPcs: number): { label: string; summary: string } {
   const plan = limits.plan.length > 0 ? limits.plan[0]!.toUpperCase() + limits.plan.slice(1) : limits.plan;
   const usedPcs = limits.pcs_used ?? listedPcs;
@@ -61,9 +61,10 @@ export function formatAccountLimits(t: Translate, limits: AccountLimits, listedP
   const dataPart = typeof limits.data_cap_bytes === "number" && limits.data_cap_bytes > 0 && typeof limits.data_used_bytes === "number"
     ? t("{used} / {cap} relay data", { used: formatRelayBytes(limits.data_used_bytes), cap: formatRelayBytes(limits.data_cap_bytes) })
     : null;
+  const fleetPart = typeof limits.fleet_max === "number" && limits.fleet_max > 0 ? t("{max} fleet machines", { max: limits.fleet_max }) : null;
   return {
     label: t("Plan · {plan}", { plan }),
-    summary: dataPart !== null ? `${pcsPart} · ${dataPart}` : pcsPart,
+    summary: [pcsPart, dataPart, fleetPart].filter((part) => part !== null).join(" · "),
   };
 }
 

@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { main } from "./plugin-launch.ts";
-import { generateKeyPair, MANIFEST, releaseFile, PTY_ASSETS, ptyFile, SERVER_PLATFORMS, signManifest, writeManifest } from "./server-manifest.ts";
+import type { installServer } from "./server-install.ts";
+import { EXTRA_PLATFORMS, extraFile, generateKeyPair, MANIFEST, releaseFile, PTY_ASSETS, ptyFile, SERVER_PLATFORMS, signManifest, writeManifest } from "./server-manifest.ts";
+import { EXTRA_BINARIES } from "./release-binaries.ts";
 
 /**
  * scripts/plugin-launch.ts's choice between the release's binary and this checkout's sources (INSTALL.md, "Binary or
@@ -71,8 +73,9 @@ describe("the herdr plugin's launcher", () => {
     mkdirSync(dir, { recursive: true });
     for (const platform of SERVER_PLATFORMS) writeFileSync(join(dir, releaseFile(platform)), `binary for ${platform}\n`);
     for (const build of PTY_ASSETS) writeFileSync(join(dir, ptyFile(build)), `pty host ${build}\n`);
+    for (const binary of EXTRA_BINARIES) for (const platform of EXTRA_PLATFORMS) writeFileSync(join(dir, extraFile(binary, platform)), `${binary} ${platform}\n`);
     writeFileSync(join(dir, "ovis-dist.tar.gz"), "client\n");
-    writeManifest(dir, { version, sources: BUILT_FROM });
+    writeManifest(dir, { version, sources: BUILT_FROM, binaries: EXTRA_BINARIES });
     signManifest(dir, generateKeyPair().privateKeyPem);
     process.env["OVIS_RELEASES_URL"] = pathToFileURL(join(scratch, "release")).href;
     const result = await launch(["start"]);
@@ -118,6 +121,68 @@ describe("the herdr plugin's launcher", () => {
     expect(existsSync(join(home, "from-source"))).toBe(false);
   });
 
+});
+
+/**
+ * An installed release's binary as a stand-in: a script that records how it was run (in `ran`) and writes a pairing QR
+ * code and its link to whatever output it has.
+ */
+function release(): { binary: string; ran: string } {
+  const binary = join(scratch, "ovis-server");
+  const ran = `${binary}.ran`;
+  writeFileSync(binary, `#!/bin/sh\necho "$@" > ${JSON.stringify(ran)}\nprintf '█▀▀▀█ https://app.ovis.sh/s/x/#offer=abc\\n'\n`);
+  chmodSync(binary, 0o755);
+  return { binary, ran };
+}
+
+describe("the pairing commands and an installed release", () => {
+  it.skipIf(process.platform === "win32")("run add, link, login, pair and phone-setup from this checkout's code with a release installed, and every other command by the release's binary", async () => {
+    const installed = release();
+    // the release's install, which a pairing command never even asks for
+    let asked = 0;
+    const server = (async () => { asked++; return { installed: false, message: "", binary: installed.binary }; }) as unknown as typeof installServer;
+    for (const command of ["add", "link", "login", "pair", "phone-setup"]) {
+      const handed: string[][] = [];
+      const code = await main([command, "--print"], { home: join(scratch, "server"), server, checkout: async (name, rest) => { handed.push([name, ...rest]); return 5; } });
+      expect([command, code, handed, asked]).toEqual([command, 5, [[command, "--print"]], 0]);
+      expect(existsSync(installed.ran)).toBe(false);
+    }
+    // status pairs nothing: the release's binary runs it, as before
+    expect(await main(["status"], { home: join(scratch, "server"), server, checkout: async () => 5 })).toBe(0);
+    expect([asked, readFileSync(installed.ran, "utf8")]).toEqual([1, "plugin status\n"]);
+  });
+
+  it.skipIf(process.platform === "win32")("writes no pairing QR code into a pipe with a release installed whose command line would: this checkout's add refuses instead", async () => {
+    const old = release();
+    // the PC's server, on a port of this test's own: in no account, so add would show a code
+    const calls: string[] = [];
+    const pc = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
+      const path = new URL(request.url).pathname;
+      calls.push(`${request.method} ${path}`);
+      if (path === "/api/health") return Response.json({ ok: true, herdr: { version: "0.9.3", protocol: 1 }, auth: { required: false, authenticated: true } });
+      if (path === "/api/account/status") return Response.json({ account: null, unlinked: [], removals: [], adds: [], blocked: [] });
+      return new Response(null, { status: 404 });
+    } });
+    try {
+      const config = join(scratch, "config");
+      mkdirSync(config);
+      writeFileSync(join(config, ".env"), `PORT=${pc.port}\n`);
+      const driver = join(scratch, "driver.ts");
+      writeFileSync(driver, `const { main } = await import(${JSON.stringify(join(import.meta.dir, "plugin-launch.ts"))});
+process.exit(await main(["add"], { home: ${JSON.stringify(join(scratch, "server"))}, server: async () => ({ installed: false, message: "", binary: ${JSON.stringify(old.binary)} }) }));\n`);
+      const child = Bun.spawn([process.execPath, driver], { stdin: "ignore", stdout: "pipe", stderr: "pipe", env: {
+        ...process.env, HOME: scratch, HOST: "127.0.0.1", PORT: undefined, OVIS_TOKEN: "", HERDR_PLUGIN_CONFIG_DIR: config,
+        HERDR_PLUGIN_STATE_DIR: join(scratch, "plugin-state"), OVIS_STATE_DIR: join(scratch, "app-state"), XDG_CONFIG_HOME: undefined, XDG_STATE_HOME: undefined,
+      } });
+      const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+      expect([out, code], err).toEqual(["Adding this PC needs a terminal: the QR code and the code to type are a key to this PC, so they are never written to a pipe, a file or a log. Run ovis add in a terminal (over ssh, run ssh -t).\n", 1]);
+      expect(out + err).not.toContain("#offer=");
+      expect(out + err).not.toContain("█");
+      expect(existsSync(old.ran)).toBe(false);
+      // it asked this PC's server what it reads, and wrote nothing to it
+      expect(calls.filter((call) => !call.startsWith("GET "))).toEqual([]);
+    } finally { await pc.stop(true); }
+  });
 });
 
 describe("the launcher's child", () => {

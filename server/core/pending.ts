@@ -1217,6 +1217,15 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     return { ...message };
   }
   /**
+   * A first message the Ovis runtime's launch held without typing it (`ovis start`): listed held among the pane's
+   * pending messages, as one held here is, for an explicit Send now or Discard; never typed on its own.
+   */
+  function listHeldFirstMessage(paneId: string, raw: string, terminalId: string, fault: { code: string; message: string }): PendingMessage {
+    const item = pending.enqueue(FIRST_MESSAGE_OWNER, paneId, nextFirstRequestId--, pendingText(raw), null, { agent: null, terminalId, session: null });
+    pending.holdItem(item, fault);
+    return { ...item.message };
+  }
+  /**
    * What a launch-bound first message learns of the agent launched for it from what runs in its pane now:
    * the parts not known yet (process, sessions), once herdr names the launched kind in its terminal and
    * nothing known disagrees. The first agent seen there is the launched one, and a part once learned is
@@ -1782,5 +1791,5 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     },
   };
 
-  return { pending, holdPending, holdPendingPane, movePendingPane, drainPending, pendingFrames, queueFirstMessage, attached, closeConnection, reconcilePiDeliveries };
+  return { pending, holdPending, holdPendingPane, movePendingPane, drainPending, pendingFrames, queueFirstMessage, listHeldFirstMessage, attached, closeConnection, reconcilePiDeliveries };
 }

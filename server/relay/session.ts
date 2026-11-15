@@ -4,7 +4,11 @@ import type { SecureChannel } from "../../shared/relay-e2ee.ts";
 import { commitmentHolds, fromBase64Url, PAIR_APPROVAL_MS, pairDigits, randomPairNonce, toBase64Url } from "../../shared/relay-pair-sas.ts";
 import { MuxEngine, MuxStreamError } from "../../shared/relay-mux-engine.ts";
 import type { HttpStream, MuxClock, SessionFrame, WsStream } from "../../shared/relay-mux-engine.ts";
-import { ACCOUNT_FEATURE, DIRECT_CARRIER, DIRECT_TAILNET, FrameType, LARGE_WS_MESSAGES, LIMITS_V1, PAIR_INTENT_ACCOUNT, PAIR_INTENT_PC, PAIR_INTENT_VOUCHED, PAIR_SAS_FEATURE, RELAY_HINTS, RELAY_PROTOCOL, REQUEST_HEADERS, RESPONSE_HEADERS, SERVER_TIME_HEADER, WS_CONTINUATION_CAPACITY } from "../../shared/relay-mux.ts";
+import type { ExtensionFrame } from "../../shared/relay-mux.ts";
+import { asMachineAuth, EnrollFrame, enrollOkFrame, fleetMuxExtension, fleetStateFrame, FLEET_STATE_FEATURE, GOAWAY_CONFIRMED, helloKind, machineAuthOkFrame, machineRevoked, openPipe, PACE_FEATURE, paceFrame, PipeFrame, pipeMuxExtension, verifyMachineAuth } from "../fleet/mux-ext.ts";
+import type { Enroll, FleetDirectory, FleetState, MachineCause, PipeAdvert, PipeStream, RelayPace } from "../fleet/mux-ext.ts";
+import type { SignInQueue } from "../fleet/sign-in-queue.ts";
+import { ACCOUNT_FEATURE, decodeFrame, DIRECT_CARRIER, DIRECT_TAILNET, EARLY_OPEN_BYTES, EARLY_OPEN_FRAMES, FrameType, LARGE_WS_MESSAGES, LIMITS_V1, PAIR_INTENT_ACCOUNT, PAIR_INTENT_PC, PAIR_INTENT_VOUCHED, PAIR_SAS_FEATURE, RELAY_HINTS, RELAY_PROTOCOL, REQUEST_HEADERS, RESPONSE_HEADERS, SERVER_TIME_HEADER, WS_CONTINUATION_CAPACITY } from "../../shared/relay-mux.ts";
 import type { HeaderList, SessionError } from "../../shared/relay-mux.ts";
 import { PairingRateLimitedError, type DeviceMatch, type PairingPath } from "../devices.ts";
 import { accountDeviceId } from "../../shared/account-records.ts";
@@ -17,6 +21,8 @@ import { VirtualSocket, type RelaySocketHandlers } from "./virtual-socket.ts";
 export const RELAY_ORIGIN = "https://relay.ovis.invalid";
 const SOURCE_LIMIT = 3 * 1024 * 1024;
 const SESSION_LIMIT = 32 * 1024 * 1024;
+/** How long a machine session that signed in `pending` drains after its batch is confirmed (it holds no pipe). */
+export const PENDING_GOAWAY_DRAIN_MS = 1_000;
 export const relayClock: MuxClock = {
   now: () => performance.now(),
   setTimeout: (callback, milliseconds) => {
@@ -75,6 +81,70 @@ export interface RelaySessionOptions {
    * (server/relay/link.ts). The session then makes no device and says nothing more: the relay closes the client.
    */
   readonly refuseNewDevice?: () => boolean;
+  /**
+   * The fleet machines this PC controls (docs/fleet-link.md): with it, a HELLO that offers `pipe-stream` starts a machine
+   * session signed in by `machine-key`. Without it the codec takes no fleet frame and such a HELLO is refused as today.
+   */
+  readonly fleet?: FleetDirectory;
+  /**
+   * The fleet's live machine sessions (server/fleet/sessions.ts), asked once a machine's AUTH verified and before its
+   * AUTH_OK: a cause refuses the sign-in. Without it a verified machine is signed in uncounted (the codec tests).
+   */
+  readonly machineSessions?: MachineSessions;
+  /** A machine signed in on this carrier (its AUTH_OK committed): from here on it is a machine's session, never a device's. */
+  readonly onMachine?: (machineId: string) => void;
+  /**
+   * This PC's direct carriers for a fleet machine (server/fleet/direct.ts machineCarriers), named in its AUTH_OK `direct`
+   * so the link agent saves them; never told to a device.
+   */
+  readonly machineCarriers?: () => readonly string[];
+  /** A carrier on a bridge adapter (server/relay/direct.ts): only a fleet machine signs in on it; a device's AUTH, PAIR or PAIR_REQUEST is refused `auth_failed`. */
+  readonly machinesOnly?: boolean;
+  /**
+   * The fleet's invites (server/fleet/sessions.ts, server/fleet/invites.ts): with it, a machine session may send one
+   * ENROLL before its AUTH (docs/fleet-link.md section 4). Without it an ENROLL is refused `auth_failed` `unknown`.
+   */
+  readonly enrolment?: MachineEnrolment;
+  /** Where the carrier came from, on a direct carrier (its source address): ENROLL's own budget is kept per address. */
+  readonly source?: string;
+  /**
+   * The fleet's sign-in queue was full when this machine's AUTH came (todo 37): a direct carrier says `retry_after_ms`
+   * and closes 1013 (server/relay/direct.ts). Without it the machine is refused `resource_exhausted` `controller_limit`.
+   */
+  readonly onMachineBusy?: (retryAfterMs: number) => void;
+  /** Places a machine may wait in the sign-in queue: SIGN_IN_WAITING on a direct carrier; the queue's own otherwise. */
+  readonly machineWaitingPlaces?: number;
+}
+
+/** What an ENROLL is checked against (server/fleet/invites.ts FleetInvites.enroll). */
+export interface MachineEnrolment {
+  enroll(request: Enroll, context: { readonly binding: Uint8Array; readonly source?: string }): Promise<{ readonly machineId: string } | { readonly code: SessionError; readonly cause: MachineCause }>;
+  /** As FleetDirectory.held: an ENROLL then ends `fleet_token_required` before the invite is looked at. */
+  held?(): boolean;
+}
+
+/** What a machine session tells the fleet once admitted: its commit, each advert, its end (called once, whatever ends it). */
+export interface MachineAdmission {
+  committed(): void;
+  advert(advert: PipeAdvert): void;
+  ended(): void;
+  /** The session was ended with `cause` in its SESSION_ERROR (before `ended`): why this machine is gone, for its row. */
+  refused?(cause: MachineCause): void;
+  /** The session was told to go (GOAWAY after its batch was confirmed) and the machine signs in again: it is no longer the machine's session. */
+  superseded?(): void;
+}
+export interface MachineSessions {
+  /**
+   * `seen` is the AUTH's `seen_state` as it came (todo 31): the fleet checks it against its witness, and may refuse the
+   * sign-in `restored` or `revoked` before it counts the session.
+   */
+  admit(machineId: string, session: RelaySession, seen?: FleetState): MachineAdmission | { readonly code: SessionError; readonly cause: MachineCause };
+  /** Whether `machineId` is a key the fleet removed (its witness lists it): refused `auth_revoked` even with no record left. */
+  removed?(machineId: string): boolean;
+  /** The queue every machine AUTH is verified through (server/fleet/sign-in-queue.ts); verified at once without it. */
+  readonly signIns?: SignInQueue;
+  /** The relay pace AUTH_OK names for this machine, `rttMs` the round trip measured so far (todo 37). */
+  paceFor?(machineId: string, rttMs: number): RelayPace | undefined;
 }
 
 export interface RelayWebSocketRequest {
@@ -90,7 +160,15 @@ export interface RelayWebSocketRequest {
 export class RelaySession {
   readonly mux: MuxEngine;
   readonly sessionId = randomBytes(16).toString("hex");
-  private state: "hello" | "auth" | "pair-commit" | "pair-wait" | "verifying" | "refused" | "ready" | "closed" = "hello";
+  private state: "hello" | "auth" | "pair-commit" | "pair-wait" | "verifying" | "refused" | "ready" | "machine" | "closed" = "hello";
+  /** The HELLO offered `pipe-stream` on a PC with a fleet: a machine session, never a device's. */
+  private machine = false;
+  /** The signed-in machine's latest PIPE_ADVERT, in memory only and gone with the session (docs/fleet-link.md section 1.8). */
+  private advert: PipeAdvert | undefined;
+  /** The fleet's count of this machine session, from its admission until it ends. */
+  private admission: MachineAdmission | undefined;
+  /** This machine session enrolled (ENROLL_OK went out): one ENROLL per session, and AUTH follows. */
+  private enrolled = false;
   private readonly nonce = randomBytes(32);
   /** This session's channel binding, when the phone offered pairing by comparing digits and this PC selected it. */
   private sasBinding: Uint8Array | undefined;
@@ -101,6 +179,18 @@ export class RelaySession {
   private intent: "pc" | "account" | "vouched" = "pc";
   /** A WELCOME went out: the provisional one before HELLO, or the answer to it. */
   private welcomed = false;
+  /** When the first WELCOME went out: a machine's AUTH signs its nonce, so the AUTH comes a round trip later at least. */
+  private welcomedAt: number | undefined;
+  /** Ends a machine's wait in the sign-in queue when its carrier closes. */
+  private signInAbort: AbortController | undefined;
+  /** The provisional WELCOME said `early_open`: a phone may send its first stream frames right behind AUTH. */
+  private earlyOpen = false;
+  /**
+   * From a well-formed AUTH (offered early_open) until its AUTH_OK commit: the stream frames that came behind it,
+   * kept only when the device it names has a row here (`known`), and counted either way against EARLY_OPEN_FRAMES
+   * and EARLY_OPEN_BYTES. None of them is read before the commit; a session that ends drops them.
+   */
+  private held: { readonly device: string; readonly known: boolean; readonly frames: ArrayBuffer[]; count: number; bytes: number } | undefined;
   /** A pairing by comparing digits under way; `ended` once it made a device or counted as a failure. */
   private sas: {
     label: string; publicKey: string; commitment: Uint8Array; pcNonce: Uint8Array; expiresAt: number;
@@ -142,9 +232,26 @@ export class RelaySession {
       // The dispatcher sets the route's budget, including overrides selected from a request body.
       requestTimeoutMs: () => 0,
       filterRequestHeaders: true,
+      ...(options.fleet ? {
+        extension: fleetMuxExtension,
+        onExtension: (frame: ExtensionFrame) => {
+          if (frame.type === PipeFrame.ADVERT && this.state === "machine") {
+            this.advert = frame.payload as PipeAdvert;
+            this.admission?.advert(this.advert);
+            return;
+          }
+          if (frame.type === EnrollFrame.ENROLL) { void this.machineEnroll(frame.payload as Enroll).catch(() => this.close("internal_error")); return; }
+          void this.machineSignIn(frame).catch(() => this.close("internal_error"));
+        },
+      } : {}),
       close: (code) => options.channel.close(code),
       onClose: (error) => {
         this.state = "closed";
+        this.signInAbort?.abort(new Error("carrier closed"));
+        this.advert = undefined;
+        this.admission?.ended();
+        this.admission = undefined;
+        this.held = undefined;
         this.endPairing(false);
         this.unwatch?.();
         this.unwatch = undefined;
@@ -198,19 +305,56 @@ export class RelaySession {
 
   private welcome(features: readonly string[], provisional: boolean): void {
     this.welcomed = true;
+    this.welcomedAt ??= this.clock.now();
     this.mux.sendSession({
       type: FrameType.WELCOME, flags: 0, stream_id: 0,
       payload: {
         protocol: "ovis-mux", version: 1, features, limits: LIMITS_V1,
         nonce: this.nonce.toString("base64url"), server_version: this.options.serverVersion,
         relay_protocol: RELAY_PROTOCOL, min_supported_client: this.options.minSupportedClient,
-        ...(provisional ? { provisional: true as const } : {}),
+        // only the provisional WELCOME offers early_open: it goes out before HELLO, so a phone signs in on it
+        ...(provisional ? { provisional: true as const, early_open: true as const } : {}),
       },
     });
+    if (provisional) this.earlyOpen = true;
+  }
+
+  /** What the signed-in machine last advertised, or undefined before its first PIPE_ADVERT. */
+  get pipeAdvert(): PipeAdvert | undefined { return this.advert; }
+
+  /** The controller's relay identity this session signs machines in for: the FLEET_STATE tag names it. */
+  get serverId(): string { return this.options.serverId; }
+
+  /** Sends FLEET_STATE (docs/fleet-link.md section 1.7) to this signed-in machine; nothing on any other session. */
+  sendFleetState(state: FleetState): void {
+    if (this.state === "machine" && this.fleetStateFeature && this.mux.active) this.mux.enqueueControl(fleetStateFrame(state));
+  }
+  private fleetStateFeature = false;
+
+  /** Opens a pipe to this signed-in machine's `endpoint` (docs/fleet-link.md section 2); the controller is the only opener. */
+  openPipe(endpoint: string): PipeStream {
+    if (this.state !== "machine") throw new MuxStreamError("refused");
+    return openPipe(this.mux, endpoint);
   }
 
   /** A sign-in or pairing is being checked, or its AUTH_OK waits to be sent. */
   get verifying(): boolean { return this.state === "verifying"; }
+  /** Whether this carrier came straight to this PC (server/relay/direct.ts) rather than through the relay. */
+  get direct(): boolean { return this.options.signInOnly === true; }
+  /** A machine whose AUTH waits in the fleet's sign-in queue or is being verified: it keeps its place against newcomers. */
+  get machineSigningIn(): boolean { return this.machine && this.state === "verifying"; }
+
+  /**
+   * The machine's agent announced `pace` in its AUTH (todo 37): it reads PACE frames. An older agent refuses one as a
+   * protocol error, so it gets none and keeps its session; AUTH_OK's `relay_pace` goes to every agent.
+   */
+  get readsPace(): boolean { return this.paceFeature; }
+  private paceFeature = false;
+
+  /** Sends a signed-in machine its relay pace (PACE, docs/fleet-link.md section 1, todo 37). */
+  sendPace(pace: RelayPace): void {
+    if (this.state === "machine" && this.mux.active) this.mux.enqueueControl(paceFrame(pace));
+  }
 
   /** Both ends are comparing digits: admission waits for people, up to PAIR_APPROVAL_MS. */
   get pairing(): boolean { return this.state === "pair-commit" || this.state === "pair-wait"; }
@@ -219,10 +363,30 @@ export class RelaySession {
 
   receive(data: string | ArrayBuffer): void {
     if (typeof data === "string") { this.close("protocol_error"); return; }
+    if (this.held) { this.hold(data); return; }
     const bytes = new Uint8Array(data);
     this.mux.receive(bytes);
     for (const socket of this.sockets.values()) socket?.drain();
     if (this.mux.active) this.touch(bytes);
+  }
+
+  /**
+   * A frame while AUTH is verified on a session that offered early_open. One on stream 0 is read as ever (a second
+   * AUTH, HELLO or PAIR is refused there). A stream frame is not read: an OPEN must name the device AUTH named, and
+   * past EARLY_OPEN_FRAMES or EARLY_OPEN_BYTES the session ends.
+   */
+  private hold(data: ArrayBuffer): void {
+    const held = this.held;
+    if (!held || !this.mux.active) return;
+    const bytes = new Uint8Array(data);
+    if (bytes.byteLength < 8 || new DataView(data).getUint32(4) === 0) { this.mux.receive(bytes); return; }
+    let frame;
+    try { frame = decodeFrame(bytes, true); } catch { this.close("protocol_error"); return; }
+    if ((frame.type === FrameType.HTTP_OPEN || frame.type === FrameType.WS_OPEN) && frame.payload.device_id !== held.device) { this.close("protocol_error"); return; }
+    if (held.count >= EARLY_OPEN_FRAMES || held.bytes + bytes.byteLength > EARLY_OPEN_BYTES) { this.close("resource_exhausted"); return; }
+    held.count++;
+    held.bytes += bytes.byteLength;
+    if (held.known) held.frames.push(data);
   }
 
   private touch(bytes: Uint8Array): void {
@@ -232,6 +396,7 @@ export class RelaySession {
   close(code: SessionError = "auth_revoked"): void {
     if (this.state === "closed") return;
     this.state = "closed";
+    this.held = undefined;
     this.endPairing(false);
     this.unwatch?.();
     this.unwatch = undefined;
@@ -260,12 +425,147 @@ export class RelaySession {
     return false;
   };
 
+  /** Ends a machine session with `code` and its cause in SESSION_ERROR's message (docs/fleet-link.md section 1). */
+  closeMachine(code: SessionError, cause: MachineCause): void { this.refuseMachine(code, cause); }
+
+  /** Whether this controller's fleet is held for want of a token (server/fleet/gate.ts). */
+  private fleetHeld(): boolean {
+    return this.options.fleet?.held?.() === true || this.options.enrolment?.held?.() === true;
+  }
+
+  /** A refusal that names its cause in SESSION_ERROR's message (docs/fleet-link.md section 1), on a session that holds no stream. */
+  private refuseMachine(code: SessionError, cause: MachineCause): void {
+    if (this.state === "closed") return;
+    this.state = "closed";
+    this.unwatch?.();
+    this.unwatch = undefined;
+    this.admission?.refused?.(cause);
+    this.mux.fail(code, cause);
+  }
+
+  /**
+   * `verify` in its turn of the fleet's sign-in queue (server/fleet/sign-in-queue.ts), or at once without one. Undefined
+   * when the queue was full (the machine was told so: 1013 with `retry_after_ms` on a direct carrier, else
+   * `resource_exhausted` `controller_limit`) or the carrier closed while it waited.
+   */
+  private async inQueue<T>(verify: () => Promise<T>): Promise<T | undefined> {
+    const queue = this.options.machineSessions?.signIns;
+    if (!queue) return verify();
+    this.signInAbort = new AbortController();
+    const turn = queue.run(verify, this.signInAbort.signal, this.options.machineWaitingPlaces);
+    if (turn === "busy") {
+      // the queue keeps every machine already in it: this newcomer comes back later
+      if (this.options.onMachineBusy) { this.state = "closed"; this.options.onMachineBusy(queue.retryAfterMs()); }
+      else this.refuseMachine("resource_exhausted", "controller_limit");
+      return undefined;
+    }
+    try { return await turn; } catch { return undefined; }
+  }
+
+  /**
+   * A new machine enrols (docs/fleet-link.md section 4): once, after a machine's HELLO and before its AUTH, never on a
+   * device's session. The invites decide; a refusal ends the session with its cause, ENROLL_OK leaves it waiting for AUTH.
+   */
+  private async machineEnroll(request: Enroll): Promise<void> {
+    if (!this.machine || this.state !== "auth" || this.enrolled) { this.close("protocol_error"); return; }
+    const enrolment = this.options.enrolment;
+    if (!enrolment) { this.refuseMachine("auth_failed", "unknown"); return; }
+    // no token on this controller: nothing about the invite is read or counted (server/fleet/gate.ts)
+    if (this.fleetHeld()) { this.refuseMachine("auth_failed", "fleet_token_required"); return; }
+    const binding = channelBinding(this.options.channel);
+    if (!binding) { this.refuseMachine("auth_failed", "signature"); return; }
+    this.state = "verifying";
+    // one turn of the sign-in queue, as an AUTH takes (todo 37): every signature check counts against its bound
+    const result = await this.inQueue(() => enrolment.enroll(request, { binding, ...(this.options.source === undefined ? {} : { source: this.options.source }) }));
+    if (result === undefined || !this.mux.active || this.state !== "verifying") return;
+    if ("code" in result) { this.refuseMachine(result.code, result.cause); return; }
+    this.enrolled = true;
+    this.state = "auth";
+    this.mux.enqueueControl(enrollOkFrame({ machine_id: result.machineId }));
+  }
+
+  /**
+   * A machine signs in (docs/fleet-link.md section 1.5): never through the device store, never as a device. The AUTH_OK
+   * commit makes the engine's second authenticated state, in which no HTTP or WS stream opens and no setup frame is taken.
+   */
+  private async machineSignIn(frame: ExtensionFrame): Promise<void> {
+    const fleet = this.options.fleet;
+    const auth = asMachineAuth(frame);
+    this.paceFeature = auth?.features?.includes(PACE_FEATURE) ?? false;
+    // an agent from before todo 31 reads FLEET_STATE as a protocol error: it gets one only when its AUTH says it reads it
+    this.fleetStateFeature = auth?.features?.includes(FLEET_STATE_FEATURE) ?? false;
+    if (!fleet || !auth || this.state !== "auth") { this.close("protocol_error"); return; }
+    if (!this.machine) { this.refuseMachine("auth_failed", "wrong_scheme"); return; }
+    if (this.fleetHeld()) { this.refuseMachine("auth_failed", "fleet_token_required"); return; }
+    this.state = "verifying";
+    const authAt = this.clock.now();
+    const result = await this.inQueue(() => verifyMachineAuth(fleet, auth, { nonce: this.nonce, serverId: this.options.serverId, binding: channelBinding(this.options.channel) }));
+    if (result === undefined || !this.mux.active || this.state !== "verifying") return;
+    if ("code" in result) {
+      // a key the fleet removed stays refused auth_revoked, also once its record is gone (todo 31)
+      if (result.cause === "unknown" && this.options.machineSessions?.removed?.(auth.machine_id)) { this.refuseMachine("auth_revoked", "revoked"); return; }
+      this.refuseMachine(result.code, result.cause);
+      return;
+    }
+    const machineId = result.machineId;
+    const publicKey = fleet.machines().find((record) => record.machine_id === machineId)?.public_key ?? "";
+    const revoked = () => machineRevoked(fleet, machineId, publicKey);
+    const pendingNow = () => fleet.machines().find((record) => record.machine_id === machineId)?.state === "pending";
+    // AUTH_OK says `pending` while the owner has not confirmed the machine's batch (docs/fleet-link.md section 1.6).
+    // Once confirmed, the session goes (GOAWAY) so the machine signs in again and hears it is no longer pending; it
+    // has no pipe to lose: none opens to a pending machine.
+    let toldPending = pendingNow();
+    const confirmed = () => {
+      if (!toldPending || this.state !== "machine" || pendingNow()) return;
+      toldPending = false;
+      // before GOAWAY goes: the roster stops showing it and no new pipe picks it while it drains
+      this.admission?.superseded?.();
+      this.mux.goAway("shutdown", PENDING_GOAWAY_DRAIN_MS, GOAWAY_CONFIRMED);
+    };
+    this.unwatch = fleet.onChange(() => {
+      const cause = revoked();
+      if (cause) { this.refuseMachine("auth_revoked", cause); return; }
+      confirmed();
+    });
+    // counted from here (so two machines verified at once cannot both take the last place), released when it ends
+    const admission = this.options.machineSessions?.admit(machineId, this, auth.seen_state);
+    if (admission && "code" in admission) { this.refuseMachine(admission.code, admission.cause); return; }
+    this.admission = admission;
+    // As for a device: the commit runs before the sink, and the machine is checked once more right there.
+    const direct = this.options.machineCarriers?.() ?? [];
+    // the first round trip: WELCOME out to AUTH in, which also holds the machine's signing (an upper bound is safe)
+    const pace = this.options.machineSessions?.paceFor?.(machineId, Math.max(0, authAt - (this.welcomedAt ?? authAt)));
+    this.mux.enqueueControl(machineAuthOkFrame({ session_id: this.sessionId, machine_id: machineId, role: "machine", ...pace ? { relay_pace: pace } : {}, ...direct.length ? { direct: [...direct] } : {}, ...toldPending ? { pending: true } : {} }), undefined, () => {
+      const cause = revoked();
+      if (cause) { this.refuseMachine("auth_revoked", cause); return; }
+      this.mux.authenticateExtension(machineId);
+      this.state = "machine";
+      this.admission?.committed();
+      this.options.onMachine?.(machineId);
+      confirmed();
+    });
+  }
+
   private async admit(frame: SessionFrame): Promise<void> {
     if (this.refused) return;
+    // a machine is never a device: no device sign-in and no pairing, so no approval prompt and no failure counted
+    if (this.machine && (frame.type === FrameType.AUTH || frame.type === FrameType.PAIR || frame.type === FrameType.PAIR_REQUEST)) {
+      this.refuseMachine("auth_failed", "wrong_scheme");
+      return;
+    }
     switch (frame.type) {
-      case FrameType.HELLO:
+      case FrameType.HELLO: {
         if (this.state !== "hello") { this.close("protocol_error"); return; }
         if (!frame.payload.versions.includes(1)) { this.close("unsupported_version"); return; }
+        const kind = this.options.fleet ? helloKind(frame.payload.features, frame.payload.required_features) : "device";
+        if (kind !== "device") {
+          if (kind !== "machine") { this.close(kind); return; }
+          this.machine = true;
+          this.mux.useExtension(pipeMuxExtension);
+          this.state = "auth";
+          if (!this.welcomed) this.welcome([], false);
+          return;
+        }
         // selected only where it can finish: a protected channel to bind the digits to
         if (frame.payload.features.includes(PAIR_SAS_FEATURE) && !this.options.signInOnly) this.sasBinding = channelBinding(this.options.channel);
         // relay hints are answered in AUTH_OK, not WELCOME: a provisional WELCOME goes out before HELLO is read
@@ -288,13 +588,21 @@ export class RelaySession {
         // after a provisional WELCOME (nothing selected), another goes out only when this one selects something
         if (!this.welcomed || selected.length > 0) this.welcome(selected, false);
         return;
+      }
       case FrameType.AUTH: case FrameType.PAIR: {
         if (this.state !== "auth") { this.close("protocol_error"); return; }
         // refused before the code is looked at: nothing is spent or counted
         if (frame.type === FrameType.PAIR && this.options.signInOnly) { this.close("auth_failed"); return; }
+        // a bridge adapter's carrier is for fleet machines only: a device signs in nowhere it could not before. Refused at its
+        // AUTH, not its HELLO, so the refusal is read before the carrier closes (a close with unread data resets on Windows)
+        if (this.options.machinesOnly) { this.close("auth_failed"); return; }
         this.state = "verifying";
         const devices = this.options.services.devices;
         if (this.options.services.serveOnly) { this.close("auth_failed"); return; }
+        // held from here, before anything is awaited: what came behind AUTH in its flight is not read before AUTH_OK
+        if (frame.type === FrameType.AUTH && this.earlyOpen) {
+          this.held = { device: frame.payload.device_id, known: devices.has(frame.payload.device_id), frames: [], count: 0, bytes: 0 };
+        }
         if (frame.type === FrameType.AUTH && !await this.pullForRefusedSignIn(frame.payload.device_id, frame.payload.signature)) return;
         this.keyProven = frame.type === FrameType.AUTH;
         const device = frame.type === FrameType.AUTH
@@ -481,9 +789,19 @@ export class RelaySession {
       payload: { session_id: this.sessionId, device_id: device.id, role: device.role, ...this.hints() },
     }, undefined, () => {
       if (!devices.has(device.id)) { this.close("auth_revoked"); return; }
+      // stream frames came for a device that had no row when AUTH came (an account pull let it in since): they were
+      // not kept, so the phone's streams cannot start where it thinks; it signs in again, and then they are held
+      if (this.held && !this.held.known && this.held.count > 0) { this.close("auth_changed"); return; }
+      const held = this.held?.frames ?? [];
+      this.held = undefined;
       this.mux.authenticate(device.id);
       this.state = "ready";
       this.options.onAuthenticated?.(device.id);
+      // what came behind AUTH, read now that it holds, in order, before AUTH_OK goes out
+      for (const data of held) {
+        if (!this.mux.active) return;
+        this.receive(data);
+      }
     });
   }
 

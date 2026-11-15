@@ -1513,6 +1513,9 @@ async function subscribe(hc: HcConnection, socket: Socket<ConnectionState>, requ
         // a program that reports nothing is named from the process in front of it (snapshot.ts `agentOf`)
         const entry = paneId ? known.get(paneId) : undefined;
         if (!entry) return;
+        // none named: hc does not know the process in front (a core stopping for `hc server restart` says so of every
+        // terminal), which is no program leaving. What it knew stands; a program that exits names the shell in front
+        if (event.data === undefined) return;
         const before = agentNow(entry.status, entry);
         entry.front = foregroundOf(event.data);
         if (agentNow(entry.status, entry) === before) return;

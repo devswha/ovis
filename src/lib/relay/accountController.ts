@@ -30,7 +30,11 @@ const DIRECTORY_REFRESH_MS = 60_000;
  * `consent`: whose account the pairing was confirmed for. `settled`: told once, when nothing more of this enrollment
  * ends or renews the session it was given (its link and renewal are done, or it stopped before them).
  */
-interface EnrollOptions { readonly consent?: PairingConsent; readonly settled?: () => void }
+interface EnrollOptions {
+  readonly consent?: PairingConsent; readonly settled?: () => void;
+  /** told the seconds this enrollment, live, waits for the account service before it asks a PC again, and null when the wait ends */
+  readonly waiting?: (seconds: number | null) => void;
+}
 const wait = (ms: number): Promise<void> => new Promise((resolve) => { setTimeout(resolve, ms); });
 /** A sign-in again, made to delete an account, landed in another account: nothing is deleted. */
 class AnotherAccountError extends Error {
@@ -368,7 +372,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     void done.then(() => running.delete(done), () => running.delete(done));
     return done;
   };
-  const enrollOwned = async (opened: RelayTransport, serverId: string, fresh: boolean, introducible: boolean, { consent, settled }: EnrollOptions): Promise<"local" | EnrollmentCompletion> => {
+  const enrollOwned = async (opened: RelayTransport, serverId: string, fresh: boolean, introducible: boolean, { consent, settled, waiting }: EnrollOptions): Promise<"local" | EnrollmentCompletion> => {
     const epoch = forgotten.get(serverId);
     if (leaving || accountService === null || consent === null || !opened.server?.features?.includes(ACCOUNT_FEATURE)) return "local";
     const session = await account.session();
@@ -494,6 +498,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
               assertPairing(await store.get(serverId));
               return response;
             }, store: accountStore, account: session.account, serverId, pc, listed, assertOwned: async () => { assertPairing(await store.get(serverId)); },
+            // only the screen this enrollment runs on says so: nothing about the wait is saved, so no other page or later load shows one
+            waiting: async (seconds) => { waiting?.(seconds); },
             // a PC that could not be opened is one more that was not checked
             others: reached.map((result) => result.status === "fulfilled" ? result.value : { serverId: "", fetch: () => Promise.reject(result.reason) }),
           });

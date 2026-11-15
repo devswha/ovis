@@ -160,8 +160,8 @@ export function parseStatusFrame(frame: EventFrame): { paneId: string; status: A
 
 export type StructureEvent =
   | { kind: "pane-ended"; paneId: string }
-  /** `closed`: the pane a `pane_closed` frame names */
-  | { kind: "structure-changed"; closed?: string; moved?: { previousPaneId: string; paneId: string; status: AgentStatus; agent: string | null } };
+  /** `closed`: the pane a `pane_closed` frame names; `created`: the pane a `pane_created` frame carries, as herdr created it */
+  | { kind: "structure-changed"; closed?: string; moved?: { previousPaneId: string; paneId: string; status: AgentStatus; agent: string | null }; created?: { paneId: string; status: AgentStatus; agent: string | null } };
 
 /** The pane a focus frame (`{data:{type:"pane_focused", pane_id}}`) brought to the front. */
 export function parseFocusFrame(frame: EventFrame): string | null {
@@ -182,6 +182,10 @@ export function parseStructureFrame(frame: EventFrame): StructureEvent | null {
         ? { kind: "structure-changed", moved: { previousPaneId: data.previous_pane_id, paneId: data.pane.pane_id, status: data.pane.agent_status as AgentStatus, agent: typeof data.pane.agent === "string" ? data.pane.agent : null } }
         : { kind: "structure-changed" };
     case "pane_created":
+      // herdr's frame carries the pane (`data.pane`); one that names only its ID (herdr-core's adapter) says nothing of its status
+      return typeof data.pane?.pane_id === "string" && typeof data.pane.agent_status === "string"
+        ? { kind: "structure-changed", created: { paneId: data.pane.pane_id, status: data.pane.agent_status as AgentStatus, agent: typeof data.pane.agent === "string" ? data.pane.agent : null } }
+        : { kind: "structure-changed" };
     case "pane_updated":
     case "workspace_created":
     case "workspace_updated":
@@ -497,14 +501,24 @@ export function startStatusCollector(handlers: StatusCollectorHandlers, override
       for (const [paneId, seq] of exitedAt) if (seq <= askedAt && paneIds.includes(paneId)) exitedAt.delete(paneId);
       for (const [paneId, seq] of focusedAt) if (seq <= askedAt && !paneIds.includes(paneId)) focusedAt.delete(paneId);
       for (const paneId of [...displayAgents.keys()]) if (!paneIds.includes(paneId) && (lastEventOf.get(paneId) ?? 0) <= askedAt) displayAgents.delete(paneId);
+      // no pane left to listen for: nothing can have been missed, and no status lost before is left to recover
+      // (a herdr that came back empty). The recovery ends here, resynced to that: every pane it lost is gone, and
+      // one herdr restores a moment later (0.9.3 answers with none first) is first seen, no change. A pane created
+      // from here on is told from where herdr created it
+      if (paneIds.length === 0) {
+        if (recovering) {
+          handlers.onResync?.([], new Set([...lastEventOf, ...actedOn].filter(([, seq]) => seq > askedAt).map(([paneId]) => paneId)));
+          handlers.onStructureChange();
+        }
+        gap = false;
+        recovering = false;
+      }
       if (sameSet) {
         if (statusStarted || paneIds.length === 0) ready.resolve();
         return;
       }
       closeStatusSubscription();
       openStatusSubscription(paneIds);
-      // no pane left to listen for: nothing can have been missed
-      if (paneIds.length === 0) gap = false;
     } catch {
       if (resync !== null && resyncFor === null) resyncFor = resync;
       if (replay !== null && replayFor === null) replayFor = replay;
@@ -574,6 +588,15 @@ export function startStatusCollector(handlers: StatusCollectorHandlers, override
           lastEventOf.set(paneId, statusEvents);
           handlers.onPaneMoved?.(previousPaneId, paneId);
         }
+        // A pane created while this listens has no status subscription until a snapshot shows it, a debounce
+        // later: its first change in between would read as where it began. What herdr created it as is that
+        // (also over what an earlier pane under a reused ID was heard as).
+        if (parsed.created !== undefined) {
+          const { paneId, status, agent } = parsed.created;
+          heard.set(paneId, { status, agent });
+          // a snapshot already on its way, without the pane, must not prune that
+          lastEventOf.set(paneId, ++statusEvents);
+        }
         // closed with no exit frame: a snapshot on its way that still holds the pane is no news of it either
         if (parsed.closed !== undefined) {
           // a tracked pane is known closed now: a snapshot without it must not report it ended
@@ -617,10 +640,11 @@ export function startStatusCollector(handlers: StatusCollectorHandlers, override
         const passing = focusFromMove(paneId);
         if (!passing) {
           focusedAt.set(paneId, ++statusEvents);
-          // a finish seen at herdr's terminal is no measure for a later snapshot. Work still going on is:
-          // its finish in a gap after this is news
+          // a finish seen at herdr's terminal is no measure for a later snapshot (herdr reads it `done` here and
+          // `idle` there). Work still going on is: its finish in a gap after this is news. So is a pane with no
+          // agent yet (`unknown`, a pane just created and focused): what its agent does first is no finish seen
           const told = heard.get(paneId);
-          if (told !== undefined && told.status !== "working" && told.status !== "blocked") heard.delete(paneId);
+          if (told?.status === "idle" || told?.status === "done") heard.delete(paneId);
         }
         onFocus(paneId, passing);
       },

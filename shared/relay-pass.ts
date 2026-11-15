@@ -14,6 +14,11 @@
  * RELAY_NEW_SESSIONS_CLOSE while the room's pass says `new` 0; the PC's other clients stay. The prefix and signing prefix stay `1`: the signature covers the payload's
  * text, `v` and `new` included, so a v2 pass cannot be passed off as v1 or have `new` edited, and a
  * relay that knows only v1 refuses a v2 pass by its shape.
+ *
+ * A v3 payload is the v2 fields with `v` 3 and one more, `fleet`: the fleet machines the PC may have connected through
+ * the relay beside its 8 clients, an integer from 1 to RELAY_PASS_MAX_FLEET (relay/README.md, "Limits and close
+ * codes"). A relay that does not know v3 refuses such a pass as invalid by its shape, so the account service signs one
+ * only for a PC whose relays say in `sync` that they take it (`pass_versions`).
  */
 
 /** The upgrade request header a PC sends its pass in; never the URL. */
@@ -25,6 +30,10 @@ export const RELAY_PASS_REFRESH_S = 12 * 3600;
 export const RELAY_PASS_SKEW_S = 300;
 /** The only audience: Ovis's relays. */
 export const RELAY_PASS_AUDIENCE = "ovis-relay";
+/** The largest `fleet` a v3 pass may carry. */
+export const RELAY_PASS_MAX_FLEET = 1000;
+/** The payload versions this code reads, which a relay names in `sync` as `pass_versions`. */
+export const RELAY_PASS_VERSIONS = [1, 2, 3] as const;
 
 /** Close code for a PC socket refused for its pass, and its reasons. */
 export const RELAY_PASS_CLOSE = 4402;
@@ -50,11 +59,17 @@ interface RelayPassFields {
   readonly iat: number;
   readonly exp: number;
 }
-export type RelayPassPayload = (RelayPassFields & { readonly v: 1 }) | (RelayPassFields & { readonly v: 2; readonly new: 0 | 1 });
+export type RelayPassPayload = (RelayPassFields & { readonly v: 1 }) | (RelayPassFields & { readonly v: 2; readonly new: 0 | 1 })
+  | (RelayPassFields & { readonly v: 3; readonly new: 0 | 1; readonly fleet: number });
 
 /** Whether this pass allows new client sessions to the PC it is for. */
 export function relayPassAdmitsNewSessions(payload: RelayPassPayload): boolean {
   return payload.v === 1 || payload.new === 1;
+}
+
+/** The fleet machines this pass lets the PC have beside its clients: a v3 pass's `fleet`, else 0. */
+export function relayPassFleet(payload: RelayPassPayload): number {
+  return payload.v === 3 ? payload.fleet : 0;
 }
 
 export type RelayPassCheck =
@@ -81,8 +96,11 @@ function isPayload(value: unknown): value is RelayPassPayload {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const fields = value as Record<string, unknown>;
   const keys = Object.keys(fields);
+  const fleet = fields["fleet"];
   const version = keys.length === 6 && fields["v"] === 1
-    || keys.length === 7 && fields["v"] === 2 && (fields["new"] === 0 || fields["new"] === 1);
+    || keys.length === 7 && fields["v"] === 2 && (fields["new"] === 0 || fields["new"] === 1)
+    || keys.length === 8 && fields["v"] === 3 && (fields["new"] === 0 || fields["new"] === 1)
+      && Number.isSafeInteger(fleet) && (fleet as number) >= 1 && (fleet as number) <= RELAY_PASS_MAX_FLEET;
   return version && typeof fields["kid"] === "string" && KID.test(fields["kid"])
     && fields["aud"] === RELAY_PASS_AUDIENCE && typeof fields["sid"] === "string" && HEX32.test(fields["sid"])
     && Number.isSafeInteger(fields["iat"]) && Number.isSafeInteger(fields["exp"])
@@ -111,13 +129,17 @@ export function importRelayPassKey(hex: string): Promise<CryptoKey> {
   return crypto.subtle.importKey("raw", raw, { name: "Ed25519" }, false, ["verify"]);
 }
 
-/** What else a pass says: with `newSessions` it is a v2 pass whose `new` follows it, without it a v1 pass. */
-export interface RelayPassSignOptions { readonly newSessions?: boolean }
+/**
+ * What else a pass says: with `fleet` it is a v3 pass (whose `new` follows `newSessions`, 1 when not given), else with
+ * `newSessions` a v2 pass whose `new` follows it, else a v1 pass.
+ */
+export interface RelayPassSignOptions { readonly newSessions?: boolean; readonly fleet?: number }
 
 /** Signs a pass for `sid`, good from `now` (seconds) for `lifetime` seconds. The account service's side. */
 export async function signRelayPass(key: CryptoKey, kid: string, sid: string, now: number, lifetime = RELAY_PASS_LIFETIME_S, options: RelayPassSignOptions = {}): Promise<string> {
   const fields = { kid, aud: RELAY_PASS_AUDIENCE, sid, iat: now, exp: now + lifetime } as const;
-  const payload: RelayPassPayload = options.newSessions === undefined ? { v: 1, ...fields } : { v: 2, ...fields, new: options.newSessions ? 1 : 0 };
+  const payload: RelayPassPayload = options.fleet !== undefined ? { v: 3, ...fields, new: options.newSessions === false ? 0 : 1, fleet: options.fleet }
+    : options.newSessions === undefined ? { v: 1, ...fields } : { v: 2, ...fields, new: options.newSessions ? 1 : 0 };
   if (!isPayload(payload)) throw new Error("Invalid relay pass fields");
   const body = toBase64url(encoder.encode(JSON.stringify(payload)));
   const signature = new Uint8Array(await crypto.subtle.sign({ name: "Ed25519" }, key, encoder.encode(SIGNING_PREFIX + body)));

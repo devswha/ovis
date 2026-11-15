@@ -61,6 +61,32 @@ as its 32 hex characters and `key` as the record's base64url text (`accountDevic
 id. Rows made any other way keep random ids, and a device already on a PC keeps the id it has there
 (an `add` for a key already present changes nothing): it knows that id from its pairing.
 
+The shared relay client can sign in this way first, on a PC it has no pairing saved for, when its
+caller holds that PC's identity (its key, and with it its `server_id`) from a source it trusts apart
+from the account's directory: a key the device pinned, an introduction by a member that verified the
+PC ([Introductions](#introductions)), or later an entry of the account's signed list
+(`trustedIdentity` in [`shared/relay-channel.ts`](../shared/relay-channel.ts)). No app passes it yet.
+The directory alone is no such source: any sign-in to the account can list a PC there, under any
+name, and such a PC would let the device in and get what is typed there
+([What this does not protect against](#what-this-does-not-protect-against)). A PC opened from the
+directory still makes the person type the digits only its own screen shows, or compare digits with
+an approver.
+
+`AUTH` signs the PC's nonce and its `server_id`, nothing of the encrypted channel it is sent in
+([Device keys](relay.md#who-gets-in)). An end that holds another key could therefore pass the real
+PC's nonce on to the device and the device's `AUTH` back to that PC. So, for this first sign-in, the
+client refuses an offer whose key does not give its `server_id` before any connection, as the hosted
+app refuses such a link (`forgedOffer`); a sign-in by a saved pairing goes only to the key it saved.
+
+When the PC refuses the sign-in, the client compares digits on a connection of its own, as without
+the option: two connections for one call, and up to four for one open when the relay fallback
+(`openRelayChannelWithFallback`) tries the other relay because a relay or the PC did not answer.
+The refusal is a failed sign-in like any other: it counts no failed pairing and asks nobody. On a PC
+in an account it may start the mailbox read of a refused sign-in
+([Account service API](#account-service-api)), which holds the refusal up to five seconds, so the
+digits can show up to five seconds later than without the option. An offer with a code, a direct
+carrier and a pairing already saved open as without it.
+
 A PC belongs to at most one account: the account of its first member. A record for another account
 is refused (`account_mismatch`). **Revoke all** clears the PC's account with its members; tombstones
 stay.
@@ -140,8 +166,11 @@ One rule for every way in: a pairing code, comparing digits, and joining through
   `bun scripts/plugin.ts add` ends in one QR code, and a signed-in device that scans it links
   itself as the PC's first member, so the PC joins that device's account. The code is therefore
   made only by that command, shown only on a terminal and cleared from it (`--print` writes it
-  as plain lines that stay, wherever the output goes), kept for 30 minutes at most, and the
+  as plain lines that stay, on a terminal too), only after Enter typed under the name of the
+  account that signed in, kept for 30 minutes at most, and the
   command says afterwards which account the PC joined and by which of that account's devices.
+  It does not say that every device of the account can use the PC while a device in no account
+  can use it too.
   Any other device the code let in is named and removed unless the person types keep, and when
   the PC ended in another account than the one the command signed in to, every device that came
   since the code was shown is removed ([A PC with no screen](relay.md#a-pc-with-no-screen)).
@@ -341,7 +370,7 @@ signed by a key the PC made up, and it signs nothing for any of them.
 
 What a client enrolls (`enrollPc` in [`src/lib/account/join.ts`](../src/lib/account/join.ts)): when
 its link brings a PC that had no account into it, it first reads every other PC of the account it
-is linked on (`?fresh=1`, at most 8 seconds each): their `blocked`, `removals` and `adds`. If
+is linked on (`?fresh=1`, at most 8 seconds each, except that a PC whose status says `mailbox.refused` with status 429 and a `retry_after_s` of at most 60 is read once more, 8 seconds again, after that many seconds, all such PCs side by side, and then every other PC read before the longest such wait ended is read again too, one that does not answer then vouching for no add): their `blocked`, `removals` and `adds`. If
 none of them answers it sends nothing and tries again on its next connection. When it reads no other
 PC at all while the account's directory lists others, it sends no add either. A new PC from
 before enrollments (its status has no `enrolling`) gets the removes through `records` and no add. A PC whose answer
@@ -905,18 +934,18 @@ The PC, by server proof:
 "account", connection_id: challenge_id }`; `proof` is the PC's `server_proof` answer for that same
 route. A challenge is good for 60 seconds and one answer. Anyone can list any `server_id` in their
 directory, so mailboxes are kept per PC **and account**: the PC asks only for its own account's
-(`account`), and another account's records can neither fill nor hide them. `last_seen_at` moves
-only in that account's directory. `ack` is the highest `seq` the PC processed, whatever the
-outcome, refused included (or `null`); the service deletes those records before answering, and
-deletes any record after 30 days. The PC pulls when it starts and every five minutes while it
-belongs to an account. It also pulls when a sign-in fails, since a member may have added that
-device on another PC a moment ago, and then checks the sign-in once more. Such sign-ins start at
-most one pull a minute (a pull that could not read the mailbox lets the next start 10 seconds after
-it began), and each waits at most five seconds for it. A sign-in that still fails is refused with
-the same `auth_failed`, so a device whose add reached the mailbox after that pull, or after another
-failed sign-in spent it, is let in up to a minute later. An unknown id and a signature that does
-not hold take the same way, so the delay does not tell which ids have a row; it does tell a PC in
-an account (the refusal may wait for the pull) from one in none (it never does).
+(`account`), and another account's records can neither fill nor hide them. `last_seen_at` moves only
+in that account's directory. `ack` is the highest `seq` the PC processed, whatever the outcome,
+refused included (or `null`); the service deletes those records before answering, and deletes any
+record after 30 days. The PC pulls when it starts and every five minutes while it belongs to an
+account, and once when its enrollment ends. It also pulls when a sign-in fails, since a member may
+have added that device on another PC a moment ago, and then checks the sign-in once more. Such
+sign-ins start at most one pull a minute (a pull that could not read the mailbox lets the next start
+10 seconds after it began), and each waits at most five seconds for it. A sign-in that still fails
+is refused with the same `auth_failed`, so a device whose add reached the mailbox after that pull,
+or after another failed sign-in spent it, is let in up to a minute later. An unknown id and a
+signature that does not hold take the same way, so the delay does not tell which ids have a row; it
+does tell a PC in an account (the refusal may wait for the pull) from one in none (it never does).
 
 The `account` role keeps the two proofs apart: the relay verifies `control` and `data` only, so an
 answer the PC gave the account service is no use to the relay, and a relay's challenge passed on by

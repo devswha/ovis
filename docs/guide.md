@@ -579,7 +579,13 @@ It listens on plain HTTP, so put it behind a TLS proxy (Caddy, nginx, `tailscale
 The Bun relay also caps open sockets at 64 per address, including sockets waiting, connected or
 still upgrading. Set `--max-sockets-per-address` or `RELAY_MAX_SOCKETS_PER_ADDRESS` to size that
 cap for your deployment; behind a local TLS proxy all users share it. A new socket past the cap
-gets `429` and `Retry-After: 60`, without closing sockets already open.
+gets `429` and `Retry-After: 60`, without closing sockets already open. Each PC gets 8 clients at
+once; for a fleet of machines beside them set `--max-clients-per-server` (8 + the fleet, so
+`--max-clients-per-server 108 --max-sockets-per-address 256` for 100 machines).
+
+Without a checkout, `bun scripts/build-relay.ts <platform> <dir>` builds the same relay as
+one binary, `ovis-relay`, which takes the same flags, and the Cloudflare Worker as one file,
+`ovis-relay-worker.js`, with a `wrangler.toml` for your own account.
 
 To stop trusting `app.ovis.sh` too, host the app yourself. `bun run build:shell` builds it into `dist-shell/`. Serve that folder over HTTPS from a host that follows its `_redirects` and `_headers` files, as Cloudflare Pages does (another host needs the same rewrites and headers), and set `OVIS_RELAY_APP_URL` on the PC to its address: the PC's QR codes then open your copy. Build it from the same release as the PC's Ovis.
 
@@ -1054,12 +1060,24 @@ macOS). See [INSTALL.md](../INSTALL.md#2-choose-the-install-method).
   type. Command Code is not offered on Windows, where its command `cmd` is cmd.exe, and a Windows
   PC offers no agent on another machine of its core, whose shells its process table does not show.
 - **Status and alerts:** an agent's status is what it reports to herdr-core (OSC 7501), so an
-  agent that reports none shows no status. A turn is done only when the program itself reports
+  agent that reports none shows no status. One more thing counts: while Ovis reads an agent's
+  question, permission or confirmation on its screen (the same card the chat shows), the agent
+  waits for you, in the sidebar, **Agents**, the inbox's **Needs you** and the waiting alert, even
+  where it reports working (a Codex question) or nothing yet (Claude Code's folder trust). The
+  wait ends once the card is answered or gone, or the agent exits, and the agent's own status is
+  back, a turn it finished meanwhile included; a card the agent's own report already calls blocked
+  changes nothing, and a picker you opened (`/model`) is no wait. One card alerts once, also
+  across a restart of Ovis or of the core (`hc server restart`). Ovis reads the screens of agents
+  that work or have reported nothing (never one at rest), every second for a terminal an open page
+  in use shows and every third second for every other one, so a card counts as waiting within about
+  3 seconds and its alert comes about 10 to 14 seconds after it appears (no alert goes out while a
+  page is in use); the same holds for each other machine of the core (its own Ovis reads it there).
+  A turn is done only when the program itself reports
   its turn finished (`done`, or `working` then `idle`); `error` shows no status. When a blocked
   agent says why (a permission, a question or a sign-in), its row in **Agents** says so in a few
   words after its name, and the row's and the state's tooltips give its message in its own words;
-  a progress it reports (0 to 100) while it works or waits is a percent after the name. Nothing
-  is shown that it did not report.
+  a progress it reports (0 to 100) while it works or waits is a percent after the name. A status
+  is shown from the agent's own report or from a card Ovis reads on its screen, never guessed.
 - **Pinned agents:** an agent pinned in Ovis is pinned in the Herdr app, and one pinned or
   unpinned in the app is pinned or unpinned in Ovis, through herdr-core's `herdr.pinned`
   terminal label; a pin made in the app joins the end of the pinned list. When the two first
@@ -1101,6 +1119,17 @@ macOS). See [INSTALL.md](../INSTALL.md#2-choose-the-install-method).
   [Supported agents](#supported-agents): `bun scripts/install-pi-integration.ts`, then restart
   pi); without the extension a pi pane uses Terminal. Other agents whose chat reads only that
   report, OpenCode for example, use Terminal on herdr-core.
+- **Agents on herdr-core, as measured** (Claude Code 2.1, Codex 0.167, on hc 0.1.18; other agents
+  are not measured yet). Alerts were heard through **Also send to**, which gets the same alerts as
+  a device; a push to a device was not measured. `bun scripts/herdr-core-agent-matrix.ts` is this
+  run as a script; it has been run with its silent stand-in only, and its real-agent part not yet.
+  A real agent runs only when named with a token; a server with no token of its own accepts any
+  non-empty `OVIS_MATRIX_TOKEN`, so there the token proves nothing:
+
+  | Agent | Chat | Prompt cards | Status and Needs you | Alerts |
+  | --- | --- | --- | --- | --- |
+  | **Claude Code** | Live, and after a reload | Permission, question and folder trust | Working, waiting and done; at the folder-trust prompt no status | Waiting and done |
+  | **Codex** | After a reload; live once its first reply is on screen | Permission and question: the card shows and its answer reaches Codex (whether the approved command took effect was not recorded). Its update menu at start is a card since its 0.167 hint is read, checked on the recorded screen, not in a live run | Working, waiting on a permission, and done; while its question waits it shows working, so Needs you stays empty | Waiting on a permission, and done |
 - **Not on herdr-core:** search in a pane, scrolling or selecting the history through the
   scroll buttons beside it, plugins and worktrees.
 - **Other machines:** each machine the core reaches (`hc machine add vps`, or added in the Herdr
@@ -1125,7 +1154,7 @@ Each `OVIS_*` variable was called `HERDR_WEB_*` before Ovis took its name (`OVIS
 | `HOST` | `127.0.0.1` | Bind address. Use `0.0.0.0` or a LAN address only with `OVIS_TOKEN` set or once a device is paired: until then that address is open to any other device that reaches it (see [Access and safety](#access-and-safety)). A request that reaches it over loopback (a browser here at a local address, a proxy on this PC) still gets in without pairing only under a local name such as `localhost`, or this PC's tailnet name or address; a browser here that opens this PC's LAN address arrives like any other device. |
 | `PORT` | `7317` | HTTP and WebSocket port. Left unset, the plugin takes the next of 17317, 27317, 37317 and 47317 when 7317 cannot be opened (another program has it, or Windows reserves it for Hyper-V, WSL2 or Docker), keeps that port for later starts, and the installer and the **Ovis status** action print the address. A port set here is never changed |
 | `HERDR_SOCKET` | `~/.config/herdr/herdr.sock` | herdr socket for API calls and terminal attach. For a named session, use `~/.config/herdr/sessions/<name>/herdr.sock`. A plugin install follows the socket of the herdr session that starts it; set `HERDR_SOCKET` in the plugin's config to pin another one, and that setting wins. |
-| `OVIS_TOKEN` | unset | Shared token for scripts and proxies. Once set, every client that is not a paired device needs it, this computer and your own Tailscale login included |
+| `OVIS_TOKEN` | unset | Shared token for scripts and proxies. Once set, every client that is not a paired device needs it, this computer and your own Tailscale login included. Every PC that opens fleet machines needs one: without it the fleet is held ([Where the controller runs](fleet.md#where-the-controller-runs)) |
 | `OVIS_LAN_HTTPS_PORT` | unset (off) | Opens an HTTPS listener on this port for devices on the same network, beside the main one; only the token or a paired device gets in there (see [On your LAN over HTTPS](#on-your-lan-over-https)) |
 | `OVIS_LAN_HTTPS_HOST` | unset (every private IPv4 address) | The one IPv4 address that listener binds instead; `0.0.0.0` only when written |
 | `OVIS_LAN_HTTPS_CERT`, `OVIS_LAN_HTTPS_KEY` | unset (self-signed, kept in the state dir) | PEM files of your own certificate and key for that listener, for example from a local CA; set both or neither |

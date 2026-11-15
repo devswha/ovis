@@ -28,4 +28,6 @@ export interface SystemReport {
   /** 1, 5 and 15 minute load averages; null on Windows, which has none */
   load: [number, number, number] | null;
   disks: SystemDisk[];
+  /** set on the Ovis runtime this server started: its terminals end when this server ends (no service holds them) */
+  terminals_end_with_server?: true;
 }

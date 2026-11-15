@@ -20,6 +20,7 @@ import { PALETTE_KO } from "./i18n/palette.ko.ts";
 import { RELAY_KO } from "./i18n/relay.ko.ts";
 import { DASHBOARD_KO } from "./i18n/dashboard.ko.ts";
 import { RUNTIME_MOVE_KO } from "./i18n/runtime-move.ko.ts";
+import { FLEET_KO } from "./i18n/fleet.ko.ts";
 
 /**
  * Korean for every `t("…")` in src/ that no part in lib/i18n/ holds: keys more than one feature
@@ -579,12 +580,20 @@ const BASE: Record<string, string> = {
   "Ready · not in the account yet": "준비됨 · 아직 계정에 없음",
   "Account setup is incomplete.": "계정 설정이 완료되지 않았습니다.",
   "Adding it to your account…": "계정에 추가하는 중…",
+  "The account service is busy: waiting {seconds} s, then trying again…": "계정 서비스가 바쁩니다: {seconds}초 기다린 뒤 다시 시도하는 중…",
+  "Adding this PC to your account: the account service is busy. Trying again in {seconds} s…": "이 PC를 계정에 추가하는 중: 계정 서비스가 바쁩니다. {seconds}초 후 다시 시도합니다…",
   "{name} is ready to open on this device.": "이제 이 기기에서 {name}에 연결할 준비가 됐습니다.",
   "In your account": "계정에 추가됨",
   "Devices added: {count}": "추가된 기기: {count}대",
   "Plan · {plan}": "플랜 · {plan}",
   "{used}/{max} PCs": "PC {used}/{max}대",
   "{used} / {cap} relay data": "릴레이 데이터 {used} / {cap}",
+  "{max} fleet machines": "플릿 머신 {max}대",
+  "Fleet": "플릿",
+  "Open fleet": "플릿 열기",
+  "Last seen": "마지막 확인",
+  "State": "상태",
+  "Route": "경로",
   "Agent": "에이전트",
   "Install another agent ({count})": "다른 에이전트 설치 ({count})",
   "Dark theme": "어두운 화면 색상",
@@ -650,6 +659,7 @@ export const KO_PARTS: Record<string, Record<string, string>> = {
   relay: RELAY_KO,
   dashboard: DASHBOARD_KO,
   "runtime-move": RUNTIME_MOVE_KO,
+  fleet: FLEET_KO,
 };
 
 export const KO: Record<string, string> = Object.assign({}, ...Object.values(KO_PARTS));

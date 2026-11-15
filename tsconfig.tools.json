@@ -81,6 +81,8 @@
     "scripts/inbox-mode-rail-demo-regression.ts",
     "scripts/sheet-outside-tap-demo-regression.ts",
     "scripts/omp-question-compat.ts",
+    "scripts/fleet-vectors.ts",
+    "scripts/fleet-contract-check.ts",
     "app/scripts/build-web.ts"
   ],
   "include": []

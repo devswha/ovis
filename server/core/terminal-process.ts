@@ -376,6 +376,8 @@ export function createSpawnAttachment({ attachments, retiringAttachments, termin
     let recoveryRetries = 0;
     const start = (): PtySession | CoreAttachSession => {
       const onCore = capabilities().attach === "hc";
+      /** a stream on the runtime's own connection: no attach command, no herdr words to read */
+      const streamed = onCore;
       let takingOver = mayTakeOver(takeover) ? takeover : null;
       takeover = null;
       trying = true;
@@ -388,7 +390,7 @@ export function createSpawnAttachment({ attachments, retiringAttachments, termin
       let heldSince = 0;
       let holding = false;
       let holdTimer: ReturnType<typeof setTimeout> | undefined;
-      const probes = onCore ? null : new AttachStartupProbes();
+      const probes = streamed ? null : new AttachStartupProbes();
       const outputTail = new AttachOutputTail();
       let tailTimer: ReturnType<typeof setTimeout> | undefined;
       /** when the words held now have waited long enough: set by their first byte, never moved by later reads */
@@ -705,7 +707,7 @@ export function createSpawnAttachment({ attachments, retiringAttachments, termin
         rows: attachment.rows,
         onData: (data) => {
           if (retired || attachments.get(paneId) !== attachment) return;
-          if (onCore) {
+          if (streamed) {
             // hc has no herdr preamble, startup queries or exclusive-attach diagnostics.
             if (!attachment.ready) {
               held = null;

@@ -83,8 +83,8 @@ export interface RuntimeChoice {
 export function environmentRuntime(env: Env = process.env): Runtime | undefined {
   const value = env["OVIS_RUNTIME"];
   if (value === undefined || value === "") return undefined;
-  if (value === "herdr" || value === "herdr-core" || value === "alt-runtime") return value;
-  throw new Error(`OVIS_RUNTIME=${value} is not a runtime Ovis knows: use herdr (the default), herdr-core or alt-runtime`);
+  if (value === "herdr" || value === "herdr-core") return value;
+  throw new Error(`OVIS_RUNTIME=${value} is not a runtime Ovis knows: use herdr (the default) or herdr-core`);
 }
 
 export interface ChooseOptions extends TraceOptions {
@@ -98,8 +98,7 @@ export interface ChooseOptions extends TraceOptions {
 /**
  * The runtime to serve: OVIS_RUNTIME, else the saved choice, else herdr whenever herdr's TUI left
  * any trace, else herdr-core when a verified hc is found and the Herdr app is installed or its core
- * runs, else herdr. Windows serves herdr unless herdr-core is chosen there. alt-runtime is served only
- * when OVIS_RUNTIME or the saved choice names it: nothing on the PC ever picks it.
+ * runs, else herdr. Windows serves herdr unless herdr-core is chosen there.
  */
 export async function chooseRuntime(options: ChooseOptions): Promise<RuntimeChoice> {
   const env = options.env ?? process.env;
@@ -155,7 +154,7 @@ export interface RuntimeServiceOptions {
   /** what this server serves, and where that came from */
   serving: Runtime;
   source: RuntimeSource;
-  fallback?: "no_herdr_core" | "no_alt_runtime";
+  fallback?: "no_herdr_core";
   /** the environment as the server started, before herdr-core's adapter took HERDR_SOCKET */
   env: Env;
   core: () => HerdrCoreFacts | undefined;
@@ -175,10 +174,11 @@ export function runtimeService(options: RuntimeServiceOptions): RuntimeService {
     const locked = runtimeLock(options.env, platform, options.managed);
     const other: Runtime = options.serving === "herdr" ? "herdr-core" : "herdr";
     const available = other === "herdr-core" ? (options.core()?.version ?? null) !== null : traces.tuiInstalled || traces.tuiRunning;
+    const switchTo = locked === null && available ? other : null;
     return {
       serving: options.serving, source: options.source,
       tui: { installed: traces.tuiInstalled, running: traces.tuiRunning }, app_installed: traces.appInstalled,
-      switch_to: locked === null && available ? other : null, locked,
+      switch_to: switchTo, switch_options: switchTo === null ? [] : [switchTo], locked,
       ...(options.fallback ? { fallback: options.fallback } : {}),
     };
   };
@@ -187,7 +187,7 @@ export function runtimeService(options: RuntimeServiceOptions): RuntimeService {
     facts,
     switching: () => requested || options.accepted?.() === false,
     request: (target) => {
-      if (target !== "herdr" && target !== "herdr-core" && target !== "alt-runtime") return { ok: false, status: 400, code: "invalid_runtime", message: "runtime must be herdr, herdr-core or alt-runtime" };
+      if (target !== "herdr" && target !== "herdr-core") return { ok: false, status: 400, code: "invalid_runtime", message: "runtime must be herdr or herdr-core" };
       const now = facts();
       if (now.locked !== null) return { ok: false, status: 409, code: "runtime_locked", message: now.locked === "env" ? "OVIS_RUNTIME in the server's environment decides the runtime" : now.locked === "unmanaged" ? "this server was not started by Ovis's launcher, so it cannot restart itself" : `herdr-core is not served on ${platform}` };
       if (requested || options.accepted?.() === false) return { ok: false, status: 409, code: "runtime_switching", message: requested ? "the server is already restarting on another runtime" : "the server is still starting; switch once it is up" };

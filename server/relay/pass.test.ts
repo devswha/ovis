@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { signRelayPass } from "../../shared/relay-pass.ts";
 import { loadRelayIdentity } from "./identity.ts";
-import { RelayPassKeeper, retryAfterMs } from "./pass.ts";
+import { passVersionsFor, RelayPassKeeper, retryAfterMs } from "./pass.ts";
 import { bounded, deferred, TestClock } from "./test-helpers.ts";
 
 const dirs: string[] = [];
@@ -278,4 +278,45 @@ test("a pass for another PC is not kept", async () => {
   expect(k.made.current()).toBeNull();
   expect(k.passes).toEqual([]);
   k.made.stop();
+});
+
+test("the PC names v3 only when every relay its pass goes to said in sync that it reads v3", () => {
+  const v3 = [1, 2, 3], old = null, beforeV3 = [1, 2];
+  // new relays
+  expect(passVersionsFor([v3])).toEqual([1, 2, 3]);
+  expect(passVersionsFor([v3, [3]])).toEqual([1, 2, 3]);
+  // an old relay: one that named no pass_versions, or only older forms
+  for (const heard of [[old], [beforeV3], [[]]]) expect(passVersionsFor(heard)).toEqual([1, 2]);
+  // mixed: a regional relay that has not moved to v3 yet beside a global one that has, in either order
+  expect(passVersionsFor([v3, old])).toEqual([1, 2]);
+  expect(passVersionsFor([beforeV3, v3])).toEqual([1, 2]);
+  // no relay heard from yet (the first pass, asked before any sync)
+  expect(passVersionsFor([])).toEqual([1, 2]);
+});
+
+test("each pass request names the pass forms the keeper is given at that moment, [1, 2] when it is given none", async () => {
+  const named: unknown[] = [];
+  let versions: readonly number[] = [1, 2];
+  const stateDir = mkdtempSync(join(tmpdir(), "ovis-relay-pass-versions-"));
+  dirs.push(stateDir);
+  const identity = loadRelayIdentity(stateDir);
+  const clock = new TestClock();
+  const keys = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]) as CryptoKeyPair;
+  const fetch = async (request: Request) => {
+    if (new URL(request.url).pathname === "/v1/pc/challenge") return Response.json({ challenge_id: "0".repeat(32), frame: JSON.stringify({ type: "server_challenge", public_key: "9".repeat(64), nonce: "1".repeat(64) }) });
+    named.push(((await request.json()) as Record<string, unknown>)["pass_versions"]);
+    return Response.json({ pass: await signRelayPass(keys.privateKey, "0badc0de", identity.server_id, Math.floor(clock.now() / 1000)), expires_in: 172_800, refresh_in: 43_200 });
+  };
+  const options = { stateDir, identity: () => identity, account: () => "acct_1", service: "https://account.test", fetch, clock, onPass: () => {} };
+  const given = new RelayPassKeeper({ ...options, passVersions: () => versions });
+  given.start();
+  await given.refresh();
+  versions = [1, 2, 3];
+  await given.refresh();
+  given.stop();
+  const plain = new RelayPassKeeper(options);
+  plain.start();
+  await plain.refresh();
+  plain.stop();
+  expect(named).toEqual([[1, 2], [1, 2, 3], [1, 2]]);
 });

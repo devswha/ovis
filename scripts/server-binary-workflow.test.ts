@@ -2,7 +2,8 @@ import { expect, test } from "bun:test";
 import { copyFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DIST_ARCHIVE, generateKeyPair, RELEASE_PUBLIC_KEY, releaseFile, PTY_ASSETS, ptyFile, SERVER_PLATFORMS, signManifest, verifyRelease, writeManifest } from "./server-manifest.ts";
+import { EXTRA_PLATFORMS, extraFile, DIST_ARCHIVE, generateKeyPair, RELEASE_PUBLIC_KEY, releaseFile, PTY_ASSETS, ptyFile, SERVER_PLATFORMS, signManifest, verifyRelease, writeManifest } from "./server-manifest.ts";
+import { RELEASE_BINARIES } from "./release-binaries.ts";
 import { parseWorkflow, root } from "./shell-workflow-rules.ts";
 
 /**
@@ -43,6 +44,7 @@ test("the signing key reaches one step, on GitHub's runner, with no package inst
   expect(runs).not.toContain("setup-ci");
 });
 
+const EXTRA_FILES = RELEASE_BINARIES.flatMap((binary) => EXTRA_PLATFORMS.map((platform) => extraFile(binary, platform)));
 const SERVER_FILES = [...SERVER_PLATFORMS.map(releaseFile), DIST_ARCHIVE, "ovis-server.json", "ovis-server.json.sig", "ovis-server.SHA256SUMS"];
 const sources = { server: "a".repeat(40), shared: "b".repeat(40) };
 
@@ -52,8 +54,9 @@ function signedFolder(temp: string): { publicKey: string; privateKeyPem: string 
   mkdirSync(dir, { recursive: true });
   for (const platform of SERVER_PLATFORMS) writeFileSync(join(dir, releaseFile(platform)), `binary for ${platform}\n`);
   for (const build of PTY_ASSETS) writeFileSync(join(dir, ptyFile(build)), `pty host ${build}\n`);
+  for (const file of EXTRA_FILES) writeFileSync(join(dir, file), `${file}\n`);
   writeFileSync(join(dir, DIST_ARCHIVE), "the built client\n");
-  writeManifest(dir, { version: "1.2.3", sources });
+  writeManifest(dir, { version: "1.2.3", sources, binaries: RELEASE_BINARIES });
   const { privateKeyPem, publicKey } = generateKeyPair();
   signManifest(dir, privateKeyPem);
   return { publicKey, privateKeyPem };
@@ -70,7 +73,7 @@ function trusting(script: string, publicKey: string): string {
  * publish's own lines from the server files to `gh release create`, run with a `gh` that records its arguments: what
  * the release would get, or the refusal. `trust` runs them trusting the test's key instead of the committed one.
  */
-function runAttach(prepare: (dir: string, privateKeyPem: string) => void, trust = true, builtHost?: string): { code: number; attached: string[]; err: string } {
+function runAttach(prepare: (dir: string, privateKeyPem: string) => void, trust = true, builtHost?: string): { code: number; attached: string[]; others: string[]; err: string } {
   const temp = mkdtempSync(join(tmpdir(), "ovis-attach-step-"));
   try {
     const { publicKey, privateKeyPem } = signedFolder(temp);
@@ -92,16 +95,26 @@ function runAttach(prepare: (dir: string, privateKeyPem: string) => void, trust 
       cwd: root, env: { ...process.env, PATH: `${join(temp, "stub")}:${process.env["PATH"]}`, RUNNER_TEMP: temp, RELEASE_VERSION: "1.2.3", GITHUB_SHA: "c".repeat(40) }, stdout: "pipe", stderr: "pipe",
     });
     const args = existsSync(join(temp, "gh-args")) ? readFileSync(join(temp, "gh-args"), "utf8").trim().split("\n") : [];
-    return { code: result.exitCode, err: result.stderr.toString(), attached: args.filter((arg) => arg.includes("/server-binary/")).map((arg) => arg.split("/server-binary/")[1]!) };
+    // every file attached that is neither a server file nor a PTY host (the notes file is the release's text)
+    const others = args.filter((arg) => arg.startsWith(`${temp}/`) && !arg.includes("/server-binary/") && !arg.includes("/pty-sidecar/") && arg !== join(temp, "release-notes.md"));
+    return { code: result.exitCode, err: result.stderr.toString(), attached: args.filter((arg) => arg.includes("/server-binary/")).map((arg) => arg.split("/server-binary/")[1]!), others };
   } finally {
     rmSync(temp, { recursive: true, force: true });
   }
 }
 
-test("publish attaches each server file and the client archive by name, only once they verify", () => {
-  const { code, attached } = runAttach(() => {});
+test("publish attaches each server file and the client archive by name, only once they verify, and no extra binary", () => {
+  const { code, attached, others } = runAttach(() => {});
   expect(code).toBe(0);
   expect(attached.sort()).toEqual([...SERVER_FILES].sort());
+  expect(others).toEqual([]);
+});
+
+test("publish refuses a server folder holding an extra binary the signed manifest does not name, and attaches nothing", () => {
+  const link = runAttach((dir) => writeFileSync(join(dir, extraFile("ovis-link", "linux-x64")), "link\n"));
+  expect(link.code).not.toBe(0);
+  expect(link.err).toContain("holds files a release does not: ovis-link-linux-x64");
+  expect([...link.attached, ...link.others]).toEqual([]);
 });
 
 test("publish refuses a release signed by any key but the committed one, and attaches nothing", () => {
@@ -126,7 +139,7 @@ test("publish attaches no PTY host but the one ovis-server.json signed", () => {
 test("publish refuses server files signed for another version than the one it releases", () => {
   // signed again by the same key: the signature holds, only the version check can refuse it
   const { code, err, attached } = runAttach((dir, privateKeyPem) => {
-    writeManifest(dir, { version: "1.2.2", sources });
+    writeManifest(dir, { version: "1.2.2", sources, binaries: RELEASE_BINARIES });
     signManifest(dir, privateKeyPem);
   });
   expect(code).not.toBe(0);
@@ -141,8 +154,9 @@ function runSignStep(key: string, trust?: string): { code: number; err: string; 
   mkdirSync(dir);
   for (const platform of SERVER_PLATFORMS) writeFileSync(join(dir, releaseFile(platform)), `binary for ${platform}\n`);
   for (const build of PTY_ASSETS) writeFileSync(join(dir, ptyFile(build)), `pty host ${build}\n`);
+  for (const file of EXTRA_FILES) writeFileSync(join(dir, file), `${file}\n`);
   writeFileSync(join(dir, DIST_ARCHIVE), "the built client\n");
-  writeManifest(dir, { version: "1.2.3", sources });
+  writeManifest(dir, { version: "1.2.3", sources, binaries: RELEASE_BINARIES });
   const script = step("server-binary-sign", "Sign the manifest").run!;
   const result = Bun.spawnSync(["bash", "-e", "-c", trust ? trusting(script, trust) : script], {
     cwd: root, env: { ...process.env, RUNNER_TEMP: temp, OVIS_SERVER_SIGNING_KEY: key, RELEASE_VERSION: "1.2.3" }, stdout: "pipe", stderr: "pipe",

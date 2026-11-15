@@ -1,0 +1,149 @@
+/*
+ * The Fleet screen (FleetView.tsx; DESIGN.md "Fleet screen"): a dialog as wide as Settings' content, whose body is the
+ * one scroller. Machine rows have one fixed height, so the list draws only the rows in view: two lines on a desktop
+ * (name over fingerprint, state over cause), three in a column narrower than 600px. Tokens only.
+ */
+
+.fleet-view {
+  width: min(100%, var(--content-w));
+  height: min(100%, var(--dialog-max-h));
+}
+
+.fleet-view-body {
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.fleet-section { display: flex; flex-direction: column; gap: var(--space-3); min-width: 0; }
+.fleet-section-title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin: 0;
+  color: var(--text-strong);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+}
+.fleet-count { color: var(--text-dim); font-weight: var(--fw-medium); font-variant-numeric: tabular-nums; }
+
+.fleet-quiet, .fleet-status, .fleet-error { margin: 0; font-size: var(--fs-sm); line-height: var(--lh-base); }
+.fleet-quiet { color: var(--text-dim); }
+.fleet-status { color: var(--text); }
+.fleet-error { color: var(--danger-text); }
+.fleet-error-block { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3); }
+
+/* what needs the owner: the held fleet, slots on hold */
+.fleet-notice {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  background: var(--notice-tint);
+  border-radius: var(--radius-md);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-base);
+}
+.fleet-notice p { margin: 0; }
+.fleet-on-hold-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2) var(--space-3); }
+.fleet-on-hold-row p { flex: 1 1 18rem; min-width: 0; }
+.fleet-on-hold-row strong { color: var(--text-strong); font-weight: var(--fw-semibold); }
+
+.fleet-fingerprint {
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* a batch waiting: its count, every machine with its fingerprint, and the Confirm that sends what was shown */
+.fleet-batch { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-3); }
+.fleet-batch-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-1) var(--space-3); margin: 0; }
+.fleet-batch-count { color: var(--text-strong); font-size: var(--fs-md); font-weight: var(--fw-medium); }
+.fleet-batch-id { color: var(--text-dim); font-size: var(--fs-xs); }
+.fleet-batch-machines {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-1) var(--space-4);
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.fleet-batch-machines li { display: contents; }
+.fleet-batch-name { min-width: 0; overflow: hidden; color: var(--text); font-size: var(--fs-sm); text-overflow: ellipsis; white-space: nowrap; }
+
+/* the machine list */
+.fleet-list-head,
+.fleet-row {
+  display: grid;
+  grid-template-columns: minmax(19.5rem, 2fr) minmax(0, 3fr) 4.5rem 5.5rem minmax(var(--touch-target), auto);
+  grid-template-areas: "name state route seen act" "print cause cause cause act";
+  column-gap: var(--space-3);
+  align-items: center;
+}
+.fleet-list-head {
+  grid-template-areas: "name state route seen act";
+  padding: 0 var(--space-2) var(--space-1);
+  border-bottom: var(--hairline) solid var(--border);
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+}
+.fleet-list { margin: 0; padding: 0; list-style: none; }
+.fleet-row {
+  height: var(--row-h);
+  padding: 0 var(--space-2);
+  border-bottom: var(--hairline) solid var(--border);
+  overflow: hidden;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-tight);
+}
+.fleet-row > * { min-width: 0; }
+.fleet-row-name { grid-area: name; display: flex; align-items: center; gap: var(--space-2); }
+.fleet-row-label, .fleet-row-cause, .fleet-row-route, .fleet-row-seen, .fleet-state-word, .fleet-row-fingerprint {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fleet-row-label { color: var(--text-strong); font-weight: var(--fw-medium); }
+.fleet-row-fingerprint { grid-area: print; padding-left: calc(var(--dot-size) * 2 + var(--space-2)); }
+.fleet-row-state { grid-area: state; display: flex; min-width: 0; }
+.fleet-state-word { color: var(--text); }
+.fleet-row-cause { grid-area: cause; color: var(--text-dim); font-size: var(--fs-xs); }
+.fleet-row-route { grid-area: route; color: var(--text-dim); }
+.fleet-row-seen { grid-area: seen; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.fleet-row-act { grid-area: act; display: flex; justify-content: flex-end; }
+
+/* the invites not used, by batch */
+.fleet-invites { display: flex; flex-direction: column; gap: var(--space-3); margin: 0; padding: 0; list-style: none; }
+.fleet-invite-batch { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
+.fleet-invite-head { color: var(--text); font-size: var(--fs-sm); }
+.fleet-invite-names { color: var(--text-dim); font-size: var(--fs-xs); overflow-wrap: anywhere; }
+
+/* minting */
+.fleet-mint { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-3); }
+.fleet-mint-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-3); width: 100%; }
+.fleet-mint-fields .field { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
+
+@container (max-width: 599px) {
+  .fleet-list-head { display: none; }
+  .fleet-row {
+    grid-template-columns: auto auto auto minmax(0, 1fr) minmax(var(--touch-target), auto);
+    grid-template-areas: "name name name name act" "state route seen . act" "cause cause cause cause cause";
+    column-gap: var(--space-2);
+    height: calc(3 * var(--fs-sm) * var(--lh-tight) + 2 * var(--space-2) + var(--space-3));
+    padding: var(--space-2);
+  }
+  .fleet-row-fingerprint { display: none; }
+  .fleet-row-route[data-empty], .fleet-row-seen[data-empty] { display: none; }
+  .fleet-row-route::before, .fleet-row-seen::before { content: "·"; margin-inline-end: var(--space-1); color: var(--text-dim); }
+  .fleet-mint-fields { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (pointer: coarse) {
+  .fleet-row-remove { min-height: var(--touch-target); }
+}

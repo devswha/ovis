@@ -62,6 +62,10 @@ export interface Env extends PassSettings {
 const PASS_CHECKED = "x-ovis-relay-pass-checked";
 /** the key the room's pass authorization is kept under in Durable Object storage */
 const PASS_UNTIL = "pass_until";
+/** the connection budget per address and minute `sync` names: RELAY_LIMITER's limit in wrangler.toml, which wrangler.test.ts keeps it equal to */
+export const WORKER_PER_ADDRESS_PER_MINUTE = 30;
+/** whether a room reads and keeps pass authorizations: outside `off`, and in `off` with keys, for fleet numbers (pass.ts) */
+const readsPasses = (policy: PassPolicy | undefined): policy is PassPolicy => policy !== undefined && (policy.mode !== "off" || policy.keys.size > 0);
 
 let policyCache: { key: string; policy: Promise<PassPolicy> } | undefined;
 /** The pass policy of these settings, read once per isolate. */
@@ -82,7 +86,8 @@ function isPassResult(value: unknown): value is PassResult {
     && (result["reason"] === undefined || typeof result["reason"] === "string")
     && (result["exp"] === undefined || typeof result["exp"] === "number")
     && (result["kid"] === undefined || typeof result["kid"] === "string")
-    && (result["noNew"] === undefined || result["noNew"] === true);
+    && (result["noNew"] === undefined || result["noNew"] === true)
+    && (result["fleet"] === undefined || Number.isSafeInteger(result["fleet"]));
 }
 
 /** the key a PC's usage is kept under: not its server_id itself */
@@ -119,6 +124,8 @@ function isInfo(value: unknown): value is SocketInfo {
     && (info["answered"] === undefined || info["answered"] === true)
     && (info["deadline"] === undefined || typeof info["deadline"] === "number")
     && (info["arrived"] === undefined || typeof info["arrived"] === "number")
+    && (info["paced"] === undefined || info["paced"] === true)
+    && (info["pass_fleet"] === undefined || Number.isSafeInteger(info["pass_fleet"]))
     && (proof === undefined || (typeof proof === "object" && proof !== null && typeof proof["expected"] === "string" && typeof proof["expires"] === "number"))
     && (info["server_id"] === undefined || typeof info["server_id"] === "string")
     && (info["generation"] === undefined || typeof info["generation"] === "string")
@@ -139,15 +146,16 @@ export class RelayRoom {
   /** the pass policy and this room's authorization, read before the first event reaches the object */
   private policy: PassPolicy | undefined;
   private passUntil: RoomAuthorization | null = null;
-  /** the saved authorization, read once and only for a PC's room while passes are on: off, and pairing rooms, never touch storage */
+  /** the saved authorization, read once and only for a PC's room while passes are read: off without keys, and pairing rooms, never touch storage */
   private passLoad: Promise<void> | undefined;
   private passLoaded = false;
 
   private loadPass(): Promise<void> | undefined {
-    if (this.passLoaded || !this.policy || this.policy.mode === "off") return undefined;
+    if (this.passLoaded || !readsPasses(this.policy)) return undefined;
     this.passLoad ??= this.state.storage.get<unknown>(PASS_UNTIL).then((saved) => {
       const value = typeof saved === "object" && saved !== null ? saved as Partial<RoomAuthorization> : {};
-      this.passUntil = typeof value.until === "number" && typeof value.kid === "string" ? { until: value.until, kid: value.kid, ...(value.noNew === true ? { noNew: true as const } : {}) } : null;
+      this.passUntil = typeof value.until === "number" && typeof value.kid === "string" ? { until: value.until, kid: value.kid, ...(value.noNew === true ? { noNew: true as const } : {}),
+        ...(Number.isSafeInteger(value.fleet) ? { fleet: value.fleet! } : {}) } : null;
       this.passLoaded = true;
     });
     return this.passLoad;
@@ -190,9 +198,10 @@ export class RelayRoom {
       usage: (report) => env?.USAGE?.writeDataPoint(usagePoint(report)),
       wake: (at) => { void this.armBy(at); },
       now: () => Date.now(),
+      perAddressPerMinute: WORKER_PER_ADDRESS_PER_MINUTE,
       get pass() {
         const policy = room.policy;
-        if (!policy || policy.mode === "off") return undefined;
+        if (!readsPasses(policy)) return undefined;
         return {
           policy,
           until: () => room.passUntil,

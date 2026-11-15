@@ -253,7 +253,6 @@ export const SETTINGS_KO: Record<string, string> = {
   "Restarting Ovis on the Herdr app…": "Herdr 앱으로 Ovis를 다시 시작하는 중…",
   "Restarting Ovis on herdr TUI…": "herdr TUI로 Ovis를 다시 시작하는 중…",
   "The Herdr app was chosen here, but no herdr-core answered, so herdr TUI is shown.": "여기서 Herdr 앱을 골랐지만 응답하는 herdr-core가 없어 herdr TUI를 보여 줍니다.",
-  "alt-runtime was chosen here, but this Ovis cannot start it, so herdr TUI is shown.": "여기서 alt-runtime을 골랐지만 이 Ovis는 아직 그것을 시작할 수 없어 herdr TUI를 보여 줍니다.",
   "OVIS_RUNTIME in Ovis's environment decides which terminals this PC shows; change it there to switch.": "이 PC가 보여 줄 터미널은 Ovis 실행 환경의 OVIS_RUNTIME이 정합니다. 바꾸려면 그 값을 바꾸세요.",
   "Show the Herdr app's terminals?": "Herdr 앱의 터미널을 볼까요?",
   "Show herdr TUI's terminals?": "herdr TUI의 터미널을 볼까요?",
@@ -289,4 +288,6 @@ export const SETTINGS_KO: Record<string, string> = {
 
   // Settings → Alerts → Also send to, when the server could not say what it holds (design pass G-111)
   "Could not read this PC's alert destination ({error}). Close Settings and open it again.": "이 PC의 외부 알림 설정을 읽지 못했습니다({error}). 설정을 닫았다가 다시 여세요.",
+  "Machines that joined this PC with an invite: confirm new ones, see why one cannot be reached, remove one.": "초대로 이 PC에 참가한 머신입니다. 새 머신을 확인하고, 닿지 않는 이유를 보고, 머신을 제거합니다.",
+  "fleet machines invites enrol confirm": "플릿 머신 초대 등록 확인",
 };

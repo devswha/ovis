@@ -271,12 +271,28 @@ describe("RelayPcDetails", () => {
     expect(text(routeOf(renderHtml({ pc: makeRow({ state: "needs-approval", paired: false, linked: false }), onClose: none })))).toBe("—");
   });
 
+  it("offers Join at once, never a number to type, for a PC new in the account that already came by the account service; one never seen keeps Add", async () => {
+    const added = new Date(NOW - 2 * 60_000).toISOString();
+    const listed = (seen: string | null) => makeRow({ state: "needs-approval", paired: false, linked: false, added_at: added, last_seen_at: seen, join: { server_public_key: "k", relay: GLOBAL } });
+    const opened: ("new" | "join")[] = [];
+    const buttonOf = (label: string) => rootOf(renderer).findAll((n) => n.type === "button" && n.children.includes(label));
+
+    await mount({ pc: listed(new Date(NOW - 30_000).toISOString()), now: NOW, onClose: none, onOpenSheet: (_pc, mode) => { opened.push(mode); } });
+    expect(buttonOf("Add")).toHaveLength(0);
+    await act(async () => { buttonOf("Join")[0]?.props.onClick(); });
+
+    await act(async () => { renderer?.unmount(); });
+    await mount({ pc: listed(null), now: NOW, onClose: none, onOpenSheet: (_pc, mode) => { opened.push(mode); } });
+    await act(async () => { buttonOf("Add")[0]?.props.onClick(); });
+    expect(opened).toEqual(["join", "new"]);
+  });
+
   it("names the specific state the table names, Needs approval or Needs update, never the Needs you group word", () => {
     const stateOf = (html: string) => /<dt>State<\/dt><dd><span class="relay-pc-details-value">([^<]+)<\/span>/.exec(html)?.[1];
     const approval = renderHtml({ pc: makeRow({ state: "needs-approval", paired: false, linked: false, join: { server_public_key: "k", relay: GLOBAL } }), onClose: none, onOpenSheet: none });
     expect(stateOf(approval)).toBe("Needs approval");
     // a listed PC past its ten minutes says how this device gets in, in the table's and the overview's words
-    expect(approval).toContain("Join · a device of your account connected to it approves");
+    expect(approval).toContain('<small class="relay-pc-details-sub" data-reason="join">');
     expect(approval).not.toContain("Add window closed");
     const update = renderHtml({ pc: makeRow({ state: "needs-update" }), onClose: none });
     expect(stateOf(update)).toBe("Needs update");

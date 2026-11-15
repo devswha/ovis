@@ -1,9 +1,16 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import nacl from "tweetnacl";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { exportAccountKey, newRecordId, signAccountRecord, type AccountRecord } from "./account-records.ts";
-import { ACCESS_TOKEN_TTL_S, ADMISSION_TTL_MS, ACCOUNT_RING, ADMISSIONS_PER_WINDOW, DEVICE_POLL_S, DIRECTORY_MAX, FakeAccountService, isAllowedRedirect, MAILBOX_TTL_MS, WEB_REDIRECT, type FakePc } from "./account-service-fake.ts";
+import { ACCESS_TOKEN_TTL_S, ADMISSION_TTL_MS, ACCOUNT_RING, ADMISSIONS_PER_WINDOW, DEVICE_POLL_S, DIRECTORY_MAX, FakeAccountService, isAllowedRedirect, MAILBOX_TTL_MS, PC_LIMITS, WEB_REDIRECT, type FakePc, type PcLimits } from "./account-service-fake.ts";
+import { importPublicKey } from "./relay-e2ee.ts";
 import { answerServerChallenge, deriveServerId, serverChallenge, verifyServerProof, type ProofRoute } from "./relay-server-proof.ts";
+import { AccountMailbox } from "../server/account/mailbox.ts";
+import { DeviceStore } from "../server/devices.ts";
+import { loadRelayIdentity } from "../server/relay/identity.ts";
 
 const BASE = "https://account.test";
 
@@ -370,6 +377,22 @@ describe("the fake account service's doorbell and limits", () => {
     expect(service.rings().length).toBe(2);
   });
 
+  test("the limits carry the fleet allowance as the service does: 0 unless set, and only an integer from 0 to 1000", async () => {
+    const service = new FakeAccountService();
+    const token = service.issueToken("acct_1");
+    const limits = async () => await (await service.fetch(new Request(`${BASE}/v1/account/limits`, { headers: { authorization: `Bearer ${token}` } }))).json() as Record<string, unknown>;
+    service.setLimits("acct_1", { plan: "pro", pcs_max: 10 });
+    expect(await limits()).toEqual({ plan: "pro", pcs_max: 10, fleet_max: 0 });
+    for (const fleet of [1, 100, 1000]) {
+      service.setLimits("acct_1", { plan: "pro", pcs_max: 10, fleet_max: fleet });
+      expect(await limits()).toEqual({ plan: "pro", pcs_max: 10, fleet_max: fleet });
+    }
+    for (const fleet of [1001, -1, 1.5, "100", null]) expect(() => service.setLimits("acct_1", { plan: "pro", pcs_max: 10, fleet_max: fleet })).toThrow("fleet_max");
+    // nothing an account sends raises it
+    expect((await put(service, token, "/v1/account/limits", { fleet_max: 1000 })).status).toBe(404);
+    expect((await limits())["fleet_max"]).toBe(1000);
+  });
+
   test("a directory holds at most a hundred PCs, and an account rings for admissions ten times in ten minutes", async () => {
     const service = new FakeAccountService();
     const token = service.issueToken("acct_1");
@@ -383,4 +406,136 @@ describe("the fake account service's doorbell and limits", () => {
     for (let index = 0; index < ADMISSIONS_PER_WINDOW; index++) expect((await service.fetch(post("/v1/admissions", { server_id: last.serverId, label: "Mac", key: (await client()).spki }, token))).status).toBe(200);
     expect((await service.fetch(post("/v1/admissions", { server_id: last.serverId, label: "Mac", key: (await client()).spki }, token))).status).toBe(429);
   });
+});
+
+describe("the fake account service's limits on a PC's calls", () => {
+  const T0 = Date.parse("2026-11-05T00:00:00.000Z");
+  /** Limits the account service may take: none per address on a pull, and both calls counted per proven server_id. */
+  const PER_PC: PcLimits = {
+    challenge: [{ name: "challenge", per: "address", max: 600, periodMs: 60_000 }, { name: "challenge-pc", per: "server_id", max: 20, periodMs: 60_000 }],
+    mailbox: [{ name: "mailbox-pc", per: "server_id", max: 30, periodMs: 60_000 }],
+  };
+  const challenge = (service: FakeAccountService, machine: ReturnType<typeof pc>, publicKey = machine.publicKey) =>
+    service.fetch(post("/v1/pc/challenge", { server_id: machine.serverId, public_key: publicKey }));
+  const open = async (service: FakeAccountService, machine: ReturnType<typeof pc>, role: ProofRoute["role"] = "account") => {
+    const { challenge_id, frame } = await (await challenge(service, machine)).json() as { challenge_id: string; frame: string };
+    const proof = answerServerChallenge(frame, machine.keys.secretKey, { server_id: machine.serverId, role, connection_id: challenge_id });
+    const response = await service.fetch(post("/v1/pc/mailbox", { server_id: machine.serverId, challenge_id, proof, ack: null, account: "acct_1" }));
+    return { response, challenge_id, frame };
+  };
+  const code = async (response: Response) => ((await response.json()) as { error?: { code: string } }).error?.code;
+
+  test("without the option, 200 calls from one address all pass", async () => {
+    const service = new FakeAccountService();
+    const machine = pc();
+    for (let index = 0; index < 100; index++) expect((await pull(service, machine, null)).status).toBe(200);
+    expect(service.requests.length).toBe(200);
+  });
+
+  test("with today's numbers the 61st call in a minute is refused as the service refuses it, and passes once the minute is over", async () => {
+    let now = T0;
+    const service = new FakeAccountService(() => now, PC_LIMITS);
+    const machine = pc();
+    for (let index = 0; index < 60; index++) expect((await challenge(service, machine)).status).toBe(200);
+    const refused = await challenge(service, machine);
+    expect(refused.status).toBe(429);
+    expect([...refused.headers.entries()].sort()).toEqual([["cache-control", "no-store"], ["content-type", "application/json"], ["retry-after", "60"]]);
+    expect(await refused.json()).toEqual({ error: { code: "rate_limited", message: "Too many requests; try again in a minute" } });
+    now += 59_999;
+    expect((await challenge(service, machine)).status).toBe(429);
+    now += 1;
+    expect((await challenge(service, machine)).status).toBe(200);
+  });
+
+  test("challenges and mailbox pulls spend one limiter, before any proof is looked at", async () => {
+    const service = new FakeAccountService(() => T0, PC_LIMITS);
+    const machine = pc();
+    for (let index = 0; index < 30; index++) expect(await code(await service.fetch(post("/v1/pc/mailbox", { server_id: machine.serverId, challenge_id: "0".repeat(32), proof: "x", account: "acct_1" })))).toBe("proof_invalid");
+    for (let index = 0; index < 29; index++) expect((await challenge(service, machine)).status).toBe(200);
+    const last = await pull(service, machine, null);
+    expect(last.challenge.challenge_id).toMatch(/^[0-9a-f]{32}$/);
+    expect(last).toMatchObject({ status: 429, body: { error: { code: "rate_limited" } } });
+    // past the limit even a body that is not JSON is refused for the count, not read
+    expect((await service.fetch(new Request(BASE + "/v1/pc/challenge", { method: "POST", body: "{not json" }))).status).toBe(429);
+  });
+
+  test("a server_id limit counts only once the key is proven; a wrong proof spends the address limit and the challenge, not the server_id's", async () => {
+    const service = new FakeAccountService(() => T0, {
+      challenge: [{ name: "challenge", per: "server_id", max: 3, periodMs: 60_000 }],
+      mailbox: [{ name: "mailbox", per: "address", max: 4, periodMs: 60_000 }, { name: "mailbox-pc", per: "server_id", max: 1, periodMs: 60_000 }],
+    });
+    const machine = pc();
+    for (let index = 0; index < 5; index++) expect(await code(await challenge(service, machine, pc().publicKey))).toBe("server_key_mismatch");
+    const wrong = await open(service, machine, "control");
+    expect(await code(wrong.response)).toBe("proof_invalid");
+    const proof = answerServerChallenge(wrong.frame, machine.keys.secretKey, { server_id: machine.serverId, role: "account", connection_id: wrong.challenge_id });
+    expect(await code(await service.fetch(post("/v1/pc/mailbox", { server_id: machine.serverId, challenge_id: wrong.challenge_id, proof, ack: null, account: "acct_1" })))).toBe("proof_invalid");
+    expect((await open(service, machine)).response.status).toBe(200);
+    // the third challenge for this server_id passes; its pull is the second proven one, past the server_id's 1
+    expect(await code((await open(service, machine)).response)).toBe("rate_limited");
+    expect(await code(await challenge(service, machine))).toBe("rate_limited");
+    // five pulls have spent the address limit of 4: the next is refused before its body is read
+    expect((await service.fetch(new Request(BASE + "/v1/pc/mailbox", { method: "POST", body: "{not json" }))).status).toBe(429);
+  });
+
+  test("the caller is its cf-connecting-ip, else the connection's address, else one constant, or whoever the test says", async () => {
+    const one = { name: "one", per: "address", max: 1, periodMs: 60_000 } as const;
+    const service = new FakeAccountService(() => T0, { challenge: [one], mailbox: [one] });
+    const machine = pc();
+    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: service.serve });
+    try {
+      const call = (headers: Record<string, string> = {}) => fetch(`http://127.0.0.1:${server.port}/v1/pc/challenge`, { method: "POST", headers, body: JSON.stringify({ server_id: machine.serverId, public_key: machine.publicKey }) });
+      expect([(await call()).status, (await call()).status, (await call({ "cf-connecting-ip": "198.51.100.1" })).status]).toEqual([200, 429, 200]);
+    } finally { await server.stop(true); }
+    expect([(await challenge(service, machine)).status, (await challenge(service, machine)).status]).toEqual([200, 429]);
+    const behindOne = new FakeAccountService(() => T0, { challenge: [one], mailbox: [one], address: () => "nat" });
+    const from = (ip: string) => behindOne.fetch(new Request(BASE + "/v1/pc/challenge", { method: "POST", headers: { "cf-connecting-ip": ip }, body: JSON.stringify({ server_id: machine.serverId, public_key: machine.publicKey }) }));
+    expect([(await from("10.0.0.1")).status, (await from("10.0.0.2")).status]).toEqual([200, 429]);
+  });
+
+  /** Twenty PCs of one account behind one address, a record waiting for each, pulling once each within 50 seconds. */
+  async function twentyBehindOneAddress(limits: PcLimits) {
+    let now = T0;
+    const service = new FakeAccountService(() => now, limits);
+    const token = service.issueToken("acct_1");
+    const [member, stranger] = [await client(), await client()];
+    const answered: string[] = [];
+    const pcFetch = async (request: Request) => {
+      const answer = await service.fetch(request);
+      answered.push(`${answer.status} ${new URL(request.url).pathname}`);
+      return answer;
+    };
+    const dirs = Array.from({ length: 20 }, () => mkdtempSync(join(tmpdir(), "ovis-fake-limit-")));
+    try {
+      const pcs = [];
+      for (const dir of dirs) {
+        const devices = new DeviceStore(dir);
+        devices.addAccountDevice({ id: "phone", key: member.spki, label: "Phone", role: "drive", account: "acct_1", addedBy: "phone" });
+        const identity = loadRelayIdentity(dir);
+        const publicKey = bytesToHex(importPublicKey(identity.public_key));
+        await service.fetch(new Request(`${BASE}/v1/pcs/${identity.server_id}`, { method: "PUT", body: JSON.stringify({ label: "vm", public_key: publicKey, relay: "wss://relay.ovis.sh" }), headers: { authorization: `Bearer ${token}` } }));
+        await service.fetch(post("/v1/records", { server_ids: [identity.server_id], record: await removeRecord("acct_1", stranger, (await client()).spki) }, token));
+        pcs.push({ serverId: identity.server_id, mailbox: new AccountMailbox({ devices, identity: () => identity, service: "https://account.test", fetch: pcFetch }) });
+      }
+      for (const { mailbox } of pcs) {
+        await mailbox.pull();
+        now += 2_500;
+      }
+      return { answered, errors: pcs.map(({ mailbox }) => mailbox.error), unread: pcs.map(({ serverId }) => service.mailbox(serverId, "acct_1").length) };
+    } finally { for (const dir of dirs) rmSync(dir, { recursive: true, force: true }); }
+  }
+
+  test("twenty PCs behind one address pulling once in a minute: today the 16th PC's challenge is the first call refused; counted per PC, all pass", async () => {
+    const today = await twentyBehindOneAddress(PC_LIMITS);
+    expect(today.answered.length).toBe(65);
+    expect(today.answered.slice(0, 60).every((line) => line.startsWith("200 "))).toBe(true);
+    expect(today.answered.slice(60)).toEqual(Array.from({ length: 5 }, () => "429 /v1/pc/challenge"));
+    expect(today.errors).toEqual([...Array.from({ length: 15 }, () => null), ...Array.from({ length: 5 }, () => "The account service answered 429 to /v1/pc/challenge")]);
+    expect(today.unread).toEqual([...Array.from({ length: 15 }, () => 0), ...Array.from({ length: 5 }, () => 1)]);
+    const perPc = await twentyBehindOneAddress(PER_PC);
+    expect(perPc.answered.length).toBe(80);
+    expect(perPc.answered.every((line) => line.startsWith("200 "))).toBe(true);
+    expect(perPc.errors.every((error) => error === null)).toBe(true);
+    expect(perPc.unread.every((count) => count === 0)).toBe(true);
+  }, 30_000);
 });

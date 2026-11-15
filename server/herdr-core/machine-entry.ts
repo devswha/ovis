@@ -10,7 +10,7 @@ import { hcMachine, setRuntime, startRuntime } from "./runtime.ts";
 
 const stateDir = process.env["OVIS_HC_MACHINE_STATE"];
 if (hcMachine() === null || !stateDir) throw new Error("machine-entry.ts runs only as machine-bridge.ts starts it");
-setRuntime("herdr-core");
+setRuntime("herdr-core", "ordinary");
 // the adapter's socket in a short folder of its own: under a long state folder its path would pass a unix socket's limit
 const socketDir = mkdtempSync(join(tmpdir(), "ovis-hc-"));
 const core = await startRuntime(socketDir);

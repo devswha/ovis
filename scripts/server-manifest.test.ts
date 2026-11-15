@@ -3,13 +3,14 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DIST_ARCHIVE, generateKeyPair, MANIFEST, RELEASE_PUBLIC_KEY, releaseFile, PTY_ASSETS, ptyFile, SERVER_PLATFORMS, SIGNATURE, signManifest, SUMS, verifyRelease, writeManifest } from "./server-manifest.ts";
+import { checkManifest, EXTRA_PLATFORMS, extraFile, DIST_ARCHIVE, generateKeyPair, MANIFEST, RELEASE_PUBLIC_KEY, releaseFile, PTY_ASSETS, ptyFile, SERVER_PLATFORMS, SIGNATURE, signManifest, SUMS, verifyRelease, writeManifest } from "./server-manifest.ts";
+import { EXTRA_BINARIES } from "./release-binaries.ts";
 
 /** a signed release folder and the key that signs it, for attacks that change something and sign again */
 function signedRelease(): { dir: string; privateKeyPem: string; publicKey: string } {
   const dir = releaseDir();
   const pair = generateKeyPair();
-  writeManifest(dir, { version: "1.2.3", sources });
+  writeManifest(dir, { version: "1.2.3", sources, binaries: EXTRA_BINARIES });
   signManifest(dir, pair.privateKeyPem);
   return { dir, ...pair };
 }
@@ -36,10 +37,12 @@ function releaseDir(): string {
   dirs.push(dir);
   for (const platform of SERVER_PLATFORMS) writeFileSync(join(dir, releaseFile(platform)), `binary for ${platform}\n`);
   for (const build of PTY_ASSETS) writeFileSync(join(dir, ptyFile(build)), `pty host ${build}\n`);
+  for (const file of EXTRA_FILES) writeFileSync(join(dir, file), `${file}\n`);
   writeFileSync(join(dir, DIST_ARCHIVE), "the built client\n");
   return dir;
 }
-const RELEASE_FILES = [...SERVER_PLATFORMS.map(releaseFile), DIST_ARCHIVE, ...PTY_ASSETS.map(ptyFile)];
+const EXTRA_FILES = EXTRA_BINARIES.flatMap((binary) => EXTRA_PLATFORMS.map((platform) => extraFile(binary, platform)));
+const RELEASE_FILES = [...SERVER_PLATFORMS.map(releaseFile), DIST_ARCHIVE, ...PTY_ASSETS.map(ptyFile), ...EXTRA_FILES];
 const sources = { server: "a".repeat(40), shared: "b".repeat(40) };
 const sha256 = (path: string) => createHash("sha256").update(readFileSync(path)).digest("hex");
 const script = join(import.meta.dir, "build-server.ts");
@@ -52,7 +55,7 @@ const cli = (args: string[], env: Record<string, string> = {}) => {
 describe("the server's release manifest", () => {
   it("names each platform's binary with the SHA-256 of its bytes, and lists the same sums", () => {
     const dir = releaseDir();
-    const manifest = writeManifest(dir, { version: "1.2.3", sources });
+    const manifest = writeManifest(dir, { version: "1.2.3", sources, binaries: EXTRA_BINARIES });
     const written = JSON.parse(readFileSync(join(dir, MANIFEST), "utf8"));
     expect(written).toEqual(manifest);
     expect(manifest.version).toBe("1.2.3");
@@ -70,21 +73,21 @@ describe("the server's release manifest", () => {
   it("refuses a folder that misses a platform or holds anything else", () => {
     const missing = releaseDir();
     rmSync(join(missing, releaseFile("darwin-x64")));
-    expect(() => writeManifest(missing, { version: "1.2.3", sources })).toThrow(releaseFile("darwin-x64"));
+    expect(() => writeManifest(missing, { version: "1.2.3", sources, binaries: EXTRA_BINARIES })).toThrow(releaseFile("darwin-x64"));
     const noClient = releaseDir();
     rmSync(join(noClient, DIST_ARCHIVE));
-    expect(() => writeManifest(noClient, { version: "1.2.3", sources })).toThrow(DIST_ARCHIVE);
+    expect(() => writeManifest(noClient, { version: "1.2.3", sources, binaries: EXTRA_BINARIES })).toThrow(DIST_ARCHIVE);
     const extra = releaseDir();
     writeFileSync(join(extra, "notes.txt"), "x");
-    expect(() => writeManifest(extra, { version: "1.2.3", sources })).toThrow("notes.txt");
+    expect(() => writeManifest(extra, { version: "1.2.3", sources, binaries: EXTRA_BINARIES })).toThrow("notes.txt");
   });
 
   it("drops a signature left from an earlier manifest: it would not be over these bytes", () => {
     const dir = releaseDir();
     const { privateKeyPem } = generateKeyPair();
-    writeManifest(dir, { version: "1.2.3", sources });
+    writeManifest(dir, { version: "1.2.3", sources, binaries: EXTRA_BINARIES });
     signManifest(dir, privateKeyPem);
-    writeManifest(dir, { version: "1.2.4", sources });
+    writeManifest(dir, { version: "1.2.4", sources, binaries: EXTRA_BINARIES });
     expect(() => statSync(join(dir, SIGNATURE))).toThrow();
   });
 });
@@ -93,7 +96,7 @@ describe("signing and verifying a release", () => {
   it("accepts the signed manifest and every binary it names", () => {
     const dir = releaseDir();
     const { privateKeyPem, publicKey } = generateKeyPair();
-    writeManifest(dir, { version: "1.2.3", sources });
+    writeManifest(dir, { version: "1.2.3", sources, binaries: EXTRA_BINARIES });
     expect(signManifest(dir, privateKeyPem)).toBe(publicKey);
     expect(verifyRelease(dir, publicKey)).toEqual({ ok: true, problems: [] });
   });
@@ -101,7 +104,7 @@ describe("signing and verifying a release", () => {
   it("rejects the manifest after one byte of it changes", () => {
     const dir = releaseDir();
     const { privateKeyPem, publicKey } = generateKeyPair();
-    writeManifest(dir, { version: "1.2.3", sources });
+    writeManifest(dir, { version: "1.2.3", sources, binaries: EXTRA_BINARIES });
     signManifest(dir, privateKeyPem);
     const bytes = readFileSync(join(dir, MANIFEST));
     bytes[bytes.length - 2] ^= 1;
@@ -113,7 +116,7 @@ describe("signing and verifying a release", () => {
 
   it("rejects a manifest signed with another key", () => {
     const dir = releaseDir();
-    writeManifest(dir, { version: "1.2.3", sources });
+    writeManifest(dir, { version: "1.2.3", sources, binaries: EXTRA_BINARIES });
     signManifest(dir, generateKeyPair().privateKeyPem);
     expect(verifyRelease(dir, generateKeyPair().publicKey).ok).toBe(false);
   });
@@ -121,7 +124,7 @@ describe("signing and verifying a release", () => {
   it("names the platform whose binary no longer matches the signed manifest", () => {
     const dir = releaseDir();
     const { privateKeyPem, publicKey } = generateKeyPair();
-    writeManifest(dir, { version: "1.2.3", sources });
+    writeManifest(dir, { version: "1.2.3", sources, binaries: EXTRA_BINARIES });
     signManifest(dir, privateKeyPem);
     const binary = join(dir, releaseFile("linux-arm64"));
     const bytes = readFileSync(binary);
@@ -154,7 +157,7 @@ describe("bun scripts/build-server.ts", () => {
 
   it("sign refuses a key whose public half is not the one committed, unless a test names the key it expects", () => {
     const dir = releaseDir();
-    writeManifest(dir, { version: "1.2.3", sources });
+    writeManifest(dir, { version: "1.2.3", sources, binaries: EXTRA_BINARIES });
     const { privateKeyPem, publicKey } = generateKeyPair();
     const other = cli(["sign", dir], { OVIS_SERVER_SIGNING_KEY: privateKeyPem });
     expect(other.code).toBe(1);
@@ -170,7 +173,7 @@ describe("bun scripts/build-server.ts", () => {
 
   it("sign refuses without the signing key and names the secret", () => {
     const dir = releaseDir();
-    writeManifest(dir, { version: "1.2.3", sources });
+    writeManifest(dir, { version: "1.2.3", sources, binaries: EXTRA_BINARIES });
     const result = cli(["sign", dir], { OVIS_SERVER_SIGNING_KEY: "" });
     expect(result.code).toBe(1);
     expect(result.err).toContain("OVIS_SERVER_SIGNING_KEY");
@@ -180,7 +183,7 @@ describe("bun scripts/build-server.ts", () => {
   it("verify accepts a signed release and exits 1 naming a changed platform; no variable stands in for the committed key", () => {
     const dir = releaseDir();
     const { privateKeyPem, publicKey } = generateKeyPair();
-    writeManifest(dir, { version: "1.2.3", sources });
+    writeManifest(dir, { version: "1.2.3", sources, binaries: EXTRA_BINARIES });
     expect(cli(["sign", dir, "--public-key", publicKey], { OVIS_SERVER_SIGNING_KEY: privateKeyPem }).out.trim()).toContain(publicKey);
     expect(cli(["verify", dir, "--public-key", publicKey]).code).toBe(0);
     expect(cli(["verify", dir], { OVIS_SERVER_PUBLIC_KEY: publicKey }).code).toBe(1);
@@ -230,8 +233,8 @@ describe("verify accepts only the release as written, even when the key signed s
 
   it("refuses a manifest of another schema, signed by the right key", () => {
     const { dir, privateKeyPem, publicKey } = signedRelease();
-    resigned(dir, privateKeyPem, (text) => text.replace('"schema": 1,', '"schema": 2,'));
-    rejects(dir, publicKey, "schema 2");
+    resigned(dir, privateKeyPem, (text) => text.replace('"schema": 2,', '"schema": 3,'));
+    rejects(dir, publicKey, "schema 3");
   });
 
   it("names the client archive when it no longer matches", () => {
@@ -246,7 +249,7 @@ describe("verify accepts only the release as written, even when the key signed s
     rejects(extraPlatform.dir, extraPlatform.publicKey, "platforms");
     const unknownField = signedRelease();
     resigned(unknownField.dir, unknownField.privateKeyPem, (text) => text.replace('{\n  "schema"', '{\n  "channel": "beta",\n  "schema"'));
-    rejects(unknownField.dir, unknownField.publicKey, "exactly schema, version, sources, assets, dist and pty");
+    rejects(unknownField.dir, unknownField.publicKey, "exactly schema, version, sources, assets, dist, pty and binaries");
     for (const bogusFirst of [true, false]) {
       const duplicate = signedRelease();
       resigned(duplicate.dir, duplicate.privateKeyPem, (text) => {
@@ -258,7 +261,7 @@ describe("verify accepts only the release as written, even when the key signed s
     }
     const notObject = signedRelease();
     resigned(notObject.dir, notObject.privateKeyPem, () => "[]\n");
-    rejects(notObject.dir, notObject.publicKey, "exactly schema, version, sources, assets, dist and pty");
+    rejects(notObject.dir, notObject.publicKey, "exactly schema, version, sources, assets, dist, pty and binaries");
     const notJson = signedRelease();
     resigned(notJson.dir, notJson.privateKeyPem, () => "{\n");
     rejects(notJson.dir, notJson.publicKey, "not JSON");
@@ -323,7 +326,7 @@ describe("verify accepts only the release as written, even when the key signed s
 describe("the Rust PTY hosts in the signed manifest", () => {
   it("names each host with its SHA-256 and size, and lists them in the sums", () => {
     const dir = releaseDir();
-    const manifest = writeManifest(dir, { version: "1.2.3", sources });
+    const manifest = writeManifest(dir, { version: "1.2.3", sources, binaries: EXTRA_BINARIES });
     for (const build of PTY_ASSETS) {
       expect(manifest.pty[build]).toEqual({ file: ptyFile(build), sha256: sha256(join(dir, ptyFile(build))), size: readFileSync(join(dir, ptyFile(build))).length });
       expect(readFileSync(join(dir, "ovis-server.SHA256SUMS"), "utf8")).toContain(`${sha256(join(dir, ptyFile(build)))}  ${ptyFile(build)}\n`);
@@ -339,9 +342,72 @@ describe("the Rust PTY hosts in the signed manifest", () => {
     rejects(replaced.dir, replaced.publicKey, "PTY host darwin-universal: ovis-pty-sidecar-darwin-universal does not match its SHA-256 and size");
     const without = signedRelease();
     resigned(without.dir, without.privateKeyPem, (text) => { const { pty: _, ...rest } = JSON.parse(text); return `${JSON.stringify(rest, null, 2)}\n`; });
-    rejects(without.dir, without.publicKey, "exactly schema, version, sources, assets, dist and pty");
+    rejects(without.dir, without.publicKey, "exactly schema, version, sources, assets, dist, pty and binaries");
     const extra = signedRelease();
     resigned(extra.dir, extra.privateKeyPem, (text) => { const parsed = JSON.parse(text); parsed.pty["windows-x64"] = parsed.pty["linux-x64"]; return `${JSON.stringify(parsed, null, 2)}\n`; });
     rejects(extra.dir, extra.publicKey, "must name exactly the Rust PTY hosts");
+  });
+});
+
+describe("the extra binaries in the signed manifest", () => {
+  const SCHEMA_1_KEYS = ["schema", "version", "sources", "assets", "dist", "pty"];
+  it("names the runtime and the link agent for each Linux and macOS platform, and lists them in the sums", () => {
+    const dir = releaseDir();
+    const manifest = writeManifest(dir, { version: "1.2.3", sources, binaries: EXTRA_BINARIES });
+    expect(manifest.schema).toBe(2);
+    expect(Object.keys(manifest.binaries!)).toEqual([...EXTRA_BINARIES]);
+    for (const binary of EXTRA_BINARIES) {
+      expect(Object.keys(manifest.binaries![binary]!)).toEqual([...EXTRA_PLATFORMS]);
+      for (const platform of EXTRA_PLATFORMS) {
+        const file = extraFile(binary, platform);
+        expect(manifest.binaries![binary]![platform]).toEqual({ file, sha256: sha256(join(dir, file)), size: statSync(join(dir, file)).size });
+        expect(readFileSync(join(dir, SUMS), "utf8")).toContain(`${sha256(join(dir, file))}  ${file}\n`);
+      }
+    }
+  });
+
+  it("refuses a folder without a platform's extra binary: nothing is published without it", () => {
+    const dir = releaseDir();
+    rmSync(join(dir, extraFile("ovis-link", "darwin-x64")));
+    expect(() => writeManifest(dir, { version: "1.2.3", sources, binaries: EXTRA_BINARIES })).toThrow("ovis-link-darwin-x64");
+  });
+
+  it("names the binary and platform whose file no longer matches", () => {
+    const { dir, publicKey } = signedRelease();
+    writeFileSync(join(dir, extraFile("ovis-link", "linux-x64")), "a mirror's link agent\n");
+    rejects(dir, publicKey, "ovis-link linux-x64: ovis-link-linux-x64 does not match its SHA-256 and size");
+  });
+
+  it("reads a schema 1 manifest, which names no extra binary, and refuses binaries in one", () => {
+    const { dir, privateKeyPem, publicKey } = signedRelease();
+    const asSchema1 = (text: string) => { const { binaries: _, ...rest } = JSON.parse(text); return `${JSON.stringify({ ...rest, schema: 1 }, null, 2)}\n`; };
+    resigned(dir, privateKeyPem, asSchema1);
+    const manifest = checkManifest(readFileSync(join(dir, MANIFEST)), readFileSync(join(dir, SIGNATURE), "utf8"), publicKey);
+    expect(typeof manifest === "string" ? manifest : Object.keys(manifest)).toEqual(SCHEMA_1_KEYS);
+    resigned(dir, privateKeyPem, (text) => text.replace('"schema": 1,', '"schema": 2,'));
+    expect(checkManifest(readFileSync(join(dir, MANIFEST)), readFileSync(join(dir, SIGNATURE), "utf8"), publicKey)).toContain("exactly schema, version, sources, assets, dist, pty and binaries");
+    const mixed = signedRelease();
+    resigned(mixed.dir, mixed.privateKeyPem, (text) => text.replace('"schema": 2,', '"schema": 1,'));
+    expect(checkManifest(readFileSync(join(mixed.dir, MANIFEST)), readFileSync(join(mixed.dir, SIGNATURE), "utf8"), mixed.publicKey)).toContain("exactly schema, version, sources, assets, dist and pty");
+  });
+
+  it("reads another binary's slot once a release fills it, and refuses a binary name that is not plain or a missing platform", () => {
+    const extra = signedRelease();
+    resigned(extra.dir, extra.privateKeyPem, (text) => {
+      const parsed = JSON.parse(text);
+      parsed.binaries["ovis-extra"] = Object.fromEntries(EXTRA_PLATFORMS.map((platform) => [platform, { file: extraFile("ovis-extra", platform), sha256: "0".repeat(64), size: 1 }]));
+      return `${JSON.stringify(parsed, null, 2)}\n`;
+    });
+    const read = checkManifest(readFileSync(join(extra.dir, MANIFEST)), readFileSync(join(extra.dir, SIGNATURE), "utf8"), extra.publicKey);
+    expect(typeof read === "string" ? read : Object.keys(read.binaries!)).toEqual(["ovis-link", "ovis-extra"]);
+    const other = signedRelease();
+    resigned(other.dir, other.privateKeyPem, (text) => { const parsed = JSON.parse(text); parsed.binaries["../ovis-miner"] = parsed.binaries["ovis-link"]; return `${JSON.stringify(parsed, null, 2)}\n`; });
+    rejects(other.dir, other.publicKey, 'binaries that are not plain names: "../ovis-miner"');
+    const missing = signedRelease();
+    resigned(missing.dir, missing.privateKeyPem, (text) => { const parsed = JSON.parse(text); delete parsed.binaries["ovis-link"]["darwin-x64"]; return `${JSON.stringify(parsed, null, 2)}\n`; });
+    rejects(missing.dir, missing.publicKey, "ovis-link: ovis-server.json must name exactly the platforms linux-x64, linux-arm64, darwin-arm64, darwin-x64");
+    const renamed = signedRelease();
+    resigned(renamed.dir, renamed.privateKeyPem, (text) => text.replace('"file": "ovis-link-linux-x64"', '"file": "ovis-link-linux-arm64"'));
+    rejects(renamed.dir, renamed.publicKey, "ovis-link linux-x64: ovis-server.json must name ovis-link-linux-x64");
   });
 });

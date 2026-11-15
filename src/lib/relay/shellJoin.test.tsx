@@ -8,7 +8,7 @@ import { memoryAccountStore } from "../account/store.ts";
 import { nativeTransport, setTransport } from "../transport.ts";
 import type { RelayDeviceStore } from "./device.ts";
 import { mountRelayShell } from "./shell.tsx";
-import { createShellTestPage } from "./shell.test.tsx";
+import { createShellTestPage } from "./shellTestPage.fixture.ts";
 import type { RelayShellMount } from "./shellState.ts";
 
 describe("explicit dashboard pairing consent", () => {

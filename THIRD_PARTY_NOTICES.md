@@ -25,6 +25,145 @@ The MIT license text below applies, with these copyright notices:
 It also bundles `tweetnacl` 1.0.3, which its authors released into the public domain (the
 Unlicense).
 
+## Rust link agent
+
+The `ovis-link` binary (`crates/fleet-link`, versions pinned in its `Cargo.lock`) is built from
+these crates. Those offered under "MIT OR Apache-2.0" (and `memchr`, offered under "Unlicense OR
+MIT") are used under MIT, whose text follows the list; the four BSD-3-Clause crates' notices and
+license follow it.
+
+- `aead` 0.6.1, `block-buffer` 0.12.1, `chacha20` 0.10.2, `chacha20poly1305` 0.11.0, `cipher`
+  0.5.2, `cmov` 0.5.4, `cpufeatures` 0.3.1, `crypto-common` 0.2.2, `ctutils` 0.4.8, `digest`
+  0.11.3, `hkdf` 0.13.0, `hmac` 0.13.0, `hybrid-array` 0.4.15, `inout` 0.2.6, `poly1305` 0.9.1,
+  `sha2` 0.11.1, `universal-hash` 0.6.1 and `zeroize` 1.9.1: `Copyright (c) 2015-2026 The RustCrypto
+  Project Developers` (`sha2` also: `Copyright (c) 2006-2009 Graydon Hoare`, `Copyright (c)
+  2009-2013 Mozilla Foundation`, `Copyright (c) 2016 Artyom Pavlov`)
+- `getrandom` 0.4.3: `Copyright (c) 2018-2026 The rust-random Project Developers` and `Copyright (c)
+  2014 The Rust Project Developers`; `rand_core` 0.10.1: `Copyright (c) 2018-2026 The Rand Project
+  Developers`
+- `libc` 0.2.191: `Copyright (c) The Rust Project Developers`; `cfg-if` 1.0.5: `Copyright (c) 2014
+  Alex Crichton`; `typenum` 1.20.1: `Copyright (c) 2014 Paho Lurie-Gregg`
+- `p256` 0.14.0, `ecdsa` 0.17.0, `elliptic-curve` 0.14.3, `primefield` 0.14.0, `rfc6979` 0.6.0 and
+  `signature` 3.0.0: `Copyright (c) 2018-2026 RustCrypto Developers`; `ed25519` 3.0.0 (Apache-2.0 OR MIT, used under
+  MIT): `Copyright (c) 2018-2026 RustCrypto Developers`; `primeorder` 0.14.0:
+  `Copyright (c) 2020-2023 RustCrypto Developers`; `wnaf` 0.14.1: `Copyright (c) 2026 RustCrypto
+  Developers` and `Copyright (c) 2018-2025 group crate developers`
+- `crypto-bigint` 0.7.11, `der` 0.8.3, `const-oid` 0.10.3, `cpubits` 0.1.1 and `sec1` 0.8.1:
+  `Copyright (c) 2020-2026 The RustCrypto Project Developers`; `base16ct` 1.0.0: `Copyright (c) 2014
+  Steve "Sc00bz" Thomas` and `Copyright (c) 2022-2025 The RustCrypto Project Developers`
+- `ff` 0.14.0: `Copyright (c) 2017 Sean Bowe`; `group` 0.14.0: Sean Bowe and Jack Grigg (its
+  authors); `num-traits` 0.2.19: `Copyright (c) 2014 The Rust Project Developers`
+- `serde` 1.0.229 and `serde_core` 1.0.229: Erick Tryzelaar and David Tolnay (their authors);
+  `serde_json` 1.0.154, `itoa` 1.0.19 and `zmij` 1.0.23 (MIT): David Tolnay (their author);
+  `memchr` 2.8.3: `Copyright (c) 2015 Andrew Gallant`
+- BSD-3-Clause: `x25519-dalek` 3.0.0, `ed25519-dalek` 3.0.0, `curve25519-dalek` 5.0.0 and `subtle` 2.6.1
+- The carriers of `ovis-link run` (MIT, or MIT OR Apache-2.0 used under MIT): `tungstenite` 0.30.0
+  (`Copyright (c) 2016 Jason Housley`, `Copyright (c) 2017 Alexey Galakhov`); `http` 1.5.0 (`Copyright
+  (c) 2017 http-rs authors`); `httparse` 1.10.1 (`Copyright (c) 2015-2025 Sean McArthur`); `bytes`
+  1.12.1 (`Copyright (c) 2018 Carl Lerche`); `mio` 1.2.4 (`Copyright (c) 2014 Carl Lerche and other
+  MIO contributors`); `data-encoding` 2.11.1 (`Copyright (c) 2015-2020 Julien Cretin`, `Copyright
+  (c) 2017-2020 Google Inc.`); `sha1` 0.11.0 (`Copyright (c) 2016-2026 The RustCrypto Project
+  Developers` and the authors named for `sha2`); `rand` 0.10.3 (`Copyright 2018 Developers of the
+  Rand project`, `Copyright (c) 2014 The Rust Project Developers`); `getrandom` 0.2.17; `log`
+  0.4.35 (`Copyright (c) 2014 The Rust Project Developers`); `once_cell` 1.21.4 and `thiserror`
+  2.0.21: Aleksey Kladov and David Tolnay (their authors); `rustls-pki-types` 1.16.0 (`Copyright (c)
+  2023 Dirkjan Ochtman`); `rustls` 0.23.46 (Apache-2.0 OR ISC OR MIT, used under MIT: `Copyright
+  (c) 2016 Joseph Birr-Pixton`)
+- ISC: `rustls-webpki` 0.103.16 (`Copyright 2015 Brian Smith.`) and `untrusted` 0.9.0 (`Copyright
+  2015-2016 Brian Smith.`); `ring` 0.17.14 is ISC for its own code (`Copyright 2015-2025 Brian
+  Smith.`) and Apache-2.0 for the code it takes from BoringSSL (`Copyright 2015 The Chromium
+  Authors`; the Apache License 2.0 text is reproduced under "Pierre diffs" below)
+- CDLA-Permissive-2.0: `webpki-roots` 1.0.12, Mozilla's root certificate list as data, shared under
+  the Community Data License Agreement - Permissive - Version 2.0 (<https://cdla.dev/permissive-2-0/>)
+
+Only the build uses `curve25519-dalek-derive` 0.1.1, `thiserror-impl` 2.0.21, `proc-macro2`, `quote`, `syn`,
+`unicode-ident`, `rustc_version`, `semver` and `autocfg` 1.5.1 (`Copyright (c) 2018 Josh Stone`)
+(procedural macros and build scripts, MIT OR Apache-2.0; `unicode-ident` also Unicode-3.0); none
+of their code is in the binary. Neither is `cc` (`Copyright (c) 2014 Alex Crichton`, MIT OR
+Apache-2.0), which compiles ring's C and assembly at build time.
+
+```
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+```
+ISC License (rustls-webpki, untrusted, ring)
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY
+SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION
+OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
+CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+```
+
+```
+x25519-dalek:
+Copyright (c) 2017-2021 isis agora lovecruft. All rights reserved.
+Copyright (c) 2019-2021 DebugSteven. All rights reserved.
+
+ed25519-dalek:
+Copyright (c) 2017-2019 isis agora lovecruft. All rights reserved.
+
+curve25519-dalek:
+Copyright (c) 2016-2021 isis agora lovecruft. All rights reserved.
+Copyright (c) 2016-2021 Henry de Valence. All rights reserved.
+
+subtle:
+Copyright (c) 2016-2017 Isis Agora Lovecruft, Henry de Valence. All rights reserved.
+Copyright (c) 2016-2024 Isis Agora Lovecruft. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+1. Redistributions of source code must retain the above copyright
+notice, this list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright
+notice, this list of conditions and the following disclaimer in the
+documentation and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS
+IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
+TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A
+PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED
+TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
 ## QR Code generator
 
 `app/windows/src/QrCode.cs` ports the byte-mode encoder from

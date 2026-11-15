@@ -17,6 +17,10 @@ For a loopback-only server, `HOST=127.0.0.1 OVIS_IPV6_LOOPBACK=1 bun run server`
 `127.0.0.1` and `[::1]` keep their own URLs and browser storage. This option does not change a
 non-loopback bind and requires IPv6 loopback to be available.
 
+The Fleet screen's entry in Settings and the machine profile (`OVIS_PROFILE=machine`) are a preview: a server shows
+the entry and starts the profile only with `OVIS_PREVIEW=fleet` in its environment (`server/preview.ts`), which no
+release sets; without it the profile refuses to start with one sentence.
+
 The plugin's `start` and `stop` (`scripts/plugin.ts`) take turns through `lifecycle.lock` in the
 plugin's state directory (the owner lock of `server/owner-guard.ts`, taken over once its owner is
 proved gone): a start holds it until its server answers or the start fails, a stop until the server
@@ -174,7 +178,9 @@ other there. A checkout is its real
 path, plus `RUNNER_NAME` when that is set: the self-hosted runners of one PC share the slots and
 all check out to the same path. The
 generated-types and generated-themes checks (`bun run generate:types --check`,
-`bun run generate:themes --check`) are read-only, but `test:unit` includes
+`bun run generate:themes --check`) and the fleet check (`bun run check:fleet`: every table of
+[docs/fleet-link.md](fleet-link.md) is covered by `server/fleet/vectors/`, and those files are what
+`scripts/fleet-vectors.ts` generates) are read-only, but `test:unit` includes
 `scripts/generate-protocol-types.test.ts`, which rewrites the generated file while it runs. Fast
 checks and the browser lane also build into `dist/`. Nothing stops a `bun run build` or a single
 test command started by hand beside a run, so avoid those while a check runs in that checkout. (`check run` runs only its named command unless `--build` is supplied.)
@@ -782,6 +788,16 @@ after changing the staged session. Files, images, push and remote PCs are not pa
 
 ## Releasing
 
+**Releases may go on; the fleet stays a preview.** The machine profile and the Fleet screen's entry stay behind
+`OVIS_PREVIEW=fleet`, which no release sets, until the machine profile's local door is fixed and the maintainer says
+the fleet is ready. Until that fix is in, the machine profile takes every local program for its owner. The pull
+request that says the fleet is ready removes this paragraph.
+
+**The first release from this `main` raises the remote bundle number.** `REMOTE_BUNDLE_VERSION` in `shared/machines.ts` is
+"48", and bundle 48 is the one already published from 0.5.4. This `main`'s bundle is built from different files, so
+that release raises the number (49 or higher) and follows the remote bundle steps below before anything is released.
+The release PR that raises it removes this paragraph.
+
 1. Open a release PR that bumps `version` in `package.json` and `herdr-plugin.toml`,
    runs `bun scripts/changelog-fold.ts X.Y.Z [YYYY-MM-DD]` (it moves the `Unreleased` notes in
    [CHANGELOG.md](../CHANGELOG.md) and the [changelog.d/](../changelog.d/README.md) fragments under
@@ -905,6 +921,16 @@ that committed key. `server-binary-attest` attests the files, and `publish` veri
 against the committed key, never one a job reports, and attaches each by name, refusing a folder that holds anything
 else; the PTY hosts it attaches must be byte for byte the ones the manifest signed. A different key put into the secret fails the release at `sign`. The signature vouches for whatever `server-binary` built.
 
+A machine of the account runs the compiled server and the Rust PTY host alone, so a release carries nothing else: the
+manifest keeps schema 2 with an empty `binaries` section (`RELEASE_BINARIES` in `scripts/release-binaries.ts`), and
+`server-binary` copies in only the PTY hosts. `install.sh` installs the server and the host the signed manifest names;
+a host that does not download or does not match its SHA-256 and size there refuses the whole release, leaving the
+install as it was, while a release that names no host for the PC, or a host that does not run there, mirrors terminals.
+It installs no extra binary, even from a release whose manifest names one. The link agent (MIT) stays buildable by its
+own workflow run by hand (**Actions → Run workflow** with a commit): `link-binary.yml` (the link agent,
+`bun scripts/build-link.ts`, for M1's test build), for `linux-x64`, `linux-arm64` (static, musl), `darwin-arm64` and
+`darwin-x64`, with its own `<binary>.json`, kept as that run's artifacts.
+
 `bun scripts/build-server.ts verify <dir> --expect-version <X.Y.Z>` checks a downloaded set against the committed key
 (`--public-key <base64>` names another, for a test's own release), and stops at the first part that fails, with one
 line naming it (exit 1):
@@ -920,7 +946,7 @@ installers, the updater, a fleet machine: todos 6, 7, 28 and 59 of the relay-fle
 for, as the release job does. The installers do it now: `install.sh` and `install.ps1` pin the committed key on one
 line each (`RELEASE_PUBLIC_KEY=` and `$releasePublicKey =`, held equal to `scripts/server-manifest.ts` by its test),
 and `scripts/plugin-launch.ts` takes it from that file. Each checks the manifest's signature first, then its schema
-(`"schema": 1`, the first field, so a reader can tell a later shape from this one) and version, then each file's
+(`"schema"`, the first field, 1 or 2, so a reader can tell a later shape from these) and version, then each file's
 size and SHA-256, and only then moves the release into place, in one rename (two on Windows, where a run cut off
 between them is put back by the next), holding an install lock (`.install.lock`, made by an atomic mkdir with the
 holder's pid; a waiter breaks it once the holder's pid no longer runs, one breaker at a time, so two installs at once
@@ -929,9 +955,49 @@ place, where three or more installs started at the same instant leave a narrow r
 from source instead is [one rule](../INSTALL.md#binary-or-source). Their tests run a copy whose key line names a key made for
 the test, or pass that key as `installServer`'s option, which the launcher never does: the shipped scripts read no
 key from anywhere else. `OVIS_RELEASES_URL` (https://, or a `file://` folder laid out as GitHub's
-`<url>/v<version>/<file>`) points them at another place, checked against the same key. Remote PC bundles and the desktop app carry the same binary with what runs beside it
+`<url>/v<version>/<file>`) points them at another place, checked against the same key ([a release mirror](#a-release-mirror)). Remote PC bundles and the desktop app carry the same binary with what runs beside it
 (`scripts/server-artifact.ts`), and no server sources. The builds are reproducible with the same Bun: CI pins Bun 1.4.2,
 so CI's hashes differ from ones built with another Bun.
+
+### A release mirror
+
+A machine can install and update from a mirror instead of GitHub's releases: a folder read as a `file://` folder or
+served as it is over https. install.sh takes it from `OVIS_RELEASES_URL`.
+
+**Who is trusted.** The key that checks a release is pinned inside install.sh, so whoever serves install.sh is trusted
+with everything: an install run as `curl -fsSL https://<mirror>/install.sh | sh` trusts the mirror completely. The
+mirror must therefore be one you control. A machine that should not trust the mirror takes install.sh from a trusted
+copy (a checkout of the release tag) and only the release files from the mirror:
+
+```sh
+OVIS_RELEASES_URL=https://<mirror> sh /path/to/trusted/install.sh
+```
+
+What install.sh then checks: it installs only a release whose `ovis-server.json` the pinned key signed, for the very
+version it asked for, and each file with the size and SHA-256 that manifest names. On a mirror (any address but
+GitHub's own), a release with no `ovis-server.json` is refused, never installed from source. What the mirror chooses
+is which signed release is the latest: `latest`, one line `vX.Y.Z`, for an https mirror (https lists no folders), or
+the newest `v<version>` folder of a `file://` one. On a mirror, a run without `OVIS_REF` never installs a release
+older than the one installed, however validly it is signed; asking for one by name (`OVIS_REF=vX.Y.Z`) still does.
+
+Limits of a mirror, even one whose install.sh is trusted:
+- it can keep a machine on its release by never offering a newer one;
+- it can serve any older signed release to a fresh machine;
+- an https redirect to another https host is followed (the size, SHA-256 and signature checks still apply).
+
+A mirror holds, for each release, every file of its GitHub release in `v<version>/` (`ovis-server.json`, its `.sig`
+and `ovis-server.SHA256SUMS`; `ovis-server-<platform>` and `ovis-dist.tar.gz`; the PTY hosts
+`ovis-pty-sidecar-<build>` and their manifest), and at its top `latest` and the release's own `install.sh`. One command fills it from a
+release:
+
+```sh
+v=X.Y.Z m=/path/to/mirror; gh release download "v$v" --repo devswha/ovis --dir "$m/v$v" --clobber && gh api -H 'Accept: application/vnd.github.raw' "repos/devswha/ovis/contents/install.sh?ref=v$v" > "$m/install.sh.new" && mv "$m/install.sh.new" "$m/install.sh" && echo "v$v" > "$m/latest"
+```
+
+A machine then installs, and later updates, with the installer pointed at the mirror: the mirror's own, when the mirror
+is yours, `curl -fsSL https://<mirror>/install.sh | OVIS_RELEASES_URL=https://<mirror> sh` (or
+`sh <folder>/install.sh` with `OVIS_RELEASES_URL=file://<folder>`), else a trusted copy as above. An installed release does not update itself: Settings says to run the installer
+again, and for a machine that installs from a mirror that is the mirror's.
 
 ### The server binary's signing key
 

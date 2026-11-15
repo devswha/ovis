@@ -152,12 +152,15 @@ jobs:
   rust-pty-host:
     # The Rust PTY host (crates/pty-sidecar) is the default where it is installed or built, and its
     # PtySession checks skip without a build. The self-hosted runners have no Rust toolchain, so this job always runs on
-    # GitHub's image, which has one: it builds the host and runs the same checks on it as on Node.
+    # GitHub's image, which has one: it builds the host and runs the same checks on it as on Node. It also checks the
+    # fleet link agent (crates/fleet-link): its Noise NK, protected records and machine session against the vendored
+    # fixture and server/fleet/vectors, clippy, and the built binary against the TypeScript responder and a TypeScript
+    # controller (a session over stdin, and `ovis-link run` dialing it).
     name: Rust PTY host
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     env:
       HERDR_TEST_MODE: unit
     steps:
@@ -191,6 +194,35 @@ jobs:
         env:
           OVIS_PTY_SIDECAR: rust
         run: bun test ./server/pty/session.test.ts
+      - name: Build the link agent
+        if: needs.changes.outputs.draft != 'true'
+        run: cargo build --release --locked --manifest-path crates/fleet-link/Cargo.toml
+      - name: Link agent unit tests
+        if: needs.changes.outputs.draft != 'true'
+        run: cargo test --locked --manifest-path crates/fleet-link/Cargo.toml
+      - name: Link agent clippy
+        if: needs.changes.outputs.draft != 'true'
+        run: cargo clippy --locked --manifest-path crates/fleet-link/Cargo.toml --all-targets -- -D warnings
+      - name: The link agent against the TypeScript responder
+        if: needs.changes.outputs.draft != 'true'
+        env:
+          OVIS_LINK_BIN: ${{ github.workspace }}/crates/fleet-link/target/release/ovis-link
+        run: bun test ./server/fleet/records-interop.test.ts
+      - name: The link agent against a TypeScript controller
+        if: needs.changes.outputs.draft != 'true'
+        env:
+          OVIS_LINK_BIN: ${{ github.workspace }}/crates/fleet-link/target/release/ovis-link
+        run: bun test ./server/fleet/link-interop.contract.test.ts
+      - name: The link agent's dial, keepalive and supervision against a TypeScript controller
+        if: needs.changes.outputs.draft != 'true'
+        env:
+          OVIS_LINK_BIN: ${{ github.workspace }}/crates/fleet-link/target/release/ovis-link
+        run: bun test ./server/fleet/link-lifecycle.contract.test.ts
+      - name: The link agent against the controller's real direct listener
+        if: needs.changes.outputs.draft != 'true'
+        env:
+          OVIS_LINK_BIN: ${{ github.workspace }}/crates/fleet-link/target/release/ovis-link
+        run: bun test ./server/fleet/direct.contract.test.ts
   herdr-core-live:
     # The hc client (server/herdr-core/connection.ts) against a real herdr-core, in a core of its
     # own (server/herdr-core/live.test.ts). hc is pinned by version and sha256 from herdr-core's

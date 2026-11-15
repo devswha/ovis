@@ -1,11 +1,16 @@
 import { useT } from "../lib/i18n.ts";
 import type { EnrollmentState } from "../lib/relay/device.ts";
-import type { EnrollmentCompletion } from "../lib/relay/shellState.ts";
+import type { EnrollmentCompletion, EnrollmentWait } from "../lib/relay/shellState.ts";
 
 /** Account work never gates opening an already paired PC. */
-export function EnrollmentStatus({ state, retry }: { readonly state: EnrollmentState | "local" | EnrollmentCompletion | undefined; readonly retry?: () => void }) {
+export function EnrollmentStatus({ state, retry }: { readonly state: EnrollmentState | "local" | EnrollmentCompletion | EnrollmentWait | undefined; readonly retry?: () => void }) {
   const t = useT();
-  if (typeof state === "object") return <p className="relay-shell-detail" role="status">{t("In your account")}{state.admitted !== undefined && <> · {t("Devices added: {count}", { count: state.admitted })}</>}</p>;
+  if (typeof state === "object") {
+    switch (state.state) {
+      case "complete": return <p className="relay-shell-detail" role="status">{t("In your account")}{state.admitted !== undefined && <> · {t("Devices added: {count}", { count: state.admitted })}</>}</p>;
+      case "waiting": return <div className="relay-shell-wait" role="status" data-enrollment-wait={state.seconds}><span className="boot-spinner" aria-hidden="true" /><p className="relay-shell-detail">{t("The account service is busy: waiting {seconds} s, then trying again…", { seconds: state.seconds })}</p></div>;
+    }
+  }
   switch (state) {
     case "pending": return <div className="relay-shell-wait" role="status"><span className="boot-spinner" aria-hidden="true" /><p className="relay-shell-detail">{t("Adding it to your account…")}</p></div>;
     case "complete": return <p className="relay-shell-detail" role="status">{t("In your account")}</p>;

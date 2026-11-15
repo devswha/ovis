@@ -20,6 +20,7 @@ mkdirSync(join(remoteHome, ".ssh"), { recursive: true });
 writeFileSync(join(remoteHome, ".zshrc"), "# isolated SSH test session\n");
 const passwordMode = process.env["SSH_TEST_PASSWORD"] === "1";
 const password = "herdr-fixture-secret-only";
+// the login name comes from the OS (`id -un`): a runner container has HOME but no USER, and Bun's userInfo() then answers "unknown"
 const username = passwordMode ? `hbr${process.pid}` : Bun.spawnSync(["id", "-un"]).stdout.toString().trim();
 let sshd: ReturnType<typeof Bun.spawn> | undefined;
 let server: ReturnType<typeof createServer> | undefined;

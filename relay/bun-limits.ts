@@ -1,4 +1,5 @@
-import type { Limiters, RateLimiter } from "./core.ts";
+import { MAX_CLIENTS, type Limiters, type RateLimiter } from "./core.ts";
+import { RELAY_PASS_MAX_FLEET } from "../shared/relay-pass.ts";
 import type { PassSettings } from "./pass.ts";
 
 export const DEFAULT_RELAY_LIMITS = {
@@ -11,6 +12,8 @@ export const DEFAULT_RELAY_LIMITS = {
   maxAddresses: 4096,
   /** open sockets (waiting, connected or still upgrading) one address may hold at once */
   maxSocketsPerAddress: 64,
+  /** answered clients every room may have: 8 + n gives every PC a fleet of n (core.ts roomLimits), at most 1000 */
+  maxClientsPerServer: 8,
 } as const;
 
 export type BunRelayLimits = { readonly [K in keyof typeof DEFAULT_RELAY_LIMITS]: number };
@@ -19,6 +22,9 @@ export function relayLimits(overrides: Partial<BunRelayLimits> = {}): BunRelayLi
   const limits = { ...DEFAULT_RELAY_LIMITS, ...overrides };
   for (const [key, value] of Object.entries(limits)) {
     if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${key} must be a positive safe integer`);
+  }
+  if (limits.maxClientsPerServer < MAX_CLIENTS || limits.maxClientsPerServer > MAX_CLIENTS + RELAY_PASS_MAX_FLEET) {
+    throw new Error(`maxClientsPerServer must be ${MAX_CLIENTS} to ${MAX_CLIENTS + RELAY_PASS_MAX_FLEET}`);
   }
   return limits;
 }
@@ -39,6 +45,7 @@ export function relayLimitsFromArgs(args: readonly string[], env: Readonly<Recor
     maxPairRooms: value("max-pair-rooms", "RELAY_MAX_PAIR_ROOMS", DEFAULT_RELAY_LIMITS.maxPairRooms),
     maxAddresses: value("max-addresses", "RELAY_MAX_ADDRESSES", DEFAULT_RELAY_LIMITS.maxAddresses),
     maxSocketsPerAddress: value("max-sockets-per-address", "RELAY_MAX_SOCKETS_PER_ADDRESS", DEFAULT_RELAY_LIMITS.maxSocketsPerAddress),
+    maxClientsPerServer: value("max-clients-per-server", "RELAY_MAX_CLIENTS_PER_SERVER", DEFAULT_RELAY_LIMITS.maxClientsPerServer),
   });
 }
 

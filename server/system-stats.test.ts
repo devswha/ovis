@@ -228,6 +228,13 @@ describe("the sampler", () => {
     expect((await handleSystemRequest(new Request("http://x/api/system", { method: "POST" }), sampler)).status).toBe(405);
   });
 
+  it("says the terminals end with the server only on an Ovis runtime it started", async () => {
+    const sampler = createSystemSampler(fakeIo().io);
+    const said = async (endWithServer: boolean) => (await (await handleSystemRequest(new Request("http://x/api/system"), sampler, endWithServer)).json() as { terminals_end_with_server?: boolean }).terminals_end_with_server;
+    expect(await said(true)).toBe(true);
+    expect(await said(false)).toBeUndefined();
+  });
+
   it("answers 404 where it has no load of its own to tell (a herdr-core machine's server on this PC)", async () => {
     const answer = await handleSystemRequest(new Request("http://x/api/system"), null);
     expect(answer.status).toBe(404);

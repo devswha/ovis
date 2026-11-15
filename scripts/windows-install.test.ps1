@@ -517,9 +517,9 @@ for (const version of ["1.2.3", "1.2.4", "1.2.5", "1.2.6", "1.2.7"]) {
   signManifest(dir, version === "1.2.5" ? generateKeyPair().privateKeyPem : key.privateKeyPem);
 }
 // v1.2.8 to v1.3.0 as main's release step (todo 5) writes them: version, sources and assets only; v1.2.9 signed by
-// another key, v1.3.0 with "schema": 2
+// another key, v1.3.0 with "schema": 3
 const { createHash, createPrivateKey, sign } = await import("node:crypto");
-for (const [version, signer, schema] of [["1.2.8", key.privateKeyPem, null], ["1.2.9", generateKeyPair().privateKeyPem, null], ["1.3.0", key.privateKeyPem, 2]]) {
+for (const [version, signer, schema] of [["1.2.8", key.privateKeyPem, null], ["1.2.9", generateKeyPair().privateKeyPem, null], ["1.3.0", key.privateKeyPem, 3]]) {
   const dir = join(releases, `v${version}`);
   mkdirSync(dir, { recursive: true });
   const assets = {};
@@ -589,7 +589,7 @@ console.log(key.publicKey);
     Assert ($message -match 'is not signed by the key') "An old-shape release signed by another key must be refused: $message"
     $message = ''; $state.installed = $false; $state.linkedRoot = ''
     try { & $copy -Ref 'v1.3.0' } catch { $message = $_.Exception.Message }
-    Assert ($message -match 'schema this installer does not know') "A manifest of schema 2 must be refused: $message"
+    Assert ($message -match 'schema this installer does not know') "A manifest of schema 3 must be refused: $message"
     $state.installed, $state.running, $state.linkedRoot = $before
     $env:OVIS_FROM_SOURCE = '1'; $env:LOCALAPPDATA = $originalLocalAppData; Remove-Item Env:\OVIS_RELEASES_URL
     $state.linkedRoot = ''; $state.running = $true

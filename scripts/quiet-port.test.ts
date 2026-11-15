@@ -1,7 +1,7 @@
 import { expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 
-import { quietPort, quietRange } from "./quiet-port.ts";
+import { heldPort, OWNER_PORTS, quietPort, quietRange } from "./quiet-port.ts";
 
 it("picks from a stretch that holds none of the ports the system hands out", () => {
   // Linux's default, and macOS's and Windows's
@@ -34,4 +34,19 @@ it("gives a free port outside this host's own, and never the same one twice", ()
     const server = Bun.listen({ hostname: "127.0.0.1", port, socket: { data() {} } });
     server.stop(true);
   }
+});
+
+it("never gives the owner's own Ovis port or the maintainer's test app's port", () => {
+  expect([...OWNER_PORTS].sort()).toEqual([17421, 7317].sort());
+  for (let round = 0; round < 40; round++) expect(OWNER_PORTS.has(quietPort())).toBe(false);
+});
+
+it("holds a port for as long as the test keeps it: nobody else can take it, and what connects is closed at once", async () => {
+  const held = heldPort();
+  try {
+    expect(OWNER_PORTS.has(held.port)).toBe(false);
+    expect(() => Bun.listen({ hostname: "127.0.0.1", port: held.port, socket: { data() {} } })).toThrow();
+    // a request to it gets no answer from an app: the connection is closed under it
+    await expect(fetch(`http://127.0.0.1:${held.port}/api/health`, { signal: AbortSignal.timeout(5_000) })).rejects.toThrow();
+  } finally { held.stop(); }
 });

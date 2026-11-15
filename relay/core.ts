@@ -10,7 +10,10 @@
  *   text) about clients, and sends nothing but keepalive pings, pass renewals, and
  *   `{"type":"new_session","connection_id":".."}` once it identified a client as a device new to it.
  * - client (`role=client`): a phone or browser. The relay picks its `connection_id` and says so
- *   in its first frame, `{"type":"assigned","connection_id":"..."}`.
+ *   in its first frame, `{"type":"assigned","connection_id":"..."}`. A fleet machine adds `lane=paced`:
+ *   the relay keeps that bit beside its connection_id and uses it only to order what it already does
+ *   (`sync` and `connected` name it, a paced client never takes the warm socket, and a full waiting
+ *   queue gives way paced-first); frames still pass unread.
  * - data (`role=server&connection_id=..`): the PC's socket for one client, opened once the PC
  *   hears `connected` (or `sync`) for it. Frames then pass between client and data as they came.
  * - warm (`role=server&warm=<generation>`): a data socket the PC opened and proved before any
@@ -25,9 +28,9 @@
  * A PC socket (control or data) offers the PC's public key, from which its `server_id` is derived,
  * and is no part of the room until it answers a challenge only the matching secret key can answer
  * (shared/relay-server-proof.ts): knowing a `server_id` is not enough to take a PC's place. A
- * client holds one of a server's MAX_CLIENTS slots only once the PC has answered it (its data
- * socket sent a frame); until then it is one of at most MAX_PENDING, closed HANDSHAKE_MS after the
- * PC could have answered.
+ * client holds one of a server's slots (MAX_CLIENTS, more in a fleet room: roomLimits) only once the
+ * PC has answered it (its data socket sent a frame); until then it is one of at most MAX_PENDING (more
+ * in a fleet room), closed HANDSHAKE_MS after the PC could have answered.
  *
  * The room keeps no state that must outlive the process (or a Durable Object's eviction): who is
  * who lives with each socket (`RoomHost.info`), and a PC that reconnects gets the clients still
@@ -41,12 +44,12 @@
 
 import { parsePairRequest, type PairSocketRequest } from "./pair-room.ts";
 import { SERVER_KEY_INVALID, SERVER_KEY_MISMATCH, SERVER_PROOF_CLOSE, SERVER_PROOF_MS, SERVER_PROOF_REQUIRED, deriveServerId, proofKey, serverChallenge, verifyServerProof } from "../shared/relay-server-proof.ts";
-import { RELAY_NEW_SESSIONS_CLOSE, RELAY_NEW_SESSIONS_REFUSED, RELAY_PASS_CLOSE, RELAY_PASS_EXPIRED, RELAY_PASS_HEADER, RELAY_PASS_INVALID, RELAY_PASS_REQUIRED, RELAY_PASS_SKEW_S } from "../shared/relay-pass.ts";
+import { RELAY_NEW_SESSIONS_CLOSE, RELAY_NEW_SESSIONS_REFUSED, RELAY_PASS_CLOSE, RELAY_PASS_EXPIRED, RELAY_PASS_HEADER, RELAY_PASS_INVALID, RELAY_PASS_REQUIRED, RELAY_PASS_SKEW_S, RELAY_PASS_VERSIONS } from "../shared/relay-pass.ts";
 import { checkPass, passMayHold, passMode, passNotice, type PassPolicy, type PassResult, type PassState } from "./pass.ts";
 
 /** the wire version this relay speaks, `v=` in the socket URL */
 export const WIRE_VERSION = "1";
-/** clients the PC has answered, one server_id may have at once */
+/** clients the PC has answered, one server_id may have at once, unless its room is a fleet's (roomLimits) */
 export const MAX_CLIENTS = 8;
 /** clients one server_id may have that the PC has not answered yet (waiting for their data socket, or for its first frame) */
 export const MAX_PENDING = 4;
@@ -58,6 +61,18 @@ export const MAX_PENDING = 4;
 export const MAX_PROVING = 16;
 /** proven warm sockets one server_id may keep waiting for a client; past it the oldest is closed */
 export const MAX_WARM = 1;
+/** the most waiting clients `sync` names: a PC closes its control socket on more (server/relay/link.ts); the rest follow as `connected` */
+export const SYNC_IDS = 8;
+
+/**
+ * A room's sizes with `fleet` machines beside its clients (a v3 relay pass's `fleet`, or a Bun relay's
+ * --max-clients-per-server less 8): 8 + n answered clients, 4 + ceil(n/8) waiting, and max(16, ceil(n/8)) PC sockets
+ * proving at once. Without a fleet these are MAX_CLIENTS, MAX_PENDING and MAX_PROVING.
+ */
+export function roomLimits(fleet: number): { clients: number; pending: number; proving: number } {
+  const share = Math.ceil(fleet / 8);
+  return { clients: MAX_CLIENTS + fleet, pending: MAX_PENDING + share, proving: Math.max(MAX_PROVING, share) };
+}
 /**
  * A warm socket silent this long (the PC pings it every 10 s) is not handed to a client: the PC may have
  * given it up while its close has not arrived, and the client would wait out its handshake deadline.
@@ -69,6 +84,16 @@ export const MAX_MESSAGE_BYTES = 64 * 1024;
 export const BUFFER_FRAMES = 200;
 /** ...and at most this many bytes */
 export const BUFFER_BYTES = 1024 * 1024;
+/**
+ * What one room may hold for all its waiting clients together. A room of 8 holds at most 4 MiB (4 waiting); a fleet
+ * room's queue (4 + ceil(n/8)) could hold 129 MiB, past the 128 MB of a Durable Object's isolate. Each held frame is a
+ * copy (`own`), and the frame it was copied from lives until the garbage collector takes it, so holding costs up to
+ * twice what is held (measured on the Bun relay: 31 MiB more resident for 17 MiB held): 32 MiB keeps a full room
+ * well under 128 MB where 64 MiB would not.
+ */
+export const ROOM_BUFFER_BYTES = 32 * BUFFER_BYTES;
+/** why a waiting client closes 1013 for ROOM_BUFFER_BYTES */
+const ROOM_HELD_REFUSED = "too much held for this server";
 /** a client the PC has not answered (its data socket sent nothing yet) is closed this long after the PC could have */
 export const HANDSHAKE_MS = 15_000;
 /**
@@ -99,7 +124,7 @@ export const CLOSE = {
   TOO_BIG: 1009,
   /** the PC's data socket went away (to its client), or the relay lost frames it held */
   RESTART: 1012,
-  /** a limit: too many clients, too many waiting, too much held before the PC attached, no answer from the PC in time, or no PC connected in time */
+  /** a limit: too many clients, too many waiting, too much held before the PC attached (by the client, or by the room in all), no answer from the PC in time, or no PC connected in time */
   TRY_AGAIN: 1013,
   /** a PC socket without a valid answer to its challenge: no key, a key that is not this server_id's, a wrong or late answer */
   SERVER_PROOF: SERVER_PROOF_CLOSE,
@@ -133,6 +158,8 @@ export interface SocketInfo {
   deadline?: number;
   /** a client: when it arrived, so the oldest one not answered gives way to a newcomer */
   arrived?: number;
+  /** a client that asked for the paced lane (`lane=paced`): a fleet machine, as far as the relay knows */
+  paced?: true;
   /** a PC socket that has not answered its challenge yet: no part of the room until it does */
   proof?: { expected: string; expires: number };
   /** a PC socket still proving: its pass's expiry (ms) and key id, which authorize the room once the proof holds */
@@ -140,6 +167,8 @@ export interface SocketInfo {
   pass_kid?: string;
   /** a PC socket still proving: its pass allows no new client sessions, which it says for the room once the proof holds */
   pass_no_new?: true;
+  /** a PC socket still proving: its pass's fleet number, which sizes the room once the proof holds */
+  pass_fleet?: number;
   /** a PC socket still proving: what the relay made of its pass, told to the PC in `sync` */
   pass_state?: PassState;
   /** a control socket's generation, new each time one is proven; a warm socket's, the one it was opened under */
@@ -182,6 +211,8 @@ export interface SocketRequest {
   public_key?: string | null;
   /** a warm socket's control generation, as given */
   generation?: string;
+  /** a client's lane, when it asked for the paced one */
+  lane?: "paced";
   /** a PC socket's pass, checked by `admit` when the relay has a pass policy that is not off */
   pass?: PassResult;
 }
@@ -214,7 +245,9 @@ export function parseSocketRequest(url: URL): SocketRequest | { error: string } 
   const version = params.get("v");
   if (role === "client") {
     if (connectionId !== null) return { error: "the relay assigns a client's connection_id" };
-    return { server_id: serverId, role: "client", connection_id: null, version };
+    const lane = params.get("lane");
+    if (lane !== null && lane !== "paced") return { error: "lane must be paced" };
+    return { server_id: serverId, role: "client", connection_id: null, version, ...(lane === null ? {} : { lane }) };
   }
   if (role !== "server") return { error: "role must be server or client" };
   const proof = { proof: params.get("proof"), public_key: params.get("public_key") };
@@ -265,7 +298,8 @@ export async function admit(request: Request, address: string, limiters?: Limite
   }
   // otherwise checked after the limits, so a flood of requests costs no signature checks; a pairing host's pass, for the key it offers
   const serverId = "kind" in socket ? socket.key?.server_id : pcServerId;
-  if (!policy || policy.mode === "off" || serverId === undefined) return socket;
+  // with passes off, a relay with keys still reads a PC socket's pass for its fleet number (roomLimits), and refuses nobody for it
+  if (!policy || serverId === undefined || (policy.mode === "off" && (policy.keys.size === 0 || "kind" in socket))) return socket;
   return { ...socket, pass: pass ?? await checkPass(policy, header, serverId, Date.now()) };
 }
 
@@ -275,8 +309,11 @@ export function passRefusal(socket: Pick<SocketRequest, "role" | "pass"> | PairS
   return socket.pass?.state === "ok" ? null : socket.pass?.reason ?? RELAY_PASS_REQUIRED;
 }
 
-/** A room's relay pass authorization: the latest expiry any of its proven PC sockets' passes gave, that pass's key id, and whether it allows no new client sessions. */
-export interface RoomAuthorization { readonly until: number; readonly kid: string; readonly noNew?: true }
+/**
+ * A room's relay pass authorization: the latest expiry any of its proven PC sockets' passes gave, that pass's key id,
+ * whether it allows no new client sessions, and its fleet number (v3).
+ */
+export interface RoomAuthorization { readonly until: number; readonly kid: string; readonly noNew?: true; readonly fleet?: number }
 export interface RoomPass {
   readonly policy: PassPolicy;
   /** the authorization, or null when no pass authorized this room */
@@ -302,6 +339,10 @@ export interface RoomHost<S extends object> {
   now(): number;
   /** the relay pass policy and this room's authorization; without it every PC is let in, as before */
   pass?: RoomPass;
+  /** the connection budget per address and minute `sync` names (`per_address_per_minute`); none when not given */
+  perAddressPerMinute?: number;
+  /** the answered clients every room of this relay may have (a Bun relay's --max-clients-per-server); MAX_CLIENTS when not given */
+  maxClients?: number;
 }
 
 interface Held { frames: Frame[]; bytes: number }
@@ -399,12 +440,12 @@ export class Room<S extends object> {
   }
 
   /** A socket was upgraded: place it, or close it when the room refuses it. */
-  open(socket: S, request: Pick<SocketRequest, "server_id" | "role" | "connection_id" | "version" | "proof" | "public_key" | "generation" | "pass">): void {
+  open(socket: S, request: Pick<SocketRequest, "server_id" | "role" | "connection_id" | "version" | "proof" | "public_key" | "generation" | "pass" | "lane">): void {
     if (request.version !== WIRE_VERSION) return this.end(socket, CLOSE.POLICY, "unsupported wire version");
     // the room wakes when enforcement begins, so sockets let in during grace do not outlive it
     const policy = this.host.pass?.policy;
     if (policy?.mode === "grace" && policy.enforceAt !== null && this.host.now() < policy.enforceAt) this.host.wake?.(policy.enforceAt);
-    if (request.role === "client") return this.openClient(socket, request.server_id);
+    if (request.role === "client") return this.openClient(socket, request.server_id, request.lane === "paced");
     const refused = passRefusal(request, this.host.pass?.policy, this.host.now());
     if (refused !== null) return this.end(socket, CLOSE.RELAY_PASS, refused);
     // a PC socket: nothing of the room until it proves it holds the key this server_id derives from
@@ -413,7 +454,8 @@ export class Room<S extends object> {
     if (!key || deriveServerId(key) !== request.server_id) return this.end(socket, CLOSE.SERVER_PROOF, SERVER_KEY_MISMATCH);
     const proving = this.peers(true).filter((peer) => peer.info.proof).sort((a, b) => a.info.proof!.expires - b.info.proof!.expires);
     // the oldest challenge gives way, so silent sockets cannot keep the PC itself from proving
-    for (const peer of proving.slice(0, Math.max(0, proving.length - MAX_PROVING + 1))) this.end(peer.socket, CLOSE.TRY_AGAIN, "too many server proofs pending");
+    const maxProving = this.limits(this.host.now()).proving;
+    for (const peer of proving.slice(0, Math.max(0, proving.length - maxProving + 1))) this.end(peer.socket, CLOSE.TRY_AGAIN, "too many server proofs pending");
     let challenge: ReturnType<typeof serverChallenge>;
     // a warm socket's proof covers its generation, carried where a data socket's covers its connection_id
     try { challenge = serverChallenge(key, { server_id: request.server_id, role: request.role, connection_id: request.role === "warm" ? request.generation ?? null : request.connection_id }); }
@@ -422,24 +464,33 @@ export class Room<S extends object> {
     const expires = now + SERVER_PROOF_MS;
     this.host.setInfo(socket, { role: request.role, connection_id: request.connection_id, seen: now, buffered: false, proof: { expected: challenge.expected, expires }, server_id: request.server_id,
       ...(request.role === "warm" ? { generation: request.generation } : {}),
-      ...(request.pass ? { pass_state: request.pass.state, ...(request.pass.exp !== undefined && request.pass.kid !== undefined ? { pass_exp: request.pass.exp, pass_kid: request.pass.kid, ...(request.pass.noNew ? { pass_no_new: true as const } : {}) } : {}) } : {}) });
+      ...(request.pass ? { pass_state: request.pass.state, ...(request.pass.exp !== undefined && request.pass.kid !== undefined ? { pass_exp: request.pass.exp, pass_kid: request.pass.kid,
+        ...(request.pass.noNew ? { pass_no_new: true as const } : {}), ...(request.pass.fleet !== undefined ? { pass_fleet: request.pass.fleet } : {}) } : {}) } : {}) });
     this.lastSeen.set(socket, now);
     this.host.send(socket, challenge.frame);
     this.host.wake?.(expires);
   }
 
-  private openClient(socket: S, serverId: string): void {
+  private openClient(socket: S, serverId: string, paced: boolean): void {
     const now = this.host.now();
     const peers = this.peers();
+    const limits = this.limits(now);
     const clients = peers.filter((peer) => peer.info.role === "client");
     const answered = clients.filter((peer) => peer.info.answered).length;
-    if (answered >= MAX_CLIENTS) return this.end(socket, CLOSE.TRY_AGAIN, "too many clients for this server");
+    if (answered >= limits.clients) return this.end(socket, CLOSE.TRY_AGAIN, "too many clients for this server");
     // the oldest client not answered gives way: holding the waiting places then takes MAX_PENDING
-    // arrivals within one real phone's handshake, not one arrival per HANDSHAKE_MS
+    // arrivals within one real phone's handshake, not one arrival per HANDSHAKE_MS. Paced ones give way
+    // first, and a paced newcomer never takes a default-lane client's place: it is refused instead
     const waiting = clients.filter((peer) => !peer.info.answered).sort((a, b) => (a.info.arrived ?? a.info.seen) - (b.info.arrived ?? b.info.seen));
-    for (const peer of waiting.slice(0, Math.max(0, waiting.length - MAX_PENDING + 1))) this.end(peer.socket, CLOSE.TRY_AGAIN, "too many clients waiting for this server");
+    const over = waiting.length - limits.pending + 1;
+    if (over > 0) {
+      const pacedWaiting = waiting.filter((peer) => peer.info.paced);
+      const giving = paced ? pacedWaiting : [...pacedWaiting, ...waiting.filter((peer) => !peer.info.paced)];
+      if (giving.length < over) return this.end(socket, CLOSE.TRY_AGAIN, "too many clients waiting for this server");
+      for (const peer of giving.slice(0, over)) this.end(peer.socket, CLOSE.TRY_AGAIN, "too many clients waiting for this server");
+    }
     const connectionId = randomHex();
-    const info: SocketInfo = { role: "client", connection_id: connectionId, seen: now, buffered: false, arrived: now, server_id: serverId, usage: { since: now, up: 0, down: 0 } };
+    const info: SocketInfo = { role: "client", connection_id: connectionId, seen: now, buffered: false, arrived: now, server_id: serverId, usage: { since: now, up: 0, down: 0 }, ...(paced ? { paced: true as const } : {}) };
     this.host.setInfo(socket, info);
     this.lastSeen.set(socket, now);
     // with a PC connected, the client must be answered in time; without one it waits a while for the PC
@@ -450,13 +501,14 @@ export class Room<S extends object> {
     const notice = pass && pass.policy.mode !== "off" && !this.authorized(now) ? { relay_pass: passNotice(pass.policy, "missing") } : {};
     this.host.send(socket, JSON.stringify({ type: "assigned", connection_id: connectionId, ...notice }));
     const generation = peers.find((peer) => peer.info.role === "control")?.info.generation;
-    let warm = generation ? peers.find((peer) => peer.info.role === "warm" && peer.info.generation === generation) : undefined;
+    // a paced client never takes the warm socket: it stays for the next default-lane client
+    let warm = generation && !paced ? peers.find((peer) => peer.info.role === "warm" && peer.info.generation === generation) : undefined;
     // one the PC stopped keeping alive may be gone on its side (half-open): the client is announced instead
     if (warm && now - Math.max(this.lastSeen.get(warm.socket) ?? warm.info.seen, this.host.keepaliveAt?.(warm.socket) ?? 0) >= WARM_QUIET_MS) {
       this.end(warm.socket, CLOSE.GOING_AWAY, "warm socket went quiet");
       warm = undefined;
     }
-    if (!warm) return this.tellControls({ type: "connected", connection_id: connectionId });
+    if (!warm) return this.tellControls({ type: "connected", connection_id: connectionId, ...(paced ? { lane: "paced" } : {}) });
     // the PC's warm socket becomes this client's data socket, saved as such before any frame passes
     this.host.setInfo(warm.socket, { role: "data", connection_id: connectionId, seen: now, buffered: false });
     this.lastSeen.set(warm.socket, now);
@@ -473,6 +525,17 @@ export class Room<S extends object> {
   private serverId(): string | undefined {
     if (this.roomServerId === undefined) for (const peer of this.peers(true)) if (peer.info.server_id !== undefined) { this.roomServerId = peer.info.server_id; break; }
     return this.roomServerId;
+  }
+
+  /**
+   * This room's sizes now (roomLimits): its fleet is the relay's own (a Bun relay's --max-clients-per-server less 8) or
+   * the one the pass that authorizes the room names, whichever is more. A pass counts only while it holds, so a room
+   * whose pass ran out unrenewed is back to 8: no newcomer past them, and nobody it holds is closed for it.
+   */
+  private limits(now: number): ReturnType<typeof roomLimits> {
+    const own = Math.max(0, (this.host.maxClients ?? MAX_CLIENTS) - MAX_CLIENTS);
+    const passed = this.authorized(now) ? this.host.pass?.until()?.fleet ?? 0 : 0;
+    return roomLimits(Math.max(own, passed));
   }
 
   /** whether passes are enforced now and none authorizes the room: then nothing more passes until the sweep closed its PC sockets */
@@ -503,15 +566,16 @@ export class Room<S extends object> {
   /**
    * A proven PC socket's pass authorizes the room until its expiry, and says whether new client
    * sessions are allowed; an earlier expiry changes nothing while the saved one holds, so the pass
-   * issued last (which runs out last) decides, and of two issued the same second the stricter.
+   * issued last (which runs out last) decides, and of two issued the same second the stricter. Its fleet number comes
+   * with it.
    */
-  private authorize(until: number, kid: string, noNew: boolean): void {
+  private authorize(until: number, kid: string, noNew: boolean, fleet?: number): void {
     const pass = this.host.pass;
     if (!pass) return;
     const current = pass.until();
     // one with the same expiry was issued the same second: the stricter of the two holds, whichever is proven last
     if (current && this.authorized(this.host.now()) && (until < current.until || (until === current.until && (!noNew || current.noNew === true)))) return;
-    pass.setUntil({ until, kid, ...(noNew ? { noNew: true as const } : {}) });
+    pass.setUntil({ until, kid, ...(noNew ? { noNew: true as const } : {}), ...(fleet !== undefined ? { fleet } : {}) });
     this.host.wake?.(until + PASS_SKEW_MS);
   }
 
@@ -522,7 +586,8 @@ export class Room<S extends object> {
   /** A renewal on a proven control socket: `{"type":"relay_pass","pass":"..."}`, checked as at admission. */
   private async renew(socket: S, info: SocketInfo, text: string): Promise<void> {
     const pass = this.host.pass;
-    if (!pass || pass.policy.mode === "off" || info.server_id === undefined) return;
+    // with passes off, a relay with keys still reads a renewal for its fleet number
+    if (!pass || pass.policy.keys.size === 0 || info.server_id === undefined) return;
     // one check at a time and one a minute per socket: a forged renewal costs the relay one signature check a minute
     const now = this.host.now();
     if (this.renewing.has(socket) || now - (this.renewedAt.get(socket) ?? -Infinity) < RENEWAL_GAP_MS) return;
@@ -532,7 +597,7 @@ export class Room<S extends object> {
       const result = await checkPass(pass.policy, text, info.server_id, now);
       // the socket may have closed (its pass ran out, say) while the signature was checked
       if (this.ended.has(socket) || this.host.info(socket)?.role !== "control") return;
-      if (result.state === "ok" && result.exp !== undefined && result.kid !== undefined) this.authorize(result.exp, result.kid, result.noNew === true);
+      if (result.state === "ok" && result.exp !== undefined && result.kid !== undefined) this.authorize(result.exp, result.kid, result.noNew === true, result.fleet);
     } finally { this.renewing.delete(socket); }
   }
 
@@ -540,7 +605,7 @@ export class Room<S extends object> {
   private attach(socket: S, info: SocketInfo): void {
     const now = this.host.now();
     const peers = this.peers();
-    if (info.pass_exp !== undefined && info.pass_kid !== undefined) this.authorize(info.pass_exp, info.pass_kid, info.pass_no_new === true);
+    if (info.pass_exp !== undefined && info.pass_kid !== undefined) this.authorize(info.pass_exp, info.pass_kid, info.pass_no_new === true, info.pass_fleet);
     if (info.role === "control") {
       // the newest proven control socket wins: an older one may be half-open after the PC's network moved
       for (const peer of peers) if (peer.info.role === "control") this.end(peer.socket, CLOSE.POLICY, "replaced by a newer control socket");
@@ -555,7 +620,14 @@ export class Room<S extends object> {
       const pass = this.host.pass;
       // outside `off` the PC hears whether its pass holds; an older PC reads only connection_ids and warm
       const notice = pass && pass.policy.mode !== "off" ? { relay_pass: passNotice(pass.policy, this.authorized(now) ? "ok" : info.pass_state ?? "missing") } : {};
-      this.host.send(socket, JSON.stringify({ type: "sync", connection_ids: waiting.map((peer) => peer.info.connection_id), warm: generation, ...notice }));
+      // default-lane clients first: sync names at most SYNC_IDS, and the rest follow at once as `connected`, in the same order
+      const ordered = [...waiting.filter((peer) => !peer.info.paced), ...waiting.filter((peer) => peer.info.paced)];
+      const named = ordered.slice(0, SYNC_IDS);
+      const paced = named.filter((peer) => peer.info.paced).map((peer) => peer.info.connection_id);
+      const budget = this.host.perAddressPerMinute === undefined ? {} : { per_address_per_minute: this.host.perAddressPerMinute };
+      this.host.send(socket, JSON.stringify({ type: "sync", connection_ids: named.map((peer) => peer.info.connection_id), ...(paced.length > 0 ? { paced } : {}), warm: generation,
+        max_clients: this.limits(now).clients, ...budget, pass_versions: RELAY_PASS_VERSIONS, ...notice }));
+      for (const peer of ordered.slice(SYNC_IDS)) this.host.send(socket, JSON.stringify({ type: "connected", connection_id: peer.info.connection_id, ...(peer.info.paced ? { lane: "paced" } : {}) }));
       return;
     }
     if (info.role === "warm") {
@@ -629,7 +701,7 @@ export class Room<S extends object> {
       if (!client) return;
       if (!client.info.answered) {
         // the PC answered the client: it now holds one of the server's slots, and its session starts
-        if (this.peers().filter((peer) => peer.info.role === "client" && peer.info.answered).length >= MAX_CLIENTS) return this.end(client.socket, CLOSE.TRY_AGAIN, "too many clients for this server");
+        if (this.peers().filter((peer) => peer.info.role === "client" && peer.info.answered).length >= this.limits(now).clients) return this.end(client.socket, CLOSE.TRY_AGAIN, "too many clients for this server");
         const { deadline: _deadline, ...rest } = client.info;
         // its time counts from here; what it sent while waiting (its first handshake frames) stays counted
         this.host.setInfo(client.socket, { ...rest, answered: true, usage: { since: now, up: rest.usage?.up ?? 0, down: 0 } });
@@ -645,10 +717,34 @@ export class Room<S extends object> {
     if (info.buffered && !this.held.has(connectionId)) return this.lostHeld(socket);
     const held = this.held.get(connectionId) ?? { frames: [], bytes: 0 };
     if (held.frames.length >= BUFFER_FRAMES || held.bytes + size > BUFFER_BYTES) return this.end(socket, CLOSE.TRY_AGAIN, "too much sent before the server attached");
+    if (!this.roomToHold(socket, info, size)) return this.end(socket, CLOSE.TRY_AGAIN, ROOM_HELD_REFUSED);
     held.frames.push(own(frame));
     held.bytes += size;
     this.held.set(connectionId, held);
     if (!info.buffered) this.host.setInfo(socket, { ...(this.host.info(socket) ?? info), buffered: true });
+  }
+
+  /**
+   * Whether the room may hold `size` more bytes for `socket`, a waiting client, under ROOM_BUFFER_BYTES. Past it, other
+   * waiting clients holding frames give way as a full waiting queue's do (openClient): the oldest paced ones first, and
+   * default-lane ones only for a default-lane sender; when they cannot free enough, the sender is refused instead.
+   */
+  private roomToHold(socket: S, info: SocketInfo, size: number): boolean {
+    let over = size - ROOM_BUFFER_BYTES;
+    for (const held of this.held.values()) over += held.bytes;
+    if (over <= 0) return true;
+    const holding = this.peers().filter((peer) => peer.socket !== socket && peer.info.role === "client" && (this.held.get(peer.info.connection_id!)?.bytes ?? 0) > 0)
+      .sort((a, b) => (a.info.arrived ?? a.info.seen) - (b.info.arrived ?? b.info.seen));
+    const paced = holding.filter((peer) => peer.info.paced);
+    const giving: typeof holding = [];
+    for (const peer of info.paced ? paced : [...paced, ...holding.filter((peer) => !peer.info.paced)]) {
+      if (over <= 0) break;
+      giving.push(peer);
+      over -= this.held.get(peer.info.connection_id!)!.bytes;
+    }
+    if (over > 0) return false;
+    for (const peer of giving) this.end(peer.socket, CLOSE.TRY_AGAIN, ROOM_HELD_REFUSED);
+    return true;
   }
 
   /** A socket closed (or failed): close its partner. Safe to call more than once. */

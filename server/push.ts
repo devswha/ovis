@@ -202,6 +202,12 @@ export interface PushService {
    * change that happened unseen is not news, and an alert it overtook is called off.
    */
   resync(panes: readonly HerdrPane[], newer: ReadonlySet<string>, machineId?: string): void;
+  /**
+   * A status the pane already had, taken as no change: nothing is announced and no alert is called off. `replace`: over
+   * whatever was heard (a card's wait remembered across a restart, server/card-waits.ts); else only where nothing was
+   * heard yet, so that the change after it is news rather than a first sighting.
+   */
+  assume(paneId: string, status: AgentStatus, replace?: boolean, machineId?: string): void;
   /** Schedules the alert this change is worth, and calls off the one it overtakes. */
   onStatus(paneId: string, status: AgentStatus, machineId?: string): Promise<void>;
   onEnded(paneId: string, machineId?: string): Promise<void>;
@@ -965,6 +971,11 @@ export function createPushService(options: PushServiceOptions): PushService {
         if (pane.agent_kind) kinds.set(key, pane.agent_kind); else kinds.delete(key);
         if (!lastStatus.has(key)) lastStatus.set(key, pane.agent_status);
       }
+    },
+
+    assume(paneId, status, replace = false, machineId = "local") {
+      const key = paneStorageId(machineId, paneId);
+      if (replace || !lastStatus.has(key)) lastStatus.set(key, status);
     },
 
     resync(panes, newer, machineId = "local") {

@@ -20,7 +20,7 @@ describe("imports", () => {
       const code = stripComments(read(file));
       return [...code.matchAll(SPECIFIER)].flatMap((match) => {
         const specifier = match[1] ?? match[2] ?? match[3]!;
-        const bad = specifier.startsWith("@shared/") || (specifier.startsWith(".") && !/\.(?:ts|tsx|mjs|js|css|json|md|svg|png|woff2|html|txt)(?:\?[\w&=-]*)?$/.test(specifier));
+        const bad = specifier.startsWith("@shared/") || (specifier.startsWith(".") && !/\.(?:ts|tsx|mjs|js|css|json|md|svg|png|woff2|html|txt|sh)(?:\?[\w&=-]*)?$/.test(specifier));
         return bad ? [`${file}:${lineOf(code, match.index)}: ${specifier}`] : [];
       });
     });
@@ -152,6 +152,14 @@ describe("demo transport", () => {
     "/api/account/records": "account linking: no screen of the app asks for it yet (the account screens come with their own demo answers)",
     "/api/account/relay-account": "relay pass: named by a signed-in owner's account screen, which the demo never reaches (no sign-in there)",
     "/api/devices/pair/cancel": "called by the plugin's terminal `link --code` only (scripts/plugin-link.ts); no screen of the app asks for it",
+    "/api/fleet/machines": "a fleet's machines and why one is not usable: no screen of the app asks for it yet (the Fleet screen comes with its own demo answers)",
+    "/api/fleet/invites": "a fleet's invites (minted by `ovis fleet invite`): no screen of the app asks for them yet (the Fleet screen comes with its own demo answers)",
+    "/api/fleet/batches": "a fleet's batches waiting for confirmation: no screen of the app asks for them yet (the Fleet screen comes with its own demo answers)",
+    "/api/fleet/invites/withdraw": "withdraws open invites (`ovis fleet invite --withdraw`): no screen of the app sends it yet (the Fleet screen comes with its own demo answers)",
+    "/api/fleet/restore/confirm": "confirms a restored fleet (`ovis fleet confirm --restored`): no screen of the app sends it yet (the Fleet screen comes with its own demo answers)",
+    "/api/fleet/enable": "turns a fleet on (todo 60): no screen of the app asks for it yet (the Fleet screen comes with its own demo answers)",
+    "/api/fleet/machines/native": "a machine's runtime socket and bearer (todo 32): only a process on the controller with its token asks; never a browser",
+    "/api/fleet/machines/bridge": "a machine's bridge forward and token for `ovis start` and `ovis wait` (todo 32): only a process on the controller with its token asks; never a browser",
     "/api/auth": "the demo is never locked (/api/health says authenticated), so neither the token form nor sign-out runs",
     "/api/bridge": "a remote PC's bridge endpoint, asked by another server, never by the browser",
     "/api/runtime": "switching the runtime: the demo's health carries no herdr_runtime, so Settings offers no Switch",
@@ -210,6 +218,8 @@ describe("names from before Ovis", () => {
     "src/lib/legacyStorage.test.ts": "tests that move",
     "server/auth.ts": "still accepts and clears the old cookies",
     "server/auth.test.ts": "tests the old cookies",
+    "server/fleet/on.contract.test.ts": "tests that the native route refuses the token cookie under its old name too",
+    "server/fleet/routes-access.contract.test.ts": "tests that the native route refuses the token cookie under its old name too",
     "server/pty/pty-host.mjs": "keeps the token from the attach under either name",
     "server/pty/session.ts": "keeps the token from the sidecar under either name",
     "crates/pty-sidecar/src/pty.rs": "keeps the token from the attach under either name, as pty-host.mjs does",

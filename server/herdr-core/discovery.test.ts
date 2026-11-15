@@ -1,9 +1,9 @@
 import { afterEach, expect, it } from "bun:test";
-import { chmodSync, existsSync, statSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, statSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync, type Stats } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isAbsolute, relative } from "node:path";
-import { aclReader, coreSocket, discoverHc, findHc, harmlessGroups, macAclGrantsWrite, ownedByUser, plainSession, privateGroup, trustRefusal } from "./discovery.ts";
+import { aclReader, coreSocket, coreSocketStatus, discoverHc, findHc, harmlessGroups, macAclGrantsWrite, ownedByUser, plainSession, privateGroup, trustRefusal, type TrustReader } from "./discovery.ts";
 
 const unix = process.platform !== "win32";
 let cleanup = () => {};
@@ -238,6 +238,76 @@ it.skipIf(!unix)("says which entry a refused candidate fails on, and which rule"
   expect(trustRefusal(bin, () => false)).toBe(`${bin} is writable by everyone`);
   chmodSync(bin, 0o755);
   expect(trustRefusal(bin, () => false)).toBeNull();
+});
+
+/** a core's socket as hc makes it (0755, in a 0700 folder), listening until the test ends */
+function coreAt(root: string): { run: string; folder: string; socket: string } {
+  const run = join(root, "run");
+  const folder = join(run, "herdr-core");
+  mkdirSync(folder, { recursive: true, mode: 0o700 });
+  chmodSync(run, 0o700);
+  const socket = join(folder, "core.sock");
+  const listener = Bun.listen({ unix: socket, socket: { data() {} } });
+  chmodSync(socket, 0o755);
+  const before = cleanup;
+  cleanup = () => { listener.stop(true); before(); };
+  return { run: realpathSync(run), folder: realpathSync(folder), socket: realpathSync(socket) };
+}
+
+/** the file system, except that `owners` says who owns those entries (a test cannot chown) */
+function ownedAs(owners: Record<string, number>): TrustReader {
+  const as = (path: string, stats: Stats) => path in owners ? new Proxy(stats, { get: (target, key) => {
+    if (key === "uid") return owners[path];
+    const value: unknown = Reflect.get(target, key, target);
+    return typeof value === "function" ? value.bind(target) : value;
+  } }) : stats;
+  return { stat: (path) => as(path, statSync(path)), lstat: (path) => as(path, lstatSync(path)) };
+}
+
+it.skipIf(!unix)("takes a core's socket only when its whole path is this account's, and names the real path to connect to", () => {
+  const { root } = scratch();
+  const { run, folder, socket } = coreAt(root);
+  expect(coreSocketStatus(socket)).toEqual({ status: "socket", real: socket });
+  // a link of this account's in the middle of the path: followed once, and the connection goes where it led
+  symlinkSync(run, join(root, "via"));
+  expect(coreSocketStatus(join(root, "via", "herdr-core", "core.sock"))).toEqual({ status: "socket", real: socket });
+  // the socket's own name a link, even to the core: refused
+  symlinkSync(socket, join(folder, "alias.sock"));
+  expect(coreSocketStatus(join(folder, "alias.sock"))).toEqual({ status: "refused", reason: `${join(folder, "alias.sock")} is a link, not a socket` });
+  // a folder on the way that every account can write: another could put any socket there
+  chmodSync(run, 0o777);
+  expect(coreSocketStatus(socket)).toEqual({ status: "refused", reason: `${run} is writable by everyone` });
+  // sticky, as /tmp is, above the socket's own folder: nobody can replace what is not theirs there
+  chmodSync(run, 0o1777);
+  expect(coreSocketStatus(socket)).toEqual({ status: "socket", real: socket });
+  chmodSync(run, 0o700);
+  // but not as the socket's own folder: another account could take the socket's name before the core does
+  chmodSync(folder, 0o1777);
+  expect(coreSocketStatus(socket)).toEqual({ status: "refused", reason: `${folder} is writable by everyone` });
+  chmodSync(folder, 0o700);
+  // the socket's own mode says who may connect, not who may replace it: hc makes it from the umask
+  chmodSync(socket, 0o777);
+  expect(coreSocketStatus(socket)).toEqual({ status: "socket", real: socket });
+  chmodSync(socket, 0o755);
+  // not there yet: gone, not refused, so the selection waits for the core
+  expect(coreSocketStatus(join(folder, "later.sock"))).toEqual({ status: "gone" });
+  expect(coreSocketStatus(join(root, "absent", "core.sock"))).toEqual({ status: "gone" });
+});
+
+it.skipIf(!unix)("refuses a core's socket that another account or root owns, and a link on the way that another account owns", () => {
+  const { root } = scratch();
+  const { run, socket } = coreAt(root);
+  const other = process.getuid!() + 4242;
+  expect(coreSocketStatus(socket, ownedAs({}))).toEqual({ status: "socket", real: socket });
+  expect(coreSocketStatus(socket, ownedAs({ [socket]: other }))).toEqual({ status: "refused", reason: `${socket} is owned by uid ${other}, not you or root` });
+  // root's core is not this account's either
+  expect(coreSocketStatus(socket, ownedAs({ [socket]: 0 }))).toEqual({ status: "refused", reason: `${socket} is owned by uid 0, not you` });
+  // the reviewer's path: a link another account owns, in the middle of the path, pointing at the owner's own folder
+  const via = join(realpathSync(root), "via");
+  symlinkSync(run, via);
+  expect(coreSocketStatus(join(via, "herdr-core", "core.sock"), ownedAs({ [via]: other }))).toEqual({ status: "refused", reason: `${via} is owned by uid ${other}, not you or root` });
+  // and a folder another account owns
+  expect(coreSocketStatus(socket, ownedAs({ [run]: other }))).toEqual({ status: "refused", reason: `${run} is owned by uid ${other}, not you or root` });
 });
 
 it.skipIf(!unix)("tells the caller each candidate it refuses", async () => {

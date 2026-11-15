@@ -4,7 +4,7 @@ import { rotateRelayIdentity } from "../../../server/relay/identity.ts";
 import type { RelayIdentity } from "../../../server/relay/identity.ts";
 import { relayConnection, relayDevice, relayFixture } from "../../../server/relay/test-helpers.ts";
 import { accountDeviceId, exportAccountKey } from "../../../shared/account-records.ts";
-import { FakeAccountService } from "../../../shared/account-service-fake.ts";
+import { FakeAccountService, PC_LIMITS, type PcLimits } from "../../../shared/account-service-fake.ts";
 import { generateKeyPair, importPublicKey } from "../../../shared/relay-e2ee.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import type { RelayDevice } from "../relay/device.ts";
@@ -154,8 +154,8 @@ it("keeps an add the account service refused and sends it on the next try, so a 
 
 describe("enrolling a PC this device brings into the account", () => {
   /** A phone that is a member of PC X, which already belongs to the account, and has a QR pairing with PC Y, which does not. */
-  async function setUp() {
-    const service = new FakeAccountService();
+  async function setUp(options: { now?: () => number; limits?: PcLimits } = {}) {
+    const service = new FakeAccountService(options.now, options.limits ?? null);
     // Y collects its mailbox from the same service, which is when it retries records waiting on their signer
     // both PCs collect their mailboxes from the fake service, never the real one
     const [x, y] = [pc({ accountService: { url: SERVICE, fetch: service.fetch } }), pc({ accountService: { url: SERVICE, fetch: service.fetch } })];
@@ -186,7 +186,7 @@ describe("enrolling a PC this device brings into the account", () => {
       await planEnroll(accountStore, y.identity.server_id, ACCOUNT);
       return linkThisDevice({ fetch: pcFetch(await connect(y, (await phone.get(y.identity.server_id))!)), device: (await phone.get(y.identity.server_id))!, key, account: ACCOUNT, store: phone });
     };
-    return { x, y, service, accountStore, account, key, onX, approve, disconnect, linkY };
+    return { x, y, service, accountStore, account, key, onX, phone, approve, disconnect, linkY };
   }
 
   it("tombstones on the new PC the devices this phone removed, and adds the ones it approved, but no key a PC merely lists", async () => {
@@ -249,8 +249,11 @@ describe("enrolling a PC this device brings into the account", () => {
       const answer = await pcFetch(link)(path, init);
       return path.startsWith("/api/account/status") ? Response.json({ ...await answer.json() as object, fresh: false }) : answer;
     };
-    const enrolled = await enrollPc({ fetch: pcFetch(await connect(y, onY)), store: accountStore, account: ACCOUNT, serverId: y.identity.server_id, others: [{ serverId: x.identity.server_id, fetch: stale }] });
-    expect([enrolled.finished, enrolled.checked, enrolled.admitted]).toEqual([false, 0, []]);
+    const waits: number[] = [];
+    const enrolled = await enrollPc({ fetch: pcFetch(await connect(y, onY)), store: accountStore, account: ACCOUNT, serverId: y.identity.server_id, others: [{ serverId: x.identity.server_id, fetch: stale }],
+      wait: async (ms) => { waits.push(ms); } });
+    // a read that failed for any reason but the account service's limit is not asked again
+    expect([enrolled.finished, enrolled.checked, enrolled.admitted, waits]).toEqual([false, 0, [], []]);
     expect(y.f.app.context.services.accountHolds.enrolling()).toBe(true);
     // a passing failure leaves no permanent hold behind
     expect(y.f.app.context.services.accountHolds.full()).toBe(false);
@@ -600,6 +603,124 @@ describe("enrolling a PC this device brings into the account", () => {
     };
     expect((await enrollPc({ fetch: busy, store: accountStore, account: ACCOUNT, serverId: y.identity.server_id })).finished).toBe(false);
     expect((await accountStore.get("enrolls"))?.[y.identity.server_id]?.done).toEqual([]);
+  });
+
+  /**
+   * X and the new PC Y behind one address with the account service's limits on a PC's calls (PC_LIMITS): the
+   * account's other machines, joining in the same minute, spent this minute's calls, so X's fresh pull is refused
+   * with the service's 429 and its Retry-After of 60 seconds. `others` reads X through `as` (a rewrite of X's
+   * answer, as an older or another PC would give it); `moves`: whether a wait moves the clock it names on.
+   */
+  async function crowded(options: { as?: ((mailbox: Record<string, unknown>) => Record<string, unknown>)[]; moves?: boolean } = {}) {
+    let clock = Date.now();
+    const set = await setUp({ now: () => clock, limits: PC_LIMITS });
+    const mac = await set.approve("Mac app");
+    const onY = await set.linkY();
+    // the address limiter is spent before a call's body is read: any call from the same address counts
+    let crowd = 0;
+    for (let status = 0; status !== 429 && crowd <= 60; crowd++) status = (await set.service.fetch(new Request(`${SERVICE}/v1/pc/challenge`, { method: "POST", body: "{}" }))).status;
+    expect(crowd).toBeLessThanOrEqual(60);
+    const link = await connect(set.x, set.onX);
+    const statuses: unknown[] = [];
+    const peer = (rewrite: (mailbox: Record<string, unknown>) => Record<string, unknown>, serverId: string) => ({ serverId, fetch: async (path: string, init?: RequestInit) => {
+      const answer = await pcFetch(link)(path, init);
+      if (!path.startsWith("/api/account/status")) return answer;
+      const body = await answer.json() as { mailbox: Record<string, unknown> };
+      const mailbox = rewrite(body.mailbox);
+      statuses.push(mailbox.refused ?? "read whole");
+      return Response.json({ ...body, mailbox });
+    } });
+    const others = (options.as ?? [(mailbox) => mailbox]).map((rewrite, index) => peer(rewrite, index === 0 ? set.x.identity.server_id : "e".repeat(32)));
+    const waits: number[] = [];
+    const told: (number | null)[] = [];
+    // the waits of every PC are asked for before any of them ends: they run side by side
+    const all = Promise.withResolvers<void>();
+    const limited = others.length;
+    const enrolled = await enrollPc({ fetch: pcFetch(await connect(set.y, onY)), store: set.accountStore, account: ACCOUNT, serverId: set.y.identity.server_id, others,
+      waiting: async (seconds) => { told.push(seconds); },
+      wait: async (ms) => {
+        waits.push(ms);
+        if (waits.length === limited) { if (options.moves !== false) clock += Math.max(...waits); all.resolve(); }
+        await all.promise;
+      } });
+    return { y: set.y, mac, enrolled, waits, told, statuses };
+  }
+  const REFUSED = { status: 429, retry_after_s: 60 };
+  const withRefusal = (refused: unknown) => (mailbox: Record<string, unknown>) => ({ ...mailbox, refused });
+
+  it("asks a PC whose pull the account service limited once more, after the wait the service named, and ends the new PC's wait", async () => {
+    const { y, mac, enrolled, waits, told, statuses } = await crowded();
+    expect({ statuses, waits, told, finished: enrolled.finished, checked: enrolled.checked, admitted: enrolled.admitted, waiting: y.f.app.context.services.accountHolds.enrolling() })
+      .toEqual({ statuses: [REFUSED, "read whole"], waits: [60_000], told: [60, null], finished: true, checked: 1, admitted: [mac.public_spki], waiting: false });
+    expect(y.f.app.context.services.devices.hasKey(mac.public_spki)).toBe(true);
+  });
+
+  it("asks only once: a second refusal keeps the new PC's wait as before", async () => {
+    const { y, enrolled, waits, statuses } = await crowded({ moves: false });
+    expect({ statuses, waits, finished: enrolled.finished, checked: enrolled.checked, admitted: enrolled.admitted, waiting: y.f.app.context.services.accountHolds.enrolling() })
+      .toEqual({ statuses: [REFUSED, REFUSED], waits: [60_000], finished: false, checked: 0, admitted: [], waiting: true });
+  });
+
+  it.each([
+    ["an older PC that does not say how the service refused", (mailbox: Record<string, unknown>) => { const { refused: _refused, ...rest } = mailbox; return rest; }],
+    ["a Retry-After longer than a minute", withRefusal({ status: 429, retry_after_s: 61 })],
+    ["no Retry-After the PC could read", withRefusal({ status: 429, retry_after_s: null })],
+    ["another refusal than the limit", withRefusal({ status: 503, retry_after_s: 30 })],
+  ])("does not wait for %s, and keeps the new PC's wait as before", async (_case, rewrite) => {
+    const { y, mac, enrolled, waits, told, statuses } = await crowded({ as: [rewrite] });
+    expect({ asked: statuses.length, waits, told, finished: enrolled.finished, checked: enrolled.checked, admitted: enrolled.admitted, waiting: y.f.app.context.services.accountHolds.enrolling() })
+      .toEqual({ asked: 1, waits: [], told: [], finished: false, checked: 0, admitted: [], waiting: true });
+    expect(y.f.app.context.services.devices.hasKey(mac.public_spki)).toBe(false);
+  });
+
+  it.each([
+    ["the other member removes the Mac on Z: Z's removal keeps it out", "removal", { admitted: [], onY: false, finished: true, waiting: false }],
+    ["Z does not answer again: it vouches for no one, and the new PC keeps its wait", "silence", { admitted: [], onY: false, finished: false, waiting: true }],
+  ] as const)("reads again, once another PC's wait is over, a PC that answered at first: %s", async (_case, meanwhile, outcome) => {
+    const { x, y, service, accountStore, key, onX, phone, approve, linkY } = await setUp();
+    const mac = await approve("Mac app");
+    // Z: a third PC of the account this phone is a member of, with another member who will remove the Mac there
+    const z = pc({ accountService: { url: SERVICE, fetch: service.fetch } });
+    const onZ = await linkThisDevice({ fetch: pcFetch(await connect(z, await qrPairing(z, phone, "mini"))), device: (await phone.get(z.identity.server_id))!, key, account: ACCOUNT, store: phone });
+    expect((await pcFetch(await connect(z, onZ))("/api/account/enroll", { method: "POST", body: JSON.stringify({ account: ACCOUNT, records: [] }) })).ok).toBe(true);
+    const other = await accountKey();
+    z.f.app.context.services.devices.addAccountDevice({ id: accountDeviceId(z.identity.server_id, other.public_spki), key: other.public_spki, label: "Other phone", role: "drive", account: ACCOUNT, addedBy: onZ.device_id! });
+    const onY = await linkY();
+    // X's first pull is limited for 60 seconds, as a crowded address makes it; Z answers whole at once
+    const reads = { x: 0, z: 0 };
+    const linkX = await connect(x, onX);
+    const fromX = async (path: string, init?: RequestInit) => {
+      const answer = await pcFetch(linkX)(path, init);
+      if (!path.startsWith("/api/account/status")) return answer;
+      const body = await answer.json() as { mailbox: Record<string, unknown> };
+      return Response.json(++reads.x === 1 ? { ...body, fresh: false, mailbox: { ...body.mailbox, refused: { status: 429, retry_after_s: 60 } } } : body);
+    };
+    const linkZ = await connect(z, onZ);
+    const fromZ = async (path: string, init?: RequestInit) => {
+      if (!path.startsWith("/api/account/status")) return pcFetch(linkZ)(path, init);
+      if (++reads.z > 1 && meanwhile === "silence") throw new TypeError("connection lost");
+      return pcFetch(linkZ)(path, init);
+    };
+    const waits: number[] = [];
+    const enrolled = await enrollPc({ fetch: pcFetch(await connect(y, onY)), store: accountStore, account: ACCOUNT, serverId: y.identity.server_id,
+      others: [{ serverId: x.identity.server_id, fetch: fromX }, { serverId: z.identity.server_id, fetch: fromZ }],
+      wait: async (ms) => {
+        waits.push(ms);
+        if (meanwhile !== "removal") return;
+        // while X's wait runs, the other member removes the Mac on Z
+        const remove = await signAccountRecord({ v: 1, kind: "remove", account: ACCOUNT, key: mac.public_spki, issued_at: new Date().toISOString(), id: newRecordId(), signer: other.public_spki }, other.private_key);
+        expect((await pcFetch(await connect(z, onZ))("/api/account/records", { method: "POST", body: JSON.stringify({ records: [remove] }) })).ok).toBe(true);
+      } });
+    expect({ waits, reads, admitted: enrolled.admitted, onY: y.f.app.context.services.devices.hasKey(mac.public_spki), finished: enrolled.finished, waiting: y.f.app.context.services.accountHolds.enrolling() })
+      .toEqual({ waits: [60_000], reads: { x: 2, z: 2 }, ...outcome });
+  });
+
+  it("lets every limited PC wait side by side, and says the longest wait once", async () => {
+    // two PCs of the account the phone reads (both answered by X here), one asked to wait 60 seconds, the other 30
+    const { enrolled, waits, told, statuses } = await crowded({ as: [(mailbox) => mailbox, (mailbox) => mailbox.refused === undefined ? mailbox : withRefusal({ status: 429, retry_after_s: 30 })(mailbox)] });
+    // each read twice, the one that waited 30 s once more after the 60 s wait ended
+    expect({ waits, told, asked: statuses.length, finished: enrolled.finished, checked: enrolled.checked })
+      .toEqual({ waits: [60_000, 30_000], told: [60, null], asked: 5, finished: true, checked: 2 });
   });
 });
 

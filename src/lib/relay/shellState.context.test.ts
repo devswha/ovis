@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { createShellTestPage } from "./shell.test.tsx";
+import { createShellTestPage } from "./shellTestPage.fixture.ts";
 import { dashboardHash, keepSheetContext, sheetContext } from "./shellState.ts";
 
 describe("dashboard return context", () => {

@@ -5,6 +5,11 @@
  * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
  */
 export const MACHINES_JA: Record<string, string> = {
+  "Fleet machines": "フリートマシン",
+  "1 fleet machine": "フリートマシン 1台",
+  "{n} fleet machines": "フリートマシン {n}台",
+  "through the fleet link": "フリートのリンク経由",
+  "A fleet machine. It is enrolled and removed in the fleet, not here.": "フリートマシンです。登録と削除はここではなくフリートで行います。",
   "1 agent": "エージェント: 1 件",
   "{n} agents": "エージェント: {n} 件",
   "{where} refused the SSH connection: the PC may be off, or nothing answers on that port.": "{where} が SSH 接続を拒否しました。PC の電源が切れているか、そのポートで応答するものがない可能性があります。",

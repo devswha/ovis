@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import {
-  RELAY_PASS_EXPIRED, RELAY_PASS_INVALID, RELAY_PASS_LIFETIME_S, RELAY_PASS_REQUIRED, RELAY_PASS_SKEW_S,
-  checkRelayPass, importRelayPassKey, parseRelayPass, relayPassAdmitsNewSessions, signRelayPass,
+  RELAY_PASS_EXPIRED, RELAY_PASS_INVALID, RELAY_PASS_LIFETIME_S, RELAY_PASS_MAX_FLEET, RELAY_PASS_REQUIRED, RELAY_PASS_SKEW_S,
+  checkRelayPass, importRelayPassKey, parseRelayPass, relayPassAdmitsNewSessions, relayPassFleet, signRelayPass,
 } from "./relay-pass.ts";
 
 const SID = "0123456789abcdef0123456789abcdef";
@@ -104,4 +104,59 @@ test("only the exact shape parses", async () => {
     `ovp1.${encode({ ...base, exp: NOW })}.${sig}`, `ovp1.${encode({ ...base, sid: "ABC" })}.${sig}`,
     `ovp1.${encode({ ...base, iat: 1.5 })}.${sig}`, `ovp1.${encode([base])}.${sig}`, "x".repeat(600), 42,
   ]) expect(parseRelayPass(bad)).toBeNull();
+});
+
+/** A pass signed as the service signs one, over any payload: the shape checks are what refuse these, not the signature. */
+async function signedAs(payload: Record<string, unknown>) {
+  const pair = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]) as CryptoKeyPair;
+  const raw = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
+  const keys = new Map([["a1b2c3d4", await importRelayPassKey(Array.from(raw, (byte) => byte.toString(16).padStart(2, "0")).join(""))]]);
+  const body = encode(payload);
+  const signature = new Uint8Array(await crypto.subtle.sign({ name: "Ed25519" }, pair.privateKey, new TextEncoder().encode(`ovis-relay-pass/1.${body}`)));
+  return { keys, pass: `ovp1.${body}.${btoa(String.fromCharCode(...signature)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")}` };
+}
+
+const V3 = { v: 3, kid: "a1b2c3d4", aud: "ovis-relay", sid: SID, iat: NOW, exp: NOW + RELAY_PASS_LIFETIME_S, new: 1, fleet: 100 } as const;
+
+test("a v3 pass carries the fleet number beside what a v2 pass says of new sessions", async () => {
+  const { kid, keys } = await issuer();
+  const pair = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]) as CryptoKeyPair;
+  const raw = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
+  keys.set(kid, await importRelayPassKey(Array.from(raw, (byte) => byte.toString(16).padStart(2, "0")).join("")));
+  const open = await checkRelayPass(await signRelayPass(pair.privateKey, kid, SID, NOW, undefined, { fleet: 100 }), keys, SID, NOW);
+  expect(open).toEqual({ ok: true, payload: V3 });
+  const closed = await checkRelayPass(await signRelayPass(pair.privateKey, kid, SID, NOW, undefined, { fleet: RELAY_PASS_MAX_FLEET, newSessions: false }), keys, SID, NOW);
+  expect(closed).toEqual({ ok: true, payload: { ...V3, new: 0, fleet: 1000 } });
+  expect([open, closed].map((check) => check.ok && [relayPassFleet(check.payload), relayPassAdmitsNewSessions(check.payload)])).toEqual([[100, true], [1000, false]]);
+  // v1 and v2 passes name no fleet
+  const v2 = await checkRelayPass(await signRelayPass(pair.privateKey, kid, SID, NOW, undefined, { newSessions: true }), keys, SID, NOW);
+  expect(v2.ok && relayPassFleet(v2.payload)).toBe(0);
+  // the account service never signs a fleet number a relay would refuse
+  for (const fleet of [0, -1, 1.5, RELAY_PASS_MAX_FLEET + 1]) await expect(signRelayPass(pair.privateKey, kid, SID, NOW, undefined, { fleet })).rejects.toThrow();
+});
+
+test("a v3 pass whose fleet number was edited does not hold", async () => {
+  const { keys, pass } = await signedAs(V3);
+  expect((await checkRelayPass(pass, keys, SID, NOW)).ok).toBe(true);
+  const [, , sig] = pass.split(".") as [string, string, string];
+  expect(await checkRelayPass(`ovp1.${encode({ ...V3, fleet: 1000 })}.${sig}`, keys, SID, NOW)).toEqual({ ok: false, reason: RELAY_PASS_INVALID });
+  // nor passed off as the v2 pass it would be without the number
+  const { fleet: _fleet, ...v2 } = V3;
+  expect(await checkRelayPass(`ovp1.${encode({ ...v2, v: 2 })}.${sig}`, keys, SID, NOW)).toEqual({ ok: false, reason: RELAY_PASS_INVALID });
+});
+
+for (const [name, fleet] of [["over 1000", RELAY_PASS_MAX_FLEET + 1], ["negative", -100], ["not an integer", 100.5], ["zero", 0], ["a string", "100"], ["missing", undefined]] as const) {
+  test(`a v3 pass whose fleet number is ${name} is not a pass, even signed by a trusted key`, async () => {
+    const { keys, pass } = await signedAs({ ...V3, fleet });
+    expect(parseRelayPass(pass)).toBeNull();
+    expect(await checkRelayPass(pass, keys, SID, NOW)).toEqual({ ok: false, reason: RELAY_PASS_INVALID });
+  });
+}
+
+test("a v3 pass has exactly its fields: for another audience, or with one more, it is not one", async () => {
+  for (const bad of [{ ...V3, aud: "other-relay" }, { ...V3, extra: 1 }, { ...V3, new: 2 }, { ...V3, v: 4 }]) {
+    const { keys, pass } = await signedAs(bad);
+    expect(parseRelayPass(pass)).toBeNull();
+    expect(await checkRelayPass(pass, keys, SID, NOW)).toEqual({ ok: false, reason: RELAY_PASS_INVALID });
+  }
 });

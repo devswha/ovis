@@ -2,6 +2,7 @@ import { DeviceGoneError, PcInAccountError } from "../devices.ts";
 import { errorResponse, jsonResponse, readJsonObject, setRequestRoute } from "../http.ts";
 import type { ServerContext } from "../dispatch.ts";
 import { updateRequestAllowed } from "../update-api.ts";
+import { RelayUnavailableError } from "./service.ts";
 
 /**
  * Drive authority and the outer origin gate are shared with Portal in dispatch.ts. `caller`: the paired device
@@ -120,6 +121,7 @@ export async function handleRelayRequest(request: Request, pathname: string, con
     if (error instanceof DeviceGoneError) return fail(error.code, error.message, 401);
     // the PC joined an account since the page read it: the page asks nothing more and says how a device is added there
     if (error instanceof PcInAccountError) return fail(error.code, error.message, 409);
+    if (error instanceof RelayUnavailableError) return fail(error.code, error.message, 409);
     return errorResponse(error);
   }
 }

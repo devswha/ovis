@@ -29,6 +29,7 @@ import { KeyBarSettings, KeyBarToggles } from "./KeyBarSettings.tsx";
 import { FileTextSizeRow } from "./FileTextSizeRow.tsx";
 import { FoldHelpersRow } from "./FoldHelpersRow.tsx";
 import { FilesPanelRow } from "./FilesPanelRow.tsx";
+import { FleetRow } from "./FleetRow.tsx";
 import { onSettingsHistory, recordSettings, settingsEntry, settingsLevels, type SettingsLevel } from "../lib/settingsHistory.ts";
 import { ThemeFiles, themeLabel } from "./ThemeFiles.tsx";
 import { THEME_NAMES, ThemeCard } from "./ThemeCard.tsx";
@@ -109,6 +110,8 @@ export interface SettingsDialogProps {
   herdrCore?: HerdrCoreFacts | null;
   /** which runtime the server serves and what Settings may switch it to, from the same check */
   herdrRuntimeFacts?: HerdrRuntimeFacts | null;
+  /** the same check said `fleet_preview` (OVIS_PREVIEW=fleet): Devices and PCs shows the Fleet screen's entry */
+  fleetPreview?: boolean;
   /** the PC shown now passes pictures (herdr-core, its panes attached): what Pictures in the terminal does there until a device chooses */
   picturesByDefault?: boolean;
   /** the server's boot id from the same check: a new one after a switch is the restarted server */
@@ -1255,9 +1258,9 @@ const groupedId = (id: string): string => id.match(/.{1,4}/g)?.join(" ") ?? id;
  * then the paired phones and browsers), with one Connect a device whose dialog holds every way in. What few
  * people change waits in More settings.
  */
-function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSettings, pcSettingsError, onPcSettings, openAddPc, connectPc }: {
+function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSettings, pcSettingsError, onPcSettings, openAddPc, connectPc, openFleet, fleetPreview }: {
   auth: HealthAuth | null; security: SecurityFacts; onSignOut: (() => Promise<void>) | null; onRevokedAll: () => void;
-  machines: readonly Machine[]; pcSettings: MachineSettings | null; pcSettingsError: string | null; onPcSettings: (patch: Partial<MachineSettings>) => void; openAddPc: (preset?: AddPcPreset) => void; connectPc: (machine: Machine) => void;
+  machines: readonly Machine[]; pcSettings: MachineSettings | null; pcSettingsError: string | null; onPcSettings: (patch: Partial<MachineSettings>) => void; openAddPc: (preset?: AddPcPreset) => void; connectPc: (machine: Machine) => void; openFleet: () => void; fleetPreview: boolean;
 }) {
   const { settings, update } = useSettings();
   const t = useT();
@@ -1390,6 +1393,7 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
           {/* in the hosted shell too (a phone reaching this PC through the relay or directly), there without the switch */}
           {(relayOffered(relay) || inRelayShell()) && <RelayDirectRow relay={relay} readOnly={relayReadOnly || inRelayShell()} />}
           <div className="settings-item" ref={setDevicesMore} />
+          <FleetRow preview={fleetPreview} onOpen={openFleet} />
           {onSignOut && <SignOutRow viaPortal={auth?.via === "portal"} oidc={auth?.portal?.method === "oidc"} onSignOut={onSignOut} label={t("Sign out of this PC")} />}
         </SettingsGroup>
         <SettingsGroup title={t("This device")} section="phone-more">
@@ -1692,7 +1696,6 @@ function RuntimeFacts({ version, runtime, core, facts: healthFacts, bootId, onSe
   const target = facts?.switch_to ?? null;
   // under the fact, not beside it: the fact keeps its one line on a phone
   const hint = facts?.fallback === "no_herdr_core" ? t("The Herdr app was chosen here, but no herdr-core answered, so herdr TUI is shown.")
-    : facts?.fallback === "no_alt_runtime" ? t("alt-runtime was chosen here, but this Ovis cannot start it, so herdr TUI is shown.")
     : facts?.locked === "env" ? t("OVIS_RUNTIME in Ovis's environment decides which terminals this PC shows; change it there to switch.")
     // where the OS does not serve herdr-core, setting OVIS_RUNTIME=herdr-core would stop Ovis: no how-to
     : target !== null || onCore || !core?.version || facts?.locked === "platform" ? null
@@ -1856,7 +1859,7 @@ function matchedGroups(result: Element | null, words: readonly string[]): string
   return [...groups.filter(holdsAll), ...groups.filter((group) => !holdsAll(group))].map((group) => group.dataset["section"]).filter((name): name is string => name !== undefined);
 }
 
-function OpenSettingsDialog({ section = null, linkPage = null, linkSection = null, onPage, onClose, onUsageLogin, onOpenPane, actions, updates, auth, herdrVersion, herdrRuntime = null, herdrCore = null, herdrRuntimeFacts = null, picturesByDefault = false, bootId = null, onServerRestarted, security, onEnableNotifications, saveError, savePaused, saveRetrying, onRetrySave, overPreview = false, machines = [] }: SettingsDialogProps) {
+function OpenSettingsDialog({ section = null, linkPage = null, linkSection = null, onPage, onClose, onUsageLogin, onOpenPane, actions, updates, auth, herdrVersion, herdrRuntime = null, herdrCore = null, herdrRuntimeFacts = null, fleetPreview = false, picturesByDefault = false, bootId = null, onServerRestarted, security, onEnableNotifications, saveError, savePaused, saveRetrying, onRetrySave, overPreview = false, machines = [] }: SettingsDialogProps) {
   const t = useT();
   const narrow = useNarrow();
   // opened by Forward, the dialog shows what that entry of the history showed
@@ -2067,7 +2070,7 @@ function OpenSettingsDialog({ section = null, linkPage = null, linkSection = nul
       case "agents": return <AgentsSettings watching={auth?.role === "watch"} onLocalLogin={onUsageLogin} onOpenPane={onOpenPane} onOpenGuide={onClose} />;
       case "shortcuts": return <ShortcutsPage />;
       // after every device went, its own pairing included, a browser asks the server where it stands: the roster answers, or the gate does
-      case "devices": return <DevicesPage auth={auth} security={security} onSignOut={actions.lock} onRevokedAll={actions.refresh} openAddPc={actions.openAddPc} connectPc={actions.connectPc}
+      case "devices": return <DevicesPage auth={auth} security={security} onSignOut={actions.lock} onRevokedAll={actions.refresh} openAddPc={actions.openAddPc} connectPc={actions.connectPc} openFleet={actions.openFleet} fleetPreview={fleetPreview}
         machines={machines} pcSettings={pcSettings} pcSettingsError={pcSettingsError} onPcSettings={(patch) => void updatePcSettings(patch)} />;
       case "experimental": return <ExperimentalPage />;
       case "about": return <AboutPage updates={updates} herdrVersion={herdrVersion} herdrRuntime={herdrRuntime} herdrCore={herdrCore} herdrRuntimeFacts={herdrRuntimeFacts} bootId={bootId} onServerRestarted={onServerRestarted} onOpenPane={onOpenPane} bridgesFollow={pcSettings?.auto_update_bridges === true} />;

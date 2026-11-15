@@ -7,7 +7,7 @@
  * uses herdr's TUI. So a candidate is only ever asked `--version`, and the core counts as running
  * when its socket file is there: nothing connects to it.
  */
-import { lstatSync, readFileSync, readlinkSync, realpathSync, statSync, type Stats } from "node:fs";
+import { lstatSync, readFileSync, readlinkSync, readdirSync, realpathSync, statSync, type Stats } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { HerdrCoreFacts } from "../../shared/machines.ts";
@@ -153,8 +153,26 @@ export function ownedByUser(path: string, harmless: (gid: number, path: string) 
 
 /** why ownedByUser refuses `path`, naming the entry and the rule it fails; null when it does not */
 export function trustRefusal(path: string, harmless: (gid: number, path: string) => boolean, asFolder = false, acl: AclReader = aclReader()): string | null {
+  const walked = trustWalk(path, asFolder ? "folder" : "file", harmless, acl);
+  return "refusal" in walked ? walked.refusal : null;
+}
+
+/** How the walk reads the file system; a test hands in one that reports another owner for one entry. */
+export interface TrustReader { stat: (path: string) => Stats; lstat: (path: string) => Stats }
+const FILE_SYSTEM: TrustReader = { stat: statSync, lstat: lstatSync };
+
+/**
+ * trustRefusal's walk from `/`, which also gives the real path it reached: the entry at the end, with
+ * every link resolved through entries that passed the rule. `socket`: the end is a Unix socket (not a link
+ * to one) that this user owns (root's is refused too), in a folder no other account may write, even a
+ * sticky one, so nobody else can put a socket of theirs at that name; the socket's own mode is not read.
+ */
+export function trustWalk(path: string, kind: "file" | "folder" | "socket", harmless: (gid: number, path: string) => boolean, acl: AclReader = aclReader(),
+  read: TrustReader = FILE_SYSTEM): { real: string } | { refusal: string; missing?: true } {
+  const asFolder = kind === "folder";
   const uid = process.getuid?.();
-  if (uid === undefined) return "no user id to check against";
+  if (uid === undefined) return { refusal: "no user id to check against" };
+  const refused = (refusal: string | null): { real: string } | { refusal: string } | null => refusal === null ? null : { refusal };
   const owned = (stats: Stats, at: string) => stats.uid === uid || stats.uid === 0 ? null : `${at} is owned by uid ${stats.uid}, not you or root`;
   const writable = (stats: Stats, at: string): string | null => {
     if ((stats.mode & 0o002) !== 0) return `${at} is writable by everyone`;
@@ -171,46 +189,56 @@ export function trustRefusal(path: string, harmless: (gid: number, path: string)
   try {
     // `folder` is always a real path whose every folder has been checked on the way to it
     let folder = "/";
-    let here = statSync("/");
+    let here = read.stat("/");
     const rest = parts(path);
     let links = 0;
     while (true) {
-      if (!here.isDirectory()) return `${folder} is not a folder`;
-      const folderOwner = owned(here, folder);
+      if (!here.isDirectory()) return { refusal: `${folder} is not a folder` };
+      const folderOwner = refused(owned(here, folder));
       if (folderOwner !== null) return folderOwner;
       const name = rest.shift();
-      if (name === undefined) return asFolder ? writable(here, folder) : `${path} is a folder`;
+      if (name === undefined) return asFolder ? refused(writable(here, folder)) ?? { real: folder } : { refusal: `${path} is a folder` };
       // a sticky folder on the way: nobody may rename or replace what is not theirs in it
       const open = writable(here, folder);
-      if (open !== null && (here.mode & 0o1000) === 0) return open;
+      if (open !== null && (here.mode & 0o1000) === 0) return { refusal: open };
       if (name === "..") {
         folder = dirname(folder);
-        here = statSync(folder);
+        here = read.stat(folder);
         continue;
       }
       const entry = join(folder, name);
-      const stats = lstatSync(entry);
-      const entryOwner = owned(stats, entry);
+      const stats = read.lstat(entry);
+      const entryOwner = refused(owned(stats, entry));
       if (entryOwner !== null) return entryOwner;
       if (stats.isSymbolicLink()) {
-        if (++links > MAX_LINKS) return `${path} goes through more than ${MAX_LINKS} links`;
+        // the socket's own name is the socket, as hc made it: a link there is never followed
+        if (kind === "socket" && rest.length === 0) return { refusal: `${entry} is a link, not a socket` };
+        if (++links > MAX_LINKS) return { refusal: `${path} goes through more than ${MAX_LINKS} links` };
         const target = readlinkSync(entry);
         rest.unshift(...parts(target));
         if (target.startsWith("/")) {
           folder = "/";
-          here = statSync("/");
+          here = read.stat("/");
         }
         continue;
       }
       if (rest.length === 0 && !stats.isDirectory()) {
-        if (asFolder || !stats.isFile()) return `${entry} is not a regular file`;
-        return writable(stats, entry) ?? open;
+        if (kind === "socket") {
+          if (!stats.isSocket()) return { refusal: `${entry} is not a socket` };
+          if (stats.uid !== uid) return { refusal: `${entry} is owned by uid ${stats.uid}, not you` };
+          // a socket's mode only says who may connect to it (hc makes it from the umask: 775 under 002),
+          // never who may replace it: its folder decides that
+          return refused(open) ?? { real: entry };
+        }
+        if (asFolder || !stats.isFile()) return { refusal: `${entry} is not a regular file` };
+        return refused(writable(stats, entry) ?? open) ?? { real: entry };
       }
       folder = entry;
       here = stats;
     }
   } catch (error) {
-    return `${path} could not be checked (${(error as NodeJS.ErrnoException).code ?? String(error)})`;
+    const code = (error as NodeJS.ErrnoException).code;
+    return { refusal: `${path} could not be checked (${code ?? String(error)})`, ...(code === "ENOENT" ? { missing: true as const } : {}) };
   }
 }
 
@@ -408,7 +436,7 @@ async function loginShellPath(env: Env, platform: NodeJS.Platform): Promise<stri
  * It runs in a process group of its own, killed once the answer is in: something it left behind
  * holding stdout is read for at most EXIT_GRACE_MS after the exit, never waited on.
  */
-async function probe(argv: string[], env: Env, timeoutMs: number): Promise<string | null> {
+export async function probe(argv: string[], env: Env, timeoutMs: number): Promise<string | null> {
   let child: ReturnType<typeof Bun.spawn<"ignore", "pipe", "ignore">>;
   try {
     child = Bun.spawn(argv, { stdin: "ignore", stdout: "pipe", stderr: "ignore", env, windowsHide: true, detached: process.platform !== "win32" });
@@ -486,6 +514,34 @@ export function coreSocket(options: CoreSocketOptions = {}): CoreSocket {
     const run = runtimeDir(env, options);
     return run === null ? join(state, `${session}.sock`) : join(run, "herdr-core", `${session}.sock`);
   }
+}
+
+/**
+ * Whether a selected core socket may be used, and where it really is. Its whole path is walked from `/`
+ * (trustWalk): every folder and link on the way is this user's or root's, no folder is writable by another
+ * account (a sticky one such as /tmp only above the socket's own folder), and the socket itself is this
+ * user's and not a link. A connection goes to `real`, which has no link left in it, so a link
+ * changed after the check redirects nothing. A missing entry is `gone`: the core is not running there.
+ */
+export function coreSocketStatus(path: string, read?: TrustReader): { status: "socket"; real: string } | { status: "gone" } | { status: "refused"; reason: string } {
+  const walked = trustWalk(path, "socket", harmlessGroups(), aclReader(), read);
+  if ("real" in walked) return { status: "socket", real: walked.real };
+  return walked.missing ? { status: "gone" } : { status: "refused", reason: walked.refusal };
+}
+
+/** Account-local candidates for a fleet bridge with no selector. Only a live probe may select one. */
+export function coreSocketCandidates(env: Env = process.env): string[] {
+  const home = userHome(env, process.platform);
+  const candidates = new Set<string>([coreSocket({ env: { ...env, HC_SOCKET: undefined, HC_SESSION: undefined } }).path]);
+  const entries = (dir: string): string[] => { try { return readdirSync(dir); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; } };
+  const run = runtimeDir(env, {});
+  if (run !== null) {
+    const dir = join(run, "herdr-core");
+    for (const name of entries(dir)) if (name.endsWith(".sock") && plainSession(name.slice(0, -5))) candidates.add(join(dir, name));
+  }
+  const state = join(env["XDG_STATE_HOME"] || join(home, ".local", "state"), "herdr-core");
+  for (const session of entries(state)) if (plainSession(session)) candidates.add(join(state, session, `${session}.sock`));
+  return [...candidates];
 }
 
 function runtimeDir(env: Env, options: CoreSocketOptions): string | null {

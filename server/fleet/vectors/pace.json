@@ -1,0 +1,245 @@
+{
+  "file": "pace.json",
+  "contract": "docs/fleet-link.md",
+  "generated_by": "scripts/fleet-vectors.ts",
+  "test_only": "Every key, secret, nonce and token in this file is a fixed test value derived from a label by scripts/fleet-vectors.ts. Never use one outside tests.",
+  "derivations": {
+    "note": "Restates todo 37's formulas as numbers; todo 37 owns them.",
+    "profiles": [
+      {
+        "budget": 30,
+        "per_minute": 24,
+        "burst": 4,
+        "spacing_ms": 2500,
+        "machine_per_minute": 22,
+        "machine_spacing_ms": 2727.2727272727275
+      },
+      {
+        "budget": 120,
+        "per_minute": 96,
+        "burst": 22,
+        "spacing_ms": 625,
+        "machine_per_minute": 96,
+        "machine_spacing_ms": 625
+      }
+    ],
+    "default_slot": {
+      "machine_id": "7fda5abbaaccaa974084419f97585cea",
+      "rule": "first four hex digits of machine_id, mod 100",
+      "slot": 30
+    },
+    "next_instant": [
+      {
+        "slot": 7,
+        "span": 100,
+        "spacing_ms": 2500,
+        "loss_controller_ms": 1767225600000,
+        "instant_controller_ms": 1767225767500
+      },
+      {
+        "slot": 99,
+        "span": 100,
+        "spacing_ms": 625,
+        "loss_controller_ms": 1767225600001,
+        "instant_controller_ms": 1767225624375
+      }
+    ]
+  },
+  "cases": [
+    {
+      "name": "pace/hosted",
+      "frame": "PACE",
+      "type": 71,
+      "stream_id": 0,
+      "direction": "controller_to_machine",
+      "context": {
+        "state": "after_auth",
+        "selected": [
+          "pipe-stream"
+        ]
+      },
+      "bytes": "01470000000000007b2267656e65726174696f6e223a312c227065725f6d696e757465223a32322c226275727374223a342c22736c6f74223a372c227370616e223a3130302c22636f6e74726f6c6c65725f6d73223a313736373232353630303030302c227274745f6d73223a34327d",
+      "expect": {
+        "parse": {
+          "generation": 1,
+          "per_minute": 22,
+          "burst": 4,
+          "slot": 7,
+          "span": 100,
+          "controller_ms": 1767225600000,
+          "rtt_ms": 42
+        },
+        "effect": "the machine keeps offset = controller_ms - its monotonic clock at receipt, error bound rtt_ms"
+      }
+    },
+    {
+      "name": "pace/fleet-flags",
+      "frame": "PACE",
+      "type": 71,
+      "stream_id": 0,
+      "direction": "controller_to_machine",
+      "context": {
+        "state": "after_auth",
+        "selected": [
+          "pipe-stream"
+        ]
+      },
+      "bytes": "01470000000000007b2267656e65726174696f6e223a322c227065725f6d696e757465223a39362c226275727374223a32322c22736c6f74223a39392c227370616e223a3130302c22636f6e74726f6c6c65725f6d73223a313736373232363230303030302c227274745f6d73223a31387d",
+      "expect": {
+        "parse": {
+          "generation": 2,
+          "per_minute": 96,
+          "burst": 22,
+          "slot": 99,
+          "span": 100,
+          "controller_ms": 1767226200000,
+          "rtt_ms": 18
+        }
+      }
+    },
+    {
+      "name": "pace/from-machine",
+      "frame": "PACE",
+      "type": 71,
+      "stream_id": 0,
+      "direction": "machine_to_controller",
+      "context": {
+        "state": "after_auth",
+        "selected": [
+          "pipe-stream"
+        ]
+      },
+      "bytes": "01470000000000007b2267656e65726174696f6e223a312c227065725f6d696e757465223a32322c226275727374223a342c22736c6f74223a372c227370616e223a3130302c22636f6e74726f6c6c65725f6d73223a313736373232353630303030302c227274745f6d73223a34327d",
+      "expect": {
+        "parse": {
+          "generation": 1,
+          "per_minute": 22,
+          "burst": 4,
+          "slot": 7,
+          "span": 100,
+          "controller_ms": 1767225600000,
+          "rtt_ms": 42
+        },
+        "refuse": {
+          "stage": "session",
+          "kind": "session_error",
+          "code": "protocol_error"
+        }
+      }
+    },
+    {
+      "name": "pace/before-auth",
+      "frame": "PACE",
+      "type": 71,
+      "stream_id": 0,
+      "direction": "controller_to_machine",
+      "context": {
+        "state": "before_auth",
+        "selected": [
+          "pipe-stream"
+        ]
+      },
+      "bytes": "01470000000000007b2267656e65726174696f6e223a312c227065725f6d696e757465223a32322c226275727374223a342c22736c6f74223a372c227370616e223a3130302c22636f6e74726f6c6c65725f6d73223a313736373232353630303030302c227274745f6d73223a34327d",
+      "expect": {
+        "parse": {
+          "generation": 1,
+          "per_minute": 22,
+          "burst": 4,
+          "slot": 7,
+          "span": 100,
+          "controller_ms": 1767225600000,
+          "rtt_ms": 42
+        },
+        "refuse": {
+          "stage": "session",
+          "kind": "session_error",
+          "code": "protocol_error"
+        }
+      }
+    },
+    {
+      "name": "pace/slot-not-below-span",
+      "frame": "PACE",
+      "type": 71,
+      "stream_id": 0,
+      "direction": "controller_to_machine",
+      "context": {
+        "state": "after_auth",
+        "selected": [
+          "pipe-stream"
+        ]
+      },
+      "bytes": "01470000000000007b2267656e65726174696f6e223a312c227065725f6d696e757465223a32322c226275727374223a342c22736c6f74223a3130302c227370616e223a3130302c22636f6e74726f6c6c65725f6d73223a313736373232353630303030302c227274745f6d73223a34327d",
+      "expect": {
+        "refuse": {
+          "stage": "decode",
+          "kind": "session_error",
+          "code": "protocol_error"
+        }
+      }
+    },
+    {
+      "name": "pace/per-minute-zero",
+      "frame": "PACE",
+      "type": 71,
+      "stream_id": 0,
+      "direction": "controller_to_machine",
+      "context": {
+        "state": "after_auth",
+        "selected": [
+          "pipe-stream"
+        ]
+      },
+      "bytes": "01470000000000007b2267656e65726174696f6e223a312c227065725f6d696e757465223a302c226275727374223a342c22736c6f74223a372c227370616e223a3130302c22636f6e74726f6c6c65725f6d73223a313736373232353630303030302c227274745f6d73223a34327d",
+      "expect": {
+        "refuse": {
+          "stage": "decode",
+          "kind": "session_error",
+          "code": "protocol_error"
+        }
+      }
+    },
+    {
+      "name": "pace/cycle-under-a-minute",
+      "frame": "PACE",
+      "type": 71,
+      "stream_id": 0,
+      "direction": "controller_to_machine",
+      "context": {
+        "state": "after_auth",
+        "selected": [
+          "pipe-stream"
+        ]
+      },
+      "bytes": "01470000000000007b2267656e65726174696f6e223a312c227065725f6d696e757465223a32322c226275727374223a342c22736c6f74223a372c227370616e223a31302c22636f6e74726f6c6c65725f6d73223a313736373232353630303030302c227274745f6d73223a34327d",
+      "expect": {
+        "refuse": {
+          "stage": "decode",
+          "kind": "session_error",
+          "code": "protocol_error"
+        }
+      }
+    },
+    {
+      "name": "pace/rtt-above-pong-deadline",
+      "frame": "PACE",
+      "type": 71,
+      "stream_id": 0,
+      "direction": "controller_to_machine",
+      "context": {
+        "state": "after_auth",
+        "selected": [
+          "pipe-stream"
+        ]
+      },
+      "bytes": "01470000000000007b2267656e65726174696f6e223a312c227065725f6d696e757465223a32322c226275727374223a342c22736c6f74223a372c227370616e223a3130302c22636f6e74726f6c6c65725f6d73223a313736373232353630303030302c227274745f6d73223a36303030317d",
+      "expect": {
+        "refuse": {
+          "stage": "decode",
+          "kind": "session_error",
+          "code": "protocol_error"
+        }
+      }
+    }
+  ]
+}

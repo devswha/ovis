@@ -232,6 +232,129 @@ describe("a phone's sheet in the history", () => {
     expect(fake.at()).toBe(start);
   });
 
+  it("goes on to a navigation made while the step off a closed sheet's entry was on its way: the step lands under it, and the app hears the newer address", async () => {
+    // a PC's details are an entry of their own; a sheet opened from them closes by Escape, and a
+    // second Escape closes the details (a navigation the app pushes) before the browser lands the step
+    h.pushState({ details: true }, "", "/#pcs?pc=a");
+    const details = fake.at();
+    // the app's listener, after this module's, as the dashboard's
+    const heard: string[] = [];
+    let listening = true;
+    // and whoever keeps state by the entry asks first (sheetStep.holds): the entry it landed on is superseded
+    fake.window.addEventListener("popstate", (event) => { if (listening) heard.push(sheetStep.holds(event as unknown as Event) ? `held ${fake.window.location.href}` : fake.window.location.href); });
+    const leave = hooks.enter(() => {});
+    fake.defer(true);
+    leave();
+    jest.advanceTimersByTime(0);
+    expect(fake.pending()).toBe(true);
+    h.pushState({ list: true }, "", "/#pcs");
+    await settled();
+    fake.defer(false);
+    expect(heard).toEqual(["held /#pcs"]);
+    expect(fake.window.location.href).toBe("/#pcs");
+    expect(h.state).toEqual({ list: true });
+    // as with no step on its way: the list right over the details, and nothing ahead
+    expect(fake.at()).toBe(details + 1);
+    expect(fake.entries.length).toBe(details + 2);
+    h.back(); await settled();
+    expect(fake.window.location.href).toBe("/#pcs?pc=a");
+    listening = false;
+    h.back(); await settled();
+  });
+
+  it("keeps every navigation made while that step was on its way, in order: Back and Forward go through each", async () => {
+    // the details, a sheet from them closed by Escape, then the list and Devices before the step lands;
+    // the list's entry has its state written over once (Settings marks the entry it pushed so)
+    h.pushState({ details: true }, "", "/#pcs?pc=a");
+    const details = fake.at();
+    const leave = hooks.enter(() => {});
+    fake.defer(true);
+    leave();
+    jest.advanceTimersByTime(0);
+    expect(fake.pending()).toBe(true);
+    h.pushState({ list: true }, "", "/#pcs");
+    h.replaceState({ list: true, marked: true }, "");
+    h.pushState({ devices: true }, "", "/#devices");
+    // where the browser tells no key, only the newest of them carries the id that tells it apart, and the
+    // list's entry is as the app wrote it: whichever entry the step lands on, no older one keeps an id
+    expect(fake.entries[details + 2]!.state).toEqual({ list: true, marked: true });
+    await settled();
+    fake.defer(false);
+    expect(fake.window.location.href).toBe("/#devices");
+    expect(h.state).toEqual({ devices: true });
+    expect(fake.at()).toBe(details + 2);
+    expect(fake.entries.length).toBe(details + 3);
+    h.back(); await settled();
+    expect(fake.window.location.href).toBe("/#pcs");
+    expect(h.state).toEqual({ list: true, marked: true });
+    h.back(); await settled();
+    expect(fake.window.location.href).toBe("/#pcs?pc=a");
+    h.forward(); await settled();
+    h.forward(); await settled();
+    expect(fake.window.location.href).toBe("/#devices");
+    h.go(-3); await settled();
+  });
+
+  it("tells the entry a step landed on from a newer one with the same address and state, where the browser tells no key", async () => {
+    // the details, a sheet from them closed by Escape, then Devices and the same details again before the step lands,
+    // with the very state of the entry the step lands on (the sheet's mark included, as a copy of that entry carries it)
+    h.pushState({ details: true }, "", "/#pcs?pc=a");
+    const details = fake.at();
+    const held: boolean[] = [];
+    let listening = true;
+    fake.window.addEventListener("popstate", (event) => { if (listening) held.push(sheetStep.holds(event as unknown as Event)); });
+    const leave = hooks.enter(() => {});
+    const under = fake.entries[details]!.state;
+    fake.defer(true);
+    leave();
+    jest.advanceTimersByTime(0);
+    expect(fake.pending()).toBe(true);
+    h.pushState({ devices: true }, "", "/#devices");
+    h.pushState(under, "", "/#pcs?pc=a");
+    await settled();
+    fake.defer(false);
+    // the step landed on the first details: the two navigations are made again over it, as entries of their own
+    expect(held).toEqual([true]);
+    expect(fake.at()).toBe(details + 2);
+    expect(fake.entries.length).toBe(details + 3);
+    expect(fake.window.location.href).toBe("/#pcs?pc=a");
+    expect(h.state).toEqual(under);
+    h.back(); await settled();
+    expect(fake.window.location.href).toBe("/#devices");
+    h.back(); await settled();
+    expect(fake.window.location.href).toBe("/#pcs?pc=a");
+    expect(fake.at()).toBe(details);
+    h.forward(); await settled();
+    expect(fake.window.location.href).toBe("/#devices");
+    h.forward(); await settled();
+    expect(fake.window.location.href).toBe("/#pcs?pc=a");
+    expect(fake.at()).toBe(details + 2);
+    listening = false;
+    h.go(-3); await settled();
+  });
+
+  it("keeps a null state as null through a navigation made while that step was on its way, written over once", async () => {
+    // the dashboard pushes its views with no state
+    h.pushState({ details: true }, "", "/#pcs?pc=a");
+    const details = fake.at();
+    const leave = hooks.enter(() => {});
+    fake.defer(true);
+    leave();
+    jest.advanceTimersByTime(0);
+    expect(fake.pending()).toBe(true);
+    h.pushState(null, "", "/#pcs");
+    h.replaceState(null, "", "/#pcs?filter=all");
+    await settled();
+    fake.defer(false);
+    expect(fake.window.location.href).toBe("/#pcs?filter=all");
+    expect(h.state).toBeNull();
+    expect(fake.at()).toBe(details + 1);
+    h.back(); await settled();
+    h.forward(); await settled();
+    expect(h.state).toBeNull();
+    h.go(-2); await settled();
+  });
+
   it("keeps a sheet that stays up under another sheet: that sheet's close, or a Back, comes back to it", async () => {
     const start = fake.at();
     let peekClosed = 0;

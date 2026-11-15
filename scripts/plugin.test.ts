@@ -6,7 +6,7 @@ import { join } from "node:path";
 
 import { COMMAND_ALIASES } from "./plugin-link.ts";
 import { herdrStateDir } from "./plugin-state.ts";
-import { quietPort } from "./quiet-port.ts";
+import { heldPort, quietPort } from "./quiet-port.ts";
 import { readProcessBirth } from "../server/process-owner.ts";
 import { updateStateDir } from "../server/update-state.ts";
 import { exportPublicKey, generateKeyPair } from "../shared/relay-e2ee.ts";
@@ -20,6 +20,20 @@ import { decodeOffer, encodeOffer } from "../shared/relay-offer.ts";
 const ROOT = join(import.meta.dir, "..");
 let scratch: string;
 let configDir: string;
+/**
+ * A loopback stub on a port of this test's own, which answers nothing as the app would: a run that names no port of its
+ * own (no PORT, no settings file or kept port naming one) is pointed at it, never at the default port, where the
+ * owner's own Ovis may answer.
+ */
+let stub: ReturnType<typeof Bun.serve>;
+/**
+ * Ports a run is pointed at where no app answers (a server that is down): held by this test for its whole life, so no
+ * other program can take them meanwhile, and closing whatever connects (heldPort). Never a fixed port, nor the owner's.
+ */
+let P1 = 0;
+let P2 = 0;
+let P3 = 0;
+let held: ReturnType<typeof heldPort>[] = [];
 
 async function status(): Promise<{ out: string; err: string; exitCode: number }> {
   return run("status");
@@ -36,6 +50,11 @@ function launchEnv(extra: Record<string, string | undefined> = {}): Record<strin
   const bin = join(scratch, "bin");
   const env: Record<string, string | undefined> = { ...process.env, PATH: `${bin}:${process.env["PATH"] ?? ""}`, HOME: scratch, HERDR_PLUGIN_STATE_DIR: join(scratch, "state") };
   for (const key of ["HERDR_PLUGIN_CONFIG_DIR", "PORT", "HOST", "OVIS_TOKEN", "OVIS_STATE_DIR", "XDG_CONFIG_HOME", "XDG_STATE_HOME"]) delete env[key];
+  // the settings and kept port this run reads, as plugin.ts finds them: a port named there wins over the stub's
+  const files = [join(extra["HERDR_PLUGIN_CONFIG_DIR"] ?? configDir, ".env"), join(extra["HERDR_PLUGIN_CONFIG_DIR"] ?? configDir, "env")];
+  const named = files.some((file) => existsSync(file) && /^\s*PORT=/m.test(readFileSync(file, "utf8")))
+    || existsSync(join(extra["OVIS_STATE_DIR"] ?? join(scratch, ".config", "ovis"), "plugin-port"));
+  if (!("PORT" in extra) && !named) env["PORT"] = String(stub.port);
   Object.assign(env, extra);
   for (const [key, value] of Object.entries(extra)) if (value === undefined) delete env[key];
   return env;
@@ -47,6 +66,9 @@ function launch(command: string, extra: Record<string, string | undefined> = {},
 }
 
 beforeEach(() => {
+  stub = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response(null, { status: 404 }) });
+  held = [heldPort(), heldPort(), heldPort()];
+  [P1, P2, P3] = held.map((port) => port.port) as [number, number, number];
   scratch = mkdtempSync(join(tmpdir(), "herdr-plugin-env-"));
   configDir = join(scratch, "config");
   mkdirSync(configDir);
@@ -56,29 +78,58 @@ beforeEach(() => {
   chmodSync(herdr, 0o755);
 });
 
-afterEach(() => rmSync(scratch, { recursive: true, force: true }));
+afterEach(async () => {
+  rmSync(scratch, { recursive: true, force: true });
+  await stub.stop(true);
+  for (const port of held.splice(0)) port.stop();
+});
+
+/** What a terminal shows, as plain lines: its CR LF line ends, and the OSC 8 links plugin.ts draws there, undone. */
+const shown = (text: string): string => text.replace(/\r\n/g, "\n").replace(/\x1b\]8;;[^\x07\x1b]*(?:\x1b\\|\x07)/g, "");
+
+/**
+ * `command` as a person runs it at a terminal (a PTY is its stdin, stdout and stderr): what it showed, as plain lines.
+ * `enter`: once the terminal shows this, Enter is pressed.
+ */
+async function runAtTerminal(command: string, extra: Record<string, string | undefined> = {}, more: { args?: string[]; enter?: string } = {}): Promise<{ out: string; exitCode: number }> {
+  let out = "";
+  let entered = false;
+  const decoder = new TextDecoder();
+  // a terminal can hand over its last bytes after the child exited: what it showed is read once its stream ended
+  let ended = (): void => undefined;
+  const complete = new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`the terminal's output never ended: ${JSON.stringify(out)}`)), 15_000);
+    ended = () => { clearTimeout(timer); resolve(); };
+  });
+  const child = Bun.spawn(["bun", "scripts/plugin.ts", command, ...more.args ?? []], { cwd: ROOT, env: launchEnv(extra), terminal: { cols: 200, rows: 60, data: (terminal, bytes) => {
+    out += decoder.decode(bytes, { stream: true });
+    if (more.enter !== undefined && !entered && out.includes(more.enter)) { entered = true; terminal.write("\r"); }
+  }, exit: () => ended() } });
+  const [exitCode] = await Promise.all([child.exited, complete]);
+  return { out: shown(out), exitCode };
+}
 
 describe("plugin settings files", () => {
   it("finds the config dir through herdr and reads .env", async () => {
-    writeFileSync(join(configDir, ".env"), "PORT=1\n");
+    writeFileSync(join(configDir, ".env"), `PORT=${P1}\n`);
     const run = await status();
     expect(run.exitCode, run.err).toBe(0);
-    expect(run.out).toContain("down http://127.0.0.1:1");
+    expect(run.out).toContain(`down http://127.0.0.1:${P1}`);
     expect(run.out).toContain(`config: ${join(configDir, ".env")}`);
   });
 
   it("still reads env, from older installs", async () => {
-    writeFileSync(join(configDir, "env"), "PORT=2\n");
+    writeFileSync(join(configDir, "env"), `PORT=${P2}\n`);
     const run = await status();
-    expect(run.out).toContain("down http://127.0.0.1:2");
+    expect(run.out).toContain(`down http://127.0.0.1:${P2}`);
     expect(run.out).toContain(`config: ${join(configDir, "env")}`);
   });
 
   it("lets .env win over env and names the keys they disagree on, not their values", async () => {
-    writeFileSync(join(configDir, "env"), "PORT=2\nOVIS_TOKEN=old-secret\nHOST=127.0.0.1\n");
-    writeFileSync(join(configDir, ".env"), "PORT=1\nOVIS_TOKEN=new-secret\nHOST=127.0.0.1\n");
+    writeFileSync(join(configDir, "env"), `PORT=${P2}\nOVIS_TOKEN=old-secret\nHOST=127.0.0.1\n`);
+    writeFileSync(join(configDir, ".env"), `PORT=${P1}\nOVIS_TOKEN=new-secret\nHOST=127.0.0.1\n`);
     const run = await status();
-    expect(run.out).toContain("down http://127.0.0.1:1");
+    expect(run.out).toContain(`down http://127.0.0.1:${P1}`);
     expect(run.out).toContain(`config: ${join(configDir, "env")}, ${join(configDir, ".env")}`);
     expect(run.out).toContain("set PORT, OVIS_TOKEN; .env wins");
     expect(run.out).not.toContain("secret");
@@ -87,6 +138,8 @@ describe("plugin settings files", () => {
   it("says where settings go when there are none", async () => {
     const run = await status();
     expect(run.out).toContain(`config: none (settings go in ${join(scratch, ".config", "ovis", "env")})`);
+    // with no port of its own it asked this test's stub, not the default port the owner's Ovis may answer on
+    expect(run.out).toContain(`http://127.0.0.1:${stub.port}`);
   });
 });
 
@@ -103,7 +156,7 @@ describe("the version status names", () => {
 
   it("is the checkout's while no update is installed", async () => {
     const root = checkout("0.4.1");
-    const result = await run("status", { HERDR_PLUGIN_ROOT: root, OVIS_STATE_DIR: join(scratch, "app-state"), PORT: "1" });
+    const result = await run("status", { HERDR_PLUGIN_ROOT: root, OVIS_STATE_DIR: join(scratch, "app-state"), PORT: String(P1) });
     expect(result.exitCode, result.err).toBe(0);
     expect(result.out).toContain("version: 0.4.1\n");
   });
@@ -111,14 +164,14 @@ describe("the version status names", () => {
   it("is the release Settings \u2192 Updates installed, which herdr's plugin list does not name", async () => {
     const root = checkout("0.4.1");
     const state = join(scratch, "app-state");
-    const updates = updateStateDir(root, 1, state);
+    const updates = updateStateDir(root, P1, state);
     const release = join(updates, "release-test");
     mkdirSync(join(release, "scripts"), { recursive: true });
     writeFileSync(join(release, "scripts", "plugin.ts"), "");
     writeFileSync(join(release, "package.json"), JSON.stringify({ version: "0.4.9" }));
     const revision = Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: root }).stdout.toString().trim();
     writeFileSync(join(updates, "current.json"), JSON.stringify({ source_revision: revision, directory: release }));
-    const result = await run("status", { HERDR_PLUGIN_ROOT: root, OVIS_STATE_DIR: state, PORT: "1" });
+    const result = await run("status", { HERDR_PLUGIN_ROOT: root, OVIS_STATE_DIR: state, PORT: String(P1) });
     expect(result.exitCode, result.err).toBe(0);
     expect(result.out).toContain("version: 0.4.9\n");
   });
@@ -128,6 +181,193 @@ describe("the version status names", () => {
 const BRIDGE_HEALTH = { ok: true, auth: { required: false, authenticated: true }, bridge_protocol: 1 };
 /** What the app's full health answers while herdr does (every release since v0.1.0 has sent these). */
 const APP_HEALTH = { ok: true, herdr: { version: "0.9.3", protocol: 1 }, auth: { required: false, authenticated: true } };
+
+/** The first word of `status` is read by install.sh, install.ps1 and the Mac and Windows apps: only `running` means usable. */
+describe("status", () => {
+  const firstLine = (out: string): string => out.split("\n")[0]!;
+
+  it("says running, as it always has, while Ovis and its engine answer", async () => {
+    const ours = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => Response.json(APP_HEALTH) });
+    try {
+      const result = await run("status", { PORT: String(ours.port) });
+      expect(result.exitCode, result.err).toBe(0);
+      expect(firstLine(result.out)).toBe(`running http://127.0.0.1:${ours.port}`);
+    } finally { await ours.stop(true); }
+  });
+
+  it("tells an engine that does not answer from a server that does not, naming the engine and the server's reason", async () => {
+    const ours = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: (request) => new URL(request.url).searchParams.get("scope") === "bridge"
+        ? Response.json({ ...BRIDGE_HEALTH, runtime: "herdr-core" })
+        : Response.json({ error: { code: "connect_failed", message: "herdr-core socket unreachable" } }, { status: 502 }),
+    });
+    try {
+      mkdirSync(join(scratch, "state"), { recursive: true });
+      writeFileSync(join(scratch, "state", "server.pid"), `${process.pid}\n`);
+      const result = await run("status", { PORT: String(ours.port) });
+      expect(result.exitCode, result.err).toBe(0);
+      const [word, address, pid, number] = firstLine(result.out).split(" ");
+      // the apps read the pid as the third and fourth words
+      expect([word, address, pid, number]).toEqual(["engine-down", `http://127.0.0.1:${ours.port}`, "(pid", `${process.pid})`]);
+      expect(firstLine(result.out)).toContain("herdr-core");
+      expect(result.out).toContain("herdr-core socket unreachable");
+    } finally { await ours.stop(true); }
+  });
+
+  it("reads a machine-profile server's health, which has no bridge protocol: engine-down while its engine is down, running while it answers", async () => {
+    // the answer of server/machine-profile.ts machineHealth (release 1's machine profile), to both health URLs
+    const profile = (down: boolean) => ({ ok: true, auth: { required: false, authenticated: true }, version: "0.5.3", runtime: "herdr", machine_profile: { engine: "herdr", runtime_down: down, reason: down ? "herdr is not running for the selected session" : null }, ...down ? {} : { herdr: APP_HEALTH.herdr }, web_ui: { boot_id: "b" } });
+    for (const [down, word] of [[true, "engine-down"], [false, "running"]] as const) {
+      const ours = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => Response.json(profile(down)) });
+      try {
+        const result = await run("status", { PORT: String(ours.port) });
+        expect(result.exitCode, result.err).toBe(0);
+        expect(firstLine(result.out).split(" ")[0]).toBe(word);
+      } finally { await ours.stop(true); }
+    }
+  });
+
+  it("gives a machine-profile server's own reason for an engine it cannot use, and no promise to pick that engine up", async () => {
+    for (const [engine, reason] of [["herdr-core", "herdr-core is not supported for a machine yet"], ["herdr", "Several herdr sessions are running; select one with HERDR_REMOTE_SOCKET"]]) {
+      const ours = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => Response.json({ ok: true, auth: { required: false, authenticated: true }, runtime: "herdr", machine_profile: { engine, runtime_down: true, reason } }) });
+      try {
+        const result = await run("status", { PORT: String(ours.port) });
+        expect(result.exitCode, result.err).toBe(0);
+        const lines = result.out.trimEnd().split("\n");
+        expect(lines[0]!.split(" ")[0]).toBe("engine-down");
+        // the first line, its reason, version and config: nothing more
+        expect([lines.length, lines[1]!.startsWith("reason: "), lines[2]!.startsWith("version: "), lines[3]!.startsWith("config: ")]).toEqual([4, true, true, true]);
+      } finally { await ours.stop(true); }
+    }
+  });
+
+  /** `status` as a person runs it, at a terminal: its output is a PTY, as the apps' pipe is not */
+  async function atTerminal(extra: Record<string, string | undefined>): Promise<{ out: string; exitCode: number }> {
+    let out = "";
+    const decoder = new TextDecoder();
+    // a terminal can hand over its last bytes after the child exited: what it showed is read once its stream ended
+    let ended = (): void => undefined;
+    const complete = new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`the terminal's output never ended: ${JSON.stringify(out)}`)), 15_000);
+      ended = () => { clearTimeout(timer); resolve(); };
+    });
+    const child = Bun.spawn(["bun", "scripts/plugin.ts", "status"], { cwd: ROOT, env: launchEnv(extra), terminal: { cols: 200, rows: 40, data: (_terminal, bytes) => { out += decoder.decode(bytes, { stream: true }); }, exit: () => ended() } });
+    const [exitCode] = await Promise.all([child.exited, complete]);
+    return { out: out.replace(/\r\n/g, "\n"), exitCode };
+  }
+
+  /** the machine profile's answer to a caller it does not know: exactly this, and the older auth-shaped form */
+  const LOCKED_BODIES = [{ ok: true }, { ok: true, auth: { required: true, authenticated: false } }];
+
+  /**
+   * A machine-profile server that requires its token: the engine facts only to a caller with it. `engine.reason` set
+   * is the engine down, with the profile's own reason; `locked` is what a caller without the token gets.
+   */
+  function tokenProfile(authorizations: (string | null)[], engine: { reason: string | null; engine?: string }, locked: object = LOCKED_BODIES[0]!) {
+    return Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (request) => {
+      const authorization = request.headers.get("authorization");
+      authorizations.push(authorization);
+      const down = engine.reason !== null;
+      return authorization === "Bearer s3cret"
+        ? Response.json({ ok: true, auth: { required: true, authenticated: true }, runtime: "herdr", machine_profile: { engine: engine.engine ?? "herdr", runtime_down: down, reason: engine.reason }, ...down ? {} : { herdr: APP_HEALTH.herdr } })
+        : Response.json(locked);
+    } });
+  }
+
+  it("sends no token from a status read through a pipe, as the Mac and Windows apps read it, and says no-access", async () => {
+    for (const locked of LOCKED_BODIES) {
+      const authorizations: (string | null)[] = [];
+      const ours = tokenProfile(authorizations, { reason: null }, locked);
+      try {
+        const result = await run("status", { PORT: String(ours.port), OVIS_TOKEN: "s3cret" });
+        expect(result.exitCode, result.err).toBe(0);
+        expect(firstLine(result.out).split(" ")[0]).toBe("no-access");
+        // a correct token was set but not sent: never called missing or wrong
+        expect(result.out.split("\n")[1]!.startsWith("Not sent:")).toBe(true);
+        expect(result.out).toMatch(/(^|\s)ovis status in a terminal/);
+        expect(authorizations.length).toBeGreaterThan(0);
+        expect(authorizations.filter((value) => value !== null)).toEqual([]);
+      } finally { await ours.stop(true); }
+    }
+  });
+
+  it("names the command OVIS_CLI_NAME gives, not a bare ovis, in what status tells the person to run", async () => {
+    const ours = tokenProfile([], { reason: null });
+    try {
+      const result = await run("status", { PORT: String(ours.port), OVIS_TOKEN: "s3cret", OVIS_CLI_NAME: "/opt/trial/bin/ovis-trial" });
+      expect(result.out).toContain("/opt/trial/bin/ovis-trial status");
+      expect(result.out).not.toMatch(/(^|[\s(`])ovis (add|link|pair|status|login)\b/m);
+    } finally { await ours.stop(true); }
+  });
+
+  it("at a terminal, sends the token only after a locked answer without it, and says no-access, never down, when that does not open it", async () => {
+    const authorizations: (string | null)[] = [];
+    const engine: { reason: string | null; engine?: string } = { reason: null };
+    const ours = tokenProfile(authorizations, engine);
+    mkdirSync(join(scratch, "state"), { recursive: true });
+    writeFileSync(join(scratch, "state", "server.pid"), `${process.pid}\n`);
+    const NOT_RUNNING = "herdr is not running for the selected session";
+    const NOT_SUPPORTED = "herdr-core is not supported for a machine yet";
+    try {
+      for (const [token, reason, name, word] of [["s3cret", null, "herdr", "running"], ["s3cret", NOT_RUNNING, "herdr", "engine-down"], ["s3cret", NOT_SUPPORTED, "herdr-core", "engine-down"], [undefined, null, "herdr", "no-access"], ["wrong", null, "herdr", "no-access"]] as const) {
+        engine.reason = reason;
+        engine.engine = name;
+        authorizations.length = 0;
+        const result = await atTerminal({ PORT: String(ours.port), OVIS_TOKEN: token });
+        expect(result.exitCode, result.out).toBe(0);
+        if (word === "running") expect(firstLine(result.out)).toBe(`running http://127.0.0.1:${ours.port} (pid ${process.pid})`);
+        else expect(firstLine(result.out).split(" ")[0]).toBe(word);
+        // the server's own reason, on the line after the first
+        if (reason !== null) expect(result.out.split("\n")[1]).toBe(`reason: ${reason}`);
+        // without a token it is missing; a token sent and still locked out says so, and no more
+        if (word === "no-access") expect(result.out.split("\n")[1]!.split(" ")[0]).toBe(token === undefined ? "No" : "Sent");
+        // every read without the token first; with one set, the last read alone carries it
+        expect(authorizations.at(-1)).toBe(token === undefined ? null : `Bearer ${token}`);
+        expect(authorizations.slice(0, token === undefined ? undefined : -1).every((value) => value === null)).toBe(true);
+        expect(authorizations.length).toBeGreaterThan(1);
+      }
+    } finally { await ours.stop(true); }
+  });
+
+  it("never sends the token from start, even to a server that answers locked on its port", async () => {
+    const authorizations: (string | null)[] = [];
+    const locked = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (request) => {
+      authorizations.push(request.headers.get("authorization"));
+      return Response.json({ ok: true, auth: { required: true, authenticated: false } });
+    } });
+    try {
+      // a start that spawns anyway spawns no real server: there is no server/managed.ts under this root
+      const started = await run("start", { PORT: String(locked.port), OVIS_TOKEN: "s3cret", HERDR_PLUGIN_ROOT: scratch });
+      expect(started.exitCode).toBe(1);
+      expect(authorizations.length).toBeGreaterThan(0);
+      expect(authorizations.filter((value) => value !== null)).toEqual([]);
+    } finally { await locked.stop(true); }
+  });
+
+  it("keeps today's running line, byte for byte, with a token set", async () => {
+    const ours = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => Response.json(APP_HEALTH) });
+    try {
+      const result = await run("status", { PORT: String(ours.port), OVIS_TOKEN: "s3cret" });
+      expect(firstLine(result.out)).toBe(`running http://127.0.0.1:${ours.port}`);
+    } finally { await ours.stop(true); }
+  });
+
+  it("says down while Ovis does not answer, its recorded process alive or not", async () => {
+    const gone = await run("status", { PORT: String(P1) });
+    expect(gone.exitCode, gone.err).toBe(0);
+    expect(firstLine(gone.out)).toBe(`down http://127.0.0.1:${P1}`);
+    const reading = readProcessBirth(process.pid);
+    mkdirSync(join(scratch, "state"), { recursive: true });
+    writeFileSync(join(scratch, "state", "server.owner"), JSON.stringify(reading.state === "identified" ? { pid: process.pid, birth: reading.birth } : { pid: process.pid, birth_unknown: true }));
+    writeFileSync(join(scratch, "state", "server.pid"), `${process.pid}\n`);
+    const alive = await run("status", { PORT: String(P1) });
+    expect(alive.exitCode, alive.err).toBe(0);
+    expect(firstLine(alive.out).split(" ").slice(0, 4)).toEqual(["down", `http://127.0.0.1:${P1}`, "(pid", `${process.pid})`]);
+    expect(firstLine(alive.out)).not.toBe(`down http://127.0.0.1:${P1} (pid ${process.pid})`);
+  });
+});
 
 describe("the herdr socket", () => {
   /** a stand-in server that records the HERDR_SOCKET it was started with, then exits */
@@ -359,7 +599,7 @@ describe("starts at the same moment", () => {
     const server = spawn("sleep", ["30"], { detached: true, stdio: "ignore" });
     try {
       writeFileSync(join(legacy, "server.pid"), `${server.pid}\n`);
-      const stopped = await run("stop", { HERDR_PLUGIN_STATE_DIR: current, PORT: "1" });
+      const stopped = await run("stop", { HERDR_PLUGIN_STATE_DIR: current, PORT: String(P1) });
       expect(stopped.exitCode, stopped.err).toBe(0);
       expect(existsSync(join(current, "lifecycle.lock.guard"))).toBe(true);
       expect(existsSync(join(legacy, "lifecycle.lock.guard")), "regression: the lock followed the record into the old id's dir").toBe(false);
@@ -378,7 +618,7 @@ describe("starts at the same moment", () => {
       const started = await run("start", { HERDR_PLUGIN_ROOT: root, PORT: await freePortNumber() });
       expect(existsSync(join(scratch, "spawned")), "regression: a live server with its own birth was taken for one from before this boot").toBe(false);
       expect(started.err).toContain(`Ovis (pid ${server.pid}) is still running but does not answer`);
-      const stopped = await run("stop", { HERDR_PLUGIN_ROOT: root, PORT: "1" });
+      const stopped = await run("stop", { HERDR_PLUGIN_ROOT: root, PORT: String(P1) });
       expect(stopped.out).toContain(`stopped Ovis (pid ${server.pid})`);
       expect(() => process.kill(server.pid!, 0)).toThrow();
     } finally { try { process.kill(-server.pid!, "SIGKILL"); } catch { /* stopped */ } }
@@ -442,7 +682,7 @@ describe("starts at the same moment", () => {
   it("do not block on the lock's guard while another process holds it, so they can say why they wait", async () => {
     const holder = await holdLock(true);
     try {
-      const stop = launch("stop", { PORT: "1" });
+      const stop = launch("stop", { PORT: String(P1) });
       await readUntil(stop.stdout.getReader(), "waiting for it to finish", "regression: stop, blocked on the guard,");
       await holder.release();
       expect(await stop.exited).toBe(0);
@@ -516,14 +756,14 @@ describe("port", () => {
   };
 
   it("reports the port an earlier start fell back to", async () => {
-    keep(3);
-    expect((await status()).out).toContain("down http://127.0.0.1:3");
+    keep(P3);
+    expect((await status()).out).toContain(`down http://127.0.0.1:${P3}`);
   });
 
   it("lets a PORT the user set win over the kept one", async () => {
-    keep(3);
-    writeFileSync(join(configDir, ".env"), "PORT=1\n");
-    expect((await status()).out).toContain("down http://127.0.0.1:1");
+    keep(P3);
+    writeFileSync(join(configDir, ".env"), `PORT=${P1}\n`);
+    expect((await status()).out).toContain(`down http://127.0.0.1:${P1}`);
   });
 
   it("does not start on another port when the PORT the user set cannot be opened, and says so", async () => {
@@ -655,7 +895,7 @@ describe("stop", () => {
     const server = spawn("sleep", ["30"], { detached: true, stdio: "ignore" });
     try {
       writeFileSync(join(legacy, "server.pid"), `${server.pid}\n`);
-      const stopped = await run("stop", { HERDR_PLUGIN_STATE_DIR: join(plugins, "devswha.ovis"), PORT: "1" });
+      const stopped = await run("stop", { HERDR_PLUGIN_STATE_DIR: join(plugins, "devswha.ovis"), PORT: String(P1) });
       expect(stopped.exitCode, stopped.err).toBe(0);
       expect(existsSync(join(legacy, "server.pid"))).toBe(false);
       expect(() => process.kill(server.pid!, 0)).toThrow();
@@ -672,7 +912,7 @@ describe("stop", () => {
       writeFileSync(join(scratch, "state", "server.pid"), `${other.pid}\n`);
       const earlier = { platform: process.platform, value: process.platform === "linux" ? `${readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim()}:1` : "Thu Jan 1 00:00:00 1970" };
       writeFileSync(join(scratch, "state", "server.owner"), JSON.stringify({ pid: other.pid, birth: earlier }));
-      const stopped = await run("stop", { PORT: "1" });
+      const stopped = await run("stop", { PORT: String(P1) });
       expect(stopped.exitCode, stopped.err).toBe(0);
       expect(() => process.kill(other.pid!, 0), "regression: stop signalled a process that is not the server").not.toThrow();
       expect(stopped.out).toContain(`Ovis is not running (pid ${other.pid} now belongs to another process)`);
@@ -725,11 +965,11 @@ describe("the state dir when run by hand", () => {
   const legacy = () => join(scratch, ".local", "state", "herdr-web-ui");
   const managed = (base = join(scratch, ".local", "state")) => join(base, "herdr", "plugins", "devswha.ovis");
   const pidFile = (dir: string, pid: number) => { mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, "server.pid"), `${pid}\n`); };
-  const byHand = (extra: Record<string, string | undefined> = {}) => run("status", { HERDR_PLUGIN_STATE_DIR: undefined, PORT: "1", ...extra });
+  const byHand = (extra: Record<string, string | undefined> = {}) => run("status", { HERDR_PLUGIN_STATE_DIR: undefined, PORT: String(P1), ...extra });
 
   it("reads herdr's plugin state, under XDG_STATE_HOME when it is set", async () => {
     pidFile(managed(join(scratch, "state-home")), process.pid);
-    expect((await byHand({ XDG_STATE_HOME: join(scratch, "state-home") })).out).toContain(`down http://127.0.0.1:1 (pid ${process.pid})`);
+    expect((await byHand({ XDG_STATE_HOME: join(scratch, "state-home") })).out).toContain(`down http://127.0.0.1:${P1} (pid ${process.pid})`);
   });
 
   it("skips an old checkout's pid file whose server is gone", async () => {
@@ -767,6 +1007,7 @@ describe("add and login", () => {
       const path = new URL(request.url).pathname;
       if (path === "/api/health") return Response.json(APP_HEALTH);
       if (path === "/api/account/status") return Response.json({ account: "acct_1", unlinked: [], removals: [], adds: [], blocked: [] });
+      if (path === "/api/devices") return Response.json({ devices: [] });
       return new Response(null, { status: 404 });
     } });
     writeFileSync(join(configDir, ".env"), `PORT=${server.port}\n`);
@@ -784,7 +1025,7 @@ describe("add and login", () => {
     } finally { server.stop(true); }
   });
 
-  it("run the release the app updated to as link, the one name a release from before them knows", async () => {
+  it("are never handed to an installed release's copy (an in-app update), whatever it holds: this checkout's own runs, and writes no code into a pipe", async () => {
     const { server, env } = linkedPc();
     try {
       const release = join(updateStateDir(ROOT, server.port!, join(scratch, "app-state")), "release-test");
@@ -792,9 +1033,20 @@ describe("add and login", () => {
       writeFileSync(join(release, "scripts", "plugin.ts"), 'console.log("active release", process.argv.slice(2).join(" "));');
       const revision = Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: ROOT, windowsHide: true }).stdout.toString().trim();
       writeFileSync(join(release, "..", "current.json"), JSON.stringify({ source_revision: revision, directory: release }));
-      for (const name of ["add", "login"]) {
-        const result = await run(name, env);
-        expect([result.out, result.exitCode], result.err).toEqual(["active release link\n", 0]);
+      // an older copy, and one that has every check this checkout has: neither is handed them
+      for (const link of ["export function answerOf() {}\n", "export function needsTerminal() {}\n"]) {
+        writeFileSync(join(release, "scripts", "plugin-link.ts"), link);
+        for (const name of ["add", "login", "link"]) {
+          const result = await run(name, env);
+          expect([name, result.out, result.exitCode], result.err).toEqual([name, "This PC is already in an Ovis account (acct_1).\n", 0]);
+        }
+        const coded = await run("link", env, { args: ["--code"] });
+        expect([coded.out, coded.exitCode], coded.err).toEqual(["Pairing a device with a code needs a terminal: the QR code and the code to type are a key to this PC, so they are never written to a pipe, a file or a log. Run ovis link --code in a terminal (over ssh, run ssh -t).\n", 1]);
+        // nor Phone setup, nor pair, which pair too
+        for (const name of ["phone-setup", "pair"]) {
+          const result = await run(name, env);
+          expect(result.out + result.err).not.toContain("active release");
+        }
       }
     } finally { server.stop(true); }
   });
@@ -812,7 +1064,41 @@ describe("add and login", () => {
     } finally { server.stop(true); }
   });
 
-  it("take the code back when the output went away: a write that fails stops the run as its signal would", async () => {
+  it("write no pairing code where the output is not a terminal: add, add --print and link --code each say so in one line, and ask for none", async () => {
+    const key = generateKeyPair();
+    const calls: string[] = [];
+    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
+      const path = new URL(request.url).pathname;
+      if (path === "/api/health") return Response.json(APP_HEALTH);
+      calls.push(`${request.method} ${path}`);
+      if (path === "/api/account/status") return Response.json({ account: null, unlinked: [], removals: [], adds: [], blocked: [] });
+      if (path === "/api/relay") return Response.json({ phase: "online", blocked: null });
+      if (path === "/api/relay/code") return Response.json({ code: "ABCD-EFGH-JK", expires_at: new Date(Date.now() + 600_000).toISOString(), server_id: "0123456789abcdef0123456789abcdef" });
+      if (path === "/api/relay/offer") return Response.json({ url: encodeOffer({ v: 1, server_id: "0123456789abcdef0123456789abcdef", server_public_key: exportPublicKey(key.publicKey), relay: "wss://relay.ovis.sh", code: "123456" }, "https://app.ovis.sh"), expires_at: new Date(Date.now() + 600_000).toISOString() });
+      return new Response(null, { status: 404 });
+    } });
+    writeFileSync(join(configDir, ".env"), `PORT=${server.port}\n`);
+    const env = { HOST: "127.0.0.1", HERDR_PLUGIN_ROOT: ROOT, HERDR_PLUGIN_CONFIG_DIR: configDir, OVIS_STATE_DIR: join(scratch, "app-state"), OVIS_TOKEN: "" };
+    try {
+      for (const [command, args, line] of [
+        ["add", [], "Adding this PC needs a terminal: the QR code and the code to type are a key to this PC, so they are never written to a pipe, a file or a log. Run ovis add in a terminal (over ssh, run ssh -t).\n"],
+        ["add", ["--print"], "Adding this PC needs a terminal: the QR code and the code to type are a key to this PC, so they are never written to a pipe, a file or a log. Run ovis add in a terminal (over ssh, run ssh -t).\n"],
+        ["link", ["--code"], "Pairing a device with a code needs a terminal: the QR code and the code to type are a key to this PC, so they are never written to a pipe, a file or a log. Run ovis link --code in a terminal (over ssh, run ssh -t).\n"],
+      ] as const) {
+        calls.length = 0;
+        const result = await run(command, env, { args: [...args] });
+        expect([command, args, result.out, result.exitCode], result.err).toEqual([command, args, line, 1]);
+        // no QR code block, no pairing link, no code to type
+        expect(result.out).not.toContain("█");
+        expect(result.out).not.toContain("#offer");
+        expect(result.out).not.toContain("ABCD-EFGH-JK");
+        expect(calls.filter((call) => call.startsWith("POST "))).toEqual([]);
+      }
+    } finally { await server.stop(true); }
+  });
+
+  // on a terminal of its own (`script`), which then goes away: --code writes its code to nothing else
+  it.skipIf(platform() === "win32" || Bun.which("script") === null)("take the code back when the terminal went away", async () => {
     const key = generateKeyPair();
     const calls: string[] = [];
     let codes = 0;
@@ -831,15 +1117,37 @@ describe("add and login", () => {
       return new Response(null, { status: 404 });
     } });
     writeFileSync(join(configDir, ".env"), `PORT=${server.port}\n`);
-    // its reader takes the first code's lines and ends: the write of the next code fails
-    const child = Bun.spawn(["sh", "-c", "bun scripts/plugin.ts link --code | head -n 2"], {
-      cwd: ROOT, stdout: "pipe", stderr: "pipe",
+    // util-linux takes the command as one string, BSD (macOS) as arguments; behind cat, as macOS's script refuses a
+    // socket for stdin
+    const line = `${process.execPath} scripts/plugin.ts link --code`;
+    const terminal = platform() === "darwin" ? `script -q /dev/null ${line}` : `script -qfec 'exec ${line}' /dev/null`;
+    const child = Bun.spawn(["sh", "-c", `cat | ${terminal}`], {
+      cwd: ROOT, stdin: "pipe", stdout: "pipe", stderr: "pipe",
       env: launchEnv({ HOST: "127.0.0.1", HERDR_PLUGIN_ROOT: ROOT, HERDR_PLUGIN_CONFIG_DIR: configDir, OVIS_STATE_DIR: join(scratch, "app-state"), OVIS_TOKEN: "" }),
     });
     let timer: ReturnType<typeof setTimeout> | undefined;
     let result: "taken back" | "left valid";
     try {
-      // a run whose write failed unheard is gone at once, with nothing taken back: its exit is the other end of the wait
+      // the code on the terminal, then the terminal goes: `script`, which holds its other end, is killed outright
+      const reader = child.stdout.getReader();
+      const decoder = new TextDecoder();
+      let screen = "";
+      while (!screen.includes("Press Ctrl+C to stop")) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        screen += decoder.decode(chunk.value, { stream: true });
+      }
+      reader.releaseLock();
+      const rows = Bun.spawnSync(["ps", "-A", "-o", "pid=,ppid=,command="]).stdout.toString().split("\n").map((row) => /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(row)).filter((row) => row !== null);
+      const below = new Set([child.pid]);
+      for (let grew = true; grew;) {
+        grew = false;
+        for (const [, pid, ppid] of rows) if (below.has(Number(ppid)) && !below.has(Number(pid))) { below.add(Number(pid)); grew = true; }
+      }
+      const holder = rows.find(([, pid, , command]) => below.has(Number(pid)) && command!.startsWith("script "));
+      expect(holder, screen).toBeDefined();
+      process.kill(Number(holder![1]), "SIGKILL");
+      // a run that went on with its terminal gone, or ended unheard, left its code valid: its exit is the other end of the wait
       result = await Promise.race([
         taken.then(() => "taken back" as const),
         child.exited.then(() => "left valid" as const),
@@ -847,11 +1155,13 @@ describe("add and login", () => {
       ]);
     } finally {
       clearTimeout(timer);
+      child.stdin.end();
       child.kill();
       await child.exited;
       await server.stop(true);
     }
-    expect([result, calls.filter((call) => call === "POST /api/relay/offer").length], await new Response(child.stderr).text()).toEqual(["taken back", 2]);
+    expect(result, await new Response(child.stderr).text()).toBe("taken back");
+    expect(calls.filter((call) => call === "POST /api/relay/offer").length).toBeGreaterThan(0);
   }, 30_000);
 
   it("are in the usage an unknown command gets, with what they do", async () => {
@@ -859,7 +1169,7 @@ describe("add and login", () => {
     expect(result.exitCode).toBe(2);
     expect(result.err).toBe([
       "usage: bun scripts/plugin.ts <start|stop|status|pair|link|add|login|phone|phone-setup|tui>",
-      "add (also login, link): sign this PC in, then scan its QR code with a device of your Ovis account to add it (--approve: approve that device here instead; --print: write the QR code where there is no terminal).",
+      "add (also login, link): sign this PC in, then scan its QR code with a device of your Ovis account to add it, at a terminal only (--approve: approve that device here instead; --print: write the QR code as lines that stay on the terminal).",
       "link --code: show a code and a QR code to pair one device instead.",
       "tui: herdr-core's terminals in this terminal, as herdr shows them.",
       "",
@@ -996,16 +1306,59 @@ describe("pair relay offer", () => {
       },
     });
     try {
-      const result = await run("pair", { PORT: String(server.port) });
+      // at a terminal: the code and the relay's pairing link are written to nothing else
+      const result = await runAtTerminal("pair", { PORT: String(server.port) });
       return { ...result, offerRequests };
     } finally {
       await server.stop(true);
     }
   }
 
+  it("writes no pairing code and no relay link where its output is not a terminal, and asks for none; phone-setup the same", async () => {
+    const calls: string[] = [];
+    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
+      const path = new URL(request.url).pathname;
+      calls.push(`${request.method} ${path}`);
+      if (path === "/api/health") return Response.json(APP_HEALTH);
+      if (path === "/api/access") return Response.json({ tailscale: { serving_url: null, serve_command: null } });
+      if (path === "/api/devices/pair/start") return Response.json({ code: "123456", expires_at: "2030-01-01T00:00:00.000Z" });
+      if (path === "/api/relay") return Response.json({ phase: "online" });
+      return new Response(null, { status: 404 });
+    } });
+    try {
+      const NEEDS = "Pairing a device with a code needs a terminal: the QR code and the code to type are a key to this PC, so they are never written to a pipe, a file or a log. Run ovis pair in a terminal (over ssh, run ssh -t).\n";
+      const piped = await run("pair", { PORT: String(server.port) });
+      expect([piped.out, piped.err, piped.exitCode]).toEqual(["", NEEDS, 1]);
+      expect(calls).toEqual([]);
+      const setup = await run("phone-setup", { PORT: String(server.port) });
+      expect(setup.exitCode).toBe(1);
+      expect(setup.err).toBe(NEEDS);
+      expect(setup.out).not.toContain("Pairing code");
+      expect(calls).not.toContain("POST /api/devices/pair/start");
+    } finally { await server.stop(true); }
+  });
+
+  it("phone-setup shows the pairing code at a terminal, as the marketplace action's pane is one, and ends on Enter", async () => {
+    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
+      const path = new URL(request.url).pathname;
+      if (path === "/api/health") return Response.json(APP_HEALTH);
+      if (path === "/api/access") return Response.json({ tailscale: { serving_url: null, serve_command: null } });
+      if (path === "/api/devices/pair/start") return Response.json({ code: "123456", expires_at: "2030-01-01T00:00:00.000Z" });
+      if (path === "/api/relay") return Response.json({ phase: "off" });
+      return new Response(null, { status: 404 });
+    } });
+    try {
+      const result = await runAtTerminal("phone-setup", { PORT: String(server.port) }, { enter: "Press Enter to finish" });
+      expect(result.exitCode, result.out).toBe(0);
+      expect(result.out).toContain("Phone setup");
+      expect(result.out).toContain("Pairing code: 123 456");
+      expect(result.out).toContain("Press Enter to finish.");
+    } finally { await server.stop(true); }
+  });
+
   it("prints the relay offer URL and QR only while online", async () => {
     const result = await pairWithRelay("online");
-    expect(result.exitCode, result.err).toBe(0);
+    expect(result.exitCode, result.out).toBe(0);
     expect(result.out).toContain("Ovis relay");
     const printedUrl = result.out.split("\n").find((line) => line.includes("#offer="));
     expect(printedUrl).toBeString();
@@ -1019,7 +1372,7 @@ describe("pair relay offer", () => {
 
   it("prints one settings hint while relay is off and never requests an offer", async () => {
     const result = await pairWithRelay("off");
-    expect(result.exitCode, result.err).toBe(0);
+    expect(result.exitCode, result.out).toBe(0);
     expect(result.out).not.toContain("#offer=");
     expect(result.out.match(/To turn on Ovis relay:/g)).toHaveLength(1);
     expect(result.offerRequests).toBe(0);
@@ -1027,7 +1380,7 @@ describe("pair relay offer", () => {
 
   it("prints nothing extra when the relay API is missing", async () => {
     const result = await pairWithRelay("missing");
-    expect(result.exitCode, result.err).toBe(0);
+    expect(result.exitCode, result.out).toBe(0);
     expect(result.out).not.toContain("Ovis relay");
     expect(result.out).not.toContain("To turn on Ovis relay:");
     expect(result.offerRequests).toBe(0);
@@ -1036,11 +1389,11 @@ describe("pair relay offer", () => {
   it("reports malformed relay responses without crashing or printing a QR", async () => {
     const status = await pairWithRelay("malformed");
     expect(status.exitCode).toBe(0);
-    expect(status.err).toContain("Could not read Ovis relay pairing:");
+    expect(status.out).toContain("Could not read Ovis relay pairing:");
     expect(status.out).not.toContain("#offer=");
     const offer = await pairWithRelay("bad-offer");
     expect(offer.exitCode).toBe(0);
-    expect(offer.err).toContain("Could not read Ovis relay pairing:");
+    expect(offer.out).toContain("Could not read Ovis relay pairing:");
     expect(offer.out).not.toContain("#offer=");
   });
 });

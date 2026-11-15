@@ -3,7 +3,8 @@
  * before pushing, so both run the same thing.
  *
  *   bun run check fast                  what CI's "Fast checks" job runs: workflow syntax, generated
- *                                       types, typecheck, build, unit tests. No herdr needed.
+ *                                       types, the fleet contract and vectors, typecheck, build, unit
+ *                                       tests. No herdr needed.
  *   bun run check integration browser   CI's "Integration and browser" job: a build, then the named
  *                                       lanes side by side (either name alone runs that lane)
  *   bun run check full                  fast, then both lanes
@@ -1094,6 +1095,7 @@ export async function main(groupSeams: GroupSeams & {
     specs.push({ name: "workflow syntax", command: null });
     specs.push({ name: "generated types are fresh", command: [bun, "run", "generate:types", "--check"] });
     specs.push({ name: "generated themes are fresh", command: [bun, "run", "generate:themes", "--check"] });
+    specs.push({ name: "fleet contract and vectors", command: [bun, "run", "check:fleet"] });
     specs.push({ name: "typecheck", command: [bun, "run", "typecheck"] });
     specs.push({ name: "build", command: [bun, "run", "build"] });
     specs.push({ name: "unit tests", command: [bun, "run", "test:unit"] });
@@ -1519,6 +1521,8 @@ export async function main(groupSeams: GroupSeams & {
       for (const [label, command] of [
         ["generated types are fresh", [bun, "run", "generate:types", "--check"]],
         ["generated themes are fresh", [bun, "run", "generate:themes", "--check"]],
+        // docs/fleet-link.md and server/fleet/vectors/ cannot drift apart unnoticed
+        ["fleet contract and vectors", [bun, "run", "check:fleet"]],
         ["typecheck", [bun, "run", "typecheck"]],
       ] as const) {
         if (code !== 0 || ending) break;

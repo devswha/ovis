@@ -85,6 +85,7 @@ function sleepHelpers(code: string, source: string): { names: Set<string>; defin
 export function fixedSleeps(file: string, text = read(file)): string[] {
   const code = stripComments(text, { strings: true });
   const lines = text.split("\n");
+  const codeLines = code.split("\n");
   const found: string[] = [];
   const helpers = sleepHelpers(code, stripComments(text));
   const calls = helpers.names.size ? [...code.matchAll(new RegExp(`(?<![\\w.])(?:${[...helpers.names].join("|")})\\s*\\((?!\\s*0\\s*\\))`, "g"))] : [];
@@ -95,7 +96,7 @@ export function fixedSleeps(file: string, text = read(file)): string[] {
     .sort((a, b) => a.index - b.index);
   for (const match of waits) {
     const line = lineOf(code, match.index);
-    const codeLine = code.split("\n")[line - 1]!;
+    const codeLine = codeLines[line - 1]!;
     if (/\bPromise\.race\s*\(/.test(codeLine)) continue;
     if (MARKER.test(lines[line - 1]!) || MARKER.test(lines[line - 2] ?? "")) continue;
     const before = codeLine.slice(0, match.index - (code.lastIndexOf("\n", match.index) + 1));

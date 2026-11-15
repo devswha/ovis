@@ -20,6 +20,7 @@ import { PALETTE_JA } from "./i18n/palette.ja.ts";
 import { RELAY_JA } from "./i18n/relay.ja.ts";
 import { DASHBOARD_JA } from "./i18n/dashboard.ja.ts";
 import { RUNTIME_MOVE_JA } from "./i18n/runtime-move.ja.ts";
+import { FLEET_JA } from "./i18n/fleet.ja.ts";
 
 /**
  * Japanese for every `t("…")` in src/ that no part in lib/i18n/ holds: keys more than one feature
@@ -581,12 +582,20 @@ const BASE: Record<string, string> = {
   "Ready · not in the account yet": "準備完了 · まだアカウント外",
   "Account setup is incomplete.": "アカウントの設定が完了していません。",
   "Adding it to your account…": "アカウントに追加中…",
+  "The account service is busy: waiting {seconds} s, then trying again…": "アカウントサービスが混み合っています: {seconds}秒待ってから再試行します…",
+  "Adding this PC to your account: the account service is busy. Trying again in {seconds} s…": "このPCをアカウントに追加中: アカウントサービスが混み合っています。{seconds}秒後に再試行します…",
   "{name} is ready to open on this device.": "このデバイスで {name} を開く準備ができました。",
   "In your account": "アカウントに追加済み",
   "Devices added: {count}": "追加したデバイス: {count}台",
   "Plan · {plan}": "プラン · {plan}",
   "{used}/{max} PCs": "PC {used}/{max}台",
   "{used} / {cap} relay data": "リレーデータ {used} / {cap}",
+  "{max} fleet machines": "フリートマシン {max}台",
+  "Fleet": "フリート",
+  "Open fleet": "フリートを開く",
+  "Last seen": "最終確認",
+  "State": "状態",
+  "Route": "経路",
   "Agent": "エージェント",
   "Install another agent ({count})": "別のエージェントをインストール ({count})",
   "Dark theme": "ダークテーマ",
@@ -652,6 +661,7 @@ export const JA_PARTS: Record<string, Record<string, string>> = {
   relay: RELAY_JA,
   dashboard: DASHBOARD_JA,
   "runtime-move": RUNTIME_MOVE_JA,
+  fleet: FLEET_JA,
 };
 
 export const JA: Record<string, string> = Object.assign({}, ...Object.values(JA_PARTS));

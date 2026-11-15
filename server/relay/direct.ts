@@ -10,6 +10,9 @@
  * Narrower than the relay: devices sign in here, nothing pairs (RelaySession signInOnly). Clients
  * that have not signed in are bounded per source address and in total, apart from the relay's, so
  * nobody on the network can crowd out relay service; signed-in sessions keep the relay's limits.
+ *
+ * While the fleet is in use (server/fleet/direct.ts) it also listens on the PC's container and VM bridge adapters, for
+ * fleet machines only: a device cannot sign in there, and they are named only in a machine's AUTH_OK.
  */
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { TCPSocketListener } from "bun";
@@ -23,6 +26,9 @@ import type { MuxClock } from "../../shared/relay-mux-engine.ts";
 import { isDirectCarrier, isTailnetCarrier, MAX_DIRECT_CARRIERS } from "../../shared/relay-mux.ts";
 import { inTailnet } from "../access.ts";
 import type { RequestServices } from "../dispatch.ts";
+import { bridgeAddresses, fleetInUse, machineCarriers } from "../fleet/direct.ts";
+import type { Fleet } from "../fleet/sessions.ts";
+import { SIGN_IN_WAITING } from "../fleet/sign-in-queue.ts";
 import { privateLanPeer } from "../lan-https.ts";
 import { SignedInSessions } from "./admissions.ts";
 import type { RelayIdentity } from "./identity.ts";
@@ -126,11 +132,17 @@ export interface DirectCarrierOptions {
   readonly tailnetIp?: () => string | null;
   /** The Tailscale addresses to listen on; this PC's own by default (tailnetAddresses), none when `addresses` is given. */
   readonly tailnetAddresses?: () => readonly string[];
+  /** The fleet this PC controls (RelayLinkOptions fleet): machines sign in here too, against the same OVIS_FLEET_MAX. */
+  readonly fleet?: Fleet;
+  /** The bridge addresses to listen on while the fleet is in use; this PC's own by default (bridgeAddresses), none when `addresses` is given. */
+  readonly bridgeAddresses?: () => readonly string[];
 }
 
 interface SocketData {
   readonly source: string;
   readonly id: string;
+  /** came through a bridge adapter's listener: fleet machines only */
+  readonly machinesOnly: boolean;
 }
 
 interface Carrier {
@@ -145,6 +157,8 @@ interface Carrier {
   readonly openedAt: number;
   session?: RelaySession;
   deviceId?: string;
+  /** a fleet machine signed in on it: no longer a client waiting to sign in */
+  machineId?: string;
   /** Gives its signed-in place back (SignedInSessions.admit). */
   release?: () => void;
   /** counts the session as its device's for good: its client opened a stream on it */
@@ -184,6 +198,14 @@ export class DirectCarrier {
   private listeners: TCPSocketListener<unknown>[] = [];
   /** the carrier's HTTP server on loopback, behind the gates (direct-gate.ts) */
   private upstream: Bun.Server<SocketData> | undefined;
+  /** the same, behind the bridge adapters' gates: its sessions take fleet machines only */
+  private machineUpstream: Bun.Server<SocketData> | undefined;
+  /** a listener per bridge adapter address while the fleet is in use, on the phones' port (or one of their own while there is none) */
+  private readonly bridges = new Map<string, TCPSocketListener<unknown>>();
+  private bridgePort: number | null = null;
+  /** bridge addresses whose bind failed, told once */
+  private readonly bridgeFailed = new Set<string>();
+  private unwatchFleet: (() => void) | undefined;
   private readonly secret = randomBytes(32).toString("hex");
   /** connections per address, shared by every gate */
   private readonly connections = new Map<string, number>();
@@ -206,7 +228,10 @@ export class DirectCarrier {
    */
   async start(): Promise<void> {
     if (this.stopped) return;
-    await this.refresh();
+    // a machine added or the last one revoked opens or closes the bridge listeners now, not at the next refresh
+    this.unwatchFleet = this.options.fleet?.onChange(() => { if (!this.stopped) this.refreshing = this.refresh(); });
+    this.refreshing = this.refresh();
+    await this.refreshing;
     const again = (): void => {
       if (this.stopped) return;
       void this.refresh().finally(() => { if (!this.stopped) this.cancelRefresh = this.clock.setTimeout(again, this.options.refreshMs ?? REFRESH_MS); });
@@ -214,13 +239,21 @@ export class DirectCarrier {
     if (!this.stopped) this.cancelRefresh = this.clock.setTimeout(again, this.options.refreshMs ?? REFRESH_MS);
   }
 
+  /** Resolves once the listeners follow the last store change (a mint's invites open the bridge listeners). */
+  settled(): Promise<void> { return this.refreshing.catch(() => undefined); }
+  private refreshing: Promise<void> = Promise.resolve();
+
   private async refresh(): Promise<void> {
     // addresses named (tests) name every one: nothing of this PC's own is looked up beside them
     const tailnet = this.options.tailnetAddresses?.()
       ?? (this.options.addresses ? [] : tailnetAddresses(networkInterfaces(), this.options.tailnetIp?.() ?? null));
     const lan = this.options.addresses?.() ?? rankLanAddresses(networkInterfaces(), await routedAddress());
+    const bridges = this.options.fleet && fleetInUse(this.options.fleet)
+      ? this.options.bridgeAddresses?.() ?? (this.options.addresses ? [] : bridgeAddresses(networkInterfaces())) : [];
+    if (this.stopped) return;
     // the Tailscale one keeps a place: the home network's first ones fill the rest
-    if (!this.stopped) this.bind([...lan.slice(0, MAX_DIRECT_CARRIERS - Math.min(tailnet.length, 1)), ...tailnet.slice(0, 1)]);
+    this.bind([...lan.slice(0, MAX_DIRECT_CARRIERS - Math.min(tailnet.length, 1)), ...tailnet.slice(0, 1)]);
+    this.bindBridges(bridges);
   }
 
   /**
@@ -234,6 +267,20 @@ export class DirectCarrier {
     return named.filter((carrier) => isDirectCarrier(carrier) && (tailnet || !isTailnetCarrier(carrier))).slice(0, MAX_DIRECT_CARRIERS);
   }
 
+  /**
+   * What a fleet machine's AUTH_OK names (server/fleet/direct.ts machineCarriers): the addresses a phone is told, the
+   * Tailscale one and the bridge adapters', as `ws://<address>:<port>`.
+   */
+  machineCarriers(): readonly string[] {
+    const listened = this.bound ? this.bound.addresses.map((address) => ({ address, port: this.bound!.port })) : [];
+    const named = (list: readonly { address: string; port: number }[]) => list.map(({ address, port }) => `ws://${address}:${port}`);
+    return machineCarriers({
+      lan: named(listened.filter(({ address }) => !tailnetPeer(address))),
+      tailnet: named(listened.filter(({ address }) => tailnetPeer(address))),
+      bridges: named([...this.bridges].map(([address, listener]) => ({ address, port: listener.port }))),
+    });
+  }
+
   /** The port listened on, or null while nothing is. */
   get port(): number | null { return this.bound?.port ?? null; }
 
@@ -243,9 +290,17 @@ export class DirectCarrier {
   private bind(listed: readonly string[]): void {
     const addresses = [...new Set(listed)];
     if (this.bound && addresses.join() === this.bound.addresses.join()) return;
+    // an address is a phone carrier or a bridge one, never both, and the phones' list wins: a bridge listener on an address
+    // that joins it (the default route moved onto that adapter) goes first, so the phones keep their port
+    for (const address of addresses) {
+      const bridge = this.bridges.get(address);
+      if (!bridge) continue;
+      this.bridges.delete(address);
+      bridge.stop(false);
+    }
     const previous = this.listeners;
     // the port in use is kept across a change, so phones told it a moment ago still find this PC
-    const wanted = this.bound?.port ?? this.options.preferredPort ?? DIRECT_PORT;
+    const wanted = this.bound?.port ?? this.bridgePort ?? this.options.preferredPort ?? DIRECT_PORT;
     this.listeners = [];
     this.bound = null;
     // released before the new ones bind: an address that stayed may hold the port
@@ -270,15 +325,50 @@ export class DirectCarrier {
     }
   }
 
-  /** A gate on `address` in front of the loopback server (made at the first one). */
-  private listen(address: string, port: number): TCPSocketListener<unknown> {
-    this.upstream ??= this.serveUpstream();
-    return openGate({ hostname: address, port, upstreamPort: this.upstream.port!, secret: this.secret,
+  /**
+   * Follows the bridge adapters, each on its own: on the phones' port, or while no phone address is listened on, one
+   * port of their own. An address that cannot be bound is left out (and tried again at the next refresh), never taking
+   * the phones' listeners or port with it.
+   */
+  private bindBridges(listed: readonly string[]): void {
+    const phones = this.bound?.addresses ?? [];
+    const wanted = [...new Set(listed)].filter((address) => !phones.includes(address));
+    const port = this.bound?.port ?? this.bridgePort ?? this.options.preferredPort ?? DIRECT_PORT;
+    for (const [address, listener] of [...this.bridges]) {
+      if (wanted.includes(address) && listener.port === port) continue;
+      listener.stop(false);
+      this.bridges.delete(address);
+    }
+    let chosen: number | null = this.bound?.port ?? (this.bridges.size > 0 ? port : null);
+    for (const address of wanted) {
+      if (this.bridges.has(address)) continue;
+      for (const attempt of chosen !== null ? [chosen] : port === 0 ? [0] : [port, 0]) {
+        try {
+          const listener = this.listen(address, attempt, true);
+          this.bridges.set(address, listener);
+          this.bridgeFailed.delete(address);
+          chosen = listener.port;
+          break;
+        } catch (error) {
+          if ((attempt === 0 || chosen !== null) && !this.bridgeFailed.has(address)) {
+            this.bridgeFailed.add(address);
+            console.error(`Direct connections for fleet machines on ${address} are off: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
+      }
+    }
+    this.bridgePort = this.bound || this.bridges.size === 0 ? null : chosen;
+  }
+
+  /** A gate on `address` in front of the loopback server (made at the first one); a bridge's in front of the machines' one. */
+  private listen(address: string, port: number, machinesOnly = false): TCPSocketListener<unknown> {
+    const upstream = machinesOnly ? (this.machineUpstream ??= this.serveUpstream(true)) : (this.upstream ??= this.serveUpstream(false));
+    return openGate({ hostname: address, port, upstreamPort: upstream.port!, secret: this.secret,
       allowed: (source) => this.options.peerAllowed ? this.options.peerAllowed(source) : directPeerAllowed(address, source), counts: this.connections }) as TCPSocketListener<unknown>;
   }
 
   /** The carrier's HTTP server: on loopback, answering only what a gate of this carrier forwarded. */
-  private serveUpstream(): Bun.Server<SocketData> {
+  private serveUpstream(machinesOnly: boolean): Bun.Server<SocketData> {
     return Bun.serve<SocketData>({
       hostname: "127.0.0.1", port: 0,
       idleTimeout: 10,
@@ -298,7 +388,7 @@ export class DirectCarrier {
         if (request.headers.get("upgrade")?.toLowerCase() !== "websocket" || !request.headers.has("sec-websocket-key")) return new Response(null, { status: 426 });
         // asked only: nobody gives way until the upgrade has happened (open)
         if (!this.makeRoom(source, false)) return new Response(null, { status: 503 });
-        return server.upgrade(request, { data: { source, id: randomBytes(16).toString("hex") } })
+        return server.upgrade(request, { data: { source, id: randomBytes(16).toString("hex"), machinesOnly } })
           ? undefined : new Response(null, { status: 426 });
       },
       websocket: {
@@ -315,7 +405,8 @@ export class DirectCarrier {
 
   /** Room for one more client that has not signed in (admissionDrops), or false; `apply` false only asks. */
   private makeRoom(source: string, apply: boolean): boolean {
-    const pending = [...this.carriers.values()].filter((carrier) => !carrier.deviceId);
+    // a machine whose AUTH waits in the fleet's sign-in queue is never dropped for a newer client (todo 37)
+    const pending = [...this.carriers.values()].filter((carrier) => !carrier.deviceId && !carrier.machineId && !carrier.session?.machineSigningIn);
     const drops = admissionDrops(pending, source, this.clock.now());
     if (drops === null) return false;
     if (apply) for (const carrier of drops) this.drop(carrier);
@@ -365,8 +456,18 @@ export class DirectCarrier {
         serverVersion: this.options.serverVersion ?? version, minSupportedClient: "0.4.20",
         routingOverhead: 0, maxWireMessageBytes: 64 * 1024, signInOnly: true,
         directCarriers: (tailnet) => this.advertised(tailnet),
+        machineCarriers: () => this.machineCarriers(),
+        ...(socket.data.machinesOnly ? { machinesOnly: true } : {}),
+        // the sign-in queue is full: the machine is told when to come back, outside the channel, and the carrier closes 1013
+        machineWaitingPlaces: SIGN_IN_WAITING,
+        onMachineBusy: (retryAfterMs) => {
+          if (this.carriers.get(id) !== carrier) return;
+          socket.send(JSON.stringify({ type: "retry", retry_after_ms: retryAfterMs }));
+          socket.close(1013, "Try again");
+        },
         onAuthenticated: (deviceId) => this.authenticated(id, carrier, deviceId),
         onChosen: () => carrier.chosen?.(),
+        ...(this.options.fleet ? { fleet: this.options.fleet, machineSessions: this.options.fleet, enrolment: this.options.fleet, source: carrier.source, onMachine: (machineId: string) => this.machine(id, carrier, machineId) } : {}),
         websocket: {
           ...handlers,
           open: (peer) => { carrier.sockets.add(peer); return handlers.open(peer); },
@@ -392,6 +493,12 @@ export class DirectCarrier {
     carrier.transport.onclose?.(code, reason);
   }
 
+  private machine(id: string, carrier: Carrier, machineId: string): void {
+    if (this.carriers.get(id) !== carrier) return;
+    carrier.cancelTimeout();
+    carrier.machineId = machineId;
+  }
+
   private authenticated(id: string, carrier: Carrier, deviceId: string): void {
     if (this.carriers.get(id) !== carrier) return;
     carrier.cancelTimeout();
@@ -408,8 +515,11 @@ export class DirectCarrier {
     if (this.stopped) return;
     this.stopped = true;
     this.cancelRefresh?.();
+    this.unwatchFleet?.();
     // no new connections; the carriers' GOAWAY goes out before their sockets close
-    const listeners = this.listeners.splice(0);
+    const listeners = [...this.listeners.splice(0), ...this.bridges.values()];
+    this.bridges.clear();
+    this.bridgePort = null;
     for (const listener of listeners) listener.stop(false);
     this.bound = null;
     await Promise.all([...this.carriers.values()].map(async (carrier) => {
@@ -427,5 +537,7 @@ export class DirectCarrier {
     for (const listener of listeners) listener.stop(true);
     void this.upstream?.stop(true);
     this.upstream = undefined;
+    void this.machineUpstream?.stop(true);
+    this.machineUpstream = undefined;
   }
 }

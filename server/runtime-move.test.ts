@@ -24,6 +24,11 @@ describe("moveUnavailable", () => {
     // the move ends panes through Unix process groups, and its lock refuses Windows (runtime-move-lock.ts)
     expect(moveUnavailable("herdr", facts, "win32")).toBe("runtime_locked");
   });
+
+  it("moves only from herdr: herdr-core answers not_herdr", () => {
+    const facts = { serving: "herdr", source: "detected", tui: { installed: true, running: true }, app_installed: false, switch_to: "herdr-core", locked: null } as const;
+    for (const serving of ["herdr-core"] as const) expect(moveUnavailable(serving, { ...facts, serving }, "linux")).toBe("not_herdr");
+  });
 });
 
 describe("tabTree", () => {

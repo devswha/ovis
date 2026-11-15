@@ -253,7 +253,6 @@ export const SETTINGS_ZH: Record<string, string> = {
   "Restarting Ovis on the Herdr app…": "正在以 Herdr 应用重启 Ovis…",
   "Restarting Ovis on herdr TUI…": "正在以 herdr TUI 重启 Ovis…",
   "The Herdr app was chosen here, but no herdr-core answered, so herdr TUI is shown.": "这里选择了 Herdr 应用，但没有 herdr-core 响应，因此显示 herdr TUI。",
-  "alt-runtime was chosen here, but this Ovis cannot start it, so herdr TUI is shown.": "这里选择了 alt-runtime，但此 Ovis 还无法启动它，因此显示 herdr TUI。",
   "OVIS_RUNTIME in Ovis's environment decides which terminals this PC shows; change it there to switch.": "这台电脑显示哪种终端由 Ovis 运行环境中的 OVIS_RUNTIME 决定；要切换，请在那里修改。",
   "Show the Herdr app's terminals?": "要显示 Herdr 应用的终端吗？",
   "Show herdr TUI's terminals?": "要显示 herdr TUI 的终端吗？",
@@ -289,4 +288,6 @@ export const SETTINGS_ZH: Record<string, string> = {
 
   // Settings → Alerts → Also send to, when the server could not say what it holds (design pass G-111)
   "Could not read this PC's alert destination ({error}). Close Settings and open it again.": "无法读取此 PC 的外部提醒设置（{error}）。请关闭设置后重新打开。",
+  "Machines that joined this PC with an invite: confirm new ones, see why one cannot be reached, remove one.": "通过邀请加入此 PC 的机器：确认新机器、查看无法连接的原因、移除机器。",
+  "fleet machines invites enrol confirm": "机群 机器 邀请 注册 确认",
 };

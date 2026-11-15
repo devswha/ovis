@@ -1,7 +1,7 @@
-import { afterAll, afterEach, beforeAll, describe, expect, setSystemTime, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
 import { answerServerChallenge, SERVER_PROOF_CLOSE, SERVER_PROOF_MS } from "../shared/relay-server-proof.ts";
-import { RELAY_NEW_SESSIONS_REFUSED, RELAY_PASS_HEADER, RELAY_PASS_LIFETIME_S, RELAY_PASS_SKEW_S, signRelayPass } from "../shared/relay-pass.ts";
-import { CLOSE, HANDSHAKE_MS, IDLE_MS, KEEPALIVE_PING, KEEPALIVE_PONG, MAX_CLIENTS, MAX_MESSAGE_BYTES, MAX_PENDING, MAX_PROVING, OFFLINE_WAIT_MS, USAGE_REPORT_MS, WARM_QUIET_MS, parseSocketRequest, type Frame } from "./core.ts";
+import { RELAY_NEW_SESSIONS_REFUSED, RELAY_PASS_HEADER, RELAY_PASS_INVALID, RELAY_PASS_LIFETIME_S, RELAY_PASS_SKEW_S, signRelayPass } from "../shared/relay-pass.ts";
+import { CLOSE, HANDSHAKE_MS, IDLE_MS, KEEPALIVE_PING, KEEPALIVE_PONG, MAX_CLIENTS, MAX_MESSAGE_BYTES, MAX_PENDING, MAX_PROVING, OFFLINE_WAIT_MS, ROOM_BUFFER_BYTES, USAGE_REPORT_MS, WARM_QUIET_MS, BUFFER_BYTES, parseSocketRequest, roomLimits, type Frame } from "./core.ts";
 import { answerChallenge, newServer, type TestServer } from "./relay-test-client.ts";
 import { PAIR_GUEST_MS } from "./pair-room.ts";
 import { RelayRoom, handle, usageKey, type Env, type HibernatableSocket, type RelayState } from "./worker.ts";
@@ -26,7 +26,15 @@ class FakeSocket implements HibernatableSocket {
   }
   serializeAttachment(value: unknown) { this.attachment = structuredClone(value); }
   deserializeAttachment() { return structuredClone(this.attachment); }
-  json(index: number) { return JSON.parse(this.sent[index] as string) as Record<string, unknown>; }
+  json(index: number) {
+    const value = JSON.parse(this.sent[index] as string) as Record<string, unknown>;
+    // under grace a PC without a pass and its clients are told so, and that notice is all that differs from passes off
+    if (mode === "grace" && "relay_pass" in value) {
+      expect(value["relay_pass"]).toEqual({ state: "missing", enforce_at: null, mode: "grace" });
+      delete value["relay_pass"];
+    }
+    return value;
+  }
 }
 
 const runtime = globalThis as unknown as Record<string, unknown>;
@@ -38,7 +46,19 @@ beforeAll(() => {
   runtime["WebSocketRequestResponsePair"] = class { constructor(readonly request: string, readonly response: string) {} };
 });
 afterAll(() => Object.assign(runtime, saved));
-afterEach(() => setSystemTime());
+afterEach(() => { setSystemTime(); mode = "off"; });
+
+/**
+ * The room tests run twice: as they are (no pass settings, as relay.ovis.sh runs today), and under `grace` with no
+ * enforce date, which a PC without a pass must find exactly the same apart from the notice it is told (relay/README.md,
+ * "Relay pass"). The keys are made for this run; no real key is in the tests.
+ */
+const MODES = ["off", "grace"] as const;
+let mode: (typeof MODES)[number] = "off";
+const inMode = (name: string, each: (typeof MODES)[number]) => each === "off" ? name : `${name} (grace, no enforce date)`;
+const graceKey = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]) as CryptoKeyPair;
+const GRACE = { RELAY_PASS_MODE: "grace", RELAY_PASS_KEYS: `0badc0de:${Array.from(new Uint8Array(await crypto.subtle.exportKey("raw", graceKey.publicKey)), (byte) => byte.toString(16).padStart(2, "0")).join("")}` };
+const modeSettings = () => mode === "grace" ? GRACE : {};
 
 /** DurableObjectState over the fake sockets; it outlives a RelayRoom as the real one outlives an eviction */
 function fakeState() {
@@ -71,6 +91,17 @@ const SERVER = PC.serverId;
 const url = (query: string) => `https://relay.test/v1/ws?server_id=${SERVER}&v=1&${query}`;
 const proof = (server: TestServer = PC) => `proof=1&public_key=${server.publicKey}`;
 const upgrade = { headers: { upgrade: "websocket" } };
+
+/**
+ * A room on `state` in the mode the test runs in. As the runtime does before the first event, the room has its pass
+ * settings, and under grace the authorization it saved (worker.ts loadPass), by the time it is handed anything.
+ */
+async function relayRoom(state: ReturnType<typeof fakeState>["state"], env?: ConstructorParameters<typeof RelayRoom>[1]): Promise<RelayRoom> {
+  const room = new RelayRoom(state, mode === "grace" ? { ...env, ...GRACE } : env);
+  await state.ready;
+  if (mode === "grace") await (room as unknown as { loadPass(): Promise<void> | undefined }).loadPass();
+  return room;
+}
 
 /** opens a socket on the room; returns the server end the room holds */
 async function connect(room: RelayRoom, fake: ReturnType<typeof fakeState>, query: string): Promise<FakeSocket> {
@@ -118,22 +149,23 @@ function closeFromFar(room: RelayRoom, socket: FakeSocket) {
   room.webSocketClose(socket);
 }
 
-describe("relay warm sockets", () => {
+for (const each of MODES) describe(inMode("relay warm sockets", each), () => {
+  beforeEach(() => { mode = each; });
   test("a client arriving takes the PC's proven warm socket at once, and the control socket hears nothing of it", async () => {
     const fake = fakeState();
-    let room = new RelayRoom(fake.state);
+    let room = await relayRoom(fake.state);
     const control = await connectServer(room, fake);
     const warm = await connectWarm(room, fake, generationOf(control));
     expect(warm.sent).toEqual([]);
     expect(warm.closedWith).toBeNull();
     // an eviction between the proof and the client: the warm socket is found again from what it saved
-    room = new RelayRoom(fake.state);
+    room = await relayRoom(fake.state);
     const client = await connect(room, fake, "role=client");
     const { connection_id } = client.json(0) as { connection_id: string };
     expect(warm.json(0)).toEqual({ type: "bound", connection_id });
     expect(control.sent).toHaveLength(1);
     room.webSocketMessage(client, "hello");
-    room = new RelayRoom(fake.state);
+    room = await relayRoom(fake.state);
     room.webSocketMessage(warm, "ready");
     expect(warm.sent.slice(1)).toEqual(["hello"]);
     expect(client.sent.slice(1)).toEqual(["ready"]);
@@ -149,14 +181,14 @@ describe("relay warm sockets", () => {
     const start = new Date("2026-11-05T12:00:00Z");
     setSystemTime(start);
     const fake = fakeState();
-    let room = new RelayRoom(fake.state);
+    let room = await relayRoom(fake.state);
     const control = await connectServer(room, fake);
     const generation = generationOf(control);
     const kept = await connectWarm(room, fake, generation);
     // kept alive by its pings, the last one answered by the runtime itself, after an eviction
     setSystemTime(new Date(start.getTime() + 20_000));
     room.webSocketMessage(kept, KEEPALIVE_PING);
-    room = new RelayRoom(fake.state);
+    room = await relayRoom(fake.state);
     setSystemTime(new Date(start.getTime() + 40_000));
     fake.keepalive.set(kept, new Date(start.getTime() + 39_000));
     const first = await connect(room, fake, "role=client");
@@ -172,7 +204,7 @@ describe("relay warm sockets", () => {
 
   test("a warm socket needs a warm proof of its generation, and one at a time waits", async () => {
     const fake = fakeState();
-    const room = new RelayRoom(fake.state);
+    const room = await relayRoom(fake.state);
     for (const query of [`warm=1`, `warm=${"ab".repeat(16)}&connection_id=${"ab".repeat(16)}`]) {
       expect(parseSocketRequest(new URL(url(`role=server&${query}`)))).toHaveProperty("error");
     }
@@ -192,7 +224,7 @@ describe("relay warm sockets", () => {
 
   test("a warm socket goes with the control socket it was opened under, proven or still proving", async () => {
     const fake = fakeState();
-    const room = new RelayRoom(fake.state);
+    const room = await relayRoom(fake.state);
     const control = await connectServer(room, fake);
     const old = generationOf(control);
     const proven = await connectWarm(room, fake, old);
@@ -219,10 +251,11 @@ describe("relay warm sockets", () => {
   });
 });
 
-describe("relay Durable Object", () => {
+for (const each of MODES) describe(inMode("relay Durable Object", each), () => {
+  beforeEach(() => { mode = each; });
   test("one failed alarm write does not stop later ones", async () => {
     const fake = fakeState();
-    const room = new RelayRoom(fake.state);
+    const room = await relayRoom(fake.state);
     const setAlarm = fake.state.storage.setAlarm;
     fake.state.storage.setAlarm = async () => { throw new Error("storage unavailable"); };
     await expect(room.fetch(new Request(url("role=client"), upgrade))).rejects.toThrow("storage unavailable");
@@ -239,9 +272,9 @@ describe("relay Durable Object", () => {
 
   test("pairs control, client and data and passes frames unchanged, across an eviction", async () => {
     const fake = fakeState();
-    let room = new RelayRoom(fake.state);
+    let room = await relayRoom(fake.state);
     const control = await connectServer(room, fake);
-    expect(control.json(0)).toEqual({ type: "sync", connection_ids: [], warm: expect.stringMatching(/^[0-9a-f]{32}$/) });
+    expect(control.json(0)).toEqual({ type: "sync", connection_ids: [], warm: expect.stringMatching(/^[0-9a-f]{32}$/), max_clients: 8, per_address_per_minute: 30, pass_versions: [1, 2, 3] });
     const client = await connect(room, fake, "role=client");
     const { connection_id } = client.json(0) as { connection_id: string };
     expect(connection_id).toMatch(/^[0-9a-f]{32}$/);
@@ -249,7 +282,7 @@ describe("relay Durable Object", () => {
     const data = await connectServer(room, fake, connection_id);
 
     // evicted: a new instance knows the sockets only from their attachments
-    room = new RelayRoom(fake.state);
+    room = await relayRoom(fake.state);
     const binary = crypto.getRandomValues(new Uint8Array(4096)).buffer;
     room.webSocketMessage(client, binary);
     expect(data.sent).toEqual([binary]);
@@ -262,12 +295,12 @@ describe("relay Durable Object", () => {
 
   test("closes a client 1012 whose held frames an evicted instance took with it", async () => {
     const fake = fakeState();
-    const before = new RelayRoom(fake.state);
+    const before = await relayRoom(fake.state);
     await connectServer(before, fake);
     const client = await connect(before, fake, "role=client");
     const { connection_id } = client.json(0) as { connection_id: string };
     before.webSocketMessage(client, "held");
-    const after = new RelayRoom(fake.state);
+    const after = await relayRoom(fake.state);
     const data = await connectServer(after, fake, connection_id);
     expect(client.closedWith?.code).toBe(CLOSE.RESTART);
     expect(data.closedWith?.code).toBe(CLOSE.GOING_AWAY);
@@ -275,7 +308,7 @@ describe("relay Durable Object", () => {
 
   test("a second control socket replaces the first with 1008; the 9th client is refused 1013; unknown versions 1008", async () => {
     const fake = fakeState();
-    const room = new RelayRoom(fake.state);
+    const room = await relayRoom(fake.state);
     const first = await connectServer(room, fake);
     const second = await connectServer(room, fake);
     expect(first.closedWith?.code).toBe(CLOSE.POLICY);
@@ -295,7 +328,7 @@ describe("relay Durable Object", () => {
 
   test("propagates closes: client gone closes data 1001, data gone closes client 1012", async () => {
     const fake = fakeState();
-    const room = new RelayRoom(fake.state);
+    const room = await relayRoom(fake.state);
     const control = await connectServer(room, fake);
     const pair = async () => {
       const client = await connect(room, fake, "role=client");
@@ -315,7 +348,7 @@ describe("relay Durable Object", () => {
 
   test("answers a close the peer sent, so its socket does not hang in CLOSING until it times out", async () => {
     const fake = fakeState();
-    const room = new RelayRoom(fake.state);
+    const room = await relayRoom(fake.state);
     const control = await connectServer(room, fake);
     const one = await connectPair(room, fake);
     // the phone closed its socket: the runtime reports the close and leaves the answer to the room
@@ -333,7 +366,7 @@ describe("relay Durable Object", () => {
   for (const target of ["client", "data"] as const) {
     test(`a failed send to ${target} ends the pair without a runtime close event`, async () => {
       const fake = fakeState();
-      const room = new RelayRoom(fake.state);
+      const room = await relayRoom(fake.state);
       const control = await connectServer(room, fake);
       const pair = await connectPair(room, fake);
       const other = await connectPair(room, fake);
@@ -358,7 +391,7 @@ describe("relay Durable Object", () => {
     const start = new Date("2026-10-29T12:00:00Z");
     setSystemTime(start);
     const fake = fakeState();
-    const room = new RelayRoom(fake.state);
+    const room = await relayRoom(fake.state);
     const control = await connectServer(room, fake);
     // the PC's challenge was due first
     expect(fake.state.alarm).toBe(start.getTime() + SERVER_PROOF_MS);
@@ -384,7 +417,7 @@ describe("relay Durable Object", () => {
     const start = 1_000_000;
     setSystemTime(new Date(start));
     const fake = fakeState();
-    let room = new RelayRoom(fake.state, usage);
+    let room = await relayRoom(fake.state, usage);
     const control = await connectServer(room, fake);
     const pair = await connectPair(room, fake);
     room.webSocketMessage(pair.data, "handshake answer");
@@ -400,7 +433,7 @@ describe("relay Durable Object", () => {
     const reported = points.length;
 
     // hibernated, then woken by the next alarm while the runtime still lists the unanswered socket
-    room = new RelayRoom(fake.state, usage);
+    room = await relayRoom(fake.state, usage);
     setSystemTime(new Date(start + 2 * IDLE_MS));
     fake.keepalive.set(control, new Date());
     await room.alarm();
@@ -427,7 +460,7 @@ describe("relay Durable Object", () => {
     const at = (ms: number) => setSystemTime(new Date(ms));
     at(1_000_000);
     const fake = fakeState();
-    let room = new RelayRoom(fake.state);
+    let room = await relayRoom(fake.state);
     await connectServer(room, fake);
     const client = await connect(room, fake, "role=client");
     const { connection_id } = client.json(0) as { connection_id: string };
@@ -438,7 +471,7 @@ describe("relay Durable Object", () => {
     room.webSocketMessage(data, new Uint8Array([4, 5, 6]).buffer);
     expect(data.sent).toHaveLength(1);
 
-    room = new RelayRoom(fake.state);
+    room = await relayRoom(fake.state);
     at(1_120_000);
     await room.alarm();
     expect([client.closedWith, data.closedWith]).toEqual([null, null]);
@@ -454,10 +487,11 @@ describe("relay Durable Object", () => {
   });
 });
 
-describe("relay admission", () => {
+for (const each of MODES) describe(inMode("relay admission", each), () => {
+  beforeEach(() => { mode = each; });
   test("takeover: a socket that claims role=server without the PC's key cannot replace its control socket or take its waiting phones", async () => {
     const fake = fakeState();
-    const room = new RelayRoom(fake.state);
+    const room = await relayRoom(fake.state);
     const control = await connectServer(room, fake);
     const client = await connect(room, fake, "role=client");
     const { connection_id } = client.json(0) as { connection_id: string };
@@ -488,11 +522,11 @@ describe("relay admission", () => {
 
   test("takeover: a replayed proof is refused, and a proof for a control socket does not open a data socket", async () => {
     const fake = fakeState();
-    const room = new RelayRoom(fake.state);
+    const room = await relayRoom(fake.state);
     const first = await connect(room, fake, `role=server&${proof()}`);
     const answer = answerChallenge(first.sent.shift()!, PC, null)!;
     room.webSocketMessage(first, answer);
-    expect(first.json(0)).toEqual({ type: "sync", connection_ids: [], warm: expect.stringMatching(/^[0-9a-f]{32}$/) });
+    expect(first.json(0)).toEqual({ type: "sync", connection_ids: [], warm: expect.stringMatching(/^[0-9a-f]{32}$/), max_clients: 8, per_address_per_minute: 30, pass_versions: [1, 2, 3] });
     const replay = await connect(room, fake, `role=server&${proof()}`);
     room.webSocketMessage(replay, answer);
     expect(replay.closedWith?.code).toBe(SERVER_PROOF_CLOSE);
@@ -506,7 +540,7 @@ describe("relay admission", () => {
 
   test("a newer control socket replaces the older only once it proves the same key", async () => {
     const fake = fakeState();
-    const room = new RelayRoom(fake.state);
+    const room = await relayRoom(fake.state);
     const first = await connectServer(room, fake);
     const second = await connect(room, fake, `role=server&${proof()}`);
     // until it answers, the first keeps the room
@@ -514,13 +548,13 @@ describe("relay admission", () => {
     room.webSocketMessage(second, answerChallenge(second.sent[0]!, PC, null)!);
     expect(first.closedWith?.code).toBe(CLOSE.POLICY);
     expect(second.closedWith).toBeNull();
-    expect(second.json(1)).toEqual({ type: "sync", connection_ids: [], warm: expect.stringMatching(/^[0-9a-f]{32}$/) });
+    expect(second.json(1)).toEqual({ type: "sync", connection_ids: [], warm: expect.stringMatching(/^[0-9a-f]{32}$/), max_clients: 8, per_address_per_minute: 30, pass_versions: [1, 2, 3] });
   });
 
   test("a PC socket that does not answer its challenge in 10 s is closed, keepalives or not", async () => {
     setSystemTime(new Date(1_000_000));
     const fake = fakeState();
-    const room = new RelayRoom(fake.state);
+    const room = await relayRoom(fake.state);
     const silent = await connect(room, fake, `role=server&${proof()}`);
     expect(fake.state.alarm).toBe(1_000_000 + SERVER_PROOF_MS);
     fake.keepalive.set(silent, new Date(1_000_000 + SERVER_PROOF_MS));
@@ -532,7 +566,7 @@ describe("relay admission", () => {
   test(`slots: clients the PC has not answered count as waiting (${MAX_PENDING} at most, the oldest giving way) and close 1013 after ${HANDSHAKE_MS / 1000} s, so a real phone gets in`, async () => {
     setSystemTime(new Date(1_000_000));
     const fake = fakeState();
-    const room = new RelayRoom(fake.state);
+    const room = await relayRoom(fake.state);
     await connectServer(room, fake);
     // sockets whose data socket attached but which never get past the handshake
     const unanswered = [];
@@ -569,12 +603,12 @@ describe("relay admission", () => {
   test(`slots: while the PC is gone a waiting client waits up to ${OFFLINE_WAIT_MS / 1000} s, and a PC back in time gives it the full ${HANDSHAKE_MS / 1000} s again`, async () => {
     setSystemTime(new Date(1_000_000));
     const fake = fakeState();
-    let room = new RelayRoom(fake.state);
+    let room = await relayRoom(fake.state);
     const control = await connectServer(room, fake);
     const waiting = await connect(room, fake, "role=client");
     closeFromFar(room, control);
     // evicted while the PC is away: the offline deadline is kept with the socket
-    room = new RelayRoom(fake.state);
+    room = await relayRoom(fake.state);
     setSystemTime(new Date(1_000_000 + OFFLINE_WAIT_MS - 1));
     await room.alarm();
     expect(waiting.closedWith).toBeNull();
@@ -591,14 +625,14 @@ describe("relay admission", () => {
   test(`slots: a client waiting for a PC that is not connected is closed 1013 after ${OFFLINE_WAIT_MS / 1000} s, keepalives or not`, async () => {
     setSystemTime(new Date(1_000_000));
     const fake = fakeState();
-    let room = new RelayRoom(fake.state);
+    let room = await relayRoom(fake.state);
     const waiting = await connect(room, fake, "role=client");
     expect(fake.state.alarm).toBe(1_000_000 + OFFLINE_WAIT_MS);
     setSystemTime(new Date(1_000_000 + OFFLINE_WAIT_MS - 1));
     room.webSocketMessage(waiting, KEEPALIVE_PING);
     fake.keepalive.set(waiting, new Date());
     // an eviction keeps the deadline with the socket
-    room = new RelayRoom(fake.state);
+    room = await relayRoom(fake.state);
     await room.alarm();
     expect(waiting.closedWith).toBeNull();
     setSystemTime(new Date(1_000_000 + OFFLINE_WAIT_MS));
@@ -608,7 +642,7 @@ describe("relay admission", () => {
 
   test(`at most ${MAX_PROVING} PC sockets wait on their challenge; the oldest gives way, and the PC still proves after a burst`, async () => {
     const fake = fakeState();
-    const room = new RelayRoom(fake.state);
+    const room = await relayRoom(fake.state);
     const live = await connectServer(room, fake);
     const silent = [];
     for (let index = 0; index < MAX_PROVING; index++) silent.push(await connect(room, fake, `role=server&${proof()}`));
@@ -624,7 +658,7 @@ describe("relay admission", () => {
   test("slots: a client waiting while no PC is connected gets its handshake deadline once the PC connects", async () => {
     setSystemTime(new Date(1_000_000));
     const fake = fakeState();
-    const room = new RelayRoom(fake.state);
+    const room = await relayRoom(fake.state);
     const waiting = await connect(room, fake, "role=client");
     setSystemTime(new Date(1_000_000 + OFFLINE_WAIT_MS - 1));
     await room.alarm();
@@ -641,12 +675,12 @@ describe("relay admission", () => {
 
   test("a client whose held frames an evicted instance took is closed 1012 on its next frame, and the loss is counted", async () => {
     const fake = fakeState();
-    const before = new RelayRoom(fake.state);
+    const before = await relayRoom(fake.state);
     await connectServer(before, fake);
     const client = await connect(before, fake, "role=client");
     const { connection_id } = client.json(0) as { connection_id: string };
     before.webSocketMessage(client, "first");
-    const after = new RelayRoom(fake.state);
+    const after = await relayRoom(fake.state);
     after.webSocketMessage(client, "second");
     expect(client.closedWith?.code).toBe(CLOSE.RESTART);
     expect(after.heldFramesLost).toBe(1);
@@ -657,7 +691,8 @@ describe("relay admission", () => {
   });
 });
 
-describe("relay Worker", () => {
+for (const each of MODES) describe(inMode("relay Worker", each), () => {
+  beforeEach(() => { mode = each; });
   function env() {
     const asked: string[] = [];
     const limiter = (name: string) => {
@@ -669,6 +704,7 @@ describe("relay Worker", () => {
       RELAY: { idFromName: (name: string) => name, get: (id: unknown) => ({ fetch: async () => { rooms.push(id as string); return new Response(null, { status: 101 }); } }) },
       RELAY_LIMITER: limiter("address"),
       RELAY_GLOBAL_LIMITER: limiter("global"),
+      ...modeSettings(),
     } satisfies Env;
     return { env: value, asked, rooms };
   }
@@ -711,7 +747,8 @@ describe("relay Worker", () => {
   });
 });
 
-describe("relay Worker pairing rendezvous", () => {
+for (const each of MODES) describe(inMode("relay Worker pairing rendezvous", each), () => {
+  beforeEach(() => { mode = each; });
   const pairUrl = (role: string, plate = "AB1") => `https://relay.test/v1/pair?nameplate=${plate}&role=${role}&v=1`;
   const openPair = async (room: RelayRoom, fake: ReturnType<typeof fakeState>, role: string) => {
     expect((await room.fetch(new Request(pairUrl(role), upgrade))).status).toBe(101);
@@ -721,19 +758,19 @@ describe("relay Worker pairing rendezvous", () => {
   test("routes a pairing socket to the nameplate's own Durable Object, apart from every server_id", async () => {
     const rooms: string[] = [];
     const allow = { limit: async () => ({ success: true }) };
-    const e = { RELAY: { idFromName: (name: string) => name, get: (id: unknown) => ({ fetch: async () => { rooms.push(id as string); return new Response(null, { status: 101 }); } }) }, RELAY_LIMITER: allow, RELAY_GLOBAL_LIMITER: allow } satisfies Env;
+    const e = { RELAY: { idFromName: (name: string) => name, get: (id: unknown) => ({ fetch: async () => { rooms.push(id as string); return new Response(null, { status: 101 }); } }) }, RELAY_LIMITER: allow, RELAY_GLOBAL_LIMITER: allow, ...modeSettings() } satisfies Env;
     expect((await handle(new Request(pairUrl("host"), { headers: { upgrade: "websocket" } }), e)).status).toBe(101);
     expect(rooms).toEqual(["pair:AB1"]);
   });
 
   test("host and guest meet, frames pass scoped to the attempt, and it survives an eviction", async () => {
     const fake = fakeState();
-    let room = new RelayRoom(fake.state);
+    let room = await relayRoom(fake.state);
     const host = await openPair(room, fake, "host");
     expect(host.json(0)).toEqual({ type: "waiting" });
     const guest = await openPair(room, fake, "guest");
     const { attempt } = host.json(1) as { attempt: string };
-    room = new RelayRoom(fake.state);
+    room = await relayRoom(fake.state);
     room.webSocketMessage(guest, new Uint8Array([7]).buffer);
     const up = host.sent[2] as Uint8Array;
     expect(Array.from(up.slice(16))).toEqual([7]);
@@ -747,7 +784,7 @@ describe("relay Worker pairing rendezvous", () => {
   test("a guest past its deadline passes nothing on, before any sweep", async () => {
     const fake = fakeState();
     setSystemTime(new Date(1_000_000));
-    const room = new RelayRoom(fake.state);
+    const room = await relayRoom(fake.state);
     const host = await openPair(room, fake, "host");
     const guest = await openPair(room, fake, "guest");
     const before = host.sent.length;
@@ -761,7 +798,7 @@ describe("relay Worker pairing rendezvous", () => {
   test("a host that does not answer its key's challenge in time is closed 4401, and the nameplate is free again", async () => {
     const fake = fakeState();
     setSystemTime(new Date(1_000_000));
-    const room = new RelayRoom(fake.state);
+    const room = await relayRoom(fake.state);
     expect((await room.fetch(new Request(`${pairUrl("host")}&server_id=${SERVER}&public_key=${PC.publicKey}`, upgrade))).status).toBe(101);
     const host = fake.sockets.at(-1)!;
     expect(host.json(0)).toMatchObject({ type: "server_challenge" });
@@ -774,7 +811,7 @@ describe("relay Worker pairing rendezvous", () => {
   test("a host the runtime keeps answering keepalives for is not closed as idle", async () => {
     const fake = fakeState();
     setSystemTime(new Date(1_000_000));
-    const room = new RelayRoom(fake.state);
+    const room = await relayRoom(fake.state);
     const host = await openPair(room, fake, "host");
     setSystemTime(new Date(1_000_000 + IDLE_MS + 1000));
     fake.keepalive.set(host, new Date(1_000_000 + IDLE_MS));
@@ -783,7 +820,8 @@ describe("relay Worker pairing rendezvous", () => {
   });
 });
 
-describe("relay usage counters", () => {
+for (const each of MODES) describe(inMode("relay usage counters", each), () => {
+  beforeEach(() => { mode = each; });
   /** an Analytics Engine dataset that records what it is given */
   const dataset = () => {
     const points: { indexes: string[]; blobs: string[]; doubles: number[] }[] = [];
@@ -794,14 +832,14 @@ describe("relay usage counters", () => {
     const usage = dataset();
     const fake = fakeState();
     setSystemTime(new Date(1_000_000));
-    let room = new RelayRoom(fake.state, usage);
+    let room = await relayRoom(fake.state, usage);
     const control = await connectServer(room, fake);
     const client = await connect(room, fake, "role=client");
     const { connection_id } = client.json(0) as { connection_id: string };
     room.webSocketMessage(client, "hello"); // held until the PC's data socket attaches, still traffic
     const data = await connectServer(room, fake, connection_id);
     room.webSocketMessage(data, "x".repeat(100)); // the PC answers: the session starts
-    room = new RelayRoom(fake.state, usage); // evicted: the counts live with the socket
+    room = await relayRoom(fake.state, usage); // evicted: the counts live with the socket
     room.webSocketMessage(client, new Uint8Array(40).buffer);
     room.webSocketMessage(client, KEEPALIVE_PING); // keepalives are not traffic
     room.webSocketMessage(data, "é"); // 2 bytes in UTF-8
@@ -819,7 +857,7 @@ describe("relay usage counters", () => {
     const fake = fakeState();
     const start = 1_000_000;
     setSystemTime(new Date(start));
-    const room = new RelayRoom(fake.state, usage);
+    const room = await relayRoom(fake.state, usage);
     const control = await connectServer(room, fake);
     const later = start + USAGE_REPORT_MS;
     setSystemTime(new Date(later));
@@ -835,7 +873,7 @@ describe("relay usage counters", () => {
   test("a client the PC never answered is no session", async () => {
     const usage = dataset();
     const fake = fakeState();
-    const room = new RelayRoom(fake.state, usage);
+    const room = await relayRoom(fake.state, usage);
     const client = await connect(room, fake, "role=client");
     room.webSocketMessage(client, "held");
     closeFromFar(room, client);
@@ -1250,7 +1288,7 @@ describe("relay pass", () => {
     const w = await world("grace", "2027-01-01T00:00:00.000Z");
     const control = await w.control();
     expect(control.closedWith).toBeNull();
-    expect(control.json(0)).toEqual({ type: "sync", connection_ids: [], warm: expect.any(String), relay_pass: { state: "missing", enforce_at: "2027-01-01T00:00:00.000Z", mode: "grace" } });
+    expect(control.json(0)).toEqual({ type: "sync", connection_ids: [], warm: expect.any(String), max_clients: 8, per_address_per_minute: 30, pass_versions: [1, 2, 3], relay_pass: { state: "missing", enforce_at: "2027-01-01T00:00:00.000Z", mode: "grace" } });
     const client = await w.open("role=client");
     expect(client.json(0)).toEqual({ type: "assigned", connection_id: expect.any(String), relay_pass: { state: "missing", enforce_at: "2027-01-01T00:00:00.000Z", mode: "grace" } });
     // the alarm comes at the date, and from then the sockets let in without a pass go, the client with its PC
@@ -1390,3 +1428,332 @@ describe("relay pass", () => {
   });
 });
 
+
+describe("relay fleet rooms", () => {
+  const KID = "0badc0de";
+  const T0 = Date.parse("2026-12-01T00:00:00Z");
+  const S0 = Math.floor(T0 / 1000);
+  let signer: CryptoKey;
+  let stranger: CryptoKey;
+  let keys: string;
+  beforeAll(async () => {
+    const pair = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]) as CryptoKeyPair;
+    signer = pair.privateKey;
+    stranger = (await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]) as CryptoKeyPair).privateKey;
+    const raw = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
+    keys = `${KID}:${Array.from(raw, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+  });
+  const b64url = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  /** a pass over any payload, signed as the account service signs one (shared/relay-pass.ts) */
+  const signed = async (payload: Record<string, unknown>, key = signer) => {
+    const body = b64url(new TextEncoder().encode(JSON.stringify(payload)));
+    return `ovp1.${body}.${b64url(new Uint8Array(await crypto.subtle.sign({ name: "Ed25519" }, key, new TextEncoder().encode(`ovis-relay-pass/1.${body}`))))}`;
+  };
+  const v3 = (fields: Record<string, unknown> = {}) => ({ v: 3, kid: KID, aud: "ovis-relay", sid: SERVER, iat: S0, exp: S0 + RELAY_PASS_LIFETIME_S, new: 1, fleet: 100, ...fields });
+  const fleetPass = (fleet = 100) => signRelayPass(signer, KID, SERVER, S0, undefined, { fleet });
+
+  /** A Worker over one RelayRoom for SERVER with passes in `mode` and this run's key, or with no pass settings at all (null). */
+  async function fleetWorld(mode: "off" | "grace" | "enforce" | null) {
+    setSystemTime(new Date(T0));
+    const fake = fakeState();
+    const settings = mode === null ? {} : { RELAY_PASS_MODE: mode, RELAY_PASS_KEYS: keys };
+    const room = new RelayRoom(fake.state, settings);
+    await fake.state.ready;
+    const allow = { limit: async () => ({ success: true }) };
+    const e: Env = { ...settings, RELAY: { idFromName: (name: string) => name, get: () => ({ fetch: (request: Request) => room.fetch(request) }) }, RELAY_LIMITER: allow, RELAY_GLOBAL_LIMITER: allow };
+    const open = async (query: string, pass?: string) => {
+      const before = fake.sockets.length;
+      const response = await handle(new Request(url(query), { headers: { upgrade: "websocket", ...(pass ? { [RELAY_PASS_HEADER]: pass } : {}) } }), e);
+      return response.status !== 101 ? response : fake.sockets.length > before ? fake.sockets.at(-1)! : pairs.at(-1)![1];
+    };
+    const socket = async (query: string, pass?: string) => {
+      const opened = await open(query, pass);
+      if (opened instanceof Response) throw new Error(`refused ${opened.status}`);
+      return opened;
+    };
+    const prove = (opened: FakeSocket, connectionId: string | null = null) => {
+      const answer = answerChallenge(opened.sent.shift(), PC, connectionId);
+      if (answer) room.webSocketMessage(opened, answer);
+      return opened;
+    };
+    const control = async (pass?: string) => prove(await socket(`role=server&${proof()}`, pass));
+    const client = async (lane?: "paced") => {
+      const opened = await socket(`role=client${lane ? `&lane=${lane}` : ""}`);
+      return { socket: opened, id: opened.sent.length > 0 ? (opened.json(0) as { connection_id: string }).connection_id : "" };
+    };
+    /** a client the PC answers: it holds one of the room's places */
+    const answered = async (pass?: string) => {
+      const { socket: opened, id } = await client();
+      if (opened.closedWith) return opened;
+      const data = prove(await socket(`role=server&connection_id=${id}&${proof()}`, pass), id);
+      room.webSocketMessage(data, "handshake answer");
+      return opened;
+    };
+    return { fake, room, settings, open, control, client, answered };
+  }
+
+  test("the room sizes: 8 clients, 4 waiting and 16 proving without a fleet number; 8 + n, 4 + ceil(n/8) and at least 16 with one", () => {
+    expect(roomLimits(0)).toEqual({ clients: MAX_CLIENTS, pending: MAX_PENDING, proving: MAX_PROVING });
+    expect(roomLimits(100)).toEqual({ clients: 108, pending: 17, proving: 16 });
+    expect(roomLimits(1000)).toEqual({ clients: 1008, pending: 129, proving: 125 });
+    // what a room may hold for its waiting clients is capped; a room of 8, or of 108, never reaches the cap
+    expect(ROOM_BUFFER_BYTES).toBe(32 * BUFFER_BYTES);
+    expect([roomLimits(0).pending * BUFFER_BYTES, roomLimits(100).pending * BUFFER_BYTES].every((bytes) => bytes < ROOM_BUFFER_BYTES)).toBe(true);
+  });
+
+  for (const mode of ["off", "grace", "enforce"] as const) {
+    test(`${mode}: a PC whose v3 pass says fleet 100 has a room of 108, and the 109th client it answers is refused 1013`, async () => {
+      const w = await fleetWorld(mode);
+      const pass = await fleetPass(100);
+      const control = await w.control(pass);
+      expect(control.json(0)).toMatchObject({ type: "sync", max_clients: 108, per_address_per_minute: 30, pass_versions: [1, 2, 3] });
+      for (let index = 0; index < 108; index++) {
+        const client = await w.answered(pass);
+        expect([index, client.closedWith]).toEqual([index, null]);
+        expect(client.sent.at(-1)).toBe("handshake answer");
+      }
+      const refused = await w.answered(pass);
+      expect(refused.closedWith).toEqual({ code: CLOSE.TRY_AGAIN, reason: "too many clients for this server" });
+      expect(control.closedWith).toBeNull();
+    });
+  }
+
+  test("off: a PC with no pass is admitted with a room of 8, and the 9th client it answers is refused 1013", async () => {
+    const w = await fleetWorld("off");
+    const control = await w.control();
+    expect(control.json(0)).toMatchObject({ type: "sync", max_clients: 8 });
+    expect(control.json(0)).not.toHaveProperty("relay_pass");
+    for (let index = 0; index < 8; index++) expect((await w.answered()).closedWith).toBeNull();
+    expect((await w.answered()).closedWith?.code).toBe(CLOSE.TRY_AGAIN);
+  });
+
+  test("a relay with no pass keys ignores the fleet number of a pass that holds", async () => {
+    const w = await fleetWorld(null);
+    const pass = await fleetPass(100);
+    const control = await w.control(pass);
+    expect(control.json(0)).toMatchObject({ type: "sync", max_clients: 8 });
+    for (let index = 0; index < 8; index++) expect((await w.answered(pass)).closedWith).toBeNull();
+    expect((await w.answered(pass)).closedWith?.code).toBe(CLOSE.TRY_AGAIN);
+  });
+
+  const unsigned: [string, () => Promise<string>, string | null][] = [
+    ["a v3 pass whose fleet number was edited after signing", async () => {
+      const [, , sig] = (await fleetPass(100)).split(".") as [string, string, string];
+      return `ovp1.${b64url(new TextEncoder().encode(JSON.stringify(v3({ fleet: 1000 }))))}.${sig}`;
+    }, RELAY_PASS_INVALID],
+    ["a v3 pass signed by a key the relay does not trust", () => signed(v3(), stranger), RELAY_PASS_INVALID],
+    ["an expired v3 pass", () => signed(v3({ iat: S0 - RELAY_PASS_LIFETIME_S - 3600, exp: S0 - 3600 })), "relay pass expired"],
+    ["a v2 pass, which names no fleet", () => signRelayPass(signer, KID, SERVER, S0, undefined, { newSessions: true }), null],
+    ["a v3 pass for another audience", () => signed(v3({ aud: "other-relay" })), RELAY_PASS_INVALID],
+    ["a v3 pass with a fleet number over 1000", () => signed(v3({ fleet: 1001 })), RELAY_PASS_INVALID],
+    ["a v3 pass with a negative fleet number", () => signed(v3({ fleet: -100 })), RELAY_PASS_INVALID],
+    ["a v3 pass with a fleet number that is not an integer", () => signed(v3({ fleet: 100.5 })), RELAY_PASS_INVALID],
+    ["a v3 pass for another server_id", () => signed(v3({ sid: newServer().serverId })), RELAY_PASS_INVALID],
+  ];
+  for (const [name, make, refusal] of unsigned) {
+    test(`${name} raises no room: 8 with passes off, and ${refusal === null ? "admitted" : `refused 4402 (${refusal})`} while enforced`, async () => {
+      const pass = await make();
+      const off = await fleetWorld("off");
+      const control = await off.control(pass);
+      expect(control.closedWith).toBeNull();
+      expect(control.json(0)).toMatchObject({ type: "sync", max_clients: 8 });
+      const enforced = await fleetWorld("enforce");
+      const refused = await enforced.control(pass);
+      if (refusal === null) expect(refused.json(0)).toMatchObject({ type: "sync", max_clients: 8 });
+      else expect(refused.closedWith).toEqual({ code: CLOSE.RELAY_PASS, reason: refusal });
+    });
+  }
+
+  test("a renewal's fleet number raises the room; once the pass runs out unrenewed the room is 8 again, and clients it answered stay", async () => {
+    const w = await fleetWorld("off");
+    const control = await w.control(await signRelayPass(signer, KID, SERVER, S0, undefined, { newSessions: true }));
+    for (let index = 0; index < 8; index++) expect((await w.answered()).closedWith).toBeNull();
+    await w.room.webSocketMessage(control, JSON.stringify({ type: "relay_pass", pass: await signRelayPass(signer, KID, SERVER, S0 + 60, undefined, { fleet: 2 }) }));
+    const ninth = await w.answered();
+    const tenth = await w.answered();
+    expect([ninth.closedWith, tenth.closedWith]).toEqual([null, null]);
+    expect((await w.answered()).closedWith?.code).toBe(CLOSE.TRY_AGAIN);
+    setSystemTime(new Date(T0 + (60 + RELAY_PASS_LIFETIME_S + RELAY_PASS_SKEW_S) * 1000));
+    // one of the ten leaves: nine are left, still past the 8 the room is back to, so a newcomer is refused
+    closeFromFar(w.room, ninth);
+    expect((await w.answered()).closedWith?.code).toBe(CLOSE.TRY_AGAIN);
+    expect(tenth.closedWith).toBeNull();
+  });
+
+  test("a fleet room holds 4 + ceil(n/8) waiting clients (17 for 100); past them the oldest gives way", async () => {
+    const w = await fleetWorld("off");
+    await w.control(await fleetPass(100));
+    const waiting = [];
+    for (let index = 0; index < 17; index++) waiting.push((await w.client()).socket);
+    expect(waiting.map((socket) => socket.closedWith)).toEqual(waiting.map(() => null));
+    await w.client();
+    expect(waiting[0]!.closedWith).toEqual({ code: CLOSE.TRY_AGAIN, reason: "too many clients waiting for this server" });
+    expect(waiting.slice(1).map((socket) => socket.closedWith)).toEqual(waiting.slice(1).map(() => null));
+  });
+
+
+  /** sends `bytes` in frames of 64 KiB (the last one shorter) from a waiting client, until the room closes it */
+  const hold = (w: Awaited<ReturnType<typeof fleetWorld>>, socket: FakeSocket, bytes: number) => {
+    for (let sent = 0; sent < bytes && !socket.closedWith; sent += 65536) w.room.webSocketMessage(socket, new Uint8Array(Math.min(65536, bytes - sent)).buffer);
+  };
+
+  test("a fleet room holds at most ROOM_BUFFER_BYTES for its waiting clients, counted in bytes: past it the oldest give way, closed 1013", async () => {
+    const w = await fleetWorld("off");
+    await w.control(await fleetPass(1000));
+    const half = BUFFER_BYTES / 2;
+    const clients = [];
+    // 129 waiting clients (the queue of a fleet of 1000), each sending half a MiB: 64.5 MiB in all
+    for (let index = 0; index < roomLimits(1000).pending; index++) {
+      const client = (await w.client()).socket;
+      hold(w, client, half);
+      clients.push(client);
+    }
+    const open = clients.filter((client) => client.closedWith === null);
+    expect(open.length * half).toBeLessThanOrEqual(ROOM_BUFFER_BYTES);
+    // the cap is in bytes: twice as many half-MiB clients wait as whole-MiB ones would
+    expect(open).toHaveLength(ROOM_BUFFER_BYTES / half);
+    expect(clients.slice(-open.length)).toEqual(open);
+    expect(clients.slice(0, -open.length).map((client) => client.closedWith)).toEqual(clients.slice(0, -open.length).map(() => ({ code: CLOSE.TRY_AGAIN, reason: "too much held for this server" })));
+  });
+
+  test("the room's cap takes exactly ROOM_BUFFER_BYTES; one byte more makes the oldest waiting client give way", async () => {
+    const w = await fleetWorld("off");
+    await w.control(await fleetPass(1000));
+    const clients = [];
+    for (let index = 0; index < ROOM_BUFFER_BYTES / BUFFER_BYTES; index++) {
+      const client = (await w.client()).socket;
+      hold(w, client, BUFFER_BYTES);
+      clients.push(client);
+    }
+    expect(clients.every((client) => client.closedWith === null)).toBe(true);
+    const last = (await w.client()).socket;
+    hold(w, last, 1);
+    expect(clients[0]!.closedWith).toEqual({ code: CLOSE.TRY_AGAIN, reason: "too much held for this server" });
+    expect([last, ...clients.slice(1)].every((client) => client.closedWith === null)).toBe(true);
+  });
+
+  test("on a moving clock the oldest to arrive gives way first, not the one quiet longest", async () => {
+    const w = await fleetWorld("off");
+    await w.control(await fleetPass(1000));
+    const clients = [];
+    for (let index = 0; index < ROOM_BUFFER_BYTES / BUFFER_BYTES; index++) {
+      setSystemTime(new Date(T0 + index * 1_000));
+      const client = (await w.client()).socket;
+      hold(w, client, BUFFER_BYTES - 65536);
+      clients.push(client);
+    }
+    // the first to arrive sends its last frame most recently: it was heard from last, and is still the oldest
+    setSystemTime(new Date(T0 + 60_000));
+    for (const client of [...clients].reverse()) hold(w, client, 65536);
+    expect(clients.every((client) => client.closedWith === null)).toBe(true);
+    setSystemTime(new Date(T0 + 61_000));
+    const newcomer = (await w.client()).socket;
+    hold(w, newcomer, 2 * 65536);
+    expect(clients.map((client) => client.closedWith?.reason ?? null)).toEqual(clients.map((_, index) => index === 0 ? "too much held for this server" : null));
+    expect(newcomer.closedWith).toBeNull();
+  });
+
+  test("under the room's cap a paced client gives way first, a paced sender never pushes out a default-lane one, and is refused itself instead", async () => {
+    const w = await fleetWorld("off");
+    await w.control(await fleetPass(1000));
+    const share = ROOM_BUFFER_BYTES / BUFFER_BYTES / 2;
+    const fill = async (lane?: "paced") => { const client = (await w.client(lane)).socket; hold(w, client, BUFFER_BYTES); return client; };
+    const defaults = [];
+    const paced = [];
+    for (let index = 0; index < share; index++) defaults.push(await fill());
+    for (let index = 0; index < share; index++) paced.push(await fill("paced"));
+    expect([...defaults, ...paced].every((client) => client.closedWith === null)).toBe(true);
+    // the room is full: a default-lane sender takes the place of the oldest paced one
+    const late = await fill();
+    expect(paced[0]!.closedWith).toEqual({ code: CLOSE.TRY_AGAIN, reason: "too much held for this server" });
+    expect([late, ...defaults, ...paced.slice(1)].every((client) => client.closedWith === null)).toBe(true);
+    // a paced sender takes the place of the oldest paced one only
+    const pacedLate = await fill("paced");
+    expect(paced[1]!.closedWith?.code).toBe(CLOSE.TRY_AGAIN);
+    expect([pacedLate, late, ...defaults, ...paced.slice(2)].every((client) => client.closedWith === null)).toBe(true);
+    // with nothing but default-lane clients holding, a paced sender is refused itself and none of them gives way
+    const only = await fleetWorld("off");
+    await only.control(await fleetPass(1000));
+    const held = [];
+    for (let index = 0; index < 2 * share; index++) { const client = (await only.client()).socket; hold(only, client, BUFFER_BYTES); held.push(client); }
+    const refused = (await only.client("paced")).socket;
+    hold(only, refused, BUFFER_BYTES);
+    expect(refused.closedWith).toEqual({ code: CLOSE.TRY_AGAIN, reason: "too much held for this server" });
+    expect(held.every((client) => client.closedWith === null)).toBe(true);
+  });
+
+  test("a PC socket whose saved pass_fleet is not an integer is no socket the room knows after an eviction: it raises nothing", async () => {
+    for (const saved of [100, "100", 100.5] as const) {
+      const w = await fleetWorld("off");
+      const pc = await w.open(`role=server&${proof()}`, await fleetPass(100)) as FakeSocket;
+      const answer = answerChallenge(pc.sent.shift(), PC, null)!;
+      pc.serializeAttachment({ ...(pc.deserializeAttachment() as Record<string, unknown>), pass_fleet: saved });
+      const evicted = new RelayRoom(w.fake.state, w.settings);
+      await w.fake.state.ready;
+      await evicted.webSocketMessage(pc, answer);
+      if (saved === 100) expect(pc.json(0)).toMatchObject({ type: "sync", max_clients: 108 });
+      else expect([saved, pc.sent]).toEqual([saved, []]);
+    }
+  });
+
+  test("lanes: a client may ask for lane=paced and nothing else, refused 400 before any room", async () => {
+    expect(parseSocketRequest(new URL(url("role=client&lane=paced")))).toMatchObject({ role: "client", lane: "paced" });
+    expect(parseSocketRequest(new URL(url("role=client")))).not.toHaveProperty("lane");
+    for (const lane of ["other", "", "PACED"]) expect(parseSocketRequest(new URL(url(`role=client&lane=${lane}`)))).toEqual({ error: "lane must be paced" });
+    const w = await fleetWorld(null);
+    const refused = await w.open("role=client&lane=other");
+    expect(refused instanceof Response && refused.status).toBe(400);
+    expect(w.fake.sockets).toEqual([]);
+  });
+
+  test("lanes: with 3 default-lane and 12 paced clients waiting, sync names 8 ids, default lane first, lists the paced ones of them, and announces the other 7 right after", async () => {
+    const w = await fleetWorld("off");
+    const pass = await fleetPass(100);
+    const first = await w.control(pass);
+    const order = ["paced", "paced", "default", "paced", "paced", "paced", "default", "paced", "paced", "paced", "paced", "default", "paced", "paced", "paced"] as const;
+    const clients: { id: string; lane: string }[] = [];
+    for (const lane of order) clients.push({ id: (await w.client(lane === "paced" ? "paced" : undefined)).id, lane });
+    // the control socket connected then heard each as it came, the paced ones with their lane
+    expect(first.sent.slice(1).map((frame) => JSON.parse(frame as string))).toEqual(clients.map(({ id, lane }) => ({ type: "connected", connection_id: id, ...(lane === "paced" ? { lane } : {}) })));
+    const second = await w.control(pass);
+    expect(first.closedWith?.code).toBe(CLOSE.POLICY);
+    const defaults = clients.filter((client) => client.lane === "default").map((client) => client.id);
+    const paced = clients.filter((client) => client.lane === "paced").map((client) => client.id);
+    expect(second.json(0)).toMatchObject({ type: "sync", connection_ids: [...defaults, ...paced.slice(0, 5)], paced: paced.slice(0, 5) });
+    expect(second.sent.slice(1).map((frame) => JSON.parse(frame as string))).toEqual(paced.slice(5).map((id) => ({ type: "connected", connection_id: id, lane: "paced" })));
+  });
+
+  test("lanes: a paced client never takes the warm socket, which stays for the next default-lane client", async () => {
+    const w = await fleetWorld(null);
+    const control = await w.control();
+    const generation = (control.json(0) as { warm: string }).warm;
+    const warm = await connectWarm(w.room, w.fake, generation);
+    const paced = await w.client("paced");
+    expect(control.json(control.sent.length - 1)).toEqual({ type: "connected", connection_id: paced.id, lane: "paced" });
+    expect(warm.sent).toEqual([]);
+    const phone = await w.client();
+    expect(warm.json(0)).toEqual({ type: "bound", connection_id: phone.id });
+    expect(control.json(control.sent.length - 1)).toEqual({ type: "connected", connection_id: paced.id, lane: "paced" });
+  });
+
+  test("lanes: with the waiting queue full, a new default-lane client closes the oldest paced one, and a paced one never closes a default-lane one", async () => {
+    const w = await fleetWorld(null);
+    await w.control();
+    const d1 = await w.client();
+    const p1 = await w.client("paced");
+    const d2 = await w.client();
+    const p2 = await w.client("paced");
+    const d3 = await w.client();
+    expect(p1.socket.closedWith).toEqual({ code: CLOSE.TRY_AGAIN, reason: "too many clients waiting for this server" });
+    expect([d1, d2, p2, d3].map((client) => client.socket.closedWith)).toEqual([null, null, null, null]);
+    // a paced newcomer takes the place of the oldest paced one only
+    const p3 = await w.client("paced");
+    expect(p2.socket.closedWith?.code).toBe(CLOSE.TRY_AGAIN);
+    const d4 = await w.client();
+    expect(p3.socket.closedWith?.code).toBe(CLOSE.TRY_AGAIN);
+    // four default-lane clients wait: a paced newcomer is refused itself, and none of them gives way
+    const p4 = await w.client("paced");
+    expect(p4.socket.closedWith).toEqual({ code: CLOSE.TRY_AGAIN, reason: "too many clients waiting for this server" });
+    expect([d1, d2, d3, d4].map((client) => client.socket.closedWith)).toEqual([null, null, null, null]);
+  });
+});

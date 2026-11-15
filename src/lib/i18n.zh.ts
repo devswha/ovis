@@ -20,6 +20,7 @@ import { PALETTE_ZH } from "./i18n/palette.zh.ts";
 import { RELAY_ZH } from "./i18n/relay.zh.ts";
 import { DASHBOARD_ZH } from "./i18n/dashboard.zh.ts";
 import { RUNTIME_MOVE_ZH } from "./i18n/runtime-move.zh.ts";
+import { FLEET_ZH } from "./i18n/fleet.zh.ts";
 
 /**
  * Simplified Chinese for every `t("…")` in src/ that no part in lib/i18n/ holds: keys more than
@@ -583,12 +584,20 @@ const BASE: Record<string, string> = {
   "Ready · not in the account yet": "就绪 · 尚未加入账户",
   "Account setup is incomplete.": "账户设置尚未完成。",
   "Adding it to your account…": "正在添加到账户…",
+  "The account service is busy: waiting {seconds} s, then trying again…": "账户服务繁忙：等待 {seconds} 秒后重试…",
+  "Adding this PC to your account: the account service is busy. Trying again in {seconds} s…": "正在将此 PC 添加到账户：账户服务繁忙，{seconds} 秒后重试…",
   "{name} is ready to open on this device.": "此设备已准备好打开 {name}。",
   "In your account": "已加入你的账户",
   "Devices added: {count}": "已添加的设备：{count}台",
   "Plan · {plan}": "方案 · {plan}",
   "{used}/{max} PCs": "{used}/{max} 台电脑",
   "{used} / {cap} relay data": "中继流量 {used} / {cap}",
+  "{max} fleet machines": "{max} 台集群机器",
+  "Fleet": "机群",
+  "Open fleet": "打开机群",
+  "Last seen": "上次出现",
+  "State": "状态",
+  "Route": "路由",
   "Agent": "Agent",
   "Install another agent ({count})": "安装其他代理（{count}）",
   "Dark theme": "深色主题",
@@ -654,6 +663,7 @@ export const ZH_PARTS: Record<string, Record<string, string>> = {
   relay: RELAY_ZH,
   dashboard: DASHBOARD_ZH,
   "runtime-move": RUNTIME_MOVE_ZH,
+  fleet: FLEET_ZH,
 };
 
 export const ZH: Record<string, string> = Object.assign({}, ...Object.values(ZH_PARTS));

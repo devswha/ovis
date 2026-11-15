@@ -157,3 +157,14 @@ describe("a folder a workspace route is given", () => {
     }
   });
 });
+
+describe("a create with program or first_message_wait_ms (todo 32's ovis start)", () => {
+  it("is refused, starting nothing on herdr", async () => {
+    const request = new Request("http://127.0.0.1/api/workspace/create", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ program: { argv: ["sh"] } }) });
+    const response = await handleWorkspaceRequest(request, new URL(request.url), "/api/workspace/create", { timeout: () => {} },
+      () => {}, async () => ({ id: "m1" }) as PendingMessage, () => ({ order_epoch: "e", moved_seq: 1 }), undefined, true);
+    const body = (await response!.json()) as Record<string, unknown>;
+    expect([response!.status, (body["error"] as { code: string }).code]).toEqual([409, "unsupported_runtime"]);
+    expect(calls).toEqual([]);
+  });
+});

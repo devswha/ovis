@@ -1,0 +1,748 @@
+{
+  "file": "enroll.json",
+  "contract": "docs/fleet-link.md",
+  "generated_by": "scripts/fleet-vectors.ts",
+  "test_only": "Every key, secret, nonce and token in this file is a fixed test value derived from a label by scripts/fleet-vectors.ts. Never use one outside tests.",
+  "derivations": {
+    "invite": {
+      "secret": "KJCQIKrROCZU_8GTmGJc9nj8cdTqp2CbaWbQL6z2amo",
+      "invite_id": "f5fee1cd3ecba2d3",
+      "info_hex": "6f7669732d666c6565742d696e766974652f3166356665653163643365636261326433",
+      "seed_hex": "e9037e597bcba2f40cdccba0bc61fe7c97a9b73fac431ede36238b83afe9d199",
+      "public_key_hex": "92afa10ea049c9d971592298a9265a6032be8040568be0a27182acd9707bc435"
+    },
+    "enroll_message": {
+      "layout": "\"ovis-fleet-enroll/1\" || binding (32) || machine public key SPKI DER (91) || invite id (16 ASCII)",
+      "accept_hex": "6f7669732d666c6565742d656e726f6c6c2f3125b8c33937093d59b1ee00b9010b7a5430ab4ec0a264484a4f7589c97423b0a23059301306072a8648ce3d020106082a8648ce3d0301070342000469055c518f8796bc781012c4d0a6033c5eb7bdb45ada7b3a02b2d8bab80c116c9a242976f1cc45d650c2734d040632db9744482c56158136e185eab243fbe04e66356665653163643365636261326433"
+    },
+    "machine_enrolling": {
+      "private_scalar_hex": "223c65d1a27b34d438868eaff195a681fd8dbc06540ea898c2ffebac1d0c6167",
+      "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaQVcUY-Hlrx4EBLE0KYDPF63vbRa2ns6ArLYurgMEWyaJCl28cxF1lDCc00EBjLbl0RILFYVgTbhheqyQ_vgTg",
+      "machine_id": "c374ba9a0df7420e14555376de60188b"
+    },
+    "machine_second": {
+      "private_scalar_hex": "dd6713c2b5f036d0aa49a24980387bbd41841e100571691eaa3635f0b968e7c8",
+      "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEceqqc2j5Vx6f-ti7bxIAuvEfQ3c8MOfp7MdX1FQollek4Lubhl0lkYZtx7oul1GcrV7YoO8pwFNfMHa6NNEucg",
+      "machine_id": "203c6ed3b01cb1c7bd0920319e096bf8"
+    },
+    "sessions": {
+      "enroll_1_binding_hex": "25b8c33937093d59b1ee00b9010b7a5430ab4ec0a264484a4f7589c97423b0a2",
+      "enroll_2_binding_hex": "e7d43552883edd18e50c90c64c6fa8af93fa83c30eb52de3c9b69645e9a7623f"
+    }
+  },
+  "cases": [
+    {
+      "name": "enroll/accept",
+      "frame": "ENROLL",
+      "type": 69,
+      "stream_id": 0,
+      "direction": "machine_to_controller",
+      "context": {
+        "state": "before_auth",
+        "selected": [
+          "pipe-stream"
+        ],
+        "controller_now": 1767225600,
+        "tries_before": 0,
+        "store": {
+          "invite": "unused",
+          "exp": 1767229200
+        },
+        "signed": {
+          "secret": "KJCQIKrROCZU_8GTmGJc9nj8cdTqp2CbaWbQL6z2amo",
+          "invite_id": "f5fee1cd3ecba2d3",
+          "binding_hex": "25b8c33937093d59b1ee00b9010b7a5430ab4ec0a264484a4f7589c97423b0a2",
+          "machine_public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaQVcUY-Hlrx4EBLE0KYDPF63vbRa2ns6ArLYurgMEWyaJCl28cxF1lDCc00EBjLbl0RILFYVgTbhheqyQ_vgTg"
+        },
+        "verifier": {
+          "invite_public_key_hex": "92afa10ea049c9d971592298a9265a6032be8040568be0a27182acd9707bc435",
+          "binding_hex": "25b8c33937093d59b1ee00b9010b7a5430ab4ec0a264484a4f7589c97423b0a2",
+          "holds": true
+        }
+      },
+      "bytes": "01450000000000007b22696e766974655f6964223a2266356665653163643365636261326433222c226d616368696e655f7075626c69635f6b6579223a224d466b77457759484b6f5a497a6a3043415159494b6f5a497a6a304441516344516741456151566355592d486c72783445424c45304b59445046363376625261326e733641724c597572674d455779614a436c3238637846316c444363303045426a4c626c3052494c4659566754626868657179515f76675467222c227369676e6174757265223a22556278503732656b73646f45722d4145463435726a384275496e2d797774714a775338583951463739335071446672733159714c78576433756a756c4c70746e5064376a495568695a4b6978465753514d4e4e794467222c226e6f77223a313736373232353630307d",
+      "expect": {
+        "parse": {
+          "invite_id": "f5fee1cd3ecba2d3",
+          "machine_public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaQVcUY-Hlrx4EBLE0KYDPF63vbRa2ns6ArLYurgMEWyaJCl28cxF1lDCc00EBjLbl0RILFYVgTbhheqyQ_vgTg",
+          "signature": "UbxP72eksdoEr-AEF45rj8BuIn-ywtqJwS8X9QF793PqDfrs1YqLxWd3ujulLptnPd7jIUhiZKixFWSQMNNyDg",
+          "now": 1767225600
+        },
+        "effect": "the machine is recorded pending and ENROLL_OK names its machine_id"
+      }
+    },
+    {
+      "name": "enroll/retry-same-key",
+      "frame": "ENROLL",
+      "type": 69,
+      "stream_id": 0,
+      "direction": "machine_to_controller",
+      "context": {
+        "state": "before_auth",
+        "selected": [
+          "pipe-stream"
+        ],
+        "controller_now": 1767225600,
+        "tries_before": 0,
+        "store": {
+          "invite": "used",
+          "exp": 1767229200,
+          "machine_public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaQVcUY-Hlrx4EBLE0KYDPF63vbRa2ns6ArLYurgMEWyaJCl28cxF1lDCc00EBjLbl0RILFYVgTbhheqyQ_vgTg"
+        },
+        "signed": {
+          "secret": "KJCQIKrROCZU_8GTmGJc9nj8cdTqp2CbaWbQL6z2amo",
+          "invite_id": "f5fee1cd3ecba2d3",
+          "binding_hex": "e7d43552883edd18e50c90c64c6fa8af93fa83c30eb52de3c9b69645e9a7623f",
+          "machine_public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaQVcUY-Hlrx4EBLE0KYDPF63vbRa2ns6ArLYurgMEWyaJCl28cxF1lDCc00EBjLbl0RILFYVgTbhheqyQ_vgTg"
+        },
+        "verifier": {
+          "invite_public_key_hex": "92afa10ea049c9d971592298a9265a6032be8040568be0a27182acd9707bc435",
+          "binding_hex": "e7d43552883edd18e50c90c64c6fa8af93fa83c30eb52de3c9b69645e9a7623f",
+          "holds": true
+        }
+      },
+      "bytes": "01450000000000007b22696e766974655f6964223a2266356665653163643365636261326433222c226d616368696e655f7075626c69635f6b6579223a224d466b77457759484b6f5a497a6a3043415159494b6f5a497a6a304441516344516741456151566355592d486c72783445424c45304b59445046363376625261326e733641724c597572674d455779614a436c3238637846316c444363303045426a4c626c3052494c4659566754626868657179515f76675467222c227369676e6174757265223a22756d33434a746c486c446c587438756f765f475f396e63772d456d57456c3147314648364e645058614b79634b535f6274455968785976706f635f486f57756b5644663543516973734c304835377548786b53514251222c226e6f77223a313736373232353630307d",
+      "expect": {
+        "parse": {
+          "invite_id": "f5fee1cd3ecba2d3",
+          "machine_public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaQVcUY-Hlrx4EBLE0KYDPF63vbRa2ns6ArLYurgMEWyaJCl28cxF1lDCc00EBjLbl0RILFYVgTbhheqyQ_vgTg",
+          "signature": "um3CJtlHlDlXt8uov_G_9ncw-EmWEl1G1FH6NdPXaKycKS_btEYhxYvpoc_HoWukVDf5CQissL0H57uHxkSQBQ",
+          "now": 1767225600
+        },
+        "effect": "the same ENROLL_OK as the first time"
+      }
+    },
+    {
+      "name": "enroll/second-key",
+      "frame": "ENROLL",
+      "type": 69,
+      "stream_id": 0,
+      "direction": "machine_to_controller",
+      "context": {
+        "state": "before_auth",
+        "selected": [
+          "pipe-stream"
+        ],
+        "controller_now": 1767225600,
+        "tries_before": 0,
+        "store": {
+          "invite": "used",
+          "exp": 1767229200,
+          "machine_public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaQVcUY-Hlrx4EBLE0KYDPF63vbRa2ns6ArLYurgMEWyaJCl28cxF1lDCc00EBjLbl0RILFYVgTbhheqyQ_vgTg"
+        },
+        "signed": {
+          "secret": "KJCQIKrROCZU_8GTmGJc9nj8cdTqp2CbaWbQL6z2amo",
+          "invite_id": "f5fee1cd3ecba2d3",
+          "binding_hex": "e7d43552883edd18e50c90c64c6fa8af93fa83c30eb52de3c9b69645e9a7623f",
+          "machine_public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEceqqc2j5Vx6f-ti7bxIAuvEfQ3c8MOfp7MdX1FQollek4Lubhl0lkYZtx7oul1GcrV7YoO8pwFNfMHa6NNEucg"
+        },
+        "verifier": {
+          "invite_public_key_hex": "92afa10ea049c9d971592298a9265a6032be8040568be0a27182acd9707bc435",
+          "binding_hex": "e7d43552883edd18e50c90c64c6fa8af93fa83c30eb52de3c9b69645e9a7623f",
+          "holds": true
+        }
+      },
+      "bytes": "01450000000000007b22696e766974655f6964223a2266356665653163643365636261326433222c226d616368696e655f7075626c69635f6b6579223a224d466b77457759484b6f5a497a6a3043415159494b6f5a497a6a304441516344516741456365717163326a35567836662d7469376278494175764566513363384d4f6670374d64583146516f6c6c656b344c7562686c306c6b595a7478376f756c314763725637596f4f387077464e664d4861364e4e45756367222c227369676e6174757265223a227a7369665f6b56646d64475f5a68597558735846527549614f4c4b5f727247354134625a503054736f4c4c765a565730366e74506274766838525361573166576e5f4d6263375a2d694341544148695677586c744277222c226e6f77223a313736373232353630307d",
+      "expect": {
+        "parse": {
+          "invite_id": "f5fee1cd3ecba2d3",
+          "machine_public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEceqqc2j5Vx6f-ti7bxIAuvEfQ3c8MOfp7MdX1FQollek4Lubhl0lkYZtx7oul1GcrV7YoO8pwFNfMHa6NNEucg",
+          "signature": "zsif_kVdmdG_ZhYuXsXFRuIaOLK_rrG5A4bZP0TsoLLvZVW06ntPbtvh8RSaW1fWn_Mbc7Z-iCATAHiVwXltBw",
+          "now": 1767225600
+        },
+        "refuse": {
+          "stage": "session",
+          "kind": "session_error",
+          "code": "auth_revoked",
+          "message": "quarantined"
+        },
+        "effect": "the slot is quarantined and an alert raised"
+      }
+    },
+    {
+      "name": "enroll/wrong-secret",
+      "frame": "ENROLL",
+      "type": 69,
+      "stream_id": 0,
+      "direction": "machine_to_controller",
+      "context": {
+        "state": "before_auth",
+        "selected": [
+          "pipe-stream"
+        ],
+        "controller_now": 1767225600,
+        "tries_before": 0,
+        "store": {
+          "invite": "unused",
+          "exp": 1767229200
+        },
+        "signed": {
+          "secret": "mt9kaxTNyj1tIbv3AWO_53IYyK-hu1Gh00LmuLhon-w",
+          "invite_id": "f5fee1cd3ecba2d3",
+          "binding_hex": "25b8c33937093d59b1ee00b9010b7a5430ab4ec0a264484a4f7589c97423b0a2",
+          "machine_public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaQVcUY-Hlrx4EBLE0KYDPF63vbRa2ns6ArLYurgMEWyaJCl28cxF1lDCc00EBjLbl0RILFYVgTbhheqyQ_vgTg"
+        },
+        "verifier": {
+          "invite_public_key_hex": "92afa10ea049c9d971592298a9265a6032be8040568be0a27182acd9707bc435",
+          "binding_hex": "25b8c33937093d59b1ee00b9010b7a5430ab4ec0a264484a4f7589c97423b0a2",
+          "holds": false
+        }
+      },
+      "bytes": "01450000000000007b22696e766974655f6964223a2266356665653163643365636261326433222c226d616368696e655f7075626c69635f6b6579223a224d466b77457759484b6f5a497a6a3043415159494b6f5a497a6a304441516344516741456151566355592d486c72783445424c45304b59445046363376625261326e733641724c597572674d455779614a436c3238637846316c444363303045426a4c626c3052494c4659566754626868657179515f76675467222c227369676e6174757265223a22586c5650377850577471585a476f6579764e6443384c475f6b694b6844534b7943316c7338796d344969333444487969366e38374e4c724649513753596a4d43424438464336536834445f39704c4956397977384251222c226e6f77223a313736373232353630307d",
+      "expect": {
+        "parse": {
+          "invite_id": "f5fee1cd3ecba2d3",
+          "machine_public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaQVcUY-Hlrx4EBLE0KYDPF63vbRa2ns6ArLYurgMEWyaJCl28cxF1lDCc00EBjLbl0RILFYVgTbhheqyQ_vgTg",
+          "signature": "XlVP7xPWtqXZGoeyvNdC8LG_kiKhDSKyC1ls8ym4Ii34DHyi6n87NLrFIQ7SYjMCBD8FC6Sh4D_9pLIV9yw8BQ",
+          "now": 1767225600
+        },
+        "refuse": {
+          "stage": "verify",
+          "kind": "session_error",
+          "code": "auth_failed",
+          "message": "signature"
+        }
+      }
+    },
+    {
+      "name": "enroll/other-machine-key",
+      "frame": "ENROLL",
+      "type": 69,
+      "stream_id": 0,
+      "direction": "machine_to_controller",
+      "context": {
+        "state": "before_auth",
+        "selected": [
+          "pipe-stream"
+        ],
+        "controller_now": 1767225600,
+        "tries_before": 0,
+        "store": {
+          "invite": "unused",
+          "exp": 1767229200
+        },
+        "signed": {
+          "secret": "KJCQIKrROCZU_8GTmGJc9nj8cdTqp2CbaWbQL6z2amo",
+          "invite_id": "f5fee1cd3ecba2d3",
+          "binding_hex": "25b8c33937093d59b1ee00b9010b7a5430ab4ec0a264484a4f7589c97423b0a2",
+          "machine_public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEceqqc2j5Vx6f-ti7bxIAuvEfQ3c8MOfp7MdX1FQollek4Lubhl0lkYZtx7oul1GcrV7YoO8pwFNfMHa6NNEucg"
+        },
+        "verifier": {
+          "invite_public_key_hex": "92afa10ea049c9d971592298a9265a6032be8040568be0a27182acd9707bc435",
+          "binding_hex": "25b8c33937093d59b1ee00b9010b7a5430ab4ec0a264484a4f7589c97423b0a2",
+          "holds": false
+        }
+      },
+      "bytes": "01450000000000007b22696e766974655f6964223a2266356665653163643365636261326433222c226d616368696e655f7075626c69635f6b6579223a224d466b77457759484b6f5a497a6a3043415159494b6f5a497a6a304441516344516741456151566355592d486c72783445424c45304b59445046363376625261326e733641724c597572674d455779614a436c3238637846316c444363303045426a4c626c3052494c4659566754626868657179515f76675467222c227369676e6174757265223a224a5f375873395068712d4749575a57576b6f55576d79562d3038556b6e733256486a64472d4756475f654b566e7963316c653351664962774a6e6c68494e44633531764b7667356536334e514e422d44306a36484251222c226e6f77223a313736373232353630307d",
+      "expect": {
+        "parse": {
+          "invite_id": "f5fee1cd3ecba2d3",
+          "machine_public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaQVcUY-Hlrx4EBLE0KYDPF63vbRa2ns6ArLYurgMEWyaJCl28cxF1lDCc00EBjLbl0RILFYVgTbhheqyQ_vgTg",
+          "signature": "J_7Xs9Phq-GIWZWWkoUWmyV-08Ukns2VHjdG-GVG_eKVnyc1le3QfIbwJnlhINDc51vKvg5e63NQNB-D0j6HBQ",
+          "now": 1767225600
+        },
+        "refuse": {
+          "stage": "verify",
+          "kind": "session_error",
+          "code": "auth_failed",
+          "message": "signature"
+        }
+      }
+    },
+    {
+      "name": "enroll/replayed-on-another-session",
+      "frame": "ENROLL",
+      "type": 69,
+      "stream_id": 0,
+      "direction": "machine_to_controller",
+      "context": {
+        "state": "before_auth",
+        "selected": [
+          "pipe-stream"
+        ],
+        "controller_now": 1767225600,
+        "tries_before": 0,
+        "store": {
+          "invite": "unused",
+          "exp": 1767229200
+        },
+        "signed": {
+          "secret": "KJCQIKrROCZU_8GTmGJc9nj8cdTqp2CbaWbQL6z2amo",
+          "invite_id": "f5fee1cd3ecba2d3",
+          "binding_hex": "25b8c33937093d59b1ee00b9010b7a5430ab4ec0a264484a4f7589c97423b0a2",
+          "machine_public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaQVcUY-Hlrx4EBLE0KYDPF63vbRa2ns6ArLYurgMEWyaJCl28cxF1lDCc00EBjLbl0RILFYVgTbhheqyQ_vgTg"
+        },
+        "verifier": {
+          "invite_public_key_hex": "92afa10ea049c9d971592298a9265a6032be8040568be0a27182acd9707bc435",
+          "binding_hex": "e7d43552883edd18e50c90c64c6fa8af93fa83c30eb52de3c9b69645e9a7623f",
+          "holds": false
+        }
+      },
+      "bytes": "01450000000000007b22696e766974655f6964223a2266356665653163643365636261326433222c226d616368696e655f7075626c69635f6b6579223a224d466b77457759484b6f5a497a6a3043415159494b6f5a497a6a304441516344516741456151566355592d486c72783445424c45304b59445046363376625261326e733641724c597572674d455779614a436c3238637846316c444363303045426a4c626c3052494c4659566754626868657179515f76675467222c227369676e6174757265223a22556278503732656b73646f45722d4145463435726a384275496e2d797774714a775338583951463739335071446672733159714c78576433756a756c4c70746e5064376a495568695a4b6978465753514d4e4e794467222c226e6f77223a313736373232353630307d",
+      "expect": {
+        "parse": {
+          "invite_id": "f5fee1cd3ecba2d3",
+          "machine_public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaQVcUY-Hlrx4EBLE0KYDPF63vbRa2ns6ArLYurgMEWyaJCl28cxF1lDCc00EBjLbl0RILFYVgTbhheqyQ_vgTg",
+          "signature": "UbxP72eksdoEr-AEF45rj8BuIn-ywtqJwS8X9QF793PqDfrs1YqLxWd3ujulLptnPd7jIUhiZKixFWSQMNNyDg",
+          "now": 1767225600
+        },
+        "refuse": {
+          "stage": "verify",
+          "kind": "session_error",
+          "code": "auth_failed",
+          "message": "signature"
+        }
+      }
+    },
+    {
+      "name": "enroll/machine-key-not-on-curve",
+      "frame": "ENROLL",
+      "type": 69,
+      "stream_id": 0,
+      "direction": "machine_to_controller",
+      "context": {
+        "state": "before_auth",
+        "selected": [
+          "pipe-stream"
+        ],
+        "controller_now": 1767225600,
+        "tries_before": 0,
+        "store": {
+          "invite": "unused",
+          "exp": 1767229200
+        },
+        "signed": {
+          "secret": "KJCQIKrROCZU_8GTmGJc9nj8cdTqp2CbaWbQL6z2amo",
+          "invite_id": "f5fee1cd3ecba2d3",
+          "binding_hex": "25b8c33937093d59b1ee00b9010b7a5430ab4ec0a264484a4f7589c97423b0a2",
+          "machine_public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQ"
+        },
+        "verifier": {
+          "invite_public_key_hex": "92afa10ea049c9d971592298a9265a6032be8040568be0a27182acd9707bc435",
+          "binding_hex": "25b8c33937093d59b1ee00b9010b7a5430ab4ec0a264484a4f7589c97423b0a2",
+          "holds": true
+        }
+      },
+      "bytes": "01450000000000007b22696e766974655f6964223a2266356665653163643365636261326433222c226d616368696e655f7075626c69635f6b6579223a224d466b77457759484b6f5a497a6a3043415159494b6f5a497a6a304441516344516741454141414141414141414141414141414141414141414141414141414141414141414141414141414141414541414141414141414141414141414141414141414141414141414141414141414141414141414141414151222c227369676e6174757265223a226d4759446b6d67324476565a6d4956754b5655493157746930375a533674647174396f5a64495f544e574b47477762636a3152322d7948706a7354713667575a484d3979656e653354324f47666f44777a6752724451222c226e6f77223a313736373232353630307d",
+      "expect": {
+        "parse": {
+          "invite_id": "f5fee1cd3ecba2d3",
+          "machine_public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQ",
+          "signature": "mGYDkmg2DvVZmIVuKVUI1Wti07ZS6tdqt9oZdI_TNWKGGwbcj1R2-yHpjsTq6gWZHM9yene3T2OGfoDwzgRrDQ",
+          "now": 1767225600
+        },
+        "refuse": {
+          "stage": "verify",
+          "kind": "session_error",
+          "code": "auth_failed",
+          "message": "signature"
+        },
+        "effect": "the invite signature holds, but the machine key cannot be imported"
+      }
+    },
+    {
+      "name": "enroll/unknown-invite",
+      "frame": "ENROLL",
+      "type": 69,
+      "stream_id": 0,
+      "direction": "machine_to_controller",
+      "context": {
+        "state": "before_auth",
+        "selected": [
+          "pipe-stream"
+        ],
+        "controller_now": 1767225600,
+        "tries_before": 0,
+        "store": {},
+        "signed": {
+          "secret": "TmFZbkurpHarQsJ3oulVr3erjarJSC11c900KEHClBA",
+          "invite_id": "43287d94f182a4f3",
+          "binding_hex": "25b8c33937093d59b1ee00b9010b7a5430ab4ec0a264484a4f7589c97423b0a2",
+          "machine_public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaQVcUY-Hlrx4EBLE0KYDPF63vbRa2ns6ArLYurgMEWyaJCl28cxF1lDCc00EBjLbl0RILFYVgTbhheqyQ_vgTg"
+        }
+      },
+      "bytes": "01450000000000007b22696e766974655f6964223a2234333238376439346631383261346633222c226d616368696e655f7075626c69635f6b6579223a224d466b77457759484b6f5a497a6a3043415159494b6f5a497a6a304441516344516741456151566355592d486c72783445424c45304b59445046363376625261326e733641724c597572674d455779614a436c3238637846316c444363303045426a4c626c3052494c4659566754626868657179515f76675467222c227369676e6174757265223a22474a35644f48627263567a4365757237545270486a3949764b6e774779715a4f6732616a5a686c67343171346c6f4d323069355a504e537043374b505a764334395954452d6276795645754849645564674944564251222c226e6f77223a313736373232353630307d",
+      "expect": {
+        "parse": {
+          "invite_id": "43287d94f182a4f3",
+          "machine_public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaQVcUY-Hlrx4EBLE0KYDPF63vbRa2ns6ArLYurgMEWyaJCl28cxF1lDCc00EBjLbl0RILFYVgTbhheqyQ_vgTg",
+          "signature": "GJ5dOHbrcVzCeur7TRpHj9IvKnwGyqZOg2ajZhlg41q4loM20i5ZPNSpC7KPZvC49YTE-bvyVEuHIdUdgIDVBQ",
+          "now": 1767225600
+        },
+        "refuse": {
+          "stage": "session",
+          "kind": "session_error",
+          "code": "auth_failed",
+          "message": "unknown"
+        }
+      }
+    },
+    {
+      "name": "enroll/expired",
+      "frame": "ENROLL",
+      "type": 69,
+      "stream_id": 0,
+      "direction": "machine_to_controller",
+      "context": {
+        "state": "before_auth",
+        "selected": [
+          "pipe-stream"
+        ],
+        "controller_now": 1767229201,
+        "tries_before": 0,
+        "store": {
+          "invite": "unused",
+          "exp": 1767229200
+        },
+        "signed": {
+          "secret": "KJCQIKrROCZU_8GTmGJc9nj8cdTqp2CbaWbQL6z2amo",
+          "invite_id": "f5fee1cd3ecba2d3",
+          "binding_hex": "25b8c33937093d59b1ee00b9010b7a5430ab4ec0a264484a4f7589c97423b0a2",
+          "machine_public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaQVcUY-Hlrx4EBLE0KYDPF63vbRa2ns6ArLYurgMEWyaJCl28cxF1lDCc00EBjLbl0RILFYVgTbhheqyQ_vgTg"
+        },
+        "verifier": {
+          "invite_public_key_hex": "92afa10ea049c9d971592298a9265a6032be8040568be0a27182acd9707bc435",
+          "binding_hex": "25b8c33937093d59b1ee00b9010b7a5430ab4ec0a264484a4f7589c97423b0a2",
+          "holds": true
+        }
+      },
+      "bytes": "01450000000000007b22696e766974655f6964223a2266356665653163643365636261326433222c226d616368696e655f7075626c69635f6b6579223a224d466b77457759484b6f5a497a6a3043415159494b6f5a497a6a304441516344516741456151566355592d486c72783445424c45304b59445046363376625261326e733641724c597572674d455779614a436c3238637846316c444363303045426a4c626c3052494c4659566754626868657179515f76675467222c227369676e6174757265223a22556278503732656b73646f45722d4145463435726a384275496e2d797774714a775338583951463739335071446672733159714c78576433756a756c4c70746e5064376a495568695a4b6978465753514d4e4e794467222c226e6f77223a313736373232353630307d",
+      "expect": {
+        "parse": {
+          "invite_id": "f5fee1cd3ecba2d3",
+          "machine_public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaQVcUY-Hlrx4EBLE0KYDPF63vbRa2ns6ArLYurgMEWyaJCl28cxF1lDCc00EBjLbl0RILFYVgTbhheqyQ_vgTg",
+          "signature": "UbxP72eksdoEr-AEF45rj8BuIn-ywtqJwS8X9QF793PqDfrs1YqLxWd3ujulLptnPd7jIUhiZKixFWSQMNNyDg",
+          "now": 1767225600
+        },
+        "refuse": {
+          "stage": "session",
+          "kind": "session_error",
+          "code": "auth_failed",
+          "message": "expired"
+        }
+      }
+    },
+    {
+      "name": "enroll/fleet-token-required",
+      "frame": "ENROLL",
+      "type": 69,
+      "stream_id": 0,
+      "direction": "machine_to_controller",
+      "context": {
+        "state": "before_auth",
+        "selected": [
+          "pipe-stream"
+        ],
+        "controller_now": 1767225600,
+        "tries_before": 0,
+        "store": {
+          "invite": "unused",
+          "exp": 1767229200
+        },
+        "fleet": {
+          "token": false
+        },
+        "signed": {
+          "secret": "KJCQIKrROCZU_8GTmGJc9nj8cdTqp2CbaWbQL6z2amo",
+          "invite_id": "f5fee1cd3ecba2d3",
+          "binding_hex": "25b8c33937093d59b1ee00b9010b7a5430ab4ec0a264484a4f7589c97423b0a2",
+          "machine_public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaQVcUY-Hlrx4EBLE0KYDPF63vbRa2ns6ArLYurgMEWyaJCl28cxF1lDCc00EBjLbl0RILFYVgTbhheqyQ_vgTg"
+        },
+        "verifier": {
+          "invite_public_key_hex": "92afa10ea049c9d971592298a9265a6032be8040568be0a27182acd9707bc435",
+          "binding_hex": "25b8c33937093d59b1ee00b9010b7a5430ab4ec0a264484a4f7589c97423b0a2",
+          "holds": true
+        }
+      },
+      "bytes": "01450000000000007b22696e766974655f6964223a2266356665653163643365636261326433222c226d616368696e655f7075626c69635f6b6579223a224d466b77457759484b6f5a497a6a3043415159494b6f5a497a6a304441516344516741456151566355592d486c72783445424c45304b59445046363376625261326e733641724c597572674d455779614a436c3238637846316c444363303045426a4c626c3052494c4659566754626868657179515f76675467222c227369676e6174757265223a22556278503732656b73646f45722d4145463435726a384275496e2d797774714a775338583951463739335071446672733159714c78576433756a756c4c70746e5064376a495568695a4b6978465753514d4e4e794467222c226e6f77223a313736373232353630307d",
+      "expect": {
+        "parse": {
+          "invite_id": "f5fee1cd3ecba2d3",
+          "machine_public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaQVcUY-Hlrx4EBLE0KYDPF63vbRa2ns6ArLYurgMEWyaJCl28cxF1lDCc00EBjLbl0RILFYVgTbhheqyQ_vgTg",
+          "signature": "UbxP72eksdoEr-AEF45rj8BuIn-ywtqJwS8X9QF793PqDfrs1YqLxWd3ujulLptnPd7jIUhiZKixFWSQMNNyDg",
+          "now": 1767225600
+        },
+        "refuse": {
+          "stage": "session",
+          "kind": "session_error",
+          "code": "auth_failed",
+          "message": "fleet_token_required"
+        },
+        "effect": "the controller has no OVIS_TOKEN (todo 60): the invite is not looked at, nothing is counted or written"
+      }
+    },
+    {
+      "name": "enroll/sixth-try",
+      "frame": "ENROLL",
+      "type": 69,
+      "stream_id": 0,
+      "direction": "machine_to_controller",
+      "context": {
+        "state": "before_auth",
+        "selected": [
+          "pipe-stream"
+        ],
+        "controller_now": 1767225600,
+        "tries_before": 5,
+        "store": {
+          "invite": "unused",
+          "exp": 1767229200
+        },
+        "signed": {
+          "secret": "mt9kaxTNyj1tIbv3AWO_53IYyK-hu1Gh00LmuLhon-w",
+          "invite_id": "f5fee1cd3ecba2d3",
+          "binding_hex": "25b8c33937093d59b1ee00b9010b7a5430ab4ec0a264484a4f7589c97423b0a2",
+          "machine_public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaQVcUY-Hlrx4EBLE0KYDPF63vbRa2ns6ArLYurgMEWyaJCl28cxF1lDCc00EBjLbl0RILFYVgTbhheqyQ_vgTg"
+        },
+        "verifier": {
+          "invite_public_key_hex": "92afa10ea049c9d971592298a9265a6032be8040568be0a27182acd9707bc435",
+          "binding_hex": "25b8c33937093d59b1ee00b9010b7a5430ab4ec0a264484a4f7589c97423b0a2",
+          "holds": false
+        }
+      },
+      "bytes": "01450000000000007b22696e766974655f6964223a2266356665653163643365636261326433222c226d616368696e655f7075626c69635f6b6579223a224d466b77457759484b6f5a497a6a3043415159494b6f5a497a6a304441516344516741456151566355592d486c72783445424c45304b59445046363376625261326e733641724c597572674d455779614a436c3238637846316c444363303045426a4c626c3052494c4659566754626868657179515f76675467222c227369676e6174757265223a22586c5650377850577471585a476f6579764e6443384c475f6b694b6844534b7943316c7338796d344969333444487969366e38374e4c724649513753596a4d43424438464336536834445f39704c4956397977384251222c226e6f77223a313736373232353630307d",
+      "expect": {
+        "parse": {
+          "invite_id": "f5fee1cd3ecba2d3",
+          "machine_public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaQVcUY-Hlrx4EBLE0KYDPF63vbRa2ns6ArLYurgMEWyaJCl28cxF1lDCc00EBjLbl0RILFYVgTbhheqyQ_vgTg",
+          "signature": "XlVP7xPWtqXZGoeyvNdC8LG_kiKhDSKyC1ls8ym4Ii34DHyi6n87NLrFIQ7SYjMCBD8FC6Sh4D_9pLIV9yw8BQ",
+          "now": 1767225600
+        },
+        "refuse": {
+          "stage": "session",
+          "kind": "session_error",
+          "code": "auth_failed",
+          "message": "rate_limited"
+        }
+      },
+      "limit": "enroll_tries_per_invite"
+    },
+    {
+      "name": "enroll/valid-past-tries",
+      "frame": "ENROLL",
+      "type": 69,
+      "stream_id": 0,
+      "direction": "machine_to_controller",
+      "context": {
+        "state": "before_auth",
+        "selected": [
+          "pipe-stream"
+        ],
+        "controller_now": 1767225600,
+        "tries_before": 5,
+        "store": {
+          "invite": "unused",
+          "exp": 1767229200
+        },
+        "signed": {
+          "secret": "KJCQIKrROCZU_8GTmGJc9nj8cdTqp2CbaWbQL6z2amo",
+          "invite_id": "f5fee1cd3ecba2d3",
+          "binding_hex": "25b8c33937093d59b1ee00b9010b7a5430ab4ec0a264484a4f7589c97423b0a2",
+          "machine_public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaQVcUY-Hlrx4EBLE0KYDPF63vbRa2ns6ArLYurgMEWyaJCl28cxF1lDCc00EBjLbl0RILFYVgTbhheqyQ_vgTg"
+        },
+        "verifier": {
+          "invite_public_key_hex": "92afa10ea049c9d971592298a9265a6032be8040568be0a27182acd9707bc435",
+          "binding_hex": "25b8c33937093d59b1ee00b9010b7a5430ab4ec0a264484a4f7589c97423b0a2",
+          "holds": true
+        }
+      },
+      "bytes": "01450000000000007b22696e766974655f6964223a2266356665653163643365636261326433222c226d616368696e655f7075626c69635f6b6579223a224d466b77457759484b6f5a497a6a3043415159494b6f5a497a6a304441516344516741456151566355592d486c72783445424c45304b59445046363376625261326e733641724c597572674d455779614a436c3238637846316c444363303045426a4c626c3052494c4659566754626868657179515f76675467222c227369676e6174757265223a22556278503732656b73646f45722d4145463435726a384275496e2d797774714a775338583951463739335071446672733159714c78576433756a756c4c70746e5064376a495568695a4b6978465753514d4e4e794467222c226e6f77223a313736373232353630307d",
+      "expect": {
+        "parse": {
+          "invite_id": "f5fee1cd3ecba2d3",
+          "machine_public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaQVcUY-Hlrx4EBLE0KYDPF63vbRa2ns6ArLYurgMEWyaJCl28cxF1lDCc00EBjLbl0RILFYVgTbhheqyQ_vgTg",
+          "signature": "UbxP72eksdoEr-AEF45rj8BuIn-ywtqJwS8X9QF793PqDfrs1YqLxWd3ujulLptnPd7jIUhiZKixFWSQMNNyDg",
+          "now": 1767225600
+        },
+        "effect": "five refused tries came before: a valid ENROLL is still taken, the machine recorded pending"
+      }
+    },
+    {
+      "name": "enroll/truncated-signature",
+      "frame": "ENROLL",
+      "type": 69,
+      "stream_id": 0,
+      "direction": "machine_to_controller",
+      "context": {
+        "state": "before_auth",
+        "selected": [
+          "pipe-stream"
+        ],
+        "controller_now": 1767225600,
+        "tries_before": 0,
+        "store": {
+          "invite": "unused",
+          "exp": 1767229200
+        }
+      },
+      "bytes": "01450000000000007b22696e766974655f6964223a2266356665653163643365636261326433222c226d616368696e655f7075626c69635f6b6579223a224d466b77457759484b6f5a497a6a3043415159494b6f5a497a6a304441516344516741456151566355592d486c72783445424c45304b59445046363376625261326e733641724c597572674d455779614a436c3238637846316c444363303045426a4c626c3052494c4659566754626868657179515f76675467222c227369676e6174757265223a22556278503732656b73646f45722d4145463435726a384275496e2d797774714a775338583951463739335071446672733159714c78576433756a756c4c70746e5064376a495568695a4b6978465753514d4e4e7944222c226e6f77223a313736373232353630307d",
+      "expect": {
+        "refuse": {
+          "stage": "decode",
+          "kind": "session_error",
+          "code": "protocol_error"
+        }
+      }
+    },
+    {
+      "name": "enroll/too-large",
+      "frame": "ENROLL",
+      "type": 69,
+      "stream_id": 0,
+      "direction": "machine_to_controller",
+      "context": {
+        "state": "before_auth",
+        "selected": [
+          "pipe-stream"
+        ],
+        "controller_now": 1767225600,
+        "tries_before": 0,
+        "store": {
+          "invite": "unused",
+          "exp": 1767229200
+        }
+      },
+      "bytes": "01450000000000007b22696e766974655f6964223a2266356665653163643365636261326433222c226d616368696e655f7075626c69635f6b6579223a224d466b77457759484b6f5a497a6a3043415159494b6f5a497a6a304441516344516741456151566355592d486c72783445424c45304b59445046363376625261326e733641724c597572674d455779614a436c3238637846316c444363303045426a4c626c3052494c4659566754626868657179515f76675467222c227369676e6174757265223a22556278503732656b73646f45722d4145463435726a384275496e2d797774714a775338583951463739335071446672733159714c78576433756a756c4c70746e5064376a495568695a4b6978465753514d4e4e794467222c226e6f77223a313736373232353630302c22706164223a22707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070227d",
+      "expect": {
+        "refuse": {
+          "stage": "decode",
+          "kind": "session_error",
+          "code": "protocol_error"
+        }
+      },
+      "limit": "metadata_frame_bytes"
+    },
+    {
+      "name": "enroll/after-auth",
+      "frame": "ENROLL",
+      "type": 69,
+      "stream_id": 0,
+      "direction": "machine_to_controller",
+      "context": {
+        "state": "after_auth",
+        "selected": [
+          "pipe-stream"
+        ],
+        "controller_now": 1767225600,
+        "tries_before": 0,
+        "store": {
+          "invite": "unused",
+          "exp": 1767229200
+        },
+        "signed": {
+          "secret": "KJCQIKrROCZU_8GTmGJc9nj8cdTqp2CbaWbQL6z2amo",
+          "invite_id": "f5fee1cd3ecba2d3",
+          "binding_hex": "25b8c33937093d59b1ee00b9010b7a5430ab4ec0a264484a4f7589c97423b0a2",
+          "machine_public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaQVcUY-Hlrx4EBLE0KYDPF63vbRa2ns6ArLYurgMEWyaJCl28cxF1lDCc00EBjLbl0RILFYVgTbhheqyQ_vgTg"
+        },
+        "verifier": {
+          "invite_public_key_hex": "92afa10ea049c9d971592298a9265a6032be8040568be0a27182acd9707bc435",
+          "binding_hex": "25b8c33937093d59b1ee00b9010b7a5430ab4ec0a264484a4f7589c97423b0a2",
+          "holds": true
+        }
+      },
+      "bytes": "01450000000000007b22696e766974655f6964223a2266356665653163643365636261326433222c226d616368696e655f7075626c69635f6b6579223a224d466b77457759484b6f5a497a6a3043415159494b6f5a497a6a304441516344516741456151566355592d486c72783445424c45304b59445046363376625261326e733641724c597572674d455779614a436c3238637846316c444363303045426a4c626c3052494c4659566754626868657179515f76675467222c227369676e6174757265223a22556278503732656b73646f45722d4145463435726a384275496e2d797774714a775338583951463739335071446672733159714c78576433756a756c4c70746e5064376a495568695a4b6978465753514d4e4e794467222c226e6f77223a313736373232353630307d",
+      "expect": {
+        "parse": {
+          "invite_id": "f5fee1cd3ecba2d3",
+          "machine_public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaQVcUY-Hlrx4EBLE0KYDPF63vbRa2ns6ArLYurgMEWyaJCl28cxF1lDCc00EBjLbl0RILFYVgTbhheqyQ_vgTg",
+          "signature": "UbxP72eksdoEr-AEF45rj8BuIn-ywtqJwS8X9QF793PqDfrs1YqLxWd3ujulLptnPd7jIUhiZKixFWSQMNNyDg",
+          "now": 1767225600
+        },
+        "refuse": {
+          "stage": "session",
+          "kind": "session_error",
+          "code": "protocol_error"
+        }
+      }
+    },
+    {
+      "name": "enroll/to-machine",
+      "frame": "ENROLL",
+      "type": 69,
+      "stream_id": 0,
+      "direction": "controller_to_machine",
+      "context": {
+        "state": "before_auth",
+        "selected": [
+          "pipe-stream"
+        ],
+        "controller_now": 1767225600,
+        "tries_before": 0,
+        "store": {
+          "invite": "unused",
+          "exp": 1767229200
+        },
+        "signed": {
+          "secret": "KJCQIKrROCZU_8GTmGJc9nj8cdTqp2CbaWbQL6z2amo",
+          "invite_id": "f5fee1cd3ecba2d3",
+          "binding_hex": "25b8c33937093d59b1ee00b9010b7a5430ab4ec0a264484a4f7589c97423b0a2",
+          "machine_public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaQVcUY-Hlrx4EBLE0KYDPF63vbRa2ns6ArLYurgMEWyaJCl28cxF1lDCc00EBjLbl0RILFYVgTbhheqyQ_vgTg"
+        },
+        "verifier": {
+          "invite_public_key_hex": "92afa10ea049c9d971592298a9265a6032be8040568be0a27182acd9707bc435",
+          "binding_hex": "25b8c33937093d59b1ee00b9010b7a5430ab4ec0a264484a4f7589c97423b0a2",
+          "holds": true
+        }
+      },
+      "bytes": "01450000000000007b22696e766974655f6964223a2266356665653163643365636261326433222c226d616368696e655f7075626c69635f6b6579223a224d466b77457759484b6f5a497a6a3043415159494b6f5a497a6a304441516344516741456151566355592d486c72783445424c45304b59445046363376625261326e733641724c597572674d455779614a436c3238637846316c444363303045426a4c626c3052494c4659566754626868657179515f76675467222c227369676e6174757265223a22556278503732656b73646f45722d4145463435726a384275496e2d797774714a775338583951463739335071446672733159714c78576433756a756c4c70746e5064376a495568695a4b6978465753514d4e4e794467222c226e6f77223a313736373232353630307d",
+      "expect": {
+        "parse": {
+          "invite_id": "f5fee1cd3ecba2d3",
+          "machine_public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaQVcUY-Hlrx4EBLE0KYDPF63vbRa2ns6ArLYurgMEWyaJCl28cxF1lDCc00EBjLbl0RILFYVgTbhheqyQ_vgTg",
+          "signature": "UbxP72eksdoEr-AEF45rj8BuIn-ywtqJwS8X9QF793PqDfrs1YqLxWd3ujulLptnPd7jIUhiZKixFWSQMNNyDg",
+          "now": 1767225600
+        },
+        "refuse": {
+          "stage": "session",
+          "kind": "session_error",
+          "code": "protocol_error"
+        }
+      }
+    },
+    {
+      "name": "enroll/enroll-ok/accept",
+      "frame": "ENROLL_OK",
+      "type": 70,
+      "stream_id": 0,
+      "direction": "controller_to_machine",
+      "context": {
+        "state": "before_auth",
+        "selected": [
+          "pipe-stream"
+        ]
+      },
+      "bytes": "01460000000000007b226d616368696e655f6964223a226333373462613961306466373432306531343535353337366465363031383862227d",
+      "expect": {
+        "parse": {
+          "machine_id": "c374ba9a0df7420e14555376de60188b"
+        },
+        "effect": "the machine stores machine_id, deletes the invite secret and signs in with AUTH on this session"
+      }
+    },
+    {
+      "name": "enroll/enroll-ok/from-machine",
+      "frame": "ENROLL_OK",
+      "type": 70,
+      "stream_id": 0,
+      "direction": "machine_to_controller",
+      "context": {
+        "state": "before_auth",
+        "selected": [
+          "pipe-stream"
+        ]
+      },
+      "bytes": "01460000000000007b226d616368696e655f6964223a226333373462613961306466373432306531343535353337366465363031383862227d",
+      "expect": {
+        "parse": {
+          "machine_id": "c374ba9a0df7420e14555376de60188b"
+        },
+        "refuse": {
+          "stage": "session",
+          "kind": "session_error",
+          "code": "protocol_error"
+        }
+      }
+    }
+  ]
+}

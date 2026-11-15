@@ -53,8 +53,32 @@ async function fromSource(command: string, args: string[]): Promise<number> {
   return 0;
 }
 
-/** the tests': the install folder, what stands in for the source path, and how a file is fetched */
-export async function main(args: string[], { home = join(root, ".ovis", "server"), source = fromSource, fetchFile, sources = sourceTrees(root) }: { home?: string; source?: typeof fromSource; fetchFile?: typeof fetch; sources?: ReturnType<typeof sourceTrees> } = {}): Promise<number> {
+/**
+ * The commands that write a pairing code or decide what may pair with this PC (scripts/plugin-link.ts, plugin.ts). They
+ * always run from this checkout's own scripts/plugin.ts, never by a release's bundled command line: a release is chosen
+ * by its server/ and shared/ trees alone (scripts/server-manifest.ts), so the one installed can bundle an older command
+ * line.
+ */
+const PAIRING = new Set(["add", "link", "login", "pair", "phone-setup"]);
+
+/**
+ * A pairing command by this checkout's own scripts/plugin.ts. A checkout that runs a release's binary has never
+ * installed its packages: they are installed first.
+ */
+async function checkoutCli(command: string, args: string[]): Promise<number> {
+  if (!existsSync(join(root, "node_modules"))) {
+    console.error("Ovis: this command runs from the plugin's own copy, which installs its packages first");
+    const code = await run([process.execPath, "install", "--frozen-lockfile"]);
+    if (code !== 0) return code;
+  }
+  return await run([process.execPath, join(root, "scripts", "plugin.ts"), command, ...args]);
+}
+
+/**
+ * the tests': the install folder, what stands in for the source path, how a file is fetched, what stands in for the
+ * release's install (`server`), and for this checkout's own command line (`checkout`)
+ */
+export async function main(args: string[], { home = join(root, ".ovis", "server"), source = fromSource, fetchFile, sources = sourceTrees(root), server = installServer, checkout = checkoutCli }: { home?: string; source?: typeof fromSource; fetchFile?: typeof fetch; sources?: ReturnType<typeof sourceTrees>; server?: typeof installServer; checkout?: typeof checkoutCli } = {}): Promise<number> {
   const [command, ...rest] = args;
   if (command === undefined || ["--help", "-h", "help"].includes(command)) {
     console.log(USAGE);
@@ -74,9 +98,11 @@ export async function main(args: string[], { home = join(root, ".ovis", "server"
   } else if (process.env["OVIS_FROM_SOURCE"] === "1" || (existsSync(marker) && readFileSync(marker, "utf8").trim() === version)) {
     return await source(command, rest);
   }
+  // never by an installed release's bundled command line, nor after asking for one: this checkout's own runs it
+  if (PAIRING.has(command)) return await checkout(command, rest);
   let binary: string;
   try {
-    const result = await installServer({
+    const result = await server({
       // the release's binary only for the sources it was built from: a branch or main between releases builds its own
       home, version, fetchFile, sources,
       // the Rust PTY host comes with it, the one the signed manifest names (scripts/server-install.ts)

@@ -219,7 +219,7 @@ export function RelayShell(props: RelayShellProps) {
         {/* one wrapper whether a sheet is open or not: swapping it in would remount the dashboard, losing the control that opened the sheet before its focus trap records it */}
         <div inert={modalOpen || undefined}>{dash}</div>
         {sheet && (
-          <AddPcSheet mode={sheet.mode} pc={sheet.pc} state={state} onJoin={(target, options) => onJoin?.(target, { ...options, sheet: sheet.mode === "new" ? "new" : "join" })} onPair={onPair} onMatch={onMatch} onCancel={onCancel} onClose={() => setSheet(null)} onPairByQr={() => { setSheet(null); setAddingPc(true); }} />
+          <AddPcSheet mode={sheet.mode} pc={sheet.pc} state={state} onJoin={(target, options) => onJoin?.(target, { ...options, sheet: sheet.mode === "new" ? "new" : "join" })} onPair={onPair} onMatch={onMatch} onCancel={onCancel} onClose={() => setSheet(null)} onPairByQr={() => { setSheet(null); setAddingPc(true); }} {...(sheet.mode === "new" && sheet.pc !== null ? { onAskToJoin: () => setSheet({ pc: sheet.pc, mode: "join" }) } : {})} {...(sheet.mode === "join" && sheet.pc !== null ? { onTypeNumber: () => setSheet({ pc: sheet.pc, mode: "new" }) } : {})} />
         )}
         {addingPc && (
           <PairQrDialog state={state} onCodeStart={onCodeStart} onCodeSubmit={onCodeSubmit} onCodeMatch={onCodeMatch} onCancel={onCancel} onClose={() => {

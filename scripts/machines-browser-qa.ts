@@ -1,12 +1,108 @@
-/** Run against SSH_TEST_KEEP=1's fixture. Delays real requests, never mocks APIs. */
+/**
+ * Run against SSH_TEST_KEEP=1's fixture. Delays real requests, never mocks APIs. Without a fixture path it runs the
+ * fleet's part alone: a server started here with three fleet machines signed in on live machine sessions.
+ */
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { chromium } from "playwright-core";
 import { herdrRpc } from "../server/herdr/client.ts";
 import { paneStorageId } from "../shared/machines.ts";
+import { FLEET_CAUSE_SENTENCE } from "../shared/fleet-cause.ts";
+import { relayFixture } from "../server/relay/test-helpers.ts";
+import { advertFrame, machineConnection, machineKey, pipeToTarget, testAdvert } from "../server/fleet/test-helpers.ts";
 import { openSettingsPage } from "./settings-page.ts";
 import { chromePath } from "./chrome-path.ts";
+
+/**
+ * The fleet's group in the sidebar: three machines, each answered by a stand-in bridge through its own local forward,
+ * captured at 1280 and 390 px; then one machine's session drops, and its PC must show Offline with its cause within
+ * one roster refresh, its roster drawn as not live (inert).
+ */
+async function fleetScenario(): Promise<void> {
+  const server = relayFixture();
+  const fleet = server.app.context.services.relay.fleet;
+  // the fleet holds itself on a server with no token (todo 60): this one acts as if it had one before any store write
+  fleet.setTokenConfigured(true);
+  const names = ["Lab VM", "Build box", "GPU runner"];
+  const tokens = new Map(names.map((name) => [randomBytes(32).toString("hex"), name] as const));
+  const snapshot = (name: string) => ({
+    version: "0.9.1", protocol: 22, agents: [], layouts: [], focused_pane_id: null,
+    workspaces: [{ workspace_id: "w1", label: `${name} work`, number: 1, active_tab_id: "w1:t1", focused: false, agent_status: "unknown", pane_count: 1, tab_count: 1 }],
+    tabs: [{ tab_id: "w1:t1", workspace_id: "w1", label: "1", number: 1, focused: false, agent_status: "unknown", pane_count: 1 }],
+    panes: [{ pane_id: "w1:p1", tab_id: "w1:t1", workspace_id: "w1", terminal_id: "t1", focused: false, agent_status: "unknown", cwd: "/", title: "shell" }],
+  });
+  const bridge = Bun.serve<{ name: string }>({
+    hostname: "127.0.0.1", port: 0, idleTimeout: 0,
+    fetch(request, bun) {
+      const name = tokens.get(/^Bearer (.+)$/.exec(request.headers.get("authorization") ?? "")?.[1] ?? "");
+      if (name === undefined) return new Response(null, { status: 401 });
+      const path = new URL(request.url).pathname;
+      if (request.headers.get("upgrade")?.toLowerCase() === "websocket") return bun.upgrade(request, { data: { name } }) ? undefined : new Response(null, { status: 400 });
+      if (path === "/api/session") return Response.json({ snapshot: snapshot(name) });
+      if (path === "/api/health") return Response.json({ herdr: { version: "0.9.1", protocol: 22 }, web_ui: { boot_id: `boot-${name}` } });
+      return new Response(null, { status: 404 });
+    },
+    websocket: { message() {} },
+  });
+  const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
+  const evidence = join(process.cwd(), "evidence/machines"); mkdirSync(evidence, { recursive: true });
+  try {
+    const sessions = [];
+    for (const [token, name] of tokens) {
+      const key = await machineKey();
+      fleet.store.add({ machine_id: key.id, public_key: key.spki, name });
+      fleet.store.setState(key.id, "active");
+      const connection = await machineConnection(server, fleet, { machineSessions: fleet }, { onPipe: (pipe) => pipeToTarget(pipe, bridge.port!) });
+      await connection.hello();
+      await connection.signIn(key);
+      connection.mux.enqueueControl(advertFrame({ ...testAdvert(["bridge"]), runtime_id: `rt-${sessions.length}`, bridge_token: token }));
+      sessions.push({ name, connection });
+    }
+    const page = await (await browser.newContext({ viewport: { width: 1280, height: 900 } })).newPage();
+    page.setDefaultTimeout(15_000);
+    const errors: string[] = []; page.on("pageerror", (e) => errors.push(e.message));
+    await page.goto(`http://127.0.0.1:${server.app.port}/`);
+    const group = page.getByRole("region", { name: "Fleet machines", exact: true });
+    await group.locator(".machine-group:not(.is-offline)").nth(2).waitFor();
+    assert.equal(await group.locator('.fleet-group-count [aria-hidden="true"]').innerText(), "3");
+    assert.equal(await group.locator(".fleet-group-count .visually-hidden").textContent(), "3 fleet machines");
+    assert.deepEqual(await group.locator(".machine-name").allInnerTexts(), ["Build box", "GPU runner", "Lab VM"]);
+    await group.screenshot({ path: join(evidence, "fleet-group-1280.png") });
+    console.log("PASS three fleet machines connected under one sidebar group with their count, sorted by name");
+
+    // a machine whose link session drops: one roster refresh (5 s) at most, and its PC is offline with the cause
+    const dropped = page.getByRole("region", { name: "PC Lab VM", exact: true });
+    const started = performance.now();
+    sessions[0]!.connection.stop();
+    await dropped.locator(".machine-state-word").filter({ hasText: /^Offline$/ }).waitFor({ timeout: 5_000 });
+    console.log(`offline shown after ${Math.round(performance.now() - started)} ms`);
+    assert.match(await dropped.getAttribute("class") ?? "", /\bis-offline\b/);
+    assert.equal(await dropped.locator(".machine-state-detail").innerText(), FLEET_CAUSE_SENTENCE.offline);
+    // its terminals are not shown as live: its last roster is drawn inert, the others' stay live
+    assert.equal(await dropped.locator(".machine-offline[inert]").count(), 1);
+    assert.equal(await group.locator(".machine-offline[inert]").count(), 1);
+    await group.screenshot({ path: join(evidence, "fleet-group-offline-1280.png") });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.getByRole("button", { name: "Open workspace list", exact: true }).click();
+    await page.waitForFunction(() => Math.abs(document.querySelector(".sidebar.is-open")!.getBoundingClientRect().x) < 1);
+    await group.scrollIntoViewIfNeeded();
+    await group.screenshot({ path: join(evidence, "fleet-group-offline-390.png") });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth), false);
+    assert.deepEqual(errors, []);
+    console.log("PASS a dropped session shows Offline with its cause within one roster refresh, its roster not live; 1280 and 390 px captured");
+  } finally {
+    await browser.close();
+    void bridge.stop(true);
+    server.close();
+  }
+}
+
+if (process.argv[2] === undefined) {
+  await fleetScenario();
+  process.exit(0);
+}
 const fixture = JSON.parse(readFileSync(process.argv[2]!, "utf8")) as { root: string; remoteHome: string; port: number; machineId: string; secondMachineId: string; paneId: string };
 const { machineId: a, secondMachineId: b, paneId } = fixture;
 const origin = `http://127.0.0.1:${fixture.port}`;

@@ -5,6 +5,11 @@
  * Register and fixed terms follow ../i18n.ko.ts; a key another feature also uses goes there.
  */
 export const MACHINES_KO: Record<string, string> = {
+  "Fleet machines": "플릿 머신",
+  "1 fleet machine": "플릿 머신 1대",
+  "{n} fleet machines": "플릿 머신 {n}대",
+  "through the fleet link": "플릿 링크로",
+  "A fleet machine. It is enrolled and removed in the fleet, not here.": "플릿 머신입니다. 등록과 제거는 여기가 아니라 플릿에서 합니다.",
   "1 agent": "에이전트 1개",
   "{n} agents": "에이전트 {n}개",
   "{where} refused the SSH connection: the PC may be off, or nothing answers on that port.": "{where}이(가) SSH 연결을 거부했습니다. PC가 꺼져 있거나 그 포트에서 응답하는 것이 없을 수 있습니다.",

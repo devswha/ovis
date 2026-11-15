@@ -10,6 +10,12 @@ export function useMachineDialog() {
   // Add PC from Settings or the palette leaves no trigger to return focus to once its dialog
   // closes (Settings closed when it opened): the header's workspace-list toggle stands in
   const addPcFocusReturn = useRef(false);
+  // the Fleet screen (components/FleetView.tsx), opened from Settings (closed as it opens) or the sidebar's fleet caption
+  const [fleetOpen, setFleetOpen] = useState(false);
+  const closeFleet = useCallback(() => {
+    setFleetOpen(false);
+    focusWorkspaceListToggle();
+  }, []);
   const closeMachineDialog = useCallback(() => {
     setMachineDialog(null);
     setAddPcPreset(null);
@@ -17,5 +23,5 @@ export function useMachineDialog() {
     addPcFocusReturn.current = false;
     focusWorkspaceListToggle();
   }, []);
-  return { machineDialog, setMachineDialog, addPcPreset, setAddPcPreset, addPcFocusReturn, closeMachineDialog };
+  return { machineDialog, setMachineDialog, addPcPreset, setAddPcPreset, addPcFocusReturn, closeMachineDialog, fleetOpen, setFleetOpen, closeFleet };
 }

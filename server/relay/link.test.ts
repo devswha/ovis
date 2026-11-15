@@ -2,11 +2,21 @@ import { afterEach, expect, it } from "bun:test";
 import { loadRelayIdentity } from "./identity.ts";
 import { RelayLink } from "./link.ts";
 import type { RelayLinkOptions } from "./link.ts";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { bounded, deferred, relayFixture, relayPhone, TestClock } from "./test-helpers.ts";
+import { SignedInSessions } from "./admissions.ts";
+import { startBunRelay } from "../../relay/bun.ts";
 import { serverChallenge, SERVER_PROOF_CLOSE, SERVER_PROOF_REQUIRED } from "../../shared/relay-server-proof.ts";
 import { importPublicKey } from "../../shared/relay-e2ee.ts";
 import type { Transport } from "../../shared/relay-e2ee.ts";
 import { signRelayPass } from "../../shared/relay-pass.ts";
+import { Fleet } from "../fleet/sessions.ts";
+import { FleetStore } from "../fleet/store.ts";
+import { machineClient, machineKey } from "../fleet/test-helpers.ts";
+import type { MachineKey } from "../fleet/test-helpers.ts";
 
 const fixtures: ReturnType<typeof relayFixture>[] = [];
 /** links and relays a test left running, stopped before its fixture goes */
@@ -487,4 +497,275 @@ it("holds a renewal that follows another within the relay's minute, then sends t
   pass = "pass-4";
   relay.link.renewPass(pass);
   expect(renewals()).toEqual(["pass-1", "pass-3", "pass-4"]);
+});
+
+for (const room of [null, 108, 1008, 1009, 5000, 7, 0, -1, 108.5, "108"] as const) {
+  // a room past 1008 (8 + a fleet of 1000), under 8, or not an integer is not one a relay names: the PC keeps 8
+  const served = room === 108 || room === 1008;
+  it(`serves as many waiting clients at once as the room its relay's sync names (${room === null ? "a relay that names none: 8, as before" : served ? room : `${JSON.stringify(room)}, which is no room: 8`})`, async () => {
+    const fixture = relayFixture();
+    fixtures.push(fixture);
+    const identity = loadRelayIdentity(fixture.stateDir);
+    const ids = Array.from({ length: 20 }, (_, index) => index.toString(16).padStart(32, "0"));
+    const server = Bun.serve<{ control: boolean }>({
+      hostname: "127.0.0.1", port: 0,
+      fetch(request, server) { return server.upgrade(request, { data: { control: !new URL(request.url).searchParams.has("connection_id") } }) ? undefined : new Response(null, { status: 400 }); },
+      websocket: {
+        open(socket) {
+          if (socket.data.control) socket.send(serverChallenge(importPublicKey(identity.public_key), { server_id: identity.server_id, role: "control", connection_id: null }).frame);
+        },
+        message(socket) {
+          if (!socket.data.control) return;
+          socket.send(JSON.stringify({ type: "sync", connection_ids: ids.slice(0, 8), ...(room === null ? {} : { max_clients: room }), per_address_per_minute: 30 }));
+          for (const id of ids.slice(8)) socket.send(JSON.stringify({ type: "connected", connection_id: id, lane: "paced" }));
+          // anything else ends the control socket: by then the PC has read every message before it
+          socket.send('{"type":"over"}');
+        },
+      },
+    });
+    stops.push(() => server.stop(true));
+    const done = deferred<void>();
+    /** data sockets the PC closed itself, to keep a place free */
+    const evicted: string[] = [];
+    const link = new RelayLink({
+      relay: `ws://127.0.0.1:${server.port}`, identity, services: fixture.app.context.services, port: fixture.app.port,
+      clock: new TestClock(), random: () => 0.5, onState: () => {},
+      connect: (url) => {
+        const socket = new WebSocket(url);
+        const id = new URL(url).searchParams.get("connection_id");
+        const close = socket.close.bind(socket);
+        socket.close = (code, reason) => { if (id === null) done.resolve(); else evicted.push(id); close(code, reason); };
+        return socket;
+      },
+    });
+    stops.push(() => link.stop());
+    link.start();
+    await bounded(done.promise);
+    // with 8 places, the oldest client not signed in gives way to each newcomer from the 8th on: 7 are served at once
+    expect(evicted).toEqual(served ? [] : ids.slice(0, 13));
+  });
+}
+
+it("a PC that reads no lane signs in every client a fleet room names, by sync and by connected, paced or not", async () => {
+  const lanes = ["paced", "paced", "default", "paced", "paced", "paced", "default", "paced", "paced", "paced", "paced", "default", "paced", "paced", "paced"];
+  // a device paired for each client, written before the server starts (pairing this many in a row is rate limited)
+  const devices = await Promise.all(lanes.map(async () => {
+    const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
+    return { id: randomBytes(8).toString("hex"), keys, publicKey: Buffer.from(await crypto.subtle.exportKey("spki", keys.publicKey)).toString("base64url") };
+  }));
+  const stateDir = mkdtempSync(join(tmpdir(), "ovis-relay-lanes-"));
+  const created = new Date().toISOString();
+  writeFileSync(join(stateDir, "devices.json"), JSON.stringify({ gate_closed_at: created, devices: devices.map((device) => ({
+    id: device.id, label: "Fleet test", role: "drive", token_hash: randomBytes(32).toString("hex"), relay_public_key: device.publicKey, created_at: created, last_seen_at: null })) }), { mode: 0o600 });
+  const fixture = relayFixture(false, { stateDir });
+  fixtures.push(fixture);
+  const identity = loadRelayIdentity(fixture.stateDir);
+  // these sockets all come from this one address at once; the room is the operator's --max-clients-per-server 108
+  const allow = { async limit() { return { success: true }; } };
+  const relay = startBunRelay({ port: 0, limits: { maxClientsPerServer: 108 }, limiters: { perAddress: allow, global: allow } });
+  stops.push(() => relay.stop());
+  const base = `ws://127.0.0.1:${relay.port}`;
+  // they wait for the PC before it connects: its sync names 8 of them, and the other 7 come as connected
+  const phones = await Promise.all(lanes.map(async (lane) => {
+    const socket = new WebSocket(`${base}/v1/ws?server_id=${identity.server_id}&role=client&v=1${lane === "paced" ? "&lane=paced" : ""}`);
+    socket.binaryType = "arraybuffer";
+    const assigned = deferred<void>();
+    const transport: Transport = { onmessage: null, onclose: null, onerror: null, send: (data) => { socket.send(data); }, close: (code, reason) => socket.close(code, reason) };
+    socket.onmessage = (event) => {
+      if (typeof event.data === "string" && event.data.includes('"assigned"')) { assigned.resolve(); return; }
+      transport.onmessage?.({ data: event.data, isBinary: typeof event.data !== "string" });
+    };
+    socket.onclose = (event) => transport.onclose?.(event.code, event.reason);
+    stops.push(async () => socket.close());
+    await bounded(assigned.promise);
+    return transport;
+  }));
+  const heard: Record<string, unknown>[] = [];
+  const link = new RelayLink({
+    relay: base, identity, services: fixture.app.context.services, port: fixture.app.port, clock: new TestClock(), random: () => 0.5,
+    // fifteen devices at once: more than a PC's own device limit, which this test is not about
+    sessions: new SignedInSessions(lanes.length),
+    onState: () => {},
+    connect: (url) => {
+      const socket = new WebSocket(url);
+      const query = new URL(url).searchParams;
+      if (!query.has("connection_id") && !query.has("warm")) socket.addEventListener("message", (event) => {
+        const value = typeof event.data === "string" ? JSON.parse(event.data) as Record<string, unknown> : null;
+        if (value && value["type"] !== "server_challenge") heard.push(value);
+      });
+      return socket;
+    },
+  });
+  stops.push(() => link.stop());
+  link.start();
+  const signedIn = await Promise.all(phones.map(async (transport, index) => {
+    const device = devices[index]!;
+    const phone = await relayPhone(transport, identity.public_key);
+    await phone.auth(device, identity.server_id);
+    return (await bounded(phone.admitted)).device_id === device.id;
+  }));
+  expect(signedIn).toEqual(lanes.map(() => true));
+  expect(heard[0]).toMatchObject({ type: "sync", max_clients: 108, per_address_per_minute: 120 });
+  expect((heard[0] as { connection_ids: string[] }).connection_ids).toHaveLength(8);
+  expect((heard[0] as { paced: string[] }).paced).toHaveLength(5);
+  expect(heard.slice(1, 8)).toEqual(Array.from({ length: 7 }, () => ({ type: "connected", connection_id: expect.any(String), lane: "paced" })));
+});
+
+for (const [said, heard] of [[[1, 2, 3], [1, 2, 3]], [undefined, []], [[1, 2], [1, 2]], ["3", []], [[1, "3", 3.5, 3], [1, 3]]] as const) {
+  it(`keeps the pass forms its relay's sync names (${JSON.stringify(said) ?? "none"}), none before a sync and after a refusal for the pass`, async () => {
+    const fixture = relayFixture();
+    fixtures.push(fixture);
+    const identity = loadRelayIdentity(fixture.stateDir);
+    const clock = new TestClock();
+    let controls = 0;
+    const synced = deferred<void>();
+    const lost = deferred<void>();
+    const refused = deferred<void>();
+    const server = Bun.serve<{ control: boolean }>({
+      hostname: "127.0.0.1", port: 0,
+      fetch(request, server) { return server.upgrade(request, { data: { control: !new URL(request.url).searchParams.has("connection_id") } }) ? undefined : new Response(null, { status: 400 }); },
+      websocket: {
+        open(socket) {
+          if (!socket.data.control) return;
+          controls++;
+          socket.send(serverChallenge(importPublicKey(identity.public_key), { server_id: identity.server_id, role: "control", connection_id: null }).frame);
+        },
+        message(socket) {
+          // the second control socket is refused for its pass, before any sync
+          if (controls === 2) { socket.close(4402, "relay pass invalid"); return; }
+          socket.send(JSON.stringify({ type: "sync", connection_ids: [], ...(said === undefined ? {} : { pass_versions: said }) }));
+          // then the relay goes away
+          socket.close(1001, "going away");
+        },
+      },
+    });
+    stops.push(() => server.stop(true));
+    const link = new RelayLink({
+      relay: `ws://127.0.0.1:${server.port}`, identity, services: fixture.app.context.services, port: fixture.app.port, clock, random: () => 0.5,
+      onState: (phase) => { if (phase === "online") synced.resolve(); else if (phase === "error") lost.resolve(); },
+      pass: () => "ovp1.x.y", onPassRefused: () => refused.resolve(),
+    });
+    stops.push(() => link.stop());
+    expect(link.passVersions).toBeNull();
+    link.start();
+    await bounded(synced.promise);
+    await bounded(lost.promise);
+    // a socket that was lost keeps what its relay said: the same relay is asked again
+    expect(link.passVersions).toEqual(heard);
+    // to the reconnect (1 s at this random), and not to its 15 s upgrade deadline
+    clock.advance(1_000);
+    await bounded(refused.promise);
+    // refused for its pass: what the relay said before no longer counts
+    expect(link.passVersions).toBeNull();
+  });
+}
+
+/**
+ * A fake relay that carries in-process fleet machines (server/fleet/test-helpers.ts machineClient) on the data sockets the
+ * PC opens, and lets a test send the control socket any `sync`: what the room's fleet share does to machine sessions.
+ */
+async function fleetLink(machineCount: number) {
+  const fixture = relayFixture();
+  fixtures.push(fixture);
+  const identity = loadRelayIdentity(fixture.stateDir);
+  const store = new FleetStore({ stateDir: fixture.stateDir, max: 100 });
+  const keys: MachineKey[] = [];
+  for (let index = 0; index < machineCount; index++) {
+    const key = await machineKey();
+    store.add({ machine_id: key.id, public_key: key.spki });
+    store.setState(key.id, "active");
+    keys.push(key);
+  }
+  const clock = new TestClock();
+  const fleet = new Fleet({ stateDir: fixture.stateDir, store, clock, tokenConfigured: true });
+  let control: { send(text: string): void } | undefined;
+  const controlReady = deferred<void>();
+  type Data = { control: boolean; id: string | null; transport?: Transport & { deliver(data: string | ArrayBuffer): void } };
+  const opened = new Map<string, Data["transport"]>();
+  const waiting = new Map<string, (transport: NonNullable<Data["transport"]>) => void>();
+  const server = Bun.serve<Data>({
+    hostname: "127.0.0.1", port: 0,
+    fetch(request, server) {
+      const id = new URL(request.url).searchParams.get("connection_id");
+      return server.upgrade(request, { data: { control: id === null, id } }) ? undefined : new Response(null, { status: 400 });
+    },
+    websocket: {
+      open(socket) {
+        socket.send(serverChallenge(importPublicKey(identity.public_key), { server_id: identity.server_id, role: socket.data.control ? "control" : "data", connection_id: socket.data.id }).frame);
+      },
+      message(socket, message) {
+        if (socket.data.control) { control ??= socket; controlReady.resolve(); return; }
+        const transport = socket.data.transport;
+        if (!transport) {
+          // the PC's proof: from here on this socket carries one machine's channel
+          const made: NonNullable<Data["transport"]> = {
+            onmessage: null, onclose: null, onerror: null,
+            send: (data) => { socket.send(data); }, close: () => socket.close(),
+            deliver: (data) => made.onmessage?.({ data, isBinary: typeof data !== "string" }),
+          };
+          socket.data.transport = made;
+          opened.set(socket.data.id!, made);
+          waiting.get(socket.data.id!)?.(made);
+          return;
+        }
+        transport.deliver(typeof message === "string" ? message : message.buffer.slice(message.byteOffset, message.byteOffset + message.byteLength) as ArrayBuffer);
+      },
+      close(socket) { socket.data.transport?.onclose?.(1000, ""); },
+    },
+  });
+  stops.push(async () => server.stop(true));
+  const link = new RelayLink({
+    relay: `ws://127.0.0.1:${server.port}`, identity, services: fixture.app.context.services, port: fixture.app.port,
+    clock, random: () => 0.5, onState: () => {}, fleet,
+  });
+  stops.push(() => link.stop());
+  link.start();
+  await bounded(controlReady.promise);
+  const transportOf = (id: string) => opened.get(id) ? Promise.resolve(opened.get(id)!) : new Promise<NonNullable<Data["transport"]>>((resolve) => waiting.set(id, resolve));
+  return {
+    fleet, keys, clock,
+    sync(ids: readonly string[], room: number) { control!.send(JSON.stringify({ type: "sync", connection_ids: ids, paced: ids, max_clients: room })); },
+    /** a machine dialing in as `id`: announced by the last sync, signed in as `key` */
+    async machine(id: string, key: MachineKey) {
+      const machine = await machineClient(await bounded(transportOf(id)), identity.public_key, identity.server_id);
+      await machine.signIn(key);
+      return machine;
+    },
+  };
+}
+const linkIds = Array.from({ length: 4 }, (_, index) => (index + 1).toString(16).padStart(32, "0"));
+
+it("ends the newest machines when a later sync names a smaller room, and keeps the oldest", async () => {
+  const world = await fleetLink(3);
+  world.sync(linkIds.slice(0, 3), 11);
+  const machines = [];
+  for (const [index, key] of world.keys.entries()) {
+    const machine = await world.machine(linkIds[index]!, key);
+    expect((await bounded(machine.admitted)).machine_id).toBe(key.id);
+    machines.push(machine);
+  }
+  expect(world.fleet.sessions).toBe(3);
+  // the room shrinks to 8 + 1: the two newest go, controller_limit, the oldest stays
+  world.sync([], 9);
+  expect(await bounded(machines[2]!.error)).toEqual({ code: "resource_exhausted", message: "controller_limit" });
+  expect(await bounded(machines[1]!.error)).toEqual({ code: "resource_exhausted", message: "controller_limit" });
+  expect(machines[0]!.mux.active).toBe(true);
+  expect(world.fleet.online(world.keys[0]!.id)).toBe(true);
+});
+
+it("gives a machine's place on the link back when it leaves: the next machine takes it", async () => {
+  const world = await fleetLink(2);
+  world.sync(linkIds.slice(0, 2), 9);
+  const first = await world.machine(linkIds[0]!, world.keys[0]!);
+  await bounded(first.admitted);
+  const second = await world.machine(linkIds[1]!, world.keys[1]!);
+  expect(await bounded(second.error)).toEqual({ code: "resource_exhausted", message: "controller_limit" });
+  first.channel.close();
+  await bounded(first.closed);
+  // the link sees the session end; the place is free for a machine that dials in again
+  for (let tries = 0; world.fleet.sessions > 0 && tries < 1000; tries++) await new Promise<void>((resolve) => setImmediate(resolve));
+  expect(world.fleet.sessions).toBe(0);
+  world.sync([linkIds[2]!], 9);
+  const again = await world.machine(linkIds[2]!, world.keys[1]!);
+  expect((await bounded(again.admitted)).machine_id).toBe(world.keys[1]!.id);
 });

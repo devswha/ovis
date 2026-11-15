@@ -436,6 +436,47 @@ describe("herdr-core adapter", () => {
     ]);
   });
 
+  // hc 0.1.18, `hc server restart` (task alert-after-restart, live44 events): the stopping core sends `foreground` with
+  // `data: null` for every terminal, and the next core lists the same process (same pid) in front again
+  it("keeps the agent in front when hc stops knowing the process there, as a restarting core does, and names a real exit's shell", async () => {
+    let channel = 0;
+    const codex = { pid: 11, name: "codex", argv: ["codex"] };
+    const { socket, cores } = await setup([terminal("t1")], {
+      "events.subscribe": () => {
+        channel = cores.at(-1)!.channel();
+        return { channel, seq: 1, terminals: [terminal("t1", { argv: ["bash"], foreground: codex })] };
+      },
+    });
+    const frames: EventFrame[] = [];
+    const started = Promise.withResolvers<void>();
+    const ended = Promise.withResolvers<void>();
+    const subscription = subscribeEvents([{ type: "pane.updated" }, { type: "pane.agent_status_changed", pane_id: "t1" }], {
+      onEvent: (frame) => frames.push(frame),
+      onStarted: () => started.resolve(),
+      onClose: () => ended.resolve(),
+    }, socket);
+    cleanups.push(() => subscription.close());
+    await started.promise;
+    const core = cores[0]!;
+    core.notify(channel, "event", { seq: 2, type: "status", terminal: "t1", data: { status: { state: "working" } } });
+    // the core restarting: it no longer knows what is in front, which tells nothing
+    core.notify(channel, "event", { seq: 3, type: "foreground", terminal: "t1", data: null });
+    core.notify(channel, "event", { seq: 4, type: "status", terminal: "t1", data: { status: { state: "working" } } });
+    // Codex exits at its card: the shell is in front, then Codex is started again (another process)
+    core.notify(channel, "event", { seq: 5, type: "foreground", terminal: "t1", data: { pid: 12, name: "bash", argv: ["/bin/bash"] } });
+    core.notify(channel, "event", { seq: 6, type: "foreground", terminal: "t1", data: { ...codex, pid: 13 } });
+    core.notify(channel, "missed", { seq: 9, terminals: [] });
+    await ended.promise;
+    expect(frames).toEqual([
+      { event: "pane.agent_status_changed", data: { pane_id: "t1", agent_status: "working", agent: "codex" } },
+      { event: "pane.agent_status_changed", data: { pane_id: "t1", agent_status: "working", agent: "codex" } },
+      { event: "pane.updated", data: { type: "pane_updated", pane_id: "t1" } },
+      { event: "pane.agent_status_changed", data: { pane_id: "t1", agent_status: "working", agent: null } },
+      { event: "pane.updated", data: { type: "pane_updated", pane_id: "t1" } },
+      { event: "pane.agent_status_changed", data: { pane_id: "t1", agent_status: "working", agent: "codex" } },
+    ]);
+  });
+
   // letta-code 0.34.44 on old-desktop, 2026-11-08: its title carries a spinner frame while a turn runs
   it("asks for a fresh snapshot when a Letta that reports nothing starts or stops its spinner title, and only then", async () => {
     let channel = 0;

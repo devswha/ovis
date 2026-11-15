@@ -118,4 +118,10 @@ it("formats account limits with server-provided plan name, PCs used/max, and opt
     label: "Plan · Personal",
     summary: "3/7 PCs · 4.2 GB / 50 GB relay data",
   });
+  // fleet machines only when the account has an allowance
+  expect(formatAccountLimits(t, { plan: "pro", pcs_max: 10, pcs_used: 2, data_cap_bytes: 50 * 1024 * 1024 * 1024, data_used_bytes: 0, fleet_max: 100 }, 1).summary).toBe("2/10 PCs · 0 B / 50 GB relay data · 100 fleet machines");
+  expect(formatAccountLimits(t, { plan: "pro", pcs_max: 10, fleet_max: 1 }, 1).summary).toBe("1/10 PCs · 1 fleet machines");
+  expect(formatAccountLimits(t, { plan: "pro", pcs_max: 10, fleet_max: 0 }, 1).summary).toBe("1/10 PCs");
+  const ko = (key: string, vars?: Record<string, string | number>) => translate("ko", key, vars);
+  expect(formatAccountLimits(ko, { plan: "pro", pcs_max: 10, fleet_max: 100 }, 1).summary).toBe("PC 1/10대 · 플릿 머신 100대");
 });

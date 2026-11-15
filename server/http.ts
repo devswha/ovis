@@ -39,6 +39,10 @@ export function jsonResponse(body: unknown, status = 200, headers: Record<string
 
 export function errorResponse(error: unknown): Response {
   if (error instanceof HerdrError) {
+    // another client holds the pane's input (the Ovis runtime's writer seat): nothing was written, the user may take over
+    if (error.code === "attach_held") return jsonResponse({ error: { code: error.code, message: error.message } }, 409);
+    // the runtime's queue is full (the Ovis runtime's launch queue or its own bounds): worth another try soon
+    if (error.code === "backpressure" || error.code === "limit_exceeded") return jsonResponse({ error: { code: error.code, message: error.message } }, 503, { "retry-after": "1" });
     const status = error.code === "connect_failed" || error.code === "timeout" ? 502 : 404;
     return jsonResponse({ error: { code: error.code, message: error.message } }, status);
   }

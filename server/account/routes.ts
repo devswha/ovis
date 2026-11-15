@@ -36,7 +36,7 @@ export async function handleAccountRequest(request: Request, pathname: string, c
     const blocked = [...new Set([...devices.tombstoneKeys(), ...mailbox.waitingRemoveKeys(), ...context.services.accountHolds.list()])];
     return reply({
       account: devices.account(), ...devices.accountRows(), removals: devices.accountRemovals(), adds: devices.accountAdds(), blocked,
-      enrolling: context.services.accountHolds.enrolling(), blocked_all: mailbox.holdsEveryAdd(), ...(fresh === undefined ? {} : { fresh }), mailbox: { last_pull_at: mailbox.lastPullAt, error: mailbox.error },
+      enrolling: context.services.accountHolds.enrolling(), blocked_all: mailbox.holdsEveryAdd(), ...(fresh === undefined ? {} : { fresh }), mailbox: { last_pull_at: mailbox.lastPullAt, error: mailbox.error, ...(mailbox.refused === null ? {} : { refused: mailbox.refused }) },
     });
   }
   if (request.method !== "POST") return fail("method_not_allowed", "use POST", 405);
@@ -120,7 +120,11 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       if (last !== false && !undecided && linker) {
         holds.endEnrolling();
         // adds the barrier held back now pass every gate in their turn
-        await mailbox.settle();
+        const settled = mailbox.settle();
+        // and one pull after them (or the one under way) shows this PC seen in the account's directory now, not on
+        // the next five-minute pull; the answer waits only for the settle
+        void mailbox.pull();
+        await settled;
       }
       return reply({ results });
     }

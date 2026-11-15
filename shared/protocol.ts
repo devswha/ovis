@@ -71,6 +71,11 @@ export type HerdrPane = PaneInfo & {
   agent_message?: string;
   agent_progress?: number;
   /**
+   * Ovis runtime only: what the shown status rests on, the `basis.kind` of the root record's report (`session` for
+   * the wrapper's session file, `screen`, ...); absent when the report names none, and on herdr and herdr-core.
+   */
+  status_basis?: string;
+  /**
    * herdr-core only: the terminal's own grid. Its layout rects are shares of a fixed area there
    * (server/herdr-core/layout-doc.ts), not cells, so an attach that must not resize the terminal
    * (an observer, a chat lens) starts at this size instead.
@@ -140,16 +145,19 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *                                          authenticated only, where it has one: Machine.server_id) },
  *                                          version?: string (this server's own version, package.json's, which the compiled
  *                                          binary carries from its build; authenticated only),
+ *                                          fleet_preview?: true (authenticated only, while the server runs with
+ *                                          OVIS_PREVIEW=fleet, server/preview.ts: Settings shows the Fleet screen's entry;
+ *                                          the machine profile's answer carries it too),
  *                                          security?: SecuritySummary (authenticated only, no-store),
  *                                          herdr_core?: HerdrCoreFacts (shared/machines.ts; authenticated only, absent until
  *                                          the server's first look for hc has ended), herdr_runtime?: HerdrRuntimeFacts (a driving owner
  *                                          only: which runtime this server serves and what Settings may switch it to) } (boot_id: this server
  *                                          lifetime's id, the supervisor's when managed; older servers sent null unmanaged)
  *  GET    /api/session                   -> { snapshot: SessionSnapshot }
- *  POST   /api/runtime                   -> 202 { accepted: true }; body { runtime: "herdr" | "herdr-core" | "alt-runtime" }, X-Herdr-Update: 1,
+ *  POST   /api/runtime                   -> 202 { accepted: true }; body { runtime: "herdr" | "herdr-core" }, X-Herdr-Update: 1,
  *         a driving owner only (not watch, not an open install's stranger): saves the choice (runtime-<port>.json) and has
  *         the launcher restart the server on it (server/herdr-core/runtime-choice.ts); 409 runtime_locked (OVIS_RUNTIME,
- *         no launcher, the OS), runtime_unavailable (this PC lacks it, or serves it already; alt-runtime until this Ovis can start it), runtime_switching
+ *         no launcher, the OS), runtime_unavailable (this PC lacks it, or serves it already), runtime_switching
  *  GET    /api/herdr-ui                  -> HerdrUiConfig (this server PC's herdr [ui] copy_on_select and
  *         [keys] prefix bindings, for local and remote panes alike), no-store
  *  GET    /api/access                    -> RemoteAccess (how a phone can reach this server: what
@@ -629,7 +637,8 @@ export interface RelayStatus {
 
 /**
  * The account service's GET /v1/account/limits, as Settings → Account reads it: the account's plan
- * name, PC slot limit, and optional relay data allowance as reported by the account service.
+ * name, PC slot limit, optional relay data allowance, and fleet machines (`fleet_max`, present only above 0)
+ * as reported by the account service.
  */
 export interface AccountLimits {
   readonly plan: string;
@@ -638,6 +647,8 @@ export interface AccountLimits {
   readonly data_cap_bytes?: number;
   readonly data_used_bytes?: number | null;
   readonly until?: number | null;
+  /** Fleet machines one of the account's PCs may have on Ovis's relay beside its clients: 1 to 1000, absent for none. */
+  readonly fleet_max?: number;
 }
 
 /** POST /api/devices/pair's answer to a request that accepts JSON: the device's own credential. */

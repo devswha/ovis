@@ -13,6 +13,7 @@ const RUN: Record<EntryName, () => Promise<unknown>> = {
   plugin: () => import("../scripts/plugin.ts").then((entry) => entry.runPlugin()),
   askpass: () => import("./ssh-askpass.ts"),
   "windows-launch": () => import("./windows-launch.ts"),
+  fleet: () => import("./fleet/cli.ts").then((entry) => entry.main()),
 };
 
 const name = process.argv[2];

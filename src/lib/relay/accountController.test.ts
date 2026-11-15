@@ -1,4 +1,4 @@
-import { createShellTestPage } from "./shell.test.tsx";
+import { createShellTestPage } from "./shellTestPage.fixture.ts";
 import { afterEach, beforeEach, describe, expect, it, jest } from "bun:test";
 import type { ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";

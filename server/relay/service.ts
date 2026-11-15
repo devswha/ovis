@@ -1,3 +1,4 @@
+import { MACHINE_DIRECT_CARRIER_ENABLED } from "../machine-profile.ts";
 import { existsSync, readFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
@@ -18,13 +19,23 @@ import { DirectCarrier } from "./direct.ts";
 import type { DirectCarrierOptions } from "./direct.ts";
 import { RelayLink, relayEnforcesPasses } from "./link.ts";
 import type { RelayLinkOptions } from "./link.ts";
+import { Fleet } from "../fleet/sessions.ts";
 import { RelayPairingApprovals } from "./pairing-approvals.ts";
 import { RelayPairCodes } from "./pair-code.ts";
-import { RelayPassKeeper, type RelayPassClock } from "./pass.ts";
+import { passVersionsFor, RelayPassKeeper, type RelayPassClock } from "./pass.ts";
 import type { RelayPassNotice } from "./link.ts";
 
 /** An account id as the account service gives it (docs/account.md, Records). */
 const ACCOUNT_ID = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** This server never runs a relay link (a fleet machine's bridge): a refusal, not a failure. */
+export class RelayUnavailableError extends Error {
+  readonly code = "relay_unavailable";
+  constructor(message: string) {
+    super(message);
+    this.name = "RelayUnavailableError";
+  }
+}
 
 export interface RelayServiceOptions {
   readonly stateDir: string;
@@ -62,6 +73,8 @@ export interface RelayServiceOptions {
    * staging copy OVIS_RELAY_URL names with OVIS_RELAY_STAGING=1) unless tests name theirs.
    */
   readonly ovisRelays?: readonly string[];
+  /** The fleet this PC controls; one on `<stateDir>/fleet/machines.json` (server/fleet/sessions.ts) unless given. */
+  readonly fleet?: Fleet;
 }
 
 /** Ovis's staging account service (ovis-sh/account `[env.staging]`): the only one whose passes go to a staging relay. */
@@ -158,10 +171,16 @@ export class RelayService {
   private readonly signedIn = new SignedInSessions();
   /** whether direct connections are on, read once from `relay/direct.json`: on unless turned off */
   private directOn: boolean | undefined;
+  /**
+   * The fleet machines this PC controls: they sign in on the relay links and direct carriers, apart from the devices.
+   * With no machine in its store (none is enrolled before todo 30) every machine sign-in is refused `unknown`.
+   */
+  readonly fleet: Fleet;
 
   constructor(private readonly options: RelayServiceOptions) {
     // the pairing window outlives a restart (pairing-approvals.ts), so it is read from this PC's state
     this.approvals = new RelayPairingApprovals({ path: join(options.stateDir, "relay", "pairing-window.json") });
+    this.fleet = options.fleet ?? new Fleet({ stateDir: options.stateDir, ...(options.clock ? { clock: options.clock } : {}), serverId: () => this.serverId() });
     const named = options.relay ?? process.env["OVIS_RELAY_URL"];
     const origin = named === undefined ? undefined : relayEndpoint(named, "wss:");
     // A test PC on a staging copy of Ovis's relay (relay/README.md, "Staging"), and only with Ovis's staging account
@@ -179,6 +198,19 @@ export class RelayService {
     this.regionalRelays = this.pinned ? [this.pinned]
       : (options.regionalRelays ?? (origin === undefined ? REGIONAL_RELAYS : []))
         .map((relay) => relayEndpoint(relay, "wss:")).filter((relay) => relay !== this.relay);
+  }
+
+  /**
+   * This controller as an invite names it (docs/fleet-link.md section 4): its relay identity, the relay its machines dial
+   * and the direct carriers a machine's AUTH_OK names (server/fleet/direct.ts), once the listeners follow the store's
+   * last change; null while the relay is off (no carrier and no key a machine could reach).
+   */
+  async fleetController(): Promise<{ server_id: string; server_public_key: string; relay: string | null; direct: string[] } | null> {
+    if (this.services?.options.profile === "machine" || !this.enabled || !this.identity || this.blocked) return null;
+    await this.directCarrier?.settled();
+    const identity = this.identity;
+    if (!this.enabled || !identity) return null;
+    return { server_id: identity.server_id, server_public_key: identity.public_key, relay: this.relay, direct: [...this.directCarrier?.machineCarriers() ?? []] };
   }
 
   /** This PC's relay identity once the relay has started: what the account service knows it by (server/account/mailbox.ts). */
@@ -224,7 +256,7 @@ export class RelayService {
     return { phase: this.phase, relay: this.advertised, app: this.app,
       sessions: (this.link?.sessions ?? 0) + (this.regionalLink?.sessions ?? 0) + (this.directCarrier?.sessions ?? 0),
       blocked: this.blocked, error: this.error, error_code: this.exactErrorCode(),
-      ...(this.options.direct ? { direct: { on: this.directEnabled(), carriers: this.directCarrier?.advertised(true) ?? [] } } : {}),
+      ...(this.directAvailable ? { direct: { on: this.directEnabled(), carriers: this.directCarrier?.advertised(true) ?? [] } } : {}),
       ...(this.passKeeper ? { pass: { state: this.passState(this.passKeeper), relay: this.passNotice?.state ?? null, enforce_at: this.passNotice?.enforce_at ?? null, refused: this.passRefused,
         // a relay that refuses this PC for its pass enforces them, whatever it last said in a `sync`
         enforced: this.passRefused || relayEnforcesPasses(this.passNotice, Date.now()), ...this.newSessions() } } : {}) };
@@ -324,6 +356,7 @@ export class RelayService {
     this.passKeeper = new RelayPassKeeper({
       stateDir: this.options.stateDir, identity: () => this.identity ?? identity, account: () => this.passAccount(), service,
       ...(this.options.accountFetch ? { fetch: this.options.accountFetch } : {}), ...(this.options.passClock ? { clock: this.options.passClock } : {}),
+      passVersions: () => this.passVersions(),
       onPass: (pass) => {
         // the relay takes a renewal on the open control socket without a word: a notice that the pass was missing is over
         if (this.passNotice !== null && this.passNotice.state !== "ok") this.passNotice = { ...this.passNotice, state: "ok" };
@@ -331,6 +364,12 @@ export class RelayService {
         if (this.passFor(this.regionalRelay) === pass) this.regionalLink?.renewPass(pass); },
     });
     this.passKeeper.start();
+  }
+
+  /** The pass forms a pass request names: v3 only while every link a pass goes to (Ovis's relays) heard its relay read it. */
+  private passVersions(): readonly number[] {
+    const links = [[this.link, this.relay], [this.regionalLink, this.regionalRelay]] as const;
+    return passVersionsFor(links.filter(([link, relay]) => link !== undefined && this.isOvisRelay(relay)).map(([link]) => link!.passVersions));
   }
 
   /** What every link of this service sends and hears of the relay pass. */
@@ -370,11 +409,11 @@ export class RelayService {
   }
 
   /** Whether this server takes direct connections at all (the `direct` option). */
-  get directAvailable(): boolean { return this.options.direct !== undefined; }
+  get directAvailable(): boolean { return this.options.direct !== undefined && (this.services?.options.profile !== "machine" || MACHINE_DIRECT_CARRIER_ENABLED); }
 
   /** Turns direct connections on this PC's networks on or off, kept across restarts; off ends every direct session. */
   async setDirect(on: boolean): Promise<RelayStatus> {
-    if (!this.options.direct) throw new Error("Direct connections are not available on this server.");
+    if (!this.directAvailable) throw new Error("Direct connections are not available on this server.");
     writePrivateState(this.directPath(), { on });
     this.directOn = on;
     if (!on) await this.stopDirect();
@@ -386,8 +425,8 @@ export class RelayService {
   }
 
   private startDirect(services: RequestServices, identity: RelayIdentity): void {
-    if (!this.options.direct || this.directCarrier || !this.directEnabled()) return;
-    this.directCarrier = new DirectCarrier({ ...this.options.direct, identity, services, port: this.port, sessions: this.signedIn,
+    if (!this.options.direct || !this.directAvailable || this.directCarrier || !this.directEnabled()) return;
+    this.directCarrier = new DirectCarrier({ ...this.options.direct, identity, services, port: this.port, sessions: this.signedIn, ...(services.options.profile === "machine" ? {} : { fleet: this.fleet }),
       ...(this.options.clock ? { clock: this.options.clock } : {}), ...(this.options.serverVersion ? { serverVersion: this.options.serverVersion } : {}) });
     this.directStarting = this.directCarrier.start();
   }
@@ -433,7 +472,7 @@ export class RelayService {
       const regional = new RelayLink({
         relay, identity, services, port: this.port, ...this.passOptions(relay, false),
         connect: this.options.connect, clock: this.options.clock, random: this.options.random, serverVersion: this.options.serverVersion,
-        relayHints: () => this.relayHints(), directCarriers: (tailnet) => this.directCarriers(tailnet), sessions: this.signedIn,
+        relayHints: () => this.relayHints(), directCarriers: (tailnet) => this.directCarriers(tailnet), machineCarriers: () => this.directCarrier?.machineCarriers() ?? [], sessions: this.signedIn, ...(services.options.profile === "machine" ? {} : { fleet: this.fleet }),
         onState: (phase) => { if (this.regionalLink === regional) this.regionalPhase = phase; },
       });
       this.regionalLink = regional;
@@ -447,6 +486,9 @@ export class RelayService {
   resume(services: RequestServices, port: number): void {
     this.services = services;
     this.port = port;
+    // the fleet depends on this server's token (server/fleet/gate.ts): set before its forwards open
+    this.fleet.setTokenConfigured(services.options.profile !== "machine" && services.token !== "");
+    if (services.options.profile !== "machine") this.fleet.start();
     // "revoke all" ends what the owner had invited too, not only the devices already let in
     this.stopRevokeAll?.();
     this.stopRevokeAll = services.devices.onRevokeAll(() => this.approvals.closeWindow());
@@ -490,7 +532,7 @@ export class RelayService {
       const link = new RelayLink({
         relay: this.relay, identity: this.identity, services, port: this.port, ...this.passOptions(this.relay, true),
         connect: this.options.connect, clock: this.options.clock, random: this.options.random, serverVersion: this.options.serverVersion,
-        relayHints: () => this.relayHints(), directCarriers: (tailnet) => this.directCarriers(tailnet), sessions: this.signedIn,
+        relayHints: () => this.relayHints(), directCarriers: (tailnet) => this.directCarriers(tailnet), machineCarriers: () => this.directCarrier?.machineCarriers() ?? [], sessions: this.signedIn, ...(services.options.profile === "machine" ? {} : { fleet: this.fleet }),
         onState: (phase, error, code) => { if (this.link === link) { this.phase = phase; this.error = error; this.errorCode = code ?? null; } },
       });
       this.link = link;
@@ -537,7 +579,7 @@ export class RelayService {
   /** Shutdown preserves the user's saved choice for the next process. */
   shutdown(): Promise<void> {
     this.shuttingDown = true;
-    return this.disconnect();
+    return Promise.all([this.disconnect(), this.fleet.close()]).then(() => undefined);
   }
 
   /** The offer a QR code shows, for a given six-digit code. */

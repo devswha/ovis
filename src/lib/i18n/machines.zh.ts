@@ -5,6 +5,11 @@
  * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
  */
 export const MACHINES_ZH: Record<string, string> = {
+  "Fleet machines": "集群机器",
+  "1 fleet machine": "1 台集群机器",
+  "{n} fleet machines": "{n} 台集群机器",
+  "through the fleet link": "通过集群链接",
+  "A fleet machine. It is enrolled and removed in the fleet, not here.": "这是集群机器。它在集群中注册和移除，而不是在这里。",
   "1 agent": "1 个代理",
   "{n} agents": "{n} 个代理",
   "{where} refused the SSH connection: the PC may be off, or nothing answers on that port.": "{where} 拒绝了 SSH 连接：PC 可能已关机，或该端口上没有服务响应。",

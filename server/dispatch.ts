@@ -1,3 +1,5 @@
+import { machineHealth, machineRouteRestricted } from "./machine-profile.ts";
+import { fleetPreview } from "./preview.ts";
 import { handleWorkspaceRequest } from "./workspace-routes.ts";
 import { handleAlertWebhookRequest } from "./alert-webhook.ts";
 import { connectionData, type createCore, type SocketData } from "./core/index.ts";
@@ -44,6 +46,8 @@ import { runtime } from "./herdr-core/runtime.ts";
 import { handleUpdateRequest, updateRequestAllowed } from "./update-api.ts";
 import { handleHerdrUpdateRequest } from "./herdr-update.ts";
 import { handlePortalRequest } from "./portal.ts";
+import { handleFleetMachines } from "./fleet/causes.ts";
+import { handleFleetInviteRoute, handleFleetMachineRoute, handleFleetNativeRoute, isFleetInviteRoute, isFleetMachineRoute, isFleetNativeRoute } from "./fleet/routes.ts";
 import { handleRelayRequest } from "./relay/routes.ts";
 import { handleAccountRequest } from "./account/routes.ts";
 import type { AccountMailbox } from "./account/mailbox.ts";
@@ -158,7 +162,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   const url = new URL(request.url);
   let { pathname } = url;
   const relayPeer = ctx.peer.kind === "relay" ? ctx.peer.device : undefined;
-  const bridgeAuthorized = relayPeer === undefined && ctx.lanHttps !== true && isAuthenticated(request, bridgeToken);
+  const bridgeAuthorized = options.profile !== "machine" && relayPeer === undefined && ctx.lanHttps !== true && isAuthenticated(request, bridgeToken);
   // the connection server that reaches this one as its PC reads its update status and asks for the
   // update on offer: an Ovis run on this PC by itself is updated through its own updater, never
   // replaced (server/machines.ts ownOffer). An install still names the offered revision and the
@@ -220,12 +224,22 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   });
   const authenticated = access.level === "full" || (bridgePath && bridgeAuthorized);
 
+  if (options.profile === "machine" && pathname === "/api/health" && !authenticated) {
+    setRequestRoute(pathname);
+    return jsonResponse({ ok: true }, 200, { "cache-control": "no-store" });
+  }
+
   if (requiresAuth(pathname) && !authenticated) {
     setRequestRoute("auth-refusal");
     // a script's Bearer guess is told to wait; a browser's cookie gets the usual 401 and its sign-in form
     if (presented === "held" && pathname !== "/ws" && request.headers.has("authorization")) return presentedTokenHeld(client);
     // The WS client never parses a body, so the upgrade refusal stays plain text.
     return pathname === "/ws" ? new Response("unauthorized", { status: 401 }) : unauthorizedJson(access.level === "none" ? access.reason : "token_required");
+  }
+
+  if (options.profile === "machine" && machineRouteRestricted(pathname)) {
+    setRequestRoute("machine-profile-refusal");
+    return jsonResponse({ error: { code: "machine_profile", message: "This control is unavailable in the machine profile" } }, 409);
   }
 
   const readOnly = access.level === "full" && access.role === "watch";
@@ -532,6 +546,44 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     // the paired device that asks, when one does: a pairing code it starts or is handed goes with it (DeviceStore.revoke)
     return handleRelayRequest(request, pathname, ctx, access.level === "full" ? access.device?.id ?? null : null);
   }
+  // the fleet's routes (who may call each: todo 30 of the relay-fleet plan): read by any full access, a watching device
+  // too (it was refused every write above), but never by a Portal visitor or an open LAN window (as /api/account/), and
+  // not by a page of another site (as /api/machines); a write only by the owner, here or through the relay, with the
+  // app's own header (as the update routes). No machine session reaches any HTTP route at all (server/relay/session.ts).
+  if (pathname === "/api/fleet/machines" || isFleetInviteRoute(pathname) || isFleetMachineRoute(pathname) || isFleetNativeRoute(pathname)) {
+    if (access.level === "full" && (access.via === "open" || access.via === "portal")) {
+      setRequestRoute("owner-refusal");
+      return jsonResponse({ error: { code: "owner_only", message: "See the fleet from this PC itself, or from a paired device." } }, 403);
+    }
+    if (!sameOrigin(request)) return jsonResponse({ error: { code: "invalid_origin", message: "Use fleet controls from this app" } }, 403);
+    // a machine's runtime bearer (todo 32's row): only a process on this PC that presents the token in its Authorization
+    // header, so never a paired device (local or through the relay), a browser holding the token cookie, a proxy in front,
+    // or the LAN listener
+    if (isFleetNativeRoute(pathname)) {
+      setRequestRoute(pathname.endsWith("/bridge") ? "/api/fleet/machines/bridge" : "/api/fleet/machines/native");
+      if (ctx.services.relay.fleet.held()) {
+        return jsonResponse({ error: { code: "fleet_token_required", message: "The fleet needs OVIS_TOKEN on this server: set it and restart Ovis." } }, 409, { "cache-control": "no-store" });
+      }
+      const onController = relayPeer === undefined && ctx.lanHttps !== true && loopback && !forwarded && access.level === "full" && access.via === "token" && bearerMatches(request, token);
+      if (!onController) {
+        setRequestRoute("owner-refusal");
+        return jsonResponse({ error: { code: "controller_only", message: "Only a command on this PC itself, with this server's token, reaches a machine's engine or bridge (ovis start, ovis wait)." } }, 403, { "cache-control": "no-store" });
+      }
+      return handleFleetNativeRoute(request, pathname, ctx.services.relay.fleet);
+    }
+    setRequestRoute(pathname);
+    if (pathname === "/api/fleet/machines") return handleFleetMachines(request, ctx.services.relay.fleet);
+    if (request.method !== "GET") {
+      if (!ownerAccess(access)) { setRequestRoute("owner-refusal"); return jsonResponse({ error: { code: "owner_only", message: "Only the owner changes the fleet." } }, 403); }
+      if (!updateRequestAllowed(request)) return jsonResponse({ error: { code: "forbidden", message: "a fleet change must come from this app's own page" } }, 403);
+      // the fleet depends on a token (server/fleet/gate.ts): without one no fleet write is made, whoever asks
+      if (ctx.services.relay.fleet.held()) {
+        return jsonResponse({ error: { code: "fleet_token_required", message: "The fleet needs OVIS_TOKEN on this server: set it and restart Ovis. Nothing was changed." } }, 409, { "cache-control": "no-store" });
+      }
+    }
+    if (isFleetMachineRoute(pathname)) return handleFleetMachineRoute(request, pathname, ctx.services.relay.fleet);
+    return handleFleetInviteRoute(request, pathname, ctx.services.relay.fleet, () => ctx.services.relay.fleetController());
+  }
   if (pathname === "/api/connection-diagnostics") { setRequestRoute(pathname); return clientConnectionLog.handle(request, client ?? "unknown"); }
   if (pathname === "/api/telemetry") { setRequestRoute(pathname); return handleTelemetryRequest(request, options.telemetry); }
   // what every browser of this server shares; a watching device reads it and cannot change it (above)
@@ -617,16 +669,25 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     const owner = access.level === "full" && access.role === "drive" && access.via !== "open" && access.via !== "portal";
     // the connection server that reaches this PC with its bridge token shows its move badge from them
     const herdr_runtime = owner || bridgeAuthorized ? options.runtimeService?.facts() : undefined;
+    // OVIS_PREVIEW=fleet (server/preview.ts), for Settings' entry to the Fleet screen: told like the version, to a client that got in
+    const preview = access.level === "full" && fleetPreview() ? { fleet_preview: true as const } : {};
+    if (options.profile === "machine") {
+      const health = await machineHealth(options.machineEngine ?? "herdr", options.machineRefusal?.());
+      return jsonResponse({ ok: true, auth, version, runtime: "herdr", ...relay, ...health, ...preview,
+        ...(health.herdr ? { herdr: attachableIdentity(health.herdr, sidecar) } : {}),
+        ...(security ? { security } : {}), web_ui: { boot_id: bootId, ...(serverId ? { server_id: serverId } : {}) },
+      }, 200, { "cache-control": "no-store" });
+    }
     // the boot id lets the launcher know its own new bridge without waiting on herdr (server/supervisor.ts);
     // the runtime facts ride along, so Settings can switch back while herdr's TUI is stopped
-    if (url.searchParams.get("scope") === "bridge") return jsonResponse({ ok: true, auth, bridge_protocol: BRIDGE_PROTOCOL, ...relay, ...(security ? { security } : {}), web_ui: { boot_id: bootId }, runtime: runtime(), ...(options.launchAccepted ? { accepted: options.launchAccepted() } : {}), ...(herdr_runtime ? { herdr_runtime } : {}) }, 200, securityHeaders);
+    if (url.searchParams.get("scope") === "bridge") return jsonResponse({ ok: true, auth, bridge_protocol: BRIDGE_PROTOCOL, ...relay, ...(security ? { security } : {}), web_ui: { boot_id: bootId }, runtime: runtime(), ...(owner || bridgeAuthorized ? { fleet_bridge: options.fleetBridgeHealth?.() } : {}), ...(options.launchAccepted ? { accepted: options.launchAccepted() } : {}), ...(herdr_runtime ? { herdr_runtime } : {}) }, 200, securityHeaders);
     const herdr_core = owner ? options.herdrCoreFacts?.() : undefined;
     try {
       const info = await ping();
       // a forced answer (tests) and a runtime without the PTY sidecar are told the way a Windows herdr's own would be
       const herdr = attachableIdentity(info, sidecar);
       // this server's own version (package.json, embedded in the compiled binary), told with the other facts to a client that got in
-      return jsonResponse({ ok: true, herdr, auth, ...(access.level === "full" ? { version } : {}), ...relay, ...exposure, ...(security ? { security } : {}), ...(herdr_core ? { herdr_core } : {}), ...(herdr_runtime ? { herdr_runtime } : {}),
+      return jsonResponse({ ok: true, herdr, auth, ...(access.level === "full" ? { version } : {}), ...preview, ...relay, ...exposure, ...(security ? { security } : {}), ...(herdr_core ? { herdr_core } : {}), ...(herdr_runtime ? { herdr_runtime } : {}),
         web_ui: { boot_id: bootId, revision: process.env["OVIS_REVISION"] ?? null, ...(serverId ? { server_id: serverId } : {}) } }, 200, securityHeaders);
     } catch (error) {
       const failed = errorResponse(error);
@@ -805,7 +866,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   const pluginResponse = await handlePluginRequest(request, url, pathname, options);
   if (pluginResponse) return pluginResponse;
 
-  const paneResponse = await handlePaneRequest(request, url, pathname, options);
+  const paneResponse = await handlePaneRequest(request, url, pathname, { ...options, attachHeld: core.attachHeld });
   if (paneResponse) return paneResponse;
 
   const tasksResponse = await handleTasksRequest(request, url, pathname, { omo, claudeAgents, opencodeAgents });

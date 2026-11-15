@@ -78,6 +78,8 @@ function labelMapUses(): [key: string, file: string][] {
     ...grab("lib/workBlocks.ts", "CATEGORY_LABEL", /\["([^"]+)", "([^"]+)"\]/g),
     ...grab("lib/usage.ts", "WINDOW_LABEL", value),
     ...grab("lib/toolVerbs.ts", "VERB_LABEL", value),
+    // the sentence of each cause of a fleet machine that is not usable (the Fleet screen shows them by cause)
+    ...grab("../shared/fleet-cause.ts", "FLEET_CAUSE_SENTENCE", value),
     // the card text the bridge writes itself, which PromptCard shows by its key (lib/promptText.ts)
     ...grab("../shared/card-text.ts", "CARD_TEXT", /^\s+"([^"]+)",$/gm).map(([key, file]): [string, string] => [key.replaceAll("\\n", "\n"), file]),
   ];
@@ -169,7 +171,7 @@ describe.each(Object.entries(DICTIONARIES))("%s dictionary", (_name, dictionary)
 
 /** Each part's files: a part holds the keys that only its files use (CONTRIBUTING.md, UI text). */
 const PART_FILES: Record<string, string[]> = {
-  settings: ["components/SettingsDialog.tsx", "lib/herdrWindow.ts", "components/SignOutRow.tsx", "components/KeyBarSettings.tsx", "lib/paletteSettings.ts", "components/TelemetryControls.tsx", "components/SettingsControls.tsx", "components/AlertWebhookGroup.tsx", "components/ThemeFiles.tsx"],
+  settings: ["components/SettingsDialog.tsx", "lib/herdrWindow.ts", "components/SignOutRow.tsx", "components/FleetRow.tsx", "components/KeyBarSettings.tsx", "lib/paletteSettings.ts", "components/TelemetryControls.tsx", "components/SettingsControls.tsx", "components/AlertWebhookGroup.tsx", "components/ThemeFiles.tsx"],
   terminal: ["components/PaneTerminal.tsx", "lib/useTerminalMount.ts", "lib/useComposerSends.ts", "lib/usePeekReturn.ts", "lib/useTypedKeys.ts", "components/PaneCanvas.tsx", "components/KeyBar.tsx", "components/FindBar.tsx", "components/TerminalViewportTools.tsx", "components/SplitDropPreview.tsx", "components/TabStrip.tsx", "lib/terminalLabel.ts", "lib/tabName.ts"],
   composer: ["components/Composer.tsx", "components/ReplyComments.tsx", "components/ComposerNotices.tsx", "components/VoiceInput.tsx", "components/SecretInput.tsx", "components/TerminalInput.tsx", "components/PendingMessages.tsx", "lib/compose.ts", "components/PromptCard.tsx", "lib/promptAnswer.ts", "../shared/card-text.ts"],
   chat: ["components/ChatView.tsx", "lib/chatImages.ts", "components/SentWaiting.tsx", "components/Markdown.tsx", "components/MermaidLightbox.tsx", "components/ChatMinimap.tsx", "components/ImageLightbox.tsx", "components/BackgroundTasks.tsx", "components/BackgroundAgentDetail.tsx", "components/Artifacts.tsx", "components/OmpBtw.tsx", "components/MarkdownLinkMenu.tsx", "lib/workBlocks.ts", "lib/toolVerbs.ts", "lib/outcomeChip.ts", "lib/chatTimestamp.ts", "lib/chatReadDeadline.ts", "components/ConversationSearch.tsx"],
@@ -186,6 +188,7 @@ const PART_FILES: Record<string, string[]> = {
   relay: ["components/RelayShell.tsx", "components/RelayShellScreens.tsx", "components/AccountPcs.tsx", "lib/relay/shell.tsx", "lib/relay/accountController.ts", "components/relayFailureText.ts"],
   dashboard: ["components/AddPcSheet.tsx", "components/RelayDashboard.tsx", "components/RelayMap.tsx", "components/RelayPcTable.tsx", "components/RelayPcDetails.tsx", "components/RelayOverview.tsx", "components/relayMapLayout.ts", "components/relayPcState.tsx"],
   "runtime-move": ["components/RuntimeMove.tsx", "components/RuntimeMoveViews.tsx", "lib/runtimeMove.ts"],
+  fleet: ["../shared/fleet-cause.ts", "components/FleetView.tsx", "lib/fleet.ts"],
 };
 
 /** Parts in src/lib/i18n/ hold the keys only one feature uses; the base dictionary holds the rest. */

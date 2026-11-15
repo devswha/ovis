@@ -22,7 +22,7 @@ import { ConsentChangedError, createAccountController } from "./accountControlle
 import { offerOf } from "./shellState.ts";
 import { enrollmentOf, type RelayDevice, type RelayDeviceStore } from "./device.ts";
 import { dashboardModel, dashboardPcs } from "./dashboard.ts";
-import { createShellTestPage } from "./shell.test.tsx";
+import { createShellTestPage } from "./shellTestPage.fixture.ts";
 import { RelayTransport } from "./transport.ts";
 import { forgetSavedPc } from "./updateFlow.ts";
 

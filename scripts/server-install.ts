@@ -23,7 +23,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, 
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runsHere } from "./pty-sidecar.ts";
-import { binaryName, checkManifest, DIST_ARCHIVE, MANIFEST, oldShapeRelease, ptyAssetFor, RELEASE_PUBLIC_KEY, type ReleaseAsset, releaseFile, SERVER_PLATFORMS, type ServerPlatform, SIGNATURE } from "./server-manifest.ts";
+import { binaryName, checkManifest, DIST_ARCHIVE, MANIFEST, oldShapeRelease, ptyAssetFor, RELEASE_PUBLIC_KEY, type ReleaseAsset, releaseFile, type ServerManifest, SERVER_PLATFORMS, type ServerPlatform, SIGNATURE } from "./server-manifest.ts";
 
 export const DEFAULT_RELEASES = "https://github.com/devswha/ovis/releases/download";
 const MANIFEST_LIMIT = 64 * 1024;
@@ -328,7 +328,9 @@ export async function installServer(options: InstallServerOptions): Promise<{ in
   const publicKey = options.publicKey ?? RELEASE_PUBLIC_KEY;
   const current = join(home, "bin");
   const binary = join(current, binaryName(platform));
-  if (verifiedInstall(home, version, platform, publicKey)) return { installed: false, message: `Ovis ${version} is installed already in ${current}; nothing to do`, binary };
+  if (verifiedInstall(home, version, platform, publicKey)) {
+    return { installed: false, message: `Ovis ${version} is installed already in ${current}; nothing to do`, binary };
+  }
   return await withInstallLock(home, () => installLocked(options, platform, base, publicKey), options.lockWaitMs, options.onLockWait);
 }
 

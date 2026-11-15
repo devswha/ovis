@@ -489,8 +489,12 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       } });
       const pcHerdrConfig = join(dir, "config.toml");
       writeFileSync(pcHerdrConfig, "[ui]\ncopy_on_select = true\n");
+      /** while set, the account service limits this PC's pulls with a 429 and this Retry-After, as it does a crowded address */
+      let limited: string | null = null;
       const pc = createServer({ port: 0, hostname: "127.0.0.1", stateDir: dir, token: "", tailscaleOwner: null, sidecar: false, relay: pcRelay, herdrConfigPath: pcHerdrConfig,
-        accountService: { url: ACCOUNT_SERVICE, fetch: (request) => fake.fetch(request) } });
+        accountService: { url: ACCOUNT_SERVICE, fetch: (request) => limited !== null && new URL(request.url).pathname === "/v1/pc/challenge"
+          ? Promise.resolve(new Response(JSON.stringify({ error: { code: "rate_limited", message: "Too many requests" } }), { status: 429, headers: { "content-type": "application/json", "retry-after": limited } }))
+          : fake.fetch(request) } });
       const stop = async (): Promise<void> => { await pcRelay.shutdown(); pc.stop(); rmSync(dir, { recursive: true, force: true }); };
       pcs9.push({ stop });
       const at = `http://127.0.0.1:${pc.port}`;
@@ -508,6 +512,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       const services = pc.context.services;
       return {
         offer, id: offer.server_id, local, mailbox: services.accountMailbox,
+        limit: (retryAfter: string | null): void => { limited = retryAfter; },
         /** in the account, and no member's enrollment still under way */
         joined: (): boolean => services.devices.account() === ACCT && !services.accountHolds.enrolling(),
         /** the comparisons the PC's own windows show, with their digits */
@@ -776,10 +781,59 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       await typed.fill(asked!.digits);
       await a.locator("[role=dialog]").getByRole("button", { name: "Add this PC" }).click();
       await a.getByText("Approve this device on Mac mini within 90 seconds to finish.").waitFor();
+      // Desk PC, which the enrollment reads first, is limited by the account service for 15 s, and stays so
+      pc1.limit("15");
       assert.equal((await pc2.local("/api/relay/pairing", { body: { id: asked!.id, decision: "approve" } })).status, 200);
       await pairedStraightIn(a);
       await inApp(a);
+      // the first pairing opened Mac mini before its enrollment read Desk PC: the wait is said inside the open PC, counting down
+      const inAppNotice = a.locator('[data-enrollment-notice][data-kind="waiting"]');
+      await inAppNotice.waitFor({ timeout: 45_000 });
+      const said = await inAppNotice.evaluate((element) => ({ seconds: Number(element.getAttribute("data-seconds")), text: (element as HTMLElement).innerText }));
+      assert.ok(said.seconds >= 1 && said.seconds <= 15 && new RegExp(`\\b${said.seconds}\\b`).test(said.text), `the open PC says the seconds left of the 15 s wait (${JSON.stringify(said)})`);
+      assert.equal(await inAppNotice.locator("button").count(), 0, "a waiting notice cannot be dismissed");
+      await capture(a, "enrollment-notice-1440-dark");
+      // a phone's width: the workspace list the wide layout showed folds into a drawer over the PC; closed, as a phone opens
+      await a.setViewportSize({ width: 390, height: 844 });
+      const closeList = a.getByRole("button", { name: "Close workspace list" });
+      if (await closeList.count() > 0) await closeList.click();
+      await a.waitForFunction(() => document.getAnimations().filter((animation) => Number.isFinite(animation.effect?.getTiming().iterations ?? 1)).every((animation) => animation.playState === "finished"));
+      const inView = await inAppNotice.evaluate((element) => {
+        const box = element.getBoundingClientRect();
+        const centre = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+        return element.checkVisibility() && box.left >= 0 && box.right <= window.innerWidth && centre !== null && element.contains(centre);
+      });
+      assert.ok(inView, "at 390 the notice is in view, on top, inside the open PC");
+      await capture(a, "enrollment-notice-390-dark");
+      await a.waitForFunction((start) => Number(document.querySelector('[data-enrollment-notice][data-kind="waiting"]')?.getAttribute("data-seconds")) < start, said.seconds);
+      assert.equal(await inAppNotice.count(), 1, "the pictures were taken while the enrollment still waited, and the count went down");
+      await a.setViewportSize({ width: 1440, height: 900 });
+      // Desk PC is asked once more and refused again: the enrollment fails, and the notice goes with the wait
+      await until(async () => (await saved(a, pc2.id))?.enrollment === "failed", "Mac mini's enrollment failed when Desk PC was refused a second time", 75_000);
+      await inAppNotice.waitFor({ state: "detached", timeout: 15_000 });
+      assert.equal(pc2.joined(), false, "Mac mini still waits for its enrollment");
+      // the next open of Mac mini stops at Ready and tries again, Desk PC still limited for 15 s: the Ready screen waits live
+      await a.goto(`${APP}/s/${pc2.id}/`);
+      const readyScreen = a.locator('[role=dialog][data-add-pc-phase="ready"]');
+      const waitLine = readyScreen.locator("[data-enrollment-wait]");
+      await waitLine.waitFor({ timeout: 45_000 });
+      assert.equal(await waitLine.getAttribute("data-enrollment-wait"), "15", "the Ready screen names the 15 s the account service asked for");
+      assert.match(await waitLine.innerText(), /\b15\b/, "the waiting line says the seconds");
+      await capture(a, "enrollment-wait-1440-dark");
+      // a phone's width: the Ready screen becomes a sheet from the bottom, pictured once it has settled
+      await a.setViewportSize({ width: 390, height: 844 });
+      await settledSheet(a);
+      await capture(a, "enrollment-wait-390-dark");
+      assert.equal(await waitLine.count(), 1, "the pictures were taken while the enrollment still waited");
+      await a.setViewportSize({ width: 1440, height: 900 });
+      // the wait over, Desk PC is asked once more, reads whole, and the enrollment completes
+      pc1.limit(null);
+      await readyScreen.getByText("In your account").waitFor({ timeout: 45_000 });
+      assert.equal(await readyScreen.locator("[data-enrollment-wait]").count(), 0, "no wait is left on the Ready screen");
+      await readyScreen.getByRole("button", { name: "Open PC" }).click();
+      await inApp(a);
       await until(async () => pc2.joined() && (await saved(a, pc2.id))?.enrollment === "complete", "Mac mini joined the account and this device recorded completion", 75_000);
+      log9("limited: Desk PC's pull refused 429 Retry-After 15 -> Mac mini's first pairing opened it and the open PC said the wait, counting down (pictured at 1440 and 390) -> refused again -> enrollment failed, the notice gone; the next open stopped at Ready and tried again -> the Ready screen said the wait live (data-enrollment-wait=15; pictured at 1440 and 390 while it waited) -> Desk PC asked once more -> In your account -> Open PC");
       await pc2.mailbox.pull();
       await a.goto(`${APP}/`);
       await row(a, "Mac mini").and(a.locator('[data-pc-state="paired"]')).waitFor();

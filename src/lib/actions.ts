@@ -81,6 +81,8 @@ export interface AppActions {
   openAddPc: (preset?: AddPcPreset) => void;
   /** a PC's own setup dialog (Connect on a PC saved in herdr), from Settings → Devices and PCs; Settings closes first */
   connectPc: (machine: Machine) => void;
+  /** the Fleet screen (components/FleetView.tsx), from Settings → Devices and PCs and the sidebar's fleet group; Settings closes first */
+  openFleet: () => void;
   toggleSidebar: () => void;
   /** into the agent inbox (lib/inboxMode.ts) or, while `on`, back out of it; null where the mode is not offered */
   inboxMode: { on: boolean; go: () => void } | null;

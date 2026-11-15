@@ -1986,7 +1986,7 @@ describe("check CLI", () => {
       name: "check-cli-fixture",
       scripts: {
         "generate:types": noOp,
-        "generate:themes": noOp,
+        "generate:themes": noOp, "check:fleet": noOp,
         typecheck: noOp,
         build: fixtureBuild,
         "test:unit": noOp,
@@ -2031,7 +2031,7 @@ describe("check CLI", () => {
       name: "check-cli-fixture",
       scripts: {
         "generate:types": noOp,
-        "generate:themes": noOp,
+        "generate:themes": noOp, "check:fleet": noOp,
         typecheck: noOp,
         build: fixtureBuild,
         "test:unit": "git init -q nested && node -e \"require('node:fs').writeFileSync('nested/source.txt','fixture')\"",
@@ -2062,7 +2062,7 @@ describe("check CLI", () => {
     rmSync(join(cwd, "dist"), { recursive: true });
     writeFileSync(join(cwd, "package.json"), JSON.stringify({
       name: "check-cli-fixture",
-      scripts: { "generate:types": noOp, "generate:themes": noOp, typecheck: noOp, build: noOp, "test:unit": noOp },
+      scripts: { "generate:types": noOp, "generate:themes": noOp, "check:fleet": noOp, typecheck: noOp, build: noOp, "test:unit": noOp },
     }));
     const missingBuild = runCheck();
     expect(missingBuild.status).toBe(1);
@@ -2084,7 +2084,7 @@ describe("check CLI", () => {
       name: "check-cli-fixture",
       scripts: {
         "generate:types": 'node -e "require(\'node:fs\').writeFileSync(\'ran\',\'\')" --',
-        "generate:themes": noOp,
+        "generate:themes": noOp, "check:fleet": noOp,
         typecheck: noOp,
         build: 'node -e "const fs=require(\'node:fs\');fs.mkdirSync(\'dist\',{recursive:true});fs.writeFileSync(\'dist/index.html\',\'fixture\')"',
         "test:unit": noOp,
@@ -2128,7 +2128,7 @@ describe("check CLI", () => {
       name: "check-cli-fixture",
       scripts: {
         "generate:types": noOp,
-        "generate:themes": noOp,
+        "generate:themes": noOp, "check:fleet": noOp,
         typecheck: noOp,
         build: 'node -e "const fs=require(\'node:fs\');fs.mkdirSync(\'dist\',{recursive:true});fs.writeFileSync(\'dist/index.html\',\'fixture\')"',
         // the unit tests pass, but edit a tracked file while the check runs

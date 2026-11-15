@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { createServer as createNetServer, type AddressInfo, type Socket } from "node:net";
 import { join } from "node:path";
 import { accountDeviceId, exportAccountKey, newRecordId, signAccountRecord, type AccountRecord, type UnsignedAccountRecord } from "../../shared/account-records.ts";
 import { FakeAccountService } from "../../shared/account-service-fake.ts";
@@ -464,6 +465,112 @@ test("a fresh status reads the mailbox after the request, so a remove posted a m
   await service.fetch(new Request("https://account.test/v1/records", { method: "POST", headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ server_ids: [identity.server_id], record: await remove(stranger, mac.spki) }) }));
   // within the ten seconds a join's pull is limited to
   expect((await read()).blocked).toContain(mac.spki);
+});
+
+test("a fresh status says how the account service refused the pull: its status and Retry-After, on either call", async () => {
+  const service = new FakeAccountService();
+  let refusal: { path: string; status: number; retryAfter: string | null } | null = null;
+  const refusing = async (request: Request) => refusal !== null && new URL(request.url).pathname === refusal.path
+    ? new Response(JSON.stringify({ error: { code: "refused", message: "" } }), { status: refusal.status, headers: refusal.retryAfter === null ? {} : { "retry-after": refusal.retryAfter } })
+    : service.fetch(request);
+  const f = fixture({ accountService: { url: "https://account.test", fetch: refusing } });
+  const identity = rotateRelayIdentity(f.stateDir);
+  const { link } = await member(f);
+  await service.fetch(new Request(`https://account.test/v1/pcs/${identity.server_id}`, { method: "PUT", headers: { authorization: `Bearer ${service.issueToken(ACCOUNT)}` },
+    body: JSON.stringify({ label: "PC", public_key: bytesToHex(importPublicKey(identity.public_key)), relay: "wss://relay.ovis.sh" }) }));
+  const read = async () => await (await link.open("/api/account/status?fresh=1").response).json() as { fresh?: boolean; mailbox: { error: string | null; refused?: unknown } };
+  expect((await read()).mailbox).not.toHaveProperty("refused");
+  const rows = [
+    ["/v1/pc/challenge", 429, "60", { status: 429, retry_after_s: 60 }],
+    ["/v1/pc/challenge", 500, null, { status: 500, retry_after_s: null }],
+    ["/v1/pc/mailbox", 503, "30", { status: 503, retry_after_s: 30 }],
+  ] as const;
+  for (const [path, status, retryAfter, refused] of rows) {
+    refusal = { path, status, retryAfter };
+    const answer = await read();
+    expect([path, answer.fresh, answer.mailbox.refused]).toEqual([path, false, refused]);
+    // older clients still read the sentence
+    expect(answer.mailbox.error).toBe(`The account service answered ${status} to ${path}`);
+  }
+  refusal = null;
+  const whole = await read();
+  expect(whole.fresh).toBe(true);
+  expect(whole.mailbox).not.toHaveProperty("refused");
+});
+
+test("a PC reads the account service's Retry-After off the wire as whole seconds by value, from 0 to 3600", async () => {
+  // a service on loopback that answers every call 429 with the Retry-After line written as it is here, byte for byte
+  let line: string | null = null;
+  const sockets = new Set<Socket>();
+  const service = createNetServer((socket) => {
+    sockets.add(socket);
+    socket.once("data", () => {
+      const body = JSON.stringify({ error: { code: "rate_limited", message: "" } });
+      socket.end(`HTTP/1.1 429 Too Many Requests\r\ncontent-type: application/json\r\ncontent-length: ${body.length}\r\nconnection: close\r\n${line === null ? "" : `retry-after:${line}\r\n`}\r\n${body}`);
+    });
+    socket.on("close", () => sockets.delete(socket));
+  });
+  await new Promise<void>((resolve) => service.listen(0, "127.0.0.1", resolve));
+  try {
+    const f = fixture({ accountService: { url: `http://127.0.0.1:${(service.address() as AddressInfo).port}` } });
+    rotateRelayIdentity(f.stateDir);
+    const { link } = await member(f);
+    const rows = [
+      ["60", 60], ["0", 0], ["00000", 0], ["3600", 3600], ["3601", null], [null, null], ["Sun, 15 Nov 2026 04:00:00 GMT", null],
+      ["-1", null], ["1.5", null],
+      // HTTP drops the whitespace around a field's value (RFC 9110, 5.5) before anyone reads it
+      ["  60  ", 60],
+    ] as const;
+    const read: [string | null, unknown][] = [];
+    for (const [value] of rows) {
+      line = value;
+      const answer = await (await link.open("/api/account/status?fresh=1").response).json() as { mailbox: { refused?: { status: number; retry_after_s: number | null } } };
+      read.push([value, answer.mailbox.refused]);
+    }
+    expect(read).toEqual(rows.map(([value, seconds]) => [value, { status: 429, retry_after_s: seconds }]));
+  } finally {
+    for (const socket of sockets) socket.destroy();
+    await new Promise<void>((resolve) => service.close(() => resolve()));
+  }
+});
+
+test("a PC keeps saying how the last pull was refused while the next one runs, and that pull's outcome replaces it", async () => {
+  const service = new FakeAccountService();
+  let next: "refuse" | "hold" | "pass" | "fail" = "refuse";
+  const asked = deferred<void>();
+  const held = deferred<void>();
+  const pc = async (request: Request): Promise<Response> => {
+    if (!new URL(request.url).pathname.startsWith("/v1/pc/")) return service.fetch(request);
+    switch (next) {
+      case "refuse": return new Response("{}", { status: 429, headers: { "retry-after": "60" } });
+      case "hold": next = "pass"; asked.resolve(); await held.promise; return service.fetch(request);
+      case "pass": return service.fetch(request);
+      case "fail": throw new TypeError("fetch failed");
+    }
+  };
+  const f = fixture({ accountService: { url: "https://account.test", fetch: pc } });
+  const identity = rotateRelayIdentity(f.stateDir);
+  const { link } = await member(f);
+  await service.fetch(new Request(`https://account.test/v1/pcs/${identity.server_id}`, { method: "PUT", headers: { authorization: `Bearer ${service.issueToken(ACCOUNT)}` },
+    body: JSON.stringify({ label: "PC", public_key: bytesToHex(importPublicKey(identity.public_key)), relay: "wss://relay.ovis.sh" }) }));
+  type Status = { fresh?: boolean; mailbox: { error: string | null; refused?: unknown } };
+  const status = async (path: string) => await (await link.open(path).response).json() as Status;
+  const REFUSED = { status: 429, retry_after_s: 60 };
+  expect((await status("/api/account/status?fresh=1")).mailbox.refused).toEqual(REFUSED);
+  // the next pull is under way, held at the service: a plain status still says how the last one ended
+  next = "hold";
+  const pulling = status("/api/account/status?fresh=1");
+  await bounded(asked.promise);
+  expect((await status("/api/account/status")).mailbox.refused).toEqual(REFUSED);
+  held.resolve();
+  expect(await bounded(pulling)).toMatchObject({ fresh: true, mailbox: { error: null } });
+  expect((await status("/api/account/status")).mailbox).not.toHaveProperty("refused");
+  // refused again, then a pull that fails without an HTTP answer: no refusal is said, only the error
+  next = "refuse";
+  expect((await status("/api/account/status?fresh=1")).mailbox.refused).toEqual(REFUSED);
+  next = "fail";
+  const failed = await status("/api/account/status?fresh=1");
+  expect([failed.fresh, failed.mailbox.error === null, "refused" in failed.mailbox]).toEqual([false, false, false]);
 });
 
 test("a PC with no account service says its status is fresh: no mailbox can hold a removal for it", async () => {

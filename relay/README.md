@@ -63,14 +63,30 @@ reports the reason in relay status. An invalid or out-of-order first challenge i
 the PC with `4000` and retried. Refusing a data socket does not stop the control link.
 
 - A client's first frame is `{"type":"assigned","connection_id":"<32 hex>"}`, its random 128-bit id.
-- The control socket hears `{"type":"sync","connection_ids":[...],"warm":"<32 hex>"}` when it opens
-  (the clients still waiting for a data socket; `warm` says this relay takes a warm socket and
-  names this control socket's generation, new for each one),
+- The control socket hears `{"type":"sync","connection_ids":[...],"warm":"<32 hex>","max_clients":8,"per_address_per_minute":30,"pass_versions":[1,2,3]}`
+  when it opens (the clients still waiting for a data socket, at most 8, default lane first; `warm`
+  says this relay takes a warm socket and names this control socket's generation, new for each one;
+  `max_clients` the clients its room holds, "Limits and close codes"; `per_address_per_minute` this
+  relay's connection budget per address, 30 on the Worker, the Bun relay's own; `pass_versions` the
+  relay pass payloads it reads), then right after it a `connected` for each further waiting client,
   `{"type":"connected","connection_id":"..."}` when a client arrives and
   `{"type":"disconnected","connection_id":"..."}` when one leaves. The PC answers `connected` (or
   `sync`) by opening the client's data socket. The PC may send `{"type":"relay_pass","pass":"..."}`
   ("Relay pass" below) and `{"type":"new_session","connection_id":"..."}` ("New sessions" below);
-  anything else the PC sends on the control socket is dropped.
+  anything else the PC sends on the control socket is dropped. A PC that does not know a field
+  ignores it.
+- Lanes: a client socket may add `lane=paced` to its URL (`/v1/ws?server_id=..&role=client&v=1&lane=paced`;
+  any other value is refused `400`, and a relay older than this ignores it). Ovis's fleet machines
+  do; phones and browsers never do, and one that did would only wait longer. The relay keeps that
+  one bit beside the client's `connection_id` and uses it only to order what it does anyway: `sync`
+  names default-lane clients first and adds `"paced":[...]`, those of its ids that are paced; a
+  paced client is announced as `{"type":"connected","connection_id":"...","lane":"paced"}`; a paced
+  client never takes the warm socket, which stays for the next default-lane one; and with the
+  waiting queue full a new default-lane client takes the place of the oldest paced one (closed
+  `1013`), never the reverse: a paced newcomer then gives way itself. It learns nothing else of the
+  client (no machine id, key or name), frames still pass unread, and a relay that lied about a lane
+  could only delay a client, which it can do by closing it anyway: admission still rests on the
+  encrypted sign-in.
 - Warm socket: so that a client does not wait for the PC to open and prove a socket, the PC may
   keep one proven `warm` socket ready, opened with the generation its control socket's `sync` named.
   A client arriving while that control socket is connected takes it at once: the warm socket hears `{"type":"bound","connection_id":"..."}` before any of
@@ -103,18 +119,40 @@ signed-in account lists. Phones and browsers never need one, and the frames stay
 whatever the pass says. The setting is off unless the relay's operator turns it on; a relay you run
 yourself stays open.
 
-**Keep it off on Ovis's relays for now.** Nothing issues passes yet and no PC sends one: turning on
-`grace` would only add a notice, but `enforce` would refuse every PC. It stays `off` until the
-account service issues passes, and PCs fetch and renew them, and send them with their typed-code
-pairing hosts, in a release most PCs run.
+**Never `enforce` on Ovis's relays for now.** `wrangler.toml` names `grace` with no enforce date for
+`relay.ovis.sh`, under which a PC without a pass is let in and paired exactly as under `off` (it and its
+clients are only told so), and a PC's pass is read for its fleet number. The account service's public
+key is not in the repository: the owner sets it as the secret `RELAY_PASS_KEYS` before the deploy;
+without it the Worker logs `relay.pass.settings_invalid` and runs with passes off. `enforce` would
+refuse every PC without a pass: it waits until the account service issues passes, and PCs fetch and
+renew them, and send them with their typed-code pairing hosts, in a release most PCs run.
 
 - **The pass.** `ovp1.<payload>.<signature>`, base64url. The payload is JSON with exactly `v` (1),
   `kid`, `aud` (`ovis-relay`), `sid` (the PC's `server_id`), `iat` and `exp` (seconds; 48 hours
   apart, and a relay refuses one good for longer); the signature is Ed25519 over `ovis-relay-pass/1.` followed by the payload's text. It names
   no account. A v2 payload has the same fields with `v` 2 and one more, `new`: 1 when new client
   sessions to the PC are allowed, 0 when they are not for the pass's lifetime; a v1 pass allows
-  them. The prefix stays `ovp1.`: the signature covers the payload, `v` and `new` included. The
-  relay accepts both forms; what `new` does is under "New sessions" below.
+  them. A v3 payload has the v2 fields with `v` 3 and one more, `fleet`: an integer from 1 to 1000,
+  the fleet machines the PC may have in its room beside its 8 clients ("Fleet rooms" below). The
+  prefix stays `ovp1.`: the signature covers the payload, `v`, `new` and `fleet` included. The relay
+  accepts all three forms; what `new` does is under "New sessions" below. A relay from before v3
+  refuses a v3 pass as invalid by its shape, so a PC is given one only for relays whose `sync` lists
+  3 in `pass_versions`.
+- **Fleet rooms.** Without a fleet a room holds 8 clients. A pass that holds and says `fleet: n`
+  makes it 8 + n, with a waiting queue of 4 + ceil(n/8) and room for max(16, ceil(n/8)) PC sockets
+  proving at once. Whatever its size, a room holds at most 32 MiB of frames for its waiting clients
+  ("Limits and close codes"). The relay reads a pass a PC socket presents for this whatever the mode, as long
+  as it has keys: in `off` it refuses nobody for the pass (a PC without one connects and gets 8, as
+  before), and a relay with no keys ignores the number. A pass that does not hold (forged, expired,
+  for another `server_id` or audience, or with a `fleet` out of range) is invalid and raises nothing;
+  only a pass signed by a key the relay trusts does, so an unsigned claim never makes a room bigger.
+  The room's size follows the pass that authorizes it (the last issued, renewals included); once
+  that runs out unrenewed the room is 8 again: no newcomer past 8, and nobody it holds is closed for
+  it. `sync` names the size as `max_clients` when the control socket opens. A Bun relay's
+  `--max-clients-per-server m` gives every room a fleet of m - 8 without any pass; a pass that says
+  more raises it further. Each client socket still counts against its address's connection budget
+  (30 a minute on the Worker) before any room wakes: machines behind one address come back at that
+  pace and get no budget of their own.
 - **Sending it.** The PC puts it in the `x-ovis-relay-pass` header of every PC socket's upgrade
   (control, data, warm), never in the URL. A pass alone opens nothing: the socket still answers the
   server challenge for that `server_id`'s key, so a copied pass is no use without the PC's secret key.
@@ -196,7 +234,7 @@ pairing hosts, in a release most PCs run.
   removed from the settings cannot be matched against one, so without a revocation it is held to its
   pass's expiry and its 11-minute deadline. The PC then opens the nameplate again with the pass it
   holds now.
-- **Storage.** With passes off, and for pairing rooms always, the Durable Object never reads its
+- **Storage.** With passes off and no pass keys, and for pairing rooms always, the Durable Object never reads its
   storage.
 
 ## Limits and close codes
@@ -204,12 +242,14 @@ pairing hosts, in a release most PCs run.
 | Limit | Value | Past it |
 |---|---|---|
 | frame size | 64 KiB (Ovis frames stay under about 22 KiB) | that socket closes `1009` |
-| clients the PC has answered, per `server_id` | 8 | the new client closes `1013` |
-| clients the PC has not answered yet, per `server_id` | 4 | the oldest of them closes `1013` |
+| clients the PC has answered, per `server_id` | 8; a fleet room 8 + n (n from the pass, at most 1000, or a Bun relay's `--max-clients-per-server` less 8) | the new client closes `1013` |
+| clients the PC has not answered yet, per `server_id` | 4; a fleet room 4 + ceil(n/8) (17 for n = 100) | the oldest of them closes `1013`, paced clients first; a paced newcomer facing only default-lane ones closes itself |
 | a client the PC has not answered, with the PC connected | 15 s | the client closes `1013` |
 | a client waiting while no PC is connected | 30 s | the client closes `1013` |
-| a PC socket answering its challenge | 10 s, 16 at once per `server_id` | `4401`; past 16 the oldest closes `1013` |
+| a PC socket answering its challenge | 10 s, 16 at once per `server_id` (a fleet room max(16, ceil(n/8))) | `4401`; past them the oldest closes `1013` |
 | frames held for a waiting client | 200 frames or 1 MiB, whichever comes first | the client closes `1013` |
+| frames one room holds at worst | its waiting clients times 1 MiB, at most 32 MiB in all: 4 MiB for a room of 8, 17 MiB for n = 100, 32 MiB from n = 224 on (1000 included) | past 32 MiB, the oldest waiting client holding frames closes `1013` (paced ones first; a paced sender facing only default-lane ones closes itself) |
+| frames a Bun relay holds at worst | 1 MiB per waiting client and 32 MiB per room: at most `--max-sockets` MiB (1 GiB at 1024), whatever `--max-clients-per-server` says | as above |
 | idle | 120 s without a frame or keepalive | the socket closes `1001` |
 | connections per address | Cloudflare Worker: 30 a minute; Bun: 120 a minute | `429`, `Retry-After: 60` |
 | connections per PC whose relay pass holds, once its address's budget is spent (passes on) | Cloudflare Worker: 30 a minute; Bun: as per address | `429`, `Retry-After: 60` |
@@ -217,8 +257,19 @@ pairing hosts, in a release most PCs run.
 | connections from all addresses | 600 a minute | `429`, `Retry-After: 60` |
 | total sockets (Bun, including pending upgrades/proofs) | 1024 | `503`, `Retry-After: 60` |
 | rooms (Bun, including pending upgrades) | 256 | `503`, `Retry-After: 60` |
-| open sockets per address (Bun, waiting, connected or upgrading) | 64 | `429`, `Retry-After: 60`; open sockets are never closed for it |
+| open sockets per address (Bun, waiting, connected or upgrading) | 64 (`--max-sockets-per-address`) | `429`, `Retry-After: 60`; open sockets are never closed for it |
 | address buckets (Bun) | 4096 | a new address gets `429` until an idle bucket expires |
+
+Memory, measured on the linux-x64 `ovis-relay` binary: it idles at 23-25 MiB resident; a room of 8
+whose 4 waiting clients each hold 1 MiB took it to 40 MiB, a fleet room of 108 whose 17 waiting
+clients each hold 1 MiB to 56 MiB (an 18th pushed the oldest out), and 100 clients against a room
+of 8 (8 answered, 92 closed `1013`) to 53 MiB. A fleet room of 1008 that 129 waiting clients each
+tried to fill with 1 MiB kept 32 of them (32 MiB), peaked at 114 MiB while the frames dropped with
+the others waited for the garbage collector, and settled at 71 MiB; without the room's cap it held
+all 129 and stayed at 174 MiB. Each held frame is a copy, and what it was copied from lives until the
+collector takes it, so holding costs up to about twice what is held: on Cloudflare one room is one
+Durable Object, whose isolate has 128 MB, so a room holds at most 32 MiB (64 MiB measured at 152 MiB
+at its peak and 106 MiB settled).
 
 | Code | Meaning |
 |---|---|
@@ -309,7 +360,9 @@ with a notice naming the missing one and deploys nothing. It needs the `ovis.sh`
 account: the route in `wrangler.toml` makes `relay.ovis.sh` a custom domain of the Worker, and
 `workers_dev = false` leaves no second address. The deploy creates the Durable Object class
 (`[[migrations]]`) and the rate limiters (`[[ratelimits]]`, whose `namespace_id` only has to
-be unique among the account's limiters). The Worker itself has no secrets.
+be unique among the account's limiters). The Worker's one secret is `RELAY_PASS_KEYS`, the account
+service's public key ("Relay pass" above), which the owner sets with `wrangler secret put
+RELAY_PASS_KEYS`; without it passes stay off.
 
 One-time setup by the owner:
 
@@ -362,6 +415,12 @@ Either deploy the Worker to your own Cloudflare account (change `name` and the r
 bun relay/bun.ts --port 8787 --hostname 127.0.0.1
 ```
 
+Without a checkout, `bun scripts/build-relay.ts <platform> <dir>`
+builds both ways ready to use: `ovis-relay` (`ovis-relay.exe` on Windows), the Bun server compiled
+to one binary that takes the same flags (`ovis-relay --port 8787 --max-clients-per-server 108`), and
+`ovis-relay-worker.js` with a `wrangler.toml` for your own account (a workers.dev address, no
+staging copy, passes off): `wrangler deploy` from that folder.
+
 It listens on plain HTTP, so put it behind a TLS proxy (Caddy, nginx, `tailscale serve`) and give
 the PC and devices the `wss://` address. Bun enables in-memory token buckets by default,
 with a 120/address/minute and 600/global/minute budget. They start full and
@@ -386,11 +445,17 @@ The global cap remains a backstop.
 | `--max-pair-rooms` | `RELAY_MAX_PAIR_ROOMS` | 256 (pairing rooms for typed codes, apart from PCs' rooms) |
 | `--max-addresses` | `RELAY_MAX_ADDRESSES` | 4096 |
 | `--max-sockets-per-address` | `RELAY_MAX_SOCKETS_PER_ADDRESS` | 64 |
+| `--max-clients-per-server` | `RELAY_MAX_CLIENTS_PER_SERVER` | 8 (8 + n gives every PC a fleet of n machines: "Fleet rooms" above; 8 to 1008) |
+
+For a fleet of 100 machines behind one address: `--max-clients-per-server 108
+--max-sockets-per-address 256` (each machine holds its client socket and the PC a data socket for
+it). `--per-address-per-minute` stays as it is: `sync` names it, and the machines pace their
+returns by it.
 
 Flags override environment. Values must be positive safe integers; zero, infinity, fractions
 and missing flag values fail startup. `startBunRelay({ limits: { maxSockets: 2048, ... } })`
 accepts the same budgets as camel-case options (`perAddressPerMinute`, `globalPerMinute`,
-`maxSockets`, `maxRooms`, `maxPairRooms`, `maxAddresses`, `maxSocketsPerAddress`). Programmatic options do not read environment.
+`maxSockets`, `maxRooms`, `maxPairRooms`, `maxAddresses`, `maxSocketsPerAddress`, `maxClientsPerServer`). Programmatic options do not read environment.
 `startBunRelay({ limiters })` can replace just the rate limiters; room/socket caps still hold.
 Admission reserves both caps synchronously before upgrade, rolls back failed upgrades and
 reclaims a room when its last pending/open socket leaves. `/health` remains available at capacity.
@@ -427,4 +492,8 @@ frames, the idle alarm and the limiters. In CI they run with the unit tests in F
 clients each, sends 50 random frames each way per client and prints frames sent and received;
 it exits 1 unless every frame arrived intact and in order. `--url ws://host:port` points it at a
 running relay instead. The local load smoke sizes its budgets to the requested load rather than
-disabling production limits; provision matching budgets when using `--url`.
+disabling production limits; provision matching budgets when using `--url`. It prints how many
+clients the PC answered and how many the relay closed, by code, and fails unless all were
+answered. `--server-pass fleet=<n>` gives each PC a v3 pass with that fleet number, signed with a
+key made for the run that the local relay trusts: `bun relay/load-smoke.ts --pcs 1 --clients 100
+--server-pass fleet=100` answers all 100; without the flag 8 are answered and 92 closed `1013`.

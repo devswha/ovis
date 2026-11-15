@@ -199,6 +199,16 @@ describe("settleJournal", () => {
     expect(settleJournal(dir, PORT, "herdr-core")?.state).toBe("done");
   });
 
+  it("counts a move whose switch was asked for as interrupted on any runtime but herdr-core", async () => {
+    const dir = stateDir();
+    const { source, destination, options } = fakes();
+    await runMove(dir, PORT, "m1", plan, source, destination, { ...options, switchRuntime: () => { throw new Error("stopped"); } });
+    const journal = readJournal(dir, PORT)!;
+    journal.state = "switching";
+    await Bun.write(join(dir, `runtime-move-${PORT}.json`), JSON.stringify(journal));
+    expect(settleJournal(dir, PORT, "herdr")?.state).toBe("interrupted");
+  });
+
   it("never retries a move another server left mid-way, and names the agents it had ended", async () => {
     const dir = stateDir();
     const { source, destination, options } = fakes();

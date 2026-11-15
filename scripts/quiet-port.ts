@@ -23,6 +23,30 @@ export function quietRange(first: number, last: number): [number, number] | null
   return stretches.find(([from, to]) => to - from + 1 >= 1000) ?? null;
 }
 
+/**
+ * Ports a test never picks, binds or hands to a program: the default port of the owner's own Ovis (7317) and the
+ * maintainer's test app on this PC (17421). A request a test sends there reaches a live app.
+ */
+export const OWNER_PORTS: ReadonlySet<number> = new Set([7317, 17421]);
+
+/**
+ * A loopback port this test holds for as long as it keeps the listener: whatever connects there is closed at once, so a
+ * program pointed at it finds no app answering, and no other program can take the port meanwhile (a port bound and
+ * let go can be). Never one of OWNER_PORTS. `stop` lets it go.
+ */
+export function heldPort(): { readonly port: number; readonly stop: () => void } {
+  const passed: { stop: (closeActive?: boolean) => void }[] = [];
+  for (;;) {
+    const listener = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { open(socket) { socket.end(); }, data() {} } });
+    if (!OWNER_PORTS.has(listener.port)) {
+      for (const other of passed) other.stop(true);
+      return { port: listener.port, stop: () => listener.stop(true) };
+    }
+    // held until another port is had, so the system does not hand the same one again
+    passed.push(listener);
+  }
+}
+
 const given = new Set<number>();
 
 /**
@@ -36,15 +60,20 @@ export function quietPort(): number {
   const range = quietRange(...handedOut());
   // a host that hands out nearly every port has no such port: one of the system's, as before
   if (range === null) {
-    const probe = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
-    const port = probe.port;
-    probe.stop(true);
-    return port;
+    const passed: { stop: (closeActive?: boolean) => void }[] = [];
+    for (;;) {
+      const probe = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+      if (OWNER_PORTS.has(probe.port)) { passed.push(probe); continue; }
+      const port = probe.port;
+      probe.stop(true);
+      for (const other of passed) other.stop(true);
+      return port;
+    }
   }
   const [from, to] = range;
   for (let attempt = 0; attempt < 200; attempt++) {
     const port = from + Math.floor(Math.random() * (to - from + 1));
-    if (given.has(port)) continue;
+    if (given.has(port) || OWNER_PORTS.has(port)) continue;
     try {
       Bun.listen({ hostname: "127.0.0.1", port, socket: { data() {} } }).stop(true);
       given.add(port);

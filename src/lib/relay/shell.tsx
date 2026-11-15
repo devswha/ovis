@@ -23,6 +23,7 @@ import type { Attempt, RelayShellMount, RelayShellState, SheetJoin } from "./she
 import { openRelayTransport, type RelayTransport } from "./transport.ts";
 import { offerFromCode, TypedCodeError } from "./pairCode.ts";
 import { ConsentChangedError, createAccountController } from "./accountController.ts";
+import { showEnrollmentNotice } from "./enrollmentNotice.ts";
 import { createPcSweep } from "./pcSweep.ts";
 import { createUpdateFlow, loadObservedVersions, observedVersions, reloadPage, freshShellNext, forgetSavedPc } from "./updateFlow.ts";
 export type { RelayShellMount } from "./shellState.ts";
@@ -50,6 +51,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   let comparison: { name: string | null; digits: string; matched: () => void; typed: boolean } | null = null;
   let challenge = 0, checked = false;
   const enrolling = new Set<RelayTransport>();
+  // takes away the enrollment notice of the PC open here (enroll): that PC is left, so no PC opened after it shows its wait
+  let leftPc = (): void => {};
   const directSocket = nativeDirectSocket();
   const directTailnet = directSocket ? nativeDirectTailnet() : undefined;
   const findByCode = mount.findByCode ?? offerFromCode;
@@ -296,7 +299,19 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     // the confirm said this device gets a key of its own: a sign-in stored since then adds nothing to its account here
     if (attempt.accountless) return;
     enrolling.add(opened);
-    void account.enroll(opened, attempt.offer.server_id, attempt.fresh === true, attempt.fresh === true && attempt.introducible === true, { consent: consentOf(attempt), ...(settled ? { settled } : {}) }).then((enrollment) => {
+    // the open PC (the first pairing enters it before the enrollment reads the other PCs) and a ready screen still waiting
+    // on this enrollment say how long the account service asked it to wait
+    let ended = (): void => {};
+    const waiting = (seconds: number | null): void => {
+      ended();
+      ended = () => {};
+      // only while this enrollment's PC is the one open here: a PC left meanwhile says its wait nowhere
+      if (seconds !== null && transport === opened) leftPc = ended = showEnrollmentNotice({ kind: "waiting", seconds });
+      if (app === null && last === attempt && shown?.kind === "ready" && (shown.enrollment === "pending" || (typeof shown.enrollment === "object" && shown.enrollment.state === "waiting"))) {
+        show({ ...shown, enrollment: seconds === null ? "pending" : { state: "waiting", seconds } });
+      }
+    };
+    void account.enroll(opened, attempt.offer.server_id, attempt.fresh === true, attempt.fresh === true && attempt.introducible === true, { consent: consentOf(attempt), waiting, ...(settled ? { settled } : {}) }).then((enrollment) => {
       if (app === null && last === attempt && shown?.kind === "ready") show({ ...shown, enrollment });
     }, (error: unknown) => {
       console.warn("Ovis: this PC did not join the account yet", error instanceof Error ? error.name : error);
@@ -355,7 +370,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     }, asked);
   };
   const consentOf = (attempt: Attempt): AccountSession | null | undefined => attempt.accountless ? null : attempt.signIn;
-  const cancelAttempt = (): void => { press++; confirming = false; comparison = null; last = null; opening?.abort(); opening = null; updates.cancel(); if (transport && !enrolling.has(transport)) transport.close(); transport = null; };
+  const cancelAttempt = (): void => { leftPc(); press++; confirming = false; comparison = null; last = null; opening?.abort(); opening = null; updates.cancel(); if (transport && !enrolling.has(transport)) transport.close(); transport = null; };
   const retry = (): void => {
     if (shown?.kind === "ready" && shown.enrollment === "failed" && transport && last) { show({ ...shown, enrollment: "pending" }); enroll(transport, last); return; }
     if (last === null || !(shown?.kind === "failed" || shown?.kind === "outdated" || shown?.kind === "compare" && shown.wrong)) return;

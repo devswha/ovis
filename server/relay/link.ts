@@ -12,14 +12,25 @@ import { answerServerChallenge, PERMANENT_SERVER_PROOF_REFUSALS, SERVER_PROOF_CL
 import { RELAY_PASS_CLOSE, RELAY_PASS_HEADER, parseRelayPass, relayPassAdmitsNewSessions } from "../../shared/relay-pass.ts";
 import { SignedInSessions } from "./admissions.ts";
 import type { RelayErrorCode } from "../../shared/protocol.ts";
+import type { Fleet } from "../fleet/sessions.ts";
+import type { MachineAdmission } from "./session.ts";
+import { fleetInUse } from "../fleet/direct.ts";
+import { relayPace, RelaySocketBudget } from "../fleet/relay-pace.ts";
+import type { RelayLane } from "../fleet/relay-pace.ts";
 
 /** The fixed codes a link's own errors carry. */
 export type LinkErrorCode = Extract<RelayErrorCode, "relay_unreachable" | "server_key_refused" | "pass_required">;
 
-/** Signed-in sessions this PC serves at once, as many as the relay lets in (relay/core.ts MAX_CLIENTS). */
+/**
+ * Signed-in device sessions this PC serves at once, as many as the relay lets into a room without a fleet (relay/core.ts
+ * MAX_CLIENTS). A fleet room holds more (the `max_clients` its `sync` names): those places are for machine sessions,
+ * which are counted apart, so devices still get no more than these.
+ */
 const MAX_SESSIONS = 8;
-/** Clients still signing in beyond those, as many as the relay holds waiting (relay/core.ts MAX_PENDING). */
+/** Clients still signing in beyond those, as many as the relay holds waiting (relay/core.ts MAX_PENDING; more in a fleet room). */
 const MAX_PENDING = 4;
+/** The largest room a relay may name (relay/core.ts roomLimits: 8 + a fleet of at most 1000). */
+const MAX_ROOM = 1008;
 /** A relay control message is a short JSON object (a sync names at most 8 ids). */
 const CONTROL_MESSAGE_BYTES = 4096;
 /** A client whose sign-in or pairing is being verified at its deadline gets this long to finish. */
@@ -68,8 +79,15 @@ export interface RelayLinkOptions {
   readonly relayHints?: () => readonly string[];
   /** This PC's direct carriers (RelaySession directCarriers). */
   readonly directCarriers?: (tailnet: boolean) => readonly string[];
+  /** This PC's direct carriers for a fleet machine (RelaySession machineCarriers). */
+  readonly machineCarriers?: () => readonly string[];
   /** The PC's signed-in sessions over every way in (admissions.ts); this link's own when not given. */
   readonly sessions?: SignedInSessions;
+  /**
+   * The fleet this PC controls (server/fleet/sessions.ts): machines sign in on this link's sessions, counted there
+   * (OVIS_FLEET_MAX) and never among the device sessions. Without it a machine's sign-in is refused as before.
+   */
+  readonly fleet?: Fleet;
 }
 
 /** `mode` is the relay's configured pass mode; a relay from before it said so names none. */
@@ -99,6 +117,8 @@ interface DataConnection {
   cancelKeepalive?: () => void;
   /** Set once the client signed in or paired; until then the connection holds no session place. */
   deviceId?: string;
+  /** Set once a fleet machine signed in on it: a place of the room's fleet share, never a device's. */
+  machineId?: string;
   /** Gives its signed-in place back (SignedInSessions.admit). */
   release?: () => void;
   /** counts the session as its device's for good: its client opened a stream on it */
@@ -141,12 +161,33 @@ export class RelayLink {
   private passRefused = false;
   /** The pass the current control socket was opened with. */
   private controlPass: string | null = null;
+  /**
+   * The pass forms this link's relay named in its last `sync` (`pass_versions`, integers only; [] from a relay that names
+   * none), or null before one and after the relay refused the pass: server/relay/pass.ts passVersionsFor.
+   */
+  passVersions: readonly number[] | null = null;
   /** What this relay last said of passes in `sync`; kept while the control socket reconnects, so a limit holds meanwhile. */
   private notice: RelayPassNotice | null = null;
+  /** The answered clients the relay's room holds, as its last `sync` named them; MAX_SESSIONS from a relay that names none. */
+  private room = MAX_SESSIONS;
+  /**
+   * The machine sessions this link admitted (AUTH verified) until each ends, oldest first: at most the room's fleet share,
+   * `room - MAX_SESSIONS`, so machines never take one of the device places (none in a room without a fleet allowance).
+   */
+  private readonly machines: RelaySession[] = [];
   /** The control socket the last renewal went out on, and when (the link's clock). */
   private renewed: { socket: WebSocket; at: number } | undefined;
   /** A renewal waiting for the relay's minute since the one before it to pass. */
   private cancelRenewal: (() => void) | undefined;
+  /**
+   * While fleet machines use this relay, every socket the PC opens to it draws from this bucket (todo 37,
+   * docs/fleet-link.md "The relay pace"): control and warm first, then devices during their window, then machines.
+   */
+  private socketBudget: RelaySocketBudget | undefined;
+  /** The ids the relay named in the paced lane (a fleet machine's dial), until each is answered or gone. */
+  private readonly paced = new Set<string>();
+  /** Clients waiting for a token, with the cancel of their wait. */
+  private readonly drawing = new Map<string, () => void>();
 
   constructor(private readonly options: RelayLinkOptions) {
     this.clock = options.clock ?? relayClock;
@@ -156,6 +197,24 @@ export class RelayLink {
   get sessions(): number { return [...this.data.values()].filter((entry) => entry.deviceId && entry.session?.mux.active).length; }
 
   start(): void { if (!this.stopped && !this.control) this.openControl(); }
+
+  /** The bucket while the fleet is in use (a machine that is not revoked), else nothing is paced, as before todo 37. */
+  private budget(): RelaySocketBudget | undefined {
+    if (!this.options.fleet || !fleetInUse(this.options.fleet)) return undefined;
+    this.socketBudget ??= new RelaySocketBudget(relayPace(this.options.fleet.pace.budget), this.clock);
+    return this.socketBudget;
+  }
+
+  /** Sockets this link drew from its bucket, with when (the storm's MAX_CONTROLLER_SOCKETS_PER_MINUTE). */
+  get budgetGrants(): readonly number[] { return this.socketBudget?.granted ?? []; }
+
+  /** Opens through the bucket when there is one (returns at once otherwise). */
+  private draw(lane: RelayLane, open: () => void, key?: string): void {
+    const budget = this.budget();
+    if (!budget) { open(); return; }
+    const cancel = budget.take(lane, () => { if (key) this.drawing.delete(key); open(); }, () => { if (key) { this.drawing.delete(key); this.paced.delete(key); } });
+    if (key) this.drawing.set(key, cancel);
+  }
 
   private socket(connectionId?: string, warm?: string): WebSocket {
     const url = new URL("/v1/ws", this.options.relay);
@@ -206,6 +265,18 @@ export class RelayLink {
 
   private openControl(): void {
     if (this.stopped) return;
+    if (this.budget() && !this.drawingControl) {
+      this.drawingControl = true;
+      this.draw("control", () => { this.drawingControl = false; this.openControlNow(); });
+      return;
+    }
+    if (!this.drawingControl) this.openControlNow();
+  }
+
+  private drawingControl = false;
+
+  private openControlNow(): void {
+    if (this.stopped || this.control) return;
     this.options.onState("connecting", null);
     let socket: WebSocket;
     try { socket = this.socket(); }
@@ -243,6 +314,18 @@ export class RelayLink {
       if (value.type === "sync" && "connection_ids" in value && Array.isArray(value.connection_ids)
         && value.connection_ids.length <= 8 && value.connection_ids.every((id) => typeof id === "string" && /^[0-9a-f]{32}$/.test(id))) {
         this.attempts = 0;
+        this.room = "max_clients" in value && Number.isSafeInteger(value.max_clients) && (value.max_clients as number) >= MAX_SESSIONS
+          && (value.max_clients as number) <= MAX_ROOM ? value.max_clients as number : MAX_SESSIONS;
+        // a smaller room than before: the newest machines past its fleet share give way, never a device place
+        for (const session of this.machines.slice(this.fleetShare)) session.closeMachine("resource_exhausted", "controller_limit");
+        // the relay's budget sets the pace (30 a minute when it names none); the devices' window starts now
+        const budget = "per_address_per_minute" in value && Number.isSafeInteger(value.per_address_per_minute) ? value.per_address_per_minute as number : undefined;
+        this.options.fleet?.setRelayBudget(budget);
+        this.socketBudget?.setProfile(relayPace(budget));
+        this.budget()?.proven();
+        if ("paced" in value && Array.isArray(value.paced)) for (const id of value.paced) if (typeof id === "string" && value.connection_ids.includes(id)) this.paced.add(id);
+        this.passVersions = "pass_versions" in value && Array.isArray(value.pass_versions)
+          ? value.pass_versions.filter((version): version is number => Number.isSafeInteger(version)) : [];
         this.options.onState("online", null);
         this.notice = "relay_pass" in value ? passNotice(value.relay_pass) : null;
         this.options.onPassNotice?.(this.notice);
@@ -256,8 +339,15 @@ export class RelayLink {
           this.openWarm();
         }
       } else if ("connection_id" in value && typeof value.connection_id === "string" && /^[0-9a-f]{32}$/.test(value.connection_id)) {
-        if (value.type === "connected") this.openData(value.connection_id);
-        else if (value.type === "disconnected") this.data.get(value.connection_id)?.socket.close();
+        if (value.type === "connected") {
+          if ("lane" in value && value.lane === "paced") this.paced.add(value.connection_id);
+          this.openData(value.connection_id);
+        } else if (value.type === "disconnected") {
+          this.drawing.get(value.connection_id)?.();
+          this.drawing.delete(value.connection_id);
+          this.paced.delete(value.connection_id);
+          this.data.get(value.connection_id)?.socket.close();
+        }
         else socket.close();
       } else socket.close();
     };
@@ -279,6 +369,8 @@ export class RelayLink {
       }
       // refused for the pass: asking again without a new one would be refused again (renewPass reopens)
       if (event.code === RELAY_PASS_CLOSE) {
+        // the relay may not read the pass it was sent (a v3 one, say): what it said of pass forms counts no more
+        this.passVersions = null;
         // a pass came while this socket was being let in: try again with it, it was not the one refused
         const held = this.options.pass?.() ?? null;
         if (held !== null && held !== this.controlPass) { if (!this.stopped) this.retry(); return; }
@@ -309,15 +401,21 @@ export class RelayLink {
     this.cancelRetry = this.clock.setTimeout(() => this.openControl(), delay);
   }
 
-  /** Whether one more client may start signing in; the relay bounds who reaches this PC (relay/core.ts: MAX_CLIENTS answered, MAX_PENDING waiting). */
+  /** Whether one more client may start signing in; the relay bounds who reaches this PC (relay/core.ts roomLimits: the room answered, its waiting queue). */
   private hasRoom(id: string): boolean {
     if (this.stopped || this.data.has(id)) return false;
     // a client still signing in holds no session place and is closed at its deadline (serveData)
-    if (this.data.size >= MAX_SESSIONS + MAX_PENDING) return false;
-    return [...this.data.values()].filter((entry) => entry.deviceId).length < MAX_SESSIONS;
+    if (this.data.size >= this.room + MAX_PENDING + Math.ceil((this.room - MAX_SESSIONS) / 8)) return false;
+    return [...this.data.values()].filter((entry) => entry.deviceId || entry.machineId).length < this.room;
   }
 
   private openData(id: string): void {
+    if (!this.hasRoom(id) || this.drawing.has(id)) return;
+    // a paced id (a machine's dial) and a default-lane one (a device) take their tokens by lane
+    this.draw(this.paced.has(id) ? "paced" : "default", () => { this.paced.delete(id); this.openDataNow(id); }, id);
+  }
+
+  private openDataNow(id: string): void {
     if (!this.hasRoom(id)) return;
     let socket: WebSocket;
     try { socket = this.socket(id); } catch { return; }
@@ -326,6 +424,19 @@ export class RelayLink {
   }
 
   private openWarm(): void {
+    const control = this.warmControl;
+    if (this.stopped || this.warm || this.cancelWarmRetry || this.drawingWarm || !control || control.socket !== this.control) return;
+    if (this.budget()) {
+      this.drawingWarm = true;
+      this.draw("control", () => { this.drawingWarm = false; this.openWarmNow(); });
+      return;
+    }
+    this.openWarmNow();
+  }
+
+  private drawingWarm = false;
+
+  private openWarmNow(): void {
     const control = this.warmControl;
     if (this.stopped || this.warm || this.cancelWarmRetry || !control || control.socket !== this.control) return;
     let socket: WebSocket;
@@ -403,12 +514,12 @@ export class RelayLink {
     };
     const entry: DataConnection = { socket, sockets: new Set(), cancelTimeout: this.clock.setTimeout(deadline, 15_000) };
     this.data.set(id, entry);
-    // The relay refuses a client outright once 8 are answered, before this PC hears of it, so a room full
-    // of clients that never sign in would turn everyone away. Keep a place free: the oldest client not
+    // The relay refuses a client outright once its room is answered, before this PC hears of it, so a room
+    // full of clients that never sign in would turn everyone away. Keep a place free: the oldest client not
     // signed in gives way to a new one. A signed-in session is never evicted.
-    if (this.data.size >= MAX_SESSIONS) {
+    if (this.data.size >= this.room) {
       // a phone comparing digits waits for a person: it gives way last
-      const waiting = [...this.data].filter(([other, candidate]) => other !== id && !candidate.deviceId);
+      const waiting = [...this.data].filter(([other, candidate]) => other !== id && !candidate.deviceId && !candidate.machineId);
       const oldest = waiting.find(([, candidate]) => !candidate.session?.pairing) ?? waiting[0];
       if (oldest) {
         this.data.delete(oldest[0]);
@@ -463,8 +574,10 @@ export class RelayLink {
         onAuthenticated: (deviceId) => this.authenticated(id, entry, deviceId),
         onChosen: () => entry.chosen?.(),
         refuseNewDevice: () => this.refuseNewDevice(id, entry),
+        ...(this.options.fleet ? { fleet: this.options.fleet, enrolment: this.options.fleet, machineSessions: { admit: (machineId: string, session: RelaySession) => this.admitMachine(machineId, session), signIns: this.options.fleet.signIns, paceFor: (machineId: string, rttMs: number) => this.options.fleet!.paceFor(machineId, rttMs) }, onMachine: (machineId: string) => this.machine(id, entry, machineId) } : {}),
         ...(this.options.relayHints ? { relayHints: this.options.relayHints } : {}),
         ...(this.options.directCarriers ? { directCarriers: this.options.directCarriers } : {}),
+        ...(this.options.machineCarriers ? { machineCarriers: this.options.machineCarriers } : {}),
         websocket: {
           ...handlers,
           open: (peer) => { entry.sockets.add(peer); return handlers.open(peer); },
@@ -502,6 +615,39 @@ export class RelayLink {
     return true;
   }
 
+  /** A machine signed in: it keeps its socket past the sign-in deadline, and no client that has not signed in evicts it. */
+  /** The relay room's places beyond the device sessions: what machines may hold on this link. */
+  private get fleetShare(): number { return Math.max(0, this.room - MAX_SESSIONS); }
+
+  /** A verified machine on this link: refused past the room's fleet share, else counted by the fleet (OVIS_FLEET_MAX) and here. */
+  private admitMachine(machineId: string, session: RelaySession): ReturnType<Fleet["admit"]> {
+    if (this.machines.length >= this.fleetShare) {
+      this.options.fleet!.refused(machineId, "controller_limit");
+      return { code: "resource_exhausted", cause: "controller_limit" };
+    }
+    const admission = this.options.fleet!.admit(machineId, session);
+    if ("code" in admission) return admission;
+    this.machines.push(session);
+    let ended = false;
+    const counted: MachineAdmission = {
+      committed: () => admission.committed(),
+      advert: (advert) => admission.advert(advert),
+      refused: (cause) => admission.refused?.(cause),
+      superseded: () => admission.superseded?.(),
+      ended: () => {
+        if (!ended) { ended = true; this.machines.splice(this.machines.indexOf(session), 1); }
+        admission.ended();
+      },
+    };
+    return counted;
+  }
+
+  private machine(id: string, entry: DataConnection, machineId: string): void {
+    if (this.data.get(id) !== entry) return;
+    entry.cancelTimeout();
+    entry.machineId = machineId;
+  }
+
   private authenticated(id: string, entry: DataConnection, deviceId: string): void {
     if (this.data.get(id) !== entry) return;
     entry.cancelTimeout();
@@ -517,6 +663,8 @@ export class RelayLink {
   async stop(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
+    this.socketBudget?.stop();
+    this.drawing.clear();
     this.cancelRetry?.();
     this.cancelKeepalive?.();
     this.cancelRenewal?.();

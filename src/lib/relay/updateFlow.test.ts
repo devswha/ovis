@@ -6,7 +6,7 @@ import type { Attempt, RelayShellState } from "./shellState.ts";
 import { getTransport, nativeTransport, setTransport } from "../transport.ts";
 import { isValidElement, type ReactNode } from "react";
 import { RelayShell, type RelayShellProps } from "../../components/RelayShell.tsx";
-import { createShellTestPage } from "./shell.test.tsx";
+import { createShellTestPage } from "./shellTestPage.fixture.ts";
 import { forgetSavedPc, mountRelayShell, type RelayShellMount } from "./shell.tsx";
 import { exportPublicKey, generateKeyPair } from "../../../shared/relay-e2ee.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";

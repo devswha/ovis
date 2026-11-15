@@ -9,6 +9,7 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
 import { newRecordId, type AccountRecord } from "../../../shared/account-records.ts";
 import { isWssOrigin } from "../../../shared/relay-offer.ts";
+import { RELAY_PASS_MAX_FLEET } from "../../../shared/relay-pass.ts";
 import { GLOBAL_APP } from "../../../shared/relay-regions.ts";
 import type { AccountLock, AccountProvider, AccountSession, AccountStore } from "./store.ts";
 import { ACCOUNT_PROVIDERS, accountLock } from "./store.ts";
@@ -174,13 +175,14 @@ export async function failure(response: Response): Promise<AccountServiceError> 
 
 export function parseAccountLimits(value: unknown): AccountLimits | null {
   if (!isRecord(value)) return null;
-  const { plan, pcs_max, pcs_used, data_cap_bytes, data_used_bytes, data_metering, until } = value;
+  const { plan, pcs_max, pcs_used, data_cap_bytes, data_used_bytes, data_metering, until, fleet_max } = value;
   if (typeof plan !== "string" || plan.trim() === "") return null;
   if (typeof pcs_max !== "number" || !Number.isSafeInteger(pcs_max) || pcs_max < 0) return null;
   if (pcs_used !== undefined && pcs_used !== null && (typeof pcs_used !== "number" || !Number.isSafeInteger(pcs_used) || pcs_used < 0)) return null;
   if (data_cap_bytes !== undefined && data_cap_bytes !== null && (typeof data_cap_bytes !== "number" || !Number.isSafeInteger(data_cap_bytes) || data_cap_bytes < 0)) return null;
   if (data_used_bytes !== undefined && data_used_bytes !== null && (typeof data_used_bytes !== "number" || !Number.isSafeInteger(data_used_bytes) || data_used_bytes < 0)) return null;
   if (until !== undefined && until !== null && (typeof until !== "number" || !Number.isFinite(until))) return null;
+  if (fleet_max !== undefined && fleet_max !== null && (typeof fleet_max !== "number" || !Number.isSafeInteger(fleet_max) || fleet_max < 0 || fleet_max > RELAY_PASS_MAX_FLEET)) return null;
   const metered = data_metering === undefined || data_metering === "on";
   return {
     // a long name is shortened, never a reason to drop the limits
@@ -190,6 +192,7 @@ export function parseAccountLimits(value: unknown): AccountLimits | null {
     ...(typeof data_cap_bytes === "number" ? { data_cap_bytes } : {}),
     ...(metered && typeof data_used_bytes === "number" ? { data_used_bytes } : {}),
     ...(until !== undefined ? { until: until ?? null } : {}),
+    ...(typeof fleet_max === "number" && fleet_max > 0 ? { fleet_max } : {}),
   };
 }
 

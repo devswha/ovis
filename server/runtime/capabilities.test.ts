@@ -1,7 +1,18 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { capabilities, HERDR, HERDR_CORE, runtimeIdentity, serveRuntime } from "./capabilities.ts";
+import { capabilities, HERDR, HERDR_CORE, runtimeIdentity, runtimeSeenMarker, serveRuntime, type RuntimeSeenMarker } from "./capabilities.ts";
 
-afterEach(() => serveRuntime(null));
+afterEach(() => { serveRuntime(null); });
+
+describe("the seen marker the server marks a read finish through", () => {
+  const marker = (name: string): RuntimeSeenMarker & { name: string } => ({ name, mark: () => Promise.resolve() });
+  it("is herdr-core's on herdr-core, and none on herdr", () => {
+    const core = marker("core");
+    serveRuntime(HERDR_CORE);
+    expect(runtimeSeenMarker(() => core)).toBe(core);
+    serveRuntime(HERDR);
+    expect(runtimeSeenMarker(() => core)).toBeNull();
+  });
+});
 
 describe("the runtime a process serves", () => {
   it("is herdr's TUI server until a runtime's start names itself, and again once it stops", () => {

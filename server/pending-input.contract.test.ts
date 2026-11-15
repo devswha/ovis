@@ -2151,12 +2151,16 @@ describe("a create request's first message", () => {
     });
     globalThis.process.kill(launcher.pid, "SIGUSR1");
     await started;
-    // the launcher ends SESSION1 once SESSION2 runs: the replacement is complete once herdr no longer lists SESSION1
-    for (const deadline = Date.now() + 10_000; (await herdrClient.paneProcessInfo(f.pane))?.foreground_processes?.some((entry) => entry.pid === first.pid);) {
-      if (Date.now() > deadline) throw new Error("SESSION1 did not end");
-      await Bun.sleep(25);
+    // the launcher ends SESSION1 once SESSION2 runs: the replacement is complete once herdr no longer lists SESSION1 and
+    // lists SESSION2 in front, both in one answer: the launcher ends SESSION1 as SESSION2 starts, and herdr can answer
+    // without SESSION1 before it lists SESSION2 as the agent (until its exec, SESSION2 is listed as the launcher's copy)
+    let inFront: NonNullable<herdrClient.ProcessInfo["foreground_processes"]> = [];
+    for (const deadline = Date.now() + 10_000; ; await Bun.sleep(25)) {
+      inFront = (await herdrClient.paneProcessInfo(f.pane))?.foreground_processes ?? [];
+      if (!inFront.some((entry) => entry.pid === first.pid) && inFront.some((entry) => entry.argv?.[0] === join(root, "claude"))) break;
+      if (Date.now() > deadline) throw new Error(`SESSION2 did not replace SESSION1 in front: ${JSON.stringify(inFront)}`);
     }
-    const replacement = (await herdrClient.paneProcessInfo(f.pane))?.foreground_processes?.find((entry) => entry.argv?.[0] === join(root, "claude"));
+    const replacement = inFront.find((entry) => entry.argv?.[0] === join(root, "claude"));
     expect(replacement).toBeDefined(); // control: SESSION2 is a live foreground agent
     expect(replacement?.pid).not.toBe(first.pid); // control: the process really changed, in the same terminal
     const held = listed(f.socket, f.pane, message.id, "held");

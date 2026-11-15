@@ -7,10 +7,13 @@
  * back off its entry once whatever it ran has written its own history. A sheet closed by Back
  * leaves its entry ahead of the app; Forward onto it goes on to the next. A sheet opened while
  * that step back is on its way (the browser runs a traversal later) is not closed by the step's
- * popstate: its entry is made again over where the step landed. A sheet still up under one opened
- * over it (the drawer under a row's ⋯ menu, a dialog under a confirmation) stays up: the sheets
- * are a stack, Back closes the one on top, and that one's own close comes back to the one under
- * it. So does a sheet made to stay up under a navigation opened over it (a terminal peek under
+ * popstate: its entry is made again over where the step landed. Nor does that step take the app back
+ * from the navigations made meanwhile (a second Escape closing the details the sheet opened over): the
+ * step lands under them, they are made again there in order, and whoever keeps state by the entry
+ * leaves it as it is (sheetStep.holds), as what it shows is theirs already. A sheet still up under
+ * one opened over it (the drawer under a row's ⋯ menu, a dialog under a confirmation) stays up:
+ * the sheets are a stack, Back closes the one on top, and that one's own close comes back to the
+ * one under it. So does a sheet made to stay up under a navigation opened over it (a terminal peek under
  * Settings), whose entry the navigation took: the Back that leaves it does not close the sheet.
  * While the history is on that entry or above it the navigation is still over the sheet, which is
  * left as it is; the Back that goes below it gives the sheet its entry back.
@@ -220,6 +223,20 @@ let stepping: Set<string> | null = null;
 /** whether the popstate being dispatched is such a step: this module listens first, so the app's Back reads it for the same event */
 let steppedOff = false;
 /**
+ * The navigations the app pushed while that step was on its way (a second Escape closing what the sheet
+ * opened over, then another), in order: each entry's state as the app wrote it (what it wrote over it
+ * since included), its address, and what tells it from every other entry. That is its key where the
+ * browser tells one, and else an id this module writes into the newest one's state (`marked`), taken off
+ * it again before the next is pushed and once the step lands: two entries may have the same address and
+ * state. The browser lands the step under them, on the entry the sheet opened over, and its popstate
+ * pushes them again there before the app hears that entry.
+ */
+let overtaking: ReadonlyArray<{ readonly state: unknown; readonly href: string; readonly id: string; readonly marked: boolean }> = [];
+/** where that id is written */
+const OVERTAKING_KEY = "ovis:overtaking";
+/** `state` with that id */
+const marked = (state: unknown, id: string): unknown => ({ ...(state !== null && typeof state === "object" ? state : {}), [OVERTAKING_KEY]: id });
+/**
  * While a step back that another part of the app asked for is on its way (sheetStep.goingBack):
  * no Back of the user's, so its popstate closes no sheet. A sheet that opens meanwhile makes no
  * entry yet (it would lie over the entries that step is leaving): its entry is made where it lands.
@@ -424,8 +441,16 @@ if (typeof window !== "undefined") {
     return push(placed(state, next), ...rest);
   };
   // an entry stays where it is: it keeps its place through whatever is written on it, and takes no other entry's
-  history.replaceState = ((state: unknown, ...rest: [string, (string | URL | null)?]) =>
-    replace(counting() ? placed(state, placeIn(history.state)) : state, ...rest)) as History["replaceState"];
+  history.replaceState = ((state: unknown, ...rest: [string, (string | URL | null)?]) => {
+    // the last navigation made while a closed sheet's step is on its way, written over: it keeps its id,
+    // and is made again as it stands now
+    const last = stepping === null ? undefined : overtaking.at(-1);
+    replace(counting() ? placed(state, placeIn(history.state)) : state, ...rest);
+    if (last === undefined) return;
+    const written: unknown = history.state;
+    if (last.marked) replace(marked(written, last.id), "");
+    overtaking = [...overtaking.slice(0, -1), { ...last, state: written, href: window.location.href }];
+  }) as History["replaceState"];
   history.pushState = ((state: unknown, ...rest: [string, (string | URL | null)?]) => {
     try {
       if (pushing) return pushEntry(state, ...rest);
@@ -434,8 +459,19 @@ if (typeof window !== "undefined") {
       // A staying sheet still up under it is covered
       seen = null;
       if (owned(history.state)) { cover(history.state); return history.replaceState(without(state), ...rest); }
+      // the entry this push leaves, made while a closed sheet's step is on its way, is as the app wrote it again
+      const previous = stepping === null ? undefined : overtaking.at(-1);
+      if (previous?.marked === true) replace(previous.state, "");
       // an entry pushed over a sheet's copies its state (the file viewer's does): only the sheet's own carries its mark
-      return pushEntry(without(state), ...rest);
+      pushEntry(without(state), ...rest);
+      // a navigation made while a closed sheet's step is on its way: the step lands under it (hear)
+      if (stepping !== null) {
+        const key = where()?.key;
+        const id = key ?? token();
+        const pushed: unknown = history.state;
+        if (key === undefined) replace(marked(pushed, id), "");
+        overtaking = [...overtaking, { state: pushed, href: window.location.href, id, marked: key === undefined }];
+      }
     } finally {
       // a new entry drops the ones ahead, and what a navigation wrote is no place to go onto again
       here = where();
@@ -553,6 +589,8 @@ if (typeof window !== "undefined") {
     const step = stepping;
     stepping = null;
     steppedOff = step !== null;
+    const newest = overtaking;
+    overtaking = [];
     const heir = from === null ? undefined : heirs.get(from);
     // the entry just left, by its key: where the browser skips an entry made now, the sheets that stay go onto it again
     const left = SKIPS && from !== null ? entryKeys.get(from) : undefined;
@@ -644,9 +682,23 @@ if (typeof window !== "undefined") {
       climb(top.id, onward);
       return;
     }
+    // the step landed under the navigations made while it was on its way: they are made again here, in
+    // order, so the address the app reads is the newest one (in the hashchange after this popstate too).
+    // The event carries the entry it landed on, which they superseded: whoever keeps state by the entry
+    // (a file, a diff, a web page, Settings) leaves it, as it shows the newest navigation's already
+    // (told by the entry's key, or by the id written into its state where the browser tells none)
+    const last = newest.at(-1);
+    const landedState: unknown = window.history.state;
+    const landedId = last?.marked !== true ? here?.key
+      : landedState !== null && typeof landedState === "object" ? (landedState as Record<string, unknown>)[OVERTAKING_KEY] : undefined;
+    const overtaken = last !== undefined && landedId !== last.id;
+    if (overtaken) {
+      for (const entry of newest) window.history.pushState(entry.state, "", entry.href);
+      holding = true;
+    } else if (last?.marked === true) window.history.replaceState(last.state, "");
     // their entries are made again over where the history landed
     for (const kept of again) remake(kept.id, kept.onBack);
-    if (retired && again.length === 0) window.history.forward();
+    if (retired && again.length === 0 && !overtaken) window.history.forward();
     // the user's own Back, by one entry: the one it left lies right ahead
     else if (!own && step === null && was !== null && here !== null && here.index === was.index - 1) ahead = was.key;
   };

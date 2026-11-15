@@ -78,7 +78,9 @@ async function main(args: string[]): Promise<void> {
     const sources = sourceTrees();
     if ("error" in sources) fail(sources.error);
     const { version } = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version: string };
-    console.log(JSON.stringify(writeManifest(out, { version, sources: sources as { server: string; shared: string } }), null, 2));
+    // the extra binaries the release carries are named here, not in the exported reader (scripts/release-binaries.ts)
+    const { RELEASE_BINARIES } = await import("./release-binaries.ts");
+    console.log(JSON.stringify(writeManifest(out, { version, sources: sources as { server: string; shared: string }, binaries: RELEASE_BINARIES }), null, 2));
   } else if (verb === "sign") {
     const expected = flags(rest, ["--public-key"]).get("--public-key") ?? RELEASE_PUBLIC_KEY;
     const key = process.env[SIGNING_KEY_VARIABLE]?.trim();

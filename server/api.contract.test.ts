@@ -4482,11 +4482,22 @@ describe("pairing and identity", () => {
   it("the plugin script prints a code a headless PC's owner can hand to a phone", async () => {
     const configDir = mkdtempSync(join(tmpdir(), "herdr-pair-cli-"));
     try {
-      // spawned asynchronously: a synchronous spawn would block the very server the script asks
+      // spawned asynchronously: a synchronous spawn would block the very server the script asks. On a terminal of its
+      // own (a PTY is its stdin, stdout and stderr): `pair` writes its code to nothing else
       const pairCli = async (port: number) => {
-        const child = Bun.spawn(["bun", "scripts/plugin.ts", "pair"], { cwd: join(import.meta.dir, ".."), env: { ...process.env, PORT: String(port), HOST: "127.0.0.1", HERDR_PLUGIN_CONFIG_DIR: configDir, OVIS_TOKEN: "" }, stdout: "pipe", stderr: "pipe" });
-        const [out, err, exitCode] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
-        return { out, err, exitCode };
+        let shown = "";
+        const decoder = new TextDecoder();
+        // A terminal can hand over its last bytes after the child exited: what it showed is read only once the
+        // terminal's own stream ended (its `exit`), within 15 seconds, else the test fails with what came
+        let ended = (): void => undefined;
+        const complete = new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error(`the terminal's output never ended: ${JSON.stringify(shown)}`)), 15_000);
+          ended = () => { clearTimeout(timer); resolve(); };
+        });
+        const child = Bun.spawn(["bun", "scripts/plugin.ts", "pair"], { cwd: join(import.meta.dir, ".."), env: { ...process.env, PORT: String(port), HOST: "127.0.0.1", HERDR_PLUGIN_CONFIG_DIR: configDir, OVIS_TOKEN: "" }, terminal: { cols: 200, rows: 80, data: (_terminal, bytes) => { shown += decoder.decode(bytes, { stream: true }); }, exit: () => ended() } });
+        const [exitCode] = await Promise.all([child.exited, complete]);
+        const out = shown.replace(/\r\n/g, "\n").replace(/\x1b\]8;;[^\x07\x1b]*(?:\x1b\\|\x07)/g, "");
+        return { out, err: out, exitCode };
       };
       const run = await pairCli(open.port);
       const out = run.out;

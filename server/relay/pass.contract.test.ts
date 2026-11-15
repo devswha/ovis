@@ -13,6 +13,7 @@ import type { RelayStatus } from "../../shared/protocol.ts";
 import { createServer } from "../index.ts";
 import { RelayService, STAGING_ACCOUNT_SERVICE, type RelayServiceOptions } from "./service.ts";
 import { loadRelayIdentity } from "./identity.ts";
+import { importPublicKey } from "../../shared/relay-e2ee.ts";
 import { bounded, deferred } from "./test-helpers.ts";
 
 const cleanup: (() => void | Promise<void>)[] = [];
@@ -50,7 +51,7 @@ async function fixture(mode: "off" | "grace" | "enforce" = "enforce", extra: Par
   /** the accounts that have as many PCs on the relay as they may */
   const limited = new Set<string>();
   /** what the passes the service signs say of new client sessions (unset: a v1 pass) */
-  const signing: { newSessions?: boolean } = {};
+  const signing: { newSessions?: boolean; fleet?: number } = {};
   /** the pass forms each pass request said this PC reads */
   const passVersions: unknown[] = [];
   /**
@@ -182,6 +183,22 @@ test("an enforcing relay refuses a PC with no account to name; once its owner na
   // sent in a header on every PC socket, never in the address
   expect(f.headers.at(-1)?.[RELAY_PASS_HEADER]).toStartWith("ovp1.");
   expect(existsSync(join(f.stateDir, "relay", "pass.json"))).toBe(true);
+});
+
+test("with passes off, the relay still reads a v3 pass's fleet number: a PC whose pass says fleet 100 is told its room holds 108, one without a pass 8", async () => {
+  const plain = await fixture("off");
+  await plain.start();
+  expect(await bounded(plain.synced)).toMatchObject({ type: "sync", max_clients: 8 });
+  expect(plain.syncs[0]).not.toHaveProperty("relay_pass");
+  const f = await fixture("off");
+  f.signing.fleet = 100;
+  // started on a pass it kept, its control socket carries the pass from the start
+  await f.savePass();
+  expect((await f.nameAccount("acct_1")).status).toBe(204);
+  await f.start();
+  expect(await bounded(f.synced)).toMatchObject({ type: "sync", max_clients: 108, per_address_per_minute: 120, pass_versions: [1, 2, 3] });
+  expect(f.headers.at(-1)?.[RELAY_PASS_HEADER]).toStartWith("ovp1.");
+  expect(f.service.status().phase).toBe("online");
 });
 
 test("a PC the relay refuses for its pass says why as a fixed code: no account to name, not listed by the one it names, or at its limit", async () => {
@@ -392,9 +409,9 @@ test("a pass that allows no new client sessions is told in the status; one that 
   expect((await f.nameAccount("acct_2")).status).toBe(204);
   expect((await f.nameAccount("acct_1")).status).toBe(204);
   await bounded(f.renewal);
-  // the PC says it reads both pass forms, so the service may sign it a v2 pass
+  // the PC says it reads v2, so the service may sign it a v2 pass; and v3 too, as the relay it sends its pass to said in sync
   expect(f.passVersions.length).toBeGreaterThan(0);
-  expect(f.passVersions.every((versions) => JSON.stringify(versions) === "[1,2]")).toBe(true);
+  expect(f.passVersions.every((versions) => JSON.stringify(versions) === "[1,2,3]")).toBe(true);
   expect(f.service.status().pass).toEqual({ state: "ok", relay: "ok", enforce_at: "2099-01-01T00:00:00.000Z", refused: false, enforced: true });
 });
 
@@ -451,3 +468,51 @@ test("naming the same account again keeps the scheduled retry after a refusal fo
   expect((await f.nameAccount("acct_1")).status).toBe(204);
   expect(f.asked).toHaveLength(asked);
 });
+
+for (const mixed of [false, true]) {
+  test(`the PC names v3 only while every relay its pass goes to reads it: ${mixed ? "a regional relay from before v3 beside a global one that reads it keeps [1, 2]" : "a global relay that reads it alone gives [1, 2, 3]"}`, async () => {
+    const f = await fixture("off");
+    const identity = loadRelayIdentity(f.stateDir);
+    const OLD = "wss://old-relay.test";
+    const globalSynced = deferred<void>();
+    const oldSynced = deferred<void>();
+    // a relay from before v3: it proves the PC and names no pass_versions in its sync
+    const old = Bun.serve<{ control: boolean }>({
+      hostname: "127.0.0.1", port: 0,
+      fetch(request, server) { return server.upgrade(request, { data: { control: !new URL(request.url).searchParams.has("connection_id") } }) ? undefined : new Response(null, { status: 400 }); },
+      websocket: {
+        open(socket) { if (socket.data.control) socket.send(serverChallenge(importPublicKey(identity.public_key), { server_id: identity.server_id, role: "control", connection_id: null }).frame); },
+        message(socket) { if (socket.data.control) { socket.send(JSON.stringify({ type: "sync", connection_ids: [], max_clients: 8 })); oldSynced.resolve(); } },
+      },
+    });
+    cleanup.push(() => old.stop(true));
+    const connect = (url: string, headers?: Record<string, string>) => {
+      const target = new URL(url);
+      const toOld = target.hostname === "old-relay.test";
+      const socket = new WebSocket(`ws://127.0.0.1:${toOld ? old.port : f.relayPort}${target.pathname}${target.search}`, (headers ? { headers } : undefined) as unknown as string[]);
+      if (!toOld && target.pathname === "/v1/ws" && !target.searchParams.has("connection_id") && !target.searchParams.has("warm")) {
+        socket.addEventListener("message", (event) => { if (typeof event.data === "string" && event.data.includes('"type":"sync"')) globalSynced.resolve(); });
+      }
+      return socket;
+    };
+    if (mixed) {
+      mkdirSync(join(f.stateDir, "relay"), { recursive: true });
+      writeFileSync(join(f.stateDir, "relay", "region.json"), JSON.stringify({ relay: OLD }));
+    }
+    await f.restart({ connect, ...(mixed ? { regionalRelays: [OLD], ovisRelays: [f.origin, OLD] } : {}) });
+    expect((await f.nameAccount("acct_1")).status).toBe(204);
+    await f.start();
+    await bounded(globalSynced.promise);
+    if (mixed) await bounded(oldSynced.promise);
+    // another account (which does not list this PC), then back: the PC asks again, after every relay was heard from
+    const refused = deferred<void>();
+    f.hooks.refused = () => refused.resolve();
+    expect((await f.nameAccount("acct_2")).status).toBe(204);
+    await bounded(refused.promise);
+    const signing = deferred<void>();
+    f.hooks.signing = async () => { signing.resolve(); };
+    expect((await f.nameAccount("acct_1")).status).toBe(204);
+    await bounded(signing.promise);
+    expect(f.passVersions.at(-1)).toEqual(mixed ? [1, 2] : [1, 2, 3]);
+  });
+}

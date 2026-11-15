@@ -48,7 +48,7 @@ test("flags override environment values and invalid budgets fail startup", () =>
     RELAY_MAX_SOCKETS: "8", RELAY_PER_ADDRESS_PER_MINUTE: "6", RELAY_MAX_ROOMS: "3",
     RELAY_GLOBAL_PER_MINUTE: "17", RELAY_MAX_ADDRESSES: "11", RELAY_MAX_SOCKETS_PER_ADDRESS: "4",
   });
-  expect(limits).toEqual({ maxSockets: 9, perAddressPerMinute: 7, maxRooms: 3, maxPairRooms: 256, globalPerMinute: 17, maxAddresses: 11, maxSocketsPerAddress: 5 });
+  expect(limits).toEqual({ maxSockets: 9, perAddressPerMinute: 7, maxRooms: 3, maxPairRooms: 256, globalPerMinute: 17, maxAddresses: 11, maxSocketsPerAddress: 5, maxClientsPerServer: 8 });
   expect(relayLimitsFromArgs([], { RELAY_MAX_SOCKETS_PER_ADDRESS: "4" }).maxSocketsPerAddress).toBe(4);
   for (const value of ["0", "-1", "NaN", "1.5", "Infinity", "", "9007199254740992"]) {
     expect(() => relayLimitsFromArgs(["--max-sockets", value], {})).toThrow();
@@ -56,6 +56,15 @@ test("flags override environment values and invalid budgets fail startup", () =>
     expect(() => relayLimitsFromArgs(["--max-sockets-per-address", value], {})).toThrow();
   }
   expect(() => relayLimitsFromArgs(["--max-rooms"], {})).toThrow();
+});
+
+test("--max-clients-per-server sizes every room of a relay someone runs: 8 unless set, 8 to 1008, anything else fails startup", () => {
+  expect(relayLimitsFromArgs([], {}).maxClientsPerServer).toBe(8);
+  expect(relayLimitsFromArgs([], { RELAY_MAX_CLIENTS_PER_SERVER: "20" }).maxClientsPerServer).toBe(20);
+  expect(relayLimitsFromArgs(["--max-clients-per-server", "108"], { RELAY_MAX_CLIENTS_PER_SERVER: "20" }).maxClientsPerServer).toBe(108);
+  expect(relayLimitsFromArgs(["--max-clients-per-server", "1008"], {}).maxClientsPerServer).toBe(1008);
+  for (const value of ["7", "1009", "0", "-8", "1.5", "NaN", ""]) expect(() => relayLimitsFromArgs(["--max-clients-per-server", value], {})).toThrow();
+  expect(() => relayLimitsFromArgs(["--max-clients-per-server"], {})).toThrow();
 });
 
 test("Bun starts with default rate limiting and ignores spoofed forwarding addresses", async () => {

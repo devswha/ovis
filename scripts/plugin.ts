@@ -37,8 +37,10 @@ import { DEFAULT_PORT } from "../shared/protocol.ts";
 import { decodeOffer } from "../shared/relay-offer.ts";
 import type { RemoteAccess } from "../shared/protocol.ts";
 import { canServe, FALLBACK_PORTS, freePort, savedPort } from "./plugin-port.ts";
-import { approveWaiting, COMMAND_ALIASES, discardTyped, link as linkPc, type WaitingDevice } from "./plugin-link.ts";
+import { approveWaiting, cli, COMMAND_ALIASES, discardTyped, link as linkPc, needsTerminal, type WaitingDevice } from "./plugin-link.ts";
 import { activePluginScript } from "./plugin-runtime.ts";
+import { runFleet } from "./plugin-fleet.ts";
+import { runStart, runWait } from "./plugin-start.ts";
 import { runTui } from "./plugin-tui.ts";
 import { accountServiceOrigin, DEFAULT_ACCOUNT_SERVICE } from "../server/static.ts";
 import { herdrStateDir } from "./plugin-state.ts";
@@ -219,16 +221,51 @@ async function health(): Promise<boolean> {
   }
 }
 
-/** Whether the app holds the port: its bridge health answers without asking herdr. */
-async function appOnPort(): Promise<boolean> {
+/** The engines a server can serve its terminals from (server/herdr-core/runtime.ts), as its bridge health names them. */
+const ENGINES = ["herdr", "herdr-core"] as const;
+type Engine = (typeof ENGINES)[number];
+
+/**
+ * Whether the app holds the port: its bridge health answers without asking herdr. Its answer names the engine the
+ * server is set to (null from a server too old to say); null when the app does not hold the port.
+ */
+async function appOnPort(): Promise<{ readonly engine: Engine | null } | null> {
   try {
     const response = await fetch(`${origin}/api/health?scope=bridge`, { signal: AbortSignal.timeout(1500) });
-    if (!response.ok) return false;
+    if (!response.ok) return null;
     // another program's JSON can say ok too: only the app's own answer (server/index.ts) counts
-    const body = (await response.json()) as { ok?: unknown; auth?: unknown; bridge_protocol?: unknown };
-    return body.ok === true && Number.isInteger(body.bridge_protocol) && appAuth(body.auth);
+    const body = (await response.json()) as { ok?: unknown; auth?: unknown; bridge_protocol?: unknown; runtime?: unknown };
+    if (body.ok !== true || !Number.isInteger(body.bridge_protocol) || !appAuth(body.auth)) return null;
+    return { engine: ENGINES.find((engine) => engine === body.runtime) ?? null };
   } catch {
-    return false;
+    return null;
+  }
+}
+
+/**
+ * What the health of a server in the machine profile says when `health()` does not count it as running
+ * (server/machine-profile.ts `machineHealth`, release 1's machine server): it has no `bridge_protocol`. `cannot-use`:
+ * its `machine_profile` says `runtime_down`, with its `engine` and `reason` (contract names; nothing else is read).
+ * `locked`: it answers ok but tells a caller it does not know no engine fact: exactly `{"ok":true}`, or `auth` saying
+ * it is not let in with no `herdr` and no `machine_profile`. `running`: its engine answers (`herdr` is there). null for any other answer, or none.
+ * `headers` carry the token on the one read `status` makes with it.
+ */
+async function machineProfile(headers: Record<string, string> = {}): Promise<{ readonly is: "cannot-use"; readonly engine: string | null; readonly reason: string | null } | { readonly is: "locked" | "running" } | null> {
+  try {
+    const response = await fetch(`${origin}/api/health`, { headers, signal: AbortSignal.timeout(1500) });
+    const body = (await response.json()) as { ok?: unknown; auth?: { required?: unknown; authenticated?: unknown } | null; herdr?: unknown; machine_profile?: { runtime_down?: unknown; engine?: unknown; reason?: unknown } | null };
+    // what the profile tells a caller it does not know: exactly {"ok":true}, which any program could answer too
+    if (response.ok && body !== null && typeof body === "object" && body.ok === true && Object.keys(body).length === 1) return { is: "locked" };
+    if (body.ok !== true || !appAuth(body.auth)) return null;
+    if (response.ok && typeof body.herdr === "object" && body.herdr !== null) return { is: "running" };
+    const profile = body.machine_profile;
+    if (typeof profile === "object" && profile !== null) {
+      if (!response.ok || profile.runtime_down !== true) return null;
+      return { is: "cannot-use", engine: typeof profile.engine === "string" ? profile.engine : null, reason: typeof profile.reason === "string" ? profile.reason : null };
+    }
+    return body.auth?.required === true && body.auth.authenticated === false && body.herdr === undefined ? { is: "locked" } : null;
+  } catch {
+    return null;
   }
 }
 
@@ -432,7 +469,7 @@ async function settlePort(): Promise<"ready" | "running" | "failed"> {
     await Bun.sleep(250);
   }
   // the app holds the port but cannot reach herdr: another port would put a second server beside it (#428)
-  if (await appOnPort()) {
+  if ((await appOnPort()) !== null) {
     if (await health()) return "running";
     const why = await healthError();
     if (why === null) return "running";
@@ -553,7 +590,7 @@ async function startInTurn(): Promise<number> {
     if (await health()) {
       process.stdout.write(`Ovis listening at ${origin}\n`);
       if ((env["OVIS_TOKEN"] ?? "") === "") {
-        process.stdout.write(`no token set: your own Tailscale devices get in as you; pair any other device in Settings → Devices, or put OVIS_TOKEN=<token> in ${join(CONFIG_DIR, "env")}\n`);
+        process.stdout.write(`no token set: your own Tailscale devices get in as you; pair any other device with ${cli()} pair (or in Settings → Devices and PCs), or put OVIS_TOKEN=<token> in ${join(CONFIG_DIR, "env")}\n`);
       }
       return 0;
     }
@@ -821,6 +858,12 @@ async function stopInTurn(dependencies: StopDependencies): Promise<number> {
  */
 async function pair(): Promise<number> {
   if (process.argv.includes("--approve")) return approvePairings();
+  // the code and the relay's pairing link admit whoever reads them: never into a pipe, a file or a log, and none is
+  // asked for then
+  if (process.stdout.isTTY !== true) {
+    process.stderr.write(needsTerminal("Pairing a device with a code", "pair"));
+    return 1;
+  }
   if (!(await health())) {
     process.stderr.write(`Ovis is not running at ${origin}; start it first\n`);
     return 1;
@@ -868,7 +911,7 @@ async function pair(): Promise<number> {
         if (!decodeOffer(offer.url)) throw new Error("invalid relay offer URL");
         out.push("", "Ovis relay", link(offer.url), "", qr(offer.url));
       } else {
-        out.push("To turn on Ovis relay: Settings -> Devices and PCs -> Ovis relay.");
+        out.push(`To turn on Ovis relay: run ${cli()} link --code here, which turns it on and shows a code for one device (on a PC with a screen, Settings -> Devices and PCs -> Ovis relay does it too).`);
       }
     }
   } catch (error) {
@@ -930,19 +973,8 @@ async function approvePairings(): Promise<number> {
  * (`--approve`: by an approval here), or with a code to type and a QR code.
  */
 async function linkCommand(): Promise<number> {
-  // the checkout survives in-app updates: the release that runs has the link that fits its server (as phone-setup)
-  const active = activePluginScript(ROOT, port, APP_STATE_DIR);
-  if (active !== join(resolve(ROOT), "scripts", "plugin.ts") && resolve(active) !== resolve(import.meta.filename)) {
-    // Ctrl+C reaches the release's link too, which takes its code back; this one waits for it.
-    // Always "link", whichever name it was run by: a release from before `add` and `login` knows only that one
-    process.on("SIGINT", () => undefined);
-    // a SIGTERM or SIGHUP sent to this process alone is passed on, so the release takes its code back too.
-    // Listening starts before the release does, so a signal that comes while it starts no longer ends this
-    // process with the release left running: Bun runs the listener from the event loop, after `child` is set.
-    for (const signal of ["SIGTERM", "SIGHUP"] as const) process.on(signal, () => child.kill(signal));
-    const child = Bun.spawn([process.execPath, active, "link", ...process.argv.slice(3)], { cwd: ROOT, windowsHide: true, env, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
-    return await child.exited;
-  }
+  // Always this checkout's own, never an installed release's copy (an in-app update): what decides what may pair with
+  // this PC is never handed to an older release's copy of these commands
   if (!(await health())) {
     process.stderr.write(`Ovis is not running at ${origin}; start it first\n`);
     return 1;
@@ -966,6 +998,8 @@ async function linkCommand(): Promise<number> {
   return linkPc(process.argv.slice(3), {
     origin, headers, signal: stop.signal,
     accountService: accountServiceOrigin(env["OVIS_ACCOUNT_SERVICE_URL"] ?? DEFAULT_ACCOUNT_SERVICE),
+    // the app the server pairs with, as server/relay/service.ts reads it from the same settings
+    ...(env["OVIS_RELAY_APP_URL"] ? { app: env["OVIS_RELAY_APP_URL"] } : {}),
     out: (text) => process.stdout.write(text),
     lines: console[Symbol.asyncIterator](),
     // a pipe, a file or a closed stdin approves nothing, whatever it carries and whenever (`yes | ovis add`)
@@ -1050,11 +1084,7 @@ async function phone(): Promise<number> {
 
 /** The marketplace action has a real pane, so its address, QR and pairing code stay visible. */
 async function phoneSetup(): Promise<number> {
-  const active = activePluginScript(ROOT, port, APP_STATE_DIR);
-  if (active !== join(resolve(ROOT), "scripts", "plugin.ts") && resolve(active) !== resolve(import.meta.filename)) {
-    const child = Bun.spawn([process.execPath, active, "phone-setup"], { cwd: ROOT, windowsHide: true, env, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
-    return await child.exited;
-  }
+  // always this checkout's own, as `link` (linkCommand): Phone setup shows a pairing code
   process.stdout.write(`Phone setup\n\nApp on this PC: ${link(origin)}\n`);
   let code = 0;
   if (!(await health())) {
@@ -1099,11 +1129,93 @@ function runningVersion(): string | null {
   } catch { return null; }
 }
 
+/** `fleet ...` (scripts/plugin-fleet.ts): the fleet's owner, with the address and token every command here uses. */
+async function fleetCommand(): Promise<number> {
+  const headers: Record<string, string> = {};
+  if ((env["OVIS_TOKEN"] ?? "") !== "") headers["authorization"] = `Bearer ${env["OVIS_TOKEN"]}`;
+  const lines = console[Symbol.asyncIterator]();
+  return runFleet(process.argv.slice(3), {
+    origin, headers, stateDir: APP_STATE_DIR,
+    stdoutTTY: process.stdout.isTTY === true, stdinTTY: process.stdin.isTTY === true,
+    out: (text) => process.stdout.write(`${text}\n`), err: (text) => process.stderr.write(`${text}\n`),
+    async ask(question) {
+      // a pipe, a file or a closed stdin confirms nothing (as `ovis add` asks)
+      if (process.stdin.isTTY !== true) return null;
+      process.stderr.write(question);
+      const next = await lines.next();
+      return next.done ? null : next.value;
+    },
+  });
+}
+
+/**
+ * `start <machine> ... -- <command>` and `wait <machine> <terminal> ...` (scripts/plugin-start.ts): a program and its
+ * first message on a fleet machine, and its terminal's shown state, with the address and token every command here uses.
+ */
+async function fleetStartCommand(verb: "start" | "wait"): Promise<number> {
+  const headers: Record<string, string> = {};
+  if ((env["OVIS_TOKEN"] ?? "") !== "") headers["authorization"] = `Bearer ${env["OVIS_TOKEN"]}`;
+  const io = { origin, headers, stateDir: APP_STATE_DIR, out: (text: string) => process.stdout.write(`${text}\n`), err: (text: string) => process.stderr.write(`${text}\n`) };
+  return verb === "start" ? runStart(process.argv.slice(3), io) : runWait(process.argv.slice(3), io);
+}
+
+/**
+ * What to do while the engine does not answer, where it was measured: on herdr the server picks herdr up again by
+ * itself once it runs; on herdr-core today's server starts a core again itself. Restarting Ovis is never the way.
+ */
+function engineAdvice(engine: Engine | null): string | null {
+  switch (engine) {
+    case "herdr": return "Start herdr on this PC again; Ovis picks it up by itself, without a restart.";
+    case "herdr-core": return "Ovis picks herdr-core up again by itself once it answers, without a restart.";
+    case null: return null;
+  }
+}
+
+/**
+ * The first line of `status`; while the engine does not answer, the server's reason after it and, on herdr and
+ * herdr-core, what to do. Its first word is read by programs: `running` (install.sh, install.ps1 and the Mac and
+ * Windows apps) only while Ovis and its engine both answer, unchanged since 0.3; `engine-down` while Ovis answers and
+ * its engine does not; `no-access` while it answers but tells this command nothing of its engine (no token, or not
+ * its token); `down` while Ovis does not answer. The `(pid N)` stays right after the address, where the apps
+ * read it.
+ */
+async function statusLines(): Promise<string> {
+  const pid = recordedPid();
+  const at = `${origin}${pid === null ? "" : ` (pid ${pid})`}`;
+  if (await health()) return `running ${at}`;
+  const engineDown = (engine: string | null, why: string | null): string => {
+    const advice = engineAdvice(ENGINES.find((known) => known === engine) ?? null);
+    return `engine-down ${at} Ovis answers; ${engine ?? "its engine"} does not${why === null ? "" : `\nreason: ${why}`}${advice === null ? "" : `\n${advice}`}`;
+  };
+  const app = await appOnPort();
+  if (app === null) {
+    let profile = await machineProfile();
+    // The token goes only to a server that answered locked, and only from a `status` run at a terminal, meant for a
+    // person there: never from the Mac and Windows apps' polling (they read it through a pipe) or from start and stop.
+    const token = env["OVIS_TOKEN"] ?? "";
+    const sent = profile?.is === "locked" && process.stdout.isTTY === true && token !== "";
+    if (sent) profile = await machineProfile({ authorization: `Bearer ${token}` }) ?? profile;
+    if (profile?.is === "running") return `running ${at}`;
+    // a machine-profile server refuses an engine for more reasons than its being away: its own reason says what to do
+    if (profile?.is === "cannot-use") return `engine-down ${at} Ovis answers; it cannot use ${profile.engine ?? "its engine"}${profile.reason === null ? "" : `\nreason: ${profile.reason}`}`;
+    if (profile?.is === "locked") {
+      const settings = CONFIG_FILES.at(-1) ?? join(CONFIG_DIR, "env");
+      const what = token === "" ? `No token is set for this command: put OVIS_TOKEN=<the server's token> in ${settings}.`
+        : sent ? "Sent the token (OVIS_TOKEN) from this terminal; the server still told this command nothing about its engine."
+        : `Not sent: the token goes only from a status run in a terminal. Run ${cli()} status in a terminal to read the engine.`;
+      return `no-access ${at} a server answers here but tells this command nothing\n${what}`;
+    }
+    return provedServer() === null ? `down ${at}` : `down ${at} (its process still runs, but it does not answer)`;
+  }
+  const why = await healthError();
+  // the engine answered again meanwhile
+  if (why === null) return `running ${at}`;
+  return engineDown(app.engine, why);
+}
+
 /** Reporting "down" is not an action failure: herdr logs a nonzero exit as failed. */
 async function status(): Promise<number> {
-  const pid = recordedPid();
-  const up = await health();
-  process.stdout.write(`${up ? "running" : "down"} ${origin}${pid === null ? "" : ` (pid ${pid})`}\n`);
+  process.stdout.write(`${await statusLines()}\n`);
   const version = runningVersion();
   if (version !== null) process.stdout.write(`version: ${version}\n`);
   process.stdout.write(`config: ${CONFIG_FILES.length === 0 ? `none (settings go in ${join(CONFIG_DIR, "env")})` : CONFIG_FILES.join(", ")}\n`);
@@ -1114,13 +1226,17 @@ async function status(): Promise<number> {
 export async function runPlugin(): Promise<void> {
   const named = process.argv[2] ?? "status";
   const command = Object.hasOwn(COMMAND_ALIASES, named) ? COMMAND_ALIASES[named] : named;
-  if (command === "start") process.exit(await start());
+  // `start` alone starts this PC's server, as herdr's hooks and the user services run it; with arguments it starts a program on a fleet machine
+  if (command === "start" && process.argv.length > 3) process.exit(await fleetStartCommand("start"));
+  else if (command === "start") process.exit(await start());
+  else if (command === "wait") process.exit(await fleetStartCommand("wait"));
   else if (command === "stop") process.exit(await stop());
   else if (command === "status") process.exit(await status());
   else if (command === "pair") process.exit(await pair());
   else if (command === "link") process.exit(await linkCommand());
   else if (command === "phone") process.exit(await phone());
   else if (command === "phone-setup") process.exit(await phoneSetup());
+  else if (command === "fleet") process.exit(await fleetCommand());
   else if (command === "tui") process.exit(await runTui(process.argv.slice(3), { platform: platform(), where: { root: ROOT, home: homedir() }, caller: process.env, settings: env, err: (text) => process.stderr.write(text), on: (signal, handler) => process.on(signal, handler) }));
   else {
     // a launcher runs the checkout's own script, which stays at the version first installed: a
@@ -1134,7 +1250,7 @@ export async function runPlugin(): Promise<void> {
     }
     process.stderr.write([
       "usage: bun scripts/plugin.ts <start|stop|status|pair|link|add|login|phone|phone-setup|tui>",
-      "add (also login, link): sign this PC in, then scan its QR code with a device of your Ovis account to add it (--approve: approve that device here instead; --print: write the QR code where there is no terminal).",
+      "add (also login, link): sign this PC in, then scan its QR code with a device of your Ovis account to add it, at a terminal only (--approve: approve that device here instead; --print: write the QR code as lines that stay on the terminal).",
       "link --code: show a code and a QR code to pair one device instead.",
       "tui: herdr-core's terminals in this terminal, as herdr shows them.",
       "",

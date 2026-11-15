@@ -5740,6 +5740,52 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   label, autofocused field, primary Unlock button and linked alert text.
 - Success mounts the shell; Lock unsubscribes push, deletes auth and returns to the gate.
 
+### Fleet screen (`.fleet-view`)
+- The owner's place for the machines that joined this PC with an invite (components/FleetView.tsx,
+  lib/fleet.ts; todo 33 of the relay-fleet plan). Opened from Settings → Devices and PCs → **Fleet**
+  (**Open fleet**, under More settings; only while the server's health says `fleet_preview`, i.e.
+  `OVIS_PREVIEW=fleet`, components/FleetRow.tsx) and from the sidebar's **Fleet machines** caption, which is
+  a button. A dialog as wide as `--content-w`, a bottom sheet at 640 px and under, whose body is the
+  one scroller.
+- Layout: one column, `modal-body` the only scroller; in reading order the held notice, the slots on
+  hold, **Waiting for confirmation**, **Machines** (a list that draws only the rows in view from 60
+  machines), **Invites** and **Invite machines** (first instead when nothing joined yet). No nested
+  scroller, no side panel, no cards around sections.
+- Brief. Primary action: **Confirm {n} machines** on the first batch waiting; with none,
+  **Download invites**. Priorities: 1 what stops the fleet (the held notice, a slot on hold), 2 the
+  batches waiting with every machine's name and fingerprint, 3 the machine list (name, state word,
+  cause sentence, route, last seen). Left out on purpose: counters per state, a search field, the
+  invite secrets after the download, removed machines' rows (one line says how many stay refused).
+- Machine rows are one fixed height (`--row-h`): name over the key's fingerprint, the state word
+  (Connected, Offline, Needs attention, Waiting for confirmation, On hold, Held) over the cause's
+  sentence (shared/fleet-cause.ts), the route (Direct or Relay) and Last seen ("Now" while signed in).
+  Under 600 px of container they take three lines: name and Remove, state · route · last seen, cause;
+  the fingerprint is left to the batch it was confirmed in. The state glyph is StatusDot's.
+- The windowed list follows the keyboard: a focused row is scrolled into view (`block: "nearest"`), so Tab and
+  Shift+Tab walk every row with the focused control visible. Keyboard focus coming in from above lands on the first row
+  and from below (the mint form) on the last row, even when the list was scrolled away. A click or a tap (not
+  `:focus-visible`) focuses the row it lands on and never moves the list, so its confirm dialog opens. The dialog's focus trap moves focus
+  without scrolling, so the list does this itself; the trap is unchanged for other dialogs.
+- A batch lists every machine with its fingerprint in `--font-mono` `--fs-xs` (key material, the
+  one place mono is used) and one **Confirm** that sends back the count and digest it showed; a
+  batch changed meanwhile says so and reads again. A slot on hold is an `alert` on the notice tint
+  with **Remove**. **Remove** opens the confirm dialog (danger **Remove**).
+- **Download invites** mints and hands the files over as one stored zip (`ovis-invites-<batch>.zip`,
+  one `<id>.json` each); the screen keeps no secret, only the line that says how many were saved
+  and until when.
+- Who sees which control follows the route table of todo 30: an owner (token, Tailscale login or a
+  device paired to drive, through the relay too) gets Download invites, Confirm and Remove; a device
+  that only watches reads the same lists under one dim line and none of them. While the server
+  answers `fleet_token_required`, the notice says the cause's sentence and how to set `OVIS_TOKEN`,
+  and no write control is drawn for anyone.
+- Todo 31 adds where the code leaves its seams: the rolled-back notice with its own Confirm and
+  "Removed after this backup" marks with Re-admit, Release beside Remove on a slot on hold, and a
+  batch's retention in the mint form.
+- Follows: none of the coding-agent apps (Codex, Claude, Paseo, T3 Code, Zed, Warp, Conductor) has a
+  screen that admits machines. The model is Tailscale's admin console Machines list (a pending
+  device approved by its owner, each row with its state and last seen), the owner's stated
+  direction for the fleet; its pixels are not copied.
+
 ### Relay shell (`.relay-shell*`)
 - The hosted shell's screens before the app (components/RelayShell.tsx, lib/relay/shell.tsx): the
   token gate's card, one sidebar wide on `--bg`, the sheep mark, a `--fs-lg` title that says what

@@ -50,8 +50,14 @@ try {
     }
   }
   assert.ok(descriptor, "bundle starts a private daemon and bridge without system runtimes");
-  const response = await fetch(`http://127.0.0.1:${descriptor.port}/api/bridge`, { headers: { authorization: `Bearer ${descriptor.token}` } });
-  assert.equal(response.status, 200);
+  // the descriptor is written as the bridge listens; until herdr answers for the session it says 404: wait for that
+  // answer to change, a bounded number of times, and fail on anything else at once
+  let response = await fetch(`http://127.0.0.1:${descriptor.port}/api/bridge`, { headers: { authorization: `Bearer ${descriptor.token}` } });
+  for (let i = 0; i < 300 && response.status === 404; i++) {
+    await Bun.sleep(100);
+    response = await fetch(`http://127.0.0.1:${descriptor.port}/api/bridge`, { headers: { authorization: `Bearer ${descriptor.token}` } });
+  }
+  assert.equal(response.status, 200, `/api/bridge: ${await response.clone().text()}`);
   const identity = await response.json() as { socket_path: string; herdr: { terminal_attach?: boolean } };
   assert.equal(identity.socket_path, socket);
   // a Windows herdr has no terminal attach (herdrdev/herdr#4821); the bridge must say so

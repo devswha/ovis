@@ -215,12 +215,18 @@ function describe(lock: string, state: OwnerSample): string {
   return named.record ? `lock ${lock}, owner pid ${named.pid} generation ${named.record.generation}` : `lock ${lock}, owner pid ${named.pid}`;
 }
 
+/** Who holds `lock` as a start judges it (acquireOwnerDirectory), for a message; null when it is absent or its owner is provably gone. */
+export function liveOwner(lock: string): string | null {
+  const state = sample(lock);
+  return verdict(state) === "live" ? describe(lock, state) : null;
+}
+
 /** How long a release that does not wait retries a guard another process holds. */
 const RELEASE_WAIT_MS = 5_000;
 
 /** Test seams, each called synchronously: before the guard is taken, once it is held, after the stale owner is re-proved, and with the complete staged directory before it is renamed into place. */
 export interface OwnerLockHooks { observed?(): void; locked?(): void; validated?(): void; staged?(staging: string): void }
-export interface OwnerLease { record: OwnerRecord; release(): void }
+export interface OwnerLease { record: OwnerRecord; release(): void; amend(write: (directory: string) => void): void }
 
 /**
  * Takes the owner directory `lock` for this process. A live owner (or one that cannot be proved
@@ -282,6 +288,24 @@ export function acquireOwnerDirectory(lock: string, errors: { running: string; s
           if (error instanceof OwnerGuardBusy && Date.now() < deadline) { Bun.sleepSync(25); continue; }
           console.error(`Releasing the startup lock ${lock} failed: ${error instanceof Error ? error.message : error}`);
           return;
+        }
+      }
+    },
+    /** Writes into the lock directory while it is still this acquisition's, so that release still knows it as its own. */
+    amend(write) {
+      const deadline = Date.now() + RELEASE_WAIT_MS;
+      for (;;) {
+        try {
+          withOwnerGuard(lock, () => {
+            const now = sample(lock);
+            if (now.directory !== published || now.owner === null || parseOwnerRecord(now.owner)?.generation !== record.generation) throw new Error(`the startup lock ${lock} is no longer this process's (${describe(lock, now)})`);
+            write(lock);
+            published = directoryIdentity(lock);
+          }, { wait });
+          return;
+        } catch (error) {
+          if (error instanceof OwnerGuardBusy && Date.now() < deadline) { Bun.sleepSync(25); continue; }
+          throw error;
         }
       }
     },
