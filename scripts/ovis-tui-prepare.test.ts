@@ -105,6 +105,31 @@ describe("crates/ovis-tui/prepare.sh", () => {
     expect(git(upstream, "rev-parse", "HEAD")).toBe(made);
   });
 
+  it("keeps a commit only the reflog of upstream/ holds when the pin moves", () => {
+    const { dir, upstream } = crate(1);
+    expect(prepare(dir).code).toBe(0);
+    const made = git(upstream, "rev-parse", "HEAD");
+    writeFileSync(join(upstream, "mine.md"), "mine\n");
+    git(upstream, "add", "mine.md");
+    git(upstream, "commit", "--quiet", "-m", "mine");
+    git(upstream, "reset", "--quiet", "--hard", made);
+    bumpPin(dir);
+    const ran = prepare(dir);
+    expect(ran.code, ran.out).toBe(1);
+    expect(git(upstream, "log", "-g", "--format=%s").split("\n")).toContain("mine");
+  });
+
+  it("keeps files in a vendor/ghostty that is not initialised", () => {
+    const { dir, upstream } = crate(1);
+    expect(prepare(dir).code).toBe(0);
+    git(upstream, "submodule", "--quiet", "deinit", "-f", "vendor/ghostty");
+    writeFileSync(join(upstream, "vendor", "ghostty", "mine.zig"), "// mine\n");
+    addPatch(dir, 2);
+    const ran = prepare(dir);
+    expect(ran.code, ran.out).toBe(1);
+    expect(existsSync(join(upstream, "vendor", "ghostty", "mine.zig"))).toBe(true);
+  });
+
   it("moves a clean tree to a new pin whose Ghostty commit differs", () => {
     const { dir, upstream } = crate(1);
     expect(prepare(dir).code).toBe(0);
@@ -187,6 +212,18 @@ describe("crates/ovis-tui/prepare.sh", () => {
       });
     }
 
+    it("keeps work in a tree git cannot read (a broken index), and replaces nothing", () => {
+      const { dir, upstream } = crate(1);
+      expect(prepare(dir).code).toBe(0);
+      writeFileSync(join(upstream, "notes.md"), "mine\n");
+      writeFileSync(join(upstream, ".git", "index"), "not an index");
+      addPatch(dir, 2);
+      const ran = prepare(dir);
+      expect(ran.code, ran.out).toBe(1);
+      expect(ran.out).toContain("git could not inspect it");
+      expect(existsSync(join(upstream, "notes.md"))).toBe(true);
+    });
+
     it("keeps work made in it while the new tree was fetched, and replaces nothing", () => {
       const { dir, upstream } = crate(1);
       expect(prepare(dir).code).toBe(0);
@@ -210,6 +247,25 @@ describe("crates/ovis-tui/prepare.sh", () => {
     addPatch(dir, 2);
     expect(prepare(dir).code).toBe(0);
     expect(existsSync(join(upstream, "patch-2.txt"))).toBe(true);
+  });
+
+  it("runs once at a time: a second run while one holds the lock touches nothing", () => {
+    const { dir, upstream } = crate(1);
+    expect(prepare(dir).code).toBe(0);
+    mkdirSync(join(dir, ".prepare.lock"));
+    addPatch(dir, 2);
+    const ran = prepare(dir);
+    expect(ran.code, ran.out).toBe(1);
+    expect(ran.out).toContain("another prepare.sh is running");
+    expect(existsSync(join(upstream, "patch-2.txt"))).toBe(false);
+    expect(existsSync(join(dir, ".prepare.lock"))).toBe(true);
+  });
+
+  it("clears the half-made trees of runs that were killed", () => {
+    const { dir } = crate(1);
+    mkdirSync(join(dir, ".upstream.new.999", "part"), { recursive: true });
+    expect(prepare(dir).code).toBe(0);
+    expect(readdirSync(dir).filter((name) => name.startsWith(".upstream.new") || name === ".prepare.lock")).toEqual([]);
   });
 
   it("leaves the old tree as it was when the fetch fails, and no half-made tree beside it", () => {

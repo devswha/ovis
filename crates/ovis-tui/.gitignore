@@ -2,3 +2,4 @@
 # the pinned hc-tui source with our patches, made by prepare.sh
 /upstream/
 /.upstream.new.*/
+/.prepare.lock/
