@@ -23,7 +23,7 @@ import { SHEET_QUERY } from "./sheets.ts";
 /** how long a batch waits before it is told, unless the page is hidden first */
 export const FLUSH_MS = 60_000;
 
-interface Pending { add: Partial<Record<TelemetryCounter, number>>; shown: Set<TelemetryShown> }
+interface Pending { add: Partial<Record<TelemetryCounter, number>>; shown: Set<TelemetryShown>; keys: string[] }
 
 export interface UsageCountersOptions {
   /** whether this build counts at all (COUNTS_ON): off, nothing is kept, asked or told */
@@ -45,13 +45,21 @@ export function createUsageCounters(options: UsageCountersOptions) {
   /** null until the page has heard the server's word; then whether it counts */
   let allowed: boolean | null = null;
   let asking = false;
-  const pending: Record<TelemetryWidth, Pending> = { narrow: { add: {}, shown: new Set() }, wide: { add: {}, shown: new Set() } };
+  const empty = (): Pending => ({ add: {}, shown: new Set(), keys: [] });
+  const pending: Record<TelemetryWidth, Pending> = { narrow: empty(), wide: empty() };
+  /** controls told (or on their way) as shown, by UTC day and width; a batch that is lost takes its own back out */
   const toldShownByDayAndWidth = new Set<string>();
+  /** controls drawn now, each with how many places draw it: told again on a new day or width while they stay */
+  const drawn = new Map<TelemetryShown, number>();
+  const forget = (keys: readonly string[]): void => { for (const key of keys) toldShownByDayAndWidth.delete(key); };
   let cancelTimer: (() => void) | null = null;
 
   const heard = (status: TelemetryStatus | null): void => {
+    const was = allowed;
     allowed = countingAllowed(status);
     if (!allowed) drop();
+    // drawn before the server's word came: told now
+    else if (was !== true) reshow();
   };
   const ask = (): void => {
     if (asking || allowed !== null) return;
@@ -59,7 +67,7 @@ export function createUsageCounters(options: UsageCountersOptions) {
     options.status().then(heard, () => { /* not heard: nothing is kept, and the next use asks again */ }).finally(() => { asking = false; });
   };
   const drop = (): void => {
-    for (const width of ["narrow", "wide"] as const) pending[width] = { add: {}, shown: new Set() };
+    for (const width of ["narrow", "wide"] as const) { forget(pending[width].keys); pending[width] = empty(); }
     cancelTimer?.();
     cancelTimer = null;
   };
@@ -72,16 +80,35 @@ export function createUsageCounters(options: UsageCountersOptions) {
     return allowed === true;
   };
 
+  /** a control drawn now, told as shown unless it already was today at this width */
+  const markShown = (name: TelemetryShown): void => {
+    const width = options.narrow() ? "narrow" : "wide";
+    const key = `${new Date(options.now()).toISOString().slice(0, 10)}:${width}:${name}`;
+    if (toldShownByDayAndWidth.has(key)) return;
+    toldShownByDayAndWidth.add(key);
+    pending[width].shown.add(name);
+    pending[width].keys.push(key);
+    schedule();
+  };
+  /** every control still drawn, for a day or a width that has not had it yet */
+  const reshow = (): void => { if (ready()) for (const name of drawn.keys()) markShown(name); };
+
   function flush(keepalive: boolean): void {
+    if (allowed !== true) { drop(); return; }
+    // what is still drawn goes with this batch, so the timer it may arm is the one cleared here
+    reshow();
     cancelTimer?.();
     cancelTimer = null;
-    if (allowed !== true) { drop(); return; }
     for (const width of ["narrow", "wide"] as const) {
-      const { add, shown } = pending[width];
+      const { add, shown, keys } = pending[width];
       if (Object.keys(add).length === 0 && shown.size === 0) continue;
-      pending[width] = { add: {}, shown: new Set() };
-      // a batch that is not taken is not tried again: a count told twice would be worse than one lost
-      options.send({ width, add, shown: [...shown].sort() }, keepalive).then((status) => { if (status) heard(status); }, () => { allowed = null; });
+      pending[width] = empty();
+      // a batch that is not taken is not tried again: a count told twice would be worse than one lost. Its shown
+      // controls are forgotten, so the next batch tells them again; a refusal (a watching device) stops counting here
+      options.send({ width, add, shown: [...shown].sort() }, keepalive).then((status) => { if (status) heard(status); }, (error: unknown) => {
+        forget(keys);
+        allowed = (error as { status?: unknown } | null)?.status === 403 ? false : null;
+      });
     }
   }
 
@@ -96,14 +123,22 @@ export function createUsageCounters(options: UsageCountersOptions) {
     },
     /** a control that is not always drawn was drawn: told once a day per width */
     shown(name: TelemetryShown): void {
-      if (!ready()) return;
-      const width = options.narrow() ? "narrow" : "wide";
-      const key = `${new Date(options.now()).toISOString().slice(0, 10)}:${width}:${name}`;
-      if (toldShownByDayAndWidth.has(key)) return;
-      toldShownByDayAndWidth.add(key);
-      pending[width].shown.add(name);
-      schedule();
+      if (ready()) markShown(name);
     },
+    /**
+     * A control that is not always drawn is drawn from now until the returned undo: told as shown now, and again
+     * on each new day or width while it stays (with the next batch, on return to the page or a change of width)
+     */
+    draw(name: TelemetryShown): () => void {
+      drawn.set(name, (drawn.get(name) ?? 0) + 1);
+      if (ready()) markShown(name);
+      return () => {
+        const left = (drawn.get(name) ?? 1) - 1;
+        if (left > 0) drawn.set(name, left); else drawn.delete(name);
+      };
+    },
+    /** the page came back, or its width crossed SHEET_QUERY: the controls drawn now, for a day or width not told yet */
+    reshow,
     /**
      * A chat/terminal switch a person asked for, on a pane of `machineId` running `agent`, counted under
      * the pane's kind and under where it was asked. `source` null is a switch the app made by itself: not counted.
@@ -134,12 +169,13 @@ export const usageCounters: UsageCounters = createUsageCounters({
 
 if (typeof document !== "undefined") {
   onTelemetryStatus(usageCounters.heard);
-  // a phone's page is often closed by leaving it: what it used goes as it is hidden
-  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") usageCounters.flush(true); });
+  // a phone's page is often closed by leaving it: what it used goes as it is hidden; back, what is drawn is told for today
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") usageCounters.flush(true); else usageCounters.reshow(); });
+  window.matchMedia?.(SHEET_QUERY).addEventListener?.("change", () => usageCounters.reshow());
   window.addEventListener("pagehide", () => usageCounters.flush(true));
 }
 
-/** `name` was drawn while `drawn`, for a pane of `machineId`: told once a day, and only for this PC's own panes */
+/** `name` is drawn while `drawn`, for a pane of `machineId`: told once a day per width while it stays, only for this PC's own panes */
 export function useShownCount(name: TelemetryShown, drawn: boolean, machineId: string): void {
-  useEffect(() => { if (drawn && machineId === LOCAL_MACHINE) usageCounters.shown(name); }, [name, drawn, machineId]);
+  useEffect(() => drawn && machineId === LOCAL_MACHINE ? usageCounters.draw(name) : undefined, [name, drawn, machineId]);
 }

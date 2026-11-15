@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SUPPORTED_AGENT_KINDS } from "../shared/supported-agents.ts";
 import { ACTIVE_LATE_DAYS, COUNTS_LATE_DAYS, emptyUsage, harnessOf, TELEMETRY_COUNT_MAX, TELEMETRY_HARNESSES, type TelemetryActive, type TelemetryChange, type TelemetryCounts, type TelemetryEvent, type TelemetryRuntime, type TelemetrySettings, type TelemetryUsage } from "../shared/telemetry.ts";
-import { COUNTS_NOTICE_VERSION, COUNTS_ON, NOTICE_VERSION } from "../shared/telemetry-notice.ts";
+import { NOTICE_VERSION } from "../shared/telemetry-notice.ts";
 import { DEFAULT_SETTINGS, telemetrySettingsSnapshot, type Settings } from "../src/lib/settings.ts";
 import { handleTelemetryRequest, installMethod, Telemetry, telemetryBlocked, USAGE_RESEND_MS, visitSurface } from "./telemetry.ts";
 
@@ -1056,8 +1056,29 @@ describe("/api/telemetry", () => {
 });
 
 describe("telemetry counts", () => {
+  test("POST counts is refused with 400 while this build counts nothing, as before counts existed", async () => {
+    const off = setup({ countsOn: false });
+    seen(off.telemetry);
+    const post = (telemetry: Telemetry) => handleTelemetryRequest(new Request("http://localhost/api/telemetry", { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ counts: { width: "wide", add: { chat_send: 1 }, shown: [] } }) }), telemetry);
+    const refused = await post(off.telemetry);
+    expect(refused.status).toBe(400);
+    expect((await refused.json()).error.code).toBe("invalid_body");
+    const on = setup({ countsOn: true });
+    seen(on.telemetry);
+    expect((await post(on.telemetry)).status).toBe(200);
+  });
+  test("the shipped default counts and sends nothing before the notice that says so (version 6)", async () => {
+    const { telemetry, counts, clock, stateDir } = setup();
+    seen(telemetry);
+    telemetry.change({ counts: { width: "wide", add: { chat_send: 3 }, shown: ["composer"] } });
+    clock.now += 86_400_000;
+    await telemetry.active([]);
+    await settled();
+    // 6 is the notice whose wording says buttons are counted: below it, nothing is kept, previewed or sent
+    const on = NOTICE_VERSION >= 6;
+    expect([counts.length > 0, telemetry.status().counts !== undefined, savedFile(stateDir).counts.length > 0 || counts.length > 0]).toEqual([on, on, on]);
+  });
   test("off in this build (its notice is below COUNTS_NOTICE_VERSION): nothing is counted, sent or previewed", async () => {
-    expect(COUNTS_ON).toBe(NOTICE_VERSION >= COUNTS_NOTICE_VERSION);
     const { telemetry, counts, clock, stateDir } = setup({ countsOn: false });
     seen(telemetry);
     telemetry.change({ counts: { width: "narrow", add: { chat_send: 3 }, shown: ["composer"] } });

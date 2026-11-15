@@ -548,6 +548,9 @@ export class Telemetry {
    */
   private countsOn(): boolean { return this.options.countsOn ?? COUNTS_ON; }
 
+  /** whether a browser's counts are taken at all: not while this build's notice does not say so, where they are refused as before */
+  takesCounts(): boolean { return this.countsOn(); }
+
   private flushCounts(): Promise<void> {
     if (!this.countsOn()) return Promise.resolve();
     if (this.countsSending) return this.countsSending;
@@ -817,7 +820,8 @@ export async function handleTelemetryRequest(request: Request, telemetry?: Telem
   try { body = JSON.parse(text); } catch { return badRequest("invalid_json", "The body is not JSON"); }
   if (!isJsonObject(body)) return badRequest("invalid_body", "Send an object");
   const change = telemetryChange(body);
-  if (!change) return badRequest("invalid_body", "Send enabled, settings, or the current notice acknowledgement");
+  // a counts change is refused as any unknown key was before, while this build counts nothing
+  if (!change || (change.counts !== undefined && !telemetry.takesCounts())) return badRequest("invalid_body", "Send enabled, settings, or the current notice acknowledgement");
   try { return reply(telemetry.change(change)); }
   catch (error) { return errorResponse(error); }
 }

@@ -9,7 +9,7 @@ import { notificationViewForPane, type NotificationTarget } from "./notification
 import type { TerminalPeek } from "./terminalPeek.ts";
 import { HISTORY_PROMPTS, type Settings } from "./settings.ts";
 import type { TelemetryViewSource } from "../../shared/telemetry.ts";
-import { usageCounters } from "./usageCounters.ts";
+import { usageCounters, type UsageCounters } from "./usageCounters.ts";
 
 /**
  * The lens a pane opens in: the one picked for it by hand, remembered per pane, else its default
@@ -113,7 +113,7 @@ export function usePaneLens({ settings, selectedPaneId, selectedMachineId, selec
  * (find, a recovered message, a new session's first message) and is not counted. The selected pane's pick
  * to the lens it already shows (`view`) is no switch.
  */
-export function usePaneViewPicks({ setViewPicks, setNotificationViewTarget, setTerminalPeek, setLens, setAutoSelected, selectedPaneId, selectedMachineId, view, agentOf }: {
+export function usePaneViewPicks({ setViewPicks, setNotificationViewTarget, setTerminalPeek, setLens, setAutoSelected, selectedPaneId, selectedMachineId, view, agentOf, counters = usageCounters }: {
   setViewPicks: Dispatch<SetStateAction<ReadonlyMap<string, PaneView>>>;
   setNotificationViewTarget: Dispatch<SetStateAction<NotificationTarget | null>>;
   setTerminalPeek: Dispatch<SetStateAction<TerminalPeek | null>>;
@@ -123,6 +123,8 @@ export function usePaneViewPicks({ setViewPicks, setNotificationViewTarget, setT
   selectedMachineId: string;
   view: PaneView;
   agentOf: (machineId: string, paneId: string) => string | null | undefined;
+  /** the page's counters; a test passes its own */
+  counters?: Pick<UsageCounters, "viewSwitch">;
 }) {
   const agentOfRef = useRef(agentOf);
   agentOfRef.current = agentOf;
@@ -137,9 +139,9 @@ export function usePaneViewPicks({ setViewPicks, setNotificationViewTarget, setT
   }, []);
 
   const pickView = useCallback((machineId: string, paneId: string, next: PaneView, source: TelemetryViewSource | null) => {
-    usageCounters.viewSwitch(next, agentOfRef.current(machineId, paneId), source, machineId);
+    counters.viewSwitch(next, agentOfRef.current(machineId, paneId), source, machineId);
     remember(machineId, paneId, next);
-  }, [remember]);
+  }, [counters, remember]);
 
   const setView = useCallback(
     (next: PaneView, source: TelemetryViewSource | null) => {
@@ -147,10 +149,10 @@ export function usePaneViewPicks({ setViewPicks, setNotificationViewTarget, setT
       setLens((current) => ({ ...current, view: next }));
       setAutoSelected(false);
       if (selectedPaneId === null) return;
-      if (next !== view) usageCounters.viewSwitch(next, agentOfRef.current(selectedMachineId, selectedPaneId), source, selectedMachineId);
+      if (next !== view) counters.viewSwitch(next, agentOfRef.current(selectedMachineId, selectedPaneId), source, selectedMachineId);
       remember(selectedMachineId, selectedPaneId, next);
     },
-    [selectedPaneId, selectedMachineId, remember, view],
+    [counters, selectedPaneId, selectedMachineId, remember, view],
   );
   return { pickView, setView };
 }

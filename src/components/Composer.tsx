@@ -748,7 +748,7 @@ export function Composer({
         });
       }
     },
-    [agent, onOpenHistory, setTextAndCaret, text],
+    [agent, machineId, onOpenHistory, setTextAndCaret, text],
   );
 
   const pumpUploads = useCallback(() => {
@@ -861,6 +861,14 @@ export function Composer({
     const sentAttachments = attachments;
     let sendId: number | undefined;
     const settle = (result: boolean | string | DraftRefusal): void => {
+      // counted once taken: a refused or failed send is no send. A count that fails is logged and never stands in the
+      // send's way: the draft's lease is released after this
+      if (result === true) {
+        try {
+          usageCounters.paneUse("chat_send", machineId);
+          if (hold) usageCounters.paneUse("composer_hold", machineId);
+        } catch (error) { console.error("usage counts", error); }
+      }
       // a send for a pane another herdr has replaced since leaves the new pane's box alone (#1608)
       const acknowledged = result === true ? composerDrafts.settle(draftKey, sent, sendId) : null;
       // the comments it carried are sent: any written meanwhile wait for the next message
@@ -892,8 +900,6 @@ export function Composer({
       replyComments.reserve(sentComments);
       // a polish landing before the acknowledgement would count as an edit and keep the sent message here
       dictation.forget();
-      usageCounters.paneUse("chat_send", machineId);
-      if (hold) usageCounters.paneUse("composer_hold", machineId);
       try {
         // a message with comments goes only to an agent: a shell would read `> quote` as a redirect
         const agentOnly = sentComments.length > 0 || composerDrafts.isAgentOnly(draftKey);
