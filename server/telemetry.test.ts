@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SUPPORTED_AGENT_KINDS } from "../shared/supported-agents.ts";
@@ -743,6 +743,69 @@ describe("daily active message", () => {
     expect(savedFile(stateDir)).toMatchObject({ settings: null, active: [], counts: [] });
   });
 
+  test("a lock another live server holds keeps a count out, but an off still goes and nothing is sent after it", async () => {
+    const { telemetry, actives, stateDir } = setup({ grace: 600_000 });
+    seen(telemetry);
+    await telemetry.active(["claude"]);
+    // another server (a live process) holds the state folder's lock, freshly
+    writeFileSync(join(stateDir, "telemetry.lock"), `${process.ppid} ${Date.now()}`);
+    const errors = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      telemetry.tally("prompt_answers");
+      expect(savedFile(stateDir).active[0].usage.prompt_answers).toBe(0);
+      expect(errors.mock.calls.some(([line]) => String(line).includes("telemetry.lock"))).toBe(true);
+      // the off does not wait for it: marked, and what was not sent deleted
+      telemetry.change({ enabled: false });
+      expect(existsSync(join(stateDir, "telemetry-off"))).toBe(true);
+      expect(savedFile(stateDir)).toMatchObject({ enabled: false, active: [] });
+    } finally { errors.mockRestore(); }
+    rmSync(join(stateDir, "telemetry.lock"));
+    await settled();
+    expect(actives).toEqual([]);
+  });
+
+  test("a lock left by a server that is gone, or held too long, is taken over", () => {
+    for (const lock of [`999999999 ${Date.now()}`, `${process.ppid} ${Date.now() - 60_000}`, "garbage"]) {
+      const { telemetry, stateDir } = setup({ grace: 600_000 });
+      seen(telemetry);
+      void telemetry.active(["claude"]);
+      const file = join(stateDir, "telemetry.lock");
+      writeFileSync(file, lock);
+      if (lock === "garbage") utimesSync(file, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
+      telemetry.tally("prompt_answers");
+      expect(savedFile(stateDir).active[0].usage.prompt_answers).toBe(1);
+      expect(existsSync(file)).toBe(false);
+    }
+  });
+
+  test("a lock another server holds for a moment is waited for", async () => {
+    const { telemetry, stateDir } = setup({ grace: 600_000 });
+    seen(telemetry);
+    await telemetry.active(["claude"]);
+    const file = join(stateDir, "telemetry.lock");
+    // another process takes the lock, says so, and lets it go 40 ms later
+    const child = Bun.spawn(["bun", "-e", `const fs = require("node:fs"); fs.writeFileSync(${JSON.stringify(file)}, process.pid + " " + Date.now(), { flag: "wx" }); console.log("HELD"); setTimeout(() => fs.rmSync(${JSON.stringify(file)}), 40);`], { stdout: "pipe" });
+    const reader = child.stdout.getReader();
+    expect(new TextDecoder().decode((await reader.read()).value)).toContain("HELD");
+    telemetry.tally("prompt_answers");
+    expect(savedFile(stateDir).active[0].usage.prompt_answers).toBe(1);
+    expect(await child.exited).toBe(0);
+  });
+
+  test("a server never waits on its own lock and leaves none behind", async () => {
+    const { telemetry, stateDir } = setup({ grace: 600_000 });
+    const errors = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      seen(telemetry);
+      await telemetry.active(["claude"]);
+      telemetry.tally("prompt_answers");
+      telemetry.change({ enabled: false });
+      telemetry.change({ enabled: true });
+      expect(errors.mock.calls.some(([line]) => String(line).includes("telemetry.lock"))).toBe(false);
+    } finally { errors.mockRestore(); }
+    expect(existsSync(join(stateDir, "telemetry.lock"))).toBe(false);
+  });
+
   test("(k) an install that was never visited sends no active message", async () => {
     const { telemetry, actives, sent } = setup();
     seen(telemetry);
@@ -1166,7 +1229,9 @@ describe("another server on the same state directory", () => {
     const writer = await pausedWriter(stateDir, `telemetry.change({ enabled: false, notice_seen: true, notice_version: ${NOTICE_VERSION} });`);
     try {
       expect(await writer.next()).toBe("PAUSED");
-      expect(telemetry.change({ enabled: true }).enabled).toBe(true);
+      // the other server holds the state folder's lock through its off: this on cannot interleave with it, and is not taken
+      const errors = spyOn(console, "error").mockImplementation(() => {});
+      try { expect(telemetry.change({ enabled: true }).enabled).toBe(false); } finally { errors.mockRestore(); }
       writer.resume();
       expect(await writer.next()).toBe("DONE");
       expect(await writer.child.exited).toBe(0);
