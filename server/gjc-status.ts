@@ -41,8 +41,8 @@ interface GjcEntry {
   message?: { role?: unknown; stopReason?: unknown; content?: unknown; toolCallId?: unknown; toolName?: unknown; details?: unknown };
 }
 
-/** the states gjc's `job` and `subagent` tools report a job in once it no longer runs */
-const ENDED = new Set(["completed", "failed", "cancelled", "not_found", "already_completed", "already_cancelled"]);
+/** the states gjc's `job` and `subagent` tools report a job in once it no longer runs (a paused one waits on nobody) */
+const ENDED = new Set(["completed", "failed", "cancelled", "paused", "not_found", "already_completed", "already_cancelled"]);
 const record = (value: unknown): Record<string, unknown> | null => typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null;
 const list = (value: unknown): Record<string, unknown>[] => Array.isArray(value) ? value.flatMap((item) => { const found = record(item); return found ? [found] : []; }) : [];
 const text = (content: unknown): string => list(content).flatMap((part) => part["type"] === "text" && typeof part["text"] === "string" ? [part["text"]] : []).join("\n");
@@ -51,9 +51,10 @@ const text = (content: unknown): string => list(content).flatMap((part) => part[
  * The background jobs a gjc session started and has not heard the end of: a turn that ends while
  * one runs waits on it (background-wait.ts), and its end wakes the session. A job starts with a
  * `task` or `bash` result whose `details.async.state` is `running`: a bash job is that result's
- * `jobId`, a task batch lists each job as ``(job `<id>`)`` in its text (its details name only the
- * first). It ends with the `async-result` that delivers it, or a `job` or `subagent` result that
- * reports it no longer running (an await or a cancel acknowledges it, and no delivery follows).
+ * `jobId`, a task batch lists each job on a line of its own, ``- `<id>` (job `<id>`) — <description>``
+ * (its details name only the first; the description is the model's, and names no job). It ends
+ * with the `async-result` that delivers it, or a `job` or `subagent` result that reports it no
+ * longer running, paused included (an await or a cancel acknowledges it, and no delivery follows).
  */
 export function gjcJobsAfter(open: readonly OmoDetachedCell[], entry: GjcEntry): readonly OmoDetachedCell[] {
   const ended = (ids: string[]): readonly OmoDetachedCell[] => {
@@ -80,7 +81,7 @@ export function gjcJobsAfter(open: readonly OmoDetachedCell[], entry: GjcEntry):
   if (async?.["state"] !== "running" || typeof async["jobId"] !== "string") return open;
   const at = typeof entry.timestamp === "string" ? Date.parse(entry.timestamp) : NaN;
   if (!Number.isFinite(at)) return open;
-  const ids = message.toolName === "task" ? [...text(message.content).matchAll(/\(job `([^`]+)`\)/g)].map((match) => match[1]!)
+  const ids = message.toolName === "task" ? [...text(message.content).matchAll(/^- `[^`]*` \(job `([^`]+)`\)/gm)].map((match) => match[1]!)
     : message.toolName === "bash" ? [async["jobId"]] : [];
   const started = ids.filter((id, i) => ids.indexOf(id) === i && !open.some((job) => job.id === id));
   return started.length > 0 ? [...open, ...started.map((id) => ({ id, at }))] : open;

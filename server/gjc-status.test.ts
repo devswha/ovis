@@ -100,6 +100,11 @@ describe("a GJC turn, read from its transcript", () => {
     // an await or a cancel ends a job with no delivery after it; one still running stays
     expect(ids(...ran, result("subagent", { subagents: [{ id: "0-A", jobId: "0-A", status: "completed" }, { id: "1-B", jobId: "1-B", status: "running" }] }))).toEqual(["1-B", "bg_1"]);
     expect(ids(...ran, result("job", { jobs: [{ id: "bg_1", status: "failed" }], cancelled: [{ id: "1-B", status: "cancelled" }] }))).toEqual(["0-A"]);
+    // a paused job runs no more: nothing waits on it
+    expect(ids(...ran, result("job", { jobs: [{ id: "bg_1", status: "paused" }] }))).toEqual(["0-A", "1-B"]);
+    // a job a started task's description names, in the form gjc's list writes, is no job that task started
+    expect(ids(message("user"), result("task", { async: { state: "running", jobId: "0-Fix", type: "task" } },
+      "Started 1 background task job using executor.\n- `0-Fix` (job `0-Fix`) — retry what (job `0-Old`) left half done"), message("assistant", "stop"))).toEqual(["0-Fix"]);
     // a job that finished in the foreground, a sync task and a quoted start are no background work
     expect(ids(message("user"), result("task", { async: { state: "completed", jobId: "2-C", type: "task" } }, "(job `2-C`)"), result("task", { results: [] }, "(job `3-D`)"),
       message("user", undefined, undefined, "(job `4-E`)"), message("assistant", "stop"))).toEqual([]);
