@@ -34,6 +34,7 @@ function crate(patches = 0): { dir: string; upstream: string } {
   mkdirSync(hc);
   git(hc, "init", "--quiet");
   writeFileSync(join(hc, "README.md"), "hc-tui\n");
+  writeFileSync(join(hc, ".gitignore"), "/target/\n*.local\n");
   git(hc, "add", "-A");
   git(hc, "submodule", "--quiet", "add", ghostty, "vendor/ghostty");
   git(hc, "commit", "--quiet", "-m", "hc-tui");
@@ -57,7 +58,7 @@ function addPatch(dir: string, n: number): void {
 
 function prepare(dir: string, extra: Record<string, string> = {}): { code: number; out: string } {
   const run = Bun.spawnSync(["sh", join(dir, "prepare.sh")], {
-    env: { PATH: process.env["PATH"] ?? "/usr/bin:/bin", HOME: scratch, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "protocol.file.allow", GIT_CONFIG_VALUE_0: "always", ...extra },
+    env: { PATH: `${join(scratch, "bin")}:${process.env["PATH"] ?? "/usr/bin:/bin"}`, HOME: scratch, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "protocol.file.allow", GIT_CONFIG_VALUE_0: "always", ...extra },
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -66,6 +67,9 @@ function prepare(dir: string, extra: Record<string, string> = {}): { code: numbe
 
 beforeEach(() => {
   scratch = mkdtempSync(join(tmpdir(), "ovis-tui-prepare-"));
+  // git, which writes WORK_DURING_FETCH's file first when it fetches: work done while the script runs
+  mkdirSync(join(scratch, "bin"));
+  writeFileSync(join(scratch, "bin", "git"), `#!/bin/sh\ncase " $* " in *" fetch "*) [ -z "\${WORK_DURING_FETCH:-}" ] || echo mine > "$WORK_DURING_FETCH" ;; esac\nexec "${Bun.which("git")}" "$@"\n`, { mode: 0o755 });
 });
 
 afterEach(() => rmSync(scratch, { recursive: true, force: true }));
@@ -87,14 +91,37 @@ describe("crates/ovis-tui/prepare.sh", () => {
   });
 
   describe("never deletes work when the patches change", () => {
-    const cases: [string, (upstream: string) => void, string][] = [
-      ["a branch", (upstream) => git(upstream, "branch", "mywork"), "refs/heads/mywork"],
+    const sub = (upstream: string) => join(upstream, "vendor", "ghostty");
+    const commitIn = (repo: string, file: string) => {
+      writeFileSync(join(repo, file), "mine\n");
+      git(repo, "add", file);
+      git(repo, "commit", "--quiet", "-m", "mine");
+    };
+    const refs = (repo: string) => git(repo, "for-each-ref", "--format=%(refname)");
+    const cases: [string, (upstream: string) => void, (upstream: string) => boolean][] = [
+      ["a branch", (upstream) => git(upstream, "branch", "mywork"), (upstream) => refs(upstream).includes("refs/heads/mywork")],
       ["a stash", (upstream) => {
         writeFileSync(join(upstream, "README.md"), "edited\n");
         git(upstream, "stash", "--quiet");
-      }, "refs/stash"],
-      ["an uncommitted change", (upstream) => writeFileSync(join(upstream, "README.md"), "edited\n"), "README.md"],
-      ["an untracked file in the Ghostty submodule", (upstream) => writeFileSync(join(upstream, "vendor", "ghostty", "mine.zig"), "// mine\n"), "vendor/ghostty/mine.zig"],
+      }, (upstream) => refs(upstream).includes("refs/stash")],
+      ["an uncommitted change", (upstream) => writeFileSync(join(upstream, "README.md"), "edited\n"), (upstream) => readFileSync(join(upstream, "README.md"), "utf8") === "edited\n"],
+      ["an untracked file its git config hides", (upstream) => {
+        git(upstream, "config", "status.showUntrackedFiles", "no");
+        writeFileSync(join(upstream, "notes.md"), "mine\n");
+      }, (upstream) => existsSync(join(upstream, "notes.md"))],
+      ["an ignored file that is not a build cache", (upstream) => writeFileSync(join(upstream, "keys.local"), "mine\n"), (upstream) => existsSync(join(upstream, "keys.local"))],
+      ["another worktree of it", (upstream) => git(upstream, "worktree", "add", "--quiet", "--detach", join(scratch, "elsewhere")), (upstream) => git(upstream, "worktree", "list").includes("elsewhere")],
+      ["an untracked file in the Ghostty submodule", (upstream) => writeFileSync(join(sub(upstream), "mine.zig"), "// mine\n"), (upstream) => existsSync(join(sub(upstream), "mine.zig"))],
+      ["a stash in the Ghostty submodule", (upstream) => {
+        writeFileSync(join(sub(upstream), "build.zig"), "// edited\n");
+        git(sub(upstream), "stash", "--quiet");
+      }, (upstream) => refs(sub(upstream)).includes("refs/stash")],
+      ["a commit on the Ghostty submodule's detached HEAD", (upstream) => commitIn(sub(upstream), "mine.zig"), (upstream) => git(sub(upstream), "log", "--format=%s", "-1") === "mine"],
+      ["a Ghostty branch with a commit no remote has", (upstream) => {
+        git(sub(upstream), "switch", "--quiet", "-c", "mywork");
+        commitIn(sub(upstream), "mine.zig");
+        git(sub(upstream), "switch", "--quiet", "--detach", "HEAD~1");
+      }, (upstream) => refs(sub(upstream)).includes("refs/heads/mywork")],
     ];
     for (const [name, make, kept] of cases) {
       it(`keeps ${name}`, () => {
@@ -105,17 +132,30 @@ describe("crates/ovis-tui/prepare.sh", () => {
         const ran = prepare(dir);
         expect(ran.code, ran.out).toBe(1);
         expect(ran.out).toContain("has work of its own");
-        if (kept.startsWith("refs/")) expect(git(upstream, "for-each-ref", "--format=%(refname)")).toContain(kept);
-        else expect(existsSync(join(upstream, kept))).toBe(true);
+        expect(kept(upstream)).toBe(true);
       });
     }
+
+    it("keeps work made in it while the new tree was fetched, and replaces nothing", () => {
+      const { dir, upstream } = crate(1);
+      expect(prepare(dir).code).toBe(0);
+      addPatch(dir, 2);
+      const ran = prepare(dir, { WORK_DURING_FETCH: join(upstream, "notes.md") });
+      expect(ran.code, ran.out).toBe(1);
+      expect(ran.out).toContain("nothing was replaced");
+      expect(existsSync(join(upstream, "notes.md"))).toBe(true);
+      expect(existsSync(join(upstream, "patch-2.txt"))).toBe(false);
+      expect(readdirSync(dir).filter((name) => name.startsWith(".upstream.new"))).toEqual([]);
+    });
   });
 
-  it("does not count the Ghostty build's own ignored files as work", () => {
+  it("does not count build caches (target/, Ghostty's zig-pkg/) as work", () => {
     const { dir, upstream } = crate(1);
     expect(prepare(dir).code).toBe(0);
     mkdirSync(join(upstream, "vendor", "ghostty", "zig-pkg"));
     writeFileSync(join(upstream, "vendor", "ghostty", "zig-pkg", "cache"), "x");
+    mkdirSync(join(upstream, "target"));
+    writeFileSync(join(upstream, "target", "build"), "x");
     addPatch(dir, 2);
     expect(prepare(dir).code).toBe(0);
     expect(existsSync(join(upstream, "patch-2.txt"))).toBe(true);

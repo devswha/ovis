@@ -7,8 +7,8 @@
 # It fetches one commit (hc-tui.pin names it) and that commit's Ghostty submodule, checks both commit
 # ids, applies every patch and commits them there, so a clean `git status` in ./upstream means the
 # tree is exactly "the pin plus our patches". A tree that is already that is left alone. A tree with
-# work of its own (edits, branches, a stash, files in the Ghostty submodule) is never deleted: the
-# script stops and says so. A new tree is made beside the old one and replaces it only once whole,
+# work of its own (see work_in: edits, untracked or kept ignored files, branches, a stash, another
+# worktree, commits, in it or in its Ghostty submodule) is never deleted: the script stops and says so. A new tree is made beside the old one and replaces it only once whole,
 # so a failed fetch leaves the old tree as it was.
 #
 # HC_TUI_REPO_OVERRIDE names another place to fetch the same commit from (a local clone, a mirror).
@@ -29,28 +29,47 @@ fi
 want=$( { printf '%s %s\n' "$HC_TUI_COMMIT" "$GHOSTTY_COMMIT"; for patch in "$here"/patches/*.patch; do [ -f "$patch" ] && cat "$patch"; done; } | hash | cut -d' ' -f1)
 [ -n "$want" ] || { echo "prepare.sh: could not hash the pin and the patches" >&2; exit 1; }
 
-if [ -e "$dest" ] && [ ! -d "$dest/.git" ] && [ -n "$(ls -A "$dest" 2>/dev/null)" ]; then
-  echo "prepare.sh: $dest is not a checkout this script made. Move it away, then run this again." >&2
-  exit 1
-fi
-
-if [ -d "$dest/.git" ]; then
-  # the tree is this script's own only while it is exactly the commit the script made last (the
-  # stamp's second line), or the bare pin, with no edits and no untracked files: anything else is
-  # someone's work, which is never deleted
-  made=$(sed -n 2p "$stamp" 2>/dev/null || true)
-  head=$(git -C "$dest" rev-parse HEAD 2>/dev/null || true)
-  edits=$(git -C "$dest" status --porcelain --ignore-submodules=none | grep -v -x '?? .ovis-prepared' || true)
-  # the script makes no branch and no stash: any is someone's
-  refs=$(git -C "$dest" for-each-ref --format='%(refname)' refs/heads refs/stash)
-  sub=""
-  [ ! -e "$dest/vendor/ghostty/.git" ] || sub=$(git -C "$dest/vendor/ghostty" status --porcelain)
-  if [ -n "$edits" ] || [ -n "$refs" ] || [ -n "$sub" ] || { [ "$head" != "$made" ] && [ "$head" != "$HC_TUI_COMMIT" ]; }; then
-    echo "prepare.sh: $dest has work of its own (edits, untracked files, a branch, a stash, files in vendor/ghostty, or commits not exported to $here/patches). Export it (git -C upstream format-patch), or move the folder away, then run this again." >&2
-    exit 1
+# Prints, one per line, what in the tree at $1 is someone's work; prints nothing for a tree this
+# script made and nobody changed since. Build caches are not work: target/ in upstream/, and
+# zig-pkg/, zig-out/ and the Zig caches in vendor/ghostty.
+work_in() {
+  d=$1
+  [ -n "$(ls -A "$d" 2>/dev/null)" ] || return 0
+  if [ ! -d "$d/.git" ]; then
+    echo "it is not a checkout this script made"
+    return 0
   fi
+  made=$(sed -n 2p "$d/.ovis-prepared" 2>/dev/null || true)
+  head=$(git -C "$d" rev-parse HEAD 2>/dev/null || true)
+  [ "$head" = "$made" ] || [ "$head" = "$HC_TUI_COMMIT" ] || echo "HEAD is $head, with commits not exported to patches/"
+  # the flags override a status.showUntrackedFiles=no in that checkout's config
+  git -C "$d" status --porcelain --untracked-files=normal --ignore-submodules=all | grep -v -x '?? .ovis-prepared' | sed 's/^/changed: /'
+  git -C "$d" status --porcelain --untracked-files=normal --ignored=matching --ignore-submodules=all | sed -n 's/^!! //p' | grep -v -E '^target/' | sed 's/^/ignored file kept: /'
+  # the script makes no branch, no stash and no other worktree: any is someone's
+  git -C "$d" for-each-ref --format='%(refname)' refs/heads refs/stash | sed 's/^/ref: /'
+  [ "$(git -C "$d" worktree list --porcelain | grep -c '^worktree ')" -le 1 ] || echo "another worktree of it"
+  s="$d/vendor/ghostty"
+  [ -e "$s/.git" ] || return 0
+  sub=$(git -C "$s" rev-parse HEAD 2>/dev/null || true)
+  [ "$sub" = "$GHOSTTY_COMMIT" ] || echo "vendor/ghostty: HEAD is $sub, not the pin"
+  git -C "$s" status --porcelain --untracked-files=normal | sed 's|^|vendor/ghostty changed: |'
+  git -C "$s" status --porcelain --untracked-files=normal --ignored=matching | sed -n 's/^!! //p' | grep -v -E '^(zig-pkg|zig-out|\.zig-cache|zig-cache)/' | sed 's|^|vendor/ghostty ignored file kept: |'
+  git -C "$s" for-each-ref --format='%(refname)' refs/stash | sed 's|^|vendor/ghostty: |'
+  # its clone makes a branch at the remote's head: only commits no remote has are work
+  git -C "$s" rev-list --branches --not --remotes | head -1 | sed 's|^|vendor/ghostty: unpushed commit |'
+}
+
+refuse() {
+  echo "prepare.sh: $dest has work of its own$1. Export it (git -C upstream format-patch), or move the folder away, then run this again:" >&2
+  printf '%s\n' "$2" | head -10 | sed 's/^/  /' >&2
+  exit 1
+}
+
+if [ -e "$dest" ]; then
+  work=$(work_in "$dest")
+  [ -z "$work" ] || refuse "" "$work"
   # reused only when it is the very commit made for these patches: the bare pin is made again
-  if [ "$head" = "$made" ] && [ "$(sed -n 1p "$stamp" 2>/dev/null || true)" = "$want" ]; then
+  if [ -d "$dest/.git" ] && [ "$(git -C "$dest" rev-parse HEAD)" = "$(sed -n 2p "$stamp" 2>/dev/null || true)" ] && [ "$(sed -n 1p "$stamp" 2>/dev/null || true)" = "$want" ]; then
     exit 0
   fi
 fi
@@ -79,6 +98,11 @@ if [ "$applied" -gt 0 ]; then
   git -C "$new" -c user.name=ovis-tui -c user.email=ovis-tui@users.noreply.github.com commit --quiet -m "Ovis patches on hc-tui $HC_TUI_TAG ($applied)"
 fi
 printf '%s\n%s\n' "$want" "$(git -C "$new" rev-parse HEAD)" > "$new/.ovis-prepared"
+# looked at again just before it goes: work may have been done in it while this one was made
+if [ -e "$dest" ]; then
+  work=$(work_in "$dest")
+  [ -z "$work" ] || refuse " (made while this ran; nothing was replaced)" "$work"
+fi
 rm -rf "$dest"
 mv "$new" "$dest"
 trap - EXIT
