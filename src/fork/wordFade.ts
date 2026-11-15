@@ -11,9 +11,9 @@ import { createElement, useMemo, useRef, useState, type ReactNode } from "react"
 
 import type { ConversationTurn } from "../../shared/protocol.ts";
 
-/** words 70ms apart, an update's words all started within 700ms (Streamdown: 40 and 320); the fade's 250ms is in chat.css */
-const STAGGER_MS = 70;
-const MAX_BACKLOG_MS = 700;
+/** words 100ms apart, an update's words all started within 1000ms (Streamdown: 40 and 320); the fade's 350ms is in chat.css */
+const STAGGER_MS = 100;
+const MAX_BACKLOG_MS = 1000;
 const MIN_STEP_MS = 4;
 /** the chat was opened or shown again this recently: the reply is drawn as it stands */
 export const OPEN_GRACE_MS = 1500;
