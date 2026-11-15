@@ -118,6 +118,7 @@ export async function checkTelemetrySettings(browser: Browser): Promise<void> {
     // the notice by its role, not its sentence: a new notice version rewords it, and the version is asserted below
     const notice = page.locator(".update-notice.is-telemetry[role='status']").first();
     await notice.waitFor({ state: "visible" });
+    assert.ok((await notice.locator(".update-notice-text").innerText()).trim().length > 0, "the notice says something, whatever its wording");
     await until(async () => (await statusAt(origin)).notice_seen, "the visible notice is reacknowledged");
     // the server can hold the acknowledgement a moment before Playwright reports the request that carried it
     await until(async () => changes.some((change) => change.notice_seen === true && change.notice_version === NOTICE_VERSION), "the browser acknowledges exactly the current notice version");

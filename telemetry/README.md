@@ -19,8 +19,8 @@ A second table, `active`, holds one row per install and UTC day the app was open
 the app was installed, the terminal runtime, the country, and `harnesses`, a JSON array of the kinds of coding agents
 running that day, from the fixed list `TELEMETRY_HARNESSES` in `shared/telemetry.ts` (any other
 agent is `other`). A later message for the same day replaces the version and the harnesses.
-A third table, `counts`, holds one row per install and UTC day that has ended, for apps since notice
-version 6 (`POST /v1/counts`): the day, the random install ID, the app's version that day, and
+A third table, `counts`, is ready to hold one row per install and UTC day that has ended
+(`POST /v1/counts`); no app sends to it yet, and none will before a notice that says so: the day, the random install ID, the app's version that day, and
 `narrow` and `wide`, the day's use of the app's controls in a window at most 640px wide and in a
 wider one: for each fixed counter name used that day (`TELEMETRY_COUNTERS` in `shared/telemetry.ts`,
 such as `chat_send` or `view_terminal_claude`), a bucket (1: 1-2 times, 2: 3-9, 3: 10-29, 4: 30 or
