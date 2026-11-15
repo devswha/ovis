@@ -11,6 +11,8 @@
   checkout cannot run the stop, nothing is built, and the installer says what to stop or remove
   before running it again. `OVIS_REF` naming another branch or commit than the installed one, or a
   branch that has moved since it was installed, is said, and nothing is stopped or changed. So is git
-  failing to read the installed checkout's commit, with what git said.
+  failing to read the installed checkout's commit, with what git said; for a folder git does not trust
+  (owned by another account), with the `git config --global --add safe.directory` command that fixes
+  it.
 - `install.sh` and `install.ps1` run again with `OVIS_REF` over an installed Ovis that needs no
   build say the commit it is at and that `OVIS_REF` does not move it, instead of nothing.
