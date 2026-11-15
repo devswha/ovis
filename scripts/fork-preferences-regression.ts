@@ -3,10 +3,15 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chromium } from "playwright-core";
+import { chromium, type Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+
+const openDrawer = async (page: Page) => {
+  await page.getByRole("button", { name: "Open workspace list", exact: true }).click();
+  await page.locator("#workspace-drawer.is-open").waitFor();
+};
 
 const app = mkdtempSync(join(tmpdir(), "ovis-fork-preferences-"));
 try {
@@ -58,6 +63,27 @@ try {
           await page.reload();
           await page.locator(".conn-live").waitFor({ state: "attached" });
           assert.equal(await page.evaluate(() => document.documentElement.dataset["forkSquareCorners"]), String(!legacy), "the explicit choice survives reload without being migrated again");
+          // Agent friends: the saved fork device shows each running agent as its friend alone, no harness logo; upstream defaults keep the marks
+          const faces = (selector: string) => page.locator(selector).evaluateAll((nodes) => nodes.map((node) => ({ friend: node.querySelector(".agent-friend img") !== null, mark: node.querySelector(".agent-mark") !== null })));
+          const checkFaces = async (what: string, selector: string) => {
+            if (legacy) await page.waitForFunction((css) => [...document.querySelectorAll(css)].some((node) => node.querySelector(".agent-friend")), selector);
+            const seen = (await faces(selector)).filter((face) => face.friend || face.mark);
+            assert.ok(seen.length > 0, `${what}: has agent rows`);
+            assert.ok(seen.every((face) => (face.friend && !face.mark) === legacy && (face.mark && !face.friend) === !legacy), `${what}: ${legacy ? "the friend alone, no .agent-mark" : "the harness mark, no friend"}`);
+          };
+          await page.evaluate(() => localStorage.setItem("ovis:phone-inbox", "true"));
+          await page.goto(`http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/?app=inbox`);
+          await page.locator(".mode-inbox .inbox-item").first().waitFor();
+          await checkFaces("inbox rows", ".mode-inbox .inbox-avatar");
+          await page.evaluate(() => { localStorage.removeItem("ovis:phone-inbox"); localStorage.setItem("ovis:sidebar-agent-tree", "true"); });
+          await page.goto(`http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/?pane=${encodeURIComponent(panes.omp)}&view=chat`);
+          await page.locator(".conn-live").waitFor({ state: "attached" });
+          await openDrawer(page);
+          await page.locator(".workspace-agent .sidebar-mark").first().waitFor();
+          await checkFaces("the sidebar's workspace agent rows", ".workspace-agent .sidebar-mark");
+          await page.evaluate(() => localStorage.removeItem("ovis:sidebar-agent-tree"));
+          await page.goto(`http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/?pane=${encodeURIComponent(panes.omp)}&view=chat`);
+          await page.locator(".conn-live").waitFor({ state: "attached" });
           await page.evaluate(() => localStorage.setItem("ovis:phone-tabs", JSON.stringify("row")));
           await page.setViewportSize({ width: 700, height: 900 });
           await page.reload();

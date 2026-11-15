@@ -11,8 +11,7 @@ import { useAppLayout, useMachineApi, useMachineId, useReorderCoordinator } from
 import { PanePressContext } from "../lib/paneSubmitContext.ts";
 import { usePaneLocked } from "../lib/paneLocks.ts";
 import type { AppActions } from "../lib/actions.ts";
-import { indicatorGlyph, knownStatus, rollupStatus, STATUS_WORD } from "../lib/status.ts";
-import { AgentMark } from "./AgentMark.tsx";
+import { indicatorGlyph, knownStatus, paneStatus, rollupStatus, STATUS_WORD } from "../lib/status.ts";
 import { WorkspaceFavicon } from "./WorkspaceFavicon.tsx";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { RowMenu, type RowMenuItem } from "./RowMenu.tsx";
@@ -42,6 +41,7 @@ import { agentTabName, paneMark, sidebarAgents, workspaceAgentLabels, type Sideb
 import { PANE_DRAG_TYPE, paneDragData } from "../lib/split.ts";
 import { publishWorkspaceRows, workspaceRows } from "../lib/adjacentTarget.ts";
 import { currentSidebarPins, pinnedGroupIds, pinnedWorkspaceIds, pruneWorkspacePins, reorderWorkspacePins, setSidebarPins, splitPinnedGroups, subscribeSidebarPins, toggleSidebarPin, workspacePinKey, type WorkspaceGroup } from "../lib/sidebarPins.ts";
+import { AgentAvatar } from "../fork/AgentAvatar.tsx";
 
 const ERROR_NOTE_MS = 5000;
 
@@ -516,7 +516,7 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
     const mark = paneMark(agentByPane.get(pane.pane_id));
     return (
       <span className="sidebar-mark" aria-hidden="true">
-        {mark !== null ? <AgentMark agent={mark} size={18} /> : linked ? <GitBranch /> : <Terminal />}
+        {mark !== null ? <AgentAvatar agent={mark} size={18} paneId={pane.pane_id} machineId={machineId} status={paneStatus(pane)} /> : linked ? <GitBranch /> : <Terminal />}
       </span>
     );
   };
@@ -830,7 +830,7 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
         onPointerDown={(event) => { if (event.button === 0 && !event.ctrlKey && !selected && pane.agent != null) pressPane?.(machineId, pane.pane_id); }}
         onClick={() => actions.selectPane(pane.pane_id)}
       >
-        <span className="sidebar-mark" aria-hidden="true">{mark !== null ? <AgentMark agent={mark} size={18} /> : <Terminal />}</span>
+        <span className="sidebar-mark" aria-hidden="true">{mark !== null ? <AgentAvatar agent={mark} size={18} paneId={pane.pane_id} machineId={machineId} status={paneStatus(pane)} /> : <Terminal />}</span>
         {kind && kind !== title && <span className="visually-hidden">{kind}: </span>}
         <span className="workspace-agent-title">{title}</span>
         {place && <span className="workspace-agent-place">{place}</span>}

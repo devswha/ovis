@@ -16,7 +16,6 @@ import { actionAliases, rankByTitle, requestSettingsPage, settingsPageEntries } 
 import { Ownership, runPluginActionToEnd } from "../lib/pluginRun.ts";
 import { modalOpenBesides, shortcutDisplayKeys, formatKeys, type ShortcutId } from "../lib/shortcuts.ts";
 import { useSettings } from "../lib/settings.ts";
-import { AgentMark } from "./AgentMark.tsx";
 import { OvisMark } from "./OvisMark.tsx";
 import { displayPaneTitle, StatusBadge } from "./Sidebar.tsx";
 import { PAGES } from "./SettingsDialog.tsx";
@@ -41,6 +40,7 @@ import { recentDirectories } from "../lib/recent-directories.ts";
 
 import { availableTarget, groupMachinePanes, loadRecentTargets, rankMachinePanes, recentTargets, rememberTarget, targetKey, RECENT_KEY, type MachineBranches, type MachinePane, type RecentPane } from "../lib/machinePalette.ts";
 import { worktreeWorkspaceSignature, type WorkspaceBranch } from "../lib/worktreeBranches.ts";
+import { AgentAvatar } from "../fork/AgentAvatar.tsx";
 const RECENT_SHOWN = 3;
 /** pinned and recent folders offered as jumps, each */
 const FOLDERS_SHOWN = 5;
@@ -789,7 +789,7 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
                 const selected = row.machineId === machineId && pane.pane_id === selectedPaneId;
                 return (
                   <button key={targetKey(row)} data-machine={row.machineId} data-pane={pane.pane_id} id={`palette-item-${index}`} type="button" role="option" className="menu-item palette-pane" aria-selected={activeIndex === index} aria-current={selected ? "true" : undefined} title={title} onFocus={() => select(index)} onMouseMove={() => select(index)} onClick={() => runPane(row)}>
-                    <span className="palette-mark"><AgentMark agent={pane.agent ?? "shell"} /></span>
+                    <span className="palette-mark"><AgentAvatar agent={pane.agent ?? "shell"} paneId={pane.agent ? pane.pane_id : null} machineId={row.machineId} status={paneStatus(pane)} /></span>
                     <span className="menu-item-main"><span className="palette-row-title"><span className="palette-row-name">{title}</span>{selected && <span className="palette-selected">{t("Selected")}</span>}</span><span className="palette-row-subtitle">{place}</span></span>
                     <StatusBadge status={paneStatus(pane)} />
                   </button>

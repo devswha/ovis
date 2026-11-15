@@ -29,11 +29,12 @@ import type { RenameRequest } from "../lib/useRenameRequest.ts";
 import { paneLifetimes } from "../lib/paneLifetime.ts";
 import { usePaneLocked } from "../lib/paneLocks.ts";
 import { sidebarPinKey } from "../lib/sidebarPins.ts";
-import { AgentMark } from "./AgentMark.tsx";
 import { displayPaneTitle } from "./Sidebar.tsx";
 import { RowMenu, type RowMenuItem } from "./RowMenu.tsx";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import "./PaneCanvas.css";
+import { AgentAvatar } from "../fork/AgentAvatar.tsx";
+import { paneStatus } from "../lib/status.ts";
 
 type PaneLayoutSplit = PaneLayoutSnapshot["splits"][number];
 
@@ -274,7 +275,7 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
     return {
       panes: own.length < 2 ? [] : own.map((item): RowMenuItem => ({
         id: `pane:${item.pane_id}`, label: displayPaneTitle(item), icon: Terminal,
-        glyph: item.agent ? <AgentMark agent={item.agent} size={16} /> : undefined,
+        glyph: item.agent ? <AgentAvatar agent={item.agent} size={16} paneId={item.pane_id} status={paneStatus(item)} /> : undefined,
         current: item.pane_id === selectedPaneId, run: () => onSelect(item.pane_id),
       })),
       tab: [

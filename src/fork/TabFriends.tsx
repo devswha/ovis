@@ -19,7 +19,7 @@ export function TabFriends({ panes, children }: { panes: PaneInfo[]; children: R
     {agents.slice(0, 2).map((pane) => {
       const friend = friends[friendKey(machineId, pane.pane_id)];
       const status = paneStatus(pane as HerdrPane);
-      return friend ? <AgentFriend key={pane.pane_id} friend={friend} agent={pane.agent!} status={status === "waiting" ? "working" : status === "unknown" ? undefined : status} />
+      return friend ? <AgentFriend key={pane.pane_id} friend={friend} status={status === "waiting" ? "working" : status === "unknown" ? undefined : status} />
         : <AgentMark key={pane.pane_id} agent={pane.agent!} size={16} />;
     })}
   </span>;

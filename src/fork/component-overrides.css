@@ -45,6 +45,14 @@
 }
 }
 
+/* src/components/InboxList.css */
+/* an agent's friend is the whole avatar: no round face, border or harness logo behind it */
+.inbox-avatar-face:has(> .agent-friend) {
+  overflow: visible;
+  background: transparent;
+  border: 0;
+}
+
 /* src/components/Machines.css */
 [data-fork-collapse-offline-pcs="true"] .machine-offline-toggle {
   margin: var(--space-4) 0 0 var(--side-gutter);
@@ -201,10 +209,6 @@
 [data-fork-agent-friends="true"] .tab-strip-faces .agent-friend {
   width: 18px;
   height: 18px;
-}
-
-[data-fork-agent-friends="true"] .tab-strip-faces .agent-friend-badge {
-  display: none;
 }
 
 [data-fork-agent-friends="true"] .tab-strip-faces.is-split .agent-friend {

@@ -15,7 +15,7 @@ import { useMachineApi } from "../lib/machineContext.tsx";
 import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import { useSheetSwipe } from "../lib/sheets.ts";
 import { useFocusTrap } from "../lib/useFocusTrap.ts";
-import { AgentMark } from "./AgentMark.tsx";
+import { AgentAvatar } from "../fork/AgentAvatar.tsx";
 
 /** a query shorter than this matches too much to be worth a read of the whole conversation */
 const MIN_QUERY = 2;
@@ -180,7 +180,7 @@ export function ConversationSearch({ paneId, agent, historyId, title = null, onC
             return (
               <button key={`${match.turn}|${index}`} id={`conversation-search-${index}`} type="button" role="option" className="menu-item conversation-search-row" aria-selected={active === index} aria-busy={opening || undefined}
                 onMouseMove={() => setActive(index)} onClick={() => pick(index)}>
-                <span className="conversation-search-who">{match.role === "user" ? <User aria-label={t("You")} /> : <AgentMark agent={agent ?? "agent"} size={16} />}</span>
+                <span className="conversation-search-who">{match.role === "user" ? <User aria-label={t("You")} /> : <AgentAvatar agent={agent ?? "agent"} size={16} paneId={paneId} />}</span>
                 <span className="menu-item-main">
                   <span className="conversation-search-snippet">{match.before}<mark>{match.match}</mark>{match.after}</span>
                   {stamp !== null && <span className="palette-row-subtitle" title={stamp.full}>{stamp.label}</span>}

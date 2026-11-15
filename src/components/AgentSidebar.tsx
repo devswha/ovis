@@ -43,7 +43,7 @@ import "./AgentSidebar.css";
 interface AgentRowBodyProps {
   /** the agent's kind or name; null draws a terminal, for a shell */
   mark: string | null;
-  /** the friend the agent wears, drawn with the mark as its badge */
+  /** the friend the agent wears, drawn in place of its mark */
   friend?: Friend;
   /** the kind the mark draws, left off the second line: said for a screen reader, since the mark is aria-hidden */
   markKind: string | null;
@@ -112,7 +112,7 @@ function AgentRowBody({ mark, friend, markKind, title, name, context, tokens, ba
   const t = useT();
   const showProgress = progress !== undefined && (status === "working" || status === "blocked");
   return <>
-    <span className="sidebar-mark" aria-hidden="true">{mark === null ? <Terminal /> : friend ? <AgentFriend friend={friend} agent={mark} status={status} /> : <AgentMark agent={mark} size={18} />}</span>
+    <span className="sidebar-mark" aria-hidden="true">{mark === null ? <Terminal /> : friend ? <AgentFriend friend={friend} status={status} /> : <AgentMark agent={mark} size={18} />}</span>
     <span className="agent-copy">
       {markKind && <span className="visually-hidden">{markKind}: </span>}
       <span className="agent-main">

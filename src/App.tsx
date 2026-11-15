@@ -15,7 +15,6 @@ import { worktreeRepoName } from "./lib/composerStrip.ts";
 import { programReadsDrags } from "./lib/programDrags.ts";
 import { PANE_TABPANEL_ID, paneTabPanelLabel } from "./lib/paneRegion.ts";
 import { AccessGate } from "./components/AccessGate.tsx";
-import { AgentMark } from "./components/AgentMark.tsx";
 import { useAgentFriends } from "./lib/friends.ts";
 import { PiVoiceView } from "./components/PiVoiceView.tsx";
 import { ComputerView } from "./components/ComputerView.tsx";
@@ -153,6 +152,8 @@ import { InboxConnecting, InboxFootEntry, InboxUnchosen, ThreadTitle, ThreadTop 
 import { OvisMark } from "./components/OvisMark.tsx";
 import { catchTypeAhead } from "./lib/typeAhead.ts";
 import { goalStatusWord, sessionMenuLines, sizeWords, useSessionStats, workedWords } from "./lib/sessionStats.ts";
+import { AgentAvatar } from "./fork/AgentAvatar.tsx";
+import { paneStatus } from "./lib/status.ts";
 
 const APP_TITLE = "Ovis";
 
@@ -1167,7 +1168,7 @@ export function App() {
         ) : selectedPane && crumb ? (
           <div className={`context${headerConnection === null ? "" : " has-connection"}${tabsInHeader && selectedWorkspace && !guideShown ? " has-tabs" : ""}`} title={crumb.tooltip}>
             <div className="context-title">
-              {selectedAgent && <AgentMark agent={selectedAgent} size={18} />}
+              {selectedAgent && <AgentAvatar agent={selectedAgent} size={18} paneId={selectedPane.pane_id} machineId={selectedMachineId} status={paneStatus(selectedPane)} />}
               <span className="context-title-text" role="group" aria-label={[selectedAgent ? agentName(selectedAgent) : null, crumb.fullContext].filter((part) => part !== null).join(" · ")}>{selectedTitle}</span>
               {position && <span className="context-position" title={position.words}>
                 <span aria-hidden="true">{position.index}/{position.count}</span>

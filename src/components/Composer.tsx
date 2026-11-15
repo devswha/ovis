@@ -56,7 +56,7 @@ import {
 import { composerLabelDraw } from "../lib/composerLabelFit.ts";
 import { composerFull, formatChars, pasteOverflow } from "../lib/composerLength.ts";
 import { normalizeComposerImageFile } from "../lib/composerImageMime.ts";
-import { paneStatus } from "../lib/status.ts";
+import { knownStatus, paneStatus } from "../lib/status.ts";
 import { modelLabel } from "../lib/modelName.ts";
 import { useFacesArrived } from "../lib/fontFaces.ts";
 import { activeTrigger, applyCompletion, type ActiveTrigger } from "../lib/mentions.ts";
@@ -76,6 +76,7 @@ import { useT } from "../lib/i18n.ts";
 import { offersRetry, userFailure, type UserFailure } from "../lib/userError.ts";
 import { AttachmentTooLargeError } from "../lib/api.ts";
 import { modalOpen } from "../lib/focus.ts";
+import { AgentAvatar } from "../fork/AgentAvatar.tsx";
 
 export interface ComposerProps {
   connected: boolean;
@@ -1609,7 +1610,7 @@ export function Composer({
               </span>
             ) : (
               <span className={`composer-pill${metadata?.model ? "" : " is-bare"}`}>
-              {!settings.composerExtras && agent && <AgentMark agent={agent} size={14} />}
+              {!settings.composerExtras && agent && <AgentAvatar agent={agent} size={14} paneId={paneId} status={knownStatus(agentStatus)} />}
               {settings.composerExtras && ring}
               {modelShown && <span className="composer-model-info" aria-label={t("Model and reasoning")}>
                 {/* a name only for an id modelLabel can name for certain; any other id is drawn as received, in the identifier face */}

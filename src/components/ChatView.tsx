@@ -10,7 +10,6 @@ import "./ChatView.css";
 // .chat-frame and the loading state are drawn before it arrives
 import "./ChatTimeline.css";
 
-import { AgentMark } from "./AgentMark.tsx";
 import { AnimatedHeight } from "./AnimatedHeight.tsx";
 import { Markdown, ReservedImage } from "./Markdown.tsx";
 import { ChatMarkdownImages } from "./ChatMarkdownImages.tsx";
@@ -48,7 +47,7 @@ import { learnFromConversation } from "../lib/tabLabels.ts";
 import { PAGE_OVERLAP_ROWS, pageScrollDistance } from "../lib/pageScroll.ts";
 import { dropPendingListScroll, listEndPadded } from "../lib/followScroll.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
-import { statusEdgeRead } from "../lib/status.ts";
+import { knownStatus, statusEdgeRead } from "../lib/status.ts";
 import { askedQuestions } from "../../shared/askQuestions.ts";
 import { forgetWaitingBaseline, settleWaitingSends, waitingKey } from "../lib/sentWaiting.ts";
 import { SentWaitingList, useWaitingSends } from "./SentWaiting.tsx";
@@ -123,6 +122,7 @@ import { replyCommentsKey } from "../lib/replyComments.ts";
 import { ReplyCommentAction } from "./ReplyComments.tsx";
 import { ConversationSearch, type RevealResult } from "./ConversationSearch.tsx";
 import { useResourceUrl } from "../lib/useResourceUrl.ts";
+import { AgentAvatar } from "../fork/AgentAvatar.tsx";
 
 /** Slow reads in a row the chat waits through quietly before it alarms: about 50 s at the local 15 s deadline. */
 const SLOW_READS_BEFORE_ALARM = 3;
@@ -3024,7 +3024,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
           ? <p className={`${activityClass} chat-activity-line`} role="status" aria-hidden={activityReserved || undefined}><CircleDot aria-hidden="true" />{activity === "thinking" ? t("Thinking…") : t("Working…")}</p>
           // before the turn has a row at all, where its work block will be drawn
           : <PendingWorkHead className={activityClass} reserved={activityReserved} title={activity === "thinking" ? t("Thinking…") : t("Working…")} />)}
-      {loaded && empty && error === null && prompt === null && activity === "idle" && !(greeted && blank) && sentWaiting.length === 0 && <div className="chat-empty"><AgentMark agent={agent ?? "agent"} size={32} /><p>{t("No conversation yet — say something below")}</p></div>}
+      {loaded && empty && error === null && prompt === null && activity === "idle" && !(greeted && blank) && sentWaiting.length === 0 && <div className="chat-empty"><AgentAvatar agent={agent ?? "agent"} size={32} paneId={paneId} status={knownStatus(agentStatus)} /><p>{t("No conversation yet — say something below")}</p></div>}
       {ended && <p className="chat-endcap">{t("terminal ended")}</p>}
   </>;
   const jump = newMessages ? <button type="button" className="btn chat-new-messages chat-virtual-jump" onClick={scrollToBottom}>{t("New messages")} <ArrowDown aria-hidden="true" /></button>

@@ -52,6 +52,7 @@ import { displayPaneTitle } from "./Sidebar.tsx";
 import { RowMenu, type RowMenuItem } from "./RowMenu.tsx";
 import { paneDrag } from "../lib/paneDrag.ts";
 import { lastViewedPane, rememberViewedPane } from "../lib/lastViewedPane.ts";
+import { AgentAvatar } from "../fork/AgentAvatar.tsx";
 
 /** a strip that held the focus went (TabStrip's handoff effect): its workspace, whether the window was
  *  wide when it mounted, and when. Only that workspace's strip on the other side of the width the
@@ -487,6 +488,8 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
 
   // the mark of the pane the tab opens on, else of the first agent in it
   const agentOf = (tab: HerdrTab): PaneInfo["agent"] => paneFor(tab)?.agent ?? panesOf(tab).find((pane) => pane.agent)?.agent ?? null;
+  // the pane agentOf draws the mark of
+  const agentPane = (tab: HerdrTab): PaneInfo | undefined => { const opens = paneFor(tab); return opens?.agent ? opens : panesOf(tab).find((candidate) => candidate.agent); };
   // the agent's name as herdr shows it ("OmO" for omo), for the tab's spoken description
   // the same pane agentOf draws the mark of: the one the tab opens on when it runs an agent, else the first agent in it
   const agentNameOf = (tab: HerdrTab): string | null => {
@@ -630,7 +633,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
     const groups: RowMenuItem[][] = [
       own.length < 2 ? [] : own.map((pane): RowMenuItem => ({
         id: `pane:${pane.pane_id}`, label: displayPaneTitle(pane), icon: Terminal,
-        glyph: pane.agent ? <AgentMark agent={pane.agent} size={16} /> : undefined,
+        glyph: pane.agent ? <AgentAvatar agent={pane.agent} size={16} paneId={pane.pane_id} status={paneStatus(pane)} /> : undefined,
         current: pane.pane_id === selectedPane.pane_id, run: () => onSelectPane(pane.pane_id),
       })),
       paneItems,
@@ -821,7 +824,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
     const agent = agentOf(tab);
     return {
       id: `tab:${tab.tab_id}`, label: nameOf(tab), icon: Terminal,
-      glyph: <span className="tab-sheet-marks" aria-hidden="true">{statusMark(status)}{agent ? <AgentMark agent={agent} size={18} /> : <Terminal aria-hidden="true" />}</span>,
+      glyph: <span className="tab-sheet-marks" aria-hidden="true">{statusMark(status)}{agent ? <AgentAvatar agent={agent} size={18} paneId={agentPane(tab)?.pane_id} status={statusOf(tab)} /> : <Terminal aria-hidden="true" />}</span>,
       ...(busyStatus(status) ? { hint: t(STATUS_WORD[status]) } : {}),
       current: tab.tab_id === selectedPane.tab_id,
       run: () => {

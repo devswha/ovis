@@ -12,7 +12,7 @@ import { inboxAsks, inboxRowLine, inboxStateWord } from "../lib/inboxRow.ts";
 import { PanePressContext } from "../lib/paneSubmitContext.ts";
 import { agentName } from "../lib/runtimeMove.ts";
 import { useSettings } from "../lib/settings.ts";
-import { knownStatus } from "../lib/status.ts";
+import { knownStatus, paneStatus, type KnownStatus } from "../lib/status.ts";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { SHEET_QUERY } from "../lib/sheets.ts";
 import type { SidebarActivity } from "../lib/sidebarActivity.tsx";
@@ -21,7 +21,7 @@ import { useAgentStateStamps } from "../lib/useAgentStateSince.ts";
 import { questionTargets, useInboxQuestions, type QuestionReads } from "../lib/useInboxQuestions.ts";
 import { summaryTargets, useInboxSummaries, type RowSummary, type SummaryReads } from "../lib/useInboxSummaries.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
-import { AgentMark } from "./AgentMark.tsx";
+import { AgentAvatar } from "../fork/AgentAvatar.tsx";
 import { OvisMark } from "./OvisMark.tsx";
 import { agentRowTitle, blockedNote, stateAge } from "./AgentSidebar.tsx";
 import { RowMenu } from "./RowMenu.tsx";
@@ -90,11 +90,11 @@ function lastWords(summary: RowSummary | undefined, t: Translate): string | null
 }
 
 /** An agent's round mark: a tile mark fills the face, any other sits on it; a pane with no agent draws the shell's glyph. */
-export function InboxAvatar({ mark }: { mark: string | null }) {
+export function InboxAvatar({ mark, paneId, machineId, status }: { mark: string | null; paneId?: string; machineId?: string; status?: KnownStatus }) {
   const tile = mark !== null && TILE_MARKS.has(mark);
   return (
     <span className={`inbox-avatar${tile ? " is-tile" : ""}`} aria-hidden="true">
-      <span className="inbox-avatar-face">{mark === null ? <Terminal /> : <AgentMark agent={mark} size={32} />}</span>
+      <span className="inbox-avatar-face">{mark === null ? <Terminal /> : <AgentAvatar agent={mark} size={32} friendSize="fill" paneId={paneId} machineId={machineId} status={status} />}</span>
     </span>
   );
 }
@@ -376,7 +376,7 @@ export function InboxList({ machines, activity, watching, wide, filter, onFilter
                     title={wide ? [row.title, row.line, at === null ? null : `${age} · ${at.toLocaleString(resolvedLanguage)}`].filter((part) => part !== null).join("\n") : undefined}
                     onPointerDown={(event) => { if (event.button === 0 && row.online) pressPane?.(row.machine.id, row.pane.pane_id); }}
                     onClick={() => onOpen(row.machine.id, row.pane.pane_id)}>
-                    <InboxAvatar mark={row.mark} />
+                    <InboxAvatar mark={row.mark} paneId={row.pane.pane_id} machineId={row.machine.id} status={paneStatus(row.pane)} />
                     <span className="inbox-body">
                       <span className="inbox-line">
                         <span className="inbox-name">{row.title}</span>

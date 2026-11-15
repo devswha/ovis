@@ -17,6 +17,7 @@ import { inboxStateWord } from "../lib/inboxRow.ts";
 import { agentName } from "../lib/runtimeMove.ts";
 import type { SidebarActivity } from "../lib/sidebarActivity.tsx";
 import { paneMark } from "../lib/sidebarAgents.ts";
+import { paneStatus } from "../lib/status.ts";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { agentRowTitle } from "./AgentSidebar.tsx";
 import { InboxAvatar } from "./InboxList.tsx";
@@ -64,7 +65,7 @@ export function ThreadTitle(props: ThreadProps) {
   const { name, kind, mark, said } = useMemo(() => threadFacts({ machines, activity, machineId, pane, connection, watching, severalPcs }, t), [machines, activity, machineId, pane, connection, watching, severalPcs, t]);
   return (
     <div className="thread-title" title={name}>
-      <InboxAvatar mark={mark} />
+      <InboxAvatar mark={mark} paneId={pane.pane_id} machineId={machineId} status={paneStatus(pane)} />
       <div className="thread-title-words">
         <span className="thread-name">{kind && <span className="visually-hidden">{agentName(kind)}: </span>}{name}</span>
         <span className={`thread-state${connection === null ? "" : ` is-${connection}`}`}>{said}</span>
@@ -83,7 +84,7 @@ function ThreadChip(props: ThreadProps) {
   const { name, kind, mark, said } = useMemo(() => threadFacts({ machines, activity, machineId, pane, connection, watching, severalPcs }, t), [machines, activity, machineId, pane, connection, watching, severalPcs, t]);
   return (
     <div className="thread-chip" title={name}>
-      <InboxAvatar mark={mark} />
+      <InboxAvatar mark={mark} paneId={pane.pane_id} machineId={machineId} status={paneStatus(pane)} />
       <span className="thread-chip-name">{kind && <span className="visually-hidden">{agentName(kind)}: </span>}{name}</span>
       <span className={`thread-chip-state${connection === null ? "" : ` is-${connection}`}`}>{said}</span>
     </div>

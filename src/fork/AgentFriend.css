@@ -15,22 +15,6 @@
   -webkit-user-drag: none;
 }
 
-.agent-friend-badge {
-  position: absolute;
-  right: -3px;
-  bottom: -2px;
-  display: inline-flex;
-  padding: 1px;
-  border-radius: var(--radius-sm);
-  background: var(--bg-panel);
-  line-height: 0;
-}
-
-.sidebar-mark .agent-friend-badge svg {
-  width: 9px;
-  height: 9px;
-}
-
 .agent-friend.is-working { animation: friend-bounce 1.1s steps(6) infinite; }
 /* a done agent hops and waves once, then rests: an idle screen holds no running animation (IS-018) */
 .agent-friend.is-done { animation: friend-hop 0.5s ease-out 2, friend-wave 1.6s steps(8) 1s 1; }

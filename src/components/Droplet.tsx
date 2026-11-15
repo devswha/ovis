@@ -196,7 +196,7 @@ export function Droplet({ onOpen }: { onOpen: (machineId: string, paneId: string
         onPointerCancel={(event) => endPress(event, true)}
       >
         <span className="droplet-mark">{current.agent
-          ? current.friend ? <AgentFriend friend={current.friend} agent={current.agent} status={current.kind === "ended" ? undefined : current.kind} /> : <AgentMark agent={current.agent} size={22} />
+          ? current.friend ? <AgentFriend friend={current.friend} status={current.kind === "ended" ? undefined : current.kind} /> : <AgentMark agent={current.agent} size={22} />
           : <span className="droplet-mark-blank" />}</span>
         <span className="droplet-text">
           <span className="droplet-title">{current.title}</span>

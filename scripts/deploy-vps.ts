@@ -14,16 +14,17 @@
  * fast-forward it (scripts/deploy-helpers.ts, onMainSteps). Once on main it:
  *
  * 1. builds the client (`bun run build`);
- * 2. restarts `ovis.service` (`systemctl --user restart`), since a build under a running server only
- *    gets it the "Restart it there" banner;
- * 3. waits until the server runs HEAD, then checks from omarchy that the tailnet address serves the
- *    new bundle;
- * 4. updates the Ovis of every PC this server reaches over SSH (`~/.local/share/ovis/app`, install.sh's checkout)
+ * 2. updates the Ovis of every PC this server reaches over SSH (`~/.local/share/ovis/app`, install.sh's checkout)
  *    to the same commit and restarts it, since this Ovis refuses a PC whose Ovis is older, and those PCs only
- *    update themselves to a release tag;
- *    Each PC's source bundle identity (server/bundle-version.ts, what this server compares) is computed
- *    after its build and must equal this checkout's, or that PC is reported as not updated: the same
- *    commit can differ by files on disk, so a matching commit alone proves nothing;
+ *    update themselves to a release tag. Each PC's source bundle identity (server/bundle-version.ts, what this
+ *    server compares) is computed after its build and must equal this checkout's, or that PC is reported as not
+ *    updated: the same commit can differ by files on disk, so a matching commit alone proves nothing. The PC
+ *    list comes from the server still running, before anything restarts. This comes before the VPS restart:
+ *    a server started while a PC still runs the old code parks it in "error" and never retries;
+ * 3. restarts `ovis.service` (`systemctl --user restart`), since a build under a running server only
+ *    gets it the "Restart it there" banner;
+ * 4. waits until the server runs HEAD, checks from omarchy that the tailnet address serves the new bundle,
+ *    and waits up to 60s until every PC updated in step 2 shows as connected in `/api/machines`;
  * 5. restarts the Ovis app on the Xiaomi over adb, since the Android app ignores a reload.
  *
  * It also sets OVIS_AUTO_UPDATE=1 in `~/.config/ovis/env`, which every start of the unit reads (this
@@ -40,7 +41,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { join } from "node:path";
 import { sourceBundleVersion } from "../server/bundle-version.ts";
-import { onMainSteps, pullMainSteps, settingOf, withSetting } from "./deploy-helpers.ts";
+import { machinesOf, onMainSteps, pullMainSteps, rollOut, settingOf, withSetting } from "./deploy-helpers.ts";
 
 const repo = join(import.meta.dir, "..");
 const publicUrl = process.env.OVIS_DEPLOY_URL ?? "https://vps.tailb4e5ae.ts.net:8443/";
@@ -108,46 +109,54 @@ const after = withSetting(before, "OVIS_AUTO_UPDATE", "1");
 if (after !== before) { writeFileSync(settingsFile, after, { mode: 0o600 }); console.log(`deploy-vps: set OVIS_AUTO_UPDATE=1 in ${settingsFile}`); }
 // the port the unit starts the server on is the settings file's, not this shell's
 const port = settingOf(after, "PORT") ?? "7317";
-
-console.log(`deploy-vps: restarting ${service} (port ${port})`);
-if (!run(["systemctl", "--user", "restart", service], { quiet: false }).ok) fail(`could not restart ${service}`);
-
 const local = `http://127.0.0.1:${port}/`;
-await waitFor(`the server to run ${head.slice(0, 8)}`, 90_000, async () => {
-  try {
-    const status = await (await fetch(`${local}api/updates`)).json() as { current_revision?: string; served_revision?: string | null };
-    return status.current_revision === head && !status.served_revision;
-  } catch { return false; }
-});
-const bundle = bundleOf(await (await fetch(local)).text());
-if (!bundle) fail("the server answers without a client bundle");
-
-const remote = run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", checkHost, `curl -s --max-time 20 ${publicUrl}`]);
-if (!remote.ok) fail(`could not reach ${publicUrl} from ${checkHost}: ${remote.out.slice(0, 200)}`);
-if (bundleOf(remote.out) !== bundle) fail(`${checkHost} gets ${bundleOf(remote.out) ?? "no bundle"} from ${publicUrl}, not ${bundle}`);
-console.log(`deploy-vps: ${checkHost} gets ${bundle} at ${publicUrl}`);
 
 // The PCs whose own Ovis this server bridges to: each must run this commit too, or this server refuses it.
-const machines = await (await fetch(`${local}api/machines`)).json() as { machines?: { name: string; kind: string; target?: { destination?: string; own_ovis?: string } }[] };
-const pcs = (machines.machines ?? []).filter((machine) => machine.kind === "ssh" && machine.target?.own_ovis && machine.target.destination);
-const stale: string[] = [];
-for (const pc of pcs) {
-  console.log(`deploy-vps: updating ${pc.name}'s Ovis to ${head.slice(0, 8)}`);
-  const steps = [
-    ...pullMainSteps("$HOME/.local/share/ovis/app"),
-    `test "$(git rev-parse HEAD)" = ${head} || { echo "deploy-vps: origin/main there is not ${head.slice(0, 8)}" >&2; exit 1; }`,
-    ". scripts/bun-path.sh",
-    "bun install --frozen-lockfile",
-    "bun run build",
-    // same function the servers compare; fail before restarting a PC this server would refuse anyway
-    `id=$(bun -e 'import { sourceBundleVersion } from "./server/bundle-version.ts"; console.log(sourceBundleVersion(process.cwd()))') && { test "$id" = ${identity} || { echo "deploy-vps: its bundle identity is $id, not ${identity}" >&2; exit 1; }; }`,
-    "if systemctl --user cat ovis.service >/dev/null 2>&1; then systemctl --user restart ovis.service; elif launchctl print gui/$(id -u)/sh.ovis.server >/dev/null 2>&1; then HERDR_PLUGIN_STATE_DIR=$HOME/.local/state/ovis HERDR_PLUGIN_CONFIG_DIR=$HOME/.config/ovis bun scripts/plugin.ts stop && launchctl kickstart -k gui/$(id -u)/sh.ovis.server; else echo 'deploy-vps: no ovis.service or sh.ovis.server there' >&2; exit 1; fi",
-    `port=$(sed -n 's/^PORT=//p' "$HOME/.config/ovis/env" 2>/dev/null | tail -1); for i in $(seq 90); do curl -s -m 2 "http://127.0.0.1:\${port:-7317}/api/updates" | grep -q '"current_revision":"${head}"' && exit 0; sleep 1; done; echo 'deploy-vps: its server does not run the new commit after 90s' >&2; exit 1`,
-  ];
-  const done = run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", pc.target!.destination!, `bash -lc ${shellQuote(steps.join(" && "))}`]);
-  if (done.ok) console.log(`deploy-vps: ${pc.name} runs ${head.slice(0, 8)}`);
-  else { stale.push(pc.name); console.error(`deploy-vps: ${pc.name} was not updated: ${done.out.slice(-400)}`); }
-}
+// They are updated before the server restarts: one started while a PC still runs the old code parks it
+// in "error" and never retries (reconnecting is owner-only), so the list comes from the server still running.
+const listMachines = async (signal: AbortSignal) => machinesOf(await fetch(`${local}api/machines`, { signal }));
+const { pcs, stale, waiting } = await rollOut({
+  listMachines,
+  updatePc: (pc) => {
+    console.log(`deploy-vps: updating ${pc.name}'s Ovis to ${head.slice(0, 8)}`);
+    const steps = [
+      ...pullMainSteps("$HOME/.local/share/ovis/app"),
+      `test "$(git rev-parse HEAD)" = ${head} || { echo "deploy-vps: origin/main there is not ${head.slice(0, 8)}" >&2; exit 1; }`,
+      ". scripts/bun-path.sh",
+      "bun install --frozen-lockfile",
+      "bun run build",
+      // same function the servers compare; fail before restarting a PC this server would refuse anyway
+      `id=$(bun -e 'import { sourceBundleVersion } from "./server/bundle-version.ts"; console.log(sourceBundleVersion(process.cwd()))') && { test "$id" = ${identity} || { echo "deploy-vps: its bundle identity is $id, not ${identity}" >&2; exit 1; }; }`,
+      "if systemctl --user cat ovis.service >/dev/null 2>&1; then systemctl --user restart ovis.service; elif launchctl print gui/$(id -u)/sh.ovis.server >/dev/null 2>&1; then HERDR_PLUGIN_STATE_DIR=$HOME/.local/state/ovis HERDR_PLUGIN_CONFIG_DIR=$HOME/.config/ovis bun scripts/plugin.ts stop && launchctl kickstart -k gui/$(id -u)/sh.ovis.server; else echo 'deploy-vps: no ovis.service or sh.ovis.server there' >&2; exit 1; fi",
+      `port=$(sed -n 's/^PORT=//p' "$HOME/.config/ovis/env" 2>/dev/null | tail -1); for i in $(seq 90); do curl -s -m 2 "http://127.0.0.1:\${port:-7317}/api/updates" | grep -q '"current_revision":"${head}"' && exit 0; sleep 1; done; echo 'deploy-vps: its server does not run the new commit after 90s' >&2; exit 1`,
+    ];
+    const done = run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", pc.target!.destination!, `bash -lc ${shellQuote(steps.join(" && "))}`]);
+    if (done.ok) console.log(`deploy-vps: ${pc.name} runs ${head.slice(0, 8)}`);
+    else console.error(`deploy-vps: ${pc.name} was not updated: ${done.out.slice(-400)}`);
+    return done.ok;
+  },
+  restart: () => {
+    console.log(`deploy-vps: restarting ${service} (port ${port})`);
+    if (!run(["systemctl", "--user", "restart", service], { quiet: false }).ok) fail(`could not restart ${service}`);
+  },
+  afterRestart: async () => {
+    await waitFor(`the server to run ${head.slice(0, 8)}`, 90_000, async () => {
+      try {
+        const status = await (await fetch(`${local}api/updates`)).json() as { current_revision?: string; served_revision?: string | null };
+        return status.current_revision === head && !status.served_revision;
+      } catch { return false; }
+    });
+    const bundle = bundleOf(await (await fetch(local)).text());
+    if (!bundle) fail("the server answers without a client bundle");
+
+    const remote = run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", checkHost, `curl -s --max-time 20 ${publicUrl}`]);
+    if (!remote.ok) fail(`could not reach ${publicUrl} from ${checkHost}: ${remote.out.slice(0, 200)}`);
+    if (bundleOf(remote.out) !== bundle) fail(`${checkHost} gets ${bundleOf(remote.out) ?? "no bundle"} from ${publicUrl}, not ${bundle}`);
+    console.log(`deploy-vps: ${checkHost} gets ${bundle} at ${publicUrl}`);
+  },
+}).catch((error) => fail(`${error instanceof Error ? error.message : error}; if the server is down, start it (systemctl --user start ${service}) and run this again`));
+if (waiting.length) fail(`the restarted server has not connected ${waiting.join(", ")} after 60s, though they run ${head.slice(0, 8)}; restart ${service} once more or look at their errors`);
+console.log("deploy-vps: every updated PC is connected to the restarted server");
 
 const adbOnPath = run(["sh", "-c", "command -v adb"]).out;
 const adb = adbOnPath || join(homedir(), "Android/Sdk/platform-tools/adb");
@@ -159,5 +168,5 @@ if (run([adb, "-s", adbSerial, "get-state"]).out !== "device") {
 run([adb, "-s", adbSerial, "shell", "am", "force-stop", androidApp]);
 run([adb, "-s", adbSerial, "shell", "monkey", "-p", androidApp, "-c", "android.intent.category.LAUNCHER", "1"]);
 await waitFor("the Ovis app to start on the Xiaomi", 15_000, () => run([adb, "-s", adbSerial, "shell", "pidof", androidApp]).ok);
-if (stale.length) fail(`deployed ${head.slice(0, 8)} on the VPS and the Xiaomi, but not on ${stale.join(", ")}, which this server refuses until they run it too`);
+if (stale.length) fail(`deployed ${head.slice(0, 8)} on the VPS and the Xiaomi, but not on ${stale.map((pc) => pc.name).join(", ")}, which this server refuses until they run it too`);
 console.log(`deploy-vps: deployed ${head.slice(0, 8)}; the Xiaomi app and ${pcs.length} PC(s) restarted. Desktop windows only need a reload.`);
