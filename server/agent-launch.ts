@@ -3,14 +3,14 @@
  * of `agent`, then the start, which retries a pane whose shell is not up yet and a name another
  * agent took. Workspace, tab and worktree creation share it.
  */
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { freeAgentName } from "./agent-name.ts";
 import { launchedAgents } from "./launched-agents.ts";
 import { isShellAgentKind, startShellAgent, type ShellAgentLocator } from "./shell-agent.ts";
 import { agentStart, HerdrError, sessionSnapshot } from "./herdr/client.ts";
 import { agentStartArgs } from "./claude-settings-file.ts";
-import { launchArgsFault } from "../shared/launch-rules.ts";
+import { DSH_EFFORTS, launchArgsFault } from "../shared/launch-rules.ts";
 import { hcMachine } from "./herdr-core/runtime.ts";
 import { userHome } from "./user-home.ts";
 
@@ -29,44 +29,78 @@ export function agentFault(agent: AgentPayload | undefined): string | null {
 }
 
 /**
- * A checked dsh-tui launch's arguments without `--effort <level>`, which dsh-tui 0.20.0 has no flag for: the level
- * goes to `~/.dsh-tui/effort.json` instead, the file dsh-tui's own `/effort <id>` writes and its boot reads
- * (lib/types/effortPrefs.js), so the session starts on it and later ones keep it, as after `/effort`.
- * A /settings "default reasoning effort" the reader set in dsh-tui still outranks it there.
+ * A dsh-tui launch's arguments without `--effort <level>`, which dsh-tui 0.20.0 has no flag for, and the level they
+ * named. Read as launchArgsFault reads them: only before `--` (what follows is passed on as it is), and a level
+ * outside DSH_EFFORTS is no level, so nothing the check would refuse is ever saved.
  */
-export function dshEffortArgs(args: readonly string[], home: string = userHome()): string[] {
+export function dshEffortArgs(args: readonly string[]): { args: string[]; effort: string | undefined } {
   const rest: string[] = [];
   let effort: string | undefined;
   for (let at = 0; at < args.length; at++) {
     const arg = args[at]!;
-    if (arg === "--effort") effort = args[++at];
-    else if (arg.startsWith("--effort=")) effort = arg.slice("--effort=".length);
-    else rest.push(arg);
+    if (arg === "--") { rest.push(...args.slice(at)); break; }
+    let value: string | undefined;
+    if (arg === "--effort") value = args[++at] ?? "";
+    else if (arg.startsWith("--effort=")) value = arg.slice("--effort=".length);
+    else { rest.push(arg); continue; }
+    effort = (DSH_EFFORTS as readonly string[]).includes(value) ? value : undefined;
   }
-  if (effort !== undefined) {
-    // ponytail: one file for every dsh-tui, so two launches seconds apart with different levels can both boot on
-    // the later one; a per-launch level needs a dsh-tui flag or env for it
+  return { args: rest, effort };
+}
+
+/** each effort file's latest dsh-tui start that set it, settled either way: the next launch that sets it waits for it */
+const dshEffortStarts = new Map<string, Promise<unknown>>();
+
+/**
+ * Starts dsh-tui with its `--effort <level>` saved to `<home>/.dsh-tui/effort.json` instead, the file dsh-tui's own
+ * `/effort <id>` writes and its boot reads (lib/types/effortPrefs.js), so the session starts on it and later ones
+ * keep it, as after `/effort`; a /settings "default reasoning effort" set in dsh-tui still outranks it there. The
+ * file is written just before the command is typed, since dsh-tui reads it as it boots, and put back as it was when
+ * the start fails. One file serves every dsh-tui, so a launch that sets it waits until the previous one's process has
+ * started; a dsh-tui started outside Ovis at that moment can still read the level. No home: nothing is saved.
+ */
+async function startDshTui(paneId: string, args: string[], options: { locator?: ShellAgentLocator }, home: string): Promise<number | null> {
+  const { args: rest, effort } = dshEffortArgs(args);
+  if (effort === undefined || home === "") return startShellAgent("dsh-tui", paneId, rest, options);
+  const file = join(home, ".dsh-tui", "effort.json");
+  const previous = dshEffortStarts.get(file);
+  const start = (async () => {
+    await previous;
+    const before = existsSync(file) ? readFileSync(file, "utf8") : null;
     mkdirSync(join(home, ".dsh-tui"), { recursive: true });
-    writeFileSync(join(home, ".dsh-tui", "effort.json"), JSON.stringify({ effort }, null, 2));
-  }
-  return rest;
+    writeFileSync(file, JSON.stringify({ effort }, null, 2));
+    try {
+      return await startShellAgent("dsh-tui", paneId, rest, options);
+    } catch (error) {
+      if (before === null) rmSync(file, { force: true });
+      else writeFileSync(file, before);
+      throw error;
+    }
+  })();
+  const settled = start.catch(() => undefined);
+  dshEffortStarts.set(file, settled);
+  void settled.then(() => { if (dshEffortStarts.get(file) === settled) dshEffortStarts.delete(file); });
+  return start;
 }
 
 /**
  * Starts a checked `agent` in a pane herdr just made. A failure is answered, not thrown: the
  * workspace, tab or worktree around the pane is there either way. `launched` is told the pid of
  * the process a shell-started agent came up as, when one is seen in front of the pane; `locator`
- * is the one `/api/agents` offered it from. `options` stands in for this PC's platform and the
- * folder Claude Code's settings files go to, for a test.
+ * is the one `/api/agents` offered it from. `options` stands in for this PC's platform, the
+ * folder Claude Code's settings files go to and the user's home, for a test.
  */
-export async function agentLaunch(paneId: string, agent: AgentPayload, launched?: (pid: number) => void, locator?: ShellAgentLocator, options: { platform?: string; settingsDir?: string } = {}): Promise<{ agent_started: true } | { agent_started: false; error: { code: string; message: string } }> {
+export async function agentLaunch(paneId: string, agent: AgentPayload, launched?: (pid: number) => void, locator?: ShellAgentLocator, options: { platform?: string; settingsDir?: string; home?: string } = {}): Promise<{ agent_started: true } | { agent_started: false; error: { code: string; message: string } }> {
   try {
     const kind = agent.kind as string;
     const args = agent.args as string[] | undefined;
     if (isShellAgentKind(kind)) {
       // another machine of the core: its path would be this PC's, and its start is never seen there (no pids)
       if (hcMachine() !== null) return { agent_started: false, error: { code: "other_machine", message: `${kind} starts only on the PC that runs Ovis` } };
-      const pid = await startShellAgent(kind, paneId, kind === "dsh-tui" && args !== undefined ? dshEffortArgs(args) : args, locator ? { locator } : {});
+      const shellOptions = locator ? { locator } : {};
+      const pid = kind === "dsh-tui" && args !== undefined
+        ? await startDshTui(paneId, args, shellOptions, options.home ?? userHome())
+        : await startShellAgent(kind, paneId, args, shellOptions);
       if (pid !== null) launched?.(pid);
     }
     else {

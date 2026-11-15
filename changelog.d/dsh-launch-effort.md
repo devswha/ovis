@@ -1,3 +1,5 @@
 ### Added
-- New workspace, New tab and New worktree offer an effort level for DeepSeek Harness (off, low, high,
-  max), saved where dsh-tui's own `/effort` keeps it, since dsh-tui has no flag for it.
+- New workspace and New tab offer an effort level for DeepSeek Harness (off, low, high, max), saved
+  where dsh-tui's own `/effort` keeps it, since dsh-tui has no flag for it: it becomes dsh-tui's
+  default for later sessions too, and a default set in dsh-tui's /settings wins over it. New worktree
+  offers no level: its dsh-tui starts on dsh-tui's own default.
