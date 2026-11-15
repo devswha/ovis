@@ -168,7 +168,11 @@ linux("never reuses a binding after a transport gap or explicit reader cleanup",
 // stall, a timeout only means the fixture was late, so observe again (the timeout closed the
 // connection, so each attempt starts afresh) a bounded number of times. Only an rpc_timeout is asked
 // again, so no answer on the way can be a foreground ID, and the last answer must be the fault's own.
+// One attempt can wait on three of the product's 2 s deadlines in turn: the connection with its
+// `connect` RPC, then each of the two `session.getForeground` requests a read makes.
 const attempts = 3;
+const attemptBudget = 3 * 2_000;
+const fixtureStart = 5_000;
 for (const mode of ["switch", "event", "event-after-final", "malformed", "wrong-id", "empty", "oversize", "truncated", "close", "version", "stall"]) {
   linux(`rejects ${mode} instead of returning a stale foreground ID`, async () => {
     const test = await fixture(mode);
@@ -184,7 +188,7 @@ for (const mode of ["switch", "event", "event-after-final", "malformed", "wrong-
       expect(result).toEqual({ state: "unavailable", diagnostic });
     }
     finally { await test.close(); }
-  }, attempts * 2_000 + 5_000);
+  }, attempts * attemptBudget + fixtureStart);
 }
 
 for (const [mode, flags, diagnostic] of [
