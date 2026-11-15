@@ -7,7 +7,9 @@
 # It fetches one commit (UPSTREAM names it) and that commit's Ghostty submodule, checks both commit
 # ids, applies every patch and commits them there, so a clean `git status` in ./upstream means the
 # tree is exactly "the pin plus our patches". A tree that is already that is left alone. A tree with
-# edits of its own is never deleted: the script stops and says so.
+# work of its own (edits, branches, a stash, files in the Ghostty submodule) is never deleted: the
+# script stops and says so. A new tree is made beside the old one and replaces it only once whole,
+# so a failed fetch leaves the old tree as it was.
 #
 # HC_TUI_REPO_OVERRIDE names another place to fetch the same commit from (a local clone, a mirror).
 set -eu
@@ -38,9 +40,13 @@ if [ -d "$dest/.git" ]; then
   # someone's work, which is never deleted
   made=$(sed -n 2p "$stamp" 2>/dev/null || true)
   head=$(git -C "$dest" rev-parse HEAD 2>/dev/null || true)
-  edits=$(git -C "$dest" status --porcelain --ignore-submodules=untracked | grep -v -x '?? .ovis-prepared' || true)
-  if [ -n "$edits" ] || { [ "$head" != "$made" ] && [ "$head" != "$HC_TUI_COMMIT" ]; }; then
-    echo "prepare.sh: $dest has work of its own (edits, untracked files, or commits not exported to $here/patches). Export it (git -C upstream format-patch), or delete the folder, then run this again." >&2
+  edits=$(git -C "$dest" status --porcelain --ignore-submodules=none | grep -v -x '?? .ovis-prepared' || true)
+  # the script makes no branch and no stash: any is someone's
+  refs=$(git -C "$dest" for-each-ref --format='%(refname)' refs/heads refs/stash)
+  sub=""
+  [ ! -e "$dest/vendor/ghostty/.git" ] || sub=$(git -C "$dest/vendor/ghostty" status --porcelain)
+  if [ -n "$edits" ] || [ -n "$refs" ] || [ -n "$sub" ] || { [ "$head" != "$made" ] && [ "$head" != "$HC_TUI_COMMIT" ]; }; then
+    echo "prepare.sh: $dest has work of its own (edits, untracked files, a branch, a stash, files in vendor/ghostty, or commits not exported to $here/patches). Export it (git -C upstream format-patch), or move the folder away, then run this again." >&2
     exit 1
   fi
   # reused only when it is the very commit made for these patches: the bare pin is made again
@@ -49,25 +55,31 @@ if [ -d "$dest/.git" ]; then
   fi
 fi
 
-rm -rf "$dest"
-mkdir -p "$dest"
-git -C "$dest" init --quiet
-git -C "$dest" fetch --quiet --depth 1 "${HC_TUI_REPO_OVERRIDE:-$HC_TUI_REPO}" "$HC_TUI_COMMIT"
-git -C "$dest" checkout --quiet --detach FETCH_HEAD
-got=$(git -C "$dest" rev-parse HEAD)
+# made beside the old tree, which it replaces only once whole
+new="$here/.upstream.new.$$"
+trap 'rm -rf "$new"' EXIT
+rm -rf "$new"
+mkdir -p "$new"
+git -C "$new" init --quiet
+git -C "$new" fetch --quiet --depth 1 "${HC_TUI_REPO_OVERRIDE:-$HC_TUI_REPO}" "$HC_TUI_COMMIT"
+git -C "$new" checkout --quiet --detach FETCH_HEAD
+got=$(git -C "$new" rev-parse HEAD)
 [ "$got" = "$HC_TUI_COMMIT" ] || { echo "prepare.sh: fetched $got, not the pinned $HC_TUI_COMMIT" >&2; exit 1; }
-git -C "$dest" submodule --quiet update --init --depth 1
-got=$(git -C "$dest/vendor/ghostty" rev-parse HEAD)
+git -C "$new" submodule --quiet update --init --depth 1
+got=$(git -C "$new/vendor/ghostty" rev-parse HEAD)
 [ "$got" = "$GHOSTTY_COMMIT" ] || { echo "prepare.sh: vendor/ghostty is $got, not the pinned $GHOSTTY_COMMIT" >&2; exit 1; }
 
 applied=0
 for patch in "$here"/patches/*.patch; do
   [ -f "$patch" ] || continue
-  git -C "$dest" apply --index "$patch" || { echo "prepare.sh: $patch does not apply to $HC_TUI_COMMIT" >&2; exit 1; }
+  git -C "$new" apply --index "$patch" || { echo "prepare.sh: $patch does not apply to $HC_TUI_COMMIT" >&2; exit 1; }
   applied=$((applied + 1))
 done
 if [ "$applied" -gt 0 ]; then
-  git -C "$dest" -c user.name=ovis-tui -c user.email=ovis-tui@users.noreply.github.com commit --quiet -m "Ovis patches on hc-tui $HC_TUI_TAG ($applied)"
+  git -C "$new" -c user.name=ovis-tui -c user.email=ovis-tui@users.noreply.github.com commit --quiet -m "Ovis patches on hc-tui $HC_TUI_TAG ($applied)"
 fi
-printf '%s\n%s\n' "$want" "$(git -C "$dest" rev-parse HEAD)" > "$stamp"
+printf '%s\n%s\n' "$want" "$(git -C "$new" rev-parse HEAD)" > "$new/.ovis-prepared"
+rm -rf "$dest"
+mv "$new" "$dest"
+trap - EXIT
 echo "prepare.sh: hc-tui $HC_TUI_TAG ($HC_TUI_COMMIT) with $applied patch(es) is in $dest"
