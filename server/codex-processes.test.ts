@@ -11,6 +11,7 @@ import * as processStart from "./process-start.ts";
 import { processStartedAt } from "./process-start.ts";
 import * as kiro from "./kiro-terminal.ts";
 import * as tmux from "./tmux-terminal.ts";
+import { codexConversationMode } from "./codex-executable.ts";
 import { paneTranscript } from "./conversation.ts";
 import type { SessionSnapshot } from "../shared/protocol.ts";
 
@@ -127,11 +128,14 @@ const resolve = () => codexTranscriptPath(root, root, home, [{
 /** Kiro's wrapper checks as on macOS, where its Codex is proven: the real checks, with the platform pinned. */
 function asOnMac() {
   const wrapper = kiro.kiroWrapper, nestedPane = kiro.kiroNested;
+  // The synthetic attachment proof includes explicit readable-local kernel argv evidence.
+  const argv = spyOn(tmux, "codexProcessArgv").mockReturnValue(["codex"]);
   const spies = [
     spyOn(kiro, "kiroWrapper").mockImplementation((info) => wrapper(info, "darwin")),
     spyOn(kiro, "kiroNested").mockImplementation((info, labelled) => nestedPane(info, labelled, "darwin")),
+    argv,
   ];
-  return { mockRestore: () => { for (const spy of spies) spy.mockRestore(); } };
+  return { argv, mockRestore: () => { for (const spy of spies) spy.mockRestore(); } };
 }
 
 // A Chat poll hands its own process read to the lookup (#1879). The pane can change in between: what decides the
@@ -724,7 +728,7 @@ async function codexHolding(rollout: string): Promise<ReturnType<typeof Bun.spaw
 it.skipIf(process.platform !== "linux")("reads the native rollout behind a verified local tmux attach client", async () => {
   const child = await codexHolding(path);
   foreground = [{ pid: 2147483647, argv: ["/usr/bin/tmux", "-S", "/synthetic/tmux.sock", "attach-session", "-t", "work"] }];
-  const nested = spyOn(tmux, "tmuxCodexProcess").mockResolvedValue({ pid: child.pid, argv: ["codex"], identity: `client:1,pane:${child.pid}:1`, pane: { args: [], id: "%1" } });
+  const nested = spyOn(tmux, "tmuxCodexProcess").mockResolvedValue({ pid: child.pid, argv: ["codex"], identity: `client:1,pane:${child.pid}:1`, argvRead: true, argvState: "local" as const, pane: { args: [], id: "%1" } });
   try {
     expect(await resolve()).toBe(path);
     expect(await codexOpenRollout(root, root, home)).toBe(path);
@@ -735,7 +739,7 @@ it.skipIf(process.platform !== "linux")("reads the exact held tmux rollout despi
   const child = await codexHolding(path);
   foreground = [{ pid: 2147483647, argv: ["tmux", "attach"] }];
   const mapping = "2147483647\t/dev/pts/1\t2147483645\t/fixture/tmux.sock\t$2\t@3\t%4\t2147483646\t/dev/pts/2\t0\t0\n";
-  const rows = () => kiro.parseTerminalProcesses(`
+  const rows = () => tmux.parseTerminalProcesses(`
 2147483647 1 2147483647 2147483647 pts/1 S tmux: client
 2147483646 2147483645 2147483646 2147483644 pts/2 S /bin/bash
 2147483644 2147483646 2147483644 2147483644 pts/2 S /bin/sh
@@ -757,7 +761,7 @@ it.skipIf(process.platform !== "linux")("requires outer shell proof for a held r
   foreground = [{ pid: shellPid, argv: ["/bin/sh"] }, { pid: 2147483644, argv: ["/bin/sh"] },
     { pid: 2147483647, argv: ["tmux", "attach"] }];
   const mapping = "2147483647\t/dev/pts/1\t2147483645\t/fixture/tmux.sock\t$2\t@3\t%4\t2147483642\t/dev/pts/2\t0\t0\n";
-  const rows = () => kiro.parseTerminalProcesses(`
+  const rows = () => tmux.parseTerminalProcesses(`
 2147483646 1 2147483646 2147483646 pts/1 S /bin/sh
 2147483644 2147483646 2147483646 2147483646 pts/1 S /bin/sh
 2147483647 2147483644 2147483646 2147483646 pts/1 S tmux: client
@@ -783,7 +787,7 @@ describe.skipIf(process.platform !== "linux")("tmux attachment continuity", () =
     const child = await codexHolding(path);
     foreground = [{ pid: 2147483647, argv: ["tmux", "attach"] }];
     const mapping = "2147483647\t/dev/pts/1\t2147483645\t/fixture/tmux.sock\t$2\t@3\t%4\t2147483646\t/dev/pts/2\t0\t0\n";
-    const rows = kiro.parseTerminalProcesses(`
+    const rows = tmux.parseTerminalProcesses(`
 2147483647 1 2147483647 2147483647 pts/1 S tmux: client
 2147483646 2147483645 2147483646 ${child.pid} pts/2 S /bin/bash
 ${child.pid} 2147483646 ${child.pid} ${child.pid} pts/2 S node
@@ -804,7 +808,7 @@ ${child.pid} 2147483646 ${child.pid} ${child.pid} pts/2 S node
   it.each(["chat", "background"])("refuses a rejected final identity read for %s without rejecting the lookup", async (reader) => {
     const child = await codexHolding(path);
     foreground = [{ pid: 2147483647, argv: ["tmux", "attach"] }];
-    const nested = spyOn(tmux, "tmuxCodexProcess").mockResolvedValue({ pid: child.pid, argv: ["codex"], identity: "stable-fixture", pane: { args: [], id: "%1" } });
+    const nested = spyOn(tmux, "tmuxCodexProcess").mockResolvedValue({ pid: child.pid, argv: ["codex"], identity: "stable-fixture", argvRead: true, argvState: "local" as const, pane: { args: [], id: "%1" } });
     failedReads.add(reader === "chat" ? 2 : 3);
     try { await expect(reader === "chat" ? resolve() : codexOpenRollout(root, root, home)).resolves.toBeNull(); }
     finally { nested.mockRestore(); }
@@ -813,7 +817,7 @@ ${child.pid} 2147483646 ${child.pid} ${child.pid} pts/2 S node
   it.each(["missing", "switched", "reused"])("refuses a tmux binding that is %s after reading its held rollout", async (change) => {
     const child = await codexHolding(path);
     foreground = [{ pid: 2147483647, argv: ["tmux", "attach"] }];
-    const first = { pid: child.pid, argv: ["codex"], identity: "client:1,pane:1", pane: { args: [], id: "%1" } };
+    const first = { pid: child.pid, argv: ["codex"], identity: "client:1,pane:1", argvRead: true, argvState: "local" as const, pane: { args: [], id: "%1" } };
     const next = change === "missing" ? null : { ...first, ...(change === "switched" ? { pid: 2147483646 } : {}), identity: "client:1,pane:2" };
     const nested = spyOn(tmux, "tmuxCodexProcess").mockResolvedValueOnce(first).mockResolvedValue(next);
     try { expect(await resolve()).toBeNull(); }
@@ -857,7 +861,7 @@ describe.skipIf(process.platform !== "linux")("a Codex on the shared daemon behi
     const pane = (id: "%1" | "%2") => id === "%1" ? "$1\t@1\t%1\t2147483646\t/dev/pts/2" : "$2\t@2\t%2\t2147483644\t/dev/pts/4";
     const mapping = () => `2147483647\t/dev/pts/1\t2147483645\t/fixture/tmux.sock\t${pane(shown)}\t0\t0\n`
       + `2147483640\t/dev/pts/3\t2147483645\t/fixture/tmux.sock\t${pane("%2")}\t0\t0\n`;
-    const rows = () => kiro.parseTerminalProcesses(`
+    const rows = () => tmux.parseTerminalProcesses(`
 2147483647 1 2147483647 2147483647 pts/1 S tmux: client
 2147483640 1 2147483640 2147483640 pts/3 S tmux: client
 2147483646 2147483645 2147483646 ${codexIn["%1"]} pts/2 S /bin/bash
@@ -873,6 +877,16 @@ ${codexIn["%2"]} 2147483644 ${codexIn["%2"]} ${codexIn["%2"]} pts/4 S codex
     });
   });
   afterEach(() => { proof.mockRestore(); view.mockRestore(); });
+
+  it.each(["--remote", "--remote=fixture-endpoint", "unreadable argv"])
+    ("refuses local screen matching for native tmux %s", async (remote) => {
+      views.set("%1", `${header}\n${answer}`);
+      proof.mockRestore();
+      proof = spyOn(tmux, "tmuxCodexProcess").mockResolvedValue({ pid: codexIn["%1"],
+        argv: remote === "unreadable argv" ? ["codex"] : ["codex", remote],
+        argvRead: remote !== "unreadable argv", argvState: remote === "unreadable argv" ? "unavailable" : "remote", identity: "screen-only-fixture", pane: { args: [], id: "%1" } });
+      expect(await resolve()).toBeNull();
+    });
 
   it("shows only the conversation of the pane its client shows, never another tmux session's", async () => {
     otherSession(otherAnswer);
@@ -3918,17 +3932,19 @@ describe("a Codex pane whose last answer is shorter than 64 letters and digits b
     expect(await resolve()).toBeNull();
   });
 
-  it("takes no short answer for a nested pane or a TUI of an app server elsewhere, whose long answers still tell", async () => {
+  it("requires local mode for short and long answers, and a substantial answer for a proven nested local pane", async () => {
     const short = footed([`› ${asked}`], ["• ok"]);
     const long = footed(["› Explain which conversation this pane shows"], [`• ${answer}`]);
     /** The conversation's last turn: the short one, or the long one. */
     const endOn = (index: number) => writeRollout(path, thread, index === 0 ? turn("t1", asked, "ok") : turn("t1", "Explain which conversation this pane shows", answer));
-    // --remote: the conversation shown is in another store
+    // A substantial screen match cannot override known remote mode, even after a local binding.
     for (const [index, shown] of [short, long].entries()) {
       endOn(index);
-      foreground = [{ pid: 2147483640 - index, argv: ["/usr/bin/codex", "--remote", "ws://127.0.0.1:4500"] }];
+      foreground = live;
       screen = shown;
-      expect([index, await resolve()]).toEqual([index, index === 0 ? null : path]);
+      expect([index, await resolve()]).toEqual([index, path]);
+      foreground = [{ pid: live[0]!.pid, argv: ["/usr/bin/codex", "--remote", "ws://127.0.0.1:4500"] }];
+      expect([index, await resolve()]).toEqual([index, null]);
     }
     // a Codex inside Kiro's wrapper: only a substantial match ties it to a conversation
     unlabelled = true;
@@ -4428,3 +4444,125 @@ describe("a Codex pane keeps its conversation beside a second Codex that only st
     expect(await codexTranscriptPath(root, root, home, [fixturePane(root), fixturePane("peer")])).toBe(path);
   });
 });
+
+
+it("keeps fresh tmux conversation identities opaque and refuses remote greetings", async () => {
+  const store = join(root, "unwritten-store");
+  mkdirSync(store);
+  foreground = [{ pid: 2147483647, argv: ["tmux", "attach"] }];
+  let identity = "fixture-socket:/private/tmux.sock:pts/9:12345:birth-one";
+  let argv = ["codex"];
+  const proof = spyOn(tmux, "tmuxCodexProcess").mockImplementation(async () => ({
+    pid: 2147483646, argv, argvRead: true, argvState: codexConversationMode(argv), identity, pane: { args: [], id: "%1" },
+  }));
+  const start = spyOn(processStart, "processStartLowerBound").mockReturnValue(1000);
+  const fresh = "  >_ OpenAI Codex (v0.167.0)\n  /fixture\n\n› Ask Codex to do anything\n\n  GPT-6.1-Sol low · /fixture\n  ? for shortcuts";
+  const read = () => codexModule.codexFreshSession(root, [root], store, fresh);
+  try {
+    const first = await read();
+    expect(first).not.toBeNull();
+    expect(first).toMatch(new RegExp(`^unwritten:codex:${root}:[0-9a-f]{64}$`));
+    expect(await read()).toBe(first);
+    for (const privatePart of ["/private/tmux.sock", "pts/9", "12345", "birth-one"]) expect(first).not.toContain(privatePart);
+    identity += ":different-pane";
+    expect(await read()).not.toBe(first);
+    for (const remote of [["codex", "--remote", "fixture-endpoint"], ["codex", "--remote=fixture-endpoint"]]) {
+      argv = remote;
+      expect(await read()).toBeNull();
+    }
+    // The shared rule also rejects a known remote direct pane, while preserving verified local greetings.
+    foreground = [{ pid: process.pid, argv: ["codex", "--remote", "fixture-endpoint"] }];
+    expect(await read()).toBeNull();
+    foreground = [{ pid: process.pid, argv: ["codex"] }];
+    expect(await read()).not.toBeNull();
+  } finally { proof.mockRestore(); start.mockRestore(); }
+});
+
+
+it.each([
+  [["codex"], "local"], [["codex", "--profile", "e"], "local"],
+  [["node", "--no-warnings", "/fixture/codex.js"], "local"],
+  [["codex", "--remote", "fixture"], "remote"], [["codex", "--remote=fixture"], "remote"],
+  [["node", "other.js", "--remote=fixture"], "remote"], [["node", "other.js"], "rejected"],
+  [null, "unavailable"], [[], "unavailable"],
+] as const)("classifies local history evidence %j", (argv, expected) => {
+  expect(codexConversationMode(argv)).toBe(expected);
+});
+
+// Each case uses the actual native proof and a real owned held FD, not a mocked resolver result.
+for (const held of [true, false]) for (const mode of ["local", "remote", "remote-equals", "rejected", "unavailable", "throwing"] as const) {
+  it.skipIf(process.platform !== "linux")(`shares ${mode} local-history eligibility across consumers with held FD ${held}`, async () => {
+    writeFileSync(path, [
+      { type: "session_meta", payload: { id: thread, cwd: root } },
+      { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "Read this verified local conversation" }] } },
+      { type: "response_item", payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: answer }] } },
+    ].map((record) => JSON.stringify(record)).join("\n"));
+    const child = held ? await codexHolding(path) : await runningCodex();
+    foreground = [{ pid: 2147483647, argv: ["tmux", "attach"] }];
+    const mapping = `2147483647\t/dev/pts/1\t2147483645\t/fixture/tmux.sock\t$2\t@3\t%4\t2147483646\t/dev/pts/2\t0\t0\n`;
+    const rows = tmux.parseTerminalProcesses(`
+2147483647 1 2147483647 2147483647 pts/1 S tmux: client
+2147483646 2147483645 2147483646 ${child.pid} pts/2 S /bin/bash
+${child.pid} 2147483646 ${child.pid} ${child.pid} pts/2 S codex
+`);
+    const argv = mode === "local" ? ["codex"] : mode === "remote" ? ["codex", "--remote", "fixture"]
+      : mode === "remote-equals" ? ["codex", "--remote=fixture"] : mode === "rejected" ? ["node", "other.js"] : null;
+    const original = tmux.tmuxCodexProcess;
+    const proof = spyOn(tmux, "tmuxCodexProcess").mockImplementation((info) => original(info, "linux", async () => mapping, async () => rows,
+      (pid) => pid, () => { if (mode === "throwing") throw new Error("argv denied"); return argv; }));
+    const view = spyOn(tmux, "tmuxPaneView").mockResolvedValue({ text: `>_ OpenAI Codex (v0.167.0)\n\n${answer}`, cwd: root });
+    const empty = join(root, "empty-greeting-store"); mkdirSync(empty);
+    const greeting = "  >_ OpenAI Codex (v0.167.0)\n\n› Ask Codex to do anything\n\n  GPT-6.1-Sol low · /fixture\n  ? for shortcuts";
+    try {
+      const fresh = await codexModule.codexFreshSession(root, [root], empty, greeting);
+      if (mode === "local") {
+        expect(fresh).not.toBeNull();
+        expect(await resolve()).toBe(path);
+        expect(await codexOpenRollout(root, root, home)).toBe(held ? path : null);
+        expect((await conversationModule.paneConversation(root, home)).source).toBe("codex-transcript");
+        expect(await conversationModule.readCommandTranscript(root, home)).not.toBeNull();
+      } else {
+        expect(fresh).toBeNull();
+        expect(await resolve()).toBeNull();
+        expect(await codexOpenRollout(root, root, home)).toBeNull();
+        await expect(conversationModule.paneTranscript(root, home, labelledSnapshot())).rejects.toBeInstanceOf(conversationModule.ConversationUnavailable);
+        await expect(conversationModule.paneConversation(root, home)).rejects.toBeInstanceOf(conversationModule.ConversationUnavailable);
+        await expect(conversationModule.readCommandTranscript(root, home)).rejects.toBeInstanceOf(conversationModule.ConversationUnavailable);
+      }
+    } finally { proof.mockRestore(); view.mockRestore(); }
+  });
+}
+
+it.skipIf(process.platform !== "linux")("does not turn unavailable nested Kiro argv into local history, and retains verified local ownership", async () => {
+  const child = await codexHolding(path);
+  const mac = asOnMac();
+  const nested = spyOn(kiro, "kiroCodexProcess").mockResolvedValue({ pid: child.pid, argv: ["codex"], identity: `10:1,20:1,${child.pid}:1` });
+  const argv = mac.argv.mockReturnValue(null);
+  try {
+    expect(await resolve()).toBeNull(); expect(await codexOpenRollout(root, root, home)).toBeNull();
+    argv.mockReturnValue(["codex", "--remote=fixture"]);
+    expect(await resolve()).toBeNull(); expect(await codexOpenRollout(root, root, home)).toBeNull();
+    argv.mockReturnValue(["codex"]);
+    expect(await resolve()).toBe(path); expect(await codexOpenRollout(root, root, home)).toBe(path);
+  } finally { nested.mockRestore(); mac.mockRestore(); }
+});
+
+
+for (const mode of ["local", "remote", "remote-equals", "rejected", "unavailable"] as const) {
+  it.skipIf(process.platform !== "linux")(`shares direct ${mode} eligibility before a real held local rollout`, async () => {
+    const child = await codexHolding(path);
+    foreground = [{ pid: child.pid, argv: mode === "local" ? ["codex"] : mode === "remote" ? ["codex", "--remote", "fixture"]
+      : mode === "remote-equals" ? ["codex", "--remote=fixture"] : mode === "rejected" ? ["node", "other.js"] : [] }];
+    const original = fs.readFileSync;
+    const denied = mode === "unavailable" ? spyOn(fs, "readFileSync").mockImplementation(((...args: any[]) => {
+      if (args[0] === `/proc/${child.pid}/cmdline`) throw new Error("unavailable argv");
+      return Reflect.apply(original, fs, args);
+    }) as typeof fs.readFileSync) : null;
+    try {
+      expect(await resolve()).toBe(mode === "local" ? path : null);
+      expect(await codexOpenRollout(root, root, home)).toBe(mode === "local" ? path : null);
+      if (mode === "local") expect((await conversationModule.paneConversation(root, home)).source).toBe("codex-transcript");
+      else await expect(conversationModule.paneConversation(root, home)).rejects.toBeInstanceOf(conversationModule.ConversationUnavailable);
+    } finally { denied?.mockRestore(); }
+  });
+}

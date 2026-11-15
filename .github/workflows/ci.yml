@@ -316,6 +316,15 @@ jobs:
           herdr: 'true'
       - run: bun install --frozen-lockfile
         if: needs.changes.outputs.draft != 'true'
+      - name: Install hosted tmux test tools
+        if: needs.changes.outputs.draft != 'true' && runner.environment != 'self-hosted'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux procps
+      - name: Require native tmux contract tools
+        if: needs.changes.outputs.draft != 'true'
+        run: |
+          command -v tmux
+          command -v node
+          test -x /bin/ps
       - name: Integration tests (updater restart and rollback included)
         if: needs.changes.outputs.draft != 'true'
         env:

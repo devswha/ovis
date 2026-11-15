@@ -673,9 +673,8 @@ const FORM_SETTLE_MS = 3_000;
 
 const defaultOpenCodeState = new OpenCodePromptState();
 
-/** Each pane's rollout, resolved for its collapsed queue: a poll every 2s would otherwise redo it. */
-const queueRollouts = new Map<string, { path: string | null; at: number }>();
-const QUEUE_ROLLOUT_MS = 15_000;
+/** The last resolved queue location, used only to recognise a question opened from that rollout. */
+const queueRollouts = new Map<string, { path: string | null }>();
 
 /**
  * The chat's own message back in Claude's box (claudeRestoredDraft), only when the live screen holds
@@ -1264,20 +1263,19 @@ async function readKnownPrompt(
     else settled = now;
   }
   if (count === 0 || !pane.cwd) return { prompt, screen, inputUnverified, ...(settled ? { settled } : {}) };
-  let rollout = queueRollouts.get(paneId);
-  if (!rollout || Date.now() - rollout.at > QUEUE_ROLLOUT_MS) {
-    // a store a Codex process placed is checked against the one the lookup's own read sees (#2774)
-    const store = await paneCodexHomePlaced(paneId, codexHome);
-    rollout = { path: await codexTranscriptPath(paneId, pane.cwd, store.home, undefined, false, store.placed && !codexHome), at: Date.now() };
-    queueRollouts.set(paneId, rollout);
-    if (queueRollouts.size > 64) queueRollouts.delete(queueRollouts.keys().next().value!);
-  }
+  // A remembered path cannot prove that the pane still runs a local conversation.
+  const store = await paneCodexHomePlaced(paneId, codexHome);
+  const resolve = () => codexTranscriptPath(paneId, pane.cwd!, store.home, undefined, false, store.placed && !codexHome);
+  const rollout = { path: await resolve() };
+  queueRollouts.set(paneId, rollout);
+  if (queueRollouts.size > 64) queueRollouts.delete(queueRollouts.keys().next().value!);
   try {
     // a question remembered from another rollout (a new session) means nothing here
     const front = queueFronts.get(paneId);
     if (front && front.rollout !== rollout.path) queueFronts.delete(paneId);
+    const questions = rollout.path ? await unansweredCodexQuestions(rollout.path) : null;
     return {
-      prompt: rollout.path ? codexQueuedPrompt(screen, await unansweredCodexQuestions(rollout.path), front?.rollout === rollout.path ? front : null) : null,
+      prompt: questions && await resolve() === rollout.path ? codexQueuedPrompt(screen, questions, front?.rollout === rollout.path ? front : null) : null,
       screen,
     };
   } catch {

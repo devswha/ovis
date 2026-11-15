@@ -3,3 +3,5 @@
   attachment, including a current Codex on the shared app-server daemon: the attached pane's own
   screen is matched as a direct pane's is. Dead, switched, ambiguous or unprovable attachments keep
   the terminal fallback instead of picking another session's conversation.
+- Local conversation reads share one eligibility check: remote, rejected or unavailable execution
+  evidence keeps the terminal fallback, including when a process holds a local rollout open.

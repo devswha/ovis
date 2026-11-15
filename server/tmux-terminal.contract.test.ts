@@ -6,12 +6,11 @@ import { basename, join } from "node:path";
 import { createServer } from "./index.ts";
 import { herdrRpc, paneProcessInfo, workspaceClose, workspaceCreate } from "./herdr/client.ts";
 import { shellQuote } from "./machine-security.ts";
-import { processTable } from "./kiro-terminal.ts";
-import { tmuxCodexProcess } from "./tmux-terminal.ts";
+import { processTable, tmuxCodexProcess } from "./tmux-terminal.ts";
 import type { ConversationResponse } from "../shared/protocol.ts";
 
 // A real private tmux client in the test herdr, a stand-in executable, and synthetic native files.
-const native = process.platform === "linux" && Bun.which("tmux") !== null && Bun.which("node") !== null;
+const native = process.platform === "linux";
 const root = mkdtempSync(join(tmpdir(), "ovis-tmux-"));
 const socket = join(root, "tmux.sock");
 const home = join(root, "store");
@@ -30,9 +29,12 @@ let scriptWorkspace: string | undefined;
 let scriptPane: string;
 let server: ReturnType<typeof createServer> | undefined;
 let tmuxStarted = false;
+let rejectedWorkspace: string | undefined;
+let rejectedPane: string;
 
 async function tmux(...args: string[]): Promise<string> {
-  const child = Bun.spawn(["tmux", "-S", socket, ...args], { stdout: "pipe", stderr: "pipe", timeout: 5000 });
+  // Exercise the actual tab-separated format under a non-UTF8 client locale.
+  const child = Bun.spawn(["tmux", "-u", "-S", socket, ...args], { env: { ...process.env, LC_ALL: "C" }, stdout: "pipe", stderr: "pipe", timeout: 5000 });
   const output = new Response(child.stdout).text();
   const error = await new Response(child.stderr).text();
   if (await child.exited !== 0) throw new Error(`private tmux command failed: ${error}`);
@@ -41,6 +43,8 @@ async function tmux(...args: string[]): Promise<string> {
 
 beforeAll(async () => {
   if (!native) return;
+  const missing = [!Bun.which("tmux") && "tmux", !Bun.which("node") && "node", !existsSync("/bin/ps") && "procps", !Bun.which("python3") && "python3"].filter(Boolean);
+  if (missing.length) throw new Error(`Native tmux contracts require: ${missing.join(", ")}`);
   mkdirSync(join(home, "sessions"), { recursive: true });
   writeFileSync(rollout, [
     { type: "session_meta", payload: { id: "00000000-0000-4000-8000-000000000001", cwd: root } },
@@ -149,6 +153,35 @@ beforeAll(async () => {
   await herdrRpc("pane.send_text", { pane_id: shownPane, text: `exec env -u TMUX tmux -S ${shellQuote(socket)} attach-session -E -t shown\n` });
   if (await shownAttached.exited !== 0) throw new Error("private screen-only tmux client did not attach");
   await herdrRpc("pane.report_agent", { pane_id: shownPane, source: "manual", agent: "codex", state: "idle" });
+  // A real readable non-Codex argv with comm=codex and an owned held FD must not be promoted.
+  const rejectedReady = join(root, "rejected-ready");
+  const rejectedScript = join(root, "not-codex.py");
+  writeFileSync(rejectedScript, `import ctypes, os, sys
+assert ctypes.CDLL(None).prctl(15, b"codex", 0, 0, 0) == 0
+held = open(${JSON.stringify(rollout)}, "r")
+print("Ask Codex; synthetic terminal chrome", flush=True)
+open(${JSON.stringify(rejectedReady)}, "w").write(str(os.getpid()))
+sys.stdin.read()
+`);
+  const rejectedLauncher = join(root, "rejected-launcher.sh");
+  writeFileSync(rejectedLauncher, `set -m\n${[Bun.which("python3")!, rejectedScript].map(shellQuote).join(" ")}\n`);
+  const rejectedWatcher = watch(root);
+  let rejectedTimer: ReturnType<typeof setTimeout> | undefined;
+  const rejectedStarted = new Promise<void>((done, fail) => {
+    rejectedWatcher.on("change", (_, file) => { if (file === "rejected-ready" && existsSync(rejectedReady)) done(); });
+    rejectedTimer = setTimeout(() => fail(new Error("rejected argv stand-in did not start")), 5000);
+  });
+  try {
+    await tmux("new-session", "-d", "-s", "rejected", `exec env -u BASH_ENV -u ENV CODEX_HOME=${shellQuote(home)} /bin/bash --noprofile --norc ${shellQuote(rejectedLauncher)}`);
+    await rejectedStarted;
+  } finally { rejectedWatcher.close(); clearTimeout(rejectedTimer); }
+  await tmux("set-hook", "-g", "client-attached", "wait-for -S rejected-attached");
+  const rejectedAttached = Bun.spawn(["tmux", "-S", socket, "wait-for", "rejected-attached"], { stdout: "ignore", stderr: "pipe", timeout: 5000 });
+  const rejectedView = await workspaceCreate({ cwd: root, label: "ovis-test-tmux-rejected-argv" });
+  rejectedWorkspace = rejectedView.workspace.workspace_id; rejectedPane = rejectedView.root_pane.pane_id;
+  await herdrRpc("pane.send_text", { pane_id: rejectedPane, text: `exec env -u TMUX tmux -S ${shellQuote(socket)} attach-session -E -t rejected\n` });
+  if (await rejectedAttached.exited !== 0) throw new Error("rejected argv tmux client did not attach");
+  await herdrRpc("pane.report_agent", { pane_id: rejectedPane, source: "manual", agent: "codex", state: "idle" });
   server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: join(root, "app"), codexHome: home });
 }, 15_000);
 
@@ -166,6 +199,7 @@ afterAll(() => cleanup([
   () => wrappedWorkspace ? workspaceClose(wrappedWorkspace) : undefined,
   () => scriptWorkspace ? workspaceClose(scriptWorkspace) : undefined,
   () => shownWorkspace ? workspaceClose(shownWorkspace) : undefined,
+  () => rejectedWorkspace ? workspaceClose(rejectedWorkspace) : undefined,
   () => tmuxStarted ? tmux("kill-server") : undefined,
   () => rmSync(root, { recursive: true, force: true }),
 ]));
@@ -250,4 +284,18 @@ it.skipIf(!native)("drops native chat for a dead retained pane even while tmux r
   const response = await fetch(`http://127.0.0.1:${server!.port}/api/pane/conversation?pane_id=${encodeURIComponent(pane)}`);
   expect(response.status).toBe(200);
   expect((await response.json() as ConversationResponse).source).toBe("scrollback");
+});
+
+
+it.skipIf(!native)("does not serve a local conversation from readable rejected argv plus one real held rollout", async () => {
+  const pid = Number(readFileSync(join(root, "rejected-ready"), "utf8"));
+  expect((await processTable()).find((row) => row.pid === pid)!.command).toBe("codex");
+  expect(readdirSync(`/proc/${pid}/fd`).some((fd) => readlinkSync(`/proc/${pid}/fd/${fd}`) === rollout)).toBe(true);
+  const attached = await tmuxCodexProcess(await paneProcessInfo(rejectedPane));
+  expect(attached).toMatchObject({ pid, argvRead: true, argvState: "rejected" });
+  const response = await fetch(`http://127.0.0.1:${server!.port}/api/pane/conversation?pane_id=${encodeURIComponent(rejectedPane)}`);
+  expect(response.status).toBe(200);
+  const answer = await response.json() as ConversationResponse;
+  expect(answer.source).toBe("scrollback");
+  expect(JSON.stringify(answer)).not.toContain("Only this native conversation belongs");
 });

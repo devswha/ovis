@@ -34,3 +34,14 @@ export function isCodexExecutable(argv: readonly string[]): boolean {
   }
   return codex.test(argv[script] ?? "");
 }
+
+
+export type CodexConversationMode = "local" | "remote" | "rejected" | "unavailable";
+
+/** Readable contradictions are never weakened into an unknown local-history fallback. */
+export function codexConversationMode(argv: readonly string[] | null | undefined): CodexConversationMode {
+  if (!argv?.length) return "unavailable";
+  if (argv.some((word) => word === "--remote" || word.startsWith("--remote="))) return "remote";
+  if (!isCodexExecutable(argv)) return "rejected";
+  return "local";
+}

@@ -1,8 +1,11 @@
 import { describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { shellQuote } from "./machine-security.ts";
 import type { ProcessInfo } from "./herdr/client.ts";
-import { parseTerminalProcesses, type TerminalProcess } from "./kiro-terminal.ts";
-import { tmuxCodexProcess as discoverTmux, tmuxPaneView, tmuxWrapper } from "./tmux-terminal.ts";
+import type { TerminalProcess } from "./kiro-terminal.ts";
+import { parseTerminalProcesses, tmuxCodexProcess as discoverTmux, tmuxPaneView, tmuxWrapper } from "./tmux-terminal.ts";
 
 // Synthetic interpreter PIDs must never read the host's argv unless a test supplies its own reader.
 const tmuxCodexProcess: typeof discoverTmux = (info, platform, clients, rows, birth, argv = () => null) =>
@@ -22,6 +25,31 @@ const wrapped = processes.map((row) => row.pid === 20 ? { ...row, foreground: 25
   .concat({ pid: 25, parent: 20, group: 25, foreground: 25, tty: "pts/2", command: "/bin/sh" });
 
 describe("tmux native process proof", () => {
+  it.skipIf(process.platform === "win32")("requests UTF8 for native metadata and pane reads under a C locale", async () => {
+    const root = fs.mkdtempSync(join(tmpdir(), "ovis-tmux-read-"));
+    const previousPath = process.env["PATH"], previousLocale = process.env["LC_ALL"];
+    fs.writeFileSync(join(root, "tmux"), `#!/bin/sh
+[ "$LC_ALL" = C ] || exit 2
+[ "$1" = -u ] || exit 3
+case "$4" in
+  list-clients) printf '%s' ${shellQuote(mapping)} ;;
+  capture-pane) printf '%s\n' 'synthetic Codex answer' ;;
+  display-message) printf '%s\n' '/work/été' ;;
+  *) exit 4 ;;
+esac
+`, { mode: 0o755 });
+    process.env["PATH"] = `${root}:${previousPath ?? ""}`;
+    process.env["LC_ALL"] = "C";
+    try {
+      const found = await discoverTmux(info, "linux", undefined, async () => processes, births, () => ["/opt/bin/codex"]);
+      expect(found).toMatchObject({ pid: 30, argvState: "local" });
+      expect(await tmuxPaneView(found!.pane)).toEqual({ text: "synthetic Codex answer\n", cwd: "/work/été" });
+    } finally {
+      if (previousPath === undefined) delete process.env["PATH"]; else process.env["PATH"] = previousPath;
+      if (previousLocale === undefined) delete process.env["LC_ALL"]; else process.env["LC_ALL"] = previousLocale;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
   it.skipIf(process.platform !== "linux").each([
     ["node\0codex.js\0", true, false], ["node\0codex.js\0\0", true, true],
     ["node\0\0codex.js\0", false, false], ["node\0codex.js", false, false], ["", false, false],
@@ -81,13 +109,41 @@ describe("tmux native process proof", () => {
     expect(second!.identity).not.toContain("fixture-argument-two");
   });
 
-  it("keeps native positives without reading interpreter argv, but refuses two script candidates", async () => {
+  it("keeps comm-only positives when argv is unreadable, but refuses two script candidates", async () => {
     expect((await tmuxCodexProcess(info, "linux", async () => mapping, async () => processes, births,
       () => { throw new Error("native must not read argv"); }))?.pid).toBe(30);
     const rows = processes.map((row) => row.pid === 30 ? { ...row, command: "node" } : row)
       .concat({ ...processes[3]!, pid: 31, command: "node" });
     expect(await tmuxCodexProcess(info, "linux", async () => mapping, async () => rows, births,
       () => ["node", "codex.js"])).toBeNull();
+  });
+
+  it("retains native argv including remote/resume and revalidates it without exposing arguments", async () => {
+    let argument = "--remote=fixture-endpoint";
+    const read = () => tmuxCodexProcess(info, "linux", async () => mapping, async () => processes, births,
+      () => ["/opt/bin/codex", argument]);
+    const first = await read();
+    expect(first).toMatchObject({ argv: ["/opt/bin/codex", argument], argvRead: true });
+    expect(first!.identity).not.toContain(argument);
+    argument = "resume";
+    expect((await read())!.identity).not.toBe(first!.identity);
+    let reads = 0;
+    expect(await tmuxCodexProcess(info, "linux", async () => mapping, async () => processes, births,
+      () => ["codex", String(++reads)])).toBeNull();
+    expect(await tmuxCodexProcess(info, "linux", async () => mapping, async () => processes, births, () => null))
+      .toMatchObject({ pid: 30, argvRead: false });
+  });
+
+  it.each([
+    [["codex"], "local"], [["codex", "--profile", "e"], "local"],
+    [["codex", "--remote=fixture"], "remote"], [["node", "other.js"], "rejected"],
+    [null, "unavailable"],
+  ] as const)("retains native argv evidence without weakening %j into comm-local proof", async (argv, state) => {
+    const found = await tmuxCodexProcess(info, "linux", async () => mapping, async () => processes, births, () => argv);
+    expect(found).not.toBeNull();
+    expect(found!.argvState).toBe(state);
+    expect(found!.argvRead).toBe(argv !== null);
+    if (argv !== null) expect(found!.argv).toEqual([...argv]);
   });
 
   const outerInfo = { ...info, shell_pid: 8, foreground_processes: [
@@ -184,6 +240,78 @@ describe("tmux native process proof", () => {
       async () => snapshot("Z", pid).filter((row) => row.pid !== 40), births)).toBeNull();
   });
 
+  it("parses Codex Linux/Darwin state columns separately from the unchanged Kiro parser", () => {
+    expect(parseTerminalProcesses("30 20 30 30 pts/2 R+ /opt/bin/codex\n40 30 30 30 pts/2 Z chrome"))
+      .toEqual([{ pid: 30, parent: 20, group: 30, foreground: 30, tty: "pts/2", command: "/opt/bin/codex" }]);
+    expect(parseTerminalProcesses("30 20 30 30 ttys002 S+ codex\n40 30 30 30 ttys002 Z+ chrome"))
+      .toEqual([{ pid: 30, parent: 20, group: 30, foreground: 30, tty: "ttys002", command: "codex" }]);
+    expect(parseTerminalProcesses("malformed\n")).toEqual([]);
+  });
+
+  const nodeWrapped = wrapped.map((row) => row.pid === 25 ? { ...row, command: "MainThread" } : row);
+  const launcherArgv = (pid: number) => pid === 25 ? ["/usr/bin/node", "/fixture/codex.js"] : null;
+
+  it("proves a recognised Node Codex launcher and its one native child", async () => {
+    expect(await tmuxCodexProcess(info, "linux", async () => mapping, async () => nodeWrapped, births, launcherArgv))
+      .toMatchObject({ pid: 30, pane: { args: ["-S", "/fixture/tmux.sock"], id: "%4" } });
+  });
+
+  it.each([null, ["node", "other.js"], ["node", "-e", "codex.js"], ["bun", "codex.js"]].map((argv) => [argv] as const))
+    ("refuses an unrecognised Node launcher %j", async (argv) => {
+      expect(await tmuxCodexProcess(info, "linux", async () => mapping, async () => nodeWrapped, births, () => argv)).toBeNull();
+    });
+
+  it("refuses a Node launcher's changed argv or birth and includes its argv in later binding identity", async () => {
+    let reads = 0;
+    expect(await tmuxCodexProcess(info, "linux", async () => mapping, async () => nodeWrapped, births,
+      () => ["node", "codex.js", String(++reads)])).toBeNull();
+    let generation = 0;
+    expect(await tmuxCodexProcess(info, "linux", async () => mapping, async () => nodeWrapped,
+      (pid) => births(pid) + (pid === 25 ? generation : 0), () => { generation++; return launcherArgv(25); })).toBeNull();
+    let argument = "first";
+    const read = () => tmuxCodexProcess(info, "linux", async () => mapping, async () => nodeWrapped, births,
+      () => ["node", "codex.js", argument]);
+    const first = await read(); argument = "second"; const second = await read();
+    expect(first).not.toBeNull(); expect(second).not.toBeNull();
+    expect(first!.identity).not.toBe(second!.identity);
+    expect(first!.identity).not.toContain("codex.js");
+  });
+
+  const tools: TerminalProcess[] = [
+    ...wrapped,
+    { pid: 40, parent: 30, group: 25, foreground: 25, tty: "pts/2", command: "node" },
+    { pid: 41, parent: 40, group: 25, foreground: 25, tty: "pts/2", command: "rg" },
+  ];
+  const toolArgv = (pid: number) => pid === 40 ? ["node", "/fixture/mcp.js"] : ["/usr/bin/rg"];
+
+  it("accepts verified Codex tool descendants without making their lifetimes the conversation identity", async () => {
+    let generation = 0;
+    const read = () => tmuxCodexProcess(info, "linux", async () => mapping, async () => tools,
+      (pid) => births(pid) + (pid === 40 ? generation : 0), toolArgv);
+    const first = await read(); generation++; const second = await read();
+    expect(first).not.toBeNull(); expect(second).not.toBeNull();
+    expect(first!.identity).toBe(second!.identity);
+  });
+
+  it.each([
+    ["a sibling", tools.map((row) => row.pid === 40 ? { ...row, parent: 25 } : row)],
+    ["a missing parent", tools.map((row) => row.pid === 40 ? { ...row, parent: 99 } : row)],
+    ["a cycle", tools.map((row) => row.pid === 40 ? { ...row, parent: 41 } : row)],
+    ["foreign foreground metadata", tools.map((row) => row.pid === 40 ? { ...row, foreground: 99 } : row)],
+    ["another native Codex", tools.map((row) => row.pid === 40 ? { ...row, command: "codex" } : row)],
+  ])("refuses tool ancestry with %s", async (_name, rows) => {
+    expect(await tmuxCodexProcess(info, "linux", async () => mapping, async () => rows as TerminalProcess[], births, toolArgv)).toBeNull();
+  });
+
+  it("refuses another interpreted Codex, unreadable argv and tool reuse during proof", async () => {
+    for (const argv of [null, ["node", "codex.js"]]) {
+      expect(await tmuxCodexProcess(info, "linux", async () => mapping, async () => tools, births, () => argv)).toBeNull();
+    }
+    let reads = 0;
+    expect(await tmuxCodexProcess(info, "linux", async () => mapping, async () => tools,
+      (pid) => births(pid) + (pid === 40 && ++reads > 1 ? 1 : 0), toolArgv)).toBeNull();
+  });
+
   it("accepts one foreground Codex through its pane root's foreground shell launcher", async () => {
     const found = await tmuxCodexProcess(info, "linux", async () => mapping, async () => wrapped, births);
     expect(found).toMatchObject({ pid: 30, argv: ["/opt/bin/codex"] });
@@ -272,6 +400,28 @@ describe("tmux native process proof", () => {
       async () => processes,
       (pid) => change === "reparented" && pid === 11 && ++serverBirths > 1 ? null : births(pid))).toBeNull();
   });
+
+  for (const argvMode of ["readable", "unreadable", "throwing"] as const) {
+    const argv = () => {
+      if (argvMode === "throwing") throw new Error("argv unavailable");
+      return argvMode === "readable" ? ["/opt/bin/codex"] : null;
+    };
+    it(`rejects a native candidate's first unknown birth with ${argvMode} argv`, async () => {
+      let reads = 0;
+      expect(await tmuxCodexProcess(info, "linux", async () => mapping, async () => processes,
+        (pid) => pid === 30 && ++reads === 1 ? null : births(pid), argv)).toBeNull();
+    });
+    it(`rejects a native candidate replaced after its first birth with ${argvMode} argv`, async () => {
+      let reads = 0;
+      expect(await tmuxCodexProcess(info, "linux", async () => mapping, async () => processes,
+        (pid) => births(pid) + (pid === 30 && ++reads > 1 ? 1 : 0), argv)).toBeNull();
+    });
+    it(`retains a stable native candidate with ${argvMode} argv without inventing argv proof`, async () => {
+      const found = await tmuxCodexProcess(info, "linux", async () => mapping, async () => processes, births, argv);
+      expect(found).toMatchObject({ pid: 30, argvRead: argvMode === "readable" });
+      if (argvMode !== "readable") expect(found!.argv).toEqual(["/opt/bin/codex"]);
+    });
+  }
 
   it.each([10, 11, 20, 30])("rejects PID %s reuse", async (reused) => {
     let count = 0;
