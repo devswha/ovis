@@ -8,6 +8,8 @@ import type { PaneView } from "./actions.ts";
 import { notificationViewForPane, type NotificationTarget } from "./notificationTarget.ts";
 import type { TerminalPeek } from "./terminalPeek.ts";
 import { HISTORY_PROMPTS, type Settings } from "./settings.ts";
+import type { TelemetryViewSource } from "../../shared/telemetry.ts";
+import { usageCounters } from "./usageCounters.ts";
 
 /**
  * The lens a pane opens in: the one picked for it by hand, remembered per pane, else its default
@@ -105,7 +107,13 @@ export function usePaneLens({ settings, selectedPaneId, selectedMachineId, selec
   return { lenses, view, pressPane };
 }
 
-export function usePaneViewPicks({ setViewPicks, setNotificationViewTarget, setTerminalPeek, setLens, setAutoSelected, selectedPaneId, selectedMachineId }: {
+/**
+ * A pane's lens picked by hand. `source` says where a person asked for it, and the switch is counted there
+ * (lib/usageCounters.ts) under the pane's kind of agent (`agentOf`); null is a switch the app makes itself
+ * (find, a recovered message, a new session's first message) and is not counted. The selected pane's pick
+ * to the lens it already shows (`view`) is no switch.
+ */
+export function usePaneViewPicks({ setViewPicks, setNotificationViewTarget, setTerminalPeek, setLens, setAutoSelected, selectedPaneId, selectedMachineId, view, agentOf }: {
   setViewPicks: Dispatch<SetStateAction<ReadonlyMap<string, PaneView>>>;
   setNotificationViewTarget: Dispatch<SetStateAction<NotificationTarget | null>>;
   setTerminalPeek: Dispatch<SetStateAction<TerminalPeek | null>>;
@@ -113,8 +121,12 @@ export function usePaneViewPicks({ setViewPicks, setNotificationViewTarget, setT
   setAutoSelected: Dispatch<SetStateAction<boolean>>;
   selectedPaneId: string | null;
   selectedMachineId: string;
+  view: PaneView;
+  agentOf: (machineId: string, paneId: string) => string | null | undefined;
 }) {
-  const pickView = useCallback((machineId: string, paneId: string, next: PaneView) => {
+  const agentOfRef = useRef(agentOf);
+  agentOfRef.current = agentOf;
+  const remember = useCallback((machineId: string, paneId: string, next: PaneView) => {
     const key = lensOwner(machineId, paneId);
     setViewPicks((current) => current.get(key) === next ? current : new Map(current).set(key, next));
     try {
@@ -124,15 +136,21 @@ export function usePaneViewPicks({ setViewPicks, setNotificationViewTarget, setT
     }
   }, []);
 
+  const pickView = useCallback((machineId: string, paneId: string, next: PaneView, source: TelemetryViewSource | null) => {
+    usageCounters.viewSwitch(next, agentOfRef.current(machineId, paneId), source, machineId);
+    remember(machineId, paneId, next);
+  }, [remember]);
+
   const setView = useCallback(
-    (next: PaneView) => {
+    (next: PaneView, source: TelemetryViewSource | null) => {
       setNotificationViewTarget(null); setTerminalPeek(null);
       setLens((current) => ({ ...current, view: next }));
       setAutoSelected(false);
       if (selectedPaneId === null) return;
-      pickView(selectedMachineId, selectedPaneId, next);
+      if (next !== view) usageCounters.viewSwitch(next, agentOfRef.current(selectedMachineId, selectedPaneId), source, selectedMachineId);
+      remember(selectedMachineId, selectedPaneId, next);
     },
-    [selectedPaneId, selectedMachineId, pickView],
+    [selectedPaneId, selectedMachineId, remember, view],
   );
   return { pickView, setView };
 }
