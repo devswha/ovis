@@ -498,6 +498,35 @@ describe("daily active message", () => {
     }
   });
 
+  test("an event owed across an off goes after the on with what holds then: no settings, no version it replaced", async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), "telemetry-"));
+    dirs.push(stateDir);
+    // 0.4.0 was reported; this server runs 0.4.1, so an update is owed
+    writeFileSync(join(stateDir, "telemetry.json"), JSON.stringify({ install_id: "0b5f3c2e-8a51-4c47-9d0e-3f6a2b1c9e84", enabled: true, notice_seen_at: "2026-10-01T00:00:00.000Z", notice_version: NOTICE_VERSION, reported_version: "0.4.0", settings: null, active: [], usage_after_notice: true, counts: [] }));
+    const { telemetry, sent } = setup({ stateDir, status: 503 });
+    expect((await handleTelemetryRequest(telemetryPost({ settings: settingsSnapshot({ theme: "light" }) }), telemetry)).status).toBe(200);
+    expect(telemetry.status().next).toMatchObject({ event: "update", previous_version: "0.4.0", settings: settingsSnapshot({ theme: "light" }) });
+    expect((await handleTelemetryRequest(telemetryPost({ enabled: false }), telemetry)).status).toBe(200);
+    expect((await handleTelemetryRequest(telemetryPost({ enabled: true }), telemetry)).status).toBe(200);
+    const next = { event: "update", install_id: "0b5f3c2e-8a51-4c47-9d0e-3f6a2b1c9e84", version: "0.4.1", previous_version: null, settings: null };
+    expect(telemetry.status().next).toMatchObject(next);
+    expect(savedFile(stateDir).settings).toBeNull();
+    // the update the receiver refused (503) before the off goes now, as it holds
+    await settled();
+    expect(sent.at(-1)).toMatchObject(next);
+  });
+
+  test("an on with nothing owed names the version running then as what a later update replaced", async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), "telemetry-"));
+    dirs.push(stateDir);
+    writeFileSync(join(stateDir, "telemetry.json"), JSON.stringify({ install_id: "0b5f3c2e-8a51-4c47-9d0e-3f6a2b1c9e84", enabled: true, notice_seen_at: "2026-10-01T00:00:00.000Z", notice_version: NOTICE_VERSION, reported_version: "0.4.1", settings: null, active: [], usage_after_notice: true, counts: [] }));
+    const { telemetry } = setup({ stateDir });
+    telemetry.change({ enabled: false });
+    telemetry.change({ enabled: true });
+    const updated = setup({ stateDir, version: "0.4.2" });
+    expect(updated.telemetry.status().next).toMatchObject({ event: "update", previous_version: "0.4.1" });
+  });
+
   test("(k) an install that was never visited sends no active message", async () => {
     const { telemetry, actives, sent } = setup();
     seen(telemetry);
@@ -1088,16 +1117,18 @@ describe("/api/telemetry", () => {
     expect(JSON.parse(readFileSync(join(stateDir, "telemetry.json"), "utf8")).settings).toBeNull();
     expect(sent).toEqual([]);
 
+    // settings told with an off are not kept: nothing captured while off goes after the on
     const response = await handleTelemetryRequest(post({ enabled: false, notice_seen: true, notice_version: NOTICE_VERSION, settings }), telemetry);
-    expect(await response.json()).toMatchObject({ enabled: false, notice_seen: true, next: { settings } });
-    expect(JSON.stringify(telemetry.status())).not.toContain("private font name");
-    expect(JSON.stringify(telemetry.status())).not.toContain("private reply");
-    expect(JSON.parse(readFileSync(join(stateDir, "telemetry.json"), "utf8")).settings).toEqual(settings);
+    expect(await response.json()).toMatchObject({ enabled: false, notice_seen: true, next: { settings: null } });
+    expect(JSON.parse(readFileSync(join(stateDir, "telemetry.json"), "utf8")).settings).toBeNull();
     await telemetry.report();
     expect(sent).toEqual([]);
 
-    const enabled = await handleTelemetryRequest(post({ enabled: true }), telemetry);
+    // on again, with the page's settings told in the same body: kept, and the install event carries them
+    const enabled = await handleTelemetryRequest(post({ enabled: true, settings }), telemetry);
     expect(await enabled.json()).toMatchObject({ enabled: true, next: { settings } });
+    expect(JSON.stringify(telemetry.status())).not.toContain("private font name");
+    expect(JSON.stringify(telemetry.status())).not.toContain("private reply");
     await telemetry.report();
     expect(sent).toHaveLength(1);
     expect(sent[0]!.settings).toEqual(settings);

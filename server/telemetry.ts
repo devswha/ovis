@@ -168,6 +168,9 @@ interface Saved {
   notice_version: number;
   /** the version the last delivered event was for; null before the first one */
   reported_version: string | null;
+  /** an off came since the last delivered event: the version an update replaced was known before it, so the next
+   * install or update event names none */
+  replaced_forgotten: boolean;
   /** the last browser's complete, allowlisted settings snapshot; null before one has */
   settings: TelemetrySettings | null;
   /** the recorded visit days, ascending, no older than ACTIVE_LATE_DAYS before today */
@@ -291,6 +294,7 @@ function readSaved(file: string, offFile: string): Saved | null {
       notice_seen_at: noticeSeenAt,
       notice_version: NOTICE_VERSION,
       reported_version: typeof value["reported_version"] === "string" ? value["reported_version"] : null,
+      replaced_forgotten: value["replaced_forgotten"] === true,
       settings: seenVersion >= SETTINGS_NOTICE_VERSION ? telemetrySettings(value["settings"]) : null,
       active: noticeSeenAt !== null && value["usage_after_notice"] === true ? active : withoutUsage(active),
       usage_after_notice: true,
@@ -347,7 +351,7 @@ export class Telemetry {
     // a first run's state directory is made before the mark is looked for: one that is not there reads off (offMarked)
     try { mkdirSync(options.stateDir, { recursive: true, mode: 0o700 }); } catch { /* not made: offMarked reads off */ }
     const saved = readSaved(this.file, this.offFile);
-    this.saved = saved ?? { install_id: randomUUID(), enabled: !offMarked(this.offFile), notice_seen_at: null, notice_version: NOTICE_VERSION, reported_version: null, settings: null, active: [], usage_after_notice: true, counts: [] };
+    this.saved = saved ?? { install_id: randomUUID(), enabled: !offMarked(this.offFile), notice_seen_at: null, notice_version: NOTICE_VERSION, reported_version: null, replaced_forgotten: false, settings: null, active: [], usage_after_notice: true, counts: [] };
     if (!saved) {
       try { this.persist(); } catch (error) {
         // the app still starts; telemetry just stays silent
@@ -427,8 +431,10 @@ export class Telemetry {
     const { version } = this.options;
     const reported = this.saved.reported_version;
     if (reported === version) return null;
-    const replaced = reported ?? this.options.previousVersion?.() ?? null;
-    const update = replaced !== null && replaced !== version;
+    const known = reported ?? this.options.previousVersion?.() ?? null;
+    const update = known !== null && known !== version;
+    // after an off the version it replaced is a fact from before it: an update that names none, as one from before telemetry
+    const replaced = this.saved.replaced_forgotten ? null : known;
     return {
       event: update ? "update" : "install",
       install_id: this.saved.install_id,
@@ -467,10 +473,12 @@ export class Telemetry {
     // visit day and count day not yet delivered
     if (clean.enabled === false || (clean.enabled === true && !this.saved.enabled)) this.forgetUnsent();
     if (clean.enabled !== undefined) this.saved.enabled = clean.enabled;
+    // on again with nothing owed: the version running now is what a later update replaces, known at the on
+    if (clean.enabled === true && this.saved.reported_version === this.options.version) this.saved.replaced_forgotten = false;
     if (clean.notice_seen && this.saved.notice_seen_at === null) this.saved.notice_seen_at = new Date(this.now()).toISOString();
-    // kept for the next install/update event, and only once the notice that names it was seen (the page sends it with its
-    // acknowledgement); telling it sends nothing by itself
-    if (clean.settings !== undefined && this.saved.notice_seen_at !== null) this.saved.settings = clean.settings;
+    // kept for the next install/update event, only once the notice that names it was seen (the page sends it with its
+    // acknowledgement) and while the counts are on; telling it sends nothing by itself
+    if (clean.settings !== undefined && this.saved.notice_seen_at !== null && this.saved.enabled) this.saved.settings = clean.settings;
     this.persist();
     // and again after: an on from another server between the two writes cannot leave this off without its mark
     if (clean.enabled === false) this.markOff();
@@ -494,12 +502,15 @@ export class Telemetry {
   }
 
   /**
-   * Every day kept and not delivered yet, gone: visit days and count days. This version's install or update event is no
-   * record of a day: it says what runs now, so it still goes once the counts are on (with the settings told since).
+   * Everything captured and not delivered yet, gone: visit days, count days and the settings snapshot. This version's
+   * install or update event may still go once the counts are on, built from what holds then: no settings until a page
+   * tells them again, and no version it replaced (known only from before the off).
    */
   private forgetUnsent(): void {
     this.saved.active = [];
     this.saved.counts = [];
+    this.saved.settings = null;
+    this.saved.replaced_forgotten = true;
   }
 
   /** Whether a browser visit is recorded at all: never while the switch is off or the environment forbids sending. */
@@ -810,6 +821,7 @@ export class Telemetry {
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         this.refresh();
         this.saved.reported_version = event.version;
+        this.saved.replaced_forgotten = false;
         this.persist();
       } catch (error) {
         if (!abort.signal.aborted) console.error(`telemetry: the ${event.event} event was not delivered (${error instanceof Error ? error.message : String(error)})`);
