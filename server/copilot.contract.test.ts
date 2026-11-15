@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, expect, it, onTestFinished, spyOn } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
@@ -78,14 +79,16 @@ async function startFixture(pane: string, session: string, flags = "") {
 beforeAll(async () => {
   if (process.platform !== "linux") return;
   for (const session of [id, other]) mkdirSync(join(home, "session-state", session), { recursive: true });
-  writeFileSync(executable, `import { openSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, renameSync } from "node:fs";
+  // herdr takes a `node <script>` process for the script's agent only while the process is called node, and Node 24 calls
+  // its main thread MainThread. Asked once here: where node is called node, the stand-in is written as it always was; only
+  // elsewhere does it start by naming itself copilot, as the real CLI's binary is called (the name alone: its command line
+  // stays as typed, which process.title would overwrite). The handoff child runs the same file.
+  const nodeName = spawnSync("node", ["-e", "process.stdout.write(require('node:fs').readFileSync('/proc/self/comm', 'utf8'))"], { encoding: "utf8" }).stdout.trim();
+  const nameSelf = nodeName === "node" ? "" : `import { writeFileSync as nameStandIn } from "node:fs";\nnameStandIn("/proc/self/comm", "copilot");\n`;
+  writeFileSync(executable, `${nameSelf}import { openSync, mkdirSync, writeFileSync, appendFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
-// herdr takes a \`node <script>\` process for the script's agent only while the process is called node. Node 24 calls its
-// main thread MainThread: there the stand-in takes the name copilot, as the real CLI's binary has (the name alone: its
-// command line stays as typed; process.title would overwrite it). Where it is called node, it stays as it is.
-if (readFileSync("/proc/self/comm", "utf8").trim() !== "node") writeFileSync("/proc/self/comm", "copilot");
 const home = process.env.COPILOT_HOME;
 const hold = (id) => { const dir = join(home, "session-state", id); mkdirSync(dir, { recursive: true }); openSync(join(dir, \`inuse.\${process.pid}.hold\`), "w"); };
 const lifecycle = process.argv.includes("--lifecycle");
