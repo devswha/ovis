@@ -264,7 +264,7 @@ describe("usage counters", () => {
     // nothing selected to split, close or add a tab beside: the key or row did nothing
     expect([actionUse("split", "shortcut", here({ split: false })), actionUse("close_pane", "palette", here({ close_pane: false })), actionUse("new_tab", "shortcut", here({ new_tab: false }))]).toEqual([null, null, null]);
     // another PC's pane: those three are not counted; the rest are the app's own, wherever the pane is
-    expect([actionUse("split", "button", here({}, "pc-2")), actionUse("close_pane", "menu", here({}, "pc-2")), actionUse("new_tab", "shortcut", here({}, "pc-2"))]).toEqual([null, null, null]);
+    expect([actionUse("split", "button", here({}, "pc-2")), actionUse("close_pane", "menu", here({}, "pc-2")), actionUse("new_tab", "shortcut", here({}, "pc-2")), actionUse("files", "menu", here({}, "pc-2"))]).toEqual([null, null, null, null]);
     expect(actionUse("sidebar", "shortcut", here({}, "pc-2"))).toBe("sidebar_by_shortcut");
   });
 
