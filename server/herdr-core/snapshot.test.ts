@@ -485,28 +485,6 @@ describe("OpenCode sessions", () => {
   });
 });
 
-describe("pi names", () => {
-  it("prefers the session name, then hc's name, then the cleaned title", () => {
-    const pi = { status: { app: "pi", state: "idle" }, title: "π - agents-app" };
-    const snapshot = buildSnapshot([
-      terminal("t1", { ...pi, name: "general" }),
-      terminal("t2", { ...pi, name: "general" }),
-      terminal("t3", pi),
-      terminal("t4", { ...pi, labels: { "ovis.pane": "My label" } }),
-      terminal("t5", { title: "π - not-pi" }),
-    ], null, "0.1.19", undefined, undefined, undefined, coreHost(false, "linux"),
-    (entry) => ["t1", "t4"].includes(entry.address) ? "VPS off herdr" : null);
-    expect(snapshot.panes.map((pane) => [pane.label, pane.title, pane.terminal_title])).toEqual([
-      [null, "VPS off herdr", "π - agents-app"],
-      [null, "general", "π - agents-app"],
-      [null, "agents-app", "π - agents-app"],
-      ["My label", "VPS off herdr", "π - agents-app"],
-      [null, "π - not-pi", "π - not-pi"],
-    ]);
-    expect(snapshot.agents.map((agent) => agent.title)).toEqual(["VPS off herdr", "general", "agents-app", "VPS off herdr"]);
-  });
-});
-
 describe("keyBytes", () => {
   it("types printable characters, Enter, Tab, Backspace, and Alt or Shift on a character hc has no key for; leaves the rest to hc's encoder", () => {
     expect(["x", "A", "한", " ", "Enter", "tab", "Backspace", "plus", "shift+plus", "alt+|", "alt+shift+plus"].map(keyBytes))

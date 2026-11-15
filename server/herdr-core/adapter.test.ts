@@ -129,7 +129,7 @@ for (const method of ["call", "open"] as const) {
   });
 }
 /** `machine`: the adapter of that other machine's server (machine-scope.ts), as machine-entry.ts starts it; `pc`: the PC it runs on, in place of this one */
-async function setup(terminals: HcTerminal[], extra: Record<string, Handler> = {}, observeSeen?: SeenObserver, machine?: string, pc: Pick<AdapterOptions, "platform" | "processTable" | "piName" | "terminalEnv"> = {}) {
+async function setup(terminals: HcTerminal[], extra: Record<string, Handler> = {}, observeSeen?: SeenObserver, machine?: string, pc: Pick<AdapterOptions, "platform" | "processTable" | "terminalEnv"> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ovis-hc-"));
   const socket = join(dir, "herdr.sock");
   const cores: FakeCore[] = [];
@@ -163,24 +163,6 @@ async function setup(terminals: HcTerminal[], extra: Record<string, Handler> = {
 }
 
 describe("herdr-core adapter", () => {
-  it("uses the active pi session's name in snapshots, pane.get and agent.get", async () => {
-    let name: string | null = "VPS off herdr";
-    const piName = jest.fn(async () => name);
-    const records = [terminal("t1", { name: "general", title: "π - agents-app", status: { app: "pi", state: "idle" } })];
-    const { socket } = await setup(records, {}, undefined, undefined, { piName });
-    expect((await sessionSnapshot(socket)).agents[0]?.title).toBe(name);
-    expect((await paneGet("t1", socket)).title).toBe(name);
-    expect((await herdrRpc<{ agent: { title: string } }>("agent.get", { target: "t1" }, socket)).agent.title).toBe(name);
-    name = "Renamed session";
-    expect((await sessionSnapshot(socket)).panes[0]?.title).toBe(name);
-    name = null;
-    expect((await sessionSnapshot(socket)).panes[0]?.title).toBe("general");
-    const remoteName = jest.fn(async () => "This PC's unrelated pi");
-    const remote = await setup(records, {}, undefined, "vps", { piName: remoteName });
-    await sessionSnapshot(remote.socket);
-    expect(remoteName).not.toHaveBeenCalled();
-  });
-
   it("refuses a second adapter on a live socket and leaves the first serving", async () => {
     const { socket, hc } = await setup([terminal("t1")]);
     await sessionSnapshot(socket);

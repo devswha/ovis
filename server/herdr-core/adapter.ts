@@ -10,9 +10,8 @@ import { descendantProcesses, type ProcessRow, windowsProcessTable } from "../wi
 import { type HcConnection, HcError } from "./connection.ts";
 import { foreignLayout, leaves, neighbour, OVIS_LAYOUT_DOC, type OvisLayout, type PaneDirection, resizeLeaf, setRatio, splitLeaf, swapLeaves, type TabLayout } from "./layout-doc.ts";
 import { paneSession, titleStatus } from "../agent-identity.ts";
-import { piSessionName } from "../pi.ts";
-import { PiSessionReader } from "../pi-session-metadata.ts";
-import { agentInfoOf, agentOf, agentOfStatus, type CoreHost, coreHost, agentStatusOf, foregroundOf, type HcForeground, buildSnapshot, type FirstTurn, keptLayout, opencodeRecords, type SessionOf, reportedFacts, type HcStatus, type HcTerminal, hcKeyName, HERDR_PROTOCOL, hiddenTerminal, isRecord, keyBytes, LAYOUT_DOC, onOtherMachine, OTHER_WORKSPACE_ID, PANE_NAME_LABEL, processInfoOf, SEEN_LABEL, shownStatusOf, SPACE_LABEL, TAB_LABEL, TAB_NAME_LABEL, WORKSPACE_NAME_LABEL } from "./snapshot.ts";
+import { hiddenTerminal } from "../fork/core-terminals.ts";
+import { agentInfoOf, agentOf, agentOfStatus, type CoreHost, coreHost, agentStatusOf, foregroundOf, type HcForeground, buildSnapshot, type FirstTurn, keptLayout, opencodeRecords, type SessionOf, reportedFacts, type HcStatus, type HcTerminal, hcKeyName, HERDR_PROTOCOL, isRecord, keyBytes, LAYOUT_DOC, onOtherMachine, OTHER_WORKSPACE_ID, PANE_NAME_LABEL, processInfoOf, SEEN_LABEL, shownStatusOf, SPACE_LABEL, TAB_LABEL, TAB_NAME_LABEL, WORKSPACE_NAME_LABEL } from "./snapshot.ts";
 import { checkoutHolding, defaultCheckoutPath, factsOf, git, gitDirIdentity, labeledWorktree, realPath, type Checkout, type Repository, repositoryOf, WORKTREE_LABEL, WorktreeError, worktreeFolder, worktreeLabel } from "./worktrees.ts";
 import type { AgentStatus, SessionSnapshot, WorkspaceWorktreeInfo } from "../../shared/herdr-api.generated.ts";
 import type { WorktreeInfo } from "../herdr/client.ts";
@@ -115,8 +114,6 @@ export interface AdapterOptions {
   platform?: NodeJS.Platform;
   /** this PC's process table, read afresh within `timeoutMs` each time; a test stands in for it */
   processTable?: (timeoutMs: number) => Promise<ProcessRow[]>;
-  /** The active pi session's name; a test stands in for the local extension and session store. */
-  piName?: (terminal: HcTerminal) => Promise<string | null>;
   /** what every shell the adapter starts runs in, over the core's own and under a call's `env` (terminal-env.ts) */
   terminalEnv?: () => Promise<Record<string, string>>;
 }
@@ -206,8 +203,7 @@ export async function startHerdrCoreAdapter(hc: HcConnection, socketPath: string
       sessionLabels.forget(address);
     }
   };
-  const piReader = new PiSessionReader();
-  const answers = createAnswers(hc, firstTurn, forgetTurns, options, piReader, sessionOf);
+  const answers = createAnswers(hc, firstTurn, forgetTurns, options, sessionOf);
   const listener = Bun.listen<ConnectionState>({
     unix: socketPath,
     socket: {
@@ -248,7 +244,6 @@ export async function startHerdrCoreAdapter(hc: HcConnection, socketPath: string
   return {
     socketPath,
     stop: () => {
-      piReader.close();
       sessionLabels.stop();
       listener.stop(true);
       rmSync(socketPath, { force: true });
@@ -456,7 +451,7 @@ const CHECKOUT_FACTS_MS = 5_000;
 /** How long a snapshot waits on git for one folder's facts before drawing it without them. */
 const CHECKOUT_FACTS_WAIT_MS = 2_000;
 
-function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (live: ReadonlySet<string>) => void, options: AdapterOptions, piReader: PiSessionReader, sessionOf?: SessionOf): (request: Request) => Promise<Reply> {
+function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (live: ReadonlySet<string>) => void, options: AdapterOptions, sessionOf?: SessionOf): (request: Request) => Promise<Reply> {
   const platform = options.platform ?? process.platform;
   const processTable = options.processTable ?? windowsProcessTable;
   /** A Windows pane's programs are read off this PC's process table, which says nothing of another machine's. */
@@ -511,21 +506,7 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
     ]);
     forgetTurns(new Set(list.terminals.map((terminal) => terminal.address)));
     const host = coreHost(options.otherMachine, platform);
-    const piNames = new Map<string, string | null>();
-    // Never ask this PC's extension or filesystem for another machine's sessions. Supply
-    // process facts directly: calling agent.get through our own adapter here would recurse.
-    if (!options.otherMachine) await Promise.all(list.terminals.filter((entry) => agentOf(entry, host) === "pi").map(async (entry) => {
-      const name = options.piName ? await options.piName(entry) : await piSessionName(entry.address, piReader, {
-        agent: { agent: "pi" },
-        processes: processInfoOf(entry).foreground_processes ?? [],
-        processesAfter: async () => {
-          const fresh = await terminal(entry.address).catch(() => null);
-          return fresh ? processInfoOf(fresh).foreground_processes ?? [] : null;
-        },
-      });
-      piNames.set(entry.address, name);
-    }));
-    const shown = buildSnapshot(list.terminals, doc.value, hello.version, firstTurn, ovis.value, sessionOf, host, (entry) => piNames.get(entry.address) ?? null);
+    const shown = buildSnapshot(list.terminals, doc.value, hello.version, firstTurn, ovis.value, sessionOf, host);
     // herdr reports every workspace's checkout from git; hc has none, so a workspace no label claims (one
     // the app arranges, or a checkout Ovis did not open) gets git's facts for its first pane's folder.
     // Clients draw and act on these as on herdr's: removing a checkout asks git again first. No label is
@@ -1446,7 +1427,7 @@ async function subscribe(hc: HcConnection, socket: Socket<ConnectionState>, requ
     known.set(record["address"], { status, front: foregroundOf(record["foreground"]), cwd: typeof record["cwd"] === "string" ? record["cwd"] : undefined, argv: Array.isArray(record["argv"]) && record["argv"].every((word) => typeof word === "string") ? record["argv"] : undefined, pid: typeof record["pid"] === "number" ? record["pid"] : null, title: typeof record["title"] === "string" ? record["title"] : null, turn, first, labels, shown: shownStatusOf(status, turn, labels, first) });
     observeSeen?.(record["address"], turn, labels);
   };
-  /** a hidden terminal (snapshot.ts `hiddenTerminal`) is in no snapshot, so no event about it is told either */
+  /** a hidden terminal is in no snapshot, so no event about it is told either */
   const hidden = (paneId: string | undefined): boolean => paneId !== undefined && hiddenTerminal(known.get(paneId)?.labels);
   const tell = (paneId: string, status: HcStatus | null, shown: AgentStatus) => {
     if (hidden(paneId)) return;

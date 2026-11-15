@@ -1,6 +1,6 @@
 import type { AgentInfo, AgentSessionInfo, AgentStatus, PaneInfo, PaneLayoutSnapshot, PaneProcessInfo, SessionSnapshot, TabInfo, WorkspaceInfo } from "../../shared/herdr-api.generated.ts";
 import { HC_OTHER_WORKSPACE_ID } from "../../shared/machines.ts";
-import { stripPaneChrome } from "../../shared/pane-title.ts";
+import { hiddenTerminal } from "../fork/core-terminals.ts";
 import type { HerdrPane } from "../../shared/protocol.ts";
 import type { Foreground, Status, Terminal } from "./hc-api.generated.ts";
 import { clampRatio, type Grouping, type LayoutNode, LAYOUT_AREA, parseOvisLayout, place, reconcile, sideBySide } from "./layout-doc.ts";
@@ -35,15 +35,6 @@ export const WORKSPACE_NAME_LABEL = "ovis.workspace";
 export const TAB_NAME_LABEL = "ovis.tab";
 /** The name a person gave a pane, on a core whose layout Ovis keeps: the terminal's own name otherwise. */
 export const PANE_NAME_LABEL = "ovis.pane";
-/**
- * `ovis.view=work` marks a terminal that runs in hc for something other than coding (a phone assistant
- * the gateway keeps). Ovis shows it nowhere: not in the snapshot, nor in the events and alerts built on
- * it. It keeps running, and `hc attach` still reaches it. Only the exact value hides one.
- */
-export const VIEW_LABEL = "ovis.view";
-export function hiddenTerminal(labels: Readonly<Record<string, string>> | undefined): boolean {
-  return labels?.[VIEW_LABEL] === "work";
-}
 /**
  * The last turn a person looked at, shared by every Herdr client (herdr-app docs/labels.md): an
  * agent at rest whose turn is past it is done, one at or below it idle. Missing, the program's own
@@ -170,8 +161,6 @@ export function opencodeRecords(records: unknown): string[] {
 
 /** The agent session a terminal shows, as herdr's OpenCode integration reports it (adapter.ts `sessionOf`). */
 export type SessionOf = (terminal: HcTerminal) => AgentSessionInfo | null;
-/** The name of the active pi session, resolved before building the snapshot. */
-export type PiNameOf = (terminal: HcTerminal) => string | null;
 
 const STATUS_RANK: Record<string, number> = { blocked: 4, working: 3, done: 2, idle: 1 };
 
@@ -256,11 +245,7 @@ function besides(root: LayoutNode | null, count: number, address: string): Layou
  * its first terminal's folder, or its number. A space or tab id seen before, or empty, is skipped; one
  * with no live terminal stays a place for a labeled terminal and shows only once it holds one.
  */
-function groups(terminals: readonly HcTerminal[], layout: unknown, host: CoreHost = coreHost(false)): Group[] {
-  // Generated names are not user-assigned tab labels: the Agents list must let pi's
-  // resolved session title win. Explicit Ovis tab labels still name the row.
-  const unplacedTabLabel = (terminal: HcTerminal): string => terminal.labels?.[TAB_NAME_LABEL]
-    || (agentOf(terminal, host) === "pi" ? "" : terminal.name || terminal.address);
+function groups(terminals: readonly HcTerminal[], layout: unknown): Group[] {
   // no Herdr app arranges this core: the tabs labels make are Ovis's to lay out
   const own = layout === null || layout === undefined;
   // the one place a hidden terminal (hiddenTerminal) leaves: every list, count and alert reads this projection
@@ -357,7 +342,7 @@ function groups(terminals: readonly HcTerminal[], layout: unknown, host: CoreHos
       let tabId = `${home.group.id}:${terminal.address}`;
       for (let n = 2; ids.has(tabId); n++) tabId = `${home.group.id}:${terminal.address}:${n}`;
       ids.add(tabId);
-      const tab: ShownTab = { id: tabId, label: unplacedTabLabel(terminal), terminals: [terminal], root: null, kept: false };
+      const tab: ShownTab = { id: tabId, label: terminal.labels?.[TAB_NAME_LABEL] || terminal.name || terminal.address, terminals: [terminal], root: null, kept: false };
       let at = home.group.tabs.indexOf(home.tab) + 1;
       while (at < home.group.tabs.length && below(home.group.tabs[at]!, home.tab)) at++;
       home.group.tabs.splice(at, 0, tab);
@@ -390,7 +375,7 @@ function groups(terminals: readonly HcTerminal[], layout: unknown, host: CoreHos
     shown.push({
       id: OTHER_WORKSPACE_ID,
       label: "Other terminals",
-      tabs: rest.map((terminal) => ({ id: `${OTHER_WORKSPACE_ID}:${terminal.address}`, label: unplacedTabLabel(terminal), terminals: [terminal], root: null, kept: false })),
+      tabs: rest.map((terminal) => ({ id: `${OTHER_WORKSPACE_ID}:${terminal.address}`, label: terminal.labels?.[TAB_NAME_LABEL] || terminal.name || terminal.address, terminals: [terminal], root: null, kept: false })),
     });
   }
   return shown;
@@ -414,15 +399,9 @@ export function reportedFacts(status: HcStatus | null | undefined): Pick<HerdrPa
   };
 }
 
-function paneOf(terminal: HcTerminal, workspaceId: string, tabId: string, shown: ReadonlySet<string>, host: CoreHost, firstTurn?: FirstTurn, sessionOf?: SessionOf, piNameOf?: PiNameOf): HerdrPane {
+function paneOf(terminal: HcTerminal, workspaceId: string, tabId: string, shown: ReadonlySet<string>, host: CoreHost, firstTurn?: FirstTurn, sessionOf?: SessionOf): HerdrPane {
   const cwd = terminal.foreground?.cwd ?? terminal.cwd;
   const session = sessionOf?.(terminal) ?? null;
-  const agent = agentOf(terminal, host);
-  // herdr keeps effective metadata separate from the raw OSC title. A pi without a
-  // session name falls back to its terminal name, then the title without pi's chrome.
-  const title = agent === "pi"
-    ? piNameOf?.(terminal)?.trim() || terminal.name?.trim() || stripPaneChrome(terminal.title ?? "", agent).trim() || null
-    : terminal.title ?? null;
   return {
     ...(session ? { agent_session: session } : {}),
     ...(terminal.parent && terminal.parent !== terminal.address && shown.has(terminal.parent) ? { parent_pane_id: terminal.parent } : {}),
@@ -434,13 +413,13 @@ function paneOf(terminal: HcTerminal, workspaceId: string, tabId: string, shown:
     grid: { cols: terminal.cols, rows: terminal.rows },
     workspace_id: workspaceId,
     tab_id: tabId,
-    agent,
+    agent: agentOf(terminal, host),
     agent_status: shownStatusOf(terminal.status, terminal.turn, terminal.labels, firstTurn?.(terminal)),
     cwd,
     foreground_cwd: cwd,
-    title,
+    title: terminal.title ?? null,
     terminal_title: terminal.title ?? null,
-    label: terminal.labels?.[PANE_NAME_LABEL] || (agent === "pi" ? null : terminal.name) || null,
+    label: terminal.labels?.[PANE_NAME_LABEL] || terminal.name || null,
     focused: false,
     revision: terminal.turn ?? 0,
   };
@@ -519,13 +498,13 @@ function arranged(placed: Group[], ovisDoc: unknown): { groups: Group[]; zoomed:
  * cell, and a grid read back as the pane made panes shrink each other (#2812). `host`: where the
  * core's terminals run (agentOf).
  */
-export function buildSnapshot(terminals: readonly HcTerminal[], layout: unknown, version: string, firstTurn?: FirstTurn, ovisDoc?: unknown, sessionOf?: SessionOf, host: CoreHost = coreHost(false), piNameOf?: PiNameOf): SessionSnapshot {
+export function buildSnapshot(terminals: readonly HcTerminal[], layout: unknown, version: string, firstTurn?: FirstTurn, ovisDoc?: unknown, sessionOf?: SessionOf, host: CoreHost = coreHost(false)): SessionSnapshot {
   const workspaces: WorkspaceInfo[] = [];
   const tabs: TabInfo[] = [];
   const panes: PaneInfo[] = [];
   const layouts: PaneLayoutSnapshot[] = [];
   const own = layout === null || layout === undefined;
-  const grouped = groups(terminals, layout, host);
+  const grouped = groups(terminals, layout);
   const { groups: placed, zoomed } = own ? arranged(grouped, ovisDoc) : { groups: grouped, zoomed: new Map<string, string>() };
   const shown = new Set(placed.flatMap((group) => group.tabs.flatMap((tab) => tab.terminals.map((terminal) => terminal.address))));
   for (const [index, group] of placed.entries()) {
@@ -533,7 +512,7 @@ export function buildSnapshot(terminals: readonly HcTerminal[], layout: unknown,
     for (const [tabIndex, tab] of group.tabs.entries()) {
       const byAddress = new Map(tab.terminals.map((terminal) => [terminal.address, terminal]));
       const cut = place(tab.root ?? sideBySide(tab.terminals.map((terminal) => terminal.address)));
-      const tabPanes = cut.panes.map(({ pane_id }) => paneOf(byAddress.get(pane_id)!, group.id, tab.id, shown, host, firstTurn, sessionOf, piNameOf));
+      const tabPanes = cut.panes.map(({ pane_id }) => paneOf(byAddress.get(pane_id)!, group.id, tab.id, shown, host, firstTurn, sessionOf));
       groupPanes.push(...tabPanes);
       const alone = zoomed.get(tab.id);
       const focused = alone ?? tabPanes[0]!.pane_id;

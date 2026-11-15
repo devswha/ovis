@@ -81,7 +81,7 @@ A small import-and-call is possible for a self-contained component, not for ever
 2. `src/components/Composer.tsx` retains the Pi model/reasoning menu and a few branch/context props. Their lifecycle is coupled to existing metadata, send state and menus. Rendering/context components and CSS are extracted; the remaining state was not rewritten.
 3. `src/components/ChatView.tsx` and `src/components/ChatTimeline.tsx` retain live-row identity, read reconciliation, footer/scroll anchoring and transcript-layout fixes. Compact runs, speech, motion and reveal helpers are extracted. Moving the remaining timeline changes would require replacing the upstream reader/virtualizer, not a behavior-preserving module move. The upstream stopped-send effect and selection are restored verbatim, including their source-level test.
 4. Machine connection/retry/update code, source-bundle handling, herdr-core adapters, Pi transcript/receipt parsing, native notifications and terminal lifecycle fixes retain their existing upstream integration and tests. These are portable correctness changes, not fork visual defaults. They need separate upstream correctness PRs; no new transport, cache, session ownership or RPC mechanism was invented here.
-5. `server/herdr-core/snapshot.ts` retains explicit `ovis.view=work` projection and related adapter behavior. The task's description of Coding/Work grouping does not correspond to a separate browser grouping implementation at the starting commit. Hiding a deliberately labelled runtime workspace is a server projection, not a device-local row preference. Per-device projection would require a new wire contract, so this code and its tests were left intact rather than adding an unused toggle.
+5. `server/fork/core-terminals.ts` owns `ovis.view=work` hiding. `server/herdr-core/snapshot.ts` imports and calls its predicate in the live projection; `server/herdr-core/adapter.ts` imports and calls it in event filtering. There is no separate Coding/Work browser grouping. Pi session naming is dropped: snapshots use upstream terminal names/titles and never read Pi session metadata for tab names. The shared metadata reader remains for session history.
 6. The native Android call/notification changes and packaging files are outside this browser/server move. Their device permissions and lifecycle require native checks. This work does not claim to have run Android, Windows or macOS validation.
 7. Existing convention-test adaptations, cross-module settings migrations, shared preference/wire fields and fixture helpers remain where their upstream owners enforce them. Generated files, tracked `.rej` files and `src/lib/fixtures-input-rows/**` recordings are unchanged.
 
@@ -90,6 +90,21 @@ A small import-and-call is possible for a self-contained component, not for ever
 Upstream `scripts/*-regression.ts` and `scripts/*-qa.ts` previously adapted to fork-only controls were restored to the merge-base versions. Fork preference/migration coverage lives in `scripts/fork-preferences-regression.ts`. `scripts/fork-features-regression.ts` exercises read-aloud playback controls, the Computer viewer/settings/keyboard, pull-request checkout/reopening and Pi voice start/mute/end, plus the fresh-install disabled paths. Both are registered with the browser runner. Pure migration, model-mark, compact-run, branch-storage and chat-presentation regressions live under `src/fork/`.
 
 The browser runner uses the CI image and a `git ls-files` tar, isolated test sessions and temporary state. Standalone upstream QA scripts absent from the serial lane are registered only inside the disposable verification snapshot, not added to normal CI. The SSH-profile QA needs its external SSH fixture and is explicitly excluded from the local parallel batch. See the validation appendix for exact scope and results.
+
+## One-line hook extraction (PR #84 follow-up)
+
+Counts compare against `upstream/main` with `git diff --shortstat upstream/main...HEAD -- <file>`; `+/-` means insertions/deletions. This table is updated alongside each extraction. The first row is complete; the browser rows still show their starting counts.
+
+| Upstream file | Before +/− | After +/− | Fork hook |
+| --- | --- | --- | --- |
+| `server/herdr-core/adapter.ts` | +30/−6 | +8/−3 | Import and predicate call for event hiding; existing subscription bookkeeping remains |
+| `server/herdr-core/snapshot.ts` | +51/−12 | +3/−1 | Import and predicate call in live-terminal projection |
+| `src/App.tsx` | +65/−57 | +65/−57 | Pending extraction |
+| `src/components/Composer.tsx` | +101/−39 | +101/−39 | Pending extraction |
+| `src/components/InboxList.tsx` | +5/−5 | +5/−5 | Pending extraction |
+| `src/lib/api.ts` | +30/−7 | +30/−7 | Pending extraction |
+| `src/lib/notifications.ts` | +27/−12 | +27/−12 | Pending extraction |
+| `src/lib/useNotifications.ts` | +12/−3 | +12/−3 | Pending extraction |
 
 ## Size measurement
 

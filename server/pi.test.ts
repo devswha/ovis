@@ -4,9 +4,8 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { defaultPiSessionDir, piExtensionCommands, piPaneAgentDirs, piSessionName, piTranscriptInStore, piTranscriptPath, piUnwrittenHeaderId, unwrittenSession } from "./pi.ts";
+import { defaultPiSessionDir, piExtensionCommands, piPaneAgentDirs, piTranscriptInStore, piTranscriptPath, piUnwrittenHeaderId, unwrittenSession } from "./pi.ts";
 import { piAgentDir } from "./pi-models.ts";
-import { PiSessionReader } from "./pi-session-metadata.ts";
 import { transcriptPage, piTranscriptImage } from "./conversation.ts";
 import { turnStarts } from "./transcript-turns.ts";
 import type { ConversationTurn } from "../shared/protocol.ts";
@@ -768,21 +767,6 @@ it.skipIf(process.platform === "win32")("reads the session the pane's pi names t
   const options = { agent, processes, processesAfter: async () => processes, environOf: () => [`PI_CODING_AGENT_DIR=${profile}`], home: root };
   try {
     expect(await piTranscriptPath("core-pane", undefined, options)).toEqual({ path: written, agentDir: profile, identity: expect.any(String) });
-    const reader = new PiSessionReader();
-    try {
-      appendFileSync(written, JSON.stringify({ type: "message", message: { role: "user", content: "Not a session name" } }) + "\n");
-      expect(await piSessionName("core-pane", reader, options)).toBeNull();
-      appendFileSync(written, JSON.stringify({ type: "session_info", name: "VPS off herdr" }) + "\n");
-      expect(await piSessionName("core-pane", reader, options)).toBe("VPS off herdr");
-      appendFileSync(written, JSON.stringify({ type: "session_info", name: "Renamed session" }) + "\n");
-      expect(await piSessionName("core-pane", reader, options)).toBe("Renamed session");
-      expect(await piSessionName("core-pane", reader, { ...options, processesAfter: async () => null })).toBeNull();
-      state = { pid: 831, sessionFile: written };
-      expect(await piSessionName("core-pane", reader, options)).toBeNull();
-      state = { pid: 830, sessionFile: written };
-      appendFileSync(written, JSON.stringify({ type: "session_info", name: " " }) + "\n");
-      expect(await piSessionName("core-pane", reader, options)).toBeNull();
-    } finally { reader.close(); await reader.idle(); }
     // a session pi has named and not written yet
     const fresh = join(sessions, "2026-11-05T09-01-00-000Z_1b0e7f1c-3c62-4a51-9b5e-5d1f2a3b4c5d.jsonl");
     state = { pid: 830, sessionFile: fresh };

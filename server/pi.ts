@@ -1,4 +1,4 @@
-import { closeSync, constants, fstatSync, lstatSync, open, readFileSync, realpathSync, type Stats } from "node:fs";
+import { lstatSync, readFileSync, realpathSync, type Stats } from "node:fs";
 import { lstat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,7 +10,6 @@ import { agentGet, paneProcessInfo } from "./herdr/client.ts";
 import { runsAgent } from "./gjc-runtime.ts";
 import { processEnviron } from "./omo.ts";
 import { piAgentDir } from "./pi-models.ts";
-import type { PiSessionReader } from "./pi-session-metadata.ts";
 import { authorizedTranscript, unwrittenSession } from "./transcript-store.ts";
 import { source as piCatalog } from "./skills/pi.ts";
 import { userHome } from "./user-home.ts";
@@ -349,33 +348,6 @@ export async function piTranscriptPath(
   if (authorized !== null) return { path: authorized.path, agentDir, identity: authorized.identity };
   const unwritten = unwrittenSession(reported, matches[0]!);
   return unwritten === null ? null : { unwritten };
-}
-
-/**
- * The active session's own name, not its first prompt or OSC title. Reuse the transcript's
- * process/socket/store checks and the bounded, stat-keyed metadata reader used by session history.
- * No name is safer than guessing a different session when pi switches or its file is busy.
- */
-export async function piSessionName(paneId: string, reader: PiSessionReader, options: PiTranscriptOptions): Promise<string | null> {
-  try {
-    const session = await piTranscriptPath(paneId, undefined, options);
-    if (!session || !("path" in session)) return null;
-    const label = await reader.read(async (checkActive) => {
-      const fd = await new Promise<number>((done, fail) => open(session.path,
-        constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOFOLLOW ?? 0),
-        (error, fd) => error ? fail(error) : done(fd)));
-      try {
-        checkActive();
-        const stat = fstatSync(fd, { bigint: true });
-        if (!stat.isFile() || `${stat.dev}:${stat.ino}` !== session.identity || realpathSync(session.path) !== session.path) {
-          closeSync(fd);
-          return null;
-        }
-        return fd;
-      } catch (error) { closeSync(fd); throw error; }
-    }, performance.now() + reader.listingDeadlineMs, { path: session.path, scope: paneId });
-    return label?.title?.trim() || null;
-  } catch { return null; }
 }
 
 /**
