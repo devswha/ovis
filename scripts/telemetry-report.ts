@@ -2,7 +2,7 @@
  * The telemetry counts of telemetry/README.md ("Reading the counts") as one markdown report, plus
  * daily active installs per country for the last 28 days, and the last 7 finished days' button counts
  * (the counts table): for each counter and width, the share of installs that used it and the median
- * range among those that did, never a mean, beside the share that were shown the control at all.
+ * range of the middle install among those that did, never a mean, beside the share that were shown the control at all.
  *
  *   bun scripts/telemetry-report.ts --out <file.md> [--html <file.html>]
  *
@@ -11,6 +11,7 @@
  */
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { TELEMETRY_HARNESSES } from "../shared/telemetry.ts";
 
 export const COUNTS_INSTALLS = "Installs that sent button counts, per width, the last 7 finished days";
 export const COUNTS_BUCKETS = "Button counts per width: installs that used each, and days per range, the last 7 finished days";
@@ -19,7 +20,10 @@ export const SWITCHES_BY_AGENT = "Chat/terminal switches by kind of agent and wi
 export const SWITCH_DAYS_BY_VERSION = "Install-days with a chat/terminal switch, per version, the last 7 finished days";
 export const COUNTER_SHARES = "Button counts per width: share of installs that used each, and the median range of a day it was used";
 
-export const QUERIES: ReadonlyArray<{ title: string; sql: string }> = [
+export const COUNTS_PER_INSTALL = "Each install's ranges per counter and width (read for the middle install, never printed)";
+
+/** `hidden`: read for a derived table, not printed itself */
+export const QUERIES: ReadonlyArray<{ title: string; sql: string; hidden?: boolean }> = [
   { title: "New installs per week", sql: "SELECT strftime('%Y-%W', day) AS week, COUNT(*) FROM events WHERE event = 'install' GROUP BY week ORDER BY week;" },
   { title: "Daily active installs (DAU)", sql: "SELECT day, COUNT(*) FROM active GROUP BY day ORDER BY day;" },
   { title: "Weekly active installs (WAU), the last 7 days", sql: "SELECT COUNT(DISTINCT install_id) FROM active WHERE day >= date('now', '-6 days');" },
@@ -33,27 +37,40 @@ export const QUERIES: ReadonlyArray<{ title: string; sql: string }> = [
   { title: COUNTS_INSTALLS, sql: "SELECT w.width, COUNT(DISTINCT c.install_id) AS installs FROM (SELECT 'narrow' AS width UNION ALL SELECT 'wide') AS w JOIN counts c ON (CASE w.width WHEN 'narrow' THEN c.narrow ELSE c.wide END) IS NOT NULL WHERE c.day >= date('now', '-7 days') AND c.day < date('now') GROUP BY w.width ORDER BY w.width;" },
   { title: COUNTS_BUCKETS, sql: "SELECT w.width, item.key AS counter, COUNT(DISTINCT c.install_id) AS installs, SUM(item.value = 1) AS days_1_2, SUM(item.value = 2) AS days_3_9, SUM(item.value = 3) AS days_10_29, SUM(item.value = 4) AS days_30_up FROM (SELECT 'narrow' AS width UNION ALL SELECT 'wide') AS w JOIN counts c ON (CASE w.width WHEN 'narrow' THEN c.narrow ELSE c.wide END) IS NOT NULL CROSS JOIN json_each(CASE w.width WHEN 'narrow' THEN c.narrow ELSE c.wide END, '$.counts') AS item WHERE c.day >= date('now', '-7 days') AND c.day < date('now') GROUP BY w.width, item.key ORDER BY w.width, installs DESC, item.key;" },
   { title: COUNTS_SHOWN, sql: "SELECT w.width, item.value AS control, COUNT(DISTINCT c.install_id) AS installs FROM (SELECT 'narrow' AS width UNION ALL SELECT 'wide') AS w JOIN counts c ON (CASE w.width WHEN 'narrow' THEN c.narrow ELSE c.wide END) IS NOT NULL CROSS JOIN json_each(CASE w.width WHEN 'narrow' THEN c.narrow ELSE c.wide END, '$.shown') AS item WHERE c.day >= date('now', '-7 days') AND c.day < date('now') GROUP BY w.width, item.value ORDER BY w.width, installs DESC, item.value;" },
-  { title: SWITCHES_BY_AGENT, sql: "SELECT w.width, h.value AS agent, COUNT(DISTINCT c.install_id) AS running, COUNT(DISTINCT CASE WHEN EXISTS (SELECT 1 FROM json_each(CASE w.width WHEN 'narrow' THEN c.narrow ELSE c.wide END, '$.counts') AS x WHERE x.key IN ('view_chat_' || h.value, 'view_terminal_' || h.value)) THEN c.install_id END) AS switched FROM (SELECT 'narrow' AS width UNION ALL SELECT 'wide') AS w JOIN counts c ON (CASE w.width WHEN 'narrow' THEN c.narrow ELSE c.wide END) IS NOT NULL JOIN active a ON a.day = c.day AND a.install_id = c.install_id CROSS JOIN json_each(a.harnesses) AS h WHERE c.day >= date('now', '-7 days') AND c.day < date('now') GROUP BY w.width, h.value ORDER BY w.width, running DESC, h.value;" },
+  { title: COUNTS_PER_INSTALL, hidden: true, sql: "SELECT w.width, item.key AS counter, c.install_id AS install, group_concat(item.value) AS buckets FROM (SELECT 'narrow' AS width UNION ALL SELECT 'wide') AS w JOIN counts c ON (CASE w.width WHEN 'narrow' THEN c.narrow ELSE c.wide END) IS NOT NULL CROSS JOIN json_each(CASE w.width WHEN 'narrow' THEN c.narrow ELSE c.wide END, '$.counts') AS item WHERE c.day >= date('now', '-7 days') AND c.day < date('now') GROUP BY w.width, item.key, c.install_id;" },
+  // every kind of agent, and `shell` for a pane with none: installs running it (from that day's active message) and
+  // installs that switched on its panes (from the switch counters' own names); running is either: a day whose active
+  // message named no agent yet still counts an install whose counts name one
+  { title: SWITCHES_BY_AGENT, sql: `SELECT width, agent, running, switched FROM (SELECT w.width AS width, ag.agent AS agent, (SELECT COUNT(*) FROM (SELECT c.install_id FROM counts c JOIN active a ON a.day = c.day AND a.install_id = c.install_id CROSS JOIN json_each(a.harnesses) AS h WHERE c.day >= date('now', '-7 days') AND c.day < date('now') AND h.value = ag.agent AND CASE w.width WHEN 'narrow' THEN c.narrow ELSE c.wide END IS NOT NULL UNION SELECT c.install_id FROM counts c CROSS JOIN json_each(CASE w.width WHEN 'narrow' THEN c.narrow ELSE c.wide END, '$.counts') AS y WHERE c.day >= date('now', '-7 days') AND c.day < date('now') AND CASE w.width WHEN 'narrow' THEN c.narrow ELSE c.wide END IS NOT NULL AND y.key IN ('view_chat_' || ag.agent, 'view_terminal_' || ag.agent))) AS running, (SELECT COUNT(DISTINCT c.install_id) FROM counts c CROSS JOIN json_each(CASE w.width WHEN 'narrow' THEN c.narrow ELSE c.wide END, '$.counts') AS x WHERE c.day >= date('now', '-7 days') AND c.day < date('now') AND CASE w.width WHEN 'narrow' THEN c.narrow ELSE c.wide END IS NOT NULL AND x.key IN ('view_chat_' || ag.agent, 'view_terminal_' || ag.agent)) AS switched FROM (SELECT 'narrow' AS width UNION ALL SELECT 'wide') AS w CROSS JOIN (${[...TELEMETRY_HARNESSES, "shell"].map((agent) => `SELECT '${agent}' AS agent`).join(" UNION ALL ")}) AS ag) WHERE running > 0 OR switched > 0 ORDER BY width, running DESC, agent;` },
   { title: SWITCH_DAYS_BY_VERSION, sql: "SELECT c.version, COUNT(*) AS days, SUM(EXISTS (SELECT 1 FROM json_each(c.narrow, '$.counts') AS x WHERE x.key GLOB 'view_*_by_*') OR EXISTS (SELECT 1 FROM json_each(c.wide, '$.counts') AS x WHERE x.key GLOB 'view_*_by_*')) AS days_switched FROM counts c WHERE c.day >= date('now', '-7 days') AND c.day < date('now') GROUP BY c.version ORDER BY c.version;" },
 ];
 
 /** A bucket's range, as the counts message names it (shared/telemetry.ts countBucket). */
 export const BUCKET_RANGES = ["1-2", "3-9", "10-29", "30+"] as const;
 
+/** the two middle values of a list (the same one for an odd count), each a value that was there: never an average */
+const middles = (values: readonly number[]): [number, number] => {
+  const sorted = [...values].sort((x, y) => x - y);
+  return [sorted[Math.floor((sorted.length - 1) / 2)]!, sorted[Math.floor(sorted.length / 2)]!];
+};
+
 /**
- * For each counter and width: the share of the installs that sent counts at that width which used it at
- * least once, and the median range of a day it was used. Means are left out: a few heavy installs would
- * carry them.
+ * For each counter and width: the share of the installs that sent counts at that width which used it at least once
+ * (`of` is that base: a share over a handful of installs is noise), and the middle install's typical day: each install
+ * first gets one value, the lower middle of its own days' ranges, then the middle is taken across installs, so a few
+ * heavy installs cannot carry it. Only ranges are sent and none is averaged: when the two middle installs differ,
+ * both ranges are named (`1-2 .. 30+`). No means.
  */
-export function counterShares(installs: ReadonlyArray<Record<string, unknown>>, buckets: ReadonlyArray<Record<string, unknown>>): Array<Record<string, unknown>> {
+export function counterShares(installs: ReadonlyArray<Record<string, unknown>>, buckets: ReadonlyArray<Record<string, unknown>>, perInstall: ReadonlyArray<Record<string, unknown>>): Array<Record<string, unknown>> {
   const total = new Map(installs.map((row) => [String(row["width"]), Number(row["installs"])]));
   return buckets.map((row) => {
-    const days = [row["days_1_2"], row["days_3_9"], row["days_10_29"], row["days_30_up"]].map(Number);
-    const half = days.reduce((sum, count) => sum + count, 0) / 2;
-    let seen = 0;
-    const median = days.findIndex((count) => (seen += count) >= half);
-    const of = total.get(String(row["width"])) ?? 0;
-    return { width: row["width"], counter: row["counter"], installs: row["installs"], percent: of === 0 ? 0 : Math.round(1000 * Number(row["installs"]) / of) / 10, median_day: BUCKET_RANGES[median] ?? "-" };
+    const width = String(row["width"]), counter = String(row["counter"]);
+    const typical = perInstall
+      .filter((entry) => String(entry["width"]) === width && String(entry["counter"]) === counter)
+      .map((entry) => middles(String(entry["buckets"]).split(",").map(Number))[0]);
+    const [low, high] = typical.length === 0 ? [0, 0] : middles(typical);
+    const of = total.get(width) ?? 0;
+    return { width, counter, installs: row["installs"], of, percent: of === 0 ? 0 : Math.round(1000 * Number(row["installs"]) / of) / 10, middle_install_day: typical.length === 0 ? "-" : low === high ? BUCKET_RANGES[low - 1]! : `${BUCKET_RANGES[low - 1]} .. ${BUCKET_RANGES[high - 1]}` };
   });
 }
 
@@ -118,10 +135,11 @@ if (import.meta.main) {
     results.push({ title: query.title, rows });
   }
   const rowsOf = (title: string) => results.find((result) => result.title === title)?.rows ?? [];
-  results.push({ title: COUNTER_SHARES, rows: counterShares(rowsOf(COUNTS_INSTALLS), rowsOf(COUNTS_BUCKETS)) });
+  results.push({ title: COUNTER_SHARES, rows: counterShares(rowsOf(COUNTS_INSTALLS), rowsOf(COUNTS_BUCKETS), rowsOf(COUNTS_PER_INSTALL)) });
+  const shown = results.filter(({ title }) => !QUERIES.find((query) => query.title === title)?.hidden);
   const heading = "Telemetry report";
   const note = `Run at ${new Date().toISOString()}. Counts are a trend, not an audit (telemetry/README.md).`;
-  writeFileSync(out, [`# ${heading}\n\n${note}`, ...results.map(({ title, rows }) => `## ${title}\n\n${table(rows)}`)].join("\n\n") + "\n");
-  if (page) writeFileSync(page, html(`${heading} · ${note}`, results));
-  console.log(`telemetry report: ${results.length} tables written to ${out}${page ? ` and ${page}` : ""}`);
+  writeFileSync(out, [`# ${heading}\n\n${note}`, ...shown.map(({ title, rows }) => `## ${title}\n\n${table(rows)}`)].join("\n\n") + "\n");
+  if (page) writeFileSync(page, html(`${heading} · ${note}`, shown));
+  console.log(`telemetry report: ${shown.length} tables written to ${out}${page ? ` and ${page}` : ""}`);
 }

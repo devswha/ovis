@@ -3,7 +3,7 @@ import { afterAll, describe, expect, it } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { COUNTER_SHARES, COUNTS_BUCKETS, COUNTS_INSTALLS, COUNTS_SHOWN, SWITCH_DAYS_BY_VERSION, SWITCHES_BY_AGENT, counterShares, html, QUERIES, table } from "./telemetry-report.ts";
+import { COUNTER_SHARES, COUNTS_BUCKETS, COUNTS_INSTALLS, COUNTS_PER_INSTALL, COUNTS_SHOWN, SWITCH_DAYS_BY_VERSION, SWITCHES_BY_AGENT, counterShares, html, QUERIES, table } from "./telemetry-report.ts";
 
 /** scripts/telemetry-report.ts with a stand-in bunx on a private PATH: no wrangler, no D1. */
 
@@ -100,21 +100,45 @@ describe("telemetry report: button counts", () => {
       { width: "wide", agent: "claude", running: 1, switched: 0 },
     ]);
     expect(rows(SWITCH_DAYS_BY_VERSION)).toEqual([{ version: "0.5.5", days: 2, days_switched: 1 }, { version: "0.5.6", days: 1, days_switched: 0 }]);
-    expect(counterShares(rows(COUNTS_INSTALLS), buckets)).toEqual([
-      { width: "narrow", counter: "chat_send", installs: 1, percent: 50, median_day: "3-9" },
-      { width: "narrow", counter: "view_terminal_by_header", installs: 1, percent: 50, median_day: "1-2" },
-      { width: "narrow", counter: "view_terminal_claude", installs: 1, percent: 50, median_day: "1-2" },
-      { width: "wide", counter: "chat_send", installs: 1, percent: 100, median_day: "1-2" },
+    // install a sent chat_send on two days, in 3-9 and 30+: its own value is the lower middle, and it is the only one
+    expect(counterShares(rows(COUNTS_INSTALLS), buckets, rows(COUNTS_PER_INSTALL))).toEqual([
+      { width: "narrow", counter: "chat_send", installs: 1, of: 2, percent: 50, middle_install_day: "3-9" },
+      { width: "narrow", counter: "view_terminal_by_header", installs: 1, of: 2, percent: 50, middle_install_day: "1-2" },
+      { width: "narrow", counter: "view_terminal_claude", installs: 1, of: 2, percent: 50, middle_install_day: "1-2" },
+      { width: "wide", counter: "chat_send", installs: 1, of: 1, percent: 100, middle_install_day: "1-2" },
     ]);
     db.close();
   });
 
-  it("takes the median range of the days a counter was used, not its mean", () => {
-    const share = (days: number[]) => counterShares([{ width: "wide", installs: 4 }], [{ width: "wide", counter: "chat_send", installs: 3, days_1_2: days[0], days_3_9: days[1], days_10_29: days[2], days_30_up: days[3] }])[0];
-    // one heavy day does not move it
-    expect(share([3, 0, 0, 1])).toEqual({ width: "wide", counter: "chat_send", installs: 3, percent: 75, median_day: "1-2" });
-    expect(share([1, 1, 3, 0])!.median_day).toBe("10-29");
-    expect(share([0, 0, 0, 2])!.median_day).toBe("30+");
+  it("takes the middle install, each install first given its own middle day: a heavy install does not carry it", () => {
+    const shares = (perInstall: [string, number[]][]) => counterShares([{ width: "wide", installs: 10 }], [{ width: "wide", counter: "chat_send", installs: perInstall.length }],
+      perInstall.map(([install, buckets]) => ({ width: "wide", counter: "chat_send", install, buckets: buckets.join(",") })))[0]!;
+    // one install in 30+ on six days, five installs once in 1-2: the middle install is a light one
+    expect(shares([["heavy", [4, 4, 4, 4, 4, 4]], ["a", [1]], ["b", [1]], ["c", [1]], ["d", [1]], ["e", [1]]]).middle_install_day).toBe("1-2");
+    // two installs, one in 1-2 and one in 30+: no single middle range, both are named
+    expect(shares([["a", [1]], ["b", [4]]]).middle_install_day).toBe("1-2 .. 30+");
+    expect(shares([["a", [3]], ["b", [3, 2, 3]], ["c", [1]]]).middle_install_day).toBe("10-29");
+    // the base it is a share of is printed with it: a share over one install says so
+    expect(shares([["a", [2]]])).toMatchObject({ installs: 1, of: 10, percent: 10 });
+  });
+
+  it("counts an install as running an agent when its counts name it, though its visit named none yet", () => {
+    const db = new Database(":memory:");
+    db.exec(readFileSync(join(import.meta.dir, "..", "telemetry", "schema.sql"), "utf8"));
+    const today = db.query<{ day: string }, []>("SELECT date('now') AS day").get()!.day;
+    const day = db.query<{ day: string }, [string, string]>("SELECT date(?, ?) AS day").get(today, "-1 days")!.day;
+    const counts = db.prepare("INSERT INTO counts (day, install_id, version, narrow, wide) VALUES (?, ?, '0.5.6', NULL, ?)");
+    const active = db.prepare("INSERT INTO active (day, install_id, version, os, arch, install_method, country, harnesses) VALUES (?, ?, '0.5.6', 'linux', 'x64', 'source', 'KR', ?)");
+    const side = (counted: Record<string, number>) => JSON.stringify({ counts: counted, shown: [] });
+    counts.run(day, "a", side({ view_terminal_claude: 1 }));
+    counts.run(day, "b", side({ chat_send: 1 }));
+    counts.run(day, "c", side({ view_chat_claude: 2 }));
+    active.run(day, "a", '["claude"]');
+    active.run(day, "b", '["claude"]');
+    // c opened the app before it started Claude: its active message named no agent
+    active.run(day, "c", "[]");
+    expect(db.query(QUERIES.find((query) => query.title === SWITCHES_BY_AGENT)!.sql).all()).toEqual([{ width: "wide", agent: "claude", running: 3, switched: 2 }]);
+    db.close();
   });
 
   it("draws the report as one page, a percent as a bar, and escapes what it shows", () => {
@@ -143,9 +167,9 @@ describe.skipIf(process.platform === "win32")("telemetry report", () => {
       "SELECT country, COUNT(*) FROM (SELECT (SELECT country FROM events WHERE install_id = e.install_id AND country IS NOT NULL ORDER BY rowid DESC LIMIT 1) AS country FROM events e GROUP BY install_id) GROUP BY country ORDER BY 2 DESC;",
       "SELECT day, country, COUNT(*) FROM active WHERE day >= date('now', '-27 days') GROUP BY day, country ORDER BY day, country;",
       // the button counts' tables, checked against stored rows above (telemetry report: button counts)
-      ...[COUNTS_INSTALLS, COUNTS_BUCKETS, COUNTS_SHOWN, SWITCHES_BY_AGENT, SWITCH_DAYS_BY_VERSION].map((title) => QUERIES.find((query) => query.title === title)!.sql),
+      ...[COUNTS_INSTALLS, COUNTS_BUCKETS, COUNTS_SHOWN, COUNTS_PER_INSTALL, SWITCHES_BY_AGENT, SWITCH_DAYS_BY_VERSION].map((title) => QUERIES.find((query) => query.title === title)!.sql),
     ]);
-    expect(QUERIES).toHaveLength(15);
+    expect(QUERIES).toHaveLength(16);
     // from telemetry/, where wrangler finds wrangler.toml and the database's id
     const telemetry = join(import.meta.dir, "..", "telemetry");
     expect(new Set(result.dirs)).toEqual(new Set([telemetry]));

@@ -112,11 +112,19 @@ name: installs already send to that address, and a D1 database cannot be renamed
 ## Reading the counts
 
 After `bunx wrangler login` from `telemetry/`, run
-`bun scripts/telemetry-report.ts --out <file.md>` from the repository root. It runs the weekly installs, DAU, WAU, MAU,
-agent-kind and country queries below, plus daily actives per country for the last 28 days and the
-last 7 finished days' button counts (per width: the share of installs that used each counter and the
-median range of a day it was used, the controls shown, switches by kind of agent and by version), and
-writes them as one report; `--html <file.html>` also writes them as one page with the shares drawn as bars. The script selects `telemetry/` as Wrangler's working directory.
+`bun scripts/telemetry-report.ts --out ~/telemetry-report.md` from the repository root (write it outside the tree:
+it holds counts no one has published; `telemetry-report*.md` and `*.html` at the root are ignored by git for a
+slip). It runs the weekly installs, DAU, WAU, MAU, agent-kind and country queries below, plus daily actives per
+country for the last 28 days and the last 7 finished days' button counts, and writes them as one report;
+`--html <file.html>` also writes them as one page with the shares drawn as bars. For the button counts, per width:
+
+- the share of installs that used each counter, with `of`, the installs it is a share of: under about ten installs
+  a share is noise, and over one install it reads 100%;
+- the middle install's typical day: each install first gets one value, the lower middle of its own days' ranges,
+  then the middle install is taken, so a few heavy installs do not carry it; only ranges are sent and none is
+  averaged, so when the two middle installs differ both ranges are named (`1-2 .. 30+`);
+- the controls shown, and chat/terminal switches by kind of agent: an install runs an agent there when that day's
+  active message or its own switch counts name it, and switched when its counts hold a switch on that agent's panes. The script selects `telemetry/` as Wrangler's working directory.
 For the individual queries below, stay in `telemetry/`:
 
 ```sh
