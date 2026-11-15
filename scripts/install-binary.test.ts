@@ -285,6 +285,34 @@ exec "${Bun.which("tar")}" "$@"`);
     expect(readFileSync(join(ovis, "bin", "dist", "index.html"), "utf8")).toMatch(/1\.2\.[34]/);
   }, 60_000);
 
+  it("leaves the lock to a waiter that claims it while the holder removes it, and both succeed, with a mkdir that never refuses", async () => {
+    const { releases, key, start, standIn, ovis, home } = pc();
+    release(releases, "1.2.3", key.privateKeyPem);
+    release(releases, "1.2.4", key.privateKeyPem);
+    standIn("mkdir", `exec "${Bun.which("mkdir")}" -p "$@"`);
+    const sync = join(home, "sync");
+    mkdirSync(sync);
+    const lock = join(ovis, ".install.lock");
+    // the first removal of a lock folder pauses where rm -rf does, between the pid it unlinks and the folder it
+    // removes, until another waiter holds the lock
+    standIn("rm", `case "$*" in "-rf ${lock}"*) if [ -d "$2" ] && (set -C; : > "${sync}/paused") 2>/dev/null; then
+  "${Bun.which("rm")}" -f "$2/pid"
+  n=0; until [ -s "${lock}/pid" ] || [ "$n" -ge 3000 ]; do n=$((n + 1)); sleep 0.01; done
+  [ ! -s "${lock}/pid" ] || : > "${sync}/claimed"
+  exec rmdir "$2"
+fi ;; esac
+exec "${Bun.which("rm")}" "$@"`);
+    const first = start("install_binary 1.2.3");
+    const second = start(`until [ -s "${lock}/pid" ]; do sleep 0.01; done; install_binary 1.2.4`);
+    const [one, two] = await Promise.all([first, second]);
+    expect(existsSync(join(sync, "claimed")), "the second run never claimed the lock during the first's release").toBe(true);
+    expect(one.code, one.out).toBe(0);
+    expect(two.code, two.out).toBe(0);
+    expect(two.out).toContain("waiting for it");
+    expect(readFileSync(join(ovis, "bin", "ovis-server.json"), "utf8")).toContain('"version": "1.2.4"');
+    expect(readdirSync(ovis).filter((name) => name.startsWith(".install.lock"))).toEqual([]);
+  }, 60_000);
+
   it("lets one waiter at a time break a stale lock, with a mkdir that never refuses", async () => {
     const { releases, key, start, standIn, ovis, home } = pc();
     release(releases, "1.2.3", key.privateKeyPem);
