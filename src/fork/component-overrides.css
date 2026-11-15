@@ -53,6 +53,22 @@
   border: 0;
 }
 
+[data-fork-agent-friends="true"] .mode-inbox .fork-inbox-helper > .inbox-row {
+  position: relative;
+  padding-inline-start: calc(var(--inbox-inset) + var(--space-5));
+}
+
+[data-fork-agent-friends="true"] .mode-inbox .fork-inbox-helper > .inbox-row::before {
+  content: "";
+  position: absolute;
+  inset-inline-start: var(--inbox-inset);
+  bottom: 50%;
+  width: var(--space-3);
+  height: var(--space-4);
+  border-inline-start: var(--hairline) solid var(--border-strong);
+  border-bottom: var(--hairline) solid var(--border-strong);
+}
+
 /* src/components/Machines.css */
 [data-fork-square-corners="true"] .machine-dot {
   border-radius: var(--radius-circle);

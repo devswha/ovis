@@ -20,12 +20,26 @@ when the last agent exits so a new pane after a restart keeps the same friend. M
 metadata retains the legacy fallback until the next roster observation. No API request/response shape
 or auth/observe guard changes.
 
+`src/fork/inboxRows.ts` applies the sidebar's existing family ordering after inbox filters/search and
+held ordering: a waiting helper brings its conductor with it, siblings keep their input order, and a
+filtered-out conductor leaves a normal row. IDs are machine-scoped. Fork CSS draws an indent and
+connector; pictures keep their normal full color. This follows the existing Ovis sidebar rather than
+introducing a competing agent-group interaction.
+
 Hooks added/changed by this task (upstream files only):
 - `server/index.ts`: one existing `friendOf` callback line also passes the cached machine roster;
   the fork looks up workspace/parent metadata for alerts, including before a browser lists a pane.
   Fork diff vs `upstream/main` before/after: **+12/-5 → +12/-5** (unchanged hook footprint).
+- `src/components/InboxList.tsx`: one import, one `forkInboxRows(..., settings.agentFriends)`
+  wrapper, one row-class suffix. Fork diff **+2/-1 → +6/-4**.
+- `src/lib/agentRoster.ts`: export the already-generic `nestRows` helper (one changed line, no
+  behavior change), avoiding a duplicate algorithm in the fork. Fork diff **0 → +1/-1**.
 - `server/fork/routes.ts` (fork-owned): supplies cached snapshots, or a local snapshot when the
   machine manager is disabled. No extra upstream route hook.
+
+Scoped nesting checks: `TMPDIR="$HOME/.cache/ovis-tmp/inbox-agent-clarity" bun test
+src/fork/inboxRows.test.ts src/lib/agentRoster.test.ts src/components/InboxList.test.tsx` exited 0
+(71 tests), after the test-only commit exited 1 with the fork function still absent.
 
 Scoped red/green evidence: `TMPDIR="$HOME/.cache/ovis-tmp/inbox-agent-clarity" bun test
 server/fork/fork-friends.test.ts` exited 1 (three meaningful project/migration failures) before

@@ -25,6 +25,7 @@ import { summaryTargets, useInboxSummaries, type RowSummary, type SummaryReads }
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { AgentMark } from "./AgentMark.tsx";
 import { ForkInboxAvatar } from "../fork/InboxAvatar.tsx";
+import { forkInboxRows } from "../fork/inboxRows.ts";
 import { agentRowTitle, blockedNote, stateAge } from "./AgentSidebar.tsx";
 import { RowMenu } from "./RowMenu.tsx";
 import { compactWorktreeName, StatusBadge } from "./Sidebar.tsx";
@@ -204,7 +205,7 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
   useLayoutEffect(() => { if (wide && searchAsked) search.current?.focus(); }, [wide, searchAsked]);
 
   const severalPcs = machines.length > 1;
-  const rows = shown.map((row) => {
+  const rows = forkInboxRows(shown.map((row) => {
     const { machine, entry } = row;
     const { pane, workspace, tab } = entry;
     const online = machine.state === "connected";
@@ -228,7 +229,7 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
       key, machine, pane, online, status, group, title, line, failed, mark: paneMark(entry) ?? "", kind, state,
       asks: online && inboxAsks(group), since: online ? inboxSinceAt(group, summary, group === "blocked" ? stateSince(stamps, machine.id, pane.pane_id, pane.terminal_id, "blocked") : null) : null,
     };
-  });
+  }), settings.agentFriends);
   const timed = rows.some((row) => row.since !== null);
   // read again whenever the clock ticks, new words or a new wait land, or the rows that draw a time change (a filter
   // that drew none while the clock stood still brings one back)
@@ -402,7 +403,7 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
               // what a screen reader hears for the row: who it is, how it is, what it says, then for how long
               const spoken = [row.kind ? agentName(row.kind) : null, row.title, row.state, row.line === row.state ? null : row.line, age].filter((part) => part !== null).join(", ");
               return (
-                <li key={row.key} className={`inbox-item${row.online ? "" : " is-offline"}${row.asks ? " is-asking" : ""}${open ? " is-current" : ""}`} data-machine={row.machine.id} data-pane={row.pane.pane_id} data-state={row.group}>
+                <li key={row.key} className={`inbox-item${row.online ? "" : " is-offline"}${row.asks ? " is-asking" : ""}${open ? " is-current" : ""}${row.forkNested ? " fork-inbox-helper" : ""}`} data-machine={row.machine.id} data-pane={row.pane.pane_id} data-state={row.group}>
                   <button type="button" className="inbox-row" disabled={!row.online} aria-label={spoken} aria-current={open ? "true" : undefined}
                     ref={(node) => { if (node) rowNodes.current.set(row.key, node); else rowNodes.current.delete(row.key); }}
                     title={wide ? [row.title, row.line, at === null ? null : `${age} · ${at.toLocaleString(resolvedLanguage)}`].filter((part) => part !== null).join("\n") : undefined}
