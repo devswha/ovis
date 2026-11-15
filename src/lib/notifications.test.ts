@@ -131,14 +131,6 @@ describe("tab alerts shown through the worker", () => {
     ]);
   });
 
-  it("shows the friend of the pane's workspace, else the app's icon", async () => {
-    const shown = hiddenTabWithWorker();
-    showPaneStatusNotification("w1:p1", "Mac · pi", "done", undefined, "local", "w1", "kuma");
-    showPaneEndedNotification("w1:p2", "Mac · bash", undefined, "local", "w1");
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(shown.map((entry) => entry.icon)).toEqual(["/friends/kuma.png", "/icons/icon-192.png?v=sheep1"]);
-  });
-
   type Data = { pane_id?: string; machine_id?: string; workspace_id?: string; alert_id?: string };
   /** What iOS shows: one notification per show, whatever the tag, each closed on its own. */
   function iosCentre() {

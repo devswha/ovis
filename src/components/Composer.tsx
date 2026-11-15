@@ -12,7 +12,7 @@ import {
   type ReactNode,
 } from "react";
 import { flushSync } from "react-dom";
-import { ArrowUp, ClipboardPaste, FileText, Folder, FolderGit2, GitBranch, LoaderCircle, Package, Plus, Puzzle, Square, TriangleAlert, UserRound, X, type LucideIcon, AudioLines, ChevronDown, Cpu } from "lucide-react";
+import { ArrowUp, ClipboardPaste, FileText, Folder, FolderGit2, GitBranch, LoaderCircle, Package, Plus, Puzzle, Square, TriangleAlert, UserRound, X, type LucideIcon, AudioLines } from "lucide-react";
 
 import "./Composer.css";
 
@@ -39,10 +39,8 @@ import {
   composerStatusCompact,
   composerStatusHint,
   composerStatusWord,
-  contextLeftPercent,
   type DraftRefusal,
   draftSendNote,
-  formatTokens,
   imageMention,
   insertLeadingMention,
   MAX_COMPOSER_CHARS,
@@ -59,7 +57,6 @@ import { composerLabelDraw } from "../lib/composerLabelFit.ts";
 import { composerFull, formatChars, pasteOverflow } from "../lib/composerLength.ts";
 import { normalizeComposerImageFile } from "../lib/composerImageMime.ts";
 import { paneStatus } from "../lib/status.ts";
-import { modelLabel } from "../lib/modelName.ts";
 import { useFacesArrived } from "../lib/fontFaces.ts";
 import { activeTrigger, applyCompletion, type ActiveTrigger } from "../lib/mentions.ts";
 import { resolveComposerMenuActiveItemId } from "../lib/composerMenuHighlight.ts";
@@ -68,10 +65,7 @@ import { composerUsage, formatPercent, formatResetIn, HIGH_PERCENT, isCurrent, m
 import { Artifacts } from "./Artifacts.tsx";
 import { OmpBtw } from "./OmpBtw.tsx";
 import { BackgroundTasks } from "./BackgroundTasks.tsx";
-import { AgentMark } from "./AgentMark.tsx";
-import { modelMark } from "../fork/modelMark.ts";
-import { RowMenu } from "./RowMenu.tsx";
-import { ThinkingSlider } from "./ThinkingSlider.tsx";
+import { useForkComposer } from "../fork/ComposerPill.tsx";
 import { MicButton, VoiceRecordingPill, useDictation } from "./VoiceInput.tsx";
 import { usePaneCommands } from "../lib/usePaneCommands.ts";
 import { useT } from "../lib/i18n.ts";
@@ -182,35 +176,6 @@ function readSlashUsage(): Record<string, number> {
   }
 }
 
-/**
- * What is left of the context, as a ring filled by what is used (as Codex's app shows it):
- * red when little is left. It only shows: the number is in its tooltip and read to a screen
- * reader, and a press does nothing. A window the transcript does not name draws no ring.
- */
-function ContextRing({ context }: { context: NonNullable<ConversationMetadata["context"]> }) {
-  const t = useT();
-  const left = contextLeftPercent(context);
-  if (left === null || context.window === null) return null;
-  const label = t("Context {percent}% left", { percent: left });
-  const detail = t("{used} of {window} tokens", { used: formatTokens(context.used), window: formatTokens(context.window) });
-  const radius = 6;
-  const circumference = 2 * Math.PI * radius;
-  return <span className={`composer-context${left <= 20 ? " is-low" : ""}`} title={`${label} · ${detail}`}>
-    <svg viewBox="0 0 16 16" aria-hidden="true">
-      <circle className="composer-context-track" cx="8" cy="8" r={radius} />
-      <circle className="composer-context-used" cx="8" cy="8" r={radius}
-        strokeDasharray={`${circumference * (100 - left) / 100} ${circumference}`} transform="rotate(-90 8 8)" />
-    </svg>
-    <span className="visually-hidden">{label} · {detail}</span>
-  </span>;
-}
-
-/** a model's maker's mark for the model menu; the menu's chip icon stands for a maker without one */
-function markGlyph(model: string): ReactNode {
-  const mark = modelMark(model);
-  return mark ? <AgentMark agent={mark} size={16} /> : undefined;
-}
-
 function useMediaQuery(query: string): boolean {
   const [matches, setMatches] = useState(() => window.matchMedia?.(query).matches === true);
   useEffect(() => {
@@ -277,8 +242,6 @@ export function Composer({
   const hintRef = useRef<HTMLSpanElement | null>(null);
   /** the card's own width: a narrow one shows the task chip's count */
   const [cardWidth, setCardWidth] = useState(0);
-  const [modelMenu, setModelMenu] = useState<HTMLElement | null>(null);
-  const [picked, setPicked] = useState<{ id: string; level: string | null } | null>(null);
   const composingRef = useRef(false);
   // the chat lens's input surface takes the keyboard when it appears (a pane switch remounts
   // it), as the grid does in the terminal lens: a pane picked from the drawer is typed into
@@ -1223,31 +1186,7 @@ export function Composer({
   const dictating = dictation.voice.state === "starting" || dictation.voice.state === "recording";
   useEffect(() => { if (dictating) tally(() => usageCounters.paneUse("composer_voice", machineId)); }, [dictating, machineId]);
   const hint = composerStatusHint({ uploading, connected, text, noRoom: roomless !== undefined });
-  const models = settings.piModelPicker && agent === "pi" && role !== "observe" && metadata?.models?.length ? metadata.models : undefined;
-  // a switch shows at once: pi applies it in a moment, but its transcript reaches the pill a read later
-  // (seconds for a long one or a far phone). The pick holds until the transcript says the same, or 8s
-  const recordedModel = models?.find((entry) => entry.current);
-  const pickedModel = picked === null ? undefined : models?.find((entry) => entry.id === picked.id);
-  const currentModel = pickedModel ?? recordedModel;
-  const effort = picked?.level ?? metadata?.reasoning_effort ?? null;
-  const settled = picked !== null && recordedModel?.id === picked.id && (picked.level === null || metadata?.reasoning_effort === picked.level);
-  useEffect(() => {
-    if (picked === null) return;
-    if (settled) return setPicked(null);
-    const timer = window.setTimeout(() => setPicked(null), 8000);
-    return () => window.clearTimeout(timer);
-  }, [picked, settled]);
-  const modelId = pickedModel ? pickedModel.id.slice(pickedModel.id.indexOf("/") + 1) : metadata?.model;
-  const modelShown = Boolean(modelId || effort);
-  // an id modelLabel cannot name takes the name pi gives it, where pi's extension recorded one
-  const label = modelId ? modelLabel(modelId) : null;
-  const model = label && !label.named && currentModel ? { ...label, text: currentModel.name, named: true } : label;
-  const switchable = connected && !sending && !isWorking && agentStatus !== "blocked" && onCommand !== undefined;
-  const switchTo = (id: string, level: string | null = null): void => {
-    setModelMenu(null);
-    if (onCommand?.(`/ovis-model ${id}${level ? ` ${level}` : ""}`)) setPicked({ id, level });
-    else setNote(t("Not confirmed. Check the terminal before sending again."));
-  };
+  const { modelId, effort, renderPill } = useForkComposer({ metadata, agent, role, connected, sending, isWorking, agentStatus, onCommand, onRefused: setNote });
   const usageDetail = usageWindows.map((window) => {
     const reset = formatResetIn(window.resets_at, Date.now());
     return `${windowLabel(window)} ${meterText(window, settings.usageCount)}${reset ? ` · ${t("Resets in {time}", { time: reset })}` : ""}`;
@@ -1261,30 +1200,6 @@ export function Composer({
     : hint === "near-limit" ? composerFull(text.length, MAX_COMPOSER_CHARS) ? t("{max}-character limit", { max: formatChars(MAX_COMPOSER_CHARS) }) : t("{count} characters left", { count: MAX_COMPOSER_CHARS - text.length })
     : hint === "uploading" ? t("Uploading file…") : offlineSentence;
   /** an upload's failure as one line: what failed and the cause it knows, then what the pick left out */
-  const pillBody = <>
-    {modelShown && <span className="composer-model-info" aria-label={t("Model and reasoning")}>
-      {/* a name only for an id modelLabel can name for certain; any other id is drawn as received, in the identifier face */}
-      <span className={`composer-model${model ? model.named ? "" : " is-id" : " is-none"}`} title={modelId ?? t("Model not available")}>{model?.text ?? t("Model —")}</span>
-      {/* behind a name the id as received is still read; a touch cannot reach the title */}
-      {model?.named && <span className="composer-model-id visually-hidden">{modelId}</span>}
-      {/* no level recorded: nothing is drawn for it, no dot and no dash; the sentence is still read */}
-      <span className={`composer-reasoning${effort ? "" : " visually-hidden"}`} title={effort ? t("Reasoning effort: {effort}", { effort: effort }) : t("Reasoning effort not available")}>
-        <span className="composer-reasoning-full visually-hidden">{t("Reasoning {effort}", { effort: effort ?? "—" })}</span>
-        {effort && <>
-          <span className="composer-reasoning-dot" aria-hidden="true">·</span>
-          <span className="composer-reasoning-short" aria-hidden="true">{effort}</span>
-        </>}
-      </span>
-    </span>}
-    {metadata?.context && <ContextRing context={metadata.context} />}
-    {usage !== undefined && isCurrent(usage) && usageLimit !== undefined && <span
-      className={`composer-usage${usageLimit.used_percent >= HIGH_PERCENT ? " is-high" : ""}${usage.recorded ? " is-recorded" : ""}`}
-      title={`${usageName(usage)}${usageRecorded ? `\n${usageRecorded.join("\n")}` : ""}\n${usageDetail}`}
-    >
-      <span aria-hidden="true">{usageCaption}</span>
-      <span className="visually-hidden">{usageAccessible}</span>
-    </span>}
-  </>;
   const noteLine = note === null ? null : typeof note === "string" ? note : "failure" in note
     ? [note.failure.cause === null ? t("{name} could not be attached", { name: note.attachment.file.name }) : t("{name} could not be attached: {reason}", { name: note.attachment.file.name, reason: note.failure.cause }), note.attachment.leftOut].filter((part) => part !== null).join(" ")
     : note.note;
@@ -1665,24 +1580,15 @@ export function Composer({
             <span className="composer-agent-label visually-hidden">{agentLabel}</span>
             <span className="composer-status-separator visually-hidden" aria-hidden="true">·</span>
             <strong className="visually-hidden">{t(composerStatusWord(shownStatus))}</strong>
-            {/* the mark, the model, the level and the context ring as one quiet pill. It only shows: no role,
-                no focus, nothing to press but the ring inside it. A pane that names no model draws no pill
-                (.is-bare): the mark, a level if it has one, and the ring stand in the row as they are.
-                Fork: with Pi model picker on, a pi pane's model, level and ring open its model menu while pi is idle */}
-            <span className={`composer-pill${metadata?.model ? "" : " is-bare"}`}>
-              {agent && <AgentMark agent={agent} size={14} />}
-              {models ? <button type="button" className="composer-pill-menu" aria-haspopup="menu" aria-expanded={modelMenu !== null}
-                disabled={!switchable} title={switchable ? t("Switch model") : t("Switch the model once the agent is idle")}
-                onClick={(event) => setModelMenu(modelMenu ? null : event.currentTarget)}>
-                {pillBody}
-                <ChevronDown className="composer-pill-chevron" aria-hidden="true" />
-              </button> : pillBody}
-            </span>
-            {modelMenu && models && <RowMenu anchor={modelMenu} title={t("Model")} onClose={() => setModelMenu(null)}
-              items={models.map((entry) => ({ id: entry.id, label: entry.name, icon: Cpu, glyph: markGlyph(entry.id), checked: entry.id === currentModel?.id,
-                run: () => { if (entry.id !== currentModel?.id) switchTo(entry.id); } }))}
-              footer={currentModel && currentModel.levels.length > 1 ? <ThinkingSlider levels={currentModel.levels} value={effort} disabled={!switchable}
-                onCommit={(level) => switchTo(currentModel.id, level)} /> : undefined} />}
+            {renderPill(<>
+              {usage !== undefined && isCurrent(usage) && usageLimit !== undefined && <span
+                className={`composer-usage${usageLimit.used_percent >= HIGH_PERCENT ? " is-high" : ""}${usage.recorded ? " is-recorded" : ""}`}
+                title={`${usageName(usage)}${usageRecorded ? `\n${usageRecorded.join("\n")}` : ""}\n${usageDetail}`}
+              >
+                <span aria-hidden="true">{usageCaption}</span>
+                <span className="visually-hidden">{usageAccessible}</span>
+              </span>}
+            </>)}
             {/* the chip is a button in the left controls; its count is still said here, where a change is announced */}
             {backgroundTasks > 0 && <span className="composer-task-count visually-hidden">{t(backgroundTasks === 1 ? "{n} background task" : "{n} background tasks", { n: backgroundTasks })}</span>}
           </span>

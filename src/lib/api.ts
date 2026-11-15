@@ -94,7 +94,6 @@ import type {
   PluginActionsResponse,
   WorktreeInventory,
   WorktreeListing,
-  PullRequestListing,
   WorktreeOpened,
   WorktreeRemoved,
   ZoomPaneRequest,
@@ -103,14 +102,14 @@ import { SUPPORTED_AGENT_KINDS } from "../../shared/supported-agents.ts";
 import type { PaneScrollInfo } from "../../shared/herdr-api.generated.ts";
 import { readInstalledNotes, readUpdateNotes, type HerdrUpdateStatus, type InstalledNotes, type UpdateNotes, type UpdateRequest, type UpdateStatus } from "../../shared/update.ts";
 import type { AlertPrefs } from "../../shared/notify-policy.ts";
-import type { PiVoiceStatus } from "../../shared/pi-voice.ts";
+export { listPullRequests, fetchPullRequestBranch, fetchPiVoiceStatus } from "../fork/api.ts";
 import type { TelemetryChange, TelemetryStatus } from "../../shared/telemetry.ts";
 import type { VoiceConfigUpdate, VoiceStatus } from "../../shared/voice.ts";
 import { MAX_ATTACHMENT_BYTES } from "../../shared/attachments.ts";
 import { t } from "./i18n.ts";
 import { chatReadDeadlineMs, withChatReadDeadline } from "./chatReadDeadline.ts";
 import { movingHerdrFocus } from "./followFocus.ts";
-import { observeWaitingClock, waitingKey } from "./sentWaiting.ts";
+import { readForkConversation } from "../fork/api.ts";
 import type { UsageAccountRemoval, UsageLoginAccounts, UsageLoginCode, UsageLoginFollowed, UsageLoginPrompt, UsageLoginProvider, UsageLoginRequest, UsageLoginStarted } from "../../shared/usage-login.ts";
 
 export function fetchUsageLoginProviders(signal: AbortSignal): Promise<{ providers: readonly UsageLoginProvider[] }> {
@@ -488,7 +487,7 @@ export async function errorFrom(url: string, response: Response): Promise<ApiErr
   return new ApiError(url, response.status, detail, code, seconds === null ? null : seconds * 1000);
 }
 
-async function getJson<T>(url: string, init?: RequestInit): Promise<T> {
+export async function getJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await apiFetch(url, init);
   if (!response.ok) throw await errorFrom(url, response);
   return (await response.json()) as T;
@@ -855,23 +854,7 @@ async function readPaneConversation(paneId: string, machineId: string, page: Con
   if (plain !== undefined) lastNewestRead.set(plain, read);
   const known = polled ? currentAnswer(url, pane) : undefined;
   const requestUrl = page.history_id === undefined ? url : `${url}&history_id=${encodeURIComponent(page.history_id)}`;
-  const { response, body, whole } = await withChatReadDeadline(async (signal) => {
-    // naming the answer held asks for only the turns that changed since it (server/conversation-delta.ts);
-    // a fresh read gets those too, only never the 304 that hands back the held answer itself
-    const held = known === undefined ? requestUrl : `${requestUrl}&delta=${encodeURIComponent(known.etag)}`;
-    const response = await apiFetch(held, { cache: "no-store", signal, ...(known && !page.fresh ? { headers: { "if-none-match": known.etag } } : {}) });
-    // as it arrived, whatever becomes of its body: its time bounds this browser's clock against the PC's
-    const received = performance.now(), receivedWall = Date.now();
-    if (response.status === 304 && known) {
-      observeWaitingClock(waitingKey(machineId, paneId), response.headers.get("x-server-time"), received, receivedWall, true);
-      return { response, body: known.body, whole: true };
-    }
-    if (!response.ok) throw await errorFrom(url, response);
-    const { delta, ...answer } = (await response.json()) as ConversationResponse & { delta?: { drop: number; keep: number } };
-    observeWaitingClock(waitingKey(machineId, paneId), response.headers.get("x-server-time") ?? answer.server_time, received, receivedWall);
-    if (delta === undefined || known === undefined) return { response, body: answer, whole: true };
-    return { response, body: { ...answer, turns: [...known.body.turns.slice(delta.drop, delta.drop + delta.keep), ...answer.turns] }, whole: false };
-  }, chatReadDeadlineMs(machineId), page.signal).catch((cause: unknown) => {
+  const { response, body, whole } = await withChatReadDeadline((signal) => readForkConversation(requestUrl, url, known, page.fresh, signal, machineId, paneId), chatReadDeadlineMs(machineId), page.signal).catch((cause: unknown) => {
     // a failed read gives up what it held of the pages' order: a later read is the newest again
     if (polled && lastNewestRead.get(url) === read) lastNewestRead.delete(url);
     if (plain !== undefined && lastNewestRead.get(plain) === read) lastNewestRead.delete(plain);
@@ -1070,7 +1053,7 @@ export async function uploadPaneImage(paneId: string, image: Blob, machineId = "
   return ((await response.json()) as { path: string }).path;
 }
 
-async function sendJson(url: string, method: "POST" | "PATCH" | "PUT" | "DELETE", body: unknown, keepalive = false): Promise<Response> {
+export async function sendJson(url: string, method: "POST" | "PATCH" | "PUT" | "DELETE", body: unknown, keepalive = false): Promise<Response> {
   const response = await apiFetch(url, {
     method,
     headers: { "content-type": "application/json", "x-herdr-machine": "1" },
@@ -1394,17 +1377,6 @@ export function listWorktrees(workspaceId: string, machineId = "local"): Promise
   return getJson<WorktreeListing>(`${machinePath(machineId, "worktree/list")}?workspace_id=${encodeURIComponent(workspaceId)}`);
 }
 
-/** GET /api/worktree/pull-requests: the repository's open pull requests, read with the `gh` account that can see it; never cached. */
-export function listPullRequests(workspaceId: string, machineId = "local"): Promise<PullRequestListing> {
-  return getJson<PullRequestListing>(`${machinePath(machineId, "worktree/pull-requests")}?workspace_id=${encodeURIComponent(workspaceId)}`, { cache: "no-store" });
-}
-
-/** POST /api/worktree/pull-request-fetch: the pull request's branch fetched from origin; the ref a worktree starts from. */
-export async function fetchPullRequestBranch(workspaceId: string, branch: string, machineId = "local"): Promise<{ ref: string }> {
-  const response = await sendJson(machinePath(machineId, "worktree/pull-request-fetch"), "POST", { workspace_id: workspaceId, branch });
-  return (await response.json()) as { ref: string };
-}
-
 /**
  * GET /api/worktree/inventory: what listWorktrees answers for each workspace, in one read (at most
  * MAX_INVENTORY_WORKSPACES). A PC whose bridge is from before it answers 404 not_found (routeMissing).
@@ -1509,11 +1481,6 @@ export async function fetchPaneCommands(paneId: string, machineId = "local"): Pr
   // a read that never answers would be shared by every later caller for good: it fails at a deadline instead,
   // past the 45 s the server waits for a scan before it answers 503 (server/commands.ts COMMANDS_WAIT_MS)
   return (await withChatReadDeadline((signal) => getJson<{ commands: SlashCommand[] }>(machinePath(machineId, `pane/commands?pane_id=${encodeURIComponent(paneId)}`), { signal }), 4 * chatReadDeadlineMs(machineId))).commands;
-}
-
-/** GET /api/pane/pi-voice: whether the pane's Pi can take a live voice call from this phone, and whether one is on. */
-export async function fetchPiVoiceStatus(paneId: string, machineId = "local"): Promise<PiVoiceStatus> {
-  return getJson<PiVoiceStatus>(machinePath(machineId, `pane/pi-voice?pane_id=${encodeURIComponent(paneId)}`));
 }
 
 /**

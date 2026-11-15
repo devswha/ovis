@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, jest, setSystemTime } from
 import { act, useLayoutEffect, useState } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 
-import { buildSnapshot, type HcTerminal } from "../../server/herdr-core/snapshot.ts";
 import type { Machine } from "../../shared/machines.ts";
 import type { AgentStatus } from "../../shared/protocol.ts";
 import machinesFixture from "../../site/demo/fixtures/machines.json";
@@ -157,30 +156,6 @@ describe("AgentSidebar phone sheet live row", () => {
       getItem: (key) => key === "ovis:settings" ? JSON.stringify({ agentLocks, lockedAgents }) : null, setItem() {}, removeItem() {},
     };
   };
-
-  it("shows unplaced hc pi session names instead of generated tab names, but keeps explicit Ovis names", async () => {
-    const shell: HcTerminal = { address: "t1", cwd: "/work/agents-app", state: "live", cols: 80, rows: 24,
-      labels: { "herdr.space": "workspace", "herdr.tab": "tab" } };
-    const pi = (address: string, extra: Partial<HcTerminal> = {}): HcTerminal => ({
-      ...shell, address, labels: {}, title: "π - agents-app", status: { app: "pi", state: "idle" }, ...extra,
-    });
-    const snapshot = buildSnapshot([
-      shell,
-      pi("t17"),
-      pi("t18", { name: "general" }),
-      pi("t19", { name: "general", labels: { "ovis.tab": "My Ovis tab" } }),
-      pi("t20", { name: "general", parent: "t1" }),
-      pi("t21", { parent: "t1", labels: { "ovis.tab": "My helper tab" } }),
-      pi("t22", { name: "general", labels: { "ovis.pane": "My pane" } }),
-    ], null, "0.1.19", undefined, undefined, undefined, undefined, () => "VPS off herdr");
-    const machine = { ...roster().find((entry) => entry.id === "local")!, snapshot };
-    await act(async () => { renderer = create(view([machine]), { createNodeMock: () => anchor }); });
-    const displayedTitle = (id: string) => renderer!.root.findByProps({ "data-machine": "local", "data-pane": id })
-      .findByProps({ className: "agent-title" }).children.join("");
-    expect(["t17", "t18", "t19", "t20", "t21", "t22"].map(displayedTitle)).toEqual([
-      "VPS off herdr", "VPS off herdr", "My Ovis tab", "VPS off herdr", "My helper tab", "My pane",
-    ]);
-  });
 
   it("offers no lock, and holds none, until Lock pinned agents is turned on (#2432)", async () => {
     lockSetting(false, [`local:${paneId}`]);

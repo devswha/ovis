@@ -1,7 +1,7 @@
 import type { AgentStatus } from "../../shared/protocol.ts";
-import { friendPicturePath, type Friend } from "../../shared/friends.ts";
+import { forkAlert, forkNotificationIcon, forkNotificationState, refreshForkNotificationState, requestForkNotificationPermission } from "../fork/notifications.ts";
 import { ENDED_NOTIFICATION_BODY, paneNotificationTag, statusNotificationBody } from "../../shared/notify-policy.ts";
-import { callNative, hasNativePlugin, nativeAlerts, nativeAlertsState, PUSH_PLUGIN, requestNativeAlerts, showNativeAlert } from "./nativeApp.ts";
+import { callNative, hasNativePlugin, nativeAlerts, PUSH_PLUGIN } from "./nativeApp.ts";
 
 /**
  * Tab alerts: Web Notifications for pane status transitions while this page is open
@@ -22,8 +22,6 @@ export type NotificationState = "unsupported" | "default" | "granted" | "denied"
 
 /** The app's permission, the newest of its push plugin's answers (`askApp`); the page cannot read it synchronously. */
 let appPermission: NotificationState = "default";
-// an app without the push plugin shows alerts itself (HerdrShellPlugin): its last answer
-let nativeState: NotificationState = "default";
 /**
  * Orders the plugin's answers, so an out-of-date one never replaces a newer one. A check counts from
  * when it was asked: what it read can be older than an answer that overtakes it (the page came back
@@ -35,7 +33,7 @@ let answeredTurn = 0;
 
 export function notificationState(): NotificationState {
   if (hasNativePlugin(PUSH_PLUGIN)) return appPermission;
-  if (nativeAlerts()) return nativeState;
+  if (nativeAlerts()) return forkNotificationState();
   if (typeof globalThis.Notification === "undefined") return "unsupported";
   return globalThis.Notification.permission;
 }
@@ -58,35 +56,31 @@ async function askApp(method: "checkPermissions" | "requestPermissions"): Promis
 /** The app's permission read anew from its push plugin, as the phone's Settings can change it while the page is away; elsewhere notificationState(). */
 export async function refreshNotificationState(): Promise<NotificationState> {
   if (hasNativePlugin(PUSH_PLUGIN)) return askApp("checkPermissions");
-  if (nativeAlerts()) nativeState = await nativeAlertsState();
+  await refreshForkNotificationState();
   return notificationState();
 }
 
 export async function requestNotificationPermission(): Promise<NotificationState> {
   if (hasNativePlugin(PUSH_PLUGIN)) return askApp("requestPermissions");
-  if (nativeAlerts()) return nativeState = await requestNativeAlerts();
+  if (nativeAlerts()) return requestForkNotificationPermission();
   if (typeof globalThis.Notification === "undefined") return "unsupported";
   const permission = await globalThis.Notification.requestPermission();
   return permission === "granted" ? "granted" : permission === "denied" ? "denied" : "default";
 }
 
 /**
- * The Android app shows it natively. Elsewhere, through the service worker when there is
- * one: Android Chrome has no `new Notification()`, and the worker's notificationclick
- * (public/sw.js) selects the pane. The constructor is the fallback for a page without a worker.
+ * Shown through the service worker when there is one: Android Chrome has no
+ * `new Notification()`, and the worker's notificationclick (public/sw.js) selects the
+ * pane. The constructor is the fallback for a page without a worker.
  */
-async function show(paneId: string, title: string, body: string, onClick?: () => void, machineId = "local", workspaceId?: string, friend?: Friend): Promise<void> {
-  if (nativeAlerts()) {
-    // a tap comes back through nativeAlertTaps (lib/notificationTarget.ts), as a worker's would
-    if (nativeState === "granted" && document.hidden) await showNativeAlert({ title, body, tag: paneNotificationTag(paneId, machineId), pane_id: paneId, machine_id: machineId, ...(workspaceId ? { workspace_id: workspaceId } : {}), ...(friend ? { friend } : {}) }).catch(() => {});
-    return;
-  }
+async function show(paneId: string, title: string, body: string, onClick?: () => void, machineId = "local", workspaceId?: string): Promise<void> {
+  if (await forkAlert(paneId, title, body, machineId, workspaceId)) return;
   if (typeof globalThis.Notification === "undefined") return;
   if (globalThis.Notification.permission !== "granted") return;
   if (typeof document !== "undefined" && !document.hidden) return; // visible tab: the UI already shows it
   const tag = paneNotificationTag(paneId, machineId);
   const alertId = crypto.randomUUID();
-  const options: NotificationOptions = { body, tag, data: { pane_id: paneId, machine_id: machineId, ...(workspaceId ? { workspace_id: workspaceId } : {}), alert_id: alertId }, icon: friend ? friendPicturePath(friend) : "/icons/icon-192.png?v=sheep1" };
+  const options: NotificationOptions = { body, tag, data: { pane_id: paneId, machine_id: machineId, ...(workspaceId ? { workspace_id: workspaceId } : {}), alert_id: alertId }, icon: forkNotificationIcon(machineId, paneId) };
   try {
     const registration = "serviceWorker" in navigator ? await navigator.serviceWorker.getRegistration() : undefined;
     if (registration?.active) {
@@ -139,14 +133,11 @@ export async function showTestNotification(title: string, body: string): Promise
   }
 }
 
-/**
- * `workspaceId`: the pane's workspace, as the server's push names it (server/push.ts), so a tap after the pane ends opens it.
- * `friend`: the friend that workspace wears, the notification's picture; without one it shows the app's icon.
- */
-export function showPaneStatusNotification(paneId: string, title: string, status: AgentStatus, onClick?: () => void, machineId = "local", workspaceId?: string, friend?: Friend): Promise<void> {
-  return show(paneId, title, statusNotificationBody(status), onClick, machineId, workspaceId, friend);
+/** `workspaceId`: the pane's workspace, as the server's push names it (server/push.ts), so a tap after the pane ends opens it. */
+export function showPaneStatusNotification(paneId: string, title: string, status: AgentStatus, onClick?: () => void, machineId = "local", workspaceId?: string): Promise<void> {
+  return show(paneId, title, statusNotificationBody(status), onClick, machineId, workspaceId);
 }
 
-export function showPaneEndedNotification(paneId: string, title: string, onClick?: () => void, machineId = "local", workspaceId?: string, friend?: Friend): Promise<void> {
-  return show(paneId, title, ENDED_NOTIFICATION_BODY, onClick, machineId, workspaceId, friend);
+export function showPaneEndedNotification(paneId: string, title: string, onClick?: () => void, machineId = "local", workspaceId?: string): Promise<void> {
+  return show(paneId, title, ENDED_NOTIFICATION_BODY, onClick, machineId, workspaceId);
 }

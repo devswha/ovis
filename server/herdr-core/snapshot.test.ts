@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import type { HerdrPane } from "../../shared/protocol.ts";
 import type { ProgramPlatform } from "../agent-identity.ts";
-import { agentOf, buildSnapshot, coreHost, type HcTerminal, keyBytes, opencodeRecords, OTHER_WORKSPACE_ID, terminalPlatform } from "./snapshot.ts";
+import { agentOf, buildSnapshot, type HcTerminal, keyBytes, opencodeRecords, OTHER_WORKSPACE_ID, terminalPlatform } from "./snapshot.ts";
 
 function terminal(address: string, extra: Partial<HcTerminal> = {}): HcTerminal {
   return { address, cols: 120, rows: 40, cwd: "/home/u", state: "live", ...extra };
@@ -482,28 +482,6 @@ describe("OpenCode sessions", () => {
       (entry) => entry.address === "t1" ? session : null);
     expect(snapshot.panes.map((pane) => pane.agent_session ?? null)).toEqual([session, null]);
     expect(snapshot.agents.map((agent) => agent.agent_session ?? null)).toEqual([session]);
-  });
-});
-
-describe("pi names", () => {
-  it("prefers the session name, then hc's name, then the cleaned title", () => {
-    const pi = { status: { app: "pi", state: "idle" }, title: "π - agents-app" };
-    const snapshot = buildSnapshot([
-      terminal("t1", { ...pi, name: "general" }),
-      terminal("t2", { ...pi, name: "general" }),
-      terminal("t3", pi),
-      terminal("t4", { ...pi, labels: { "ovis.pane": "My label" } }),
-      terminal("t5", { title: "π - not-pi" }),
-    ], null, "0.1.19", undefined, undefined, undefined, coreHost(false, "linux"),
-    (entry) => ["t1", "t4"].includes(entry.address) ? "VPS off herdr" : null);
-    expect(snapshot.panes.map((pane) => [pane.label, pane.title, pane.terminal_title])).toEqual([
-      [null, "VPS off herdr", "π - agents-app"],
-      [null, "general", "π - agents-app"],
-      [null, "agents-app", "π - agents-app"],
-      ["My label", "VPS off herdr", "π - agents-app"],
-      [null, "π - not-pi", "π - not-pi"],
-    ]);
-    expect(snapshot.agents.map((agent) => agent.title)).toEqual(["VPS off herdr", "general", "agents-app", "VPS off herdr"]);
   });
 });
 

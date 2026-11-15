@@ -25,7 +25,7 @@ export function repairOutcome(result: PushActionResult): PushActionOutcome {
 }
 
 /** The browser's notification permission and whether this device has a push subscription. */
-export function useNotificationState(alertsOn = false) {
+export function useNotificationState() {
   const [notifications, setNotifications] = useState<NotificationState>(() => notificationState());
   // in the phone app the permission is the app's (lib/notifications.ts): read from the app at load,
   // and again whenever the page comes back, as it may have been changed in the phone's Settings
@@ -66,14 +66,6 @@ export function useNotificationState(alertsOn = false) {
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, []);
-  // the Android app without the push plugin asks once on load when alerts are on (they sync, or
-  // were on before a reinstall) and nobody asked yet
-  const asked = useRef(false);
-  useEffect(() => {
-    if (!alertsOn || notifications !== "default" || !nativeAlerts() || asked.current) return;
-    asked.current = true;
-    void requestNotificationPermission().then(setNotifications);
-  }, [alertsOn, notifications]);
   // this device has a server-side push subscription: alerts come from the server, not the tab
   const [pushOn, setPushOn] = useState(false);
   const pushOnRef = useRef(pushOn);
