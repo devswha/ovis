@@ -37,6 +37,9 @@ const SEND_TIMEOUT_MS = 10_000;
 const START_DELAY_MS = 15_000;
 /** after the notice was shown, time to read it and press Turn off before the first event goes */
 export const NOTICE_GRACE_MS = 10 * 60_000;
+/** the first notices that named the settings snapshot (3) and the daily visit with the agent kinds (4): shared/telemetry-notice.ts */
+const SETTINGS_NOTICE_VERSION = 3;
+const VISITS_NOTICE_VERSION = 4;
 const TELEMETRY_CHANGE_KEYS = new Set(["enabled", "notice_seen", "notice_version", "settings", "alert_opened", "counts"]);
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 /** today's usage (its kinds of screen and ways in as much as its counts) changes on the wire at most this often, and only with a
@@ -279,14 +282,16 @@ function readSaved(file: string, offFile: string): Saved | null {
     }
     // a notice from before it said what is sent now does not count: it is shown again first
     const noticeSeenAt = value["notice_version"] === NOTICE_VERSION && typeof value["notice_seen_at"] === "string" ? value["notice_seen_at"] : null;
-    const active = readActive(value["active"]);
+    // the notice that was seen, if any: what was kept under it stays only as far as it said so
+    const seenVersion = typeof value["notice_seen_at"] === "string" && typeof value["notice_version"] === "number" ? value["notice_version"] : 0;
+    const active = seenVersion >= VISITS_NOTICE_VERSION ? readActive(value["active"]) : [];
     return {
       install_id: value["install_id"],
       enabled: value["enabled"] !== false && !offMarked(offFile),
       notice_seen_at: noticeSeenAt,
       notice_version: NOTICE_VERSION,
       reported_version: typeof value["reported_version"] === "string" ? value["reported_version"] : null,
-      settings: telemetrySettings(value["settings"]),
+      settings: seenVersion >= SETTINGS_NOTICE_VERSION ? telemetrySettings(value["settings"]) : null,
       active: noticeSeenAt !== null && value["usage_after_notice"] === true ? active : withoutUsage(active),
       usage_after_notice: true,
       // counted only once the current notice was shown: a file whose notice is older keeps none
@@ -458,12 +463,14 @@ export class Telemetry {
     this.refresh();
     // off is marked before FILE is written, whatever another server writes to FILE meanwhile
     if (clean.enabled === false) this.markOff();
+    // nothing kept before an off is sent after it: the off, and an on after an off (one another server marked), drop every
+    // visit day and count day not yet delivered
+    if (clean.enabled === false || (clean.enabled === true && !this.saved.enabled)) this.forgetUnsent();
     if (clean.enabled !== undefined) this.saved.enabled = clean.enabled;
-    // counts not delivered yet go with the off: turned on again, nothing counted before it is sent
-    if (clean.enabled === false) this.saved.counts = [];
-    // kept for the next install/update event; telling it sends nothing by itself
-    if (clean.settings !== undefined) this.saved.settings = clean.settings;
     if (clean.notice_seen && this.saved.notice_seen_at === null) this.saved.notice_seen_at = new Date(this.now()).toISOString();
+    // kept for the next install/update event, and only once the notice that names it was seen (the page sends it with its
+    // acknowledgement); telling it sends nothing by itself
+    if (clean.settings !== undefined && this.saved.notice_seen_at !== null) this.saved.settings = clean.settings;
     this.persist();
     // and again after: an on from another server between the two writes cannot leave this off without its mark
     if (clean.enabled === false) this.markOff();
@@ -484,6 +491,15 @@ export class Telemetry {
     void this.flushActive();
     void this.flushCounts();
     return this.status();
+  }
+
+  /**
+   * Every day kept and not delivered yet, gone: visit days and count days. This version's install or update event is no
+   * record of a day: it says what runs now, so it still goes once the counts are on (with the settings told since).
+   */
+  private forgetUnsent(): void {
+    this.saved.active = [];
+    this.saved.counts = [];
   }
 
   /** Whether a browser visit is recorded at all: never while the switch is off or the environment forbids sending. */
@@ -616,8 +632,8 @@ export class Telemetry {
    * visit with the kinds known so far.
    */
   active(agents: readonly (string | null | undefined)[] | Promise<readonly (string | null | undefined)[]>, visit: { surface?: TelemetrySurface | null; ingress?: TelemetryIngress | null } = {}): Promise<void> {
-    // a visit made while off is not kept for when the switch is turned on again
-    if (!this.counting()) {
+    // a visit made while off, or before the current notice was seen, is not kept for later
+    if (!this.countingUsage()) {
       Promise.resolve(agents).catch(() => {});
       return Promise.resolve();
     }
@@ -630,10 +646,8 @@ export class Telemetry {
     }
     const today = this.saved.active.find((entry) => entry.day === day);
     if (today) {
-      // before the current notice a visit is a day of use, nothing more (countingUsage)
-      const usageCounted = this.saved.notice_seen_at !== null;
-      const surfaces = withKind(today.usage.surfaces, usageCounted ? visit.surface : null);
-      const ingress = withKind(today.usage.ingress, usageCounted ? visit.ingress : null);
+      const surfaces = withKind(today.usage.surfaces, visit.surface);
+      const ingress = withKind(today.usage.ingress, visit.ingress);
       if (!today.visited || surfaces.join() !== today.usage.surfaces.join() || ingress.join() !== today.usage.ingress.join()) {
         today.visited = true;
         today.usage = { ...today.usage, surfaces, ingress };
@@ -652,8 +666,9 @@ export class Telemetry {
         console.error(`telemetry: the panes could not be read (${message(error)})`);
         found = [];
       }
-      // turned off while the panes were read: the visit stays recorded, what was read is not kept
-      if (!this.counting()) return;
+      // turned off while the panes were read: the off dropped the visit, and what was read is not kept (an on since then
+      // finds no day to add it to)
+      if (!this.countingUsage()) return;
       const entry = this.saved.active.find((known) => known.day === day);
       if (entry) {
         const merged = [...new Set([...entry.harnesses, ...found.map(harnessOf).filter((harness) => harness !== null)])].sort();

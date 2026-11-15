@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SUPPORTED_AGENT_KINDS } from "../shared/supported-agents.ts";
@@ -63,6 +63,9 @@ function setup(options: { version?: string; env?: Record<string, string>; status
 
 /** runs every queued promise continuation, so a send that already got its answer has finished */
 const settled = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+/** a POST to /api/telemetry as the app makes it */
+const telemetryPost = (body: unknown) => new Request("http://localhost/api/telemetry", { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify(body) });
 
 function savedFile(stateDir: string) {
   return JSON.parse(readFileSync(join(stateDir, "telemetry.json"), "utf8"));
@@ -228,11 +231,13 @@ describe("telemetry events", () => {
       usageHidden: ["private-account-key"],
     });
     const { telemetry, sent, stateDir } = setup();
+    // told before the notice: not kept (the page sends its settings with the acknowledgement)
     telemetry.change({ settings });
+    expect(telemetry.status().next?.settings).toBeNull();
     await telemetry.report();
     expect(sent).toEqual([]);
 
-    telemetry.change({ notice_seen: true, notice_version: NOTICE_VERSION });
+    telemetry.change({ notice_seen: true, notice_version: NOTICE_VERSION, settings });
     await telemetry.report();
     expect(sent).toHaveLength(1);
     expect(sent[0]!.settings).toEqual(settings);
@@ -259,10 +264,11 @@ describe("telemetry events", () => {
   });
 
   test("invalid settings cannot be persisted or sent, and changing settings after a counted version adds no event", async () => {
-    const { telemetry, sent, stateDir } = setup();
+    // the grace holds the install event, so its preview can be read after the acknowledgement
+    const { telemetry, sent, stateDir, clock } = setup({ grace: 600_000 });
     const safe = settingsSnapshot();
     const submitted = { ...safe };
-    telemetry.change({ settings: submitted });
+    telemetry.change({ notice_seen: true, notice_version: NOTICE_VERSION, settings: submitted });
     submitted.theme = "light";
     const preview = telemetry.status().next?.settings;
     expect(preview).toEqual(safe);
@@ -277,7 +283,7 @@ describe("telemetry events", () => {
     expect(telemetry.status().next?.settings).toEqual(safe);
     expect(sent).toEqual([]);
 
-    telemetry.change({ notice_seen: true, notice_version: NOTICE_VERSION });
+    clock.now += 600_001;
     await telemetry.report();
     expect(sent).toHaveLength(1);
     telemetry.change({ settings: settingsSnapshot({ theme: "light" }) });
@@ -418,6 +424,7 @@ describe("daily active message", () => {
 
   test("(g) status().active previews today's message as it would be sent", async () => {
     const { telemetry } = setup();
+    seen(telemetry);
     const before = telemetry.status().active;
     expect(before).toEqual({ event: "active", day: "2026-10-08", install_id: expect.stringMatching(/^[0-9a-f-]{36}$/), version: "0.4.1", os: "linux", arch: "x64", install_method: "source", harnesses: [], usage: emptyUsage(), runtime: "herdr" });
     await telemetry.active(["codex", "claude", undefined]);
@@ -433,19 +440,62 @@ describe("daily active message", () => {
     expect(missing).toEqual([]);
   });
 
-  test("(j) a visit before the notice is delivered once the grace after the notice has passed", async () => {
-    const { telemetry, actives, clock, nextActive, fireTimer } = setup({ grace: 600_000 });
-    await telemetry.active(["claude"]);
-    expect(actives).toEqual([]);
-    seen(telemetry);
+  test("(j) a visit before the notice is not kept: once it is seen, only a later visit goes, after the grace", async () => {
+    const { telemetry, actives, clock } = setup({ grace: 600_000 });
+    await telemetry.active(["claude"], { surface: "ios-app", ingress: "tailscale" });
+    expect(telemetry.status().active).toMatchObject({ harnesses: [], usage: emptyUsage() });
+    expect((await handleTelemetryRequest(telemetryPost({ notice_seen: true, notice_version: NOTICE_VERSION }), telemetry)).status).toBe(200);
     await settled();
-    expect(actives).toEqual([]);
     clock.now += 600_001;
-    const delivered = nextActive();
-    fireTimer();
-    expect(await delivered).toMatchObject({ event: "active", day: "2026-10-08", harnesses: ["claude"] });
-    await settled();
-    expect(actives).toHaveLength(1);
+    await telemetry.active([]);
+    expect(actives.map((active) => [active.day, active.harnesses, active.usage.surfaces])).toEqual([["2026-10-08", [], []]]);
+  });
+
+  test("nothing is kept before the current notice: a new install, and one whose older notice did not name it", async () => {
+    // a new install: a visit, its usage and the settings told before the acknowledgement are not kept
+    const fresh = setup({ grace: 600_000 });
+    await fresh.telemetry.active(["claude"], { surface: "ios-app", ingress: "tailscale" });
+    fresh.telemetry.tally("prompt_answers");
+    expect((await handleTelemetryRequest(telemetryPost({ settings: settingsSnapshot() }), fresh.telemetry)).status).toBe(200);
+    expect(fresh.telemetry.status()).toMatchObject({ notice_seen: false, active: { harnesses: [], usage: emptyUsage() }, next: { settings: null } });
+    expect(existsSync(join(fresh.stateDir, "telemetry.json")) ? savedFile(fresh.stateDir) : { active: [], settings: null }).toMatchObject({ active: [], settings: null });
+    // a file from builds whose notice named neither the visits (before 4) nor the settings (before 3): neither is kept
+    // until the current notice is seen; one whose notice named the visits keeps them, without the usage it did not name
+    const day = { day: "2026-10-07", harnesses: ["claude"], sent: null, visited: true, usage: { ...emptyUsage(), prompt_answers: 2 }, sent_usage: null, sent_at: null };
+    const cases: [number, { active: (typeof day)[]; settings: TelemetrySettings | null }][] = [[2, { active: [], settings: null }], [3, { active: [], settings: settingsSnapshot() }], [4, { active: [{ ...day, usage: emptyUsage() }], settings: settingsSnapshot() }]];
+    for (const [older, kept] of cases) {
+      const stateDir = mkdtempSync(join(tmpdir(), "telemetry-"));
+      dirs.push(stateDir);
+      writeFileSync(join(stateDir, "telemetry.json"), JSON.stringify({ install_id: "0b5f3c2e-8a51-4c47-9d0e-3f6a2b1c9e84", enabled: true, notice_seen_at: "2026-10-01T00:00:00.000Z", notice_version: older, reported_version: "0.4.1", settings: settingsSnapshot(), active: [day] }));
+      const { telemetry, actives } = setup({ stateDir });
+      expect(telemetry.status().notice_seen).toBe(false);
+      telemetry.change({ notice_seen: true, notice_version: NOTICE_VERSION });
+      await settled();
+      expect(savedFile(stateDir).settings).toEqual(kept.settings);
+      expect(actives.map((active): unknown[] => [active.day, active.harnesses, active.usage])).toEqual(kept.active.map((entry) => [entry.day, entry.harnesses, entry.usage]));
+    }
+  });
+
+  test("an off drops every visit day and usage not yet sent, and on again sends nothing from before it", async () => {
+    for (const off of ["here", "another server"] as const) {
+      const { telemetry, actives, clock, stateDir } = setup({ grace: 600_000 });
+      seen(telemetry);
+      // held by the grace: a visit with its usage, not sent yet
+      await telemetry.active(["claude"], { surface: "ios-app", ingress: "tailscale" });
+      telemetry.tally("prompt_answers");
+      expect(savedFile(stateDir).active).toHaveLength(1);
+      if (off === "here") {
+        expect((await handleTelemetryRequest(telemetryPost({ enabled: false }), telemetry)).status).toBe(200);
+        expect(savedFile(stateDir).active).toEqual([]);
+      } else writeFileSync(join(stateDir, "telemetry-off"), "");
+      expect(telemetry.status().enabled).toBe(false);
+      expect((await handleTelemetryRequest(telemetryPost({ enabled: true }), telemetry)).status).toBe(200);
+      clock.now += 600_001;
+      telemetry.change({ enabled: true });
+      await settled();
+      expect(actives).toEqual([]);
+      expect(savedFile(stateDir).active).toEqual([]);
+    }
   });
 
   test("(k) an install that was never visited sends no active message", async () => {
@@ -460,9 +510,9 @@ describe("daily active message", () => {
 
   test("(l) a visit held by the grace across midnight is delivered for its own day", async () => {
     const { telemetry, actives, clock, nextActive, fireTimer } = setup({ grace: 600_000, now: "2026-10-08T23:55:00Z" });
-    await telemetry.active(["claude"]);
-    clock.now = Date.parse("2026-10-08T23:56:00Z");
     seen(telemetry);
+    clock.now = Date.parse("2026-10-08T23:56:00Z");
+    await telemetry.active(["claude"]);
     clock.now = Date.parse("2026-10-09T00:07:00Z");
     const delivered = nextActive();
     fireTimer();
@@ -473,12 +523,14 @@ describe("daily active message", () => {
   });
 
   test("(m) an undelivered day older than ACTIVE_LATE_DAYS is dropped and never sent", async () => {
-    const { telemetry, actives, clock, stateDir } = setup();
+    // held by a grace as long as ACTIVE_LATE_DAYS, so neither day goes before the first is too old
+    const { telemetry, actives, clock, stateDir } = setup({ grace: ACTIVE_LATE_DAYS * 86_400_000 });
+    seen(telemetry);
     await telemetry.active(["claude"]);
     clock.now += 86_400_000;
     await telemetry.active(["codex"]);
     clock.now += ACTIVE_LATE_DAYS * 86_400_000;
-    seen(telemetry);
+    telemetry.change({ enabled: true });
     await settled();
     expect(actives.map((active) => [active.day, active.harnesses])).toEqual([["2026-10-09", ["codex"]]]);
     expect(savedFile(stateDir).active.map((entry: { day: string }) => entry.day)).toEqual(["2026-10-09"]);
@@ -496,18 +548,19 @@ describe("daily active message", () => {
     expect(telemetry.status().active).toMatchObject({ day: "2026-10-09", harnesses: [] });
   });
 
-  test("(p) agents read after the switch was turned off are not kept or sent", async () => {
-    const { telemetry, actives, stateDir } = setup();
+  test("(p) a visit whose panes are read across an off and an on is not kept, and nothing of it is sent", async () => {
+    const { telemetry, actives, stateDir } = setup({ grace: 600_000 });
     seen(telemetry);
     const agents = Promise.withResolvers<string[]>();
     const visit = telemetry.active(agents.promise);
+    expect(savedFile(stateDir).active).toHaveLength(1);
     telemetry.change({ enabled: false });
+    telemetry.change({ enabled: true });
     agents.resolve(["codex"]);
     await visit;
-    expect(savedFile(stateDir).active).toEqual([{ day: "2026-10-08", harnesses: [], sent: null, visited: true, usage: emptyUsage(), sent_usage: null, wire_usage: null, sent_at: null }]);
-    telemetry.change({ enabled: true });
+    expect(savedFile(stateDir).active).toEqual([]);
     await settled();
-    expect(actives.map((active) => [active.day, active.harnesses])).toEqual([["2026-10-08", []]]);
+    expect(actives).toEqual([]);
   });
 
   test("(o) a pane read that fails still counts the visit", async () => {
@@ -669,7 +722,8 @@ describe("daily usage", () => {
       before.telemetry.tally("prompt_answers");
       before.telemetry.tally("alerts_delivered");
       expect((await handleTelemetryRequest(tap(), before.telemetry)).status).toBe(200);
-      expect(savedFile(stateDir).active.map((entry: { usage: unknown }) => entry.usage)).toEqual([emptyUsage()]);
+      // no day at all: the visit is not kept either
+      expect(existsSync(join(stateDir, "telemetry.json")) ? savedFile(stateDir).active : []).toEqual([]);
       // after a restart and the notice, the day goes out without anything counted before it
       const after = setup({ stateDir });
       seen(after.telemetry);
@@ -909,6 +963,7 @@ describe("another server on the same state directory", () => {
     dirs.push(stateDir);
     const days: string[] = [];
     const { telemetry, clock } = setup({
+      grace: 129_600_000,
       stateDir,
       fetch: (async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
         if (String(url) === TEST_ACTIVE_URL) {
@@ -919,11 +974,13 @@ describe("another server on the same state directory", () => {
         return new Response(null, { status: 204 });
       }) as typeof fetch,
     });
-    // two days owed: visited before the notice, sent together once it was seen
+    // two days owed: visited within a grace of a day and a half, sent together once it has passed
+    seen(telemetry);
     await telemetry.active(["claude"]);
     clock.now += 86_400_000;
     await telemetry.active(["claude"]);
-    seen(telemetry);
+    clock.now += 86_400_000;
+    telemetry.change({ enabled: true });
     await settled();
     expect(days).toEqual(["2026-10-08"]);
   });
