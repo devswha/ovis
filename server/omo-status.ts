@@ -162,8 +162,11 @@ export interface OmoFile {
 }
 
 export interface OmoStatusDeps {
-  /** the panes of a snapshot that run OmO, whatever herdr calls them: one process lookup per pane */
-  discover: (panes: HerdrPane[]) => Promise<Map<string, OmoPane>>;
+  /**
+   * The panes of a snapshot that run OmO, whatever herdr calls them: one process lookup per pane. A pane given as
+   * null could not be read this time, which says nothing of the agent there: what was known of it stands.
+   */
+  discover: (panes: HerdrPane[]) => Promise<Map<string, OmoPane | null>>;
   snapshot: () => Promise<SessionSnapshot>;
   /**
    * `turn`: the pane's turn started or ended; otherwise only its background tasks changed.
@@ -172,8 +175,8 @@ export interface OmoStatusDeps {
   onChange: (paneId: string, status: AgentStatus, background: number, turn: boolean, rest?: OmoRest) => void;
   /** a pane was found to run OmO: what herdr called it until now is the same agent */
   onFound?: (paneId: string, again: boolean) => void;
-  /** the agent's process a pane held is gone: discovery no longer finds the agent there, or finds another process of it */
-  onLost?: (paneId: string) => void;
+  /** the agent's process a pane held is gone: discovery read the pane and no longer finds the agent there, or finds another process of it (`replaced`) */
+  onLost?: (paneId: string, replaced: boolean) => void;
   /** the identity the panes' status is reported under (`omo`), and the names herdr gave the agent before */
   agent?: string;
   aliases?: readonly string[];
@@ -341,17 +344,18 @@ export class OmoStatus {
         if (found.has(paneId)) continue;
         this.remember(paneId, gone);
         this.panes.delete(paneId);
-        this.deps.onLost?.(paneId);
+        this.deps.onLost?.(paneId, false);
       }
       for (const paneId of [...this.last.keys()]) if (!cwds.has(paneId)) this.last.delete(paneId);
       for (const [paneId, pane] of found) {
+        if (pane === null) continue;
         const before = this.panes.get(paneId);
         // `again`: OmO held it when last looked at, and goes on from what it read then
         if (!before) this.deps.onFound?.(paneId, this.last.has(paneId));
         // another process started in the pane since (both starts known): a new lifetime, whose session is read anew
         // and whose background work is its own, though it resumes the same session
         const restarted = before !== undefined && before.startedAt !== null && pane.startedAt !== null && pane.startedAt !== before.startedAt;
-        if (restarted) this.deps.onLost?.(paneId);
+        if (restarted) this.deps.onLost?.(paneId, true);
         // the same session goes on being read from where it was: what happened meanwhile is told.
         // A start that cannot be read this time is the one read before
         if (before && before.path === pane.path && !restarted) before.startedAt = pane.startedAt ?? before.startedAt;

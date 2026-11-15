@@ -151,14 +151,16 @@ describe("OmO panes' status in place of herdr's", () => {
     const told: ([string, AgentStatus, number, boolean] | [string, AgentStatus, number, boolean, OmoRest])[] = [];
     const found: string[] = [];
     const again: boolean[] = [];
+    const lost: [string, boolean][] = [];
     const backgroundCwds: string[] = [];
-    const state = { background: 0, discovered: new Map<string, OmoPane>([["omo", { path: FILE, startedAt: null }], ["lost", { path: null, startedAt: null }]]), lookups: 0, clock: 0, failing: false, during: () => {} };
+    const state = { background: 0, discovered: new Map<string, OmoPane | null>([["omo", { path: FILE, startedAt: null }], ["lost", { path: null, startedAt: null }]]), lookups: 0, clock: 0, failing: false, during: () => {} };
     const omo = new OmoStatus({
       // the session of `lost` cannot be told (two OmO panes in one folder without /proc)
       discover: async () => { state.lookups += 1; state.during(); return new Map(state.discovered); },
       snapshot: async () => herdr(),
       onChange: (id, status, count, turn, rest) => told.push(rest ? [id, status, count, turn, rest] : [id, status, count, turn]),
       onFound: (id, held) => { found.push(id); again.push(held); },
+      onLost: (id, replaced) => lost.push([id, replaced]),
       file: {
         stat: (path) => path in files ? { size: Buffer.byteLength(files[path]!), id: ids[path] ?? "1" } : null,
         lines: (path, from, size, each) => { if (state.failing) return from; const text = Buffer.from(files[path]!).subarray(from, size).toString("utf8"); const whole = text.slice(0, text.lastIndexOf("\n") + 1); for (const line of whole.split("\n").slice(0, -1)) each({ text: line }); return from + Buffer.byteLength(whole); },
@@ -169,7 +171,7 @@ describe("OmO panes' status in place of herdr's", () => {
     const append = (...entries: string[]) => { files[FILE] += lines(...entries); };
     /** the file put anew in place of the old one, as a rewrite does */
     const replace = (...entries: string[]) => { files[FILE] = lines(...entries); ids[FILE] = `${Number(ids[FILE] ?? 1) + 1}`; };
-    return { omo, told, found, again, append, replace, state, files, backgroundCwds };
+    return { omo, told, found, again, lost, append, replace, state, files, backgroundCwds };
   }
   const statuses = (snapshot: SessionSnapshot) => Object.fromEntries(snapshot.panes.map((p) => [p.pane_id, `${p.agent}/${p.agent_status}`]));
 
@@ -364,6 +366,26 @@ describe("OmO panes' status in place of herdr's", () => {
     expect(found.filter((id) => id === "omo")).toEqual(["omo", "omo"]);
     expect(again.slice(found.indexOf("omo"), found.indexOf("omo") + 1)).toEqual([false]);
     expect(again[found.lastIndexOf("omo")]).toBe(true);
+  });
+
+  it("keeps a pane whose lookup could not be read, and calls it lost only once a lookup reads it without OmO", async () => {
+    // Given an OmO pane, tracked.
+    const { omo, lost, state } = setup();
+    await omo.refresh(herdr().panes);
+    // When the next lookup of the pane fails, which says nothing of OmO there.
+    state.discovered.set("omo", null);
+    state.clock += 10_000;
+    await omo.refresh(herdr().panes);
+    // Then the pane is OmO's as before, and nobody is told it left.
+    expect(omo.runs("omo")).toBe(true);
+    expect(lost).toEqual([]);
+    // When a lookup reads the pane and finds no OmO.
+    state.discovered.delete("omo");
+    state.clock += 10_000;
+    await omo.refresh(herdr().panes);
+    // Then it is lost, with no other OmO process in its place.
+    expect(omo.runs("omo")).toBe(false);
+    expect(lost).toEqual([["omo", false]]);
   });
 
   it("counts nothing for a folder that cannot be resolved, rather than throwing from the poll", () => {
