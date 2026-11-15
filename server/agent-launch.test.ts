@@ -149,22 +149,42 @@ describe("agentLaunch", () => {
       }
     });
 
-    it("lets a second launch change the level only once the first one's dsh-tui has started", async () => {
+    it("leaves a level set meanwhile when dsh-tui does not start, with a file before or none", async () => {
       const root = home();
+      mkdirSync(join(root, ".dsh-tui"));
+      writeFileSync(effortFile(root), JSON.stringify({ effort: "high" }));
+      const fresh = home();
       const shell = shellStarts(root);
       try {
-        const first = agentLaunch(PANE, { kind: "dsh-tui", args: ["--effort", "low"] }, undefined, undefined, { home: root });
-        const second = agentLaunch(PANE, { kind: "dsh-tui", args: ["--effort", "max"] }, undefined, undefined, { home: root });
-        await shell.called(1);
-        // the first dsh-tui boots and reads its level while the second launch waits
-        expect(saved(root)).toEqual({ effort: "low" });
-        shell.calls[0]!.finish(1);
-        expect(await first).toEqual({ agent_started: true });
+        const kept = agentLaunch(PANE, { kind: "dsh-tui", args: ["--effort", "off"] }, undefined, undefined, { home: root });
+        const made = agentLaunch(PANE, { kind: "dsh-tui", args: ["--effort", "low"] }, undefined, undefined, { home: fresh });
         await shell.called(2);
-        expect(JSON.parse(shell.calls[1]!.file!)).toEqual({ effort: "max" });
-        shell.calls[1]!.finish(2);
-        expect(await second).toEqual({ agent_started: true });
+        // the user's /effort max in another dsh-tui, while both starts wait
+        for (const at of [root, fresh]) writeFileSync(effortFile(at), JSON.stringify({ effort: "max" }, null, 2));
+        for (const call of shell.calls) call.fail(new Error("dsh-tui did not start in the pane"));
+        expect(await Promise.all([kept, made])).toMatchObject([{ agent_started: false }, { agent_started: false }]);
+        expect(saved(root)).toEqual({ effort: "max" });
+        expect(saved(fresh)).toEqual({ effort: "max" });
       } finally {
+        shell.restore();
+      }
+    });
+
+    it("answers with the start's error when putting the level back fails too", async () => {
+      const root = home();
+      const shell = shellStarts(root);
+      const warned = spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const answer = agentLaunch(PANE, { kind: "dsh-tui", args: ["--effort", "low"] }, undefined, undefined, { home: root });
+        await shell.called(1);
+        // the effort file is no longer a file: reading it back to compare throws
+        rmSync(effortFile(root));
+        mkdirSync(effortFile(root));
+        shell.calls[0]!.fail(new Error("dsh-tui did not start in the pane"));
+        expect(await answer).toMatchObject({ agent_started: false, error: { code: "agent_start_failed", message: "dsh-tui did not start in the pane" } });
+        expect(warned).toHaveBeenCalledTimes(1);
+      } finally {
+        warned.mockRestore();
         shell.restore();
       }
     });

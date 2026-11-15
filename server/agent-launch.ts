@@ -48,39 +48,36 @@ export function dshEffortArgs(args: readonly string[]): { args: string[]; effort
   return { args: rest, effort };
 }
 
-/** each effort file's latest dsh-tui start that set it, settled either way: the next launch that sets it waits for it */
-const dshEffortStarts = new Map<string, Promise<unknown>>();
-
 /**
  * Starts dsh-tui with its `--effort <level>` saved to `<home>/.dsh-tui/effort.json` instead, the file dsh-tui's own
  * `/effort <id>` writes and its boot reads (lib/types/effortPrefs.js), so the session starts on it and later ones
  * keep it, as after `/effort`; a /settings "default reasoning effort" set in dsh-tui still outranks it there. The
  * file is written just before the command is typed, since dsh-tui reads it as it boots, and put back as it was when
- * the start fails. One file serves every dsh-tui, so a launch that sets it waits until the previous one's process has
- * started; a dsh-tui started outside Ovis at that moment can still read the level. No home: nothing is saved.
+ * the start fails, unless something else changed it meanwhile. One file serves every dsh-tui and none takes a level
+ * of its own, so two launches at about the same time may both start on the later level. No home: nothing is saved.
  */
 async function startDshTui(paneId: string, args: string[], options: { locator?: ShellAgentLocator }, home: string): Promise<number | null> {
   const { args: rest, effort } = dshEffortArgs(args);
   if (effort === undefined || home === "") return startShellAgent("dsh-tui", paneId, rest, options);
   const file = join(home, ".dsh-tui", "effort.json");
-  const previous = dshEffortStarts.get(file);
-  const start = (async () => {
-    await previous;
-    const before = existsSync(file) ? readFileSync(file, "utf8") : null;
-    mkdirSync(join(home, ".dsh-tui"), { recursive: true });
-    writeFileSync(file, JSON.stringify({ effort }, null, 2));
+  const before = existsSync(file) ? readFileSync(file, "utf8") : null;
+  const written = JSON.stringify({ effort }, null, 2);
+  mkdirSync(join(home, ".dsh-tui"), { recursive: true });
+  writeFileSync(file, written);
+  try {
+    return await startShellAgent("dsh-tui", paneId, rest, options);
+  } catch (error) {
     try {
-      return await startShellAgent("dsh-tui", paneId, rest, options);
-    } catch (error) {
-      if (before === null) rmSync(file, { force: true });
-      else writeFileSync(file, before);
-      throw error;
+      // only this launch's own level is taken back: one the user set (or a file they removed) meanwhile stays
+      if (existsSync(file) && readFileSync(file, "utf8") === written) {
+        if (before === null) rmSync(file);
+        else writeFileSync(file, before);
+      }
+    } catch (restoreError) {
+      console.warn(`dsh-tui effort: ${file} could not be put back (${restoreError instanceof Error ? restoreError.message : String(restoreError)})`);
     }
-  })();
-  const settled = start.catch(() => undefined);
-  dshEffortStarts.set(file, settled);
-  void settled.then(() => { if (dshEffortStarts.get(file) === settled) dshEffortStarts.delete(file); });
-  return start;
+    throw error;
+  }
 }
 
 /**
