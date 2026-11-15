@@ -171,6 +171,11 @@ interface Saved {
   /** an off came since the last delivered event: the version an update replaced was known before it, so the next
    * install or update event names none */
   replaced_forgotten: boolean;
+  /** how many offs have deleted what was not sent: a visit or a send begun before one does not write or send after it */
+  forgotten: number;
+  /** the visit days in `active` were recorded only after the current notice. A file without it (an older build's) may
+   * hold a day recorded before the notice, so its days not yet delivered are dropped when read */
+  visits_after_notice: true;
   /** the last browser's complete, allowlisted settings snapshot; null before one has */
   settings: TelemetrySettings | null;
   /** the recorded visit days, ascending, no older than ACTIVE_LATE_DAYS before today */
@@ -287,7 +292,8 @@ function readSaved(file: string, offFile: string): Saved | null {
     const noticeSeenAt = value["notice_version"] === NOTICE_VERSION && typeof value["notice_seen_at"] === "string" ? value["notice_seen_at"] : null;
     // the notice that was seen, if any: what was kept under it stays only as far as it said so
     const seenVersion = typeof value["notice_seen_at"] === "string" && typeof value["notice_version"] === "number" ? value["notice_version"] : 0;
-    const active = seenVersion >= VISITS_NOTICE_VERSION ? readActive(value["active"]) : [];
+    // days an older build kept may have been recorded before the notice: only the ones it delivered stay, so none is sent again
+    const active = seenVersion < VISITS_NOTICE_VERSION ? [] : value["visits_after_notice"] === true ? readActive(value["active"]) : readActive(value["active"]).filter((entry) => entry.sent !== null);
     return {
       install_id: value["install_id"],
       enabled: value["enabled"] !== false && !offMarked(offFile),
@@ -295,6 +301,8 @@ function readSaved(file: string, offFile: string): Saved | null {
       notice_version: NOTICE_VERSION,
       reported_version: typeof value["reported_version"] === "string" ? value["reported_version"] : null,
       replaced_forgotten: value["replaced_forgotten"] === true,
+      forgotten: typeof value["forgotten"] === "number" && Number.isSafeInteger(value["forgotten"]) && value["forgotten"] >= 0 ? value["forgotten"] : 0,
+      visits_after_notice: true,
       settings: seenVersion >= SETTINGS_NOTICE_VERSION ? telemetrySettings(value["settings"]) : null,
       active: noticeSeenAt !== null && value["usage_after_notice"] === true ? active : withoutUsage(active),
       usage_after_notice: true,
@@ -351,12 +359,20 @@ export class Telemetry {
     // a first run's state directory is made before the mark is looked for: one that is not there reads off (offMarked)
     try { mkdirSync(options.stateDir, { recursive: true, mode: 0o700 }); } catch { /* not made: offMarked reads off */ }
     const saved = readSaved(this.file, this.offFile);
-    this.saved = saved ?? { install_id: randomUUID(), enabled: !offMarked(this.offFile), notice_seen_at: null, notice_version: NOTICE_VERSION, reported_version: null, replaced_forgotten: false, settings: null, active: [], usage_after_notice: true, counts: [] };
+    this.saved = saved ?? { install_id: randomUUID(), enabled: !offMarked(this.offFile), notice_seen_at: null, notice_version: NOTICE_VERSION, reported_version: null, replaced_forgotten: false, forgotten: 0, visits_after_notice: true, settings: null, active: [], usage_after_notice: true, counts: [] };
     if (!saved) {
       try { this.persist(); } catch (error) {
         // the app still starts; telemetry just stays silent
         this.writable = false;
         console.error(`telemetry: ${this.file} could not be written, so nothing will be sent (${error instanceof Error ? error.message : String(error)})`);
+      }
+    }
+    // the environment forbids sending: as an off, whatever was kept and not sent is deleted, so none of it goes once the
+    // variable is removed
+    if (this.blocked() && this.writable && (this.saved.active.length > 0 || this.saved.counts.length > 0 || this.saved.settings !== null)) {
+      this.forgetUnsent();
+      try { this.persist(); } catch (error) {
+        console.error(`telemetry: ${this.file} could not be written (${error instanceof Error ? error.message : String(error)})`);
       }
     }
   }
@@ -511,6 +527,7 @@ export class Telemetry {
     this.saved.counts = [];
     this.saved.settings = null;
     this.saved.replaced_forgotten = true;
+    this.saved.forgotten += 1;
   }
 
   /** Whether a browser visit is recorded at all: never while the switch is off or the environment forbids sending. */
@@ -649,6 +666,7 @@ export class Telemetry {
       return Promise.resolve();
     }
     const day = utcDay(this.now());
+    const forgotten = this.saved.forgotten;
     const pruned = this.prune();
     let changed = false;
     if (!this.saved.active.some((entry) => entry.day === day)) {
@@ -677,9 +695,9 @@ export class Telemetry {
         console.error(`telemetry: the panes could not be read (${message(error)})`);
         found = [];
       }
-      // turned off while the panes were read: the off dropped the visit, and what was read is not kept (an on since then
-      // finds no day to add it to)
-      if (!this.countingUsage()) return;
+      // turned off while the panes were read: the off dropped the visit, and what was read is not kept, even when the
+      // counts are on again and a later visit recorded the day anew
+      if (!this.countingUsage() || this.saved.forgotten !== forgotten) return;
       const entry = this.saved.active.find((known) => known.day === day);
       if (entry) {
         const merged = [...new Set([...entry.harnesses, ...found.map(harnessOf).filter((harness) => harness !== null)])].sort();
@@ -740,19 +758,23 @@ export class Telemetry {
     }
     if (this.activeSending) { this.activeAgain = true; this.activeAgainVisit ||= visit; return this.activeSending; }
     const due = this.saved.active.filter(owed).map((entry) => ({ active: this.activeMessage({ ...entry, usage: carried(entry) }), fresh: usageDue(entry) }));
+    const forgotten = this.saved.forgotten;
     const abort = new AbortController();
     this.activeAbort = abort;
     this.activeSending = (async () => {
       try {
         for (const { active, fresh } of due) {
           if (abort.signal.aborted) return;
+          // as the file stands now: an off here or by another server since the list was made deleted its days, and they
+          // are neither sent nor written back
+          this.refresh();
+          if (!this.saved.enabled || this.saved.forgotten !== forgotten) return;
           // kept before it goes: a receiver may read it even when its answer never comes back, so the hour counts from here
           const going = this.saved.active.find((known) => known.day === active.day);
-          if (going) {
-            going.wire_usage = active.usage;
-            if (fresh) going.sent_at = this.now();
-            this.persist();
-          }
+          if (!going) continue;
+          going.wire_usage = active.usage;
+          if (fresh) going.sent_at = this.now();
+          this.persist();
           // last, right before it goes: turned off here or by another server on the same state directory meanwhile
           if (offMarked(this.offFile)) return;
           try {
@@ -768,6 +790,7 @@ export class Telemetry {
             return;
           }
           this.refresh();
+          if (this.saved.forgotten !== forgotten) return;
           const entry = this.saved.active.find((known) => known.day === active.day);
           if (entry) {
             entry.sent = active.harnesses;
