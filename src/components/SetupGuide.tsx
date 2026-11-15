@@ -161,6 +161,9 @@ export function SetupGuide(props: SetupGuideProps) {
     if (!hidden) firstFocus.current?.focus({ preventScroll: true });
   }, [state.step, hidden]);
   const viewBefore = useRef(view);
+  // the close button holds the keyboard only because the dialog opened on the check: the first view after it takes
+  // it once; later (Look again) a keyboard user who went to Close keeps their place
+  const headHanded = useRef(false);
   useEffect(() => {
     if (viewBefore.current === view) return;
     viewBefore.current = view;
@@ -169,7 +172,9 @@ export function SetupGuide(props: SetupGuideProps) {
     // the control that had focus went with the view it was in, or the dialog opened on the check and gave it
     // to its close button: the new view's heading takes it
     const active = document.activeElement;
-    if (!hidden && (active === null || active === document.body || !surface.current?.contains(active) || active.closest(".setup-head") !== null)) document.getElementById("setup-step-title")?.focus({ preventScroll: true });
+    const inHead = active !== null && active.closest(".setup-head") !== null;
+    if (!hidden && (active === null || active === document.body || !surface.current?.contains(active) || (inHead && !headHanded.current))) document.getElementById("setup-step-title")?.focus({ preventScroll: true });
+    headHanded.current = true;
   }, [view, hidden, surface]);
 
   // the page's own line about usage counts would be under the scrim: each step carries it while the guide is shown
@@ -395,8 +400,7 @@ function Steps({ catalog, ready, machineId, reopened, notice, dispatch, onClose,
   // the workspace made, when the agent did not start in it: opening it shows why, in its terminal
   const [madeWithout, setMadeWithout] = useState<string | null>(null);
 
-  // a reply after the screen is gone (Escape, the guide closed in another tab) changes nothing on it; a workspace it
-  // made is still shown, as Start asked
+  // a reply after the screen is gone (Escape, the guide closed in another tab) opens nothing
   const alive = useRef(true);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   const start = async (): Promise<void> => {
@@ -409,8 +413,9 @@ function Steps({ catalog, ready, machineId, reopened, notice, dispatch, onClose,
     if ("fault" in launch) { setOpening(false); setError(t("{agent} can't start from here. Open a workspace from the sidebar instead.", { agent: chosen.name })); return; }
     try {
       const result = await openInFolder((directory) => createWorkspace(createRequest({ tab: null, directory, name: "" }, launch, null)), folder, HOME, (reason) => alive.current && reason instanceof ApiError && reason.code === "invalid_cwd");
-      // the guide closed while it was being made (Escape): the workspace exists, so it is still the one shown
-      if (!alive.current) { if (result.agent_started !== false) onOpened(result.pane_id, true); return; }
+      // the guide closed while it was being made (Escape): the workspace is in the sidebar, but nothing is closed or
+      // picked for it, as the user may be somewhere else by now, or in a guide opened again
+      if (!alive.current) return;
       if (result.agent_started === false) {
         setOpening(false);
         setMadeWithout(result.pane_id);

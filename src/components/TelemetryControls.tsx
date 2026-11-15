@@ -34,7 +34,9 @@ export function TelemetryNotice({ enabled, onOpen, inline = false }: { enabled: 
   const settingsSignature = JSON.stringify(settingsSnapshot);
   const settingsSnapshotRef = useRef(settingsSnapshot);
   settingsSnapshotRef.current = settingsSnapshot;
-  const submittedSettingsSignature = useRef<string | null>(null);
+  // shared by every copy of the line: the setup guide draws one per step, and a new copy must not tell the
+  // server the same snapshot again
+  const submittedSettingsSignature = submittedNotice;
   // the server's word on the switch, the environment and the notice: the snapshot is told only where
   // an event may go out, so an install that is off, blocked or has not seen the notice keeps its
   // settings to itself. The first snapshot rides with the acknowledgement below.
@@ -121,6 +123,9 @@ export function TelemetryNotice({ enabled, onOpen, inline = false }: { enabled: 
     <button type="button" className="icon-button update-notice-dismiss" aria-label={t("Dismiss")} title={t("Dismiss")} onClick={() => setClosed(true)}><X /></button>
   </div>;
 }
+
+/** The settings snapshot last told along with the notice (TelemetryNotice), for every copy of the line on this page. */
+const submittedNotice: { current: string | null } = { current: null };
 
 /** A modal surface open over `node` (one that does not hold it): what is under it can be neither read nor reached. */
 function coveredByModal(node: HTMLElement): boolean {

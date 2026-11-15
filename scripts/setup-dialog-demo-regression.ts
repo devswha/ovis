@@ -164,6 +164,69 @@ try {
       }
     }
   }
+
+  // The usage-counts notice in the guide is the consent counts wait for (components/TelemetryControls.tsx): it is
+  // recorded only once its line is wholly in view and nothing covers it, and the page's own copy is not drawn under
+  // the guide. The demo sends no counts, so this page's /api/telemetry is a recorder that says they are on and unseen.
+  {
+    const context = await browser.newContext({ viewport: { width: 1280, height: 420 }, locale: "en-US", colorScheme: "dark" });
+    await context.addInitScript((guide) => {
+      localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "dark", palette: "codex", darkTheme: "codex", lightTheme: "codex" }));
+      if (sessionStorage.getItem("seeded") === null) { localStorage.setItem("ovis:setup-guide", guide); sessionStorage.setItem("seeded", "1"); }
+      const counts = { gets: 0, seen: [] as unknown[] };
+      (window as unknown as { counts: typeof counts }).counts = counts;
+      const status = (seen: boolean) => new Response(JSON.stringify({ enabled: true, blocked_by_env: false, notice_seen: seen, next: null,
+        active: { event: "active", day: "2026-11-15", install_id: "demo", version: "0.0.0", os: "linux", arch: "x64", install_method: "source", harnesses: [], usage: {}, runtime: "herdr" } }), { headers: { "content-type": "application/json" } });
+      const native = window.fetch.bind(window);
+      let inner: typeof window.fetch = native;
+      // the demo's transport puts its own fetch in place as it loads: it goes behind this one, which answers only /api/telemetry
+      const recorder = ((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.href);
+        if (!url.pathname.startsWith("/api/")) return native(input, init);
+        if (url.pathname !== "/api/telemetry") return inner(input, init);
+        if ((init?.method ?? "GET").toUpperCase() === "GET") { counts.gets += 1; return Promise.resolve(status(counts.seen.length > 0)); }
+        const body = JSON.parse(String(init?.body ?? "{}")) as { notice_seen?: boolean };
+        if (body.notice_seen === true) counts.seen.push(body);
+        return Promise.resolve(status(counts.seen.length > 0));
+      }) as typeof window.fetch;
+      Object.defineProperty(window, "fetch", { configurable: true, get: () => recorder, set: (next: typeof window.fetch) => { inner = next; } });
+    }, WELCOME);
+    const page = await context.newPage();
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    const seen = () => page.evaluate(() => (window as unknown as { counts: { seen: unknown[] } }).counts.seen.length);
+    const frames = (count: number) => page.evaluate((n) => new Promise<void>((done) => { const step = (left: number) => left === 0 ? done() : requestAnimationFrame(() => step(left - 1)); step(n); }), count);
+    try {
+      await page.goto(root);
+      const dialog = page.getByRole("dialog", { name: DIALOG, exact: true });
+      const line = dialog.locator(".setup-note-usage");
+      await line.waitFor({ state: "attached" });
+      // a short window: the welcome's line is below the fold of the guide's scrolling body
+      const below = await line.evaluate((node) => {
+        const body = node.closest(".modal-body")!.getBoundingClientRect();
+        return node.getBoundingClientRect().bottom > body.bottom;
+      });
+      assert.ok(below, "the usage-counts line starts below the guide body's fold at 1280x420");
+      await frames(4);
+      assert.equal(await seen(), 0, "a line below the fold is not recorded as seen");
+      assert.equal(await page.locator(".update-notice.is-telemetry").count(), 0, "the page's own line is not drawn under the guide");
+      // Settings over the guide, then the line scrolled into view under it: still not seen
+      await page.keyboard.press("Control+Shift+Comma");
+      const settings = page.getByRole("dialog", { name: "Settings", exact: true });
+      await settings.waitFor();
+      await line.evaluate((node) => node.scrollIntoView({ block: "nearest" }));
+      await frames(4);
+      assert.equal(await seen(), 0, "a line under Settings is not recorded as seen");
+      // Settings closed: the line is in view and uncovered, and is recorded
+      await page.keyboard.press("Escape");
+      await settings.waitFor({ state: "detached" });
+      await page.waitForFunction(() => (window as unknown as { counts: { seen: unknown[] } }).counts.seen.length === 1);
+      assert.deepEqual(errors, [], "no page errors in the usage-counts case");
+      console.log("PASS the guide's usage-counts line is recorded only in view and uncovered, and the page's copy is not drawn under it");
+    } finally {
+      await context.close();
+    }
+  }
 } finally {
   await browser?.close();
   await server?.stop(true);
