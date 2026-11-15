@@ -537,6 +537,8 @@ exit /b 1
     # given here, or null where nobody is at the terminal and the installer's own wait is what ended.
     $answering = 'function Read-Answer { $star.asked++; if ($star.failAsk) { throw "Read-Answer has no console to read from" }; $star.answer }'
     $atTerminal = $source.Replace($decision, "function Test-Terminal { `$true }; $answering; $decision")
+    $atTerminal = $atTerminal.Replace("`$starred = Invoke-GhApi 'user/starred/devswha/ovis'", "`$starred = Invoke-GhApi 'user/starred/devswha/ovis'; Write-Host ""DEBUG installer starred: `$(`$starred | ConvertTo-Json -Compress) mode=[`$((Get-Content -Raw (Join-Path `$ghStandIn 'mode.txt')).Trim())] lastexit=`$LASTEXITCODE gh=`$((Get-Command gh -CommandType Application | Select-Object -First 1).Source)""")
+    Write-Host "DEBUG injected: $($atTerminal.Contains('DEBUG installer starred'))"
     $nobodyThere = $source.Replace($decision, "function Test-Terminal { `$true }; function Read-Answer { `$null }; $decision")
     $star.answer = 'y'
     $said = & $firstInstall 'not' $nobodyThere
@@ -553,23 +555,10 @@ exit /b 1
     $star.answer = 'y'
     $said = & $firstInstall 'not' $atTerminal
     Assert ($star.asked -eq 1 -and (& $given) -eq 1 -and $said -match 'starred\. Thank you') "A yes must star once: $said"
-    Write-Host "DEBUG env CI=$env:CI XDG=[$env:XDG_STATE_HOME] LOCALAPPDATA=$env:LOCALAPPDATA ComSpec=$env:ComSpec PSVersion=$($PSVersionTable.PSVersion)"
-    Write-Host "DEBUG gh: $((Get-Command gh -All -ErrorAction SilentlyContinue | ForEach-Object { "$($_.CommandType):$($_.Source)" }) -join ' | ')"
-    Write-Host "DEBUG PATH head: $(($env:PATH -split ';' | Select-Object -First 8) -join ';')"
-    Write-Host "DEBUG standin dir: $((Get-ChildItem -Force $ghStandIn | ForEach-Object Name) -join ', ')"
-    Write-Host "DEBUG mode.txt before: [$(Get-Content -Raw (Join-Path $ghStandIn 'mode.txt'))]"
-    $dbgParsed = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $installer).Path, [ref]$null, [ref]$null)
-    Invoke-Expression ($dbgParsed.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-GhApi' }, $true).Extent.Text)
-    Set-Content -LiteralPath (Join-Path $ghStandIn 'mode.txt') -Encoding Ascii -Value 'refuses'
-    $dbg = Invoke-GhApi 'user/starred/devswha/ovis'
-    Write-Host "DEBUG direct Invoke-GhApi (refuses): $($dbg | ConvertTo-Json -Compress)"
-    $dbgPlain = & cmd /d /c "`"$(Join-Path $ghStandIn 'gh.cmd')`" api --hostname github.com --include user/starred/devswha/ovis" 2>&1
-    Write-Host "DEBUG plain gh.cmd: [$(($dbgPlain | ForEach-Object { "$_" }) -join ' / ')] exit=$LASTEXITCODE"
-    Write-Host "DEBUG lastexit=$LASTEXITCODE EAP=$ErrorActionPreference star=$($star | ConvertTo-Json -Compress)"
+    Write-Host "DEBUG before refuses: CI=$env:CI XDG=[$env:XDG_STATE_HOME] standin=[$((Get-ChildItem -Force $ghStandIn | ForEach-Object Name) -join ', ')] star=$($star | ConvertTo-Json -Compress)"
     $said = & $firstInstall 'refuses' $atTerminal
     Write-Host "DEBUG said (refuses): [$said]"
     Write-Host "DEBUG calls.txt: [$(Get-Content -Raw $ghCalls -ErrorAction SilentlyContinue)]"
-    Write-Host "DEBUG star after: $($star | ConvertTo-Json -Compress)"
     Assert ($said -match 'could not star it' -and $state.installed) "A star gh refuses must be said, not thrown: $said"
     $star.failAsk = $true
     $said = & $firstInstall 'not' $atTerminal
