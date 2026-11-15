@@ -66,13 +66,8 @@ async function recordAgentEvents(pane: string): Promise<{ events: { at: number; 
   return { events, close: () => subscription?.close() };
 }
 
-/**
- * Runs the stand-in under the name `copilot`, as the real CLI's own binary runs: herdr names a pane's agent by the
- * process's name or argv[0], and takes `node <script>` for the script's agent only while the process is called `node`.
- * Node 24 calls its main thread `MainThread`, so a `node copilot.js` there is never labelled.
- */
 async function startFixture(pane: string, session: string, flags = "") {
-  await herdrRpc("pane.send_text", { pane_id: pane, text: `(COPILOT_HOME=${home} exec -a copilot node ${executable} ${session}${flags ? ` ${flags}` : ""})\n` });
+  await herdrRpc("pane.send_text", { pane_id: pane, text: `COPILOT_HOME=${home} node ${executable} ${session}${flags ? ` ${flags}` : ""}\n` });
   for (const deadline = Date.now() + 10_000;;) {
     if ((await sessionSnapshot()).panes.find((p) => p.pane_id === pane)?.agent === "copilot" && await fixtureInFront(pane, session) !== undefined) return;
     if (Date.now() > deadline) throw new Error(`isolated Copilot stand-in not detected in ${pane}`);
@@ -83,10 +78,14 @@ async function startFixture(pane: string, session: string, flags = "") {
 beforeAll(async () => {
   if (process.platform !== "linux") return;
   for (const session of [id, other]) mkdirSync(join(home, "session-state", session), { recursive: true });
-  writeFileSync(executable, `import { openSync, mkdirSync, writeFileSync, appendFileSync, renameSync } from "node:fs";
+  writeFileSync(executable, `import { openSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
+// herdr takes a \`node <script>\` process for the script's agent only while the process is called node. Node 24 calls its
+// main thread MainThread: there the stand-in takes the name copilot, as the real CLI's binary has (the name alone: its
+// command line stays as typed; process.title would overwrite it). Where it is called node, it stays as it is.
+if (readFileSync("/proc/self/comm", "utf8").trim() !== "node") writeFileSync("/proc/self/comm", "copilot");
 const home = process.env.COPILOT_HOME;
 const hold = (id) => { const dir = join(home, "session-state", id); mkdirSync(dir, { recursive: true }); openSync(join(dir, \`inuse.\${process.pid}.hold\`), "w"); };
 const lifecycle = process.argv.includes("--lifecycle");
@@ -134,7 +133,7 @@ let child;
 if (process.argv.includes("--handoff")) {
   if (!process.argv.includes("--initial-unregister")) appendFileSync(log, new Date().toISOString() + " [INFO] Registering foreground session: " + selected + "\\n");
   appendFileSync(log, new Date().toISOString() + " [INFO] Unregistering foreground session: " + selected + "\\n");
-  child = spawn(process.execPath, [process.argv[1], selected, "--prefer-version", "1.0.104-3", "--session-id", selected, "--handoff-child"], { stdio: "inherit", argv0: "copilot" });
+  child = spawn(process.execPath, [process.argv[1], selected, "--prefer-version", "1.0.104-3", "--session-id", selected, "--handoff-child"], { stdio: "inherit" });
   process.on("exit", () => child.kill());
 }
 if (process.argv.includes("--handoff-child")) setInterval(() => {}, 1000);
