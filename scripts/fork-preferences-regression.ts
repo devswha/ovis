@@ -48,8 +48,6 @@ try {
           if (legacy) await toggle.waitFor({ state: "detached" });
           else await toggle.waitFor();
           assert.equal(await page.locator(".header-tabs-sheet").count() > 0, legacy, "only the saved fork device has phone tabs in the header");
-          const preferences = await page.evaluate(() => ({ steady: document.documentElement.dataset["forkSteadyKeyboardTabs"] }));
-          assert.deepEqual(preferences, { steady: String(legacy) }, "keyboard behavior preserves the migrated device choice");
           const radius = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--radius-lg").trim());
           assert.equal(radius, legacy ? "0" : "12px", "corners follow the migrated preference");
           await page.keyboard.press("ControlOrMeta+Shift+Comma");
@@ -103,7 +101,7 @@ try {
           await page.getByRole("textbox", { name: "Message", exact: true }).click();
           await page.setViewportSize({ width: 700, height: 650 });
           await page.waitForFunction(() => window.matchMedia("(max-width: 768px) and (max-height: 700px)").matches);
-          await tabRow.waitFor({ state: legacy ? "visible" : "detached" });
+          await tabRow.waitFor({ state: "detached" });
           assert.deepEqual(errors, []);
           console.log(`PASS ${legacy ? "legacy fork" : "upstream defaults"}: tabs, lens, corners, Settings, reload and keyboard sizing`);
         } finally { await context.close(); }

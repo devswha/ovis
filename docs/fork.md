@@ -39,7 +39,6 @@ New devices use upstream behavior. Migrated devices retain the previous fork beh
 | Composer | Upstream context strip and ring | Interactive context/model controls | Composer extras |
 | Chat previews and send-follow | Upstream transcript/follow rules | Live reveal, pop animation and immediate follow | Animated replies |
 | Extra views/actions | Absent | Pi voice, Computer, PRs and read-aloud available | Their individual feature switches |
-| Phone tab row during keyboard resize | Upstream cramped-height media query | Hold the pre-keyboard cramped state | Keep tabs while keyboard opens |
 | Terminal key bar | Upstream layout without Super | Existing saved layout, or the old fork layout including Super | Existing Key bar editor; adding Super is offered with Computer view |
 | Context ring visibility | Visible, as upstream | Existing choice | Existing Context circle control |
 | Running work starts open | Open, as upstream | Existing choice | Existing Open work while the agent runs control |
@@ -321,7 +320,7 @@ Validation artifacts, the runnable container scripts, and `check-command-history
 
 - Correctness: checked upstream defaults, migration precedence, explicit false/reset values, hook ordering, route fallthrough and WebSocket upgrades. Restored-file inventory was checked byte-for-byte.
 - Security: no new dependencies or credentials. Authentication, origin and observe guards retain their route order; device revocation still closes screen/voice sockets. UI preferences are not access controls. No automatic input, focus or takeover was introduced.
-- Performance: fork listeners/polling are disabled with their features; the steady-keyboard listeners are not subscribed by default. No new transcript rebuild, PTY ownership or cache was added.
+- Performance: fork listeners/polling are disabled with their features. No new transcript rebuild, PTY ownership or cache was added.
 - Clarity/scope: small compatibility facades are intentional; moved large modules were not gratuitously rewritten. Pure helpers and optional controls have focused unit or browser coverage. No Bigpowers plan/state files were created. The skill's spec-output and project-wide-check requirements are superseded by this task's explicit instructions.
 - CI follow-up: read-only token permissions, pinned actions, no persisted checkout credentials or new dependencies. Shards preserve per-file process isolation and failure exits. Browser selection tests cover PR/push bases, upstream byte comparisons, missing scripts, fetch fallback and restoration of temporary registration. Copilot remains visible; it was not removed to make the gate green.
 - The tempting shortcut was to treat all failed browsers as baseline failures. The baseline comparison instead identified the new menu/helper/keyboard failures, which were fixed; only the four reproduced failures above remain blocked.

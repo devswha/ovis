@@ -23,7 +23,6 @@ export interface ForkSettings {
   computerView: boolean;
   pullRequests: boolean;
   readAloud: boolean;
-  steadyKeyboardTabs: boolean;
 }
 
 export const FORK_DEFAULTS: ForkSettings = {
@@ -31,7 +30,7 @@ export const FORK_DEFAULTS: ForkSettings = {
   speechVoice: SPEECH_DEFAULT_VOICE, liveVoice: "pi",
   squareCorners: false, moreViewToggle: false, agentNamedTabs: false, agentFriends: false,
   composerExtras: false, chatMotion: false, piLiveVoice: false,
-  computerView: false, pullRequests: false, readAloud: false, steadyKeyboardTabs: false,
+  computerView: false, pullRequests: false, readAloud: false,
 };
 
 export const FORK_SCOPE = {
@@ -60,7 +59,7 @@ export function migrateForkSettings(raw: unknown): unknown {
   // Once a new setting is explicit it always wins, including false and a reset to upstream defaults.
   return { phoneTabs: "header", ...keyBarDefaults, contextCircle: true, squareCorners: true, moreViewToggle: true, agentNamedTabs: true,
     agentFriends: true, composerExtras: true, chatMotion: true,
-    piLiveVoice: true, computerView: true, pullRequests: true, readAloud: true, steadyKeyboardTabs: true, ...record };
+    piLiveVoice: true, computerView: true, pullRequests: true, readAloud: true, ...record };
 }
 
 /** Kept apart from the main record: an older upstream tab must not erase fork choices on save. */

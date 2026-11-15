@@ -19,7 +19,6 @@ export function ForkFeatures() {
     ["computerView", t("Computer view")],
     ["pullRequests", t("Pull requests")],
     ["readAloud", t("Read aloud")],
-    ["steadyKeyboardTabs", t("Keep tabs while keyboard opens")],
   ] as const;
   return <SettingsGroup title={t("Fork features")} section="fork-features">
     {choices.map(([key, label]) => <SettingsRow key={key} label={label} reset={[key]}>
