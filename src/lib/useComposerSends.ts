@@ -160,7 +160,7 @@ export function useComposerSends(deps: ComposerSendsDeps) {
             setChatLocalSend((current) => ({ key: current.key + 1, navigationGeneration: navigation }));
           }
           // the PC's stamp before it typed bounds the send's turn on its clock alone (lib/sentWaiting.ts)
-          if (pane !== null) rememberWaitingSend(waitingKey(machineId, pane), text, sentAt, stampedBaseline(sentAfter, answer.sendingAt, sentAt), delivery !== "immediate", known);
+          if (pane !== null) rememberWaitingSend(waitingKey(machineId, pane), text, sentAt, stampedBaseline(sentAfter, answer.sendingAt, sentAt));
         }
         if (pane !== null && typedNow) showSentCommand(pane, text, known, seen);
         // Ctrl+Enter: the row it was queued as goes now, by the same steer as its Send now. A refused steer
@@ -256,7 +256,7 @@ export function useComposerSends(deps: ComposerSendsDeps) {
             pendingMessages.removeCopy(owner, id);
             if (answer.pending === undefined) {
               // typed by this resend: a replay of a send another connection made has its own turn already
-              if (answer.typedNow === true) rememberWaitingSend(waitingKey(machineId, pane), message.text, sentAt, stampedBaseline(sentAfter, answer.sendingAt, sentAt), true);
+              if (answer.typedNow === true) rememberWaitingSend(waitingKey(machineId, pane), message.text, sentAt, stampedBaseline(sentAfter, answer.sendingAt, sentAt));
               showSentCommand(pane, message.text, known, seen);
             }
           }

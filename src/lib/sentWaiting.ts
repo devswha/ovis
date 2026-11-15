@@ -1,4 +1,3 @@
-import { adoptSend } from "../fork/sentBubble.ts";
 import type { Machine } from "../../shared/machines.ts";
 import type { ConversationTurn } from "../../shared/protocol.ts";
 import { composerMessage } from "./compose.ts";
@@ -35,10 +34,6 @@ export interface WaitingSend {
   at: number;
   /** what the chat held at send time; null when it had shown no turns, and `at` is the only guard */
   after: WaitingBaseline | null;
-  /** typed from the queue (Send now, the turn end's drain), not by the composer: Animated replies leaves it in the footer */
-  queued?: true;
-  /** the outcome ids the chat had read as the text left, which tell the send's own outcome among its identical ones (Animated replies, fork/sentBubble.ts) */
-  known?: readonly string[];
 }
 
 type Turn = Pick<ConversationTurn, "role" | "parts" | "ts">;
@@ -203,13 +198,13 @@ export function stampedBaseline(after: WaitingBaseline | null, sendingAt: string
   return { keys: after.keys, latest: null, takenAt: after.takenAt, pcFloor: stamped };
 }
 
-export function rememberWaitingSend(key: string, text: string, at = Date.now(), after: WaitingBaseline | null = null, queued = false, known: readonly string[] | null = null): void {
+export function rememberWaitingSend(key: string, text: string, at = Date.now(), after: WaitingBaseline | null = null): void {
   // the text the composer types: paste markers it strips are no part of the turn
   const typed = composerMessage(text);
   if (typed.trim() === "" || !becomesTurn(typed)) return;
   const pane = waiting.get(key) ?? { sends: empty, claimed: new Set<string>() };
   const id = ++nextId;
-  pane.sends = [...pane.sends, { id, pane: key, text: typed, at, after, ...(queued ? { queued: true as const } : {}), ...(known !== null ? { known } : {}) }];
+  pane.sends = [...pane.sends, { id, pane: key, text: typed, at, after }];
   waiting.set(key, pane);
   setTimeout(() => expireWaitingSends(key), Math.max(0, at + WAITING_SEND_MS - Date.now()));
   announce();
@@ -252,7 +247,6 @@ export function settleWaitingSends(key: string, turns: readonly Turn[], now = Da
     const match = candidates.find((candidate) => !pane.claimed.has(candidate.key) && turnMatches(send, candidate.turn, candidate.key, candidate.answeredAt, candidate.last));
     if (!match) return true;
     pane.claimed.add(match.key);
-    if (!send.queued) adoptSend(key, send, match.turn);
     return false;
   });
   if (remaining.length === pane.sends.length) return;

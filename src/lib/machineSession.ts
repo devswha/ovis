@@ -120,7 +120,7 @@ export class MachineSession {
         // already, has no time before its Enter that the turn could settle
         for (const item of typed) {
           const text = rows.find((row) => row.id === item.id)?.text, went = this.going.get(item.id);
-          if (text !== undefined && went !== undefined) rememberWaitingSend(key, text, went.at, went.after, true);
+          if (text !== undefined && went !== undefined) rememberWaitingSend(key, text, went.at, went.after);
         }
         for (const item of message.removed ?? []) this.going.delete(item.id);
       }
