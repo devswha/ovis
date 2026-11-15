@@ -138,6 +138,28 @@ describe("mounted", () => {
     } finally { forgetWaitingSends(key); }
   });
 
+  test("judges a send in a chat opened again by a read since then, not by the one its last visit settled", async () => {
+    const key = waitingKey("local", "reopened-mounted");
+    const chat = () => createElement(SentWaitingList, { sends: currentWaitingSends(key), paneKey: key, resting: true, agent: "kiro" });
+    try {
+      settleWaitingSends(key, [], at - 1, true);
+      rememberWaitingSend(key, "do the thing", at);
+      const visit = mount(chat());
+      // a read two seconds on, at rest, before the agent wrote the turn; then the user leaves the chat
+      act(() => { jest.advanceTimersByTime(2_000); observeWaitingClock(key, new Date().toISOString(), 0, Date.now()); settleWaitingSends(key, [], Date.now(), true); });
+      act(() => { visit.unmount(); });
+      renderers.splice(renderers.indexOf(visit), 1);
+      // back five minutes later: the agent wrote the turn meanwhile, with no time (as Kiro does)
+      jest.advanceTimersByTime(5 * 60_000);
+      mount(chat());
+      expect(currentWaitingSends(key).map((item) => item.unanswered)).toEqual([undefined]);
+      // the chat's first read since: the agent wrote it, in a turn the chat does not match, and the send goes
+      act(() => { jest.advanceTimersByTime(1); observeWaitingClock(key, new Date().toISOString(), 0, Date.now()); settleWaitingSends(key, [{ role: "user", ts: null, parts: [{ kind: "text", text: "do the thing" }] }], Date.now(), true); });
+      await act(async () => { await Promise.resolve(); });
+      expect(currentWaitingSends(key)).toEqual([]);
+    } finally { forgetWaitingSends(key); }
+  });
+
   test("leaves no timer behind when the bubble goes before its clock", () => {
     const renderer = mount(createElement(SentWaitingList, { sends: [send] }));
     expect(jest.getTimerCount()).toBe(1);

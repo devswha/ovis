@@ -44,7 +44,10 @@ export function SentWaitingList({ sends, paneKey, resting = false, agent = null,
   // the clock as it is now: an agent that comes to rest long after the minute makes the send unanswered at once
   // since when the agent rests, as this chat saw it: a send is said unanswered only after a read that came since then
   useEffect(() => {
-    if (paneKey !== undefined) restingSince(paneKey, resting ? Date.now() : null);
+    if (paneKey === undefined) return;
+    restingSince(paneKey, resting ? Date.now() : null);
+    // a chat opened again judges its sends by a read since then, not by the one its last visit settled
+    return () => { restingSince(paneKey, null); };
   }, [paneKey, resting]);
   useEffect(() => {
     if (paneKey === undefined) return;
