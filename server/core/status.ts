@@ -159,6 +159,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     onFound: (paneId, again) => { completions.adopt(paneId, "gjc", []); if (!again) waits.forget(paneId); },
     // the gjc process the pane held is gone (left, or replaced by a new one): what its turn waited on is over
     onLost: (paneId) => {
+      // a pane native OmO took is OmO's, its wait too (OmO's onFound dropped what GJC left there)
+      if (omo.runs(paneId)) return;
       const held = waits.waiting(paneId);
       waits.forget(paneId);
       if (held) waitEnded(paneId);

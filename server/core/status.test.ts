@@ -2772,6 +2772,39 @@ describe("the status hub's GJC turn at rest under its background job", () => {
     expect(after?.background_tasks ?? 0).toBe(0);
   });
 
+  it("keeps the wait OmO holds in a pane it took from GJC when GJC's discovery then drops the pane", async () => {
+    // Given GJC tracked in a pane, at rest on nothing.
+    const h = await gjcPane(prompt(0) + answer(100));
+    const proj = join(root, "omo-takeover");
+    mkdirSync(join(proj, ".omo", "senpi-task", "tasks"), { recursive: true });
+    const taken: HerdrPane = { ...pane, agent_status: "idle", cwd: proj };
+    h.herdrSays(taken);
+    // When OmO's own discovery finds native OmO there, and its turn ends while a task it started runs.
+    const session = "abcdef12-3456-4789-8abc-def012345678";
+    const omoPath = join(root, `2026-11-15T00-00-00_${session}.jsonl`);
+    writeFileSync(omoPath, prompt(1000));
+    const omoFound = spyOn(omo, "omoPanes").mockResolvedValue(new Map([[pane.pane_id, { path: omoPath, startedAt: null }]]));
+    try {
+      await h.status.omo.refresh([taken]);
+      expect(h.last().status).toBe("working");
+      writeFileSync(join(proj, ".omo", "senpi-task", "tasks", "st_1.json"), JSON.stringify({ status: "running", parent_session_id: session }));
+      appendFileSync(omoPath, answer(2000));
+      await h.status.omo.poll();
+      expect(h.last()).toEqual({ status: "done", tasks: 1, bg: true });
+      const told = h.alerts.length;
+      // And GJC's next discovery (a snapshot reads OmO first, then GJC on the panes OmO named) no longer finds GJC there.
+      await h.status.clientSnapshot();
+      expect(h.status.gjc.runs(pane.pane_id)).toBe(false);
+      // Then OmO's wait stands, and no finish is alerted while its task runs.
+      expect(h.last().bg).toBe(true);
+      expect(h.alerts.slice(told)).not.toContain("done");
+      await h.status.omo.poll();
+      expect((await h.status.clientSnapshot()).panes[0]?.background_wait).toBe(true);
+    } finally {
+      omoFound.mockRestore();
+    }
+  });
+
   it("ends the wait when a new gjc started in the pane resumes the same session", async () => {
     // Given a GJC pane at rest on a job.
     const h = await waitingOnProcess();
