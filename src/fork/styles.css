@@ -53,12 +53,15 @@
 }
 
 /* The status bar already names the folder and the branch, so the composer's own folder/branch strip
- * under the input card would say the same thing in a second bar right above it. The strip stays
- * wherever the status bar is not shown, and the prompt card stops reserving room for it. */
-:root:has(.status-bar) .composer-strip {
+ * under the input card would say the same thing in a second bar right above it. The agent inbox view
+ * has no status bar and its list already names each agent, so it drops the strip too. The strip stays
+ * on a phone, and the prompt card stops reserving room for it where it is hidden. */
+:root:has(.status-bar) .composer-strip,
+.app.is-inbox .composer-strip {
   display: none;
 }
 
-:root:has(.status-bar) .prompt-dock > .prompt-card {
+:root:has(.status-bar) .prompt-dock > .prompt-card,
+.app.is-inbox .prompt-dock > .prompt-card {
   --prompt-card-strip: 0px;
 }
