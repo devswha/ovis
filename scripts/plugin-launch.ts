@@ -18,8 +18,10 @@
  * remembers the second case for this version, so later commands ask no server. A manifest that exists and fails a
  * check, a server error or a network failure is a failure, never a reason to build from source.
  * .ovis/server/source-build is what that build came to (install.ps1 reads it): `started` from its first step, and the
- * version and the checkout's commit (the version alone where git cannot tell it) only once every step returned 0, and
- * only when that commit is still the one the build started from.
+ * version and the checkout's commit (the version alone in a folder that has none: see checkoutCommit) only once every
+ * step returned 0, and only when git read the same answer before and after the build. Without git on PATH the launcher
+ * still runs: the release's binary is taken only for sources git can tie to it (scripts/server-manifest.ts
+ * sourceTrees), so such a checkout runs from source, saying why.
  * This file imports nothing outside scripts/ and shared/.
  */
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -57,24 +59,33 @@ async function fromSource(command: string, args: string[]): Promise<number> {
 }
 
 /**
- * The commit of the checkout in `dir`, or "" where git cannot tell: no git, not a git checkout, or a folder that is not
- * a checkout's top level (git would read the repository around it, whose commit is not this checkout's; install.ps1 and
- * install.sh read it by the same rule).
+ * What git answers for the checkout in a folder, by one rule that install.ps1 (Read-InstalledCommit) and install.sh
+ * (ref_not_moved) read it by too: a checkout's top level has its commit; a folder inside another repository
+ * (`--show-prefix` names its path there) or one git says is no repository has none of its own; anything else (git's
+ * own error, a lock, no git on PATH) is git failing, on which nothing may be decided.
  */
-export async function headCommit(dir = root): Promise<string> {
+export type CheckoutCommit = { commit: string } | { none: "nested" | "no checkout" } | { failed: string };
+
+export async function checkoutCommit(dir = root): Promise<CheckoutCommit> {
+  // git's own words, untranslated: "not a git repository" is told from its other errors by them
+  const git = async (...args: string[]) => {
+    const child = Bun.spawn(["git", "-C", dir, ...args], { env: { ...process.env, LC_ALL: "C" }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    return { out: out.trim(), err: err.trim() || `git exited with ${code}`, code };
+  };
   try {
-    // the folder's path inside its repository, empty at the top level, then the commit
-    const git = Bun.spawn(["git", "-C", dir, "rev-parse", "--show-prefix", "HEAD"], { env: process.env, stdin: "ignore", stdout: "pipe", stderr: "ignore" });
-    const [out, code] = await Promise.all([new Response(git.stdout).text(), git.exited]);
-    const [prefix, commit = ""] = out.split(/\r?\n/);
-    return code === 0 && prefix === "" ? commit.trim() : "";
-  } catch {
-    return "";
+    const prefix = await git("rev-parse", "--show-prefix");
+    if (prefix.code !== 0) return /not a git repository/.test(prefix.err) ? { none: "no checkout" } : { failed: prefix.err };
+    if (prefix.out !== "") return { none: "nested" };
+    const head = await git("rev-parse", "HEAD");
+    return head.code === 0 && head.out !== "" ? { commit: head.out } : { failed: head.err };
+  } catch (error) {
+    return { failed: (error as NodeJS.ErrnoException).code === "ENOENT" ? "git is not on PATH" : String(error) };
   }
 }
 
 /** the tests': the install folder, what stands in for the source path, how a file is fetched, and how the commit is read */
-export async function main(args: string[], { home = join(root, ".ovis", "server"), source = fromSource, fetchFile, sources = sourceTrees(root), commit = () => headCommit() }: { home?: string; source?: typeof fromSource; fetchFile?: typeof fetch; sources?: ReturnType<typeof sourceTrees>; commit?: () => Promise<string> } = {}): Promise<number> {
+export async function main(args: string[], { home = join(root, ".ovis", "server"), source = fromSource, fetchFile, sources = sourceTrees(root), commit = () => checkoutCommit() }: { home?: string; source?: typeof fromSource; fetchFile?: typeof fetch; sources?: ReturnType<typeof sourceTrees>; commit?: () => Promise<CheckoutCommit> } = {}): Promise<number> {
   const [command, ...rest] = args;
   if (command === undefined || ["--help", "-h", "help"].includes(command)) {
     console.log(USAGE);
@@ -93,7 +104,8 @@ export async function main(args: string[], { home = join(root, ".ovis", "server"
   // failed or was cut off (in bun install, or over the packages and client of an earlier build) is never taken as
   // finished. A checkout without a stamp was built by a launcher from before it, or took the release's binary. The
   // commit is the one the build started from: a checkout that moved meanwhile (a pull while bun install ran) holds
-  // sources other than the ones built, and its build stays `started`.
+  // sources other than the ones built, and its build stays `started`. So does one where git failed, before or after:
+  // the version alone would claim a folder with no commit of its own, and install.ps1 would take it as built.
   const stamp = join(home, "source-build");
   const build = async () => {
     mkdirSync(home, { recursive: true });
@@ -102,8 +114,11 @@ export async function main(args: string[], { home = join(root, ".ovis", "server"
     const builtFrom = await commit();
     const code = await source("install", rest);
     if (code !== 0) return code;
-    if (await commit() === builtFrom) writeFileSync(stamp, `${[version, builtFrom].filter(Boolean).join(" ")}\n`);
-    else console.error("Ovis: the checkout moved to another commit while it was built, so the build is not marked finished");
+    const now = await commit();
+    const failed = "failed" in builtFrom ? builtFrom.failed : "failed" in now ? now.failed : null;
+    if (failed !== null) console.error(`Ovis: git could not read the checkout's commit (${failed}), so the build is not marked finished`);
+    else if (JSON.stringify(now) !== JSON.stringify(builtFrom)) console.error("Ovis: the checkout moved to another commit while it was built, so the build is not marked finished");
+    else writeFileSync(stamp, `${"commit" in builtFrom ? `${version} ${builtFrom.commit}` : version}\n`);
     return code;
   };
   if (command === "install") {
