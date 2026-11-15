@@ -2691,6 +2691,43 @@ describe("the status hub's Claude turn at rest under its background subagent", (
   });
 });
 
+describe("the status hub's GJC turn at rest under its background job", () => {
+  it("reads BG, not DONE, while a job the turn started runs, and alerts the finish once its delivery is answered", async () => {
+    // Given a GJC pane whose turn starts a background subagent and ends.
+    const h = hub();
+    const pane: HerdrPane = { ...claude, agent: "gjc", agent_status: "working", agent_session: null, focused: false, revision: 0, terminal_id: "gjc-bg" };
+    const path = join(root, "gjc-background.jsonl");
+    const ts = (ms: number) => new Date(at + ms).toISOString();
+    writeFileSync(path, line({ type: "message", timestamp: ts(0), message: { role: "user" } }));
+    const discovery = spyOn(gjc, "gjcPanes").mockResolvedValue(new Map([[pane.pane_id, { path, startedAt: null }]]));
+    try {
+      h.herdrSays(pane);
+      await h.status.gjc.refresh([pane]);
+      expect(h.last().status).toBe("working");
+      appendFileSync(path, line({ type: "message", timestamp: ts(100), message: { role: "toolResult", toolName: "task", toolCallId: "t",
+        content: [{ type: "text", text: "Started 1 background task job using executor.\n- `0-Cleanup` (job `0-Cleanup`)" }],
+        details: { async: { state: "running", jobId: "0-Cleanup", type: "task" } } } })
+        + line({ type: "message", timestamp: ts(200), message: { role: "assistant", stopReason: "stop" } }));
+      await h.status.gjc.poll();
+      // Then the pane waits on its job: BG, alerted as working, in frames and in the snapshot.
+      expect(h.last()).toEqual({ status: "done", tasks: 1, bg: true });
+      expect(h.alerts.at(-1)).toBe("working");
+      expect((await h.snapshot()).panes[0]).toMatchObject({ background_tasks: 1, background_wait: true });
+      // When the job's delivery wakes the session and its answer ends the turn.
+      appendFileSync(path, line({ type: "custom_message", customType: "async-result", display: true, timestamp: ts(5000), details: { jobs: [{ jobId: "0-Cleanup", type: "task" }] } }));
+      await h.status.gjc.poll();
+      expect(h.last()).toEqual({ status: "working", tasks: 0, bg: false });
+      appendFileSync(path, line({ type: "message", timestamp: ts(6000), message: { role: "assistant", stopReason: "stop" } }));
+      await h.status.gjc.poll();
+      // Then that rest is the finish.
+      expect(h.last()).toEqual({ status: "done", tasks: 0, bg: false });
+      expect(h.alerts.at(-1)).toBe("done");
+    } finally {
+      discovery.mockRestore();
+    }
+  });
+});
+
 describe("the status hub's Claude turn at rest when its last background task ends (#3348)", () => {
   const ts = (ms: number) => new Date(at + ms).toISOString();
   let fixtures = 0;

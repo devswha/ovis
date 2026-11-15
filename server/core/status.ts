@@ -154,7 +154,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   const gjc = createGjcStatus({
     discover: (panes) => gjcPanes(panes),
     snapshot: omoSnapshot,
-    onChange: (paneId, derived, _background, turn, rest) => gjcChanged(paneId, derived, turn, rest),
+    onChange: (paneId, derived, background, turn, rest) => gjcChanged(paneId, derived, turn, rest, "gjc", background),
     onFound: (paneId) => completions.adopt(paneId, "gjc", []),
   }, omo);
   /** each Letta pane's status as its own title last said it, where nothing else gave one (letta-status.ts lettaTitleStatus) */
@@ -432,7 +432,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     options.openCodeState?.reconcile(named.panes, promptCheckpoint);
     return named;
   };
-  const backgroundOf = (paneId: string): number => omo.backgroundOf(paneId) || claudeAgents.countOf(paneId) || opencodeAgents.countOf(paneId) || taskAgents.countOf(paneId);
+  const backgroundOf = (paneId: string): number => omo.backgroundOf(paneId) || gjc.backgroundOf(paneId) || claudeAgents.countOf(paneId) || opencodeAgents.countOf(paneId) || taskAgents.countOf(paneId);
   /** the snapshot clients get: finishes settled, OmO panes named, background tasks, waits, plan progress and context */
   const clientSnapshot = async (): Promise<SessionSnapshot> => {
     // the order this read can show is the one of the moves confirmed before it starts: taken before any wait,
@@ -529,16 +529,23 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   }
 
   /**
-   * A GJC pane's own turn, which herdr's provider-child status never shows: back at work, its
-   * form has had its answer. gjc keeps no background records to count, so a change is always a
-   * turn, and an idle read after work is the finish — one ended in an error is not (#687).
+   * A GJC or Letta pane's own turn, which herdr's provider-child status never shows: back at work,
+   * its form has had its answer, and an idle read after work is the finish — one ended in an error
+   * is not (#687). A GJC turn that ended while background jobs it started still run (gjc-status.ts
+   * `gjcJobsAfter`) waits on them as an OmO one does: BG, not DONE, and a finish alerted once
+   * they are over. A job's end wakes gjc, so no time limit either.
    */
-  function gjcChanged(paneId: string, derived: AgentStatus, turn: boolean, rest: OmoRest | undefined, agent: "gjc" | "letta" = "gjc"): void {
+  function gjcChanged(paneId: string, derived: AgentStatus, turn: boolean, rest: OmoRest | undefined, agent: "gjc" | "letta" = "gjc", background = 0): void {
     if (turn && derived === "working") promptWaitEnded(paneId);
     const status = turn ? completions.observe(paneId, derived, agent, rest) : completions.current(paneId) ?? completions.observe(paneId, derived, agent);
     if (turn) { pending.status(paneId, status); drainPending(paneId); }
-    broadcastAll(paneStatus(paneId, status));
-    if (turn) push.onStatus(paneId, status).catch(logPushError);
+    const held = waits.waiting(paneId);
+    if (agent === "gjc") {
+      waits.running(paneId, background, null, false);
+      if (turn) waits.status(paneId, status);
+    }
+    broadcastAll(paneStatus(paneId, status, agent === "gjc" ? { background_tasks: background } : {}));
+    if (turn || waits.waiting(paneId) !== held) push.onStatus(paneId, alertStatus(status, waits.waiting(paneId))).catch(logPushError);
     if (turn && rest === "failed" && status === "idle") push.onFailed(paneId).catch(logPushError);
   }
 
@@ -637,9 +644,9 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     if (eventAgent.get(paneId)?.agent !== (named[0]!.agent ?? null)) eventAgent.set(paneId, { agent: named[0]!.agent ?? null, since: statusNow() });
     // herdr says `claude/idle` for an OmO pane whatever it does, and a provider child's work for
     // a GJC one while its transcript is tracked: their own status stands, and no Claude turn waits there
-    // (an OmO pane's wait on its background tasks is omoChanged's)
-    if (omo.tracks(paneId)) return;
-    if (gjc.tracks(paneId) || letta.tracks(paneId)) {
+    // (an OmO or GJC pane's wait on its background jobs is omoChanged's or gjcChanged's)
+    if (omo.tracks(paneId) || gjc.tracks(paneId)) return;
+    if (letta.tracks(paneId)) {
       waits.forget(paneId);
       return;
     }
