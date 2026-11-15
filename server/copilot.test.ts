@@ -721,14 +721,25 @@ it.skipIf(process.platform !== "linux")("reads the log again when it rotates whi
 });
 
 /**
- * Returns once the kernel's file clock has moved past `ctimeNs`. A kernel without fine-grained file timestamps (Linux
- * before 6.13) stamps every change within one tick, a few milliseconds, with the same time: a change made in the tick of
- * the one before looks like no change to a reader that compares times and sizes.
+ * Reports every later change to `file` with the times it has now, as a kernel without fine-grained file timestamps
+ * (Linux before 6.13) stamps every change within one tick of its file clock.
  */
-function afterFileClock(ctimeNs: bigint): void {
-  const probe = join(tmpdir(), `file-clock-${process.pid}`);
-  do writeFileSync(probe, ""); while (statSync(probe, { bigint: true }).ctimeNs <= ctimeNs);
-  rmSync(probe, { force: true });
+function oneFileClockTick(file: string) {
+  const now = fs.statSync(file, { bigint: true });
+  const realFstat = fs.fstatSync;
+  function tickStat(fd: number, options?: fs.StatOptions & { bigint?: false }): fs.Stats;
+  function tickStat(fd: number, options: fs.StatOptions & { bigint: true }): fs.BigIntStats;
+  function tickStat(fd: number, options?: fs.StatOptions): fs.Stats | fs.BigIntStats;
+  function tickStat(fd: number, options?: fs.StatOptions): fs.Stats | fs.BigIntStats {
+    const stat = realFstat(fd, options);
+    if (BigInt(stat.dev) === now.dev && BigInt(stat.ino) === now.ino) {
+      Object.assign(stat, typeof stat.mtimeMs === "bigint"
+        ? { mtimeMs: now.mtimeMs, ctimeMs: now.ctimeMs, mtimeNs: now.mtimeNs, ctimeNs: now.ctimeNs }
+        : { mtimeMs: Number(now.mtimeMs), ctimeMs: Number(now.ctimeMs) });
+    }
+    return stat;
+  }
+  return spyOn(fs, "fstatSync").mockImplementation(tickStat);
 }
 
 it.skipIf(process.platform !== "linux")("keeps a logged binding when only the log's timestamps change", async () => {
@@ -741,15 +752,17 @@ it.skipIf(process.platform !== "linux")("keeps a logged binding when only the lo
     const stat = statSync(log);
     fs.utimesSync(log, stat.atime, new Date(stat.mtimeMs + 1000));
     expect(fixture.binding()).toEqual(before);
-    // a partial line cut away again is not an unchanged log
+    // a partial line cut away again is not an unchanged log, even when the cut shares the append's timestamps
     appendFileSync(log, register(other).slice(0, 60));
-    expect(readCopilotProcessSession(environment, ["copilot"], pid).diagnostic).toBe("copilot_log_partial");
-    // read afresh from its complete lines, as after any truncation: a new binding, not the cached one
-    afterFileClock(statSync(log, { bigint: true }).ctimeNs);
-    fs.truncateSync(log, register(session).length);
-    const reread = fixture.binding();
-    expect(reread?.sessionId).toBe(session);
-    expect(reread?.generation).not.toBe(before?.generation);
+    const tick = oneFileClockTick(log);
+    try {
+      expect(readCopilotProcessSession(environment, ["copilot"], pid).diagnostic).toBe("copilot_log_partial");
+      // read afresh from its complete lines, as after any truncation: a new binding, not the cached one
+      fs.truncateSync(log, register(session).length);
+      const reread = fixture.binding();
+      expect(reread?.sessionId).toBe(session);
+      expect(reread?.generation).not.toBe(before?.generation);
+    } finally { tick.mockRestore(); }
     // same size, different bytes is still a rewrite
     writeFileSync(log, "x".repeat(register(session).length - 1) + "\n");
     expect(readCopilotProcessSession(environment, ["copilot"], pid).diagnostic).toBe("copilot_log_rewritten");

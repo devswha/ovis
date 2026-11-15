@@ -579,9 +579,17 @@ describe("listSessions", () => {
    * the one before looks like no change to a reader that compares times and sizes.
    */
   function afterFileClock(ctimeNs: bigint): void {
-    const probe = join(tmpdir(), `file-clock-${process.pid}`);
-    do writeFileSync(probe, ""); while (statSync(probe, { bigint: true }).ctimeNs <= ctimeNs);
-    rmSync(probe, { force: true });
+    const dir = mkdtempSync(join(tmpdir(), "file-clock-"));
+    const probe = join(dir, "probe");
+    // a clock set back while it waits would keep it here: a tick is milliseconds, so seconds mean a stuck clock
+    const deadline = performance.now() + 2_000;
+    try {
+      for (let seen = -1n; seen <= ctimeNs;) {
+        if (performance.now() > deadline) throw new Error(`the file clock stayed at or before ${ctimeNs} ns: the probe's change time is ${seen} ns`);
+        writeFileSync(probe, "");
+        seen = statSync(probe, { bigint: true }).ctimeNs;
+      }
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   }
 
   it("reads a WAL store immutable once more, writing nothing into it, when its writer came and went during the read", () => {
