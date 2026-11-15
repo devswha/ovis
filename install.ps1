@@ -595,8 +595,22 @@ if (-not $plugin) {
         $marker = Join-Path $plugin.plugin_root '.ovis\server\from-source'
         $chosen = if (Test-Path -LiteralPath $marker) { (Get-Content -Raw -LiteralPath $marker).Trim() } else { '' }
         if ($chosen -ne $checkoutVersion) {
+            # herdr checks the ref out detached, so the checkout knows its commit, not the branch: the ref is the installed
+            # checkout only when it names that commit (a commit id, or a branch or tag whose tip on GitHub is it). A rerun
+            # keeps the installed plugin, so another ref, or a branch that moved since, is said and nothing is touched.
+            $installedCommit = "$(Run-Tool git @('-C', $plugin.plugin_root, 'rev-parse', 'HEAD'))".Trim()
+            $refCommits = @(if ($Ref -match '^[0-9a-fA-F]{7,40}$' -and $installedCommit.StartsWith($Ref.ToLowerInvariant())) { $installedCommit } else {
+                $listed = & git ls-remote 'https://github.com/devswha/ovis.git' $Ref
+                if ($LASTEXITCODE -ne 0) { throw "Could not ask GitHub which commit $Ref is, so the installed plugin was not rebuilt and Ovis was left running. Check your connection and run this again." }
+                $listed | ForEach-Object { $commit, $name = $_ -split "`t"; if ($name -in "refs/heads/$Ref", "refs/tags/$Ref", "refs/tags/$Ref^{}") { $commit } }
+            })
+            if ($installedCommit -notin $refCommits) {
+                $at = if ($refCommits) { "$Ref is at $($refCommits[-1].Substring(0, 12))" } else { "GitHub has no branch or tag $Ref" }
+                throw "The installed plugin is at commit $($installedCommit.Substring(0, 12)) and $at. This installer does not move an installed plugin to another branch or commit, so nothing was changed and Ovis was left running. To install $Ref, stop Ovis (herdr plugin action invoke $pluginId.stop-windows), run `$env:OVIS_FROM_SOURCE = '1'; herdr plugin install devswha/ovis --ref $Ref --yes (INSTALL.md, Update: it replaces the checkout), then run this again."
+            }
             Write-Host "Ovis: the installed branch runs the release's binary; building it from its own sources"
             $givenSource = $env:OVIS_FROM_SOURCE
+            $built = $false
             try {
                 # the binary's stop: under the caller's OVIS_FROM_SOURCE=1 the launcher would hand it to scripts/plugin.ts,
                 # which cannot run without the packages
@@ -604,11 +618,16 @@ if (-not $plugin) {
                 & bun $launcherScript stop | Out-Null
                 if ($LASTEXITCODE -ne 0) { throw "Could not stop the Ovis the release's binary runs, so the branch was not built. Stop it (herdr plugin action invoke $pluginId.stop-windows, or restart herdr), then run this again." }
                 $env:OVIS_FROM_SOURCE = '1'
-                # the launcher names this version in the marker before it builds: a build that fails takes it back, so
-                # the next run tries again instead of starting sources that were never built
-                try { Run-Tool bun @($launcherScript, 'install') }
-                catch { Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue; throw }
-            } finally { $env:OVIS_FROM_SOURCE = $givenSource }
+                & bun $launcherScript install
+                if ($LASTEXITCODE -ne 0) { throw "bun failed (exit $LASTEXITCODE) building the installed branch, and Ovis is stopped. Fix the error above, then run this again with OVIS_REF=$Ref to build it and start Ovis." }
+                $built = $true
+            } finally {
+                $env:OVIS_FROM_SOURCE = $givenSource
+                # the launcher names this version in the marker before it builds: a build that did not finish, failed or
+                # cut off (Ctrl+C reaches finally, not catch), takes it back, so the next run builds again instead of
+                # starting sources that were never built
+                if (-not $built) { Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue }
+            }
         }
     }
 }

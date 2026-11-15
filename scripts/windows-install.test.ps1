@@ -8,7 +8,7 @@ $originalUserProfile = $env:USERPROFILE
 # against a local release folder, near the end
 $originalFromSource = $env:OVIS_FROM_SOURCE
 $env:OVIS_FROM_SOURCE = '1'
-$state = @{ installed = $false; installs = 0; uninstalls = 0; ref = ''; running = $true; started = $false; failInstall = $false; bunVersion = '1.4.2'; failBun = $false; windowsRelease = $true; refId = 'devswha.ovis'; installedId = ''; manifestBlocked = $false; startedLegacy = $false; legacyInstalled = $false; stopStateDirs = @(); handStarted = $false; pluginSource = ''; launcherCalls = @(); failBuild = $false }
+$state = @{ installed = $false; installs = 0; uninstalls = 0; ref = ''; running = $true; started = $false; failInstall = $false; bunVersion = '1.4.2'; failBun = $false; windowsRelease = $true; refId = 'devswha.ovis'; installedId = ''; manifestBlocked = $false; startedLegacy = $false; legacyInstalled = $false; stopStateDirs = @(); handStarted = $false; pluginSource = ''; launcherCalls = @(); failBuild = $false; cutBuild = $null }
 $global:herdrInstallOpened = @()
 # gh is a stand-in .cmd, first on PATH: the installer runs gh as a process, and no real star is read or given.
 # mode.txt beside it is what it answers: starred, not, refuses (the star itself), upstream, signed-out, hangs or
@@ -22,8 +22,20 @@ function Assert([bool]$Condition, [string]$Message) { if (-not $Condition) { thr
 function Start-Process { $global:herdrInstallOpened += ($args -join ' ') }
 
 # Tool boundaries only: no downloads, installed plugins, processes or user settings are changed.
+# The commit a ref names: a commit id itself, or a stand-in id for a branch or tag
+function Get-TestCommit {
+    param([string]$Ref)
+    if ($Ref -match '^[0-9a-f]{7,40}$') { return $Ref.PadRight(40, '0') }
+    -join ([Security.Cryptography.SHA1]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($Ref)) | ForEach-Object { $_.ToString('x2') })
+}
 function git {
     $global:LASTEXITCODE = 0
+    # herdr's checkout, detached at the commit of the ref it was installed at, and a branch's tip on GitHub
+    if ($args[0] -eq '-C' -and $args[2] -eq 'rev-parse') { return Get-TestCommit $state.ref }
+    if ($args[0] -eq 'ls-remote' -and $args[1] -ne '--tags') {
+        if ($args[2] -notmatch '^[0-9a-f]{7,40}$') { "$(Get-TestCommit $args[2])`trefs/heads/$($args[2])" }
+        return
+    }
     "aaa`trefs/tags/v1.9.0"
     "bbb`trefs/tags/v1.10.0"
     "ccc`trefs/tags/v2.0.0-rc.1"
@@ -50,6 +62,8 @@ function bun {
             New-Item -ItemType Directory -Force -Path $serverDir | Out-Null
             Set-Content -LiteralPath (Join-Path $serverDir 'from-source') -Value '1.2.3'
             if ($state.failBuild) { $global:LASTEXITCODE = 1 }
+            # a build cut off: it says the marker is written, then runs until the test stops the installer, as Ctrl+C does
+            if ($state.cutBuild) { $null = $state.cutBuild.Set(); Start-Sleep -Seconds 60 }
         }
     }
     else { throw "Unexpected Bun command: $args" }
@@ -204,9 +218,39 @@ exit /b 1
     $message = ''
     try { & $installer -Ref 'feat/windows-install' } catch { $message = $_.Exception.Message }
     Assert ($message -match 'bun failed' -and -not (Test-Path -LiteralPath $fromSource) -and -not $env:OVIS_FROM_SOURCE) "A failed build must stop the install and leave no from-source marker: $message"
+    Assert ($message -match 'Ovis is stopped' -and $message -match 'OVIS_REF=feat/windows-install') "A failed build must say that Ovis is stopped and what to run: $message"
     $state.failBuild = $false; $state.launcherCalls = @()
     & $installer -Ref 'feat/windows-install'
     Assert (($state.launcherCalls -join ',') -eq 'stop,install 1' -and (Test-Path -LiteralPath $fromSource)) "A rerun after a failed build must build again (launcher: $($state.launcherCalls -join ','))"
+    # a build cut off after the launcher wrote the marker (Ctrl+C stops the pipeline: finally runs, catch does not): the
+    # installer runs in a pipeline of its own, which is stopped as the console's Ctrl+C stops it
+    Remove-Item -LiteralPath (Join-Path $pluginRoot '.ovis') -Recurse -Force; $state.launcherCalls = @()
+    $state.cutBuild = New-Object Threading.ManualResetEvent($false)
+    $runspace = [RunspaceFactory]::CreateRunspace(); $runspace.Open()
+    foreach ($name in 'state', 'pluginRoot', 'ghStandIn', 'launcher') { $runspace.SessionStateProxy.SetVariable($name, (Get-Variable $name -ValueOnly)) }
+    $stubs = [PowerShell]::Create(); $stubs.Runspace = $runspace
+    $null = $stubs.AddScript((@(foreach ($name in 'Get-TestCommit', 'git', 'bun', 'herdr') { "function global:$name {$((Get-Item "Function:\$name").Definition)}" }) -join "`n")).Invoke()
+    $stubs.Dispose()
+    $cut = [PowerShell]::Create(); $cut.Runspace = $runspace
+    $null = $cut.AddScript((Get-Content -Raw $installer)).AddParameter('Ref', 'feat/windows-install')
+    try {
+        $running = $cut.BeginInvoke()
+        Assert ($state.cutBuild.WaitOne(30000)) "control: the installer must reach the build (launcher: $($state.launcherCalls -join ','))"
+        $cut.Stop()
+        Assert ($running.IsCompleted -and $cut.InvocationStateInfo.State -eq 'Stopped') "control: the installer must have been stopped: $($cut.InvocationStateInfo.State) $($cut.InvocationStateInfo.Reason)"
+    } finally { $cut.Dispose(); $runspace.Dispose(); $state.cutBuild.Dispose(); $state.cutBuild = $null }
+    Assert (-not (Test-Path -LiteralPath $fromSource) -and -not $env:OVIS_FROM_SOURCE) "A build cut off must leave no from-source marker and the caller's OVIS_FROM_SOURCE (launcher: $($state.launcherCalls -join ','))"
+    $state.launcherCalls = @()
+    & $installer -Ref 'feat/windows-install'
+    Assert (($state.launcherCalls -join ',') -eq 'stop,install 1' -and (Test-Path -LiteralPath $fromSource)) "A rerun after a build cut off must build again (launcher: $($state.launcherCalls -join ','))"
+    # another branch over the installed one is said, and nothing is stopped or built; the installed commit's id is the same checkout
+    Remove-Item -LiteralPath (Join-Path $pluginRoot '.ovis') -Recurse -Force; $state.launcherCalls = @()
+    $message = ''
+    try { & $installer -Ref 'other-branch' } catch { $message = $_.Exception.Message }
+    $installedAt = (Get-TestCommit 'feat/windows-install').Substring(0, 12)
+    Assert ($state.launcherCalls.Count -eq 0 -and $message -match $installedAt -and $message -match (Get-TestCommit 'other-branch').Substring(0, 12)) "Another branch must be said, with both commits, and nothing stopped or built (launcher: $($state.launcherCalls -join ',')): $message"
+    & $installer -Ref $installedAt
+    Assert (($state.launcherCalls -join ',') -eq 'stop,install 1' -and (Test-Path -LiteralPath $fromSource)) "The installed commit's id must build that checkout (launcher: $($state.launcherCalls -join ','))"
     # a release tag keeps its binary, and a checkout whose marker names its version was built from source already
     $state.launcherCalls = @()
     & $installer -Ref 'v1.10.0'
