@@ -134,7 +134,7 @@ import { SplitDropPreview } from "./components/SplitDropPreview.tsx";
 import { CrashProbe, RegionCrash } from "./components/AppCrash.tsx";
 import { RenderBoundary } from "./components/RenderBoundary.tsx";
 import { lensOwner, storedView, usePaneLens, usePaneLensState, usePaneViewPicks } from "./lib/usePaneLens.ts";
-import { usageCounters, useCountedInboxWays, useShownCount } from "./lib/usageCounters.ts";
+import { actionUse, usageCounters, useCountedInboxWays, useShownCount } from "./lib/usageCounters.ts";
 import { useSplitLayout, useSplitRecheck, useSplitState } from "./lib/useSplitView.ts";
 import { linkSelects, useLinkLanding, useMachineGone, useNotificationTargets, useSelectedLayout, useSelectedMachine, useSelectedPane, useSelectionMark, useSelectionState, useSelectPane, useSelectTarget } from "./lib/useSelection.ts";
 import { useAddressBar } from "./lib/useAddressBar.ts";
@@ -646,9 +646,12 @@ export function App() {
       },
       setView,
       counted: (action, source) => {
-        // split, close pane and new tab act on the selected pane: counted for this PC's own alone
-        if (action === "split" || action === "close_pane" || action === "new_tab") usageCounters.paneUse(`${action}_by_${source}`, selectedMachineId);
-        else usageCounters.count(`${action}_by_${source}`);
+        // what would do nothing here is no use of it (a shortcut or palette row with no pane to split, close or add a tab
+        // beside); split, close pane and new tab act on the selected pane: counted for this PC's own alone
+        const name = actionUse(action, source, { machineId: selectedMachineId, can: {
+          split: actions.splitPane !== null, close_pane: actions.closePane !== null, new_tab: !inbox.shown && !inMode && newTabTarget() !== null,
+        } });
+        if (name) usageCounters.count(name);
       },
       // a peek shows the terminal over the chat: the shortcut takes the chat back, the lens stays Chat
       toggleView: (source) => { if (terminalPeek !== null) endPeek(); else setView(view === "chat" ? "terminal" : "chat", source); setDrawerOpen(false); },

@@ -15,7 +15,7 @@
 import { useCallback, useEffect } from "react";
 import { LOCAL_MACHINE } from "../../shared/machines.ts";
 import { COUNTS_ON } from "../../shared/telemetry-notice.ts";
-import { harnessOf, type TelemetryCounter, type TelemetryCountsChange, type TelemetryShown, type TelemetryStatus, type TelemetryViewSource, type TelemetryWidth } from "../../shared/telemetry.ts";
+import { harnessOf, type TelemetryAction, type TelemetryActionSource, type TelemetryCounter, type TelemetryCountsChange, type TelemetryShown, type TelemetryStatus, type TelemetryViewSource, type TelemetryWidth } from "../../shared/telemetry.ts";
 import type { PaneView } from "./actions.ts";
 import { changeTelemetry, fetchTelemetry, onTelemetryStatus } from "./api.ts";
 import { SHEET_QUERY } from "./sheets.ts";
@@ -188,4 +188,14 @@ export function useCountedInboxWays(enter: () => void, leave: () => void): { ent
     enter: useCallback(() => { usageCounters.count("inbox_enter"); enter(); }, [enter]),
     leave: useCallback(() => { usageCounters.count("inbox_leave"); leave(); }, [leave]),
   };
+}
+
+/**
+ * The counter an action taken by `source` goes to, or null: none when it would do nothing here (a shortcut or a
+ * palette row for a split, a close or a new tab with nothing to act on), and none for a pane on another PC.
+ */
+export function actionUse(action: TelemetryAction, source: TelemetryActionSource, here: { machineId: string; can: Partial<Record<TelemetryAction, boolean>> }): TelemetryCounter | null {
+  if (here.can[action] === false) return null;
+  if ((action === "split" || action === "close_pane" || action === "new_tab") && here.machineId !== LOCAL_MACHINE) return null;
+  return `${action}_by_${source}`;
 }

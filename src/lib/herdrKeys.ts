@@ -76,11 +76,12 @@ export function herdrKeyStep(map: HerdrKeyMap, armed: boolean, event: ShortcutEv
   return event.key === "Escape" ? { kind: "escape" } : { kind: "pass" };
 }
 
-/** `tabRefused`: herdr's refusal of a new tab, said over the pane as the tab strip's button says it */
 /** herdr's prefix actions that are also a button, a menu item or a palette row: counted as the shortcuts are */
 const HERDR_KEY_ACTIONS: Partial<Record<HerdrPrefixAction, TelemetryAction>> = {
   settings: "settings", new_workspace: "new_workspace", new_tab: "new_tab", split_vertical: "split", split_horizontal: "split", toggle_sidebar: "sidebar",
 };
+
+/** `tabRefused`: herdr's refusal of a new tab, said over the pane as the tab strip's button says it */
 
 export function runHerdrAction(actions: AppActions, action: HerdrPrefixAction, index: number | null, tabRefused: (reason: unknown) => void): void {
   const counted = HERDR_KEY_ACTIONS[action];

@@ -166,6 +166,11 @@ const PALETTE_ACTIONS: Partial<Record<string, TelemetryAction>> = {
   "close-pane": "close_pane", sidebar: "sidebar", "inbox-mode": "inbox", settings: "settings", files: "files",
 };
 
+/** the action a palette row counts, by its id: the inbox row only on the way in, as every other way in is counted */
+export function paletteUse(id: string, inInbox: boolean): TelemetryAction | undefined {
+  return id === "inbox-mode" && inInbox ? undefined : PALETTE_ACTIONS[id];
+}
+
 export function CommandPalette({ open, initialQuery = "", onClose, machines, onSelect, snapshot, online, selectedPaneId, view, actions, watching = false, inboxMode = false }: CommandPaletteProps) {
   const t = useT();
   const { settings } = useSettings();
@@ -553,7 +558,7 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
     onClose();
   };
   const runAction = (action: PaletteAction): void => {
-    const counted = PALETTE_ACTIONS[action.id];
+    const counted = paletteUse(action.id, actions.inboxMode?.on === true);
     if (counted) actions.counted?.(counted, "palette");
     action.run();
     if (!action.keepOpen) onClose();

@@ -311,8 +311,7 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
     <button type="button" className="icon-button inbox-round inbox-add" aria-label={t("New workspace")} title={t("New workspace")}
       aria-haspopup={connected.length > 1 ? popup : undefined} aria-expanded={connected.length > 1 ? pcMenu !== null : undefined}
       onClick={(event) => {
-        usageCounters.count("new_workspace_by_button");
-        if (connected.length === 1) onNew(connected[0]!.id);
+        if (connected.length === 1) { usageCounters.count("new_workspace_by_button"); onNew(connected[0]!.id); }
         else setPcMenu(pcMenu === null ? event.currentTarget : null);
       }}>
       <Plus aria-hidden="true" />
@@ -425,7 +424,7 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
         {searchField}
       </div>}
       {pcMenu !== null && !watching && connected.length > 1 && <RowMenu anchor={pcMenu} title={t("New workspace")} onClose={() => setPcMenu(null)}
-        items={connected.map((machine) => ({ id: machine.id, label: machine.name, icon: Monitor, run: () => onNew(machine.id) }))} />}
+        items={connected.map((machine) => ({ id: machine.id, label: machine.name, icon: Monitor, run: () => { usageCounters.count("new_workspace_by_button"); onNew(machine.id); } }))} />}
       {filterMenu !== null && <RowMenu anchor={filterMenu} title={t("Filter by state")} choice onClose={() => setFilterMenu(null)}
         items={INBOX_FILTERS.map((value) => ({
           id: value, label: filterWord(value), icon: ListFilter, checked: filter === value, run: () => onFilter(value),
