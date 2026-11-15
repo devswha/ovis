@@ -113,8 +113,10 @@ name: installs already send to that address, and a D1 database cannot be renamed
 
 After `bunx wrangler login` from `telemetry/`, run
 `bun scripts/telemetry-report.ts --out <file.md>` from the repository root. It runs the weekly installs, DAU, WAU, MAU,
-agent-kind and country queries below, plus daily actives per country for the last 28 days, and
-writes them as one report. The script selects `telemetry/` as Wrangler's working directory.
+agent-kind and country queries below, plus daily actives per country for the last 28 days and the
+last 7 finished days' button counts (per width: the share of installs that used each counter and the
+median range of a day it was used, the controls shown, switches by kind of agent and by version), and
+writes them as one report; `--html <file.html>` also writes them as one page with the shares drawn as bars. The script selects `telemetry/` as Wrangler's working directory.
 For the individual queries below, stay in `telemetry/`:
 
 ```sh
