@@ -73,6 +73,10 @@ export async function tmuxCodexProcess(info: ProcessInfo | undefined, platform =
   try {
     const clientBirth = birth(client.pid);
     if (clientBirth === null) return null;
+    // One process table for both observations: the second asks tmux again whether the client still shows the same
+    // pane, and the births read after it prove every process of both chains is still the one first seen (a process
+    // is reparented only when its parent exits). Each caller's next lookup reads a table of its own.
+    let table: TerminalProcess[] | undefined;
     const observe = async () => {
       const text = await readClients(client.args);
       const lines = text.trimEnd().split("\n").map((line) => line.split("\t"));
@@ -84,7 +88,7 @@ export async function tmuxCodexProcess(info: ProcessInfo | undefined, platform =
         || !isAbsolute(socket!) || (client.socket !== null && resolve(socket!) !== resolve(client.socket))
         || !/^\$\d+$/.test(session!) || !/^@\d+$/.test(window!) || !/^%\d+$/.test(pane!) || control !== "0"
         || !clientTty?.startsWith("/dev/") || !paneTty?.startsWith("/dev/") || clientTty === paneTty) return null;
-      const rows = await readProcesses();
+      const rows = table ??= await readProcesses();
       const outer = rows.find((row) => row.pid === client.pid);
       const root = rows.find((row) => row.pid === Number(panePid));
       // Remain-on-exit keeps a dead pane's PID/TTY; only its live server-owned child is proof.

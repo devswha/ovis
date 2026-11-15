@@ -139,10 +139,17 @@ describe("tmux native process proof", () => {
     expect(second!.identity).not.toBe(first!.identity);
   });
 
-  it("refuses an outer shell reparented between observations", async () => {
+  it("refuses an outer shell reparented between observations, which its parent's exit shows", async () => {
     let reads = 0;
-    expect(await tmuxCodexProcess(outerInfo, "linux", async () => mapping,
-      async () => ++reads === 1 ? outerRows : outerRows.map((row) => row.pid === 9 ? { ...row, parent: 1 } : row), births)).toBeNull();
+    expect(await tmuxCodexProcess(outerInfo, "linux", async () => mapping, async () => outerRows,
+      (pid) => pid === 8 && ++reads > 1 ? null : births(pid))).toBeNull();
+  });
+
+  it("reads one process table for both observations of a proof", async () => {
+    let lists = 0, tables = 0;
+    expect(await tmuxCodexProcess(info, "linux", async () => { lists++; return mapping; },
+      async () => { tables++; return processes; }, births)).toMatchObject({ pid: 30 });
+    expect({ lists, tables }).toEqual({ lists: 2, tables: 1 });
   });
 
   it("rejects stale reported membership, a missing root and multiple clients", async () => {
@@ -196,12 +203,13 @@ describe("tmux native process proof", () => {
     expect(await tmuxCodexProcess(info, "linux", async () => mapping, async () => rows as TerminalProcess[], births)).toBeNull();
   });
 
+  // one table serves both observations: the births read after them show a launcher that exited, was reused, or was
+  // reparented because the pane root above it exited
   it.each(["exit", "reparent", "reuse"])("refuses wrapper %s during verification", async (change) => {
-    let reads = 0, wrapperBirths = 0;
-    expect(await tmuxCodexProcess(info, "linux", async () => { reads++; return mapping; },
-      async () => reads < 2 || change === "reuse" ? wrapped : change === "exit" ? wrapped.filter((row) => row.pid !== 25)
-        : wrapped.map((row) => row.pid === 25 ? { ...row, parent: 99 } : row),
-      (pid) => births(pid) + (change === "reuse" && pid === 25 && ++wrapperBirths > 1 ? 1 : 0))).toBeNull();
+    const changed = change === "reparent" ? 20 : 25;
+    let reads = 0;
+    expect(await tmuxCodexProcess(info, "linux", async () => mapping, async () => wrapped,
+      (pid) => pid !== changed || ++reads === 1 ? births(pid) : change === "reuse" ? births(pid) + 1 : null)).toBeNull();
   });
 
   it("changes the binding identity when a shell wrapper's birth changes between lookups", async () => {
@@ -243,11 +251,12 @@ describe("tmux native process proof", () => {
   });
 
   it.each(["dead", "reparented"])("rejects a pane that becomes %s between reads", async (change) => {
-    let reads = 0;
+    // a pane root is reparented only when its server exits
+    let reads = 0, serverBirths = 0;
     expect(await tmuxCodexProcess(info, "linux",
       async () => ++reads > 1 && change === "dead" ? mapping.replace(/\t0\n$/, "\t1\n") : mapping,
-      async () => reads > 1 && change === "reparented" ? processes.map((row) => row.pid === 20 ? { ...row, parent: 99 } : row) : processes,
-      births)).toBeNull();
+      async () => processes,
+      (pid) => change === "reparented" && pid === 11 && ++serverBirths > 1 ? null : births(pid))).toBeNull();
   });
 
   it.each([10, 11, 20, 30])("rejects PID %s reuse", async (reused) => {
