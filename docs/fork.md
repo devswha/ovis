@@ -2,6 +2,38 @@
 
 This fork is `ricardofelixb/ovis`; upstream is `devswha/ovis`. This inventory compares the starting commit `da5afc54` with its upstream merge base, `2decd453d6a28eb6cf21647c6f928150d1196c5c`. It includes inherited fork changes, not just this refactor.
 
+## Project friends and inbox clarity
+
+Reusable upstream candidate, behind the existing **Agent friends** opt-in (off on new devices).
+`server/fork/friends.ts` now assigns one friend per machine + workspace ID, not per pane. A workspace
+ID survives bridge/runtime restarts and renames without following a pane's changing cwd; separate
+workspaces intentionally remain separate projects. Descendants resolve their conductor's workspace,
+even across workspaces. The browser/alert response stays `{ friends: { [machine:pane]: friend } }`;
+`src/fork/friends.ts`, avatars and notification callers need no changes and add no child tint.
+
+`project-friends.json`, owned by FriendStore, is a new flat workspace-to-friend document beside the
+unchanged pane cache `friends.json`. A project's first observed pane/conductor inherits its old pick;
+other panes converge on it. Reads alone do not write. Old releases ignore the new file and can rewrite
+the pane cache without erasing project picks; a downgrade still reads the original pane-cache shape.
+Malformed, unreadable or future-shaped project documents are never overwritten. Project picks remain
+when the last agent exits so a new pane after a restart keeps the same friend. Missing snapshot
+metadata retains the legacy fallback until the next roster observation. No API request/response shape
+or auth/observe guard changes.
+
+Hooks added/changed by this task (upstream files only):
+- `server/index.ts`: one existing `friendOf` callback line also passes the cached machine roster;
+  the fork looks up workspace/parent metadata for alerts, including before a browser lists a pane.
+  Fork diff vs `upstream/main` before/after: **+12/-5 → +12/-5** (unchanged hook footprint).
+- `server/fork/routes.ts` (fork-owned): supplies cached snapshots, or a local snapshot when the
+  machine manager is disabled. No extra upstream route hook.
+
+Scoped red/green evidence: `TMPDIR="$HOME/.cache/ovis-tmp/inbox-agent-clarity" bun test
+server/fork/fork-friends.test.ts` exited 1 (three meaningful project/migration failures) before
+implementation. Server conventions (`bun test server/conventions.test.ts`, same TMPDIR) exited 0
+(16 tests). `TMPDIR="$HOME/.cache/ovis-tmp/inbox-agent-clarity" bun test
+server/fork/fork-friends.test.ts server/friends.test.ts` exited 0 (6 tests). No Bigpowers timing or
+RED-isolation scripts exist in this checkout; the failing test-only commit records RED directly.
+
 ## Three piles
 
 - **A: reusable changes.** Upstream PR candidates, not submitted. Optional presentation features should arrive upstream disabled; protocol correctness fixes should retain their focused tests rather than acquire a switch.

@@ -26,7 +26,7 @@ export function routeForkScreen(request: Request, url: URL, ctx: ServerContext, 
 /** Called only after upstream's authentication, origin, drive and observe guards. */
 export function routeForkApi(request: Request, url: URL, ctx: ServerContext, caller: { readOnly: boolean; deviceId: string | undefined; headers: Headers }): Promise<Response | undefined> | null {
   const { pathname } = url;
-  if (pathname === "/api/friends") { setRequestRoute(pathname); return handleFriendsRequest(request, ctx.services.friends); }
+  if (pathname === "/api/friends") { setRequestRoute(pathname); return handleFriendsRequest(request, ctx.services.friends, async () => ctx.services.core.machines?.list() ?? [{ id: "local", snapshot: await ctx.services.core.clientSnapshot() }]); }
   if (pathname === "/api/speech") { ctx.timeout(request, 0); return handleSpeechRequest(request, ctx.services.speech); }
   if (pathname !== PI_VOICE_PATH && pathname !== PI_VOICE_STATUS_PATH) return null;
   return (async () => {
