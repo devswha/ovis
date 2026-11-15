@@ -158,6 +158,14 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   script, the modules it needs at once and the styles) are sent with Brotli's best compression,
   about 150 KB (14%) smaller, where the browser accepts Brotli. A build takes a few seconds longer.
   ([#3860](https://github.com/devswha/ovis/pull/3860) by @nocstah)
+- The iPhone app is out on the App Store. ovis.sh and the READMEs link to it with Apple's badge,
+  and the beta page keeps TestFlight for trying upcoming iPhone builds early.
+  ([#3863](https://github.com/devswha/ovis/pull/3863))
+- The first-run setup guide is now a dialog over the app, a 16:9 card with a step at a time: the
+  welcome, then your coding agent (the ones installed here, the rest behind Install another agent), then
+  Done with Start. Start now, finish setup later still starts your agent two clicks from the welcome, and
+  the close button or Escape closes it (Settings → Agents opens it again).
+  ([#3861](https://github.com/devswha/ovis/pull/3861))
 
 ### Fixed
 - More closes when the button that opened it leaves the page (a Back that takes its screen away),
