@@ -19,7 +19,7 @@ function git(cwd: string, ...args: string[]): string {
 }
 
 /**
- * A crate folder holding prepare.sh, an UPSTREAM that pins a local stand-in for hc-tui (with a
+ * A crate folder holding prepare.sh, an hc-tui.pin that pins a local stand-in for hc-tui (with a
  * stand-in Ghostty submodule at vendor/ghostty), and `patches` patch files made against it.
  */
 function crate(patches = 0): { dir: string; upstream: string } {
@@ -40,7 +40,7 @@ function crate(patches = 0): { dir: string; upstream: string } {
   const dir = join(scratch, "crate");
   mkdirSync(join(dir, "patches"), { recursive: true });
   copyFileSync(PREPARE, join(dir, "prepare.sh"));
-  writeFileSync(join(dir, "UPSTREAM"), `HC_TUI_REPO=${hc}\nHC_TUI_TAG=v0\nHC_TUI_COMMIT=${git(hc, "rev-parse", "HEAD")}\nGHOSTTY_COMMIT=${git(ghostty, "rev-parse", "HEAD")}\n`);
+  writeFileSync(join(dir, "hc-tui.pin"), `HC_TUI_REPO=${hc}\nHC_TUI_TAG=v0\nHC_TUI_COMMIT=${git(hc, "rev-parse", "HEAD")}\nGHOSTTY_COMMIT=${git(ghostty, "rev-parse", "HEAD")}\n`);
   for (let n = 1; n <= patches; n += 1) addPatch(dir, n);
   return { dir, upstream: join(dir, "upstream") };
 }
@@ -71,6 +71,12 @@ beforeEach(() => {
 afterEach(() => rmSync(scratch, { recursive: true, force: true }));
 
 describe("crates/ovis-tui/prepare.sh", () => {
+  it("makes upstream/ where no file of the crate has that name in another case (macOS folders ignore case)", () => {
+    const crateDir = join(import.meta.dir, "..", "crates", "ovis-tui");
+    const tracked = Bun.spawnSync(["git", "ls-files", "--", "."], { cwd: crateDir, stdout: "pipe" }).stdout.toString().split("\n");
+    expect(tracked.map((path) => path.split("/")[0]!).filter((name) => name.toLowerCase() === "upstream")).toEqual([]);
+  });
+
   it("makes the pin with its patches, and leaves a tree that already is that alone", () => {
     const { dir, upstream } = crate(1);
     expect(prepare(dir).code).toBe(0);

@@ -4,7 +4,7 @@
 #
 #   crates/ovis-tui/prepare.sh
 #
-# It fetches one commit (UPSTREAM names it) and that commit's Ghostty submodule, checks both commit
+# It fetches one commit (hc-tui.pin names it) and that commit's Ghostty submodule, checks both commit
 # ids, applies every patch and commits them there, so a clean `git status` in ./upstream means the
 # tree is exactly "the pin plus our patches". A tree that is already that is left alone. A tree with
 # work of its own (edits, branches, a stash, files in the Ghostty submodule) is never deleted: the
@@ -15,9 +15,9 @@
 set -eu
 
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-[ -n "$here" ] && [ -f "$here/UPSTREAM" ] || { echo "prepare.sh: UPSTREAM is missing beside the script" >&2; exit 1; }
+[ -n "$here" ] && [ -f "$here/hc-tui.pin" ] || { echo "prepare.sh: hc-tui.pin is missing beside the script" >&2; exit 1; }
 # shellcheck disable=SC1091
-. "$here/UPSTREAM"
+. "$here/hc-tui.pin"
 dest="$here/upstream"
 stamp="$dest/.ovis-prepared"
 
