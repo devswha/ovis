@@ -2759,6 +2759,23 @@ describe("the status hub's GJC turn at rest under its background job", () => {
     expect((await h.snapshot()).panes[0]).toMatchObject({ background_tasks: 1, background_wait: true });
   });
 
+  it("keeps the wait through herdr's word while the transcript's last record is half written", async () => {
+    // Given a GJC pane at rest on a job, whose transcript's next record is only partly written.
+    const h = await waiting();
+    const record = JSON.stringify({ type: "custom", customType: "note" });
+    h.append(record.slice(0, 10));
+    await h.status.gjc.poll();
+    // When herdr reports the provider child at work and at rest meanwhile, and the record is then complete.
+    handlers.onStatus(pane.pane_id, "working", "gjc");
+    handlers.onStatus(pane.pane_id, "idle", "gjc");
+    h.append(`${record.slice(10)}\n`);
+    await h.status.gjc.poll();
+    // Then the pane still waits on its job: BG, alerted as working, not a finish.
+    expect(h.last()).toMatchObject({ status: "done", bg: true });
+    expect(h.alerts.at(-1)).toBe("working");
+    expect((await h.snapshot()).panes[0]).toMatchObject({ background_tasks: 1, background_wait: true });
+  });
+
   it("reads BG, not DONE, while a job the turn started runs, and alerts the finish once its delivery is answered", async () => {
     // Given a GJC pane whose turn starts a background subagent and ends.
     const h = await waiting();

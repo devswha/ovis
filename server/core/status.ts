@@ -699,7 +699,9 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       // Only the Claude tracker's poll changes what was told of that hold
       if (claudeAgents.loopTold(paneId) !== resumed) tellQueue(paneId);
       waits.status(paneId, status);
-    } else waits.forget(paneId);
+      // herdr's word on a GJC pane whose transcript cannot be read just now (half written, a read under way) is its
+      // provider child's: the wait gjc's transcript set stands until that transcript or gjc's leaving ends it
+    } else if (agent !== "gjc") waits.forget(paneId);
     const tell = (): void => {
       broadcastAll(paneStatus(paneId, status, tracker !== null ? { background_tasks: tracker.countOf(paneId) } : {}));
       push.onStatus(paneId, alertStatus(status, waits.waiting(paneId))).catch(logPushError);
