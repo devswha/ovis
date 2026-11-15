@@ -619,9 +619,10 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
         : { id: "pin-workspace", label: t("Pin workspace"), icon: Pin, run: () => togglePin(state) },
       // the tab row's own New tab with agent…, aimed at this workspace without opening it first (#3772); a tab is a drive
       // action, so a watching device is not offered it, and a PC that is not connected has no roster to make it in
-      // a folded row unfolds first, as opening a worktree from the menu unfolds its group, so the new agent is in sight (#3771)
+      // with Agents under workspaces on, a folded row unfolds first, as opening a worktree from the menu unfolds its group, so
+      // the new agent is in sight (#3771); with it off no agent is drawn under the row, so every saved fold stays as it is
       ...(online && !watching ? [{ id: "new-tab", label: t("New tab with agent…"), icon: Bot, run: () => {
-        if (worktrees.length > 0 && repoKey) { if (folded) toggleWorktrees(repoKey, true); } else if (agentsAway) toggleAgents(workspace.workspace_id, true);
+        if (agentTree) { if (worktrees.length > 0 && repoKey) { if (folded) toggleWorktrees(repoKey, true); } else if (agentsAway) toggleAgents(workspace.workspace_id, true); }
         actions.openNewTab({ machineId, workspaceId: workspace.workspace_id });
       } }] : []),
       ...(!renameOffered || !renamesWorkspace(workspace.workspace_id) ? [] : [{ id: "rename-workspace", label: t("Rename workspace"), icon: Pencil, run: () => beginWorkspaceRename(workspace) }]),

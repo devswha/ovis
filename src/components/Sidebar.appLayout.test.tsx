@@ -178,6 +178,24 @@ describe("the sidebar on a PC the Herdr app lays out", () => {
     }
   });
 
+  it("leaves a folded repository's saved fold alone when New tab with agent… runs while Agents under workspaces is off", async () => {
+    stored.set("ovis:worktree-group-collapsed:local:r", "1");
+    const fetch = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async () => Response.json({ error: "not_found" }, { status: 404 }), { preconnect: globalThis.fetch.preconnect }));
+    try {
+      const opened: unknown[] = [];
+      const spying = new Proxy({}, { get: (_, name) => name === "openNewTab" ? (target: unknown) => opened.push(target) : () => {} }) as AppActions;
+      await draw(roster([workspace("root", worktree(false)), workspace("child", worktree(true))]), TUI, true, { actions: spying });
+      expect(await menuOf("root")).toContain("new-tab");
+      await act(async () => { (renderer!.root.findByType(RowMenu).props.items as { id: string; run: () => void }[]).find((item) => item.id === "new-tab")!.run(); renderer!.root.findByType(RowMenu).props.onClose(); });
+      expect(opened).toEqual([{ machineId: "local", workspaceId: "root" }]);
+      expect(stored.get("ovis:worktree-group-collapsed:local:r")).toBe("1");
+      expect(await menuOf("root")).toContain("fold");
+      expect((renderer!.root.findByType(RowMenu).props.items as { id: string; label: string }[]).find((item) => item.id === "fold")?.label).toBe("Expand");
+    } finally {
+      fetch.mockRestore();
+    }
+  });
+
   it("offers Collapse and Expand for a row's agents while Agents under workspaces is on, one fold per row (#3771)", async () => {
     stored.set("ovis:sidebar-agent-tree", "true");
     const fetch = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async () => Response.json({ error: "not_found" }, { status: 404 }), { preconnect: globalThis.fetch.preconnect }));
