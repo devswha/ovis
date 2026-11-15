@@ -324,7 +324,7 @@ async function scenario(browser: Browser, server: { port: number }, width: numbe
     assert.ok((await page.evaluate(() => (window as unknown as { tapTargetsHeld: number[] }).tapTargetsHeld)).includes(4500), `${label}: the demo's turn completion was held, so the plan chip stays at work`);
     await settle(page);
     await capture(page, label, "chat");
-    failures.push(...check(await measure(page, chatTargets(phone), phone), `${label} chat`));
+    failures.push(...check(await measure(page, CHAT, phone), `${label} chat`));
 
     await tap(".composer-controls-left .voice-mic");
     await page.locator('.composer .voice-pill.is-open[data-state="recording"]').waitFor();
@@ -349,7 +349,7 @@ async function scenario(browser: Browser, server: { port: number }, width: numbe
       await page.locator(".terminal-input .terminal-input-mic .voice-mic").waitFor();
       await settle(page);
       await capture(page, label, "terminal-line");
-      failures.push(...check(await measure(page, [...view(phone), ...LINE], phone), `${label} terminal line`));
+      failures.push(...check(await measure(page, [...VIEW, ...LINE], phone), `${label} terminal line`));
     }
     assert.deepEqual(errors, [], `${width}: no page errors`);
   } finally { await context.close(); }

@@ -90,14 +90,17 @@ async function activeTabInView(page: Page, label: string): Promise<void> {
 }
 
 /**
- * A phone's default, Tabs on a phone at Under the header: the row under a one-row header, every tab a
+ * Tabs on a phone at Under the header: the row under a one-row header, every tab a
  * touch target, the open one and the + in view, and a tap on another opens it. No chevron lists them.
  */
 async function checkPhoneRow(browser: Browser, origin: string, first: string, panes: string[]): Promise<void> {
   for (const width of [360, 390]) {
     const context = await browser.newContext({ viewport: { width, height: 780 }, isMobile: true, hasTouch: true, locale: "en-US" });
     try {
-      await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" })));
+      await context.addInitScript(() => {
+        localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" }));
+        localStorage.setItem("ovis:phone-tabs", JSON.stringify("row"));
+      });
       const page = await context.newPage();
       const errors: string[] = [];
       page.on("pageerror", (error) => errors.push(error.message));
@@ -145,7 +148,8 @@ async function checkHeaderLongPress(browser: Browser, origin: string, first: str
     const second = row.getByRole("tab", { name: "second", exact: true });
     await second.waitFor();
     const selected = (): Promise<string | null> => row.locator('[role="tab"][aria-selected="true"] .tab-strip-label').textContent();
-    assert.equal(await selected(), "Tab 1", "the first tab is open");
+    const firstTab = await selected();
+    assert.ok(firstTab?.trim() && !TAB_LABELS.includes(firstTab), "the first tab is open and named");
     // a point on the second tab that is inside the row, not under its faded end
     const point = async (): Promise<{ x: number; y: number }> => {
       const tab = (await second.boundingBox())!;
@@ -163,7 +167,7 @@ async function checkHeaderLongPress(browser: Browser, origin: string, first: str
     await page.clock.runFor(600);
     await menu.waitFor();
     await touch("touchEnd");
-    assert.equal(await selected(), "Tab 1", "a long press opens the tab's menu and does not open the tab");
+    assert.equal(await selected(), firstTab, "a long press opens the tab's menu and does not open the tab");
     // the lift sent no click or focus that closes it: the menu is still there to use
     await menu.getByRole("button", { name: "Cancel", exact: true }).tap();
     await menu.waitFor({ state: "detached" });
@@ -172,9 +176,9 @@ async function checkHeaderLongPress(browser: Browser, origin: string, first: str
     await second.tap();
     await row.locator('[role="tab"][aria-selected="true"] .tab-strip-label', { hasText: "second" }).waitFor();
 
-    // moved past the slop: no menu once the 450ms have passed, and no tab opened (Tab 1, now beside the open one).
+    // moved past the slop: no menu once the 450ms have passed, and no tab opened (the first tab, now beside the open one).
     // Last: under the page's clock the press's own events can leave the next tap unanswered, which a real clock does not
-    const tab1 = row.getByRole("tab", { name: /^Tab 1/ });
+    const tab1 = row.getByRole("tab").filter({ has: page.getByText(firstTab, { exact: true }) });
     const box1 = (await tab1.boundingBox())!;
     const strip1 = (await row.boundingBox())!;
     const from = { x: Math.min(Math.max(box1.x + box1.width / 2, strip1.x + 12), strip1.x + strip1.width - 24), y: box1.y + box1.height / 2 };
@@ -235,7 +239,7 @@ export async function checkMobileTabs(browser: Browser, origin: string): Promise
 
     await page.goto(`${origin}/?pane=${encodeURIComponent(first)}`);
     await page.locator(".conn-live").waitFor();
-    await page.locator(".app-header .context-tabs").waitFor();
+    await page.locator(".app-header .header-tabs-sheet").waitFor();
     await pickLens(page, "chat");
     const firstFrame = page.locator(`[data-layout-pane=${JSON.stringify(first)}]`);
     const composer = firstFrame.getByRole("textbox", { name: "Message", exact: true });
@@ -261,7 +265,7 @@ export async function checkMobileTabs(browser: Browser, origin: string): Promise
     // The title's list: every tab with a Close of its own, the open one marked, the open tab's move
     // and the ways to a new tab under them. It opens on its first row, and the title says it is open.
     const tabs = await openTabs(page);
-    assert.equal(await page.locator(".app-header .context-tabs").getAttribute("aria-expanded"), "true", "the title says its list is open");
+    assert.equal(await page.locator(".app-header .header-tabs-sheet").getAttribute("aria-expanded"), "true", "the title says its list is open");
     // an unnamed tab is named by its agent's title
     const firstTab = (await tabs.locator(".row-sheet-item .row-sheet-label").first().innerText()).trim();
     assert.ok(firstTab !== "" && !TAB_LABELS.includes(firstTab), "the workspace's first tab is named");
@@ -392,7 +396,7 @@ export async function checkMobileTabs(browser: Browser, origin: string): Promise
         assert.deepEqual(lateErrors, []);
       } finally { await slow.close(); }
     }
-    console.log("PASS a phone's tabs are a row under the header by default, one tap to another; in the header, they keep a one-row header whose chevron lists them, in both lenses and with the keyboard up, reopens a tab and a workspace on the pane last seen after a reload, and a tablet keeps the open tab and the + in its strip");
+    console.log("PASS a phone's tabs can be a row under the header, one tap to another; in the header, they keep a one-row header whose chevron lists them, in both lenses and with the keyboard up, reopens a tab and a workspace on the pane last seen after a reload, and a tablet keeps the open tab and the + in its strip");
   } finally {
     await context.close();
     if (workspaceId) await workspaceClose(workspaceId).catch(() => undefined);

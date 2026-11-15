@@ -10,9 +10,10 @@ import { pickLens, shownLens, VIEW_BUTTON } from "./view-toggle.ts";
 
 async function checkTabSurface(page: Page, width: number): Promise<void> {
   if (width <= 640) {
-    // a phone's header title lists the tabs in place of the row
-    await page.locator(".app-header .context-tabs").waitFor();
-    assert.equal(await page.locator(".header-tabs").count(), 0, "a phone has no tab row in its header");
+    // This fork's phone default keeps the tabs and their list in the header.
+    await page.locator(".app-header .header-tabs-sheet").waitFor();
+    await page.locator(".header-tabs .tab-strip").waitFor();
+    assert.equal(await page.locator(".pane-slot .tab-strip").count(), 0, "a phone has no second tab row over the pane");
     return;
   }
   // the header takes the tabs from 769px; a tablet below that keeps its row over the pane

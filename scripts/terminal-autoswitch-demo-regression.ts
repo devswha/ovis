@@ -176,10 +176,10 @@ try {
       await page.waitForFunction(() => (window as unknown as PeekWindow).promptReads > 0);
       const tag = `${width}-${theme}`;
       const chatLens = await lens(page);
-      // a phone has no track: its one button names the other lens (components/LensToggle.tsx)
-      assert.deepEqual({ stored: chatLens.stored, chatPressed: chatLens.chatPressed }, { stored: "chat", chatPressed: touch ? null : "true" });
-      const phoneButton = () => page.locator(".app-header .lens-toggle").evaluate((node) => ({ view: node.getAttribute("data-view"), label: node.getAttribute("aria-label") }));
-      if (touch) assert.deepEqual(await phoneButton(), { view: "chat", label: "Switch to terminal" });
+      // More carries the current lens on both phone and desktop (scripts/view-toggle.ts).
+      assert.deepEqual({ stored: chatLens.stored, chatPressed: chatLens.chatPressed }, { stored: "chat", chatPressed: "true" });
+      const phoneView = () => page.locator(".app-header .header-more-button").getAttribute("data-view");
+      if (touch) assert.equal(await phoneView(), "chat");
 
       /** The peek is up: the grid over the mounted chat, nothing written about the lens, the composer out of the way. */
       const expectPeek = async (auto: boolean, command: string) => {
@@ -340,7 +340,7 @@ try {
       await page.keyboard.press("Control+Shift+J");
       await expectReturned();
       assert.deepEqual(await lens(page), chatLens, "the shortcut ends the peek instead of switching lenses");
-      if (touch) assert.deepEqual(await phoneButton(), { view: "chat", label: "Switch to terminal" }, "the phone's lens button follows the peek's end");
+      if (touch) assert.equal(await phoneView(), "chat", "the phone's view action follows the peek's end");
       console.log(`PASS ${tag}: Mod+Shift+J ends the peek`);
 
       if (touch) {

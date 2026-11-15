@@ -1204,6 +1204,10 @@ export function App() {
         ) : (
           <><Brand /><span className="machine-context-name">{selectedMachine?.name ?? selectedMachineId}</span></>
         )}
+        {selectedPane && inMode && !inbox.shown && screenMachineId === null && (
+          <LensToggle view={view} peek={terminalPeek !== null} terminalAttach={terminalAttach} thread
+            title={(label) => shortcutTitle(label, "toggle-view")} onToggle={actions.toggleView} />
+        )}
         {selectedPane && wideScreen && !inMode && screenMachineId === null && (
           <button type="button" className="header-text-button header-files-button is-icon" aria-label={t("Browse files")} title={t("Files")} aria-pressed={filesDocked ? filesBeside : undefined} onClick={toggleFiles}>
             <FolderOpen aria-hidden="true" />
