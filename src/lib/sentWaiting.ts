@@ -240,10 +240,13 @@ export function rememberWaitingSend(key: string, text: string, at = Date.now(), 
  */
 export const WAITING_STUCK_MS = 10 * 60_000;
 
-/** Drop the sends still on its way after WAITING_STUCK_MS (the browser's clock on both sides). */
+/**
+ * Drop the sends still on its way after WAITING_STUCK_MS (the browser's clock on both sides). Not while the agent
+ * rests: the chat's next read says what became of them (markUnanswered), however long the chat was closed.
+ */
 export function expireWaitingSends(key: string, now = Date.now()): void {
   const pane = waiting.get(key);
-  if (!pane) return;
+  if (!pane || rests.has(key)) return;
   const remaining = pane.sends.filter((send) => send.unanswered === true || now - send.at < WAITING_STUCK_MS);
   if (remaining.length === pane.sends.length) return;
   pane.sends = remaining;

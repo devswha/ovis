@@ -428,6 +428,23 @@ describe("waitingText", () => {
     } finally { forgetWaitingSends(key); }
   });
 
+  it("keeps a send on its way while the agent rests, past the long while, until a read says what became of it", () => {
+    const key = waitingKey("local", "reopened");
+    try {
+      readAt(key, [assistant("earlier")], 900);
+      rememberWaitingSend(key, "sent, then the chat was closed", 1_000);
+      // the chat is open again long after, the agent at rest, before its first read since
+      const reopened = 1_000 + WAITING_STUCK_MS + 5 * 60_000;
+      restingSince(key, reopened);
+      markUnanswered(key, reopened);
+      expireWaitingSends(key, reopened);
+      expect(currentWaitingSends(key).map((send) => send.unanswered)).toEqual([undefined]);
+      readAt(key, [assistant("earlier")], reopened + 1);
+      markUnanswered(key, reopened + 2);
+      expect(currentWaitingSends(key).map((send) => [send.text, send.unanswered])).toEqual([["sent, then the chat was closed", true]]);
+    } finally { forgetWaitingSends(key); }
+  });
+
   it("lets a send go, not unanswered, when the agent wrote a turn for it the chat does not match", () => {
     for (const written of [user("the turn, as the agent rewrote it", 2_000), { ...user("the turn"), ts: null }]) {
       const key = waitingKey("local", "rewritten");
