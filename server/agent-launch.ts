@@ -3,7 +3,7 @@
  * of `agent`, then the start, which retries a pane whose shell is not up yet and a name another
  * agent took. Workspace, tab and worktree creation share it.
  */
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync, type Stats } from "node:fs";
 import { join } from "node:path";
 import { freeAgentName } from "./agent-name.ts";
 import { launchedAgents } from "./launched-agents.ts";
@@ -53,23 +53,28 @@ export function dshEffortArgs(args: readonly string[]): { args: string[]; effort
  * `/effort <id>` writes and its boot reads (lib/types/effortPrefs.js), so the session starts on it and later ones
  * keep it, as after `/effort`; a /settings "default reasoning effort" set in dsh-tui still outranks it there. The
  * file is written just before the command is typed, since dsh-tui reads it as it boots, and put back as it was when
- * the start fails, unless something else changed it meanwhile. One file serves every dsh-tui and none takes a level
- * of its own, so two launches at about the same time may both start on the later level. No home: nothing is saved.
+ * the start fails, unless something else wrote it meanwhile (even the same level). One file serves every dsh-tui and
+ * none takes a level of its own, so two launches at about the same time may both start on the later level. With no
+ * home a chosen level cannot be saved, so dsh-tui is not started.
  */
 async function startDshTui(paneId: string, args: string[], options: { locator?: ShellAgentLocator }, home: string): Promise<number | null> {
   const { args: rest, effort } = dshEffortArgs(args);
-  if (effort === undefined || home === "") return startShellAgent("dsh-tui", paneId, rest, options);
+  if (effort === undefined) return startShellAgent("dsh-tui", paneId, rest, options);
+  if (home === "") throw new Error("the effort level could not be saved to ~/.dsh-tui/effort.json: this server has no home folder (HOME is not set)");
   const file = join(home, ".dsh-tui", "effort.json");
   const before = existsSync(file) ? readFileSync(file, "utf8") : null;
   const written = JSON.stringify({ effort }, null, 2);
   mkdirSync(join(home, ".dsh-tui"), { recursive: true });
   writeFileSync(file, written);
+  // the file as this launch left it: a rewrite with the same level changes its times, if not its bytes
+  const same = (stats: Stats, then: Stats): boolean => stats.ino === then.ino && stats.size === then.size && stats.mtimeMs === then.mtimeMs && stats.ctimeMs === then.ctimeMs;
+  const ours = statSync(file);
   try {
     return await startShellAgent("dsh-tui", paneId, rest, options);
   } catch (error) {
     try {
-      // only this launch's own level is taken back: one the user set (or a file they removed) meanwhile stays
-      if (existsSync(file) && readFileSync(file, "utf8") === written) {
+      // only this launch's own write is taken back: a level written (or a file removed) meanwhile stays
+      if (existsSync(file) && same(statSync(file), ours) && readFileSync(file, "utf8") === written) {
         if (before === null) rmSync(file);
         else writeFileSync(file, before);
       }

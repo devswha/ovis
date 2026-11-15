@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import * as fs from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -103,22 +104,39 @@ describe("agentLaunch", () => {
       }
     });
 
-    it("saves nothing for another agent, for an effort after --, or with no home", async () => {
+    it("saves nothing for another agent or for an effort after --", async () => {
       const root = home();
       const shell = shellStarts(root);
       try {
         const answers = [
           agentLaunch(PANE, { kind: "gjc", args: ["--effort", "low"] }, undefined, undefined, { home: root }),
           agentLaunch(PANE, { kind: "dsh-tui", args: ["--", "--effort", "bogus"] }, undefined, undefined, { home: root }),
-          agentLaunch(PANE, { kind: "dsh-tui", args: ["--effort", "max"] }, undefined, undefined, { home: "" }),
         ];
-        await shell.called(3);
-        expect(shell.calls.map((call) => call.args)).toEqual([["--effort", "low"], ["--", "--effort", "bogus"], []]);
+        await shell.called(2);
+        expect(shell.calls.map((call) => call.args)).toEqual([["--effort", "low"], ["--", "--effort", "bogus"]]);
         for (const call of shell.calls) call.finish(null);
-        expect(await Promise.all(answers)).toEqual([{ agent_started: true }, { agent_started: true }, { agent_started: true }]);
+        expect(await Promise.all(answers)).toEqual([{ agent_started: true }, { agent_started: true }]);
         expect(existsSync(join(root, ".dsh-tui"))).toBeFalse();
+      } finally {
+        shell.restore();
+      }
+    });
+
+    it("refuses a chosen level with no home to save it in, and starts dsh-tui there when none was chosen", async () => {
+      const shell = shellStarts(home());
+      try {
+        const refused = await agentLaunch(PANE, { kind: "dsh-tui", args: ["--effort", "max"] }, undefined, undefined, { home: "" });
+        expect(refused).toMatchObject({ agent_started: false, error: { code: "agent_start_failed" } });
+        expect(refused.agent_started === false && refused.error.message).toContain("effort.json");
+        expect(shell.calls).toHaveLength(0);
         // no home is not the server's working folder
         expect(existsSync(join(process.cwd(), ".dsh-tui"))).toBeFalse();
+
+        const plain = agentLaunch(PANE, { kind: "dsh-tui", args: ["/tmp/project"] }, undefined, undefined, { home: "" });
+        await shell.called(1);
+        expect(shell.calls[0]!.args).toEqual(["/tmp/project"]);
+        shell.calls[0]!.finish(null);
+        expect(await plain).toEqual({ agent_started: true });
       } finally {
         shell.restore();
       }
@@ -170,20 +188,39 @@ describe("agentLaunch", () => {
       }
     });
 
+    it("leaves the same level written again meanwhile when dsh-tui does not start", async () => {
+      const root = home();
+      mkdirSync(join(root, ".dsh-tui"));
+      writeFileSync(effortFile(root), JSON.stringify({ effort: "high" }));
+      const shell = shellStarts(root);
+      try {
+        const answer = agentLaunch(PANE, { kind: "dsh-tui", args: ["--effort", "off"] }, undefined, undefined, { home: root });
+        await shell.called(1);
+        // another dsh-tui's /effort off: the same bytes, written again (its time set apart from the clock's resolution)
+        writeFileSync(effortFile(root), JSON.stringify({ effort: "off" }, null, 2));
+        utimesSync(effortFile(root), new Date(2001, 0, 1), new Date(2001, 0, 1));
+        shell.calls[0]!.fail(new Error("dsh-tui did not start in the pane"));
+        expect(await answer).toMatchObject({ agent_started: false });
+        expect(saved(root)).toEqual({ effort: "off" });
+      } finally {
+        shell.restore();
+      }
+    });
+
     it("answers with the start's error when putting the level back fails too", async () => {
       const root = home();
       const shell = shellStarts(root);
       const warned = spyOn(console, "warn").mockImplementation(() => {});
+      const removal = spyOn(fs, "rmSync").mockImplementation(() => { throw new Error("EACCES: permission denied"); });
       try {
         const answer = agentLaunch(PANE, { kind: "dsh-tui", args: ["--effort", "low"] }, undefined, undefined, { home: root });
         await shell.called(1);
-        // the effort file is no longer a file: reading it back to compare throws
-        rmSync(effortFile(root));
-        mkdirSync(effortFile(root));
         shell.calls[0]!.fail(new Error("dsh-tui did not start in the pane"));
         expect(await answer).toMatchObject({ agent_started: false, error: { code: "agent_start_failed", message: "dsh-tui did not start in the pane" } });
+        expect(removal).toHaveBeenCalledTimes(1);
         expect(warned).toHaveBeenCalledTimes(1);
       } finally {
+        removal.mockRestore();
         warned.mockRestore();
         shell.restore();
       }
