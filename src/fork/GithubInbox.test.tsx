@@ -3,7 +3,7 @@ import { act } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import type { WorktreeListing } from "../../shared/protocol.ts";
 import { SettingsProvider } from "../lib/settings.ts";
-import { ForkGithubRail, GithubInbox, setGithubSection } from "./GithubInbox.tsx";
+import { closeGithubPull, ForkGithubPane, ForkGithubRail, GithubInbox, refreshGithubListing, setGithubSection } from "./GithubInbox.tsx";
 
 let renderer: ReactTestRenderer | undefined;
 const saved = new Map<string, PropertyDescriptor | undefined>();
@@ -20,13 +20,22 @@ beforeEach(() => {
   const events = new EventTarget(); records.clear(); calls = 0; responseCode = 200;
   payload = { accounts: ["me"], review: [{ repository: "owner/repo", number: 1, title: "Fix this", url: "https://github.com/owner/repo/pull/1", branch: "topic", checks: "failing", review: "review_required", workspace_id: "w1" }], yours: [] };
   Object.defineProperty(globalThis, "window", { configurable: true, value: { addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events), localStorage: { getItem: (key: string) => records.get(key) ?? null, setItem: (key: string, value: string) => records.set(key, value) } } });
-  Object.defineProperty(globalThis, "fetch", { configurable: true, value: async (url: string) => { calls++; expect(url).toBe("/api/fork/github/pulls"); return Response.json(payload, { status: responseCode }); } });
+  Object.defineProperty(globalThis, "fetch", { configurable: true, value: async (url: string) => {
+    if (url.startsWith(DETAIL)) return detailUnread();
+    calls++; expect(url).toBe("/api/fork/github/pulls"); return Response.json(payload, { status: responseCode });
+  } });
+  records.set("ovis:settings", JSON.stringify({ pullRequests: true }));
+  refreshGithubListing();
   setGithubSection("inbox");
 });
 afterEach(async () => {
   await act(async () => renderer?.unmount()); renderer = undefined;
+  closeGithubPull();
   for (const [key, descriptor] of saved) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key); }
 });
+// A pull request's page reads its detail; these tests are about the list and Checkout, so it stays unread.
+const DETAIL = "/api/fork/github/pull?";
+const detailUnread = () => Response.json({ error: { code: "gh_failed", message: "Unread" } }, { status: 409 });
 const button = (name: string) => renderer!.root.findAllByType("button").find((node) => node.props["aria-label"] === name || node.findAll((child) => child.children.includes(name)).length > 0)!;
 async function rail(enabled: boolean) {
   records.set("ovis:settings", JSON.stringify({ pullRequests: enabled }));
@@ -41,6 +50,7 @@ function checkoutApi(listings: WorktreeListing[], replies: Record<string, unknow
   const requests: { path: string; body?: unknown }[] = [];
   let reads = 0;
   Object.defineProperty(globalThis, "fetch", { configurable: true, value: async (path: string, init?: RequestInit) => {
+    if (path.startsWith(DETAIL)) return detailUnread();
     requests.push({ path, body: init?.body ? JSON.parse(String(init.body)) : undefined });
     if (path === "/api/fork/github/pulls") return Response.json(payload);
     if (path === "/api/worktree/list?workspace_id=w1") return Response.json(listings[Math.min(reads++, listings.length - 1)]);
@@ -49,10 +59,16 @@ function checkoutApi(listings: WorktreeListing[], replies: Record<string, unknow
   } });
   return requests;
 }
-async function openPull(onOpened = (_opened: unknown) => {}) {
-  await act(async () => { renderer = create(<SettingsProvider><GithubInbox wide watching={false} onOpened={onOpened} /></SettingsProvider>); });
+/** The wide layout: the list, and the page it opens beside it. */
+async function wideGithub(watching = false, onOpened = (_opened: unknown) => {}) {
+  setGithubSection("github");
+  await act(async () => { renderer = create(<SettingsProvider><GithubInbox wide watching={watching} onOpened={onOpened} /><ForkGithubPane wide watching={watching} onOpened={onOpened} /></SettingsProvider>); });
+}
+async function openPull(onOpened = (_opened: unknown) => {}, watching = false) {
+  await wideGithub(watching, onOpened);
   await act(async () => button("Fix this").props.onClick());
 }
+async function closeAll() { await act(async () => { renderer?.unmount(); closeGithubPull(); }); renderer = undefined; }
 
 test("opens an existing same-repository worktree without fetching or creating a branch", async () => {
   const opened = { workspace_id: "fork", pane_id: "p1", path: "/pr", branch: "topic", already_open: true };
@@ -73,7 +89,7 @@ test("fork PRs offer only GitHub, even when an unrelated local branch has the sa
     expect(button("Checkout")).toBeUndefined();
     expect(renderer!.root.findByType("a").props.href).toBe("https://github.com/owner/repo/pull/1");
     expect(requests).toEqual([{ path: "/api/fork/github/pulls", body: undefined }]);
-    await act(async () => renderer?.unmount());
+    await closeAll(); refreshGithubListing();
   }
 });
 
@@ -96,7 +112,7 @@ test("creates from the main workspace when only a linked checkout is selected", 
       { path: "/api/worktree/create", body: { workspace_id: "main", branch: "topic", base: "origin/topic" } },
     ]);
     expect(result).toEqual(opened);
-    await act(async () => renderer?.unmount());
+    await closeAll(); refreshGithubListing();
   }
 });
 
@@ -110,10 +126,11 @@ test("rail is opt-in, switches current place, and Inbox switches back", async ()
   expect(button("Inbox").props["aria-current"]).toBe("page");
 });
 
-test("loads once, expands in place, and refreshes without redirecting", async () => {
-  await act(async () => { renderer = create(<SettingsProvider><GithubInbox wide={false} watching={false} onOpened={() => {}} /></SettingsProvider>); });
+test("loads once, opens the page beside the list, and refreshes without redirecting", async () => {
+  await wideGithub();
   expect(calls).toBe(1);
   expect(renderer!.root.findAllByType("a")).toHaveLength(0);
+  expect(JSON.stringify(renderer!.toJSON())).toContain("Choose a pull request to open it here.");
   await act(async () => button("Fix this").props.onClick());
   expect(renderer!.root.findByType("a").props.href).toBe("https://github.com/owner/repo/pull/1");
   expect(button("Checkout")).toBeDefined();
@@ -122,13 +139,15 @@ test("loads once, expands in place, and refreshes without redirecting", async ()
   await act(async () => button("Refresh").props.onClick()); expect(calls).toBe(2);
 });
 
-test("hides checkout for unknown repos and observers, and shows empty and CLI errors", async () => {
+test("offers a clone for unknown repos, nothing to observers, and shows empty and CLI errors", async () => {
   for (const watching of [false, true]) {
     (payload as { review: { workspace_id?: string }[] }).review[0]!.workspace_id = watching ? "w1" : undefined;
-    await act(async () => { renderer = create(<SettingsProvider><GithubInbox wide watching={watching} onOpened={() => {}} /></SettingsProvider>); });
-    await act(async () => button("Fix this").props.onClick()); expect(button("Checkout")).toBeUndefined();
-    await act(async () => renderer?.unmount());
+    await openPull(() => {}, watching);
+    expect(button("Checkout")).toBeUndefined();
+    expect(button("Clone and checkout") !== undefined).toBe(!watching);
+    await closeAll(); refreshGithubListing();
   }
+  setGithubSection("inbox");
   payload = { accounts: ["me"], review: [], yours: [] };
   await act(async () => { renderer = create(<SettingsProvider><GithubInbox wide watching={false} onOpened={() => {}} /></SettingsProvider>); });
   expect(JSON.stringify(renderer!.toJSON())).toContain("Nothing needs you");

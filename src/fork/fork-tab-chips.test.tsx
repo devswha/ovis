@@ -17,7 +17,7 @@ it("uses role chips, not repeated friends, and opens the child's pane", async ()
   expect(buttons.map((button) => button.props.title)).toEqual(tabs.map((tab) => tab.label));
   expect(buttons.map((button) => button.props["aria-selected"])).toEqual([false, true, false]);
   expect(buttons[1]!.props.tabIndex).toBe(0);
-  expect(renderer!.root.findAllByType("svg").map((svg) => svg.props.className)).toEqual(["lucide lucide-hammer", "lucide lucide-check", "lucide lucide-terminal"]);
+  expect(renderer!.root.findAllByType("svg").map((svg) => svg.props.className)).toEqual(["lucide lucide-code-xml lucide-code-2", "lucide lucide-check", "lucide lucide-search"]);
   expect(renderer!.root.findAllByProps({ "data-status": "working" })).toHaveLength(3);
   expect(renderer!.root.findAllByType("img")).toHaveLength(0);
   await act(async () => buttons[0]!.props.onClick({ ctrlKey: false, currentTarget: { focus() {} } }));
