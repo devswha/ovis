@@ -17,7 +17,8 @@ import { chromePath } from "./chrome-path.ts";
 // in the default face a bullet list keeps its 20px indent. The marker is measured as the browser
 // draws it: its text in its own computed font. The omp pane's conversation answers TURNS; all
 // files and HTTP traffic stay in this disposable, loopback-only app and no herdr session is
-// opened. Screenshots go to UI_EVIDENCE_DIR when it is set.
+// opened. Screenshots go to UI_EVIDENCE_DIR when it is set. The user's own message numbers its
+// list as typed, skipping (1, 4): its markers read 1 and 4, not 1 and 2, and fit their indent too.
 const app = mkdtempSync(join(tmpdir(), "herdr-chat-list-markers-demo-"));
 const evidence = process.env["UI_EVIDENCE_DIR"] || null;
 if (evidence !== null) mkdirSync(evidence, { recursive: true });
@@ -30,7 +31,7 @@ const REPLY = [
   "Bullets:", "", "- a bullet", "- another", "  - nested under it",
 ].join("\n");
 const TURNS = [
-  { role: "user", ts: "2026-10-28T10:00:00.000Z", parts: [{ kind: "text", text: "Number them" }] },
+  { role: "user", ts: "2026-10-28T10:00:00.000Z", parts: [{ kind: "text", text: "Number them\n\n1. Let's try the first\n4. The fourth would be nice too" }] },
   { role: "assistant", ts: "2026-10-28T10:00:05.000Z", parts: [{ kind: "text", text: REPLY }] },
 ];
 
@@ -51,7 +52,9 @@ const markers = (scope: Locator): Promise<Marker[]> => scope.locator(".markdown-
     [...list.children].forEach((item, position) => {
       const marker = getComputedStyle(item, "::marker");
       const type = getComputedStyle(item).listStyleType;
-      const text = type === "decimal" ? `${start + position}. ` : bullets[type];
+      // an item written with its own number carries it (Markdown.tsx); the others count from the start
+      const ordinal = item instanceof HTMLLIElement && item.hasAttribute("value") ? item.value : start + position;
+      const text = type === "decimal" ? `${ordinal}. ` : bullets[type];
       if (text === undefined) throw new Error(`no marker text for list-style-type ${type}`);
       const probe = document.createElement("span");
       probe.style.cssText = "position: absolute; visibility: hidden; white-space: pre";
@@ -110,7 +113,9 @@ async function check(browser: Browser, origin: string, width: number, testCase: 
     await appFaces(page);
 
     const found = await markers(scope);
-    assert.equal(found.length, 3 + 5 + 2 + 3, `${testCase.name} ${width}px: every item of the reply's lists is drawn`);
+    assert.equal(found.length, 2 + 3 + 5 + 2 + 3, `${testCase.name} ${width}px: every item of the message's and the reply's lists is drawn`);
+    assert.deepEqual(found.filter((marker) => marker.list === 0).map((marker) => marker.text.trim()), ["1.", "4."],
+      `${testCase.name} ${width}px: the user's skipping list keeps the numbers typed`);
     if (testCase.name !== "default") assert.match(found[0]!.font, /monospace/, `${testCase.name} ${width}px: the markers are drawn in the Chat font`);
     const clipped = found.filter((marker) => marker.width > marker.indent + 0.5);
     assert.deepEqual(clipped, [], `${testCase.name} ${width}px: every marker fits inside its list's indent`);

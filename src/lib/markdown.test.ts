@@ -706,6 +706,34 @@ describe("numbered lists as agents write them", () => {
   };
   const lists = (source: string) => parseMarkdown(source).map((block) => block.type === "list" ? { start: block.start ?? 1, items: block.items.length } : block.type);
 
+  it("shows an ordered list's numbers as written when they skip, and counts up a list written all one number", () => {
+    const numbers = (source: string) => {
+      const block = parseMarkdown(source)[0];
+      return block?.type === "list" ? block.items.map((item) => item.number ?? null) : null;
+    };
+    // what was typed: 1 and 4 mean options one and four, not one and two
+    expect(numbers("1. Let's try moge3\n4. Sam would be nice")).toEqual([1, 4]);
+    expect(numbers("2. b\n1. a")).toEqual([2, 1]);
+    expect(numbers("1. a\n2. b\n5. e")).toEqual([1, 2, 5]);
+    // counting up, from any start, or all one number (markdown's own way to count): nothing to keep
+    expect(numbers("1. a\n2. b\n3. c")).toEqual([null, null, null]);
+    expect(numbers("3. c\n4. d")).toEqual([null, null]);
+    expect(numbers("1. a\n1. b\n1. c")).toEqual([null, null, null]);
+    expect(numbers("- a\n- b")).toEqual([null, null]);
+    // a nested list keeps its own numbers apart from its parent's
+    const parent = parseMarkdown("1. a\n   3. x\n   7. y\n2. b")[0];
+    expect(parent?.type === "list" && parent.items.map((item) => item.number ?? null)).toEqual([null, null]);
+    const nested = parent?.type === "list" ? parent.items[0]?.blocks?.[0] : undefined;
+    expect(nested?.type === "list" && nested.items.map((item) => item.number)).toEqual([3, 7]);
+    // drawn with each item's own number, and indented for the widest of them
+    const html = render("1. a\n12. b");
+    expect(html).toContain('<li value="1"><span>a</span></li><li value="12"><span>b</span></li>');
+    expect(html).toMatch(/--markdown-list-digits:2/);
+    expect(render("1. a\n2. b")).not.toContain("value=");
+    // past a 32-bit integer the browser ignores `value`: none is set
+    expect(render("1. a\n100000000000000000000. b")).toContain('<li value="1"><span>a</span></li><li><span>b</span></li>');
+  });
+
   it("tells the list how many digits its widest number has, as the browser numbers it (#1993)", () => {
     const digits = (source: string) => render(source).match(/--markdown-list-digits:(\d+)/)?.[1] ?? null;
     expect(digits("1. a\n2. b")).toBeNull();

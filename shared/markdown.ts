@@ -21,6 +21,13 @@ export interface ListItem {
   checked?: boolean;
   /** what is indented under the item's text, in order: a nested list, a table */
   blocks?: MarkdownBlock[];
+  /**
+   * An ordered item's number as written, when its list's numbers neither count up from the first
+   * nor all repeat it: `1.` then `4.` shows 1 and 4, as typed, where markdown would renumber them
+   * 1 and 2 and change what was said. Absent from a list that counts up, and from one written all
+   * `1.` (markdown's way to let the numbers count), which counts up from its first.
+   */
+  number?: number;
 }
 
 export interface ListBlock {
@@ -389,6 +396,8 @@ function parseList(lines: string[], start: number, visualizations = false): { bl
   const ordered = /\d/.test(first[2] ?? "");
   const number = ordered ? Number.parseInt(first[2] ?? "1", 10) : 1;
   const block: ListBlock = { type: "list", ordered, ...(ordered && number !== 1 ? { start: number } : {}), items: [] };
+  // each item's number as written (ordered lists): kept on the items only when it is not the count
+  const numbers: number[] = [];
   let index = start;
   while (index < lines.length) {
     // between items: blank lines (a loose list, as agents often write one) and an item's own
@@ -449,8 +458,12 @@ function parseList(lines: string[], start: number, visualizations = false): { bl
     }
     if ((match[1] ?? "").length !== baseIndent || /\d/.test(match[2] ?? "") !== ordered) break;
     block.items.push(listItem(match[3] ?? ""));
+    if (ordered) numbers.push(Number.parseInt(match[2] ?? "1", 10));
     index += 1;
   }
+  const counts = numbers.every((written, at) => written === number + at);
+  const repeats = numbers.every((written) => written === number);
+  if (!counts && !repeats) block.items.forEach((item, at) => { item.number = numbers[at]; });
   return { block, next: index };
 }
 
