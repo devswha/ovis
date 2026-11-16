@@ -14,6 +14,16 @@ function held(keys: AllHerdrKeys, name: string, prefixed: boolean) {
   return action(keys, name).bindings.filter((binding) => binding.prefixed === prefixed).flatMap((binding) => binding.chords);
 }
 
+/** herdr 0.9.5's navigate-mode defaults, as its `herdr --default-config` prints them */
+const herdrNavigateDefaults: AllHerdrKeys["navigate"] = [
+  { name: "navigate_workspace_up", default: "up", text: "up", chord: chord("ArrowUp") },
+  { name: "navigate_workspace_down", default: "down", text: "down", chord: chord("ArrowDown") },
+  { name: "navigate_pane_left", default: "h", text: "h", chord: chord("h") },
+  { name: "navigate_pane_down", default: "j", text: "j", chord: chord("j") },
+  { name: "navigate_pane_up", default: "k", text: "k", chord: chord("k") },
+  { name: "navigate_pane_right", default: "l", text: "l", chord: chord("l") },
+];
+
 function refusal(keys: AllHerdrKeys, name: string) {
   return keys.refusals.filter((entry) => entry.action === name).map(({ action: refused, binding, code, holder }) => ({ action: refused, binding, code, holder }));
 }
@@ -170,34 +180,75 @@ describe("resolveAllHerdrKeys", () => {
     expect(refusal(keys, "zoom")).toEqual([{ action: "zoom", binding: "prefix+1..9", code: "index", holder: null }]);
   });
 
-  test("herdr's navigate-mode keys are read, plain keys included, and not called unknown", () => {
-    const keys = resolveAllHerdrKeys({ navigate_pane_down: "j", navigate_workspace_up: ["K", "ctrl+p"], frobnicate: "x" });
-    expect(keys.refusals.map(({ action: name, code }) => ({ name, code }))).toEqual([{ name: "frobnicate", code: "unknown_action" }]);
-    expect(keys.navigate).toEqual([
-      { name: "navigate_pane_down", text: "j", chord: chord("j") },
-      { name: "navigate_workspace_up", text: "K", chord: chord("k", { shift: true }) },
-      { name: "navigate_workspace_up", text: "ctrl+p", chord: chord("p", { ctrl: true }) },
-    ]);
-    // a navigate key is no terminal-mode binding
-    expect(keys.direct).toEqual([]);
-    expect(resolveAllHerdrKeys(undefined).navigate).toEqual([]);
+  test("herdr's six navigate defaults written out are read whole, with no refusal", () => {
+    const keys = resolveAllHerdrKeys({ navigate_workspace_up: "up", navigate_workspace_down: "down", navigate_pane_left: "h", navigate_pane_down: "j", navigate_pane_up: "k", navigate_pane_right: "l" });
+    expect(keys.navigate).toEqual(herdrNavigateDefaults);
+    expect(keys.refusals).toEqual([]);
   });
 
-  test("a navigate key herdr cannot read or keeps for navigate mode itself is refused", () => {
-    const keys = resolveAllHerdrKeys({ navigate_pane_left: ["prefix+h", "enter", "esc", "left", "tab", "3", "pagedown", "ctrl+b", ""], navigate_pane_right: "l", navigate_pane_up: "l", navigate_pane_down: 5 });
-    expect(keys.configRead).toBe(true);
-    expect(refusal(keys, "navigate_pane_left").map(({ binding, code }) => [binding, code])).toEqual([
-      ["prefix+h", "unparsable"], ["enter", "reserved"], ["esc", "reserved"], ["left", "reserved"], ["tab", "reserved"], ["3", "reserved"], ["pagedown", "unparsable"], ["ctrl+b", "prefix"],
+  test("with no navigate key in the config the six hold herdr's defaults", () => {
+    expect(resolveAllHerdrKeys(undefined).navigate).toEqual(herdrNavigateDefaults);
+    expect(resolveAllHerdrKeys({ new_tab: "prefix+t" }).navigate).toEqual(herdrNavigateDefaults);
+    // the user's key replaces the default; a list holds one entry per key
+    const keys = resolveAllHerdrKeys({ navigate_pane_down: "J", navigate_workspace_up: ["K", "ctrl+p"] });
+    expect(keys.navigate.filter((entry) => entry.name === "navigate_workspace_up" || entry.name === "navigate_pane_down")).toEqual([
+      { name: "navigate_workspace_up", default: "up", text: "K", chord: chord("k", { shift: true }) },
+      { name: "navigate_workspace_up", default: "up", text: "ctrl+p", chord: chord("p", { ctrl: true }) },
+      { name: "navigate_pane_down", default: "j", text: "J", chord: chord("j", { shift: true }) },
     ]);
-    expect(refusal(keys, "navigate_pane_up")).toEqual([{ action: "navigate_pane_up", binding: "l", code: "taken", holder: "navigate_pane_right" }]);
+    expect(keys.refusals).toEqual([]);
+    // a navigate key is no terminal-mode binding, and shares its key with one freely: they live in different modes
+    const shared = resolveAllHerdrKeys({ navigate_pane_left: "ctrl+t", new_tab: "ctrl+t" });
+    expect(shared.direct.map((entry) => entry.action)).toEqual(["new_tab"]);
+    expect(shared.navigate.find((entry) => entry.name === "navigate_pane_left")?.chord).toEqual(chord("t", { ctrl: true }));
+    expect(shared.refusals).toEqual([]);
+  });
+
+  test("plain esc, enter, tab and 1..9 are reserved on a navigate key; arrows, 0 and modified keys are kept", () => {
+    const keys = resolveAllHerdrKeys({ navigate_pane_left: ["esc", "enter", "tab", "5", "prefix+h", "1..9", "pagedown"], navigate_workspace_up: ["up", "left", "0", "ctrl+5", "ctrl+up", "shift+tab"] });
+    expect(refusal(keys, "navigate_pane_left").map(({ binding, code }) => [binding, code])).toEqual([
+      ["esc", "reserved"], ["enter", "reserved"], ["tab", "reserved"], ["5", "reserved"], ["prefix+h", "unparsable"], ["1..9", "unparsable"], ["pagedown", "unparsable"],
+    ]);
+    expect(refusal(keys, "navigate_workspace_up")).toEqual([]);
+    expect(keys.navigate.filter((entry) => entry.name === "navigate_workspace_up").map((entry) => entry.chord)).toEqual([
+      chord("ArrowUp"), chord("ArrowLeft"), chord("0"), chord("5", { ctrl: true }), chord("ArrowUp", { ctrl: true }), chord("Tab", { shift: true }),
+    ]);
+  });
+
+  test("a navigate name herdr does not have is unknown; every name herdr's own config documents is known", () => {
+    const keys = resolveAllHerdrKeys({ navigate_pane_dwon: "x", navigate_: "y", frobnicate: "z", remote_image_paste: "ctrl+v" });
+    expect(keys.refusals.map(({ action: name, binding, code }) => [name, binding, code])).toEqual([
+      ["navigate_pane_dwon", "x", "unknown_action"], ["navigate_", "y", "unknown_action"], ["frobnicate", "z", "unknown_action"],
+    ]);
+    expect(keys.navigate).toEqual(herdrNavigateDefaults);
+  });
+
+  test("a navigate key the user writes replaces its default even when refused, as an action's binding does", () => {
+    const keys = resolveAllHerdrKeys({ navigate_pane_left: "esc", zoom: "j" });
+    expect(keys.refusals.map((entry) => [entry.action, entry.code])).toEqual([["zoom", "printable"], ["navigate_pane_left", "reserved"]]);
+    expect([action(keys, "zoom").bindings, keys.navigate.find((entry) => entry.name === "navigate_pane_left")]).toEqual([[], { name: "navigate_pane_left", default: "h", text: "", chord: null }]);
+  });
+
+  test("a navigate key on a prefix, on another navigate key's key, or of the wrong type is refused and the rest resolves", () => {
+    const keys = resolveAllHerdrKeys({ navigate_pane_left: ["ctrl+b", ""], navigate_pane_right: "x", navigate_pane_up: "x", navigate_pane_down: 5, new_tab: "prefix+t" });
+    expect(keys.configRead).toBe(true);
+    expect(refusal(keys, "navigate_pane_left")).toEqual([{ action: "navigate_pane_left", binding: "ctrl+b", code: "prefix", holder: null }]);
+    // the first in herdr's order keeps the key
+    expect(refusal(keys, "navigate_pane_right")).toEqual([{ action: "navigate_pane_right", binding: "x", code: "taken", holder: "navigate_pane_up" }]);
     expect(refusal(keys, "navigate_pane_down").map((entry) => entry.code)).toEqual(["unparsable"]);
-    expect(keys.navigate).toEqual([{ name: "navigate_pane_right", text: "l", chord: chord("l") }]);
+    expect(keys.navigate.map((entry) => [entry.name, entry.text])).toEqual([
+      ["navigate_workspace_up", "up"], ["navigate_workspace_down", "down"], ["navigate_pane_left", ""], ["navigate_pane_down", ""], ["navigate_pane_up", "x"], ["navigate_pane_right", ""],
+    ]);
+    expect(held(keys, "new_tab", true)).toEqual([{ chord: chord("t"), index: null }]);
   });
 
   test("a prefix list with a hole is read without it, as the existing resolver always did", () => {
     expect(resolveHerdrKeys({ prefix: [, "ctrl+a"] }).prefixes).toEqual(["ctrl+a"]);
     expect(resolveHerdrKeys({ prefix: "ctrl+a", extra_prefixes: ["ctrl+space", , "ctrl+q"] }).prefixes).toEqual(["ctrl+a", "ctrl+space", "ctrl+q"]);
-    expect(resolveAllHerdrKeys({ prefix: [, "ctrl+a"], navigate_pane_down: [, "j"] })).toMatchObject({ prefixes: [{ text: "ctrl+a" }], navigate: [{ name: "navigate_pane_down", text: "j" }], refusals: [] });
+    const keys = resolveAllHerdrKeys({ prefix: [, "ctrl+a"], navigate_pane_down: [, "J"] });
+    expect(keys.prefixes.map((prefix) => prefix.text)).toEqual(["ctrl+a"]);
+    expect(keys.navigate.find((entry) => entry.name === "navigate_pane_down")?.text).toBe("J");
+    expect(keys.refusals).toEqual([]);
   });
 
   test("modifier and key names in any case herdr reads, the prefix word in lowercase only", () => {

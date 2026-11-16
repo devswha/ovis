@@ -42,6 +42,15 @@ const FIELDS = [
 /** One of herdr's actions outside navigate mode. */
 export type HerdrAction = (typeof FIELDS)[number][0];
 
+/** herdr's navigate-mode keys, in its order, with their defaults (as `herdr --default-config` prints them). */
+const NAVIGATE_FIELDS = [
+  ["navigate_workspace_up", "up"], ["navigate_workspace_down", "down"], ["navigate_pane_left", "h"],
+  ["navigate_pane_down", "j"], ["navigate_pane_up", "k"], ["navigate_pane_right", "l"],
+] as const;
+
+/** One of herdr's navigate-mode keys. */
+export type HerdrNavigateKey = (typeof NAVIGATE_FIELDS)[number][0];
+
 /** indexed actions and the `[keys.indexed]` entry that displaces their default */
 const INDEXED: Readonly<Record<string, string>> = { focus_agent: "agents", switch_tab: "tabs", switch_workspace: "workspaces" };
 const DEFAULT_PREFIX = "ctrl+b";
@@ -143,8 +152,8 @@ export interface HerdrKeptBinding {
  * written after `prefix+` or as a range); `printable` a direct binding on a key that types text (no
  * ctrl, alt or super), which would take that key from the pane; `prefix` it is a prefix key; `taken`
  * an earlier binding holds it; `index` a range on an action that takes no index, or a key other than a
- * digit on one that does; `reserved` a navigate key navigate mode keeps for itself (Escape, Enter, Tab,
- * an arrow, a digit); `unknown_action` a `[keys]` name herdr does not read.
+ * digit on one that does; `reserved` a navigate key navigate mode keeps for itself (a plain Escape, Enter,
+ * Tab or digit 1 to 9); `unknown_action` a `[keys]` name herdr does not read.
  */
 export type HerdrKeyRefusalCode = "unparsable" | "printable" | "prefix" | "taken" | "index" | "reserved" | "unknown_action";
 
@@ -170,18 +179,26 @@ export interface AllHerdrKeys {
   readonly actions: readonly { readonly action: HerdrAction; readonly default: string; readonly bindings: readonly HerdrKeptBinding[] }[];
   /** the direct (prefix-free) chords of `actions`, one per chord, in action order */
   readonly direct: readonly { readonly action: HerdrAction; readonly text: string; readonly chord: HerdrChord; readonly index: number | null }[];
-  /** the navigate-mode keys the config writes (`navigate_*`, plain keys allowed), in its order; herdr's own navigate defaults are not here */
-  readonly navigate: readonly { readonly name: string; readonly text: string; readonly chord: HerdrChord }[];
+  /**
+   * herdr's six navigate-mode keys in its order, each with its default and the key it holds: the user's when
+   * written (plain keys allowed), else the default. A list holds one entry per key it keeps; a key the user
+   * writes that keeps none (refused, or "") holds one entry with `text` "" and `chord` null, as an action
+   * the user writes loses its default even when its binding is refused.
+   */
+  readonly navigate: readonly { readonly name: HerdrNavigateKey; readonly default: string; readonly text: string; readonly chord: HerdrChord | null }[];
   /** the bindings the config writes that hold no key, and the `[keys]` names herdr does not know */
   readonly refusals: readonly HerdrKeyRefusal[];
 }
 
-/** the `[keys]` names herdr reads besides its navigate-mode keys */
-const KEYS_NAMES: ReadonlySet<string> = new Set(["prefix", "extra_prefixes", "indexed", "command", "fullscreen", ...FIELDS.map(([action]) => action)]);
-/** herdr's navigate-mode keys (`navigate_workspace_*`, `navigate_pane_*`) */
-const NAVIGATE_PREFIX = "navigate_";
-/** the keys navigate mode keeps for itself: leave, pick, cycle, move and jump by digit */
-const NAVIGATE_RESERVED = /^(?:Escape|Enter|Tab|Arrow(?:Up|Down|Left|Right)|\d)$/;
+/** the `[keys]` names herdr reads (`remote_image_paste` acts only under `herdr --remote`) */
+const KEYS_NAMES: ReadonlySet<string> = new Set([
+  "prefix", "extra_prefixes", "indexed", "command", "fullscreen", "remote_image_paste", ...FIELDS.map(([action]) => action), ...NAVIGATE_FIELDS.map(([name]) => name),
+]);
+
+/** herdr on navigate keys: "Do not include prefix+, esc, enter, tab, or 1..9 here" (`herdr --default-config`), so those keys without a modifier stay navigate mode's own */
+function navigateReserved(chord: HerdrChord): boolean {
+  return !chord.ctrl && !chord.alt && !chord.shift && !chord.meta && !chord.hyper && /^(?:Escape|Enter|Tab|[1-9])$/.test(chord.key);
+}
 
 const REASONS: Readonly<Record<HerdrKeyRefusalCode, (refusal: Omit<HerdrKeyRefusal, "reason">) => string>> = {
   unparsable: ({ action, binding }) => `${action}: herdr cannot read "${binding}"`,
@@ -216,9 +233,9 @@ interface Resolution {
  * an indexed one takes digits only, and a direct binding that types text is refused. Keys after the
  * prefix and direct keys are taken apart. A value of the wrong type makes herdr read no config at all:
  * its defaults stand. Only what the user wrote is reported: a default that loses its key stands down
- * silently. A navigate-mode key is a plain chord without `prefix+`, kept apart from the rest. A hole
- * in a prefix or navigate list is skipped (no config text makes one), as the browser's resolver always
- * did; one in an action's list throws, as it always did.
+ * silently. A navigate-mode key is a chord without `prefix+`, plain keys allowed, registered the same way
+ * among the navigate keys alone. A hole in a prefix or navigate list is skipped (no config text makes
+ * one), as the browser's resolver always did; one in an action's list throws, as it always did.
  */
 function resolveKeys(keys: unknown): Resolution {
   let user = table(keys) ?? {};
@@ -298,31 +315,39 @@ function resolveKeys(keys: unknown): Resolution {
       }
     }
   }
-  const navigate: { name: string; text: string; chord: HerdrChord }[] = [];
-  const takenNavigate = new Map<string, string>();
-  for (const [name, value] of Object.entries(user)) {
-    if (KEYS_NAMES.has(name)) continue;
-    if (!name.startsWith(NAVIGATE_PREFIX)) {
-      refuse({ action: name, binding: bindingValues(value)?.join(", ") ?? "", code: "unknown_action", holder: null });
-      continue;
-    }
-    const values = bindingValues(value);
-    if (values === null) { refuse({ action: name, binding: "", code: "unparsable", holder: null }); continue; }
-    // flatMap skips a hole in the list
-    for (const raw of values.flatMap((text) => [text])) {
-      if (raw.trim() === "") continue;
-      const report = (code: HerdrKeyRefusalCode, holder: string | null = null): void => { refuse({ action: name, binding: raw.trim(), code, holder }); };
-      const binding = parseHerdrBinding(raw);
-      if (binding === null || binding.prefixed || binding.range) { report("unparsable"); continue; }
-      if (NAVIGATE_RESERVED.test(binding.chord.key)) { report("reserved"); continue; }
-      const id = chordId(binding.chord);
-      if (prefixIds.has(id)) { report("prefix"); continue; }
-      const holder = takenNavigate.get(id);
-      if (holder !== undefined) { report("taken", holder); continue; }
-      takenNavigate.set(id, name);
-      navigate.push({ name, text: raw.trim(), chord: binding.chord });
+  const takenNavigate = new Map<string, HerdrNavigateKey>();
+  const navigateHeld = new Map<HerdrNavigateKey, { text: string; chord: HerdrChord }[]>(NAVIGATE_FIELDS.map(([name]) => [name, []]));
+  for (const pass of ["user", "default"] as const) {
+    for (const [name, defaults] of NAVIGATE_FIELDS) {
+      const written = Object.hasOwn(user, name);
+      if (written !== (pass === "user")) continue;
+      const report = (raw: string, code: HerdrKeyRefusalCode, holder: string | null = null): void => {
+        if (written) refuse({ action: name, binding: raw.trim(), code, holder });
+      };
+      const values = written ? bindingValues(user[name]) : [defaults];
+      if (values === null) { report("", "unparsable"); continue; }
+      // flatMap skips a hole in the list
+      for (const raw of values.flatMap((text) => [text])) {
+        if (raw.trim() === "") continue;
+        const binding = parseHerdrBinding(raw);
+        if (binding === null || binding.prefixed || binding.range) { report(raw, "unparsable"); continue; }
+        if (navigateReserved(binding.chord)) { report(raw, "reserved"); continue; }
+        const id = chordId(binding.chord);
+        if (prefixIds.has(id)) { report(raw, "prefix"); continue; }
+        const holder = takenNavigate.get(id);
+        if (holder !== undefined) { report(raw, "taken", holder); continue; }
+        takenNavigate.set(id, name);
+        navigateHeld.get(name)!.push({ text: raw.trim(), chord: binding.chord });
+      }
     }
   }
+  for (const [name, value] of Object.entries(user)) {
+    if (!KEYS_NAMES.has(name)) refuse({ action: name, binding: bindingValues(value)?.join(", ") ?? "", code: "unknown_action", holder: null });
+  }
+  const navigate = NAVIGATE_FIELDS.flatMap(([name, defaults]): AllHerdrKeys["navigate"] => {
+    const held = navigateHeld.get(name)!;
+    return held.length === 0 ? [{ name, default: defaults, text: "", chord: null }] : held.map((key) => ({ name, default: defaults, ...key }));
+  });
   return { configRead: true, prefixes, kept, navigate, refusals };
 }
 
