@@ -54,7 +54,7 @@ afterEach(() => {
 });
 
 /** the message box as the browser holds it: its value and selection, which the test sets as a user would */
-type Box = { value: string; selectionStart: number; selectionEnd: number; selectionDirection: "none"; focused: number; style: Record<string, string>; focus(): void; setSelectionRange(start: number, end: number): void };
+type Box = { value: string; selectionStart: number; selectionEnd: number; selectionDirection: "none"; focused: number; style: Record<string, string>; listeners: Map<string, () => void>; focus(): void; setSelectionRange(start: number, end: number): void; addEventListener(type: string, listener: () => void): void; removeEventListener(type: string): void };
 let element: Box;
 const uploads = new Map<string, { resolve: (path: string) => void; reject: (error: unknown) => void }>();
 const path = (name: string) => `/tmp/proj/.ovis/${name}-20261116-101010-0123abcd.png`;
@@ -64,7 +64,7 @@ async function open(): Promise<void> {
     paneId: pane, agent: "claude", agentStatus: "idle", connected: true, autoFocus: false, onSend: () => true, onAbort() {},
     onUploadImage: (file) => new Promise<string>((resolve, reject) => { uploads.set(file.name.replace(/\.png$/u, ""), { resolve, reject }); }),
   };
-  element = { value: "", selectionStart: 0, selectionEnd: 0, selectionDirection: "none", focused: 0, style: {}, focus() { this.focused++; }, setSelectionRange(start, end) { this.selectionStart = start; this.selectionEnd = end; } };
+  element = { value: "", selectionStart: 0, selectionEnd: 0, selectionDirection: "none", focused: 0, style: {}, listeners: new Map(), focus() { this.focused++; }, setSelectionRange(start, end) { this.selectionStart = start; this.selectionEnd = end; }, addEventListener(type, listener) { this.listeners.set(type, listener); }, removeEventListener(type) { this.listeners.delete(type); } };
   const measure = { style: {}, scrollHeight: 0 };
   await act(async () => {
     renderer = create(<Composer {...props} />, { createNodeMock: (node) => node.type !== "textarea" ? null : (node.props as { onKeyDown?: unknown }).onKeyDown ? element : measure });
@@ -154,6 +154,50 @@ it("never puts the path of an upload started in a cleared draft into the new one
   await type("new draft");
   await finish("shot");
   expect(box().props.value).toBe("new draft");
+  expect(tiles()).toBe(0);
+});
+
+it("never puts the path of an upload started in a draft typed over whole into the new one, whatever they share", async () => {
+  await open();
+  await type("before after", 7);
+  await paste(7, "shot");
+  // the whole draft selected, then typed over: the browser's beforeinput sees the selection it replaces
+  Object.assign(element, { selectionStart: 0, selectionEnd: 12 });
+  await act(async () => { element.listeners.get("beforeinput")?.(); });
+  await type("brand new after");
+  await finish("shot");
+  expect(box().props.value).toBe("brand new after");
+  expect(tiles()).toBe(0);
+});
+
+it("moves a later paste's place once for each path placed before it, whichever upload finishes first", async () => {
+  await open();
+  await type("one two three", 13);
+  await paste(8, "late");
+  await paste(4, "early");
+  await finish("early");
+  await finish("late");
+  expect(box().props.value).toBe(`one @${path("early")} two @${path("late")} three`);
+});
+
+it("keeps the order of files picked together inside a leading slash command", async () => {
+  await open();
+  await type("/review the menu", 3);
+  await pick(3, "one", "two");
+  await finish("one");
+  await finish("two");
+  expect(box().props.value).toBe(`/review @${path("one")} @${path("two")} the menu`);
+});
+
+it("takes a removed attachment's path out of the text when it was placed before a line break", async () => {
+  await open();
+  await type("before\nafter", 6);
+  await paste(6, "shot");
+  await finish("shot");
+  expect(box().props.value).toBe(`before @${path("shot")}\nafter`);
+  const remove = renderer!.root.find((node) => node.type === "button" && node.props["aria-label"] === "Remove shot.png");
+  await act(async () => { remove.props.onClick(); });
+  expect(box().props.value).toBe("before\nafter");
   expect(tiles()).toBe(0);
 });
 

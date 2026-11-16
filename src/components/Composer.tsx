@@ -47,8 +47,10 @@ import {
   insertLeadingMention,
   insertMentionAt,
   MAX_COMPOSER_CHARS,
+  mentionPlace,
   namesHiddenCommand,
   rankSlashCommands,
+  removeMention,
   sendsBarePick,
   slashCommandReplacement,
   submitNote,
@@ -734,12 +736,14 @@ export function Composer({
         setAttachments((current) => current.map((item) => (item.id === id ? { ...item, state: "no-room", missing } : item)));
         break;
       }
-      insertMention(next);
-      // the other places move with it; one at the same place goes after it when picked after it, so a batch keeps its order
+      // the other places move with it, before the text changes so the effect that follows edits finds them
+      // moved already; one that lands at the same place goes after it when picked after it, so a batch keeps its order
       places.current.delete(id);
       for (const [other, { at }] of places.current) {
-        places.current.set(other, { at: at > next.at || (at === next.at && other > id) ? at + next.length : at, text: next.text });
+        const lands = mentionPlace(textRef.current, at);
+        places.current.set(other, { at: lands > next.at || (lands === next.at && other > id) ? lands + next.length : at, text: next.text });
       }
+      insertMention(next);
       if (!place) placedMentions.current.set(id, mention);
       setAttachments((current) => current.map((item) => (item.id === id ? { ...item, path, state: "ready" } : item)));
       attached.push(t("{name} attached", { name }));
@@ -756,6 +760,19 @@ export function Composer({
   }, [placeWaitingMentions, text]);
 
   useEffect(() => followPlaces(text), [followPlaces, text]);
+
+  // typing over the whole draft selected replaces it: an upload started in it never lands in the new one
+  useEffect(() => {
+    const element = textareaRef.current;
+    if (!element) return;
+    const replacing = () => {
+      if (element.value !== "" && element.selectionStart === 0 && element.selectionEnd === element.value.length) {
+        for (const id of [...places.current.keys()]) dropTile(id);
+      }
+    };
+    element.addEventListener("beforeinput", replacing);
+    return () => element.removeEventListener("beforeinput", replacing);
+  }, [dropTile]);
 
   const selectCompletion = useCallback(
     (choice: SlashCommand | string, currentTrigger: ActiveTrigger) => {
@@ -863,7 +880,7 @@ export function Composer({
     if (attachment.path) {
       const mention = imageMention(attachment.path);
       setText((current) => {
-        const next = current.replace(mention, "");
+        const next = removeMention(current, mention);
         textRef.current = next;
         caretRef.current = Math.min(caretRef.current, next.length);
         return next;

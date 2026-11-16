@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 
 import { skillSyntax } from "../../shared/skill-syntax.ts";
 import { AGENT_INPUT_DRAFT_MESSAGE, CLAUDE_FOLDED_DRAFT_MESSAGE } from "../../shared/submit-outcome.ts";
-import { agentDisplayLabel, claudeMainAtRest, composerDelivery, composerMessage, composerSendShown, composerPayload, composerModelDraw, composerStatusCompact, composerStatusHint, composerStatusWord, COMPOSER_STATUS_COMPACT_BELOW, contextLeftPercent, followPlace, formatTokens, imageMention, insertLeadingMention, insertMentionAt, insertNote, MAX_COMPOSER_CHARS, QUEUE_READY_STATUS, rankSlashCommands, submitNote, submitNotTyped, submitRefusal, sameMessage, pendingActionUncertain, draftSendNote, endsWithTurn, stoppedTurn } from "./compose.ts";
+import { agentDisplayLabel, claudeMainAtRest, composerDelivery, composerMessage, composerSendShown, composerPayload, composerModelDraw, composerStatusCompact, composerStatusHint, composerStatusWord, COMPOSER_STATUS_COMPACT_BELOW, contextLeftPercent, followPlace, formatTokens, imageMention, insertLeadingMention, insertMentionAt, insertNote, removeMention, MAX_COMPOSER_CHARS, QUEUE_READY_STATUS, rankSlashCommands, submitNote, submitNotTyped, submitRefusal, sameMessage, pendingActionUncertain, draftSendNote, endsWithTurn, stoppedTurn } from "./compose.ts";
 import { briefDescription, COMMAND_GROUPS, commandGroup, commandsForTrigger, namesHiddenCommand, sendsBarePick, slashCommandReplacement, terminalCommand, typedTerminalCommand } from "./compose.ts";
 import type { ConversationTurn, SlashCommand } from "../../shared/protocol.ts";
 import { activeTrigger, applyCompletion, type ActiveTrigger } from "./mentions.ts";
@@ -427,10 +427,20 @@ describe("followPlace (#3216)", () => {
     expect(followPlace("before after", "befter", 7)).toBe(3);
   });
 
-  it("is gone once the whole draft is cleared or replaced", () => {
+  it("is gone once the draft is cleared", () => {
     expect(followPlace("before after", "", 7)).toBeNull();
-    expect(followPlace("before after", "new draft", 7)).toBeNull();
     expect(followPlace("", "typed", 0)).toBe(0);
+  });
+});
+
+describe("removeMention (#3216)", () => {
+  const mention = imageMention("/tmp/1.png");
+
+  it("takes out the mention as either insert wrote it, and nothing else", () => {
+    expect(removeMention("before @/tmp/1.png after", mention)).toBe("before after");
+    expect(removeMention(insertMentionAt("before\nafter", mention, 6).text, mention)).toBe("before\nafter");
+    expect(removeMention(insertMentionAt("before\tafter", mention, 6).text, mention)).toBe("before\tafter");
+    expect(removeMention("before @/tmp/1.pngs\nafter", mention)).toBe("before @/tmp/1.pngs\nafter");
   });
 });
 

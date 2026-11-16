@@ -241,7 +241,8 @@ export function insertLeadingMention(
 /**
  * Where a place read in `before` is in `after`, one edit later (#3216): text added at the place
  * goes after it, text removed before it moves it back, and an edit across it leaves it where the
- * edit began. null when the edit took the whole message: the draft it was in was cleared or replaced.
+ * edit began. null when the draft it was in was cleared; a draft typed over whole is the caller's
+ * to tell, since the characters the old and new drafts share cannot.
  */
 export function followPlace(before: string, after: string, at: number): number | null {
   if (before === after) return at;
@@ -250,7 +251,7 @@ export function followPlace(before: string, after: string, at: number): number |
   while (start < shorter && before[start] === after[start]) start++;
   let end = 0;
   while (end < shorter - start && before[before.length - 1 - end] === after[after.length - 1 - end]) end++;
-  if (start === 0 && end === 0 && before.length > 0) return null;
+  if (after === "") return null;
   if (at <= start) return at;
   if (at >= before.length - end) return at + after.length - before.length;
   return start;
@@ -267,7 +268,7 @@ export function insertMentionAt(
   mention: string,
   place: number,
 ): { text: string; at: number; length: number; missing?: number } {
-  const at = Math.min(Math.max(place, /^\/\S+/u.exec(text)?.[0].length ?? 0), text.length);
+  const at = mentionPlace(text, place);
   const before = text.slice(0, at);
   const after = text.slice(at);
   const body = /^\s/u.test(after) ? mention.trimEnd() : mention;
@@ -275,6 +276,28 @@ export function insertMentionAt(
   const missing = text.length + snippet.length - MAX_COMPOSER_CHARS;
   if (missing > 0) return { text, at, length: 0, missing };
   return { text: before + snippet + after, at, length: snippet.length };
+}
+
+/** Where insertMentionAt puts a mention meant for `place`: after a leading `/command`, and within the text */
+export function mentionPlace(text: string, place: number): number {
+  return Math.min(Math.max(place, /^\/\S+/u.exec(text)?.[0].length ?? 0), text.length);
+}
+
+/**
+ * The text without an attached file's mention: as imageMention writes it, or as insertMentionAt
+ * wrote it before a line break or a tab, without its trailing space and with the space put before it.
+ */
+export function removeMention(text: string, mention: string): string {
+  const at = text.indexOf(mention);
+  if (at >= 0) return text.slice(0, at) + text.slice(at + mention.length);
+  const bare = mention.trimEnd();
+  for (let found = text.indexOf(bare); found >= 0; found = text.indexOf(bare, found + 1)) {
+    const end = found + bare.length;
+    if (end < text.length && !/\s/u.test(text[end]!)) continue;
+    const start = text[found - 1] === " " ? found - 1 : found;
+    return text.slice(0, start) + text.slice(end);
+  }
+  return text;
 }
 
 /** Ready states affect the held-message hint only; sending always requires a user action. */
