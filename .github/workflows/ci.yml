@@ -255,7 +255,7 @@ jobs:
     env:
       HERDR_TEST_MODE: unit
       # "<version> <sha256 of its linux-x86_64 archive>", one per line: a new hc is added by adding its line
-      HC_RELEASES: |
+      HC_RELEASES: |-
         0.1.17 82ec44043f6894bfdb716b979b87cda43fd7fa46b0104e7b7bd93e64d1a9b877
         0.1.18 5b2f97cb4b2a9d7a6b2cc5942628203ed9fbb7cc0c2b4b09ad8a6f5648e246b7
     steps:
@@ -284,6 +284,7 @@ jobs:
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/hc-archives"
           while read -r version sha256; do
+            [ -n "$version" ] || continue
             curl -fsSL --retry 3 "https://releases.herdr.dev/core/$version/herdr-core-linux-x86_64.tar.gz" -o "$RUNNER_TEMP/hc-archives/$version.tar.gz"
           done <<< "$HC_RELEASES"
       - name: Verify and unpack hc
@@ -291,6 +292,7 @@ jobs:
         run: |
           set -euo pipefail
           while read -r version sha256; do
+            [ -n "$version" ] || continue
             echo "$sha256  $RUNNER_TEMP/hc-archives/$version.tar.gz" | sha256sum -c -
             mkdir -p "$RUNNER_TEMP/hc/$version"
             tar -xzf "$RUNNER_TEMP/hc-archives/$version.tar.gz" -C "$RUNNER_TEMP/hc/$version" herdr-core
@@ -306,6 +308,7 @@ jobs:
             ./server/herdr-core/live.test.ts
           )
           while read -r version sha256; do
+            [ -n "$version" ] || continue
             export OVIS_TEST_HC_BIN="$RUNNER_TEMP/hc/$version/herdr-core"
             "$OVIS_TEST_HC_BIN" --version | grep -Fx "hc $version"
             bun test "${files[@]}"

@@ -19,6 +19,13 @@ import type { HerdrPane } from "../../shared/protocol.ts";
 const bin = process.env["OVIS_TEST_HC_BIN"];
 
 const WAIT_MS = 5000;
+
+/** whether release `a` is older than release `b`, both `major.minor.patch` */
+const olderThan = (a: string, b: string): boolean => {
+  const [left, right] = [a, b].map((version) => version.split(".").map(Number));
+  for (let at = 0; at < 3; at++) if (left![at] !== right![at]) return (left![at] ?? 0) < (right![at] ?? 0);
+  return false;
+};
 const TEST_MS = 30_000;
 
 interface Waiter { check: () => boolean; resolve: () => void }
@@ -92,8 +99,8 @@ describe.skipIf(!bin)("hc client against a real hc", () => {
     expect(await proc.exited).toBe(0);
     const stored = JSON.parse(readFileSync(join(import.meta.dir, "..", "..", "scripts", "hc-schema.json"), "utf8")) as typeof schema;
     const hello = await hc.hello();
-    if (hello.version === stored.info.version) {
-      // the hc the types were made from: refresh with OVIS_HC_BIN=<it> bun run generate:types --refresh-hc
+    if (!olderThan(hello.version, stored.info.version)) {
+      // the hc the types were made from, or a newer one: refresh with OVIS_HC_BIN=<it> bun run generate:types --refresh-hc
       expect(schema).toEqual(stored);
     } else {
       // an older supported hc publishes another schema; what the types and the client call must still be there
