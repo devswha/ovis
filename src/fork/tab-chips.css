@@ -1,0 +1,47 @@
+.fork-tab-chips {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: var(--space-half);
+  padding-inline-end: var(--space-1);
+}
+
+.fork-tab-chip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: var(--fork-chip-size, 24px);
+  min-height: var(--pointer-target);
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  background: transparent;
+  cursor: pointer;
+}
+
+.fork-tab-chip > svg { width: var(--icon-size-sm); height: var(--icon-size-sm); }
+.fork-tab-chip > .tab-strip-dot { position: absolute; inset-inline-end: 0; bottom: var(--space-half); }
+.fork-tab-chip:is([aria-selected="true"], [aria-pressed="true"]) { color: var(--text-strong); background: var(--bg-elevated); }
+.fork-tab-chip:focus-visible { outline: var(--ring); outline-offset: var(--ring-inset-offset); }
+@media (hover: hover) { .fork-tab-chip:hover { color: var(--text-strong); background: var(--bg-hover); } }
+
+/* The title keeps its normal minimum room; chips never push it or the close out. */
+.header-tabs .tab-strip-item:has(> .fork-tab-chips) {
+  min-width: calc(var(--tab-min-w) + var(--fork-chip-room));
+  max-width: calc(var(--tab-max-w) + var(--fork-chip-room));
+}
+
+.row-menu-line:has(> .fork-tab-chips) { display: flex; align-items: center; }
+.row-menu-line:has(> .fork-tab-chips) > .menu-item { flex: 1; min-width: 0; }
+.row-menu-line .fork-tab-chip { width: 24px; min-height: var(--pointer-target); }
+.row-sheet-line:has(> .fork-tab-chips) > .row-sheet-item { min-width: 0; }
+.row-sheet-line:has(> .fork-tab-chips) { flex-wrap: wrap; }
+.row-sheet-line > .fork-tab-chips { margin-inline-start: auto; }
+.fork-tab-chip.row-sheet-aside { width: max(var(--pointer-target), 44px); min-height: 44px; }
+@media (max-width: 768px) {
+  .fork-tab-chips, .tab-strip-item:has(> .fork-tab-chips) { --fork-chip-size: 44px; }
+  .fork-tab-chip { min-height: 44px; }
+}

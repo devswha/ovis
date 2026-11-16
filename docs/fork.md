@@ -2,6 +2,85 @@
 
 This fork is `ricardofelixb/ovis`; upstream is `devswha/ovis`. This inventory compares the starting commit `da5afc54` with its upstream merge base, `2decd453d6a28eb6cf21647c6f928150d1196c5c`. It includes inherited fork changes, not just this refactor.
 
+## Grouped sub-agent tabs
+
+Upstream candidate (A), behind **Agent friends** (off by default). `src/fork/groupAgentTabs.ts`
+folds same-workspace descendants into their visible parent without changing real tabs or order;
+missing parents/cycles remain ordinary tabs. `src/fork/TabChips.tsx` and `src/fork/tab-chips.css`
+provide tiny role controls (Hammer/Check, a neutral Terminal for other roles), without a repeated
+friend. Their named controls select the real child pane, keep its menu/rename/close, and highlight
+selection; touch hold opens its menu. Chips stay pinned in their parent group. The desktop row,
+phone header row and phone tabs sheet all share these controls; selecting a child leaves the
+parent highlighted while the existing header/pane title continues to name the selected child.
+Overflow chips retain menuitem semantics for the existing arrow-key navigation; sheet chips remain
+ordinary buttons. Their mouse press preserves the menu on browsers that do not focus clicked buttons.
+`src/components/TabStrip.tsx` hooks the grouping, chip mount and presentation-only selected/root
+mapping; original tabs still drive commands. `src/components/RowMenu.tsx` adds a generic optional
+`trailing` sibling-control slot (one type field and two render sites), needed for attached chips
+in a sheet without invalid nested buttons. TabStrip's missing grouped-tab presentation extension
+point is an upstream PR candidate. This differs from Warp's collapsible tab groups: job roles stay
+reachable on the parent, per the requested lower-noise design; no code or pixels were copied.
+`src/fork/tabGroupLayout.ts` budgets attached chip widths in the desktop More overflow, delegating
+to upstream's existing calculation unchanged with no groups. Phone chips keep 44px touch targets. Fork-only role metadata lives
+in `shared/fork/pane.ts` and `server/fork/core-terminals.ts`: only hc labels `role=implement`,
+`review` or `explore` become optional `agent_role`; herdr and old bridges omit it.
+Upstream hooks: `server/herdr-core/snapshot.ts` adds `forkPaneFields` to the existing fork import
+and one spread in `paneOf`; `shared/protocol.ts` adds one type import and one intersection.
+`server/fork/fork-pane-role.test.ts` failed before implementation, then passed with both app-owned
+and Ovis-owned layouts. No generated file or setting default changed.
+
+Hook footprint (insertions/deletions vs `upstream/main`, merge base, measured with
+`git diff --shortstat upstream/main...<ref> -- <file>`; before is `491a5965`):
+
+| Upstream file | Before | After | Hooks added here |
+| --- | --- | --- | --- |
+| `src/components/TabStrip.tsx` | +23/-8 | +52/-27 | 3 imports; grouping/layout calls, selection guards, 2 chip mounts; independent child picker |
+| `src/components/RowMenu.tsx` | +10/-3 | +19/-8 | optional trailing slot, 2 generic sibling render sites |
+| `src/lib/useTabReorder.ts` | +1/-2 | +12/-6 | optional adjacent/drop-boundary callbacks, original geometry fallback preserved |
+| `shared/protocol.ts` | +15/-1 | +17/-2 | type import + intersection |
+| `server/herdr-core/snapshot.ts` | +3/-1 | +4/-1 | existing fork import extended + pane spread |
+| `scripts/ci-browser.sh` | +5/-2 | +6/-2 | one fork regression registration, shared by serial/parallel browser lanes |
+
+Regression coverage: `src/fork/fork-group-agent-tabs.test.ts`,
+`src/fork/fork-tab-chips.test.tsx`, `src/fork/fork-tabGroupLayout.test.ts`,
+`server/fork/fork-pane-role.test.ts` and the added opt-in TabStrip integration cases.
+`scripts/fork-grouped-tabs-demo-regression.ts` uses synthetic demo-only parents and hc roles to
+exercise desktop/phone grouping, child selection/title, rename, phone sheet, touch targets,
+large sibling groups and the setting disabled. No real session or user state is used.
+`src/lib/useTabReorder.ts` needs generic optional boundary callbacks (another upstream
+extension-point candidate): the fork maps parent moves to the next visible root in native index
+coordinates. Without this, Move right/left can silently step across folded children without moving
+the parent on screen. Children stay pinned to their parent but can reorder among direct siblings by
+menu, Alt+Shift+Arrow keys, or mouse drag. Fork-only sibling/drop boundaries reject other groups and
+cross-generation drops. The generic drop-boundary callback shares upstream's fixed-layout, in-flight and
+acknowledgement guards; root-tab geometry remains upstream. Chips use the same pointer-drag
+controller as normal tabs, so dragging outside the strip still offers a split and opens the child
+beside the current pane. Returning to the strip clears the split target; Escape, pointer cancellation
+and lost capture cancel it. The separate HTML drag implementation and unused `moveTo` handle are gone.
+Touch keeps scrolling and long-press menus.
+Child pickers opt out of the selected-tab ellipsis lifecycle, so long presses and keyboard menus
+on inactive chips stay open without selecting them; the existing missing-tab cleanup still applies.
+A chip opened from More or the phone sheet resolves upstream's `rowMenuAnchor` before dismissing
+that surface, so the child menu stays attached to the persistent More/header button, not a removed chip.
+The demo regression covers an overflowed group's child menu and its Rename action, desktop sibling
+shortcuts and drag, and an inactive phone child's long-press menu and sibling move without selection.
+It also checks a child drag's split target, return to the strip, Escape and successful split drop;
+a TabStrip regression covers split callbacks and click suppression. Both failed before the fix.
+
+Validation: scoped fork/TabStrip/RowMenu/hc tests, conventions and changelog tests passed (276
+cases); changed-file TypeScript diagnostics passed for both configs. In `herdr-ci-runner:local`,
+`tab-menu-regression`, `tab-overflow-regression`, `mobile-tabs-regression`,
+`fork-grouped-tabs-demo-regression`, `fork-tab-alignment-demo-regression`,
+`tab-agent-mark-demo-regression`, `phone-glass-header-demo-regression` and
+`phone-safe-area-demo-regression` passed. Demo UI artifacts were built for these checks only;
+the initial implementer scope skipped project-wide checks. The required pre-push `bun run check fast`
+later passed workflow syntax, generated-file freshness, full typecheck and production build, but its
+unit lane found 14 OMP failures. `TMPDIR="$HOME/.cache/ovis-tmp/grouped-tabs-pr" bun test server/omp.test.ts`
+reproduced the same 14 failures on base `491a5965` (48 passed), chiefly `ConversationUnavailable:
+no_session_path`; no OMP code was changed. Its first complete run also caught a missing registration
+for the new browser regression. `scripts/ci-browser.sh` now registers it with one line, so the serial
+and parallel lanes both run it; the existing browser-lane assignment test caught this before the fix.
+
 ## Project friends and inbox clarity
 
 Reusable upstream candidate, behind the existing **Agent friends** opt-in (off on new devices).

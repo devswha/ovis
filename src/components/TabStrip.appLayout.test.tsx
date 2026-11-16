@@ -2,12 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { act, createElement } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 
-import type { PaneInfo, SessionSnapshot, WorkspaceInfo } from "../../shared/protocol.ts";
+import type { HerdrPane, PaneInfo, SessionSnapshot, WorkspaceInfo } from "../../shared/protocol.ts";
 import { AppLayoutContext, appLayoutOf, type LayoutOffer } from "../lib/machineContext.tsx";
 import { SettingsProvider } from "../lib/settings.ts";
 import { setSidebarPins } from "../lib/sidebarPins.ts";
+import { paneDrag } from "../lib/paneDrag.ts";
 import { RowMenu } from "./RowMenu.tsx";
-import { TabStrip } from "./TabStrip.tsx";
+import { TabStrip, type TabStripProps } from "./TabStrip.tsx";
 
 /** herdr's TUI server, a herdr-core PC the Herdr app lays out, and one whose layout Ovis keeps (lib/machineContext.tsx) */
 const TUI = appLayoutOf({ version: "0.9.5", protocol: 22 });
@@ -29,10 +30,11 @@ const snapshot: SessionSnapshot = {
   panes: [pane("w1", "w1:t1"), pane("w1", "w1:t2"), pane("w2", "w2:t1")],
 };
 // the test renderer draws no DOM: a node stands in for every element, connected and measurable, so the tab's menu can open
+let dragTargets: HTMLElement[] = [];
 const node = (): HTMLElement => ({
   isConnected: true, offsetWidth: 200, offsetHeight: 100, dataset: {}, scrollLeft: 0, scrollWidth: 0, clientWidth: 0,
-  getBoundingClientRect: () => ({ top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 }),
-  querySelector: () => null, querySelectorAll: () => [], contains: () => false, closest: () => null,
+  getBoundingClientRect: () => ({ top: 0, left: 0, right: 100, bottom: 20, width: 100, height: 20 }),
+  querySelector: () => null, querySelectorAll: (selector: string) => selector === ".fork-tab-chip" ? dragTargets : [], contains: () => false, closest: () => null,
   focus() {}, addEventListener() {}, removeEventListener() {},
 }) as unknown as HTMLElement;
 const noKeys = { altKey: false, shiftKey: false, ctrlKey: false, metaKey: false, repeat: false, preventDefault() {}, stopPropagation() {} };
@@ -46,15 +48,18 @@ describe("the tab strip on a PC the Herdr app lays out", () => {
   let activeTab: { dataset: { tabId: string } };
 
   beforeEach(() => {
-    for (const key of ["window", "document", "navigator", "getComputedStyle", "localStorage", "HTMLElement", "CSS", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    for (const key of ["window", "document", "navigator", "getComputedStyle", "localStorage", "HTMLElement", "CSS", "IS_REACT_ACT_ENVIRONMENT", "requestAnimationFrame", "cancelAnimationFrame"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     stored.clear();
     requested = [];
+    dragTargets = [];
     activeTab = { dataset: { tabId: "w1:t1" } };
     const storage = { getItem: (key: string) => stored.get(key) ?? null, setItem: (key: string, value: string) => { stored.set(key, value); }, removeItem: (key: string) => { stored.delete(key); } };
     const events = new EventTarget();
     media = { matches: false, addEventListener() {}, removeEventListener() {} };
     const define = (key: string, value: unknown) => Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
     define("IS_REACT_ACT_ENVIRONMENT", true);
+    define("requestAnimationFrame", () => 1);
+    define("cancelAnimationFrame", () => {});
     define("HTMLElement", class HTMLElement {});
     define("CSS", { escape: (value: string) => value });
     define("localStorage", storage);
@@ -74,8 +79,8 @@ describe("the tab strip on a PC the Herdr app lays out", () => {
     }
   });
 
-  async function draw(offer: LayoutOffer, workspace: WorkspaceInfo | null = snapshot.workspaces[0]!, beside?: WorkspaceInfo): Promise<void> {
-    const strip = (shown: WorkspaceInfo) => createElement(TabStrip, { snapshot, workspace: shown, selectedPane: snapshot.panes[0]!, onSelectPane: () => {}, onNewTab: () => {}, onNewTerminal: async () => {}, onMoveToWorkspace: async () => {} });
+  async function draw(offer: LayoutOffer, workspace: WorkspaceInfo | null = snapshot.workspaces[0]!, beside?: WorkspaceInfo, options: Partial<TabStripProps> = {}): Promise<void> {
+    const strip = (shown: WorkspaceInfo) => createElement(TabStrip, { snapshot, workspace: shown, selectedPane: snapshot.panes[0]!, onSelectPane: () => {}, onNewTab: () => {}, onNewTerminal: async () => {}, onMoveToWorkspace: async () => {}, ...options });
     const tree = createElement(SettingsProvider, null, createElement(AppLayoutContext.Provider, { value: offer },
       workspace && strip(workspace), beside && strip(beside)));
     await act(async () => { if (renderer) renderer.update(tree); else renderer = create(tree, { createNodeMock: node }); });
@@ -97,6 +102,116 @@ describe("the tab strip on a PC the Herdr app lays out", () => {
     }, { preconnect: globalThis.fetch.preconnect }));
     try { await run(); } finally { fetch.mockRestore(); }
   };
+
+  for (const phoneRow of [false, true]) it(`folds child tabs into the selected parent, including the phone sheet (phone row: ${phoneRow})`, async () => {
+    const child = snapshot.panes[1]! as HerdrPane;
+    child.parent_pane_id = snapshot.panes[0]!.pane_id;
+    stored.set("ovis:settings", JSON.stringify({ agentFriends: true }));
+    let selected = "";
+    try {
+      await draw(OVIS_CORE, undefined, undefined, { phoneRow, sheet: node(), onSheetClose() {}, selectedPane: child, onSelectPane: (id) => { selected = id; } });
+      expect(renderer!.root.findAllByProps({ className: "tab-strip-label" })).toHaveLength(1);
+      const parent = renderer!.root.findAllByType("div").find((item) => item.props.className?.startsWith("tab-strip-item"));
+      expect(parent?.props.className).toContain("is-active");
+      const chip = renderer!.root.findAllByType("button").find((item) => item.props.className?.includes("fork-tab-chip"))!;
+      expect(chip.props["aria-selected"]).toBe(true);
+      await act(async () => chip.props.onClick({ ctrlKey: false, currentTarget: { focus() {} } }));
+      expect(selected).toBe(child.pane_id);
+      const sheet = renderer!.root.findByType(RowMenu);
+      expect(sheet.props.items.filter((item: { id: string }) => item.id.startsWith("tab:")).map((item: { id: string }) => item.id)).toEqual(["tab:w1:t1"]);
+      expect(sheet.props.items[0].trailing).toBeTruthy();
+    } finally { delete child.parent_pane_id; }
+  });
+
+  it("keeps an unselected child's keyboard menu open until that tab disappears", async () => {
+    const child = snapshot.panes[1]! as HerdrPane;
+    child.parent_pane_id = snapshot.panes[0]!.pane_id;
+    stored.set("ovis:settings", JSON.stringify({ agentFriends: true }));
+    try {
+      await draw(TUI, undefined, undefined, { phoneRow: true });
+      const chip = renderer!.root.findByProps({ "data-tab-id": "w1:t2" });
+      await act(async () => chip.props.onKeyDown({ ...noKeys, key: "ContextMenu", currentTarget: node() }));
+      expect(renderer!.root.findAllByType(RowMenu)).toHaveLength(1);
+      expect(renderer!.root.findByType(RowMenu).props.title).toBe("Tab 2");
+      await draw(TUI, undefined, undefined, { phoneRow: true, snapshot: { ...snapshot, tabs: snapshot.tabs.filter((tab) => tab.tab_id !== child.tab_id) } });
+      expect(renderer!.root.findAllByType(RowMenu)).toHaveLength(0);
+    } finally { delete child.parent_pane_id; }
+  });
+
+  it("drags a folded child out to split, back to the strip, or cancels without selecting it", async () => {
+    const child = { ...snapshot.panes[1]!, parent_pane_id: snapshot.panes[0]!.pane_id } as HerdrPane;
+    const grouped = { ...snapshot, panes: [snapshot.panes[0]!, child, snapshot.panes[2]!] };
+    stored.set("ovis:settings", JSON.stringify({ agentFriends: true }));
+    const drops: unknown[] = [];
+    let selected = false;
+    paneDrag.onDrop((...args) => drops.push(args));
+    try {
+      await draw(TUI, undefined, undefined, { snapshot: grouped, splitDrag: true, onSelectPane: () => { selected = true; } });
+      const chip = renderer!.root.findByProps({ "data-tab-id": child.tab_id });
+      const event = { ...noKeys, pointerType: "mouse", pointerId: 1, button: 0, isPrimary: true, clientX: 0, clientY: 0,
+        currentTarget: { ...node(), setPointerCapture() {}, hasPointerCapture: () => false } };
+      await act(async () => chip.props.onPointerDown(event));
+      await act(async () => chip.props.onPointerMove({ ...event, clientY: 70 }));
+      expect(paneDrag.snapshot()).toEqual({ target: { machineId: "local", paneId: child.pane_id }, point: { x: 0, y: 70 } });
+      await act(async () => chip.props.onPointerMove(event));
+      expect(paneDrag.snapshot()?.point).toBeNull();
+      await act(async () => chip.props.onPointerMove({ ...event, clientY: 70 }));
+      await act(async () => chip.props.onPointerUp({ ...event, clientY: 70 }));
+      expect(drops).toEqual([[{ machineId: "local", paneId: child.pane_id }, 0, 70]]);
+      expect(paneDrag.snapshot()).toBeNull();
+      await act(async () => chip.props.onClick({ ...event, detail: 1 }));
+      expect(selected).toBe(false);
+      await act(async () => chip.props.onPointerDown(event));
+      await act(async () => chip.props.onPointerMove({ ...event, clientY: 70 }));
+      await act(async () => chip.props.onPointerCancel());
+      expect(paneDrag.snapshot()).toBeNull();
+      expect(drops).toHaveLength(1);
+    } finally { paneDrag.cancel(); paneDrag.onDrop(null); }
+  });
+
+  for (const action of ["menu", "keyboard", "drag"]) it(`moves children among siblings using ${action}, never among root tabs`, async () => {
+    const child = { ...snapshot.panes[1]!, parent_pane_id: snapshot.panes[0]!.pane_id } as HerdrPane;
+    const sibling = { ...child, pane_id: "w1:t3:p", tab_id: "w1:t3" };
+    const grouped = { ...snapshot, tabs: [...snapshot.tabs, { ...snapshot.tabs[1]!, tab_id: sibling.tab_id }], panes: [snapshot.panes[0]!, child, sibling, snapshot.panes[2]!] };
+    stored.set("ovis:settings", JSON.stringify({ agentFriends: true }));
+    await withFetch(async () => {
+      await draw(TUI, undefined, undefined, { snapshot: grouped });
+      const chip = renderer!.root.findByProps({ "data-tab-id": child.tab_id });
+      if (action === "menu") {
+        await act(async () => chip.props.onKeyDown({ ...noKeys, key: "ContextMenu", currentTarget: node() }));
+        const items = renderer!.root.findByType(RowMenu).props.items as { id: string; run(): void }[];
+        expect(items.some((item) => item.id === "move-left")).toBe(false);
+        expect(items.some((item) => item.id === "move-right")).toBe(true);
+        await act(async () => items.find((item) => item.id === "move-right")!.run());
+      } else if (action === "keyboard") {
+        await act(async () => chip.props.onKeyDown({ ...noKeys, key: "ArrowRight", altKey: true, shiftKey: true }));
+      } else {
+        await act(async () => {
+          dragTargets = [{ ...node(), dataset: { tabId: sibling.tab_id } }];
+          const event = { ...noKeys, pointerType: "mouse", pointerId: 1, isPrimary: true, button: 0, clientX: 0, clientY: 10,
+            currentTarget: { ...node(), setPointerCapture() {}, hasPointerCapture: () => false } };
+          chip.props.onPointerDown(event);
+          chip.props.onPointerMove({ ...event, clientX: 80 });
+          chip.props.onPointerUp({ ...event, clientX: 80 });
+        });
+      }
+      expect(requested).toEqual(["/api/tab/move"]);
+    });
+  });
+
+  it("does not move a parent against its own folded child by menu or keys", async () => {
+    const child = snapshot.panes[1]! as HerdrPane;
+    child.parent_pane_id = snapshot.panes[0]!.pane_id;
+    stored.set("ovis:settings", JSON.stringify({ agentFriends: true }));
+    try {
+      await withFetch(async () => {
+        await draw(TUI);
+        expect(await menuOf()).not.toContain("move-right");
+        await keyDown("ArrowRight", { altKey: true, shiftKey: true });
+        expect(requested).toEqual([]);
+      });
+    } finally { delete child.parent_pane_id; }
+  });
 
   it("offers a TUI PC's tab its moves and rename, by menu, keys and a double-click", async () => {
     await withFetch(async () => {
