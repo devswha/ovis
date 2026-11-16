@@ -66,6 +66,11 @@
   --inbox-avatar: var(--mark-size);
 }
 
+/* A wide list spaces its rows with a gap (InboxList.css), which broke the tree line between them: there the space
+   is each row's own, half above and half below, so the rows meet and the line runs on through them. */
+.mode-inbox.is-wide .inbox-rows { gap: 0; }
+.mode-inbox.is-wide .inbox-item { padding-block: calc(var(--space-1) / 2); }
+
 /* the agent's row has room under its mark: the line starts right under the mark, as the sidebar's does */
 .mode-inbox .inbox-item:has(+ .inbox-item[data-depth="1"]):not([data-depth]) {
   position: relative;
