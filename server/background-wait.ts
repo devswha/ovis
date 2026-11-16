@@ -42,6 +42,9 @@ interface Pane {
  * and running tasks: OmO's records name the session, not the turn, that started a task. It is held
  * as long as one runs, with no WAIT_LIMIT_MS: a task whose host process died is not counted
  * (omo-status.ts), and OmO wakes the session when a task ends.
+ *
+ * A pane's wait is the agent's that holds the pane, and ends when that agent changes or is gone: the status
+ * hub says whose it is, and ends it in one place (core/status.ts `ownerChanged`).
  */
 export class BackgroundWait {
   private readonly panes = new Map<string, Pane>();
@@ -85,6 +88,16 @@ export class BackgroundWait {
     return this.settle(pane);
   }
 
+  /**
+   * A count that rose while the pane was at rest, with no status between: a whole turn began and came to rest
+   * between two reads (a GJC transcript read at once), seen only in the work it left running. That rest is now.
+   * A pane with no status seen yet is a baseline, which starts no hold. Called before `running` takes the count.
+   */
+  restedUnseen(paneId: string, turnRunning: number): void {
+    const pane = this.panes.get(paneId);
+    if (pane?.statusSeen && !pane.busy && turnRunning > pane.turnRunning) pane.restAt = this.now();
+  }
+
   /** The panes whose wait ran out since last asked. */
   tick(): string[] {
     return [...this.panes].filter(([, pane]) => this.settle(pane)).map(([paneId]) => paneId);
@@ -103,18 +116,6 @@ export class BackgroundWait {
     pane.turnRunning = 0;
     pane.endedAt = null;
     pane.waiting = false;
-  }
-
-  /**
-   * reset, keeping the rest observed from `since` on: another agent's lifetime ended there, and the one that
-   * followed was seen rest before its tracker knew its session. Its counts come afresh from that tracker.
-   */
-  resetBefore(paneId: string, since: number): void {
-    const pane = this.panes.get(paneId);
-    if (!pane) return;
-    const restAt = pane.restAt !== null && pane.restAt >= since ? pane.restAt : null;
-    this.reset(paneId);
-    pane.restAt = restAt;
   }
 
   forget(paneId: string): void {

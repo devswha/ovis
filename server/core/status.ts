@@ -1,6 +1,14 @@
 /**
  * Pane status as clients and web push see it: the completion tracker, OmO's, GJC's and Claude's
  * own status, background waits, plans, the machine roster and the one collector that feeds them.
+ *
+ * Who owns a pane's background wait. A pane has one wait (background-wait.ts), and five agents write it:
+ * OmO, GJC, Claude Code, OpenCode and agy/grok (Letta holds none). It belongs to the agent that holds the
+ * pane: the one OmO's or GJC's discovery found there (OmO first), else the one herdr names (`owners`). A
+ * change of owner ends it, in one place, `ownerChanged`: herdr's event or a snapshot naming another agent
+ * or none, a tracker finding its agent in the pane, and the owner's own end there (its tracker read the
+ * pane and lost it, or found another process or session of it). Nothing else drops a wait for whose it
+ * is. WAIT_LIMIT_MS bounds a wait whose owner is still there, and never stands in for this.
  */
 import type { TailnetPcsOptions } from "../tailnet-pcs.ts";
 import type { SshCandidatesOptions } from "../ssh-candidates.ts";
@@ -145,17 +153,22 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     discover: (panes) => omoPanes(panes),
     snapshot: sessionSnapshot,
     onChange: (paneId, derived, background, turn, rest) => omoChanged(paneId, derived, background, turn, rest),
+    // the owner first: a wait that ends is told as the status of the agent that held it, which adopting may drop.
     // herdr called it `claude` or `pi` until now: what it finished under that name is its own
-    // a wait another agent left is not OmO's; one OmO held before it was missed a while goes on
-    onFound: (paneId, again) => { completions.adopt(paneId, "omo", OMO_ALIASES); if (!again) waits.forget(paneId); },
+    onFound: (paneId) => { ownerChanged(paneId, "omo"); completions.adopt(paneId, "omo", OMO_ALIASES); },
+    // OmO left the pane. Another OmO process found there is no end: the wait is its session's, whose count drops
+    // what a dead host left (background-wait.ts)
+    onLost: (paneId, replaced) => { if (!replaced) ownerChanged(paneId, "omo", true); },
   });
   const omoSnapshot = () => readOmoSnapshot(sessionSnapshot, omo);
   /** GJC panes get their status from gjc's own transcript: herdr's `working` can be a provider child's (server/gjc-status.ts) */
   const gjc = createGjcStatus({
     discover: (panes) => gjcPanes(panes),
     snapshot: omoSnapshot,
-    onChange: (paneId, derived, _background, turn, rest) => gjcChanged(paneId, derived, turn, rest),
-    onFound: (paneId) => completions.adopt(paneId, "gjc", []),
+    onChange: (paneId, derived, background, turn, rest) => gjcChanged(paneId, derived, turn, rest, "gjc", background),
+    onFound: (paneId) => { ownerChanged(paneId, "gjc"); completions.adopt(paneId, "gjc", []); },
+    // the gjc process the pane held is gone (left, or replaced by a new one): what its turn waited on is over
+    onLost: (paneId) => ownerChanged(paneId, "gjc", true),
   }, omo);
   /** each Letta pane's status as its own title last said it, where nothing else gave one (letta-status.ts lettaTitleStatus) */
   const lettaTitled = new Map<string, AgentStatus>();
@@ -176,28 +189,36 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       // each turn the file tells replaces the last: a later good answer leaves no earlier failure standing
       if (turn && rest !== undefined && derived !== "working") lettaRests.set(paneId, rest); else if (turn) lettaRests.delete(paneId);
     },
-    onFound: (paneId) => completions.adopt(paneId, "letta", []),
+    // Letta holds no wait: what another agent left waiting there is over
+    onFound: (paneId) => { ownerChanged(paneId, "letta"); completions.adopt(paneId, "letta", []); },
   });
   /** Claude panes whose turn ended while work it started runs in the background (server/background-wait.ts) */
   const waits = new BackgroundWait(options.statusNow ?? Date.now, options.backgroundWait);
-  /** the pane whose status event is reading its background work now: that event sends the one frame and alert of it */
+  /** the pane whose status event is reading its background work now, or ending what another agent waited on there: that event sends the one frame and alert of it */
   let settling: string | null = null;
   /** each pane's agent as the newest snapshot or status event has it, a snapshot's set before either subagent tracker reads it (owns) */
   const agentNow = new Map<string, string | null>();
   /** the read (opencodeAgents.beginRead) each pane's agentNow came from: a snapshot read before a newer word never undoes it */
   const agentRead = new Map<string, number>();
-  /** each pane's agent as its status events have it, and since when: the rests from then on are that agent's (newLifetime) */
-  const eventAgent = new Map<string, { agent: string | null; since: number }>();
-  const statusNow = options.statusNow ?? Date.now;
+  /** the agent each pane's wait belongs to: the one a tracker found in the pane, else the one herdr names there (null: none) */
+  const owners = new Map<string, string | null>();
   /**
-   * A new lifetime in the pane: what came before is not its own. `keep`: the agent whose rests from its first status
-   * event on stay, as it was seen rest before its tracker knew its session; null keeps none.
+   * The one place a pane's wait ends because its owner changed (the rule at the top of this file). `agent` holds the
+   * pane now, as herdr named it or its tracker found it there: what another agent waited on is over, and this one
+   * starts with nothing seen. `ended`: that agent's own lifetime there is over instead (its tracker read the pane and
+   * lost it, or found another process or session of it), which ends its wait and no other's: a tracker that lets go of
+   * a pane another agent took says nothing of that agent's wait. What was seen of the pane's status stays then, for
+   * the lifetime that follows. A pane first heard of had no owner, and nothing to end. The end of a wait that was
+   * held is told here, unless the status event that named the agent tells it (`settling`).
    */
-  function newLifetime(paneId: string, keep: string | null): void {
+  function ownerChanged(paneId: string, agent: string | null, ended = false): void {
+    const owner = owners.get(paneId);
+    if (ended ? owner !== agent : owner === agent) return;
+    owners.set(paneId, agent);
+    if (owner === undefined) return;
     const held = waits.waiting(paneId);
-    const seen = eventAgent.get(paneId);
-    if (keep !== null && seen?.agent === keep) waits.resetBefore(paneId, seen.since); else waits.reset(paneId);
-    claudeAgentsChanged(paneId, 0, 0, null, held);
+    if (ended) waits.reset(paneId); else waits.forget(paneId);
+    if (held) waitEnded(paneId);
   }
   /** OpenCode's service and when it started, looked up once per service process, off the event loop */
   let service: { pid: number; started: number | null } | null = null;
@@ -205,11 +226,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   const claudeAgents = new ClaudeSubagentStatus({
     resolve: claudePaneSession,
     pid: claudePanePid,
-    // a pane that left Claude Code for another agent keeps what that agent was seen do there since
-    onReset: (paneId) => {
-      const agent = agentNow.get(paneId) ?? null;
-      if (owns(paneId, "claude")) newLifetime(paneId, agent === "claude" ? null : agent);
-    },
+    // another Claude session or process in a pane that is Claude's: a pane that left Claude for another agent is that agent's already
+    onReset: (paneId) => ownerChanged(paneId, "claude", true),
     onChange: (paneId, running, turnRunning, promptAt) => {
       if (agentNow.get(paneId) !== "claude" || !owns(paneId, "claude")) return;
       claudeAgentsChanged(paneId, running, turnRunning, promptAt, false, "claude");
@@ -291,7 +309,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       }
       return service.started;
     },
-    onReset: (paneId, first) => { if (owns(paneId, "opencode")) newLifetime(paneId, first ? "opencode" : null); },
+    // the first session after another agent's is the lifetime that began when the pane was named OpenCode's: what it was seen do since stays
+    onReset: (paneId, first) => { if (!first) ownerChanged(paneId, "opencode", true); },
     // a count that fell only because that setting was turned off ended no work: no grace is held for it
     onChange: (paneId, running, turnRunning, promptAt, toggled) => { if (owns(paneId, "opencode")) claudeAgentsChanged(paneId, running, turnRunning, promptAt, false, null, toggled); },
   });
@@ -305,7 +324,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       const store = await resolveAgyStore(pane);
       return store === null ? null : { path: store.path, started: await processStartUpperBoundAsync(store.pid), owner: `${store.pid}:${store.started}` };
     },
-    onReset: (paneId) => { if (isTaskAgent(agentNow.get(paneId))) newLifetime(paneId, null); },
+    onReset: (paneId) => { const agent = agentNow.get(paneId); if (isTaskAgent(agent)) ownerChanged(paneId, agent, true); },
     onChange: (paneId, count) => {
       if (isTaskAgent(agentNow.get(paneId)) && !omo.runs(paneId)) claudeAgentsChanged(paneId, count.running, count.turnRunning, count.promptAt, false, null, false, count.capped);
     },
@@ -318,7 +337,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
    * read the snapshot yet, and would keep the wait of the agent it ran for from being dropped.
    */
   function owns(paneId: string, tracker: "claude" | "opencode"): boolean {
-    if (omo.runs(paneId)) return false;
+    // an OmO or GJC pane's count and wait are its own transcript's (omoChanged, gjcChanged)
+    if (omo.runs(paneId) || gjc.runs(paneId)) return false;
     const agent = agentNow.get(paneId);
     const other = tracker === "claude" ? "opencode" : "claude";
     if (agent !== undefined && agent !== other) return true;
@@ -408,13 +428,13 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       if (ids.has(paneId) || (agentRead.get(paneId) ?? 0) > read) continue;
       agentNow.delete(paneId);
       agentRead.delete(paneId);
-      eventAgent.delete(paneId);
       heard.delete(paneId);
     }
     for (const pane of named.panes) {
       if ((agentRead.get(pane.pane_id) ?? 0) > read) continue;
       agentNow.set(pane.pane_id, pane.agent ?? null);
       agentRead.set(pane.pane_id, read);
+      ownerChanged(pane.pane_id, pane.agent ?? null);
       hearClaude(pane.pane_id, pane.agent, pane.agent_status, false);
     }
     // not waited for: finding a transcript costs process calls, and a snapshot must not wait on them.
@@ -432,7 +452,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     options.openCodeState?.reconcile(named.panes, promptCheckpoint);
     return named;
   };
-  const backgroundOf = (paneId: string): number => omo.backgroundOf(paneId) || claudeAgents.countOf(paneId) || opencodeAgents.countOf(paneId) || taskAgents.countOf(paneId);
+  const backgroundOf = (paneId: string): number => omo.backgroundOf(paneId) || gjc.backgroundOf(paneId) || claudeAgents.countOf(paneId) || opencodeAgents.countOf(paneId) || taskAgents.countOf(paneId);
   /** the snapshot clients get: finishes settled, OmO panes named, background tasks, waits, plan progress and context */
   const clientSnapshot = async (): Promise<SessionSnapshot> => {
     // the order this read can show is the one of the moves confirmed before it starts: taken before any wait,
@@ -529,16 +549,26 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   }
 
   /**
-   * A GJC pane's own turn, which herdr's provider-child status never shows: back at work, its
-   * form has had its answer. gjc keeps no background records to count, so a change is always a
-   * turn, and an idle read after work is the finish — one ended in an error is not (#687).
+   * A GJC or Letta pane's own turn, which herdr's provider-child status never shows: back at work,
+   * its form has had its answer, and an idle read after work is the finish — one ended in an error
+   * is not (#687). A GJC turn that ended while background jobs it started still run (gjc-status.ts
+   * `gjcJobsAfter`) waits on them as an OmO one does: BG, not DONE, and a finish alerted once
+   * they are over. A job's end wakes gjc, but nothing proves a job gjc wrote no end for is still
+   * running, so the wait is held at most WAIT_LIMIT_MS, as a Claude one is. A whole turn read at
+   * once shows only in the jobs it left running: their rise at rest is its rest (`restedUnseen`).
    */
-  function gjcChanged(paneId: string, derived: AgentStatus, turn: boolean, rest: OmoRest | undefined, agent: "gjc" | "letta" = "gjc"): void {
+  function gjcChanged(paneId: string, derived: AgentStatus, turn: boolean, rest: OmoRest | undefined, agent: "gjc" | "letta" = "gjc", background = 0): void {
     if (turn && derived === "working") promptWaitEnded(paneId);
     const status = turn ? completions.observe(paneId, derived, agent, rest) : completions.current(paneId) ?? completions.observe(paneId, derived, agent);
     if (turn) { pending.status(paneId, status); drainPending(paneId); }
-    broadcastAll(paneStatus(paneId, status));
-    if (turn) push.onStatus(paneId, status).catch(logPushError);
+    const held = waits.waiting(paneId);
+    if (agent === "gjc") {
+      if (!turn && derived === "idle") waits.restedUnseen(paneId, background);
+      waits.running(paneId, background, null, true);
+      if (turn) waits.status(paneId, status);
+    }
+    broadcastAll(paneStatus(paneId, status, agent === "gjc" ? { background_tasks: background } : {}));
+    if (turn || waits.waiting(paneId) !== held) push.onStatus(paneId, alertStatus(status, waits.waiting(paneId))).catch(logPushError);
     if (turn && rest === "failed" && status === "idle") push.onFailed(paneId).catch(logPushError);
   }
 
@@ -563,14 +593,17 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     if (changed) push.onStatus(paneId, alertStatus(status, waits.waiting(paneId))).catch(logPushError);
   }
 
-  /** A wait ran out (its work ended and no turn followed, or it was held as long as one is): the status it stood for. */
+  /** A pane's wait ended with no status after it: the status it stood for. */
+  function waitEnded(paneId: string): void {
+    const status = completions.current(paneId);
+    if (status === undefined || paneId === settling) return;
+    broadcastAll(paneStatus(paneId, status));
+    push.onStatus(paneId, alertStatus(status, waits.waiting(paneId))).catch(logPushError);
+  }
+
+  /** A wait ran out (its work ended and no turn followed, or it was held as long as one is). */
   function waitsRanOut(): void {
-    for (const paneId of waits.tick()) {
-      const status = completions.current(paneId);
-      if (status === undefined) continue;
-      broadcastAll(paneStatus(paneId, status));
-      push.onStatus(paneId, alertStatus(status, waits.waiting(paneId))).catch(logPushError);
-    }
+    for (const paneId of waits.tick()) waitEnded(paneId);
   }
 
   /** A pane's plan moved on: keep its current status and background wait, and alert nothing. */
@@ -634,15 +667,11 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     // newer than the last snapshot: a route that looks the pane's session up before the next one reads it so
     agentNow.set(paneId, named[0]!.agent ?? null);
     agentRead.set(paneId, opencodeAgents.beginRead());
-    if (eventAgent.get(paneId)?.agent !== (named[0]!.agent ?? null)) eventAgent.set(paneId, { agent: named[0]!.agent ?? null, since: statusNow() });
     // herdr says `claude/idle` for an OmO pane whatever it does, and a provider child's work for
     // a GJC one while its transcript is tracked: their own status stands, and no Claude turn waits there
-    // (an OmO pane's wait on its background tasks is omoChanged's)
-    if (omo.tracks(paneId)) return;
-    if (gjc.tracks(paneId) || letta.tracks(paneId)) {
-      waits.forget(paneId);
-      return;
-    }
+    // (an OmO or GJC pane's wait on its background jobs is omoChanged's or gjcChanged's)
+    // nor does one in a Letta pane whose own messages are read
+    if (omo.tracks(paneId) || gjc.tracks(paneId) || letta.tracks(paneId)) return;
     reportStatus(paneId, raw, agent);
   }
 
@@ -659,8 +688,13 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     if (raw === "working" || agent !== "codex") codexWorking(paneId, raw === "working" && agent === "codex");
     // (herdr's own DONE or Codex's `unknown` at rest included: the tracker reads a failed rest only from an idle)
     const failedRest = codexFailed.has(paneId) && raw !== "blocked";
-    const status = completions.observe(paneId, failedRest ? "idle" : raw, omo.runs(paneId) ? "omo" : gjc.runs(paneId) ? "gjc" : agent, failedRest ? "failed" : undefined);
+    const owner = omo.runs(paneId) ? "omo" : gjc.runs(paneId) ? "gjc" : agent;
+    const status = completions.observe(paneId, failedRest ? "idle" : raw, owner, failedRest ? "failed" : undefined);
     pending.status(paneId, queueStatus(paneId, status)); drainPending(paneId);
+    // herdr's word names the pane's agent: what another agent waited on there is over before this one's work is
+    // read, and the frame below says so
+    settling = paneId;
+    try { ownerChanged(paneId, owner); } finally { settling = null; }
     // a Claude turn that ended holds on its background work: what it started is read now, while
     // the pane is still taken for the status before (work that ended before the turn did holds
     // nothing), and this frame says all of it, so none says the pane finished first
@@ -676,7 +710,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       // Only the Claude tracker's poll changes what was told of that hold
       if (claudeAgents.loopTold(paneId) !== resumed) tellQueue(paneId);
       waits.status(paneId, status);
-    } else waits.forget(paneId);
+    }
     const tell = (): void => {
       broadcastAll(paneStatus(paneId, status, tracker !== null ? { background_tasks: tracker.countOf(paneId) } : {}));
       push.onStatus(paneId, alertStatus(status, waits.waiting(paneId))).catch(logPushError);
@@ -785,7 +819,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     heard.delete(paneId);
     agentNow.delete(paneId);
     agentRead.set(paneId, opencodeAgents.beginRead());
-    eventAgent.delete(paneId);
+    owners.delete(paneId);
     // the terminal is gone, so is whatever its chat parsed (server/conversation.ts)
     forgetPaneTranscriptState(paneId);
     bridgeAgents?.ended(paneId);
