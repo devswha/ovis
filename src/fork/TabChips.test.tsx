@@ -24,9 +24,17 @@ it("uses role chips, not repeated friends, and opens the child's pane", async ()
   expect(selected).toBe("pane:implement");
 });
 
+it("keeps overflow chips reachable by the More menu's arrow keys", async () => {
+  await act(async () => { renderer = create(<ForkTabChips tabs={[tabs[0]!]} paneFor={() => panes[0]} nameOf={(tab) => tab.label} selectedTab="implement" onSelect={() => {}} onMenu={() => {}} sheet popup="menu" statusMark={() => null} />); });
+  const chip = renderer!.root.findByType("button");
+  expect(chip.props.role).toBe("menuitemcheckbox");
+  expect(chip.props["aria-checked"]).toBe(true);
+  expect(chip.props["aria-pressed"]).toBeUndefined();
+});
+
 it("keeps close, rename and a contextual menu on chips, also in a phone sheet", async () => {
   const actions: string[] = [];
-  await act(async () => { renderer = create(<ForkTabChips tabs={[tabs[0]!]} paneFor={() => panes[0]} nameOf={(tab) => tab.label} selectedTab="implement" onSelect={() => actions.push("select")} onMenu={() => actions.push("menu")} onClose={() => actions.push("close")} onRename={() => actions.push("rename")} onDismiss={() => actions.push("dismiss")} sheet statusMark={() => null} />); });
+  await act(async () => { renderer = create(<ForkTabChips tabs={[tabs[0]!]} paneFor={() => panes[0]} nameOf={(tab) => tab.label} selectedTab="implement" onSelect={() => actions.push("select")} onMenu={() => actions.push("menu")} onClose={() => actions.push("close")} onRename={() => actions.push("rename")} onDismiss={() => actions.push("dismiss")} sheet popup="dialog" statusMark={() => null} />); });
   const chip = renderer!.root.findByType("button");
   expect(chip.props.className).toContain("row-sheet-aside");
   expect(chip.props["aria-pressed"]).toBe(true);
