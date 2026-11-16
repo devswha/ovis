@@ -10,7 +10,7 @@
 #     added (the live runner image has none, so these tests never run in a live runner's container), started as
 #     python3 (PR_SET_CHILD_SUBREAPER on itself, then exec) bash hook-test-harness.sh container ...
 #     The marker is there, root's and read-only, /.dockerenv is there, PID 1 is the container's init (tini or
-#     docker-init), and the PID namespace is not the host's initial one (/proc/$/ns/pid is not pid:[4026531836],
+#     docker-init), and the PID namespace is not the host's initial one (/proc/$$/ns/pid is not pid:[4026531836],
 #     a constant of the kernel). The probe, which runs alone, also refuses when /proc shows any process that is
 #     neither this harness nor one above it: another container's processes, as with --pid=container:<a live
 #     runner>, or anything else. Then it proves that an orphan of its subtree comes to it, not to any process
@@ -26,7 +26,7 @@
 # (a copy named systemd that ends once the hook says it blocks), or probe (the guard alone). <output> is open, or closed: the hook writes to a pipe nobody reads. The environment
 # carries the hook's (GITHUB_*), HOOK, HOOK_PATH (its PATH) and HARNESS_DIR (a directory of the test's own).
 # It prints one line:
-#   report parent=<exit status|running|gone> hook=<ended|blocked|silent> next=<ran|no> decoys=<alive|dead> above=<alive|dead>
+#   report parent=<exit status|running|gone> hook=<ended|blocked|unproven|silent> next=<ran|no> decoys=<alive|dead> above=<alive|dead>
 set -u
 
 marker=/opt/runner-hooks/ovis-runner-image
@@ -51,8 +51,8 @@ in_runner_container() {
   IFS= read -r init 2>/dev/null </proc/1/comm || { why="/proc/1/comm cannot be read"; return 1; }
   mapfile -d '' args 2>/dev/null </proc/1/cmdline || { why="/proc/1/cmdline cannot be read"; return 1; }
   [[ ($init == tini || $init == docker-init) && ${args[0]##*/} == "$init" ]] || { why="PID 1 is $init, not the container's init"; return 1; }
-  [[ $ != 1 ]] || { why="this harness is PID 1"; return 1; }
-  ns=$(/bin/readlink "/proc/$/ns/pid" 2>/dev/null) || { why="its PID namespace cannot be read"; return 1; }
+  [[ $$ != 1 ]] || { why="this harness is PID 1"; return 1; }
+  ns=$(/bin/readlink "/proc/$$/ns/pid" 2>/dev/null) || { why="its PID namespace cannot be read"; return 1; }
   [[ $ns =~ ^pid:\[[0-9]+\]$ && $ns != 'pid:[4026531836]' ]] || { why="in the host's initial PID namespace ($ns)"; return 1; }
 }
 
@@ -61,7 +61,7 @@ in_runner_container() {
 # read from each /proc/<pid>/stat (field 4); the list of what /proc shows is a glob.
 alone_in_namespace() {
   local -A line_of_mine=()
-  local pid=$ stat entry
+  local pid=$$ stat entry
   while [[ $pid =~ ^[1-9][0-9]*$ ]]; do
     line_of_mine[$pid]=1
     IFS= read -r stat 2>/dev/null <"/proc/$pid/stat" || { why="/proc/$pid/stat cannot be read"; return 1; }
@@ -90,6 +90,27 @@ stat_of() {
   IFS= read -r line 2>/dev/null <"/proc/$1/stat" || return 1
   line=${line##*) }
   read -r _ ppid_of _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ start_of _ <<<"$line"
+}
+
+# A block said is not yet a block that holds. After the hook's "this hook blocks (pid N)" line, it must be seen
+# to go round its loop: a /bin/sleep child of pid N, then another one (so N has read its parent again and stayed),
+# with N and its parent still running at every poll. The polls read /proc only; between two of them the harness
+# waits on fd 5, the hold FIFO it alone writes and never does, for 0.1 s. At most 150 polls, so 15 s at most,
+# against the hook's 5 s loop: the end is the hook's own second sleep, never a silence.
+persists() {
+  local hook_pid=$1 first="" children child comm polls=0
+  while (( polls++ < 150 )); do
+    [[ $(state "$hook_pid") == running && $(state "$pid") == running ]] || return 1
+    children=""
+    IFS= read -r children 2>/dev/null <"/proc/$hook_pid/task/$hook_pid/children"
+    for child in $children; do
+      IFS= read -r comm 2>/dev/null <"/proc/$child/comm" || continue
+      [[ $comm == sleep ]] || continue
+      if [[ -z $first ]]; then first=$child; elif [[ $child != "$first" ]]; then return 0; fi
+    done
+    read -r -t 0.1 _ <&5
+  done
+  return 1
 }
 
 # running or gone (a zombie is gone)
@@ -174,21 +195,27 @@ if [[ $parent == gone ]]; then
 fi
 
 # The hook's output, read as it comes, up to 20 s for each line, until its end (EOF: every writer gone) or the
-# line in which the hook says it blocks. With a parent that lives on, that line is the report: the hook blocks.
+# line in which the hook says it blocks. With a parent that lives on, that line and persists() decide: blocked
+# when the block holds, unproven otherwise; then whatever the hook and its parent wrote meanwhile is read.
 # With leaves, the harness then lets the parent end and reads on to the hook's own end; with gone, the parent
 # has ended already, and the hook ends after that line too.
+blocks_line='this hook blocks \(pid ([0-9]+)\)'
 hook=silent next=no
 while :; do
   if IFS= read -r -t 20 line <&3; then
     printf '%s\n' "$line" >>"$dir/output"
     [[ $line == 'next step ran' ]] && next=ran
-    if [[ $line == *'this hook blocks (pid '* ]]; then
+    if [[ $line =~ $blocks_line ]]; then
       if [[ $parent == leaves ]]; then
         : >"$dir/fifo"
         wait "$pid"
         parent_status=$?
       elif [[ $parent != gone ]]; then
-        hook=blocked
+        if persists "${BASH_REMATCH[1]}"; then hook=blocked; else hook=unproven; fi
+        while IFS= read -r -t 0.1 line <&3; do
+          printf '%s\n' "$line" >>"$dir/output"
+          [[ $line == 'next step ran' ]] && next=ran
+        done
         break
       fi
     fi

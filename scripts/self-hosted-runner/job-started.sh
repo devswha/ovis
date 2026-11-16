@@ -12,16 +12,13 @@
 # First of all: a write to a closed output (an error message on a stderr nobody reads) must not
 # end this shell with SIGPIPE before the refusal below can run.
 trap '' PIPE
-# the runner starts this with bash; another shell (sh is dash on Debian) cannot run the rest, so
-# it blocks without killing anything, as block() below does
+# the runner starts this with bash; another shell (sh is dash on Debian) cannot run the rest, and
+# need not even set $PPID, so it cannot tell when its parent is gone: it blocks for good, killing
+# nothing. This branch has no exit.
 if [ -z "${BASH_VERSION:-}" ]; then
   trap '' HUP INT TERM
-  echo "::error::job-started.sh runs under bash only; refusing this job; this hook blocks (pid $$) until its parent is gone." 2>/dev/null
-  while :; do
-    parent=$(/bin/ps -o ppid= -p $$ 2>/dev/null) && parent=$(echo $parent)
-    case $parent in ''|*[!0-9]*) ;; *) [ "$parent" != "$PPID" ] && exit 1 ;; esac
-    /bin/sleep 5 || sleep 5
-  done
+  echo "::error::job-started.sh runs under bash only; refusing this job; this hook blocks (pid $$)." 2>/dev/null
+  while :; do /bin/sleep 3600 || sleep 3600; done
 fi
 set -euo pipefail
 
