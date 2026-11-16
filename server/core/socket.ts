@@ -6,7 +6,7 @@
 import type { WebSocketHandler } from "bun";
 import type { ClientMessage, ClientRole, ServerFeature, SessionSnapshot } from "../../shared/protocol.ts";
 import { ConnectionDiagnostics } from "../connection-diagnostics.ts";
-import { HerdrError, type HerdrFailureView, herdrFault, LARGE_REPLY_BYTES } from "../herdr/client.ts";
+import { faultOf, HerdrError, type HerdrFailureView, LARGE_REPLY_BYTES } from "../herdr/client.ts";
 import { OUTPUT_HARD_BYTES } from "../output-window.ts";
 import { pasteDirectoryForAll } from "../paste.ts";
 import { type Client, connectionOf, presenceOf, relayClient, send, setMachineEvents, type SocketData } from "./connections.ts";
@@ -74,9 +74,6 @@ export function createSocket({ clients, present, stopped, admit, setRole, watcha
   frames: Omit<FrameHandlers, ConnectionFrame>;
 }): SocketHandler {
   const websocketDiagnostics = new ConnectionDiagnostics("websocket");
-  /** An error frame's code and message: a herdr call's as herdrFault words it; any other keeps `code`, with the view's sentence under one. */
-  const frameFault = (error: unknown, code: string) => error instanceof HerdrError ? herdrFault(error, herdrFailure)
-    : { code, message: herdrFailure !== undefined ? herdrFailure(new HerdrError(code, "")).message : error instanceof Error ? error.message : String(error) };
   // Here and not in connections.ts: watch checks its grid with validGeometry (terminals.ts), and
   // terminals.ts imports connections.ts, which imports none of the core.
   const connectionFrames = {
@@ -176,7 +173,7 @@ export function createSocket({ clients, present, stopped, admit, setRole, watcha
         const read = await snapshot;
         send(client, { type: "snapshot", snapshot: client.data.bridge ? read : browserSnapshot(read), features, connection: client.data.connectionId });
       } catch (error) {
-        const fault = frameFault(error, "snapshot_failed");
+        const fault = faultOf(error, "snapshot_failed", herdrFailure);
         send(client, { type: "error", code: fault.code, message: fault.message });
       }
     },
@@ -208,7 +205,7 @@ export function createSocket({ clients, present, stopped, admit, setRole, watcha
         // an attach that could not start names its pane: the panes of a PC share this connection, and one
         // without a pane would end every terminal on it
         const failed = code === "attach_failed" && message.type === "attach" ? { pane_id: message.pane_id } : {};
-        const fault = frameFault(error, code);
+        const fault = faultOf(error, code, herdrFailure);
         send(client, { type: "error", code: fault.code, message: fault.message, ...failed });
       }
     },

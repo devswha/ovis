@@ -124,6 +124,11 @@ export type HerdrFailureView = (error: HerdrError) => { code: string; message: s
 export function herdrFault(error: HerdrError, view: HerdrFailureView | undefined): { code: string; message: string } {
   return view !== undefined && error.failedCall === true ? view(error) : { code: error.code, message: error.message };
 }
+/** Any fault's code and message for a caller: a HerdrError's as herdrFault gives it; any other keeps `code`, in `view`'s sentence where the server has one. */
+export function faultOf(error: unknown, code: string, view: HerdrFailureView | undefined): { code: string; message: string } {
+  if (error instanceof HerdrError) return herdrFault(error, view);
+  return { code, message: view !== undefined ? view(new HerdrError(code, "")).message : error instanceof Error ? error.message : String(error) };
+}
 
 let requestCounter = 0;
 function nextId(): string {

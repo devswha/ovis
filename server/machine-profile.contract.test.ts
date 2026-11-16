@@ -1376,3 +1376,34 @@ it("words a failed herdr call in its WebSocket frames, and an ordinary server's 
   for (const frame of mine) expect([frame.code === refusal.code, frame.message === refusal.message]).toEqual([false, false]);
   expect(theirs.map((frame) => ({ code: frame.code, message: frame.message }))).toEqual([refusal, refusal]);
 }, 60_000);
+
+it("words a submit that failed for a fault of the bridge's own in its sentence, keeping the code, and an ordinary server answers as main does", async () => {
+  const config = herdrConfig();
+  const socket = join(config, "herdr", "sessions", "a", "herdr.sock");
+  mkdirSync(dirname(socket), { recursive: true, mode: 0o700 });
+  // a process lookup herdr answers with nothing: the submit fails in the bridge, not at herdr
+  refusingHerdr(socket, { code: "refused", message: "refused" }, { ...reads(scratch()), "pane.process_info": () => null });
+  const dir = state();
+  await bounded(launch(dir, { XDG_CONFIG_HOME: config, HERDR_REMOTE_SOCKET: "", HERDR_REMOTE_SESSION: "a" }).ready, 20_000);
+  const ordinary = await bounded(launch(state(), { OVIS_PROFILE: "", OVIS_PREVIEW: undefined, HERDR_SOCKET: socket }).ready, 20_000);
+  const submitted = async (url: string, init?: { headers: Record<string, string> }) => {
+    const ws = new WebSocket(url, init as never);
+    cleanup.push(() => ws.close());
+    const frame = <T,>(match: (message: Record<string, unknown>) => boolean) => {
+      const seen = deferred<T>();
+      ws.addEventListener("message", (event) => { const message = JSON.parse(String(event.data)) as Record<string, unknown>; if (match(message)) seen.resolve(message as T); });
+      return bounded(seen.promise, 15_000);
+    };
+    await frame((message) => message.type === "snapshot");
+    const result = frame<{ ok: boolean; code: string; message: string }>((message) => message.type === "submit-result" && message.id === 3);
+    ws.send(JSON.stringify({ type: "submit", id: 3, pane_id: "w1:p1", text: "hello", payload: "hello", delivery: "immediate" }));
+    return result;
+  };
+  const mine = await submitted(`ws+unix://${join(realpathSync(dir), "serve.sock")}:/ws`);
+  const theirs = await submitted(`${ordinary.replace(/^http/, "ws")}/ws`, { headers: { authorization: headers.authorization } });
+  // the profile's sentence, as its HTTP answer to a call herdr refused gives it
+  const refused = await owner(dir, "/api/pane/zoom", { method: "POST", headers: { ...headers, origin: "http://localhost", "content-type": "application/json" }, body: JSON.stringify({ pane_id: "w1:p1" }) });
+  const sentence = ((await refused.json()) as { error: { message: string } }).error.message;
+  expect([mine.ok, mine.code, mine.message]).toEqual([false, theirs.code, sentence]);
+  expect([theirs.ok, theirs.message === sentence]).toEqual([false, false]);
+}, 60_000);

@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HerdrError } from "../herdr/client.ts";
+import { PendingInputError } from "../pending-input.ts";
 import { createSubmitText, pendingFault, pendingText, submitFraming } from "./composer.ts";
 
 // The real RPC client against a unix socket this test owns; only herdr's answers are synthetic. The pane runs a
@@ -163,8 +164,11 @@ describe("a pending row's fault", () => {
     const view = () => ({ code: "worded", message: "the view's words" });
     const failed = () => new HerdrError("connect_failed", "herdr's own words", false, true);
     expect([pendingFault(failed(), view), pendingFault(failed(), undefined)]).toEqual([view(), { code: "connect_failed", message: "herdr's own words" }]);
-    // a refusal the bridge words itself, and any other error, keep their own fault
+    // a refusal the bridge words itself keeps its own fault
     expect(pendingFault(new HerdrError("agent_blocked", "the bridge's words"), view)).toEqual({ code: "agent_blocked", message: "the bridge's words" });
-    expect(pendingFault(new Error("other"), view)).toEqual({ code: "submit_failed", message: "other" });
+    expect(pendingFault(new PendingInputError("pending_wait", "the bridge's words"), view)).toEqual({ code: "pending_wait", message: "the bridge's words" });
+    // any other fault keeps its code, in the view's sentence where there is one, and as it is without
+    expect([pendingFault(new TypeError("other"), view), pendingFault(new TypeError("other"), undefined)])
+      .toEqual([{ code: "submit_failed", message: view().message }, { code: "submit_failed", message: "other" }]);
   });
 });
