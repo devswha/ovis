@@ -353,10 +353,14 @@ one more browser's and is unchanged.
 - Turning alerts on asks for notifications (the phone's own prompt), then subscribes, and the PC
   sends its confirmation push, as in a browser. The app shows an alert that arrives while it is
   open too. On Android, tapping a pane's alert opens the PC that sent it on that pane's chat, as a
-  browser's does, switching PC when another is open: the PC names the endpoint it pushed to and its
-  relay ID inside the encrypted alert (`shared/push.ts`), and the app finds the saved PC by them
-  (`PCStore.alertLink`). An alert from an older PC, or from one the phone no longer keeps, opens
-  the app as it was. On iOS a tap still only opens the app.
+  browser's does: the PC names the endpoint it pushed to and its relay ID inside the encrypted alert
+  (`shared/push.ts`), and the app finds the saved PC by them (`PCStore.alertLink`). A tap for the
+  PC already open selects the pane in its page without reloading the page. An alert for another
+  saved PC opens that PC, as switching PC does. An alert too long to carry the endpoint and relay
+  ID is sent without them, and its tap just opens the app, as does an alert from an older PC or
+  from one the phone no longer keeps. A tap for the open PC only brings the app forward when that
+  PC's page is from an Ovis older than this hand-over and is served over plain http, where a page
+  has no service worker. On iOS a tap still only opens the app.
 - The plugin is `app/ios/App/App/OvisPushPlugin.swift` on iOS and
   [`app/android/ovis-push`](../app/android/ovis-push/README.md) on Android, with the same calls:
   `checkPermissions()` and `requestPermissions()` (`{ notifications }`, Capacitor's permission
