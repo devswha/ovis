@@ -9,7 +9,15 @@ folds same-workspace descendants into their visible parent without changing real
 missing parents/cycles remain ordinary tabs. `src/fork/TabChips.tsx` and `src/fork/tab-chips.css`
 provide tiny role controls (Hammer/Check, a neutral Terminal for other roles), without a repeated
 friend. Their named controls select the real child pane, keep its menu/rename/close, and highlight
-selection; touch hold opens its menu. Chips stay pinned in their parent group. Fork-only role metadata lives
+selection; touch hold opens its menu. Chips stay pinned in their parent group. The desktop row,
+phone header row and phone tabs sheet all share these controls; selecting a child leaves the
+parent highlighted while the existing header/pane title continues to name the selected child.
+`src/components/TabStrip.tsx` hooks the grouping, chip mount and presentation-only selected/root
+mapping; original tabs still drive commands. `src/components/RowMenu.tsx` adds a generic optional
+`trailing` sibling-control slot (one type field and two render sites), needed for attached chips
+in a sheet without invalid nested buttons. TabStrip's missing grouped-tab presentation extension
+point is an upstream PR candidate. This differs from Warp's collapsible tab groups: job roles stay
+reachable on the parent, per the requested lower-noise design; no code or pixels were copied. Fork-only role metadata lives
 in `shared/fork/pane.ts` and `server/fork/core-terminals.ts`: only hc labels `role=implement`,
 `review` or `explore` become optional `agent_role`; herdr and old bridges omit it.
 Upstream hooks: `server/herdr-core/snapshot.ts` adds `forkPaneFields` to the existing fork import

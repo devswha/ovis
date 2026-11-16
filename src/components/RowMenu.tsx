@@ -31,6 +31,8 @@ export interface RowMenuItem {
   icon: LucideIcon;
   /** drawn in the icon's place when given: an agent's mark, which is not a lucide icon */
   glyph?: ReactNode;
+  /** Sibling controls after the main button, never interactive content inside it. */
+  trailing?: ReactNode;
   /** a hairline above this item */
   divider?: boolean;
   danger?: boolean;
@@ -302,14 +304,15 @@ export function RowMenu({ anchor, point, restoreFocusTo, title, subtitle, alert,
                   {item.switch ? <span className="row-menu-switch-track" data-checked={item.checked} aria-hidden="true"><span /></span> : item.checked && <Check className="row-sheet-check" aria-hidden="true" />}
                 </button>
               );
-              if (!item.aside) return button;
+              if (!item.aside && !item.trailing) return button;
               const { aside } = item;
               return (
                 <div key={item.id} className={`row-sheet-line${item.divider ? " has-divider" : ""}${item.current ? " is-current" : ""}`}>
                   {button}
-                  <button type="button" className="row-sheet-aside" aria-label={aside.label} title={aside.label} onMouseDown={keepFocus} onClick={() => runAside(aside)}>
+                  {item.trailing}
+                  {aside && <button type="button" className="row-sheet-aside" aria-label={aside.label} title={aside.label} onMouseDown={keepFocus} onClick={() => runAside(aside)}>
                     <aside.icon aria-hidden="true" />
-                  </button>
+                  </button>}
                 </div>
               );
             })}
@@ -335,6 +338,7 @@ export function RowMenu({ anchor, point, restoreFocusTo, title, subtitle, alert,
             {item.hint && <span className="menu-item-hint">{item.hint}</span>}
             {item.switch ? <span className="row-menu-switch-track" data-checked={item.checked} aria-hidden="true"><span /></span> : item.checked && <Check className="menu-item-check" aria-hidden="true" />}
           </button>
+          {item.trailing}
           {item.aside && <button type="button" role="menuitem" className="menu-item row-menu-aside" aria-label={item.aside.label} title={item.aside.label} onMouseDown={keepFocus} onClick={() => runAside(item.aside!)}>
             <item.aside.icon aria-hidden="true" />
             <span className="menu-item-main">{item.aside.label}</span>

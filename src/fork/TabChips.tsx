@@ -1,7 +1,12 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode, type CSSProperties } from "react";
 import { Check, Hammer, Terminal } from "lucide-react";
 import type { HerdrPane, HerdrTab, PaneInfo } from "../../shared/protocol.ts";
 import "./tab-chips.css";
+
+export const CHIP_WIDTH = 24;
+export function forkTabGroupStyle(count: number): CSSProperties | undefined {
+  return count ? { "--fork-chip-room": `${count * (CHIP_WIDTH + 2) + 4}px` } as CSSProperties : undefined;
+}
 
 type Point = { x: number; y: number };
 interface Props {
