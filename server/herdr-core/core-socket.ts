@@ -5,8 +5,10 @@
  */
 
 import { statSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { readHerdrConfig } from "../herdr-sidebar.ts";
+import { sameSocket } from "../herdr/test-session.ts";
 import { userHome } from "../user-home.ts";
 
 type Env = Record<string, string | undefined>;
@@ -47,6 +49,13 @@ export function coreSocket(options: CoreSocketOptions = {}): CoreSocket {
     const run = runtimeDir(env, options);
     return run === null ? join(state, `${session}.sock`) : join(run, "herdr-core", `${session}.sock`);
   }
+}
+
+/** Whether hc in `env` would reach the user's default core: the one this process's environment, or its owner's home, names when no HC_SOCKET or HC_SESSION does. */
+export function userCore(env: Record<string, string | undefined>): boolean {
+  const unnamed = { ...process.env, HC_SOCKET: undefined, HC_SESSION: undefined };
+  const defaults = [coreSocket({ env: unnamed }).path, coreSocket({ env: unnamed, home: homedir() }).path].map(sameSocket);
+  return defaults.includes(sameSocket(coreSocket({ env }).path));
 }
 
 function runtimeDir(env: Env, options: CoreSocketOptions): string | null {
