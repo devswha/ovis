@@ -1,0 +1,196 @@
+import { describe, expect, it } from "bun:test";
+import { bytes, expectEveryWay, raw } from "../testing/input-runs.ts";
+import type { Mods } from "./decode.ts";
+import type { Framer } from "./framer.ts";
+
+const key = (name: string, mods: Mods = {}, extra: { text?: string; unshifted?: string; action?: "press" | "repeat" | "release" } = {}) =>
+  ({ type: "key", key: name, mods, action: extra.action ?? "press", ...(extra.text === undefined ? {} : { text: extra.text }), ...(extra.unshifted === undefined ? {} : { unshifted: extra.unshifted }) });
+/** a key that types `char` (shift already in the text), with the char it is without shift */
+const typed = (name: string, char: string, unshifted: string, mods: Mods = {}, action?: "press" | "repeat" | "release") => key(name, mods, { text: char, unshifted, action });
+const text = (value: string) => ({ type: "text", text: value });
+const mouse = (action: string, button: string | undefined, col: number, row: number, mods: Mods = {}) =>
+  ({ type: "mouse", action, ...(button === undefined ? {} : { button }), mods, col, row });
+const unknown = (value: string) => ({ type: "unknown", raw: value });
+const C = { ctrl: true } as const, A = { alt: true } as const, S = { shift: true } as const;
+
+type Row = [name: string, input: Uint8Array, events: unknown[], setup?: (framer: Framer) => void];
+const eraseIsCtrlH = (framer: Framer) => framer.setModes({ eraseIsCtrlH: true });
+
+const ROWS: Row[] = [
+  // legacy: text, C0 bytes and DEL
+  ["a letter", bytes("a"), [text("a")]],
+  ["a run of text", bytes("hello world"), [text("hello world")]],
+  ["Enter", bytes("\r"), [key("ENTER")]],
+  ["Tab", bytes("\t"), [key("TAB")]],
+  ["DEL is Backspace", bytes("\x7f"), [key("BACKSPACE")]],
+  ["BS is ctrl+h", bytes("\x08"), [key("H", C, { unshifted: "h" })]],
+  ["BS is Backspace when erase is ^H", bytes("\x08"), [key("BACKSPACE")], eraseIsCtrlH],
+  ["NUL is ctrl+space", bytes("\x00"), [key("SPACE", C, { unshifted: " " })]],
+  ["ctrl+a", bytes("\x01"), [key("A", C, { unshifted: "a" })]],
+  ["ctrl+j", bytes("\x0a"), [key("J", C, { unshifted: "j" })]],
+  ["ctrl+z", bytes("\x1a"), [key("Z", C, { unshifted: "z" })]],
+  ["ctrl+backslash", bytes("\x1c"), [key("BACKSLASH", C, { unshifted: "\\" })]],
+  ["ctrl+]", bytes("\x1d"), [key("BRACKET_RIGHT", C, { unshifted: "]" })]],
+  ["ctrl+6", bytes("\x1e"), [key("DIGIT_6", C, { unshifted: "6" })]],
+  ["ctrl+/", bytes("\x1f"), [key("SLASH", C, { unshifted: "/" })]],
+  ["text around Enter", bytes("ab\rcd"), [text("ab"), key("ENTER"), text("cd")]],
+  ["Hangul", bytes("한글"), [text("한글")]],
+  ["two- and four-byte characters", bytes("é😀"), [text("é😀")]],
+  ["an overlong slash", raw("\xc0\xaf"), [unknown("\xc0"), unknown("\xaf")]],
+  ["an overlong NUL in three bytes", raw("\xe0\x80\x80"), [unknown("\xe0"), unknown("\x80"), unknown("\x80")]],
+  ["a UTF-16 surrogate", raw("\xed\xa0\x80"), [unknown("\xed"), unknown("\xa0"), unknown("\x80")]],
+  ["a byte no UTF-8 starts with", raw("\xff"), [unknown("\xff")]],
+  ["a cut character before ASCII", raw("\xed\x95a"), [unknown("\xed\x95"), text("a")]],
+  // legacy: ESC as Alt, and the Escape key
+  ["alt+a", bytes("\x1ba"), [typed("A", "a", "a", A)]],
+  ["alt+shift+a", bytes("\x1bA"), [typed("A", "A", "a", A)]],
+  ["alt+1", bytes("\x1b1"), [typed("DIGIT_1", "1", "1", A)]],
+  ["alt+shift+1", bytes("\x1b!"), [typed("DIGIT_1", "!", "1", A)]],
+  ["alt+space", bytes("\x1b "), [typed("SPACE", " ", " ", A)]],
+  ["ctrl+alt+a", bytes("\x1b\x01"), [key("A", { ctrl: true, alt: true }, { unshifted: "a" })]],
+  ["alt+Enter", bytes("\x1b\r"), [key("ENTER", A)]],
+  ["alt+Backspace", bytes("\x1b\x7f"), [key("BACKSPACE", A)]],
+  ["alt with a Hangul syllable", bytes("\x1b한"), [typed("UNIDENTIFIED", "한", "한", A)]],
+  ["a lone ESC", bytes("\x1b"), [key("ESCAPE")]],
+  ["ESC ESC", bytes("\x1b\x1b"), [key("ESCAPE"), key("ESCAPE")]],
+  ["ESC [ alone is alt+[", bytes("\x1b["), [typed("BRACKET_LEFT", "[", "[", A)]],
+  ["ESC O alone is alt+shift+o", bytes("\x1bO"), [typed("O", "O", "o", A)]],
+  ["ESC before an arrow", bytes("\x1b\x1b[A"), [key("ESCAPE"), key("ARROW_UP")]],
+  // CSI and SS3
+  ["up", bytes("\x1b[A"), [key("ARROW_UP")]],
+  ["down", bytes("\x1b[B"), [key("ARROW_DOWN")]],
+  ["right", bytes("\x1b[C"), [key("ARROW_RIGHT")]],
+  ["left", bytes("\x1b[D"), [key("ARROW_LEFT")]],
+  ["home", bytes("\x1b[H"), [key("HOME")]],
+  ["end", bytes("\x1b[F"), [key("END")]],
+  ["keypad 5", bytes("\x1b[E"), [key("NUMPAD_BEGIN")]],
+  ["ctrl+up", bytes("\x1b[1;5A"), [key("ARROW_UP", C)]],
+  ["shift+left", bytes("\x1b[1;2D"), [key("ARROW_LEFT", S)]],
+  ["alt+right", bytes("\x1b[1;3C"), [key("ARROW_RIGHT", A)]],
+  ["super+down", bytes("\x1b[1;9B"), [key("ARROW_DOWN", { super: true })]],
+  ["ctrl+alt+shift+home", bytes("\x1b[1;8H"), [key("HOME", { shift: true, alt: true, ctrl: true })]],
+  ["insert", bytes("\x1b[2~"), [key("INSERT")]],
+  ["delete", bytes("\x1b[3~"), [key("DELETE")]],
+  ["ctrl+delete", bytes("\x1b[3;5~"), [key("DELETE", C)]],
+  ["page up", bytes("\x1b[5~"), [key("PAGE_UP")]],
+  ["page down", bytes("\x1b[6~"), [key("PAGE_DOWN")]],
+  ["home as 7~", bytes("\x1b[7~"), [key("HOME")]],
+  ["end as 8~", bytes("\x1b[8~"), [key("END")]],
+  ["F1 as 11~", bytes("\x1b[11~"), [key("F1")]],
+  ["F2 as 12~", bytes("\x1b[12~"), [key("F2")]],
+  ["F3 as 13~", bytes("\x1b[13~"), [key("F3")]],
+  ["F4 as 14~", bytes("\x1b[14~"), [key("F4")]],
+  ["F5", bytes("\x1b[15~"), [key("F5")]],
+  ["F6", bytes("\x1b[17~"), [key("F6")]],
+  ["F7", bytes("\x1b[18~"), [key("F7")]],
+  ["F8", bytes("\x1b[19~"), [key("F8")]],
+  ["F9", bytes("\x1b[20~"), [key("F9")]],
+  ["F10", bytes("\x1b[21~"), [key("F10")]],
+  ["F11", bytes("\x1b[23~"), [key("F11")]],
+  ["F12", bytes("\x1b[24~"), [key("F12")]],
+  ["shift+F12", bytes("\x1b[24;2~"), [key("F12", S)]],
+  ["menu", bytes("\x1b[29~"), [key("CONTEXT_MENU")]],
+  ["keypad 5 as 57427~", bytes("\x1b[57427~"), [key("NUMPAD_BEGIN")]],
+  ["shift+tab", bytes("\x1b[Z"), [key("TAB", S)]],
+  ["ctrl+F1", bytes("\x1b[1;5P"), [key("F1", C)]],
+  ["shift+F2", bytes("\x1b[1;2Q"), [key("F2", S)]],
+  ["ctrl+F3", bytes("\x1b[1;5R"), [key("F3", C)]],
+  ["alt+F4", bytes("\x1b[1;3S"), [key("F4", A)]],
+  ["SS3 up", bytes("\x1bOA"), [key("ARROW_UP")]],
+  ["SS3 down", bytes("\x1bOB"), [key("ARROW_DOWN")]],
+  ["SS3 right", bytes("\x1bOC"), [key("ARROW_RIGHT")]],
+  ["SS3 left", bytes("\x1bOD"), [key("ARROW_LEFT")]],
+  ["SS3 home", bytes("\x1bOH"), [key("HOME")]],
+  ["SS3 end", bytes("\x1bOF"), [key("END")]],
+  ["SS3 keypad 5", bytes("\x1bOE"), [key("NUMPAD_BEGIN")]],
+  ["SS3 F1", bytes("\x1bOP"), [key("F1")]],
+  ["SS3 F2", bytes("\x1bOQ"), [key("F2")]],
+  ["SS3 F3", bytes("\x1bOR"), [key("F3")]],
+  ["SS3 F4", bytes("\x1bOS"), [key("F4")]],
+  ["an unknown tilde key", bytes("\x1b[99~"), [unknown("\x1b[99~")]],
+  ["an unknown final byte", bytes("\x1b[1;5X"), [unknown("\x1b[1;5X")]],
+  ["an unknown SS3 key", bytes("\x1bOx"), [unknown("\x1bOx")]],
+  ["a CSI cut by a control byte", bytes("\x1b[1\x01"), [unknown("\x1b[1"), key("A", C, { unshifted: "a" })]],
+  ["text, a key, text", bytes("a\x1b[Ab"), [text("a"), key("ARROW_UP"), text("b")]],
+  ["two arrows in one read", bytes("\x1b[A\x1b[B"), [key("ARROW_UP"), key("ARROW_DOWN")]],
+  // modifyOtherKeys
+  ["mok ctrl+i", bytes("\x1b[27;5;105~"), [key("I", C, { unshifted: "i" })]],
+  ["mok shift+a", bytes("\x1b[27;2;65~"), [typed("A", "A", "a")]],
+  ["mok ctrl+shift+a", bytes("\x1b[27;6;65~"), [key("A", { shift: true, ctrl: true }, { unshifted: "a" })]],
+  ["mok alt+shift+1", bytes("\x1b[27;4;33~"), [typed("DIGIT_1", "!", "1", A)]],
+  ["mok ctrl+Enter", bytes("\x1b[27;5;13~"), [key("ENTER", C)]],
+  ["mok shift+Enter", bytes("\x1b[27;2;13~"), [key("ENTER", S)]],
+  ["mok ctrl+Tab", bytes("\x1b[27;5;9~"), [key("TAB", C)]],
+  // kitty
+  ["kitty Escape", bytes("\x1b[27u"), [key("ESCAPE")]],
+  ["kitty ctrl+a", bytes("\x1b[97;5u"), [key("A", C, { unshifted: "a" })]],
+  ["kitty ctrl+shift+a", bytes("\x1b[97;6u"), [key("A", { shift: true, ctrl: true }, { unshifted: "a" })]],
+  ["kitty alt+a", bytes("\x1b[97;3u"), [typed("A", "a", "a", A)]],
+  ["kitty alt+shift+a", bytes("\x1b[97;4u"), [typed("A", "A", "a", A)]],
+  ["kitty alt+shift with the shifted key", bytes("\x1b[59:58;4u"), [typed("SEMICOLON", ":", ";", A)]],
+  ["kitty ctrl+i", bytes("\x1b[105;5u"), [key("I", C, { unshifted: "i" })]],
+  ["kitty ctrl+space", bytes("\x1b[32;5u"), [key("SPACE", C, { unshifted: " " })]],
+  ["kitty shift+Enter", bytes("\x1b[13;2u"), [key("ENTER", S)]],
+  ["kitty ctrl+Tab", bytes("\x1b[9;5u"), [key("TAB", C)]],
+  ["kitty ctrl+Backspace", bytes("\x1b[127;5u"), [key("BACKSPACE", C)]],
+  ["kitty keypad 0", bytes("\x1b[57399u"), [key("NUMPAD_0")]],
+  ["kitty keypad Enter", bytes("\x1b[57414u"), [key("NUMPAD_ENTER")]],
+  ["kitty keypad up", bytes("\x1b[57419u"), [key("NUMPAD_UP")]],
+  ["kitty F13", bytes("\x1b[57376u"), [key("F13")]],
+  ["kitty menu", bytes("\x1b[57363u"), [key("CONTEXT_MENU")]],
+  ["kitty print screen", bytes("\x1b[57361;5u"), [key("PRINT_SCREEN", C)]],
+  ["kitty repeat", bytes("\x1b[97;5:2u"), [key("A", C, { unshifted: "a", action: "repeat" })]],
+  ["kitty release", bytes("\x1b[97;5:3u"), [key("A", C, { unshifted: "a", action: "release" })]],
+  ["kitty release of a legacy form", bytes("\x1b[1;5:3A"), [key("ARROW_UP", C, { action: "release" })]],
+  ["kitty ctrl with a Cyrillic letter", bytes("\x1b[1080;5u"), [key("UNIDENTIFIED", C, { unshifted: "и" })]],
+  ["kitty text only", bytes("\x1b[0;;229u"), [text("å")]],
+  ["kitty text of a key", bytes("\x1b[97;2;65u"), [typed("A", "A", "a")]],
+  ["kitty hyper is a chord no program sees", bytes("\x1b[97;17u"), [unknown("\x1b[97;17u")]],
+  ["kitty caps lock state is ignored", bytes("\x1b[97;69u"), [key("A", C, { unshifted: "a" })]],
+  // SGR mouse
+  ["left press", bytes("\x1b[<0;1;1M"), [mouse("press", "left", 0, 0)]],
+  ["left release", bytes("\x1b[<0;10;5m"), [mouse("release", "left", 9, 4)]],
+  ["middle press", bytes("\x1b[<1;3;4M"), [mouse("press", "middle", 2, 3)]],
+  ["right press", bytes("\x1b[<2;3;4M"), [mouse("press", "right", 2, 3)]],
+  ["drag with the left button", bytes("\x1b[<32;7;8M"), [mouse("motion", "left", 6, 7)]],
+  ["motion with no button", bytes("\x1b[<35;7;8M"), [mouse("motion", undefined, 6, 7)]],
+  ["wheel up", bytes("\x1b[<64;2;2M"), [mouse("press", "wheelUp", 1, 1)]],
+  ["wheel down", bytes("\x1b[<65;2;2M"), [mouse("press", "wheelDown", 1, 1)]],
+  ["wheel left", bytes("\x1b[<66;2;2M"), [mouse("press", "wheelLeft", 1, 1)]],
+  ["wheel right", bytes("\x1b[<67;2;2M"), [mouse("press", "wheelRight", 1, 1)]],
+  ["shift+press", bytes("\x1b[<4;1;1M"), [mouse("press", "left", 0, 0, S)]],
+  ["alt+press", bytes("\x1b[<8;1;1M"), [mouse("press", "left", 0, 0, A)]],
+  ["ctrl+press", bytes("\x1b[<16;1;1M"), [mouse("press", "left", 0, 0, C)]],
+  ["ctrl+shift+wheel", bytes("\x1b[<84;2;3M"), [mouse("press", "wheelUp", 1, 2, { shift: true, ctrl: true })]],
+  ["far cells", bytes("\x1b[<0;300;200M"), [mouse("press", "left", 299, 199)]],
+  ["column 0 does not exist", bytes("\x1b[<0;0;1M"), [unknown("\x1b[<0;0;1M")]],
+  ["extra buttons are not forwarded", bytes("\x1b[<128;1;1M"), [unknown("\x1b[<128;1;1M")]],
+  ["a press of no button", bytes("\x1b[<3;1;1M"), [unknown("\x1b[<3;1;1M")]],
+  ["an X10 report is consumed whole", raw("\x1b[M !!"), [unknown("\x1b[M !!")]],
+  // focus
+  ["focus in", bytes("\x1b[I"), [{ type: "focus", focused: true }]],
+  ["focus out", bytes("\x1b[O"), [{ type: "focus", focused: false }]],
+  ["focus out then in", bytes("\x1b[O\x1b[I"), [{ type: "focus", focused: false }, { type: "focus", focused: true }]],
+  // reply shapes with no query waiting, strings and paste marks
+  ["kitty flags with no query", bytes("\x1b[?1u"), [unknown("\x1b[?1u")]],
+  ["DA1 with no query", bytes("\x1b[?62;22c"), [unknown("\x1b[?62;22c")]],
+  ["a mode report with no query", bytes("\x1b[?2026;2$y"), [unknown("\x1b[?2026;2$y")]],
+  ["a cell size with no query", bytes("\x1b[6;16;8t"), [unknown("\x1b[6;16;8t")]],
+  ["a colour with no query", bytes("\x1b]11;rgb:0000/0000/0000\x07"), [unknown("\x1b]11;rgb:0000/0000/0000\x07")]],
+  ["a DCS string", bytes("\x1bP>|xterm\x1b\\"), [unknown("\x1bP>|xterm\x1b\\")]],
+  ["an APC string", bytes("\x1b_Gi=1;OK\x1b\\"), [unknown("\x1b_Gi=1;OK\x1b\\")]],
+  ["a string cut by ESC", bytes("\x1b]11;x\x1b[A"), [unknown("\x1b]11;x"), key("ARROW_UP")]],
+  ["a paste", bytes("\x1b[200~hi\x1b[201~"), [{ type: "paste", text: "hi", complete: true }]],
+  ["an end mark with no paste", bytes("\x1b[201~"), [unknown("\x1b[201~")]],
+];
+
+describe("decode table", () => {
+  it("has about 80 rows or more, each named once", () => {
+    expect(ROWS.length).toBeGreaterThanOrEqual(80);
+    expect(new Set(ROWS.map(([name]) => name)).size).toBe(ROWS.length);
+  });
+
+  for (const [name, input, events, setup] of ROWS) {
+    it(name, () => expectEveryWay(input, events, setup));
+  }
+});
