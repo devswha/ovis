@@ -6,7 +6,10 @@ This fork is `ricardofelixb/ovis`; upstream is `devswha/ovis`. This inventory co
 
 Upstream candidate (A), behind **Agent friends** (off by default). `src/fork/groupAgentTabs.ts`
 folds same-workspace descendants into their visible parent without changing real tabs or order;
-missing parents/cycles remain ordinary tabs. Fork-only role metadata lives
+missing parents/cycles remain ordinary tabs. `src/fork/TabChips.tsx` and `src/fork/tab-chips.css`
+provide tiny role controls (Hammer/Check, a neutral Terminal for other roles), without a repeated
+friend. Their named controls select the real child pane, keep its menu/rename/close, and highlight
+selection; touch hold opens its menu. Chips stay pinned in their parent group. Fork-only role metadata lives
 in `shared/fork/pane.ts` and `server/fork/core-terminals.ts`: only hc labels `role=implement`,
 `review` or `explore` become optional `agent_role`; herdr and old bridges omit it.
 Upstream hooks: `server/herdr-core/snapshot.ts` adds `forkPaneFields` to the existing fork import
