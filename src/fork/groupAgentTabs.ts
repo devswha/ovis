@@ -1,4 +1,5 @@
 import type { HerdrPane, HerdrTab } from "../../shared/protocol.ts";
+import { adjacentTabBoundary } from "../lib/tabOrder.ts";
 
 type Tab = Pick<HerdrTab, "tab_id" | "workspace_id">;
 type Pane = Pick<HerdrPane, "pane_id" | "tab_id" | "workspace_id" | "parent_pane_id">;
@@ -40,5 +41,11 @@ export function groupAgentTabs<T extends Tab>(tabs: readonly T[], panes: readonl
     append(tab.tab_id, own);
     if (own.length) children.set(tab.tab_id, own);
   }
-  return { tabs: visible, children, parentOf };
+  const adjacentBoundary = (id: string, direction: -1 | 1): number | null => {
+    const boundary = adjacentTabBoundary(visible.map((tab) => tab.tab_id), id, direction);
+    if (boundary === null) return null;
+    const neighbour = visible[direction === 1 ? boundary - 1 : boundary]!;
+    return tabs.indexOf(neighbour) + (direction === 1 ? 1 : 0);
+  };
+  return { tabs: visible, children, parentOf, adjacentBoundary };
 }

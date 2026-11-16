@@ -217,7 +217,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   const stripTabs = forkTabs.tabs;
   // a watching device moves no tab (the server refuses it read_only): the order is fixed for it as for the Herdr app's
   const reorderable = arrange && closable;
-  const reorder = useTabReorder({ owner: `${machineId}:${workspace.workspace_id}`, tabs, strip, moveTab, fixed: !reorderable,
+  const reorder = useTabReorder({ owner: `${machineId}:${workspace.workspace_id}`, tabs, strip, moveTab, adjacentBoundary: forkTabs.adjacentBoundary, fixed: !reorderable,
     failed: (reason) => setError(t("Move failed: {reason}", { reason: said(reason) })),
     stale: () => setError(t("Tab order did not refresh. Try again.")),
     // dragged down out of the strip, a tab opens its pane in half of the pane area (lib/split.ts)
@@ -655,9 +655,9 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
     const about = (label: string): string => `${label} · ${name}`;
     const canReorder = reorderable && !forkTabs.parentOf.has(tab.tab_id);
     return [
-      ...(canReorder && !reorder.moving && tabs.findIndex((entry) => entry.tab_id === tab.tab_id) > 0
+      ...(canReorder && !reorder.moving && stripTabs.findIndex((entry) => entry.tab_id === tab.tab_id) > 0
         ? [{ id: "move-left", label: t("Move tab left"), title: about(t("Move tab left")), icon: ArrowLeft, run: () => reorder.moveAdjacent(tab.tab_id, -1) }] : []),
-      ...(canReorder && !reorder.moving && tabs.findIndex((entry) => entry.tab_id === tab.tab_id) < tabs.length - 1
+      ...(canReorder && !reorder.moving && stripTabs.findIndex((entry) => entry.tab_id === tab.tab_id) < stripTabs.length - 1
         ? [{ id: "move-right", label: t("Move tab right"), title: about(t("Move tab right")), icon: ArrowRight, run: () => reorder.moveAdjacent(tab.tab_id, 1) }] : []),
       ...(canMoveOut(tab) ? [{ id: "move-workspace", label: t("Move to workspace…"), title: t("Move {tab} to", { tab: name }), icon: FolderInput, disabled: !closable,
         // RowMenu closes before it runs an item: the picker is set again, not updated

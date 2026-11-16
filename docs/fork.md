@@ -34,8 +34,9 @@ Hook footprint (insertions/deletions vs `upstream/main`, merge base, measured wi
 
 | Upstream file | Before | After | Hooks added here |
 | --- | --- | --- | --- |
-| `src/components/TabStrip.tsx` | +23/-8 | +50/-24 | 3 imports; grouping/layout calls, selection guards, 2 chip mounts |
+| `src/components/TabStrip.tsx` | +23/-8 | +51/-25 | 3 imports; grouping/layout calls, selection guards, 2 chip mounts |
 | `src/components/RowMenu.tsx` | +10/-3 | +19/-8 | optional trailing slot, 2 generic sibling render sites |
+| `src/lib/useTabReorder.ts` | +1/-2 | +8/-6 | optional adjacent-boundary callback, original fallback preserved |
 | `shared/protocol.ts` | +15/-1 | +17/-2 | type import + intersection |
 | `server/herdr-core/snapshot.ts` | +3/-1 | +4/-1 | existing fork import extended + pane spread |
 
@@ -45,8 +46,12 @@ Regression coverage: `src/fork/fork-group-agent-tabs.test.ts`,
 `scripts/fork-grouped-tabs-demo-regression.ts` uses synthetic demo-only parents and hc roles to
 exercise desktop/phone grouping, child selection/title, rename, phone sheet, touch targets,
 large sibling groups and the setting disabled. No real session or user state is used.
+`src/lib/useTabReorder.ts` needs a generic optional adjacent-boundary callback (another upstream
+extension-point candidate): the fork maps parent moves to the next visible root in native index
+coordinates. Without this, Move right/left can silently step across folded children without moving
+the parent on screen. Child chips remain pinned; drag, request and acknowledgement handling stay upstream.
 
-Validation: scoped fork/TabStrip/RowMenu/hc tests, conventions and changelog tests passed (261
+Validation: scoped fork/TabStrip/RowMenu/hc tests, conventions and changelog tests passed (269
 cases); changed-file TypeScript diagnostics passed for both configs. In `herdr-ci-runner:local`,
 `tab-menu-regression`, `tab-overflow-regression`, `mobile-tabs-regression`,
 `fork-grouped-tabs-demo-regression`, `fork-tab-alignment-demo-regression`,

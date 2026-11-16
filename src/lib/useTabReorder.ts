@@ -20,7 +20,7 @@ export interface TabDragOut {
  * lib/machineContext.tsx AppLayoutContext): no insertion line and no move, as among one tab; a
  * drag can still leave the strip (`outside`).
  */
-export function useTabReorder({ owner, tabs, strip, moveTab, failed, stale, outside, fixed = false }: {
+export function useTabReorder({ owner, tabs, strip, moveTab, failed, stale, outside, adjacentBoundary, fixed = false }: {
   owner: string;
   tabs: HerdrTab[];
   strip: RefObject<HTMLDivElement | null>;
@@ -28,14 +28,16 @@ export function useTabReorder({ owner, tabs, strip, moveTab, failed, stale, outs
   failed: (error: unknown) => void;
   stale: () => void;
   outside?: TabDragOut;
+  /** A folded presentation can skip hidden neighbours without changing the authoritative IDs. */
+  adjacentBoundary?: (tabId: string, direction: -1 | 1) => number | null;
   fixed?: boolean;
 }) {
   const [drag, setDrag] = useState<Drag | null>(null);
   const [moving, setMoving] = useState(false);
   const ids = tabs.map((tab) => tab.tab_id);
   const key = JSON.stringify(ids);
-  const current = useRef({ owner, key, ids, moveTab, failed, stale, outside, fixed });
-  current.current = { owner, key, ids, moveTab, failed, stale, outside, fixed };
+  const current = useRef({ owner, key, ids, moveTab, failed, stale, outside, adjacentBoundary, fixed });
+  current.current = { owner, key, ids, moveTab, failed, stale, outside, adjacentBoundary, fixed };
   const press = useRef<Press | null>(null);
   const operation = useRef<Operation | null>(null);
   const suppressClick = useRef(false);
@@ -103,7 +105,8 @@ export function useTabReorder({ owner, tabs, strip, moveTab, failed, stale, outs
     });
   };
   const moveAdjacent = (tabId: string, direction: -1 | 1): void => {
-    const boundary = adjacentTabBoundary(current.current.ids, tabId, direction);
+    const saved = current.current;
+    const boundary = saved.adjacentBoundary ? saved.adjacentBoundary(tabId, direction) : adjacentTabBoundary(saved.ids, tabId, direction);
     if (boundary !== null) requestMove(tabId, boundary);
   };
   const overStrip = (held: Press): boolean => {
