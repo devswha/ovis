@@ -142,11 +142,11 @@ without sorting, breaking it at unrelated rows; `forkInboxRows` reuses it for un
 only new upstream hook is the one-line decoration call before rendering. Agent friends remains the
 explicitly approved opt-in (the reviewer withdrew that finding).
 
-Final second-review verification: 171 tests across 20 touched/fork/conventions files, scoped strict
+Final second-review verification: 257 tests across 21 touched/fork/conventions files, scoped strict
 TypeScript, the three inbox browser regressions in the CI image and whitespace checks all exited 0.
 Exact commands/exits and audit checklist are under
 `$HOME/.cache/ovis-tmp/inbox-agent-clarity-review2/verification.md`; browser logs/screenshots are beside
-it. No server code changed this round, so server suites were not repeated. Full-suite typecheck,
+it. The combined run included the earlier server friend/push regressions. Full-suite typecheck,
 `bun run check fast` and production `bun run build` remain skipped per scoped-check instructions;
 browser regressions build only disposable demo bundles. Self-audit covered correctness, security,
 performance, types, coverage and fork hook scope: no new dependency, payload, setting or poller.
