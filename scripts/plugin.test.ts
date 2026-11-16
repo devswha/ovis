@@ -1046,7 +1046,8 @@ describe("pair relay offer", () => {
 });
 
 describe("a command handed on to the release the app updated to", () => {
-  // POSIX signals: on Windows herdr runs scripts/plugin.ps1, and no SIGTERM or SIGHUP reaches the plugin there
+  // POSIX signals: on Windows herdr runs scripts/plugin.ps1, no SIGTERM or SIGHUP reaches the plugin there, and a SIGINT
+  // is not passed on
   const posix = it.skipIf(process.platform === "win32");
   const plugin = JSON.stringify(join(ROOT, "scripts", "plugin.ts"));
   const releaseScript = join("release-test", "scripts", "plugin.ts");
@@ -1061,11 +1062,12 @@ describe("a command handed on to the release the app updated to", () => {
 
   /**
    * plugin.ts `command` with a release the app updated to whose plugin.ts is a stand-in: it writes its pid, ends with 3
-   * on SIGTERM and 4 on SIGHUP, and says "up" once it listens. The process notes in `notes`, as it starts the release,
-   * how many SIGTERM and SIGHUP listeners it has; with `fail`, the release cannot be started, and once the command gave
-   * up the process sends itself a SIGTERM. Its stderr goes into a file: a release left running would hold a pipe open.
+   * on SIGTERM, 4 on SIGHUP and 6 on SIGINT, and says "up" once it listens. The process notes in `notes`, as it starts
+   * the release, how many SIGTERM and SIGHUP listeners it has; with `fail`, the release cannot be started, and once the
+   * command gave up the process sends itself a SIGTERM. With `group`, it leads a process group of its own, as a command
+   * in a terminal does. Its stderr goes into a file: a release left running would hold a pipe open.
    */
-  function handOn(command: string, fail = false) {
+  function handOn(command: string, { fail = false, group = false } = {}) {
     const port = quietPort();
     writeFileSync(join(configDir, ".env"), `PORT=${port}\n`);
     const release = join(updateStateDir(ROOT, port, join(scratch, "app-state")), "release-test");
@@ -1074,6 +1076,7 @@ describe("a command handed on to the release the app updated to", () => {
     writeFileSync(join(release, "scripts", "plugin.ts"), `import { writeFileSync } from "node:fs";
 process.on("SIGTERM", () => process.exit(3));
 process.on("SIGHUP", () => process.exit(4));
+process.on("SIGINT", () => process.exit(6));
 writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
 console.log("up");
 setInterval(() => {}, 1 << 30);
@@ -1093,7 +1096,7 @@ const { runPlugin } = await import(${plugin});
 try { await runPlugin(); } catch (error) { appendFileSync(${JSON.stringify(notes)}, \`threw \${error.message}\n\`); }
 process.kill(process.pid, "SIGTERM");
 setInterval(() => {}, 1_000);`], {
-      cwd: ROOT, stdout: "pipe", stderr: Bun.file(join(scratch, "stderr")),
+      cwd: ROOT, stdout: "pipe", stderr: Bun.file(join(scratch, "stderr")), detached: group,
       env: launchEnv({ HOST: "127.0.0.1", HERDR_PLUGIN_ROOT: ROOT, HERDR_PLUGIN_CONFIG_DIR: configDir, OVIS_STATE_DIR: join(scratch, "app-state"), OVIS_TOKEN: "" }),
     });
     const released = () => existsSync(pidFile) ? Number(readFileSync(pidFile, "utf8")) : 0;
@@ -1109,20 +1112,32 @@ setInterval(() => {}, 1_000);`], {
   }
 
   for (const command of ["link", "phone-setup", "a-later-command"]) {
-    for (const [signal, exit] of [["SIGTERM", 3], ["SIGHUP", 4]] as const) {
+    for (const [signal, exit] of [["SIGTERM", 3], ["SIGHUP", 4], ["SIGINT", 6]] as const) {
       posix(`${command}: listens before the release starts, passes it a ${signal} and exits as it did, leaving no release behind`, async () => {
         using run = handOn(command);
         const up = await within(run.child.stdout.getReader().read(), "the release never started");
         expect(new TextDecoder().decode(up.value)).toBe("up\n");
         run.child.kill(signal);
         const code = await within(run.child.exited, "the command never exited");
-        // regression for phone-setup (fails on main: it listened for nothing, ended by the signal, and left the release running)
+        // regression for phone-setup (fails on main: it listened for nothing, ended by the signal, and left the release
+        // running), and for every command with a SIGINT sent to it alone (fails at 69ebe4b1: it was ignored, and the
+        // command went on waiting for the release)
         expect({ notes: run.notes(), code, releaseLeft: alive(run.released()) }, run.said()).toEqual({ notes: "spawn 1 1\n", code: exit, releaseLeft: false });
       }, 30_000);
     }
 
+    posix(`${command}: ends with the release on a Ctrl+C, which reaches both through their process group`, async () => {
+      // the terminal's SIGINT goes to the whole group: the release gets it directly and, passed on, once more
+      using run = handOn(command, { group: true });
+      const up = await within(run.child.stdout.getReader().read(), "the release never started");
+      expect(new TextDecoder().decode(up.value)).toBe("up\n");
+      process.kill(-run.child.pid, "SIGINT");
+      const code = await within(run.child.exited, "the command never exited");
+      expect({ code, releaseLeft: alive(run.released()) }, run.said()).toEqual({ code: 6, releaseLeft: false });
+    }, 30_000);
+
     posix(`${command}: stops listening when the release cannot be started, so a later SIGTERM ends the process as it would`, async () => {
-      using run = handOn(command, true);
+      using run = handOn(command, { fail: true });
       await within(run.child.exited, "the command never exited");
       // regression for link and a-later-command (fails on main: the listener left behind throws on the release that never
       // started, and the process ends with 1 instead)
@@ -1131,10 +1146,12 @@ setInterval(() => {}, 1_000);`], {
   }
 });
 
-describe("stop and status over a checkout whose packages are not installed", () => {
-  it("load and answer with an empty node_modules, where Bun installs nothing on its own", async () => {
-    // every file of the checkout plugin.ts can load, at any command, without the packages: what an install cut off
-    // before it got to them leaves
+describe("a checkout whose packages are not installed", () => {
+  /**
+   * Every file of the checkout plugin.ts can load, at any command, copied without the packages into an empty
+   * node_modules, where Bun installs nothing on its own: what an install cut off before it got to them leaves.
+   */
+  async function withoutPackages(): Promise<string> {
     const copy = join(scratch, "checkout");
     const built = await Bun.build({ entrypoints: [join(ROOT, "scripts", "plugin.ts")], target: "bun", packages: "external", metafile: true });
     for (const input of Object.keys(built.metafile!.inputs)) {
@@ -1143,15 +1160,63 @@ describe("stop and status over a checkout whose packages are not installed", () 
       copyFileSync(resolve(input), to);
     }
     mkdirSync(join(copy, "node_modules"));
+    return copy;
+  }
+
+  async function runIn(copy: string, args: string[], port: number): Promise<{ out: string; err: string; code: number }> {
+    const child = Bun.spawn([process.execPath, join("scripts", "plugin.ts"), ...args], {
+      cwd: copy, stdin: "ignore", stdout: "pipe", stderr: "pipe",
+      env: launchEnv({ PORT: String(port), HOST: "127.0.0.1", HERDR_PLUGIN_ROOT: copy, HERDR_PLUGIN_CONFIG_DIR: configDir, OVIS_STATE_DIR: join(scratch, "app-state"), OVIS_TOKEN: "" }),
+    });
+    const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    return { out, err, code };
+  }
+
+  it("stop and status load and answer", async () => {
+    const copy = await withoutPackages();
     const port = quietPort();
     for (const [command, said] of [["status", `down http://127.0.0.1:${port}\n`], ["stop", "Ovis is not running\n"]] as const) {
-      const child = Bun.spawn([process.execPath, join("scripts", "plugin.ts"), command], {
-        cwd: copy, stdout: "pipe", stderr: "pipe",
-        env: launchEnv({ PORT: String(port), HOST: "127.0.0.1", HERDR_PLUGIN_ROOT: copy, HERDR_PLUGIN_CONFIG_DIR: configDir, OVIS_STATE_DIR: join(scratch, "app-state") }),
-      });
-      const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+      const { out, err, code } = await runIn(copy, [command], port);
       // regression (fails on main: Cannot find package 'qrcode-generator', then the relay's and the account's packages)
       expect({ command, code, first: out.split("\n")[0] + "\n" }, err).toEqual({ command, code: 0, first: said });
     }
   }, 30_000);
+
+  it.skipIf(process.platform === "win32")("the commands that need a package fail before they change anything: no pairing code asked for, nothing published or decided", async () => {
+    const copy = await withoutPackages();
+    // an app whose phone address Tailscale serves, so a pairing would draw its QR code, recording every request that
+    // changes something
+    const changes: string[] = [];
+    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
+      const path = new URL(request.url).pathname;
+      if (request.method !== "GET") changes.push(`${request.method} ${path}`);
+      if (path === "/api/health") return Response.json(APP_HEALTH);
+      if (path === "/api/access") return Response.json({ tailscale: { serving_url: "https://pc.example.ts.net", serve_command: null } });
+      if (path === "/api/devices/pair/start") return Response.json({ code: "123456", expires_at: new Date(Date.now() + 600_000).toISOString() });
+      if (path === "/api/relay/pairings") return Response.json({ pairings: [] });
+      return new Response(null, { status: 404 });
+    } });
+    // a Tailscale that runs and serves nothing yet, so `phone` would publish the app; it records every call
+    const calls = join(scratch, "tailscale-calls");
+    writeFileSync(join(scratch, "bin", "tailscale"), `#!/bin/sh
+echo "$*" >> ${JSON.stringify(calls)}
+case "$1 $2" in
+  "status --json") echo '{"BackendState":"Running","Self":{"DNSName":"pc.example.ts.net."}}' ;;
+  "serve status") echo '{}' ;;
+esac
+`);
+    chmodSync(join(scratch, "bin", "tailscale"), 0o755);
+    try {
+      for (const args of [["pair"], ["phone-setup"], ["phone"], ["link"], ["pair", "--approve"]]) {
+        const { err, code } = await runIn(copy, args, server.port!);
+        expect({ args, failed: code !== 0, missing: /Cannot find (package|module)/.test(err) }, err).toEqual({ args, failed: true, missing: true });
+      }
+      // regression (fails at 69ebe4b1: pair and phone-setup asked for a pairing code, which replaces the one another
+      // device may be using, and phone published the app, before each failed at the package)
+      const published = existsSync(calls) ? readFileSync(calls, "utf8").split("\n").filter((line) => line.startsWith("serve --yes")) : [];
+      expect({ changes, published }).toEqual({ changes: [], published: [] });
+    } finally {
+      await server.stop(true);
+    }
+  }, 60_000);
 });

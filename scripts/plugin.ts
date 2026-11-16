@@ -200,12 +200,24 @@ function link(url: string): string {
   return process.stdout.isTTY ? `\x1b]8;;${url}\x1b\\${url}\x1b]8;;\x1b\\` : url;
 }
 
-async function qr(text: string): Promise<string> {
+/**
+ * What draws a QR code, from its package. A command that draws one loads it before it changes anything (a pairing code,
+ * Tailscale), so in a checkout whose install was cut off it fails with nothing changed.
+ */
+async function qrDrawer(): Promise<(text: string) => string> {
   const { default: qrcode } = await import("qrcode-generator");
-  const code = qrcode(0, "M");
-  code.addData(text);
-  code.make();
-  return code.createASCII(1, 1);
+  return (text) => {
+    const code = qrcode(0, "M");
+    code.addData(text);
+    code.make();
+    return code.createASCII(1, 1);
+  };
+}
+
+/** What `pair` draws and checks a relay offer with, loaded before it asks for a code (see qrDrawer) */
+async function pairingParts(): Promise<{ qr: (text: string) => string; decodeOffer: (url: string) => unknown }> {
+  const [qr, { decodeOffer }] = await Promise.all([qrDrawer(), import("../shared/relay-offer.ts")]);
+  return { qr, decodeOffer };
 }
 
 async function health(): Promise<boolean> {
@@ -816,8 +828,9 @@ async function stopInTurn(dependencies: StopDependencies): Promise<number> {
  * open Settings → Devices in, so this is how its owner lets a phone in: the code, the address the
  * phone opens (when Tailscale serves one), and that address as a QR code for a screen to scan.
  */
-async function pair(): Promise<number> {
+async function pair(parts?: Awaited<ReturnType<typeof pairingParts>>): Promise<number> {
   if (process.argv.includes("--approve")) return approvePairings();
+  const { qr, decodeOffer } = parts ?? await pairingParts();
   if (!(await health())) {
     process.stderr.write(`Ovis is not running at ${origin}; start it first\n`);
     return 1;
@@ -838,7 +851,7 @@ async function pair(): Promise<number> {
   const out: string[] = [`Pairing code: ${code.slice(0, 3)} ${code.slice(3)}   (good for 10 minutes, for one device)`];
   if (url !== null) {
     out.push(`On the other device, open ${link(url)} and enter the code, or scan this to open it with the code filled in:`, "");
-    out.push(await qr(`${url}/?pair=${code}`));
+    out.push(qr(`${url}/?pair=${code}`));
   } else {
     out.push("On the other device, open the app's address and enter the code. Settings → Phone, on any signed-in device, shows the address and how to get one.");
   }
@@ -862,9 +875,8 @@ async function pair(): Promise<number> {
         if (typeof offer !== "object" || offer === null || !("url" in offer) || typeof offer.url !== "string" || !offer.url.includes("#offer=")) {
           throw new Error("invalid relay offer response");
         }
-        const { decodeOffer } = await import("../shared/relay-offer.ts");
         if (!decodeOffer(offer.url)) throw new Error("invalid relay offer URL");
-        out.push("", "Ovis relay", link(offer.url), "", await qr(offer.url));
+        out.push("", "Ovis relay", link(offer.url), "", qr(offer.url));
       } else {
         out.push("To turn on Ovis relay: Settings -> Devices and PCs -> Ovis relay.");
       }
@@ -882,6 +894,8 @@ async function pair(): Promise<number> {
  * itself, so this is approval on this PC (docs/account.md, "Who may admit a device").
  */
 async function approvePairings(): Promise<number> {
+  // loaded before a request is decided, as qrDrawer is
+  const { approveWaiting, discardTyped } = await import("./plugin-link.ts");
   if (!(await health())) {
     process.stderr.write(`Ovis is not running at ${origin}; start it first\n`);
     return 1;
@@ -899,7 +913,6 @@ async function approvePairings(): Promise<number> {
     return 0;
   }
   // asked as `ovis add` asks (scripts/plugin-link.ts): a line answers only the request it was typed under
-  const { approveWaiting, discardTyped } = await import("./plugin-link.ts");
   return approveWaiting(pairings, {
     out: (text) => process.stdout.write(text),
     lines: console[Symbol.asyncIterator](),
@@ -926,15 +939,19 @@ async function approvePairings(): Promise<number> {
 /**
  * Runs the release Settings → Updates installed (its scripts/plugin.ts, `active`) with `args` in this terminal, and gives
  * back its exit code: the checkout survives in-app updates, and the release that runs has the command that fits its
- * server. Ctrl+C reaches the release too (it shares the terminal), and this process waits for it; a SIGTERM or SIGHUP
- * sent to this process alone is passed on, so the release ends with it and takes back what it handed out (link's code).
+ * server. A SIGINT, SIGTERM or SIGHUP sent to this process is passed on, and this process waits for the release, which
+ * ends with it and takes back what it handed out (link's code). A Ctrl+C on the terminal they share reaches the release
+ * itself too, so it gets that SIGINT twice: every release ends at the first or catches each (link). On Windows a SIGINT
+ * is not passed on: there Bun ends a child outright for any signal it is sent, without the clean-up the release's own
+ * Ctrl+C gives it, and a Ctrl+C reaches every process of the console anyway.
  * Listening starts before the release does, so a signal that comes while it starts no longer ends this process with the
  * release left running: Bun runs the listener from the event loop, after `child` is set. A release that could not be
  * started has nothing to pass one on to, and the listeners go on every way out.
  */
 async function handOn(active: string, args: readonly string[]): Promise<number> {
   let child: Bun.Subprocess | undefined;
-  const handlers = { SIGINT: () => undefined, SIGTERM: () => child?.kill("SIGTERM"), SIGHUP: () => child?.kill("SIGHUP") } as const;
+  const pass = (signal: NodeJS.Signals) => () => { child?.kill(signal); };
+  const handlers = { SIGINT: process.platform === "win32" ? () => undefined : pass("SIGINT"), SIGTERM: pass("SIGTERM"), SIGHUP: pass("SIGHUP") } as const;
   for (const [signal, handler] of Object.entries(handlers)) process.on(signal, handler);
   try {
     child = Bun.spawn([process.execPath, active, ...args], { cwd: ROOT, windowsHide: true, env, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
@@ -954,6 +971,8 @@ async function linkCommand(): Promise<number> {
   const active = activePluginScript(ROOT, port, APP_STATE_DIR);
   // Always "link", whichever name it was run by: a release from before `add` and `login` knows only that one
   if (active !== join(resolve(ROOT), "scripts", "plugin.ts") && resolve(active) !== resolve(import.meta.filename)) return await handOn(active, ["link", ...process.argv.slice(3)]);
+  // loaded before anything is asked or listened for, as qrDrawer is
+  const { discardTyped, link: linkPc } = await import("./plugin-link.ts");
   if (!(await health())) {
     process.stderr.write(`Ovis is not running at ${origin}; start it first\n`);
     return 1;
@@ -974,7 +993,6 @@ async function linkCommand(): Promise<number> {
   // hears ends the process where it stands, or leaves it running with nobody to read it: the code stays valid either
   // way. It is heard instead, and stops the run as its signal would
   process.stdout.on("error", halt);
-  const { discardTyped, link: linkPc } = await import("./plugin-link.ts");
   return linkPc(process.argv.slice(3), {
     origin, headers, signal: stop.signal,
     accountService: accountServiceOrigin(env["OVIS_ACCOUNT_SERVICE_URL"] ?? DEFAULT_ACCOUNT_SERVICE),
@@ -997,6 +1015,8 @@ async function linkCommand(): Promise<number> {
  * server nor startup ever calls it.
  */
 async function phone(): Promise<number> {
+  // before `tailscale serve` (see qrDrawer)
+  const qr = await qrDrawer();
   const say = (line = "") => process.stdout.write(line + "\n");
   const running = await health();
   say(`Ovis on this PC: ${link(origin)}${running ? "" : " (not running yet: it starts with herdr)"}`);
@@ -1056,7 +1076,7 @@ async function phone(): Promise<number> {
   if (ip !== null) say(`Tailscale IP of this PC: ${ip}. Open the name above, not the IP: the HTTPS certificate is for the name.`);
   say(`Scan this with a phone signed in to Tailscale${owner === null ? "" : ` as ${owner}`}; that login gets in without a code (with OVIS_TOKEN set, after entering the token once).`);
   say("Anyone else on your tailnet needs a pairing code: Settings → Devices, or the pair command.");
-  say(await qr(url));
+  say(qr(url));
   return 0;
 }
 
@@ -1064,6 +1084,8 @@ async function phone(): Promise<number> {
 async function phoneSetup(): Promise<number> {
   const active = activePluginScript(ROOT, port, APP_STATE_DIR);
   if (active !== join(resolve(ROOT), "scripts", "plugin.ts") && resolve(active) !== resolve(import.meta.filename)) return await handOn(active, ["phone-setup"]);
+  // before the pairing code is asked for (see qrDrawer), and not taken for a failed read of the app below
+  const parts = await pairingParts();
   process.stdout.write(`Phone setup\n\nApp on this PC: ${link(origin)}\n`);
   let code = 0;
   if (!(await health())) {
@@ -1080,7 +1102,7 @@ async function phoneSetup(): Promise<number> {
         if (access.tailscale.serve_command) process.stdout.write(`To make a phone address, run this on the PC, then reopen Phone setup:\n\n  ${access.tailscale.serve_command}\n\n`);
         else process.stdout.write("For a phone address, set up Tailscale on both devices, or use your own HTTPS proxy. Settings → Phone shows the connection options.\n\n");
       }
-      code = await pair();
+      code = await pair(parts);
     } catch {
       process.stderr.write("Could not read phone setup. Check the app's token and connection, then reopen this pane.\n");
       code = 1;
