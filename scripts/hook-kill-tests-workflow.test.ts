@@ -12,6 +12,15 @@ const workflow = parseWorkflow(file);
 const job = workflow.jobs["hook-kill-tests"]! as Job & { name?: string };
 const container = readFileSync(join(root, "scripts/self-hosted-runner/hook-test-container.sh"), "utf8");
 const dockerfile = readFileSync(join(root, "scripts/self-hosted-runner/hook-test.Dockerfile"), "utf8");
+/** The job's last step: status 0 and exactly the expected summary, read from what the container wrote, or it fails. */
+const CONTAINER_RESULT_CHECK = String.raw`out="$RUNNER_TEMP/hook-test-out"
+status=$(cat "$out/status" 2>/dev/null || echo missing)
+if [ "$status" != 0 ]; then echo "::error::the container's command did not end with status 0 (status: $status)"; exit 1; fi
+counts=$( { grep -E '^ *[0-9]+ (pass|skip|fail|todo)$' "$out/log.txt" || true; } | sed -E 's/^ +//' | LC_ALL=C sort | tr '\n' ';')
+if [ "$counts" != "0 fail;8 pass;" ]; then echo "::error::the tests' summary is '$counts', not '0 fail;8 pass;'"; exit 1; fi
+if grep -q 'kill tests skipped' "$out/log.txt"; then echo "::error::the kill tests were skipped"; exit 1; fi
+echo "the container's own result: status 0, 0 fail;8 pass;"
+`;
 const setupCi = Bun.YAML.parse(readFileSync(join(root, ".github/actions/setup-ci/action.yml"), "utf8")) as { inputs: Record<string, { default?: string }> };
 
 describe("hook kill tests workflow", () => {
@@ -36,6 +45,19 @@ describe("hook kill tests workflow", () => {
     expect(on["push"]).toEqual({ branches: ["main"] });
     expect(job.if).toBeUndefined();
     for (const step of job.steps ?? []) expect(step.if, `${step.name ?? step.uses}: a step that can be skipped`).toBeUndefined();
+  });
+
+  test("cannot go green on a failure or wait on another job", () => {
+    const failSoft = (owner: object) => (owner as Record<string, unknown>)["continue-on-error"];
+    expect(failSoft(job)).toBeUndefined();
+    for (const step of job.steps ?? []) expect(failSoft(step), `${step.name ?? step.uses}: continue-on-error`).toBeUndefined();
+    expect(job.needs).toBeUndefined();
+  });
+
+  test("ends with a check of the files the container wrote, independent of the container script", () => {
+    const last = job.steps!.at(-1)!;
+    expect(last.name).toBe("Check the container's own result");
+    expect(last.run).toBe(CONTAINER_RESULT_CHECK);
   });
 
   test("starts its one container confined: no network, capability, privilege, host pid namespace or socket", () => {

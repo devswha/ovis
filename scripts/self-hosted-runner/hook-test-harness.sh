@@ -6,8 +6,9 @@
 #     unshare --user --map-root-user --pid --fork --mount-proc --kill-child bash hook-test-harness.sh <token> ...
 #     It is PID 1, PID 1 of /proc carries the run's <token> (so /proc is this namespace's), and no other
 #     process is visible: every pid it can name is one it started, and the kernel kills them all when it exits.
-#   container: inside a throwaway container of a test image built FROM the runner image with the marker below
-#     added (the live runner image has none, so these tests never run in a live runner's container), started as
+#   container: inside a throwaway container of an image that carries the marker below: hook-test.Dockerfile's,
+#     which CI's hook-kill-tests.yml builds (the live runner image has none, so these tests never run in a live
+#     runner's container), started as
 #     python3 (PR_SET_CHILD_SUBREAPER on itself, then exec) bash hook-test-harness.sh container ...
 #     The marker is there, root's and read-only, /.dockerenv is there, PID 1 is the container's init (tini or
 #     docker-init), and the PID namespace is not the host's initial one (/proc/$$/ns/pid is not pid:[4026531836],

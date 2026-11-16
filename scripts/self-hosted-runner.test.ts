@@ -46,7 +46,8 @@ function runJobStarted(eventName: string, payload: unknown) {
 
 /**
  * How hook-test-harness.sh is started for each guard it checks itself. namespace: a PID namespace of its own
- * (--kill-child ends it with unshare). container: the runner image's container, the harness made a child
+ * (--kill-child ends it with unshare). container: a container of an image that carries the marker
+ * (hook-test.Dockerfile's), the harness made a child
  * subreaper first, so the orphans of its subtree come to it.
  */
 const HARNESS_LAUNCH = {
@@ -57,7 +58,7 @@ type Isolation = keyof typeof HARNESS_LAUNCH;
 
 /**
  * Where the hook's kill tests may run here: the first guard hook-test-harness.sh proves from inside, starting
- * nothing before it. Any failure (no unshare, a namespace refused, no runner image) only moves to the next guard
+ * nothing before it. Any failure (no unshare, a namespace refused, no marker) only moves to the next guard
  * or skips them, with every reason: never a reason to run them anywhere else.
  */
 function probeIsolation(): { ok: true; mode: Isolation } | { ok: false; reason: string } {
@@ -1167,7 +1168,8 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
 });
 
 // The hook as the runner runs it. Only a job it allows runs on the host: every refusal may kill, so every test that
-// can reach one runs isolated (runHookIsolated: a PID namespace of its own or the runner image's container), or not at all.
+// can reach one runs isolated (runHookIsolated: a PID namespace of its own or a container of an image that carries the
+// marker, hook-test.Dockerfile's), or not at all.
 describe.skipIf(process.platform === "win32")("self-hosted runner job-started hook", () => {
   it("runs a job from this repository", () => {
     // without jq the hook would refuse (and, under runJobStarted's parent, block): fail before it starts
@@ -1190,7 +1192,7 @@ describe.skipIf(process.platform === "win32")("self-hosted runner job-started ho
 });
 
 const isolation = probeIsolation();
-if (!isolation.ok) console.warn(`job-started hook kill tests skipped, as they run only in a PID namespace of their own or the runner image's container: ${isolation.reason}`);
+if (!isolation.ok) console.warn(`job-started hook kill tests skipped, as they run only in a PID namespace of their own or a container of an image that carries the marker (hook-test.Dockerfile): ${isolation.reason}`);
 
 // The runner image is Linux, where the hook proves its parent through /proc; the Mac runner (README "Mac runner")
 // runs the same file, which asks ps there: the copies with { ps } run that path here, on Linux.
@@ -1309,7 +1311,7 @@ describe.skipIf(!isolation.ok)("self-hosted runner job-started hook, isolated", 
     const runs = await Promise.all(
       (
         [
-          // the 00:44 incident: the hook's parent lives and is not the worker (there, the user's systemd manager)
+          // a live parent that is not the worker, as when a user's systemd manager adopted an earlier version of the hook
           { parent: "named:systemd" },
           { parent: "named:Runner.Worker2" },
           { parent: "named:Runner.Worke" },

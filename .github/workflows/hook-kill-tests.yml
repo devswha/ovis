@@ -49,3 +49,15 @@ jobs:
           mkdir "$RUNNER_TEMP/hook-test-out"
           bash scripts/self-hosted-runner/hook-test-container.sh ovis-hook-test:ci "$GITHUB_WORKSPACE" "$RUNNER_TEMP/hook-test-out"
           echo "run ended $(date -u +%FT%TZ)"
+      # independent of the container script: the files the container itself wrote into the output directory (its
+      # command's exit status, and the tests' output) must say the tests ran and passed. A script that returned early
+      # leaves no such files, and this step fails.
+      - name: Check the container's own result
+        run: |
+          out="$RUNNER_TEMP/hook-test-out"
+          status=$(cat "$out/status" 2>/dev/null || echo missing)
+          if [ "$status" != 0 ]; then echo "::error::the container's command did not end with status 0 (status: $status)"; exit 1; fi
+          counts=$( { grep -E '^ *[0-9]+ (pass|skip|fail|todo)$' "$out/log.txt" || true; } | sed -E 's/^ +//' | LC_ALL=C sort | tr '\n' ';')
+          if [ "$counts" != "0 fail;8 pass;" ]; then echo "::error::the tests' summary is '$counts', not '0 fail;8 pass;'"; exit 1; fi
+          if grep -q 'kill tests skipped' "$out/log.txt"; then echo "::error::the kill tests were skipped"; exit 1; fi
+          echo "the container's own result: status 0, 0 fail;8 pass;"
