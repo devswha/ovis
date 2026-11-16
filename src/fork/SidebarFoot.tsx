@@ -1,8 +1,8 @@
 import type { ReactElement } from "react";
-import { CircleHelp, FolderTree, GitPullRequest, Inbox, Settings } from "lucide-react";
+import { CircleHelp, FolderTree, GitPullRequest, Inbox } from "lucide-react";
 
 import type { InboxRailProps } from "../components/InboxRail.tsx";
-import { UsageMeters } from "../components/UsageMeters.tsx";
+import { SidebarFooter } from "../components/SidebarFooter.tsx";
 import { useT } from "../lib/i18n.ts";
 import { useSettings } from "../lib/settings.ts";
 import { setGithubSection, useGithubSection } from "./GithubInbox.tsx";
@@ -47,24 +47,18 @@ export function ForkSidebarFoot({ children }: { children: ReactElement<{ onOpen(
 
 /**
  * The agent inbox's wide column (App.tsx wraps upstream's rail): with the inbox footer on, the workspaces
- * sidebar's foot under the list instead of the rail, with the same gear, plan meters and places, and the agents
- * that wait. Alerts and the PCs menu are left out. Off, upstream's rail stays.
+ * sidebar's own foot (SidebarFooter) under the list instead of the rail, with the places and the agents that wait
+ * in its start slot. Alerts and the PCs menu are left out. Off, upstream's rail stays.
  */
 export function ForkInboxFoot({ children, watching, onUsageLogin }: { children: ReactElement<InboxRailProps>; watching: boolean; onUsageLogin(paneId: string): void }) {
   const { settings } = useSettings();
   const current = useGithubSection();
-  const t = useT();
   if (!settings.inboxFooter) return children;
-  const { onExit, onInbox, onSettings, shortcutTitle, waiting } = children.props;
-  return <footer className="sidebar-footer fork-inbox-foot">
-    <div className="sidebar-footer-row">
-      <button type="button" className="btn btn-ghost sidebar-footer-action sidebar-footer-settings" aria-label={t("Settings")} title={shortcutTitle(t("Settings"), "settings")} onClick={onSettings}><Settings aria-hidden="true" /></button>
-      <UsageMeters watching={watching} onLocalLogin={watching ? undefined : onUsageLogin} />
-    </div>
-    <FootPlaces current={current} waiting={waiting} onPlace={(place) => {
+  const { onExit, onInbox, onSettings, waiting } = children.props;
+  return <SidebarFooter watching={watching} onUsageLogin={onUsageLogin} onSettings={onSettings}
+    start={<FootPlaces current={current} waiting={waiting} onPlace={(place) => {
       if (place === "workspaces") { onExit(); return; }
       setGithubSection(place);
       if (place === "inbox") onInbox();
-    }} />
-  </footer>;
+    }} />} />;
 }

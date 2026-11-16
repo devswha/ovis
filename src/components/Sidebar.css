@@ -7,7 +7,8 @@
   --side-selected: var(--bg-hover);
 }
 
-.sidebar-shell {
+.sidebar-shell,
+.sidebar-footer {
   /* One grid for every row: a leading cell that says who or what the row is, the title, and a
      trailing cell that says how it is. The two cells are the columns of the header zone's own
      buttons above the list. Aliases of existing tokens only. */

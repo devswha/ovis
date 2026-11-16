@@ -220,10 +220,10 @@
 
 /* The agent inbox's wide column with the inbox footer on (SidebarFoot.tsx): the list over the workspaces
    sidebar's foot, where the rail stood beside it, and no rail's width taken from the top row's start */
-.app.is-inbox-wide:has(.fork-inbox-foot) { --inbox-rail-w: 0px; }
-.app.is-inbox-wide .inbox-column:has(> .fork-inbox-foot) { flex-direction: column; }
-.inbox-column:has(> .fork-inbox-foot) > :not(.fork-inbox-foot, .sidebar-resizer) { flex: 1 1 auto; min-height: 0; }
-.inbox-column > .fork-inbox-foot {
+.app.is-inbox-wide:has(.inbox-column > .sidebar-footer) { --inbox-rail-w: 0px; }
+.app.is-inbox-wide .inbox-column:has(> .sidebar-footer) { flex-direction: column; }
+.inbox-column:has(> .sidebar-footer) > :not(.sidebar-footer, .sidebar-resizer) { flex: 1 1 auto; min-height: 0; }
+.inbox-column > .sidebar-footer {
   order: 1;
   border-top: var(--hairline) solid var(--border);
 }
