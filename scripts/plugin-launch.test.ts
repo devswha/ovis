@@ -431,7 +431,8 @@ console.log(JSON.stringify({ code, asked }));`;
         const [built, now] = said(dir);
         expect(line.indexOf(built)).toBeGreaterThan(-1);
         expect(line.indexOf(now)).toBeGreaterThan(line.indexOf(built));
-        expect(line).toContain("OVIS_FROM_SOURCE=1 bun ");
+        // the command for this platform's shell, as the launcher builds it (PowerShell on Windows)
+        expect(line).toContain(process.platform === "win32" ? "$env:OVIS_FROM_SOURCE = '1'; bun " : "OVIS_FROM_SOURCE=1 bun ");
         expect(result.err.indexOf(line)).toBeLessThan(result.err.indexOf("so this checkout runs"));
       });
     }
