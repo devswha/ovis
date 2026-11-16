@@ -44,6 +44,11 @@ describe("DeepSeek Harness ask_user_question panel", () => {
     expect(parseInteractivePrompt("dsh-tui", described)).toMatchObject({ multi_select: false, custom_option_index: 2 });
   });
 
+  it("has no card while dsh folds part of a long question out of view (recorded at 118x40): the card would show it cut short", () => {
+    expect(screen("q1-folded")).toContain("… 16 lines outside view");
+    expect(parseInteractivePrompt("dsh-tui", screen("q1-folded"))).toBeNull();
+  });
+
   it("shows the header chip over the question", () => {
     expect(parseInteractivePrompt("dsh-tui", screen("q1"))?.body).toBe("Choose Approach");
   });

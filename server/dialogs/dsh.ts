@@ -175,8 +175,9 @@ function readDshPanel(screen: string): DshPanel | null {
   // a single choice marks the cursor's row alone, and none while the cursor is on the free-text row
   if (!multi && rows.some((row) => row.checked !== row.cursor)) return null;
 
-  // the header chip (`◈ Platforms`), the question, then a blank line and the question's detail; a
-  // long question and detail fold into a window with a line saying how much of them is hidden
+  // the header chip (`◈ Platforms`), the question, then a blank line and the question's detail; a long question and
+  // detail fold into a window with a line saying how much of them is hidden (`… 16 lines outside view · Alt+Up/Alt+Down
+  // to scroll`): the card would ask it cut short, so the terminal, which scrolls it, answers it
   const paragraphs: string[][] = [];
   let chip: string | null = null;
   let blank = true;
@@ -184,7 +185,7 @@ function readDshPanel(screen: string): DshPanel | null {
     const line = cleanLine(raw);
     if (!line) { blank = true; continue; }
     if (chip === null && paragraphs.length === 0 && line.startsWith("◈ ")) { chip = line.slice(2).trim(); continue; }
-    if (/^…\s/.test(line)) break;
+    if (/^…\s/.test(line)) return null;
     if (blank) paragraphs.push([]);
     paragraphs.at(-1)!.push(raw);
     blank = false;
