@@ -167,3 +167,9 @@
 .fork-github-summary[aria-current="true"] {
   background: var(--bg-hover);
 }
+
+/* The thread's own top bar sits above the panes; under a GitHub page it hides but keeps its room, so the pane
+   underneath keeps its size (a terminal refit would resize its pty). */
+.pane-split:has(> .fork-github-pane) .thread-top {
+  visibility: hidden;
+}
