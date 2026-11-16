@@ -104,14 +104,19 @@ export class HerdrError extends Error {
    * enumerable, so an error's printed or encoded form keeps its own fields only.
    */
   declare readonly fromReply: boolean;
+  /** Set on what a call to herdr rejects with (herdrRpc), so a refusal the bridge words itself never has it. Not enumerable either. */
+  declare readonly failedCall?: true;
 
-  constructor(code: string, message: string, fromReply = false) {
+  constructor(code: string, message: string, fromReply = false, failedCall = false) {
     super(message);
     this.name = "HerdrError";
     this.code = code;
     Object.defineProperty(this, "fromReply", { value: fromReply, enumerable: false });
+    if (failedCall) markFailedCall(this);
   }
 }
+
+function markFailedCall(error: HerdrError): void { Object.defineProperty(error, "failedCall", { value: true, enumerable: false }); }
 
 let requestCounter = 0;
 function nextId(): string {
@@ -444,6 +449,7 @@ export async function herdrRpc(
   } catch (error) {
     const code = error instanceof HerdrError ? transportFailureCode(error.code) : null;
     if (code !== null) diagnostics.failed(key, code, fields());
+    if (error instanceof HerdrError && error.failedCall !== true) markFailedCall(error);
     throw error;
   } finally {
     pendingRpcs--;
@@ -1081,9 +1087,9 @@ export async function paneMoveBeside(paneId: string, targetPaneId: string, side:
         read = await sessionSnapshot(socket).catch(() => null);
         back = inTab(read, out);
       }
-      if (!back) throw new HerdrError(why.code, `pane ${out} ${read === null ? "may wait" : "waits"} in a tab of its own: ${why.message}`, why.fromReply);
+      if (!back) throw new HerdrError(why.code, `pane ${out} ${read === null ? "may wait" : "waits"} in a tab of its own: ${why.message}`, why.fromReply, why.failedCall === true);
       if (left !== null) await restore(out, (at) => at === left);
-      throw new HerdrError(why.code, `pane ${out} went back into its tab: ${why.message}`, why.fromReply);
+      throw new HerdrError(why.code, `pane ${out} went back into its tab: ${why.message}`, why.fromReply, why.failedCall === true);
     };
     const failed = (error: unknown) => error instanceof HerdrError ? error : new HerdrError("pane_not_moved", error instanceof Error ? error.message : String(error));
     try {
