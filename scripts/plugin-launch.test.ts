@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { type CheckoutCommit, checkoutCommit, main } from "./plugin-launch.ts";
-import { generateKeyPair, MANIFEST, releaseFile, PTY_ASSETS, ptyFile, SERVER_PLATFORMS, signManifest, writeManifest } from "./server-manifest.ts";
+import { type CheckoutCommit, checkoutCommit, gitFailed, main } from "./plugin-launch.ts";
+import { generateKeyPair, MANIFEST, releaseFile, PTY_ASSETS, ptyFile, SERVER_PLATFORMS, signManifest, sourceTrees, writeManifest } from "./server-manifest.ts";
 
 /**
  * scripts/plugin-launch.ts's choice between the release's binary and this checkout's sources (INSTALL.md, "Binary or
@@ -262,6 +262,8 @@ describe("the herdr plugin's launcher", () => {
     try {
       const answer = await checkoutCommit(folder);
       if (!("failed" in answer) || !answer.trust) throw new Error(`no trust command: ${JSON.stringify(answer)}`);
+      // the reason the release's binary is not taken there says git distrusts it, not that it is no checkout
+      expect(sourceTrees(folder)).toEqual({ error: "git does not trust this folder (another account owns it), so the binaries cannot be tied to their sources" });
       // the build in that folder is left unfinished, and the command is said on a line of its own
       const home = join(scratch, "server");
       expect(await main(["install"], { home, source: async () => 0, commit: () => checkoutCommit(folder) })).toBe(0);
@@ -307,41 +309,107 @@ const { readFileSync } = await import("node:fs");
 const home = ${JSON.stringify(home)};
 const calls = [];
 const source = async (command) => { calls.push(command); return 0; };
-const { rmSync } = await import("node:fs");
 const install = await main(["install"], { home, source });
 const stamp = readFileSync(${JSON.stringify(join(home, "source-build"))}, "utf8");
 delete process.env.OVIS_FROM_SOURCE;
 const status = await main(["status"], { home, source });
-// no marker, no binary, and the release out of reach: an already built checkout still starts, the release not asked
-rmSync(${JSON.stringify(join(home, "from-source"))});
-const asked = [];
-const start = await main(["start"], { home, source, fetchFile: async (url) => { asked.push(String(url)); throw new TypeError("fetch failed"); } });
-console.log(JSON.stringify({ install, stamp, status, start, asked, calls, after: readFileSync(${JSON.stringify(join(home, "source-build"))}, "utf8"), trees: sourceTrees() }));`;
+console.log(JSON.stringify({ install, stamp, status, calls, trees: sourceTrees() }));`;
     const child = Bun.spawn([process.execPath, "-e", script], { env: { ...process.env, PATH: bin, OVIS_FROM_SOURCE: "1" }, stdout: "pipe", stderr: "pipe" });
     const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
     // regression (fails on main): sourceTrees threw ENOENT before any command ran
     expect(code, err).toBe(0);
-    // regression (fails on main): the start asked the release, and failed with 1 when it was out of reach
-    expect(JSON.parse(out)).toEqual({ install: 0, stamp: "started\n", status: 0, start: 0, asked: [], calls: ["install", "status", "start"], after: "started\n", trees: { error: "git is not on PATH, so the binaries cannot be tied to their sources" } });
+    expect(JSON.parse(out)).toEqual({ install: 0, stamp: "started\n", status: 0, calls: ["install", "status"], trees: { error: "git is not on PATH, so the binaries cannot be tied to their sources" } });
     expect(err).toContain("git could not read the checkout's commit (git is not on PATH)");
-    expect(err).toContain("(git is not on PATH, so the binaries cannot be tied to their sources), so this checkout runs from source");
   });
 
   // Without sources git ties to the release (no git, no checkout, changes not committed) its binary is never taken, so
-  // nothing the release answers changes the choice: it is not asked. The stamp, which only a build writes, stays.
-  for (const why of ["git is not on PATH, so the binaries cannot be tied to their sources", "not a git checkout, so the binaries cannot be tied to their sources", "server/ or shared/ has changes that are not committed, so the binaries would not be built from HEAD's sources"]) {
-    it(`starts from source without asking the release, also one out of reach, where ${why.split(",")[0]}`, async () => {
-      const home = join(scratch, "server");
-      mkdirSync(home, { recursive: true });
-      writeFileSync(join(home, "source-build"), `${version} ${"a".repeat(40)}\n`);
-      const asked: string[] = [];
-      // regression (fails on main): exit 1, "could not install the server"
-      expect(await launch(["start"], offline(asked), { error: why })).toMatchObject({ code: 7, sourced: [["start"]] });
-      expect(asked).toEqual([]);
-      expect(readFileSync(join(home, "from-source"), "utf8")).toBe(`${version}\n`);
-      expect(readFileSync(join(home, "source-build"), "utf8")).toBe(`${version} ${"a".repeat(40)}\n`);
+  // nothing the release answers changes the choice: it is not asked. A start for that reason runs the checkout's own
+  // build only once it finished, and does not remember it. These run the launcher of a checkout of the test's own, with
+  // its real source path: its scripts/plugin.ts stands for the server and notes the command it got.
+  function checkout({ packages = true, client = true, stamp, git = false }: { packages?: boolean; client?: boolean; stamp?: string; git?: boolean } = {}): string {
+    const dir = join(scratch, "checkout");
+    mkdirSync(join(dir, "scripts"), { recursive: true });
+    for (const file of ["plugin-launch.ts", "server-install.ts", "server-manifest.ts", "pty-sidecar.ts"]) copyFileSync(join(import.meta.dir, file), join(dir, "scripts", file));
+    copyFileSync(join(import.meta.dir, "..", "package.json"), join(dir, "package.json"));
+    writeFileSync(join(dir, "scripts", "plugin.ts"), `await Bun.write(${JSON.stringify(join(dir, "ran"))}, process.argv.slice(2).join(" "));\n`);
+    if (packages) mkdirSync(join(dir, "node_modules"));
+    if (client) {
+      mkdirSync(join(dir, "dist"));
+      writeFileSync(join(dir, "dist", "index.html"), "");
+    }
+    if (stamp !== undefined) {
+      mkdirSync(join(dir, ".ovis", "server"), { recursive: true });
+      writeFileSync(join(dir, ".ovis", "server", "source-build"), `${stamp}\n`);
+    }
+    if (git) {
+      for (const args of [["init", "-q"], ["add", "-A"], ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "x"]]) {
+        expect(Bun.spawnSync(["git", "-C", dir, ...args]).exitCode).toBe(0);
+      }
+    }
+    return dir;
+  }
+  /** `start` in that checkout, in a process of its own: without git on PATH unless `git`, the release out of reach unless `releases` names one */
+  async function startIn(dir: string, { git = false, sources, releases = "https://releases.invalid" }: { git?: boolean; sources?: { error: string }; releases?: string } = {}) {
+    const bin = join(scratch, "no-git");
+    mkdirSync(bin, { recursive: true });
+    rmSync(join(dir, "ran"), { force: true });
+    const script = `
+const { main } = await import(${JSON.stringify(pathToFileURL(join(dir, "scripts", "plugin-launch.ts")).href)});
+const asked = [];
+const fetchFile = async (url) => { asked.push(String(url)); throw new TypeError("fetch failed"); };
+const code = await main(["start"], { fetchFile${sources ? `, sources: ${JSON.stringify(sources)}` : ""} });
+console.log(JSON.stringify({ code, asked }));`;
+    const child = Bun.spawn([process.execPath, "-e", script], { env: { ...process.env, PATH: git ? process.env["PATH"] : bin, OVIS_RELEASES_URL: releases }, stdout: "pipe", stderr: "pipe" });
+    const [out, err] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    const ran = existsSync(join(dir, "ran")) ? readFileSync(join(dir, "ran"), "utf8") : null;
+    return { ...(JSON.parse(out.trim().split("\n").at(-1)!) as { code: number; asked: string[] }), ran, marker: existsSync(join(dir, ".ovis", "server", "from-source")), err };
+  }
+
+  it("starts a finished build without git, the release out of reach, without asking it, and remembers nothing", async () => {
+    const dir = checkout({ stamp: `${version} ${"a".repeat(40)}` });
+    // regression (fails at e1a4d23f, which remembered the choice; on main: exit 1, nothing ran)
+    expect(await startIn(dir)).toMatchObject({ code: 0, asked: [], ran: "start", marker: false });
+    expect(readFileSync(join(dir, ".ovis", "server", "source-build"), "utf8")).toBe(`${version} ${"a".repeat(40)}\n`);
+  });
+
+  for (const [state, given, missing] of [
+    ["without its client", { client: false }, "no dist/index.html"],
+    ["without its packages", { packages: false }, "no node_modules"],
+    ["whose last build did not finish", { stamp: "started" }, "its last build did not finish"],
+  ] as const) {
+    it(`starts nothing without git for a checkout ${state}, saying it needs a build and how`, async () => {
+      const result = await startIn(checkout(given));
+      // regression (fails at e1a4d23f, which ran it and remembered it)
+      expect(result).toMatchObject({ code: 1, asked: [], ran: null, marker: false });
+      expect(result.err).toContain(missing);
+      expect(result.err).toContain("OVIS_FROM_SOURCE");
     });
   }
+
+  for (const why of ["not a git checkout, so the binaries cannot be tied to their sources", "server/ or shared/ has changes that are not committed, so the binaries would not be built from HEAD's sources"]) {
+    it(`starts a finished build without asking the release where ${why.split(",")[0]}, and remembers nothing`, async () => {
+      expect(await startIn(checkout(), { git: true, sources: { error: why } })).toMatchObject({ code: 0, asked: [], ran: "start", marker: false });
+    });
+  }
+
+  it("takes the usual way again once git ties the sources and the release answers: the start without git left nothing behind", async () => {
+    const dir = checkout({ git: true });
+    expect(await startIn(dir)).toMatchObject({ code: 0, ran: "start", marker: false });
+    // git and a release back: the release is asked (it has no compiled server, so the checkout runs from source)
+    mkdirSync(join(scratch, "release", `v${version}`), { recursive: true });
+    const back = await startIn(dir, { git: true, releases: pathToFileURL(join(scratch, "release")).href });
+    // regression (fails at e1a4d23f: its marker sent this start to the sources without asking the release)
+    expect(back.err).toContain("ships no compiled server");
+    expect(back).toMatchObject({ code: 0, ran: "start", marker: true });
+  });
+
+  it("gives the cmd.exe form of the trust command only for a folder cmd.exe would read as written", () => {
+    const at = (folder: string) => gitFailed(`fatal: detected dubious ownership in repository at '${folder}'\n'${folder}' is owned by:`, "win32");
+    expect(at("C:/Users/John O'Brien/plugin")).toMatchObject({ trust: "git config --global --add safe.directory 'C:/Users/John O''Brien/plugin'", trustCmd: `git config --global --add safe.directory "C:/Users/John O'Brien/plugin"` });
+    // `%name%` expands in cmd.exe, and `!name!` under delayed expansion (cmd /v:on), inside double quotes too
+    for (const folder of ["C:/100%done/plugin", "C:/work/!USER!/plugin"]) expect(at(folder)).not.toHaveProperty("trustCmd");
+    expect(gitFailed("fatal: detected dubious ownership in repository at '/home/x/it''s'", "linux")).not.toHaveProperty("trustCmd");
+  });
 
   it("builds from source at the build step without asking the release where git ties no sources to it", async () => {
     const home = join(scratch, "server");

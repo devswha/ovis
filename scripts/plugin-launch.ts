@@ -22,7 +22,8 @@
  * step returned 0, and only when git read the same answer before and after the build. Without git on PATH the launcher
  * still runs: the release's binary is taken only for sources git can tie to it (scripts/server-manifest.ts
  * sourceTrees), so such a checkout runs from source, saying why, without asking the release (scripts/server-install.ts):
- * nothing it answers could change that, and a release out of reach does not stop it.
+ * nothing it answers could change that, and a release out of reach does not stop it. Its build step builds; any other
+ * command runs only a build that finished (packages, client, and no `started` stamp), and that choice is not remembered.
  * This file imports nothing outside scripts/ and shared/.
  */
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -67,19 +68,24 @@ async function fromSource(command: string, args: string[]): Promise<number> {
  * account owns it) fails on every call: `trust` is the command that trusts it, for this platform's shell (PowerShell on
  * Windows), built from the folder git names on its first line (the command git prints is quoted for a POSIX shell). On
  * Windows herdr shows this launcher's stderr, from where it may as well be pasted into cmd.exe, which keeps single quotes:
- * `trustCmd` is the same command for cmd.exe, double-quoted, and none for a folder with a `%` (cmd.exe would expand
- * `%name%` there).
+ * `trustCmd` is the same command for cmd.exe, double-quoted, and none for a folder with a `%` or a `!` (cmd.exe would
+ * expand `%name%` there, and `!name!` under delayed expansion).
  */
 export type CheckoutCommit = { commit: string } | { none: "nested" | "no checkout" } | { failed: string; trust?: string; trustCmd?: string };
 
-function gitFailed(err: string): CheckoutCommit {
+/** `text` as one argument of the platform's shell: PowerShell on Windows, POSIX elsewhere */
+const shellQuote = (text: string, platform = process.platform): string =>
+  platform === "win32" ? `'${text.replaceAll("'", "''")}'` : `'${text.replaceAll("'", "'\\''")}'`;
+
+/** git's failure as checkoutCommit answers it (`platform`: the tests') */
+export function gitFailed(err: string, platform = process.platform): CheckoutCommit {
   const first = err.split(/\r?\n/)[0]!;
   const owned = /^fatal: detected dubious ownership in repository at '(.*)'$/.exec(first);
   if (!owned) return { failed: err };
   const folder = owned[1]!;
   const trust = (quoted: string) => `git config --global --add safe.directory ${quoted}`;
-  if (process.platform !== "win32") return { failed: first, trust: trust(`'${folder.replaceAll("'", "'\\''")}'`) };
-  return { failed: first, trust: trust(`'${folder.replaceAll("'", "''")}'`), ...(folder.includes("%") ? {} : { trustCmd: trust(`"${folder}"`) }) };
+  if (platform !== "win32") return { failed: first, trust: trust(shellQuote(folder, platform)) };
+  return { failed: first, trust: trust(shellQuote(folder, platform)), ...(/[%!]/.test(folder) ? {} : { trustCmd: trust(`"${folder}"`) }) };
 }
 
 /** git's answer as said on stderr */
@@ -171,8 +177,29 @@ export async function main(args: string[], { home = join(root, ".ovis", "server"
     binary = result.binary;
   } catch (error) {
     if (error instanceof NoBinaryRelease) {
+      if (command === "install") {
+        console.error(`Ovis: ${error.message}, so this checkout runs from source`);
+        return await build();
+      }
+      // Sources git ties to no release (no git, no checkout, changes not committed) are a reason the next start may not
+      // have (git back, a commit made): it is not remembered, and a start for it alone runs only a build that finished.
+      // The release was not asked (scripts/server-install.ts), so this is also what a start out of its reach gets.
+      if ("error" in sources) {
+        const missing = [
+          ...(existsSync(join(root, "node_modules")) ? [] : ["no node_modules"]),
+          ...(existsSync(join(root, "dist", "index.html")) ? [] : ["no dist/index.html"]),
+          ...(existsSync(stamp) && readFileSync(stamp, "utf8").trim() === "started" ? ["its last build did not finish"] : []),
+        ];
+        if (missing.length > 0) {
+          const launcher = shellQuote(join(root, "scripts", "plugin-launch.ts"));
+          const buildIt = process.platform === "win32" ? `$env:OVIS_FROM_SOURCE = '1'; bun ${launcher} install` : `OVIS_FROM_SOURCE=1 bun ${launcher} install`;
+          console.error(`Ovis: ${error.message}, and this checkout's own build is not complete (${missing.join(", ")}), so nothing was started. To build it, run:\n${buildIt}`);
+          return 1;
+        }
+        console.error(`Ovis: ${error.message}, so this checkout runs its own build`);
+        return await source(command, rest);
+      }
       console.error(`Ovis: ${error.message}, so this checkout runs from source`);
-      if (command === "install") return await build();
       remember();
       return await source(command, rest);
     }
