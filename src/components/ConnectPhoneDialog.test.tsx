@@ -46,10 +46,25 @@ describe("Connect a phone on a phone", () => {
   let pending: string;
   /** the next answers of POST /api/devices/pair/start, each held until its gate opens (none: the pending code at once) */
   let pairStarts: { code: string; gate: Promise<void> }[];
+  /** what each POST /api/relay/offer said it is for (x-ovis-no-account-only), in the order the PC got them */
+  let offersAsked: (string | null)[];
+  /** whether the pending code is the relay tab's QR code's own: the PC keeps one pending code, of one kind */
+  let pendingOwn: boolean;
+  /** the next answers of POST /api/relay/offer, each held until its gate opens: the PC has answered, the answer is on its way */
+  let offerGates: Promise<void>[];
+  /** offers the PC got whose answers have not arrived */
+  let offersOut: number;
+  /** the next POSTs of /api/relay/offer, each held on its way to the PC until its gate opens (none: the PC gets it at once) */
+  let offerRoads: Promise<void>[];
 
   beforeEach(() => {
     pending = "482913";
     pairStarts = [];
+    offersAsked = [];
+    pendingOwn = false;
+    offerGates = [];
+    offersOut = 0;
+    offerRoads = [];
     requests = [];
     assigned = [];
     shellMeta = false;
@@ -73,11 +88,27 @@ describe("Connect a phone on a phone", () => {
       documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } },
       querySelector: (selector: string) => shellMeta && selector.includes("ovis-shell") ? { getAttribute: () => "relay" } : null,
     } });
-    const fetch = async (input: string | URL | Request) => {
+    const fetch = async (input: string | URL | Request, init?: RequestInit) => {
       const path = new URL(String(input instanceof Request ? input.url : input), "https://workstation.example.ts.net").pathname;
       requests.push(path);
       const expires_at = new Date(Date.now() + 600_000).toISOString();
-      if (path === "/api/relay/offer") return Response.json({ url: pending === "482913" ? OFFER_URL : encodeOffer({ ...decodeOffer(OFFER_URL)!, code: pending }, APP), expires_at });
+      if (path === "/api/relay/offer") {
+        const own = new Headers(input instanceof Request ? input.headers : init?.headers).get("x-ovis-no-account-only");
+        const road = offerRoads.shift();
+        if (road !== undefined) await road;
+        offersAsked.push(own);
+        // one pending code, as the PC keeps it (server/devices.ts): the relay tab's QR code gets a code of its own, which
+        // no other offer carries, so an offer of either kind starts a code when the pending one is of the other kind
+        if ((own === "1") !== pendingOwn) {
+          pendingOwn = own === "1";
+          pending = String(600_000 + offersAsked.length);
+        }
+        const code = pending;
+        offersOut += 1;
+        await offerGates.shift();
+        offersOut -= 1;
+        return Response.json({ url: code === "482913" ? OFFER_URL : encodeOffer({ ...decodeOffer(OFFER_URL)!, code }, APP), expires_at });
+      }
       if (path === "/api/devices/pair/start") {
         const held = pairStarts.shift();
         if (held === undefined) return Response.json({ code: pending, expires_at });
@@ -91,7 +122,7 @@ describe("Connect a phone on a phone", () => {
         { name: "winvm", destination: "winvm.tail.ts.net", detail: "winvm.tail.ts.net", source: "tailscale", tailnet: "winvm.tail.ts.net" },
         ...extraCandidates,
       ] });
-      if (path === "/api/relay/code") { pending = "777111"; return Response.json({ code: "7K3QD-M2XHA", expires_at, server_id: SERVER_ID }); }
+      if (path === "/api/relay/code") { pending = "777111"; pendingOwn = false; return Response.json({ code: "7K3QD-M2XHA", expires_at, server_id: SERVER_ID }); }
       return Response.json({ error: { code: "not_found", message: "no" } }, { status: 404 });
     };
     spyOn(globalThis, "fetch").mockImplementation(Object.assign(fetch, { preconnect: globalThis.fetch.preconnect }));
@@ -110,6 +141,33 @@ describe("Connect a phone on a phone", () => {
 
   const mount = async (node: React.ReactNode) => { await act(async () => { renderer = create(<SettingsProvider>{node}</SettingsProvider>); }); };
   const qrCodes = () => renderer!.root.findAllByType(QrCode);
+  /** the six-digit codes of the relay QR codes on screen */
+  const shown = () => qrCodes().map((qr) => decodeOffer(String(qr.props.value))?.code);
+  /** Lets the page run on, a turn at a time, until `reached` holds; a state that never comes fails here, naming `what`. */
+  const until = async (reached: () => boolean, what: string) => {
+    for (let turn = 0; turn < 2000; turn += 1) {
+      if (reached()) return;
+      await act(async () => { await new Promise<void>((resolve) => { setImmediate(resolve); }); });
+    }
+    throw new Error(`Never came: ${what}`);
+  };
+  /** the relay tab's QR code is the only one up, with the code the PC has, which is its own; `out`: answers still on their way */
+  const onlyTheRelayTabs = (out = 0) => pendingOwn && shown().length === 1 && shown()[0] === pending && offersOut === out;
+  /** Holds the answer of an offer the PC is yet to get, the one after the next `after` offers, until the returned call. */
+  const gate = (after: number) => {
+    for (let passed = 0; passed < after; passed += 1) offerGates.push(Promise.resolve());
+    let open = () => {};
+    offerGates.push(new Promise<void>((resolve) => { open = resolve; }));
+    return () => open();
+  };
+  /** Holds the next offer asked for on its way to the PC, until the returned call: the PC gets the offers asked for after it first. */
+  const holdOnTheWay = () => {
+    let open = () => {};
+    offerRoads.push(new Promise<void>((resolve) => { open = resolve; }));
+    return () => open();
+  };
+  /** how many offers the page has asked for, those still on their way to the PC too */
+  const offersSent = () => requests.filter((path) => path === "/api/relay/offer").length;
   const text = (node: ReactTestInstance): string => node.children.map((child) => typeof child === "string" ? child : text(child)).join("");
   const button = (label: string) => {
     const found = renderer!.root.findAll((node) => node.type === "button" && text(node).trim() === label);
@@ -172,6 +230,142 @@ describe("Connect a phone on a phone", () => {
     expect(requests.filter((path) => path === "/api/relay/offer").length).toBeLessThanOrEqual(3);
     expect(qrCodes()).toHaveLength(2);
     expect(renderer!.root.findAll((node) => node.type === "p" && text(node).includes("This code expired."))).toHaveLength(0);
+  });
+
+  it("takes the guide's relay QR code down once the relay tab's QR code has its code, and starts no code for it again", async () => {
+    // the setup guide's relay QR code is up; then the relay tab's is shown beside it
+    await mount(<RelayPairing />);
+    await until(() => shown().join() === "482913" && offersOut === 0, "the guide's QR code with the pending code");
+    await act(async () => { renderer!.update(<SettingsProvider><RelayPairing /><RelayPairing qrOnly /></SettingsProvider>); });
+    await until(() => onlyTheRelayTabs() && offersAsked.length === 3, "the relay tab's QR code alone, with the PC's code");
+    // the guide's asked once, before it; the relay tab's asked again as the guide's came down, and the PC kept its code
+    expect([offersAsked, pending]).toEqual([[null, "1", "1"], "600002"]);
+    expect(renderer!.root.findAll((node) => node.type === "p" && text(node).includes("This code expired."))).toHaveLength(1);
+    expect(buttons().filter((label) => label === "New code")).toHaveLength(2);
+  });
+
+  it("leaves the relay tab's QR code up with the PC's code when the guide's relay QR code is shown after it", async () => {
+    await mount(<RelayPairing qrOnly />);
+    await until(onlyTheRelayTabs, "the relay tab's QR code with its code");
+    const first = pending;
+    await act(async () => { renderer!.update(<SettingsProvider><RelayPairing qrOnly /><RelayPairing /></SettingsProvider>); });
+    // the guide's offer started a code, which ended the relay tab's; the relay tab's QR code asked for its own again
+    await until(() => onlyTheRelayTabs() && offersAsked.length === 4, "the relay tab's QR code alone, with the code the PC has now");
+    expect([offersAsked, pending === first]).toEqual([["1", null, "1", "1"], false]);
+  });
+
+  it("shows nothing for an offer answered after the relay tab's code took the QR code down; the relay tab's QR code asks for its code again", async () => {
+    await mount(<RelayPairing />);
+    await until(() => shown().join() === "482913" && offersOut === 0, "the guide's QR code with the pending code");
+    // a code was started elsewhere on the PC. A second relay QR code comes up with it and says so, and the guide's asks
+    // for its offer again, quietly: the PC answers, and that answer is slow to arrive
+    pending = "246801";
+    const arrive = gate(1);
+    await act(async () => { renderer!.update(<SettingsProvider><RelayPairing /><RelayPairing /></SettingsProvider>); });
+    await until(() => offersAsked.length === 3, "the guide's second offer reaching the PC");
+    await act(async () => { renderer!.update(<SettingsProvider><RelayPairing /><RelayPairing /><RelayPairing qrOnly /></SettingsProvider>); });
+    await until(() => onlyTheRelayTabs(1), "the relay tab's QR code alone, with its code");
+    const before = offersAsked.length;
+    await act(async () => { arrive(); });
+    await until(() => offersAsked.length > before && offersOut === 0, "the relay tab's QR code asking for its code again");
+    // the code that arrived late is one the relay tab's replaced: no QR code shows it, and the PC still has the relay tab's
+    expect([offersAsked.slice(before), onlyTheRelayTabs(), shown().includes("246801")]).toEqual([["1"], true, false]);
+  });
+
+  it("has the relay tab's QR code ask again when the PC got another relay QR code's offer after its own and answered it late: the QR code left up shows the PC's code", async () => {
+    await mount(<RelayPairing qrOnly />);
+    await until(onlyTheRelayTabs, "the relay tab's QR code with its code");
+    await act(async () => { renderer!.update(<SettingsProvider><RelayPairing qrOnly /><RelayPairing /></SettingsProvider>); });
+    await until(() => onlyTheRelayTabs() && offersAsked.includes(null), "the relay tab's QR code alone again");
+    // a third relay QR code comes up and says its code, then goes: the relay tab's asks for its own again, and the
+    // guide's for its offer, quietly. The PC gets the relay tab's first and the guide's after it; both answers are slow
+    const settled = offersAsked.length;
+    const tabArrives = gate(1);
+    const guideArrives = gate(0);
+    await act(async () => { renderer!.update(<SettingsProvider><RelayPairing qrOnly /><RelayPairing /><RelayPairing /></SettingsProvider>); });
+    await until(() => offersOut === 2, "the relay tab's and the guide's offers reaching the PC");
+    expect([offersAsked.slice(settled), pendingOwn]).toEqual([[null, "1", null], false]);
+    const guides = pending;
+    await act(async () => { renderer!.update(<SettingsProvider><RelayPairing qrOnly /><RelayPairing /></SettingsProvider>); });
+    await act(async () => { tabArrives(); });
+    // the relay tab's QR code shows the code the PC started for it, which the guide's has ended since
+    await until(() => offersOut === 1 && shown().length === 1 && shown()[0] !== guides, "the relay tab's QR code up alone, the guide's answer still on its way");
+    const before = offersAsked.length;
+    await act(async () => { guideArrives(); });
+    await until(() => offersAsked.length > before, "the relay tab's QR code asking for its code again");
+    await until(onlyTheRelayTabs, "the relay tab's QR code alone, with the code the PC has now");
+    expect(shown().includes(guides)).toBe(false);
+  });
+
+  it("has the relay tab's QR code ask again when a relay QR code that shows a newer code comes down for it", async () => {
+    await mount(<RelayPairing qrOnly />);
+    await until(onlyTheRelayTabs, "the relay tab's QR code with its code");
+    await act(async () => { renderer!.update(<SettingsProvider><RelayPairing qrOnly /><RelayPairing /></SettingsProvider>); });
+    await until(() => onlyTheRelayTabs() && offersAsked.includes(null), "the relay tab's QR code alone again");
+    // as above, but the guide's answer arrives at once and the relay tab's is slow: the guide's QR code shows the PC's
+    // code when the relay tab's answer, with a code the PC has ended, takes it down
+    const settled = offersAsked.length;
+    const tabArrives = gate(1);
+    await act(async () => { renderer!.update(<SettingsProvider><RelayPairing qrOnly /><RelayPairing /><RelayPairing /></SettingsProvider>); });
+    await until(() => offersOut === 1 && shown().includes(pending), "the guide's QR code with the PC's code, the relay tab's answer still on its way");
+    expect([offersAsked.slice(settled), pendingOwn]).toEqual([[null, "1", null], false]);
+    const before = offersAsked.length;
+    await act(async () => { tabArrives(); });
+    await until(() => offersAsked.length > before, "the relay tab's QR code asking for its code again");
+    await until(onlyTheRelayTabs, "the relay tab's QR code alone, with the code the PC has now");
+  });
+
+  it("has the relay tab's QR code ask again when another relay QR code's offer is answered after that QR code is gone", async () => {
+    await mount(<RelayPairing qrOnly />);
+    await until(onlyTheRelayTabs, "the relay tab's QR code with its code");
+    const tabs = pending;
+    // the guide's relay QR code comes up and asks for its offer: the PC starts a code for it, which ends the relay
+    // tab's. The guide's is gone before the answer arrives, so no QR code is left to show that code or to say it
+    const arrive = gate(0);
+    await act(async () => { renderer!.update(<SettingsProvider><RelayPairing qrOnly /><RelayPairing /></SettingsProvider>); });
+    await until(() => offersOut === 1, "the guide's offer reaching the PC");
+    await act(async () => { renderer!.update(<SettingsProvider><RelayPairing qrOnly /></SettingsProvider>); });
+    expect([shown(), pendingOwn]).toEqual([[tabs], false]);
+    const before = offersAsked.length;
+    await act(async () => { arrive(); });
+    await until(() => offersAsked.length > before, "the relay tab's QR code asking for its code again");
+    await until(onlyTheRelayTabs, "the relay tab's QR code alone, with the code the PC has now");
+    expect([offersAsked.slice(before), pending === tabs]).toEqual([["1"], false]);
+  });
+
+  it("has the relay tab's QR code ask again when another relay QR code's first offer reaches the PC after the one it asked for in its place", async () => {
+    // the guide's relay QR code asks for its offer, which is slow to reach the PC
+    const reach = holdOnTheWay();
+    await mount(<RelayPairing />);
+    await until(() => offersSent() === 1, "the guide's offer asked for");
+    // a second relay QR code comes up with the pending code and says so: the guide's asks for its offer again, quietly,
+    // and shows that code without a word. Then the relay tab's QR code comes up, and both come down for its code
+    await act(async () => { renderer!.update(<SettingsProvider><RelayPairing /><RelayPairing /></SettingsProvider>); });
+    await until(() => shown().join() === "482913,482913", "both relay QR codes with the pending code");
+    await act(async () => { renderer!.update(<SettingsProvider><RelayPairing /><RelayPairing /><RelayPairing qrOnly /></SettingsProvider>); });
+    await until(() => onlyTheRelayTabs() && offersAsked.length === 4, "the relay tab's QR code alone, with its code");
+    const tabs = pending;
+    // the PC gets the guide's first offer only now: its code ends the relay tab's, and no QR code waits for the answer
+    await act(async () => { reach(); });
+    await until(() => offersAsked.length > 4, "the guide's first offer reaching the PC");
+    await until(onlyTheRelayTabs, "the relay tab's QR code alone, with the code the PC has now");
+    expect([offersAsked, pending === tabs]).toEqual([[null, null, "1", "1", null, "1"], false]);
+  });
+
+  it("asks for nothing on an answer of the relay tab's own offer that its QR code has asked for again since", async () => {
+    // the relay tab's QR code asks for its offer, and again when Phones and devices starts a code: both answers are slow
+    const first = gate(0);
+    const second = gate(0);
+    await mount(<RelayPairing qrOnly />);
+    await until(() => offersOut === 1, "the relay tab's offer reaching the PC");
+    pending = "246801";
+    pendingOwn = false;
+    await act(async () => { announcePairingCode({ code: pending, expires_at: new Date(Date.now() + 600_000).toISOString() }); });
+    await until(() => offersOut === 2, "the relay tab's second offer reaching the PC");
+    await act(async () => { first(); });
+    await act(async () => { second(); });
+    await until(onlyTheRelayTabs, "the relay tab's QR code with the code the PC has");
+    expect(offersAsked).toEqual(["1", "1"]);
   });
 
   it("a code to type starts a new six-digit code, and the pairing code shown beside it follows", async () => {

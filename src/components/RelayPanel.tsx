@@ -8,7 +8,7 @@ import { ApiError, cancelRelayCode, endPairing, requestRelayCode, requestRelayLi
 import { useT } from "../lib/i18n.ts";
 import { callNative, hasNativePlugin } from "../lib/nativeApp.ts";
 import { announcePairingCode, PAIRING_CODE_EVENT, QR_CODE_ENDED_CHANNEL, tellOtherWindowsQrCodeEnded, type AnnouncedCode, type RelayState } from "../lib/useRelay.ts";
-import type { PairingCode, RelayStatus } from "../../shared/protocol.ts";
+import type { RelayStatus } from "../../shared/protocol.ts";
 import { isTailnetCarrier } from "../../shared/relay-mux.ts";
 import { decodeOffer } from "../../shared/relay-offer.ts";
 import { QrReveal, ShareLink } from "./PhonePanel.tsx";
@@ -93,6 +93,19 @@ export function RelayDirectRow({ relay, readOnly }: { relay: RelayState; readOnl
 
 // a code announced by a relay QR (announceFromRelay), not by the Devices group
 let relayAnnouncing = false;
+
+/**
+ * The relay tab's QR codes on this page (RelayPairing `qrOnly`), each as what it does when another relay QR code has
+ * a code: it asks for its own again. They are called with the code of an offer that is not the relay tab's whenever
+ * that code will not be announced: its QR code came down for the relay tab's code (the code it showed, or one that
+ * reaches it afterwards), is gone, or has asked again since. The PC may have started that code after the relay
+ * tab's, which it then ended, whatever order the answers came in. Only the PC knows, and the relay tab's offer,
+ * asked for again, carries the code the PC has: the same one, or a new one.
+ */
+const relayTabQrCodes = new Set<(code: string | undefined) => void>();
+function askRelayTabQrCodes(code: string | undefined): void {
+  for (const askAgain of [...relayTabQrCodes]) askAgain(code);
+}
 function announceFromRelay(code: AnnouncedCode): void {
   relayAnnouncing = true;
   try { announcePairingCode(code); } finally { relayAnnouncing = false; }
@@ -105,7 +118,9 @@ function announceFromRelay(code: AnnouncedCode): void {
  * new code first; never on a timer or a render. The setup guide's and Settings' relay QR codes can be
  * up at once: a code another one announces is the one this shows already, or this asks for the offer
  * again without announcing it (the server's offer reuses its pending code), so the two never keep
- * answering each other.
+ * answering each other. The code of a QR code shown alone (`qrOnly`) is the exception: no other offer
+ * carries it, so when one is announced this QR code comes down (This code expired, New code) instead
+ * of asking again.
  * `qrOnly`: the QR code alone, with New code. No code to type is asked for (`POST /api/relay/code` is never sent), so
  * nothing on the screen can be read and typed on another device: the relay tab's account QR code, which puts a PC in
  * the account of whoever redeems it (ConnectPhoneDialog `AccountQr`). Its offer says so to the PC
@@ -128,6 +143,9 @@ export function RelayPairing({ phone = false, compact = false, qrOnly = false, o
   const quiet = useRef(false);
   // the code another relay QR code last announced
   const heard = useRef<string | null>(null);
+  // how often the relay tab's code was announced to this QR code, which is not the relay tab's: each time took it
+  // down, and an offer asked for at one count and answered at another was overtaken by the relay tab's code
+  const taken = useRef(0);
   const again = () => setGeneration((value) => value + 1);
   const refused = useRef(onInAccount);
   refused.current = onInAccount;
@@ -141,11 +159,20 @@ export function RelayPairing({ phone = false, compact = false, qrOnly = false, o
     // Asked for together, a new six-digit code the offer starts ends the code being minted on the PC.
     if (compact && !qrOnly && generation === 0) return;
     let cancelled = false;
+    const asked = taken.current;
     const silent = quiet.current;
     quiet.current = false;
     setState("minting");
     requestRelayOffer({ noAccountOnly: qrOnly }).then((next) => {
-      if (cancelled) return;
+      // An answer nobody waits for (this QR code is gone, or has asked again since), or one the relay tab's code
+      // overtook by taking this QR code down while the offer was out: it shows nothing and changes nothing here. An
+      // offer that is not the relay tab's may have ended the relay tab's code on the PC all the same, so the relay
+      // tab's QR codes on the page ask for their own again (relayTabQrCodes). The relay tab's own offer never ends
+      // the relay tab's code, and asking for it again on each such answer would never end
+      if (cancelled || asked !== taken.current) {
+        if (!qrOnly) askRelayTabQrCodes(decodeOffer(next.url)?.code);
+        return;
+      }
       setOffer(next);
       setState("live");
       // the server made this offer's code, maybe with no New code pressed: the page watches it like any other
@@ -160,7 +187,8 @@ export function RelayPairing({ phone = false, compact = false, qrOnly = false, o
         try { announceFromRelay({ code, expires_at: next.expires_at, ...(qrOnly ? { qrOnly: true } : {}) }); } finally { announcing.current = false; }
       }
     }, (reason: unknown) => {
-      if (cancelled) return;
+      // nobody waits for it, or it was overtaken, as above: nothing to show
+      if (cancelled || asked !== taken.current) return;
       setOffer(null);
       // the PC joined an account meanwhile: no refusal to read, the tab says which account instead
       if (reason instanceof ApiError && reason.code === "in_account" && refused.current !== undefined) {
@@ -171,7 +199,7 @@ export function RelayPairing({ phone = false, compact = false, qrOnly = false, o
       setState("failed");
     });
     return () => { cancelled = true; };
-  }, [generation]);
+  }, [generation, qrOnly]);
 
   // a window of this browser ended the code this QR code shows (they share the PC's one pending code): a new one
   useEffect(() => {
@@ -187,20 +215,41 @@ export function RelayPairing({ phone = false, compact = false, qrOnly = false, o
   }, [qrOnly]);
 
   useEffect(() => {
+    // another relay QR code has the code `code`: this one asks for the offer again, quietly, unless it shows that code
+    const follow = (code: string | undefined) => {
+      heard.current = code ?? null;
+      if (code === undefined || code !== shown.current) { quiet.current = true; again(); }
+    };
     const onCode = (event: Event) => {
       if (announcing.current) return;
       dropTyped();
-      const code = (event as CustomEvent<PairingCode | undefined>).detail?.code;
+      const announced = (event as CustomEvent<AnnouncedCode | undefined>).detail;
       if (relayAnnouncing) {
-        heard.current = code ?? null;
-        if (code === undefined || code !== shown.current) { quiet.current = true; again(); }
+        // the relay tab's QR code has a code of its own, which replaced the PC's one pending code: the code this QR
+        // code showed is gone, and an offer asked for now would start another code, which ends the relay tab's. So
+        // it comes down, as the digits do (ConnectPhoneDialog CodeRoute), until New code asks for one. An offer it
+        // has out is overtaken with it (`taken`), and for a code it showed the relay tab's QR code asks again
+        if (!qrOnly && announced?.qrOnly === true) {
+          const had = shown.current;
+          taken.current += 1;
+          shown.current = null;
+          setOffer(null);
+          setState("expired");
+          if (had !== null) askRelayTabQrCodes(had);
+          return;
+        }
+        follow(announced?.code);
         return;
       }
       again();
     };
     window.addEventListener(PAIRING_CODE_EVENT, onCode);
-    return () => window.removeEventListener(PAIRING_CODE_EVENT, onCode);
-  }, []);
+    if (qrOnly) relayTabQrCodes.add(follow);
+    return () => {
+      window.removeEventListener(PAIRING_CODE_EVENT, onCode);
+      relayTabQrCodes.delete(follow);
+    };
+  }, [qrOnly]);
 
   useEffect(() => {
     if (offer === null) return;
