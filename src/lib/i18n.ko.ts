@@ -525,7 +525,6 @@ const BASE: Record<string, string> = {
   "Paste and send": "붙여넣고 보내기",
   "Conversation": "대화",
   "Off": "끄기",
-  "Not now": "나중에",
   "Pair with a QR or code": "QR이나 코드로 페어링",
   "Add this PC": "이 PC 추가",
   "Pair with {name}?": "{name} 페어링을 시작할까요?",

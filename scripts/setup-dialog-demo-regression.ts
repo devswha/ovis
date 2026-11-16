@@ -4,12 +4,12 @@
  *
  * - A fresh run's guide is a modal dialog named "Set up Ovis" over the app, not a page in the main area: at
  *   1920x1080 it is the 1200x675 16:9 card in the middle of the window, at 1280x720 the same card with no
- *   scroll, and at 390 the app's bottom sheet. The keyboard starts on "Start setup", Tab stays inside it,
+ *   scroll, and at 390 the app's bottom sheet. It opens on the agent step, the keyboard on its title, Tab stays inside it,
  *   and its close button is named.
- * - The fast path is two clicks from the welcome: Start setup, then Start now, which
+ * - The fast path is Continue three times, then Start on Done, which
  *   opens a new workspace with the agent picked for you (one more in the sidebar) and closes the guide.
  * - The full path: Continue leads to the theme step, whose cards are a radio group (an arrow picks the next
- *   theme and the whole app takes it at once, the side panel naming it), then to Done, whose Start with
+ *   theme and the whole app takes it at once, the side panel naming it), then to Done, whose Start opens the workspace with
  *   <agent> is the step's one primary button and whose list names the theme picked. Between the theme and Done,
  *   Phone and alerts: Settings' Alert me when chips with their defaults, Send test showing one alert on this
  *   computer at once (notifications recorded, none reach the desktop), the phone beside them; Done lists the
@@ -125,34 +125,30 @@ try {
         assert.equal(await page.getByRole("region", { name: "Setup guide", exact: true }).count(), 0, `no in-page guide ${at}`);
         const box = (await dialog.boundingBox())!;
         if (size.width === 1920) {
-          assert.deepEqual([Math.round(box.width), Math.round(box.height)], [1200, 675], `a 1200x675 card at 1920x1080 ${at}`);
+          assert.deepEqual([Math.round(box.width), Math.round(box.height) <= 675 && Math.round(box.height) >= 440], [1200, true], `a 1200-wide card no taller than 675 at 1920x1080 ${at}`);
           assert.ok(Math.abs(box.x + box.width / 2 - size.width / 2) <= 1 && Math.abs(box.y + box.height / 2 - size.height / 2) <= 1, `centred ${at}: ${JSON.stringify(box)}`);
         } else if (!phone) {
-          assert.deepEqual([Math.round(box.width), Math.round(box.height)], [1200, 675], `the same card at 1280x720 ${at}`);
+          assert.deepEqual([Math.round(box.width), Math.round(box.height) <= 675 && Math.round(box.height) >= 440], [1200, true], `the same card at 1280x720 ${at}`);
         } else {
           assert.ok(Math.abs(box.y + box.height - size.height) <= 1 && Math.round(box.width) === size.width, `a bottom sheet at 390 ${at}: ${JSON.stringify(box)}`);
         }
         // the keyboard starts on the first choice and Tab stays in the dialog
-        assert.match(await focusedName(page), /^Start setup/, `the keyboard starts on Start setup ${at}`);
-        const order: string[] = [];
-        for (let step = 0; step < 12; step++) {
-          await page.keyboard.press("Tab");
-          order.push(await focusedName(page));
-          assert.ok(await page.evaluate(() => document.activeElement?.closest(".setup-dialog") != null), `Tab stays in the dialog ${at}: ${order.join(" | ")}`);
-        }
-        assert.ok(order.includes("Go straight in"), `Tab reaches the second choice ${at}: ${order.join(" | ")}`);
-        assert.ok(order.includes("Close setup"), `the close button is named Close setup ${at}: ${order.join(" | ")}`);
-        await shot("1-welcome");
-
-        // the fast path: two clicks from the welcome to a running agent
-        await dialog.getByRole("button", { name: /^Start setup/ }).click();
+        // the first real choice opens: the agent step, its title with the keyboard, Tab inside the dialog
         const title = dialog.getByRole("heading", { name: "Pick an agent", exact: true });
         await title.waitFor();
         await dialog.locator(".setup-found .setup-tile").first().waitFor();
         await settled(page);
         assert.equal(await focusedName(page), "Pick an agent", `the step's title takes the keyboard ${at}`);
+        const order: string[] = [];
+        for (let step = 0; step < 14; step++) {
+          await page.keyboard.press("Tab");
+          order.push(await focusedName(page));
+          assert.ok(await page.evaluate(() => document.activeElement?.closest(".setup-dialog") != null), `Tab stays in the dialog ${at}: ${order.join(" | ")}`);
+        }
+        assert.ok(order.includes("Set up later") && order.includes("Close setup"), `Tab reaches Set up later and Close setup ${at}: ${order.join(" | ")}`);
+        await dialog.getByRole("heading", { name: "Pick an agent", exact: true }).focus();
         const footer = dialog.locator(".setup-foot");
-        assert.deepEqual((await footer.getByRole("button").allInnerTexts()).map((text) => text.trim()), ["Start now", "Back", "Continue"], `the agent step's footer ${at}`);
+        assert.deepEqual((await footer.getByRole("button").allInnerTexts()).map((text) => text.trim()), ["Set up later", "Continue"], `the agent step's footer ${at}`);
         assert.equal(await dialog.locator(".btn-primary").count(), 1, `one primary button on the agent step ${at}`);
         assert.ok(await dialog.locator(".setup-side").getByText("Claude Code", { exact: true }).count() > 0, `the side panel names the agent picked for you ${at}`);
         if (!phone) {
@@ -162,7 +158,7 @@ try {
         await shot("2-agent");
 
         const steps = dialog.getByRole("list", { name: "Steps", exact: true });
-        assert.equal((await steps.locator('[aria-current="step"]').textContent())?.replace(/\s+/g, ""), "1Agent", `the head marks Agent as the current step ${at}`);
+        assert.equal((await steps.locator('[aria-current="step"]').textContent())?.replace(/\s+/g, ""), "Agent", `the head marks Agent as the current step ${at}`);
 
         // Continue: the theme step. Its cards are a radio group; an arrow picks the next card and the app takes it at once
         await footer.getByRole("button", { name: "Continue", exact: true }).click();
@@ -170,7 +166,7 @@ try {
         await look.waitFor();
         await settled(page);
         assert.equal(await focusedName(page), "Pick a look", `the theme step's title takes the keyboard ${at}`);
-        assert.equal((await steps.locator('[aria-current="step"]').textContent())?.replace(/\s+/g, ""), "2Theme", `the head marks Theme as the current step ${at}`);
+        assert.equal((await steps.locator('[aria-current="step"]').textContent())?.replace(/\s+/g, ""), "Theme", `the head marks Theme as the current step ${at}`);
         const side = theme === "dark" ? "Dark theme" : "Light theme";
         const cards = dialog.getByRole("radiogroup", { name: side, exact: true });
         assert.equal(await cards.getByRole("radio", { checked: true }).count(), 1, `one theme checked ${at}`);
@@ -190,7 +186,7 @@ try {
         await touch.waitFor();
         await settled(page);
         assert.equal(await focusedName(page), "Stay in touch", `the phone and alerts step's title takes the keyboard ${at}`);
-        assert.equal((await steps.locator('[aria-current="step"]').textContent())?.replace(/\s+/g, ""), "3Phoneandalerts", `the head marks Phone and alerts as the current step ${at}`);
+        assert.equal((await steps.locator('[aria-current="step"]').textContent())?.replace(/\s+/g, ""), "Phoneandalerts", `the head marks Phone and alerts as the current step ${at}`);
         // nothing asked the browser for permission on the way here; Turn on alerts asks it once
         const asks = () => page.evaluate(() => (window as unknown as { permissionAsks: { count: number } }).permissionAsks.count);
         assert.equal(await asks(), 0, `no permission asked before Turn on alerts ${at}`);
@@ -213,7 +209,7 @@ try {
         assert.equal(await focusedName(page), "Ovis is ready", `Done's title takes the keyboard ${at}`);
         const primary = dialog.locator(".btn-primary");
         assert.equal(await primary.count(), 1, `one primary button on Done ${at}`);
-        assert.equal((await primary.innerText()).trim(), "Start with Claude Code", `Done's Start ${at}`);
+        assert.equal((await primary.innerText()).trim(), "Start", `Done's Start ${at}`);
         assert.ok(await dialog.locator(".setup-summary").getByText(picked, { exact: false }).count() > 0, `Done lists the theme picked ${at}`);
         assert.equal(await steps.locator("li.is-done").count(), 3, `every step is marked done on Done ${at}`);
         const summary = dialog.locator(".setup-summary");
@@ -228,27 +224,28 @@ try {
         await title.waitFor();
 
         if (size.width === 1920) {
-          // the fast path straight from a fresh welcome: Start setup, then Start now opens a workspace and closes the guide
+          // the fast path from a fresh first run: Continue three times and Start (four presses) open a workspace and close the guide
           await page.evaluate((guide) => localStorage.setItem("ovis:setup-guide", guide), WELCOME);
           await page.reload();
-          await dialog.getByRole("button", { name: /^Start setup/ }).click();
           await title.waitFor();
           const workspaces = page.locator(".workspace-group[data-workspace]");
           const before = await workspaces.count();
-          await dialog.locator(".setup-foot").getByRole("button", { name: "Start now", exact: true }).click();
+          // the fast path: Continue through theme and phone and alerts with nothing chosen, then Start (four presses)
+          for (let press = 0; press < 3; press++) await dialog.locator(".setup-foot").getByRole("button", { name: "Continue", exact: true }).click();
+          await dialog.getByRole("heading", { name: "Ovis is ready", exact: true }).waitFor();
+          await dialog.locator(".setup-foot").getByRole("button", { name: "Start", exact: true }).click();
           await dialog.waitFor({ state: "detached" });
           await page.waitForFunction((count) => document.querySelectorAll(".workspace-group[data-workspace]").length > count, before);
           assert.equal(JSON.parse((await page.evaluate(() => localStorage.getItem("ovis:setup-guide"))) ?? "{}").status, "closed", `the fast path closes the guide ${at}`);
           // a first run whose agent started: the first-start hints wait for its workspace, and the sidebar's setup row may show
           assert.deepEqual(await page.evaluate(() => [localStorage.getItem("ovis:first-hints"), localStorage.getItem("ovis:setup-row")]), ["pending", "on"], `the fast path arms the hints and the setup row ${at}`);
           await shot("6-started");
-          console.log(`PASS the guide is a 1200x675 dialog, keyboard inside it, and the fast path opens the first workspace in two clicks (${at})`);
+          console.log(`PASS the guide is a 1200x675 dialog, keyboard inside it, and the fast path opens the first workspace in four presses (${at})`);
 
           // stepped aside (a pane picked from the palette over it) the guide is no modal: the app's own check for one
           // (modalOpen: the terminal's focus, the drawer, Escape) finds nothing, and Back to setup brings it back
           await page.evaluate((guide) => localStorage.setItem("ovis:setup-guide", guide), WELCOME);
           await page.reload();
-          await dialog.getByRole("button", { name: /^Start setup/ }).click();
           await title.waitFor();
           await page.keyboard.press("Control+Shift+K");
           await page.getByRole("searchbox").fill("Guard the export button");
@@ -267,7 +264,6 @@ try {
             // arrow moves off it, and the mode switch draws the other side's cards (#3885 review)
             await page.evaluate((guide) => localStorage.setItem("ovis:setup-guide", guide), WELCOME);
             await page.reload();
-            await dialog.getByRole("button", { name: /^Start setup/ }).click();
             await title.waitFor();
             await dialog.locator(".setup-foot").getByRole("button", { name: "Continue", exact: true }).click();
             await dialog.getByRole("heading", { name: "Pick a look", exact: true }).waitFor();
@@ -323,7 +319,6 @@ try {
             await page.evaluate((guide) => { localStorage.setItem("ovis:setup-guide", guide); (window as unknown as { pushStandIn: { fails: boolean } }).pushStandIn.fails = true; }, WELCOME);
             await page.reload();
             await page.evaluate(() => { (window as unknown as { pushStandIn: { fails: boolean } }).pushStandIn.fails = true; });
-            await dialog.getByRole("button", { name: /^Start setup/ }).click();
             await title.waitFor();
             for (const heading of ["Pick a look", "Stay in touch"]) {
               await dialog.locator(".setup-foot").getByRole("button", { name: "Continue", exact: true }).click();
@@ -346,7 +341,6 @@ try {
           try {
             await other.goto(`${root}?demo_devices=list`);
             const guide = other.getByRole("dialog", { name: DIALOG, exact: true });
-            await guide.getByRole("button", { name: /^Start setup/ }).click();
             await guide.getByRole("heading", { name: "Pick an agent", exact: true }).waitFor();
             await guide.locator(".setup-foot").getByRole("button", { name: "Continue", exact: true }).click();
             await guide.getByRole("heading", { name: "Pick a look", exact: true }).waitFor();
@@ -361,6 +355,16 @@ try {
           }
           console.log(`PASS the phone counts as paired only when another device is listed (${at})`);
         } else {
+          // Set up later closes it without starting an agent; the way back is in view: the sidebar's Setup: N left row
+          await dialog.locator(".setup-foot").getByRole("button", { name: "Set up later", exact: true }).click();
+          await dialog.waitFor({ state: "detached" });
+          if (phone) await page.locator(".app-header .header-menu-button, .drawer-toggle, [aria-label='Open sidebar']").first().click().catch(() => {});
+          await page.locator(".setup-row").waitFor();
+          assert.equal(await page.locator(".setup-row .setup-row-open").isVisible(), true, `Set up later leaves Setup: N left to come back by ${at}`);
+          console.log(`PASS Set up later leaves the way back in view (${at})`);
+          await page.evaluate((guide) => localStorage.setItem("ovis:setup-guide", guide), WELCOME);
+          await page.reload();
+          await dialog.waitFor();
           // Escape closes it and records it closed: a reload shows no guide
           await page.keyboard.press("Escape");
           await dialog.waitFor({ state: "detached" });
@@ -455,7 +459,6 @@ try {
       await page.keyboard.press("Tab");
       await page.waitForFunction(() => (window as unknown as { counts: { seen: unknown[] } }).counts.seen.length === 1);
       // recorded on the welcome, the line stays on the next step, its one-tap Turn off with it
-      await dialog.getByRole("button", { name: /^Start setup/ }).click();
       await dialog.getByRole("heading", { name: "Pick an agent", exact: true }).waitFor();
       await dialog.locator(".setup-note-usage").getByRole("button", { name: "Turn off", exact: true }).waitFor({ state: "attached" });
       assert.equal(await seen(), 1, "the next step's copy does not record it again");
@@ -495,7 +498,6 @@ try {
       const page = await context.newPage();
       await page.goto(`${root}?demo_devices=empty&demo_via=device${query}`);
       const dialog = page.getByRole("dialog", { name: DIALOG, exact: true });
-      await dialog.getByRole("button", { name: /^Start setup/ }).click();
       for (const heading of ["Pick an agent", "Pick a look"]) {
         await dialog.getByRole("heading", { name: heading, exact: true }).waitFor();
         await dialog.locator(".setup-foot").getByRole("button", { name: "Continue", exact: true }).click();
@@ -508,7 +510,7 @@ try {
       const body = await page.locator(".setup-dialog .setup-body").evaluate((node) => ({ scroll: node.scrollHeight, client: node.clientHeight }));
       assert.ok(body.scroll <= body.client + 1, `${at}: the step's body does not scroll (${state}): ${JSON.stringify(body)}`);
       const card = (await page.locator(".setup-dialog").boundingBox())!;
-      assert.ok(Math.abs(card.width / card.height - 16 / 9) < 0.02, `${at}: the dialog stays 16:9 (${state})`);
+      assert.ok(Math.round(card.width) === 1200 && card.height <= 675.5, `${at}: the dialog stays within its 1200x675 frame (${state})`);
     };
     const tab = (side: ReturnType<Page["locator"]>, name: RegExp) => side.getByRole("tab", { name }).click();
     {

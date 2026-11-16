@@ -17,7 +17,7 @@
  * stays visible, and the card's height never moves between steps.
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MutableRefObject, type ReactNode } from "react";
-import { ArrowRight, Bell, BellRing, Check, ChevronLeft, ChevronRight, Circle, CircleCheck, Copy, ExternalLink, TriangleAlert, Folder, Gauge, Globe, Info, KeyRound, LoaderCircle, Network, Play, RotateCw, Smartphone, Sparkles, Wifi, X } from "lucide-react";
+import { ArrowRight, Bell, BellRing, Check, ChevronLeft, Circle, CircleCheck, Copy, ExternalLink, TriangleAlert, Folder, Gauge, Globe, Info, KeyRound, LoaderCircle, Network, Play, RotateCw, Smartphone, Wifi, X } from "lucide-react";
 
 import type { AgentCatalogEntry, AgentCatalogRow } from "../../shared/agent-catalog.ts";
 import type { HealthAuth, PairingCode, RemoteAccess } from "../../shared/protocol.ts";
@@ -42,7 +42,6 @@ import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import { inRelayShell, useRelay, type RelayState } from "../lib/useRelay.ts";
 import { useOtherDevice, useSignedInUsage } from "../lib/useSetupGuide.ts";
 import { userErrorMessage, userFailure } from "../lib/userError.ts";
-import { AccountSection } from "./AccountSection.tsx";
 import { AgentMark } from "./AgentMark.tsx";
 import { AgentTile } from "./AgentTile.tsx";
 import { OvisMark } from "./OvisMark.tsx";
@@ -74,7 +73,7 @@ export interface SetupGuideProps {
   /** stepped aside for a pane the user went to: kept mounted, so what runs goes on */
   hidden?: boolean;
   dispatch: (event: GuideEvent) => void;
-  /** I've used Ovis before, Skip setup, the close button or Escape, or the first workspace opened */
+  /** Set up later, the close button or Escape, or the first workspace opened */
   onClose: () => void;
   /** shows the tab an install or sign-in runs in */
   onOpenTerminal: (paneId: string) => void;
@@ -164,7 +163,7 @@ export function SetupGuide(props: SetupGuideProps) {
   const [page, setPage] = useState<GuidePage>(state.at ?? "agent");
   // left that step: a reload resumes where the user is (#3907 review)
   useEffect(() => { if (state.at !== undefined && page !== state.at) props.dispatch({ type: "moved" }); }, [page]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { if (state.step === "welcome") setPage("agent"); }, [state.step]);
+  useEffect(() => { if (state.step === "welcome") { setPage("agent"); props.dispatch({ type: "begin" }); } }, [state.step]); // eslint-disable-line react-hooks/exhaustive-deps
   const view = setupView(check);
 
   // the control the dialog gives the keyboard to when it opens: the welcome's first choice, or a step's title
@@ -214,7 +213,7 @@ export function SetupGuide(props: SetupGuideProps) {
   // a guide stepped aside (hidden) shows nothing, so its line neither shows nor counts as seen
   const notice = <TelemetryNotice inline enabled={!hidden} onOpen={props.onOpenTelemetry} />;
   let body: ReactNode;
-  if (state.step === "welcome") body = <Welcome dispatch={props.dispatch} onClose={onClose} notice={notice} firstFocus={firstFocus} />;
+  if (state.step === "welcome") body = null;
   else if (view === "agents" && catalog !== null) body = <Steps page={page} setPage={setPage} onEnableAlerts={props.onEnableAlerts} notifications={props.notifications} settingsOpen={props.settingsOpen} pushOn={props.pushOn} catalog={catalog} ready={ready} machineId={machineId} reopened={state.reopened === true} dispatch={props.dispatch} onClose={onClose} onInstalled={agentInstalled} onLookAgain={loadCatalog} onOpenTerminal={props.onOpenTerminal} onOpened={props.onOpened} onOpenSettings={props.onOpenSettings} auth={props.auth} security={props.security} onStarting={props.onStarting} onPaired={props.onPaired} usageOn={turnsUsageOn(props.state)} phoneFirst={!phoneClosed && phoneBoxOpensFirst(props.state, isLoopbackHost(window.location.hostname))} onPhoneClosed={() => setPhoneClosed(true)} notice={notice} firstFocus={firstFocus} />;
   else body = <CheckStep reopened={state.reopened === true} dispatch={props.dispatch} onClose={onClose} notice={notice} firstFocus={firstFocus}>{view === "failed" ? <CheckFailed error={catalogError} onLookAgain={loadCatalog} /> : <Checking known={known} catalog={catalog} />}</CheckStep>;
 
@@ -226,7 +225,7 @@ export function SetupGuide(props: SetupGuideProps) {
         <header className="modal-header setup-head">
           <span className="setup-brand" id="setup-dialog-name"><OvisMark width={24} height={24} />{t("Set up Ovis")}</span>
           {/* the steps' list sits here once the guide has more than one step */}
-          {state.step === "welcome" ? <span className="setup-head-middle" /> : <StepList page={page} agent={catalog !== null && agentRows(catalog, ready).some((row) => installedHere(row, ready))} />}
+          {<StepList page={page} agent={catalog !== null && agentRows(catalog, ready).some((row) => installedHere(row, ready))} />}
           <button type="button" className="icon-button" aria-label={t("Close setup")} title={t("Close setup")} onClick={onClose}><X aria-hidden="true" /></button>
         </header>
         <p className="visually-hidden" role="status">{announced}</p>
@@ -237,42 +236,6 @@ export function SetupGuide(props: SetupGuideProps) {
 }
 
 type FirstFocus = MutableRefObject<HTMLElement | null>;
-
-function Welcome({ dispatch, onClose, notice, firstFocus }: Pick<SetupGuideProps, "dispatch" | "onClose"> & { notice: ReactNode; firstFocus: FirstFocus }) {
-  const t = useT();
-  // Not now folds the sign-in away for this welcome; Settings → Devices and PCs keeps it
-  const [later, setLater] = useState(false);
-  // Not now takes its box away: the keyboard's place goes to the first choice, not to the page
-  const firstChoice = useRef<HTMLButtonElement>(null);
-  const focusTarget = useCallback((node: HTMLButtonElement | null) => { firstChoice.current = node; firstFocus.current = node; }, [firstFocus]);
-  return (
-    <div className="modal-body setup-body setup-body-single">
-      <div className="setup-main">
-        <h2 id="setup-step-title" className="setup-title" tabIndex={-1}>{t("Welcome to Ovis")}</h2>
-        <p className="setup-lead">{t("First time with Ovis?")}</p>
-        <div className="setup-choices">
-          <button ref={focusTarget} type="button" className="setup-choice setup-choice-primary" onClick={() => dispatch({ type: "begin" })}>
-            <span className="setup-choice-icon"><Sparkles aria-hidden="true" /></span>
-            <span className="setup-choice-text"><strong>{t("Start setup")}</strong><span>{t("Find an agent and open a project.")}</span></span>
-            <ChevronRight aria-hidden="true" />
-          </button>
-          <button type="button" className="setup-choice" onClick={onClose}>
-            <span className="setup-choice-icon"><ArrowRight aria-hidden="true" /></span>
-            <span className="setup-choice-text"><strong>{t("Go straight in")}</strong></span>
-            <ChevronRight aria-hidden="true" />
-          </button>
-        </div>
-        {/* the account's sign-in, as Settings → Devices and PCs has it; none where this page has no account service */}
-        {!later && <AccountSection welcome={{
-          lead: <p className="setup-muted">{t("Sign in to reach this PC from anywhere.")}</p>,
-          later: <button type="button" className="setup-link" onClick={() => { setLater(true); firstChoice.current?.focus(); }}>{t("Not now")}</button>,
-        }} />}
-        <p className="setup-note"><Info aria-hidden="true" />{t("Reopen it in Settings → Agents.")}</p>
-        {notice}
-      </div>
-    </div>
-  );
-}
 
 /** The agent step's title, given the keyboard when the step is shown. */
 function StepTitle({ children, firstFocus }: { children: ReactNode; firstFocus: FirstFocus }) {
@@ -292,8 +255,7 @@ function CheckStep({ reopened, dispatch, onClose, notice, firstFocus, children }
         </div>
       </div>
       <footer className="modal-footer setup-foot">
-        <button type="button" className="btn btn-ghost" onClick={onClose}>{t("Skip setup")}</button>
-        {!reopened && <button type="button" className="btn" onClick={() => dispatch({ type: "back" })}><ChevronLeft aria-hidden="true" />{t("Back")}</button>}
+        <button type="button" className="btn btn-ghost setup-later" title={t("Reopen it in Settings → Agents.")} onClick={onClose}>{t("Set up later")}</button>
         <button type="button" className="btn btn-primary" disabled>{t("Continue")}<ArrowRight aria-hidden="true" /></button>
       </footer>
       {/* the title lives in the children; the check's own heading takes the focus */}
@@ -465,7 +427,7 @@ function Steps({ page, setPage, onEnableAlerts, notifications, settingsOpen = fa
   // open from the start on a first run on the PC, where a phone is the next device to add
   const [phone, setPhoneState] = useState<PhoneBoxOpening | null>(phoneFirst ? "first-run" : null);
   const setPhone = (next: PhoneBoxOpening | null): void => { setPhoneState(next); if (next === null) onPhoneClosed(); };
-  const startLabel = madeWithout !== null ? t("Open the workspace") : chosen !== null ? t("Start with {agent}", { agent: chosen.name }) : t("Start");
+  const startLabel = madeWithout !== null ? t("Open the workspace") : t("Start");
   const version = chosen?.state.installed === true ? chosen.state.version : null;
   const signInChosen = chosen !== null && unsigned.some((agent) => agent.id === chosen.id);
   const systemDark = useMediaQuery("(prefers-color-scheme: dark)");
@@ -507,7 +469,7 @@ function Steps({ page, setPage, onEnableAlerts, notifications, settingsOpen = fa
     <>
       <ThemeStep firstFocus={firstFocus}>{errorLine}{notice}</ThemeStep>
       <footer className="modal-footer setup-foot">
-        {madeWithout === null && chosen !== null && <button type="button" className="btn btn-ghost" disabled={opening} onClick={() => void start()}>{t("Start now")}</button>}
+        <button type="button" className="btn btn-ghost setup-later" title={t("Reopen it in Settings → Agents.")} onClick={onClose}>{t("Set up later")}</button>
         <button type="button" className="btn" disabled={locked} onClick={() => setPage("agent")}><ChevronLeft aria-hidden="true" />{t("Back")}</button>
         {madeWithout !== null
           ? <button type="button" className="btn btn-primary" onClick={() => void start()}><Play aria-hidden="true" />{t("Open the workspace")}</button>
@@ -533,7 +495,7 @@ function Steps({ page, setPage, onEnableAlerts, notifications, settingsOpen = fa
         </aside>
       </div>
       <footer className="modal-footer setup-foot">
-        {madeWithout === null && chosen !== null && <button type="button" className="btn btn-ghost" disabled={opening} onClick={() => void start()}>{t("Start now")}</button>}
+        <button type="button" className="btn btn-ghost setup-later" title={t("Reopen it in Settings → Agents.")} onClick={onClose}>{t("Set up later")}</button>
         <button type="button" className="btn" disabled={locked} onClick={() => setPage("theme")}><ChevronLeft aria-hidden="true" />{t("Back")}</button>
         {madeWithout !== null
           ? <button type="button" className="btn btn-primary" onClick={() => void start()}><Play aria-hidden="true" />{t("Open the workspace")}</button>
@@ -630,10 +592,7 @@ function Steps({ page, setPage, onEnableAlerts, notifications, settingsOpen = fa
         </aside>
       </div>
       <footer className="modal-footer setup-foot">
-        {madeWithout !== null ? null : chosen !== null
-          ? <button type="button" className="btn btn-ghost" disabled={opening} onClick={() => void start()}>{t("Start now")}</button>
-          : <button type="button" className="btn btn-ghost" onClick={onClose}>{t("Skip setup")}</button>}
-        {!reopened && <button type="button" className="btn" disabled={locked || busy} onClick={() => dispatch({ type: "back" })}><ChevronLeft aria-hidden="true" />{t("Back")}</button>}
+        <button type="button" className="btn btn-ghost setup-later" title={t("Reopen it in Settings → Agents.")} onClick={onClose}>{t("Set up later")}</button>
         {madeWithout !== null
           ? <button type="button" className="btn btn-primary" onClick={() => void start()}><Play aria-hidden="true" />{t("Open the workspace")}</button>
           : <button type="button" className="btn btn-primary" disabled={chosen === null || locked || busy} onClick={() => setPage("theme")}>{t("Continue")}<ArrowRight aria-hidden="true" /></button>}
@@ -648,22 +607,28 @@ type GuidePage = "agent" | "theme" | "phone" | "done";
 interface StepState { page: GuidePage; setPage: (page: GuidePage) => void }
 const STEPS: readonly Exclude<GuidePage, "done">[] = ["agent", "theme", "phone"];
 
-/** The head's list of steps: the one shown is marked current, the ones before it done. */
-/** `agent`: an agent is installed here; the Agent step is not marked done without one (a guide reopened at a later step) */
+/**
+ * The head's step bar, as Orca's: a thin segment per step this user will see (Done only with an agent to start) and
+ * "n / N"; the one shown is current, the ones before it done. Each segment keeps its step's name for a screen reader.
+ * `agent`: an agent is installed here; the Agent step is not marked done without one (a guide reopened at a later step)
+ */
 function StepList({ page, agent }: { page: GuidePage; agent: boolean }) {
   const t = useT();
-  const at = page === "done" ? STEPS.length : STEPS.indexOf(page);
+  const pages: readonly GuidePage[] = agent ? [...STEPS, "done"] : STEPS;
+  const at = Math.max(0, pages.indexOf(page));
   const done = (step: GuidePage, index: number): boolean => index < at && (step !== "agent" || agent);
-  const labels: Record<Exclude<GuidePage, "done">, string> = { agent: t("Agent"), theme: t("Theme"), phone: t("Phone and alerts") };
+  const labels: Record<GuidePage, string> = { agent: t("Agent"), theme: t("Theme"), phone: t("Phone and alerts"), done: t("Done") };
   return (
-    <ol className="setup-steps" aria-label={t("Steps")}>
-      {STEPS.map((step, index) => (
-        <li key={step} className={done(step, index) ? "is-done" : undefined} aria-current={index === at ? "step" : undefined}>
-          <span className="setup-steps-mark" {...(done(step, index) ? { role: "img", "aria-label": t("Done") } : { "aria-hidden": true })}>{done(step, index) ? <Check aria-hidden="true" /> : index + 1}</span>
-          <span className="setup-steps-label">{labels[step]}</span>
-        </li>
-      ))}
-    </ol>
+    <div className="setup-steps-bar">
+      <ol className="setup-steps" aria-label={t("Steps")}>
+        {pages.map((step, index) => (
+          <li key={step} className={done(step, index) ? "is-done" : index === at ? "is-current" : undefined} aria-current={index === at ? "step" : undefined}>
+            <span className="visually-hidden">{labels[step]}</span>
+          </li>
+        ))}
+      </ol>
+      <span className="setup-steps-count" aria-hidden="true">{at + 1} / {pages.length}</span>
+    </div>
   );
 }
 

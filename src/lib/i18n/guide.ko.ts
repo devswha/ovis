@@ -3,12 +3,9 @@
  * Register and fixed terms follow ../i18n.ko.ts; a key another feature also uses goes there.
  */
 export const GUIDE_KO: Record<string, string> = {
-  "Welcome to Ovis": "Ovis 시작하기",
-  "Skip setup": "안내 건너뛰기",
   "Look again": "다시 확인",
   "Use Tailscale or Wi-Fi instead": "대신 Tailscale이나 Wi-Fi 쓰기",
   "Set up Ovis": "Ovis 설정",
-  "Start with {agent}": "{agent}로 시작",
   "Connect your phone": "폰 연결하기",
   "Looking": "찾는 중",
   "Installed · v{version}": "설치됨 · v{version}",
@@ -46,11 +43,6 @@ export const GUIDE_KO: Record<string, string> = {
   "This computer": "이 컴퓨터",
   "now": "지금",
   "Other ways": "다른 방법",
-  "First time with Ovis?": "Ovis가 처음인가요?",
-  "Start setup": "설정 시작",
-  "Find an agent and open a project.": "에이전트를 찾고 프로젝트를 열어요.",
-  "Go straight in": "바로 들어가기",
-  "Sign in to reach this PC from anywhere.": "로그인하면 어디서든 이 PC를 써요.",
   "Reopen it in Settings → Agents.": "설정 → 에이전트에서 다시 열어요.",
   "Looking for agents…": "에이전트를 찾는 중…",
   "Couldn't look for agents": "에이전트를 찾지 못했어요",
@@ -67,7 +59,6 @@ export const GUIDE_KO: Record<string, string> = {
   "{agent} can't start here. Use the sidebar.": "여기서는 {agent}를 시작할 수 없어요. 사이드바를 써 주세요.",
   "{agent} didn't start. Its terminal shows why.": "{agent}가 시작되지 않았어요. 터미널에서 이유를 볼 수 있어요.",
   "Couldn't open the workspace.": "워크스페이스를 열지 못했어요.",
-  "Start now": "지금 시작",
   "Your plan usage shows in the sidebar.": "요금제 사용량이 사이드바에 보여요.",
   "Change it later in Settings.": "설정에서 언제든 바꿀 수 있어요.",
   "Every device gets this theme.": "모든 기기에 같은 테마가 적용돼요.",
@@ -109,4 +100,5 @@ export const GUIDE_KO: Record<string, string> = {
   "{agent} starts in {folder}.": "{agent}가 {folder}에서 시작해요.",
   "Setup isn't finished.": "설정이 남았어요.",
   "Reach this PC from anywhere.": "어디서든 이 PC에 연결해요.",
+  "Set up later": "나중에 설정",
 };

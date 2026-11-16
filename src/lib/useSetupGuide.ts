@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { fetchDevices, fetchPreferences } from "./api.ts";
 import { onSetupGuideRequest } from "./setupGuide.ts";
-import { autoOpen, otherDevice, GUIDE_STORAGE_KEY, guideStep, readGuide, readSignedIn, REOPENED, saveGuide, WELCOME, type GuideEvent, type GuideState } from "./setupGuideFlow.ts";
+import { autoOpen, otherDevice, GUIDE_STORAGE_KEY, guideStep, readGuide, readSignedIn, REOPENED, saveGuide, FIRST_RUN, type GuideEvent, type GuideState } from "./setupGuideFlow.ts";
 import { SETTINGS_STORAGE_KEY } from "./themeBoot.ts";
 import { setupRowOn } from "./firstHints.ts";
 
@@ -62,7 +62,7 @@ export function useSetupGuide({ enabled, workspaces, pairingGate, watching }: Se
     if (workspaces === null || sharedRevision === null) return;
     decided.current = true;
     setSettled(true);
-    if (autoOpen({ workspaces, savedSettings, sharedRevision, pairingGate, watching })) { openedHere.current = true; setGuide(WELCOME); }
+    if (autoOpen({ workspaces, savedSettings, sharedRevision, pairingGate, watching })) { openedHere.current = true; setGuide(FIRST_RUN); }
   }, [enabled, workspaces, sharedRevision, pairingGate, watching, savedSettings]);
 
   useEffect(() => {

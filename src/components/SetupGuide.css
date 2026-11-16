@@ -7,15 +7,18 @@
 .setup-dialog {
   --setup-w: 1200px;
   --setup-h: 675px;
+  --setup-min-h: 440px;
   --setup-head-h: 56px;
   --setup-foot-h: 64px;
   width: min(100%, var(--setup-w));
 }
 
+/* as tall as its step, within the 16:9 frame: a step with little to show is no half-empty card */
 @media (min-width: 641px) {
   .setup-dialog {
-    height: min(100%, var(--setup-h));
-    max-height: none;
+    height: auto;
+    min-height: min(100%, var(--setup-min-h));
+    max-height: min(100%, var(--setup-h));
   }
 }
 
@@ -47,73 +50,6 @@
   width: var(--space-6);
   height: var(--space-6);
   border-radius: var(--radius-sm);
-}
-
-/* the head's list of steps: a number in a ring, the current one filled, a done one checked */
-.setup-steps {
-  display: flex;
-  align-items: center;
-  gap: var(--space-6);
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.setup-steps li {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  color: var(--text-dim);
-  font-size: var(--fs-sm);
-  white-space: nowrap;
-}
-
-.setup-steps li[aria-current="step"] {
-  color: var(--text-strong);
-  font-weight: var(--fw-selected);
-}
-
-.setup-steps-mark {
-  display: grid;
-  place-items: center;
-  width: var(--space-5);
-  height: var(--space-5);
-  border: var(--hairline) solid var(--border-strong);
-  border-radius: var(--radius-pill);
-  font-size: var(--fs-xs);
-  font-variant-numeric: tabular-nums;
-}
-
-.setup-steps li[aria-current="step"] .setup-steps-mark {
-  border-color: var(--primary);
-  background: var(--primary);
-  color: var(--primary-text);
-}
-
-.setup-steps li.is-done .setup-steps-mark {
-  border-color: var(--status-done);
-  color: var(--status-done);
-}
-
-.setup-steps-mark svg {
-  width: var(--icon-size-sm);
-  height: var(--icon-size-sm);
-}
-
-/* a narrow head keeps the numbers and drops the words */
-@media (max-width: 640px) {
-  .setup-steps {
-    gap: var(--space-2);
-  }
-
-  .setup-steps-label {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
-  }
 }
 
 /* the close glyph, not its hover box, ends on the body's gutter */
@@ -1225,5 +1161,67 @@
     justify-content: flex-start;
     padding-inline: var(--space-1);
     text-align: center;
+  }
+}
+
+/* the head's step bar, as Orca's: thin segments and n / N */
+.setup-steps-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.setup-steps-bar .setup-steps {
+  display: flex;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.setup-steps-bar .setup-steps > li {
+  width: 28px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--border);
+}
+
+.setup-steps-bar .setup-steps > li.is-done {
+  background: var(--text-dim);
+}
+
+.setup-steps-bar .setup-steps > li.is-current {
+  width: 40px;
+  background: var(--text-strong);
+}
+
+.setup-steps-count {
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.setup-foot > .setup-later {
+  margin-inline-end: auto;
+  color: var(--text-dim);
+}
+
+/* only Set up later sits at the far left: Start now stays with Back and Continue */
+.setup-foot > .setup-later ~ .btn-ghost {
+  margin-inline-end: 0;
+}
+
+/* on a phone the bar is shorter, so the title beside it keeps its room */
+@media (max-width: 640px) {
+  .setup-steps-bar {
+    gap: var(--space-2);
+  }
+
+  .setup-steps-bar .setup-steps > li {
+    width: 14px;
+  }
+
+  .setup-steps-bar .setup-steps > li.is-current {
+    width: 22px;
   }
 }

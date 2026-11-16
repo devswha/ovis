@@ -26,6 +26,8 @@ export interface GuideState {
 export type GuideEvent = { type: "begin" } | { type: "back" } | { type: "moved" };
 
 export const WELCOME: GuideState = { step: "welcome" };
+/** A first run opens on the agent step, the first real choice, as Orca's opens on its first; Set up later is the way out */
+export const FIRST_RUN: GuideState = { step: "setup" };
 /** Settings → Agents' Open setup guide opens the setup screen itself */
 export const REOPENED: GuideState = { step: "setup", reopened: true };
 

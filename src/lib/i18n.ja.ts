@@ -527,7 +527,6 @@ const BASE: Record<string, string> = {
   "Paste and send": "貼り付けて送信",
   "Conversation": "会話",
   "Off": "オフ",
-  "Not now": "今はしない",
   "Pair with a QR or code": "QR またはコードでペアリング",
   "Add this PC": "このPCを追加",
   "Pair with {name}?": "{name}とペアリングしますか？",

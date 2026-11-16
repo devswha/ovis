@@ -529,7 +529,6 @@ const BASE: Record<string, string> = {
   "Paste and send": "粘贴并发送",
   "Conversation": "对话",
   "Off": "关闭",
-  "Not now": "暂不",
   "Pair with a QR or code": "使用二维码或配对码配对",
   "Add this PC": "添加此电脑",
   "Pair with {name}?": "与 {name} 配对？",

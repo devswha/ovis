@@ -3,12 +3,9 @@
  * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
  */
 export const GUIDE_JA: Record<string, string> = {
-  "Welcome to Ovis": "Ovis を始める",
-  "Skip setup": "セットアップをスキップ",
   "Look again": "もう一度確認",
   "Use Tailscale or Wi-Fi instead": "代わりに Tailscale か Wi-Fi を使う",
   "Set up Ovis": "Ovis のセットアップ",
-  "Start with {agent}": "{agent} で開始",
   "Connect your phone": "スマートフォンをつなぐ",
   "Looking": "確認中",
   "Installed · v{version}": "インストール済み · v{version}",
@@ -46,11 +43,6 @@ export const GUIDE_JA: Record<string, string> = {
   "This computer": "このコンピューター",
   "now": "今",
   "Other ways": "ほかの方法",
-  "First time with Ovis?": "Ovis は初めてですか?",
-  "Start setup": "設定を始める",
-  "Find an agent and open a project.": "エージェントを見つけて、プロジェクトを開きます。",
-  "Go straight in": "すぐに使う",
-  "Sign in to reach this PC from anywhere.": "サインインすると、どこからでもこの PC を使えます。",
   "Reopen it in Settings → Agents.": "設定 → エージェントからもう一度開けます。",
   "Looking for agents…": "エージェントを探しています…",
   "Couldn't look for agents": "エージェントを探せませんでした",
@@ -67,7 +59,6 @@ export const GUIDE_JA: Record<string, string> = {
   "{agent} can't start here. Use the sidebar.": "ここでは {agent} を始められません。サイドバーを使ってください。",
   "{agent} didn't start. Its terminal shows why.": "{agent} が始まりませんでした。理由はターミナルにあります。",
   "Couldn't open the workspace.": "ワークスペースを開けませんでした。",
-  "Start now": "今すぐ始める",
   "Your plan usage shows in the sidebar.": "プランの使用量はサイドバーに出ます。",
   "Change it later in Settings.": "あとから設定で変えられます。",
   "Every device gets this theme.": "すべての端末に同じテーマが使われます。",
@@ -109,4 +100,5 @@ export const GUIDE_JA: Record<string, string> = {
   "{agent} starts in {folder}.": "{agent} が {folder} で始まります。",
   "Setup isn't finished.": "設定がまだ残っています。",
   "Reach this PC from anywhere.": "どこからでもこの PC につながります。",
+  "Set up later": "あとで設定",
 };

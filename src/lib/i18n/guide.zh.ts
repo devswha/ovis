@@ -3,12 +3,9 @@
  * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
  */
 export const GUIDE_ZH: Record<string, string> = {
-  "Welcome to Ovis": "开始使用 Ovis",
-  "Skip setup": "跳过设置",
   "Look again": "重新检查",
   "Use Tailscale or Wi-Fi instead": "改用 Tailscale 或 Wi-Fi",
   "Set up Ovis": "设置 Ovis",
-  "Start with {agent}": "用 {agent} 开始",
   "Connect your phone": "连接手机",
   "Looking": "查找中",
   "Installed · v{version}": "已安装 · v{version}",
@@ -46,11 +43,6 @@ export const GUIDE_ZH: Record<string, string> = {
   "This computer": "这台电脑",
   "now": "刚刚",
   "Other ways": "其他方式",
-  "First time with Ovis?": "第一次用 Ovis 吗?",
-  "Start setup": "开始设置",
-  "Find an agent and open a project.": "找到智能体，打开项目。",
-  "Go straight in": "直接进入",
-  "Sign in to reach this PC from anywhere.": "登录后，随处都能用这台电脑。",
   "Reopen it in Settings → Agents.": "可在 设置 → 智能体 中再次打开。",
   "Looking for agents…": "正在查找智能体…",
   "Couldn't look for agents": "无法查找智能体",
@@ -67,7 +59,6 @@ export const GUIDE_ZH: Record<string, string> = {
   "{agent} can't start here. Use the sidebar.": "这里无法启动 {agent}。请用侧边栏。",
   "{agent} didn't start. Its terminal shows why.": "{agent} 没有启动。原因在终端里。",
   "Couldn't open the workspace.": "无法打开工作区。",
-  "Start now": "立即开始",
   "Your plan usage shows in the sidebar.": "套餐用量会显示在侧边栏。",
   "Change it later in Settings.": "之后可在设置中更改。",
   "Every device gets this theme.": "所有设备都用这个主题。",
@@ -109,4 +100,5 @@ export const GUIDE_ZH: Record<string, string> = {
   "{agent} starts in {folder}.": "{agent} 将在 {folder} 中启动。",
   "Setup isn't finished.": "设置还没完成。",
   "Reach this PC from anywhere.": "随处连接这台电脑。",
+  "Set up later": "稍后设置",
 };
