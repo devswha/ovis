@@ -142,7 +142,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   const cramped = useMediaQuery(CRAMPED_QUERY);
   const strip = useRef<HTMLDivElement>(null);
   const stripId = useId();
-  const [picker, setPicker] = useState<{ anchor: HTMLElement; tab: HerdrTab; point?: { x: number; y: number }; previousFocus: HTMLElement | null; touch: boolean; workspaces?: true } | null>(null);
+  const [picker, setPicker] = useState<{ anchor: HTMLElement; tab: HerdrTab; point?: { x: number; y: number }; previousFocus: HTMLElement | null; touch: boolean; independent?: true; workspaces?: true } | null>(null);
   const [editing, setEditing] = useState<{ tabId: string; value: string } | null>(null);
   // the name just sent, shown until herdr's snapshot carries it
   const [sent, setSent] = useState<{ tabId: string; label: string } | null>(null);
@@ -255,7 +255,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   // The ellipsis can disappear without crossing RowMenu's narrower sheet breakpoint.
   // Its tab remains the focus return target even after the ellipsis is removed.
   useLayoutEffect(() => {
-    if (picker?.touch && (!menuButton || picker.tab.tab_id !== selectedPane.tab_id)) setPicker(null);
+    if (picker?.touch && !picker.independent && (!menuButton || picker.tab.tab_id !== selectedPane.tab_id)) setPicker(null);
   }, [menuButton, selectedPane.tab_id, picker]);
   useLayoutEffect(() => {
     if (editing || !refocus.current) return;
@@ -611,7 +611,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
       previousFocus: touch ? tabButton : document.activeElement instanceof HTMLElement ? document.activeElement : null, touch });
   };
 
-  const chipsOf = (tab: HerdrTab, sheet = false): ReactNode => !forkTabs.children.has(tab.tab_id) ? null : <ForkTabChips tabs={forkTabs.children.get(tab.tab_id) ?? []} paneFor={paneFor} nameOf={nameOf} selectedTab={selectedPane.tab_id} onSelect={onSelectPane} sheet={sheet} panelId={panePanel} popup={popup} onDismiss={sheet ? () => { setMoreAnchor(null); onSheetClose?.(); } : undefined} onClose={closable ? requestClose : undefined} onRename={closable && renameOffered ? beginRename : undefined} statusMark={(child) => busyStatus(statusOf(child)) ? statusMark(statusOf(child)) : null} onMenu={(child, anchor, point) => { reorder.cancelDrag(); setPicker({ tab: child, anchor, point, previousFocus: anchor, touch: !point }); }} />;
+  const chipsOf = (tab: HerdrTab, sheet = false): ReactNode => !forkTabs.children.has(tab.tab_id) ? null : <ForkTabChips tabs={forkTabs.children.get(tab.tab_id) ?? []} paneFor={paneFor} nameOf={nameOf} selectedTab={selectedPane.tab_id} onSelect={onSelectPane} sheet={sheet} panelId={panePanel} popup={popup} onDismiss={sheet ? () => { setMoreAnchor(null); onSheetClose?.(); } : undefined} onClose={closable ? requestClose : undefined} onRename={closable && renameOffered ? beginRename : undefined} statusMark={(child) => busyStatus(statusOf(child)) ? statusMark(statusOf(child)) : null} onMenu={(child, anchor, point) => { reorder.cancelDrag(); setPicker({ tab: child, anchor, point, previousFocus: anchor, touch: !point, independent: true }); }} />;
 
   // Native tab menu: pane actions live on the pane itself. A split tab drawn one pane at a time
   // has no other way to its panes, so they lead its menu, the open one marked.
