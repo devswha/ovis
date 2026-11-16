@@ -268,8 +268,14 @@ export class RelayService {
 
   /** The account a relay pass is asked for under: this PC's members' account, else the one its signed-in owner named. */
   private passAccount(): string | null {
-    const members = this.services?.devices.account() ?? null;
-    if (members !== null) return members;
+    return this.services?.devices.account() ?? this.savedRelayAccount();
+  }
+
+  /**
+   * The account this PC's signed-in owner named for it (setRelayAccount), or null for none. While the PC has no
+   * member it is also the account its first member comes from (server/account/records.ts applyLink).
+   */
+  savedRelayAccount(): string | null {
     try {
       const saved: unknown = JSON.parse(readFileSync(this.relayAccountPath(), "utf8"));
       return isJsonObject(saved) && typeof saved.account === "string" && ACCOUNT_ID.test(saved.account) ? saved.account : null;

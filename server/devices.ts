@@ -723,6 +723,16 @@ export class DeviceStore {
   }
 
   /**
+   * A row that waits to link is turned away (its link named another account than the one this PC is for): it goes
+   * at once, as when its time runs out. Its use of the code stays spent, and the code stays.
+   */
+  turnAway(id: string): void {
+    const row = this.provisional(id);
+    const waiting = this.pending?.waiting;
+    if (row && waiting) this.dropProvisional(waiting, row);
+  }
+
+  /**
    * A link came from the row `id` (POST /api/account/link), before its signature is checked: whether the row is one
    * that waits to link. `wasProvisional`: its relay session said so when the request began, so a row that went
    * since is never taken for a device. A waiting row sends WAITING_LINKS links; the next turns it away, and null

@@ -98,8 +98,9 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       const linked = await applyLink(devices, body.record, { deviceId: peer.device.id, serverId: peer.serverId, sessionKey: peer.key, sessionId: peer.sessionId }, arrival, {
         gates: context.services.accountMailbox.gates(),
         barrier: () => context.services.accountHolds.startEnrollingBeforeRow(peer.device.id),
+        setUpFor: () => context.services.relay.savedRelayAccount(),
       });
-      if ("refused" in linked) return fail(linked.refused, `The link was refused: ${linked.refused}`, LINK_STATUS[linked.refused]);
+      if ("refused" in linked) return fail(linked.refused, linked.message ?? `The link was refused: ${linked.refused}`, LINK_STATUS[linked.refused]);
       // the wait is this device's to end: a link refused meanwhile may have named another; the first link that succeeds keeps it
       if (first) context.services.accountHolds.confirmEnrolling(peer.device.id);
       return reply({ device: linked.device });

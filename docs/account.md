@@ -62,7 +62,10 @@ id. Rows made any other way keep random ids, and a device already on a PC keeps 
 (an `add` for a key already present changes nothing): it knows that id from its pairing.
 
 A PC belongs to at most one account: the account of its first member. A record for another account
-is refused (`account_mismatch`). **Revoke all** clears the PC's account with its members; tombstones
+is refused (`account_mismatch`). A PC in no account that its signed-in owner set up for one
+([`relay-account`](#pc-api): `ovis add` names it before it shows its code, and so does adding the PC
+from its own page) takes its first member from that account alone: a first link that names another
+is refused the same way. **Revoke all** clears the PC's account with its members; tombstones
 stay.
 
 Relay rows paired before the account existed and never linked (a PC that was off when the phone
@@ -292,6 +295,13 @@ screen, after it listed the PC), or through the relay only from a drive account 
 account (`account_required` otherwise). Kept in `relay/account.json`; a
 name that is not an account id answers 400 `invalid_account`. Answers 204. Naming an account grants
 nothing: the service gives a pass only when that account lists the PC.
+While the PC has no member, it is also the account its first member comes from: a `link` that
+names another account is refused 409 `account_mismatch`, whichever code its device paired with,
+and the answer says to run `ovis add` on the PC again, which names the account its owner is
+signed in to now. A device that waited to link goes with that refusal; a device that was paired
+keeps what it had; the code is not ended, so the device of the named account still pairs with it.
+No answer through the relay names that account. Once a PC has a member, its members' account
+decides, whatever was named.
 
 `POST /api/account/link` `{ "record": <link> }`: the request's own device must be the record's
 `device_id`, with `old_key` its current key, `server_id` this PC's. The row's key becomes `key` and it
@@ -993,7 +1003,7 @@ with "continue only if you started this on your own PC".
 | code | status | meaning |
 |---|---|---|
 | `account_required` | 403 | this needs a drive account member |
-| `account_mismatch` | 409 | the record is for another account than this PC's |
+| `account_mismatch` | 409 | the record is for another account than this PC's; or, on a PC in no account, a first link names another account than the one its owner set it up for (`relay-account`) |
 | `record_invalid` | 400 | a record that does not parse, or a field out of range |
 | `signature_invalid` | 400 | the signature does not hold over the signing bytes |
 | `signer_not_member` | — | the signer is not a drive account member on this PC (a record outcome) |

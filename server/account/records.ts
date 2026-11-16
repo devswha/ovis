@@ -153,7 +153,15 @@ export interface LinkRules {
    * that back, should the row not be written.
    */
   barrier?: () => () => void;
+  /** the account this PC's signed-in owner named for it, read when the link is judged; null for none */
+  setUpFor?: () => string | null;
 }
+
+/** A link that was refused: by which check, and in words of its own where the code alone does not say what to do. */
+export interface LinkRefused { refused: LinkRefusal; message?: string }
+
+/** What a device reads when its link names another account than the one this PC was set up for: the way out is on the PC. */
+const SET_UP_FOR_ANOTHER_ACCOUNT = "This PC was set up for another Ovis account than the one this device is signed in to. To add it to this device's account instead, run `ovis add` on the PC again and sign in there with that account.";
 
 /**
  * A `link` from the device `deviceId` over its own session to the PC `serverId`. It needs no
@@ -163,7 +171,7 @@ export interface LinkRules {
  * the write run in one turn, so two links that both passed their signature check never both write. `arrival`: what
  * stood when the link arrived, before that wait (DeviceStore.linkArrived).
  */
-export async function applyLink(store: DeviceStore, value: unknown, session: { deviceId: string; serverId: string; sessionKey: string; sessionId?: string }, arrival: LinkArrival, rules: LinkRules = {}): Promise<{ device: PairedDevice } | { refused: LinkRefusal }> {
+export async function applyLink(store: DeviceStore, value: unknown, session: { deviceId: string; serverId: string; sessionKey: string; sessionId?: string }, arrival: LinkArrival, rules: LinkRules = {}): Promise<{ device: PairedDevice } | LinkRefused> {
   const { deviceId, serverId, sessionKey, sessionId } = session;
   const record = await read(value);
   if ("refused" in record) return { refused: record.refused };
@@ -178,6 +186,14 @@ export async function applyLink(store: DeviceStore, value: unknown, session: { d
   if (arrival.provisional && !waits && !store.has(deviceId)) return { refused: "link_required" };
   const account = store.account();
   if (account !== null && account !== link.account) return { refused: "account_mismatch" };
+  // A PC in no account that its signed-in owner set up for one (POST /api/account/relay-account, as `ovis add` sends
+  // it before it shows its code) takes its first member from that account. A link that names another is refused: a
+  // row that waits to link goes at once, a device keeps what it had, and no code is ended
+  const expected = account === null ? rules.setUpFor?.() ?? null : null;
+  if (expected !== null && expected !== link.account) {
+    if (waits) store.turnAway(deviceId);
+    return { refused: "account_mismatch", message: SET_UP_FOR_ANOTHER_ACCOUNT };
+  }
   // A removed key stays out. One comes back: a key this PC removed itself (Revoke, Revoke all), with a row that
   // waits to link and keeps the key it paired with. The link's write clears that tombstone, which stood when the row
   // paired: a removal made since took the row with it (DeviceStore.dropWaiting). A key an account removed stays out
