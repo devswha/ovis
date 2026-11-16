@@ -821,10 +821,29 @@ j_probe_state() {
   ! kill -0 "$probe" 2>/dev/null || j_run=unknown
 }
 j_probe_running() { j_probe_state; [ "$j_run" = running ]; }
-# j_look <pid>: how to look at a process the join could not stop or could not tell, before stopping it by hand (a pid
-# the join could not identify is never given with a command that signals it)
-j_look() { printf 'look at it first: ps -o pid,user,args -p %s, or ls -l /proc/%s/exe, which shows its program ("(deleted)" once its temporary folder is gone); stop it only if it is the kit'"'"'s ovis-server serve' "$1" "$1"; }
-j_look_ko() { printf '먼저 확인하세요: ps -o pid,user,args -p %s 또는 ls -l /proc/%s/exe (그 프로그램을 보여 주며, 임시 폴더가 지워졌으면 "(deleted)"가 붙습니다). 키트의 ovis-server serve 일 때만 멈추세요' "$1" "$1"; }
+# j_look <pid> [program]: how to look at a process the join could not stop or could not tell, before stopping it by
+# hand: stop it only if its program is <program>, else the kit's server of the check (a pid is never given with a
+# command that signals it)
+j_look() {
+  if [ -n "${2:-}" ]; then printf 'look at it first: ps -o pid,user,args -p %s, or ls -l /proc/%s/exe, which shows its program; stop it only if that is %s' "$1" "$1" "$2"
+  else printf 'look at it first: ps -o pid,user,args -p %s, or ls -l /proc/%s/exe, which shows its program ("(deleted)" once its temporary folder is gone); stop it only if it is the kit'"'"'s ovis-server serve' "$1" "$1"; fi
+}
+j_look_ko() {
+  if [ -n "${2:-}" ]; then printf '먼저 확인하세요: ps -o pid,user,args -p %s 또는 ls -l /proc/%s/exe (그 프로그램을 보여 줍니다). 그 프로그램이 %s 일 때만 멈추세요' "$1" "$1" "$2"
+  else printf '먼저 확인하세요: ps -o pid,user,args -p %s 또는 ls -l /proc/%s/exe (그 프로그램을 보여 주며, 임시 폴더가 지워졌으면 "(deleted)"가 붙습니다). 키트의 ovis-server serve 일 때만 멈추세요' "$1" "$1"; fi
+}
+# j_probe_how: after a j_probe_stop that failed, j_how and j_how_ko say what the check was sent (TERM, TERM and KILL, or
+# nothing) and whether it was seen still running then
+j_probe_how() {
+  if [ -z "$j_signalled" ]; then
+    j_how="was not signalled, as the join could not tell that it is still the kit's server"
+    j_how_ko="아직 키트의 서버인지 알 수 없어 신호를 보내지 않았습니다"
+  elif [ "$j_run" = running ]; then
+    j_how="did not end after $j_signalled" j_how_ko="보낸 신호($j_signalled) 뒤에도 끝나지 않았습니다"
+  else
+    j_how="could not be seen to end after $j_signalled" j_how_ko="보낸 신호($j_signalled) 뒤에 끝났는지 확인하지 못했습니다"
+  fi
+}
 # j_probe_stop: ends the check of the kit's server, bounded, on every path (its end and an interruption): up to 1 s for a
 # probe just started to become the kit's server (env execs it); then, only while it is the probe (j_probe_is), TERM, up
 # to 5 s for it to end (it may ignore TERM), and KILL, which it cannot; then up to 2 s for it to be seen ended. `wait`
@@ -881,14 +900,7 @@ j_probe_profile() {
   done
   # a server that does not end is not left to run on unseen: the join stops here and names it
   if ! j_probe_stop; then
-    if [ -z "$j_signalled" ]; then
-      j_how="was not signalled, as the join could not tell that it is still the kit's server"
-      j_how_ko="아직 키트의 서버인지 알 수 없어 신호를 보내지 않았습니다"
-    elif [ "$j_run" = running ]; then
-      j_how="did not end after $j_signalled" j_how_ko="보낸 신호($j_signalled) 뒤에도 끝나지 않았습니다"
-    else
-      j_how="could not be seen to end after $j_signalled" j_how_ko="보낸 신호($j_signalled) 뒤에 끝났는지 확인하지 못했습니다"
-    fi
+    j_probe_how
     printf 'Ovis: 확인용으로 한 번 실행한 이 키트의 서버(pid %s)는 %s. %s. 아무것도 바꾸지 않았습니다.\n' "$probe" "$j_how_ko" "$(j_look_ko "$probe")" >&2
     refuse 14 "this kit's server, started once for its check (pid $probe), $j_how; $(j_look "$probe"); nothing was changed"
   fi
@@ -951,7 +963,9 @@ j_uninstall() {
     4) refuse 14 "the service manager of $(id -un) could not be reached, or $J_UNIT did not stop; nothing was removed: run the undo again from a login of $(id -un) (not through su or sudo)" ;;
     2) refuse 14 "$J_HOME/receipt, or the unit $(j_unit_path), was not written by this join as it is now; nothing was removed or stopped: look at both, then remove what is yours yourself" ;;
     3) refuse 14 "the trial server was stopped and its service removed, but its folder $J_HOME could not be removed entirely (left there: $(find "$J_HOME" 2>/dev/null | sed -n '2,4p' | tr '\n' ' ')...): remove what is left yourself" ;;
-    *) refuse 14 "the trial server (pid $pid) did not end; nothing was removed: stop it, then run the undo again" ;;
+    *)
+      printf 'Ovis: 체험용 서버(pid %s)가 끝나지 않아 아무것도 지우지 않았습니다. %s. 그다음 되돌리기를 다시 실행하세요.\n' "$pid" "$(j_look_ko "$pid" "$J_HOME/bin/ovis-server")" >&2
+      refuse 14 "the trial server (pid $pid) did not end; nothing was removed: $(j_look "$pid" "$J_HOME/bin/ovis-server"), then run the undo again" ;;
   esac
   j_linger_ko=""
   if [ -n "$j_linger_left" ]; then j_linger_ko=" $j_linger_left 계정의 lingering은 끄지 못했습니다: loginctl disable-linger $j_linger_left 로 직접 끄세요."
@@ -1086,7 +1100,9 @@ j_interrupted() {
   # the check of the kit's server, if it runs: stopped and waited for, and seen gone, before anything is reported
   if [ -n "${probe:-}" ]; then
     if ! j_probe_stop; then
-      printf 'Ovis: interrupted; the check of the kit'"'"'s server (pid %s) could not be stopped; %s\n' "$probe" "$(j_look "$probe")" >&2
+      j_probe_how
+      printf 'Ovis: 중단되었습니다. 확인용으로 한 번 실행한 이 키트의 서버(pid %s)는 %s. %s.\n' "$probe" "$j_how_ko" "$(j_look_ko "$probe")" >&2
+      printf 'Ovis: interrupted; the check of the kit'"'"'s server (pid %s) %s; %s\n' "$probe" "$j_how" "$(j_look "$probe")" >&2
       exit "$1"
     fi
     probe=""

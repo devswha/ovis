@@ -1234,8 +1234,9 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
     // names the pid, says no signal was sent, and gives no command that signals it (it could not be identified)
     expect([run.stdout.trim().split("\n").pop(), run.stderr.includes(`(pid ${probe})`), /kill -/.test(run.stderr), run.stderr.includes("TERM"),
       (await m.sh(`kill -0 ${probe}`)).code]).toEqual(["rc=14", true, false, false, 0]);
-    // the join names it and leaves it; the test ends it, inside its own machine
-    expect((await m.sh(`kill -KILL ${probe}`)).code).toBe(0);
+    // the join names it and leaves it; the test ends it, inside its own machine, only while its program still reads as
+    // the stand-in's own, which it deleted
+    expect((await m.sh(`case "$(readlink /proc/${probe}/exe)" in */bin/ovis-server" (deleted)") kill -KILL ${probe} ;; *) exit 1 ;; esac`)).code).toBe(0);
     expect((await m.sh("rm /var/tmp/fake-probe-hangs /var/tmp/fake-probe-leaves /var/tmp/probe-started /var/tmp/line.sh")).code).toBe(0);
     expect(await m.home()).toBe(home);
   }, 300_000);
