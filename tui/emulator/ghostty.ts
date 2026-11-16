@@ -1,0 +1,136 @@
+import wasmFile from "../../shared/ghostty/ghostty-vt.wasm" with { type: "file" };
+import { GhosttyEngine, GhosttyModule } from "../../shared/ghostty/engine.ts";
+import { TERMINAL_HISTORY_LINES } from "../../shared/terminal-flow.ts";
+import type { Emulator, EmulatorError, EmulatorLoader, EmulatorOptions, EmulatorResult } from "./index.ts";
+
+/** The smallest pane the engine is asked for. */
+export const MIN_CELLS = 1;
+/** The engine can hang or exhaust its module on absurd sizes, so a pane is never asked for more than this. */
+export const MAX_COLS = 1000;
+export const MAX_ROWS = 500;
+/** The largest cell, in pixels, a resize may name. */
+export const MAX_CELL_PIXELS = 1000;
+
+export interface LoaderOptions {
+  /** the engine file's bytes; read once, on the first emulator */
+  read: () => Promise<ArrayBuffer>;
+  /** called with each emulator's module before its engine is made */
+  onModule?: (module: GhosttyModule) => void;
+}
+
+const inRange = (value: number, max: number): boolean => Number.isInteger(value) && value >= MIN_CELLS && value <= max;
+
+function badSize(cols: number, rows: number): EmulatorError | null {
+  if (inRange(cols, MAX_COLS) && inRange(rows, MAX_ROWS)) return null;
+  return { kind: "size", message: `size ${cols}x${rows} is outside ${MIN_CELLS}x${MIN_CELLS}..${MAX_COLS}x${MAX_ROWS}` };
+}
+
+function badCell(cellW: number, cellH: number): EmulatorError | null {
+  if ([cellW, cellH].every((pixels) => Number.isFinite(pixels) && pixels >= 0 && pixels <= MAX_CELL_PIXELS)) return null;
+  return { kind: "size", message: `cell size ${cellW}x${cellH} is outside 0..${MAX_CELL_PIXELS}` };
+}
+
+const refuse = (error: EmulatorError): { ok: false; error: EmulatorError } => ({ ok: false, error });
+
+/**
+ * Makes emulators on the shared engine core, each on a wasm instance of its own (one per pane). The engine file is read and
+ * compiled once, when the first emulator is asked for; a failed read is tried again by the next call. A compiled module holds no
+ * terminal state, so nothing a trapped instance left behind reaches the next emulator.
+ */
+export function createEmulatorLoader(options: LoaderOptions): EmulatorLoader {
+  let compiled: Promise<WebAssembly.Module> | null = null;
+  const compile = (): Promise<WebAssembly.Module> => {
+    compiled ??= options.read().then((bytes) => WebAssembly.compile(bytes)).catch((error: unknown) => {
+      compiled = null;
+      throw error;
+    });
+    return compiled;
+  };
+
+  return {
+    async create({ cols, rows, events }: EmulatorOptions): Promise<EmulatorResult<Emulator>> {
+      const size = badSize(cols, rows);
+      if (size) return refuse(size);
+      try {
+        const module = new GhosttyModule(new WebAssembly.Instance(await compile(), {}));
+        options.onModule?.(module);
+        const engine = new GhosttyEngine(module, cols, rows, { widths: "core", images: false, scrollbackLines: TERMINAL_HISTORY_LINES, events });
+        return { ok: true, value: new GhosttyEmulator(module, engine) };
+      } catch (error) {
+        return refuse(errorOf(error));
+      }
+    },
+  };
+}
+
+/** the loader of the compiled screen: the engine file embedded in the binary */
+const embedded = createEmulatorLoader({ read: () => Bun.file(wasmFile).arrayBuffer() });
+
+export const createEmulator = (options: EmulatorOptions): Promise<EmulatorResult<Emulator>> => embedded.create(options);
+
+function errorOf(error: unknown): EmulatorError {
+  const message = error instanceof Error ? error.message : String(error);
+  return { kind: error instanceof WebAssembly.RuntimeError ? "trapped" : "failed", message, cause: error };
+}
+
+class GhosttyEmulator implements Emulator {
+  failure: EmulatorError | null = null;
+  private module: GhosttyModule | null;
+  private engine: GhosttyEngine | null;
+  private disposed = false;
+
+  constructor(module: GhosttyModule, engine: GhosttyEngine) {
+    this.module = module;
+    this.engine = engine;
+  }
+
+  /** runs one engine call; an error kills the emulator: its engine and module are dropped and it is never used again */
+  private call<T>(run: (engine: GhosttyEngine) => T): EmulatorResult<T> {
+    if (this.disposed) return refuse({ kind: "disposed", message: "the emulator was disposed" });
+    if (this.failure) return refuse(this.failure);
+    try {
+      return { ok: true, value: run(this.engine!) };
+    } catch (error) {
+      this.failure = errorOf(error);
+      if (this.module?.trap) this.failure.kind = "trapped";
+      this.engine = null;
+      this.module = null;
+      return refuse(this.failure);
+    }
+  }
+
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.engine?.dispose();
+    this.engine = null;
+    this.module = null;
+  }
+
+  write: Emulator["write"] = (bytes) => this.call((engine) => engine.write(bytes));
+
+  resize: Emulator["resize"] = (cols, rows, cellW, cellH) => {
+    const refused = badSize(cols, rows) ?? badCell(cellW, cellH);
+    return refused ? refuse(refused) : this.call((engine) => engine.resize(cols, rows, cellW, cellH));
+  };
+
+  reset: Emulator["reset"] = () => this.call((engine) => engine.reset());
+  frame: Emulator["frame"] = (draw, colors) => this.call((engine) => engine.frame(draw as never, colors));
+  frameAll: Emulator["frameAll"] = (draw, colors) => this.call((engine) => engine.frameAll(draw as never, colors));
+  cursorState: Emulator["cursorState"] = () => this.call((engine) => engine.cursorState());
+  modes: Emulator["modes"] = () => this.call((engine) => engine.modes());
+  setMode: Emulator["setMode"] = (mode, on) => this.call((engine) => engine.setMode(mode, on));
+  releaseHold: Emulator["releaseHold"] = () => this.call((engine) => engine.releaseHold());
+  setColors: Emulator["setColors"] = (colors) => this.call((engine) => engine.setColors(colors));
+  encodeKey: Emulator["encodeKey"] = (key) => this.call((engine) => engine.encodeKey(key));
+  encodeMouse: Emulator["encodeMouse"] = (mouse) => this.call((engine) => engine.encodeMouse(mouse));
+  encodePaste: Emulator["encodePaste"] = (text) => this.call((engine) => engine.encodePaste(text));
+  setScrollback: Emulator["setScrollback"] = (lines) => this.call((engine) => engine.setScrollback(lines));
+  scrollFromBottom: Emulator["scrollFromBottom"] = (rows) => this.call((engine) => engine.scrollFromBottom(rows));
+  history: Emulator["history"] = () => this.call((engine) => engine.history());
+  textOf: Emulator["textOf"] = (range) => this.call((engine) => engine.textOf(range));
+  wordAt: Emulator["wordAt"] = (point) => this.call((engine) => engine.wordAt(point));
+  lineAt: Emulator["lineAt"] = (point) => this.call((engine) => engine.lineAt(point));
+  search: Emulator["search"] = (needle) => this.call((engine) => engine.search(needle));
+  searchStep: Emulator["searchStep"] = (toward) => this.call((engine) => engine.searchStep(toward));
+}
