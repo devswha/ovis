@@ -1123,9 +1123,10 @@ async function readKnownPrompt(
     return { prompt: publicPrompt(parsed) };
   }
 
-  // Antigravity's question has a reader (dialogs/agy.ts); its other screens, the folder trust at start among them, stay
-  // with the fallback card and the picker guard, so it is named here and not in SCREEN_READ_AGENTS
-  if (!SCREEN_READ_AGENTS.has(agent) && agent !== "agy") return { prompt: null };
+  // Antigravity's question and Kiro V3's tool approval have readers (dialogs/agy.ts, dialogs/kiro.ts); their other
+  // screens (agy's folder trust at start, Kiro V2's approval rows) stay with the fallback card and the picker guard, so
+  // they are named here and not in SCREEN_READ_AGENTS
+  if (!SCREEN_READ_AGENTS.has(agent) && agent !== "agy" && agent !== "kiro") return { prompt: null };
   const piTranscript = agent === "pi" ? await piTranscriptPath(paneId).catch(() => null) : null;
   // pi-ask's ask_user form, as the web UI's pi extension reports it: answered through pi-ask, never keys
   if (piTranscript && "path" in piTranscript) {
