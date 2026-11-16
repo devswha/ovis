@@ -18,7 +18,8 @@ import { serverIdOfPath } from "./shellMode.ts";
  * it survives reconnects, never reaches storage, and reads none of it. So does a PC whose stored
  * state another tab already gave to a herdr this page has not seen yet. When the app replaces the
  * page (PAGE_LEAVING_EVENT), that state waits in storage for the next page of this address, which
- * takes it back as this page would have kept it (carry).
+ * leaves its text to recovery (carry): nothing proves the herdr it comes back to is the one it was
+ * typed under, whose pane IDs another herdr may have given out again meanwhile.
  */
 export type UnsentKind = "message" | "line" | "held" | "pending";
 /** `agent_only`: a message box's draft that was for an agent alone (#511), which goes back into a box as one */
@@ -257,9 +258,9 @@ export class PaneLifetimes {
         this.retireMemory(machine.id, titles);
         if (next !== null && proven !== undefined && proven !== next) this.outlived.set(machine.id, new Set([...this.outlived.get(machine.id) ?? [], proven].slice(-RETIRED_KEPT)));
         this.generations.set(machine.id, next);
-        // what the page before this one kept for the PC (carry), as if that page had stayed open: still in
-        // memory under a snapshot naming no herdr, to recovery under one that names a herdr
-        if (first && this.takeCarried(machine.id) && next !== null) this.retireMemory(machine.id, titles);
+        // what the page before this one kept for the PC (carry) was typed while no read proved its herdr,
+        // and herdr may have been replaced since: to recovery, as any such text is, never into a pane
+        if (first && this.takeCarried(machine.id)) this.retireMemory(machine.id, titles);
         if (next !== null) this.settle(machine.id, next, titles);
         changed.push(machine.id);
       } else if (next !== null && (!this.stored(machine.id) || this.holds(machine.id))) {
@@ -333,13 +334,16 @@ export class PaneLifetimes {
   /**
    * The app is replacing this page (PAGE_LEAVING_EVENT): the pane state it keeps in memory alone waits
    * in storage for the next page of this address (takeCarried), with any an earlier page left there.
-   * Nothing of it is sent. Storage that refuses it leaves it with this page, as before.
+   * Nothing of it is sent. Storage that refuses it leaves it with this page, as before. Two pages of one
+   * origin would overwrite each other's carry for the same pane: the Android app, the only one to send
+   * the event, shows one page at a time.
    */
   carry(): void {
     if (this.memory.size === 0) return;
     try {
       const storage = this.storage();
-      storage.setItem(carriedKey(), JSON.stringify({ ...readCarried(storage.getItem(carriedKey())), ...Object.fromEntries(this.memory) }));
+      const carried = this.live([...Object.entries(readCarried(storage.getItem(carriedKey()))), ...this.memory]);
+      storage.setItem(carriedKey(), JSON.stringify(Object.fromEntries(carried)));
     } catch { /* storage refused: the text goes with this page */ }
   }
 
@@ -347,15 +351,21 @@ export class PaneLifetimes {
   private takeCarried(machineId: string): boolean {
     try {
       const storage = this.storage();
-      const carried = Object.entries(readCarried(storage.getItem(carriedKey())));
+      const all = Object.entries(readCarried(storage.getItem(carriedKey())));
+      const carried = this.live(all);
       const mine = carried.filter(([key]) => paneStateKey(key)?.machineId === machineId);
-      if (mine.length === 0) return false;
-      for (const [key, value] of mine) this.memory.set(key, value);
       const rest = carried.filter(([key]) => paneStateKey(key)?.machineId !== machineId);
+      if (rest.length === all.length) return false;
+      for (const [key, value] of mine) this.memory.set(key, value);
       if (rest.length === 0) storage.removeItem(carriedKey());
       else storage.setItem(carriedKey(), JSON.stringify(Object.fromEntries(rest)));
-      return true;
+      return mine.length > 0;
     } catch { return false; }
+  }
+
+  /** Carried pane state without held input past its age (lib/draft.ts DRAFT_TTL_MS), which is not kept in storage. */
+  private live(entries: readonly (readonly [string, string])[]): [string, string][] {
+    return entries.filter(([key, value]) => paneStateKey(key)?.kind !== "held" || restoreDraft(value, this.now()).text !== "").map(([key, value]) => [key, value]);
   }
 
   /** whether this page keeps any of the PC's pane state in its memory */
