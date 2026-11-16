@@ -1238,11 +1238,19 @@ interface MethodProps {
 function MethodPanel({ method, shown = true, ...props }: MethodProps & { method: PhoneMethod; shown?: boolean }) {
   const t = useT();
   const relay = useRelay();
+  // each return into view after another way was shown: the PC keeps one pairing code, which that way may have
+  // replaced, so the relay's box is drawn afresh and asks for an offer carrying the PC's current code
+  const [returns, setReturns] = useState(0);
+  const wasShown = useRef(shown);
+  useEffect(() => {
+    if (shown && !wasShown.current) setReturns((count) => count + 1);
+    wasShown.current = shown;
+  }, [shown]);
   if (method === "relay") {
     if (phoneWay(relay, inRelayShell(), props.auth) === "other") return <p className="setup-note"><Info aria-hidden="true" />{t("Not available on this PC.")}</p>;
     if (relay.status === null) return <p className="setup-muted"><LoaderCircle aria-hidden="true" className="setup-spin" /></p>;
     const closesGate = props.security.state === "known" && props.security.summary.pairing_gate === "open" && !props.security.summary.token_configured;
-    return <RelayBox tight relay={relay} auth={props.auth} closesGate={closesGate} onPaired={props.onPaired} onPhonePaired={props.onPhonePaired} />;
+    return <RelayBox key={returns} tight relay={relay} auth={props.auth} closesGate={closesGate} onPaired={props.onPaired} onPhonePaired={props.onPhonePaired} />;
   }
   if (method === "wifi") {
     const address = wifiAddress();

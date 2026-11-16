@@ -4,13 +4,15 @@ import { fetchDevices, fetchPreferences } from "./api.ts";
 import { onSetupGuideRequest } from "./setupGuide.ts";
 import { autoOpen, otherDevice, GUIDE_STORAGE_KEY, guideStep, readGuide, readSignedIn, REOPENED, saveGuide, FIRST_RUN, type GuideEvent, type GuideState } from "./setupGuideFlow.ts";
 import { SETTINGS_STORAGE_KEY } from "./themeBoot.ts";
-import { setupRowOn } from "./firstHints.ts";
+import { setupRowOn, USAGE_ARMED_KEY } from "./firstHints.ts";
 
 const storage = (): Storage | null => {
   try { return window.localStorage; } catch { return null; }
 };
 
 export interface SetupGuideFacts {
+  /** the plan usage setting: turned off, the guide's remembered Continue goes (USAGE_ARMED_KEY) */
+  showUsage?: boolean;
   /** the app is in (past the access gate) */
   enabled: boolean;
   /** this PC's workspaces once the roster has them; null before */
@@ -27,7 +29,14 @@ export interface SetupGuideFacts {
  * workspace, an alert, the tab the guide opened): the guide steps aside, still mounted, for it. The
  * app's own fallback pick of a first pane is no pick, and leaves it in front.
  */
-export function useSetupGuide({ enabled, workspaces, pairingGate, watching }: SetupGuideFacts) {
+export function useSetupGuide({ enabled, workspaces, pairingGate, watching, showUsage = false }: SetupGuideFacts) {
+  // plan usage turned off (here, in Settings or on another device): the guide's remembered Continue is forgotten, so a
+  // guide opened again reads no usage before its Continue is pressed again
+  const usageWas = useRef(showUsage);
+  useEffect(() => {
+    if (usageWas.current && !showUsage) { try { storage()?.removeItem(USAGE_ARMED_KEY); } catch { /* nothing kept */ } }
+    usageWas.current = showUsage;
+  }, [showUsage]);
   // read before this page saves anything: a save made by the guide itself must not count
   const [savedSettings] = useState(() => { try { return storage()?.getItem(SETTINGS_STORAGE_KEY) != null; } catch { return true; } });
   const [record] = useState(() => { const store = storage(); return store === null ? null : readGuide(store); });

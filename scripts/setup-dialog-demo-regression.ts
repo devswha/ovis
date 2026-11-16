@@ -25,6 +25,7 @@ import { join } from "node:path";
 import { chromium, type Browser, type Page } from "playwright-core";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { openSettingsPage } from "./settings-page.ts";
 
 const app = mkdtempSync(join(tmpdir(), "ovis-setup-dialog-"));
 const evidence = process.env["UI_EVIDENCE_DIR"] ? join(process.env["UI_EVIDENCE_DIR"], "setup-dialog") : null;
@@ -616,6 +617,61 @@ try {
     await page.waitForFunction(() => (window as unknown as { sent: string[] }).sent.includes("GET /api/usage"));
     await context.close();
     console.log("PASS opening the guide and Set up later read no usage, write no shared setting and leave the settings as they were; Continue reads the usage");
+  }
+
+  // Anywhere's QR code, then Tailscale (a new pairing code: the PC keeps one), then Anywhere again: the relay asks for a
+  // fresh offer carrying the PC's current code, never shows the old one. And plan usage turned off forgets the guide's
+  // remembered Continue
+  {
+    const context = await browser!.newContext({ viewport: { width: 1920, height: 1080 }, locale: "en-US", colorScheme: "dark" });
+    await context.addInitScript(([guide]) => {
+      if (sessionStorage.getItem("seeded") === null) {
+        localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "dark", palette: "codex", darkTheme: "codex", lightTheme: "codex" }));
+        localStorage.setItem("ovis:setup-guide", guide);
+        sessionStorage.setItem("seeded", "1");
+      }
+      const sent: string[] = [];
+      (window as unknown as { sent: string[] }).sent = sent;
+      let inner = window.fetch.bind(window);
+      const recorder = ((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.href);
+        if (url.pathname.startsWith("/api/")) sent.push(`${(init?.method ?? "GET").toUpperCase()} ${url.pathname}`);
+        return inner(input, init);
+      }) as typeof window.fetch;
+      Object.defineProperty(window, "fetch", { configurable: true, get: () => recorder, set: (next: typeof window.fetch) => { inner = next; } });
+    }, [WELCOME] as const);
+    const page = await context.newPage();
+    await page.goto(`${root}?demo_devices=empty&demo_via=device`);
+    const dialog = page.getByRole("dialog", { name: DIALOG, exact: true });
+    for (const heading of ["Pick an agent", "Pick a look"]) {
+      await dialog.getByRole("heading", { name: heading, exact: true }).waitFor();
+      await dialog.locator(".setup-foot").getByRole("button", { name: "Continue", exact: true }).click();
+    }
+    const side = dialog.locator(".setup-side-phone");
+    const offers = () => page.evaluate(() => (window as unknown as { sent: string[] }).sent.filter((request) => request === "POST /api/relay/offer").length);
+    await side.getByRole("button", { name: "Turn on", exact: true }).click();
+    await side.locator(".setup-relay-tight .qr").waitFor();
+    await page.waitForFunction(() => (window as unknown as { sent: string[] }).sent.includes("POST /api/relay/offer"));
+    const first = await offers();
+    await side.getByRole("tab", { name: /Tailscale/ }).click();
+    await side.getByRole("img", { name: /^QR code that pairs a phone with code/ }).waitFor();
+    await side.getByRole("tab", { name: /^Anywhere/ }).click();
+    await page.waitForFunction((count) => (window as unknown as { sent: string[] }).sent.filter((request) => request === "POST /api/relay/offer").length > count, first);
+    await side.locator(".setup-relay-tight .qr").waitFor();
+    // plan usage off: the remembered Continue goes
+    assert.equal(await page.evaluate(() => localStorage.getItem("ovis:setup-usage-armed")), "1", "Continue on the agent step is remembered");
+    await page.evaluate(() => localStorage.setItem("ovis:settings", JSON.stringify({ ...JSON.parse(localStorage.getItem("ovis:settings") ?? "{}"), showUsage: true })));
+    await page.reload();
+    await dialog.waitFor();
+    await page.evaluate(() => localStorage.setItem("ovis:setup-usage-armed", "1"));
+    await page.keyboard.press("Escape");
+    await dialog.waitFor({ state: "detached" });
+    await page.keyboard.press("Control+Shift+Comma");
+    await openSettingsPage(page, "Agents");
+    await page.locator(".settings-dialog").getByRole("group", { name: "Plan limits" }).getByRole("button", { name: "Off", exact: true }).click();
+    await page.waitForFunction(() => localStorage.getItem("ovis:setup-usage-armed") === null);
+    await context.close();
+    console.log("PASS back to Anywhere after Tailscale asks for a fresh relay offer; turning plan usage off forgets the remembered Continue");
   }
 
   // On a phone, with the answer a browser on the PC itself gets (via local): the step opens at its top, and a tab's press brings
