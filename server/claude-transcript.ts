@@ -1,5 +1,5 @@
-import { closeSync, openSync, readSync } from "node:fs";
 import type { ConversationPart, ConversationTurn, OmoTaskResult } from "../shared/protocol.ts";
+import { readBytes } from "./claude-subagents.ts";
 import { invokedSkill } from "./skill-activity.ts";
 import { claudeCommandEcho } from "./skill-invocations/claude.ts";
 import { agentTaskResult, CLAUDE_HANDBACK_POINTER, claudeHandback, claudePeerId, claudePeerNotice, isContextClear, MAX_TURNS, OMO_TASK_RESULT_MAX, toolSummary, type TranscriptParser } from "./transcript-records.ts";
@@ -881,20 +881,14 @@ export function claudeTurnEnd(text: string): ClaudeTurnEnd {
 }
 
 /**
- * How the turn that wrote a Claude transcript's bytes from `from` to `size` stands: what claudeTurnEnd reads in them
- * (their last `tailBytes`). Read at once, as the subagent tracker reads the same file (claude-subagents.ts scanParent),
- * so a status is told on what it says. A record still being written leaves the turn's end unknown: it is read whole
- * once the file grows.
+ * How the turn that wrote a Claude transcript's bytes from `from` to the end `plain` found (`file`) stands: what
+ * claudeTurnEnd reads in them (their last `tailBytes`). Read at once and as the subagent tracker reads the same file
+ * (claude-subagents.ts readBytes): only the plain file looked at, never a FIFO or a link put in its place. A record
+ * still being written, or a file not read, leaves the turn's end unknown: it is read whole once the file grows.
  */
-export function claudeLastTurnEnd(path: string, from: number, size: number, tailBytes = 256 * 1024): ClaudeTurnEnd {
-  const fd = openSync(path, "r");
-  try {
-    const start = Math.max(from, size - tailBytes);
-    const buffer = Buffer.alloc(size - start);
-    const text = buffer.subarray(0, readSync(fd, buffer, 0, buffer.length, start)).toString("utf8");
-    return text.endsWith("\n") ? claudeTurnEnd(text) : null;
-  } finally {
-    closeSync(fd);
-  }
+export function claudeLastTurnEnd(path: string, file: { size: number; exact: string }, from: number, tailBytes = 256 * 1024): ClaudeTurnEnd {
+  const start = Math.max(from, file.size - tailBytes);
+  const text = readBytes(path, file.exact, start, file.size - start)?.toString("utf8");
+  return text?.endsWith("\n") === true ? claudeTurnEnd(text) : null;
 }
 

@@ -750,7 +750,8 @@ function turnAfter(entry: Row, at: number | null, turnEndedAt: number | null): n
   return row(row(entry["message"]))?.["stop_reason"] === "end_turn" ? at : null;
 }
 
-function readBytes(path: string, exact: string, from: number, length: number): Buffer | null {
+/** At most `length` bytes of `path` from `from`, read from the plain file `plain` looked at (`exact`, openPlain), or null. */
+export function readBytes(path: string, exact: string, from: number, length: number): Buffer | null {
   const fd = openPlain(path, exact)?.fd;
   if (fd === undefined) return null;
   try {

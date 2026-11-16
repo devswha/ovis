@@ -419,8 +419,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     const session = claudeAgents.sessionOf(paneId);
     const file = session?.live === true && session.path === mark.path ? plain(mark.path) : null;
     if (file === null || file.id !== mark.id || file.size <= mark.read) return null;
-    let end: ClaudeTurnEnd;
-    try { end = claudeLastTurnEnd(mark.path, mark.from, file.size); } catch { return null; }
+    const end = claudeLastTurnEnd(mark.path, file, mark.from);
     mark.read = file.size;
     return end;
   }
