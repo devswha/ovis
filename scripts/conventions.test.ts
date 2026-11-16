@@ -6,7 +6,7 @@ import { dirname, join, posix, sep } from "node:path";
 import { fixedSleepCounts, fixedSleeps, sleepFiles } from "./fixed-sleeps.ts";
 import { fail, files, lineOf, read, repo, stripComments } from "./source-scan.ts";
 
-const SOURCES = [...files("{src,server,shared,scripts,site,telemetry,integrations}/**/*.{ts,tsx,mjs,js}"), "vite.config.ts"];
+const SOURCES = [...files("{src,server,shared,scripts,site,telemetry,integrations,tui}/**/*.{ts,tsx,mjs,js}"), "vite.config.ts"];
 
 const SPECIFIER = /(?:^|[\s;])(?:import|export)\s[^;]*?\sfrom\s*["']([^"']+)["']|(?:^|[\s;])import\s*["']([^"']+)["']|\bimport\(\s*["']([^"']+)["']\s*\)/gm;
 
@@ -22,7 +22,7 @@ const specifiers = (file: string): { specifier: string; at: string }[] =>
 describe("imports", () => {
   it("name relative modules with their extension and never use the @shared alias", () => {
     const offenders = SOURCES.flatMap((file) => specifiers(file)
-      .filter(({ specifier }) => specifier.startsWith("@shared/") || (specifier.startsWith(".") && !/\.(?:ts|tsx|mjs|js|css|json|md|svg|png|woff2|html|txt|sh)(?:\?[\w&=-]*)?$/.test(specifier)))
+      .filter(({ specifier }) => specifier.startsWith("@shared/") || (specifier.startsWith(".") && !/\.(?:ts|tsx|mjs|js|css|json|md|svg|png|woff2|html|txt|wasm|sh)(?:\?[\w&=-]*)?$/.test(specifier)))
       .map(({ at }) => at));
     fail(offenders, "Imports carry explicit .ts/.tsx extensions and relative paths (AGENTS.md, Code conventions): write \"./x.ts\" or \"../shared/x.ts\", never \"./x\" or \"@shared/x\".");
   });
