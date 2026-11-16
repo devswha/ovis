@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, expect, it, jest } from "bun:test";
-import { HerdrSocket } from "./ws.ts";
+import { backoffDelay, HerdrSocket } from "./ws.ts";
 import { nativeTransport, setTransport, type WebSocketLike } from "./transport.ts";
 import type { ClientConnectionTrace, PendingMessage } from "../../shared/protocol.ts";
 import { OUTPUT_STALLED_CLOSE_CODE } from "../../shared/terminal-flow.ts";
@@ -1343,6 +1343,7 @@ it("reconnects at once when the page wakes instead of waiting out the backoff, a
 
 it("backs off repeated short-lived opens, even when each receives a snapshot and terminal readiness", () => {
   jest.useFakeTimers();
+  const random = jest.spyOn(Math, "random").mockReturnValue(1);
   const { client, socket } = liveClient([]);
   try {
     let current = socket;
@@ -1363,12 +1364,14 @@ it("backs off repeated short-lived opens, even when each receives a snapshot and
     }
   } finally {
     client.close();
+    random.mockRestore();
     jest.useRealTimers();
   }
 });
 
 it("starts the retry delay over only after an open connection has stayed up for 10s", () => {
   jest.useFakeTimers();
+  const random = jest.spyOn(Math, "random").mockReturnValue(1);
   const { client, socket } = liveClient([]);
   try {
     socket.disconnect();
@@ -1391,12 +1394,14 @@ it("starts the retry delay over only after an open connection has stayed up for 
     expect(FakeSocket.last).not.toBe(stable);
   } finally {
     client.close();
+    random.mockRestore();
     jest.useRealTimers();
   }
 });
 
 it("ignores a late open from an abandoned attempt instead of replaying on the replacement", () => {
   jest.useFakeTimers();
+  const random = jest.spyOn(Math, "random").mockReturnValue(1);
   const client = new HerdrSocket("ws://test/ws");
   try {
     client.attach("w1:p1", 100, 30);
@@ -1418,12 +1423,14 @@ it("ignores a late open from an abandoned attempt instead of replaying on the re
     expect(FakeSocket.last).not.toBe(replacement);
   } finally {
     client.close();
+    random.mockRestore();
     jest.useRealTimers();
   }
 });
 
 it("still bypasses a flapping connection's backoff on wake and resets its next retry", () => {
   jest.useFakeTimers();
+  const random = jest.spyOn(Math, "random").mockReturnValue(1);
   const { client, socket } = liveClient([]);
   try {
     socket.disconnect();
@@ -1442,6 +1449,7 @@ it("still bypasses a flapping connection's backoff on wake and resets its next r
     expect(FakeSocket.last).not.toBe(woken);
   } finally {
     client.close();
+    random.mockRestore();
     jest.useRealTimers();
   }
 });
@@ -2874,4 +2882,24 @@ it("forgets machine event capability on disconnect before a replacement subscrib
   socket.disconnect();
   expect(client.machineEventsAvailable).toBeNull();
   client.close();
+});
+
+it("backoffDelay stays within the jittered bound", () => {
+  for (const retries of [0, 1, 5, 20]) {
+    const cap = Math.min(5000, 250 * 2 ** retries);
+    for (let i = 0; i < 100; i++) {
+      const delay = backoffDelay(retries);
+      expect(delay).toBeGreaterThanOrEqual(0);
+      expect(delay).toBeLessThan(cap);
+    }
+  }
+});
+
+it("backoffDelay applies real jitter", () => {
+  const samples = Array.from({ length: 1000 }, () => backoffDelay(2));
+  expect(samples.some((delay) => delay !== samples[0])).toBe(true);
+});
+
+it("backoffDelay caps at 5000 ms", () => {
+  expect(backoffDelay(30)).toBeLessThan(5000);
 });
