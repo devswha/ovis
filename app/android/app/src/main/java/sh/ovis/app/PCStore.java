@@ -133,6 +133,19 @@ final class PCStore {
         }
     }
 
+    /**
+     * The script MainActivity runs in the open page with an AlertTap's `selection`, which goes in as a
+     * JSON value, never as code. It is dispatched on the page's window as "ovis-select-pane"
+     * (SELECT_PANE_EVENT in src/lib/notificationTarget.ts), which a page on plain http, with no
+     * navigator.serviceWorker, hears too; that page cancels it. An older page does not, and gets it
+     * as public/sw.js posts it, on navigator.serviceWorker, where it has one. Taken once either way.
+     */
+    static String selectionScript(String selection) {
+        return "(() => { const data = " + selection + "; "
+            + "if (window.dispatchEvent(new MessageEvent('ovis-select-pane', { data, cancelable: true }))) { "
+            + "const worker = navigator.serviceWorker; if (worker) worker.dispatchEvent(new MessageEvent('message', { data })); } })()";
+    }
+
     private static String encoded(String text) {
         try {
             return java.net.URLEncoder.encode(text, "UTF-8").replace("+", "%20");

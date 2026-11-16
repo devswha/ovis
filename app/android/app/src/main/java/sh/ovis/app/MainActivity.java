@@ -936,12 +936,8 @@ public class MainActivity extends BridgeActivity {
         );
         if (alert == null) return false;
         if (alert.selection != null) {
-            // as public/sw.js posts it to the open window: src/lib/notificationTarget.ts hears it on
-            // navigator.serviceWorker, which a page on plain http lacks, and then the app only comes forward
-            view.evaluateJavascript(
-                "(() => { const worker = navigator.serviceWorker; if (worker) worker.dispatchEvent(new MessageEvent('message', { data: " + alert.selection + " })); })()",
-                null
-            );
+            // as public/sw.js posts it to the open window, through a page event a page on plain http hears too
+            view.evaluateJavascript(PCStore.selectionScript(alert.selection), null);
             return false;
         }
         // the alert is the newer ask: a pairing link still waiting for the connect screen would show that instead
