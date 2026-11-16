@@ -19,9 +19,9 @@
 # server cannot be read from its process, 33 the trial's state folder resolves into an Ovis default folder, 34 the
 # pairing gate is not closed after the add (finished, or not finished with the server kept), 35 the kit's server refuses to start here (in its own
 # words, which name the folder or setting), 36 the trial server refuses the chosen session's herdr socket (it names the
-# folder another account could change), 37 the add did not finish while the trial server names an Ovis account (removed,
+# folder another account could change), 37 the add did not finish while the trial server names an Ovis account it did not name before (removed,
 # on a run again too), 38 the add returned and the trial server names an Ovis account this run did not sign in to (kept,
-# with its pairing gate closed), 39 the add did not finish and the trial server's account could not be read (stopped,
+# with its pairing gate closed; also after an add that did not finish, in the account it named before), 39 the add did not finish and the trial server's account could not be read (stopped,
 # the install kept for the undo). A HUP ends it as INT and TERM do (129).
 set -u
 umask 077
@@ -31,6 +31,18 @@ umask 077
 # through a link, /home -> /var/home, or written with a doubled or trailing slash, would miss them all). The trial
 # folder by its parent only: the folder itself being a link is refused (j_no_links)
 j_canonical() { realpath -m -- "$1" 2>/dev/null || readlink -m -- "$1" 2>/dev/null || printf '%s' "$1"; }
+j_stage=""
+# set before anything can refuse: the temporary folder the pasted line fetched this script into (it holds nothing else); the install keeps its own copy
+j_self_dir=$(dirname "$0")
+case $j_self_dir in "${TMPDIR:-/tmp}"/tmp.* | /tmp/tmp.*) [ "$(ls -A "$j_self_dir" 2>/dev/null)" = join.sh ] || j_self_dir="" ;; *) j_self_dir="" ;; esac
+j_cleanup() {
+  [ -z "$j_stage" ] || rm -rf "$j_stage"
+  [ -z "$j_self_dir" ] || rm -rf "$j_self_dir"
+}
+trap j_cleanup EXIT
+trap 'j_cleanup; exit 130' INT
+trap 'j_cleanup; exit 143' TERM
+trap 'j_cleanup; exit 129' HUP
 # HOME set and not empty: checked on its own line, since a failed ${HOME:?} inside $(...) ends only that subshell
 : "${HOME:?HOME is not set}"
 # a HOME holding a line break or another control character, anywhere in it (the value as given: $(...) below would drop
@@ -47,18 +59,6 @@ J_PORTS="17690 17691 17692 17693 17694 17695 17696 17697 17698 17699"
 J_TAB=$(printf '\t')
 J_NL='
 '
-j_stage=""
-# the temporary folder the pasted line fetched this script into (it holds nothing else); the install keeps its own copy
-j_self_dir=$(dirname "$0")
-case $j_self_dir in "${TMPDIR:-/tmp}"/tmp.* | /tmp/tmp.*) [ "$(ls -A "$j_self_dir" 2>/dev/null)" = join.sh ] || j_self_dir="" ;; *) j_self_dir="" ;; esac
-j_cleanup() {
-  [ -z "$j_stage" ] || rm -rf "$j_stage"
-  [ -z "$j_self_dir" ] || rm -rf "$j_self_dir"
-}
-trap j_cleanup EXIT
-trap 'j_cleanup; exit 130' INT
-trap 'j_cleanup; exit 143' TERM
-trap 'j_cleanup; exit 129' HUP
 
 say() { printf '%s\n' "$*"; }
 # refuse <exit code> <one line>: what happened and what to do, then the exit; nothing of this run is left
@@ -95,7 +95,9 @@ j_systemd_user() { command -v systemctl >/dev/null 2>&1 && systemctl --user show
 # own); only the few whose program is the trial's are then looked at one by one.
 j_servers() {
   j_uid=$(id -u)
-  for j_proc in $(ls -l /proc/[0-9]*/exe 2>/dev/null | J_T="$J_HOME/bin/ovis-server" awk '{
+  # QUOTING_STYLE=literal and LC_ALL=C: GNU ls prints the names as they are whatever the login sets (busybox ls ignores
+  # both)
+  for j_proc in $(QUOTING_STYLE=literal LC_ALL=C ls -l /proc/[0-9]*/exe 2>/dev/null | J_T="$J_HOME/bin/ovis-server" awk '{
       i = index($0, " -> "); if (i == 0) next
       t = substr($0, i + 4); if (t != ENVIRON["J_T"] && t != ENVIRON["J_T"] " (deleted)") next
       l = substr($0, 1, i - 1); sub(/^.* \/proc\//, "/proc/", l); sub(/\/exe$/, "", l); print l }'); do
@@ -226,13 +228,29 @@ j_remove() {
   printf '%s\n' "$j_made" | while IFS= read -r p; do [ -z "$p" ] || rmdir -- "$p" 2>/dev/null; done
   return 0
 }
+# j_account_of <account status>: `null` when the trial server names no account, the account it names, or nothing when the
+# answer says neither (no answer)
+j_account_of() {
+  case $1 in
+    *'"account":null'*) printf null ;;
+    *'"account":"'*) printf '%s' "$1" | sed -n 's/.*"account":"\([^"]*\)".*/\1/p' ;;
+  esac
+}
+# j_short <account>: an account as the plugin's add shows it (scripts/plugin-link.ts shortId): control characters
+# dropped, its first 12 characters
+j_short() { printf '%s' "$1" | tr -d '[:cntrl:]' | cut -c1-12; }
 j_rollback() { [ "$j_fresh" = 1 ] && j_remove; }
 # j_rolled_back [all]: rolls back, and says what is left: "nothing was kept" only when the rollback removed everything.
 # A run again keeps the install of the earlier run (stopped), except with `all`: then it goes too
 j_rolled_back() {
-  if { [ "${1:-}" = all ] && j_remove; } || { [ "${1:-}" != all ] && j_rollback; }; then
+  j_rc=keep
+  if [ "${1:-}" = all ] || [ "$j_fresh" = 1 ]; then j_remove; j_rc=$?; fi
+  if [ "$j_rc" = 0 ]; then
     if [ -n "${j_linger_left:-}" ]; then printf 'nothing was kept but lingering for %s, which could not be turned off: turn it off with  loginctl disable-linger %s' "$j_linger_left" "$j_linger_left"
     else printf 'nothing was kept'; fi
+  elif [ "$j_rc" = 3 ]; then
+    # its own join.sh went with the rest: the undo line no longer works, so what is left is named
+    printf 'the trial server was stopped, but %s could not be removed entirely (left there: %s...): look at it, then remove it yourself (rm -rf %s)' "$J_HOME" "$(find "$J_HOME" 2>/dev/null | sed -n '2,4p' | tr '\n' ' ')" "$(j_quote "$J_HOME")"
   else
     if j_halt; then printf 'the install stays, stopped (undo: %s)' "$(j_undo_line)"
     else printf 'the install stays, and whether its server stopped could not be confirmed (undo: %s)' "$(j_undo_line)"; fi
@@ -830,6 +848,7 @@ j_uninstall() {
   account=unknown
   status=$(j_owner -f "$J_HOME/state/serve.sock" /api/account/status)
   case $status in *'"account":null'*) account=none ;; *'"account":"'*) account=listed ;; esac
+  account_id=$(j_short "$(j_account_of "$status")")
   linger=$(sed -n 's/^linger //p' "$J_HOME/receipt")
   j_remove
   case $? in
@@ -849,7 +868,7 @@ j_uninstall() {
   elif [ -n "$linger" ]; then say "- turned lingering off again for $linger"; fi
   say "herdr and its terminals were left as they were."
   case $account in
-    listed) say "This machine was in your Ovis account. The account's list may still name it, and nothing on this machine can take it off that list today: the Ovis guide says how such an entry goes (docs/guide.md, section \"Through an account\")." ;;
+    listed) say "This machine was in the Ovis account $account_id. The account's list may still name it, and nothing on this machine can take it off that list today: the Ovis guide says how such an entry goes (docs/guide.md, section \"Through an account\")." ;;
     none) say "The trial server had not finished joining an Ovis account (no device had scanned its QR code). If the add said this machine is listed in your account, the account's list may still name it: the Ovis guide says how such an entry goes (docs/guide.md, section \"Through an account\")." ;;
     *) say "Whether your Ovis account names this machine could not be asked (the trial server did not answer). The account's list may still name it: the Ovis guide says how such an entry goes (docs/guide.md, section \"Through an account\")." ;;
   esac
@@ -857,7 +876,7 @@ j_uninstall() {
   say "이 머신에서 Ovis 체험을 지웠습니다: 체험용 서버를 멈추고 그 서비스와 폴더($J_HOME: 프로그램, 신원, 상태)를 지웠습니다.${j_linger_ko}"
   say "herdr와 그 터미널은 그대로 두었습니다."
   case $account in
-    listed) say "이 머신은 내 Ovis 계정에 들어 있었습니다. 계정의 목록에는 아직 남아 있을 수 있으며, 지금은 이 머신에서 목록에서 뺄 방법이 없습니다. 그런 항목이 어떻게 되는지는 Ovis 안내서에 있습니다(docs/guide.md, \"Through an account\" 절)." ;;
+    listed) say "이 머신은 Ovis 계정 $account_id 에 들어 있었습니다. 계정의 목록에는 아직 남아 있을 수 있으며, 지금은 이 머신에서 목록에서 뺄 방법이 없습니다. 그런 항목이 어떻게 되는지는 Ovis 안내서에 있습니다(docs/guide.md, \"Through an account\" 절)." ;;
     none) say "체험용 서버는 Ovis 계정에 다 들어가지 않았습니다(QR 코드를 스캔한 기기가 없음). 추가 중에 이 머신이 계정 목록에 올랐다고 나왔다면 목록에는 아직 남아 있을 수 있습니다. 그런 항목이 어떻게 되는지는 Ovis 안내서에 있습니다(docs/guide.md, \"Through an account\" 절)." ;;
     *) say "내 Ovis 계정 목록에 이 머신이 있는지는 확인하지 못했습니다(체험용 서버가 답하지 않음). 목록에는 아직 남아 있을 수 있습니다. 그런 항목이 어떻게 되는지는 Ovis 안내서에 있습니다(docs/guide.md, \"Through an account\" 절)." ;;
   esac
@@ -1097,14 +1116,6 @@ j_added=0
 # Ctrl+C during the add ends the add only (it ends its code or its QR code itself): the join then goes on as after an
 # add that did not finish (below): removed when the trial server names an account (exit 37), kept only with its account
 # read as none and its pairing gate closed (exit 30), else stopped (exit 34, or 39 when its account could not be read). From the add's return on, Ctrl+C rolls back again
-# j_account_of <account status>: `null` when the trial server names no account, the account it names, or nothing when the
-# answer says neither (no answer)
-j_account_of() {
-  case $1 in
-    *'"account":null'*) printf null ;;
-    *'"account":"'*) printf '%s' "$1" | sed -n 's/.*"account":"\([^"]*\)".*/\1/p' ;;
-  esac
-}
 # the trial server's account before the add: "your account" is said only when it named none before and one after, so a
 # sign-in of this run put it there (an add that finds the machine already in an account returns without a sign-in)
 j_before=$(j_account_of "$(j_read -f /api/account/status)")
@@ -1155,6 +1166,13 @@ j_gate_open() {
   fi
   exit 34
 }
+# j_in_account <account> <why, English> <why, Korean>: the machine is kept in an account no sign-in of this run is known to
+# have put it in: named, never "your", with the undo line; exit 38. Its pairing gate was read closed first
+j_in_account() {
+  say "The trial Ovis server runs, and this machine is in the Ovis account $(j_short "$1"): $2. If that is not your account, undo the join: $(j_undo_line)"
+  say "체험용 Ovis 서버는 실행 중이며 이 머신은 Ovis 계정 $(j_short "$1") 에 들어 있습니다: $3. 내 계정이 아니면 되돌리세요: $(j_undo_line)"
+  exit 38
+}
 if [ "$j_added" = 1 ]; then
   j_after=$(j_account_of "$(j_read -f /api/account/status)")
   j_mine=0
@@ -1167,20 +1185,19 @@ if [ "$j_added" = 1 ]; then
     exit 0
   fi
   if [ -n "$j_after" ] && [ "$j_after" != null ]; then
-    if [ "$j_before" = "$j_after" ]; then j_how_en="it was in that account before this run" j_how_ko="이번 실행 전부터 그 계정에 들어 있었습니다"
-    else j_how_en="the join could not confirm that a sign-in of this run put it there" j_how_ko="이번 실행의 로그인으로 들어갔는지 확인하지 못했습니다"; fi
-    say "The trial Ovis server runs, and this machine is in the Ovis account $j_after: $j_how_en. If that is not your account, undo the join: $(j_undo_line)"
-    say "체험용 Ovis 서버는 실행 중이며 이 머신은 Ovis 계정 $j_after 에 들어 있습니다: $j_how_ko. 내 계정이 아니면 되돌리세요: $(j_undo_line)"
-    exit 38
+    if [ "$j_before" = "$j_after" ]; then j_in_account "$j_after" "it was in that account before this run" "이번 실행 전부터 그 계정에 들어 있었습니다"
+    else j_in_account "$j_after" "the join could not confirm that a sign-in of this run put it there" "이번 실행의 로그인으로 들어갔는지 확인하지 못했습니다"; fi
   fi
-  say "The add returned, but the trial Ovis server names no account, so it could not tell whether the machine is listed in your Ovis account; check with:  $J_HOME/bin/ovis-trial status"
+  if [ "$j_after" = null ]; then j_none_en="the trial Ovis server names no account" j_none_ko="체험용 Ovis 서버가 계정을 밝히지 않아"
+  else j_none_en="the trial Ovis server's account could not be read" j_none_ko="체험용 Ovis 서버의 계정을 읽지 못해"; fi
+  say "The add returned, but $j_none_en, so it could not tell whether the machine is listed in your Ovis account; check with:  $J_HOME/bin/ovis-trial status"
   say "Undo the whole join with:  $(j_undo_line)"
-  say "추가는 끝났지만 체험용 Ovis 서버가 계정을 밝히지 않아, 이 머신이 내 Ovis 계정 목록에 올라 있는지 알 수 없습니다. $J_HOME/bin/ovis-trial status 로 확인하거나 되돌리세요."
+  say "추가는 끝났지만 $j_none_ko, 이 머신이 내 Ovis 계정 목록에 올라 있는지 알 수 없습니다. $J_HOME/bin/ovis-trial status 로 확인하거나 되돌리세요."
   exit 30
 fi
 # where the machine stands after an add that did not finish (its return is the path above), from the trial server itself
 # (this machine's own, on its owner socket): an account it names means a device paired with it through an add that did
-# not finish: removed, on a run again too (exit 37). No account (null): "could not tell", with the server kept for
+# not finish: removed, on a run again too (exit 37), unless it is the account named before this run's add (kept, exit 38). No account (null): "could not tell", with the server kept for
 # `ovis-trial add` while its pairing gate is closed. No answer: stopped first, the install kept for the undo (exit 39)
 j_account=$(j_read -f /api/account/status)
 j_named=$(j_account_of "$j_account")
@@ -1196,13 +1213,20 @@ case $j_named in
     say "Add it with:  $J_HOME/bin/ovis-trial add      (or undo the whole join: $(j_undo_line))"
     say "체험용 Ovis 서버는 실행 중이지만, 이 머신이 내 Ovis 계정 목록에 올라 있는지 알 수 없습니다. $J_HOME/bin/ovis-trial status 로 확인하고, 위 명령으로 추가하거나 되돌리세요."
     ;;
+  "$j_before")
+    # the account it named before this run's add, unchanged: the earlier install is kept as after an add that returned
+    # in an account it already had (exit 38), only with its pairing gate closed
+    j_gate_closed || j_gate_open unfinished
+    j_in_account "$j_named" "it was in that account before this run, and this run's add did not finish" "이번 실행 전부터 그 계정에 들어 있었고, 이번 실행의 추가는 끝나지 않았습니다"
+    ;;
   *)
-    # the add failed while a device's pairing put the trial server in an account: which account, the join cannot
-    # confirm (the add's own words above say what it saw), so the server does not stay
-    say "체험용 서버가 Ovis 계정($j_named)에 들어갔지만 추가가 끝나지 않아, 그 계정이 내 계정인지 확인할 수 없습니다. 체험용 서버를 멈추고 되돌립니다."
+    # the add failed while a device's pairing put the trial server in an account it did not name before this run's add
+    # (none, or another): which account, the join cannot confirm (the add's own words above say what it saw), so neither
+    # the server nor its install stays
+    say "체험용 서버가 Ovis 계정($(j_short "$j_named"))에 들어갔지만 추가가 끝나지 않아, 그 계정이 내 계정인지 확인할 수 없습니다. 체험용 서버를 멈추고 되돌립니다."
     say "That account's list may still name this machine, and nothing on this machine can take it off that list today: the Ovis guide says how such an entry goes (docs/guide.md, section \"Through an account\")."
     say "그 계정의 목록에는 이 머신이 아직 남아 있을 수 있으며, 지금은 이 머신에서 목록에서 뺄 방법이 없습니다. 그런 항목이 어떻게 되는지는 Ovis 안내서에 있습니다(docs/guide.md, \"Through an account\" 절)."
-    refuse 37 "the add did not finish, but the trial server names an Ovis account ($j_named), which the join cannot confirm is the one you signed in to (the add's words above say what it saw), so neither the trial server nor its install stays; $(j_rolled_back all)"
+    refuse 37 "the add did not finish, but the trial server names an Ovis account ($(j_short "$j_named")), which the join cannot confirm is the one you signed in to (the add's words above say what it saw), so neither the trial server nor its install stays; $(j_rolled_back all)"
     ;;
 esac
 exit 30

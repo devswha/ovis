@@ -934,6 +934,21 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
     expect((await m.sh(`rm /var/tmp/fake-account-listed /var/tmp/fake-gate-closed && sh ${TRIAL}/join.sh --uninstall`)).code).toBe(0);
   }, 300_000);
 
+  test("a run again whose add fails while the server names the account it named before: the install is kept (exit 38)", async () => {
+    const m = await runnerMachine();
+    await serveHerdr(m);
+    // run 1: in an account, kept with the gate closed
+    expect((await m.sh("touch /var/tmp/fake-account-listed /var/tmp/fake-gate-closed")).code).toBe(0);
+    expect((await m.sh(`${fakeKit.line} --yes </dev/null`)).code).toBe(38);
+    // run 2: the add ends without finishing (Ctrl+C at its QR code, say), the account unchanged
+    expect((await m.sh("touch /var/tmp/fake-add-fails")).code).toBe(0);
+    const again = await m.sh(`${fakeKit.line} --yes </dev/null`);
+    note("caseSameAccount", `exit ${again.code}\n${again.stdout}${again.stderr}`);
+    // regression (before: exit 37, the server, its identity and its state removed)
+    expect([again.code, (await m.sh(`test -f ${TRIAL}/receipt`)).code, (await m.processes()).includes("ovis-server serve")]).toEqual([38, 0, true]);
+    expect((await m.sh(`rm /var/tmp/fake-add-fails /var/tmp/fake-account-listed /var/tmp/fake-gate-closed && sh ${TRIAL}/join.sh --uninstall`)).code).toBe(0);
+  }, 300_000);
+
   test("a run again on a machine already in an account, the add returning at once: exit 38 naming it, the server kept only with the gate closed", async () => {
     const m = await runnerMachine();
     await serveHerdr(m);
@@ -1011,6 +1026,12 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
     note("caseUndoPid", `[pid file naming another process] exit ${foreign.code}\n${foreign.stdout}${foreign.stderr}`);
     expect([foreign.code, await servers(), (await m.sh(`kill -0 ${other}`)).code]).toEqual([0, 0, 0]);
     expect((await m.sh(`kill ${other}`)).code).toBe(0);
+    // a login whose QUOTING_STYLE quotes every name ls prints: the undo still finds the server
+    expect((await m.sh(`${kit.line} --yes </dev/null`)).code).toBe(30);
+    const quoting = await m.sh(`QUOTING_STYLE=c sh ${TRIAL}/join.sh --uninstall`);
+    note("caseUndoPid", `[QUOTING_STYLE=c] exit ${quoting.code}\n${quoting.stdout}${quoting.stderr}`);
+    // regression (before: exit 0 and the folder removed while the server ran on)
+    expect([quoting.code, await servers()]).toEqual([0, 0]);
     expect(await m.home()).toBe(home);
   }, 300_000);
 
@@ -1139,6 +1160,14 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
       const run = await m.sh(`${kit.line} --yes </dev/null`);
       note("case6", `[a receipt this join did not write] exit ${run.code}\n${run.stdout}${run.stderr}`);
       expect([run.code, (await m.sh(`sha256sum ${TRIAL}/*`)).stdout, (await m.processes()).includes("ovis-server serve")]).toEqual([14, before, false]);
+    }, 300_000);
+
+    test("a HOME holding a line break: refused (exit 2), the line's download folder removed", async () => {
+      const m = await runnerMachine();
+      const run = await m.sh(`export TMPDIR=$HOME/tq && mkdir -p $TMPDIR && HOME="$(printf '%s\\nx' "$HOME")" ${kit.line} --yes </dev/null; echo "rc=$?"; ls -A $TMPDIR | wc -l`);
+      note("case6", `[HOME with a line break] ${run.stdout}${run.stderr}`);
+      // regression (before: the folder the line fetched join.sh into stayed)
+      expect(run.stdout.trim().split("\n").slice(-2)).toEqual(["rc=2", "0"]);
     }, 300_000);
 
     test("no herdr", async () => { await refused(await runnerMachine({ herdr: false }), kit.line, 20, "no herdr"); }, 300_000);

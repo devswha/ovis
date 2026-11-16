@@ -142,8 +142,10 @@ sign-in of this run put it in (the machine was in it before, or its account coul
 join names that account, says "your account" nowhere, and keeps the server only with its pairing gate closed. It exits
 30 when the add did not finish and the trial server answers that it names no account (the server is kept with its
 gate closed, and `ovis-trial add` finishes the add), or when the add returned and the server names none. It exits 37
-when the add did not finish but the trial server names an account, which the join cannot confirm is the one signed in
-to: the server and the install are removed, on a run again too, and that account's list may still name the machine.
+when the add did not finish but the trial server names an account it did not name before this run's add, which the
+join cannot confirm is the one signed in to: the server and the install are removed, on a run again too, and that
+account's list may still name the machine. When the account it names is the one it named before this run's add, the
+earlier install is kept as for 38. Accounts are shown shortened, as the add shows them (their first 12 characters).
 It exits 39 when the add did not finish and the trial server's account could not be read: the server is stopped first
 and the install kept for the undo. Any other code from 2 to 36 is a refusal (its list is at the head of `join.sh`). A HOME holding a line break or another control
 character is refused first (exit 2). Ctrl+C at a question ends the join with 130, a HUP with 129, nothing changed.
