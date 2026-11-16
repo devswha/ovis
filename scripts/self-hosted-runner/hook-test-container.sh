@@ -42,8 +42,10 @@ echo "net: $(ls /sys/class/net | tr "\n" " ")"
 [[ $(ls /sys/class/net) == lo ]] || { echo "STOP: a network interface other than lo"; exit 99; }
 echo "PROOFS-DONE"
 timeout 60 bash -c "until [ -e /out/go ]; do sleep 0.2; done" || { echo "STOP: no go file within 60 s"; exit 99; }
-mkdir /home/hooktest/tmp
-timeout -k 5 120 cp -R /src /home/hooktest/src
+mkdir /home/hooktest/tmp /home/hooktest/src
+timeout -k 5 120 find /src -mindepth 1 -maxdepth 1 ! -name .ci-cache -exec cp -R -t /home/hooktest/src {} +
+test -f /home/hooktest/src/bunfig.toml
+test -d /home/hooktest/src/node_modules
 cd /home/hooktest/src
 echo "tests started $(date -u +%FT%TZ)"
 TMPDIR=/home/hooktest/tmp HERDR_TEST_MODE=unit timeout -k 5 300 bun test scripts/self-hosted-runner.test.ts -t "job-started hook"
