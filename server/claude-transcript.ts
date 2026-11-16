@@ -1,3 +1,4 @@
+import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import type { ConversationPart, ConversationTurn, OmoTaskResult } from "../shared/protocol.ts";
 import { invokedSkill } from "./skill-activity.ts";
 import { claudeCommandEcho } from "./skill-invocations/claude.ts";
@@ -846,5 +847,53 @@ export function parseClaudeTranscript(text: string, maxTurns = MAX_TURNS, option
   claudeTranscriptParser(options, state).write(text);
   // No writer survives this call, so its owned turns need no detached snapshot.
   return state.turns.filter((turn) => turn.parts.length > 0).slice(-maxTurns);
+}
+
+/** How a Claude transcript's last turn stands: ended on an API error, answered, still under way, or no turn read at all. */
+export type ClaudeTurnEnd = "failed" | "answered" | "running" | null;
+
+/** A local command's output and bash mode's lines, which Claude Code writes as user entries of its own: no turn. */
+const LOCAL_LINE_RE = /^<(?:local-command-(?:stdout|stderr|caveat)|bash-(?:input|stdout|stderr))>/;
+
+/**
+ * How a Claude transcript's last turn stands, by the last entry of the session's own that tells it: `failed` when
+ * that is the answer Claude Code wrote for a request the API refused (`isApiErrorMessage`: a rate limit, a cooldown,
+ * an overloaded model), `answered` when it is an answer (one a retry got after such an error included), `running`
+ * when it is a prompt, a tool's result or a tool call. A subagent's entries (`isSidechain`), Claude Code's own records
+ * (meta entries, a compaction's summary, a local command's output) and every other entry tell nothing.
+ */
+export function claudeTurnEnd(text: string): ClaudeTurnEnd {
+  let end: ClaudeTurnEnd = null;
+  for (const line of text.split("\n")) {
+    if (!line.includes('"assistant"') && !line.includes('"user"')) continue;
+    let entry: (TranscriptEntry & { isSidechain?: unknown }) | null;
+    try { entry = JSON.parse(line) as typeof entry; } catch { continue; /* a record cut by the tail read */ }
+    if (entry === null || typeof entry !== "object" || entry.isSidechain === true || entry.isMeta === true || entry.isCompactSummary === true) continue;
+    const content = entry.message?.content;
+    if (entry.type === "assistant") {
+      if (entry.isApiErrorMessage === true) { end = "failed"; continue; }
+      const calling = entry.message?.stop_reason === "tool_use"
+        || (Array.isArray(content) && content.some((block: unknown) => typeof block === "object" && block !== null && (block as { type?: unknown }).type === "tool_use"));
+      end = calling ? "running" : "answered";
+    } else if (entry.type === "user" && !(typeof content === "string" && LOCAL_LINE_RE.test(content))) end = "running";
+  }
+  return end;
+}
+
+/**
+ * The end of a Claude transcript, where its last turn's end is: what claudeTurnEnd reads. Read at once, as the
+ * subagent tracker reads the same file (claude-subagents.ts scanParent), so a status is told on what it says.
+ */
+export function claudeLastTurnEnd(path: string, tailBytes = 256 * 1024): ClaudeTurnEnd {
+  const fd = openSync(path, "r");
+  try {
+    const { size } = fstatSync(fd);
+    const start = Math.max(0, size - tailBytes);
+    const buffer = Buffer.alloc(size - start);
+    readSync(fd, buffer, 0, buffer.length, start);
+    return claudeTurnEnd(buffer.toString("utf8"));
+  } finally {
+    closeSync(fd);
+  }
 }
 

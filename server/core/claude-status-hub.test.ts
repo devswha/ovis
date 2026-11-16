@@ -1,0 +1,146 @@
+import { describe, expect, it, jest, spyOn } from "bun:test";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { claude, handlers, hub, line, root, workingClaude } from "./status.fake.ts";
+
+// Claude Code 2.1.321 at an API rate limit, as recorded: the turn's answer entry is the error (isApiErrorMessage)
+const failed = readFileSync(join(import.meta.dir, "..", "fixtures", "claude-api-error-2.1.321.jsonl"), "utf8");
+/** the recorded error entry alone, for a turn whose prompt a fixture wrote already */
+const failedEntry = `${failed.trim().split("\n").at(-1)!}\n`;
+const prompt = (text: string) => line({ type: "user", origin: { kind: "human" }, timestamp: new Date().toISOString(), message: { role: "user", content: text } });
+const answer = (text: string) => line({ type: "assistant", timestamp: new Date().toISOString(), message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text }] } });
+
+let sessions = 0;
+/** a hub whose Claude pane reads `path` as its transcript, found by a snapshot while the pane is at rest */
+async function claudeHub(text: string) {
+  const id = `44444444-4444-4444-8444-${String(++sessions).padStart(12, "0")}`;
+  const path = join(root, `${id}.jsonl`);
+  writeFileSync(path, text);
+  const pane = { ...claude, agent_session: { ...claude.agent_session, value: id } };
+  const h = hub(path);
+  const failures: string[] = [];
+  spyOn(h.status.push, "onFailed").mockImplementation(async (paneId: string) => { failures.push(paneId); });
+  h.herdrSays(pane);
+  handlers.onBaseline([pane]);
+  await h.snapshot();
+  return { ...h, path, pane, failures };
+}
+
+describe("a Claude pane whose turn ended on an API error", () => {
+  it("reads at rest and tells the failure once, never DONE, for a turn this server saw run", async () => {
+    const h = await claudeHub("");
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    writeFileSync(h.path, failed);
+    handlers.onStatus(h.pane.pane_id, "idle", "claude");
+    expect(h.last().status).toBe("idle");
+    expect(h.alerts).toEqual(["working", "idle"]);
+    expect(h.failures).toEqual([h.pane.pane_id]);
+    expect(h.pending.current(h.pane.pane_id)).toBe("idle");
+    // herdr's own DONE for the pane, in a snapshot or an event, changes nothing and tells nothing again
+    h.herdrSays({ ...h.pane, agent_status: "done" });
+    expect((await h.snapshot()).panes[0]!.agent_status).toBe("idle");
+    handlers.onStatus(h.pane.pane_id, "done", "claude");
+    expect(h.last().status).toBe("idle");
+    expect(h.failures).toEqual([h.pane.pane_id]);
+  });
+
+  it("finishes the turn after a failure that answered", async () => {
+    const h = await claudeHub("");
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    writeFileSync(h.path, failed);
+    handlers.onStatus(h.pane.pane_id, "idle", "claude");
+    expect(h.last().status).toBe("idle");
+    // the user sends again, and the retry gets through
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    appendFileSync(h.path, `${prompt("again")}${answer("Done")}`);
+    handlers.onStatus(h.pane.pane_id, "idle", "claude");
+    expect(h.last().status).toBe("done");
+    expect(h.alerts.at(-1)).toBe("done");
+    expect(h.failures).toEqual([h.pane.pane_id]);
+  });
+
+  it("finishes a turn whose API error a retry answered before the rest", async () => {
+    const h = await claudeHub("");
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    writeFileSync(h.path, `${failed}${answer("Done")}`);
+    handlers.onStatus(h.pane.pane_id, "idle", "claude");
+    expect(h.last().status).toBe("done");
+    expect(h.failures).toEqual([]);
+  });
+
+  it("finishes a turn that answered, as before", async () => {
+    const h = await claudeHub("");
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    writeFileSync(h.path, `${prompt("go")}${answer("Done")}`);
+    handlers.onStatus(h.pane.pane_id, "idle", "claude");
+    expect(h.last().status).toBe("done");
+    expect(h.alerts).toEqual(["working", "done"]);
+    expect(h.failures).toEqual([]);
+  });
+
+  it("reads an API error written after the rest was told at the next snapshot, and a retry's answer after it as the finish", async () => {
+    const h = await claudeHub("");
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    writeFileSync(h.path, prompt("go"));
+    handlers.onStatus(h.pane.pane_id, "idle", "claude");
+    expect(h.last().status).toBe("done");
+    appendFileSync(h.path, failed);
+    h.herdrSays({ ...h.pane, agent_status: "done" });
+    expect((await h.snapshot()).panes[0]!.agent_status).toBe("idle");
+    expect(h.last().status).toBe("idle");
+    expect(h.failures).toEqual([h.pane.pane_id]);
+    // the same file read again finds nothing new and tells nothing again
+    await h.snapshot();
+    expect(h.failures).toEqual([h.pane.pane_id]);
+    appendFileSync(h.path, answer("Done"));
+    await h.snapshot();
+    expect(h.last().status).toBe("done");
+    expect(h.alerts.at(-1)).toBe("done");
+  });
+
+  it("tells the failure of a turn held on its background work once that wait ends with no turn after it", async () => {
+    jest.useFakeTimers();
+    try {
+      const h = await workingClaude();
+      const failures: string[] = [];
+      spyOn(h.status.push, "onFailed").mockImplementation(async (paneId: string) => { failures.push(paneId); });
+      appendFileSync(h.path, failedEntry);
+      handlers.onStatus(h.pane.pane_id, "idle", "claude");
+      // at rest, held on the subagent the turn started: the alerts take it for working, and no failure is told yet
+      expect(h.last()).toEqual({ status: "idle", tasks: 1, bg: true });
+      expect(failures).toEqual([]);
+      // the subagent ends, no turn follows it, and the wait runs out: the failure is told then, once
+      appendFileSync(h.child, line({ type: "assistant", isSidechain: true, timestamp: new Date().toISOString(), message: { role: "assistant", stop_reason: "end_turn", content: [] } }));
+      h.poll();
+      jest.advanceTimersByTime(61_000);
+      expect(h.last()).toEqual({ status: "idle", tasks: 0, bg: false });
+      expect(h.alerts.at(-1)).toBe("idle");
+      expect(failures).toEqual([h.pane.pane_id]);
+      jest.advanceTimersByTime(5_000);
+      expect(failures).toEqual([h.pane.pane_id]);
+    } finally { jest.useRealTimers(); }
+  });
+
+  it("tells nothing of a later turn's failure it did not see run, after one it saw answer", async () => {
+    const h = await claudeHub("");
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    writeFileSync(h.path, `${prompt("go")}${answer("Done")}`);
+    handlers.onStatus(h.pane.pane_id, "idle", "claude");
+    expect(h.last().status).toBe("done");
+    // status events are lost meanwhile: a turn begins and ends on an API error unseen, and a snapshot reads the pane at rest
+    appendFileSync(h.path, `${prompt("next")}${failedEntry}`);
+    h.herdrSays({ ...h.pane, agent_status: "done" });
+    expect((await h.snapshot()).panes[0]!.agent_status).toBe("done");
+    expect(h.failures).toEqual([]);
+  });
+
+  it("tells nothing of a failure it never saw run: a pane found already at rest, after a restart", async () => {
+    const h = await claudeHub(failed);
+    handlers.onStatus(h.pane.pane_id, "idle", "claude");
+    expect(h.last().status).toBe("idle");
+    expect(h.failures).toEqual([]);
+    h.herdrSays({ ...h.pane, agent_status: "done" });
+    expect((await h.snapshot()).panes[0]!.agent_status).toBe("done");
+    expect(h.failures).toEqual([]);
+  });
+});

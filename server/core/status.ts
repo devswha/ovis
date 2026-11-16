@@ -14,7 +14,8 @@ import { AgentTaskStatus, isTaskAgent } from "../agent-tasks.ts";
 import { resolveAgyStore } from "../agy-store.ts";
 import { BackgroundWait } from "../background-wait.ts";
 import { busyPanes, DESKTOP_ACTIVITY_FILE, trackDesktopActivity } from "../desktop-activity.ts";
-import { ClaudeSubagentStatus } from "../claude-subagents.ts";
+import { ClaudeSubagentStatus, plain } from "../claude-subagents.ts";
+import { claudeLastTurnEnd, type ClaudeTurnEnd } from "../claude-transcript.ts";
 import { codexLastTurnEnd, codexOpenRollout, paneCodexHome } from "../codex.ts";
 import { startStatusCollector } from "../collector.ts";
 import { CompletionTracker, type OmoRest } from "../completion.ts";
@@ -367,10 +368,90 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   };
   /** herdr calls a Codex at rest DONE, idle or `unknown` (codex/unknown at rest, server/completion.ts) */
   const atRest = (status: AgentStatus): boolean => status === "done" || status === "idle" || status === "unknown";
+  /** Claude panes whose last turn ended on an API error, until the next one starts (claudeRest) */
+  const claudeFailed = new Set<string>();
+  /**
+   * each Claude pane this server saw work, and its transcript as claudeRest last read it (null: not read since the pane
+   * worked): only such a turn's failure is told, as only a Codex turn this server saw run is (codexWorking)
+   */
+  const claudeLooked = new Map<string, string | null>();
+  /** Claude panes whose failure alert waits for the end of the background wait their failed rest is held on (claudeFailedAlert) */
+  const claudeFailHeld = new Set<string>();
+  /** A Claude pane is at work again (`began`), or no Claude pane any more: what its last turn ended on is no longer its rest. */
+  const claudeWorking = (paneId: string, began: boolean): void => {
+    claudeFailed.delete(paneId);
+    claudeFailHeld.delete(paneId);
+    if (began) claudeLooked.set(paneId, null); else claudeLooked.delete(paneId);
+  };
+  /**
+   * The failure alert of a Claude turn that ended on an API error, after its status was told. A rest held on the turn's
+   * background work is no stop to the alerts (push.ts onFailed): its failure is told once that wait ends with no turn
+   * after it, at the same rest (claudeFailHeldEnds).
+   */
+  function claudeFailedAlert(paneId: string): void {
+    if (waits.waiting(paneId)) { claudeFailHeld.add(paneId); return; }
+    claudeFailHeld.delete(paneId);
+    push.onFailed(paneId).catch(logPushError);
+  }
+  /** A wait a failed Claude rest was held on ended, its status told: the failure alert it held goes out now. */
+  function claudeFailHeldEnds(paneId: string): void {
+    if (!claudeFailHeld.has(paneId) || waits.waiting(paneId) || !claudeFailed.has(paneId) || completions.current(paneId) !== "idle") return;
+    claudeFailedAlert(paneId);
+  }
+  /**
+   * A Claude turn this server saw run came to rest: the transcript the chat reads says whether it ended on an API error
+   * (a rate limit, a cooldown, an overloaded model), which is at rest, not finished (#687's rule, on Claude Code's own
+   * record, as codexRest reads Codex's). Read at once, as the subagent tracker reads the same file, and again only once
+   * it changed; a transcript not found or not read leaves herdr's word.
+   */
+  function claudeRest(paneId: string): ClaudeTurnEnd {
+    const known = claudeLooked.get(paneId);
+    if (known === undefined || omo.runs(paneId) || gjc.runs(paneId)) return null;
+    const session = claudeAgents.sessionOf(paneId);
+    const file = session?.live === true ? plain(session.path) : null;
+    if (session === null || file === null) return null;
+    const read = `${session.path}\0${file.id}\0${file.size}`;
+    if (read === known) return null;
+    let end: ClaudeTurnEnd;
+    try { end = claudeLastTurnEnd(session.path); } catch { return null; }
+    claudeLooked.set(paneId, read);
+    return end;
+  }
+  /**
+   * A Claude pane at rest whose turn's end was written after its rest was told (a snapshot found the transcript grown):
+   * an API error found now is told as codexRest tells one, and an answer after a failure is the finish it is.
+   */
+  function claudeLate(paneId: string): void {
+    // a rest not told yet is its status event's to read: a read taken here would leave that event nothing new
+    const told = completions.current(paneId);
+    if (told === undefined || told === "working" || told === "blocked") return;
+    const end = claudeRest(paneId);
+    // an answer ends the turn this server saw run: a later turn it did not see run (one begun while status events
+    // were lost) is no turn of its own to tell the failure of
+    if (end === "answered") claudeLooked.delete(paneId);
+    if (end === "answered" && claudeFailed.delete(paneId)) {
+      claudeFailHeld.delete(paneId);
+      const status = completions.observe(paneId, "idle", "claude", "answered");
+      pending.status(paneId, queueStatus(paneId, status)); drainPending(paneId);
+      waits.status(paneId, status);
+      broadcastAll(paneStatus(paneId, status));
+      push.onStatus(paneId, alertStatus(status, waits.waiting(paneId))).catch(logPushError);
+      return;
+    }
+    if (end !== "failed" || claudeFailed.has(paneId)) return;
+    claudeFailed.add(paneId);
+    const status = completions.observe(paneId, "idle", "claude", "failed");
+    pending.status(paneId, queueStatus(paneId, status)); drainPending(paneId);
+    waits.status(paneId, status);
+    broadcastAll(paneStatus(paneId, status));
+    push.onStatus(paneId, alertStatus(status, waits.waiting(paneId))).catch(logPushError);
+    claudeFailedAlert(paneId);
+  }
   /** herdr calls such a pane's rest DONE as it calls any finish it did not see, or `unknown`: it is at rest, and READY */
-  const codexRests = (snapshot: SessionSnapshot): SessionSnapshot => {
-    if (codexFailed.size === 0) return snapshot;
-    const rest = (pane: { pane_id: string; agent?: string | null; agent_status: AgentStatus }) => codexFailed.has(pane.pane_id) && pane.agent === "codex" && (pane.agent_status === "done" || pane.agent_status === "unknown");
+  const failedRests = (snapshot: SessionSnapshot): SessionSnapshot => {
+    if (codexFailed.size === 0 && claudeFailed.size === 0) return snapshot;
+    const failed = (pane: { pane_id: string; agent?: string | null }) => (pane.agent === "codex" && codexFailed.has(pane.pane_id)) || (pane.agent === "claude" && claudeFailed.has(pane.pane_id));
+    const rest = (pane: { pane_id: string; agent?: string | null; agent_status: AgentStatus }) => failed(pane) && (pane.agent_status === "done" || pane.agent_status === "unknown");
     return { ...snapshot, panes: snapshot.panes.map((pane) => rest(pane) ? { ...pane, agent_status: "idle" } : pane), agents: snapshot.agents.map((agent) => rest(agent) ? { ...agent, agent_status: "idle" } : agent) };
   };
   /** herdr's snapshot with OmO's and GJC's own status in it: what the completion tracker and web push are given */
@@ -392,7 +473,9 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       // at DONE, or at any rest after a failure (a late end of the turn after it is read there too)
       else if ((pane.agent_status === "done" || (codexFailed.has(pane.pane_id) && atRest(pane.agent_status))) && !omo.runs(pane.pane_id) && !gjc.runs(pane.pane_id)) void codexRest(pane.pane_id, snapshot);
     }
-    const named = codexRests(letta.apply(gjc.apply(omo.apply(snapshot))));
+    // so may a Claude pane at rest, its API error (or a retry's answer after one) written after its rest was told
+    for (const pane of snapshot.panes) if (pane.agent === "claude" && atRest(pane.agent_status) && claudeLooked.has(pane.pane_id)) claudeLate(pane.pane_id);
+    const named = failedRests(letta.apply(gjc.apply(omo.apply(snapshot))));
     // reads overlap (the collector's, each client's): only one newer than every read applied before tells title turns
     const newest = titleRead > titleApplied;
     if (newest) titleApplied = titleRead;
@@ -561,6 +644,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     if (status === undefined) return;
     broadcastAll(paneStatus(paneId, status, { background_tasks: running }));
     if (changed) push.onStatus(paneId, alertStatus(status, waits.waiting(paneId))).catch(logPushError);
+    if (changed) claudeFailHeldEnds(paneId);
   }
 
   /** A wait ran out (its work ended and no turn followed, or it was held as long as one is): the status it stood for. */
@@ -570,6 +654,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       if (status === undefined) continue;
       broadcastAll(paneStatus(paneId, status));
       push.onStatus(paneId, alertStatus(status, waits.waiting(paneId))).catch(logPushError);
+      claudeFailHeldEnds(paneId);
     }
   }
 
@@ -657,9 +742,16 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     // an OmO pane whose session is not known keeps herdr's status, under its own name
     // a Codex pane whose rollout ended its last turn in an error stays at rest, whatever herdr calls that rest (codexRest)
     if (raw === "working" || agent !== "codex") codexWorking(paneId, raw === "working" && agent === "codex");
+    // so does a Claude pane whose transcript ended its last turn on an API error (claudeRest): read as the rest is told,
+    // so no browser plays a finish for it first. An answer read after such a rest (a retry got through) is a finish
+    if (raw === "working" || agent !== "claude") claudeWorking(paneId, raw === "working" && agent === "claude");
+    const claudeEnd = agent === "claude" && raw !== "blocked" && raw !== "working" ? claudeRest(paneId) : null;
+    const claudeFailedNow = claudeEnd === "failed" && !claudeFailed.has(paneId);
+    if (claudeFailedNow) claudeFailed.add(paneId);
+    const claudeAnswered = claudeEnd === "answered" && claudeFailed.delete(paneId);
     // (herdr's own DONE or Codex's `unknown` at rest included: the tracker reads a failed rest only from an idle)
-    const failedRest = codexFailed.has(paneId) && raw !== "blocked";
-    const status = completions.observe(paneId, failedRest ? "idle" : raw, omo.runs(paneId) ? "omo" : gjc.runs(paneId) ? "gjc" : agent, failedRest ? "failed" : undefined);
+    const failedRest = (codexFailed.has(paneId) || (agent === "claude" && claudeFailed.has(paneId))) && raw !== "blocked";
+    const status = completions.observe(paneId, failedRest || claudeAnswered ? "idle" : raw, omo.runs(paneId) ? "omo" : gjc.runs(paneId) ? "gjc" : agent, failedRest ? "failed" : claudeAnswered ? "answered" : undefined);
     pending.status(paneId, queueStatus(paneId, status)); drainPending(paneId);
     // a Claude turn that ended holds on its background work: what it started is read now, while
     // the pane is still taken for the status before (work that ended before the turn did holds
@@ -688,6 +780,10 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       void Promise.race([codexRest(paneId), new Promise<void>((resolve) => { timer = setTimeout(resolve, CODEX_LOOK_MS); })])
         .then(() => { clearTimeout(timer); if (completions.current(paneId) === status) tell(); });
     } else tell();
+    // after the status: its change calls off what was waiting, and this error is what the rest says
+    if (claudeFailedNow && status === "idle") claudeFailedAlert(paneId);
+    // an answer ends the turn this server saw run (claudeLate)
+    if (claudeEnd === "answered") claudeLooked.delete(paneId);
     // an OpenCode turn whose session is not known yet: its pane is looked up now, not at the next snapshot, so a
     // turn that ended on its subagents is held while the finish alert still waits (and is called off)
     if (tracker === opencodeAgents && opencodeAgents.sessionOf(paneId)?.live !== true) {
@@ -767,6 +863,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   // (a program that ended and whose pane then closed)
   function paneGone(paneId: string): void {
     codexWorking(paneId, false);
+    claudeWorking(paneId, false);
     codexTurns.delete(paneId);
     omo.ended(paneId);
     gjc.ended(paneId);
@@ -859,6 +956,10 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       // a Codex pane's failed rest and its turns go with it too
       for (const state of [codexFailedAt, codexTurns, codexLooked] as Map<string, unknown>[]) if (state.has(from)) { state.set(to, state.get(from)); state.delete(from); }
       if (codexFailed.delete(from)) codexFailed.add(to);
+      // and a Claude pane's
+      if (claudeLooked.has(from)) { claudeLooked.set(to, claudeLooked.get(from)!); claudeLooked.delete(from); }
+      if (claudeFailed.delete(from)) claudeFailed.add(to);
+      if (claudeFailHeld.delete(from)) claudeFailHeld.add(to);
       // a read record that cannot be written costs that record, never the rest of the move
       try { options.seenMoved?.(from, to, renumber); }
       catch (error) { console.warn(`seen: could not carry the reads of ${from} to ${to}:`, error); }
