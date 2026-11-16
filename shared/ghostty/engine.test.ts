@@ -250,21 +250,46 @@ describe("shared/ghostty engine", () => {
     expect(message(() => gone.engine.dispose())).toBe("returned");
     expect(terminalsFreed).toBe(1);
 
-    // a screen's engine refused half made frees what it made; one that traps half made marks its module
+    // a screen's engine refused half made frees what it made and drops its route; one that traps half made
+    // marks its module and drops its route
     const halfway = instantiate().exports as unknown as GhosttyExports;
     const userdataOption = new GhosttyModule({ ...halfway }).enums.GhosttyTerminalOption.USERDATA;
-    let halfFreed = 0;
+    const handles: number[] = [], handlesFreed: number[] = [], blocks: string[] = [], blocksFreed: string[] = [];
+    const freeing = (free: (handle: number) => void) => (handle: number) => { handlesFreed.push(handle); free(handle); };
     const refusing = new GhosttyModule({
       ...halfway,
       ghostty_terminal_set: (terminal: number, option: number, value: number) => (option === userdataOption ? -2 : halfway.ghostty_terminal_set(terminal, option, value)),
-      ghostty_terminal_free: (terminal: number) => { halfFreed++; halfway.ghostty_terminal_free(terminal); },
+      ghostty_wasm_take_opaque: (slot: number) => { const handle = halfway.ghostty_wasm_take_opaque(slot); handles.push(handle); return handle; },
+      ghostty_wasm_alloc: (len: number) => { const ptr = halfway.ghostty_wasm_alloc(len); blocks.push(`${ptr}+${len}`); return ptr; },
+      ghostty_wasm_free: (ptr: number, len: number) => { blocksFreed.push(`${ptr}+${len}`); halfway.ghostty_wasm_free(ptr, len); },
+      ghostty_terminal_free: freeing(halfway.ghostty_terminal_free),
+      ghostty_render_state_free: freeing(halfway.ghostty_render_state_free),
+      ghostty_render_state_row_iterator_free: freeing(halfway.ghostty_render_state_row_iterator_free),
+      ghostty_render_state_row_cells_free: freeing(halfway.ghostty_render_state_row_cells_free),
+      ghostty_render_state_image_iterator_free: freeing(halfway.ghostty_render_state_image_iterator_free),
     });
     expect(message(() => new GhosttyEngine(refusing, 20, 4, { widths: "core", images: false, events: {} }))).toBe("ghostty-vt: userdata failed (-2)");
-    expect(halfFreed).toBe(1);
+    // the terminal, the render state and its three iterators
+    expect(handles).toHaveLength(5);
+    expect([...handlesFreed].sort((a, b) => a - b)).toEqual([...handles].sort((a, b) => a - b));
+    expect(blocks).not.toEqual([]);
+    expect(blocksFreed).toEqual(blocks);
+    expect(refusing["targets"].size).toBe(0);
     expect(refusing.trap).toBeNull();
     const trapping = new GhosttyModule({ ...(instantiate().exports as unknown as GhosttyExports), ghostty_terminal_new: () => { throw new WebAssembly.RuntimeError("unreachable"); } });
     expect(thrown(() => new GhosttyEngine(trapping, 20, 4, { widths: "core", images: false, events: {} }))).toBe(trapping.trap!);
     expect(trapping.trap).toBeInstanceOf(WebAssembly.RuntimeError);
+    const late = instantiate().exports as unknown as GhosttyExports;
+    const trappingLate = new GhosttyModule({
+      ...late,
+      ghostty_terminal_set: (terminal: number, option: number, value: number) => {
+        if (option === userdataOption) throw new WebAssembly.RuntimeError("unreachable");
+        return late.ghostty_terminal_set(terminal, option, value);
+      },
+    });
+    expect(thrown(() => new GhosttyEngine(trappingLate, 20, 4, { widths: "core", images: false, events: {} }))).toBe(trappingLate.trap!);
+    expect(trappingLate.trap).toBeInstanceOf(WebAssembly.RuntimeError);
+    expect(trappingLate["targets"].size).toBe(0);
     other.engine.write(bytesOf("\x1b[6n"));
     expect(other.replies).toEqual(["\x1b[1;1R"]);
     other.engine.dispose();
@@ -288,6 +313,30 @@ describe("shared/ghostty engine", () => {
     expect(rowText(screenRows(tight.engine).get(0)!)).toBe("hello ok");
     expect(tight.replies).toEqual(["\x1b[1;9R"]);
     tight.engine.dispose();
+
+    // every other buffer a screen's engine takes is refused the same way
+    const roomy = instantiate().exports as unknown as GhosttyExports;
+    let refuse = (_len: number): boolean => true;
+    const picky = new GhosttyModule({ ...roomy, ghostty_wasm_alloc: (len: number) => (refuse(len) ? 0 : roomy.ghostty_wasm_alloc(len)) });
+    expect(message(() => new GhosttyEngine(picky, 20, 4, { widths: "core", images: false, events: {} }))).toStartWith("ghostty-vt: no memory for the engine's scratch block");
+    refuse = () => false;
+    const choosy = screenEngine(40, 4, {}, picky);
+    const longGrapheme = `e${"\u0301".repeat(70)}`;
+    choosy.engine.write(bytesOf(`${longGrapheme}\r\nneedle needle\x1b[?2004h`));
+    refuse = () => true;
+    expect(message(() => choosy.engine.frameAll(() => {}))).toStartWith("ghostty-vt: no memory for a grapheme");
+    const pasted = "p".repeat(200);
+    refuse = (len) => len > pasted.length;
+    expect(message(() => choosy.engine.encodePaste(pasted))).toStartWith("ghostty-vt: no memory for an encoded input");
+    const needle = "needle";
+    refuse = (len) => len !== needle.length;
+    expect(message(() => choosy.engine.search(needle))).toStartWith("ghostty-vt: no memory for the search matches");
+    refuse = () => false;
+    // the module keeps fewer marks than were written
+    expect(rowText(screenRows(choosy.engine).get(0)!)).toStartWith("e\u0301\u0301");
+    expect(choosy.engine.search(needle)).toHaveLength(2);
+    expect(text(choosy.engine.encodePaste(pasted))).toBe(`\x1b[200~${pasted}\x1b[201~`);
+    choosy.engine.dispose();
 
     // a callback that threw during a call the module refused: the call's own error is reported, and only once
     const quiet = instantiate().exports as unknown as GhosttyExports;
@@ -579,5 +628,56 @@ describe("shared/ghostty engine", () => {
     expect(other.frame(() => {})).toBe(true);
     failing.dispose();
     other.dispose();
+
+    // a trap inside the frame capture a hold begins with marks the module as well
+    const plain = instantiate().exports as unknown as GhosttyExports;
+    let trapCapture = false;
+    const capturing = new GhosttyModule({
+      ...plain,
+      ghostty_render_state_update: (state: number, terminal: number) => {
+        if (trapCapture) throw new WebAssembly.RuntimeError("unreachable");
+        return plain.ghostty_render_state_update(state, terminal);
+      },
+    });
+    const held = screenEngine(20, 3, {}, capturing);
+    held.engine.write(bytesOf("A"));
+    trapCapture = true;
+    const captureTrap = thrown(() => held.engine.write(bytesOf("\x1b[?2026hB")));
+    expect(captureTrap).toBeInstanceOf(WebAssembly.RuntimeError);
+    expect(capturing.trap).toBe(captureTrap as WebAssembly.RuntimeError);
+    expect((thrown(() => held.engine.modes()) as Error).cause).toBe(captureTrap);
+  });
+
+  it("engine input buffer order", () => {
+    // what the allocator is asked while an engine's writes grow its input buffer
+    const calls = (events: EngineOptions["events"]): string[] => {
+      const exports = instantiate().exports as unknown as GhosttyExports;
+      const seen: string[] = [];
+      const module = new GhosttyModule({
+        ...exports,
+        ghostty_wasm_alloc: (len: number) => { seen.push(`alloc ${len}`); return exports.ghostty_wasm_alloc(len); },
+        ghostty_wasm_free: (ptr: number, len: number) => { seen.push(`free ${len}`); exports.ghostty_wasm_free(ptr, len); },
+      });
+      const engine = new GhosttyEngine(module, 20, 4, { widths: "xterm", images: false, events });
+      seen.length = 0;
+      for (const size of [100_000, 200_000, 400_000]) engine.write(new Uint8Array(size).fill(0x41));
+      const writes = [...seen];
+      engine.dispose();
+      return writes;
+    };
+    // the browser's frees the old buffer first, as its loader always had it: the allocator hands that block back, so
+    // the page's one memory grows no more than it did
+    expect(calls(undefined)).toEqual(["alloc 100000", "free 100000", "alloc 200000", "free 200000", "alloc 400000"]);
+    // a screen's takes the new one first, so a refused write keeps the buffer it has
+    expect(calls({})).toEqual(["alloc 100000", "alloc 200000", "free 100000", "alloc 400000", "free 200000"]);
+
+    // the module has no room: the browser's engine goes on as its loader always had it (the 1-byte write lands at
+    // address 0, below the module's data); the module is thrown away, never disposed into
+    const exports = instantiate().exports as unknown as GhosttyExports;
+    let room = true;
+    const full = new GhosttyModule({ ...exports, ghostty_wasm_alloc: (len: number) => (room ? exports.ghostty_wasm_alloc(len) : 0) });
+    const browsers = new GhosttyEngine(full, 20, 4, { widths: "xterm", images: false });
+    room = false;
+    expect(message(() => browsers.write(bytesOf("A")))).toBe("returned");
   });
 });

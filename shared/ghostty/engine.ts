@@ -615,8 +615,16 @@ export class GhosttyEngine {
         bell: () => this.callback(() => this.events?.onEffect?.({ type: "bell" })),
         hold: (held) => {
           // the terminal holds exactly the frame the program wants left on screen: capture it now (a failure is
-          // reported after the module returns, like any callback's, never thrown through its frames)
-          if (held) this.callback(() => this.check(this.x.ghostty_render_state_update(this.state, this.terminal), "render_state_update"));
+          // reported after the module returns, like any callback's, never thrown through its frames; a trap
+          // marks the module, as one in any call does)
+          if (held) this.callback(() => {
+            try {
+              this.check(this.x.ghostty_render_state_update(this.state, this.terminal), "render_state_update");
+            } catch (error) {
+              if (error instanceof WebAssembly.RuntimeError) this.module.trap = error;
+              throw error;
+            }
+          });
           this.held = held;
           this.callback(() => this.events?.onHold?.(held));
         },
@@ -712,11 +720,19 @@ export class GhosttyEngine {
   private feed(bytes: Uint8Array): void {
     if (bytes.length > this.inputCap) {
       const cap = Math.max(bytes.length, 64 * 1024);
-      // allocated before the old one is freed, so a refused write keeps it
-      const next = this.allocate(cap, "a write");
-      if (this.input) this.x.ghostty_wasm_free(this.input, this.inputCap);
-      this.input = next;
-      this.inputCap = cap;
+      if (this.events) {
+        // a screen's: allocated before the old one is freed, so a refused write keeps it
+        const next = this.allocate(cap, "a write");
+        if (this.input) this.x.ghostty_wasm_free(this.input, this.inputCap);
+        this.input = next;
+        this.inputCap = cap;
+      } else {
+        // the browser's: freed first, exactly as its loader always had it, so the allocator can hand the freed
+        // block back and the page's one memory grows no more than it did
+        if (this.input) this.x.ghostty_wasm_free(this.input, this.inputCap);
+        this.inputCap = cap;
+        this.input = this.allocate(cap, "a write");
+      }
     }
     new Uint8Array(this.x.memory.buffer, this.input, bytes.length).set(bytes);
     this.x.ghostty_terminal_vt_write(this.terminal, this.input, bytes.length);
