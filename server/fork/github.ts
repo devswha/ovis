@@ -1,4 +1,4 @@
-import type { GithubCheck, GithubEntry, GithubPull, GithubPullDetail, GithubPulls, GithubThread } from "../../shared/github.ts";
+import type { GithubCheck, GithubEntry, GithubFilePatch, GithubPull, GithubPullDetail, GithubPulls, GithubThread } from "../../shared/github.ts";
 import type { SessionSnapshot } from "../../shared/protocol.ts";
 import { conflictResponse, jsonResponse } from "../http.ts";
 import { ghAccounts, originRepository, parsePullRequests, PullRequestError, runGithub } from "./pull-requests.ts";
@@ -257,36 +257,75 @@ export function parseGithubPull(output: string, repository: string): GithubPullD
   } catch { throw unreadable(); }
 }
 
-/** A pull request's page with the given account's token; 20 seconds of cache per page. I/O is injectable. */
-export function createGithubPullReader(run: Run = runGithub, now = Date.now) {
-  const cache = new Map<string, { until: number; value: Promise<GithubPullDetail> }>();
-  return (repository: string, number: number, account: string): Promise<GithubPullDetail> => {
-    const key = `${account}\n${repository}#${number}`;
+/** `gh` with one account's token, without switching the account gh itself uses; its output, or why there is none. */
+async function ghAs(run: Run, account: string, args: string[], failed: string): Promise<string> {
+  const token = await run(["auth", "token", "--user", account]);
+  if (!token) throw new PullRequestError("gh_missing", "The GitHub CLI (gh) is not installed on this PC");
+  if (token.code !== 0 || !token.stdout.trim()) throw new PullRequestError("gh_signed_out", "Sign in on this PC with gh auth login");
+  const result = await run(args, { GH_TOKEN: token.stdout.trim() });
+  if (!result) throw new PullRequestError("gh_missing", "The GitHub CLI (gh) is not installed on this PC");
+  if (result.code !== 0) {
+    const detail = `${result.stderr}\n${result.stdout}`;
+    if (/rate limit|HTTP 429/i.test(detail)) throw new PullRequestError("rate_limited", "GitHub is limiting requests; try again in a few minutes");
+    if (/gh auth login|not logged|authentication|HTTP 401|bad credentials/i.test(detail)) throw new PullRequestError("gh_signed_out", "Sign in on this PC with gh auth login");
+    throw new PullRequestError("gh_failed", failed);
+  }
+  return result.stdout;
+}
+
+/** Answers kept 20 seconds per key; a failed one is forgotten at once. */
+function cached<T>(now: () => number): (key: string, read: () => Promise<T>) => Promise<T> {
+  const cache = new Map<string, { until: number; value: Promise<T> }>();
+  return (key, read) => {
     const hit = cache.get(key);
     if (hit && now() < hit.until) return hit.value;
-    const value = (async () => {
-      const token = await run(["auth", "token", "--user", account]);
-      if (!token) throw new PullRequestError("gh_missing", "The GitHub CLI (gh) is not installed on this PC");
-      if (token.code !== 0 || !token.stdout.trim()) throw new PullRequestError("gh_signed_out", "Sign in on this PC with gh auth login");
-      const [owner, name] = repository.split("/");
-      const result = await run(["api", "graphql", "--hostname", "github.com", "-f", `query=${PULL_QUERY}`, "-f", `owner=${owner}`, "-f", `name=${name}`, "-F", `number=${number}`], { GH_TOKEN: token.stdout.trim() });
-      if (!result) throw new PullRequestError("gh_missing", "The GitHub CLI (gh) is not installed on this PC");
-      if (result.code !== 0) {
-        const detail = `${result.stderr}\n${result.stdout}`;
-        if (/rate limit|HTTP 429/i.test(detail)) throw new PullRequestError("rate_limited", "GitHub is limiting requests; try again in a few minutes");
-        if (/gh auth login|not logged|authentication|HTTP 401|bad credentials/i.test(detail)) throw new PullRequestError("gh_signed_out", "Sign in on this PC with gh auth login");
-        throw new PullRequestError("gh_failed", "Could not read this pull request");
-      }
-      return parseGithubPull(result.stdout, repository);
-    })();
+    const value = read();
     cache.set(key, { until: now() + 20_000, value });
     value.catch(() => cache.delete(key));
     return value;
   };
 }
+
+/** A pull request's page with the given account's token. I/O is injectable. */
+export function createGithubPullReader(run: Run = runGithub, now = Date.now) {
+  const cache = cached<GithubPullDetail>(now);
+  return (repository: string, number: number, account: string): Promise<GithubPullDetail> => cache(`${account}\n${repository}#${number}`, async () => {
+    const [owner, name] = repository.split("/");
+    const output = await ghAs(run, account, ["api", "graphql", "--hostname", "github.com", "-f", `query=${PULL_QUERY}`, "-f", `owner=${owner}`, "-f", `name=${name}`, "-F", `number=${number}`], "Could not read this pull request");
+    return parseGithubPull(output, repository);
+  });
+}
+
+const PATCH_CHANGES = { added: "added", removed: "deleted", renamed: "renamed", copied: "copied", modified: "modified", changed: "modified", unchanged: "modified" } as const;
+/** Each file's patch as GitHub sends it (hunks only; none for a binary or too large file), with the git header the diff view reads put back. */
+export function parseGithubFiles(output: string): GithubFilePatch[] {
+  // `gh api --paginate --slurp` answers one array per page
+  const pages: unknown = JSON.parse(output);
+  const files = (Array.isArray(pages) ? pages.flat() : []) as { filename?: unknown; previous_filename?: unknown; status?: string; patch?: unknown }[];
+  return files.filter((file) => typeof file?.filename === "string").map((file) => {
+    const path = file.filename as string;
+    const before = typeof file.previous_filename === "string" ? file.previous_filename : path;
+    const change = PATCH_CHANGES[file.status as keyof typeof PATCH_CHANGES] ?? "modified";
+    const hunks = typeof file.patch === "string" && file.patch.startsWith("@@") ? file.patch : null;
+    const header = `diff --git a/${before} b/${path}\n${change === "added" ? "new file mode 100644\n" : change === "deleted" ? "deleted file mode 100644\n" : ""}--- ${change === "added" ? "/dev/null" : `a/${before}`}\n+++ ${change === "deleted" ? "/dev/null" : `b/${path}`}\n`;
+    return { path, previous: before === path ? null : before, patch: hunks === null ? null : `${header}${hunks}${hunks.endsWith("\n") ? "" : "\n"}` };
+  });
+}
+
+/** A pull request's changed files with their patches, the first 300 GitHub lists. */
+export function createGithubFilesReader(run: Run = runGithub, now = Date.now) {
+  const cache = cached<GithubFilePatch[]>(now);
+  return (repository: string, number: number, account: string): Promise<GithubFilePatch[]> => cache(`${account}\n${repository}#${number}`, async () => {
+    const output = await ghAs(run, account, ["api", "--hostname", "github.com", "--paginate", "--slurp", `repos/${repository}/pulls/${number}/files?per_page=100`], "Could not read this pull request's files");
+    try { return parseGithubFiles(output); } catch { throw unreadable(); }
+  });
+}
+const readFiles = createGithubFilesReader();
+
 const readPull = createGithubPullReader();
 
-export async function handleGithubPull(request: Request, readOnly: boolean): Promise<Response> {
+/** The repository, number and account a pull request's routes are asked about, or a 400/403/405 answer. */
+function pullAsked(request: Request, readOnly: boolean): { repository: string; number: number; account: string } | Response {
   if (readOnly) return jsonResponse({ error: { code: "read_only", message: "This device only watches" } }, 403);
   if (request.method !== "GET") return jsonResponse({ error: { code: "method_not_allowed", message: "Use GET" } }, 405);
   const params = new URL(request.url).searchParams;
@@ -296,10 +335,26 @@ export async function handleGithubPull(request: Request, readOnly: boolean): Pro
   if (!/^[\w.-]+\/[\w.-]+$/.test(repository) || !Number.isSafeInteger(number) || number < 1 || !/^[\w-]+$/.test(account)) {
     return jsonResponse({ error: { code: "bad_request", message: "Name a repository, a pull request number and an account" } }, 400);
   }
+  return { repository, number, account };
+}
+
+export async function handleGithubPull(request: Request, readOnly: boolean): Promise<Response> {
+  const asked = pullAsked(request, readOnly);
+  if (asked instanceof Response) return asked;
   try {
-    return jsonResponse(await readPull(repository, number, account));
+    return jsonResponse(await readPull(asked.repository, asked.number, asked.account));
   } catch (error) {
     return conflictResponse(error instanceof PullRequestError ? error.code : "gh_failed", error instanceof PullRequestError ? error.message : "Could not read this pull request");
+  }
+}
+
+export async function handleGithubFiles(request: Request, readOnly: boolean): Promise<Response> {
+  const asked = pullAsked(request, readOnly);
+  if (asked instanceof Response) return asked;
+  try {
+    return jsonResponse({ files: await readFiles(asked.repository, asked.number, asked.account) });
+  } catch (error) {
+    return conflictResponse(error instanceof PullRequestError ? error.code : "gh_failed", error instanceof PullRequestError ? error.message : "Could not read this pull request's files");
   }
 }
 

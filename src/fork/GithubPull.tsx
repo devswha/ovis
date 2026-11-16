@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ArrowLeft, FileMinus, FilePlus, FileSymlink, Check, ChevronDown, CircleAlert, CircleCheck, CircleDot, CircleSlash, CircleX, ExternalLink, FileDiff, GitBranch, GitCommitHorizontal, GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft, LoaderCircle, MessageSquare, X } from "lucide-react";
+import { ArrowLeft, Check, ChevronDown, CircleAlert, CircleCheck, CircleDot, CircleSlash, CircleX, ExternalLink, FileDiff, GitBranch, GitCommitHorizontal, GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft, LoaderCircle, MessageSquare, X } from "lucide-react";
 
 import { Markdown } from "../components/Markdown.tsx";
 import { Segmented } from "../components/SettingsControls.tsx";
@@ -10,6 +10,7 @@ import { ApiError, createWorktree, fetchPullRequestBranch, getJson, listWorktree
 import { useT, type Translate } from "../lib/i18n.ts";
 import { closeGithubPull } from "./GithubInbox.tsx";
 import { ago, GithubConversation } from "./GithubConversation.tsx";
+import { GithubFiles } from "./GithubFiles.tsx";
 import "./GithubPull.css";
 
 function stateOf(detail: GithubPullDetail, t: Translate) {
@@ -73,23 +74,6 @@ function ChecksBox({ checks }: { checks: GithubCheck[] }) {
 
 /** A tab's name with its count, when there is one. */
 const counted = (label: string, count: number): string => count > 0 ? `${label} ${count}` : label;
-
-const changeIcons = { added: FilePlus, deleted: FileMinus, renamed: FileSymlink, copied: FileSymlink, modified: FileDiff } as const;
-/** The changed files with their added and removed lines; the diff itself comes next. */
-function FileList({ files, total }: { files: GithubPullDetail["files"]; total: number }) {
-  const t = useT();
-  if (files.length === 0) return <p className="fork-github-pull-dim">{t("No files changed.")}</p>;
-  return <>
-    <ul className="fork-github-files">{files.map((file) => {
-      const Icon = changeIcons[file.change];
-      return <li key={file.path} className={`is-${file.change}`}>
-        <Icon aria-hidden="true" /><code dir="auto">{file.path}</code>
-        <span className="fork-github-file-lines"><span className="is-added">+{file.additions}</span> <span className="is-removed">−{file.deletions}</span></span>
-      </li>;
-    })}</ul>
-    {total > files.length && <p className="fork-github-pull-dim">{t("And {count} more files", { count: total - files.length })}</p>}
-  </>;
-}
 
 /** One pull request, drawn from GitHub's API in Ovis's own design: the wide pane's page, or the phone's screen. */
 export function GithubPullPage({ pull, wide, watching, onOpened }: { pull: GithubPull; wide: boolean; watching: boolean; onOpened(opened: WorktreeOpened): void }) {
@@ -189,7 +173,7 @@ export function GithubPullPage({ pull, wide, watching, onOpened }: { pull: Githu
         </>}
         {tab === "conversation" && <section className="fork-github-tab-page" aria-label={t("Conversation")}><GithubConversation entries={detail.conversation ?? []} /></section>}
         {tab === "checks" && <section className="fork-github-tab-page" aria-label={t("Checks")}><ChecksBox checks={detail.check_list} /></section>}
-        {tab === "files" && <section className="fork-github-tab-page" aria-label={t("Files")}><FileList files={detail.files ?? []} total={detail.changed_files} /></section>}
+        {tab === "files" && <section className="fork-github-tab-page" aria-label={t("Files")}><GithubFiles pull={pull} detail={detail} /></section>}
       </>}
     </div>
   </article>;

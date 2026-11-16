@@ -29,7 +29,7 @@ function Body({ text }: { text: string }) {
 }
 
 /** The lines a thread is on, then its comments; a resolved thread stays folded until opened. */
-function Thread({ thread }: { thread: GithubThread }) {
+export function GithubThreadView({ thread }: { thread: GithubThread }) {
   const t = useT();
   const where = <>
     <code dir="auto">{thread.path}{thread.line !== null && `:${thread.line}`}</code>
@@ -70,7 +70,7 @@ export function GithubConversation({ entries }: { entries: GithubEntry[] }) {
         <div className="fork-github-review-head"><Icon aria-hidden="true" /><Byline author={entry.author} at={entry.at}><span>{reviewWords[entry.state]}</span></Byline></div>
         {(entry.body.trim() || entry.threads.length > 0) && <div className="fork-github-review-body">
           <Body text={entry.body} />
-          {entry.threads.map((thread, at) => <Thread key={at} thread={thread} />)}
+          {entry.threads.map((thread, at) => <GithubThreadView key={at} thread={thread} />)}
         </div>}
       </li>;
     }

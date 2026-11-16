@@ -80,3 +80,11 @@ export interface GithubCheck {
   description: string | null;
   url: string | null;
 }
+
+/** One changed file's patch, git's form from its `diff --git` line on; null when GitHub sends none (binary, or too large). */
+export interface GithubFilePatch {
+  path: string;
+  /** the name before a rename */
+  previous: string | null;
+  patch: string | null;
+}

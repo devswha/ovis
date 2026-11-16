@@ -407,12 +407,57 @@
   font-size: var(--fs-sm);
 }
 
-.fork-github-files > li {
+.fork-github-files > li { min-width: 0; }
+
+/* a file's row is its toggle: the diff opens under it */
+.fork-github-file {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  width: 100%;
   min-width: 0;
   padding: var(--space-2) var(--space-3);
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.fork-github-file:hover { background: var(--bg-hover); }
+.fork-github-file:focus-visible { outline-offset: var(--ring-inset-offset); }
+.fork-github-files svg.fork-github-file-chevron { width: 14px; height: 14px; transition: transform var(--dur-fast) ease; }
+.fork-github-files .is-open .fork-github-file-chevron { transform: rotate(90deg); }
+.is-open > .fork-github-file { border-bottom: var(--hairline) solid var(--border); }
+
+.fork-github-file-comments {
+  flex: none;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+}
+
+.fork-github-file-open {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  background: var(--bg);
+}
+
+/* Ovis's diff view fills its box and scrolls inside it: a box as tall as the patch, up to most of the screen */
+.fork-github-diff {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  height: min(calc((var(--rows) + 1) * var(--fs-xs) * var(--lh-base)), 70vh);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.fork-github-files-bar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: var(--space-2);
 }
 
 .fork-github-files > li + li { border-top: var(--hairline) solid var(--border); }
@@ -424,8 +469,8 @@
   color: var(--text-dim);
 }
 
-.fork-github-files .is-added > svg { color: var(--status-done); }
-.fork-github-files .is-deleted > svg { color: var(--status-blocked); }
+.fork-github-files .is-added > .fork-github-file > svg:not(.fork-github-file-chevron) { color: var(--status-done); }
+.fork-github-files .is-deleted > .fork-github-file > svg:not(.fork-github-file-chevron) { color: var(--status-blocked); }
 
 .fork-github-files code {
   flex: 1;
