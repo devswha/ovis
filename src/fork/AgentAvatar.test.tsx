@@ -168,6 +168,43 @@ describe("AgentAvatar", () => {
     expect(requests).toEqual(Array.from({ length: 4 }, () => ({ live: ["moving:p1"], machines: ["moving"] })));
   });
 
+  it.each(["response", "body"])("ignores an old project's late %s after a newer move finishes", async (delay) => {
+    device(true, {});
+    const id = `race-${delay}`;
+    const oldFetch = Promise.withResolvers<Response>();
+    const oldBody = Promise.withResolvers<string>();
+    const oldResponse = new Response(new ReadableStream({
+      async start(controller) {
+        controller.enqueue(new TextEncoder().encode(await oldBody.promise));
+        controller.close();
+      },
+    }));
+    let requests = 0;
+    globalThis.fetch = (async () => {
+      requests += 1;
+      if (requests === 1) return delay === "body" ? oldResponse : oldFetch.promise;
+      return new Response(JSON.stringify({ friends: { [`${id}:p1`]: "kuma" } }));
+    }) as typeof fetch;
+    function Reading({ workspace }: { workspace: string }) {
+      const friends = useAgentFriends([{ ...machine, id, snapshot: { ...machine.snapshot!,
+        panes: machine.snapshot!.panes.map((pane) => ({ ...pane, workspace_id: workspace })),
+      } }]);
+      return <output>{friends[`${id}:p1`] ?? ""}</output>;
+    }
+    const view = (workspace: string) => <SettingsProvider><Reading workspace={workspace} /></SettingsProvider>;
+    await act(async () => { renderer = create(view("project-a")); });
+    expect(requests).toBe(1);
+    await act(async () => { renderer!.update(view("project-b")); });
+    expect(requests).toBe(2);
+    expect(renderer!.root.findByType("output").children).toEqual(["kuma"]);
+    await act(async () => {
+      oldBody.resolve(JSON.stringify({ friends: { [`${id}:p1`]: "neko" } }));
+      oldFetch.resolve(oldResponse);
+    });
+    expect(renderer!.root.findByType("output").children).toEqual(["kuma"]);
+    expect(requests).toBe(2);
+  });
+
   it("maps a pane's status to its friend's mood", () => {
     expect([friendMood("waiting"), friendMood("unknown"), friendMood("done"), friendMood(undefined)]).toEqual(["working", undefined, "done", undefined]);
   });
