@@ -2062,7 +2062,10 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
          */
         const sameQuestion = (shown: ParsedPrompt | null, screen: string, onCursor: boolean, settled: ParsedPrompt | null): boolean => {
           if (interaction) return shown?.responder === responder && interaction.matches(screen);
-          if (responder === "dsh-question" && cursor === parsed.customMenuIndex) return dshFreeTextRow(screen, parsed, "") === "typed";
+          // the row empty before the answer's text, and holding exactly that text before its Enter
+          if (responder === "dsh-question" && cursor === parsed.customMenuIndex) {
+            return dshFreeTextRow(screen, parsed, customTyped ? dshTypedText(body.custom_text ?? "") : "") === "typed";
+          }
           if (responder === "pi-question" || responder === "pi-confirm") {
             const dialog = parsePiDialog(screen, true);
             return dialog?.id === parsed.id && (!onCursor || dialog.selectedIndex === cursor);
@@ -2112,7 +2115,10 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
           // Letta's search: each key after the first is looked for as the first was, in the picker showing the search
           // the keys before it left (customEditorReady waited for that drawing); a picker closed meanwhile gets none
           const lettaTyping = committed && responder === "letta-model" && body.custom_text !== undefined;
-          if (!committed || togglesInPlace() || lettaTyping) {
+          // dsh-tui's Enter after its typed text: the look before it awaits, so the row is read after that look, with no
+          // await between that read and the write (customEditorReady before it only waited for the text to be drawn)
+          const dshEnter = committed && responder === "dsh-question" && customTyped;
+          if (!committed || togglesInPlace() || lettaTyping || dshEnter) {
             // every key up to the answer's first one that cannot be undone, that one included: the question as asked
             const onCursor = !move && (step.keys?.every((key) => key === KEY.enter || key === KEY.space) ?? false);
             const { written } = await verifyThenSend(look, guardUntil, Date.now() + SETTLE_MS,

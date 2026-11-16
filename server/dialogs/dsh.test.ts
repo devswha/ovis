@@ -9,6 +9,8 @@ import { dshFreeTextRow } from "./dsh.ts";
 
 // recorded from dsh-tui 0.20.0 in a 100x50 tmux pane (narrow: 52 columns), ask_user_question asked by dsh-deepseek-flash
 const screen = (name: string) => readFileSync(join(import.meta.dir, "..", "fixtures", `dsh-question-0.20.0-${name}.txt`), "utf8");
+/** The q1 panel as a pane wide enough for its hint on one line draws it. */
+const oneLineHint = (panel: string) => panel.replace("Esc cancel ·\n    Ctrl+K", "Esc cancel · Ctrl+K");
 /** The panel with the cursor moved down to its free-text row, as dsh-tui draws it there (the q1-custom fixture). */
 const onFreeText = (panel: string) => panel.replace(/❯([○◉])/, " $1").replace(" ✎ Custom answer： Type directly…", "❯✎ Custom answer：")
   .replace(/↑\/↓ select[^]*?click the header/, "Type answer · Ctrl+V paste · Enter submit · ↑ back to options · Esc cancel · ←/→ at the text edge switches question · Ctrl+K to fold\n    / click the header");
@@ -32,6 +34,14 @@ describe("DeepSeek Harness ask_user_question panel", () => {
     });
     expect(prompt?.fallback).toBeUndefined();
     expect(parsedByPublicPrompt.get(prompt!)?.responder).toBe("dsh-question");
+  });
+
+  it("tells a multiple choice by its rows' marks, never by a ◉ in an option's words", () => {
+    const prompt = parseInteractivePrompt("dsh-tui", screen("q1").replace("no ToS risk", "no ◉ ToS risk").replace("Dev API + Firebase token", "Dev API ◉ Firebase token"))!;
+    expect(prompt).toMatchObject({ multi_select: false, custom_option_index: 2 });
+    expect(answerKeys(prompt, { option_index: 1 })).toEqual([{ keys: ["down"] }, { keys: ["enter"] }]);
+    const described = screen("q1").replace("No hardware, but depends on an unprotected staging API.", "No hardware; shows ◉ when the API is up.");
+    expect(parseInteractivePrompt("dsh-tui", described)).toMatchObject({ multi_select: false, custom_option_index: 2 });
   });
 
   it("shows the header chip over the question", () => {
@@ -116,6 +126,27 @@ describe("DeepSeek Harness ask_user_question panel", () => {
 
   it("is no card once the panel is answered and the conversation goes on under it", () => {
     expect(parseInteractivePrompt("dsh-tui", `${screen("q1")}\n  ● Answers received.\n  ╭────╮\n  ⌸ ❯\n  ╰────╯\n${"  more output\n".repeat(10)}`)).toBeNull();
+  });
+
+  it("is no card for a panel answered on a wide pane, its hint one line, with dsh's input box or any output under it", () => {
+    const [panel, footer] = [oneLineHint(screen("q1")).split("\n").slice(0, 45), screen("q1").split("\n").slice(46)];
+    expect(parseInteractivePrompt("dsh-tui", [...panel, "  ╭────╮", "  ⌸ ❯", "  ╰────╯", ...footer.slice(0, 2)].join("\n"))).toBeNull();
+    expect(parseInteractivePrompt("dsh-tui", [...panel, "  ● Done.", ...footer].join("\n"))).toBeNull();
+    expect(parseInteractivePrompt("dsh-tui", [...screen("q1").split("\n").slice(0, 46), "  ● Done.", ...footer].join("\n"))).toBeNull();
+  });
+
+  it.each(["default", "not compact", "no ctx field", "a wake on the hint row", "a hover's detail", "idle"])("reads the live panel under dsh-tui's footer set to %s, on a wide, a 100- and a 52-column pane", (setting) => {
+    for (const panel of [oneLineHint(screen("q1")), screen("q1"), screen("narrow-52")]) {
+      const lines = panel.split("\n");
+      const status = lines.findIndex((line) => line.includes("ctx 1.1% (11k/1.0m)"));
+      const hint = lines.findIndex((line) => line.trim() === "esc to interrupt");
+      if (setting === "not compact") lines[status] = "   dsh-deepseek-flash · high · ctx 11k/1.0m (1.1%)        dshq";
+      if (setting === "no ctx field") lines[status] = "   dsh-deepseek-flash · high · dshq";
+      if (setting === "a wake on the hint row") lines[hint] = "   esc to interrupt                      ▁▂▃";
+      if (setting === "a hover's detail") lines[hint] = "   1.1% · 11k/1.0m · free 989k · used 11k";
+      if (setting === "idle") lines.splice(hint, 1);
+      expect(parseInteractivePrompt("dsh-tui", lines.join("\n"))?.question).toBe("Which headless approach should I build?");
+    }
   });
 
   it("is no card with anything but dsh-tui's own footer under the hint", () => {

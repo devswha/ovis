@@ -47,11 +47,15 @@ const DSH_ATTACHED_LABEL_RE = /^(?:Customanswer\(attached:.*|自定义回答（�
 /** what the free-text row shows with nothing typed and the cursor elsewhere */
 const DSH_PLACEHOLDER_RE = /^\s*(?:Type directly…|直接输入…)$/;
 const DSH_HINT_LINES = 4;
+/** the panel hint's last part (`question-fold-hint`), which ends both hints */
+const DSH_HINT_END_RE = /(?:click the header|点标题行收起)$/;
 /**
- * dsh-tui's own footer under the panel (screens/StatusLine.js): the context meter (`11k/1.0M 1.1%`), the status
- * fields ending in their ctx field, and the key hint of the line under them.
+ * dsh-tui's own footer under the panel (screens/StatusLine.js): at most three rows, the context meter, the status fields
+ * and the key hint, whatever its settings put in them (a ctx field or none, compact or not, a wake or a hover's detail).
  */
-const DSH_FOOTER_RE = /^(?:\S+\/\S+ \d+(?:\.\d+)?%|.*\bctx \d+(?:\.\d+)?% \(\S+\/\S+\)|esc to interrupt|esc 中断|interrupting…|中断中…|esc to return to input|esc 返回输入|\? for shortcuts|\? 查看快捷键)$/;
+const DSH_FOOTER_ROWS = 3;
+/** a line of dsh-tui's conversation or its input box, which its footer never starts with */
+const DSH_TRANSCRIPT_RE = /^[╭╰│⌸●❯!⎿▾▴◈✎·]/;
 
 /** What an answer types into the free-text row: one line (dsh-tui submits the row on Enter). */
 export function dshTypedText(text: string): string {
@@ -141,14 +145,14 @@ function readDshPanel(screen: string): DshPanel | null {
     : [!customCursor && DSH_PLACEHOLDER_RE.test(text) ? "" : text.trim(), ...wrapped.map(([, after]) => after.trim())];
   // the options: the run of rows right over the free-text row, each with its continuation lines
   // (a wrapped label or a description, set past the row's mark), read upwards from it
-  const rows: { cursor: boolean; checked: boolean; head: string; rest: string[] }[] = [];
+  const rows: { cursor: boolean; checked: boolean; ticked: boolean; head: string; rest: string[] }[] = [];
   let firstRow = -1;
   let rest: string[] = [];
   for (let index = customIndex - 1; index > headerIndex; index -= 1) {
     const line = lines[index]!;
     const row = DSH_ROW_RE.exec(line);
     if (row && row[1] === indent) {
-      rows.unshift({ cursor: row[2] === "❯", checked: row[3] === "●" || row[3] === "◉", head: row[4]!.trim(), rest });
+      rows.unshift({ cursor: row[2] === "❯", checked: row[3] === "●" || row[3] === "◉", ticked: row[3] === "◉", head: row[4]!.trim(), rest });
       rest = [];
       firstRow = index;
       continue;
@@ -164,8 +168,9 @@ function readDshPanel(screen: string): DshPanel | null {
   // each row has its own hint: the option list's, or the free-text row's with the cursor on it
   if (customCursor !== DSH_TYPING_HINT_RE.test(hint)) return null;
 
-  // the free-text row's hint names no Space: a multiple choice is told by its ticks there
-  const multi = DSH_MULTI_RE.test(hint) || rows.some((row) => row.checked && !row.cursor) || /◉/.test(lines.slice(firstRow, customIndex).join(""));
+  // the free-text row's hint names no Space: a multiple choice is told by its ticks there, in the rows' mark column (an
+  // option's words may hold a `◉` of their own)
+  const multi = DSH_MULTI_RE.test(hint) || rows.some((row) => row.ticked || (row.checked && !row.cursor));
   const modeUnknown = customCursor && !multi;
   // a single choice marks the cursor's row alone, and none while the cursor is on the free-text row
   if (!multi && rows.some((row) => row.checked !== row.cursor)) return null;
@@ -256,12 +261,14 @@ function readDshPanel(screen: string): DshPanel | null {
  */
 export function dshQuestionActive(screen: string): boolean {
   const lines = screen.replace(ANSI_RE, "").split(/\r?\n/).map(cleanLine).filter(Boolean);
-  let footer = lines.length;
-  while (footer > 0 && DSH_FOOTER_RE.test(lines[footer - 1]!)) footer -= 1;
-  // the hint, as many lines as the pane wrapped it onto, ends right over the footer
-  for (let start = footer - 1; start >= Math.max(0, footer - DSH_HINT_LINES); start -= 1) {
-    const hint = lines.slice(start, footer).join(" ");
-    if (DSH_HINT_RE.test(hint) || DSH_TYPING_HINT_RE.test(hint)) return true;
+  // the hint, as many lines as the pane wrapped it onto, ends with its own last words right over the footer: dsh's
+  // input box and its conversation, under a panel already answered, are more rows than the footer has and start apart
+  for (let end = lines.length - 1; end >= Math.max(0, lines.length - 1 - DSH_FOOTER_ROWS); end -= 1) {
+    if (lines.slice(end + 1).some((line) => DSH_TRANSCRIPT_RE.test(line))) return false;
+    for (let start = end; start >= Math.max(0, end - DSH_HINT_LINES + 1); start -= 1) {
+      const hint = lines.slice(start, end + 1).join(" ");
+      if ((DSH_HINT_RE.test(hint) || DSH_TYPING_HINT_RE.test(hint)) && DSH_HINT_END_RE.test(hint)) return true;
+    }
   }
   return false;
 }

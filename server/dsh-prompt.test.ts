@@ -4,7 +4,7 @@ import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { InteractivePrompt } from "../shared/protocol.ts";
-import { handlePromptRequest } from "./prompt.ts";
+import { handlePromptRequest, type PromptRequestOptions } from "./prompt.ts";
 
 // dsh-tui 0.20.0's ask_user_question panel (fixtures/dsh-question-0.20.0-*.txt) through the real routes, redrawn after
 // each key as dsh-tui draws it (AskUserQuestionPanel.js)
@@ -95,9 +95,9 @@ async function card(): Promise<InteractivePrompt | null> {
   return ((await (await handlePromptRequest(new Request(url), url, {}))!.json()) as { prompt: InteractivePrompt | null }).prompt;
 }
 
-async function answer(body: Record<string, unknown>): Promise<number> {
+async function answer(body: Record<string, unknown>, options: PromptRequestOptions = {}): Promise<number> {
   const url = new URL("http://127.0.0.1/api/pane/prompt/answer");
-  return (await handlePromptRequest(new Request(url, { method: "POST", body: JSON.stringify({ pane_id: "p_1", ...body }) }), url, {}))!.status;
+  return (await handlePromptRequest(new Request(url, { method: "POST", body: JSON.stringify({ pane_id: "p_1", ...body }) }), url, options))!.status;
 }
 
 describe("dsh-tui's question through the answer route", () => {
@@ -120,6 +120,16 @@ describe("dsh-tui's question through the answer route", () => {
       expect(await answer({ prompt_id: (await card())!.id, custom_text: "card words" })).toBe(409);
       expect(panel.sent).toEqual(["down", "down", "text:card words"]);
       expect(panel.answers).toEqual([]);
+    });
+  });
+
+  test("sends no Enter when the question closes during the look right before it", async () => {
+    const panel = newPanel();
+    // the look before each key (beforeKey) is where another device's Esc lands, once the answer's text is in
+    const beforeKey = async (): Promise<void> => { if (panel.text) panel.open = false; };
+    await withDsh(panel, async () => {
+      expect(await answer({ prompt_id: (await card())!.id, custom_text: "card words" }, { beforeKey })).toBe(409);
+      expect(panel.sent).toEqual(["down", "down", "text:card words"]);
     });
   });
 
