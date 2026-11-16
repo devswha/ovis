@@ -149,11 +149,8 @@ const world = {
 const HOME_TREE = "find . \\( -path ./.config/herdr -o -path ./.local/state/herdr \\) -prune -o \\( -type f -exec sha256sum {} + \\) -o \\( ! -type f -printf '%p %y %m\\n' \\) | sort"
   // the folder line of herdr's own state folder's parent (herdr makes it when it first writes there)
   + " | grep -vx './.local/state d 755'"
-  // the empty standard folders the join may make and the undo leaves (it removes no folder outside the trial folder),
-  // left out only while nothing but such empty folders is in them
-  + " | { skip=''; for d in .local .local/share .config/systemd .config/systemd/user .config/systemd/user/default.target.wants; do"
-  + " [ -d \"$d\" ] && [ -z \"$(find \"$d\" -mindepth 1 ! -type d)\" ] && skip=\"$skip ./$d\"; done;"
-  + " awk -v skip=\"$skip\" 'BEGIN { n = split(skip, a, \" \"); for (i = 1; i <= n; i++) s[a[i]] = 1 } !($2 == \"d\" && ($1 in s))'; }"
+  // every folder counts: the folders the join makes on the way (~/.local/share, ~/.config/systemd/user, ...) the undo
+  // and every roll back remove again once empty
   + "; echo ---tmp; ls -A /tmp";
 /** the engine's and every Ovis server's processes, by program */
 const PROCESSES = "ps -eo pid,args --no-headers | awk '$2 ~ /(herdr|ovis-server)/' | sort -n";
@@ -879,15 +876,17 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
     expect(await m.home()).toBe(home);
   }, 300_000);
 
-  test("an unfinished add whose server names its account: the ending says the machine is listed", async () => {
+  test("a failed add whose server names an account: exit 37, rolled back, no server left", async () => {
     const m = await runnerMachine();
     await serveHerdr(m);
+    const home = await m.home();
     expect((await m.sh("touch /var/tmp/fake-add-fails /var/tmp/fake-account-listed")).code).toBe(0);
     const run = await m.sh(`${fakeKit.line} --yes </dev/null`);
     note("caseListed", `exit ${run.code}\n${run.stdout}${run.stderr}`);
-    expect(run.code).toBe(30);
-    expect(run.stdout).toContain("the machine is listed in your Ovis account, but no device scanned the QR code, so the pairing did not finish");
-    expect((await m.sh(`rm /var/tmp/fake-add-fails /var/tmp/fake-account-listed && sh ${TRIAL}/join.sh --uninstall`)).code).toBe(0);
+    // regression (exit 30 with the server left running before): the account it names may not be the one signed in to
+    expect(run.code).toBe(37);
+    expect((await m.processes()).includes("ovis-server serve")).toBe(false);
+    expect(await m.home()).toBe(home);
   }, 300_000);
 
   test("an add whose server cannot say where the machine stands: the ending says it could not tell", async () => {
@@ -915,6 +914,43 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
     note("caseGateInterrupt", run.text);
     expect(run.text).toContain("Ovis: interrupted; nothing was kept");
     expect((await m.processes()).includes("ovis-server serve")).toBe(false);
+    expect(await m.home()).toBe(home);
+  }, 300_000);
+
+  test("HUP after the add returned (a dropped connection, in the gate check): rolled back, no server left, nothing kept", async () => {
+    const m = await runnerMachine();
+    await serveHerdr(m);
+    const home = await m.home();
+    const run = terminal(m.name, m.who, `${fakeKit.line} --yes`);
+    await run.until(/Reading the trial server's pairing gate/, 180_000);
+    // regression (a HUP ended the join with no roll back before): the server stayed, with the trial folder
+    expect((await m.sh("pkill -HUP -f '[j]oin.sh --kit'")).code).toBe(0);
+    await run.exited;
+    note("caseHup", run.text);
+    expect((await m.processes()).includes("ovis-server serve")).toBe(false);
+    expect(await m.home()).toBe(home);
+  }, 300_000);
+
+  test("the undo of a background server finds it with its pid file gone, and with it naming another process, which it leaves alone", async () => {
+    const m = await runnerMachine();
+    await serveHerdr(m);
+    const home = await m.home();
+    const servers = async () => (await m.processes()).split("\n").filter((line) => line.includes(`${TRIAL}/bin/ovis-server serve`)).length;
+    // installed, the add refused at once (no terminal): the folder and the background server stay
+    expect((await m.sh(`${kit.line} --yes </dev/null`)).code).toBe(30);
+    expect(await servers()).toBe(1);
+    expect((await m.sh(`rm ${TRIAL}/run/server.pid`)).code).toBe(0);
+    const gone = await m.sh(`sh ${TRIAL}/join.sh --uninstall`);
+    note("caseUndoPid", `[pid file gone] exit ${gone.code}\n${gone.stdout}${gone.stderr}`);
+    // regression (before: exit 0 and the folder removed while the server ran on)
+    expect([gone.code, await servers()]).toEqual([0, 0]);
+    expect((await m.sh(`${kit.line} --yes </dev/null`)).code).toBe(30);
+    expect((await m.sh(`(setsid nohup sleep 4244 >/dev/null 2>&1 & echo $! > ${TRIAL}/run/server.pid)`)).code).toBe(0);
+    const other = (await m.sh(`cat ${TRIAL}/run/server.pid`)).stdout.trim();
+    const foreign = await m.sh(`sh ${TRIAL}/join.sh --uninstall`);
+    note("caseUndoPid", `[pid file naming another process] exit ${foreign.code}\n${foreign.stdout}${foreign.stderr}`);
+    expect([foreign.code, await servers(), (await m.sh(`kill -0 ${other}`)).code]).toEqual([0, 0, 0]);
+    expect((await m.sh(`kill ${other}`)).code).toBe(0);
     expect(await m.home()).toBe(home);
   }, 300_000);
 
@@ -1028,6 +1064,16 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
       await held.until(/listening/);
       expect((await m.sh("curl -fsS http://127.0.0.1:17777/api/health")).stdout).toContain('"terminal_attach":true');
       await refused(m, `${kit.line} --port 17777`, 14, "a --port another program already listens on");
+    }, 300_000);
+
+    test("a trial folder with a receipt this join did not write: refused, its files unchanged", async () => {
+      const m = await runnerMachine();
+      await serveHerdr(m);
+      expect((await m.sh(`mkdir -p ${TRIAL} && echo mine > ${TRIAL}/receipt && echo mine > ${TRIAL}/join.sh`)).code).toBe(0);
+      const before = (await m.sh(`sha256sum ${TRIAL}/*`)).stdout;
+      const run = await m.sh(`${kit.line} --yes </dev/null`);
+      note("case6", `[a receipt this join did not write] exit ${run.code}\n${run.stdout}${run.stderr}`);
+      expect([run.code, (await m.sh(`sha256sum ${TRIAL}/*`)).stdout, (await m.processes()).includes("ovis-server serve")]).toEqual([14, before, false]);
     }, 300_000);
 
     test("no herdr", async () => { await refused(await runnerMachine({ herdr: false }), kit.line, 20, "no herdr"); }, 300_000);

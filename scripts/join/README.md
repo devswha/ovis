@@ -103,7 +103,11 @@ sh ~/.local/share/ovis-trial/join.sh --uninstall
 The join never makes a link inside the trial folder. So the join (a run again too), the undo and every `ovis-trial`
 command first look for one, and for the folder itself being a link: finding one, they refuse (exit 14) before
 anything is written, read for a decision or signalled, and name the link. `ovis-trial stop` says the server stopped
-only once it saw its process end; otherwise it says what it could not tell and exits non-zero.
+only once it saw its process end; otherwise it says what it could not tell and exits non-zero. Where no user service
+manager answers, the trial server runs in the background, and `ovis-trial stop`, the undo and every rollback find it by
+one rule: a process of this account whose program is the trial's `bin/ovis-server` and whose command line is exactly
+`<that program> serve`. `run/server.pid` is not trusted for this, and no other process is ever signalled; a server that
+does not end within 10 s of TERM and then KILL is named, and the undo then removes nothing (exit 14).
 
 The port: a port another program already listens on is refused (exit 14), on a run again once the previous trial
 server is stopped, and a health answer counts only when the program listening on the port is the trial's own
@@ -121,19 +125,23 @@ only this account can connect to (`Host: localhost`, no `Origin`). Neither goes 
 The undo takes nothing it removes from the receipt: the receipt only says that a join happened and where the trial
 folder is. It removes the trial's unit only at the one path the join writes it, and only when its first line is the
 join's marker (`# Written by the Ovis trial join for <trial folder>`); the trial folder itself; and lingering, if the
-join turned it on. A receipt or unit that does not fit is refused (exit 14) and nothing is removed. It removes no
-folder outside the trial folder: it leaves empty standard folders such as `~/.local/share` or
-`~/.config/systemd/user`. It stops the trial server, removes its service and its folder (programs, identity, state), turns lingering off again if the join turned it on, and says what became of the machine's entry in the account.
+join turned it on. A receipt or unit that does not fit is refused (exit 14) and nothing is removed; a run again refuses
+such a folder the same way, before anything is written. Outside the trial folder it removes only the folders the join
+made on the way to it or to the unit (`~/.local/share`, `~/.config/systemd/user`, ...), deepest first and each only when
+it is empty. When lingering cannot be turned off, it says so and gives the `loginctl disable-linger` command. It stops the trial server, removes its service and its folder (programs, identity, state), turns lingering off again if the join turned it on, and says what became of the machine's entry in the account.
 The undo removes its own `join.sh` with the folder, so running the same undo line a second time ends with the shell's
 `cannot open ... join.sh` (exit 2): there is nothing left to undo.
 
 ## Exit codes, and Ctrl+C
 
-`join.sh` exits 0 when the machine is in the account, 30 when the trial server runs but the add did not finish (the
-folder stays, `ovis-trial add` finishes it), and a code from 2 to 36 for a refusal (its list is at the head of
-`join.sh`). Ctrl+C at a question ends the join with 130, nothing changed. Ctrl+C or TERM after the yes, before the add
-(the download, the check of the kit's server, the start, the wait for it to answer), rolls back as a refusal does and
-says what is left, with the undo line if anything is (130 or 143). Ctrl+C at the QR code ends only the add: the
+`join.sh` exits 0 when the machine is in the account, 30 when the trial server runs but the add did not finish and the
+server names no account (the folder stays, `ovis-trial add` finishes it), 37 when the add did not finish but the trial
+server names an account, which the join cannot confirm is the one signed in to (rolled back, as a refusal is), and a
+code from 2 to 36 for a refusal (its list is at the head of `join.sh`). A HOME holding a line break or another control
+character is refused first (exit 2). Ctrl+C at a question ends the join with 130, a HUP with 129, nothing changed.
+Ctrl+C, TERM or HUP (a dropped SSH connection) after the yes, before the add (the download, the check of the kit's
+server, the start, the wait for it to answer), and TERM or HUP during the add, roll back as a refusal does and say what
+is left, with the undo line if anything is (130, 143 or 129); the roll back does not depend on a terminal to print to. Ctrl+C at the QR code ends only the add: the
 join prints its ending and exits 30; the shell around it may still report 130 for the whole session (`script(1)` did in
 the container tests), so a caller should read `ovis-trial status` and the account, not that code.
 
