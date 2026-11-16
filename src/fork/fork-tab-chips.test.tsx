@@ -39,7 +39,7 @@ it("keeps close, rename and a contextual menu on chips, also in a phone sheet", 
   expect(chip.props.className).toContain("row-sheet-aside");
   expect(chip.props["aria-pressed"]).toBe(true);
   expect(chip.props.role).toBeUndefined();
-  const event = { key: "F2", repeat: false, preventDefault() {}, stopPropagation() {}, currentTarget: { focus() {} } };
+  const event = { key: "F2", repeat: false, preventDefault() {}, stopPropagation() {}, currentTarget: { focus() {}, closest() { return null; } } };
   await act(async () => { chip.props.onKeyDown(event); chip.props.onKeyDown({ ...event, key: "Delete" }); chip.props.onContextMenu(event); chip.props.onClick({ ...event, ctrlKey: false }); });
   expect(actions).toEqual(["rename", "close", "dismiss", "menu", "select", "dismiss"]);
 });

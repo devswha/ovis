@@ -20,6 +20,17 @@ function fixture(snapshot: SessionSnapshot | null, ids: string[]): void {
     const layout = snapshot.layouts?.find((candidate) => candidate.tab_id === pane.tab_id);
     if (layout) layout.workspace_id = parent.workspace_id;
   }
+  if (localStorage.getItem("qa:overflow") === "true" && !snapshot.tabs.some((tab) => tab.tab_id === "qa:other:0")) {
+    const tab = snapshot.tabs.find((entry) => entry.tab_id === parent.tab_id)!;
+    for (let index = 0; index < 12; index++) {
+      const id = `qa:other:${index}`;
+      const name = `QA unrelated ${index}`;
+      snapshot.tabs.push({ ...tab, tab_id: id, number: index + 10, label: name });
+      snapshot.panes.push({ ...parent, pane_id: id, tab_id: id, label: name });
+    }
+    snapshot.tabs.splice(snapshot.tabs.indexOf(tab), 1);
+    snapshot.tabs.push(tab);
+  }
 }
 
 const app = mkdtempSync(join(tmpdir(), "ovis-grouped-tabs-demo-"));
@@ -40,15 +51,17 @@ try {
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     try {
-      for (const width of [1280, 390]) for (const { enabled, children } of [{ enabled: false, children: 2 }, { enabled: true, children: 2 }, { enabled: true, children: 6 }]) {
+      for (const width of [1280, 390]) for (const { enabled, children, overflow = false } of [{ enabled: false, children: 2 }, { enabled: true, children: 2 }, { enabled: true, children: 6 }, { enabled: true, children: 2, overflow: true }]) {
+        if (overflow && width < 768) continue;
         const context = await browser.newContext({ viewport: { width, height: 844 }, isMobile: width < 768, hasTouch: width < 768, locale: "en-US" });
         try {
-          await context.addInitScript(({ enabled: agentFriends, children: count }) => {
+          await context.addInitScript(({ enabled: agentFriends, children: count, overflow: more }) => {
             localStorage.setItem("qa:children", String(count));
+            localStorage.setItem("qa:overflow", String(more));
             localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", agentFriends, alertsOn: false }));
             localStorage.setItem("ovis:phone-tabs", JSON.stringify("header"));
             Reflect.set(window, "__ovisDemoHoldTurn", true);
-          }, { enabled, children });
+          }, { enabled, children, overflow });
           const page = await context.newPage();
           const errors: string[] = [];
           page.on("pageerror", (error) => errors.push(error.message));
@@ -56,7 +69,17 @@ try {
           await page.locator(".conn-live").waitFor();
           const row = page.locator(".header-tabs .tab-strip");
           await row.getByRole("tab", { name: /^QA parent/ }).waitFor();
-          if (!enabled) {
+          if (overflow) {
+            await row.getByRole("tab", { name: "QA unrelated 0", exact: true }).click();
+            await page.locator(".header-tabs .tab-strip-more").click();
+            const more = page.getByRole("menu", { name: "More tabs", exact: true });
+            await more.getByRole("menuitemcheckbox", { name: "QA implementer", exact: true }).click({ button: "right" });
+            const childMenu = page.getByRole("menu", { name: "QA implementer", exact: true });
+            await childMenu.waitFor();
+            await more.waitFor({ state: "detached" });
+            await childMenu.getByRole("menuitem", { name: "Rename tab", exact: true }).click();
+            await row.getByRole("textbox").waitFor();
+          } else if (!enabled) {
             assert.equal(await row.locator(".fork-tab-chip").count(), 0);
             assert.equal(await row.getByRole("tab", { name: /^QA implementer/ }).count(), 1);
           } else {
@@ -99,7 +122,7 @@ try {
           }
           assert.deepEqual(errors, []);
           assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
-          console.log(`PASS grouped tabs: width=${width}, agentFriends=${enabled}, children=${children}`);
+          console.log(`PASS grouped tabs: width=${width}, agentFriends=${enabled}, children=${children}, overflow=${overflow}`);
         } finally { await context.close(); }
       }
     } finally { await browser.close(); }
