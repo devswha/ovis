@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { checkoutCommit, main } from "./plugin-launch.ts";
+import { type CheckoutCommit, checkoutCommit, main } from "./plugin-launch.ts";
 import { generateKeyPair, MANIFEST, releaseFile, PTY_ASSETS, ptyFile, SERVER_PLATFORMS, signManifest, writeManifest } from "./server-manifest.ts";
 
 /**
@@ -28,13 +28,20 @@ afterEach(() => {
   rmSync(scratch, { recursive: true, force: true });
 });
 
-/** runs `args` with the source path recorded; what it returned, and each call the source path got */
+/**
+ * runs `args` with the source path recorded; what it returned, and each call the source path got. The checkout's sources
+ * are trees git ties (the release's own, unless a test gives others), whatever state this checkout's are in.
+ */
 const BUILT_FROM = { server: "a".repeat(40), shared: "b".repeat(40) };
-async function launch(args: string[], fetchFile?: typeof fetch): Promise<{ code: number; sourced: string[][]; home: string }> {
+async function launch(args: string[], fetchFile?: typeof fetch, sources: { server: string; shared: string } | { error: string } = BUILT_FROM): Promise<{ code: number; sourced: string[][]; home: string }> {
   const home = join(scratch, "server");
   const sourced: string[][] = [];
-  const code = await main(args, { home, fetchFile, source: async (command, rest) => { sourced.push([command, ...rest]); return 7; } });
+  const code = await main(args, { home, fetchFile, sources, source: async (command, rest) => { sourced.push([command, ...rest]); return 7; } });
   return { code, sourced, home };
+}
+/** a release out of reach: each address asked is recorded, and the fetch fails as offline */
+function offline(asked: string[]): typeof fetch {
+  return (async (url: string | URL | Request) => { asked.push(String(url)); throw new TypeError("fetch failed"); }) as typeof fetch;
 }
 
 describe("the herdr plugin's launcher", () => {
@@ -158,7 +165,8 @@ describe("the herdr plugin's launcher", () => {
     const given = Object.fromEntries(Object.keys(set).map((name) => [name, process.env[name]]));
     Object.assign(process.env, set);
     try {
-      expect(await checkoutCommit()).toEqual({ failed: expect.stringMatching(/^fatal: detected dubious ownership in repository at /), trust: expect.stringContaining("git config --global --add safe.directory ") });
+      // (on Windows with the cmd.exe form too: the test below)
+      expect(await checkoutCommit()).toMatchObject({ failed: expect.stringMatching(/^fatal: detected dubious ownership in repository at /), trust: expect.stringContaining("git config --global --add safe.directory ") });
       // regression (main stamped the version alone, which install.ps1 took as built whatever commit the checkout is at)
       expect(await build(0)).toEqual({ code: 0, during: "started\n", after: "started\n" });
     } finally {
@@ -198,6 +206,30 @@ describe("the herdr plugin's launcher", () => {
     }
   });
 
+  it("says the checkout moved to another commit only where both of git's answers name one, else that git's answer changed", async () => {
+    process.env["OVIS_FROM_SOURCE"] = "1";
+    const home = join(scratch, "server");
+    const said: string[] = [];
+    const error = console.error;
+    console.error = (...args: unknown[]) => { said.push(args.join(" ")); };
+    try {
+      const a = { commit: "a".repeat(40) }, b = { commit: "b".repeat(40) };
+      const nested = { none: "nested" } as const, none = { none: "no checkout" } as const;
+      for (const [before, after, moved] of [[a, b, true], [none, nested, false], [none, a, false], [a, nested, false]] as const) {
+        said.length = 0;
+        const given: CheckoutCommit[] = [before, after];
+        expect(await main(["install"], { home, source: async () => 0, commit: async () => given.shift()! })).toBe(0);
+        // the stamp stays `started` either way
+        expect(readFileSync(join(home, "source-build"), "utf8")).toBe("started\n");
+        // regression (fails on main): a change of kind was said as a move to another commit
+        expect(said.some((line) => line.includes("moved to another commit")), `${JSON.stringify([before, after])}: ${said.join(" | ")}`).toBe(moved);
+        expect(said.some((line) => line.includes("git's answer for the checkout changed while it was built"))).toBe(!moved);
+      }
+    } finally {
+      console.error = error;
+    }
+  });
+
   it("stamps the version alone for a folder that is not a checkout's top level, not the commit of the repository around it", async () => {
     process.env["OVIS_FROM_SOURCE"] = "1";
     const around = join(scratch, "around");
@@ -234,11 +266,23 @@ describe("the herdr plugin's launcher", () => {
       const home = join(scratch, "server");
       expect(await main(["install"], { home, source: async () => 0, commit: () => checkoutCommit(folder) })).toBe(0);
       expect(readFileSync(join(home, "source-build"), "utf8")).toBe("started\n");
-      expect(said.join("\n").split("\n")).toContain(answer.trust);
+      const lines = said.join("\n").split("\n");
+      expect(lines).toContain(answer.trust);
       // the command, run as printed in this platform's shell, trusts the folder: git reads its commit then
       const shell = process.platform === "win32" ? ["powershell", "-NoProfile", "-Command", answer.trust] : ["sh", "-c", answer.trust];
       expect(Bun.spawnSync(shell, { env: process.env }).exitCode).toBe(0);
       expect(await checkoutCommit(folder)).toEqual({ commit: expect.stringMatching(/^[0-9a-f]{40}$/) });
+      // on Windows herdr's line may as well be pasted into cmd.exe: its own command, typed there as printed (cmd.exe
+      // reading it from its input as from the keyboard), trusts the folder too, once the first one's trust is gone
+      if (process.platform === "win32") {
+        expect(answer.trustCmd).toBeDefined();
+        expect(lines).toContain(answer.trustCmd!);
+        rmSync(set.GIT_CONFIG_GLOBAL);
+        expect(await checkoutCommit(folder)).toMatchObject({ failed: expect.any(String) });
+        const cmd = Bun.spawnSync(["cmd", "/d", "/q"], { env: process.env, stdin: Buffer.from(`${answer.trustCmd}\r\nexit %errorlevel%\r\n`) });
+        expect(cmd.exitCode, cmd.stdout.toString()).toBe(0);
+        expect(await checkoutCommit(folder)).toEqual({ commit: expect.stringMatching(/^[0-9a-f]{40}$/) });
+      } else expect(answer.trustCmd).toBeUndefined();
       // git's ownership answer is told by its own first line, not by the words anywhere: a missing folder named so is not it
       expect(await checkoutCommit(join(scratch, "no such dubious ownership folder"))).toEqual({ failed: expect.stringContaining("cannot change to") });
     } finally {
@@ -263,17 +307,53 @@ const { readFileSync } = await import("node:fs");
 const home = ${JSON.stringify(home)};
 const calls = [];
 const source = async (command) => { calls.push(command); return 0; };
+const { rmSync } = await import("node:fs");
 const install = await main(["install"], { home, source });
 const stamp = readFileSync(${JSON.stringify(join(home, "source-build"))}, "utf8");
 delete process.env.OVIS_FROM_SOURCE;
 const status = await main(["status"], { home, source });
-console.log(JSON.stringify({ install, stamp, status, calls, trees: sourceTrees() }));`;
+// no marker, no binary, and the release out of reach: an already built checkout still starts, the release not asked
+rmSync(${JSON.stringify(join(home, "from-source"))});
+const asked = [];
+const start = await main(["start"], { home, source, fetchFile: async (url) => { asked.push(String(url)); throw new TypeError("fetch failed"); } });
+console.log(JSON.stringify({ install, stamp, status, start, asked, calls, after: readFileSync(${JSON.stringify(join(home, "source-build"))}, "utf8"), trees: sourceTrees() }));`;
     const child = Bun.spawn([process.execPath, "-e", script], { env: { ...process.env, PATH: bin, OVIS_FROM_SOURCE: "1" }, stdout: "pipe", stderr: "pipe" });
     const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
     // regression (fails on main): sourceTrees threw ENOENT before any command ran
     expect(code, err).toBe(0);
-    expect(JSON.parse(out)).toEqual({ install: 0, stamp: "started\n", status: 0, calls: ["install", "status"], trees: { error: "git is not on PATH, so the binaries cannot be tied to their sources" } });
+    // regression (fails on main): the start asked the release, and failed with 1 when it was out of reach
+    expect(JSON.parse(out)).toEqual({ install: 0, stamp: "started\n", status: 0, start: 0, asked: [], calls: ["install", "status", "start"], after: "started\n", trees: { error: "git is not on PATH, so the binaries cannot be tied to their sources" } });
     expect(err).toContain("git could not read the checkout's commit (git is not on PATH)");
+    expect(err).toContain("(git is not on PATH, so the binaries cannot be tied to their sources), so this checkout runs from source");
+  });
+
+  // Without sources git ties to the release (no git, no checkout, changes not committed) its binary is never taken, so
+  // nothing the release answers changes the choice: it is not asked. The stamp, which only a build writes, stays.
+  for (const why of ["git is not on PATH, so the binaries cannot be tied to their sources", "not a git checkout, so the binaries cannot be tied to their sources", "server/ or shared/ has changes that are not committed, so the binaries would not be built from HEAD's sources"]) {
+    it(`starts from source without asking the release, also one out of reach, where ${why.split(",")[0]}`, async () => {
+      const home = join(scratch, "server");
+      mkdirSync(home, { recursive: true });
+      writeFileSync(join(home, "source-build"), `${version} ${"a".repeat(40)}\n`);
+      const asked: string[] = [];
+      // regression (fails on main): exit 1, "could not install the server"
+      expect(await launch(["start"], offline(asked), { error: why })).toMatchObject({ code: 7, sourced: [["start"]] });
+      expect(asked).toEqual([]);
+      expect(readFileSync(join(home, "from-source"), "utf8")).toBe(`${version}\n`);
+      expect(readFileSync(join(home, "source-build"), "utf8")).toBe(`${version} ${"a".repeat(40)}\n`);
+    });
+  }
+
+  it("builds from source at the build step without asking the release where git ties no sources to it", async () => {
+    const home = join(scratch, "server");
+    const asked: string[] = [];
+    const code = await main(["install"], { home, fetchFile: offline(asked), sources: { error: "git is not on PATH, so the binaries cannot be tied to their sources" }, source: async () => 0, commit: async () => ({ failed: "git is not on PATH" }) });
+    expect({ code, asked, stamp: readFileSync(join(home, "source-build"), "utf8") }).toEqual({ code: 0, asked: [], stamp: "started\n" });
+  });
+
+  it("still asks the release where git ties the sources, and fails when it is out of reach", async () => {
+    const asked: string[] = [];
+    expect(await launch(["start"], offline(asked))).toMatchObject({ code: 1, sourced: [] });
+    expect(asked).toEqual([`https://github.com/devswha/ovis/releases/download/v${version}/ovis-server.json`]);
   });
 
   it("keeps running from source a checkout an older launcher built: a marker and no stamp", async () => {

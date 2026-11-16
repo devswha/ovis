@@ -21,7 +21,8 @@
  * version and the checkout's commit (the version alone in a folder that has none: see checkoutCommit) only once every
  * step returned 0, and only when git read the same answer before and after the build. Without git on PATH the launcher
  * still runs: the release's binary is taken only for sources git can tie to it (scripts/server-manifest.ts
- * sourceTrees), so such a checkout runs from source, saying why.
+ * sourceTrees), so such a checkout runs from source, saying why, without asking the release (scripts/server-install.ts):
+ * nothing it answers could change that, and a release out of reach does not stop it.
  * This file imports nothing outside scripts/ and shared/.
  */
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -63,18 +64,27 @@ async function fromSource(command: string, args: string[]): Promise<number> {
  * (ref_not_moved) read it by too: a checkout's top level has its commit; a folder inside another repository
  * (`--show-prefix` names its path there) or one git says is no repository has none of its own; anything else (git's
  * own error, a lock, no git on PATH) is git failing, on which nothing may be decided. A folder git distrusts (another
- * account owns it) fails on every call: `trust` is the command that trusts it, for this platform's shell, built from the
- * folder git names on its first line (the command git prints is quoted for a POSIX shell).
+ * account owns it) fails on every call: `trust` is the command that trusts it, for this platform's shell (PowerShell on
+ * Windows), built from the folder git names on its first line (the command git prints is quoted for a POSIX shell). On
+ * Windows herdr shows this launcher's stderr, from where it may as well be pasted into cmd.exe, which keeps single quotes:
+ * `trustCmd` is the same command for cmd.exe, double-quoted, and none for a folder with a `%` (cmd.exe would expand
+ * `%name%` there).
  */
-export type CheckoutCommit = { commit: string } | { none: "nested" | "no checkout" } | { failed: string; trust?: string };
+export type CheckoutCommit = { commit: string } | { none: "nested" | "no checkout" } | { failed: string; trust?: string; trustCmd?: string };
 
 function gitFailed(err: string): CheckoutCommit {
   const first = err.split(/\r?\n/)[0]!;
   const owned = /^fatal: detected dubious ownership in repository at '(.*)'$/.exec(first);
   if (!owned) return { failed: err };
-  const quoted = process.platform === "win32" ? `'${owned[1]!.replaceAll("'", "''")}'` : `'${owned[1]!.replaceAll("'", "'\\''")}'`;
-  return { failed: first, trust: `git config --global --add safe.directory ${quoted}` };
+  const folder = owned[1]!;
+  const trust = (quoted: string) => `git config --global --add safe.directory ${quoted}`;
+  if (process.platform !== "win32") return { failed: first, trust: trust(`'${folder.replaceAll("'", "'\\''")}'`) };
+  return { failed: first, trust: trust(`'${folder.replaceAll("'", "''")}'`), ...(folder.includes("%") ? {} : { trustCmd: trust(`"${folder}"`) }) };
 }
+
+/** git's answer as said on stderr */
+const said = (answer: CheckoutCommit): string =>
+  "commit" in answer ? `commit ${answer.commit.slice(0, 12)}` : "none" in answer ? (answer.none === "nested" ? "a folder inside another repository" : "no git checkout") : "git failing";
 
 export async function checkoutCommit(dir = root): Promise<CheckoutCommit> {
   // git's own words, untranslated: "not a git repository" is told from its other errors by them
@@ -128,9 +138,18 @@ export async function main(args: string[], { home = join(root, ".ovis", "server"
     const failed = "failed" in builtFrom ? builtFrom : "failed" in now ? now : null;
     if (failed !== null) {
       console.error(`Ovis: git could not read the checkout's commit (${failed.failed}), so the build is not marked finished`);
-      if (failed.trust) console.error(`Ovis: git does not trust this folder (another account owns it); to trust it, run:\n${failed.trust}`);
+      if (failed.trust) {
+        const windows = process.platform === "win32";
+        console.error(`Ovis: git does not trust this folder (another account owns it); to trust it, run${windows ? " in PowerShell" : ""}:\n${failed.trust}`);
+        if (failed.trustCmd) console.error(`Ovis: or in cmd.exe:\n${failed.trustCmd}`);
+      }
     }
-    else if (JSON.stringify(now) !== JSON.stringify(builtFrom)) console.error("Ovis: the checkout moved to another commit while it was built, so the build is not marked finished");
+    else if (JSON.stringify(now) !== JSON.stringify(builtFrom)) {
+      // "moved" only where both answers name a commit: else git's answer changed kind (a folder that became a checkout)
+      console.error("commit" in now && "commit" in builtFrom
+        ? "Ovis: the checkout moved to another commit while it was built, so the build is not marked finished"
+        : `Ovis: git's answer for the checkout changed while it was built (${said(builtFrom)} before, ${said(now)} after), so the build is not marked finished`);
+    }
     else writeFileSync(stamp, `${"commit" in builtFrom ? `${version} ${builtFrom.commit}` : version}\n`);
     return code;
   };
