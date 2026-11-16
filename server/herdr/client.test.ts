@@ -221,4 +221,9 @@ describe("a failed herdr call", () => {
     // neither mark is among an error's own fields, so its printed and encoded forms keep their fields
     expect(Object.keys(refusal)).toEqual(["code", "name"]);
   });
+
+  it("carries the outcome the bridge knows as no field of its own", () => {
+    const told = new HerdrError("pane_not_moved", "the client's words", false, true, "the bridge's outcome");
+    expect([told.outcome, Object.keys(told), JSON.stringify(told)]).toEqual(["the bridge's outcome", ["code", "name"], JSON.stringify(new HerdrError("pane_not_moved", "the client's words"))]);
+  });
 });

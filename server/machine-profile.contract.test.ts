@@ -1283,8 +1283,12 @@ it("answers a pane move herdr did not make with its own reason and words, and ke
     expect([each, mine.text.includes(marker), mine.cache]).toEqual([each, false, "no-store"]);
     expect([each, theirs.text.includes(marker), theirs.cache]).toEqual([each, true, null]);
     if (each === "stray") {
-      // the same refusal, in the profile's words: the code the bridge made is kept
-      expect([mine.status, (JSON.parse(mine.text) as { error: { code: string } }).error.code]).toEqual([theirs.status, "pane_not_moved"]);
+      // the same refusal, in the profile's words: the code the bridge made is kept, and the message says where the
+      // pane is (the bridge's own words), not the sentence the profile gives a call herdr did not answer
+      const refused = await post("profile", "/api/pane/zoom", { pane_id: "w1:p1" });
+      const sentence = (JSON.parse(refused.text) as { error: { message: string } }).error.message;
+      const told = (JSON.parse(mine.text) as { error: { code: string; message: string } }).error;
+      expect([mine.status, told.code, told.message === sentence, told.message.length > 0]).toEqual([theirs.status, "pane_not_moved", false, true]);
     } else {
       const [own, plain] = [JSON.parse(mine.text) as { reason: string }, JSON.parse(theirs.text) as { reason: string }];
       expect([mine.status, own]).toEqual([200, { ...plain, reason: "herdr_error" }]);
@@ -1420,4 +1424,44 @@ it("words a submit that failed for a fault of the bridge's own in its sentence, 
   const sentence = ((await refused.json()) as { error: { message: string } }).error.message;
   expect([mine.ok, mine.code, mine.message]).toEqual([false, theirs.code, sentence]);
   expect([theirs.ok, theirs.message === sentence]).toEqual([false, false]);
+}, 60_000);
+
+it("tells a pane herdr could not restore in its own words, keeping the field, and an ordinary server answers as main does", async () => {
+  const config = herdrConfig();
+  const socket = join(config, "herdr", "sessions", "a", "herdr.sock");
+  mkdirSync(dirname(socket), { recursive: true, mode: 0o700 });
+  const marker = `herdr-own-${Math.random().toString(36).slice(2)}`;
+  const cwd = scratch();
+  const snapshot = (reads(cwd)["session.snapshot"]!() as { snapshot: { panes: object[] } }).snapshot;
+  const restored = { ...snapshot, panes: [walkPane(cwd, "w1:p1"), { ...walkPane(cwd, "w1:p2"), restore_error: `${marker} could not restore` }] };
+  refusingHerdr(socket, { code: "refused", message: "refused" }, { ...reads(cwd), "session.snapshot": () => ({ snapshot: restored }) });
+  const dir = state();
+  await bounded(launch(dir, { XDG_CONFIG_HOME: config, HERDR_REMOTE_SOCKET: "", HERDR_REMOTE_SESSION: "a" }).ready, 20_000);
+  const ordinary = await bounded(launch(state(), { OVIS_PROFILE: "", OVIS_PREVIEW: undefined, HERDR_SOCKET: socket }).ready, 20_000);
+  /** The snapshot frame as the socket opens, and the error frame of an attach to the pane that was not restored. */
+  const frames = async (url: string, init?: { headers: Record<string, string> }) => {
+    const ws = new WebSocket(url, init as never);
+    cleanup.push(() => ws.close());
+    const frame = <T,>(match: (message: Record<string, unknown>) => boolean) => {
+      const seen = deferred<T>();
+      ws.addEventListener("message", (event) => { const message = JSON.parse(String(event.data)) as Record<string, unknown>; if (match(message)) seen.resolve(message as T); });
+      return bounded(seen.promise, 15_000);
+    };
+    const opened = await frame<{ snapshot: unknown }>((message) => message.type === "snapshot");
+    const failed = frame<{ code: string; message: string }>((message) => message.type === "error");
+    ws.send(JSON.stringify({ type: "attach", pane_id: "w1:p2", cols: 80, rows: 24 }));
+    return { snapshot: opened.snapshot, attach: await failed };
+  };
+  const restoreOf = (snapshot: unknown) => (snapshot as { panes: { pane_id: string; restore_error?: string | null }[] }).panes.find((pane) => pane.pane_id === "w1:p2")?.restore_error;
+  const mine = await frames(`ws+unix://${join(realpathSync(dir), "serve.sock")}:/ws`);
+  const session = await (await owner(dir, "/api/session", { headers })).json() as { snapshot: unknown };
+  const listed = await (await owner(dir, "/api/machines", { headers })).json() as { machines: { snapshot: unknown }[] };
+  const theirs = await frames(`${ordinary.replace(/^http/, "ws")}/ws`, { headers: { authorization: headers.authorization } });
+  const theirSession = await (await fetch(`${ordinary}/api/session`, { headers })).json() as { snapshot: unknown };
+  // on the profile: the field is still set (the app keys on it), in one sentence of the profile's own, everywhere
+  const told = [restoreOf(session.snapshot), restoreOf(listed.machines[0]!.snapshot), restoreOf(mine.snapshot), mine.attach.message];
+  expect(told.map((text) => [typeof text === "string" && text.length > 0, text?.includes(marker)])).toEqual(told.map(() => [true, false]));
+  expect([new Set(told).size, mine.attach.code]).toEqual([1, "pane_not_restored"]);
+  // an ordinary server answers as main does
+  expect([restoreOf(theirSession.snapshot), restoreOf(theirs.snapshot), theirs.attach.code, theirs.attach.message]).toEqual([`${marker} could not restore`, `${marker} could not restore`, "pane_not_restored", `${marker} could not restore`]);
 }, 60_000);
