@@ -21,6 +21,7 @@ test("uses one deterministic status, never hiding a failed check or requested ch
   expect(githubStatus({ ...pr, draft: true, checks: "failing", review: "approved" }, true)).toBe("Checks failing");
   expect(githubStatus({ ...pr, checks: "pending", review: "changes_requested" }, true)).toBe("Changes requested");
   expect(githubStatus(pr, true)).toBe("Review requested");
+  expect(githubStatus({ ...pr, review: "review_required" }, false)).toBe("Review requested");
   expect(githubStatus({ ...pr, draft: true }, false)).toBe("Draft");
   expect(githubStatus({ ...pr, checks: "pending", review: "approved" }, false)).toBe("Checks running");
   expect(githubStatus({ ...pr, review: "approved" }, false)).toBe("Approved");
