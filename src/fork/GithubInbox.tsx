@@ -2,7 +2,7 @@ import { cloneElement, useEffect, useState, useSyncExternalStore, type MouseEven
 import { GitPullRequest, RefreshCw } from "lucide-react";
 
 import type { GithubPull, GithubPulls } from "../../shared/github.ts";
-import type { WorktreeListing, WorktreeOpened } from "../../shared/protocol.ts";
+import type { WorktreeOpened } from "../../shared/protocol.ts";
 import { ApiError, createWorktree, fetchPullRequestBranch, getJson, listWorktrees, openWorktree } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
 import { useSettings } from "../lib/settings.ts";
@@ -16,8 +16,6 @@ const statusClasses = {
   "Checks running": "pr-checks-pending", Approved: "pr-review-approved", Ready: "pr-checks-passing",
   "Review requested": "", Draft: "",
 };
-
-const localCheckout = (pr: GithubPull, listing: WorktreeListing) => listing.worktrees.find((entry) => entry.branch === pr.branch && !entry.is_prunable);
 
 type Section = "inbox" | "github";
 let section: Section = "inbox";
@@ -62,7 +60,6 @@ export function GithubInbox({ wide, watching, onOpened }: ViewProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
-  const [forkCheckout, setForkCheckout] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const errors: Record<string, string> = {
     gh_missing: t("Install gh on this PC"), gh_signed_out: t("Sign in on this PC with gh auth login"),
@@ -81,32 +78,21 @@ export function GithubInbox({ wide, watching, onOpened }: ViewProps) {
     });
     return () => { cancelled = true; };
   }, [refresh]);
-  useEffect(() => {
-    let cancelled = false;
-    setForkCheckout(null);
-    const pr = [...(listing?.review ?? []), ...(listing?.yours ?? [])].find((row) => expanded === `review:${row.url}` || expanded === `yours:${row.url}`);
-    if (!pr?.fork || !pr.workspace_id || watching) return;
-    // A fork branch cannot be fetched from origin, but an existing local worktree can be opened.
-    listWorktrees(pr.workspace_id, "local").then((next) => {
-      if (!cancelled && localCheckout(pr, next)) setForkCheckout(expanded);
-    }, () => { /* no safe checkout to offer when the local listing is unavailable */ });
-    return () => { cancelled = true; };
-  }, [expanded, listing, watching]);
   const groups = githubGroups(listing ?? { account: "", review: [], yours: [] }, repo);
   const { checks, reviews } = pullRequestWords(t);
   const statuses = { "Checks failing": t("Checks failing"), "Changes requested": t("Changes requested"), "Review requested": t("Review requested"), Draft: t("Draft"), "Checks running": t("Checks running"), Approved: t("Approved"), Ready: t("Ready") };
 
   const checkout = async (pr: GithubPull): Promise<void> => {
-    if (!pr.workspace_id || busy !== null || watching) return;
+    // Branch names alone cannot establish which fork a local checkout belongs to.
+    if (pr.fork || !pr.workspace_id || busy !== null || watching) return;
     setBusy(pr.url); setError(null);
     try {
       // Re-read local checkouts when pressed, rather than assuming a branch isn't already open.
       const listing = await listWorktrees(pr.workspace_id, "local");
-      const existing = localCheckout(pr, listing);
+      const existing = listing.worktrees.find((entry) => entry.branch === pr.branch && !entry.is_prunable);
       let opened: WorktreeOpened;
       if (existing) opened = await openWorktree({ workspace_id: pr.workspace_id, path: existing.path }, "local");
       else {
-        if (pr.fork) throw new Error("The fork worktree no longer exists");
         // Creation must start at the main checkout, even when only a linked workspace is open.
         let source = listing.source.source_workspace_id ?? pr.workspace_id;
         if (!listing.source.source_workspace_id && listing.source.source_checkout_path !== listing.source.repo_root) {
@@ -135,7 +121,7 @@ export function GithubInbox({ wide, watching, onOpened }: ViewProps) {
           <p>{checks[pr.checks] ?? t("No checks")} · {reviews[pr.review] ?? t("No review yet")}</p>
           <p className="worktree-path">{pr.branch}</p>
           <div className="fork-github-actions">
-            {!watching && pr.workspace_id && (!pr.fork || forkCheckout === key) && <button type="button" className="btn" disabled={busy !== null} onClick={() => void checkout(pr)}>{busy === pr.url ? t("Checking out…") : t("Checkout")}</button>}
+            {!watching && pr.workspace_id && !pr.fork && <button type="button" className="btn" disabled={busy !== null} onClick={() => void checkout(pr)}>{busy === pr.url ? t("Checking out…") : t("Checkout")}</button>}
             <a className="btn btn-ghost" href={pr.url} target="_blank" rel="noreferrer noopener">{t("Open on GitHub")}</a>
           </div>
         </div>}
