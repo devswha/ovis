@@ -198,4 +198,23 @@ public class PushStoreTest {
         assertNull(PushStore.originOf(all, "https://push.ovis.sh/v1/push/c"));
         assertNull(PushStore.originOf(all, null));
     }
+
+    @Test public void provesOnlyThisAppsOwnAlertTaps() {
+        MemoryPreferences prefs = new MemoryPreferences();
+        // no alert shown yet: no intent is one of its taps, and checking makes no proof
+        assertFalse(PushStore.provesAlert(prefs, null));
+        assertFalse(PushStore.provesAlert(prefs, ""));
+        assertTrue(prefs.values.isEmpty());
+        String proof = PushStore.alertProof(prefs);
+        // made once, from 32 random bytes, and another install's is another
+        assertEquals(proof, PushStore.alertProof(prefs));
+        assertEquals(43, proof.length());
+        assertNotEquals(proof, PushStore.alertProof(new MemoryPreferences()));
+        assertTrue(PushStore.provesAlert(prefs, proof));
+        char last = proof.charAt(proof.length() - 1);
+        String changed = proof.substring(0, proof.length() - 1) + (last == 'A' ? 'B' : 'A');
+        for (String forged : new String[] { null, "", changed, proof.substring(1), proof + "A" }) {
+            assertFalse(forged, PushStore.provesAlert(prefs, forged));
+        }
+    }
 }

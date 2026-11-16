@@ -50,6 +50,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import sh.ovis.push.AlertProof;
 import sh.ovis.push.OvisMessagingService;
 
 /**
@@ -905,12 +906,20 @@ public class MainActivity extends BridgeActivity {
      * Opens a tapped alert's pane (PCStore.alertTap). The page of the PC that sent it, already up, is
      * handed the pane as the browser's worker hands an open window, and keeps what it holds; true
      * readies another PC on that pane in its chat for the next first load, switching PC. False,
-     * leaving the open page alone, for any other intent, an alert that names no saved PC, and one the
-     * system hands back with the activity restored or started from Recents, which was opened before.
+     * leaving the open page alone, for any other intent, an alert that names no saved PC, one the
+     * system hands back with the activity restored or started from Recents, which was opened before,
+     * and one without this app's proof (AlertProof): this activity is exported, and
+     * another app's alert is a bare launch, which switches nothing and keeps a pairing link waiting.
      * The alert is taken out of the intent, so it opens once.
      */
     private boolean openAlert(Intent intent, boolean fresh) {
         if (intent == null || !OvisMessagingService.ACTION_OPEN_ALERT.equals(intent.getAction())) return false;
+        boolean own = AlertProof.own(this, intent);
+        intent.setAction(Intent.ACTION_MAIN);
+        intent.setData(null);
+        intent.removeExtra(AlertProof.EXTRA);
+        boolean fromRecents = (intent.getFlags() & Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) != 0;
+        if (!own || !fresh || fromRecents) return false;
         WebView view = bridge == null ? null : bridge.getWebView();
         String url = view == null ? null : view.getUrl();
         // the PC's page with its client up: not under the cover of a first load, nor the error page
@@ -925,10 +934,7 @@ public class MainActivity extends BridgeActivity {
             intent.getStringExtra(OvisMessagingService.EXTRA_WORKSPACE),
             intent.getStringExtra(OvisMessagingService.EXTRA_PANE)
         );
-        intent.setAction(Intent.ACTION_MAIN);
-        intent.setData(null);
-        boolean fromRecents = (intent.getFlags() & Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) != 0;
-        if (alert == null || !fresh || fromRecents) return false;
+        if (alert == null) return false;
         if (alert.selection != null) {
             // as public/sw.js posts it to the open window: src/lib/notificationTarget.ts hears it on
             // navigator.serviceWorker, which a page on plain http lacks, and then the app only comes forward

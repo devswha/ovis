@@ -88,7 +88,8 @@ public class OvisMessagingService extends FirebaseMessagingService {
                 .putExtra(EXTRA_SERVER_ID, field(alert, "server_id"))
                 .putExtra(EXTRA_MACHINE, field(alert, "machine_id"))
                 .putExtra(EXTRA_WORKSPACE, field(alert, "workspace_id"))
-                .putExtra(EXTRA_PANE, pane);
+                .putExtra(EXTRA_PANE, pane)
+                .putExtra(AlertProof.EXTRA, PushStore.alertProof(this));
         }
         // one tap per notification: Android tells PendingIntents apart by their intent's action, data
         // and component, never its extras, so a shared one would open the latest alert's pane from
