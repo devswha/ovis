@@ -25,7 +25,7 @@ import { type PendingIdentity, PendingInputError } from "../pending-input.ts";
 import { startOpenCodeWatch, openCodeSkillsToType, skillsNotAttached } from "../opencode-native.ts";
 import { herdrSkillAttachIo, type SkillAttachIo, typeWithSkills } from "../opencode-skill-attach.ts";
 import { userHome } from "../user-home.ts";
-import { type GrokQueue, grokQueue, sendGrokQueuedNow } from "./grok-queue.ts";
+import { type GrokBeforeSend, grokQueue, sendGrokQueuedNow } from "./grok-queue.ts";
 import { drawsColour, inputRowState, readsTypedDraft, screenFromAnsi, typedDraft } from "../../shared/input-row.ts";
 
 const CLAUDE_INPUT_DRAFT_MESSAGE = "Claude Code's input box is not empty (a draft, bash mode, or a box that could not be read); send or clear it in the terminal, then send this message";
@@ -455,7 +455,7 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
    * waiting collapsed in its queue: its main prompt still takes the message.
    *
    * A working Grok queues that Enter. Only a Send now (`sendNow`: a saved copy's resend) then
-   * sends one more Enter, and only while the message is the top row queued (sendGrokQueuedNow).
+   * sends one more Enter, and only while the message is the one row queued (sendGrokQueuedNow).
    * A plain Send, an idle Grok, and the terminal's own input line keep the single Enter.
    */
 
@@ -479,10 +479,10 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
     let beforeScreen: string | undefined;
     // an agent no reader knows whose screen was read for a picker of its own before agent.prompt (freeAgentPicker)
     let pickerAgent: string | undefined;
-    // a Send now to a Grok whose turn was still running at the commit (or in minimal mode, where herdr does not tell),
-    // whose first Enter only queues: that Grok's terminal and session, which the Enter after it is for and no other's,
-    // and its queue as read before it
-    let grokSendNow: { target: PendingIdentity; before: GrokQueue | null } | undefined;
+    // a Send now to a Grok, whose first Enter only queues while a turn runs (one may start after the status read, from
+    // another client, and minimal mode does not tell): that Grok's terminal and session, which the Enter after it is for
+    // and no other's, and the Grok as read before it
+    let grokSendNow: { target: PendingIdentity; before: GrokBeforeSend } | undefined;
     // herdr's foreground answer read before this send, which the outcome's process binding uses again
     let seen: ProcessInfo | undefined;
     // the send-time screen's history row, once the read alongside delivery confirms it; `noted`: the send it goes on
@@ -531,6 +531,8 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
           inTime();
           return { status: latest.agent_status, screen };
         },
+        // no lastScreen: nothing reaches herdr between this read and the Enter's write. What changes in between, or
+        // during the write's own call, is still not seen: herdr cannot compare and write in one step
         sendEnter: async () => {
           inTime();
           await paneSendKeys(paneId, ["Enter"], undefined, mayType);
@@ -786,9 +788,9 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
           const latest = await paneGet(paneId);
           inTime();
           if (resolveAgent(latest).agent === "grok") {
-            const before = grokQueue((await paneRead({ paneId, source: "detection", format: "text" })).text);
+            const queue = grokQueue((await paneRead({ paneId, source: "detection", format: "text" })).text);
             inTime();
-            if (latest.agent_status === "working" || before?.mode === "minimal") grokSendNow = { target: pendingIdentity(latest), before };
+            grokSendNow = { target: pendingIdentity(latest), before: { working: latest.agent_status === "working", queue } };
           }
         }
         const watch = pane ? startOpenCodeWatch(pane, command, options.openCodeStateDir) : null;

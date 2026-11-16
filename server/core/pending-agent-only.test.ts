@@ -1,11 +1,13 @@
 import { afterEach, expect, it, mock, spyOn } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import * as herdr from "../herdr/client.ts";
 import * as processStart from "../process-start.ts";
 import * as gjcRuntime from "../gjc-runtime.ts";
 import * as omoModule from "../omo.ts";
 import { connectionData } from "./connections.ts";
 import { createPendingDelivery } from "./pending.ts";
-import { GROK_QUEUED_MESSAGE, grokQueuedBehindMessage } from "../../shared/submit-outcome.ts";
+import { GROK_QUEUED_MESSAGE, GROK_SEND_UNCONFIRMED_MESSAGE, grokQueuedBehindMessage } from "../../shared/submit-outcome.ts";
 import { grokScreen } from "./grok-screen.fake.ts";
 
 afterEach(() => mock.restore());
@@ -29,8 +31,13 @@ function delivery(foreground: { pid: number; name: string; argv0?: string; argv?
     return { pane_id: "p", shell_pid: 41000, foreground_processes: [{ argv: [shown.name], ...shown }] } as Awaited<ReturnType<typeof herdr.paneProcessInfo>>;
   });
   spyOn(processStart, "processStartedAtAsync").mockResolvedValue(1000);
-  spyOn(herdr, "paneRead").mockImplementation(async () => ({ text: screen }) as Awaited<ReturnType<typeof herdr.paneRead>>);
-  const hooks: { paste?: () => void; keys?: () => void; submitText?: () => void } = {};
+  // `hooks.read`: what changes right after a read, which got the screen from before it
+  spyOn(herdr, "paneRead").mockImplementation(async () => {
+    const text = screen;
+    hooks.read?.();
+    return { text } as Awaited<ReturnType<typeof herdr.paneRead>>;
+  });
+  const hooks: { paste?: () => void; keys?: () => void; read?: () => void; submitText?: () => void } = {};
   spyOn(herdr, "paneSendText").mockImplementation(async (_pane, text) => { if (count.atPaste < 0) count.atPaste = count.reads; writes.push(text); hooks.paste?.(); if (afterPaste !== undefined) screen = afterPaste; });
   spyOn(herdr, "paneSendKeys").mockImplementation(async (_pane, keys) => { if (count.atEnter < 0) count.atEnter = count.reads; writes.push(keys.join(",")); hooks.keys?.(); });
   const owner = { data: connectionData({ deviceId: undefined, readOnly: false }), getBufferedAmount: () => 0, send: (value: string) => { frames.push(JSON.parse(value) as Frame); return 1; } };
@@ -165,6 +172,30 @@ it("presses nothing at Send now while Grok's prompt holds text typed in the term
   expect(d.result("pending-result", 2)).toMatchObject({ ok: false, code: "submit_changed" });
 });
 
+it("presses nothing at Send now into Grok's approval card drawn right after the read the Enter was decided on", async () => {
+  const d = delivery({ pid: 41001, name: "grok" }, "working", undefined, "grok");
+  // Grok 1.0.77's recorded approval card, whose selected `2 (●) Yes, proceed` an Enter would answer
+  const card = readFileSync(join(import.meta.dir, "../../src/lib/fixtures-input-rows/grok-1.0.77/permission-119.txt"), "utf8");
+  const grok = grokStandIn(d, { onQueued: () => { d.hooks.read = () => { d.hooks.read = undefined; d.screen(card); }; } });
+  await d.submit(1, "hold");
+  await d.sendNow(2, held(d));
+  expect(d.writes).toEqual(["\u001b[200~> backup.txt\nkeep it\u001b[201~", "Enter"]);
+  expect(grok.queue).toEqual(["> backup.txt\nkeep it"]);
+  expect(d.result("pending-result", 2)).toMatchObject({ ok: false, code: "submit_changed", message: GROK_SEND_UNCONFIRMED_MESSAGE });
+});
+
+it("sends Send now with one more Enter when another client started Grok's turn after the read before its Enter", async () => {
+  const d = delivery({ pid: 41001, name: "grok" }, "idle", undefined, "grok");
+  const grok = grokStandIn(d);
+  const keys = d.hooks.keys!;
+  d.hooks.keys = () => { d.pane.agent_status = "working"; d.hooks.keys = keys; keys(); };
+  await d.submit(1, "hold");
+  await d.sendNow(2, held(d));
+  expect(d.writes).toEqual(["\u001b[200~> backup.txt\nkeep it\u001b[201~", "Enter", "Enter"]);
+  expect(grok.sent).toEqual(["> backup.txt\nkeep it"]);
+  expect(d.result("pending-result", 2)).toMatchObject({ ok: true });
+});
+
 it("reports a working Grok's Send now as unconfirmed when the read after its queue Enter fails", async () => {
   const d = delivery({ pid: 41001, name: "grok" }, "working", undefined, "grok");
   d.hooks.keys = () => { d.pane.agent_status = "blocked"; };
@@ -210,10 +241,11 @@ it("types nothing for a second Send now of a saved copy a working Grok kept in i
 
 it("sends an idle Grok's Send now with one Enter", async () => {
   const d = delivery({ pid: 41001, name: "grok" }, "idle", undefined, "grok");
+  const grok = grokStandIn(d);
   await d.submit(1, "hold");
-  const held = d.result("submit-result", 1) as unknown as { pending: { id: string } };
-  await d.sendNow(2, held.pending.id);
+  await d.sendNow(2, held(d));
   expect(d.writes).toEqual(["\u001b[200~> backup.txt\nkeep it\u001b[201~", "Enter"]);
+  expect(grok.sent).toEqual(["> backup.txt\nkeep it"]);
   expect(d.result("pending-result", 2)).toMatchObject({ ok: true });
 });
 

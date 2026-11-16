@@ -116,12 +116,12 @@ it("presses nothing when the one queued row is not the message", async () => {
   expect(failed?.message).toBe(GROK_SEND_UNCONFIRMED_MESSAGE);
 });
 
-it("sends the message on top of Grok's queue with one Enter when another row was queued after it", async () => {
+it("leaves Send now in Grok's queue when another row was queued after it, as one row only is known to be the message", async () => {
   const { state, keys } = grok({ onQueued: (grok) => { grok.queue.push("queued from another device"); } });
-  await sendNow();
-  expect(keys).toHaveBeenCalledTimes(1);
-  expect(state.sent).toEqual(["hello from chat"]);
-  expect(state.queue).toEqual(["queued from another device"]);
+  const failed = await failure(sendNow());
+  expect(keys).not.toHaveBeenCalled();
+  expect(state.queue).toEqual(["hello from chat", "queued from another device"]);
+  expect(failed?.message).toBe(GROK_QUEUED_MESSAGE);
 });
 
 it("sends a multi-line message Grok draws as its first line and a count", async () => {
@@ -191,6 +191,16 @@ it("sends an idle Grok's chat message with the one Enter inside agent.prompt", a
   expect(typed).not.toHaveBeenCalled();
   expect(keys).not.toHaveBeenCalled();
   expect(state.sent).toEqual(["hello from chat"]);
+});
+
+it("sends Send now with one more Enter when another client started Grok's turn after the status read", async () => {
+  const { state, prompt, keys } = grok({ status: "idle" });
+  const type = prompt.getMockImplementation()!;
+  prompt.mockImplementation(async (...args) => { state.status = "working"; await type(...args); });
+  await sendNow();
+  expect(keys).toHaveBeenCalledTimes(1);
+  expect(state.sent).toEqual(["hello from chat"]);
+  expect(state.queue).toEqual([]);
 });
 
 it("does not send another Enter when Grok's turn ends and runs the message before the empty prompt is reached", async () => {

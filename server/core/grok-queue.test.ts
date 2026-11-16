@@ -1,8 +1,10 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, mock } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { inputRowState, screenFromAnsi } from "../../shared/input-row.ts";
-import { grokQueue, showsMessage } from "./grok-queue.ts";
+import { GROK_QUEUED_MESSAGE, GROK_SEND_UNCONFIRMED_MESSAGE } from "../../shared/submit-outcome.ts";
+import { HerdrError } from "../herdr/client.ts";
+import { grokQueue, sendGrokQueuedNow, showsMessage } from "./grok-queue.ts";
 import { grokScreen, type GrokScreenState } from "./grok-screen.fake.ts";
 
 // Grok 1.0.77's screens as herdr's detection read gave them (src/lib/fixtures-input-rows/README.md)
@@ -43,6 +45,33 @@ describe("Grok's queue and prompt on recorded screens", () => {
     expect(showsMessage("first follow-up please", "first follow-up")).toBe(false);
     expect(showsMessage("multi line A", "multi line A\nmulti line B")).toBe(false);
     expect(showsMessage("multi line A (+1 line)", "multi line A")).toBe(false);
+    expect(showsMessage("…", "first follow-up please")).toBe(false);
+  });
+});
+
+/** a recorded screen with its one queued row (`    #1 fourth follow-up please`) drawn as `row` */
+const withTopRow = (name: string, row: string): string => recorded(name).replace(/^ {4}#1 .*$/m, `    #1 ${row}`);
+const parts = Array.from({ length: 13 }, (_, index) => `part${index + 1}`).join(" ");
+
+describe("Send now's one more Enter, decided on recorded screens", () => {
+  // `before`: the screen read before the queueing Enter; `after`: the read after it, where the message's own row may not
+  // be drawn yet, so an older row drawn the same way is on top
+  it.each([
+    ["the message alone on top of a queue empty before it", "working", "queued-1", "fourth follow-up please", null],
+    ["an older row cut to the same drawn prefix", "queued-long", "queued-long", `a long queued follow-up ${parts} partial rewrite of the rest`, GROK_QUEUED_MESSAGE],
+    ["an older row with the same first line and line count", withTopRow("queued-1", "fix config (+1 line)"), withTopRow("queued-1", "fix config (+1 line)"), "fix config\nuse dev", GROK_QUEUED_MESSAGE],
+    ["an older row of the same words", withTopRow("queued-1", "yes"), withTopRow("queued-1", "yes"), "yes", GROK_QUEUED_MESSAGE],
+    ["an older row cut to its ellipsis", withTopRow("queued-1", "…"), withTopRow("queued-1", "…"), "fourth follow-up please", GROK_SEND_UNCONFIRMED_MESSAGE],
+    ["a queue not read before the send", "permission", "queued-1", "fourth follow-up please", GROK_SEND_UNCONFIRMED_MESSAGE],
+  ] as const)("%s", async (_, before, after, message, outcome) => {
+    const screen = (name: string): string => name.includes("\n") ? name : recorded(name);
+    const sendEnter = mock(async () => {});
+    const failed = await sendGrokQueuedNow({
+      message, before: { working: true, queue: grokQueue(screen(before)) }, delayMs: 0, sendEnter,
+      look: async () => ({ status: "working", screen: screen(after) }),
+    }).then(() => null, (error: unknown) => error as HerdrError);
+    expect(sendEnter).toHaveBeenCalledTimes(outcome === null ? 1 : 0);
+    expect(failed === null ? null : [failed.code, failed.message]).toEqual(outcome === null ? null : ["submit_changed", outcome]);
   });
 });
 

@@ -902,7 +902,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       // Claude Code queues what Enter commits during a turn; Ctrl+Enter sends it now (#737). herdr
       // encodes the key as the pane asked, and as a plain CR for a program that asked for nothing.
       // Grok queues that same Enter while a turn runs. Only Send now (`interruptWorkingCodex`, the steer) then sends
-      // one more Enter, and only while the message is the top row queued (sendGrokQueuedNow); a queued request
+      // one more Enter, and only while the message is the one row queued (sendGrokQueuedNow); a queued request
       // typed at once is not a Send now and stays queued behind the turn.
       const sentAt = Date.now();
       // the connection to herdr is awaited, and a task may fire meanwhile: the hold is read once more once connected,
@@ -912,16 +912,16 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       let refused = false;
       await paneSendKeys(paneId, [steering && beforeEnter.identity.agent === "claude" ? "ctrl+enter" : "Enter"], undefined, () => allowed() && !(refused = resumed()))
         .catch((error: unknown) => { if (refused) refuseResumed(); throw error; });
-      // the queue as read right before its Enter, with this delivery's paste in the prompt: in minimal mode herdr does
-      // not tell a running turn, so the screen after it says whether Grok queued the message
-      const grokBefore = interruptWorkingCodex && beforeEnter.identity.agent === "grok" ? grokQueue(beforeEnter.screen) : null;
-      if (interruptWorkingCodex && beforeEnter.identity.agent === "grok" && (steering || grokBefore?.mode === "minimal")) {
+      // the screen after its Enter says whether Grok queued the message, also from a Grok read at rest: another client
+      // can start a turn before the Enter, and in minimal mode herdr does not tell a running turn. Compared with the
+      // queue as read right before that Enter, with this delivery's paste in the prompt
+      if (interruptWorkingCodex && beforeEnter.identity.agent === "grok") {
         // the queue Enter already went: every failure here is submit_changed (wrote is set), never enterRefused's
         // paste left unsent, or a retry would queue the message twice. The terminal's input line does not come here;
         // a Send now from the terminal view uses this same steer, as the frame does not say which view asked.
         await sendGrokQueuedNow({
           message: closeMention(sent),
-          before: grokBefore,
+          before: { working: beforeEnter.working, queue: grokQueue(beforeEnter.screen) },
           delayMs: options.submitDelayMs ?? SUBMIT_DELAY_MS,
           // pendingContext refuses another terminal, session or process, a blocked or unknown state and a masked prompt
           look: async () => {
@@ -929,6 +929,9 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
             authorizePending(owner, paneId, lease);
             return { status: current.pane.agent_status, screen: current.screen };
           },
+          // pendingContext's process and /proc reads come after its screen read: a card or a draft that came up during
+          // them gets no Enter. The window left is this read and the write's own call (herdr has no compare-and-send)
+          lastScreen: async () => (await paneRead({ paneId, source: "detection", format: "text" })).text,
           sendEnter: async () => {
             authorizePending(owner, paneId, lease);
             await paneSendKeys(paneId, ["Enter"], undefined, allowed);
