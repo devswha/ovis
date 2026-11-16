@@ -246,17 +246,32 @@ const READ_FAILED = "herdr did not answer this request";
 const READ_FAILED_CODE = "herdr_error";
 
 /**
+ * Codes out of herdr's reply that the profile keeps, each because the app acts on it: `pane_not_found` (nothing was
+ * typed), `stale_content` (the find bar looks again), `agent_blocked` and `agent_not_ready` (the draft stays),
+ * `not_git_worktree` (that workspace is no checkout) and `invalid_request` (the read falls back to recent rows).
+ */
+const KEPT_HERDR_CODES: ReadonlySet<string> = new Set(["pane_not_found", "stale_content", "agent_blocked", "agent_not_ready", "not_git_worktree", "invalid_request"]);
+
+/**
+ * The one place that words a failed call to herdr on the profile, for every answer and frame: its code when this
+ * server's herdr client made it, or when it is a reply's code the app acts on (KEPT_HERDR_CODES), else
+ * READ_FAILED_CODE; and as its message `reason` (health's, where a route has it), or READ_FAILED.
+ */
+export function machineFailure(error: HerdrError, reason: string | null = null): { code: string; message: string } {
+  return { code: error.fromReply && !KEPT_HERDR_CODES.has(error.code) ? READ_FAILED_CODE : error.code, message: reason ?? READ_FAILED };
+}
+
+/**
  * The profile's answer to a herdr read that failed (/api/session, GET /api/machines), never stored: the status
- * errorResponse gives it; its code when this server's herdr client made it, else (a code out of herdr's reply,
- * `fromReply`) READ_FAILED_CODE; and as its message the reason the profile's health gives (`refusal` as health is
- * handed it), or READ_FAILED while health gives none. An error that is not herdr's is errorResponse's.
+ * errorResponse gives it, and machineFailure's code and message, with the reason the profile's health gives
+ * (`refusal` as health is handed it). An error that is not herdr's is errorResponse's.
  */
 export async function machineReadError(error: unknown, engine: string, refusal: string | null | undefined): Promise<Response> {
   const answer = errorResponse(error);
   if (!(error instanceof HerdrError)) return answer;
   const reason = (await machineHealth(engine, refusal)).machine_profile.reason;
-  const code = error.fromReply ? READ_FAILED_CODE : error.code;
-  return jsonResponse({ error: { code, message: reason ?? READ_FAILED } }, answer.status, { "cache-control": "no-store" });
+  const { code, message } = machineFailure(error, reason);
+  return jsonResponse({ error: { code, message } }, answer.status, { "cache-control": "no-store" });
 }
 
 /**

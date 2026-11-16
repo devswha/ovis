@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
+import { files, read, stripComments } from "../scripts/source-scan.ts";
 import { FakeAccountService } from "../shared/account-service-fake.ts";
 import { unmanagedUpdateStatus } from "../shared/update.ts";
 import { createServer } from "./index.ts";
@@ -1110,4 +1111,120 @@ it("starts an ordinary server whose hold cannot be taken for another reason, and
   // (so it is marked after that server), and what refuses the profile is the hold
   marked(dir);
   expect(await refused(launch(dir, { HOME: scratch() }))).toContain("serve.own");
+});
+
+/** A herdr that answers ping and refuses every other method with `refusal`, counting the calls it refused. */
+function refusingHerdr(socket: string, refusal: { code: string; message: string }) {
+  let calls = 0;
+  const listener = Bun.listen<{ line: string }>({ unix: socket, socket: {
+    open(client) { client.data = { line: "" }; },
+    data(client, chunk) {
+      client.data.line += chunk.toString();
+      if (!client.data.line.includes("\n")) return;
+      const { id, method } = JSON.parse(client.data.line) as { id: string; method: string };
+      if (method !== "ping") calls++;
+      client.write(`${JSON.stringify(method === "ping" ? { id, result: { version: "fixture", protocol: 22 } } : { id, error: refusal })}\n`);
+      client.end();
+    },
+  } });
+  cleanup.push(() => listener.stop(true));
+  return { calls: () => calls };
+}
+
+/** Every "/api/..." the shipped server code names: what the walk asks. A route is in it by being written. */
+function shippedRoutes(): string[] {
+  const paths = new Set<string>();
+  for (const file of files("server/**/*.ts").filter((name) => !/\.test\.ts$|\.fake\.ts$/.test(name))) {
+    for (const match of stripComments(read(file)).matchAll(/["'`](\/api\/[A-Za-z0-9_\-/]+)["'`]/g)) paths.add(match[1]!.replace(/\/$/, ""));
+  }
+  return [...paths].sort();
+}
+/** Families that call no herdr: the account, the relay and its devices, push, settings and the server's own facts. */
+const NO_HERDR = /^\/api\/(?:account|relay|devices|push|alerts|auth|telemetry|preferences|seen|system|fonts|updates|voice|cliproxy|access|health|connection-diagnostics|info|event|herdr-ui|usage(?!\/login))(?:\/|$)/;
+/** One set of values that names a pane, a workspace and a tab, and never a folder or a file. */
+const ids = { pane_id: "w1:p1", workspace_id: "w1", tab_id: "w1:t1", target: "w1:p1", target_pane_id: "w1:p2", source: "recent", text: "x", keys: "Enter",
+  name: "x", label: "x", agent_id: "x", plugin_id: "x", action_id: "x", branch: "x", query: "x", q: "x", ref: "x", id: "x", provider: "claude" };
+const walkQuery = `?${new URLSearchParams({ ...ids, offset: "1", index: "0", start: "0", end: "1" }).toString()}`;
+const walkBody = { ...ids, keys: ["Enter"], direction: "right", cols: 80, rows: 24, lines: 10, offset: 1, index: 0 };
+/** Values of their own, for routes that check one before they look the pane up. */
+const OWN: Record<string, Record<string, string>> = {
+  "/api/sessions/history": { agent: "claude" }, "/api/pane/find": { direction: "forward" },
+  "/api/pane/move": { side: "right" },
+};
+/**
+ * Routes the walk asks and does not take to herdr, each for a reason of its own: what they need first is a running
+ * login, an agent CLI install, a file or folder, a key an earlier list gave, or a request shape of their own. The walk
+ * fails for any other.
+ */
+const NOT_WALKED = /^(?:(?:GET|POST|PUT) \/api\/(?:usage\/login|agent-catalog\/(?:install|sign-in)|fs\/favicon|workspace\/directories|agent\/commands)|PUT \/api\/fs\/text|POST \/api\/(?:layout\/ratio|pane\/image|pane\/prompt\/answer|pane\/scroll|pane\/swap|tab\/move|workspace\/move|workspace\/pr\/merge|worktree\/create|worktree\/open|tab\/create|workspace\/create|sessions\/resume)|(?:GET|POST|PUT) \/api\/pane\/(?:selection|conversation\/image)|GET \/api\/plugin\/action)(?:$|\?|\/)/;
+
+/** Asks every shipped route on `ask` by GET, POST and PUT; what each answered, and whether herdr was called for it. */
+async function walk(ask: (path: string, init: RequestInit) => Promise<Response>, calls: () => number) {
+  const answers: { route: string; status: number; code: string | null; text: string; headers: string; reached: boolean }[] = [];
+  for (const path of shippedRoutes().filter((route) => !NO_HERDR.test(route))) {
+    for (const method of ["GET", "POST", "PUT"]) {
+      const before = calls();
+      const own = OWN[path] ?? {};
+      const response = await ask(`${path}${walkQuery}&${new URLSearchParams(own).toString()}`, { method, headers: { ...headers, origin: "http://localhost", "content-type": "application/json" },
+        ...(method === "GET" ? {} : { body: JSON.stringify({ ...walkBody, ...own }) }), signal: AbortSignal.timeout(10_000) });
+      const text = await response.text();
+      let code: string | null = null;
+      try { code = (JSON.parse(text) as { error?: { code?: string } }).error?.code ?? null; } catch { /* not JSON */ }
+      answers.push({ route: `${method} ${path}`, status: response.status, code, text, headers: [...response.headers.entries()].join(";"), reached: calls() > before });
+    }
+  }
+  return answers;
+}
+/** What the profile answers before any herdr call: refused, unknown, or not that method. */
+const answeredFirst = (answer: { status: number; code: string | null }) => answer.code === "machine_profile" || answer.code === "not_found" && answer.status === 404 || answer.code === "method_not_allowed" || answer.status === 405;
+
+it.each(["refusing every call", "not listening"])("answers every failed herdr call with its own words while herdr is %s", async (mode) => {
+  const dir = state();
+  const config = herdrConfig();
+  const socket = join(config, "herdr", "sessions", "a", "herdr.sock");
+  // herdr's own words in both the code and the message, or, with no herdr, the socket's path the client names
+  const marker = `herdr-own-${Math.random().toString(36).slice(2)}`;
+  let calls = () => 0;
+  if (mode === "refusing every call") {
+    mkdirSync(dirname(socket), { recursive: true, mode: 0o700 });
+    calls = refusingHerdr(socket, { code: marker, message: `${marker} at ${socket}` }).calls;
+  }
+  const server = launch(dir, { XDG_CONFIG_HOME: config, HERDR_REMOTE_SOCKET: "", HERDR_REMOTE_SESSION: "a" });
+  await bounded(server.ready, 20_000);
+  const answers = await walk((path, init) => owner(dir, path, init), calls);
+  const shown = answers.filter((answer) => [marker, socket, dirname(socket), realpathSync(dir)].some((text) => answer.text.includes(text) || answer.headers.includes(text)));
+  expect(shown.map((answer) => `${answer.route} ${answer.status} ${answer.text.slice(0, 160)}`)).toEqual([]);
+  if (mode === "refusing every call") {
+    // every route the profile did not answer first called herdr: one the walk cannot take there is named here
+    expect(answers.filter((answer) => !answeredFirst(answer) && !answer.reached && !NOT_WALKED.test(answer.route)).map((answer) => `${answer.route} ${answer.status} ${answer.code}`)).toEqual([]);
+    // the profile's own answer to the stand-in's refusal, wherever a route answers with it, is never stored
+    const worded = answers.filter((each) => each.code === "herdr_error");
+    expect(worded.length).toBeGreaterThan(0);
+    for (const answer of worded) expect([answer.route, answer.headers]).toEqual([answer.route, expect.stringContaining("no-store")]);
+    // control: an ordinary server on the same herdr answers those routes with the same status and herdr's own pair, as before
+    const ordinary = await bounded(launch(state(), { OVIS_PROFILE: "", OVIS_PREVIEW: undefined, HERDR_SOCKET: socket }).ready, 20_000);
+    // GET /api/machines is the profile's own list, not the route an ordinary server answers it with
+    for (const answer of worded.filter((each) => each.route !== "GET /api/machines")) {
+      const [method, path] = answer.route.split(" ") as [string, string];
+      const own = OWN[path] ?? {};
+      const response = await fetch(`${ordinary}${path}${walkQuery}&${new URLSearchParams(own).toString()}`, { method, headers: { ...headers, origin: ordinary, "content-type": "application/json" },
+        ...(method === "GET" ? {} : { body: JSON.stringify({ ...walkBody, ...own }) }), signal: AbortSignal.timeout(10_000) });
+      const body = await response.json() as { error?: unknown };
+      expect([answer.route, response.status, body.error, response.headers.get("cache-control")]).toEqual([answer.route, answer.status, { code: marker, message: `${marker} at ${socket}` }, null]);
+    }
+  }
+}, 180_000);
+
+it("words a failed herdr call on its own answers only, when a profile and an ordinary server run in one process", async () => {
+  const { ordinary, stateDir } = pair({ token, tailscaleOwner: null });
+  const ask = (target: "profile" | "ordinary") => target === "profile" ? owner(stateDir, "/api/pane/read?pane_id=w-none:p-none", { headers })
+    : fetch(`http://127.0.0.1:${ordinary}/api/pane/read?pane_id=w-none:p-none`, { headers });
+  // interleaved, so that each answer is worded by the server it came from and not by the other's request
+  const answers = await Promise.all(Array.from({ length: 20 }, (_, index) => ask(index % 2 === 0 ? "profile" : "ordinary").then(async (response) => ({
+    target: index % 2 === 0 ? "profile" : "ordinary", body: await response.text(), cache: response.headers.get("cache-control") }))));
+  const of = (target: string) => answers.filter((answer) => answer.target === target);
+  expect(new Set(of("profile").map((answer) => answer.body)).size).toBe(1);
+  expect(new Set(of("ordinary").map((answer) => answer.body)).size).toBe(1);
+  expect(of("profile")[0]!.body).not.toBe(of("ordinary")[0]!.body);
+  expect([new Set(of("profile").map((answer) => answer.cache)), new Set(of("ordinary").map((answer) => answer.cache))]).toEqual([new Set(["no-store"]), new Set([null])]);
 });

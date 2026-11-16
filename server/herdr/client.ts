@@ -118,6 +118,13 @@ export class HerdrError extends Error {
 
 function markFailedCall(error: HerdrError): void { Object.defineProperty(error, "failedCall", { value: true, enumerable: false }); }
 
+/** How a server words a failed call to herdr for its callers: the code and message it answers instead of the error's own. */
+export type HerdrFailureView = (error: HerdrError) => { code: string; message: string };
+/** The code and message a caller is answered with for `error`: `view`'s for a failed call when the server has one, else the error's own. */
+export function herdrFault(error: HerdrError, view: HerdrFailureView | undefined): { code: string; message: string } {
+  return view !== undefined && error.failedCall === true ? view(error) : { code: error.code, message: error.message };
+}
+
 let requestCounter = 0;
 function nextId(): string {
   requestCounter += 1;

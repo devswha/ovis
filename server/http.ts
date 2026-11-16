@@ -10,10 +10,18 @@ import { randomBytes } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 
 import { FileBusyError } from "./file-pool.ts";
-import { HerdrError } from "./herdr/client.ts";
+import { HerdrError, herdrFault, type HerdrFailureView } from "./herdr/client.ts";
 
 /** The outer HTTP boundary also correlates errors caught inside route handlers. */
-export const requestIdContext = new AsyncLocalStorage<{ readonly id: string; route: string }>();
+export const requestIdContext = new AsyncLocalStorage<{ readonly id: string; route: string; herdrFailure?: HerdrFailureView }>();
+
+/** For the rest of this request, a failed call to herdr is answered as `view` words it (the machine profile's). */
+export function wordHerdrFailures(view: HerdrFailureView): void {
+  const context = requestIdContext.getStore();
+  if (context !== undefined) context.herdrFailure = view;
+}
+/** The code and message this request answers for a HerdrError: the error's own, unless this request words failed calls. */
+export const herdrErrorBody = (error: HerdrError): { code: string; message: string } => herdrFault(error, requestIdContext.getStore()?.herdrFailure);
 
 /** Call only from a matched dispatch branch, with a fixed template or a finite matched literal. */
 export function setRequestRoute(route: string): void {
@@ -40,6 +48,11 @@ export function jsonResponse(body: unknown, status = 200, headers: Record<string
 export function errorResponse(error: unknown): Response {
   if (error instanceof HerdrError) {
     const status = error.code === "connect_failed" || error.code === "timeout" ? 502 : 404;
+    const view = requestIdContext.getStore()?.herdrFailure;
+    if (view !== undefined && error.failedCall === true) {
+      const { code, message } = view(error);
+      return jsonResponse({ error: { code, message } }, status, { "cache-control": "no-store" });
+    }
     return jsonResponse({ error: { code: error.code, message: error.message } }, status);
   }
   // every file thread busy, or the disk too slow to answer in time (file-pool.ts): worth another try soon
