@@ -7,6 +7,21 @@ import { readStateDocument, writeStateDocument } from "../state-document.ts";
 const MAX_KEYS = 2000;
 const isFriend = (value: unknown): value is Friend => (FRIENDS as readonly unknown[]).includes(value);
 type FriendSource = { id: string; snapshot: { panes: readonly Pick<HerdrPane, "pane_id" | "workspace_id" | "parent_pane_id">[] } | null };
+export type FriendLookup = FriendStore["friendOf"];
+
+/** Alert metadata comes from the collector, before the machine manager publishes its roster. */
+export function forkAlertFriends(lookup?: FriendLookup) {
+  const sources = new Map<string, FriendSource>();
+  return {
+    seed(panes: readonly HerdrPane[], machineId: string): void {
+      sources.set(machineId, { id: machineId, snapshot: { panes } });
+    },
+    friendOf(machineId: string, paneId: string): Friend | undefined {
+      const source = sources.get(machineId);
+      return lookup?.(machineId, paneId, source ? [source] : []);
+    },
+  };
+}
 
 /**
  * Which friend each agent pane wears (shared/friends.ts), kept beside preferences.json so every

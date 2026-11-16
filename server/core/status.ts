@@ -5,7 +5,7 @@
 import type { TailnetPcsOptions } from "../tailnet-pcs.ts";
 import type { SshCandidatesOptions } from "../ssh-candidates.ts";
 import { createAlertWebhook } from "../alert-webhook.ts";
-import type { Friend } from "../../shared/friends.ts";
+import type { FriendLookup } from "../fork/friends.ts";
 import { stat } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { RelaySocket } from "../../shared/relay-channel.ts";
@@ -79,7 +79,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     serverId?: () => string | undefined;
     pushLoopbackHttp?: boolean;
     /** the friend an agent pane wears (FriendStore.friendOf), named in push alerts */
-    friendOf?: (machineId: string, paneId: string) => Friend;
+    friendOf?: FriendLookup;
     backgroundWait?: { grace: number; limit: number };
     statusNow?: () => number;
     /** keep desktop-activity.json for the desktop app (server/desktop-activity.ts) */

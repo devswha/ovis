@@ -34,9 +34,15 @@ sidebar brand (no App hook), removing its flex gap while keeping New workspace a
 The footer's Open agent inbox entry and the menu remain reachable.
 
 Hooks added/changed by this task (upstream files only):
-- `server/index.ts`: one existing `friendOf` callback line also passes the cached machine roster;
-  the fork looks up workspace/parent metadata for alerts, including before a browser lists a pane.
-  Fork diff vs `upstream/main` before/after: **+12/-5 → +12/-5** (unchanged hook footprint).
+- `server/index.ts`: one existing `friendOf` option binds the fork store. Alerts never consult the
+  machine manager's possibly absent/stale roster. Fork diff vs `upstream/main` before/after:
+  **+12/-5 → +12/-5** (unchanged hook footprint).
+- `server/push.ts`: existing friend import/type/lookup hooks plus one fork initializer and one seed
+  call. `forkAlertFriends` keeps the collector's pane/workspace/parent metadata, independently per
+  machine, before its roster is published. Alerts and the first browser listing agree even with
+  the machine manager off. Fork diff **+17/-6 → +19/-6** in the review fix.
+- `server/core/status.ts`: existing friend type import and option use the fork lookup type so the
+  collector can pass metadata; no new runtime hook. Fork diff **+4/-0 → +4/-0** in the review fix.
 - `src/components/InboxList.tsx`: one import, one `forkInboxRows(..., settings.agentFriends)`
   wrapper, one row-class suffix. Fork diff **+2/-1 → +6/-4**.
 - `src/App.tsx`: one import plus one `ForkInboxBack` mount in the existing inbox-only branch.
@@ -84,6 +90,14 @@ the browser regressions built their own disposable demo bundles. No push, PR, de
 Self-audit: no auth/API shape changes, secrets, dependencies, generated-source edits or tint; retained
 old cache format and protect unknown project documents. Ordering reuses upstream's cycle-safe helper.
 Minimal upstream hooks and disabled-state fallback verified. No Bigpowers state/plan files created.
+
+Review finding 1 reproduced with decrypted alerts before any browser request: both disabled-manager
+and stale-manager cases picked three different friends for one project. Collector metadata now feeds
+FriendStore directly, with no extra RPC, async delay or change to the alert payload. The new fork alert
+regression exited 1 before implementation, then `TMPDIR="$HOME/.cache/ovis-tmp/inbox-agent-clarity-review"
+bun test server/fork/fork-alert-friends.test.ts server/fork/fork-friends.test.ts server/friends.test.ts
+server/push.test.ts server/conventions.test.ts` exited 0 (109 tests). All tests use disposable state
+and a fake loopback push service, not a real herdr session or device.
 
 ## Three piles
 
