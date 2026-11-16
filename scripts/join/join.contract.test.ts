@@ -332,6 +332,8 @@ const [command, sub] = process.argv.slice(2);
 if (command === "--version") console.log(${VERSION});
 if (command === "plugin") {
   if (sub !== "add") process.exit(0);
+  // a device of some account pairs during the add: the server names that account from then on
+  if (existsSync("/var/tmp/fake-add-links")) writeFileSync("/var/tmp/fake-account-listed", "");
   if (existsSync("/var/tmp/fake-add-fails")) { console.log("stand-in add: failed"); process.exit(1); }
   console.log("stand-in add: done");
   process.exit(0);
@@ -883,7 +885,8 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
     const m = await runnerMachine();
     await serveHerdr(m);
     const home = await m.home();
-    expect((await m.sh("touch /var/tmp/fake-add-fails /var/tmp/fake-account-listed")).code).toBe(0);
+    // no account before the add; a device of an account pairs during it, and the add fails
+    expect((await m.sh("touch /var/tmp/fake-add-fails /var/tmp/fake-add-links /var/tmp/fake-account-null")).code).toBe(0);
     const run = await m.sh(`${fakeKit.line} --yes </dev/null`);
     note("caseListed", `exit ${run.code}\n${run.stdout}${run.stderr}`);
     // regression (exit 30 with the server left running before): the account it names may not be the one signed in to
@@ -919,19 +922,19 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
     const home = await m.home();
     expect((await m.sh("touch /var/tmp/fake-add-fails /var/tmp/fake-account-null /var/tmp/fake-gate-closed")).code).toBe(0);
     expect((await m.sh(`${fakeKit.line} --yes </dev/null`)).code).toBe(30);
-    // another account's device linked it, and the add failed: on a run again too, nothing stays
-    expect((await m.sh("rm /var/tmp/fake-account-null && touch /var/tmp/fake-account-listed")).code).toBe(0);
+    // another account's device linked it during the add, and the add failed: on a run again too, nothing stays
+    expect((await m.sh("touch /var/tmp/fake-add-links")).code).toBe(0);
     const second = await m.sh(`${fakeKit.line} --yes </dev/null`);
     note("caseRunAgain37", `exit ${second.code}\n${second.stdout}${second.stderr}`);
     // regression (before: exit 37 with the install kept, stopped)
     expect([second.code, (await m.sh(`test -e ${TRIAL}`)).code, (await m.processes()).includes("ovis-server serve")]).toEqual([37, 1, false]);
     expect(await m.home()).toBe(home);
     // the line again, the add returning at once: the machine is in an account no sign-in of this run put it in
-    expect((await m.sh("rm /var/tmp/fake-add-fails")).code).toBe(0);
+    expect((await m.sh("rm /var/tmp/fake-add-fails /var/tmp/fake-add-links")).code).toBe(0);
     const third = await m.sh(`${fakeKit.line} --yes </dev/null`);
     note("caseRunAgain37", `exit ${third.code}\n${third.stdout}${third.stderr}`);
     expect([third.code, third.stdout.includes("acct_standin"), (await m.processes()).includes("ovis-server serve")]).toEqual([38, true, true]);
-    expect((await m.sh(`rm /var/tmp/fake-account-listed /var/tmp/fake-gate-closed && sh ${TRIAL}/join.sh --uninstall`)).code).toBe(0);
+    expect((await m.sh(`rm /var/tmp/fake-account-listed /var/tmp/fake-account-null /var/tmp/fake-gate-closed && sh ${TRIAL}/join.sh --uninstall`)).code).toBe(0);
   }, 300_000);
 
   test("a run again whose add fails while the server names the account it named before: the install is kept (exit 38)", async () => {
