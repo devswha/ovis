@@ -25,11 +25,13 @@ export function wordHerdrFailures(view: HerdrFailureView, reason: (reason: strin
   context.herdrFailure = view;
   context.herdrReason = reason;
 }
+/** The headers of an answer that may carry what this request words: never stored inside a request that words them, else none. */
+export const wordedHeaders = (): Record<string, string> => requestIdContext.getStore()?.herdrFailure === undefined ? {} : { "cache-control": "no-store" };
 /** A layout answer, whose `reason` may be herdr's: never stored, its reason worded, inside a request that words them; else as it is. */
 export function layoutResponse<T extends { reason: string | null }>(body: T): Response {
   const word = requestIdContext.getStore()?.herdrReason;
   if (word === undefined) return jsonResponse(body);
-  return jsonResponse({ ...body, reason: body.reason === null ? null : word(body.reason) }, 200, { "cache-control": "no-store" });
+  return jsonResponse({ ...body, reason: body.reason === null ? null : word(body.reason) }, 200, wordedHeaders());
 }
 /** The code and message this request answers for a HerdrError: the error's own, unless this request words failed calls. */
 export const herdrErrorBody = (error: HerdrError): { code: string; message: string } => herdrFault(error, requestIdContext.getStore()?.herdrFailure);
@@ -62,7 +64,7 @@ export function errorResponse(error: unknown): Response {
     const view = requestIdContext.getStore()?.herdrFailure;
     if (view !== undefined && error.failedCall === true) {
       const { code, message } = view(error);
-      return jsonResponse({ error: { code, message } }, status, { "cache-control": "no-store" });
+      return jsonResponse({ error: { code, message } }, status, wordedHeaders());
     }
     return jsonResponse({ error: { code: error.code, message: error.message } }, status);
   }
@@ -77,8 +79,8 @@ export function errorResponse(error: unknown): Response {
   return jsonResponse({ error: { code: "internal_error", message: `internal error (${id})` } }, 500);
 }
 
-export function conflictResponse(code: string, message: string): Response {
-  return jsonResponse({ error: { code, message } }, 409);
+export function conflictResponse(code: string, message: string, headers: Record<string, string> = {}): Response {
+  return jsonResponse({ error: { code, message } }, 409, headers);
 }
 
 export function badRequest(code: string, message: string): Response {

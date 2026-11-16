@@ -13,7 +13,7 @@ import type { MoveReceipt } from "./order-sequence.ts";
 import { agentFault, agentLaunch, type AgentPayload } from "./agent-launch.ts";
 import { createDirectory, expandedDirectory, listDirectories } from "./directories.ts";
 import { HerdrError, paneMoveToNewTab, sessionSnapshot, tabClose, tabCreate, tabMove, tabRename, workspaceClose, workspaceCreate, workspaceMove, workspaceRename, worktreeCreate, worktreeList, worktreeOpen, worktreeRemove } from "./herdr/client.ts";
-import { badRequest, conflictResponse, errorResponse, herdrErrorBody, isJsonObject, jsonResponse, readJsonObject, setRequestRoute } from "./http.ts";
+import { badRequest, conflictResponse, errorResponse, herdrErrorBody, isJsonObject, jsonResponse, readJsonObject, setRequestRoute, wordedHeaders } from "./http.ts";
 import { paneContext } from "./pane-context.ts";
 import { PullRequestError, mergeInputOf, mergePullRequest, pullRequestLog, pullRequestView } from "./pull-request.ts";
 import { repoDiffResponse } from "./repo-diff.ts";
@@ -249,7 +249,8 @@ export async function handleWorkspaceRequest(request: Request, url: URL, pathnam
         })
         : null;
       broadcastAll({ type: "session-changed" });
-      return jsonResponse({ workspace_id: workspaceId, pane_id: created.root_pane.pane_id, ...launched, ...(typeof payload.first_message === "string" ? { first_message: firstMessage } : {}) });
+      // an agent that did not start, or a first message not queued, is said as this request words it (herdrErrorBody)
+      return jsonResponse({ workspace_id: workspaceId, pane_id: created.root_pane.pane_id, ...launched, ...(typeof payload.first_message === "string" ? { first_message: firstMessage } : {}) }, 200, wordedHeaders());
     } catch (error) {
       return errorResponse(error);
     }
@@ -385,7 +386,7 @@ export async function handleWorkspaceRequest(request: Request, url: URL, pathnam
         path: opened.worktree.path,
         branch: opened.worktree.branch,
         ...launched,
-      });
+      }, 200, wordedHeaders());
     } catch (error) {
       // git's own words for a branch that has no commit yet (a folder just `git init`ed): with no
       // base named there is nothing to check out from, which the dialog says in its own words

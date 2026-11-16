@@ -1323,8 +1323,22 @@ it("answers a find herdr refused as stale with the code the app acts on, in its 
   const profile = await owner(stateDir, "/api/pane/find", { method: "POST", headers: { ...headers, origin: "http://localhost", "content-type": "application/json" }, body });
   const own = await fetch(`http://127.0.0.1:${ordinary}/api/pane/find`, { method: "POST", headers: { ...headers, origin: `http://127.0.0.1:${ordinary}`, "content-type": "application/json" }, body });
   const [mine, theirs] = [await profile.json(), await own.json()] as { error: { code: string; message: string } }[];
-  expect([profile.status, mine!.error.code, mine!.error.message === refused.message]).toEqual([409, "stale_content", false]);
-  expect([own.status, theirs!.error]).toEqual([409, refused]);
+  expect([profile.status, mine!.error.code, mine!.error.message === refused.message, profile.headers.get("cache-control")]).toEqual([409, "stale_content", false, "no-store"]);
+  expect([own.status, theirs!.error, own.headers.get("cache-control")]).toEqual([409, refused, null]);
+});
+
+it("answers a create whose agent herdr did not start in its own words, never stored, and an ordinary server answers as main does", async () => {
+  const { ordinary, stateDir } = pair({ token, tailscaleOwner: null });
+  const refused = { code: "agent_name_taken", message: `herdr-own-${Math.random().toString(36).slice(2)}` };
+  const create = spyOn(herdr, "workspaceCreate").mockImplementation(async () => ({ tab: { workspace_id: "w1" }, root_pane: { pane_id: "w1:p1" } }) as never);
+  const start = spyOn(herdr, "agentStart").mockImplementation(async () => { throw new HerdrError(refused.code, refused.message, true, true); });
+  cleanup.push(() => create.mockRestore(), () => start.mockRestore());
+  const body = JSON.stringify({ agent: { kind: "claude", name: "claude-create-test" } });
+  const profile = await owner(stateDir, "/api/workspace/create", { method: "POST", headers: { ...headers, origin: "http://localhost", "content-type": "application/json" }, body });
+  const own = await fetch(`http://127.0.0.1:${ordinary}/api/workspace/create`, { method: "POST", headers: { ...headers, origin: `http://127.0.0.1:${ordinary}`, "content-type": "application/json" }, body });
+  const [mine, theirs] = [await profile.json(), await own.json()] as { agent_started: boolean; error: { code: string; message: string } }[];
+  expect([profile.status, mine!.agent_started, mine!.error.message === refused.message, profile.headers.get("cache-control")]).toEqual([200, false, false, "no-store"]);
+  expect([own.status, theirs!.error, own.headers.get("cache-control")]).toEqual([200, refused, null]);
 });
 
 it("words a failed herdr call on its own answers only, when a profile and an ordinary server run in one process", async () => {
