@@ -969,8 +969,47 @@ public class MainActivity extends BridgeActivity {
         reopen();
     }
 
-    /** Starts this activity again, so the next page (a PC, or the connect screen) is a first load. */
+    /**
+     * Told to the page just before it is replaced (reopen): the client then leaves the unsent text it
+     * keeps in memory alone (an older server's pane drafts) in storage, where its PC's next page takes
+     * it back as a draft (src/lib/paneLifetime.ts, PAGE_LEAVING_EVENT). Any other page has no listener.
+     */
+    private static final String LEAVING_SCRIPT = "window.dispatchEvent(new Event('ovis-page-leaving'))";
+
+    /** How long a page that does not answer LEAVING_SCRIPT (busy, or gone) holds up its replacement. */
+    private static final long LEAVING_WAIT_MS = 1000;
+
+    /** Whether reopen has begun: the page is being told it leaves, and this activity then ends. */
+    private boolean leaving;
+
+    /**
+     * Starts this activity again, so the next page (a PC, or the connect screen) is a first load. The
+     * page shown is told first (LEAVING_SCRIPT), so a PC switch, an alert's included, keeps its
+     * memory-only drafts; nothing is asked and nothing is sent.
+     */
     void reopen() {
+        if (leaving) return;
+        leaving = true;
+        WebView view = bridge == null ? null : bridge.getWebView();
+        if (view == null) {
+            restart();
+            return;
+        }
+        Runnable once = new Runnable() {
+            private boolean done;
+
+            @Override
+            public void run() {
+                if (done) return;
+                done = true;
+                restart();
+            }
+        };
+        view.evaluateJavascript(LEAVING_SCRIPT, (value) -> once.run());
+        view.postDelayed(once, LEAVING_WAIT_MS);
+    }
+
+    private void restart() {
         Intent intent = new Intent(this, MainActivity.class);
         intent.addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
         finish();

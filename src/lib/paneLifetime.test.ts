@@ -152,6 +152,38 @@ describe("pane state per herdr lifetime", () => {
     expect(lifetimes.unsent().map(({ kind, text }) => ({ kind, text }))).toEqual([{ kind: "message", text: "typed under an older bridge" }]);
   });
 
+  it("gives an older bridge's pane state to the next page when the app replaces this one, as a draft there, never sent, and to recovery once a herdr is named", () => {
+    const storage = new MemoryStorage();
+    const HELD = "ovis:terminal-draft:remote:pc2:w1%3Ap1";
+    const leaving = page(storage);
+    leaving.observe([pc("local", undefined), pc("pc2", undefined)], title);
+    leaving.paneStorage.setItem(DRAFT, "typed under an older bridge");
+    leaving.paneStorage.setItem("ovis:terminal-line:w1:p1", "git status");
+    leaving.paneStorage.setItem(HELD, JSON.stringify({ text: "echo ", at: 1_000 }));
+    // a tapped alert switches the app to another PC: the page is replaced
+    leaving.carry();
+    expect(storage.getItem(DRAFT)).toBeNull();
+
+    // back on the PC, whose server still names no herdr: the next page holds it as the first one did, in memory
+    const back = page(storage);
+    const drafts = new ComposerDraftStore(() => back.paneStorage);
+    back.onRetire((machineId) => drafts.forget(machineId));
+    expect(drafts.read(DRAFT).text).toBe("");
+    back.observe([pc("local", undefined)], title);
+    expect(drafts.read(DRAFT)).toEqual({ text: "typed under an older bridge", sending: false });
+    expect(back.paneStorage.getItem("ovis:terminal-line:w1:p1")).toBe("git status");
+    expect(storage.getItem(DRAFT)).toBeNull();
+    expect(back.unsent()).toEqual([]);
+    // what another PC kept waits for that PC's next page, and is taken once
+    back.observe([pc("pc2", "herdr-a")], title);
+    expect(back.paneStorage.getItem(HELD)).toBeNull();
+    expect(back.unsent().map(({ machine_id, kind, text }) => ({ machine_id, kind, text }))).toEqual([{ machine_id: "pc2", kind: "held", text: "echo " }]);
+    const again = page(storage);
+    again.observe([pc("local", undefined), pc("pc2", undefined)], title);
+    expect(again.paneStorage.getItem(DRAFT)).toBeNull();
+    expect(again.paneStorage.getItem(HELD)).toBeNull();
+  });
+
   it("leaves the stored state alone in a page that is behind another tab, and keeps that page's own typing for recovery", () => {
     const storage = new MemoryStorage();
     const ahead = page(storage), behind = page(storage);

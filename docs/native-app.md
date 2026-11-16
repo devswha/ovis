@@ -357,7 +357,8 @@ one more browser's and is unchanged.
   (`shared/push.ts`), and the app finds the saved PC by them (`PCStore.alertLink`). A tap for the
   PC already open selects the pane in its page without reloading the page (over a reader or a file
   page, or before that page is up, the alert's address opens instead). An alert for another
-  saved PC opens that PC, as switching PC does. An alert too long to carry the endpoint and relay
+  saved PC opens that PC, as switching PC does, without asking: unsent text the open page kept in
+  memory alone (an older server's pane drafts) waits as a draft for that PC and pane, never sent. An alert too long to carry the endpoint and relay
   ID is sent without them, and its tap just opens the app, as does an alert from an older PC or
   from one the phone no longer keeps. A tap for the open PC only brings the app forward when that
   PC's page is from an Ovis older than this hand-over and is served over plain http, where a page
@@ -408,7 +409,11 @@ pieces are the Java twins of the iOS ones, in `app/android/app/src/main/java/sh/
   so another server on that host (a dev server's port) would otherwise replace Ovis in the WebView
   (`PCStore.sameOrigin`). A sign-in's steps and the redirects of the first load are judged before it.
   Opening or leaving a PC starts the activity again, so the next page is a first load and the
-  old WebView goes with the old activity.
+  old WebView goes with the old activity. Just before, the page shown hears `ovis-page-leaving`
+  (waited for up to a second): the client leaves the pane state it keeps in memory alone, for a PC
+  whose server names no herdr lifetime, in storage, and that PC's next page takes it back as it was
+  (`src/lib/paneLifetime.ts`, `carry`). A terminal line that looks like a key and a secret prompt's
+  input are never written down, so they still go with the page.
 - Until the PC's page shows, a native cover over the WebView says which PC is opening and offers
   Change PC, as on iOS. When the PC's page has not answered after 20 seconds (`PCStore.ANSWER_SECONDS`,
   counted from Open on the connect screen when it checked the address first, with at least 5 s left

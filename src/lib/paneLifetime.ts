@@ -2,6 +2,7 @@ import { LOCAL_MACHINE, type Machine } from "../../shared/machines.ts";
 import type { HerdrPane } from "../../shared/protocol.ts";
 import { looksLikeKey } from "../../shared/secret-prompt.ts";
 import { restoreDraft } from "./draft.ts";
+import { serverIdOfPath } from "./shellMode.ts";
 
 /**
  * herdr gives pane IDs out again once it is replaced (#1608), and a pane's unsent state is stored
@@ -15,7 +16,9 @@ import { restoreDraft } from "./draft.ts";
  *
  * A PC whose snapshot names no lifetime (an older bridge) keeps its pane state in this page only:
  * it survives reconnects, never reaches storage, and reads none of it. So does a PC whose stored
- * state another tab already gave to a herdr this page has not seen yet.
+ * state another tab already gave to a herdr this page has not seen yet. When the app replaces the
+ * page (PAGE_LEAVING_EVENT), that state waits in storage for the next page of this address, which
+ * takes it back as this page would have kept it (carry).
  */
 export type UnsentKind = "message" | "line" | "held" | "pending";
 /** `agent_only`: a message box's draft that was for an agent alone (#511), which goes back into a box as one */
@@ -47,6 +50,13 @@ const RECORD_PREFIX = "ovis:pane-lifetime:";
 const RETIRED_PREFIX = "ovis:pane-lifetimes-retired:";
 const RETIRED_KEPT = 16;
 export const UNSENT_PREFIX = "ovis:unsent:";
+/**
+ * The event the Android app dispatches on the page just before it replaces it with another PC's, or
+ * the same PC's first page again (MainActivity.reopen): this page then carries what it keeps in memory.
+ */
+export const PAGE_LEAVING_EVENT = "ovis-page-leaving";
+/** the pane state a replaced page kept in memory, by key (carry); a relay PC's shares the hosted shell's origin, so it is its own */
+const carriedKey = (): string => `ovis:pane-carried:${typeof location === "undefined" ? "" : serverIdOfPath(location.pathname) ?? ""}`;
 type PaneStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
 /** The PC and pane a pane-state key is about, and the kind of text it holds (null: a lens or a lease), or null for any other key. */
@@ -240,12 +250,16 @@ export class PaneLifetimes {
       this.skipped.delete(machine.id);
       const next = named ?? null;
       const proven = this.proven.get(machine.id);
-      if (!this.generations.has(machine.id) || this.generations.get(machine.id) !== next) {
+      const first = !this.generations.has(machine.id);
+      if (first || this.generations.get(machine.id) !== next) {
         // what the page kept for the panes it drew until now goes to recovery: typed while no read
         // proved their herdr, even the same herdr named again proves nothing about it
         this.retireMemory(machine.id, titles);
         if (next !== null && proven !== undefined && proven !== next) this.outlived.set(machine.id, new Set([...this.outlived.get(machine.id) ?? [], proven].slice(-RETIRED_KEPT)));
         this.generations.set(machine.id, next);
+        // what the page before this one kept for the PC (carry), as if that page had stayed open: still in
+        // memory under a snapshot naming no herdr, to recovery under one that names a herdr
+        if (first && this.takeCarried(machine.id) && next !== null) this.retireMemory(machine.id, titles);
         if (next !== null) this.settle(machine.id, next, titles);
         changed.push(machine.id);
       } else if (next !== null && (!this.stored(machine.id) || this.holds(machine.id))) {
@@ -314,6 +328,34 @@ export class PaneLifetimes {
       const mark = agentOnlyMark(key);
       if (pane.kind !== null) this.archive(storage, pane.machineId, pane.paneId, pane.kind, texts(pane.kind, storedText(key, value), this.now(), mark !== null && held.has(mark)), titles);
     }
+  }
+
+  /**
+   * The app is replacing this page (PAGE_LEAVING_EVENT): the pane state it keeps in memory alone waits
+   * in storage for the next page of this address (takeCarried), with any an earlier page left there.
+   * Nothing of it is sent. Storage that refuses it leaves it with this page, as before.
+   */
+  carry(): void {
+    if (this.memory.size === 0) return;
+    try {
+      const storage = this.storage();
+      storage.setItem(carriedKey(), JSON.stringify({ ...readCarried(storage.getItem(carriedKey())), ...Object.fromEntries(this.memory) }));
+    } catch { /* storage refused: the text goes with this page */ }
+  }
+
+  /** Puts the pane state a replaced page carried for the PC into this page's memory; whether there was any. */
+  private takeCarried(machineId: string): boolean {
+    try {
+      const storage = this.storage();
+      const carried = Object.entries(readCarried(storage.getItem(carriedKey())));
+      const mine = carried.filter(([key]) => paneStateKey(key)?.machineId === machineId);
+      if (mine.length === 0) return false;
+      for (const [key, value] of mine) this.memory.set(key, value);
+      const rest = carried.filter(([key]) => paneStateKey(key)?.machineId !== machineId);
+      if (rest.length === 0) storage.removeItem(carriedKey());
+      else storage.setItem(carriedKey(), JSON.stringify(Object.fromEntries(rest)));
+      return true;
+    } catch { return false; }
   }
 
   /** whether this page keeps any of the PC's pane state in its memory */
@@ -460,5 +502,17 @@ export class PaneLifetimes {
   }
 }
 
+/** The carried pane state (PaneLifetimes.carry): its string values by key; anything else is none. */
+function readCarried(raw: string | null): Record<string, string> {
+  try {
+    const value: unknown = JSON.parse(raw ?? "null");
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
+    return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+  } catch { return {}; }
+}
+
 export const paneLifetimes = new PaneLifetimes();
-if (typeof window !== "undefined") window.addEventListener("storage", (event) => paneLifetimes.storageChanged(event.key));
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => paneLifetimes.storageChanged(event.key));
+  window.addEventListener(PAGE_LEAVING_EVENT, () => paneLifetimes.carry());
+}
