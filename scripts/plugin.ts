@@ -26,10 +26,11 @@ import { parseBirth, readProcessBirth } from "../server/process-owner.ts";
 import { writeStateDocument } from "../server/state-document.ts";
 import { defaultStateDir } from "../server/update-state.ts";
 import { fleetPreview } from "../server/preview.ts";
+import { stateDirRefusal } from "../server/machine-profile.ts";
 import { COMPILED, entryCommand, ROOT as SERVER_ROOT } from "../server/entries.ts";
 import { version as builtVersion } from "../package.json";
 import { spawn, spawnSync } from "node:child_process";
-import { appendFileSync, chmodSync, closeSync, copyFileSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, closeSync, constants, copyFileSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, platform, uptime } from "node:os";
 import { basename, delimiter, dirname, join, resolve, sep } from "node:path";
 
@@ -189,27 +190,69 @@ let origin = originOf(port);
  * from the plugin's settings as the server it starts gets them (`env`: its environment, then its settings files).
  */
 const machineProfile = fleetPreview(env) && env["OVIS_PROFILE"] === "machine";
+/** The most a profile's record may hold: its own is one short line (a port, a host and a socket path of at most 100 bytes). */
+const RECORD_MAX_BYTES = 4096;
+/**
+ * How the record is opened, as server/profile-marker.ts opens the profile's marker: never through a link, never waiting
+ * (opening a FIFO for reading would wait for a writer), and never as this process's terminal.
+ */
+const RECORD_OPEN = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0) | (constants.O_NOCTTY ?? 0);
+
+/**
+ * The profile's record at `path`, opened once and asked of that descriptor only: a regular file of at most
+ * RECORD_MAX_BYTES, read to its end and never more than one byte past that. null for anything else.
+ */
+function profileRecord(path: string): unknown {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, RECORD_OPEN);
+    const entry = fstatSync(fd);
+    if (!entry.isFile() || entry.size > RECORD_MAX_BYTES) return null;
+    const bytes = Buffer.alloc(RECORD_MAX_BYTES + 1);
+    let length = 0;
+    for (let read = 1; read > 0 && length < bytes.length; length += read) read = readSync(fd, bytes, length, bytes.length - length, length);
+    if (length > RECORD_MAX_BYTES) return null;
+    return JSON.parse(bytes.toString("utf8", 0, length));
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
 /**
  * The machine profile's local owner, when this plugin runs for one (`machineProfile`). The profile records its owner's
  * unix socket in its state folder (`serve.lock/http.json`, with `door: 1`) and answers only liveness on its TCP port, so
  * the requests to the server go to that socket, addressed as `http://localhost`, the one Host and Origin it takes
- * there. The plugin takes only the profile's own socket in its state folder: `serve.sock` in the folder's real path, as
- * the profile names it (server/machine-profile.ts claimServerState). Otherwise null, and the requests go to `origin`
- * over TCP, also when the record is missing, unreadable, names no door or another socket, or the folder is absent.
- * Read for each request, by `link` once at its start: the record is written once the server listens.
+ * there. The plugin takes the socket only when the state folder passes the profile's own check (server/machine-profile.ts
+ * stateDirRefusal), the record names `serve.sock` in the folder's real path, as the profile names it, and `serve.sock`
+ * is a socket this account owns and no group or other may write to, not a link. Otherwise null, and the requests go to
+ * `origin` over TCP, also when the record is missing, unreadable, larger than RECORD_MAX_BYTES, not a regular file,
+ * names no door or another socket, or the folder is absent. Read until a health check passes (serverDoor): the record is
+ * written once the server listens.
  */
 function ownerDoor(): string | null {
   if (!machineProfile) return null;
   try {
     // the folder as the profile takes it (server/machine-profile.ts walkedStateDir): its record and its socket are there
     const dir = realpathSync(APP_STATE_DIR);
-    const record = JSON.parse(readFileSync(join(dir, "serve.lock", "http.json"), "utf8")) as { door?: unknown; socket?: unknown };
+    if (stateDirRefusal(dir) !== null) return null;
+    const record = profileRecord(join(dir, "serve.lock", "http.json")) as { door?: unknown; socket?: unknown } | null;
     const own = join(dir, "serve.sock");
-    return record.door === 1 && record.socket === own ? own : null;
+    if (typeof record !== "object" || record === null || record.door !== 1 || record.socket !== own) return null;
+    const socket = lstatSync(own);
+    return socket.isSocket() && socket.uid === process.getuid?.() && (socket.mode & 0o022) === 0 ? own : null;
   } catch { return null; }
 }
+/**
+ * The door of this command: the one its first passing health check went to (appHealth), kept for every later request
+ * of the command, so a command never moves from one door to the other. undefined until a health check passed.
+ */
+let commandDoor: string | null | undefined;
+/** The door a request goes to: the command's (commandDoor), or ownerDoor's answer now while no health check passed. */
+const serverDoor = (): string | null => commandDoor === undefined ? ownerDoor() : commandDoor;
 /** The origin the requests to the server name: `origin`, or `http://localhost` on a machine profile's owner socket. */
-const serverOrigin = (): string => ownerDoor() === null ? origin : "http://localhost";
+const serverOrigin = (): string => serverDoor() === null ? origin : "http://localhost";
 /**
  * A request on a machine profile's owner socket (`door`), as given but with no `authorization` header: the profile
  * takes its owner on that socket itself, and the plugin sends no token there.
@@ -219,8 +262,8 @@ function ownerFetch(door: string, input: string | URL | Request, init?: RequestI
   request.headers.delete("authorization");
   return fetch(request, { unix: door });
 }
-/** One request to the server at `path`: over TCP to `origin`, or on a machine profile's owner socket (`door`, ownerDoor). */
-function serverFetch(path: string, init: RequestInit = {}, door = ownerDoor()): Promise<Response> {
+/** One request to the server at `path`: over TCP to `origin`, or on a machine profile's owner socket (`door`, serverDoor). */
+function serverFetch(path: string, init: RequestInit = {}, door = serverDoor()): Promise<Response> {
   return door === null ? fetch(`${origin}${path}`, init) : ownerFetch(door, `http://localhost${path}`, init);
 }
 
@@ -268,8 +311,8 @@ async function pairingParts(): Promise<{ qr: (text: string) => string; decodeOff
  * `engineDown` is always null.
  */
 async function appHealth(): Promise<{ readonly engineDown: string | null } | null> {
-  // the door the request goes to and the answer is judged by: decided once
-  const door = ownerDoor();
+  // the door the request goes to and the answer is judged by: decided once, and kept for the command once it passes
+  const door = serverDoor();
   try {
     const response = await serverFetch("/api/health", { signal: AbortSignal.timeout(1500) }, door);
     if (!response.ok) return null;
@@ -280,6 +323,7 @@ async function appHealth(): Promise<{ readonly engineDown: string | null } | nul
     const profile = door === null ? null : body.machine_profile as { runtime_down?: unknown; reason?: unknown } | null | undefined;
     const engine = typeof profile === "object" && profile !== null && typeof profile.runtime_down === "boolean" ? profile : null;
     if ((typeof body.herdr !== "object" || body.herdr === null) && engine === null) return null;
+    commandDoor = door;
     return { engineDown: engine?.runtime_down === true ? (typeof engine.reason === "string" ? engine.reason : "") : null };
   } catch {
     return null;
@@ -1050,8 +1094,8 @@ async function linkCommand(): Promise<number> {
   // hears ends the process where it stands, or leaves it running with nobody to read it: the code stays valid either
   // way. It is heard instead, and stops the run as its signal would
   process.stdout.on("error", halt);
-  // a machine profile's owner calls go to its socket (ownerDoor, read once for the run), with the origin it takes there
-  const door = ownerDoor();
+  // a machine profile's owner calls go to its socket, the door health() passed on (serverDoor), with the origin it takes there
+  const door = serverDoor();
   return linkPc(process.argv.slice(3), {
     origin: door === null ? origin : "http://localhost", headers, signal: stop.signal,
     ...(door === null ? {} : { fetch: (input: string | URL | Request, init?: RequestInit) => ownerFetch(door, input, init) }),
