@@ -112,7 +112,8 @@ let shiftyKit: Kit;
 let silentKit: Kit;
 /** a kit (not a test kit) whose server is a stand-in that always names the machine profile and no pairing gate, answers
  * its account status with an error, and whose add succeeds, or fails when /var/tmp/fake-add-fails exists; under the
- * probe, with /var/tmp/fake-probe-hangs, it writes its pid to /var/tmp/probe-started and never answers */
+ * probe, with /var/tmp/fake-probe-hangs, it writes its pid to /var/tmp/probe-started and never answers (and with
+ * /var/tmp/fake-probe-leaves first removes its own program, so that it is no longer the kit's server) */
 let fakeKit: Kit;
 let server = "";
 let scratch = "";
@@ -330,8 +331,10 @@ setInterval(() => {}, 1 << 30);
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 const [command, sub] = process.argv.slice(2);
 // /var/tmp/fake-status-<how> holds how many account status reads are still answered that way: fails (an error status,
-// the server restarting, say), cut (a body cut off after "account":null, sent whole), stall (that body, then nothing)
-// or malformed (a whole answer that is no JSON object, holding "account":null)
+// the server restarting, say), cut (a body cut off after "account":null, sent whole), stall (that body, then nothing),
+// stall-whole ({"account":null} whole, then nothing: only the download's exit status says it is no answer),
+// stall-nested (a body cut at a nested closing brace, then nothing) or malformed (a whole answer that is no JSON
+// object, holding "account":null)
 function statusAnswers(how: string): boolean {
   const file = "/var/tmp/fake-status-" + how;
   const left = existsSync(file) ? Number(readFileSync(file, "utf8")) : 0;
@@ -340,13 +343,14 @@ function statusAnswers(how: string): boolean {
   return true;
 }
 const CUT = '{"account":null';
+const stalled = (body: string) => new Response(new ReadableStream({ start(stream) { stream.enqueue(new TextEncoder().encode(body)); } }), { headers: { "content-type": "application/json" } });
 if (command === "--version") console.log(${VERSION});
 if (command === "plugin") {
   if (sub !== "add") process.exit(0);
   // a device of some account pairs during the add: the server names that account from then on
   if (existsSync("/var/tmp/fake-add-links")) writeFileSync("/var/tmp/fake-account-listed", "");
   // the server is back by the time the add has run
-  for (const how of ["fails", "cut", "stall", "malformed"]) rmSync("/var/tmp/fake-status-" + how, { force: true });
+  for (const how of ["fails", "cut", "stall", "stall-whole", "stall-nested", "malformed"]) rmSync("/var/tmp/fake-status-" + how, { force: true });
   if (existsSync("/var/tmp/fake-add-fails")) { console.log("stand-in add: failed"); process.exit(1); }
   console.log("stand-in add: done");
   process.exit(0);
@@ -354,6 +358,7 @@ if (command === "plugin") {
 if (command !== "serve") { process.stderr.write("usage: ovis-server <command>\\n"); process.exit(2); }
 if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-probe-hangs")) {
   if (existsSync("/var/tmp/fake-probe-ignores-term")) process.on("SIGTERM", () => {});
+  if (existsSync("/var/tmp/fake-probe-leaves")) rmSync(process.execPath, { force: true });
   writeFileSync("/var/tmp/probe-started", String(process.pid));
   setInterval(() => {}, 1 << 30);
 } else {
@@ -361,7 +366,11 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
     ? (statusAnswers("fails") ? new Response("restarting", { status: 503 })
       : statusAnswers("cut") ? new Response(CUT, { headers: { "content-type": "application/json" } })
       : statusAnswers("malformed") ? new Response('<p>"account":null</p>', { headers: { "content-type": "application/json" } })
-      : statusAnswers("stall") ? new Response(new ReadableStream({ start(body) { body.enqueue(new TextEncoder().encode(CUT)); } }), { headers: { "content-type": "application/json" } })
+      : statusAnswers("stall") ? stalled(CUT)
+      : statusAnswers("stall-whole") ? stalled('{"account":null}')
+      : statusAnswers("stall-nested") ? stalled('{"account":null,"server":{"id":"s1"}')
+      // an account named by /var/tmp/fake-account-id, whatever its id
+      : existsSync("/var/tmp/fake-account-id") ? Response.json({ account: readFileSync("/var/tmp/fake-account-id", "utf8") })
       : existsSync("/var/tmp/fake-account-listed") ? Response.json({ account: "acct_standin" })
       : existsSync("/var/tmp/fake-account-null") ? Response.json({ account: null }) : new Response("no account here", { status: 503 }))
     : Response.json({ ok: true, machine_profile: { engine: "herdr" }, herdr: { terminal_attach: true },
@@ -1033,6 +1042,36 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
     expect((await m.sh(`rm /var/tmp/fake-add-fails /var/tmp/fake-account-listed /var/tmp/fake-gate-closed && sh ${TRIAL}/join.sh --uninstall`)).code).toBe(0);
   }, 300_000);
 
+  test("a run again whose account reads before the add get a whole answer, or one cut at a nested closing brace, and then nothing, the add failing: no answer by the download's exit status alone, kept (exit 39)", async () => {
+    const m = await runnerMachine();
+    await serveHerdr(m);
+    expect((await m.sh("touch /var/tmp/fake-account-listed /var/tmp/fake-gate-closed")).code).toBe(0);
+    expect((await m.sh(`${fakeKit.line} --yes </dev/null`)).code).toBe(38);
+    // each body passes the check that it is one whole object: only curl's exit status (a timeout) makes it no answer
+    for (const how of ["stall-whole", "stall-nested"]) {
+      expect((await m.sh(`echo 99 > /var/tmp/fake-status-${how} && touch /var/tmp/fake-add-fails`)).code).toBe(0);
+      const again = await m.sh(`${fakeKit.line} --yes </dev/null`);
+      note("caseBodyExitStatus", `[${how}] exit ${again.code}\n${again.stdout}${again.stderr}`);
+      // taken for "no account", it would be exit 37, the install removed
+      expect([how, again.code, (await m.sh(`test -f ${TRIAL}/receipt`)).code, (await m.processes()).includes("ovis-server serve")]).toEqual([how, 39, 0, false]);
+    }
+    expect((await m.sh(`rm /var/tmp/fake-add-fails /var/tmp/fake-account-listed /var/tmp/fake-gate-closed && sh ${TRIAL}/join.sh --uninstall`)).code).toBe(0);
+  }, 300_000);
+
+  test("a machine in an account whose id is the text null: named as that account (exit 38), never read as no account, and the undo says so", async () => {
+    const m = await runnerMachine();
+    await serveHerdr(m);
+    expect((await m.sh("printf null > /var/tmp/fake-account-id && touch /var/tmp/fake-gate-closed")).code).toBe(0);
+    const run = await m.sh(`${fakeKit.line} --yes </dev/null`);
+    note("caseAccountNullText", `exit ${run.code}\n${run.stdout}${run.stderr}`);
+    // regression (before: read as no account before and after the add, exit 30 "names no account")
+    expect([run.code, run.stdout.includes("this machine is in the Ovis account null:"), (await m.processes()).includes("ovis-server serve")]).toEqual([38, true, true]);
+    const undo = await m.sh(`sh ${TRIAL}/join.sh --uninstall`);
+    note("caseAccountNullText", `[undo] exit ${undo.code}\n${undo.stdout}${undo.stderr}`);
+    expect([undo.code, undo.stdout.includes("This machine was in the Ovis account null.")]).toEqual([0, true]);
+    expect((await m.sh("rm /var/tmp/fake-account-id /var/tmp/fake-gate-closed")).code).toBe(0);
+  }, 300_000);
+
   test("a fresh install whose account cannot be read before the add, the add failing while a device pairs it: removed (exit 37)", async () => {
     const m = await runnerMachine();
     await serveHerdr(m);
@@ -1173,6 +1212,30 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
     // regression (before: the join waited on the probe for ever, ended only by timeout's TERM: rc=124)
     expect([run.stdout.trim().split("\n").pop(), (await m.sh(`kill -0 ${probe}`)).code === 0, (await m.processes()).includes("ovis-server")]).toEqual(["rc=24", false, false]);
     expect((await m.sh("rm /var/tmp/fake-probe-hangs /var/tmp/fake-probe-ignores-term /var/tmp/probe-started /var/tmp/line.sh")).code).toBe(0);
+    expect(await m.home()).toBe(home);
+  }, 300_000);
+
+  test("on a machine without ps, a check of the kit's server whose process is no longer that server: not signalled, said so, and the join refuses (exit 14) instead of hanging", async () => {
+    const m = await runnerMachine();
+    await serveHerdr(m);
+    const home = await m.home();
+    // the stand-in in the probe removes its own program from the temporary folder, so it is no longer the kit's server
+    expect((await m.sh("touch /var/tmp/fake-probe-hangs /var/tmp/fake-probe-leaves")).code).toBe(0);
+    expect((await m.sh(`printf '%s --yes </dev/null\\n' '${fakeKit.line.replaceAll("'", "'\\''")}' > /var/tmp/line.sh`)).code).toBe(0);
+    // ps gone for the join's run only (the test's own reads below need it back)
+    expect((await m.root("mv /usr/bin/ps /usr/bin/ps.off")).code).toBe(0);
+    expect((await m.sh("command -v ps")).code).not.toBe(0);
+    // bounded by timeout(1) in the container: the check's 60 s, then 1 s and 2 s of looking, well within 100 s
+    const run = await m.sh("timeout 100 sh /var/tmp/line.sh; echo \"rc=$?\"");
+    expect((await m.root("mv /usr/bin/ps.off /usr/bin/ps")).code).toBe(0);
+    note("caseProbeLeft", `${run.stdout}${run.stderr}`);
+    const probe = (await m.sh("cat /var/tmp/probe-started")).stdout.trim();
+    // regression (before: the join waited on that process for ever, ended only by timeout's TERM: rc=124)
+    expect([run.stdout.trim().split("\n").pop(), run.stderr.includes(`(pid ${probe}), still runs, and was not signalled`), run.stderr.includes("TERM and KILL"),
+      (await m.sh(`kill -0 ${probe}`)).code]).toEqual(["rc=14", true, false, 0]);
+    // the join names it and leaves it; the test ends it, inside its own machine
+    expect((await m.sh(`kill -KILL ${probe}`)).code).toBe(0);
+    expect((await m.sh("rm /var/tmp/fake-probe-hangs /var/tmp/fake-probe-leaves /var/tmp/probe-started /var/tmp/line.sh")).code).toBe(0);
     expect(await m.home()).toBe(home);
   }, 300_000);
 

@@ -239,19 +239,20 @@ j_remove() {
   printf '%s\n' "$j_made" | while IFS= read -r p; do [ -z "$p" ] || rmdir -- "$p" 2>/dev/null; done
   return 0
 }
-# j_account_of <account status>: `null` when the trial server names no account, the account it names, or nothing (no
-# answer) unless the answer is one whole JSON object whose first field is the account, as the server writes it
-# ({"account":null,...} or {"account":"<id>",...})
+# j_account_of <account status>: `null` when the trial server names no account, `=<id>` for the account <id> it names
+# (so an account whose id is the text null is never taken for none), or nothing (no answer) unless the answer is one
+# whole JSON object whose first field is the account, as the server writes it ({"account":null,...} or
+# {"account":"<id>",...})
 j_account_of() {
   j_whole "$1" || return 0
   case $j_b in
     '{"account":null}' | '{"account":null,'*) printf null ;;
-    '{"account":"'*) printf '%s' "$j_b" | sed -n 's/^{"account":"\([^"]*\)"[,}].*/\1/p' ;;
+    '{"account":"'*) printf '%s' "$j_b" | sed -n 's/^{"account":"\([^"][^"]*\)"[,}].*/=\1/p' ;;
   esac
 }
-# j_short <account>: an account as the plugin's add shows it (scripts/plugin-link.ts shortId): control characters
-# dropped, its first 12 characters
-j_short() { printf '%s' "$1" | tr -d '[:cntrl:]' | cut -c1-12; }
+# j_short <account>: an account as j_account_of gives it, shown as the plugin's add shows it (scripts/plugin-link.ts
+# shortId): control characters dropped, the first 12 characters of its id
+j_short() { printf '%s' "${1#=}" | tr -d '[:cntrl:]' | cut -c1-12; }
 # j_account_read: sets j_got to the trial server's account as j_account_of gives it, read up to five times a second
 # apart, as the pairing gate is (j_gate_closed): one failed read (the server just restarted, say) is not taken for an
 # answer. Empty only when no try answered. A first try that got no answer is said, once: the tries can take a while
@@ -802,19 +803,26 @@ j_probe_is() {
   [ "$({ tr '\000' '\n' <"/proc/$probe/cmdline"; } 2>/dev/null)" = "$j_stage/bin/ovis-server${J_NL}serve" ]
 }
 # j_probe_running: $probe is a child of this shell that has not ended (a zombie has); a pid that is no longer this
-# shell's child is not
+# shell's child is not. Read from /proc/<pid>/stat, so it holds without ps: its state and its parent are the first two
+# fields after the program's name, which is in parentheses and may itself hold spaces or parentheses
 j_probe_running() {
-  [ "$(ps -o ppid= -p "$probe" 2>/dev/null | tr -d ' ')" = "$$" ] && [ "$(ps -o stat= -p "$probe" 2>/dev/null | cut -c1)" != Z ]
+  j_stat=$(cat "/proc/$probe/stat" 2>/dev/null) || return 1
+  j_stat=${j_stat##*") "}
+  j_state=${j_stat%% *}
+  j_stat=${j_stat#* }
+  [ "${j_stat%% *}" = "$$" ] && [ "$j_state" != Z ]
 }
 # j_probe_stop: ends the check of the kit's server, bounded, on every path (its end and an interruption): up to 1 s for a
 # probe just started to become the kit's server (env execs it); then, only while it is the probe (j_probe_is), TERM, up
 # to 5 s for it to end (it may ignore TERM), and KILL, which it cannot; then up to 2 s for it to end. Only an ended child
 # is waited for, so the join never hangs on it. False, with nothing waited for, when a child of this shell still runs
-# then (one that is not the probe is never signalled); true once it has ended
+# then (one that is not the probe is never signalled; j_signalled says whether it was); true once it has ended
 j_probe_stop() {
   j_i=0
+  j_signalled=""
   while ! j_probe_is && j_probe_running && [ "$j_i" -lt 5 ]; do j_pause 0.2; j_i=$((j_i + 1)); done
   if j_probe_is; then
+    j_signalled=1
     kill -TERM "$probe" 2>/dev/null
     j_i=0
     while j_probe_is && [ "$j_i" -lt 25 ]; do j_pause 0.2; j_i=$((j_i + 1)); done
@@ -858,7 +866,10 @@ j_probe_profile() {
     [ -n "$answer" ] || j_pause 0.3
   done
   # a server that does not end is not left to run on unseen: the join stops here and names it
-  j_probe_stop || refuse 14 "this kit's server, started once for its check (pid $probe), did not end after TERM and KILL: stop it yourself (kill -KILL $probe); nothing was changed"
+  if ! j_probe_stop; then
+    if [ -n "$j_signalled" ]; then j_how="did not end after TERM and KILL"; else j_how="still runs, and was not signalled: it is no longer the kit's server the join started"; fi
+    refuse 14 "this kit's server, started once for its check (pid $probe), $j_how: stop it yourself (kill -KILL $probe); nothing was changed"
+  fi
   probe=""
   if [ -z "$answer" ]; then
     # a machine profile that refuses to start says why in one sentence (its temporary state folder's path, say)
@@ -1212,7 +1223,7 @@ j_gate_open() {
     j_why_ko="체험용 서버의 페어링 관문을 읽지 못해(5번 시도, 열려 있을 수 있음)"
   fi
   case $1 in
-    done) j_lead_en="The machine is in the Ovis account $(j_short "$j_after"), the one the add above names, but" j_lead_ko="기기가 위의 추가가 밝힌 Ovis 계정 $(j_short "$j_after") 에 들어갔지만" ;;
+    done) j_lead_en="The machine is in the Ovis account $(j_short "$j_after") now, but" j_lead_ko="기기가 지금 Ovis 계정 $(j_short "$j_after") 에 들어 있지만" ;;
     returned) j_lead_en="The add returned, and" j_lead_ko="추가는 끝났고" ;;
     *) j_lead_en="The add did not finish, and" j_lead_ko="추가가 끝나지 않았고" ;;
   esac
@@ -1240,8 +1251,8 @@ if [ "$j_added" = 1 ]; then
   if [ "$j_mine" = 1 ]; then j_gate_closed || j_gate_open done; else j_gate_closed || j_gate_open returned; fi
   if [ "$j_mine" = 1 ]; then
     # named, not called yours: a pairing that raced this run's add looks the same from here
-    say "Done: this machine runs the trial Ovis server and is in the Ovis account $(j_short "$j_after"), the one the add above names; on your phone, open it under PCs or Overview in the Ovis app. If that is not your account, undo the join: $(j_undo_line)"
-    say "완료: 이 머신에서 체험용 Ovis 서버가 실행 중이며 위의 추가가 밝힌 Ovis 계정 $(j_short "$j_after") 에 들어 있습니다. 휴대폰의 Ovis 앱에서 PC 또는 개요를 열고 이 머신을 고르세요. 내 계정이 아니면 되돌리세요: $(j_undo_line)"
+    say "Done: this machine runs the trial Ovis server and is in the Ovis account $(j_short "$j_after") now; on your phone, open it under PCs or Overview in the Ovis app. If that is not your account, undo the join: $(j_undo_line)"
+    say "완료: 이 머신에서 체험용 Ovis 서버가 실행 중이며 지금 Ovis 계정 $(j_short "$j_after") 에 들어 있습니다. 휴대폰의 Ovis 앱에서 PC 또는 개요를 열고 이 머신을 고르세요. 내 계정이 아니면 되돌리세요: $(j_undo_line)"
     exit 0
   fi
   if [ -n "$j_after" ] && [ "$j_after" != null ]; then
