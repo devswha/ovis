@@ -52,6 +52,9 @@ coordinates. Without this, Move right/left can silently step across folded child
 the parent on screen. Child chips remain pinned; drag, request and acknowledgement handling stay upstream.
 Child pickers opt out of the selected-tab ellipsis lifecycle, so long presses and keyboard menus
 on inactive chips stay open without selecting them; the existing missing-tab cleanup still applies.
+A chip opened from More or the phone sheet resolves upstream's `rowMenuAnchor` before dismissing
+that surface, so the child menu stays attached to the persistent More/header button, not a removed chip.
+The demo regression covers an overflowed group's child menu and its Rename action.
 
 Validation: scoped fork/TabStrip/RowMenu/hc tests, conventions and changelog tests passed (269
 cases); changed-file TypeScript diagnostics passed for both configs. In `herdr-ci-runner:local`,

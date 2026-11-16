@@ -1,6 +1,7 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import { Check, Hammer, Terminal } from "lucide-react";
 import type { HerdrPane, HerdrTab, PaneInfo } from "../../shared/protocol.ts";
+import { rowMenuAnchor } from "../components/RowMenu.tsx";
 import "./tab-chips.css";
 
 type Point = { x: number; y: number };
@@ -26,7 +27,11 @@ export function ForkTabChips({ tabs, paneFor, nameOf, selectedTab, onSelect, onM
   const cancel = (): void => { if (held.current) clearTimeout(held.current.timer); held.current = null; };
   useEffect(() => cancel, []);
   if (!tabs.length) return null;
-  const menu = (tab: HerdrTab, anchor: HTMLElement, point?: Point): void => { cancel(); onDismiss?.(); onMenu(tab, anchor, point); };
+  const menu = (tab: HerdrTab, anchor: HTMLElement, point?: Point): void => {
+    cancel();
+    const target = rowMenuAnchor(anchor) ?? anchor;
+    onDismiss?.(); onMenu(tab, target, point);
+  };
   return <span className="fork-tab-chips">
     {tabs.map((tab) => {
       const pane = paneFor(tab) as HerdrPane | undefined;
@@ -42,7 +47,8 @@ export function ForkTabChips({ tabs, paneFor, nameOf, selectedTab, onSelect, onM
           const anchor = event.currentTarget;
           const press = { x: event.clientX, y: event.clientY, fired: false, timer: setTimeout(() => {
             press.fired = true;
-            onDismiss?.(); onMenu(tab, anchor);
+            const target = rowMenuAnchor(anchor) ?? anchor;
+            onDismiss?.(); onMenu(tab, target);
           }, 450) };
           held.current = press;
         }}
