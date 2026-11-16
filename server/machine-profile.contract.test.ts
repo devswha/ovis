@@ -1224,7 +1224,7 @@ it.each(["refusing every call", "answering only its snapshot and panes", "not li
     const worded = answers.filter((each) => each.code === "herdr_error");
     expect(worded.length).toBeGreaterThan(0);
     for (const answer of worded) expect([answer.route, answer.headers]).toEqual([answer.route, expect.stringContaining("no-store")]);
-    // control: an ordinary server on the same herdr answers those routes with the same status and the stand-in's pair
+    // control: an ordinary server on the same herdr answers those routes as main does
     const ordinary = await bounded(launch(state(), { OVIS_PROFILE: "", OVIS_PREVIEW: undefined, HERDR_SOCKET: socket }).ready, 20_000);
     // GET /api/machines is the profile's own list, not the route an ordinary server answers it with
     for (const answer of worded.filter((each) => each.route !== "GET /api/machines")) {
@@ -1351,7 +1351,7 @@ function nextError(socket: WebSocket): Promise<{ code: string; message: string }
   return bounded(frame.promise, 15_000);
 }
 
-it("words a failed herdr call in its WebSocket frames, and an ordinary server's frames are the stand-in's pair", async () => {
+it("words a failed herdr call in its WebSocket frames, and an ordinary server answers as main does", async () => {
   const config = herdrConfig();
   const socket = join(config, "herdr", "sessions", "a", "herdr.sock");
   mkdirSync(dirname(socket), { recursive: true, mode: 0o700 });

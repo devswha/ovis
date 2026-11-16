@@ -243,7 +243,7 @@ describe("agentLaunch", () => {
 });
 
 describe("a failed agent start's answer", () => {
-  it("is worded by the request's view of failed herdr calls, and is herdr's own pair without one", async () => {
+  it("is worded by the request's view of failed herdr calls, and answers as before without one", async () => {
     const view = () => ({ code: "worded", message: "the view's words" });
     const start = spyOn(herdr, "agentStart").mockImplementation(async () => { throw new herdr.HerdrError("agent_name_taken", "herdr's own words", true, true); });
     try {
