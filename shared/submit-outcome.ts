@@ -19,6 +19,12 @@ export const GROK_QUEUED_MESSAGE = "The message is in Grok's queue and goes when
 export const grokQueuedBehindMessage = (count: number): string =>
   `The message is in Grok's queue behind ${count} queued before it and goes when they do; nothing more was pressed`;
 
+/** The count a grokQueuedBehindMessage names; null for any other message. */
+export function grokQueuedAhead(message: string): number | null {
+  const match = /^The message is in Grok's queue behind (\d+) queued before it and goes when they do; nothing more was pressed$/.exec(message);
+  return match ? Number(match[1]) : null;
+}
+
 /** The bridge's `submit_changed` message when the Enter that would send a Grok's queued message now may not have gone. */
 export const GROK_SEND_NOW_UNCONFIRMED_MESSAGE = "The message went to Grok's queue, but sending it now was not confirmed. Check the terminal before sending again.";
 

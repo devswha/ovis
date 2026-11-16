@@ -29,7 +29,7 @@ function delivery(foreground: { pid: number; name: string; argv0?: string; argv?
   });
   spyOn(processStart, "processStartedAtAsync").mockResolvedValue(1000);
   spyOn(herdr, "paneRead").mockImplementation(async () => ({ text: screen }) as Awaited<ReturnType<typeof herdr.paneRead>>);
-  const hooks: { paste?: () => void; keys?: () => void } = {};
+  const hooks: { paste?: () => void; keys?: () => void; submitText?: () => void } = {};
   spyOn(herdr, "paneSendText").mockImplementation(async (_pane, text) => { if (count.atPaste < 0) count.atPaste = count.reads; writes.push(text); hooks.paste?.(); if (afterPaste !== undefined) screen = afterPaste; });
   spyOn(herdr, "paneSendKeys").mockImplementation(async (_pane, keys) => { if (count.atEnter < 0) count.atEnter = count.reads; writes.push(keys.join(",")); hooks.keys?.(); });
   const owner = { data: connectionData({ deviceId: undefined, readOnly: false }), getBufferedAmount: () => 0, send: (value: string) => { frames.push(JSON.parse(value) as Frame); return 1; } };
@@ -40,11 +40,12 @@ function delivery(foreground: { pid: number; name: string; argv0?: string; argv?
   const serialize = <T,>(_pane: string, run: () => T | Promise<T>): Promise<T> => { const next = tail.catch(() => {}).then(run); tail = next; return next; };
   const pending = createPendingDelivery({
     options: { submitDelayMs: 0 }, clients: new Set([owner]), attachments: new Map(), sight: (() => ({ facts: () => facts, write: () => {} })), serialize,
-    lastTyped: new Map(), submitText: async (_pane: string, text: string) => { submitted.push(text); }, authorizeSocket: () => {},
+    lastTyped: new Map(), submitText: async (_pane: string, text: string) => { submitted.push(text); hooks.submitText?.(); }, authorizeSocket: () => {},
     clientSnapshot: async () => ({ panes: [pane] }), omo: { sessionOf: () => null }, SUBMIT_DEADLINE_MS: 1000, SUBMIT_DELAY_MS: 0, TYPED_SETTLE_MS: 0,
   } as unknown as Parameters<typeof createPendingDelivery>[0]);
-  const submit = (id: number, delivery: "immediate" | "queue" | "hold", text = "> backup.txt\nkeep it") => pending.pendingFrames.submit(owner as never,
-    { type: "submit", id, pane_id: "p", text, payload: delivery === "immediate" ? "> backup.txt\rkeep it" : "unused", delivery, agent_only: true } as never);
+  // `extra`: more of the frame, as a saved copy's resend_id
+  const submit = (id: number, delivery: "immediate" | "queue" | "hold", text = "> backup.txt\nkeep it", extra: Record<string, unknown> = {}) => pending.pendingFrames.submit(owner as never,
+    { type: "submit", id, pane_id: "p", text, payload: delivery === "immediate" ? "> backup.txt\rkeep it" : "unused", delivery, agent_only: true, ...extra } as never);
   const sendNow = (id: number, pendingId: string) => pending.pendingFrames["pending-action"](owner as never, { type: "pending-action", id, pane_id: "p", pending_id: pendingId, action: "steer" } as never);
   const result = (type: string, id: number) => frames.find((frame) => frame.type === type && frame.id === id);
   const setStatus = (next: string) => { pane.agent_status = next; pending.pending.status("p", next as never); pending.drainPending("p"); };
@@ -183,6 +184,27 @@ it("leaves a working Grok's Send now queued behind the rows the user queued befo
   expect(grok.sent).toEqual([]);
   expect(grok.queue).toEqual(["row A", "row B", "> backup.txt keep it"]);
   expect(d.result("pending-result", 2)).toMatchObject({ ok: false, code: "submit_changed", message: grokQueuedBehindMessage(2) });
+});
+
+it("types nothing for a second Send now of a row a working Grok kept in its queue", async () => {
+  const d = delivery({ pid: 41001, name: "grok" }, "working", undefined, "grok");
+  const grok = grokStandIn(d, { queued: ["row A"] });
+  await d.submit(1, "hold");
+  await d.sendNow(2, held(d));
+  await d.sendNow(3, held(d));
+  expect(d.writes).toEqual(["\u001b[200~> backup.txt\nkeep it\u001b[201~", "Enter"]);
+  expect(grok.queue).toEqual(["row A", "> backup.txt keep it"]);
+  expect(d.result("pending-result", 3)).toMatchObject({ ok: false, code: "pending_uncertain" });
+});
+
+it("types nothing for a second Send now of a saved copy a working Grok kept in its queue", async () => {
+  const d = delivery({ pid: 41001, name: "grok" }, "working", undefined, "grok");
+  d.hooks.submitText = () => { throw new herdr.HerdrError("submit_changed", grokQueuedBehindMessage(1)); };
+  await d.submit(1, "immediate", undefined, { resend_id: "copy-1", resend_generation: 0 });
+  await d.submit(2, "immediate", undefined, { resend_id: "copy-1", resend_generation: 0 });
+  expect(d.submitted).toHaveLength(1);
+  expect(d.result("submit-result", 1)).toMatchObject({ ok: false, code: "submit_changed", message: grokQueuedBehindMessage(1) });
+  expect(d.result("submit-result", 2)).toMatchObject({ ok: false, code: "pending_uncertain" });
 });
 
 it("sends an idle Grok's Send now with one Enter", async () => {
