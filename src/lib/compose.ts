@@ -155,7 +155,7 @@ export function openCodeRefusalNote(code: string, message: string, tt: (text: st
 }
 
 /**
- * The note for a Send now a working Grok kept in its queue (server/core/composer.ts sendGrokQueuedNow), on the row it
+ * The note for a Send now a working Grok kept in its queue (server/core/grok-queue.ts sendGrokQueuedNow), on the row it
  * leaves uncertain: the message is in Grok's queue, not "not sent", and the row offers no Send now that would queue it
  * twice. null for any other refusal.
  */

@@ -1,14 +1,15 @@
 import { afterEach, expect, it, mock, spyOn } from "bun:test";
 import * as client from "../herdr/client.ts";
-import { GROK_QUEUED_MESSAGE, grokQueuedBehindMessage } from "../../shared/submit-outcome.ts";
+import { GROK_QUEUED_MESSAGE, GROK_SEND_UNCONFIRMED_MESSAGE, grokQueuedBehindMessage } from "../../shared/submit-outcome.ts";
 import { createSubmitText } from "./composer.ts";
+import { grokScreen } from "./grok-screen.fake.ts";
 
 afterEach(() => mock.restore());
 
 /**
  * Chat's immediate send: the composer's Send, and a saved copy's Send now (`sendNow`, its resend).
  * herdr's agent.prompt pastes and sends one Enter. A working Grok queues that Enter. Only Send now
- * then sends one empty-prompt Enter, and only on Grok's empty prompt with the message the one row
+ * then sends one empty-prompt Enter, and only on Grok's empty prompt with the message the top row
  * queued and nothing over it. A plain Send and the terminal's input line stay one Enter.
  */
 const submitter = () => createSubmitText({
@@ -16,29 +17,17 @@ const submitter = () => createSubmitText({
   SUBMIT_DEADLINE_MS: 20_000, TYPED_SETTLE_MS: 0, DRAFT_CLEAR_WAIT_MS: 0, DRAFT_CLEAR_POLL_MS: 0, SUBMIT_DELAY_MS: 0,
 });
 
-/** Grok's live screen: its output, a dialog when one is up, the input box, the queue footer under it, its shortcuts row. */
-function grokScreen(state: { output: string; dialog: boolean; prompt: string; queue: readonly string[] }): string {
-  return [
-    state.output,
-    ...(state.dialog ? ["┌─ Run bash: rm -rf build ─────────┐", "│ ❯ Allow once                      │", "│   Deny            Esc:cancel      │", "└───────────────────────────────────┘"] : []),
-    "╭──────────────────────────────────────────╮",
-    `│ ❯ ${state.prompt.replace(/\n/g, " ")}`.padEnd(43) + "│",
-    "╰──────────────────────────────────────────╯",
-    ...(state.queue.length > 0 ? [`  ${state.queue.length} queued, Enter to send now`] : []),
-    "  Shift+Tab:mode │ Ctrl+.:shortcuts",
-  ].join("\n");
-}
-
 /**
- * A stand-in Grok in pane w:p1. Enter on a typed prompt queues it during a turn, and sends it at rest; Enter on its
- * empty prompt sends the top queued row now; Enter in a dialog answers it. `queued`: what the user queued before;
- * `onQueued`: what changes right after the Enter that queued the chat's message.
+ * A stand-in Grok in pane w:p1, drawn as Grok 1.0.77 draws its screen (grok-screen.fake.ts). Enter on a typed prompt
+ * queues it during a turn, and sends it at rest; Enter on its empty prompt sends the top queued row now; Enter on its
+ * approval card answers it. `queued`: what the user queued before; `onQueued`: what changes right after the Enter that
+ * queued the chat's message; `herdr`: the status herdr reports, when it is not Grok's own (minimal mode reads `done`).
  */
-function grok(options: { status?: string; queued?: string[]; output?: string; onQueued?: (state: GrokState) => void } = {}) {
-  const state: GrokState = { status: options.status ?? "working", session: "s1", output: options.output ?? "● Reading the repository", dialog: false, prompt: "", queue: [...options.queued ?? []], sent: [] };
+function grok(options: { status?: string; herdr?: string; queued?: string[]; output?: string[]; minimal?: boolean; onQueued?: (state: GrokState) => void } = {}) {
+  const state: GrokState = { status: options.status ?? "working", session: "s1", output: options.output ?? ["word1 word2 word3"], card: false, minimal: options.minimal ?? false, prompt: "", queue: [...options.queued ?? []], sent: [] };
   let queuedOnce = false;
   const enter = () => {
-    if (state.dialog) { state.dialog = false; state.sent.push("<dialog answered>"); return; }
+    if (state.card) { state.card = false; state.sent.push("<card answered>"); return; }
     if (state.prompt !== "") {
       if (state.status === "working") state.queue.push(state.prompt);
       else state.sent.push(state.prompt);
@@ -52,14 +41,14 @@ function grok(options: { status?: string; queued?: string[]; output?: string; on
   const prompt = spyOn(client, "agentPrompt").mockImplementation(async (_pane, text) => { state.prompt = text; enter(); });
   const typed = spyOn(client, "paneSendText").mockImplementation(async (_pane, text) => { state.prompt = text; });
   const keys = spyOn(client, "paneSendKeys").mockImplementation(async () => { enter(); });
-  spyOn(client, "paneRead").mockImplementation(async () => ({ text: grokScreen(state) } as Awaited<ReturnType<typeof client.paneRead>>));
+  const read = spyOn(client, "paneRead").mockImplementation(async () => ({ text: grokScreen(state) } as Awaited<ReturnType<typeof client.paneRead>>));
   spyOn(client, "paneGet").mockImplementation(async () => ({
-    pane_id: "w:p1", agent: "grok", agent_status: state.status, cwd: "/tmp", terminal_id: "t1",
+    pane_id: "w:p1", agent: "grok", agent_status: options.herdr ?? state.status, cwd: "/tmp", terminal_id: "t1",
     agent_session: { kind: "session", source: "herdr:grok", value: state.session },
   } as Awaited<ReturnType<typeof client.paneGet>>));
-  return { state, prompt, typed, keys };
+  return { state, prompt, typed, keys, read };
 }
-type GrokState = { status: string; session: string; output: string; dialog: boolean; prompt: string; queue: string[]; sent: string[] };
+type GrokState = { status: string; session: string; output: string[]; card: boolean; minimal: boolean; prompt: string; queue: string[]; sent: string[] };
 
 const sendNow = (text = "hello from chat") => submitter()("w:p1", text, text, Date.now(), false, undefined, undefined, undefined, false, false, true);
 const failure = (sent: Promise<void>) => sent.then(() => null, (error: unknown) => error as client.HerdrError);
@@ -100,29 +89,68 @@ it("sends a working Grok's queued Send now with one empty-prompt Enter", async (
   expect(state.sent).toEqual(["hello from chat"]);
 });
 
-it("presses nothing into a permission dialog drawn over Grok's queue footer while herdr still reports it working", async () => {
-  const { state, keys } = grok({ onQueued: (grok) => { grok.dialog = true; } });
+it("presses nothing into Grok's approval card and says the send is unconfirmed, the card in place of its prompt", async () => {
+  const { state, keys } = grok({ onQueued: (grok) => { grok.card = true; } });
   const failed = await failure(sendNow());
   expect(keys).not.toHaveBeenCalled();
   expect(state.sent).toEqual([]);
   expect(failed?.code).toBe("submit_changed");
-  expect(failed?.message).toBe(GROK_QUEUED_MESSAGE);
+  expect(failed?.message).toBe(GROK_SEND_UNCONFIRMED_MESSAGE);
 });
 
-it("presses nothing once herdr reports Grok blocked after the Enter that queued the message", async () => {
-  const { state, keys } = grok({ onQueued: (grok) => { grok.status = "blocked"; grok.dialog = true; } });
+it("presses nothing and says the send is unconfirmed when no queued row is drawn while herdr reports Grok working", async () => {
+  // Grok took the message at once, or has not drawn it yet: its output quotes a queued row, indented as output is
+  const { state, keys } = grok({ output: ["#1 hello from chat", "Enter:send now"], onQueued: (grok) => { grok.sent.push(grok.queue.pop()!); } });
   const failed = await failure(sendNow());
   expect(keys).not.toHaveBeenCalled();
-  expect(state.sent).toEqual([]);
-  expect(failed?.message).toBe(GROK_QUEUED_MESSAGE);
+  expect(state.sent).toEqual(["hello from chat"]);
+  expect(failed?.message).toBe(GROK_SEND_UNCONFIRMED_MESSAGE);
 });
 
-it("presses nothing when the queue footer's words are only in Grok's output", async () => {
-  // Grok took the message at once: nothing is queued, while its output quotes the footer on a line of its own
-  const { state, keys } = grok({ output: "  2 queued, Enter to send now", onQueued: (grok) => { grok.sent.push(grok.queue.pop()!); } });
-  await sendNow();
+it("presses nothing when the one queued row is not the message", async () => {
+  // the turn ended at the Enter, so the message started a turn of its own, and a row typed in the terminal queued
+  const { state, keys } = grok({ onQueued: (grok) => { grok.sent.push(grok.queue.pop()!); grok.queue.push("typed in the terminal"); } });
+  const failed = await failure(sendNow());
   expect(keys).not.toHaveBeenCalled();
+  expect(state.queue).toEqual(["typed in the terminal"]);
+  expect(failed?.message).toBe(GROK_SEND_UNCONFIRMED_MESSAGE);
+});
+
+it("sends the message on top of Grok's queue with one Enter when another row was queued after it", async () => {
+  const { state, keys } = grok({ onQueued: (grok) => { grok.queue.push("queued from another device"); } });
+  await sendNow();
+  expect(keys).toHaveBeenCalledTimes(1);
   expect(state.sent).toEqual(["hello from chat"]);
+  expect(state.queue).toEqual(["queued from another device"]);
+});
+
+it("sends a multi-line message Grok draws as its first line and a count", async () => {
+  const { state, keys } = grok();
+  // the composer shapes the payload's line breaks as carriage returns
+  await submitter()("w:p1", "first line\nsecond line", "first line\rsecond line", Date.now(), false, undefined, undefined, undefined, false, false, true);
+  expect(keys).toHaveBeenCalledTimes(1);
+  expect(state.sent).toEqual(["first line\nsecond line"]);
+});
+
+it("reports the send as unconfirmed when the read after the queue Enter fails", async () => {
+  const { state, prompt, keys, read } = grok();
+  const draw = read.getMockImplementation()!;
+  read.mockImplementation(async (...args) => {
+    if (prompt.mock.calls.length > 0) throw new client.HerdrError("timeout", "herdr did not answer");
+    return await draw(...args);
+  });
+  const failed = await failure(sendNow());
+  expect(keys).not.toHaveBeenCalled();
+  expect(state.queue).toEqual(["hello from chat"]);
+  expect(failed?.message).toBe(GROK_SEND_UNCONFIRMED_MESSAGE);
+});
+
+it("presses nothing in minimal mode, where herdr says done during a turn, and says the message is queued", async () => {
+  const { state, keys } = grok({ herdr: "done", minimal: true });
+  const failed = await failure(sendNow());
+  expect(keys).not.toHaveBeenCalled();
+  expect(state.queue).toEqual(["hello from chat"]);
+  expect(failed?.message).toBe(GROK_QUEUED_MESSAGE);
 });
 
 it("presses nothing while Grok's prompt holds text typed in the terminal", async () => {
@@ -134,12 +162,26 @@ it("presses nothing while Grok's prompt holds text typed in the terminal", async
   expect(failed?.message).toBe(GROK_QUEUED_MESSAGE);
 });
 
+it("says a minimal-mode Grok keeps the message behind the rows it counted before it", async () => {
+  const { keys } = grok({ herdr: "done", minimal: true, queued: ["row A"] });
+  const failed = await failure(sendNow());
+  expect(keys).not.toHaveBeenCalled();
+  expect(failed?.message).toBe(grokQueuedBehindMessage(1));
+});
+
+it("sends to a minimal-mode Grok at rest with the one Enter inside agent.prompt", async () => {
+  const { state, keys } = grok({ status: "done", minimal: true });
+  await sendNow();
+  expect(keys).not.toHaveBeenCalled();
+  expect(state.sent).toEqual(["hello from chat"]);
+});
+
 it("presses nothing once the pane holds another Grok session than the send began in", async () => {
   const { state, keys } = grok({ onQueued: (grok) => { grok.session = "s2"; grok.queue = ["row X of the new session"]; } });
   const failed = await failure(sendNow());
   expect(keys).not.toHaveBeenCalled();
   expect(state.sent).toEqual([]);
-  expect(failed?.message).toBe(GROK_QUEUED_MESSAGE);
+  expect(failed?.message).toBe(GROK_SEND_UNCONFIRMED_MESSAGE);
 });
 
 it("sends an idle Grok's chat message with the one Enter inside agent.prompt", async () => {
@@ -151,8 +193,8 @@ it("sends an idle Grok's chat message with the one Enter inside agent.prompt", a
   expect(state.sent).toEqual(["hello from chat"]);
 });
 
-it("does not send another Enter when Grok's turn ends before the empty prompt is reached", async () => {
-  const { prompt, keys } = grok({ onQueued: (grok) => { grok.status = "idle"; } });
+it("does not send another Enter when Grok's turn ends and runs the message before the empty prompt is reached", async () => {
+  const { prompt, keys } = grok({ onQueued: (grok) => { grok.status = "idle"; grok.sent.push(grok.queue.shift()!); } });
   await sendNow();
   expect(prompt).toHaveBeenCalledTimes(1);
   expect(keys).not.toHaveBeenCalled();

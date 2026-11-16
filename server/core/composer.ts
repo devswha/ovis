@@ -8,7 +8,7 @@ import { withoutTrailingBreaks } from "../../shared/launch-rules.ts";
 import { stripVTControlCharacters } from "node:util";
 import type { HerdrPane } from "../../shared/protocol.ts";
 import { displayWidth, secretPrompt } from "../../shared/secret-prompt.ts";
-import { AGENT_INPUT_DRAFT_MESSAGE, CLAUDE_FOLDED_DRAFT_MESSAGE, GROK_QUEUED_MESSAGE, GROK_SEND_NOW_UNCONFIRMED_MESSAGE, grokQueuedBehindMessage, NO_AGENT_MESSAGE } from "../../shared/submit-outcome.ts";
+import { AGENT_INPUT_DRAFT_MESSAGE, CLAUDE_FOLDED_DRAFT_MESSAGE, GROK_SEND_UNCONFIRMED_MESSAGE, NO_AGENT_MESSAGE } from "../../shared/submit-outcome.ts";
 import { agentPrompt, HerdrError, paneGet, paneProcessInfo, paneRead, paneScrollInfo, paneSendKeys, paneSendText, type ProcessInfo } from "../herdr/client.ts";
 import { mirrorInput } from "../mirror-input.ts";
 import { paneAgentOf, resolveAgent, typingRoots } from "../pane-context.ts";
@@ -25,6 +25,7 @@ import { type PendingIdentity, PendingInputError } from "../pending-input.ts";
 import { startOpenCodeWatch, openCodeSkillsToType, skillsNotAttached } from "../opencode-native.ts";
 import { herdrSkillAttachIo, type SkillAttachIo, typeWithSkills } from "../opencode-skill-attach.ts";
 import { userHome } from "../user-home.ts";
+import { type GrokQueue, grokQueue, sendGrokQueuedNow } from "./grok-queue.ts";
 import { drawsColour, inputRowState, readsTypedDraft, screenFromAnsi, typedDraft } from "../../shared/input-row.ts";
 
 const CLAUDE_INPUT_DRAFT_MESSAGE = "Claude Code's input box is not empty (a draft, bash mode, or a box that could not be read); send or clear it in the terminal, then send this message";
@@ -56,67 +57,6 @@ export class InputDraftError extends HerdrError {
  * the box empty, so it counts as a draft. A wait for the box to empty (after clearing it) reads again.
  */
 class ClaudeBoxMovedError extends InputDraftError {}
-
-/** Grok's queue footer, a row of its own under the input box: `2 queued, Enter to send now`. */
-const GROK_QUEUE_FOOTER = /^\s*(\d+) queued, Enter to send now\s*$/;
-
-/**
- * How many rows Grok's live screen shows queued: the count on its queue footer, read only on a row of its own under
- * the bottom-most input row (`│ ❯`), where Grok draws it. The same words in the agent's output above the box never
- * count. 0: no footer under the input row. null: no input row on the screen, so nothing says.
- */
-export function grokQueuedRows(screen: string): number | null {
-  const rows = stripVTControlCharacters(screen).split("\n");
-  const input = rows.map((row) => /^\s*│ ❯/.test(row)).lastIndexOf(true);
-  if (input < 0) return null;
-  for (const row of rows.slice(input + 1)) {
-    const footer = GROK_QUEUE_FOOTER.exec(row);
-    if (footer) return Number(footer[1]);
-  }
-  return 0;
-}
-
-/**
- * Grok's empty prompt with nothing over it (shared/input-row.ts grokInputRow): no typed text in its input row, and no
- * dialog, picker or confirmation on screen. Only there does an Enter send a queued row and nothing else.
- */
-export const grokPromptEmpty = (screen: string): boolean => inputRowState("grok", screenFromAnsi(screen)) === "ready";
-
-/**
- * Send now on a working Grok, after the Enter that queued the message: one more Enter on Grok's empty prompt sends the
- * top queued row now, cancelling the turn at work. It goes only when that row is the message itself and the only one:
- * nothing was queued before it (`before`, the footer's count read before its Enter), and the footer now says
- * `1 queued`. Right before it, on a fresh read (`look`, which throws once the pane holds another Grok session than
- * the send began in): herdr reports the pane working, and the screen is Grok's empty prompt with nothing over it.
- * Rows the user queued before press nothing more, and the send says the message waits behind them; anything else
- * presses nothing more, and the send says the message is in Grok's queue. A turn that ended meanwhile, or no footer
- * drawn, is the send as herdr's Enter made it. At most this one Enter: never the rows queued before.
- */
-export async function sendGrokQueuedNow(opts: {
-  before: number | null;
-  delayMs: number;
-  look: () => Promise<{ status: string; screen: string }>;
-  sendEnter: () => Promise<void>;
-}): Promise<void> {
-  // fixed wait: Grok draws its queue footer after the Enter that queued the message (SUBMIT_DELAY_MS)
-  await Bun.sleep(opts.delayMs);
-  let seen: { status: string; screen: string };
-  try {
-    seen = await opts.look();
-  } catch {
-    throw new HerdrError("submit_changed", GROK_QUEUED_MESSAGE);
-  }
-  const queued = grokQueuedRows(seen.screen);
-  if (seen.status === "idle" || seen.status === "done" || queued === 0) return;
-  const ahead = Math.max(opts.before ?? 0, (queued ?? 0) - 1);
-  if (ahead > 0) throw new HerdrError("submit_changed", grokQueuedBehindMessage(ahead));
-  if (seen.status !== "working" || queued !== 1 || !grokPromptEmpty(seen.screen)) throw new HerdrError("submit_changed", GROK_QUEUED_MESSAGE);
-  try {
-    await opts.sendEnter();
-  } catch {
-    throw new HerdrError("submit_changed", GROK_SEND_NOW_UNCONFIRMED_MESSAGE);
-  }
-}
 
 /** between the two Esc presses that empty Claude Code's restored copy of the chat's message */
 const RESTORED_CLEAR_GAP_MS = 200;
@@ -515,7 +455,7 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
    * waiting collapsed in its queue: its main prompt still takes the message.
    *
    * A working Grok queues that Enter. Only a Send now (`sendNow`: a saved copy's resend) then
-   * sends one more Enter, and only while the message is the one row queued (sendGrokQueuedNow).
+   * sends one more Enter, and only while the message is the top row queued (sendGrokQueuedNow).
    * A plain Send, an idle Grok, and the terminal's own input line keep the single Enter.
    */
 
@@ -539,9 +479,10 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
     let beforeScreen: string | undefined;
     // an agent no reader knows whose screen was read for a picker of its own before agent.prompt (freeAgentPicker)
     let pickerAgent: string | undefined;
-    // a Send now to a Grok whose turn was still running at the commit, whose first Enter only queues: that Grok's
-    // terminal and session, which the Enter after it is for and no other's, and the rows queued before it
-    let grokSendNow: { target: PendingIdentity; before: number | null } | undefined;
+    // a Send now to a Grok whose turn was still running at the commit (or in minimal mode, where herdr does not tell),
+    // whose first Enter only queues: that Grok's terminal and session, which the Enter after it is for and no other's,
+    // and its queue as read before it
+    let grokSendNow: { target: PendingIdentity; before: GrokQueue | null } | undefined;
     // herdr's foreground answer read before this send, which the outcome's process binding uses again
     let seen: ProcessInfo | undefined;
     // the send-time screen's history row, once the read alongside delivery confirms it; `noted`: the send it goes on
@@ -571,10 +512,11 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
      * Grok terminal and session the send began in. The queue Enter already landed, so a failure here is submit_changed,
      * never "nothing was typed", or chat would type it again. The terminal's input line never comes here.
      */
-    const confirmGrokQueue = async (): Promise<void> => {
+    const confirmGrokQueue = async (message: string): Promise<void> => {
       if (fromTerminal || grokSendNow === undefined) return;
       const { target, before } = grokSendNow;
       await sendGrokQueuedNow({
+        message,
         before,
         delayMs: options.submitDelayMs ?? SUBMIT_DELAY_MS,
         look: async () => {
@@ -583,7 +525,7 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
           // a Grok restarted in the pane (another session) has a queue of its own: nothing goes into it
           const now = pendingIdentity(latest);
           if (now.agent !== "grok" || now.terminalId !== target.terminalId || now.session !== target.session) {
-            throw new HerdrError("submit_changed", GROK_QUEUED_MESSAGE);
+            throw new HerdrError("submit_changed", GROK_SEND_UNCONFIRMED_MESSAGE);
           }
           const screen = (await paneRead({ paneId, source: "detection", format: "text" })).text;
           inTime();
@@ -843,11 +785,10 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
         if (sendNow && agent === "grok" && pane) {
           const latest = await paneGet(paneId);
           inTime();
-          if (resolveAgent(latest).agent === "grok" && latest.agent_status === "working") {
-            // the rows the user queued in Grok before this message, which Send now never sends
-            const before = grokQueuedRows((await paneRead({ paneId, source: "detection", format: "text" })).text);
+          if (resolveAgent(latest).agent === "grok") {
+            const before = grokQueue((await paneRead({ paneId, source: "detection", format: "text" })).text);
             inTime();
-            grokSendNow = { target: pendingIdentity(latest), before };
+            if (latest.agent_status === "working" || before?.mode === "minimal") grokSendNow = { target: pendingIdentity(latest), before };
           }
         }
         const watch = pane ? startOpenCodeWatch(pane, command, options.openCodeStateDir) : null;
@@ -860,7 +801,7 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
           await delivery;
           // herdr's prompt already sent the Enter that queues a working Grok's follow-up. A failure
           // here must not fall through to another paste: the message is already in Grok's queue.
-          await confirmGrokQueue();
+          await confirmGrokQueue(closeMention(sent));
           noteSubmitted(paneId, sent, recorded(command), sentAt);
           if (command) watch?.commit(command, [{ pasted: closeMention(sent) }], []);
           return;
@@ -909,7 +850,7 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
       await paneSendKeys(paneId, ["Enter"], undefined, mayType).catch(refusal);
       // a chat fallback that pasted because agent.prompt refused: the same Send now Enter,
       // and the same submit_changed result when it does not go
-      if (!fromTerminal) await confirmGrokQueue();
+      if (!fromTerminal) await confirmGrokQueue(closeMention(sentText));
       noteSubmitted(paneId, sentText, recorded(command), sentAt);
     } catch (error) {
       if (clearedDraft) {

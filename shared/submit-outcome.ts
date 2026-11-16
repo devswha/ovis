@@ -11,7 +11,8 @@ export const NO_AGENT_MESSAGE = "No agent is in front of this pane now; nothing 
 
 /**
  * The bridge's `submit_changed` message when Send now queued its message in a working Grok and pressed nothing more
- * (server/core/composer.ts): Grok's screen did not show its empty prompt with only that message queued.
+ * (server/core/grok-queue.ts): Grok's screen showed the message on top of its queue, but not the empty prompt whose
+ * Enter sends it now, or Grok was in minimal mode, where Send now presses nothing more.
  */
 export const GROK_QUEUED_MESSAGE = "The message is in Grok's queue and goes when Grok gets to it: Grok's screen did not show its empty prompt with only this message queued, so nothing more was pressed";
 
@@ -27,6 +28,12 @@ export function grokQueuedAhead(message: string): number | null {
 
 /** The bridge's `submit_changed` message when the Enter that would send a Grok's queued message now may not have gone. */
 export const GROK_SEND_NOW_UNCONFIRMED_MESSAGE = "The message went to Grok's queue, but sending it now was not confirmed. Check the terminal before sending again.";
+
+/**
+ * The bridge's `submit_changed` message when, after Send now's Enter into a working Grok, Grok's screen did not show
+ * where the message went: no queued row while herdr reports it working, another row, a screen not read, a failed read.
+ */
+export const GROK_SEND_UNCONFIRMED_MESSAGE = "Grok's screen did not show where the message went after its Enter, so nothing more was pressed. Check the terminal before sending again.";
 
 /**
  * The bridge's `pasted_not_sent` message (#511): a message for an agent alone was pasted, then its Enter was held
