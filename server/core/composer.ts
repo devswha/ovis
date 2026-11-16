@@ -8,7 +8,7 @@ import { withoutTrailingBreaks } from "../../shared/launch-rules.ts";
 import { stripVTControlCharacters } from "node:util";
 import type { HerdrPane } from "../../shared/protocol.ts";
 import { displayWidth, secretPrompt } from "../../shared/secret-prompt.ts";
-import { AGENT_INPUT_DRAFT_MESSAGE, CLAUDE_FOLDED_DRAFT_MESSAGE, NO_AGENT_MESSAGE } from "../../shared/submit-outcome.ts";
+import { AGENT_INPUT_DRAFT_MESSAGE, CLAUDE_FOLDED_DRAFT_MESSAGE, GROK_QUEUED_MESSAGE, NO_AGENT_MESSAGE } from "../../shared/submit-outcome.ts";
 import { agentPrompt, HerdrError, paneGet, paneProcessInfo, paneRead, paneScrollInfo, paneSendKeys, paneSendText, type ProcessInfo } from "../herdr/client.ts";
 import { mirrorInput } from "../mirror-input.ts";
 import { paneAgentOf, resolveAgent, typingRoots } from "../pane-context.ts";
@@ -57,49 +57,59 @@ export class InputDraftError extends HerdrError {
  */
 class ClaudeBoxMovedError extends InputDraftError {}
 
+/** Grok's queue footer, a row of its own under the input box: `2 queued, Enter to send now`. */
+const GROK_QUEUE_FOOTER = /^\s*(\d+) queued, Enter to send now\s*$/;
+
 /**
- * A queued row still on Grok's live screen. The full footer says `N queued, Enter to send now`.
- * Minimal mode has no footer; its info row says `N queued · /queue`. Either one means another
- * empty-prompt Enter sends the top row. A screen that merely says "queued" does not.
+ * How many rows Grok's live screen shows queued: the count on its queue footer, read only on a row of its own under
+ * the bottom-most input row (`│ ❯`), where Grok draws it. The same words in the agent's output above the box never
+ * count. 0: no footer under the input row. null: no input row on the screen, so nothing says.
  */
-export function grokQueueShown(screen: string): boolean {
-  return screen.includes("queued, Enter to send now") || screen.includes("queued · /queue");
+export function grokQueuedRows(screen: string): number | null {
+  const rows = stripVTControlCharacters(screen).split("\n");
+  const input = rows.map((row) => /^\s*│ ❯/.test(row)).lastIndexOf(true);
+  if (input < 0) return null;
+  for (const row of rows.slice(input + 1)) {
+    const footer = GROK_QUEUE_FOOTER.exec(row);
+    if (footer) return Number(footer[1]);
+  }
+  return 0;
 }
+
+/**
+ * Grok's empty prompt with nothing over it (shared/input-row.ts grokInputRow): no typed text in its input row, and no
+ * dialog, picker or confirmation on screen. Only there does an Enter send a queued row and nothing else.
+ */
+export const grokPromptEmpty = (screen: string): boolean => inputRowState("grok", screenFromAnsi(screen)) === "ready";
 
 /** One empty-prompt Enter sends one queued row. Chat Send now stops at this many. */
 export const GROK_QUEUE_DRAIN_CAP = 32;
 
 /**
- * Empty-prompt Enters that send Grok's queued rows, after the Enter that queued this message.
- * The first goes while the turn is still working, before a queue line has to be drawn. Each later
- * one goes only while the live screen still shows a queued row. Each sends the top row now, which
- * cancels the turn that row just started; the last row is the one that keeps running.
+ * Empty-prompt Enters that send Grok's queued rows, after the Enter that queued this message. Before each, on a
+ * fresh read (`look`, which throws once the pane holds another Grok session than the send began in): herdr reports
+ * the pane working, the queue footer shows a row queued, and the screen shows Grok's empty prompt with nothing over
+ * it. A turn that ended, or no footer, presses nothing more. Anything else presses nothing more either, and the send
+ * is not confirmed. Each Enter sends the top row now, which cancels the turn that row just started.
  */
 export async function drainGrokQueue(opts: {
   delayMs: number;
   cap?: number;
-  look: () => Promise<{ grok: boolean; queued: boolean; release: boolean }>;
+  look: () => Promise<{ status: string; screen: string }>;
   sendEnter: () => Promise<void>;
 }): Promise<void> {
   const cap = opts.cap ?? GROK_QUEUE_DRAIN_CAP;
-  // fixed wait: Grok takes the queueing Enter before an empty-prompt Enter (SUBMIT_DELAY_MS)
-  await Bun.sleep(opts.delayMs);
-  let seen = await opts.look();
-  if (!seen.grok || (!seen.release && !seen.queued)) return;
-  await opts.sendEnter();
-  for (let sent = 1; sent < cap; sent++) {
-    // fixed wait: Grok redraws the queue footer after an empty-prompt Enter (SUBMIT_DELAY_MS)
+  for (let sent = 0; sent <= cap; sent++) {
+    // fixed wait: Grok draws its queue footer after an Enter (SUBMIT_DELAY_MS)
     await Bun.sleep(opts.delayMs);
-    seen = await opts.look();
-    if (!seen.grok || !seen.queued) return;
+    const { status, screen } = await opts.look();
+    const queued = grokQueuedRows(screen);
+    if (status === "idle" || status === "done" || queued === 0) return;
+    if (status !== "working" || queued === null || !grokPromptEmpty(screen)) throw new HerdrError("submit_changed", GROK_QUEUED_MESSAGE);
+    if (sent === cap) break;
     await opts.sendEnter();
   }
-  // fixed wait: one more redraw before a footer that never left is called unconfirmed (SUBMIT_DELAY_MS)
-  await Bun.sleep(opts.delayMs);
-  seen = await opts.look();
-  if (seen.grok && seen.queued) {
-    throw new HerdrError("submit_changed", "Grok still shows queued prompts after Send now. Check the terminal before sending again.");
-  }
+  throw new HerdrError("submit_changed", "Grok still shows queued prompts after Send now. Check the terminal before sending again.");
 }
 
 /** between the two Esc presses that empty Claude Code's restored copy of the chat's message */
@@ -523,8 +533,10 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
     let beforeScreen: string | undefined;
     // an agent no reader knows whose screen was read for a picker of its own before agent.prompt (freeAgentPicker)
     let pickerAgent: string | undefined;
-    // a Send now to a Grok whose turn was still running at the commit: its first Enter only queues
+    // a Send now to a Grok whose turn was still running at the commit: its first Enter only queues.
+    // `grokTarget`: that Grok's terminal and session, which every later Enter is for and no other's
     let grokSteering = false;
+    let grokTarget: PendingIdentity | undefined;
     // herdr's foreground answer read before this send, which the outcome's process binding uses again
     let seen: ProcessInfo | undefined;
     // the send-time screen's history row, once the read alongside delivery confirms it; `noted`: the send it goes on
@@ -550,26 +562,25 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
     /** A write mayType stopped fails with the sender's own refusal (read_only, device_revoked), not herdr's `cancelled`. */
     const refusal = (error: unknown): never => { throw refused ?? error; };
     /**
-     * Chat Send now drains Grok's queue: one empty-prompt Enter per row the live screen still
-     * shows queued. Skipped when herdr no longer reports Grok, and the first Enter is skipped
-     * when the turn has ended and the footer is not drawn. A turn that ends and starts again
-     * inside a gap still reads as working, so that Enter still goes. The terminal's input line
-     * never comes here.
+     * Chat Send now drains Grok's queue (drainGrokQueue): each Enter only on a fresh read of the same
+     * Grok terminal and session the send began in. The terminal's input line never comes here.
      */
     const commitGrokQueue = async (): Promise<void> => {
-      if (fromTerminal || !grokSteering) return;
+      if (fromTerminal || !grokSteering || grokTarget === undefined) return;
+      const target = grokTarget;
       await drainGrokQueue({
         delayMs: options.submitDelayMs ?? SUBMIT_DELAY_MS,
         look: async () => {
           const latest = await paneGet(paneId);
           inTime();
+          // a Grok restarted in the pane (another session) has a queue of its own: nothing goes into it
+          const now = pendingIdentity(latest);
+          if (now.agent !== "grok" || now.terminalId !== target.terminalId || now.session !== target.session) {
+            throw new HerdrError("submit_changed", GROK_QUEUED_MESSAGE);
+          }
           const screen = (await paneRead({ paneId, source: "detection", format: "text" })).text;
           inTime();
-          return {
-            grok: resolveAgent(latest).agent === "grok",
-            queued: grokQueueShown(screen),
-            release: latest.agent_status === "working",
-          };
+          return { status: latest.agent_status, screen };
         },
         sendEnter: async () => {
           inTime();
@@ -837,6 +848,7 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
           const latest = await paneGet(paneId);
           inTime();
           grokSteering = resolveAgent(latest).agent === "grok" && latest.agent_status === "working";
+          grokTarget = pendingIdentity(latest);
         }
         const watch = pane ? startOpenCodeWatch(pane, command, options.openCodeStateDir) : null;
         try {

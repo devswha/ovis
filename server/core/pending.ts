@@ -17,7 +17,7 @@
  * pane after, so another session or process of the same kind gets none.
  * First messages live in memory: a restart of the bridge loses those not sent yet.
  */
-import { AGENT_PICKER_MESSAGE, closeBackslash, closeMention, type createSubmitText, drainGrokQueue, freeAgentInput, freeClaudeBox, freeHermesInput, grokQueueShown, InputDraftError, modelSwitchText, OMP_REPORT_POLL_MS, OMP_STARTUP_MS, ompStartingUntil, pendingFault, pendingIdentity, pendingText, submitFraming, untilOmpReported } from "./composer.ts";
+import { AGENT_PICKER_MESSAGE, closeBackslash, closeMention, type createSubmitText, drainGrokQueue, freeAgentInput, freeClaudeBox, freeHermesInput, InputDraftError, modelSwitchText, OMP_REPORT_POLL_MS, OMP_STARTUP_MS, ompStartingUntil, pendingFault, pendingIdentity, pendingText, submitFraming, untilOmpReported } from "./composer.ts";
 import { type Client, connectionOf, send } from "./connections.ts";
 import { ATTACH_HELD_MESSAGE } from "./terminal-process.ts";
 import type { AttachmentView, TerminalSighting } from "./terminals.ts";
@@ -921,11 +921,12 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
         try {
           await drainGrokQueue({
             delayMs: options.submitDelayMs ?? SUBMIT_DELAY_MS,
+            // pendingContext refuses another terminal, session or process, a blocked or unknown state and a masked prompt
             look: async () => {
-              const queued = await pendingContext(owner, paneId, lease, identity, true, agentOnly);
+              const current = await pendingContext(owner, paneId, lease, identity, true, agentOnly);
               if (resumed()) throw new HerdrError("pending_wait", "The agent started another turn before this queued message could be committed");
               authorizePending(owner, paneId, lease);
-              return { grok: queued.identity.agent === "grok", queued: grokQueueShown(queued.screen), release: queued.working };
+              return { status: current.pane.agent_status, screen: current.screen };
             },
             sendEnter: async () => {
               if (resumed()) throw new HerdrError("pending_wait", "The agent started another turn before this queued message could be committed");
