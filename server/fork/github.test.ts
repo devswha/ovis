@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import type { SessionSnapshot } from "../../shared/protocol.ts";
 import { createGithubReader, githubWorkspaces, handleGithubPulls, parseGithubPulls } from "./github.ts";
 
-const pr = (number: number, repository = "owner/repo") => ({ number, title: `PR ${number}`, url: `https://github.com/${repository}/pull/${number}`, repository: { nameWithOwner: repository }, headRefName: "feature", updatedAt: `2026-01-${number.toString().padStart(2, "0")}T00:00:00Z`, author: { login: "me" }, reviewDecision: "APPROVED", commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [{ status: "COMPLETED", conclusion: "FAILURE" }] } } } }] } });
+const pr = (number: number, repository = "owner/repo") => ({ number, title: `PR ${number}`, url: `https://github.com/${repository}/pull/${number}`, repository: { nameWithOwner: repository }, headRefName: "feature", updatedAt: `2026-01-${number.toString().padStart(2, "0")}T00:00:00Z`, author: { login: "me" }, reviewDecision: "APPROVED", commits: { nodes: [{ commit: { statusCheckRollup: { state: "FAILURE", contexts: { nodes: [{ status: "COMPLETED", conclusion: "FAILURE" }] } } } }] } });
 const fixture = () => JSON.stringify({ data: { viewer: { login: "me" }, review: { nodes: [pr(1), pr(3)] }, yours: { nodes: [pr(2), pr(3)] } } });
 
 test("parses both groups, reuses check verdicts, sorts newest first and deduplicates within a group", () => {
@@ -15,6 +15,18 @@ test("parses both groups, reuses check verdicts, sorts newest first and deduplic
   expect(parseGithubPulls(JSON.stringify(data)).review).toHaveLength(2);
 });
 
+test("uses the aggregate state when a failed check is beyond 100 passing contexts", () => {
+  const data = JSON.parse(fixture());
+  const commit = data.data.review.nodes[0].commits.nodes[0].commit;
+  // GitHub's aggregate includes the failed 101st check, absent from this first page.
+  commit.statusCheckRollup = { state: "FAILURE", contexts: { pageInfo: { hasNextPage: true }, nodes: Array.from({ length: 100 }, () => ({ status: "COMPLETED", conclusion: "SUCCESS" })) } };
+  expect(parseGithubPulls(JSON.stringify(data)).review.find((row) => row.number === 1)?.checks).toBe("failing");
+  for (const [state, expected] of [["ERROR", "failing"], ["PENDING", "pending"], ["EXPECTED", "pending"], ["SUCCESS", "passing"], [null, "none"]]) {
+    commit.statusCheckRollup = state === null ? null : { state };
+    expect(parseGithubPulls(JSON.stringify(data)).review.find((row) => row.number === 1)?.checks).toBe(expected);
+  }
+});
+
 test("rejects malformed and partial GraphQL responses instead of claiming an empty inbox", () => {
   for (const output of ["nope", "{}", '{"errors":[{"message":"oops"}]}', JSON.stringify({ data: { viewer: { login: "me" }, review: { nodes: [] } } })]) expect(() => parseGithubPulls(output)).toThrow();
   const data = JSON.parse(fixture()); data.data.review.nodes[0].url = "javascript:alert(1)";
@@ -23,7 +35,7 @@ test("rejects malformed and partial GraphQL responses instead of claiming an emp
 
 test("coalesces reads, caps searches, and expires the cache within 30 seconds", async () => {
   let calls = 0, now = 0;
-  const read = createGithubReader(async (args) => { calls++; expect(args.join(" ")).toContain("first:50"); expect(args.join(" ")).toContain("review-requested:@me"); return { code: 0, stdout: fixture(), stderr: "" }; }, () => now);
+  const read = createGithubReader(async (args) => { calls++; expect(args.join(" ")).toContain("first:50"); expect(args.join(" ")).toContain("review-requested:@me"); expect(args.join(" ")).toContain("statusCheckRollup { state }"); expect(args.join(" ")).not.toContain("contexts("); return { code: 0, stdout: fixture(), stderr: "" }; }, () => now);
   await Promise.all([read(), read()]); await read(); expect(calls).toBe(1);
   now = 30_001; await read(); expect(calls).toBe(2);
 });
