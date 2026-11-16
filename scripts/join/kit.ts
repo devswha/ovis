@@ -151,8 +151,10 @@ export function makeKit(options: KitOptions): Kit {
   copyFileSync(options.pty, join(dir, "bin", "bin", "ovis-pty-sidecar"));
   chmodSync(join(dir, "bin", "ovis-server"), 0o755);
   chmodSync(join(dir, "bin", "bin", "ovis-pty-sidecar"), 0o755);
-  // the record the server checks its terminal host by (server/pty/host.ts): the host's SHA-256 and the server's version
-  writeFileSync(join(dir, "bin", "bin", "ovis-pty-sidecar.json"), `${JSON.stringify({ sha256: sha256(readFileSync(options.pty)), version: serverVersion })}\n`, { mode: 0o644 });
+  // the record the server checks its terminal host by (server/pty/host.ts): the SHA-256 of the host as copied into the
+  // kit (as every digest of the kit is taken from its own copy, never from a source another build may have replaced
+  // since), and the server's version
+  writeFileSync(join(dir, "bin", "bin", "ovis-pty-sidecar.json"), `${JSON.stringify({ sha256: sha256(readFileSync(join(dir, "bin", "bin", "ovis-pty-sidecar"))), version: serverVersion })}\n`, { mode: 0o644 });
   writeFileSync(join(dir, "join.sh"), joinScript, { mode: 0o644 });
   if (options.testKit === true) writeFileSync(join(dir, TEST_KIT), "A kit for the join's container tests: join.sh honours its test switches only with this file.\n", { mode: 0o644 });
   writeFileSync(join(dir, "SHA256SUMS"), [...KIT_FILES, ...(options.testKit === true ? [TEST_KIT] : [])].map((name) => `${sha256(readFileSync(join(dir, name)))}  ${name}\n`).join(""), { mode: 0o644 });

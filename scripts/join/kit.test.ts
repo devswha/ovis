@@ -1,6 +1,7 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import * as fs from "node:fs";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { open } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -138,6 +139,21 @@ describe.skipIf(process.platform !== "linux" || process.arch !== "x64")("kit lin
     const parsed = Bun.spawnSync(["sh", "-n", resolve(import.meta.dir, "join.sh")], { stderr: "pipe" });
     expect(parsed.stderr.toString()).toBe("");
     expect(parsed.exitCode).toBe(0);
+  });
+
+  test("the terminal host's record names the SHA-256 of the host copied into the kit, even when its source changes after the copy", () => {
+    const { server, pty, at } = programs();
+    // another build replaces the source right after it was copied
+    const copy = fs.copyFileSync;
+    const spy = spyOn(fs, "copyFileSync").mockImplementation((from, to, mode) => {
+      copy(from, to, mode);
+      if (from === pty) appendFileSync(pty, "# rebuilt\n");
+    });
+    try {
+      const made = makeKit({ server, pty, out: join(at, "kit"), ...origins });
+      const record = JSON.parse(readFileSync(join(made.dir, "bin", "bin", "ovis-pty-sidecar.json"), "utf8")) as { sha256: string };
+      expect([spy.mock.calls.length > 0, record.sha256]).toEqual([true, createHash("sha256").update(readFileSync(join(made.dir, "bin", "bin", "ovis-pty-sidecar"))).digest("hex")]);
+    } finally { spy.mockRestore(); }
   });
 
   test("only a kit made with --test-kit carries TEST-KIT, listed in its SHA256SUMS", () => {
