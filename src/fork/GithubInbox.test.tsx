@@ -26,7 +26,7 @@ afterEach(async () => {
   await act(async () => renderer?.unmount()); renderer = undefined;
   for (const [key, descriptor] of saved) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key); }
 });
-const button = (name: string) => renderer!.root.findAllByType("button").find((node) => node.props["aria-label"] === name || node.children.includes(name))!;
+const button = (name: string) => renderer!.root.findAllByType("button").find((node) => node.props["aria-label"] === name || node.findAll((child) => child.children.includes(name)).length > 0)!;
 async function rail(enabled: boolean) {
   records.set("ovis:settings", JSON.stringify({ pullRequests: enabled }));
   await act(async () => { renderer = create(<SettingsProvider><ForkGithubRail><button aria-current="page">Inbox</button></ForkGithubRail></SettingsProvider>); });

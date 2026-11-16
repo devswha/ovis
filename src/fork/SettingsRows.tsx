@@ -16,7 +16,7 @@ export function ForkFeatures() {
     ["chatMotion", t("Animated replies")],
     ["piLiveVoice", t("Pi live voice")],
     ["computerView", t("Computer view")],
-    ["pullRequests", t("Pull requests")],
+    ["pullRequests", t("GitHub|fork")],
     ["readAloud", t("Read aloud")],
   ] as const;
   return <SettingsGroup title={t("Fork features")} section="fork-features">
