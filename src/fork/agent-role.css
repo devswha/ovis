@@ -4,3 +4,5 @@
 .fork-role-icon[data-status="blocked"] { color: var(--status-blocked); }
 .fork-role-icon[data-status="done"] { color: var(--status-done); }
 .sidebar-mark > .fork-role-icon { width: 16px; height: 16px; }
+/* In the agent inbox too the role icon stands bare, as in the sidebar: no disc behind it, same slot. */
+:is(.mode-inbox, .thread-title, .thread-chip) .inbox-avatar-face.fork-role-face { background: none; border: 0; }
