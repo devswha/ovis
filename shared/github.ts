@@ -69,6 +69,8 @@ export type GithubEntry =
 export interface GithubThread {
   path: string;
   line: number | null;
+  /** the side of the diff the line is on: the base's lines (old) or the head's (new) */
+  side: "old" | "new";
   resolved: boolean;
   outdated: boolean;
   /** the last lines of the diff hunk the thread is on, as GitHub sends them (+, - or space first) */

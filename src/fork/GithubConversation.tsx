@@ -29,15 +29,16 @@ function Body({ text }: { text: string }) {
 }
 
 /** The lines a thread is on, then its comments; a resolved thread stays folded until opened. */
-export function GithubThreadView({ thread }: { thread: GithubThread }) {
+export function GithubThreadView({ thread, inDiff = false }: { thread: GithubThread; inDiff?: boolean }) {
   const t = useT();
+  // under its line in the diff, the code and the place are already in view
   const where = <>
-    <code dir="auto">{thread.path}{thread.line !== null && `:${thread.line}`}</code>
+    {inDiff ? <MessageSquare aria-hidden="true" /> : <code dir="auto">{thread.path}{thread.line !== null && `:${thread.line}`}</code>}
     {thread.outdated && <span className="fork-github-tag">{t("Outdated")}</span>}
     {thread.resolved && <span className="fork-github-tag">{t("Resolved")}</span>}
   </>;
   const inner = <>
-    {thread.hunk && <pre className="fork-github-hunk">{thread.hunk.split("\n").map((line, index) => (
+    {!inDiff && thread.hunk && <pre className="fork-github-hunk">{thread.hunk.split("\n").map((line, index) => (
       <span key={index} className={line.startsWith("+") ? "is-added" : line.startsWith("-") ? "is-removed" : undefined}>{line}{"\n"}</span>
     ))}</pre>}
     <ol className="fork-github-replies">{thread.comments.map((comment, index) => <li key={index}>
@@ -46,8 +47,8 @@ export function GithubThreadView({ thread }: { thread: GithubThread }) {
     </li>)}</ol>
   </>;
   return thread.resolved
-    ? <details className="fork-github-thread"><summary>{where}</summary>{inner}</details>
-    : <div className="fork-github-thread"><div className="fork-github-thread-where">{where}</div>{inner}</div>;
+    ? <details className={`fork-github-thread${inDiff ? " is-in-diff" : ""}`}><summary>{where}{inDiff && t("{count} comments", { count: thread.comments.length })}</summary>{inner}</details>
+    : <div className={`fork-github-thread${inDiff ? " is-in-diff" : ""}`}>{!inDiff && <div className="fork-github-thread-where">{where}</div>}{inner}</div>;
 }
 
 const eventIcons = { merged: GitMerge, closed: GitPullRequestClosed, reopened: GitPullRequest, ready: GitPullRequest, draft: GitPullRequestDraft } as const;

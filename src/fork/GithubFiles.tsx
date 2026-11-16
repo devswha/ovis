@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from "react";
 import { ChevronRight, FileDiff, FileMinus, FilePlus, FileSymlink, LoaderCircle } from "lucide-react";
 
 import { RenderBoundary } from "../components/RenderBoundary.tsx";
@@ -31,6 +31,38 @@ function readPatches(pull: GithubPull): Promise<Map<string, GithubFilePatch>> {
 /** A patch's rows, for a box tall enough to hold a short diff whole, before the view scrolls inside it. */
 function rowsOf(patch: string): number {
   return patch.split("\n").filter((line) => !/^(diff --git|new file mode|deleted file mode|--- |\+\+\+ )/.test(line)).length;
+}
+
+/** A thread still on a line of the head's diff goes under that line; an outdated one, or one on no line, stays after the file's diff. */
+const onDiff = (thread: GithubThread): boolean => !thread.outdated && thread.line !== null;
+
+/**
+ * The box of one file's diff: as tall as the diff with its notes, measured from the view's column,
+ * up to 70% of the screen, past which the diff scrolls inside it. The rows of the patch size it
+ * until the first measure.
+ */
+function DiffBox({ rows, children }: { rows: number; children: ReactNode }) {
+  const box = useRef<HTMLDivElement>(null);
+  const [height, setHeight] = useState<number | null>(null);
+  useEffect(() => {
+    const host = box.current;
+    if (host === null) return;
+    let column: Element | null = null;
+    const measure = new ResizeObserver(() => { if (column !== null) setHeight(column.getBoundingClientRect().height || null); });
+    // the column appears once the lazy view has loaded
+    const find = (): void => {
+      const next = host.querySelector(".repo-diff-column");
+      if (next === column) return;
+      if (column !== null) measure.unobserve(column);
+      column = next;
+      if (column !== null) measure.observe(column);
+    };
+    const appear = new MutationObserver(find);
+    appear.observe(host, { childList: true, subtree: true });
+    find();
+    return () => { appear.disconnect(); measure.disconnect(); };
+  }, []);
+  return <div ref={box} className="fork-github-diff" style={{ ["--rows" as string]: rows, ...height !== null && { ["--content" as string]: `${height}px` } }}>{children}</div>;
 }
 
 /** The line threads of every review, by the file they are on. */
@@ -79,13 +111,14 @@ export function GithubFiles({ pull, detail }: { pull: GithubPull; detail: Github
     if (patches.status === "failed") return <p className="fork-github-pull-error" role="alert">{t("Could not read this pull request's files")}</p>;
     const patch = patches.files.get(path)?.patch ?? null;
     if (patch === null) return <p className="fork-github-pull-dim">{t("GitHub shows no diff for this file: it is binary or too large.")}</p>;
-    return <div className="fork-github-diff" style={{ ["--rows" as string]: rowsOf(patch) }}>
+    const notes = (threads.get(path) ?? []).filter(onDiff).map((thread) => ({ side: thread.side, line: thread.line ?? 0, node: <GithubThreadView thread={thread} inDiff /> }));
+    return <DiffBox rows={rowsOf(patch)}>
       <RenderBoundary resetKey={patch} fallback={() => <p className="fork-github-pull-dim" role="alert">{t("This change can't be shown.")}</p>}>
         <Suspense fallback={<p className="fork-github-pull-dim" role="status">{t("Opening…")}</p>}>
-          <RepoDiff patch={patch} style={diffStyleFor(settings.diffStyle, narrow)} folded={false} wrap={settings.wrapCode} theme={resolvedEntry.mode} colored={diffColorable(path, patch)} />
+          <RepoDiff patch={patch} style={diffStyleFor(settings.diffStyle, narrow)} folded={false} wrap={settings.wrapCode} theme={resolvedEntry.mode} colored={diffColorable(path, patch)} notes={notes} />
         </Suspense>
       </RenderBoundary>
-    </div>;
+    </DiffBox>;
   };
 
   return <>
@@ -105,7 +138,8 @@ export function GithubFiles({ pull, detail }: { pull: GithubPull; detail: Github
         </button>
         {expanded && <div className="fork-github-file-open">
           {diffOf(file.path)}
-          {comments.map((thread, index) => <GithubThreadView key={index} thread={thread} />)}
+          {(patches.status === "ready" && patches.files.get(file.path)?.patch ? comments.filter((thread) => !onDiff(thread)) : comments)
+            .map((thread, index) => <GithubThreadView key={index} thread={thread} />)}
         </div>}
       </li>;
     })}</ul>

@@ -136,7 +136,7 @@ const PULL_QUERY = `query($owner:String!,$name:String!,$number:Int!) { viewer { 
     ... on ReadyForReviewEvent { actor { login } createdAt }
     ... on ConvertToDraftEvent { actor { login } createdAt } } }
   files(first:100) { nodes { path additions deletions changeType } }
-  reviewThreads(last:100) { nodes { isResolved isOutdated path line originalLine
+  reviewThreads(last:100) { nodes { isResolved isOutdated path line originalLine diffSide
     comments(first:50) { nodes { author { login } createdAt body diffHunk pullRequestReview { id } } } } }
 } } }`;
 
@@ -193,7 +193,7 @@ export function parseConversation(timeline: any[], threads: any[]): GithubEntry[
     const review = typeof first.pullRequestReview?.id === "string" ? first.pullRequestReview.id : "";
     const list = byReview.get(review) ?? [];
     list.push({
-      path: thread.path, line: thread.line ?? thread.originalLine ?? null, resolved: thread.isResolved === true, outdated: thread.isOutdated === true,
+      path: thread.path, line: thread.line ?? thread.originalLine ?? null, side: thread.diffSide === "LEFT" ? "old" : "new", resolved: thread.isResolved === true, outdated: thread.isOutdated === true,
       hunk: hunkTail(text(first.diffHunk)),
       comments: comments.map((comment: { author?: Login; createdAt: string; body?: unknown }) => ({ author: login(comment.author), at: comment.createdAt, body: text(comment.body) })),
     });
