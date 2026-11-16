@@ -597,7 +597,8 @@ export class DeviceStore {
    * code pending stays as it was), and it ends when the PC joins one (endNoAccountCode). The code pending when that
    * was made the same way, else a fresh one: never a code another place started, which may be on a screen as digits.
    * A device that pairs with it through the relay is no device yet: it waits to link (pairProvisional), and the
-   * code takes PAIRING_USES such pairings. No other offer carries it (pairingForOffer). `by` as in startPairing.
+   * code takes PAIRING_USES such pairings. No other offer carries it (pairingForOffer), and it is redeemed through
+   * the relay only (pair). `by` as in startPairing.
    */
   pairingForNoAccount(by: string | null = null, now = Date.now()): PairingCode {
     if (by !== null && !this.has(by)) throw new DeviceGoneError();
@@ -787,13 +788,17 @@ export class DeviceStore {
     return this.list(null).find((d) => d.id === id) ?? null;
   }
 
-  /** `{ token }` when the code is right; null when it is wrong, spent or expired. */
+  /** `{ token }` when the code is right; null when it is wrong, spent or expired, or is redeemed through the relay only. */
   pair(code: string, label: string, role: DeviceRole, now = Date.now(), origin: readonly string[] = [], localCodeOnly = false): { token: string; device: DeviceMatch } | null {
     this.assertWritable();
     this.pruneUnconfirmedFirstPairs(now);
     // a code started through the relay is never redeemed on the LAN listener, nor are its guesses spent there:
     // it would make a credential no relay key or account removal reaches
     if (localCodeOnly && this.pending?.remote === true) return null;
+    // a code made for a PC in no account is redeemed through the relay only, and no try is spent on it here: the
+    // device it is for links itself into an account with the key it paired with (pairProvisional), and a device
+    // paired here holds a cookie and no key
+    if (this.pending?.waiting) return null;
     if (!this.checkPairingCode(code, now, localCodeOnly)) return null;
     // a member's code goes with the member here too (pairRelay)
     const startedBy = this.pending?.startedBy ?? null;

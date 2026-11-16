@@ -491,7 +491,8 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *  POST   /api/devices/pair/start        -> PairingCode: a six-digit code good for ten minutes, replacing any pending one
  *         (X-Herdr-Machine: 1 + same origin, from a client with full access)
  *  POST   /api/devices/pair { code, label? } -> 204 + Set-Cookie ovis_device (public, like /api/auth;
- *         401 invalid_code when the code is wrong, spent after five tries, or expired). With
+ *         401 invalid_code when the code is wrong, spent after five tries, or expired, and for the code of an
+ *         offer asked for with x-ovis-no-account-only, which is redeemed through the relay only). With
  *         `Accept: application/json` (a script, never the browser app): 200 DevicePairToken + the same
  *         Set-Cookie; the script then sends `Authorization: Device <token>` in place of the cookie,
  *         under the same role, last-seen and revocation

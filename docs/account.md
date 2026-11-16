@@ -174,8 +174,10 @@ One rule for every way in: a pairing code, comparing digits, and joining through
   such a code on a PC in no account links itself the same way. It never carries the code of an
   offer asked for with the header: with that code pending it starts a code of its own, which
   replaces it as every new code does.
-- **A device that pairs with that QR code's code waits to link.** Through the relay, the code of
-  an offer asked for with `x-ovis-no-account-only` makes no device. The device that pairs with it
+- **A device that pairs with that QR code's code waits to link.** The code of an offer asked for
+  with `x-ovis-no-account-only` is redeemed through the relay only: sent to the PC's own address
+  (`POST /api/devices/pair`) it pairs nobody, is answered `401 invalid_code` as a wrong code is,
+  and spends none of its tries. Through the relay it makes no device. The device that pairs with it
   is in no list and on no disk, its sign-in answer names the `watch` role, and until it has linked
   itself into an account it makes two calls and no other: it reads its own account status
   (`GET /api/account/status`) and sends its link (`POST /api/account/link`). Everything else, a

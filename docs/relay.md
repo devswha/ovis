@@ -273,11 +273,13 @@ over the relay answer 403 `local_required`. While the relay is off an offer answ
 An offer asked for with the header `x-ovis-no-account-only: 1` (the QR code of Add a connection's
 relay tab, which puts the PC in the account of whoever scans it) is made only while the PC is in no
 account: a PC in one answers 409 `in_account`, and the code of such an offer ends when the PC joins
-an account ([account.md](account.md#who-may-admit-a-device)). A device that pairs with that code
-through the relay is no device of the PC until it has linked itself into an account: until then it
-reads its own account status and sends its link, and nothing else (403 `link_required`), and one
-that has not linked after 30 seconds is gone. An offer asked for without the header never carries
-that code: with it pending, the offer starts a code of its own, which replaces it.
+an account ([account.md](account.md#who-may-admit-a-device)). That code pairs through the relay
+only: `POST /api/devices/pair` at the PC's own address answers it 401 `invalid_code`. A device that
+pairs with that code through the relay is no device of the PC until it has linked itself into an
+account: until then it reads its own account status and sends its link, and nothing else (403
+`link_required`), and one that has not linked after 30 seconds is gone. An offer asked for without
+the header never carries that code: with it pending, the offer starts a code of its own, which
+replaces it.
 
 **A start that fails.** If a start fails before the PC's relay link exists, the switch stays
 off and the panel shows **The relay did not start: …** with the reason and **Try again**. Nothing
