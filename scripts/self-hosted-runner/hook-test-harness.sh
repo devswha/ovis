@@ -95,8 +95,9 @@ stat_of() {
 # A block said is not yet a block that holds. After the hook's "this hook blocks (pid N)" line, it must be seen
 # to go round its loop: a /bin/sleep child of pid N, then another one (so N has read its parent again and stayed),
 # with N and its parent still running at every poll. The polls read /proc only; between two of them the harness
-# waits on fd 5, the hold FIFO it alone writes and never does, for 0.1 s. At most 150 polls, so 15 s at most,
-# against the hook's 5 s loop: the end is the hook's own second sleep, never a silence.
+# waits on fd 5, the hold FIFO it alone writes and never does, for 0.1 s. At most 150 polls: 15 s of waits plus
+# the reads and scheduling, not a strict bound, against the hook's 5 s loop. The end is the hook's own second
+# sleep, never a silence; it shows the block held through one more read of its parent, not forever.
 persists() {
   local hook_pid=$1 first="" children child comm polls=0
   while (( polls++ < 150 )); do

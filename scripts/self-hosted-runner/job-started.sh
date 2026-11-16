@@ -16,6 +16,7 @@ trap '' PIPE
 # need not even set $PPID, so it cannot tell when its parent is gone: it blocks for good, killing
 # nothing. This branch has no exit.
 if [ -z "${BASH_VERSION:-}" ]; then
+  set +e
   trap '' HUP INT TERM
   echo "::error::job-started.sh runs under bash only; refusing this job; this hook blocks (pid $$)." 2>/dev/null
   while :; do /bin/sleep 3600 || sleep 3600; done
@@ -50,11 +51,11 @@ say() {
 # after it exits), and with the worker gone no step can run, so ending releases nothing. A failed
 # read keeps blocking. Never returns otherwise, and signals nothing.
 block() {
-  local now
+  local now me
   say "$refusal Its parent is not proven to be the job's Runner.Worker ($1), so nothing was killed; this hook blocks (pid $$) until its parent is gone."
   while :; do
     if [[ $os == linux ]]; then
-      stat_of $$ && [[ $stat_ppid != "$PPID" ]] && exit 1
+      stat_of self && [[ $stat_ppid != "$PPID" ]] && read -r me _ 2>/dev/null <"$proc/self/stat" && [[ $me == "$$" ]] && exit 1
     else
       now=$(ps_of ppid $$) && is_pid "$now" && [[ $now != "$PPID" ]] && exit 1
     fi
