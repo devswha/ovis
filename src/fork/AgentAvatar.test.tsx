@@ -180,11 +180,11 @@ describe("AgentAvatar", () => {
       },
     }));
     let requests = 0;
-    globalThis.fetch = (async () => {
+    globalThis.fetch = Object.assign(async () => {
       requests += 1;
       if (requests === 1) return delay === "body" ? oldResponse : oldFetch.promise;
       return new Response(JSON.stringify({ friends: { [`${id}:p1`]: "kuma" } }));
-    }) as typeof fetch;
+    }, { preconnect() {} });
     function Reading({ workspace }: { workspace: string }) {
       const friends = useAgentFriends([{ ...machine, id, snapshot: { ...machine.snapshot!,
         panes: machine.snapshot!.panes.map((pane) => ({ ...pane, workspace_id: workspace })),

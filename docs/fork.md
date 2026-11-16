@@ -12,7 +12,10 @@ even across workspaces. The browser/alert response stays `{ friends: { [machine:
 avatars and notification callers keep that shape and add no child tint. `src/fork/friends.ts` refreshes
 when workspace or parent metadata changes, including non-agent ancestors, even if pane IDs stay the
 same. Only its local refresh key carries metadata; the request remains `{ live, machines }`. Sorted
-keys avoid requests on unchanged snapshots or mere pane/machine reordering. No new upstream hook.
+keys avoid requests on unchanged snapshots or mere pane/machine reordering. A monotonic request
+generation fences publication after JSON decoding: a late response/body cannot replace a newer
+project's picks, and stale errors cannot clear its deduplication key. Deterministic out-of-order fetch
+and body regressions cover this. No new upstream hook or change to the hook counts below.
 
 `project-friends.json`, owned by FriendStore, is a new flat workspace-to-friend document beside the
 unchanged pane cache `friends.json`. A project's first observed pane/conductor inherits its old pick;

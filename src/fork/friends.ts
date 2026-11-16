@@ -8,6 +8,7 @@ import type { Machine } from "../../shared/machines.ts";
 let friends: Record<string, Friend> = {};
 const listeners = new Set<() => void>();
 let asked = "";
+let requestGeneration = 0;
 
 const subscribe = (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; };
 const current = () => friends;
@@ -41,13 +42,16 @@ export function useAgentFriends(machines: readonly Machine[]): Record<string, Fr
   useEffect(() => {
     if (!enabled || refreshKey === asked || ids.length === 0) return;
     asked = refreshKey;
+    const generation = ++requestGeneration;
     void fetch("/api/friends", { method: "POST", headers: { "content-type": "application/json" }, body: request })
       .then(async (response) => {
         if (!response.ok) return;
-        friends = ((await response.json()) as FriendsResponse).friends;
+        const next = ((await response.json()) as FriendsResponse).friends;
+        if (generation !== requestGeneration) return;
+        friends = next;
         for (const listener of [...listeners]) listener();
       })
-      .catch(() => { if (asked === refreshKey) asked = ""; });
+      .catch(() => { if (generation === requestGeneration) asked = ""; });
   }, [enabled, request, refreshKey, ids.length]);
   return useFriends();
 }
