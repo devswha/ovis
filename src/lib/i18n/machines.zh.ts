@@ -110,7 +110,6 @@ export const MACHINES_ZH: Record<string, string> = {
   "Trust fingerprint": "信任指纹",
   "Install and connect": "安装并连接",
   "Retry connection": "重试连接",
-  "Settings (⌘⇧,)": "设置 (⌘⇧,)",
   "The computer this app runs on": "运行此应用的计算机",
   "Host": "主机",
   "Clear filter": "清除筛选",
