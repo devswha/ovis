@@ -4,7 +4,9 @@ This fork is `ricardofelixb/ovis`; upstream is `devswha/ovis`. This inventory co
 
 ## Grouped sub-agent tabs
 
-Upstream candidate (A), behind **Agent friends** (off by default). Fork-only role metadata lives
+Upstream candidate (A), behind **Agent friends** (off by default). `src/fork/groupAgentTabs.ts`
+folds same-workspace descendants into their visible parent without changing real tabs or order;
+missing parents/cycles remain ordinary tabs. Fork-only role metadata lives
 in `shared/fork/pane.ts` and `server/fork/core-terminals.ts`: only hc labels `role=implement`,
 `review` or `explore` become optional `agent_role`; herdr and old bridges omit it.
 Upstream hooks: `server/herdr-core/snapshot.ts` adds `forkPaneFields` to the existing fork import
