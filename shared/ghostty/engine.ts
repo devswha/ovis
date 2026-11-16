@@ -504,6 +504,7 @@ const AT = {
   selectOptions: 1208, formatOptions: 1232, scrollbar: 1256, handle: 1280, encoded: 1296, keyText: 1424,
 } as const;
 const SCRATCH_BYTES = 1536;
+const PALETTE_SIZE = 256;
 const ENCODED_CAP = AT.keyText - AT.encoded;
 const KEY_TEXT_CAP = SCRATCH_BYTES - AT.keyText;
 
@@ -521,7 +522,7 @@ export class GhosttyEngine {
   private readonly slot: number;
   private readonly scratch: number;
   private readonly events: EngineEvents | undefined;
-  private readonly userdata: number | null = null;
+  private userdata: number | null = null;
   private input = 0;
   private inputCap = 0;
   private placementsGeneration = -1;
@@ -542,6 +543,8 @@ export class GhosttyEngine {
   private mouseEncoder = 0;
   private mouseEvent = 0;
   private searcher = 0;
+  /** set on a screen's engine by dispose(): every later call refuses */
+  private disposed = false;
 
   constructor(module: GhosttyModule, cols: number, rows: number, options: EngineOptions) {
     if (module.trap) throw new Error("ghostty-vt: the module trapped earlier and cannot make a terminal", { cause: module.trap });
@@ -552,18 +555,41 @@ export class GhosttyEngine {
     this.f = module.fields;
     this.bit = module.bit;
     this.size = { cols, rows, cellW: 0, cellH: 0 };
+    this.events = options.events;
+    // what a screen's engine that fails half made undoes, newest first
+    const undo: (() => void)[] = [];
+    try {
+      this.slot = exports.ghostty_wasm_alloc_opaque();
+      this.scratch = this.allocate(SCRATCH_BYTES, "the engine's scratch block");
+      undo.push(() => exports.ghostty_wasm_free(this.scratch, SCRATCH_BYTES));
+      const take = (result: number, what: string, free: (handle: number) => void): number => {
+        this.check(result, what);
+        const handle = exports.ghostty_wasm_take_opaque(this.slot);
+        undo.push(() => free(handle));
+        return handle;
+      };
+      this.terminal = take(exports.ghostty_terminal_new(0, this.slot, cols, rows), "terminal_new", exports.ghostty_terminal_free);
+      this.state = take(exports.ghostty_render_state_new(0, this.slot), "render_state_new", exports.ghostty_render_state_free);
+      this.iterator = take(exports.ghostty_render_state_row_iterator_new(0, this.slot), "row_iterator_new", exports.ghostty_render_state_row_iterator_free);
+      this.cells = take(exports.ghostty_render_state_row_cells_new(0, this.slot), "row_cells_new", exports.ghostty_render_state_row_cells_free);
+      this.images = take(exports.ghostty_render_state_image_iterator_new(0, this.slot), "image_iterator_new", exports.ghostty_render_state_image_iterator_free);
+      this.setUp(module, options, undo);
+    } catch (error) {
+      // a screen's engine leaves nothing behind: its route goes, what it made is freed, and a trap marks the
+      // module as one in any later call would; the browser's fails as its loader always had it
+      if (options.events) {
+        if (error instanceof WebAssembly.RuntimeError) {
+          module.trap = error;
+          if (this.userdata !== null) module.disconnect(this.userdata);
+        } else for (const step of undo.reverse()) step();
+      }
+      throw error;
+    }
+  }
 
-    this.slot = exports.ghostty_wasm_alloc_opaque();
-    this.scratch = exports.ghostty_wasm_alloc(SCRATCH_BYTES);
-    const take = (result: number, what: string): number => {
-      this.check(result, what);
-      return exports.ghostty_wasm_take_opaque(this.slot);
-    };
-    this.terminal = take(exports.ghostty_terminal_new(0, this.slot, cols, rows), "terminal_new");
-    this.state = take(exports.ghostty_render_state_new(0, this.slot), "render_state_new");
-    this.iterator = take(exports.ghostty_render_state_row_iterator_new(0, this.slot), "row_iterator_new");
-    this.cells = take(exports.ghostty_render_state_row_cells_new(0, this.slot), "row_cells_new");
-    this.images = take(exports.ghostty_render_state_image_iterator_new(0, this.slot), "image_iterator_new");
+  /** the options and, on a screen's engine, the callbacks: the constructor's second half */
+  private setUp(module: GhosttyModule, options: EngineOptions, undo: (() => void)[]): void {
+    const exports = this.x;
     const option = this.e.GhosttyTerminalOption;
     this.view().setBigUint64(this.scratch, options.images === false ? 0n : options.images, true);
     this.check(exports.ghostty_terminal_set(this.terminal, option.KITTY_IMAGE_STORAGE_LIMIT, this.scratch), "image storage limit");
@@ -574,7 +600,6 @@ export class GhosttyEngine {
       this.check(exports.ghostty_terminal_set(this.terminal, option.SCROLLBACK_MAX_BYTES, 0), "scrollback bytes");
     }
 
-    this.events = options.events;
     if (this.events) {
       const { userdata, slots } = module.connect({
         reply: (ptr, len) => this.callback(() => this.events?.onReply?.(new Uint8Array(this.x.memory.buffer, ptr, len).slice())),
@@ -589,14 +614,16 @@ export class GhosttyEngine {
         },
         bell: () => this.callback(() => this.events?.onEffect?.({ type: "bell" })),
         hold: (held) => {
-          // the terminal holds exactly the frame the program wants left on screen: capture it now
-          if (held) this.check(this.x.ghostty_render_state_update(this.state, this.terminal), "render_state_update");
+          // the terminal holds exactly the frame the program wants left on screen: capture it now (a failure is
+          // reported after the module returns, like any callback's, never thrown through its frames)
+          if (held) this.callback(() => this.check(this.x.ghostty_render_state_update(this.state, this.terminal), "render_state_update"));
           this.held = held;
           this.callback(() => this.events?.onHold?.(held));
         },
         clipboardWrite: (request) => this.callback(() => this.events?.onEffect?.(this.readClipboardWrite(request))),
       });
       this.userdata = userdata;
+      undo.push(() => module.disconnect(userdata));
       this.check(exports.ghostty_terminal_set(this.terminal, option.USERDATA, userdata), "userdata");
       this.check(exports.ghostty_terminal_set(this.terminal, option.WRITE_PTY, slots.reply), "write_pty callback");
       this.check(exports.ghostty_terminal_set(this.terminal, option.SIZE, slots.size), "size callback");
@@ -604,6 +631,16 @@ export class GhosttyEngine {
       this.check(exports.ghostty_terminal_set(this.terminal, option.RENDER_HOLD, slots.hold), "render_hold callback");
       this.check(exports.ghostty_terminal_set(this.terminal, option.CLIPBOARD_WRITE, slots.clipboardWrite), "clipboard_write callback");
     }
+  }
+
+  /**
+   * A buffer in the module's memory. The module answers 0 when it has no room: a screen's engine refuses then,
+   * instead of writing over the module's own memory at address 0; the browser's goes on as its loader always had it.
+   */
+  private allocate(len: number, what: string): number {
+    const ptr = this.x.ghostty_wasm_alloc(len);
+    if (ptr === 0 && this.events) throw new Error(`ghostty-vt: no memory for ${what} (${len} bytes)`);
+    return ptr;
   }
 
   private check(result: number, what: string): void {
@@ -618,11 +655,14 @@ export class GhosttyEngine {
   private guard<T>(run: () => T): T {
     const trap = this.module.trap;
     if (trap) throw new Error("ghostty-vt: the module trapped earlier; make a new one", { cause: trap });
+    if (this.disposed) throw new Error("ghostty-vt: the engine was disposed");
     let result: T;
     try {
       result = run();
     } catch (error) {
       if (error instanceof WebAssembly.RuntimeError && this.events) this.module.trap = error;
+      // the call's own error is the one reported: a callback's from the same call must not surface on the next
+      this.callbackError = null;
       throw error;
     }
     const failed = this.callbackError;
@@ -671,9 +711,12 @@ export class GhosttyEngine {
 
   private feed(bytes: Uint8Array): void {
     if (bytes.length > this.inputCap) {
+      const cap = Math.max(bytes.length, 64 * 1024);
+      // allocated before the old one is freed, so a refused write keeps it
+      const next = this.allocate(cap, "a write");
       if (this.input) this.x.ghostty_wasm_free(this.input, this.inputCap);
-      this.inputCap = Math.max(bytes.length, 64 * 1024);
-      this.input = this.x.ghostty_wasm_alloc(this.inputCap);
+      this.input = next;
+      this.inputCap = cap;
     }
     new Uint8Array(this.x.memory.buffer, this.input, bytes.length).set(bytes);
     this.x.ghostty_terminal_vt_write(this.terminal, this.input, bytes.length);
@@ -797,8 +840,15 @@ export class GhosttyEngine {
     const size = this.size;
     if (size.cols === cols && size.rows === rows && size.cellW === w && size.cellH === h) return;
     this.guard(() => {
+      // the module reads the new size back through the SIZE callback during the call, so it is set first and
+      // put back when the module refuses: the next resize to that size must reach the module again
       this.size = { cols, rows, cellW: w, cellH: h };
-      this.check(this.x.ghostty_terminal_resize(this.terminal, cols, rows, w, h), "resize");
+      try {
+        this.check(this.x.ghostty_terminal_resize(this.terminal, cols, rows, w, h), "resize");
+      } catch (error) {
+        this.size = size;
+        throw error;
+      }
     });
   }
 
@@ -833,6 +883,10 @@ export class GhosttyEngine {
   }
 
   setColors(colors: EngineColors): void {
+    // checked before the module is called, so a refused set changes no colour
+    const usable = (value: Rgb | null): boolean => value === null || value.every((c) => Number.isInteger(c) && c >= 0 && c <= 255);
+    if (![colors.foreground, colors.background, colors.cursor, ...colors.palette].every(usable)) throw new Error("ghostty-vt: a colour outside 0-255");
+    if (colors.palette.length !== 0 && colors.palette.length !== PALETTE_SIZE) throw new Error(`ghostty-vt: a palette of ${colors.palette.length} colours, not ${PALETTE_SIZE} or none`);
     this.guard(() => {
       const dv = this.view();
       const option = this.e.GhosttyTerminalOption;
@@ -852,7 +906,7 @@ export class GhosttyEngine {
         dv.setUint8(palette + index * 3 + 1, value[1]);
         dv.setUint8(palette + index * 3 + 2, value[2]);
       });
-      this.check(this.x.ghostty_terminal_set(this.terminal, option.COLOR_PALETTE, palette), "palette");
+      if (colors.palette.length === PALETTE_SIZE) this.check(this.x.ghostty_terminal_set(this.terminal, option.COLOR_PALETTE, palette), "palette");
     });
   }
 
@@ -1007,7 +1061,7 @@ export class GhosttyEngine {
       // a long ZWJ sequence: the call names the room it needs
       const need = this.view().getUint32(out + lenAt, true);
       if (need <= cap) return " ";
-      const big = x.ghostty_wasm_alloc(need);
+      const big = this.allocate(need, "a grapheme");
       try {
         dv = this.view();
         dv.setUint32(out + ptrAt, big, true);
@@ -1078,7 +1132,7 @@ export class GhosttyEngine {
     const result = encode(this.scratch + AT.encoded, ENCODED_CAP, outLen);
     if (result === this.e.GhosttyResult.OUT_OF_SPACE) {
       const need = this.view().getUint32(outLen, true);
-      const big = this.x.ghostty_wasm_alloc(need);
+      const big = this.allocate(need, "an encoded input");
       try {
         this.check(encode(big, need, outLen), what);
         return new Uint8Array(this.x.memory.buffer, big, this.view().getUint32(outLen, true)).slice();
@@ -1181,7 +1235,7 @@ export class GhosttyEngine {
       const x = this.x;
       const bracketed = this.getMode(MODE.bracketedPaste) ? 1 : 0;
       const data = new TextEncoder().encode(text);
-      const input = x.ghostty_wasm_alloc(Math.max(1, data.length));
+      const input = this.allocate(Math.max(1, data.length), "a paste");
       try {
         new Uint8Array(x.memory.buffer, input, data.length).set(data);
         return this.encoded((out, cap, outLen) => x.ghostty_paste_encode(input, data.length, bracketed, out, cap, outLen), "paste encode");
@@ -1302,7 +1356,7 @@ export class GhosttyEngine {
         this.check(x.ghostty_search_set(this.searcher, option.NEEDLE, 0), "search needle");
         return [];
       }
-      const copy = x.ghostty_wasm_alloc(bytes.length);
+      const copy = this.allocate(bytes.length, "a search needle");
       try {
         new Uint8Array(x.memory.buffer, copy, bytes.length).set(bytes);
         const string = this.scratch + AT.string, str = this.f.GhosttyString;
@@ -1324,7 +1378,7 @@ export class GhosttyEngine {
       const count = this.view().getUint32(buffer + b.len, true);
       if (count === 0) return [];
       const stride = this.module.sizes.GhosttySelection;
-      const list = x.ghostty_wasm_alloc(count * stride);
+      const list = this.allocate(count * stride, "the search matches");
       try {
         dv = this.view();
         dv.setUint32(buffer + b.ptr, list, true);
@@ -1430,6 +1484,9 @@ export class GhosttyEngine {
 
   /** frees the terminal and everything made for it; on a trapped module only the callback route is dropped */
   dispose(): void {
+    if (this.disposed) return;
+    // a screen's engine refuses every call from now on; the browser's keeps its loader's old ways
+    if (this.events) this.disposed = true;
     if (this.userdata !== null) this.module.disconnect(this.userdata);
     if (this.module.trap) return;
     const x = this.x;

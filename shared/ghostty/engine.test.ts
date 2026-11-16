@@ -28,6 +28,16 @@ const shared = new GhosttyModule(instantiate());
 const rowText = (runs: GhosttyRun<unknown>[]): string => runs.flatMap((run) => run.cells.map((cell) => cell.text)).join("").trimEnd();
 const text = (bytes: Uint8Array): string => new TextDecoder().decode(bytes);
 const bytesOf = (value: string): Uint8Array => new TextEncoder().encode(value);
+/** what a call threw, or null */
+const thrown = (run: () => unknown): unknown => {
+  try {
+    run();
+  } catch (error) {
+    return error;
+  }
+  return null;
+};
+const message = (run: () => unknown): string => (thrown(run) as Error | null)?.message ?? "returned";
 
 /** an engine as the screen makes it, with everything it reports collected */
 function screenEngine(cols: number, rows: number, options: Partial<EngineOptions> = {}, module = shared) {
@@ -171,6 +181,142 @@ describe("shared/ghostty engine", () => {
     }
   });
 
+  it("engine keeps its state true when the module refuses", () => {
+    const { engine, replies } = screenEngine(80, 24);
+    const state = (): string => {
+      replies.length = 0;
+      engine.write(bytesOf("\x1b[18t\x1b]10;?\x07"));
+      const rows = [...screenRows(engine)].map(([y, runs]) => `${y}:${rowText(runs)}`);
+      const mouse = text(engine.encodeMouse({ action: "press", button: "left", col: 79, row: 23 }));
+      return JSON.stringify({ replies: [...replies], modes: engine.modes(), cursor: engine.cursorState(), history: engine.history(), rows, mouse });
+    };
+    const paletteEntry = (): string => {
+      replies.length = 0;
+      engine.write(bytesOf("\x1b]4;1;?\x07"));
+      return replies.join("");
+    };
+    try {
+      engine.resize(80, 24, 8, 16);
+      const entry = paletteEntry();
+      // no palette given: the palette stays as it was
+      engine.setColors({ foreground: [1, 2, 3], background: null, cursor: null, palette: [] });
+      expect(paletteEntry()).toBe(entry);
+      engine.write(bytesOf("hello\r\nworld\x1b[?1000h\x1b[?1006h"));
+      const before = state();
+      expect(JSON.parse(before)).toMatchObject({ replies: ["\x1b[8;24;80t", "\x1b]10;rgb:0101/0202/0303\x07"], mouse: "\x1b[<0;80;24M" });
+
+      for (const [cols, rows] of [[0, 0], [0, 24], [80, 0]] as const) {
+        expect(message(() => engine.resize(cols, rows, 8, 16))).toBe("ghostty-vt: resize failed (-2)");
+        expect(message(() => engine.resize(cols, rows, 8, 16))).toBe("ghostty-vt: resize failed (-2)");
+        expect(state()).toBe(before);
+      }
+      expect(message(() => engine.setMode(65535, true))).toBe("ghostty-vt: mode 65535 failed (-2)");
+      expect(state()).toBe(before);
+      const palette = Array.from({ length: 256 }, () => [9, 9, 9] as const);
+      expect(message(() => engine.setColors({ foreground: [9, 9, 9], background: null, cursor: null, palette: [...palette, [9, 9, 9]] })))
+        .toBe("ghostty-vt: a palette of 257 colours, not 256 or none");
+      expect(message(() => engine.setColors({ foreground: [9, 9, 9], background: [256, 0, 0], cursor: null, palette }))).toBe("ghostty-vt: a colour outside 0-255");
+      expect(message(() => engine.setColors({ foreground: [9, 9, 9], background: null, cursor: [1.5, 0, 0], palette }))).toBe("ghostty-vt: a colour outside 0-255");
+      expect(state()).toBe(before);
+      // accepted, not refused: the module reads -1 as no line limit, and a scroll past either end stops there
+      engine.setScrollback(-1);
+      engine.scrollFromBottom(1e9);
+      engine.scrollFromBottom(-5);
+      expect(state()).toBe(before);
+
+      // a draw that throws: the next frame draws the rows it did not take
+      engine.write(bytesOf("\x1b[3;1Hthird"));
+      expect(message(() => engine.frame(() => { throw new Error("draw failed"); }, "written"))).toBe("draw failed");
+      const drawn = new Map<number, string>();
+      engine.frame((y, runs) => drawn.set(y, rowText(runs)), "written");
+      expect(drawn.get(2)).toBe("third");
+    } finally {
+      engine.dispose();
+    }
+
+    // a screen's engine refused at construction leaves the module as it was
+    expect(message(() => new GhosttyEngine(shared, 0, 0, { widths: "core", images: false, events: {} }))).toBe("ghostty-vt: terminal_new failed (-2)");
+    expect(message(() => new GhosttyEngine(shared, 0, 0, { widths: "core", images: false, events: {} }))).toBe("ghostty-vt: terminal_new failed (-2)");
+    expect(shared.trap).toBeNull();
+
+    // a disposed screen's engine refuses, a second dispose frees nothing, and the module's other engines go on
+    const counted = instantiate().exports as unknown as GhosttyExports;
+    let terminalsFreed = 0;
+    const counting = new GhosttyModule({ ...counted, ghostty_terminal_free: (terminal: number) => { terminalsFreed++; counted.ghostty_terminal_free(terminal); } });
+    const gone = screenEngine(20, 4, {}, counting);
+    const other = screenEngine(20, 4, {}, counting);
+    gone.engine.dispose();
+    expect(message(() => gone.engine.write(bytesOf("x")))).toBe("ghostty-vt: the engine was disposed");
+    expect(message(() => gone.engine.dispose())).toBe("returned");
+    expect(terminalsFreed).toBe(1);
+
+    // a screen's engine refused half made frees what it made; one that traps half made marks its module
+    const halfway = instantiate().exports as unknown as GhosttyExports;
+    const userdataOption = new GhosttyModule({ ...halfway }).enums.GhosttyTerminalOption.USERDATA;
+    let halfFreed = 0;
+    const refusing = new GhosttyModule({
+      ...halfway,
+      ghostty_terminal_set: (terminal: number, option: number, value: number) => (option === userdataOption ? -2 : halfway.ghostty_terminal_set(terminal, option, value)),
+      ghostty_terminal_free: (terminal: number) => { halfFreed++; halfway.ghostty_terminal_free(terminal); },
+    });
+    expect(message(() => new GhosttyEngine(refusing, 20, 4, { widths: "core", images: false, events: {} }))).toBe("ghostty-vt: userdata failed (-2)");
+    expect(halfFreed).toBe(1);
+    expect(refusing.trap).toBeNull();
+    const trapping = new GhosttyModule({ ...(instantiate().exports as unknown as GhosttyExports), ghostty_terminal_new: () => { throw new WebAssembly.RuntimeError("unreachable"); } });
+    expect(thrown(() => new GhosttyEngine(trapping, 20, 4, { widths: "core", images: false, events: {} }))).toBe(trapping.trap!);
+    expect(trapping.trap).toBeInstanceOf(WebAssembly.RuntimeError);
+    other.engine.write(bytesOf("\x1b[6n"));
+    expect(other.replies).toEqual(["\x1b[1;1R"]);
+    other.engine.dispose();
+
+    // the module has no room: a screen's engine refuses and keeps what it had
+    const exports = instantiate().exports as unknown as GhosttyExports;
+    const freed: number[] = [];
+    const tight = screenEngine(20, 4, {}, new GhosttyModule({
+      ...exports,
+      ghostty_wasm_alloc: (len: number) => (len > 1 << 20 ? 0 : exports.ghostty_wasm_alloc(len)),
+      ghostty_wasm_free: (ptr: number, len: number) => { freed.push(len); exports.ghostty_wasm_free(ptr, len); },
+    }));
+    const big = "x".repeat(2 << 20);
+    tight.engine.write(bytesOf("hello"));
+    expect(message(() => tight.engine.write(bytesOf(big)))).toBe(`ghostty-vt: no memory for a write (${2 << 20} bytes)`);
+    // the input buffer the engine has (64 kB) is still its own
+    expect(freed).not.toContain(64 * 1024);
+    expect(message(() => tight.engine.encodePaste(big))).toBe(`ghostty-vt: no memory for a paste (${2 << 20} bytes)`);
+    expect(message(() => tight.engine.search(big))).toBe(`ghostty-vt: no memory for a search needle (${2 << 20} bytes)`);
+    tight.engine.write(bytesOf(" ok\x1b[6n"));
+    expect(rowText(screenRows(tight.engine).get(0)!)).toBe("hello ok");
+    expect(tight.replies).toEqual(["\x1b[1;9R"]);
+    tight.engine.dispose();
+
+    // a callback that threw during a call the module refused: the call's own error is reported, and only once
+    const quiet = instantiate().exports as unknown as GhosttyExports;
+    const query = quiet.ghostty_wasm_alloc(4);
+    new Uint8Array(quiet.memory.buffer, query, 4).set(bytesOf("\x1b[6n"));
+    const answering = new GhosttyModule({ ...quiet, ghostty_terminal_resize: (terminal: number) => { quiet.ghostty_terminal_vt_write(terminal, query, 4); return -2; } });
+    const loud = new GhosttyEngine(answering, 20, 4, { widths: "core", images: false, events: { onReply: () => { throw new Error("reply handler failed"); } } });
+    expect(message(() => loud.resize(30, 5, 8, 16))).toBe("ghostty-vt: resize failed (-2)");
+    expect(message(() => loud.modes())).toBe("returned");
+    loud.dispose();
+
+    // the frame a hold begins with could not be captured: reported after the module returns, the hold still on
+    const plain = instantiate().exports as unknown as GhosttyExports;
+    let refuseCapture = false;
+    const capturing = new GhosttyModule({ ...plain, ghostty_render_state_update: (state: number, terminal: number) => (refuseCapture ? -1 : plain.ghostty_render_state_update(state, terminal)) });
+    const held = screenEngine(20, 3, {}, capturing);
+    held.engine.write(bytesOf("A"));
+    refuseCapture = true;
+    expect(message(() => held.engine.write(bytesOf("\x1b[?2026hB")))).toBe("ghostty-vt: render_state_update failed (-1)");
+    refuseCapture = false;
+    expect(held.holds).toEqual([true]);
+    expect(held.engine.modes().syncOutput).toBe(true);
+    held.engine.releaseHold();
+    expect(held.holds).toEqual([true, false]);
+    expect(rowText(screenRows(held.engine).get(0)!)).toBe("AB");
+    expect(capturing.trap).toBeNull();
+    held.engine.dispose();
+  });
+
   it("engine key table", () => {
     const table: [setup: string, key: Parameters<GhosttyEngine["encodeKey"]>[0], bytes: string][] = [
       ["", { key: "C", mods: { ctrl: true }, text: "c", unshifted: "c" }, "\x03"],
@@ -297,8 +443,13 @@ describe("shared/ghostty engine", () => {
       engine.resize(80, 24, 8, 16);
       engine.resize(80, 24, 8.2, 15.8);
       expect(replies).toEqual(["\x1b[48;24;80;384;640t"]);
+      // a refused resize is not remembered: asked again, it reaches the module and is refused again
+      expect(message(() => engine.resize(0, 0, 8, 16))).toBe("ghostty-vt: resize failed (-2)");
+      expect(message(() => engine.resize(0, 0, 8, 16))).toBe("ghostty-vt: resize failed (-2)");
+      engine.write(bytesOf("\x1b[18t"));
+      expect(replies).toEqual(["\x1b[48;24;80;384;640t", "\x1b[8;24;80t"]);
       engine.resize(100, 30, 8, 16);
-      expect(replies).toEqual(["\x1b[48;24;80;384;640t", "\x1b[48;30;100;480;800t"]);
+      expect(replies).toEqual(["\x1b[48;24;80;384;640t", "\x1b[8;24;80t", "\x1b[48;30;100;480;800t"]);
     } finally {
       engine.dispose();
     }
@@ -337,8 +488,18 @@ describe("shared/ghostty engine", () => {
       expect(engine.modes().win32Input).toBe(false);
       engine.write(bytesOf("\x1b[9001h\x1b[?19001h"));
       expect(engine.modes().win32Input).toBe(false);
+      // inside a CSI that is not private, and a ? printed after one
+      engine.write(bytesOf("\x1b[1;9001h\x1b[1m?9001h"));
+      expect(engine.modes().win32Input).toBe(false);
     } finally {
       engine.dispose();
+    }
+    const browsers = new GhosttyEngine(shared, 20, 4, { widths: "xterm", images: false });
+    try {
+      browsers.write(bytesOf("\x1b[?9001h"));
+      expect(browsers.modes().win32Input).toBe(false);
+    } finally {
+      browsers.dispose();
     }
   });
 
@@ -350,6 +511,7 @@ describe("shared/ghostty engine", () => {
       expect(engine.textOf({ start: { x: 0, y: 0 }, end: { x: 79, y: 1 } })).toBe("line 00 end\nline 01 end");
       expect(engine.lineAt({ x: 3, y: 39 })).toEqual({ start: { x: 0, y: 39 }, end: { x: 10, y: 39 } });
       expect(engine.wordAt({ x: 6, y: 7 })).toEqual({ start: { x: 5, y: 7 }, end: { x: 6, y: 7 } });
+      expect(engine.wordAt({ x: 70, y: 7 })).toBeNull();
       expect(engine.search("line 07")).toEqual([{ start: { x: 0, y: 7 }, end: { x: 6, y: 7 } }]);
       expect(engine.searchStep("older")).toEqual({ start: { x: 0, y: 7 }, end: { x: 6, y: 7 } });
       const scrolled = engine.history().viewportTop;
@@ -373,10 +535,15 @@ describe("shared/ghostty engine", () => {
         engine.dispose();
       }
     };
-    expect(keptRows(screenEngine(120, 40, { scrollbackLines: 2000 }).engine)).toBeGreaterThan(1500);
+    const atMostTheLimit = 2000 + 40;
+    const kept = keptRows(screenEngine(120, 40, { scrollbackLines: 2000 }).engine);
+    expect(kept).toBeGreaterThan(1500);
+    expect(kept).toBeLessThanOrEqual(atMostTheLimit);
     const changedLater = screenEngine(120, 40, { scrollbackLines: 500 }).engine;
     changedLater.setScrollback(2000);
-    expect(keptRows(changedLater)).toBeGreaterThan(1500);
+    const keptLater = keptRows(changedLater);
+    expect(keptLater).toBeGreaterThan(1500);
+    expect(keptLater).toBeLessThanOrEqual(atMostTheLimit);
     const browsers = new GhosttyEngine(shared, 120, 40, { widths: "xterm", images: false });
     browsers.setScrollback(2000);
     expect(keptRows(browsers)).toBeLessThan(1000);
@@ -387,14 +554,6 @@ describe("shared/ghostty engine", () => {
     const module = new GhosttyModule({ ...exports, ghostty_terminal_vt_write: () => { throw new WebAssembly.RuntimeError("unreachable"); } });
     const first = screenEngine(20, 4, {}, module);
     const second = screenEngine(20, 4, {}, module);
-    const thrown = (run: () => unknown): unknown => {
-      try {
-        run();
-      } catch (error) {
-        return error;
-      }
-      return null;
-    };
     const trap = thrown(() => first.engine.write(bytesOf("x")));
     expect(trap).toBeInstanceOf(WebAssembly.RuntimeError);
     expect(module.trap).toBe(trap as WebAssembly.RuntimeError);
