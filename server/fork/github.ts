@@ -70,11 +70,21 @@ const readPulls = createGithubReader();
 export async function githubWorkspaces(snapshot: SessionSnapshot, repositoryOf = originRepository): Promise<Map<string, string>> {
   const folders = new Map<string, string>();
   for (const workspace of snapshot.workspaces) {
-    const path = workspace.worktree?.repo_root ?? snapshot.panes.find((pane) => pane.workspace_id === workspace.workspace_id && pane.cwd)?.cwd;
-    if (path && folders.size < 50 && !folders.has(path)) folders.set(path, workspace.workspace_id);
+    // Match the workspace API's repository: metadata or its first pane only. A later pane's
+    // repo cannot safely use this workspace ID for checkout (see docs/fork.md).
+    const path = workspace.worktree?.repo_root ?? snapshot.panes.find((pane) => pane.workspace_id === workspace.workspace_id)?.cwd;
+    if (path && !folders.has(path)) folders.set(path, workspace.workspace_id);
   }
-  const matches = await Promise.all([...folders].map(async ([path, id]) => {
-    try { return [await repositoryOf(path), id] as const; } catch { return null; }
+  const entries = [...folders];
+  const matches = new Array<readonly [string, string] | null>(entries.length).fill(null);
+  let next = 0;
+  // No workspace cap: bound subprocess concurrency, not which repositories can match.
+  await Promise.all(Array.from({ length: Math.min(4, entries.length) }, async () => {
+    while (next < entries.length) {
+      const index = next++;
+      const [path, id] = entries[index]!;
+      try { matches[index] = [await repositoryOf(path), id]; } catch { /* not a GitHub repository */ }
+    }
   }));
   return new Map(matches.filter((match) => match !== null).map(([repo, id]) => [repo.toLowerCase(), id]));
 }
