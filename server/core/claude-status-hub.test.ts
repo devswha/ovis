@@ -11,11 +11,14 @@ const prompt = (text: string) => line({ type: "user", origin: { kind: "human" },
 const answer = (text: string) => line({ type: "assistant", timestamp: new Date().toISOString(), message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text }] } });
 
 let sessions = 0;
-/** a hub whose Claude pane reads `path` as its transcript, found by a snapshot while the pane is at rest */
-async function claudeHub(text: string) {
+/**
+ * a hub whose Claude pane reads `path` as its transcript, found by a snapshot while the pane is at rest; `text` null: a
+ * new session, whose transcript Claude Code writes only with its first message
+ */
+async function claudeHub(text: string | null) {
   const id = `44444444-4444-4444-8444-${String(++sessions).padStart(12, "0")}`;
   const path = join(root, `${id}.jsonl`);
-  writeFileSync(path, text);
+  if (text !== null) writeFileSync(path, text);
   const pane = { ...claude, agent_session: { ...claude.agent_session, value: id } };
   const h = hub(path);
   const failures: string[] = [];
@@ -181,6 +184,63 @@ describe("a Claude pane whose turn ended on an API error", () => {
     expect((await h.snapshot()).panes[0]!.agent_status).toBe("done");
     expect(h.last().status).toBe("done");
     expect(h.failures).toEqual([h.pane.pane_id]);
+  });
+
+  it("reads the first turn of a new session, whose transcript did not exist as it began, at rest with one failure alert", async () => {
+    const h = await claudeHub(null);
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    writeFileSync(h.path, `${prompt("go")}${failedEntry}`);
+    handlers.onStatus(h.pane.pane_id, "idle", "claude");
+    expect(h.last().status).toBe("idle");
+    expect(h.alerts).toEqual(["working", "idle"]);
+    expect(h.failures).toEqual([h.pane.pane_id]);
+    h.herdrSays({ ...h.pane, agent_status: "done" });
+    expect((await h.snapshot()).panes[0]!.agent_status).toBe("idle");
+    expect(h.failures).toEqual([h.pane.pane_id]);
+  });
+
+  it("finishes the first turn of a new session that answered", async () => {
+    const h = await claudeHub(null);
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    writeFileSync(h.path, `${prompt("go")}${answer("Done")}`);
+    handlers.onStatus(h.pane.pane_id, "idle", "claude");
+    expect(h.last().status).toBe("done");
+    expect(h.alerts).toEqual(["working", "done"]);
+    expect(h.failures).toEqual([]);
+  });
+
+  it("tells no failure of a turn that answered after /clear while the lookup still names the old transcript, ending on an error", async () => {
+    const h = await claudeHub("");
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    writeFileSync(h.path, failed);
+    handlers.onStatus(h.pane.pane_id, "idle", "claude");
+    expect(h.failures).toEqual([h.pane.pane_id]);
+    // /clear: herdr names the new session, and a snapshot reads it while the lookup still finds the old transcript
+    const cleared = { ...h.pane, agent_session: { ...h.pane.agent_session, value: `44444444-4444-4444-8444-${String(++sessions).padStart(12, "0")}` } };
+    h.herdrSays(cleared);
+    await h.snapshot();
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    writeFileSync(join(root, `${cleared.agent_session.value}.jsonl`), `${prompt("again")}${answer("Done")}`);
+    handlers.onStatus(h.pane.pane_id, "idle", "claude");
+    expect(h.last().status).toBe("done");
+    h.herdrSays({ ...cleared, agent_status: "done" });
+    expect((await h.snapshot()).panes[0]!.agent_status).toBe("done");
+    expect(h.last().status).toBe("done");
+    expect(h.failures).toEqual([h.pane.pane_id]);
+  });
+
+  it("reads nothing of a transcript older than the turn that the pane's lookup names only once the turn began", async () => {
+    const h = await claudeHub(null);
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    // an older session's transcript, ending on an API error, appears where the lookup points
+    const before = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    writeFileSync(h.path, `${line({ type: "user", origin: { kind: "human" }, timestamp: before, message: { role: "user", content: "go" } })}${failedEntry}`);
+    await h.snapshot();
+    handlers.onStatus(h.pane.pane_id, "idle", "claude");
+    expect(h.last().status).toBe("done");
+    h.herdrSays({ ...h.pane, agent_status: "done" });
+    expect((await h.snapshot()).panes[0]!.agent_status).toBe("done");
+    expect(h.failures).toEqual([]);
   });
 
   it("tells nothing of a failure it never saw run: a pane found already at rest, after a restart", async () => {

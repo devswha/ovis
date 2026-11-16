@@ -892,3 +892,20 @@ export function claudeLastTurnEnd(path: string, file: { size: number; exact: str
   return text?.endsWith("\n") === true ? claudeTurnEnd(text) : null;
 }
 
+/**
+ * When a Claude transcript began: the time of its first entry that carries one, within its first `headBytes`, read as
+ * claudeLastTurnEnd reads (`file`: what `plain` found), or null while no such entry is written whole.
+ */
+export function claudeTranscriptStart(path: string, file: { size: number; exact: string }, headBytes = 64 * 1024): number | null {
+  const head = readBytes(path, file.exact, 0, Math.min(file.size, headBytes))?.toString("utf8") ?? "";
+  for (const line of head.split("\n").slice(0, -1)) {
+    let entry: unknown;
+    try { entry = JSON.parse(line); } catch { return null; }
+    const at = typeof entry === "object" && entry !== null ? (entry as { timestamp?: unknown }).timestamp : undefined;
+    if (typeof at !== "string") continue;
+    const time = Date.parse(at);
+    return Number.isNaN(time) ? null : time;
+  }
+  return null;
+}
+

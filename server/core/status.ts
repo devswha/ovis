@@ -15,7 +15,7 @@ import { resolveAgyStore } from "../agy-store.ts";
 import { BackgroundWait } from "../background-wait.ts";
 import { busyPanes, DESKTOP_ACTIVITY_FILE, trackDesktopActivity } from "../desktop-activity.ts";
 import { ClaudeSubagentStatus, plain } from "../claude-subagents.ts";
-import { claudeLastTurnEnd, type ClaudeTurnEnd } from "../claude-transcript.ts";
+import { claudeLastTurnEnd, claudeTranscriptStart, type ClaudeTurnEnd } from "../claude-transcript.ts";
 import { codexLastTurnEnd, codexOpenRollout, paneCodexHome } from "../codex.ts";
 import { startStatusCollector } from "../collector.ts";
 import { CompletionTracker, type OmoRest } from "../completion.ts";
@@ -371,11 +371,18 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   /** Claude panes whose last turn ended on an API error, until the next one starts (claudeRest) */
   const claudeFailed = new Set<string>();
   /**
-   * each Claude pane this server saw work, and where its turn began in its transcript: the file, its size then (`from`)
-   * and how far claudeRest has read it since (`read`). Only such a turn's failure is told, as only a Codex turn this
-   * server saw run is (codexWorking), and only on what that turn wrote. null: no transcript was bound as it began
+   * where a Claude turn began in its transcript: the file, its size then (`from`) and how far claudeRest has read it since
+   * (`read`). Or, for a turn begun with no transcript of its session yet (a new session: Claude Code writes it with its
+   * first message), when it began (`since`) and the transcript claudeRest last found not to be the turn's (`looked`)
    */
-  const claudeLooked = new Map<string, { path: string; id: string; from: number; read: number } | null>();
+  type ClaudeMark = { path: string; id: string; from: number; read: number } | { path: null; since: number; looked: string | null };
+  /**
+   * each Claude pane this server saw work, and where its turn began (ClaudeMark): only such a turn's failure is told, as
+   * only a Codex turn this server saw run is (codexWorking), and only on what that turn wrote
+   */
+  const claudeLooked = new Map<string, ClaudeMark>();
+  /** how long before the working event that a turn began the transcript it writes may be: the prompt is written first */
+  const CLAUDE_START_SLACK_MS = 5000;
   /** Claude panes whose failure alert waits for the end of the background wait their failed rest is held on (claudeFailedAlert) */
   const claudeFailHeld = new Set<string>();
   /** A Claude pane is at work again (`began`), or no Claude pane any more: what its last turn ended on is no longer its rest. */
@@ -384,11 +391,14 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     claudeFailHeld.delete(paneId);
     if (began) claudeLooked.set(paneId, claudeMark(paneId)); else claudeLooked.delete(paneId);
   };
-  /** Where a Claude pane's transcript stands as a turn begins there: what follows is what that turn writes. */
-  function claudeMark(paneId: string): { path: string; id: string; from: number; read: number } | null {
+  /**
+   * Where a Claude pane's transcript stands as a turn begins there: what follows is what that turn writes. With no
+   * transcript of its session yet, when the turn began: the one it writes is found at rest (claudeRest).
+   */
+  function claudeMark(paneId: string): ClaudeMark {
     const session = claudeAgents.sessionOf(paneId);
     const file = session?.live === true ? plain(session.path) : null;
-    return session === null || file === null ? null : { path: session.path, id: file.id, from: file.size, read: file.size };
+    return session === null || file === null ? { path: null, since: statusNow(), looked: null } : { path: session.path, id: file.id, from: file.size, read: file.size };
   }
   /**
    * The failure alert of a Claude turn that ended on an API error, after its status was told. A rest held on the turn's
@@ -411,13 +421,24 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
    * record, as codexRest reads Codex's). Only what the turn wrote is read, at once, as the subagent tracker reads the
    * same file, and again only once it grew. Nothing written since the turn began, another transcript (a /clear or a
    * /resume the pane's binding moved to, or still names the old one of) or another file in its place says nothing of
-   * this turn, and leaves herdr's word.
+   * this turn, and leaves herdr's word. A turn begun before its session's transcript was written reads the one the pane
+   * names from its start, only once that is found to have begun with the turn: an older one is another session's.
    */
   function claudeRest(paneId: string): ClaudeTurnEnd {
-    const mark = claudeLooked.get(paneId);
-    if (mark === undefined || mark === null || omo.runs(paneId) || gjc.runs(paneId)) return null;
+    let mark = claudeLooked.get(paneId);
+    if (mark === undefined || omo.runs(paneId) || gjc.runs(paneId)) return null;
     const session = claudeAgents.sessionOf(paneId);
-    const file = session?.live === true && session.path === mark.path ? plain(mark.path) : null;
+    if (session?.live !== true) return null;
+    if (mark.path === null) {
+      const found = plain(session.path);
+      const looked = found === null ? null : `${session.path}\0${found.id}\0${found.size}`;
+      if (found === null || looked === mark.looked) return null;
+      const began = claudeTranscriptStart(session.path, found);
+      if (began === null || began < mark.since - CLAUDE_START_SLACK_MS) { mark.looked = looked; return null; }
+      mark = { path: session.path, id: found.id, from: 0, read: 0 };
+      claudeLooked.set(paneId, mark);
+    }
+    const file = session.path === mark.path ? plain(mark.path) : null;
     if (file === null || file.id !== mark.id || file.size <= mark.read) return null;
     const end = claudeLastTurnEnd(mark.path, file, mark.from);
     mark.read = file.size;
