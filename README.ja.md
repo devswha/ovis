@@ -97,4 +97,4 @@ irm https://ovis.sh/install.ps1 | iex
 
 ## ライセンス
 
-[MIT](LICENSE). Copyright © 2026 devswha.
+[MIT](LICENSE)。ただし、`shared/account-list*` 以下のアカウントリストのファイルは [FSL-1.1-MIT](LICENSES/ACCOUNT-LAYER.md) です。Copyright © 2026 devswha.

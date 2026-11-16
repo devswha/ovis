@@ -6,8 +6,8 @@
 library, the library's tests and its test vectors. The glob decides, not a list, so a file added there later is born
 under this licence. Each `.ts` file starts with `// SPDX-License-Identifier: FSL-1.1-MIT`. The JSON test vectors in
 `shared/account-list-vectors/` cannot hold a comment and must not gain a field, so [`REUSE.toml`](../REUSE.toml) names
-their licence. `scripts/account-layer-licence.test.ts` fails for a file under the glob that has neither. Everything else
-in this repository is under the MIT License in [LICENSE](../LICENSE).
+their licence. `scripts/account-layer-licence.test.ts` fails for a file under the glob that has neither. The rest of
+this repository's own code is under the MIT License in [LICENSE](../LICENSE).
 
 **Source available.** This part is source available: FSL-1.1-MIT is not an OSI-approved licence.
 

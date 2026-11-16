@@ -93,4 +93,4 @@ Built on [herdr](https://github.com/herdrdev/herdr), with inspiration from [chat
 
 ## License
 
-[MIT](LICENSE). Copyright © 2026 devswha.
+[MIT](LICENSE), except the account list's files under `shared/account-list*`, which are [FSL-1.1-MIT](LICENSES/ACCOUNT-LAYER.md). Copyright © 2026 devswha.
