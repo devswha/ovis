@@ -64,7 +64,7 @@ async function withDsh(panel: Panel, run: () => Promise<void>, drawn: (panel: Pa
       const answer = (result: unknown) => socket.end(`${JSON.stringify({ id: request.id, result })}\n`);
       if (request.method === "session.snapshot") return answer({ snapshot: { panes: [{ pane_id: "p_1", agent: "dsh-tui", agent_status: panel.status }], layouts: [] } });
       if (request.method === "pane.read") return answer({ read: { text: drawn(panel) } });
-      if (request.method === "pane.get") return answer({ pane: { pane_id: "p_1", scroll: { offset_from_bottom: 0 } } });
+      if (request.method === "pane.get") return answer({ pane: { pane_id: "p_1", agent: "dsh-tui", agent_status: panel.status, scroll: { offset_from_bottom: 0 } } });
       if (request.method === "pane.process_info") return answer({ process_info: { foreground_processes: [] } });
       if (request.method === "agent.get") return answer({ agent: {} });
       if (request.method !== "pane.send_keys" && request.method !== "pane.send_text") throw new Error(`unexpected fixture RPC: ${request.method}`);
@@ -88,6 +88,8 @@ async function withDsh(panel: Panel, run: () => Promise<void>, drawn: (panel: Pa
   }
 }
 
+const MIXED = "用WDA方案先在真机上跑通，然后把预发环境的接口当作夜间任务的后备，手机离线时自动切换，两条路径都记日志，这样两周后可以比较哪条更稳定一些。";
+const CHINESE = "先在真机上跑通方案然后把预发环境的接口当作夜间任务的后备手机离线时自动切换两条路径都记日志这样两周后可以比较哪条更稳定一些";
 const newPanel = (status = "blocked"): Panel => ({ status, cursor: 0, text: "", open: true, answers: [], sent: [] });
 
 async function card(): Promise<InteractivePrompt | null> {
@@ -141,6 +143,28 @@ describe("dsh-tui's question through the answer route", () => {
       expect(await answer({ prompt_id: (await card())!.id, custom_text: typed })).toBe(409);
       expect(panel.sent).toEqual(["down", "down", `text:${typed}`]);
     }, (drawn) => drawn.text ? wrapped : screen(drawn));
+  });
+
+  test.each([
+    ["q1-typed-mixed", MIXED], ["q1-typed-mixed-111", MIXED],
+    ["q1-typed-chinese-111", CHINESE], ["q1-typed-chinese-107", CHINESE], ["q1-typed-chinese-101", CHINESE],
+  ])("sends the Enter for a Chinese answer whose row ends a cell short, the `：` kept or squeezed out (%s, recorded)", async (name, text) => {
+    const panel = newPanel();
+    const row = readFileSync(join(import.meta.dir, "fixtures", `dsh-question-0.20.0-${name}.txt`), "utf8");
+    await withDsh(panel, async () => {
+      expect(await answer({ prompt_id: (await card())!.id, custom_text: text })).toBe(200);
+      expect(panel.sent).toEqual(["down", "down", `text:${text}`, "enter"]);
+    }, (drawn) => drawn.text ? row : screen(drawn));
+  });
+
+  test("sends no Enter onto a row, its `：` squeezed out, that holds other words than the answer (101 columns, recorded)", async () => {
+    const panel = newPanel();
+    const other = CHINESE.replace("两周后", "三周后");
+    const row = readFileSync(join(import.meta.dir, "fixtures", "dsh-question-0.20.0-q1-typed-chinese-101.txt"), "utf8");
+    await withDsh(panel, async () => {
+      expect(await answer({ prompt_id: (await card())!.id, custom_text: other })).toBe(409);
+      expect(panel.sent).toEqual(["down", "down", `text:${other}`]);
+    }, (drawn) => drawn.text ? row : screen(drawn));
   });
 
   test("sends no key once herdr stops reporting the pane's dsh-tui as waiting, its panel still on the screen", async () => {

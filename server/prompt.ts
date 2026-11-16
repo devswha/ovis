@@ -9,7 +9,7 @@ import { resolveAgent } from "./pane-context.ts";
 import { processAlive, processStartedAt, processStartUpperBoundAsync } from "./process-start.ts";
 import { commandInvocations, commandOutcome, CommandReservations, dialogSettlingScreen, ownsCommandDialog, WINDOW_MS as COMMAND_WINDOW_MS, type CommandSend } from "./outcome.ts";
 import { codexTranscriptPath, paneCodexHomePlaced, unansweredCodexQuestions } from "./codex.ts";
-import { HerdrError, paneProcessInfo, paneRead, paneScrollInfo, paneSendKeys, paneSendText, type ProcessInfo, sessionSnapshot } from "./herdr/client.ts";
+import { HerdrError, paneGet, paneProcessInfo, paneRead, paneScrollInfo, paneSendKeys, paneSendText, type ProcessInfo } from "./herdr/client.ts";
 import { isPiProcess, piTranscriptPath } from "./pi.ts";
 import { heldOmoProcess } from "./omo.ts";
 import { OmoAskReader, ompAsksAfter, type OmoAsks } from "./omo-ask.ts";
@@ -913,7 +913,7 @@ class DshNotAsking extends KeyRefused {}
 
 /** Whether herdr, asked now, still reports the pane's dsh-tui waiting on the user. */
 async function dshAsks(paneId: string, signal: AbortSignal): Promise<boolean> {
-  const pane = (await untilAborted(sessionSnapshot(), signal))?.panes.find((candidate) => candidate.pane_id === paneId);
+  const pane = await untilAborted(paneGet(paneId), signal);
   return pane?.agent === "dsh-tui" && pane.agent_status === "blocked";
 }
 

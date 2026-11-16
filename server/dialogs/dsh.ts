@@ -41,6 +41,8 @@ const DSH_ROW_RE = /^( *)([❯ ])([●○◉])\s(.+)$/;
  * column of its own, its words on lines of their own (`✎ Custom     ：Use the…` over `   answer       runs…`).
  */
 const DSH_CUSTOM_RE = /^( *)([❯ ])✎\s([^：]*)：(.*)$/;
+/** the same row once a long typed text squeezes the `：` out of it: its label's first word, then the text */
+const DSH_SQUEEZED_RE = /^( *)([❯ ])✎\s(\S+)\s{2,}(\S.*)$/;
 /** the label, its spaces dropped: alone, or with an option's label attached (`(attached: …)`, `（附加：…）`) */
 const DSH_LABEL_RE = /^(?:Customanswer|自定义回答)$/;
 const DSH_ATTACHED_LABEL_RE = /^(?:Customanswer\(attached:.*|自定义回答（附加)$/;
@@ -88,7 +90,7 @@ interface DshPanel {
   prompt: ParsedPrompt;
   /** the free-text row's text, a piece per line the pane wrapped it onto; null with an option's label attached */
   typed: string[] | null;
-  /** for each of those lines, whether it reaches the row's end, where dsh may break inside a word */
+  /** for each of those lines, whether it is full: the next line's first character would not have fitted after it */
   typedFull: boolean[];
   /**
    * The cursor on the free-text row of a question no mark says is a multiple choice: a single choice marks no row
@@ -139,9 +141,10 @@ function readDshPanel(screen: string): DshPanel | null {
   const total = Number(header[2] ?? header[4]);
   if (!Number.isInteger(n) || !Number.isInteger(total) || n < 1 || total < n) return null;
 
-  const customIndex = lines.findIndex((line, index) => index > headerIndex && DSH_CUSTOM_RE.test(line));
+  const customIndex = lines.findIndex((line, index) => index > headerIndex && (DSH_CUSTOM_RE.test(line) || DSH_SQUEEZED_RE.test(line)));
   if (customIndex < 0) return null;
-  const custom = DSH_CUSTOM_RE.exec(lines[customIndex]!)!;
+  const colon = DSH_CUSTOM_RE.exec(lines[customIndex]!);
+  const custom = colon ?? DSH_SQUEEZED_RE.exec(lines[customIndex]!)!;
   const indent = custom[1]!;
   const customCursor = custom[2] === "❯";
   // typed text the pane wraps goes on under the row's text, from the column after `：`, the label's words under the label
@@ -159,9 +162,14 @@ function readDshPanel(screen: string): DshPanel | null {
   const text = custom[4]!;
   const typed = !DSH_LABEL_RE.test(label) ? null
     : [!customCursor && DSH_PLACEHOLDER_RE.test(text) ? "" : text.trim(), ...wrapped.map(([, after]) => after.trim())];
-  // the row ends one cell short of the header's divider: the caret takes the last one (recorded on 0.20.0)
-  const rowEnd = Bun.stringWidth(lines[headerIndex]!) - 1;
-  const typedFull = lines.slice(customIndex, typedEnd).map((line) => Bun.stringWidth(line) >= rowEnd);
+  // the row ends one cell short of the header's divider (the caret takes the last one), two with the `：` squeezed out
+  // (recorded on 0.20.0 at 101-118 columns). A line is full when the next line's first character would not have
+  // fitted after it: a wide (CJK) one leaves a cell
+  const rowEnd = Bun.stringWidth(lines[headerIndex]!) - (colon ? 1 : 2);
+  const typedFull = lines.slice(customIndex, typedEnd).map((line, at) => {
+    const next = typed?.slice(at + 1).find(Boolean);
+    return next !== undefined && Bun.stringWidth(line) + Bun.stringWidth([...next][0]!) > rowEnd;
+  });
   // the options: the run of rows right over the free-text row, each with its continuation lines
   // (a wrapped label or a description, set past the row's mark), read upwards from it
   const rows: { cursor: boolean; checked: boolean; ticked: boolean; head: string; rest: string[] }[] = [];

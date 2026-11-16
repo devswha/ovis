@@ -9,6 +9,8 @@ import { dshFreeTextRow } from "./dsh.ts";
 
 // recorded from dsh-tui 0.20.0 in a 100x50 tmux pane (narrow: 52 columns), ask_user_question asked by dsh-deepseek-flash
 const screen = (name: string) => readFileSync(join(import.meta.dir, "..", "fixtures", `dsh-question-0.20.0-${name}.txt`), "utf8");
+const MIXED = "用WDA方案先在真机上跑通，然后把预发环境的接口当作夜间任务的后备，手机离线时自动切换，两条路径都记日志，这样两周后可以比较哪条更稳定一些。";
+const CHINESE = "先在真机上跑通方案然后把预发环境的接口当作夜间任务的后备手机离线时自动切换两条路径都记日志这样两周后可以比较哪条更稳定一些";
 /** The q1 panel as a pane wide enough for its hint on one line draws it. */
 const oneLineHint = (panel: string) => panel.replace("Esc cancel ·\n    Ctrl+K", "Esc cancel · Ctrl+K");
 /** The panel with the cursor moved down to its free-text row, as dsh-tui draws it there (the q1-custom fixture). */
@@ -100,6 +102,14 @@ describe("DeepSeek Harness ask_user_question panel", () => {
     expect(dshFreeTextRow(screen("q1-typed-url"), card, `see https://example.com/${"a".repeat(140)} ok`)).toBe("typed");
     // a word that ends right at the row's end, the space after it dropped by the wrap
     expect(dshFreeTextRow(screen("q1-typed-edge"), card, typed.replace("nightly runs", "nightlyy runs"))).toBe("typed");
+  });
+
+  it.each([
+    ["q1-typed-mixed", MIXED], ["q1-typed-mixed-111", MIXED],
+    ["q1-typed-chinese-111", CHINESE], ["q1-typed-chinese-107", CHINESE], ["q1-typed-chinese-101", CHINESE],
+  ])("reads back a Chinese answer whose row ends a cell short, its next character too wide to fit, the `：` kept or squeezed out (%s, recorded)", (name, text) => {
+    const card = parsedByPublicPrompt.get(parseInteractivePrompt("dsh-tui", screen("q1"))!)!;
+    expect(dshFreeTextRow(screen(name), card, text)).toBe("typed");
   });
 
   it("refuses the panel once text was typed into its free-text row in the terminal", () => {
