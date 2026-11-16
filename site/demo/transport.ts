@@ -1434,6 +1434,11 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
       demoRelayDirect = body.on;
       return json(demoRelayStatus(), 200, { "cache-control": "no-store" });
     }
+    // `?demo_relay_hold=1`: the relay's start waits until the page calls releaseDemoRelayStart() (a test holds it to see the
+    // setup guide keep its other ways while the relay starts)
+    if (path === "/api/relay/start" && new URLSearchParams(location.search).get("demo_relay_hold") === "1") {
+      await new Promise<void>((done) => { (globalThis as { releaseDemoRelayStart?: () => void }).releaseDemoRelayStart = done; });
+    }
     // `?demo_relay_fail=1`: the relay does not start (the setup guide's error state)
     if (path === "/api/relay/start") { if (new URLSearchParams(location.search).get("demo_relay_fail") === "1") demoRelayStartError = "Could not reach relay.ovis.sh."; else demoRelayOnline = true; }
     else if (path === "/api/relay/stop") demoRelayOnline = false;

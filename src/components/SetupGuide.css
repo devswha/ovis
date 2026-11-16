@@ -1063,6 +1063,12 @@
   font-size: var(--fs-sm);
 }
 
+/* held while the relay starts */
+.setup-path-tab[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: var(--disabled-opacity, 0.5);
+}
+
 .setup-path-tab[aria-selected="true"] {
   border-bottom-color: var(--accent);
   color: var(--text-strong);

@@ -674,6 +674,42 @@ try {
     console.log("PASS back to Anywhere after Tailscale asks for a fresh relay offer; turning plan usage off forgets the remembered Continue");
   }
 
+  // While the relay starts (Turn on pressed, its answer not in), the other ways wait: picking one could let the start
+  // close the device gate and spend that way's pairing code (#3962 CodeRabbit)
+  {
+    const context = await browser!.newContext({ viewport: { width: 1920, height: 1080 }, locale: "en-US", colorScheme: "dark" });
+    await context.addInitScript(([guide]) => {
+      if (sessionStorage.getItem("seeded") !== null) return;
+      localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "dark", palette: "codex", darkTheme: "codex", lightTheme: "codex" }));
+      localStorage.setItem("ovis:setup-guide", guide);
+      sessionStorage.setItem("seeded", "1");
+    }, [WELCOME] as const);
+    const page = await context.newPage();
+    await page.goto(`${root}?demo_devices=empty&demo_via=device&demo_relay_hold=1`);
+    const dialog = page.getByRole("dialog", { name: DIALOG, exact: true });
+    for (const heading of ["Pick an agent", "Pick a look"]) {
+      await dialog.getByRole("heading", { name: heading, exact: true }).waitFor();
+      await dialog.locator(".setup-foot").getByRole("button", { name: "Continue", exact: true }).click();
+    }
+    const side = dialog.locator(".setup-side-phone");
+    const tailscale = side.getByRole("tab", { name: /Tailscale/ });
+    await side.getByRole("button", { name: "Turn on", exact: true }).click();
+    await page.waitForFunction(() => document.querySelector("#setup-path-tab-tailscale")?.getAttribute("aria-disabled") === "true");
+    // a held tab is still pressable (aria-disabled): the click reaches the guide, which picks nothing
+    await tailscale.click({ force: true });
+    await page.keyboard.press("ArrowRight");
+    assert.equal(await side.getByRole("tab", { name: /^Anywhere/ }).getAttribute("aria-selected"), "true", "no other way is picked while the relay starts");
+    // the start answers
+    await page.waitForFunction(() => typeof (globalThis as { releaseDemoRelayStart?: () => void }).releaseDemoRelayStart === "function");
+    await page.evaluate(() => (globalThis as { releaseDemoRelayStart?: () => void }).releaseDemoRelayStart?.());
+    await side.locator(".setup-relay-tight .qr").waitFor();
+    await page.waitForFunction(() => document.querySelector("#setup-path-tab-tailscale")?.getAttribute("aria-disabled") === null);
+    await tailscale.click();
+    assert.equal(await tailscale.getAttribute("aria-selected"), "true", "the ways are free again once the relay is on");
+    await context.close();
+    console.log("PASS while the relay starts, the other ways wait, and are free once it is on (1920x1080)");
+  }
+
   // On a phone, with the answer a browser on the PC itself gets (via local): the step opens at its top, and a tab's press brings
   // its panel into view; Tailscale shows its QR code and Same Wi-Fi its line
   {

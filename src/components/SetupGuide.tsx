@@ -905,12 +905,15 @@ function PhoneBox({ opening, onWithdraw, auth, security, onOpenSettings, onPaire
  * gate still open, which would shut out a browser in only because nothing is paired yet (auth via
  * "open": a LAN or tailnet address, never the PC's loopback), so that browser pairs itself first.
  */
-function RelayBox({ relay, auth, closesGate, onPaired, onPhonePaired, onOther, tight = false }: { relay: RelayState; auth: HealthAuth | null; closesGate: boolean; onPaired: () => void; onPhonePaired: (name: string) => void; onOther?: () => void; tight?: boolean }) {
+function RelayBox({ relay, auth, closesGate, onPaired, onPhonePaired, onOther, onBusy, tight = false }: { relay: RelayState; auth: HealthAuth | null; closesGate: boolean; onPaired: () => void; onPhonePaired: (name: string) => void; onOther?: () => void; onBusy?: (busy: boolean) => void; tight?: boolean }) {
   const t = useT();
   const { status, pending, request } = relay;
   const [turning, setTurning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pairedSelf, setPairedSelf] = useState(false);
+  // a start under way may close the device gate and spend a code another way shows: the step's tabs wait for it
+  const starting = pending || turning;
+  useEffect(() => { onBusy?.(starting); }, [starting]); // eslint-disable-line react-hooks/exhaustive-deps
   if (status === null) return null;
   const step = relayStep(status);
   const busy = pending || turning;
@@ -1034,6 +1037,8 @@ function PhoneQr({ auth, onOpenSettings, onPaired, onPhonePaired, given, large =
   // this one, so its code goes, and its device check with it; back in view, New code asks for one on a press
   // a phone that paired while it was hidden is said once it is shown again (one read of the devices)
   const dropped = useRef(false);
+  const shownNow = useRef(shown);
+  shownNow.current = shown;
   useEffect(() => {
     if (!shown) { if (code !== null) dropped.current = true; setCode(null); return; }
     if (!dropped.current) return;
@@ -1066,7 +1071,8 @@ function PhoneQr({ auth, onOpenSettings, onPaired, onPhonePaired, given, large =
       if (!live) return;
       const fresh = await guidePairingCode();
       const after = await fetchDevices();
-      if (!live) return;
+      // hidden meanwhile: another way may take a newer code, so this answer is not shown later (#3970)
+      if (!live || !shownNow.current) return;
       before.current = new Set([...first, ...after].map((device) => device.id));
       setCode(fresh);
     })().catch((error: unknown) => { if (live) { setCode(null); setFailure(error instanceof UnconfirmedPairing ? t("Couldn't connect this browser. Turn on cookies.") : userFailure(error).kind === "unknown" ? t("Couldn't make a code. Try again.") : userErrorMessage(error).message); } }).finally(() => { if (live) setRequesting(false); });
@@ -1232,6 +1238,8 @@ interface MethodProps {
   onOpenSettings: () => void;
   onPaired: () => void;
   onPhonePaired: (name: string) => void;
+  /** the relay is starting (Turn on pressed, its answer not in yet): the other ways wait, as they did beside it before */
+  onRelayBusy?: (busy: boolean) => void;
 }
 
 /** What a method shows once picked: its QR code, or the one step it needs first, or why it cannot here. Nothing starts until its own button is pressed. */
@@ -1250,7 +1258,7 @@ function MethodPanel({ method, shown = true, ...props }: MethodProps & { method:
     if (phoneWay(relay, inRelayShell(), props.auth) === "other") return <p className="setup-note"><Info aria-hidden="true" />{t("Not available on this PC.")}</p>;
     if (relay.status === null) return <p className="setup-muted"><LoaderCircle aria-hidden="true" className="setup-spin" /></p>;
     const closesGate = props.security.state === "known" && props.security.summary.pairing_gate === "open" && !props.security.summary.token_configured;
-    return <RelayBox key={returns} tight relay={relay} auth={props.auth} closesGate={closesGate} onPaired={props.onPaired} onPhonePaired={props.onPhonePaired} />;
+    return <RelayBox key={returns} tight relay={relay} auth={props.auth} closesGate={closesGate} onPaired={props.onPaired} onPhonePaired={props.onPhonePaired} onBusy={props.onRelayBusy} />;
   }
   if (method === "wifi") {
     const address = wifiAddress();
@@ -1331,10 +1339,12 @@ function PhonePanel(props: MethodProps) {
   useShownInView(area, store ?? method);
   const [opened, setOpened] = useState<readonly PhoneMethod[]>([method]);
   useEffect(() => { setOpened((list) => list.includes(method) ? list : [...list, method]); }, [method]);
-  const pick = (next: PhoneMethod): void => { setStore(null); setMethod(next); };
+  // while the relay starts, no other way is picked (#3962 CodeRabbit): its start could close the gate and spend that way's code
+  const [relayBusy, setRelayBusy] = useState(false);
+  const pick = (next: PhoneMethod): void => { if (relayBusy && next !== method) return; setStore(null); setMethod(next); };
   const onKey = (event: ReactKeyboardEvent, index: number): void => {
     const next = event.key === "ArrowRight" ? (index + 1) % facts.length : event.key === "ArrowLeft" ? (index + facts.length - 1) % facts.length : null;
-    if (next === null) return;
+    if (next === null || relayBusy) return;
     event.preventDefault();
     pick(facts[next]!.id);
     tabs.current[next]?.focus();
@@ -1349,7 +1359,7 @@ function PhonePanel(props: MethodProps) {
         <span className="setup-path-head" id="setup-path-ways"><span className="setup-path-num" aria-hidden="true">2</span>{t("Pick how to connect")}</span>
         <div className="setup-path-tabs" role="tablist" aria-labelledby="setup-path-ways">
           {facts.map((fact, index) => (
-            <button key={fact.id} ref={(node) => { tabs.current[index] = node; }} type="button" role="tab" id={`setup-path-tab-${fact.id}`} aria-selected={store === null && method === fact.id} aria-controls="setup-path-panel" tabIndex={method === fact.id ? 0 : -1} className="setup-path-tab" onClick={() => pick(fact.id)} onKeyDown={(event) => onKey(event, index)}>
+            <button key={fact.id} ref={(node) => { tabs.current[index] = node; }} type="button" role="tab" aria-disabled={relayBusy && fact.id !== method ? true : undefined} id={`setup-path-tab-${fact.id}`} aria-selected={store === null && method === fact.id} aria-controls="setup-path-panel" tabIndex={method === fact.id ? 0 : -1} className="setup-path-tab" onClick={() => pick(fact.id)} onKeyDown={(event) => onKey(event, index)}>
               {fact.icon}<span>{fact.name}</span>{fact.recommended && <span className="setup-badge">{t("Recommended")}</span>}
             </button>
           ))}
@@ -1361,7 +1371,7 @@ function PhonePanel(props: MethodProps) {
         <div id="setup-path-panel" role="tabpanel" aria-labelledby={`setup-path-tab-${method}`} className="setup-method-area" ref={area}>
           {store !== null && <StoreQr store={store} />}
           {/* a way once opened stays mounted while hidden: going back to it asks for no new code (one only on New code) */}
-          {opened.map((way) => <div key={way} hidden={store !== null || way !== method}><MethodPanel method={way} shown={way === method} {...props} /></div>)}
+          {opened.map((way) => <div key={way} hidden={store !== null || way !== method}><MethodPanel method={way} shown={way === method} {...props} onRelayBusy={setRelayBusy} /></div>)}
         </div>
       </li>
     </ol>
