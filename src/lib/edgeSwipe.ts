@@ -74,6 +74,14 @@ function selecting(): boolean {
   return selection !== null && !selection.isCollapsed;
 }
 
+/**
+ * Whether a stroke beginning on `target` may be an edge swipe: nothing modal is up, and the finger is not on a
+ * field, a selection, or (unless the drawer is `open`) something scrolled aside that a swipe right scrolls back.
+ */
+export function strokeFree(target: EventTarget | null, open: boolean): boolean {
+  return document.querySelector(MODAL) === null && (open || !scrolledAside(target)) && !editable(target) && !selecting();
+}
+
 /** Listens on the whole document; returns the cleanup. */
 export function watchDrawerSwipe(isOpen: () => boolean, setOpen: (open: boolean) => void): () => void {
   const narrow = window.matchMedia("(max-width: 768px)");
@@ -89,8 +97,7 @@ export function watchDrawerSwipe(isOpen: () => boolean, setOpen: (open: boolean)
     // the last stroke still holds the drawer: a second finger, or its end never came (the element
     // it began on left the page and took its touches with it). It lets go where it was first
     const open = follow !== null ? onEnd() : isOpen();
-    start = event.touches.length === 1 && touch && narrow.matches && document.querySelector(MODAL) === null && (open || !scrolledAside(event.target))
-      && !editable(event.target) && !selecting()
+    start = event.touches.length === 1 && touch && narrow.matches && strokeFree(event.target, open)
       ? { x: touch.clientX, y: touch.clientY, open, at: event.timeStamp } : null;
     claimed = false;
     done = false;

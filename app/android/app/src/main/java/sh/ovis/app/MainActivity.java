@@ -701,12 +701,6 @@ public class MainActivity extends BridgeActivity {
         openingView = null;
     }
 
-    @Override
-    public void onDestroy() {
-        answerTimer.removeCallbacksAndMessages(null);
-        super.onDestroy();
-    }
-
     /**
      * Gives Back to the page or to the system, by where the WebView's history stands: the page's while
      * the page shown and the entry behind it are pages of `place`, the PC or the app's own origin
@@ -828,6 +822,7 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     public void onDestroy() {
+        answerTimer.removeCallbacksAndMessages(null);
         // the page, and any call it had going, goes with the activity
         LiveCallService.stop(this);
         super.onDestroy();

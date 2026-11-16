@@ -11,3 +11,6 @@ export function ForkInboxBack({ wide, onBack, className = "", children = null }:
   if (!wide) return null;
   return <button type="button" className={`icon-button fork-inbox-back ${className}`} aria-label={t("Back|fork inbox")} title={t("Back|fork inbox")} onClick={onBack}><ArrowLeft aria-hidden="true" /></button>;
 }
+
+/** The inbox More's way out (App.tsx spreads this over its item): the same back arrow, not the app's mark. */
+export const forkInboxExitItem = ({ agentFriends }: { agentFriends: boolean }) => agentFriends ? { icon: ArrowLeft, glyph: undefined } : {};
