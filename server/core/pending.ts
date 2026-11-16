@@ -900,8 +900,9 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       committing(steering);
       // Claude Code queues what Enter commits during a turn; Ctrl+Enter sends it now (#737). herdr
       // encodes the key as the pane asked, and as a plain CR for a program that asked for nothing.
-      // Grok queues that same Enter while a turn runs. Chat Send now then sends an empty-prompt
-      // Enter for each row the live screen still shows queued (drainGrokQueue).
+      // Grok queues that same Enter while a turn runs. Only Send now (`interruptWorkingCodex`, the steer) then sends
+      // an empty-prompt Enter for each row the live screen still shows queued (drainGrokQueue); a queued request
+      // typed at once is not a Send now and stays queued behind the turn.
       const sentAt = Date.now();
       // the connection to herdr is awaited, and a task may fire meanwhile: the hold is read once more once connected,
       // right before the key's own write. A key refused there was not sent, and its paste is not confirmed. Not seen: a
@@ -911,7 +912,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       const commitKey = (): boolean => allowed() && !(refused = resumed());
       await paneSendKeys(paneId, [steering && beforeEnter.identity.agent === "claude" ? "ctrl+enter" : "Enter"], undefined, commitKey)
         .catch((error: unknown) => { if (refused) refuseResumed(); throw error; });
-      if (steering && beforeEnter.identity.agent === "grok") {
+      if (steering && interruptWorkingCodex && beforeEnter.identity.agent === "grok") {
         // the queue Enter already went. enterRefused would call that paste unsent and tell the user
         // to press Enter in the terminal; a retry would queue the follow-up twice. wrote is already
         // set, and a failure here is the same unconfirmed send as any other key that followed a paste.
@@ -1637,8 +1638,9 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
             const receiptText = identity === null ? undefined : piReceiptText(identity, framed.text);
             const piAnchor = identity === null ? null : await preparePiReceipt(message.pane_id, identity).catch(() => null);
             sendingAt = new Date().toISOString();
+            // a saved copy's resend is its Send now: a plain Send is not
             await submitText(message.pane_id, framed.text, framed.payload, arrivedAt, message.typed === true, () => authorizeSocket(client), message.clear_draft,
-              draftConfirmations.get(client)?.get(message.pane_id), message.send_anyway === true, agentOnly);
+              draftConfirmations.get(client)?.get(message.pane_id), message.send_anyway === true, agentOnly, message.resend_id !== undefined);
             if (identity !== null && receiptText !== undefined) {
               try { recordPiTyped(client, message.pane_id, message.id, receiptText, identity, piAnchor, reservation, current !== null && piListsTemplate(current.pane, framed.text)); } catch { /* The send succeeded; receipt tracking cannot make it retryable. */ }
             }

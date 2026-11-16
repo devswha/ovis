@@ -5,10 +5,10 @@ import { createSubmitText, grokQueueShown, GROK_QUEUE_DRAIN_CAP } from "./compos
 afterEach(() => mock.restore());
 
 /**
- * Chat's immediate send (the composer's Send, a held copy's Send now, the local queue's Send now).
- * herdr's agent.prompt pastes and sends one Enter. A working Grok queues that Enter. Send now then
- * sends an empty-prompt Enter for each row the live screen still shows queued. The terminal's input
- * line stays one Enter.
+ * Chat's immediate send: the composer's Send, and a saved copy's Send now (`sendNow`, its resend).
+ * herdr's agent.prompt pastes and sends one Enter. A working Grok queues that Enter. Only Send now
+ * then sends an empty-prompt Enter for each row the live screen still shows queued. A plain Send and
+ * the terminal's input line stay one Enter.
  */
 const submitter = () => createSubmitText({
   options: { submitDelayMs: 0 }, lastTyped: new Map(), attachments: new Map(), terminalAttach: async () => true,
@@ -30,7 +30,15 @@ function grok(statuses: string[], queuedUntilEnters = 0, queueLine = (left: numb
   return { prompt, typed, keys };
 }
 
-const chat = (text = "hello from chat") => submitter()("w:p1", text, text, Date.now(), false);
+const chat = (text = "hello from chat") => submitter()("w:p1", text, text, Date.now(), false, undefined, undefined, undefined, false, false, true);
+
+it("keeps a plain chat Send to a working Grok to the one Enter that queues it", async () => {
+  const { prompt, typed, keys } = grok(["working"], 3);
+  await submitter()("w:p1", "hello from chat", "hello from chat", Date.now(), false);
+  expect(prompt).toHaveBeenCalledTimes(1);
+  expect(typed).not.toHaveBeenCalled();
+  expect(keys).not.toHaveBeenCalled();
+});
 
 it("sends an empty-prompt Enter for each row Grok's queue footer still shows", async () => {
   const { prompt, typed, keys } = grok(["working"], 3);
@@ -128,7 +136,7 @@ it("reports the empty-prompt Enter as unconfirmed when the sender may no longer 
     if (typeof guard === "function" && !guard()) throw new client.HerdrError("cancelled", "herdr was not sent");
   });
   const authorize = () => { if (armed) throw new client.HerdrError("read_only", "this connection is in observe mode"); };
-  const failed = await submitter()("w:p1", "hello from chat", "hello from chat", Date.now(), false, authorize).then(() => null, (error: unknown) => error);
+  const failed = await submitter()("w:p1", "hello from chat", "hello from chat", Date.now(), false, authorize, undefined, undefined, false, false, true).then(() => null, (error: unknown) => error);
   expect(prompt).toHaveBeenCalledTimes(1);
   expect(typed).not.toHaveBeenCalled();
   expect(failed).toBeInstanceOf(client.HerdrError);

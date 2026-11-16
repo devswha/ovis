@@ -498,9 +498,9 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
    * the bytes, so the pane sees the whole gap. So does a Codex "blocked" only by questions
    * waiting collapsed in its queue: its main prompt still takes the message.
    *
-   * A working Grok queues that Enter. A chat Send now then sends an empty-prompt Enter for
-   * each row the live screen still shows queued. An idle Grok with no queue footer, and the
-   * terminal's own input line, keep the single Enter.
+   * A working Grok queues that Enter. Only a Send now (`sendNow`: a saved copy's resend) then
+   * sends an empty-prompt Enter for each row the live screen still shows queued. A plain Send,
+   * an idle Grok with no queue footer, and the terminal's own input line keep the single Enter.
    */
 
   /**
@@ -510,9 +510,11 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
    * `sendAnyway`: the user saw the box a refusal naming no draft showed and chose to send: only into
    * the Claude terminal and session that refusal was for (`confirmation` with no draft), and only while
    * the box still shows what they saw or reads empty. Never typed instead of agent.prompt.
+   * `sendNow`: the user's Send now of a saved copy, which may send it ahead of a working Grok's turn.
    */
   async function submitText(paneId: string, text: string, payload: string, arrivedAt: number, fromTerminal = false, authorize: () => void = () => {},
-    clearDraft?: string, confirmation?: { draft: string | null; identity: PendingIdentity; box?: string | null }, sendAnyway = false, agentOnly = false): Promise<void> {
+    clearDraft?: string, confirmation?: { draft: string | null; identity: PendingIdentity; box?: string | null }, sendAnyway = false, agentOnly = false,
+    sendNow = false): Promise<void> {
     // before anything reads the pane, types or clears: closeMention and mirrorInput trust this framing
     ({ text, payload } = submitFraming(text, payload, fromTerminal));
     let clearedDraft = false;
@@ -521,7 +523,7 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
     let beforeScreen: string | undefined;
     // an agent no reader knows whose screen was read for a picker of its own before agent.prompt (freeAgentPicker)
     let pickerAgent: string | undefined;
-    // a chat send to a Grok whose turn was still running at the commit: its first Enter only queues
+    // a Send now to a Grok whose turn was still running at the commit: its first Enter only queues
     let grokSteering = false;
     // herdr's foreground answer read before this send, which the outcome's process binding uses again
     let seen: ProcessInfo | undefined;
@@ -830,7 +832,8 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
           pickerAgent = agent;
           await freeAgentPicker(paneId, agent);
         }
-        if (agent === "grok" && pane) {
+        // a plain Send queues behind a working Grok's turn, as typing in the terminal does: only Send now goes ahead
+        if (sendNow && agent === "grok" && pane) {
           const latest = await paneGet(paneId);
           inTime();
           grokSteering = resolveAgent(latest).agent === "grok" && latest.agent_status === "working";
