@@ -150,7 +150,6 @@ export const DEVICES_KO: Record<string, string> = {
   "Get a pairing code": "페어링 코드 받기",
   "This browser would not copy it. Press and hold the link to copy it.": "이 브라우저가 복사하지 못했습니다. 링크를 길게 눌러 복사하세요.",
   "Hide QR code": "QR 코드 숨기기",
-  "Show QR code": "QR 코드 보기",
   "Connect another device": "다른 기기 연결",
   "Send it this link, or show it the QR code. It opens Ovis there and pairs it with this PC.": "이 링크를 보내거나 QR 코드를 보여 주세요. 그 기기에서 Ovis가 열리고 이 PC와 페어링됩니다.",
   "Scan it with the other device's camera.": "다른 기기의 카메라로 스캔하세요.",

@@ -1211,17 +1211,14 @@
   margin-inline-end: 0;
 }
 
-/* on a phone the bar is shorter, so the title beside it keeps its room */
+/* on a phone only n / N: the title beside it keeps its room in every language */
 @media (max-width: 640px) {
-  .setup-steps-bar {
-    gap: var(--space-2);
-  }
-
-  .setup-steps-bar .setup-steps > li {
-    width: 14px;
-  }
-
-  .setup-steps-bar .setup-steps > li.is-current {
-    width: 22px;
+  .setup-steps-bar .setup-steps {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
 }

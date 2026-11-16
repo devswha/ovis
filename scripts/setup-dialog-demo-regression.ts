@@ -358,7 +358,10 @@ try {
           // Set up later closes it without starting an agent; the way back is in view: the sidebar's Setup: N left row
           await dialog.locator(".setup-foot").getByRole("button", { name: "Set up later", exact: true }).click();
           await dialog.waitFor({ state: "detached" });
-          if (phone) await page.locator(".app-header .header-menu-button, .drawer-toggle, [aria-label='Open sidebar']").first().click().catch(() => {});
+          if (phone) {
+            await page.locator(".drawer-toggle").click();
+            await page.locator("#workspace-drawer.is-open").waitFor({ state: "visible" });
+          }
           await page.locator(".setup-row").waitFor();
           assert.equal(await page.locator(".setup-row .setup-row-open").isVisible(), true, `Set up later leaves Setup: N left to come back by ${at}`);
           console.log(`PASS Set up later leaves the way back in view (${at})`);
@@ -422,8 +425,10 @@ try {
       await page.goto(root);
       const dialog = page.getByRole("dialog", { name: DIALOG, exact: true });
       const line = dialog.locator(".setup-note-usage");
+      // the guide opens on the agent step: its line is drawn again once the PC's agents arrive, so the case starts there
+      await dialog.getByRole("heading", { name: "Pick an agent", exact: true }).waitFor();
       await line.waitFor({ state: "attached" });
-      // a short window: the welcome's line is below the fold of the guide's scrolling body
+      // a short window: the line is below the fold of the guide's scrolling body
       const below = await line.evaluate((node) => {
         const body = node.closest(".modal-body")!.getBoundingClientRect();
         return node.getBoundingClientRect().bottom > body.bottom;
@@ -458,8 +463,7 @@ try {
       assert.equal(await seen(), 0, "a failed record is not counted");
       await page.keyboard.press("Tab");
       await page.waitForFunction(() => (window as unknown as { counts: { seen: unknown[] } }).counts.seen.length === 1);
-      // recorded on the welcome, the line stays on the next step, its one-tap Turn off with it
-      await dialog.getByRole("heading", { name: "Pick an agent", exact: true }).waitFor();
+      // recorded once, the line stays with its one-tap Turn off
       await dialog.locator(".setup-note-usage").getByRole("button", { name: "Turn off", exact: true }).waitFor({ state: "attached" });
       assert.equal(await seen(), 1, "the next step's copy does not record it again");
       // Turn off in the guide's copy is every copy's: the guide closed, the page's own line does not come back and
@@ -526,14 +530,14 @@ try {
       await fits(page, "the other ways");
       await side.getByRole("button", { name: "Back to QR" }).click();
       await tab(side, /Tailscale/);
-      await side.locator(".setup-qr-panel").waitFor();
+      await side.locator(".setup-qr-panel:visible").waitFor();
       await fits(page, "Tailscale's QR code");
       await tab(side, /Same Wi-Fi/);
-      await side.locator(".setup-method-area .setup-note").waitFor();
+      await side.locator(".setup-method-area .setup-note:visible").waitFor();
       await fits(page, "the Wi-Fi line");
       for (const store of ["Download on the App Store", "Get it on Google Play"]) {
         await side.getByRole("button", { name: store }).click();
-        await side.locator(".setup-qr-panel").waitFor();
+        await side.locator(".setup-qr-panel:visible").waitFor();
         await fits(page, store);
       }
       await context.close();
@@ -541,7 +545,7 @@ try {
     for (const [query, state] of [["&demo_tailscale=command", "Tailscale's command"], ["&demo_tailscale=missing", "Tailscale not installed"]] as const) {
       const { context, page, side } = await open(query);
       await tab(side, /Tailscale/);
-      await side.locator(".setup-method-area .setup-method-step, .setup-method-area .setup-note").first().waitFor();
+      await side.locator(".setup-method-area .setup-method-step:visible, .setup-method-area .setup-note:visible").first().waitFor();
       await fits(page, state);
       await context.close();
     }
@@ -554,6 +558,124 @@ try {
     }
     console.log(`PASS the phone and alerts step's body does not scroll in any state (${at})`);
   }
+  // Opening the guide reads nothing, sends nothing and turns nothing on: open then Set up later leaves no usage read, no
+  // shared-settings write, and this browser's settings byte for byte as they were. Only Continue on the agent step (the
+  // user's own press) reads the plan usage
+  {
+    const context = await browser!.newContext({ viewport: { width: 1920, height: 1080 }, locale: "en-US", colorScheme: "dark" });
+    await context.addInitScript(([guide]) => {
+      if (sessionStorage.getItem("seeded") === null) {
+        localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "dark", palette: "codex", darkTheme: "codex", lightTheme: "codex" }));
+        localStorage.setItem("ovis:setup-guide", guide);
+        sessionStorage.setItem("seeded", "1");
+      }
+      // every request the page makes to the PC, in order, through whatever fetch the demo puts in place
+      const sent: string[] = [];
+      (window as unknown as { sent: string[] }).sent = sent;
+      let inner = window.fetch.bind(window);
+      const recorder = ((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.href);
+        if (url.pathname.startsWith("/api/")) sent.push(`${(init?.method ?? "GET").toUpperCase()} ${url.pathname}`);
+        return inner(input, init);
+      }) as typeof window.fetch;
+      Object.defineProperty(window, "fetch", { configurable: true, get: () => recorder, set: (next: typeof window.fetch) => { inner = next; } });
+    }, [WELCOME] as const);
+    const page = await context.newPage();
+    await page.goto(`${root}?demo_via=local`);
+    const dialog = page.getByRole("dialog", { name: DIALOG, exact: true });
+    await dialog.getByRole("heading", { name: "Pick an agent", exact: true }).waitFor();
+    await dialog.locator(".setup-found .setup-tile").first().waitFor();
+    const settingsBefore = await page.evaluate(() => localStorage.getItem("ovis:settings"));
+    await dialog.locator(".setup-foot").getByRole("button", { name: "Set up later", exact: true }).click();
+    await dialog.waitFor({ state: "detached" });
+    await settled(page);
+    const sent = await page.evaluate(() => (window as unknown as { sent: string[] }).sent);
+    assert.deepEqual(sent.filter((request) => request === "GET /api/usage" || request.startsWith("PUT /api/preferences") || request.startsWith("POST /api/preferences")), [], `opening the guide and Set up later read no usage and write no shared setting: ${sent.join(", ")}`);
+    assert.equal(await page.evaluate(() => localStorage.getItem("ovis:settings")), settingsBefore, "Set up later leaves this browser's settings byte for byte as they were");
+    // the user's own press on the agent step: Continue reads the plan usage
+    await page.evaluate((guide) => { localStorage.setItem("ovis:setup-guide", guide); (window as unknown as { sent: string[] }).sent.length = 0; }, WELCOME);
+    await page.reload();
+    await dialog.getByRole("heading", { name: "Pick an agent", exact: true }).waitFor();
+    await dialog.locator(".setup-found .setup-tile").first().waitFor();
+    await settled(page);
+    assert.equal((await page.evaluate(() => (window as unknown as { sent: string[] }).sent)).includes("GET /api/usage"), false, "no usage read while the agent step only shows");
+    await dialog.locator(".setup-foot").getByRole("button", { name: "Continue", exact: true }).click();
+    await page.waitForFunction(() => (window as unknown as { sent: string[] }).sent.includes("GET /api/usage"));
+    await context.close();
+    console.log("PASS opening the guide and Set up later read no usage, write no shared setting and leave the settings as they were; Continue reads the usage");
+  }
+
+  // On a phone, with the answer a browser on the PC itself gets (via local): the step opens at its top, and a tab's press brings
+  // its panel into view; Tailscale shows its QR code and Same Wi-Fi its line
+  {
+    const context = await browser!.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 3, locale: "en-US", colorScheme: "dark" });
+    await context.addInitScript(([guide]) => {
+      if (sessionStorage.getItem("seeded") !== null) return;
+      localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "dark", palette: "codex", darkTheme: "codex", lightTheme: "codex" }));
+      localStorage.setItem("ovis:setup-guide", guide);
+      sessionStorage.setItem("seeded", "1");
+    }, [WELCOME] as const);
+    const page = await context.newPage();
+    await page.goto(`${root}?demo_devices=empty&demo_via=local`);
+    const dialog = page.getByRole("dialog", { name: DIALOG, exact: true });
+    for (const heading of ["Pick an agent", "Pick a look"]) {
+      await dialog.getByRole("heading", { name: heading, exact: true }).waitFor();
+      await dialog.locator(".setup-foot").getByRole("button", { name: "Continue", exact: true }).click();
+    }
+    const title = dialog.getByRole("heading", { name: "Stay in touch", exact: true });
+    await title.waitFor();
+    await settled(page);
+    const top = (await title.boundingBox())!;
+    assert.ok(top.y >= 0 && top.y + top.height <= 844, `390: the phone step opens at its top: ${JSON.stringify(top)}`);
+    const side = dialog.locator(".setup-side-phone");
+    await side.getByRole("tab", { name: /Tailscale/ }).click();
+    await side.locator(".setup-qr-panel:visible .qr").waitFor();
+    // the sheet scrolls to it (smoothly): wait for the scroll to end with the QR code whole in the window
+    const inView = await page.waitForFunction(() => {
+      const qr = [...document.querySelectorAll(".setup-qr-panel .qr")].find((node) => node.getClientRects().length > 0);
+      const rect = qr?.getBoundingClientRect();
+      const body = document.querySelector(".setup-dialog .setup-body")?.getBoundingClientRect();
+      return rect !== undefined && body !== undefined && rect.top >= body.top && rect.bottom <= body.bottom;
+    }, undefined, { timeout: 5000 }).then(() => true, () => false);
+    const qr = (await side.locator(".setup-qr-panel:visible .qr").boundingBox())!;
+    assert.ok(inView, `390: Tailscale's QR code comes into view on its press: ${JSON.stringify(qr)}`);
+    await side.getByRole("tab", { name: /Same Wi-Fi/ }).click();
+    await side.locator(".setup-method-area .setup-note:visible, .setup-qr-panel:visible").first().waitFor();
+    await context.close();
+    console.log("PASS on a phone the phone step opens at its top, and Tailscale and Same Wi-Fi work for a browser on the PC (390x844)");
+  }
+
+  // A pairing code runs out: the QR code goes back to the plain address, and New code asks for another on a press
+  {
+    const context = await browser!.newContext({ viewport: { width: 1920, height: 1080 }, locale: "en-US", colorScheme: "dark" });
+    await context.addInitScript(([guide]) => {
+      if (sessionStorage.getItem("seeded") !== null) return;
+      localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "dark", palette: "codex", darkTheme: "codex", lightTheme: "codex" }));
+      localStorage.setItem("ovis:setup-guide", guide);
+      sessionStorage.setItem("seeded", "1");
+    }, [WELCOME] as const);
+    const page = await context.newPage();
+    await page.clock.install();
+    await page.goto(`${root}?demo_devices=empty&demo_via=device`);
+    const dialog = page.getByRole("dialog", { name: DIALOG, exact: true });
+    for (const heading of ["Pick an agent", "Pick a look"]) {
+      await dialog.getByRole("heading", { name: heading, exact: true }).waitFor();
+      await dialog.locator(".setup-foot").getByRole("button", { name: "Continue", exact: true }).click();
+    }
+    const side = dialog.locator(".setup-side-phone");
+    await side.getByRole("tab", { name: /Tailscale/ }).click();
+    const coded = side.getByRole("img", { name: /^QR code that pairs a phone with code/ });
+    await coded.waitFor();
+    assert.equal(await side.getByRole("button", { name: "New code", exact: true }).count(), 0, "no New code while a code is live");
+    await page.clock.fastForward("11:00");
+    await side.getByRole("button", { name: "New code", exact: true }).waitFor();
+    assert.equal(await coded.count(), 0, "a code that ran out leaves the QR code");
+    await side.getByRole("button", { name: "New code", exact: true }).click();
+    await coded.waitFor();
+    await context.close();
+    console.log("PASS a pairing code that runs out is renewed only by New code (1920x1080)");
+  }
+
 } finally {
   await browser?.close();
   await server?.stop(true);

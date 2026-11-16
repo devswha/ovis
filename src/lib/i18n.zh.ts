@@ -306,7 +306,7 @@ const BASE: Record<string, string> = {
   // ---- prompt card ----
   "Submit": "提交",
   "Recommended": "推荐",
-  "Agents": "智能体",
+  "Agents": "Agent",
   "Setup guide": "设置向导",
   "Could not confirm this browser is paired. Check that cookies are enabled, then try again.": "无法确认此浏览器已配对。请检查是否允许 Cookie，然后重试。",
   "New code": "新代码",
@@ -628,14 +628,15 @@ const BASE: Record<string, string> = {
   "Next": "下一个",
   "Setup: {count} left": "剩余设置 {count} 项",
   "Hide setup reminder": "隐藏设置提醒",
-  "Start another agent": "再启动一个智能体",
+  "Start another agent": "再启动一个代理",
   "Optional": "可选",
   "Couldn't check alerts.": "无法检查提醒。",
   "Chat or Terminal": "聊天或终端",
-  "Same agent, two views.": "同一个智能体，两种视图。",
-  "Waiting agents first": "等待中的智能体在前",
+  "Same agent, two views.": "同一个代理，两种视图。",
+  "Waiting agents first": "等待中的代理在前",
   "From every workspace.": "来自所有工作区。",
   "Pick a folder to start in.": "选择要启动的文件夹。",
+  "Show QR code": "显示二维码",
 };
 
 /** The parts ZH is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */

@@ -150,7 +150,6 @@ export const DEVICES_ZH: Record<string, string> = {
   "Get a pairing code": "获取配对码",
   "This browser would not copy it. Press and hold the link to copy it.": "此浏览器无法复制。请长按链接进行复制。",
   "Hide QR code": "隐藏二维码",
-  "Show QR code": "显示二维码",
   "Connect another device": "连接其他设备",
   "Send it this link, or show it the QR code. It opens Ovis there and pairs it with this PC.": "把此链接发给它，或让它扫描二维码。它会在那台设备上打开 Ovis 并与这台电脑配对。",
   "Scan it with the other device's camera.": "用另一台设备的相机扫描。",

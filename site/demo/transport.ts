@@ -1206,9 +1206,11 @@ const demoDevices: PairedDevice[] = DEVICE_STATE === "empty" ? [] : [
   // `relay`: a device paired through the relay under this browser's own name, as Connect a phone's same-name hint reads it
   ...(DEVICE_STATE === "relay" ? [{ id: "9a7e5c3b1d2f4068", label: deviceLabel(navigator.userAgent, navigator.maxTouchPoints ?? 0), role: "drive" as const, created_at: ago(5 * 24 * 60), last_seen_at: ago(40), current: false, via_relay: true as const }] : []),
 ];
-// `?demo_via=device`: this browser is a paired device (the setup guide's Wi-Fi and Tailscale QR codes then make a pairing code)
-const DEMO_VIA_DEVICE = new URLSearchParams(location.search).get("demo_via") === "device";
-const demoAuth: HealthAuth = DEVICE_STATE === "watch" ? { required: false, authenticated: true, via: "device", role: "watch" } : DEMO_VIA_DEVICE ? { required: false, authenticated: true, via: "device" } : { required: false, authenticated: true };
+// `?demo_via=device`: this browser is a paired device; `?demo_via=local`: it is on the PC itself, as a real server says
+// there (the setup guide's Wi-Fi and Tailscale QR codes then make a pairing code)
+const DEMO_VIA = new URLSearchParams(location.search).get("demo_via");
+const DEMO_VIA_DEVICE = DEMO_VIA === "device";
+const demoAuth: HealthAuth = DEVICE_STATE === "watch" ? { required: false, authenticated: true, via: "device", role: "watch" } : DEMO_VIA_DEVICE ? { required: false, authenticated: true, via: "device" } : DEMO_VIA === "local" ? { required: false, authenticated: true, via: "local" } : { required: false, authenticated: true };
 let demoPairings = 0;
 // what a server answers when the registry write fails (server/http.ts): a log reference, nothing more
 const registryUnwritable = () => error("internal_error", "internal error (d3m0f41l0001)", 500);

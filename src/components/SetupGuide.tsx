@@ -1,11 +1,11 @@
 /**
- * The first-run setup guide (lib/setupGuideFlow.ts), drawn as a dialog over the app: a welcome, then the
+ * The first-run setup guide (lib/setupGuideFlow.ts), drawn as a dialog over the app: it opens on the
  * steps, then a Done screen whose Start opens the first workspace. The agent step checks the PC for
  * coding agents, then shows every one as a tile whatever it found: an installed one is picked by a tap,
  * a missing one has its Install (the user's tap is the consent: the official installer runs in a
  * terminal tab while a ring turns on the tile). Start opens the first workspace with the one picked;
  * the agent asks for its own sign-in when it first starts. Its footer's Start now, finish setup later
- * starts it at once (two clicks from the welcome); Continue leads to Done. Plan usage is turned on for
+ * starts on Done's Start (Continue three times, then Start); Set up later closes it. Plan usage is turned on for
  * accounts already signed in. Done keeps Connect your phone beside Start: it leads with the Ovis relay
  * where it can (lib/setupGuideFlow.ts phoneWay): a tap turns it on, then its pairing QR code shows right
  * there, and a browser in only because nothing is paired yet pairs itself first, as turning the relay
@@ -17,7 +17,7 @@
  * stays visible, and the card's height never moves between steps.
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MutableRefObject, type ReactNode } from "react";
-import { ArrowRight, Bell, BellRing, Check, ChevronLeft, Circle, CircleCheck, Copy, ExternalLink, TriangleAlert, Folder, Gauge, Globe, Info, KeyRound, LoaderCircle, Network, Play, RotateCw, Smartphone, Wifi, X } from "lucide-react";
+import { ArrowRight, Bell, BellRing, Check, ChevronLeft, Circle, CircleCheck, Copy, ExternalLink, TriangleAlert, Folder, Gauge, Globe, Info, KeyRound, LoaderCircle, Network, Play, RefreshCw, RotateCw, Smartphone, Wifi, X } from "lucide-react";
 
 import type { AgentCatalogEntry, AgentCatalogRow } from "../../shared/agent-catalog.ts";
 import type { HealthAuth, PairingCode, RemoteAccess } from "../../shared/protocol.ts";
@@ -79,7 +79,7 @@ export interface SetupGuideProps {
   onOpenTerminal: (paneId: string) => void;
   /** Connect your phone where the guide cannot show its QR code: the Settings page that pairs it */
   onOpenSettings: (page: "devices") => void;
-  /** the welcome's line about anonymous usage counts: its sentence opens Settings → About, where the switch is */
+  /** the line about anonymous usage counts: its sentence opens Settings → About, where the switch is */
   onOpenTelemetry: () => void;
   /** how this browser got in: one in only because nothing is paired yet pairs itself first (Connect your phone) */
   auth: HealthAuth | null;
@@ -105,7 +105,7 @@ export function SetupGuide(props: SetupGuideProps) {
   const { state, onClose, hidden = false } = props;
   const t = useT();
   const machineId = useMachineId();
-  // the PC check: GET /api/agent-catalog for the PC being set up, run once the guide is begun and on Look again
+  // the PC check: GET /api/agent-catalog for the PC being set up, run as the guide opens and on Look again
   const [catalog, setCatalog] = useState<AgentCatalogRow[] | null>(null);
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
@@ -152,21 +152,19 @@ export function SetupGuide(props: SetupGuideProps) {
     const ask = ++asked.current;
     fetchAgentCatalog(machineId).then((answer) => { if (ask === asked.current) setCatalog(answer.agents); }, () => { /* Start works without the version */ });
   };
-  const begun = state.step !== "welcome";
   useEffect(() => {
-    if (begun) loadCatalog();
+    loadCatalog();
     return () => { asked.current += 1; window.clearTimeout(settle.current); };
-  }, [begun, machineId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [machineId]); // eslint-disable-line react-hooks/exhaustive-deps
   const check: PcCheck = { checking, catalog, failed: catalogError !== null };
-  // the step shown once the guide is begun: the head's list of steps and the body follow it; the welcome starts it over
+  // the step shown: the head's step bar and the body follow it
   // opened again at a later step (the sidebar's Setup: N left) starts there
   const [page, setPage] = useState<GuidePage>(state.at ?? "agent");
   // left that step: a reload resumes where the user is (#3907 review)
   useEffect(() => { if (state.at !== undefined && page !== state.at) props.dispatch({ type: "moved" }); }, [page]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { if (state.step === "welcome") { setPage("agent"); props.dispatch({ type: "begin" }); } }, [state.step]); // eslint-disable-line react-hooks/exhaustive-deps
   const view = setupView(check);
 
-  // the control the dialog gives the keyboard to when it opens: the welcome's first choice, or a step's title
+  // the control the dialog gives the keyboard to when it opens: the step's title
   const firstFocus = useRef<HTMLElement | null>(null);
   const surface = useFocusTrap<HTMLElement>(!hidden, { initialFocus: firstFocus });
   // a phone's Back closes it, as it closes any sheet, rather than leaving the app with it open
@@ -185,7 +183,7 @@ export function SetupGuide(props: SetupGuideProps) {
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [hidden, onClose, surface]);
-  // the welcome and the steps swap in place (I'm new to Ovis, Back): the one shown takes the keyboard
+  // the steps swap in place (Continue, Back): the one shown takes the keyboard
   const stepBefore = useRef(state.step);
   useEffect(() => {
     if (stepBefore.current === state.step) return;
@@ -213,9 +211,8 @@ export function SetupGuide(props: SetupGuideProps) {
   // a guide stepped aside (hidden) shows nothing, so its line neither shows nor counts as seen
   const notice = <TelemetryNotice inline enabled={!hidden} onOpen={props.onOpenTelemetry} />;
   let body: ReactNode;
-  if (state.step === "welcome") body = null;
-  else if (view === "agents" && catalog !== null) body = <Steps page={page} setPage={setPage} onEnableAlerts={props.onEnableAlerts} notifications={props.notifications} settingsOpen={props.settingsOpen} pushOn={props.pushOn} catalog={catalog} ready={ready} machineId={machineId} reopened={state.reopened === true} dispatch={props.dispatch} onClose={onClose} onInstalled={agentInstalled} onLookAgain={loadCatalog} onOpenTerminal={props.onOpenTerminal} onOpened={props.onOpened} onOpenSettings={props.onOpenSettings} auth={props.auth} security={props.security} onStarting={props.onStarting} onPaired={props.onPaired} usageOn={turnsUsageOn(props.state)} phoneFirst={!phoneClosed && phoneBoxOpensFirst(props.state, isLoopbackHost(window.location.hostname))} onPhoneClosed={() => setPhoneClosed(true)} notice={notice} firstFocus={firstFocus} />;
-  else body = <CheckStep reopened={state.reopened === true} dispatch={props.dispatch} onClose={onClose} notice={notice} firstFocus={firstFocus}>{view === "failed" ? <CheckFailed error={catalogError} onLookAgain={loadCatalog} /> : <Checking known={known} catalog={catalog} />}</CheckStep>;
+  if (view === "agents" && catalog !== null) body = <Steps page={page} setPage={setPage} onEnableAlerts={props.onEnableAlerts} notifications={props.notifications} settingsOpen={props.settingsOpen} pushOn={props.pushOn} catalog={catalog} ready={ready} machineId={machineId} onClose={onClose} onInstalled={agentInstalled} onLookAgain={loadCatalog} onOpenTerminal={props.onOpenTerminal} onOpened={props.onOpened} onOpenSettings={props.onOpenSettings} auth={props.auth} security={props.security} onStarting={props.onStarting} onPaired={props.onPaired} usageOn={turnsUsageOn(props.state)} phoneFirst={!phoneClosed && phoneBoxOpensFirst(props.state, isLoopbackHost(window.location.hostname))} onPhoneClosed={() => setPhoneClosed(true)} notice={notice} firstFocus={firstFocus} />;
+  else body = <CheckStep onClose={onClose} notice={notice} firstFocus={firstFocus}>{view === "failed" ? <CheckFailed error={catalogError} onLookAgain={loadCatalog} /> : <Checking known={known} catalog={catalog} />}</CheckStep>;
 
   return (
     <div className="modal-scrim setup-scrim" hidden={hidden}>
@@ -244,7 +241,7 @@ function StepTitle({ children, firstFocus }: { children: ReactNode; firstFocus: 
 }
 
 /** The agent step while the PC is checked, or when the check failed: nothing to pick yet, so nothing to continue with. */
-function CheckStep({ reopened, dispatch, onClose, notice, firstFocus, children }: { reopened: boolean; dispatch: (event: GuideEvent) => void; onClose: () => void; notice: ReactNode; firstFocus: FirstFocus; children: ReactNode }) {
+function CheckStep({ onClose, notice, firstFocus, children }: { onClose: () => void; notice: ReactNode; firstFocus: FirstFocus; children: ReactNode }) {
   const t = useT();
   return (
     <>
@@ -313,9 +310,7 @@ function CheckFailed({ error, onLookAgain }: { error: string | null; onLookAgain
   );
 }
 
-interface StepsProps extends Pick<StepState, "page" | "setPage">, Pick<SetupGuideProps, "onEnableAlerts" | "notifications" | "settingsOpen" | "pushOn" | "onOpenTerminal" | "onOpened" | "onOpenSettings" | "auth" | "security" | "onStarting" | "onPaired" | "onClose" | "dispatch"> {
-  /** opened again from Settings: no welcome to go back to */
-  reopened: boolean;
+interface StepsProps extends Pick<StepState, "page" | "setPage">, Pick<SetupGuideProps, "onEnableAlerts" | "notifications" | "settingsOpen" | "pushOn" | "onOpenTerminal" | "onOpened" | "onOpenSettings" | "auth" | "security" | "onStarting" | "onPaired" | "onClose"> {
   /** the line about usage counts, at the end of the step's column */
   notice: ReactNode;
   /** a first run turns plan usage on for a signed-in account; a reopened guide leaves the setting alone */
@@ -334,7 +329,7 @@ interface StepsProps extends Pick<StepState, "page" | "setPage">, Pick<SetupGuid
 }
 
 /** The agent step and the Done screen: one place keeps the agent picked and what Start did, for both. */
-function Steps({ page, setPage, onEnableAlerts, notifications, settingsOpen = false, pushOn = false, catalog, ready, machineId, reopened, notice, dispatch, onClose, onInstalled, onLookAgain, onOpenTerminal, onOpened, onOpenSettings, auth, security, onStarting, onPaired, usageOn, phoneFirst, onPhoneClosed, firstFocus }: StepsProps) {
+function Steps({ page, setPage, onEnableAlerts, notifications, settingsOpen = false, pushOn = false, catalog, ready, machineId, notice, onClose, onInstalled, onLookAgain, onOpenTerminal, onOpened, onOpenSettings, auth, security, onStarting, onPaired, usageOn, phoneFirst, onPhoneClosed, firstFocus }: StepsProps) {
   const t = useT();
   const { settings, update } = useSettings();
   const agents = agentRows(catalog, ready);
@@ -353,7 +348,11 @@ function Steps({ page, setPage, onEnableAlerts, notifications, settingsOpen = fa
     document.getElementById("setup-step-title")?.focus({ preventScroll: true });
   }, [page]);
   // the agents already signed in here: their plan usage is turned on as soon as they are seen, without a question
-  const signedIn = useSignedInUsage(ready, (refresh) => fetchUsage(refresh).then((report) => signedInAgents(report.providers)), settings.showUsage || !usageOn, () => update({ showUsage: true }));
+  // plan usage: nothing is read from the PC's sign-ins, nor turned on, before the user's own press on the agent step
+  // (Continue), as main waited for I'm new to Ovis; Set up later from the first step reads nothing
+  const [usageArmed, setUsageArmed] = useState(page !== "agent");
+  useEffect(() => { if (page !== "agent") setUsageArmed(true); }, [page]);
+  const signedIn = useSignedInUsage(ready, (refresh) => fetchUsage(refresh).then((report) => signedInAgents(report.providers)), settings.showUsage || !usageOn, () => update({ showUsage: true }), usageArmed);
   // Claude Code and Codex, installed here and not signed in yet: signed in from the guide, in the browser
   // (UsageSignInDialog). Accounts are read on the server's PC, so only its own guide offers it, and a
   // watching device signs in to nothing
@@ -602,7 +601,7 @@ function Steps({ page, setPage, onEnableAlerts, notifications, settingsOpen = fa
   );
 }
 
-/** The steps after the welcome; Done is the end of the list, not a step of it. */
+/** The guide's steps; Done ends the list. */
 type GuidePage = "agent" | "theme" | "phone" | "done";
 interface StepState { page: GuidePage; setPage: (page: GuidePage) => void }
 const STEPS: readonly Exclude<GuidePage, "done">[] = ["agent", "theme", "phone"];
@@ -1009,7 +1008,7 @@ function PhoneQr({ auth, onOpenSettings, onPaired, onPhonePaired, given, large =
     fetchRemoteAccess().then((answer) => { if (live) setAccess(answer); }, () => { if (live) setAccess(null); });
     return () => { live = false; };
   }, []);
-  const plan = phonePlan({ protocol: window.location.protocol, hostname: window.location.hostname, origin: window.location.origin, secure: window.isSecureContext }, access ?? null);
+  const plan = phonePlan({ protocol: window.location.protocol, hostname: window.location.hostname, origin: window.location.origin, secure: window.isSecureContext, shell: inRelayShell() }, access ?? null);
   // where a phone can open this app now, as Settings → Phone works it out
   const address = given ?? (access === undefined ? undefined : plan.kind === "here" || plan.kind === "served" ? plan.url : isLoopbackHost(window.location.hostname) ? null : window.location.origin);
   // the QR, this browser paired first, or Settings → Phone (phoneBoxMode); once paired here, the QR
@@ -1026,7 +1025,8 @@ function PhoneQr({ auth, onOpenSettings, onPaired, onPhonePaired, given, large =
   const [requesting, setRequesting] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   // this browser paired itself first (it was in only because nothing was paired yet)
-  const ready = mode === "qr" || mode === "pair-self";
+  const [agreed, setAgreed] = useState(false);
+  const ready = mode === "qr" || (mode === "pair-self" && (!large || pairedHere || agreed));
   // the devices paired before this code: a new id among them later is the phone that used it
   const before = useRef<ReadonlySet<string> | null>(null);
   useEffect(() => {
@@ -1072,13 +1072,21 @@ function PhoneQr({ auth, onOpenSettings, onPaired, onPhonePaired, given, large =
     const poll = window.setInterval(look, PAIRING_POLL_MS);
     return () => { live = false; window.clearTimeout(expiry); window.clearInterval(poll); };
   }, [code]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (large && mode === "pair-self" && !pairedHere && !agreed) return (
+    <div className="setup-method-step">
+      <p className="setup-text">{t("New browsers will then need a code.")}</p>
+      <div><button type="button" className="btn" onClick={() => setAgreed(true)}>{t("Show QR code")}</button></div>
+    </div>
+  );
   if (!ready || typeof address !== "string") return <p className="setup-muted"><LoaderCircle aria-hidden="true" className="setup-spin" /></p>;
   // the line under the address: the paired phone, this browser paired first, or what failed
   const value = code === null ? address : `${address.replace(/\/$/, "")}/?pair=${code.code}`;
   if (large) return (
     <QrPanel value={value} label={code === null ? t("Open this address on your phone") : t("QR code that pairs a phone with code {code}", { code: code.code })} address={address}>
       {paired !== null && <span className="setup-paired" role="status"><Check aria-hidden="true" />{t("Paired: {name}.", { name: paired })}</span>}
+      {pairedHere && <span className="setup-paired" role="status"><Check aria-hidden="true" />{t("This browser is connected first.")}</span>}
       {failure !== null && <span className="setup-error" role="alert">{failure}</span>}
+      {code === null && <button type="button" className="btn" aria-disabled={requesting || undefined} onClick={() => { if (requesting) return; setPaired(null); setAsking((count) => count + 1); }}><RefreshCw aria-hidden="true" />{failure !== null ? t("Try again") : t("New code")}</button>}
     </QrPanel>
   );
   return (
@@ -1112,7 +1120,7 @@ export function SetupGuideResume({ onResume }: { onResume: () => void }) {
 
 /** The App Store and Google Play pages of the Ovis app. */
 const STORES = {
-  "app-store": { url: "https://apps.apple.com/app/id6824664162", badge: "/store-badges/app-store-en.svg", width: 120, height: 40 },
+  "app-store": { url: "https://apps.apple.com/app/id6824664162", badge: `${import.meta.env.BASE_URL}store-badges/app-store-en.svg`, width: 120, height: 40 },
   "google-play": { url: "https://play.google.com/store/apps/details?id=sh.ovis.app", badge: "google-play", width: 135, height: 52 },
 } as const;
 type Store = keyof typeof STORES;
@@ -1122,7 +1130,7 @@ type PhoneMethod = "relay" | "wifi" | "tailscale";
 function badgeSrc(store: Store, language: string): string {
   if (store === "app-store") return STORES["app-store"].badge;
   const lang = language.startsWith("ko") ? "ko" : language.startsWith("ja") ? "ja" : language.startsWith("zh") ? "zh-cn" : "en";
-  return `/store-badges/google-play-${lang}.png`;
+  return `${import.meta.env.BASE_URL}store-badges/google-play-${lang}.png`;
 }
 
 /** A private LAN address this page was opened at (a phone on the same Wi-Fi opens it too), else null. */
@@ -1232,7 +1240,7 @@ function TailscaleMethod(props: MethodProps) {
     return () => { live = false; };
   }, []);
   if (access === undefined) return <p className="setup-muted"><LoaderCircle aria-hidden="true" className="setup-spin" /></p>;
-  const plan = phonePlan({ protocol: window.location.protocol, hostname: window.location.hostname, origin: window.location.origin, secure: window.isSecureContext }, access);
+  const plan = phonePlan({ protocol: window.location.protocol, hostname: window.location.hostname, origin: window.location.origin, secure: window.isSecureContext, shell: inRelayShell() }, access);
   if (plan.kind === "here" || plan.kind === "served") return <PhoneQr given={plan.url} large auth={props.auth} onOpenSettings={props.onOpenSettings} onPaired={props.onPaired} onPhonePaired={props.onPhonePaired} />;
   if (plan.kind === "command") return (
     <div className="setup-method-step">
@@ -1259,10 +1267,24 @@ function methodFacts(t: Translate): { id: PhoneMethod; icon: ReactNode; name: st
 /** On a phone the page scrolls: the QR area a press filled comes into view, its QR code and line with it. */
 function useShownInView(area: React.RefObject<HTMLElement | null>, shown: unknown): void {
   const narrow = useMediaQuery("(max-width: 640px)");
+  // the step opens at its top: only a press afterwards brings its QR area into view
+  const first = useRef(true);
   useEffect(() => {
-    if (shown === null || !narrow) return;
-    area.current?.scrollIntoView({ block: "nearest" });
-  }, [shown, narrow]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (first.current) { first.current = false; return; }
+    const panel = area.current;
+    if (shown === null || !narrow || panel === null) return;
+    // to the top of the sheet: the QR code is drawn after the press, so the panel is followed as it grows, until the
+    // user scrolls or touches the sheet themselves
+    const step = panel.closest("li") ?? panel;
+    const align = (): void => step.scrollIntoView({ block: "start" });
+    align();
+    const grows = new ResizeObserver(align);
+    grows.observe(panel);
+    const sheet = panel.closest(".setup-body");
+    const stop = (): void => grows.disconnect();
+    for (const kind of ["touchstart", "wheel", "pointerdown", "keydown"] as const) sheet?.addEventListener(kind, stop, { once: true, passive: true });
+    return () => { grows.disconnect(); for (const kind of ["touchstart", "wheel", "pointerdown", "keydown"] as const) sheet?.removeEventListener(kind, stop); };
+  }, [shown]); // eslint-disable-line react-hooks/exhaustive-deps
 }
 
 /** The phone's side of the step, a short numbered path: the app (optional) with its badges on one line, the way as tabs, then its QR code. */
@@ -1274,6 +1296,8 @@ function PhonePanel(props: MethodProps) {
   const tabs = useRef<(HTMLButtonElement | null)[]>([]);
   const area = useRef<HTMLDivElement>(null);
   useShownInView(area, store ?? method);
+  const [opened, setOpened] = useState<readonly PhoneMethod[]>([method]);
+  useEffect(() => { setOpened((list) => list.includes(method) ? list : [...list, method]); }, [method]);
   const pick = (next: PhoneMethod): void => { setStore(null); setMethod(next); };
   const onKey = (event: ReactKeyboardEvent, index: number): void => {
     const next = event.key === "ArrowRight" ? (index + 1) % facts.length : event.key === "ArrowLeft" ? (index + facts.length - 1) % facts.length : null;
@@ -1302,7 +1326,9 @@ function PhonePanel(props: MethodProps) {
       <li>
         <span className="setup-path-head"><span className="setup-path-num" aria-hidden="true">3</span>{t("Scan with your phone")}</span>
         <div id="setup-path-panel" role="tabpanel" aria-labelledby={`setup-path-tab-${method}`} className="setup-method-area" ref={area}>
-          {store !== null ? <StoreQr store={store} /> : <MethodPanel key={method} method={method} {...props} />}
+          {store !== null && <StoreQr store={store} />}
+          {/* a way once opened stays mounted while hidden: going back to it asks for no new code (one only on New code) */}
+          {opened.map((way) => <div key={way} hidden={store !== null || way !== method}><MethodPanel method={way} {...props} /></div>)}
         </div>
       </li>
     </ol>

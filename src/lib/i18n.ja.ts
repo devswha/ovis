@@ -634,6 +634,7 @@ const BASE: Record<string, string> = {
   "Waiting agents first": "待っているエージェントが先",
   "From every workspace.": "すべてのワークスペースから。",
   "Pick a folder to start in.": "始めるフォルダーを選びます。",
+  "Show QR code": "QR コードを表示",
 };
 
 /** The parts JA is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */

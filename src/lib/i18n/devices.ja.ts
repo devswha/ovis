@@ -150,7 +150,6 @@ export const DEVICES_JA: Record<string, string> = {
   "Get a pairing code": "ペアリングコードを取得",
   "This browser would not copy it. Press and hold the link to copy it.": "このブラウザではコピーできませんでした。リンクを長押ししてコピーしてください。",
   "Hide QR code": "QR コードを隠す",
-  "Show QR code": "QR コードを表示",
   "Connect another device": "ほかのデバイスを接続",
   "Send it this link, or show it the QR code. It opens Ovis there and pairs it with this PC.": "このリンクを送るか、QR コードを見せてください。そのデバイスで Ovis が開き、この PC とペアリングされます。",
   "Scan it with the other device's camera.": "ほかのデバイスのカメラでスキャンしてください。",

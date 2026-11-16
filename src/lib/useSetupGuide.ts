@@ -147,12 +147,13 @@ export function useSetupGuide({ enabled, workspaces, pairingGate, watching }: Se
  * them afresh. Closing the guide stops it: no retry reads again, and no late answer turns usage on
  * over a choice made since in Settings.
  */
-export function useSignedInUsage(ready: readonly string[], read: (refresh: boolean) => Promise<readonly string[]>, showing: boolean, turnOn: () => void): readonly string[] {
+export function useSignedInUsage(ready: readonly string[], read: (refresh: boolean) => Promise<readonly string[]>, showing: boolean, turnOn: () => void, enabled = true): readonly string[] {
   const [signedIn, setSignedIn] = useState<readonly string[]>([]);
   const shown = useRef(showing);
   shown.current = showing;
   const readyKey = ready.join(",");
-  useEffect(() => readSignedIn(
+  // nothing is read, nor turned on, until the caller says so (the guide: after the user's own press on the agent step)
+  useEffect(() => !enabled ? undefined : readSignedIn(
     // an agent signed in just now: read the accounts afresh, not what the server last saw
     () => read(readyKey !== ""),
     (agents) => {
@@ -160,7 +161,7 @@ export function useSignedInUsage(ready: readonly string[], read: (refresh: boole
       if (agents.length > 0 && !shown.current) { shown.current = true; turnOn(); }
     },
     (run, ms) => { const timer = window.setTimeout(run, ms); return () => window.clearTimeout(timer); },
-  ), [readyKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  ), [readyKey, enabled]); // eslint-disable-line react-hooks/exhaustive-deps
   return signedIn;
 }
 
