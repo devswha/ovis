@@ -153,7 +153,7 @@ import { layoutCells } from "./lib/layoutMap.ts";
 import { pageStartsInInbox, useInboxMode } from "./lib/inboxMode.ts";
 import { InboxList } from "./components/InboxList.tsx";
 import { ForkGithubPane, ForkGithubSection } from "./fork/GithubInbox.tsx";
-import { ForkInboxFoot, ForkSidebarFoot } from "./fork/SidebarFoot.tsx";
+import { ForkInboxFoot, ForkSidebarFoot, useForkInboxStatusBar } from "./fork/SidebarFoot.tsx";
 import { InboxConnecting, InboxFootEntry, InboxUnchosen, ThreadTitle, ThreadTop } from "./components/InboxMode.tsx";
 import { InboxRail } from "./components/InboxRail.tsx";
 import { OvisMark } from "./components/OvisMark.tsx";
@@ -1001,7 +1001,8 @@ export function App() {
   const stripInHeader = classicStripInHeader && !inMode && screenMachineId === null;
   // from 769px with a mouse the pane column ends in the Herdr app's status bar: where the pane is, its branch,
   // the connection. A touch screen keeps that room for its key bar and says them in More and the chip.
-  const statusBarShown = wideScreen && keyboardLikely && selectedPane !== null && crumb !== null && !guideShown && !inMode;
+  const forkInboxStatusBar = useForkInboxStatusBar(inMode && !inbox.shown);
+  const statusBarShown = wideScreen && keyboardLikely && selectedPane !== null && crumb !== null && !guideShown && (!inMode || forkInboxStatusBar);
   // nor does More count where the mode's list stands beside the thread, its waiting rows first: one fact, one place
   const waitingDot = waitingInMore && !statusBarShown && !inboxWide;
   const openNewOn = (id: string): void => { setNewSessionMachineId(id); setNewTab(null); setNewSessionOpen(true); setDrawerOpen(false); };

@@ -238,3 +238,13 @@
   top: var(--space-half);
   right: var(--space-half);
 }
+
+/* the open thread's status bar (useForkInboxStatusBar) takes the room the mode's terminal kept for one */
+@media (hover: hover) and (pointer: fine) {
+  .app.is-inbox-wide.is-inbox-terminal:has(.status-bar) .pane-column {
+    padding-bottom: calc(var(--header-h) - var(--inbox-zone-h));
+  }
+}
+
+/* the status bar says who waits where it shows, as in the workspaces view: the foot then leaves it to the bar */
+.app:has(.status-bar) .fork-github-foot > .fork-foot-waiting { display: none; }

@@ -62,3 +62,13 @@ export function ForkInboxFoot({ children, watching, onUsageLogin }: { children: 
       if (place === "inbox") onInbox();
     }} />} />;
 }
+
+/**
+ * With the inbox footer on, the agent inbox's open thread ends in the workspaces view's status bar too (App.tsx
+ * adds this to where the bar shows), so a pane reads the same in both: not while Pull requests stands over it.
+ */
+export function useForkInboxStatusBar(threadShown: boolean): boolean {
+  const { settings } = useSettings();
+  const current = useGithubSection();
+  return settings.inboxFooter && threadShown && current !== "github";
+}
