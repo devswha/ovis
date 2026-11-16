@@ -1,5 +1,7 @@
 import { cloneElement, useEffect, useState, useSyncExternalStore, type MouseEventHandler, type ReactElement, type ReactNode } from "react";
-import { GitPullRequest, RefreshCw } from "lucide-react";
+import { FolderGit2, GitPullRequest, ListFilter, RefreshCw } from "lucide-react";
+
+import { RowMenu } from "../components/RowMenu.tsx";
 
 import type { GithubPull, GithubPulls } from "../../shared/github.ts";
 import type { WorktreeOpened } from "../../shared/protocol.ts";
@@ -67,6 +69,7 @@ export function GithubInbox({ wide, watching, onOpened }: ViewProps) {
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [repoMenu, setRepoMenu] = useState<HTMLElement | null>(null);
   const errors: Record<string, string> = {
     gh_missing: t("Install gh on this PC"), gh_signed_out: t("Sign in on this PC with gh auth login"),
     rate_limited: t("GitHub is limiting requests; try again later"), gh_failed: t("Could not read GitHub pull requests"),
@@ -136,10 +139,10 @@ export function GithubInbox({ wide, watching, onOpened }: ViewProps) {
   </section>;
   return <section className={`mode-inbox fork-github${wide ? " is-wide" : ""}`} aria-label={t("GitHub|fork")}>
     <header className="inbox-top"><h2>{t("GitHub|fork")}</h2>
-      {groups.repos.length > 1 && <select className="fork-github-repo" aria-label={t("Repositories")} value={groups.selected} onChange={(event) => { setRepo(event.target.value); saveGithubRepo(event.target.value); }}>
-        <option value="">{t("All")}</option>
-        {groups.repos.map(([name]) => <option key={name} value={name}>{name.split("/").pop()}</option>)}
-      </select>}
+      {groups.repos.length > 1 && <button type="button" className={`icon-button inbox-round inbox-filter-toggle${groups.selected === "" ? "" : " is-on"}`} aria-label={t("Repositories")} title={groups.selected || t("Repositories")}
+        aria-haspopup="menu" aria-expanded={repoMenu !== null} onClick={(event) => setRepoMenu(repoMenu === null ? event.currentTarget : null)}><ListFilter aria-hidden="true" /></button>}
+      {repoMenu !== null && <RowMenu anchor={repoMenu} title={t("Repositories")} choice onClose={() => setRepoMenu(null)}
+        items={[["", 0] as const, ...groups.repos].map(([name]) => ({ id: name || "all", label: name ? name.split("/").pop() ?? name : t("All"), icon: name ? FolderGit2 : ListFilter, checked: groups.selected === name, run: () => { setRepo(name); saveGithubRepo(name); } }))} />}
       <button type="button" className="icon-button" aria-label={t("Refresh")} title={t("Refresh")} disabled={loading || busy !== null} onClick={() => setRefresh((value) => value + 1)}><RefreshCw aria-hidden="true" /></button></header>
     <div className="inbox-scroll">
       {loading ? <p className="inbox-empty" role="status">{t("Reading pull requests…")}</p> : error !== null ? <p className="inbox-empty" role="alert">{error === "checkout_failed" ? t("Could not check out this pull request") : errors[error] ?? errors.gh_failed}</p> : listing !== null && <>

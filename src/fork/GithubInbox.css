@@ -33,17 +33,6 @@
 
 .fork-github .inbox-top h2 { flex: 1; }
 
-.fork-github-repo {
-  max-width: 45%;
-  padding: var(--space-1) var(--space-2);
-  border: var(--hairline) solid var(--border);
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--text-dim);
-  font: inherit;
-  font-size: var(--fs-sm);
-}
-
 .fork-github-toggle[aria-pressed="true"] { color: var(--text-strong); background: var(--bg-hover); }
 
 .fork-github h2,
