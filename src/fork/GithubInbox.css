@@ -170,16 +170,23 @@
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
   line-clamp: 2;
-  font-size: var(--fs-md);
-  line-height: 1.35;
+  color: var(--text-strong);
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-heading);
   overflow-wrap: anywhere;
 }
 
+/* the agent inbox's row sizes: its name's and its words', a step smaller on a wide screen (InboxList.css) */
 .fork-github-row-sub {
   grid-column: 1 / -1;
   color: var(--text-dim);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-row-sub);
+  line-height: var(--lh-base);
 }
+
+.mode-inbox.is-wide .fork-github-row-title { font-size: var(--fs-md); }
+.mode-inbox.is-wide .fork-github-row-sub { font-size: var(--fs-sm); }
 
 .fork-github-row-mark {
   display: inline-flex;

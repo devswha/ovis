@@ -31,6 +31,9 @@ function readPatches(pull: GithubPull, key: string, head: string, base: string):
   return value;
 }
 
+/** How long a jump waits for its file's patch and diff to draw the thread, in frames (about 3s) */
+const JUMP_FRAMES = 180;
+
 /** The files each pull request's tab was left with open, and the line each was brought to. */
 const views = new Map<string, { open: ReadonlySet<string>; marks: ReadonlyMap<string, DiffMark> }>();
 
@@ -41,8 +44,8 @@ function rowsOf(patch: string): number {
 
 /**
  * The box of one file's diff: as tall as the diff with its notes, measured from the view's column,
- * up to 70% of the screen, past which the diff scrolls inside it. The rows of the patch size it
- * until the first measure.
+ * so the page is the only thing that scrolls up and down. The rows of the patch size it until the
+ * first measure.
  */
 function DiffBox({ rows, children }: { rows: number; children: ReactNode }) {
   const box = useRef<HTMLDivElement>(null);
@@ -126,13 +129,22 @@ export function GithubFiles({ pull, detail, jump = null }: { pull: GithubPull; d
     if (opening) mark(path, firstMark(threads.get(path) ?? []));
     setOpen((before) => { const next = new Set(before); if (opening) next.add(path); else next.delete(path); return next; });
   };
-  // a thread asked for from the conversation: its file opens, scrolled into view, with its diff at the thread's line
+  // a thread asked for from the conversation: its file opens with the thread's line marked, and the page
+  // scrolls to that thread once its diff has drawn it (to the file's row until then)
   useEffect(() => {
     if (jump === null) return;
     load();
     mark(jump.path, { side: jump.side, line: jump.line, start: 0, end: 0 });
     setOpen((before) => new Set([...before, jump.path]));
-    requestAnimationFrame(() => rows.current.get(jump.path)?.scrollIntoView({ block: "start" }));
+    let frame = requestAnimationFrame(() => rows.current.get(jump.path)?.scrollIntoView({ block: "start" }));
+    let tries = 0;
+    const find = (): void => {
+      const note = rows.current.get(jump.path)?.querySelector(`[data-fork-line="${jump.side}:${jump.line}"]`);
+      if (note) { note.scrollIntoView({ block: "center" }); return; }
+      if (++tries < JUMP_FRAMES) frame = requestAnimationFrame(find);
+    };
+    const wait = requestAnimationFrame(find);
+    return () => { cancelAnimationFrame(frame); cancelAnimationFrame(wait); };
   }, [jump?.seq]);
   const all = open.size === files.length && files.length > 0;
   const toggleAll = (): void => {
@@ -147,7 +159,7 @@ export function GithubFiles({ pull, detail, jump = null }: { pull: GithubPull; d
     if (patches.status === "failed") return <p className="fork-github-pull-error" role="alert">{t("Could not read this pull request's files")}</p>;
     const patch = patches.files.get(path)?.patch ?? null;
     if (patch === null) return <p className="fork-github-pull-dim">{t("GitHub shows no diff for this file: it is binary or too large.")}</p>;
-    const notes = (threads.get(path) ?? []).filter(onDiff).map((thread) => ({ side: thread.side, line: thread.line ?? 0, node: <GithubThreadView thread={thread} inDiff /> }));
+    const notes = (threads.get(path) ?? []).filter(onDiff).map((thread) => ({ side: thread.side, line: thread.line ?? 0, node: <div data-fork-line={`${thread.side}:${thread.line ?? 0}`}><GithubThreadView thread={thread} inDiff /></div> }));
     return <DiffBox rows={rowsOf(patch)}>
       <RenderBoundary resetKey={patch} fallback={() => <p className="fork-github-pull-dim" role="alert">{t("This change can't be shown.")}</p>}>
         <Suspense fallback={<p className="fork-github-pull-dim" role="status">{t("Opening…")}</p>}>
