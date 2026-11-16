@@ -100,6 +100,13 @@ try {
             if (width < 768) {
               const box = (await chip.boundingBox())!;
               assert.ok(box.width >= 44 && box.height >= 44, "phone chips are touch targets");
+              const gap = await row.locator(".tab-strip-item.is-active").evaluate((item) => {
+                const label = item.querySelector(".tab-strip-label")!.getBoundingClientRect();
+                const chips = item.querySelector(".fork-tab-chips")!.getBoundingClientRect();
+                return chips.left - label.right;
+              });
+              assert.ok(gap < 24, `a phone's tab hugs its short title and its chips (gap ${gap}px)`);
+              if (process.env.QA_SHOTS) await page.screenshot({ path: `${process.env.QA_SHOTS}/phone-${children}.png`, clip: { x: 0, y: 0, width, height: 120 } });
               const inactive = row.getByRole("tab", { name: "QA reviewer", exact: true });
               const before = await inactive.evaluate((node) => node.previousElementSibling?.getAttribute("aria-label"));
               assert.ok(before);
