@@ -31,4 +31,4 @@ Not to be confused with the Ovis multimodal AI models from AIDC-AI (Alibaba); OV
 
 - [Changelog](https://github.com/devswha/ovis/blob/main/CHANGELOG.md)
 - [Security policy](https://github.com/devswha/ovis/blob/main/SECURITY.md): reporting a security problem privately
-- [License](https://github.com/devswha/ovis/blob/main/LICENSE): MIT, except the account list's files under `shared/account-list*`, which are FSL-1.1-MIT ([LICENSES/ACCOUNT-LAYER.md](https://github.com/devswha/ovis/blob/main/LICENSES/ACCOUNT-LAYER.md))
+- [License](https://github.com/devswha/ovis/blob/main/LICENSE): MIT

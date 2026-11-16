@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: FSL-1.1-MIT
 /**
  * The signed list's entry envelope (docs/account-list.md): how every entry is written, signed,
  * hashed and chained. A body is bytes, never JSON; nobody re-encodes an entry, so two members
