@@ -221,8 +221,14 @@ export function useSelectTarget({ selectedMachineId, setConnected, setConnectedB
         let cancelled = false;
         void fetchSession(selectedMachineId).then((current) => ({ current, confirmed: resolveLink(current, linked) }), () => null).then((read) => {
           if (cancelled || pendingLink.current !== linked) return;
-          // a failed read is not evidence that anything closed: the link settles without a word
-          if (read === null) { land({ pane: null, workspace: null, note: null }); return; }
+          // A failed read is not evidence that anything closed: a pane still selected stays, and the
+          // link settles without a word. A link that left nothing selected while it waited lands as
+          // the cached roster says, with its word, so the window is never left empty.
+          if (read === null) {
+            if (selectedPaneId !== null) { land({ pane: null, workspace: null, note: null }); return; }
+            if (!land(landed)) setSelectedPaneId(fallback(snapshot));
+            return;
+          }
           const { current, confirmed } = read;
           if (land(confirmed)) return;
           // as below: nothing selected takes the fallback, a selection that has gone takes it as auto-selected

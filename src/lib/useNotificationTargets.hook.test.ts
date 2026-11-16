@@ -2,9 +2,10 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createElement, useRef, useState } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import type { Machine } from "../../shared/machines.ts";
-import type { AppLink } from "./deepLink.ts";
+import type { AppLink, LinkNote } from "./deepLink.ts";
 import { linkTarget, type NotificationTarget } from "./notificationTarget.ts";
-import { useNotificationTargets } from "./useSelection.ts";
+import { getTransport, setTransport } from "./transport.ts";
+import { useNotificationTargets, useSelectTarget } from "./useSelection.ts";
 
 // The real hook: a desktop link selects its pane only once the roster lists it in the link's
 // workspace (lib/deepLink.ts resolveLink); before that it selects its PC alone and waits as the
@@ -108,5 +109,132 @@ describe("a desktop link's landing", () => {
     await act(async () => { take({ machine_id: "local", pane_id: "t3", view: "chat", workspace_id: "3" }); });
     expect(selected).toEqual([["local", "t3", "chat"]]);
     expect(waits).toBe(0);
+  });
+});
+
+// The real selection and its landing effect, wired as App wires them: a link to a pane the cached
+// roster lacks clears the selection while this PC is asked, and always ends on a pane.
+describe("a desktop link to a pane the cached roster lacks", () => {
+  const transport = getTransport();
+  let saved: PropertyDescriptor | undefined;
+  let renderer: ReactTestRenderer | undefined;
+  let take: (target: NotificationTarget) => void;
+  let shown: { pane: string | null; note: LinkNote | "copied" | null };
+  let misses: number;
+  let reads: number;
+  let landed: Promise<void>;
+
+  // workspace 3 "alpha" (t1 selected, t2 in front), workspace 4 "beta" (t4, herdr's focus)
+  const snapshot = {
+    workspaces: [{ workspace_id: "3", label: "alpha", active_tab_id: "3:1" }, { workspace_id: "4", label: "beta", active_tab_id: "4:1" }],
+    panes: [{ pane_id: "t1", workspace_id: "3", focused: false }, { pane_id: "t2", workspace_id: "3", focused: true }, { pane_id: "t4", workspace_id: "4", focused: true }],
+    layouts: [],
+    focused_pane_id: "t4",
+  };
+  const machines = [{ id: "local", name: "This PC", kind: "local", enabled: true, state: "connected", error: null, snapshot }] as unknown as Machine[];
+
+  /** what this PC answers when asked for its session: its roster, or a failed read */
+  function answer(read: "roster" | "fails"): void {
+    setTransport({ ...transport, async fetch() {
+      reads += 1;
+      if (read === "fails") throw new TypeError("network error");
+      return Response.json({ snapshot });
+    } });
+  }
+
+  beforeEach(() => {
+    saved = Object.getOwnPropertyDescriptor(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
+    misses = 0;
+    reads = 0;
+  });
+
+  afterEach(async () => {
+    await act(async () => { renderer?.unmount(); });
+    renderer = undefined;
+    setTransport(transport);
+    if (saved) Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", saved);
+    else Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+  });
+
+  async function mount(): Promise<void> {
+    // the link settles (setLinkLanded(true)) after it waited (setLinkLanded(false))
+    let settle = () => {};
+    landed = new Promise((resolve) => { settle = resolve; });
+    let waiting = false;
+    const noop = () => {};
+    function Probe() {
+      const [selectedMachineId, setSelectedMachineId] = useState("local");
+      const [selectedPaneId, setSelectedPaneId] = useState<string | null>("t1");
+      const [headerNote, setHeaderNote] = useState<LinkNote | "copied" | null>(null);
+      const [linkTick, setLinkTick] = useState(0);
+      const [, setLinkLandedState] = useState(true);
+      const setLinkLanded = (value: boolean) => {
+        setLinkLandedState(value);
+        if (!value) waiting = true;
+        else if (waiting) settle();
+      };
+      const machinesRef = useRef(machines);
+      const pendingLink = useRef<AppLink | null>(null);
+      const pendingFile = useRef<string | null>(null);
+      const selectionHint = useRef(null);
+      const linkSince = useRef(0);
+      const rosterSeq = useRef(0);
+      const selectionSince = useRef(0);
+      const movingPanes = useRef(new Set<string>());
+      const selectedMachine = machines.find((machine) => machine.id === selectedMachineId);
+      const { selectTargetRef } = useSelectTarget({
+        selectedMachineId, setConnected: noop, setConnectedBefore: noop, setSelectedMachineId, setSelectedPaneId, setAutoSelected: noop,
+        setDrawerOpen: noop, setOutputStopped: noop, setNotificationViewTarget: noop, setTerminalPeek: noop, pendingLink, pendingFile,
+        setLinkLanded, selectionHint, selectionSince, rosterSeq, snapshot: selectedMachine?.snapshot ?? null, selectedMachine, selectedPaneId,
+        setHeaderNote, linkTick, movingPanes, onLinkMiss: () => { misses += 1; },
+      } as Parameters<typeof useSelectTarget>[0]);
+      take = useNotificationTargets({
+        machinesRef, selectTargetRef, selectionHint, pendingLink, pendingFile, setLinkLanded, linkSince, rosterSeq, setLinkTick, load: async () => {},
+      } as Parameters<typeof useNotificationTargets>[0]).takeNotificationTarget;
+      shown = { pane: selectedPaneId, note: headerNote };
+      return null;
+    }
+    await act(async () => { renderer = create(createElement(Probe)); });
+  }
+
+  async function open(query: string): Promise<void> {
+    await act(async () => { take(linkTarget(query)!); });
+    await act(async () => { await landed; });
+  }
+
+  it("selects the fallback pane with the not-found note when this PC cannot be asked", async () => {
+    answer("fails");
+    await mount();
+    await open("?ws=9-gone&pane=t99");
+    expect(reads).toBeGreaterThan(0);
+    expect(shown).toEqual({ pane: "t4", note: "workspace-closed" });
+    expect(misses).toBe(1);
+  });
+
+  it("opens the link's workspace with its note when this PC cannot be asked", async () => {
+    answer("fails");
+    await mount();
+    await open("?ws=3-alpha&pane=t99");
+    expect(shown).toEqual({ pane: "t2", note: "pane-closed" });
+    expect(misses).toBe(1);
+  });
+
+  it("selects the fallback pane with the not-found note when this PC answers without the pane", async () => {
+    answer("roster");
+    await mount();
+    await open("?ws=9-gone&pane=t99");
+    expect(reads).toBeGreaterThan(0);
+    expect(shown).toEqual({ pane: "t4", note: "workspace-closed" });
+    expect(misses).toBe(1);
+  });
+
+  it("selects a listed pane at once, asking nothing and saying nothing", async () => {
+    answer("fails");
+    await mount();
+    await act(async () => { take(linkTarget("?ws=3-alpha&pane=t2")!); });
+    expect(shown).toEqual({ pane: "t2", note: null });
+    expect(reads).toBe(0);
+    expect(misses).toBe(0);
   });
 });
