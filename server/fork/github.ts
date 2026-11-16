@@ -1,4 +1,4 @@
-import type { GithubPull, GithubPullDetail, GithubPulls } from "../../shared/github.ts";
+import type { GithubCheck, GithubPull, GithubPullDetail, GithubPulls } from "../../shared/github.ts";
 import type { SessionSnapshot } from "../../shared/protocol.ts";
 import { conflictResponse, jsonResponse } from "../http.ts";
 import { ghAccounts, originRepository, parsePullRequests, PullRequestError, runGithub } from "./pull-requests.ts";
@@ -118,27 +118,52 @@ export async function githubWorkspaces(snapshot: SessionSnapshot, repositoryOf =
 
 const PULL_QUERY = `query($owner:String!,$name:String!,$number:Int!) { repository(owner:$owner,name:$name) { pullRequest(number:$number) {
   number title url body state isDraft createdAt updatedAt author { login } headRefName baseRefName isCrossRepository
-  additions deletions changedFiles commits { totalCount } reviewDecision
+  additions deletions changedFiles commits { totalCount } reviewDecision mergeStateStatus
   labels(first:20) { nodes { name color } }
   latestReviews(first:30) { nodes { author { login } state } }
   reviewRequests(first:30) { nodes { requestedReviewer { ... on User { login } ... on Team { name } } } }
   statusCheckRollup: commits(last:1) { nodes { commit { statusCheckRollup { contexts(first:100) { nodes {
-    __typename ... on CheckRun { status conclusion } ... on StatusContext { state } } } } } } }
+    __typename
+    ... on CheckRun { name status conclusion startedAt completedAt detailsUrl isRequired(pullRequestNumber:$number) checkSuite { workflowRun { workflow { name } } } }
+    ... on StatusContext { context state description targetUrl createdAt isRequired(pullRequestNumber:$number) } } } } } } }
 } } }`;
 
-type Context = { __typename?: string; status?: string; conclusion?: string | null; state?: string };
-/** Each check run or commit status counted once, by what it came to. */
-export function countChecks(contexts: Context[]): GithubPullDetail["checks"] {
+type Context = {
+  __typename?: string; status?: string; conclusion?: string | null; state?: string; isRequired?: boolean;
+  name?: string; startedAt?: string | null; completedAt?: string | null; detailsUrl?: string | null; checkSuite?: { workflowRun?: { workflow?: { name?: string } } | null } | null;
+  context?: string; description?: string | null; targetUrl?: string | null; createdAt?: string | null;
+};
+const FAILED = new Set(["FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE"]);
+function outcomeOf(context: Context): GithubCheck["outcome"] {
+  const outcome = context.__typename === "StatusContext" ? context.state : context.status === "COMPLETED" ? context.conclusion : "PENDING";
+  if (outcome === "SUCCESS") return "passing";
+  if (outcome === "SKIPPED" || outcome === "NEUTRAL") return "skipped";
+  return FAILED.has(outcome ?? "") ? "failing" : "pending";
+}
+const safeUrl = (url: unknown): string | null => typeof url === "string" && /^https:\/\//.test(url) ? url : null;
+const RANK = { failing: 0, pending: 1, passing: 2, skipped: 3 } as const;
+/** Each check run or commit status once: failing, then running, then passing, then skipped; required first within each. */
+export function listChecks(contexts: Context[]): GithubCheck[] {
+  return contexts.map((context): GithubCheck => {
+    const status = context.__typename === "StatusContext";
+    return {
+      name: (status ? context.context : context.name) ?? "",
+      workflow: status ? null : context.checkSuite?.workflowRun?.workflow?.name ?? null,
+      outcome: outcomeOf(context), required: context.isRequired === true,
+      started_at: (status ? context.createdAt : context.startedAt) ?? null,
+      completed_at: status ? null : context.completedAt ?? null,
+      description: status ? context.description ?? null : null,
+      url: safeUrl(status ? context.targetUrl : context.detailsUrl),
+    };
+  }).filter((check) => check.name).sort((a, b) => RANK[a.outcome] - RANK[b.outcome] || Number(b.required) - Number(a.required) || a.name.localeCompare(b.name));
+}
+/** Each check counted once, by what it came to. */
+export function countChecks(checks: GithubCheck[]): GithubPullDetail["checks"] {
   const counts = { passing: 0, failing: 0, pending: 0, skipped: 0 };
-  for (const context of contexts) {
-    const outcome = context.__typename === "StatusContext" ? context.state : context.status === "COMPLETED" ? context.conclusion : "PENDING";
-    if (outcome === "SUCCESS") counts.passing++;
-    else if (outcome === "SKIPPED" || outcome === "NEUTRAL") counts.skipped++;
-    else if (outcome === "FAILURE" || outcome === "ERROR" || outcome === "TIMED_OUT" || outcome === "CANCELLED" || outcome === "ACTION_REQUIRED" || outcome === "STARTUP_FAILURE") counts.failing++;
-    else counts.pending++;
-  }
+  for (const check of checks) counts[check.outcome]++;
   return counts;
 }
+const MERGE = { CLEAN: "clean", HAS_HOOKS: "clean", DIRTY: "conflicts", BEHIND: "behind", BLOCKED: "blocked", UNSTABLE: "unstable", DRAFT: "draft" } as const;
 
 const REVIEW_STATES = { APPROVED: "approved", CHANGES_REQUESTED: "changes_requested", COMMENTED: "commented" } as const;
 export function parseGithubPull(output: string, repository: string): GithubPullDetail {
@@ -155,6 +180,7 @@ export function parseGithubPull(output: string, repository: string): GithubPullD
       const login = request?.requestedReviewer?.login ?? request?.requestedReviewer?.name;
       if (typeof login === "string" && !reviewers.some((reviewer) => reviewer.login === login)) reviewers.push({ login, state: "requested" });
     }
+    const checkList = listChecks(pr.statusCheckRollup?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? []);
     const decision = pr.reviewDecision === "APPROVED" ? "approved" : pr.reviewDecision === "CHANGES_REQUESTED" ? "changes_requested" : pr.reviewDecision === "REVIEW_REQUIRED" ? "review_required" : "none";
     return {
       repository, number: pr.number, url: pr.url, title: pr.title, body: typeof pr.body === "string" ? pr.body : "",
@@ -162,7 +188,8 @@ export function parseGithubPull(output: string, repository: string): GithubPullD
       author: pr.author?.login ?? null, created_at: pr.createdAt, updated_at: pr.updatedAt,
       head: pr.headRefName, base: pr.baseRefName, fork: pr.isCrossRepository === true,
       additions: pr.additions ?? 0, deletions: pr.deletions ?? 0, changed_files: pr.changedFiles ?? 0, commits: pr.commits?.totalCount ?? 0,
-      checks: countChecks(pr.statusCheckRollup?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? []),
+      checks: countChecks(checkList), check_list: checkList,
+      merge: MERGE[pr.mergeStateStatus as keyof typeof MERGE] ?? "unknown",
       review: decision, reviewers,
       labels: (pr.labels?.nodes ?? []).filter((label: { name?: unknown }) => typeof label?.name === "string").map((label: { name: string; color?: string }) => ({ name: label.name, color: /^[0-9a-f]{6}$/i.test(label.color ?? "") ? label.color! : "888888" })),
     };

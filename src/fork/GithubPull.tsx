@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
-import { ArrowLeft, Check, CircleDot, ExternalLink, FileDiff, GitBranch, GitCommitHorizontal, GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft, LoaderCircle, MessageSquare, X } from "lucide-react";
+import { ArrowLeft, Check, ChevronDown, CircleAlert, CircleCheck, CircleDot, CircleSlash, CircleX, ExternalLink, FileDiff, GitBranch, GitCommitHorizontal, GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft, LoaderCircle, MessageSquare, X } from "lucide-react";
 
 import { Markdown } from "../components/Markdown.tsx";
 
-import type { GithubPull, GithubPullDetail } from "../../shared/github.ts";
+import type { GithubCheck, GithubPull, GithubPullDetail } from "../../shared/github.ts";
 import type { WorktreeOpened } from "../../shared/protocol.ts";
 import { ApiError, createWorktree, fetchPullRequestBranch, getJson, listWorktrees, openWorktree } from "../lib/api.ts";
 import { useT, type Translate } from "../lib/i18n.ts";
@@ -31,6 +31,50 @@ function stateOf(detail: GithubPullDetail, t: Translate) {
 const pageCache = new Map<string, GithubPullDetail>();
 
 const reviewIcons = { approved: Check, changes_requested: X, commented: MessageSquare, requested: CircleDot } as const;
+
+function MergeIcon({ merge }: { merge: GithubPullDetail["merge"] }) {
+  const Icon = merge === "clean" ? GitMerge : merge === "conflicts" || merge === "blocked" ? CircleAlert : merge === "unknown" ? LoaderCircle : CircleDot;
+  return <Icon className={merge === "unknown" ? "fork-github-spin" : undefined} aria-hidden="true" />;
+}
+
+/** "4m 12s" */
+function span(from: string | null, to: string | null): string | null {
+  if (!from) return null;
+  const seconds = Math.max(0, Math.round(((to ? Date.parse(to) : Date.now()) - Date.parse(from)) / 1000));
+  if (!Number.isFinite(seconds)) return null;
+  const hours = Math.floor(seconds / 3600), minutes = Math.floor(seconds % 3600 / 60), rest = seconds % 60;
+  return hours > 0 ? `${hours}h ${minutes}m` : minutes > 0 ? `${minutes}m ${rest}s` : `${rest}s`;
+}
+
+const checkIcons = { passing: CircleCheck, failing: CircleX, pending: LoaderCircle, skipped: CircleSlash } as const;
+/** Every check: problems and running ones always shown, the passing and skipped ones folded behind their count. */
+function ChecksBox({ checks }: { checks: GithubCheck[] }) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  if (checks.length === 0) return <p className="fork-github-pull-dim">{t("No checks")}</p>;
+  const counts = { failing: 0, pending: 0, passing: 0, skipped: 0 };
+  for (const check of checks) counts[check.outcome]++;
+  const settled = counts.passing + counts.skipped;
+  const shown = open ? checks : checks.filter((check) => check.outcome === "failing" || check.outcome === "pending");
+  const summary = [counts.failing > 0 && t("{count} failing", { count: counts.failing }), counts.pending > 0 && t("{count} running", { count: counts.pending }),
+    counts.passing > 0 && t("{count} passing", { count: counts.passing }), counts.skipped > 0 && t("{count} skipped", { count: counts.skipped })].filter(Boolean).join(" · ");
+  return <div className="fork-github-checks">
+    <button type="button" className={`fork-github-checks-head is-${counts.failing > 0 ? "failing" : counts.pending > 0 ? "pending" : "passing"}`} aria-expanded={open} disabled={settled === 0} onClick={() => setOpen(!open)}>
+      <span>{summary}</span>{settled > 0 && <ChevronDown className={open ? "is-open" : undefined} aria-hidden="true" />}
+    </button>
+    {shown.length > 0 && <ul>{shown.map((check, index) => {
+      const Icon = checkIcons[check.outcome];
+      const time = check.outcome === "pending" ? span(check.started_at, null) : span(check.started_at, check.completed_at);
+      const inner = <>
+        <Icon className={`is-${check.outcome}${check.outcome === "pending" ? " fork-github-spin" : ""}`} aria-hidden="true" />
+        <span className="fork-github-check-name"><span dir="auto">{check.name}</span>{check.workflow && <span className="fork-github-pull-dim">{check.workflow}</span>}{check.description && <span className="fork-github-pull-dim">{check.description}</span>}</span>
+        {check.required && <span className="fork-github-required">{t("Required")}</span>}
+        {time && <span className="fork-github-pull-dim fork-github-check-time">{time}</span>}
+      </>;
+      return <li key={`${check.name}:${index}`}>{check.url ? <a href={check.url} target="_blank" rel="noreferrer noopener">{inner}</a> : <span>{inner}</span>}</li>;
+    })}</ul>}
+  </div>;
+}
 
 /** One pull request, drawn from GitHub's API in Ovis's own design: the wide pane's page, or the phone's screen. */
 export function GithubPullPage({ pull, wide, watching, onOpened }: { pull: GithubPull; wide: boolean; watching: boolean; onOpened(opened: WorktreeOpened): void }) {
@@ -77,7 +121,10 @@ export function GithubPullPage({ pull, wide, watching, onOpened }: { pull: Githu
     rate_limited: t("GitHub is limiting requests; try again later"), checkout_failed: t("Could not check out this pull request"),
   };
   const state = detail && stateOf(detail, t);
-  const checks = detail?.checks;
+  const mergeWords = {
+    clean: t("Ready to merge"), conflicts: t("Conflicts with {base}", { base: detail?.base ?? "" }), behind: t("Behind {base}", { base: detail?.base ?? "" }),
+    blocked: t("Merging is blocked"), unstable: t("Some checks are not passing"), draft: t("Draft: not ready to merge"), unknown: t("Checking whether it can merge…"),
+  };
   const reviewWords = { approved: t("Approved"), changes_requested: t("Changes requested"), commented: t("Commented"), requested: t("Review requested") };
 
   return <article className={`fork-github-pull${wide ? " is-wide" : ""}`} aria-label={pull.title}>
@@ -103,11 +150,9 @@ export function GithubPullPage({ pull, wide, watching, onOpened }: { pull: Githu
         </ul>
         {detail.labels.length > 0 && <ul className="fork-github-labels">{detail.labels.map((label) => <li key={label.name} style={{ ["--label" as string]: `#${label.color}` }}>{label.name}</li>)}</ul>}
         <section className="fork-github-status" aria-label={t("Status")}>
-          {checks && <p className={checks.failing > 0 ? "is-failing" : checks.pending > 0 ? "is-pending" : checks.passing > 0 ? "is-passing" : ""}>
-            {checks.failing + checks.pending + checks.passing + checks.skipped === 0 ? t("No checks")
-              : [checks.failing > 0 && t("{count} failing", { count: checks.failing }), checks.pending > 0 && t("{count} running", { count: checks.pending }), checks.passing > 0 && t("{count} passing", { count: checks.passing }), checks.skipped > 0 && t("{count} skipped", { count: checks.skipped })].filter(Boolean).join(" · ")}
-          </p>}
-          {detail.reviewers.length === 0 ? <p className="fork-github-pull-dim">{t("No review yet")}</p>
+          {detail.state === "open" && <p className={`fork-github-merge is-${detail.merge}`}><MergeIcon merge={detail.merge} />{mergeWords[detail.merge]}</p>}
+          <ChecksBox checks={detail.check_list} />
+          {detail.reviewers.length === 0 ? <p className="fork-github-pull-dim fork-github-reviews-none">{t("No review yet")}</p>
             : <ul className="fork-github-reviewers">{detail.reviewers.map((reviewer) => {
               const Icon = reviewIcons[reviewer.state];
               return <li key={reviewer.login} className={`is-${reviewer.state}`} title={reviewWords[reviewer.state]}><Icon aria-hidden="true" />{reviewer.login}<span className="fork-github-pull-dim">{reviewWords[reviewer.state]}</span></li>;

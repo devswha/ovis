@@ -173,3 +173,71 @@
 .pane-split:has(> .fork-github-pane) .thread-top {
   visibility: hidden;
 }
+
+.fork-github-status { display: flex; flex-direction: column; gap: var(--space-3); }
+.fork-github-status .fork-github-reviewers { margin-top: 0; }
+
+.fork-github-merge {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: 600;
+}
+.fork-github-merge svg { width: 16px; height: 16px; flex: none; }
+.fork-github-merge.is-clean { color: var(--status-done); }
+.fork-github-merge.is-conflicts,
+.fork-github-merge.is-blocked { color: var(--status-blocked); }
+.fork-github-merge.is-behind,
+.fork-github-merge.is-unstable { color: var(--status-working); }
+.fork-github-merge.is-draft,
+.fork-github-merge.is-unknown { color: var(--text-dim); }
+
+.fork-github-checks ul { margin: var(--space-1) 0 0; padding: 0; list-style: none; }
+.fork-github-checks-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: 0;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+.fork-github-checks-head:disabled { cursor: default; }
+.fork-github-checks-head > span { flex: 1; }
+.fork-github-checks-head svg { width: 16px; height: 16px; transition: transform 150ms ease; }
+.fork-github-checks-head svg.is-open { transform: rotate(180deg); }
+.fork-github-checks-head.is-passing { color: var(--status-done); }
+.fork-github-checks-head.is-failing { color: var(--status-blocked); }
+.fork-github-checks-head.is-pending { color: var(--status-working); }
+
+.fork-github-checks li > a,
+.fork-github-checks li > span {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  margin-inline: calc(var(--space-2) * -1);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  text-decoration: none;
+}
+.fork-github-checks li > a:hover { background: var(--bg-hover); }
+.fork-github-checks li svg { width: 14px; height: 14px; flex: none; }
+.fork-github-checks svg.is-passing { color: var(--status-done); }
+.fork-github-checks svg.is-failing { color: var(--status-blocked); }
+.fork-github-checks svg.is-pending { color: var(--status-working); }
+.fork-github-checks svg.is-skipped { color: var(--text-dim); }
+.fork-github-check-name { display: flex; flex: 1; flex-wrap: wrap; gap: 0 var(--space-2); min-width: 0; overflow-wrap: anywhere; }
+.fork-github-check-time { flex: none; font-variant-numeric: tabular-nums; }
+.fork-github-required {
+  flex: none;
+  padding: 0 var(--space-1);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+}

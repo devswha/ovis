@@ -38,8 +38,25 @@ export interface GithubPullDetail {
   commits: number;
   /** check runs and commit statuses of the head commit, counted by outcome */
   checks: { passing: number; failing: number; pending: number; skipped: number };
+  /** each of them, problems first */
+  check_list: GithubCheck[];
+  /** whether GitHub would merge it now, and if not, why */
+  merge: "clean" | "conflicts" | "behind" | "blocked" | "unstable" | "draft" | "unknown";
   review: "approved" | "changes_requested" | "review_required" | "none";
   /** each reviewer's latest word, then who is still asked */
   reviewers: { login: string; state: "approved" | "changes_requested" | "commented" | "requested" }[];
   labels: { name: string; color: string }[];
+}
+
+export interface GithubCheck {
+  name: string;
+  /** the Actions workflow a check run belongs to */
+  workflow: string | null;
+  outcome: "passing" | "failing" | "pending" | "skipped";
+  required: boolean;
+  started_at: string | null;
+  completed_at: string | null;
+  /** a status's one-line description */
+  description: string | null;
+  url: string | null;
 }
