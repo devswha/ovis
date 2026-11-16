@@ -3,6 +3,7 @@ package sh.ovis.app;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
@@ -522,6 +523,43 @@ public class PCStoreTest {
         // an alert that names no saved PC, or no pane: nothing, whatever is open
         assertNull(PCStore.alertTap(saved, home, home + "/", "http://forgotten.lan:7317", null, null, null, "w1:p1"));
         assertNull(PCStore.alertTap(saved, home, home + "/", home, id, null, null, null));
+    }
+
+    @Test
+    public void handsATappedAlertOnlyToAnAppPageAndOpensItsAddressOverAReaderOrAFile() {
+        String scope = "https://app.ovis.sh/s/0123456789abcdef0123456789abcdef/";
+        String id = "0123456789abcdef0123456789abcdef";
+        String home = "http://desktop.lan:7317";
+        java.util.List<String> saved = java.util.Arrays.asList(home, scope);
+        String homeAddress = home + "/?machine=local&pane=w1%3Ap1&view=chat";
+        String scopeAddress = scope + "#machine=local&pane=w1%3Ap1&view=chat";
+        // the app, as public/sw.js isAppWindow takes it: handed the pane, nothing reloads
+        for (String shown : new String[] {
+            home, home + "/", home + "/index.html", home + "/?machine=local&pane=w1%3Ap0", home + "/?read=", home + "/?read=+%20%C2%A0",
+            // a PC's own server reads its query only
+            home + "/#read=notes.md",
+        }) {
+            PCStore.AlertTap tap = PCStore.alertTap(saved, home, shown, home, null, null, null, "w1:p1");
+            assertNotNull(shown, tap.selection);
+            assertNull(shown, tap.address);
+        }
+        for (String shown : new String[] { scope, scope + "#machine=local&pane=w1%3Ap0", scope + "?machine=local#read=notes.md" }) {
+            assertNotNull(shown, PCStore.alertTap(saved, scope, shown, "https://app.ovis.sh", id, null, null, "w1:p1").selection);
+        }
+        // a markdown reader (query, or the hosted shell's fragment) and other pages that are not the app: opened at the alert's address
+        for (String shown : new String[] {
+            home + "/?read=notes.md", home + "/?machine=local&read=docs%2Fa.md", home + "/?%72ead=notes.md",
+            home + "/api/file?path=a.html", home + "/ws", home + "/social-preview.png", home + "/notes.md",
+        }) {
+            PCStore.AlertTap tap = PCStore.alertTap(saved, home, shown, home, null, null, null, "w1:p1");
+            assertNull(shown, tap.selection);
+            assertEquals(shown, homeAddress, tap.address);
+        }
+        for (String shown : new String[] { scope + "#read=notes.md", scope + "#machine=local&read=a.md", scope + "?read=notes.md" }) {
+            PCStore.AlertTap tap = PCStore.alertTap(saved, scope, shown, "https://app.ovis.sh", id, null, null, "w1:p1");
+            assertNull(shown, tap.selection);
+            assertEquals(shown, scopeAddress, tap.address);
+        }
     }
 
     @Test

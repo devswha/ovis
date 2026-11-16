@@ -111,15 +111,17 @@ final class PCStore {
     /**
      * What a tapped alert does (MainActivity.openAlert), or null when it names no pane or no saved PC
      * (alertLink) and the app stays as it was. When its PC is the one whose page is shown (`current`;
-     * `shown`, the WebView's address once the client is up, else null), `selection` is the message
-     * the browser's worker posts to an open window (public/sw.js notificationclick "select-pane"),
-     * for the page to take as src/lib/notificationTarget.ts does, so nothing reloads. For another
-     * saved PC, or its page not up, `pc` opens at `address` as a first load, as switching PC does.
+     * `shown`, the WebView's address once the client is up, else null) and that page is the app
+     * (appPage), `selection` is the message the browser's worker posts to an open window
+     * (public/sw.js notificationclick "select-pane"), for the page to take as
+     * src/lib/notificationTarget.ts does, so nothing reloads. For another saved PC, its page not up,
+     * or a page of it that is not the app (a markdown reader, which holds no input and would not hear
+     * the message), `pc` opens at `address` as a first load, as switching PC does.
      */
     static AlertTap alertTap(List<String> saved, String current, String shown, String origin, String serverId, String machine, String workspace, String pane) {
         String[] link = alertLink(saved, origin, serverId, machine, workspace, pane);
         if (link == null) return null;
-        if (!link[0].equals(current) || shown == null || !belongs(shown, current)) return new AlertTap(link[0], link[1], null);
+        if (!link[0].equals(current) || shown == null || !belongs(shown, current) || !appPage(shown, current)) return new AlertTap(link[0], link[1], null);
         try {
             JSONObject selection = new JSONObject()
                 .put("type", "select-pane")
@@ -131,6 +133,48 @@ final class PCStore {
         } catch (JSONException never) {
             throw new IllegalStateException(never);
         }
+    }
+
+    /**
+     * Whether `url`, a page of the PC `key`, runs the app and so takes a "select-pane", by the rule of
+     * public/sw.js isAppWindow: not under /api/ nor /ws, not a file (a last path part with an
+     * extension, other than index.html), and not a markdown reader (a `read` that is not blank in its
+     * query, or for a relay PC in its fragment when it has no query, as src/lib/pageQuery.ts reads it).
+     */
+    static boolean appPage(String url, String key) {
+        URI uri;
+        try {
+            uri = new URI(url);
+        } catch (URISyntaxException notAnAddress) {
+            return false;
+        }
+        String path = uri.getRawPath() == null ? "" : uri.getRawPath();
+        if (path.startsWith("/api/") || path.equals("/ws")) return false;
+        String last = path.substring(path.lastIndexOf('/') + 1);
+        if (last.contains(".") && !last.equals("index.html")) return false;
+        String search = uri.getRawQuery();
+        String fragment = uri.getRawFragment();
+        boolean fromFragment = scoped(key) && (search == null || search.isEmpty()) && fragment != null && !fragment.isEmpty();
+        String read = queryValue(fromFragment ? fragment : search, "read");
+        // blank as JavaScript's trim() sees it
+        return read == null || read.replaceAll("[\\s\\p{Z}\\uFEFF]", "").isEmpty();
+    }
+
+    /** The first value of `name` in `query` (a raw query, `?` optional), decoded as URLSearchParams decodes it, or null. */
+    private static String queryValue(String query, String name) {
+        if (query == null) return null;
+        for (String pair : (query.startsWith("?") ? query.substring(1) : query).split("&")) {
+            int equals = pair.indexOf('=');
+            if (formDecoded(equals < 0 ? pair : pair.substring(0, equals)).equals(name)) return formDecoded(equals < 0 ? "" : pair.substring(equals + 1));
+        }
+        return null;
+    }
+
+    /** `text` with `+` as a space and its percent escapes read as UTF-8; as it is when an escape is malformed. */
+    private static String formDecoded(String text) {
+        String spaced = text.replace('+', ' ');
+        String decoded = percentDecoded(spaced);
+        return decoded == null ? spaced : decoded;
     }
 
     /**
