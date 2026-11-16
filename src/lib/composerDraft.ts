@@ -5,6 +5,13 @@ type DraftStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 interface Draft { text: string; sending: boolean }
 interface InFlight { sent: string; at: number }
 /**
+ * Who wrote a draft, so the composer knows what its upload places (#3216) still point into: "box" is
+ * the composer's own edit, which moves them itself; "append" adds after the draft and keeps them (a
+ * quote, a recovered or withdrawn message); "replace" is any other write (another tab, a send's
+ * acknowledgement, a restored or new draft), after which no place points into the text any more.
+ */
+export type DraftWrite = "box" | "append" | "replace";
+/**
  * How long another tab's in-flight send is honoured before it is read as abandoned (a tab that
  * closed mid-send never clears it). Longer than the 90s submit timeout in ws.ts, so a send that
  * is still legitimately on its way is never seconded by a second tab.
@@ -49,6 +56,11 @@ export class ComposerDraftStore {
   /** this tab's send on each draft, and the herdr its pane was drawn under when it began */
   private sends = new Map<string, { id: number; lifetime: string | null | undefined }>();
   private sendCount = 0;
+  /** how many times each draft was written as a "replace" (see DraftWrite), here or by another tab */
+  private replaced = new Map<string, number>();
+  private replace(key: string): void { this.replaced.set(key, (this.replaced.get(key) ?? 0) + 1); }
+  /** A count that changes each time the draft `key` is replaced by a write that is not its composer's own edit or an append. */
+  replacements(key: string): number { return this.replaced.get(key) ?? 0; }
   constructor(
     // the pane's herdr's storage, or this page's memory (lib/paneLifetime.ts)
     private storage: () => DraftStorage = () => paneLifetimes.paneStorage,
@@ -94,13 +106,16 @@ export class ComposerDraftStore {
       const pending = this.pending.get(key);
       if (pending && !(text ?? "").startsWith(pending.sent)) pending.edited = true;
       this.saved.set(key, text);
+      // another tab wrote it: whatever that write was, it was not this tab's box
+      this.replace(key);
     }
     this.drafts.set(key, { text: text ?? "", sending });
     this.notify();
   }
-  set(key: string, value: string | ((previous: string) => string)): void {
+  set(key: string, value: string | ((previous: string) => string), write: DraftWrite = "replace"): void {
     const draft = this.read(key);
     const text = typeof value === "string" ? value : value(draft.text);
+    if (write === "replace") this.replace(key);
     // cleared and retyped while on its way, a draft can end up starting with the sent text
     // again: once it stopped extending it, the whole of it is the user's own
     const pending = this.pending.get(key);
@@ -125,7 +140,7 @@ export class ComposerDraftStore {
     // page whatever storage does, and marked before the text is there to send (set stores the mark first)
     this.refresh(key);
     if (agentOnly) this.markAgentOnly(key);
-    this.set(key, (draft) => draft ? `${draft}\n\n${text}` : text);
+    this.set(key, (draft) => draft ? `${draft}\n\n${text}` : text, "append");
   }
   /** The draft's next text is a message for an agent alone (#511): set stores it only with the mark. */
   markAgentOnly(key: string): void {
@@ -213,6 +228,7 @@ export class ComposerDraftStore {
       if (this.unsaved.has(key)) lifetimes.keep(machineId, pane.paneId, "message", draft.text, false, this.isAgentOnly(key));
       this.drafts.delete(key);
       this.saved.delete(key);
+      this.replace(key);
       this.unsaved.delete(key);
       this.agentOnly.delete(key);
     }

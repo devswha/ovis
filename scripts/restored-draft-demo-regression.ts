@@ -243,6 +243,10 @@ try {
         await feed(page, null, null);
         await boxValue(page, "@/tmp/notes.txt ");
         console.log("PASS a path that waited on a restored /command goes in once the fill is cleared");
+        // done with the file: Remove takes it and its path out (a path deleted by hand would leave the
+        // tile saying it is in no message, and Send waits for it, #3216)
+        await page.getByRole("button", { name: "Remove notes.txt", exact: true }).click();
+        await boxValue(page, "");
 
         // the fill replaced by a new message and sent: the send empties the agent's box, so the next
         // prompt read answers no restored send while the transcript still ends with the cancelled

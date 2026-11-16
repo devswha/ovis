@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 
 import { skillSyntax } from "../../shared/skill-syntax.ts";
 import { AGENT_INPUT_DRAFT_MESSAGE, CLAUDE_FOLDED_DRAFT_MESSAGE } from "../../shared/submit-outcome.ts";
-import { agentDisplayLabel, claudeMainAtRest, composerDelivery, composerMessage, composerSendShown, composerPayload, composerModelDraw, composerStatusCompact, composerStatusHint, composerStatusWord, COMPOSER_STATUS_COMPACT_BELOW, contextLeftPercent, editBetween, followPlace, formatTokens, imageMention, insertMentionAt, insertNote, removeMention, MAX_COMPOSER_CHARS, QUEUE_READY_STATUS, rankSlashCommands, submitNote, submitNotTyped, submitRefusal, sameMessage, pendingActionUncertain, draftSendNote, endsWithTurn, stoppedTurn } from "./compose.ts";
+import { agentDisplayLabel, claudeMainAtRest, composerDelivery, composerMessage, composerSendShown, composerPayload, composerModelDraw, composerStatusCompact, composerStatusHint, composerStatusWord, COMPOSER_STATUS_COMPACT_BELOW, contextLeftPercent, editBetween, followPlace, formatTokens, imageMention, insertMentionAt, insertNote, placedMention, removeMention, followMention, MAX_COMPOSER_CHARS, QUEUE_READY_STATUS, rankSlashCommands, submitNote, submitNotTyped, submitRefusal, sameMessage, pendingActionUncertain, draftSendNote, endsWithTurn, stoppedTurn } from "./compose.ts";
 import { briefDescription, COMMAND_GROUPS, commandGroup, commandsForTrigger, namesHiddenCommand, sendsBarePick, slashCommandReplacement, terminalCommand, typedTerminalCommand } from "./compose.ts";
 import type { ConversationTurn, SlashCommand } from "../../shared/protocol.ts";
 import { activeTrigger, applyCompletion, type ActiveTrigger } from "./mentions.ts";
@@ -399,26 +399,52 @@ describe("followPlace (#3216)", () => {
     expect(followPlace(7, { start: 5, removed: 1, inserted: 0 })).toBe(6);
   });
 
-  it("goes to where an edit across it began", () => {
+  it("goes to where an edit across it began, also when it ends where text was typed over", () => {
     expect(followPlace(7, { start: 3, removed: 6, inserted: 0 })).toBe(3);
+    // "this" (4..8) typed over by "t": the place after it goes before the new word
+    expect(followPlace(8, { start: 4, removed: 4, inserted: 1 })).toBe(4);
+    // only removed before it: it moves back with the text
+    expect(followPlace(8, { start: 4, removed: 4, inserted: 0 })).toBe(4);
     expect(followPlace(12, { start: 0, removed: 13, inserted: 1 })).toBe(0);
   });
 });
 
 describe("removeMention (#3216)", () => {
   const mention = imageMention("/tmp/1.png");
+  const removed = (text: string, place: number) => {
+    const next = insertMentionAt(text, mention, place);
+    return removeMention(next.text, placedMention(next, mention)).text;
+  };
 
-  it("takes out the mention as either insert wrote it, and nothing else", () => {
-    expect(removeMention("before @/tmp/1.png after", mention)).toBe("before after");
-    expect(removeMention(insertMentionAt("before\nafter", mention, 6).text, mention)).toBe("before\nafter");
-    expect(removeMention(insertMentionAt("before\tafter", mention, 6).text, mention)).toBe("before\tafter");
-    expect(removeMention("before @/tmp/1.pngs\nafter", mention)).toBe("before @/tmp/1.pngs\nafter");
+  it("takes out the path where it was put, with the spaces the upload added", () => {
+    expect(removed("before after", 7)).toBe("before after");
+    expect(removed("ab", 1)).toBe("ab");
+    expect(removed("before\nafter", 6)).toBe("before\nafter");
+    expect(removed("before\tafter", 6)).toBe("before\tafter");
   });
 
-  it("keeps a space the user typed before the mention", () => {
-    const placed = insertMentionAt("before \nafter", mention, 7);
-    const inserted = placed.text.slice(placed.at, placed.at + placed.length);
-    expect(removeMention(placed.text, mention, inserted)).toBe("before \nafter");
+  it("keeps a space the user typed before the mention, and a copy of the path the user typed elsewhere", () => {
+    expect(removed("before \nafter", 7)).toBe("before \nafter");
+    expect(removed("see @/tmp/1.png x", 17)).toBe("see @/tmp/1.png x");
+  });
+});
+
+describe("followMention (#3216)", () => {
+  const mention = imageMention("/tmp/1.png");
+  const next = insertMentionAt("look at this", mention, 8);
+  const placed = placedMention(next, mention);
+
+  it("moves with text typed before it and stays for text typed after it", () => {
+    expect(followMention(`so ${next.text}`, placed, { start: 0, removed: 0, inserted: 3 })?.start).toBe(placed.start + 3);
+    expect(followMention(`${next.text}now`, placed, { start: next.text.length, removed: 0, inserted: 3 })).toBe(placed);
+  });
+
+  it("is gone once an edit takes a character of it or types one onto it", () => {
+    const cut = next.text.slice(0, placed.start + 3) + next.text.slice(placed.start + 4);
+    expect(followMention(cut, placed, { start: placed.start + 3, removed: 1, inserted: 0 })).toBeNull();
+    const end = placed.start + placed.bare.length;
+    const glued = next.text.slice(0, end) + "x" + next.text.slice(end + 1);
+    expect(followMention(glued, placed, { start: end, removed: 1, inserted: 1 })).toBeNull();
   });
 });
 
@@ -436,9 +462,11 @@ describe("editBetween (#3216)", () => {
     expect(editBetween("before \u314Eafter", "before \uD558after", { caret: 8 })).toEqual({ start: 7, removed: 1, inserted: 1 });
   });
 
-  it("never begins inside a character", () => {
+  it("never begins inside a character or a word", () => {
     expect(editBetween("\u{1F600}a", "\u{1F603}", { caret: 2 })).toEqual({ start: 0, removed: 3, inserted: 2 });
-    expect(editBetween("ae\u0301x", "ae\u0300y", { caret: 4 })).toEqual({ start: 1, removed: 3, inserted: 3 });
+    expect(editBetween("x ae\u0301x", "x ae\u0300y", { caret: 6 })).toEqual({ start: 2, removed: 4, inserted: 4 });
+    // an autocorrect: the word, not its first letter on
+    expect(editBetween("fix teh bug", "fix the bug", { caret: 7 })).toEqual({ start: 4, removed: 3, inserted: 3 });
   });
 });
 

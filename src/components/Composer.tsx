@@ -42,6 +42,7 @@ import {
   type DraftRefusal,
   draftSendNote,
   editBetween,
+  followMention,
   followPlace,
   formatTokens,
   imageMention,
@@ -50,6 +51,8 @@ import {
   MAX_COMPOSER_CHARS,
   mentionPlace,
   namesHiddenCommand,
+  placedMention,
+  type PlacedMention,
   rankSlashCommands,
   removeMention,
   sendsBarePick,
@@ -166,9 +169,7 @@ type Attachment = {
   file: File;
   previewUrl: string;
   path: string | null;
-  /** the text its upload put in the message, with the spaces it added: what removing it takes out */
-  inserted?: string;
-  /** unplaced: uploaded, but the draft it was pasted in was cleared or replaced, so its path is in no message yet (#3216) */
+  /** unplaced: uploaded, but its path is in no message (#3216): its draft was replaced or cleared from elsewhere, or its path was edited away */
   state: "uploading" | "ready" | "error" | "no-room" | "unplaced";
   /** for "no-room": how many characters the message must lose for the path to fit */
   missing?: number;
@@ -298,7 +299,8 @@ export function Composer({
   const drops = useRef(0);
   const wasConnected = useRef(connected);
   if (wasConnected.current !== connected) { if (!connected) drops.current++; wasConnected.current = connected; }
-  const setText = useCallback((value: string | ((previous: string) => string)) => composerDrafts.set(draftKey, value), [draftKey]);
+  // the box's own writes: its upload places (below) move with them, so they are no replacement
+  const setText = useCallback((value: string | ((previous: string) => string)) => composerDrafts.set(draftKey, value, "box"), [draftKey]);
   // comments on the agent's replies (#511) go first in the next message, unless it is a slash command or an answer
   const commentsKey = replyCommentsKey(paneStorageId(machineId, paneId));
   const comments = useReplyComments(commentsKey);
@@ -316,35 +318,76 @@ export function Composer({
   /** where each file's path goes, by attachment id (#3216): places in `placesText`, moved with each edit this composer makes */
   const places = useRef(new Map<number, number>());
   const placesText = useRef(text);
+  /** places whose draft was cleared from elsewhere: they hold, at the start, only while the box stays empty */
+  const orphans = useRef(new Set<number>());
+  /** the draft's replacement count (composerDrafts.replacements) the places were last checked against */
+  const seenReplacements = useRef(composerDrafts.replacements(draftKey));
+  /** each placed path, by attachment id: where it is, followed through every edit, so its tile never claims a path that is gone */
+  const placed = useRef(new Map<number, PlacedMention>());
   /** the box's selection as last seen: what the next edit typed or pasted over */
   const selection = useRef({ start: caret, end: caret });
   /** where an IME composition began: a file pasted or picked during one goes before the syllable being composed */
   const compositionStart = useRef(0);
+  /** files whose placed path is gone from the message: their tiles say so, and Send waits for them */
+  const unplace = useCallback((ids: readonly number[]) => {
+    if (ids.length === 0) return;
+    for (const id of ids) placed.current.delete(id);
+    setAttachments((current) => current.map((item) => (ids.includes(item.id) && item.state === "ready" ? { ...item, state: "unplaced" } : item)));
+  }, []);
+  /** an orphaned place lasts only while the box is empty: anything written there is a new draft */
+  const settleOrphans = useCallback((next: string) => {
+    if (next === "") return;
+    for (const id of orphans.current) places.current.delete(id);
+    orphans.current.clear();
+  }, []);
+  /** the box's own edit: the places and placed paths move with it */
   const movePlaces = useCallback((edit: TextEdit, next: string) => {
     for (const [id, at] of places.current) places.current.set(id, followPlace(at, edit));
+    const broken: number[] = [];
+    for (const [id, mention] of placed.current) {
+      const moved = followMention(next, mention, edit);
+      if (moved === null) broken.push(id);
+      else placed.current.set(id, moved);
+    }
+    unplace(broken);
+    settleOrphans(next);
     placesText.current = next;
-  }, []);
+  }, [settleOrphans, unplace]);
   /**
-   * The draft written from elsewhere (another tab, a send's acknowledgement, a recovered or quoted
-   * message): its places go, unless it only added after the text they were read in. Their files stay
-   * attached, and their paths go into no draft they were not pasted or picked in.
+   * The draft replaced by a write that is not this box's own edit (another tab, a send's
+   * acknowledgement, a restored send): no place or placed path points into it any more. A file
+   * still uploading keeps a place at the start only while the box is empty; the others, and the
+   * placed ones, become unplaced: their tiles say so and Send waits.
+   */
+  const dropPlaces = useCallback((next: string) => {
+    unplace([...placed.current.keys()]);
+    if (next === "") for (const id of places.current.keys()) { places.current.set(id, 0); orphans.current.add(id); }
+    else { places.current.clear(); orphans.current.clear(); }
+    placesText.current = next;
+  }, [unplace]);
+  /**
+   * Brings the places up to `current`, the draft as written: the draft store says by its replacement
+   * count whether a write from elsewhere replaced it (composerDrafts.replacements); the only other
+   * writes are appends after it (a quote, a recovered message), which leave every place where it is.
    */
   const syncPlaces = useCallback((current: string) => {
+    const replaced = composerDrafts.replacements(draftKey);
+    if (replaced !== seenReplacements.current) {
+      seenReplacements.current = replaced;
+      dropPlaces(current);
+      return;
+    }
     if (current === placesText.current) return;
-    if (placesText.current === "" || !current.startsWith(placesText.current)) places.current.clear();
+    settleOrphans(current);
     placesText.current = current;
-  }, []);
-  /**
-   * The box's text replaced whole by this composer: a restored send's fill of a blank box, and the
-   * clear of that fill untouched. No words of the user's go, so neither does a file: places inside the
-   * old text go to the start of the new one.
-   */
+  }, [draftKey, dropPlaces, settleOrphans]);
+  /** the box's text replaced whole by this composer: a restored send's fill of a blank box, and the clear of that fill untouched */
   const replaceText = useCallback((next: string) => {
     syncPlaces(textRef.current);
-    movePlaces({ start: 0, removed: textRef.current.length, inserted: next.length }, next);
+    dropPlaces(next);
     setText(next);
     textRef.current = next;
-  }, [movePlaces, setText, syncPlaces]);
+  }, [dropPlaces, setText, syncPlaces]);
   /** the restored text the box was filled with: only that fill is ever cleared, never the user's own typing */
   const filledFrom = useRef<string | null>(null);
   const commands = usePaneCommands(paneId, agent);
@@ -745,12 +788,13 @@ export function Composer({
     for (const [index, { id, path, name }] of waiting.entries()) {
       if (removedAttachments.current.has(id)) continue;
       const place = places.current.get(id);
-      /** the text this path went in as, once it went in */
-      let inserted: string | undefined;
+      const mention = imageMention(path);
+      /** where this path went in, once it went in */
+      let inserted: PlacedMention | undefined;
       // no place: the draft it was pasted in was written over from elsewhere (syncPlaces), and the
       // file stays attached without its path going into the new one
       if (place !== undefined) {
-        const next = insertMentionAt(textRef.current, imageMention(path), place);
+        const next = insertMentionAt(textRef.current, mention, place);
         // no room for the whole path: this attachment and the ones picked after it stay waiting, in
         // their order, Send stays off, and the next edit of the text tries again (the effect below);
         // a cut path would name a file that is not there, so the tile says how much to cut instead
@@ -770,18 +814,28 @@ export function Composer({
         // the other places move with it; one that lands at the same place (after a leading /command
         // too) goes after it when picked after it, so a batch keeps its order
         places.current.delete(id);
+        orphans.current.delete(id);
         for (const [other, at] of places.current) {
           const lands = mentionPlace(textRef.current, at);
           places.current.set(other, lands > next.at || (lands === next.at && other > id) ? lands + next.length : at);
         }
+        const shift: TextEdit = { start: next.at, removed: 0, inserted: next.length };
+        const broken: number[] = [];
+        for (const [other, earlier] of placed.current) {
+          const moved = followMention(next.text, earlier, shift);
+          if (moved === null) broken.push(other);
+          else placed.current.set(other, moved);
+        }
+        unplace(broken);
         insertMention(next, selected);
-        inserted = next.text.slice(next.at, next.at + next.length);
+        inserted = placedMention(next, mention);
+        placed.current.set(id, inserted);
       }
-      setAttachments((current) => current.map((item) => (item.id === id ? { ...item, path, inserted, state: inserted === undefined ? "unplaced" : "ready" } : item)));
+      setAttachments((current) => current.map((item) => (item.id === id ? { ...item, path, state: inserted === undefined ? "unplaced" : "ready" } : item)));
       if (inserted !== undefined) attached.push(t("{name} attached", { name }));
     }
     if (attached.length > 0) announce(attached.join(" "));
-  }, [announce, insertMention, readSelection, syncPlaces, t]);
+  }, [announce, insertMention, readSelection, syncPlaces, t, unplace]);
 
   // whatever wrote the text (typing, a completion, dictation, a cleared draft), a waiting path tries
   // again in the next frame, after that write's own caret placement has landed
@@ -793,21 +847,7 @@ export function Composer({
 
   useEffect(() => syncPlaces(text), [syncPlaces, text]);
 
-  // typing over the whole draft selected replaces it: an upload started in it never lands in the new
-  // one on its own; its file stays, unplaced, until the user puts it in or removes it
-  useEffect(() => {
-    const element = textareaRef.current;
-    if (!element) return;
-    const replacing = () => {
-      // an IME's own input (its candidate replaced, then committed) types over nothing of the user's
-      if (composingRef.current) return;
-      if (element.value !== "" && element.selectionStart === 0 && element.selectionEnd === element.value.length) places.current.clear();
-    };
-    element.addEventListener("beforeinput", replacing);
-    return () => element.removeEventListener("beforeinput", replacing);
-  }, []);
-
-  /** the unplaced files' paths go where the user put the caret: they wait for it after their draft went */
+  /** the unplaced files' paths go where the user put the caret: they wait for it after their draft went or their path was edited away */
   const placeUnplaced = useCallback((at: number) => {
     const waiting = attachmentsRef.current.filter((item): item is Attachment & { path: string } => item.state === "unplaced" && item.path !== null);
     if (waiting.length === 0) return;
@@ -925,21 +965,21 @@ export function Composer({
   }, [pumpUploads]);
 
   const removeAttachment = useCallback((attachment: Attachment) => {
+    syncPlaces(textRef.current);
+    // only the path this upload put in, where it is now: a copy the user typed stays, and a tile whose
+    // path is in no message takes nothing out
+    const inserted = placed.current.get(attachment.id);
     removedAttachments.current.add(attachment.id);
     places.current.delete(attachment.id);
+    placed.current.delete(attachment.id);
     URL.revokeObjectURL(attachment.previewUrl);
     setAttachments((current) => current.filter((item) => item.id !== attachment.id));
     // the note about this tile's failed upload goes with the tile
     setNote((current) => typeof current === "object" && current !== null && "failure" in current && current.attachment.id === attachment.id ? null : current);
-    if (attachment.path) {
-      const mention = imageMention(attachment.path);
+    if (inserted) {
       setText((current) => {
-        syncPlaces(current);
-        const next = removeMention(current, mention, attachment.inserted);
-        // one stretch of text went: it starts where the two first differ
-        let start = 0;
-        while (start < next.length && current[start] === next[start]) start++;
-        movePlaces({ start, removed: current.length - next.length, inserted: 0 }, next);
+        const { text: next, edit } = removeMention(current, inserted);
+        movePlaces(edit, next);
         textRef.current = next;
         caretRef.current = Math.min(caretRef.current, next.length);
         return next;
@@ -988,7 +1028,7 @@ export function Composer({
       textRef.current = rest;
       caretRef.current = rest.length;
       setNote(edited ? t("Sent as it was. Your changes made while it was sending stayed here and were not sent.") : null);
-      for (const attachment of sentAttachments) { URL.revokeObjectURL(attachment.previewUrl); places.current.delete(attachment.id); }
+      for (const attachment of sentAttachments) { URL.revokeObjectURL(attachment.previewUrl); places.current.delete(attachment.id); placed.current.delete(attachment.id); }
       setAttachments((current) => current.filter((attachment) => !sentAttachments.includes(attachment)));
     };
     const ended = (): void => { composerDrafts.end(draftKey, sendId); replyComments.release(sentComments); };
@@ -1659,10 +1699,8 @@ export function Composer({
             barePick.current = null;
             // the places follow the edit the box made, over the selection it had (#3216)
             syncPlaces(textRef.current);
+            // an edit in the box, even one that empties it or types over all of it, moves them to where it began
             movePlaces(editBetween(placesText.current, box.value, { caret: box.selectionStart, selected: selection.current }), box.value);
-            // the box emptied: the draft its uploads were started in is gone, and so are their places
-            // (not an IME clearing its own candidate on the way to committing it)
-            if (box.value === "" && !composingRef.current) places.current.clear();
             selection.current = { start: box.selectionStart, end: box.selectionEnd };
             textRef.current = box.value;
             setText(box.value);

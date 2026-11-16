@@ -230,7 +230,7 @@ export interface TextEdit { readonly start: number; readonly removed: number; re
  * The edit that turned `before` into `after` (#3216), as the box made it: the selection it replaced
  * (`selected`, read before the edit) and the caret it left. When those do not describe it (an IME,
  * an autocorrect, undo, a write with no selection), the texts are compared around the caret, and
- * the edit never begins inside a character.
+ * the edit begins at the start of a word.
  */
 export function editBetween(
   before: string,
@@ -253,17 +253,21 @@ export function editBetween(
   while (suffix < Math.min(before.length, after.length - caret) && before[before.length - 1 - suffix] === after[after.length - 1 - suffix]) suffix++;
   let prefix = 0;
   while (prefix < Math.min(before.length, after.length) - suffix && before[prefix] === after[prefix]) prefix++;
-  const start = Math.min(characterStart(before, prefix), characterStart(after, prefix));
+  let start = Math.min(characterStart(before, prefix), characterStart(after, prefix));
+  // a guessed edit takes whole words: a place it crosses goes before the word, never into it
+  while (start > 0 && /\S/u.test(before[start - 1]!)) start--;
   return { start, removed: before.length - suffix - start, inserted: after.length - suffix - start };
 }
 
 /**
  * Where a place moves with an edit (#3216): text added at it goes after it, text added or removed
- * before it moves it, and an edit across it leaves it where the edit began.
+ * before it moves it, and an edit across it leaves it where the edit began. A place at the end of
+ * text that was typed over is one the edit crossed: it goes before the new text, never into it.
  */
 export function followPlace(at: number, edit: TextEdit): number {
   if (at <= edit.start) return at;
-  if (at >= edit.start + edit.removed) return at + edit.inserted - edit.removed;
+  const end = edit.start + edit.removed;
+  if (at > end || (at === end && (edit.removed === 0 || edit.inserted === 0))) return at + edit.inserted - edit.removed;
   return edit.start;
 }
 
@@ -296,23 +300,40 @@ export function mentionPlace(text: string, place: number): number {
 }
 
 /**
- * The text without an attached file's mention: `inserted`, the exact text the insert added, when it
- * is still there, so a space the user typed stays; else as imageMention writes it, or as insertMentionAt
- * wrote it before a line break or a tab, without its trailing space and with the space put before it.
+ * A path an upload put in the message (#3216): its `@path` (`bare`) at `start`, and whether the
+ * upload added the space before it (`lead`) and after it (`trail`).
  */
-export function removeMention(text: string, mention: string, inserted?: string): string {
-  const exact = inserted ? text.indexOf(inserted) : -1;
-  if (exact >= 0) return text.slice(0, exact) + text.slice(exact + inserted!.length);
-  const at = text.indexOf(mention);
-  if (at >= 0) return text.slice(0, at) + text.slice(at + mention.length);
-  const bare = mention.trimEnd();
-  for (let found = text.indexOf(bare); found >= 0; found = text.indexOf(bare, found + 1)) {
-    const end = found + bare.length;
-    if (end < text.length && !/\s/u.test(text[end]!)) continue;
-    const start = text[found - 1] === " " ? found - 1 : found;
-    return text.slice(0, start) + text.slice(end);
-  }
-  return text;
+export interface PlacedMention { readonly start: number; readonly bare: string; readonly lead: boolean; readonly trail: boolean }
+
+/** The path insertMentionAt put in: `next` is what it returned. */
+export function placedMention(next: { text: string; at: number; length: number }, mention: string): PlacedMention {
+  const snippet = next.text.slice(next.at, next.at + next.length);
+  const lead = snippet.startsWith(" ");
+  return { start: next.at + (lead ? 1 : 0), bare: mention.trimEnd(), lead, trail: snippet.endsWith(" ") };
+}
+
+/**
+ * The placed path after an edit that gave `text`, or null once the edit took a character of it, or
+ * typed one onto either end of it: the message then names no such file.
+ */
+export function followMention(text: string, mention: PlacedMention, edit: TextEdit): PlacedMention | null {
+  const end = mention.start + mention.bare.length;
+  const start = edit.start + edit.removed <= mention.start ? mention.start + edit.inserted - edit.removed
+    : edit.start >= end ? mention.start : null;
+  if (start === null || text.slice(start, start + mention.bare.length) !== mention.bare) return null;
+  if (/\S/u.test(text[start - 1] ?? " ") || /\S/u.test(text[start + mention.bare.length] ?? " ")) return null;
+  return start === mention.start ? mention : { ...mention, start };
+}
+
+/**
+ * The text without a placed path, and the edit that takes it out: the path where it was put, with the
+ * spaces the upload added and none the user typed (a path the user typed elsewhere stays).
+ */
+export function removeMention(text: string, mention: PlacedMention): { text: string; edit: TextEdit } {
+  const end = mention.start + mention.bare.length;
+  const start = mention.lead && text[mention.start - 1] === " " ? mention.start - 1 : mention.start;
+  const stop = mention.trail && text[end] === " " ? end + 1 : end;
+  return { text: text.slice(0, start) + text.slice(stop), edit: { start, removed: stop - start, inserted: 0 } };
 }
 
 /** Ready states affect the held-message hint only; sending always requires a user action. */
