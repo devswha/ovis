@@ -68,7 +68,7 @@ public class OvisPushPlugin: CAPPlugin, CAPBridgedPlugin, NotificationHandlerPro
             PCStore.pendingStart = PCStore.alertPage(key, machine: tap["machine_id"], workspace: tap["workspace_id"], pane: pane)
             PCStore.failure = nil
             PCStore.redirects = 0
-            PCStore.reopen()
+            HerdrBridgeViewController.reopen()
         }
     }
 
