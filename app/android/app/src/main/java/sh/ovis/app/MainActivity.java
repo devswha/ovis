@@ -919,6 +919,7 @@ public class MainActivity extends BridgeActivity {
             intent.getStringExtra(OvisMessagingService.EXTRA_PANE)
         );
         intent.setAction(Intent.ACTION_MAIN);
+        intent.setData(null);
         boolean fromRecents = (intent.getFlags() & Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) != 0;
         if (alert == null || !fresh || fromRecents) return false;
         PCStore.open(this, alert[0], alert[1]);

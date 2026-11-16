@@ -6,6 +6,7 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.net.Uri;
 import android.os.Build;
 import android.util.Log;
 import androidx.core.app.NotificationCompat;
@@ -89,10 +90,13 @@ public class OvisMessagingService extends FirebaseMessagingService {
                 .putExtra(EXTRA_WORKSPACE, field(alert, "workspace_id"))
                 .putExtra(EXTRA_PANE, pane);
         }
-        // one tap per notification: a PendingIntent is told apart by its request code, not its extras,
-        // so a shared one would open the latest alert's pane from every notification. The tag is
-        // what the notification is shown under, so the same alert again replaces both
-        PendingIntent tap = open == null ? null : PendingIntent.getActivity(this, tag.hashCode(), open, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+        // one tap per notification: Android tells PendingIntents apart by their intent's action, data
+        // and component, never its extras, so a shared one would open the latest alert's pane from
+        // every notification. The tag, in the data, is what the notification is shown under, so the
+        // same alert again replaces both; a request code alone (a hash of the tag) could collide.
+        // MainActivity.openAlert drops the data with the action
+        if (open != null && pane != null) open.setData(Uri.fromParts("ovis-alert", tag, null));
+        PendingIntent tap = open == null ? null : PendingIntent.getActivity(this, 0, open, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
         NotificationCompat.Builder notification = new NotificationCompat.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_stat_ovis)
             .setColor(0xFF2E3A59)
