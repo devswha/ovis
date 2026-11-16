@@ -120,6 +120,14 @@ function packageVersion(directory: string): string | null {
   } catch { return null; }
 }
 
+/** The version of the signed ovis-server.json the installers keep beside an installed compiled server. */
+function manifestVersion(directory: string): string | null {
+  try {
+    const version = (JSON.parse(readFileSync(join(directory, "ovis-server.json"), "utf8")) as { version?: unknown }).version;
+    return typeof version === "string" ? version : null;
+  } catch { return null; }
+}
+
 /** How long a timed-out or cancelled command has to end itself before it is killed outright. */
 const KILL_GRACE_MS = 2_000;
 
@@ -289,7 +297,7 @@ export class Updater {
       return this.release;
     }
     if (this.options.installedBinary) {
-      this.patch({ managed: false, blocked_reason: INSTALLED_BINARY_REASON });
+      this.patch({ managed: false, current_version: manifestVersion(this.options.root), blocked_reason: INSTALLED_BINARY_REASON });
       return this.release;
     }
     try {

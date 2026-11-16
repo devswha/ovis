@@ -49,9 +49,12 @@ it("tells a compiled server the installers put in place to run the installer aga
   dirs.push(scratch);
   const root = join(scratch, ".local", "share", "ovis", "releases", "0.5.4-abcd");
   mkdirSync(root, { recursive: true });
+  // the signed manifest the installer checked the binary against stays beside it, and names the version
+  writeFileSync(join(root, "ovis-server.json"), '{\n  "schema": 1,\n  "version": "0.5.4"\n}\n');
   const updater = new Updater({ root, stateDir: join(scratch, "state"), autoUpdate: false, installedBinary: installedBinaryAt(root, true), publish() {}, activate: async () => {} });
   await updater.initialize();
   expect(updater.status.managed).toBe(false);
+  expect(updater.status.current_version).toBe("0.5.4");
   expect(updater.status.blocked_reason).toBe(INSTALLED_BINARY_REASON);
   expect(INSTALLED_BINARY_REASON).toContain("curl -fsSL https://ovis.sh/install.sh | sh");
   expect(INSTALLED_BINARY_REASON).toContain("irm https://ovis.sh/install.ps1 | iex");
