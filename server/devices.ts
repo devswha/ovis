@@ -15,6 +15,7 @@ import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { AccountRecordError, parseAccountRecord, type AddRecord, type RemoveRecord } from "../shared/account-records.ts";
 import { type DevicePairedEvent, type DeviceRemovedEvent, type DevicePairToken, type DeviceRole, type DevicesRevokedAll, type PairedDevice, type DeviceConnection, STREAM_COOKIE_PREFIX } from "../shared/protocol.ts";
+import type { MuxClock } from "../shared/relay-mux-engine.ts";
 import type { Access } from "./access.ts";
 import { CLEAR_LEGACY_DEVICE_COOKIE, COOKIE_MAX_AGE_SECONDS, DEVICE_COOKIE_CLEARED, deviceCookie, isSecureRequest, noContent, parseCookies } from "./auth.ts";
 import { badRequest, isJsonObject, jsonResponse, setRequestRoute } from "./http.ts";
@@ -27,6 +28,23 @@ const LAST_SEEN_WRITE_MS = 60_000;
 const UNCONFIRMED_FIRST_PAIR_LIMIT = 8;
 const LABEL_MAX = 48;
 const PAIRING_WINDOW_MS = 10 * 60_000;
+/** A device that paired with a code made for a PC in no account has this long to link itself into an account. */
+export const PAIRING_LINK_MS = 30_000;
+/** The pairings one such code takes: each makes a row that waits to link, and nothing gives one back. */
+export const PAIRING_USES = 5;
+/** The links one waiting row may send; the next turns it away. */
+const WAITING_LINKS = 5;
+
+/** A clock that only moves forward, never the PC's wall clock: what a waiting row's time is counted on (DeviceStore.useClock). */
+const MONOTONIC: MuxClock = {
+  now: () => performance.now(),
+  setTimeout: (callback, milliseconds) => {
+    const timer = setTimeout(callback, milliseconds);
+    // a bound that is still running never keeps a stopping server alive
+    timer.unref();
+    return () => clearTimeout(timer);
+  },
+};
 
 export class PairingRateLimitedError extends Error {
   readonly code = "pairing_rate_limited";
@@ -164,6 +182,17 @@ export interface DeviceMatch {
   id: string;
   label: string;
   role: DeviceRole;
+  /**
+   * Set by the relay session on one request, never kept: the row waited to link when that request began
+   * (server/relay/session.ts), so the request is one of its two calls.
+   */
+  provisional?: true;
+}
+
+/** What stood when a link arrived (DeviceStore.linkArrived): its checks are held to it. */
+export interface LinkArrival {
+  /** whether the row had paired with a code made for a PC in no account and not linked */
+  readonly provisional: boolean;
 }
 
 const hash = (token: string) => createHash("sha256").update(token).digest("hex");
@@ -280,6 +309,28 @@ export function mergeAccountTombstones(active: string, sibling: string): string 
 }
 
 /**
+ * A device that paired with a code made for a PC in no account and has not linked: in memory only, never in
+ * devices.json, and shown to its own relay session alone (DeviceStore.sessionRow).
+ */
+interface ProvisionalRow {
+  readonly id: string;
+  readonly label: string;
+  /** the key its PAIR named; only an AUTH proves it */
+  readonly key: string;
+  /** on the store's clock */
+  readonly pairedAt: number;
+  /** the links it sent */
+  links: number;
+  readonly cancel: () => void;
+}
+
+/** What a code made for a PC in no account holds besides its six digits: the pairings it still takes, and the rows that wait to link. */
+interface WaitingRows {
+  usesLeft: number;
+  readonly rows: Map<string, ProvisionalRow>;
+}
+
+/**
  * Whether the row is a pairing of its current key made on this PC (a code, or a comparison approved here): not a
  * row an account record or a remote approval made (`added_by`), and not one a `link` moved onto the key from the
  * key it was paired with, which never paired this key here. A link that kept the paired key changes nothing.
@@ -299,9 +350,12 @@ export class DeviceStore {
    */
   /**
    * `open`: started by a request the open LAN alone let in (access.ts `via: "open"`), so it ends when the gate closes;
-   * `noAccountOnly`: made to put this PC in an account (pairingForNoAccount), so it ends when the PC is in one
+   * `noAccountOnly`: made to put this PC in an account (pairingForNoAccount), so it ends when the PC is in one;
+   * `waiting`: what such a code holds, the devices that paired with it through the relay and have not linked
    */
-  private pending: { code: string; expires: number; attempts: number; lanAttempts?: number; remote: boolean; startedBy: string | null; memberRequired: boolean; open?: boolean; noAccountOnly?: boolean; holders: Set<string> } | null = null;
+  private pending: { code: string; expires: number; attempts: number; lanAttempts?: number; remote: boolean; startedBy: string | null; memberRequired: boolean; open?: boolean; noAccountOnly?: boolean; holders: Set<string>; waiting?: WaitingRows } | null = null;
+  /** What a row that waits to link is bounded on (useClock). */
+  private clock: MuxClock = MONOTONIC;
   private codeIssues: number[] = [];
   private readonly relayFailures: Record<PairingFailurePath, { at: number[]; blockedUntil: number }> = {
     code: { at: [], blockedUntil: 0 }, account: { at: [], blockedUntil: 0 }, vouched: { at: [], blockedUntil: 0 }, lan: { at: [], blockedUntil: 0 },
@@ -309,7 +363,7 @@ export class DeviceStore {
   /** First-pair cookies are not devices, and do not close the gate, until one returns. */
   private unconfirmedFirstPairs: UnconfirmedFirstPair[] = [];
   private readonly path: string;
-  private readonly revocations = new Map<string, Set<() => void>>();
+  private readonly revocations = new Map<string, Set<(waiting?: true) => void>>();
   /** Sessions of a row, told when a `link` moves it to another key (onLinked). */
   private readonly relinks = new Map<string, Set<(sessionId: string) => void>>();
   private readonly revokeAllListeners = new Set<() => void>();
@@ -426,7 +480,7 @@ export class DeviceStore {
     const gate = new Date().toISOString();
     this.save(this.devices, gate);
     this.gateClosedAt = gate;
-    this.pending = null;
+    this.voidPending();
     this.unconfirmedFirstPairs = [];
   }
 
@@ -441,10 +495,14 @@ export class DeviceStore {
     };
   }
 
-  /** Ends stale authority on revocation or role changes, never a label-only update. Called immediately for an already-revoked identity. */
-  onRevoke(id: string, close: () => void): () => void {
-    if (!this.devices.some((device) => device.id === id)) { close(); return () => {}; }
-    const listeners = this.revocations.get(id) ?? new Set<() => void>();
+  /**
+   * Ends stale authority on revocation or role changes, never a label-only update. Called immediately for an already-revoked identity.
+   * `waiting`: the row that went had paired with a code made for a PC in no account and not linked (dropProvisional).
+   */
+  onRevoke(id: string, close: (waiting?: true) => void): () => void {
+    // a row that waits to link has sessions too: they end when it goes, as a device's do when it is revoked
+    if (!this.devices.some((device) => device.id === id) && this.pending?.waiting?.rows.has(id) !== true) { close(); return () => {}; }
+    const listeners = this.revocations.get(id) ?? new Set<(waiting?: true) => void>();
     listeners.add(close);
     this.revocations.set(id, listeners);
     return () => {
@@ -521,7 +579,12 @@ export class DeviceStore {
     if (this.codeIssues.length >= 10) throw new PairingRateLimitedError(Math.ceil(((this.codeIssues[0] ?? now) + PAIRING_WINDOW_MS - now) / 1000));
     this.codeIssues.push(now);
     const code = String(randomInt(0, 1_000_000)).padStart(6, "0");
-    this.pending = { code, expires: now + CODE_TTL_MS, attempts: 0, ...how, holders: new Set([by, how.startedBy].filter((id): id is string => id !== null)) };
+    // the code this one replaces takes the rows that waited under it along
+    this.voidPending();
+    this.pending = {
+      code, expires: now + CODE_TTL_MS, attempts: 0, ...how, holders: new Set([by, how.startedBy].filter((id): id is string => id !== null)),
+      ...(how.noAccountOnly === true ? { waiting: { usesLeft: PAIRING_USES, rows: new Map<string, ProvisionalRow>() } } : {}),
+    };
     const started = { code, expires_at: new Date(this.pending.expires).toISOString() };
     for (const listener of this.codeStarts) listener();
     return started;
@@ -533,7 +596,8 @@ export class DeviceStore {
    * `x-ovis-no-account-only`). So it is made only while the PC is in no account (PcInAccountError otherwise, and the
    * code pending stays as it was), and it ends when the PC joins one (endNoAccountCode). The code pending when that
    * was made the same way, else a fresh one: never a code another place started, which may be on a screen as digits.
-   * `by` as in startPairing.
+   * A device that pairs with it through the relay is no device yet: it waits to link (pairProvisional), and the
+   * code takes PAIRING_USES such pairings. No other offer carries it (pairingForOffer). `by` as in startPairing.
    */
   pairingForNoAccount(by: string | null = null, now = Date.now()): PairingCode {
     if (by !== null && !this.has(by)) throw new DeviceGoneError();
@@ -544,6 +608,18 @@ export class DeviceStore {
       return active;
     }
     return this.startPairing(now, { remote: false, startedBy: null, memberRequired: false, noAccountOnly: true, by });
+  }
+
+  /**
+   * The code of every other relay offer (POST /api/relay/offer without `x-ovis-no-account-only`): the code pending,
+   * else a fresh one. Never the code made for a PC in no account (pairingForNoAccount): the device that pairs with
+   * that one waits to link, and this offer is for a device that is paired at once. With that code pending a fresh
+   * one is started, which replaces it as every new code does. `by` as in startPairing.
+   */
+  pairingForOffer(by: string | null = null, now = Date.now()): PairingCode {
+    const active = this.activePairing(now);
+    if (active !== null && this.pending?.noAccountOnly !== true) return active;
+    return this.startPairing(now, { remote: false, startedBy: null, memberRequired: false, by });
   }
 
   /**
@@ -569,9 +645,136 @@ export class DeviceStore {
    */
   endPairing(code?: string): boolean {
     if (code !== undefined && (this.pending === null || !same(code, this.pending.code))) return false;
-    this.pending = null;
+    this.voidPending();
     for (const listener of this.codeStarts) listener();
     return true;
+  }
+
+  /**
+   * The clock a row that waits to link is bounded on. It only moves forward (performance.now by default), so the
+   * PC's wall clock decides none of those bounds. A test hands in one it moves by hand.
+   */
+  useClock(clock: MuxClock): void {
+    this.clock = clock;
+  }
+
+  /** Drops the code pending, with nobody told; the rows that waited to link under it go with it. */
+  private voidPending(): void {
+    const waiting = this.pending?.waiting;
+    this.pending = null;
+    if (waiting) for (const row of [...waiting.rows.values()]) this.dropProvisional(waiting, row);
+  }
+
+  /**
+   * A row that waits to link goes: its sessions end `auth_revoked`, and a later sign-in with its id fails. Nothing
+   * was written for it, so nothing is unwritten and no tombstone is left. Its use stays spent; a code with no use
+   * left and no row waiting ends at once.
+   */
+  private dropProvisional(waiting: WaitingRows, row: ProvisionalRow): void {
+    if (!waiting.rows.delete(row.id)) return;
+    row.cancel();
+    const listeners = this.revocations.get(row.id);
+    this.revocations.delete(row.id);
+    for (const close of listeners ?? []) close(true);
+    if (this.pending?.waiting === waiting && waiting.usesLeft === 0 && waiting.rows.size === 0) this.endPairing();
+  }
+
+  /**
+   * `keys` were removed on this PC in this turn (a revoke, a revoke of all, an account's removal): every row that
+   * waits to link with one of them goes with it, once the removal is written and before anything else is. Such a
+   * row paired before the removal, and its link would take it back (promote clears the tombstone of a key its row
+   * kept). So a tombstone that stands when a waiting row links stood when that row paired.
+   */
+  private dropWaiting(keys: readonly string[]): void {
+    const waiting = this.pending?.waiting;
+    if (!waiting) return;
+    for (const row of [...waiting.rows.values()]) if (keys.includes(row.key)) this.dropProvisional(waiting, row);
+  }
+
+  /**
+   * The row `id` that waits to link, by the clock read now: one whose PAIRING_LINK_MS are over is gone at the first
+   * look, whether or not its timer has run.
+   */
+  private provisional(id: string): ProvisionalRow | undefined {
+    const waiting = this.pending?.waiting;
+    const row = waiting?.rows.get(id);
+    if (!waiting || !row) return undefined;
+    if (this.clock.now() - row.pairedAt < PAIRING_LINK_MS) return row;
+    this.dropProvisional(waiting, row);
+    return undefined;
+  }
+
+  /**
+   * The row `id` as its own relay session may see it: a device, or one that waits to link (`provisional`). Nothing
+   * else is shown a waiting row: no list, no route and no holder of a code knows it, and its role is the one with
+   * the fewest rights. This look reads no clock: the two calls such a row may make do (provisionalStands,
+   * linkArrived), so a row whose time is over is gone at the first of them, and can make no other call meanwhile.
+   */
+  sessionRow(id: string): { role: DeviceRole; key: string | undefined; provisional: boolean } | null {
+    const device = this.devices.find((d) => d.id === id);
+    if (device) return { role: device.role, key: device.relay_public_key, provisional: false };
+    const waiting = this.pending?.waiting?.rows.get(id);
+    return waiting ? { role: "watch", key: waiting.key, provisional: true } : null;
+  }
+
+  /** Whether the row `id` still waits to link: its code is the one pending, and its PAIRING_LINK_MS are not over by the clock read now. */
+  provisionalStands(id: string): boolean {
+    return this.provisional(id) !== undefined;
+  }
+
+  /**
+   * A link came from the row `id` (POST /api/account/link), before its signature is checked: whether the row is one
+   * that waits to link. `wasProvisional`: its relay session said so when the request began, so a row that went
+   * since is never taken for a device. A waiting row sends WAITING_LINKS links; the next turns it away, and null
+   * says so.
+   */
+  linkArrived(id: string, wasProvisional = false): LinkArrival | null {
+    const row = this.provisional(id);
+    const waiting = this.pending?.waiting;
+    if (row && waiting) {
+      row.links += 1;
+      if (row.links > WAITING_LINKS) { this.dropProvisional(waiting, row); return null; }
+    }
+    return { provisional: wasProvisional || row !== undefined };
+  }
+
+  /**
+   * The link of a row that waits (linkAccountKey): the row becomes a device and a member of `link.account` in one
+   * write of devices.json. First the check again, right before anything is written: the row still waits and still
+   * names the key the link starts from, the PC is still in no account, and no account removed the key the row would
+   * hold. Null when one of them fails, and nothing is written; a write that throws leaves the row waiting. Once the
+   * row is written the code it paired with has done what it was for: it ends, every other row that waited goes, the
+   * row's other sessions end (`auth_changed`), and the device is announced. Last, the tombstone of a key the row
+   * kept is cleared. It is this PC's own removal of that key (Revoke, Revoke all), and it stood when the row paired:
+   * one made since would have taken the row (dropWaiting). That write's failure is logged and changes nothing of the
+   * above; the next start clears it.
+   */
+  private promote(id: string, link: { oldKey: string; key: string; account: string }, sessionId: string): PairedDevice | null {
+    const row = this.provisional(id);
+    const waiting = this.pending?.waiting;
+    if (!row || !waiting || row.key !== link.oldKey || this.account() !== null || this.removedByAccount(link.key)) return null;
+    const now = Date.now();
+    const at = new Date(now).toISOString();
+    const device: StoredDevice = {
+      id: row.id, label: row.label, role: "drive", token_hash: hash(randomBytes(32).toString("hex")), relay_public_key: link.key,
+      // made at this write, not at its pairing: a row that keeps a key this PC removed is newer than that removal,
+      // so a stop before the tombstone is cleared leaves a row that the next start keeps (finishInterruptedWrites)
+      created_at: at, last_seen_at: at, account: link.account, linked_at: at, link_moved_key: link.key !== link.oldKey,
+    };
+    // no waiting row from here on: the end of its code, which this write brings, takes the rows that still wait
+    waiting.rows.delete(row.id);
+    try { this.enroll(device, now, [], false); }
+    catch (error) {
+      waiting.rows.set(row.id, row);
+      throw error;
+    }
+    row.cancel();
+    for (const listener of [...this.relinks.get(id) ?? []]) listener(sessionId);
+    if (link.key === link.oldKey) {
+      try { this.clearTombstone(link.key); }
+      catch (error) { console.error(`[devices] the tombstone of a key that paired again could not be cleared; the next start clears it: ${error instanceof Error ? error.message : String(error)}`); }
+    }
+    return this.list(null).find((d) => d.id === id) ?? null;
   }
 
   /** `{ token }` when the code is right; null when it is wrong, spent or expired. */
@@ -588,7 +791,7 @@ export class DeviceStore {
     const token = randomBytes(32).toString("hex");
     const device: StoredDevice = { id: randomBytes(8).toString("hex"), label, role, token_hash: hash(token), created_at: new Date(now).toISOString(), last_seen_at: null };
     if (!this.gated) {
-      this.pending = null;
+      this.voidPending();
       this.unconfirmedFirstPairs.push({ device, expires: now + CODE_TTL_MS, origin });
       if (this.unconfirmedFirstPairs.length > UNCONFIRMED_FIRST_PAIR_LIMIT) this.unconfirmedFirstPairs.shift();
       return { token, device: { id: device.id, label: device.label, role: device.role } };
@@ -603,7 +806,7 @@ export class DeviceStore {
    */
   private checkPairingCode(code: string, now: number, lan = false): boolean {
     const pending = this.pending;
-    if (pending === null || now > pending.expires) { this.pending = null; return false; }
+    if (pending === null || now > pending.expires) { this.voidPending(); return false; }
     // made for a PC in no account, and the PC is in one: it ended as the PC joined (endNoAccountCode), and pairs nobody
     if (pending.noAccountOnly === true && this.account() !== null) { this.endPairing(); return false; }
     if (lan) {
@@ -614,7 +817,7 @@ export class DeviceStore {
     }
     if (!same(code.replace(/\D/g, ""), pending.code)) {
       pending.attempts += 1;
-      if (pending.attempts >= CODE_ATTEMPTS) this.pending = null;
+      if (pending.attempts >= CODE_ATTEMPTS) this.voidPending();
       return false;
     }
     return true;
@@ -627,7 +830,7 @@ export class DeviceStore {
     this.save(next, gate);
     this.devices = next;
     this.gateClosedAt = gate;
-    if (codeSpent) this.pending = null;
+    if (codeSpent) this.voidPending();
     if (device.account !== undefined) this.endNoAccountCode();
     // A relay enrollment closes the gate immediately, invalidating every first-cookie candidate.
     if (device.relay_public_key !== undefined) this.unconfirmedFirstPairs = [];
@@ -642,6 +845,9 @@ export class DeviceStore {
    */
   pairRelay(code: string, label: string, publicKey: string, now = Date.now(), admit?: () => boolean): { device: DeviceMatch } | null {
     this.assertRelayPairing("code", now);
+    // a code made for a PC in no account makes no device: the one that pairs with it waits to link
+    const waiting = this.pending?.waiting;
+    if (waiting) return this.pairProvisional(waiting, code, label, publicKey, now, admit);
     if (!this.checkPairingCode(code, now) || !isRelayPublicKey(publicKey)) {
       this.noteRelayFailure("code", now);
       return null;
@@ -653,7 +859,7 @@ export class DeviceStore {
     // On a PC in no account such a code may bring back a key this PC revoked itself, as before account linking;
     // never one the account removed
     const accountless = this.account() === null;
-    const refusedKey = accountless ? this.tombstones.some((t) => t.key === publicKey && t.record_id !== "local") : this.isTombstoned(publicKey);
+    const refusedKey = accountless ? this.removedByAccount(publicKey) : this.isTombstoned(publicKey);
     if ((remote && (this.accountError !== null || refusedKey)) || (this.pending?.memberRequired && (startedBy === null || !this.isAccountApprover(startedBy)))) {
       this.noteRelayFailure("code", now);
       return null;
@@ -666,6 +872,32 @@ export class DeviceStore {
     const paired = this.enrollRelay(label, publicKey, now, true, undoesRevoke ? undefined : startedBy ?? undefined);
     if (!remote || accountless) this.clearTombstone(publicKey);
     return paired;
+  }
+
+  /**
+   * PAIR with a code made for a PC in no account: no device yet. The row it makes is in memory and in no list, and
+   * has PAIRING_LINK_MS to link itself into an account (promote); until then its answer names the role with the
+   * fewest rights. It spends one of the code's uses and does not end the code. A right code with no use left makes
+   * nothing and counts neither as a wrong try nor as a failed pairing; a wrong one counts as ever. Nothing is
+   * written, and a removed key is not judged here: the link is (records.ts applyLink, promote).
+   */
+  private pairProvisional(waiting: WaitingRows, code: string, label: string, publicKey: string, now: number, admit?: () => boolean): { device: DeviceMatch } | null {
+    if (!this.checkPairingCode(code, now) || !isRelayPublicKey(publicKey)) {
+      this.noteRelayFailure("code", now);
+      return null;
+    }
+    if (waiting.usesLeft === 0) return null;
+    // asked last, as for any pairing: a relay pass that takes no new device makes no row and spends no use
+    if (admit && this.isNewKey(publicKey) && !admit()) return null;
+    let id = randomBytes(8).toString("hex");
+    while (this.has(id) || waiting.rows.has(id)) id = randomBytes(8).toString("hex");
+    const row: ProvisionalRow = {
+      id, label: normalizeLabel(label, "Device"), key: publicKey, pairedAt: this.clock.now(), links: 0,
+      cancel: this.clock.setTimeout(() => this.dropProvisional(waiting, row), PAIRING_LINK_MS),
+    };
+    waiting.usesLeft -= 1;
+    waiting.rows.set(id, row);
+    return { device: { id, label: row.label, role: "watch" } };
   }
 
   /** Throws while relay pairing on `path` is paused after too many failures there. */
@@ -760,14 +992,20 @@ export class DeviceStore {
     const signed = Buffer.from(signature, "base64url");
     if (signed.length !== 64 || signed.toString("base64url") !== signature) return null;
     const device = this.devices.find((d) => d.id === deviceId && d.relay_public_key !== undefined);
-    if (device?.relay_public_key === undefined || this.stale(device)) return null;
+    // a row that waits to link signs in as any row does, by the key its PAIR named, while it stands; only that
+    // sign-in proves the key
+    const waiting = device === undefined ? this.provisional(deviceId) : undefined;
+    const publicKey = device?.relay_public_key ?? waiting?.key;
+    if (publicKey === undefined || (device !== undefined && this.stale(device))) return null;
     const message = Buffer.concat([Buffer.from("ovis-relay-auth/1"), nonce, Buffer.from(serverId)]);
     try {
-      const key = await crypto.subtle.importKey("spki", Buffer.from(device.relay_public_key, "base64url"), { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
+      const key = await crypto.subtle.importKey("spki", Buffer.from(publicKey, "base64url"), { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
       const verified = await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, key, signed, message);
+      // the row went, or linked, while its signature was checked: the proof was for a row that is no more
+      if (waiting !== undefined) return verified && this.provisional(deviceId) === waiting ? { id: waiting.id, label: waiting.label, role: "watch" } : null;
       // Authorization changes during WebCrypto invalidate the proof; a rename does not.
       const current = this.devices.find((d) => d.id === deviceId);
-      if (!verified || !current || current.role !== device.role || current.relay_public_key !== device.relay_public_key) return null;
+      if (!verified || !current || device === undefined || current.role !== device.role || current.relay_public_key !== device.relay_public_key) return null;
       this.noteSeen(current, now);
       return { id: current.id, label: current.label, role: current.role };
     } catch (error) {
@@ -901,7 +1139,7 @@ export class DeviceStore {
     const revoked = this.devices.map((device) => device.id);
     this.devices = [];
     this.gateClosedAt = gate;
-    this.pending = null;
+    this.voidPending();
     this.unconfirmedFirstPairs = [];
     const listeners = [...this.revocations.values()];
     this.revocations.clear();
@@ -949,6 +1187,9 @@ export class DeviceStore {
   }
 
   isTombstoned(key: string): boolean { return this.tombstones.some((t) => t.key === key); }
+
+  /** Whether an account's removal keeps `key` out (the tombstone of a `remove`), not only a revoke made on this PC. */
+  removedByAccount(key: string): boolean { return this.tombstones.some((t) => t.key === key && t.record_id !== "local"); }
 
   /** Every key this PC keeps out, signed removal or not (a Revoke here, a record that no longer parses): /api/account/status `blocked`. */
   tombstoneKeys(): string[] { return [...new Set(this.tombstones.map((t) => t.key))]; }
@@ -1027,8 +1268,8 @@ export class DeviceStore {
 
   /**
    * A `remove` that verified: the tombstone is written first, so a crash between the two writes
-   * leaves the key refused; then every row holding the key is revoked, closing its sessions.
-   * Returns whether anything changed.
+   * leaves the key refused; then the rows that wait to link with the key go (dropWaiting), and every
+   * row holding the key is revoked, closing its sessions. Returns whether anything changed.
    */
   removeAccountKey(key: string, account: string, record: { id: string; issuedAt: string; by?: { device_id: string; label: string }; signed?: RemoveRecord }, now = Date.now()): boolean {
     this.assertAccountWritable();
@@ -1047,6 +1288,7 @@ export class DeviceStore {
       const records = withRecords(kept.records, [record.signed]);
       if ((records?.length ?? 0) !== (kept.records?.length ?? 0)) this.writeTombstones(this.tombstones.map((t) => t === kept ? { ...t, ...(records ? { records } : {}) } : t));
     }
+    this.dropWaiting([key]);
     const ids = this.devices.filter((d) => d.relay_public_key === key).map((d) => d.id);
     for (const id of ids) this.revoke(id, record.by);
     return fresh || ids.length > 0;
@@ -1055,12 +1297,13 @@ export class DeviceStore {
   /**
    * A `link` the device `deviceId` sent over its own session `sessionId`: its row takes `key` and joins
    * `account` in one write. The row's other sessions signed in with a key it no longer has, so they end
-   * (`auth_changed`); the linking one goes on until it signs in again with the new key.
+   * (`auth_changed`); the linking one goes on until it signs in again with the new key. A row that waits to link
+   * is no device yet: its link makes it one (promote).
    */
   linkAccountKey(deviceId: string, oldKey: string, key: string, account: string, sessionId = ""): PairedDevice | null {
     this.assertAccountWritable();
     const device = this.devices.find((d) => d.id === deviceId && d.relay_public_key === oldKey);
-    if (!device) return null;
+    if (!device) return this.promote(deviceId, { oldKey, key, account }, sessionId);
     // once moved, moved: a later link that keeps the key does not make it the key paired here
     const moved = key !== oldKey || device.link_moved_key === true;
     const updated: StoredDevice = { ...device, relay_public_key: key, account, linked_at: new Date().toISOString(), link_moved_key: moved };
@@ -1079,18 +1322,23 @@ export class DeviceStore {
     this.writeTombstones(this.tombstones.filter((t) => t.key !== key));
   }
 
-  /** Tombstones for the relay keys of rows this PC revokes, written before the revoke itself. */
+  /**
+   * Tombstones for the relay keys of rows this PC revokes, written before the revoke itself. The rows that wait to
+   * link with one of those keys go next, before the revoke as well (dropWaiting).
+   */
   private tombstone(rows: readonly StoredDevice[], now: number): void {
     const keys = [...new Set(rows.flatMap((d) => d.relay_public_key === undefined || this.isTombstoned(d.relay_public_key) ? [] : [d.relay_public_key]))];
     const removedAt = new Date(now).toISOString();
     const next = [...this.tombstones,
       ...keys.map((key) => ({ key, account: rows.find((d) => d.relay_public_key === key)?.account ?? "", record_id: "local", removed_at: removedAt }))];
-    if (!keys.length) return;
-    // with the main file unreadable the revoke still wins: its tombstone waits beside it
-    if (this.accountError !== null) {
-      writePrivateState(this.pendingTombstonePath, { v: 1, tombstones: next });
-      this.tombstones = next;
-    } else this.writeTombstones(next);
+    if (keys.length) {
+      // with the main file unreadable the revoke still wins: its tombstone waits beside it
+      if (this.accountError !== null) {
+        writePrivateState(this.pendingTombstonePath, { v: 1, tombstones: next });
+        this.tombstones = next;
+      } else this.writeTombstones(next);
+    }
+    this.dropWaiting(rows.flatMap((d) => d.relay_public_key ?? []));
   }
 
   private writeTombstones(next: AccountTombstone[]): void {

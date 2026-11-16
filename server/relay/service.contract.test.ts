@@ -378,8 +378,14 @@ it("makes the relay tab's QR code only for a PC in no account, and takes it back
   devices.onPairingStarted(() => { started++; });
   const qr = await codeOf(await ask(true));
   expect([started, devices.activePairing()?.code]).toEqual([1, qr]);
-  // asked again, and by the page's other relay QR codes, it is the same code
-  expect([await codeOf(await ask(true)), await codeOf(await ask(false)), started]).toEqual([qr, qr, 1]);
+  // asked again, it is the same code
+  expect([await codeOf(await ask(true)), started]).toEqual([qr, 1]);
+  // the page's other relay QR codes never carry it: their offer starts a code of its own, which replaces it
+  const other = await codeOf(await ask(false));
+  expect([started, devices.activePairing()?.code]).toEqual([2, other]);
+  // and the QR code, asked for again, is given a code of its own once more
+  const again = await codeOf(await ask(true));
+  expect([started, devices.activePairing()?.code]).toEqual([3, again]);
   expect(devices.linkAccountKey(laptop.id, key, key, "acct_1")).not.toBeNull();
   // the PC is in an account: the code is taken back, and a page that still shows the QR code is refused a new one
   expect(devices.activePairing()).toBeNull();

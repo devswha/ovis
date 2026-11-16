@@ -116,6 +116,24 @@ it("a code the relay did not take leaves the six-digit code, and so the QR code,
   } finally { done(); }
 });
 
+it("is bound to a six-digit code of its own, never the code of the relay tab's QR code: the device that pairs with it is paired at once", async () => {
+  const { pairCodes, sockets, devices, done } = codes();
+  try {
+    // the relay tab's QR code is up: its code is the one pending, and a device that pairs with that one waits to link
+    devices.pairingForNoAccount();
+    let started = 0;
+    devices.onPairingStarted(() => { started++; });
+    const minted = pairCodes.mint();
+    sockets[0]!.relay(JSON.stringify({ type: "waiting" }));
+    await minted;
+    expect(started).toBe(1);
+    const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+    const key = Buffer.from(await crypto.subtle.exportKey("spki", keys.publicKey)).toString("base64url");
+    expect(devices.pairRelay(devices.activePairing()!.code, "Phone", key)?.device.role).toBe("drive");
+    expect(devices.list(null).map((device) => device.label)).toEqual(["Phone"]);
+  } finally { done(); }
+});
+
 it("a new six-digit code takes the typed code off the relay", async () => {
   const { pairCodes, sockets, devices, done } = codes();
   try {

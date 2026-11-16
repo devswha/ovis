@@ -295,7 +295,11 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   const worktreeList = /^\/api\/(?:machines\/[^/]+\/)?worktree\/(?:list|inventory)$/.test(pathname);
   // the digits of a waiting comparison are what approving it takes (docs/account.md, "Who may admit a device")
   const pairingDigits = pathname === "/api/relay/pairings";
-  if (readOnly && (fileRead || directoryListing || repositoryDiff || pullRequest || sessionHistory || commandRows || paneFiles || pluginRun || worktreeList || pairingDigits || mutating && !ownPreferences)) {
+  // a device that waits to link (it paired with a code made for a PC in no account) has the role with the fewest
+  // rights, and sends one mutation: its own link, which makes it a device (server/account/routes.ts). Its relay
+  // session refuses it every other call but the read of its own account status (server/relay/session.ts)
+  const ownLink = relayPeer?.provisional === true && request.method === "POST" && pathname === "/api/account/link";
+  if (readOnly && (fileRead || directoryListing || repositoryDiff || pullRequest || sessionHistory || commandRows || paneFiles || pluginRun || worktreeList || pairingDigits || mutating && !ownPreferences && !ownLink)) {
     setRequestRoute("watch-refusal");
     return jsonResponse({ error: { code: "read_only", message: "this device can only watch" } }, 403);
   }

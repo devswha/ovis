@@ -168,7 +168,25 @@ One rule for every way in: a pairing code, comparing digits, and joining through
   PC joined. An offer asked for without the header is what it was, on any PC: the first-run
   guide's QR code, the relay tab where the page has no account, a phone's **Use the relay** and
   `bun scripts/plugin.ts pair` keep it, without those guards, and a signed-in device that redeems
-  such a code on a PC in no account links itself the same way.
+  such a code on a PC in no account links itself the same way. It never carries the code of an
+  offer asked for with the header: with that code pending it starts a code of its own, which
+  replaces it as every new code does.
+- **A device that pairs with that QR code's code waits to link.** Through the relay, the code of
+  an offer asked for with `x-ovis-no-account-only` makes no device. The device that pairs with it
+  is in no list and on no disk, its sign-in answer names the `watch` role, and until it has linked
+  itself into an account it makes two calls and no other: it reads its own account status
+  (`GET /api/account/status`) and sends its link (`POST /api/account/link`). Everything else, a
+  socket included, is answered `403 link_required` before any route runs, and it is told none of
+  the PC's direct carriers. Its link makes it a device and the PC's first member in one write,
+  which is when it is announced; the code then ends, as above, and any other device that still
+  waited under it goes. A device that has not linked 30 seconds after it paired is gone: its
+  sessions end (`auth_revoked`) and its key signs in no more. Nothing was written for it, so
+  nothing is left of it. The code takes five such pairings, and a device that goes does not give
+  its pairing back: with none left and no device waiting, the code has ended. Ending the code
+  (**New code**, another tab, `POST /api/devices/pair/cancel`) takes the devices that wait under
+  it, and removing a key on the PC (**Revoke**, **Revoke all**, an account's `remove`) takes the
+  devices that wait with that key. A signed-in app joins as before: the account steps it takes
+  after pairing are exactly those two calls.
 - **Every admission is announced** on every device connected to the PC: the new device's name and who
   approved it.
 
@@ -240,7 +258,9 @@ only what the prompt says and which failure count a comparison spends.
 ## PC API
 
 All under `/api/account/`, JSON, `cache-control: no-store`. Every route needs drive access; through
-the relay too. Mutations need the app's mutation guard, like the other routes.
+the relay too. Mutations need the app's mutation guard, like the other routes. A device that waits
+to link ([Who may admit a device](#who-may-admit-a-device)) reaches its own status and its link,
+and nothing else.
 
 `GET /api/account/status`
 
@@ -262,6 +282,9 @@ With `?fresh=1` the PC first pulls its mailbox (a pull that starts after the req
 waiting there is counted, and adds `fresh`: true only when that pull read the whole mailbox
 without an error, for the PC's current account and relay identity. A PC whose account service is
 turned off (`off`) has no mailbox and answers `fresh: true`; one whose address is unusable does not.
+A device that waits to link reads one body, whatever the PC holds: `account` `null`, `members` 0,
+`unlinked` its own id alone, every other list empty, `enrolling` and `blocked_all` false. No
+mailbox is read for it, and `fresh` is ignored.
 
 `POST /api/account/relay-account` `{ "account" }`: the account this PC asks its relay pass under while it
 has no members ([relay.md](relay.md#relay-pass)): over a direct connection with drive access (the PC's own
@@ -275,7 +298,13 @@ nothing: the service gives a pass only when that account lists the PC.
 becomes a member, in one write. `old_key` equal to `key` makes a row whose key already is the account
 key a member. Answers `{ "device": <paired device> }`. The row's other sessions end (`auth_changed`):
 they signed in with a key it no longer has. The linking session goes on, with no member's rights,
-until it signs in again with the new key.
+until it signs in again with the new key. A device that waits to link becomes a device by its
+link: its row is written then, as a drive member. A key this PC removed itself (**Revoke**,
+**Revoke all**) before the device paired comes back with it when it is the key the device paired
+with. A key an account removed stays out: that link is refused `tombstoned`, as is a link that
+would move the device to a removed key, nothing is written and the removal stands. A key removed
+while the device waits takes the device with it. Such a device sends five links; the next is
+answered `403 link_required`, and it is gone.
 
 `POST /api/account/records` `{ "records": [<record>, …] }`: at most 32. Applies each in order and
 answers every outcome, never failing the whole batch for one record:
@@ -316,6 +345,11 @@ refused link leaves the barrier (with no account here no add applies anyway); th
 takes it over. The first link that succeeds keeps it, unless the PC has no account again (its
 first member was revoked before enrolling it): then the next first link takes it over. There is no timeout: a client that never enrolls leaves the account's adds waiting,
 and its devices join this PC by comparing digits instead.
+
+The link of a device that waits to link ([Who may admit a device](#who-may-admit-a-device)) writes
+its barrier later: once the link has passed every check, in the step that writes the row which
+makes it a device, and before that row. A link of such a device that is refused, or that outlives
+the device's 30 seconds, writes none.
 
 An enrollment applies, whatever the order sent:
 
@@ -643,7 +677,9 @@ is what authenticates the PC.
   key's tombstone, after its row is written. A code started through the relay, or a comparison an
   account member approves remotely, is refused for a tombstoned key, except on a PC in no account:
   there a code started through the relay may let back a key the PC revoked itself (not one the
-  account removed), and clears its tombstone.
+  account removed), and clears its tombstone. Through the relay tab's QR code, the link of the
+  device that paired with it brings back a key the PC revoked itself, and not one the account
+  removed.
 - A stop between two such writes leaves a row and a tombstone for one key. On start the PC tells them
   apart by time: a row made before the key's removal is revoked, one made after it keeps its device
   and the tombstone goes. A row that is no pairing of its key here (an `add`, a remote approval, a
@@ -963,6 +999,7 @@ with "continue only if you started this on your own PC".
 | `signer_not_member` | — | the signer is not a drive account member on this PC (a record outcome) |
 | `tombstoned` | — | the key was removed through the account; only this PC can let it back in (a record outcome) |
 | `link_not_owner` | 403 | a link for another device, another PC, or a key that is not the row's |
+| `link_required` | 403 | the device paired with a code made for a PC in no account and has not linked itself into an account: it reads its own account status and sends its link, and gets nothing else |
 | `key_in_use` | 409 | a link to a key another row already has |
 | `introduction_unknown_key` | 404 | an introduction for a key no account member added on this PC |
 | `introduction_invalid` | 400 | an introduction's PC list does not parse, or a `server_id` does not derive from its key |

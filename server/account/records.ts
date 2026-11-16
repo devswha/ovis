@@ -4,7 +4,7 @@
  * a drive member of this PC's account, and never lets a removed key back in.
  */
 import { accountDeviceId, AccountRecordError, ACCOUNT_RECORDS_MAX, parseAccountRecord, verifyAccountRecord, type AccountRecord, type LinkRecord } from "../../shared/account-records.ts";
-import type { DeviceStore } from "../devices.ts";
+import type { DeviceStore, LinkArrival } from "../devices.ts";
 import type { PairedDevice } from "../../shared/protocol.ts";
 
 export type RecordRefusal = "record_invalid" | "signature_invalid" | "account_mismatch" | "signer_not_member" | "tombstoned" | "link_not_owner" | "account_unavailable" | "enrolling" | "removal_pending";
@@ -141,13 +141,29 @@ export async function applyEnrollment(store: DeviceStore, values: readonly unkno
   });
 }
 
-export type LinkRefusal = RecordRefusal | "key_in_use";
+export type LinkRefusal = RecordRefusal | "key_in_use" | "link_required";
+
+/** What a link is held to on this PC besides its devices (server/account/routes.ts). */
+export interface LinkRules {
+  /** what holds a key back here (mailbox.ts `gates`) */
+  gates?: AddGates;
+  /**
+   * For a row that waits to link: called once its link has passed every check, in the turn that writes its row and
+   * before that write. It puts on disk what must be there first (the enrollment barrier), and returns what takes
+   * that back, should the row not be written.
+   */
+  barrier?: () => () => void;
+}
 
 /**
  * A `link` from the device `deviceId` over its own session to the PC `serverId`. It needs no
  * member: the session is its authority, which is how a PC gets its first one.
+ *
+ * Only the record's parsing and its signature check wait. From there to the answer nothing does: every check and
+ * the write run in one turn, so two links that both passed their signature check never both write. `arrival`: what
+ * stood when the link arrived, before that wait (DeviceStore.linkArrived).
  */
-export async function applyLink(store: DeviceStore, value: unknown, session: { deviceId: string; serverId: string; sessionKey: string; sessionId?: string }, gates?: AddGates): Promise<{ device: PairedDevice } | { refused: LinkRefusal }> {
+export async function applyLink(store: DeviceStore, value: unknown, session: { deviceId: string; serverId: string; sessionKey: string; sessionId?: string }, arrival: LinkArrival, rules: LinkRules = {}): Promise<{ device: PairedDevice } | { refused: LinkRefusal }> {
   const { deviceId, serverId, sessionKey, sessionId } = session;
   const record = await read(value);
   if ("refused" in record) return { refused: record.refused };
@@ -156,12 +172,30 @@ export async function applyLink(store: DeviceStore, value: unknown, session: { d
   // a session signed in with an older key of the row cannot move it on: only the key it proved may be replaced
   if (link.server_id !== serverId || link.device_id !== deviceId || link.old_key !== sessionKey) return { refused: "link_not_owner" };
   if (store.accountError !== null) return { refused: "account_unavailable" };
+  // What the row is now, after the wait above. One that waited to link when its link arrived and has gone since
+  // (its time ran out, its code ended) is gone: its link is never judged as a device's
+  const waits = arrival.provisional && store.provisionalStands(deviceId);
+  if (arrival.provisional && !waits && !store.has(deviceId)) return { refused: "link_required" };
   const account = store.account();
   if (account !== null && account !== link.account) return { refused: "account_mismatch" };
-  if (store.isTombstoned(link.key)) return { refused: "tombstoned" };
+  // A removed key stays out. One comes back: a key this PC removed itself (Revoke, Revoke all), with a row that
+  // waits to link and keeps the key it paired with. The link's write clears that tombstone, which stood when the row
+  // paired: a removal made since took the row with it (DeviceStore.dropWaiting). A key an account removed stays out
+  // of such a row too, and its removal stands
+  if (store.isTombstoned(link.key) && !(waits && link.key === link.old_key && !store.removedByAccount(link.key))) return { refused: "tombstoned" };
   // a row moving to a key this PC holds back would let that key in without anyone approving it here
-  if (link.key !== link.old_key && gates?.held(link.key)) return { refused: "removal_pending" };
+  if (link.key !== link.old_key && rules.gates?.held(link.key)) return { refused: "removal_pending" };
   if (store.keyHeldByOther(link.key, deviceId)) return { refused: "key_in_use" };
-  const device = store.linkAccountKey(deviceId, link.old_key, link.key, link.account, sessionId);
+  const takeBack = waits ? rules.barrier?.() : undefined;
+  let device: PairedDevice | null = null;
+  try { device = store.linkAccountKey(deviceId, link.old_key, link.key, link.account, sessionId); }
+  finally {
+    // the row was not written: what went to disk for it goes too. Whatever kept the row from being written is the
+    // failure to report, so a barrier that could not be taken back either is said beside it
+    if (device === null) {
+      try { takeBack?.(); }
+      catch (left) { console.error(`[account] the enrollment barrier of a link that was not written could not be taken back: ${left instanceof Error ? left.message : String(left)}`); }
+    }
+  }
   return device ? { device } : { refused: "link_not_owner" };
 }
