@@ -207,6 +207,15 @@ describe("CI cache contract", () => {
     expect(action.runs.steps[seed]!.if).toBe("runner.environment == 'self-hosted' && runner.os == 'Linux'");
   });
 
+  it("checks the prepared image on every self-hosted Linux runner, and sets up Bun elsewhere outside the runner account's home", () => {
+    const named = (name: string) => action.runs.steps.find((step) => step.name === name)!;
+    expect(named("Verify prepared self-hosted tools").if).toBe("runner.environment == 'self-hosted' && runner.os == 'Linux'");
+    const setupBun = action.runs.steps.filter((step) => step.uses && actionName(step.uses) === "oven-sh/setup-bun");
+    expect(setupBun.map((step) => step.if)).toEqual(["runner.environment != 'self-hosted'", "runner.environment == 'self-hosted' && runner.os != 'Linux'"]);
+    // setup-bun writes $HOME/.bun/bin: on the self-hosted Mac that is a person's account, so the job's temp folder stands in
+    expect(setupBun[1]!.env).toEqual({ HOME: "${{ runner.temp }}/setup-bun-home" });
+  });
+
   it("does not transfer dependency or browser caches over the prepared image", () => {
     for (const name of ["Cache Bun dependencies", "Restore Bun dependencies (read-only)"]) {
       expect(action.runs.steps.find((step) => step.name === name)!.if).toStartWith("runner.environment != 'self-hosted' && ");
