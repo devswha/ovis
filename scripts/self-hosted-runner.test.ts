@@ -79,10 +79,11 @@ function probeIsolation(): { ok: true; mode: Isolation } | { ok: false; reason: 
 
 /**
  * The process that starts the hook (hook-test-harness.sh): the worker; the worker with a shell between them;
- * the worker named systemd; a process named systemd that calls itself Runner.Worker; any other name; or a
- * parent that ends after the hook's start, before its refusal.
+ * the worker named systemd; a process named systemd that calls itself Runner.Worker; any other name; a parent
+ * that ends after the hook's start, before its refusal; or a process named systemd that ends once the hook says
+ * it blocks.
  */
-type HookParent = "worker" | "nested" | "renamed" | "posing" | "gone" | `named:${string}`;
+type HookParent = "worker" | "nested" | "renamed" | "posing" | "gone" | "leaves" | `named:${string}`;
 
 /**
  * What answers the hook's ps where it finds no /proc, as on macOS: procps itself, or a stub that fails, prints
@@ -1216,9 +1217,9 @@ describe.skipIf(!isolation.ok)("self-hosted runner job-started hook, isolated", 
   }
 
   /** A refusal whose parent is not proven the worker: nothing killed, the hook blocks in its step, no step after it. */
-  function expectBlocked(run: Run, parent: "running" | "0" = "running") {
+  function expectBlocked(run: Run) {
     expect(run.hook).toBe("blocked");
-    expect(run.parent).toBe(parent);
+    expect(run.parent).toBe("running");
     expect(run.nextStepRan).toBe(false);
     expect(run.decoys).toBe("alive");
     expect(run.above).toBe("alive");
@@ -1326,9 +1327,25 @@ describe.skipIf(!isolation.ok)("self-hosted runner job-started hook, isolated", 
     for (const run of runs) expectBlocked(run);
   }, 60_000);
 
-  it("blocks and kills nothing when its parent ends before the refusal, whatever adopted it", async () => {
-    // the parent ends with status 0 after the hook started: its `$PPID` names a pid that is gone
-    expectBlocked(await runHook("pull_request", fork, { parent: "gone" }), "0");
+  /** A blocked refusal whose parent has ended: the hook ends too, having killed nothing; nothing waits on it any more. */
+  function expectEndedAfterBlock(run: Run) {
+    expect(run.output).toContain("this hook blocks (pid ");
+    expect(run.hook).toBe("ended");
+    // the parent ended by itself, with status 0
+    expect(run.parent).toBe("0");
+    expect(run.nextStepRan).toBe(false);
+    expect(run.decoys).toBe("alive");
+    expect(run.above).toBe("alive");
+  }
+
+  it("kills nothing when its parent ends before the refusal, whatever adopted it, and ends", async () => {
+    // the parent ends after the hook started: its `$PPID` names a pid that is gone
+    expectEndedAfterBlock(await runHook("pull_request", fork, { parent: "gone" }));
+  }, 60_000);
+
+  it("ends a block once the parent it started under is gone, killing nothing", async () => {
+    // a parent that is not the worker lives through the refusal, then ends
+    expectEndedAfterBlock(await runHook("pull_request", fork, { parent: "leaves" }));
   }, 60_000);
 });
 

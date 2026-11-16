@@ -7,16 +7,21 @@
 # Fail closed: every exit before the job is explicitly allowed at the end refuses it, an error of
 # this script included (a missing or unreadable event file, broken JSON, an unset variable).
 # A refusal kills only this hook's own parent, and only once every check below proves that parent
-# is the job's Runner.Worker; when one fails it kills nothing and blocks, so no later step starts.
+# is the job's Runner.Worker; when one fails it kills nothing and blocks, so no later step starts,
+# until the parent it started under is gone: then nothing waits on it any more, and it ends.
 # First of all: a write to a closed output (an error message on a stderr nobody reads) must not
 # end this shell with SIGPIPE before the refusal below can run.
 trap '' PIPE
 # the runner starts this with bash; another shell (sh is dash on Debian) cannot run the rest, so
-# it blocks without killing anything
+# it blocks without killing anything, as block() below does
 if [ -z "${BASH_VERSION:-}" ]; then
   trap '' HUP INT TERM
-  echo "::error::job-started.sh runs under bash only; refusing this job, blocking (pid $$)." 2>/dev/null
-  while :; do /bin/sleep 3600 || sleep 3600; done
+  echo "::error::job-started.sh runs under bash only; refusing this job; this hook blocks (pid $$) until its parent is gone." 2>/dev/null
+  while :; do
+    parent=$(/bin/ps -o ppid= -p $$ 2>/dev/null) && parent=$(echo $parent)
+    case $parent in ''|*[!0-9]*) ;; *) [ "$parent" != "$PPID" ] && exit 1 ;; esac
+    /bin/sleep 5 || sleep 5
+  done
 fi
 set -euo pipefail
 
@@ -42,10 +47,22 @@ say() {
 }
 
 # The worker is not proven: kill nothing. This step stays running (HUP, INT and TERM are ignored,
-# by sleep too), so no other step of the job starts. Never returns.
+# by sleep too), so no other step of the job starts, for as long as the parent this shell started
+# under lives. Once a read of its own parent succeeds and names another process, that parent is gone:
+# only it waited on this hook (the worker; or a process between them, whose step the worker ends 5 s
+# after it exits), and with the worker gone no step can run, so ending releases nothing. A failed
+# read keeps blocking. Never returns otherwise, and signals nothing.
 block() {
-  say "$refusal Its parent is not proven to be the job's Runner.Worker ($1), so nothing was killed; this hook blocks (pid $$)."
-  while :; do /bin/sleep 3600 || sleep 3600; done
+  local now
+  say "$refusal Its parent is not proven to be the job's Runner.Worker ($1), so nothing was killed; this hook blocks (pid $$) until its parent is gone."
+  while :; do
+    if [[ $os == linux ]]; then
+      stat_of $$ && [[ $stat_ppid != "$PPID" ]] && exit 1
+    else
+      now=$(ps_of ppid $$) && is_pid "$now" && [[ $now != "$PPID" ]] && exit 1
+    fi
+    /bin/sleep 5 || sleep 5
+  done
 }
 
 # A pid as /proc or ps printed it: digits only, never 0, before any arithmetic on it
