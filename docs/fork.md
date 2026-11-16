@@ -134,7 +134,7 @@ Hooks added/changed by this task (upstream files only):
 - `src/components/InboxList.tsx`: one import, one `forkInboxRows(..., settings.agentFriends)`
   wrapper before the hold, one `forkInboxNesting` call after it, one carried nesting flag and one
   row-class suffix. Fork diff **+2/-1 → +8/-6** (first review **+7/-5**).
-- `src/App.tsx`: one import plus one `ForkInboxBack` mount in the existing inbox-only branch, and `ForkGithubFoot` wrapping the sidebar foot's `InboxFootEntry`: with Pull requests on, the agent inbox and Pull requests become icons at the end of the gear's row (CSS in `src/fork/GithubInbox.css`).
+- `src/App.tsx`: one import plus one `ForkInboxBack` mount in the existing inbox-only branch, `ForkSidebarFoot` wrapping the sidebar foot's `InboxFootEntry`, and `ForkInboxFoot` wrapping the wide inbox's `InboxRail` (`src/fork/SidebarFoot.tsx`): the places (workspaces, agent inbox, Pull requests) become icons at the end of the gear's row, and with Settings → Fork features → Inbox footer on, the agent inbox's column drops the rail for that same foot under its list, with the gear, plan meters and the agents that wait (alerts and the PCs menu are left out). CSS in `src/fork/GithubInbox.css`.
   Fork diff **+43/-62 → +45/-63**.
 - `src/components/InboxRail.tsx`: one import plus a two-line `ForkInboxBack` wrapper around
   upstream's exit button (its fallback). Fork diff **0 → +3/-0**. Upstream now hides App's header in

@@ -1,5 +1,5 @@
 import { cloneElement, useEffect, useRef, useState, useSyncExternalStore, type MouseEventHandler, type ReactElement, type ReactNode } from "react";
-import { ArrowLeft, Check, ChevronRight, CircleAlert, CircleCheck, CircleDot, CircleX, Eye, FolderGit2, GitPullRequest, Inbox, GitPullRequestDraft, ListFilter, RefreshCw, Search, X } from "lucide-react";
+import { ArrowLeft, Check, ChevronRight, CircleAlert, CircleCheck, CircleDot, CircleX, Eye, FolderGit2, GitPullRequest, GitPullRequestDraft, ListFilter, RefreshCw, Search, X } from "lucide-react";
 
 import { RowMenu } from "../components/RowMenu.tsx";
 
@@ -52,6 +52,8 @@ if (typeof window !== "undefined") window.addEventListener("popstate", () => {
   else if (onEntry) { onEntry = false; pull = null; setGithubSection("inbox"); }
 });
 const useSection = () => useSyncExternalStore(subscribe, () => section, () => "inbox" as Section);
+/** Which list the agent inbox shows: its agents, or Pull requests. */
+export const useGithubSection = useSection;
 const useOpenPull = () => useSyncExternalStore(subscribe, () => pull, () => null);
 
 /** Wrap the existing Inbox button: its original action and focus behavior still run on return. */
@@ -87,23 +89,6 @@ export function ForkGithubPane({ wide, watching, onOpened }: ViewProps) {
   return <div className="fork-github-pane">
     {open === null ? <p className="inbox-unchosen" role="status">{t("Choose a pull request to open it here.")}</p>
       : <GithubPullPage key={open.url} pull={open} wide watching={watching} onOpened={(opened) => { setGithubSection("inbox"); onOpened(opened); }} />}
-  </div>;
-}
-
-/**
- * The ways in from the workspaces sidebar's foot, as icons on the gear's row (GithubInbox.css): the agent inbox,
- * always on the agents, and Pull requests, the agent inbox on that list. Off, upstream's inbox row stays.
- */
-export function ForkGithubFoot({ children }: { children: ReactElement<{ onOpen(): void }> }) {
-  const { settings } = useSettings();
-  const t = useT();
-  if (!settings.pullRequests) return children;
-  const enter = children.props.onOpen;
-  return <div className="fork-github-foot">
-    <button type="button" className="btn btn-ghost sidebar-footer-action fork-github-foot-open" aria-label={t("Open agent inbox")} title={t("Open agent inbox")}
-      onClick={() => { setGithubSection("inbox"); enter(); }}><Inbox aria-hidden="true" /></button>
-    <button type="button" className="btn btn-ghost sidebar-footer-action fork-github-foot-open" aria-label={t("Pull requests")} title={t("Pull requests")}
-      onClick={() => { setGithubSection("github"); enter(); }}><GitPullRequest aria-hidden="true" /></button>
   </div>;
 }
 
