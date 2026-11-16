@@ -582,16 +582,36 @@ console.log(JSON.stringify({ code, asked }));`;
 
 describe("the launcher's child", () => {
   // POSIX signals: on Windows herdr runs scripts/plugin.ps1, and no SIGTERM or SIGHUP reaches a launcher there
-  it.skipIf(process.platform === "win32")("gets the SIGTERM sent to the launcher, and the launcher exits as the child did", async () => {
-    const ready = join(scratch, "ready");
-    const got = join(scratch, "got");
-    const script = `const { run } = await import(${JSON.stringify(join(import.meta.dir, "plugin-launch.ts"))});
-process.exit(await run(["sh", "-c", 'trap "echo got > ${got}; exit 3" TERM; : > ${ready}; while :; do sleep 0.05; done']));`;
-    const launcher = Bun.spawn([process.execPath, "-e", script], { stdout: "ignore", stderr: "pipe" });
-    const deadline = Date.now() + 10_000;
-    while (!existsSync(ready)) { if (Date.now() > deadline) throw new Error("the child never started"); await Bun.sleep(20); }
-    launcher.kill("SIGTERM");
-    expect(await launcher.exited).toBe(3);
-    expect(readFileSync(got, "utf8")).toBe("got\n");
-  });
+  const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  for (const [signal, exit] of [["SIGTERM", 3], ["SIGHUP", 4]] as const) {
+    it.skipIf(process.platform === "win32")(`gets a ${signal} that comes the instant it starts, and the launcher exits as the child did, leaving no child behind`, async () => {
+      // The launcher is held where it starts listening for the signal, if it has started the child by then, until the
+      // child has sent it the signal: as if it were descheduled there. A launcher that listens only after the spawn is
+      // ended by the signal and leaves its child running; one that listens first passes it on.
+      const pidFile = join(scratch, "child");
+      const sent = join(scratch, "sent");
+      const name = signal.slice(3);
+      const script = `import { existsSync } from "node:fs";
+let spawned = false;
+const spawn = Bun.spawn;
+Bun.spawn = (...args) => { spawned = true; return spawn(...args); };
+process.on("newListener", (event) => {
+  if (event !== "${signal}" || !spawned) return;
+  for (const deadline = Date.now() + 10_000; !existsSync(${JSON.stringify(sent)});) if (Date.now() > deadline) throw new Error("the child never sent the signal");
+});
+const { run } = await import(${JSON.stringify(join(import.meta.dir, "plugin-launch.ts"))});
+process.exit(await run(["sh", "-c", 'trap "exit ${exit}" ${name}; echo $$ > ${pidFile}; kill -${name} $PPID; : > ${sent}; while :; do sleep 0.05; done']));`;
+      // stderr into a file: a child left running would hold a pipe open
+      const err = join(scratch, "stderr");
+      const launcher = Bun.spawn([process.execPath, "-e", script], { stdout: "ignore", stderr: Bun.file(err) });
+      try {
+        const code = await launcher.exited;
+        expect({ code, childLeft: alive(Number(readFileSync(pidFile, "utf8"))) }, readFileSync(err, "utf8")).toEqual({ code: exit, childLeft: false });
+      } finally {
+        launcher.kill("SIGKILL");
+        const child = existsSync(pidFile) ? Number(readFileSync(pidFile, "utf8")) : 0;
+        if (child > 0 && alive(child)) process.kill(child, "SIGKILL");
+      }
+    }, 30_000);
+  }
 });
