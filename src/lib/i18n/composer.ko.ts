@@ -69,6 +69,8 @@ export const COMPOSER_KO: Record<string, string> = {
   "Uploading": "올리는 중",
   "No room": "공간 없음",
   "Attached": "첨부됨",
+  "Not in message": "메시지에 없음",
+  "A file is not in the message: put the caret where it goes, or remove it": "메시지에 없는 파일이 있음: 넣을 곳에 커서를 두거나 파일을 빼세요",
   "Remove {file}": "{file} 제거",
   "Message": "메시지",
   "Attach": "첨부",

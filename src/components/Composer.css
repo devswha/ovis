@@ -924,13 +924,16 @@
 }
 
 .composer-attachment.is-error,
-.composer-attachment.is-no-room {
+.composer-attachment.is-no-room,
+.composer-attachment.is-unplaced {
   border-color: var(--status-blocked);
 }
 
-/* a path with no room or a failed upload: the badge is a warning glyph alone (its words are for
-   assistive tech); the status line under the box, or the failure line above it, says the rest */
+/* a path with no room or in no message (#3216), or a failed upload: the badge is a warning glyph alone
+   (its words are for assistive tech); the status line under the box, or the failure line above it,
+   says the rest */
 .composer-attachment.is-no-room .composer-attachment-state,
+.composer-attachment.is-unplaced .composer-attachment-state,
 .composer-attachment.is-error .composer-attachment-state {
   display: inline-flex;
   align-items: center;
@@ -943,6 +946,7 @@
 }
 
 .composer-attachment.is-no-room .composer-attachment-state svg,
+.composer-attachment.is-unplaced .composer-attachment-state svg,
 .composer-attachment.is-error .composer-attachment-state svg {
   width: var(--fs-xs);
   height: var(--fs-xs);

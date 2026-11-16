@@ -210,58 +210,70 @@ export function imageMention(path: string): string {
   return `@${path} `;
 }
 
-/**
- * Where a dropped file's mention goes (a paste or a pick goes to its own place: insertMentionAt):
- * at the start of the message, after a leading `/command`
- * (it must stay first to be one), and after the mentions of files picked before it in the same
- * batch that are still there, so a batch reads in pick order however its uploads finish. An upload
- * finishes while the user may be typing, so the mention never goes where the caret is: the caller
- * shifts the caret and selection by `length` when they sit at or after `at`. The mention goes in
- * whole, with its separating space, or not at all (`length` 0): a cut `@path` would name a file
- * that does not exist, so the caller keeps the attachment waiting until there is room; `missing`
- * says how many characters the message is short of it.
- */
-export function insertLeadingMention(
-  text: string,
-  mention: string,
-  earlier: readonly string[],
-): { text: string; at: number; length: number; missing?: number } {
-  let at = /^\/\S+\s*/u.exec(text)?.[0].length ?? 0;
-  for (const previous of earlier) {
-    const found = text.indexOf(previous);
-    if (found >= 0) at = Math.max(at, found + previous.length);
-  }
-  const before = text.slice(0, at);
-  const snippet = before.length > 0 && !/\s$/u.test(before) ? ` ${mention}` : mention;
-  const missing = text.length + snippet.length - MAX_COMPOSER_CHARS;
-  if (missing > 0) return { text, at, length: 0, missing };
-  return { text: before + snippet + text.slice(at), at, length: snippet.length };
-}
-
-/**
- * Where a place read in `before` is in `after`, one edit later (#3216): text added at the place
- * goes after it, text removed before it moves it back, and an edit across it leaves it where the
- * edit began. null when the draft it was in was cleared; a draft typed over whole is the caller's
- * to tell, since the characters the old and new drafts share cannot.
- */
-export function followPlace(before: string, after: string, at: number): number | null {
-  if (before === after) return at;
-  const shorter = Math.min(before.length, after.length);
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+/** `index`, or the start of the character it falls inside: an emoji's two halves, or a letter and its accent, stay together */
+function characterStart(text: string, index: number): number {
+  if (index >= text.length) return index;
   let start = 0;
-  while (start < shorter && before[start] === after[start]) start++;
-  let end = 0;
-  while (end < shorter - start && before[before.length - 1 - end] === after[after.length - 1 - end]) end++;
-  if (after === "") return null;
-  if (at <= start) return at;
-  if (at >= before.length - end) return at + after.length - before.length;
+  // Segments.containing is off by one after a combining mark in JavaScriptCore: the boundaries are walked instead
+  for (const segment of graphemes.segment(text)) {
+    if (segment.index > index) break;
+    start = segment.index;
+  }
   return start;
 }
 
+/** One edit of the message: `removed` characters at `start` gave way to `inserted` ones */
+export interface TextEdit { readonly start: number; readonly removed: number; readonly inserted: number }
+
 /**
- * A pasted or picked file's mention at the place the paste or pick was made (#3216), after a leading
- * `/command` (it must stay first to be one), with a space on each side and no doubled one. As with
- * insertLeadingMention, the caller shifts the caret and selection at or after `at` by `length`, and
- * `missing` says how far short the message is of room for it.
+ * The edit that turned `before` into `after` (#3216), as the box made it: the selection it replaced
+ * (`selected`, read before the edit) and the caret it left. When those do not describe it (an IME,
+ * an autocorrect, undo, a write with no selection), the texts are compared around the caret, and
+ * the edit never begins inside a character.
+ */
+export function editBetween(
+  before: string,
+  after: string,
+  { caret, selected }: { caret: number; selected?: { start: number; end: number } },
+): TextEdit {
+  const grown = after.length - before.length;
+  const matches = (start: number, removed: number): boolean => {
+    const inserted = removed + grown;
+    return start >= 0 && inserted >= 0 && start + removed <= before.length && caret === start + inserted
+      && before.slice(0, start) === after.slice(0, start) && before.slice(start + removed) === after.slice(start + inserted);
+  };
+  if (selected) {
+    // typed or pasted over a selection, or at a caret; a deletion at a caret ends where the caret is left
+    const start = selected.start < selected.end || grown >= 0 ? selected.start : caret;
+    const removed = selected.start < selected.end ? selected.end - selected.start : Math.max(0, -grown);
+    if (matches(start, removed)) return { start, removed, inserted: removed + grown };
+  }
+  let suffix = 0;
+  while (suffix < Math.min(before.length, after.length - caret) && before[before.length - 1 - suffix] === after[after.length - 1 - suffix]) suffix++;
+  let prefix = 0;
+  while (prefix < Math.min(before.length, after.length) - suffix && before[prefix] === after[prefix]) prefix++;
+  const start = Math.min(characterStart(before, prefix), characterStart(after, prefix));
+  return { start, removed: before.length - suffix - start, inserted: after.length - suffix - start };
+}
+
+/**
+ * Where a place moves with an edit (#3216): text added at it goes after it, text added or removed
+ * before it moves it, and an edit across it leaves it where the edit began.
+ */
+export function followPlace(at: number, edit: TextEdit): number {
+  if (at <= edit.start) return at;
+  if (at >= edit.start + edit.removed) return at + edit.inserted - edit.removed;
+  return edit.start;
+}
+
+/**
+ * A pasted, picked or dropped file's mention at the place the paste, pick or drop was made (#3216),
+ * after a leading `/command` (it must stay first to be one) and never inside a character, with a
+ * space on each side and no doubled one. An upload finishes while the user may be typing: the
+ * caller shifts the caret and selection at or after `at` by `length`. The mention goes in whole or
+ * not at all (`length` 0): a cut `@path` would name a file that does not exist, so the caller keeps
+ * the attachment waiting until there is room; `missing` says how far short the message is of it.
  */
 export function insertMentionAt(
   text: string,
@@ -278,9 +290,9 @@ export function insertMentionAt(
   return { text: before + snippet + after, at, length: snippet.length };
 }
 
-/** Where insertMentionAt puts a mention meant for `place`: after a leading `/command`, and within the text */
+/** Where insertMentionAt puts a mention meant for `place`: after a leading `/command`, within the text, and never inside a character */
 export function mentionPlace(text: string, place: number): number {
-  return Math.min(Math.max(place, /^\/\S+/u.exec(text)?.[0].length ?? 0), text.length);
+  return characterStart(text, Math.min(Math.max(place, /^\/\S+/u.exec(text)?.[0].length ?? 0), text.length));
 }
 
 /**
@@ -444,10 +456,11 @@ export function claudeMainAtRest(row: string | null, lines: readonly string[]): 
 /** Characters left at which the composer starts counting them: further off, a count is noise. */
 export const COMPOSER_CHARS_WARNING = 200;
 
-/** `noRoom`: a finished upload's path waits for the message to be shortened. */
-export function composerStatusHint(state: { uploading: boolean; connected: boolean; text: string; noRoom?: boolean }): "uploading" | "offline" | "no-room" | "near-limit" | null {
+/** `noRoom`: a finished upload's path waits for the message to be shortened; `unplaced`: one's path is in no message (#3216). */
+export function composerStatusHint(state: { uploading: boolean; connected: boolean; text: string; noRoom?: boolean; unplaced?: boolean }): "uploading" | "offline" | "no-room" | "unplaced" | "near-limit" | null {
   if (!state.connected && state.text.length > 0) return "offline";
   if (state.noRoom) return "no-room";
+  if (state.unplaced) return "unplaced";
   if (state.uploading) return "uploading";
   return MAX_COMPOSER_CHARS - state.text.length <= COMPOSER_CHARS_WARNING ? "near-limit" : null;
 }

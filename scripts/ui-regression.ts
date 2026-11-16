@@ -1332,8 +1332,8 @@ try {
     assert.equal(await composer.inputValue(), "draft for B");
     console.log("PASS upload batch cannot cross panes");
 
-    // Each path goes to the start of the message as its upload finishes, in the order the files were
-    // picked, and what the user types meanwhile stays where the caret is.
+    // Each path goes where the pick was made (here the start of an empty box) as its upload finishes,
+    // in the order the files were picked, and what the user types there meanwhile goes after it.
     await page.unroute("**/api/pane/image");
     const held = new Map<string, () => void>();
     await page.route("**/api/pane/image", async (route) => {
@@ -1483,7 +1483,7 @@ try {
     await pickFiles("eleventh.txt");
     await until(() => held.has("eleventh.txt"), "eleventh upload in flight");
     await finish("eleventh.txt");
-    await until(async () => /^@\S*eleventh-\S* hello$/.test(await composer.inputValue()), "the path went to the start");
+    await until(async () => /^h @\S*eleventh-\S* ello$/.test(await composer.inputValue()), "the path went to the selection's start, where the pick was made");
     const selection = await composer.evaluate((element: HTMLTextAreaElement) => ({ text: element.value.slice(element.selectionStart, element.selectionEnd), direction: element.selectionDirection }));
     assert.deepEqual(selection, { text: "ell", direction: "backward" }, "the selection keeps its text and direction");
     await composer.fill("");
@@ -1511,12 +1511,15 @@ try {
     const short = Number(/· (\d+) over/.exec(await statusHint.textContent() ?? "")![1]);
     assert.equal(await sendButton.isDisabled(), true, "Send waits for the path");
     assert.equal(await composer.inputValue(), "x".repeat(MAX_COMPOSER_CHARS - 5), "no part of the path went in");
-    await composer.fill("x".repeat(MAX_COMPOSER_CHARS - 200));
-    await until(async () => /^@\S*fourteenth-\S* x+$/.test(await composer.inputValue()), "the path goes in once there is room");
-    assert.equal(short, /^@\S+ /.exec(await composer.inputValue())![0].length - 5, "the count was what the path needed");
+    // shortened, not typed over whole: a draft replaced whole is a new one, which a waiting path never joins on its own
+    await composer.focus();
+    await composer.evaluate((element: HTMLTextAreaElement) => element.setSelectionRange(0, 195));
+    await page.keyboard.press("Backspace");
+    await until(async () => /^x+ @\S*fourteenth-\S* $/.test(await composer.inputValue()), "the path goes in at the end, where it was picked, once there is room");
+    assert.equal(short, / @\S+ $/.exec(await composer.inputValue())![0].length - 5, "the count was what the path needed");
     assert.equal(await roomless.count(), 0, "the chip is attached again");
     // Removing the file with no room lets the paths waiting behind it in, with no edit of the text.
-    const mentionLength = /^@\S+ /.exec(await composer.inputValue())![0].length - "fourteenth.txt".length;
+    const mentionLength = / @\S+ $/.exec(await composer.inputValue())![0].length - "fourteenth.txt".length;
     const long = `fifteenth${"y".repeat(60)}.txt`;
     await composer.fill("x".repeat(MAX_COMPOSER_CHARS - mentionLength - "sixteenth.txt".length - 20));
     await pickFiles(long, "sixteenth.txt");
@@ -1528,7 +1531,7 @@ try {
     assert.equal(await sendButton.isDisabled(), true, "the short path waits behind the long one");
     assert.doesNotMatch(await composer.inputValue(), /sixteenth/u);
     await page.getByRole("button", { name: `Remove ${long}`, exact: true }).click();
-    await until(async () => /^@\S*sixteenth-\S* x+$/.test(await composer.inputValue()), "the short path goes in once the long one is removed");
+    await until(async () => /^x+ @\S*sixteenth-\S* $/.test(await composer.inputValue()), "the short path goes in once the long one is removed");
     await until(async () => !(await sendButton.isDisabled()), "Send is back once every path is in");
     await composer.fill("");
     console.log("PASS a path that does not fit waits whole and says how much to cut, and the count shows only near the limit");

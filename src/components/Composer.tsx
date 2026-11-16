@@ -41,11 +41,12 @@ import {
   contextLeftPercent,
   type DraftRefusal,
   draftSendNote,
+  editBetween,
   followPlace,
   formatTokens,
   imageMention,
-  insertLeadingMention,
   insertMentionAt,
+  type TextEdit,
   MAX_COMPOSER_CHARS,
   mentionPlace,
   namesHiddenCommand,
@@ -167,7 +168,8 @@ type Attachment = {
   path: string | null;
   /** the text its upload put in the message, with the spaces it added: what removing it takes out */
   inserted?: string;
-  state: "uploading" | "ready" | "error" | "no-room";
+  /** unplaced: uploaded, but the draft it was pasted in was cleared or replaced, so its path is in no message yet (#3216) */
+  state: "uploading" | "ready" | "error" | "no-room" | "unplaced";
   /** for "no-room": how many characters the message must lose for the path to fit */
   missing?: number;
   /** what the pick this file came in with left out, repeated beside an upload error of the batch */
@@ -311,6 +313,38 @@ export function Composer({
   const [caret, setCaret] = useState(text.length);
   const textRef = useRef(text);
   const caretRef = useRef(caret);
+  /** where each file's path goes, by attachment id (#3216): places in `placesText`, moved with each edit this composer makes */
+  const places = useRef(new Map<number, number>());
+  const placesText = useRef(text);
+  /** the box's selection as last seen: what the next edit typed or pasted over */
+  const selection = useRef({ start: caret, end: caret });
+  /** where an IME composition began: a file pasted or picked during one goes before the syllable being composed */
+  const compositionStart = useRef(0);
+  const movePlaces = useCallback((edit: TextEdit, next: string) => {
+    for (const [id, at] of places.current) places.current.set(id, followPlace(at, edit));
+    placesText.current = next;
+  }, []);
+  /**
+   * The draft written from elsewhere (another tab, a send's acknowledgement, a recovered or quoted
+   * message): its places go, unless it only added after the text they were read in. Their files stay
+   * attached, and their paths go into no draft they were not pasted or picked in.
+   */
+  const syncPlaces = useCallback((current: string) => {
+    if (current === placesText.current) return;
+    if (placesText.current === "" || !current.startsWith(placesText.current)) places.current.clear();
+    placesText.current = current;
+  }, []);
+  /**
+   * The box's text replaced whole by this composer: a restored send's fill of a blank box, and the
+   * clear of that fill untouched. No words of the user's go, so neither does a file: places inside the
+   * old text go to the start of the new one.
+   */
+  const replaceText = useCallback((next: string) => {
+    syncPlaces(textRef.current);
+    movePlaces({ start: 0, removed: textRef.current.length, inserted: next.length }, next);
+    setText(next);
+    textRef.current = next;
+  }, [movePlaces, setText, syncPlaces]);
   /** the restored text the box was filled with: only that fill is ever cleared, never the user's own typing */
   const filledFrom = useRef<string | null>(null);
   const commands = usePaneCommands(paneId, agent);
@@ -350,6 +384,8 @@ export function Composer({
   const uploading = attachments.some((attachment) => attachment.state === "uploading");
   /** a finished upload whose path waits for the message to be shortened: Send waits with it */
   const roomless = attachments.find((attachment) => attachment.state === "no-room");
+  /** an uploaded file whose path is in no message: Send waits until the user puts it in or removes it */
+  const unplaced = attachments.some((attachment) => attachment.state === "unplaced");
   const agentLabel = agentDisplayLabel(agent);
   // the agent's suggestion stands in the empty box as it does in its own input, until anything is typed
   const offered = connected && answerHint === null && suggestion !== null ? suggestion : null;
@@ -367,8 +403,7 @@ export function Composer({
     if (restored !== null) {
       if (restored === filledFrom.current || textRef.current.trim() !== "" || sending) return;
       if (holdsQuoteLine(restored)) composerDrafts.markAgentOnly(draftKey);
-      setText(restored);
-      textRef.current = restored;
+      replaceText(restored);
       caretRef.current = restored.length;
       setCaret(restored.length);
       filledFrom.current = restored;
@@ -376,8 +411,7 @@ export function Composer({
     }
     if (filledFrom.current === null) return;
     if (textRef.current === filledFrom.current) {
-      setText("");
-      textRef.current = "";
+      replaceText("");
       caretRef.current = 0;
       setCaret(0);
     }
@@ -603,6 +637,8 @@ export function Composer({
     // a dictation that does not fit is refused whole: cutting would drop the draft after the caret
     maxLength: MAX_COMPOSER_CHARS,
     write: (value, at) => {
+      syncPlaces(textRef.current);
+      movePlaces(editBetween(placesText.current, value, { caret: at }), value);
       textRef.current = value;
       caretRef.current = at;
       setText(value);
@@ -630,6 +666,8 @@ export function Composer({
   const setTextAndCaret = useCallback((nextText: string, nextCaret: number) => {
     const limitedText = nextText.slice(0, MAX_COMPOSER_CHARS);
     const clampedCaret = Math.min(nextCaret, MAX_COMPOSER_CHARS);
+    syncPlaces(textRef.current);
+    movePlaces(editBetween(placesText.current, limitedText, { caret: clampedCaret }), limitedText);
     textRef.current = limitedText;
     caretRef.current = clampedCaret;
     // committed now and the caret placed in the same task: a placement deferred to the next frame
@@ -664,95 +702,86 @@ export function Composer({
     if (element) element.scrollTop = element.scrollHeight;
   }), [draftKey, machineId, paneId, setTextAndCaret]);
 
-  // an upload finishes while the user may be typing: its mention goes where it was pasted or picked
-  // (insertMentionAt), or to the start for a drop (insertLeadingMention), and the caret and selection
-  // only move along with the text they sit in, without taking focus
-  const insertMention = useCallback((next: { text: string; at: number; length: number }): void => {
+  /** the box's selection, or the caret where the box does not hold this text yet */
+  const readSelection = useCallback((): { start: number; end: number; direction?: "forward" | "backward" | "none" } => {
     const element = textareaRef.current;
-    const selectionIsCurrent = element?.value === textRef.current;
-    const start = selectionIsCurrent ? (element.selectionStart ?? caretRef.current) : caretRef.current;
-    const end = selectionIsCurrent ? (element.selectionEnd ?? start) : start;
-    const direction = selectionIsCurrent ? (element.selectionDirection ?? undefined) : undefined;
+    if (element?.value !== textRef.current) return { start: caretRef.current, end: caretRef.current };
+    return { start: element.selectionStart, end: element.selectionEnd, direction: element.selectionDirection };
+  }, []);
+
+  // an upload finishes while the user may be typing: its mention goes where it was pasted, picked or
+  // dropped (insertMentionAt), and the caret and selection only move along with the text they sit in,
+  // without taking focus; a selection that ends at the place keeps its end before the path, so typing
+  // over it never deletes the path
+  const insertMention = useCallback((next: { text: string; at: number; length: number }, selected: ReturnType<typeof readSelection>): void => {
     const moved = (position: number) => (position >= next.at ? position + next.length : position);
+    const start = moved(selected.start);
+    const end = selected.start < selected.end && selected.end === next.at ? selected.end : moved(selected.end);
     textRef.current = next.text;
-    caretRef.current = moved(start);
+    placesText.current = next.text;
+    caretRef.current = start;
+    selection.current = { start, end };
     flushSync(() => {
       setText(next.text);
-      setCaret(moved(start));
+      setCaret(start);
     });
-    if (element) element.setSelectionRange(moved(start), moved(end), direction);
+    textareaRef.current?.setSelectionRange(start, end, selected.direction);
   }, []);
 
   // one queue for the whole box: a pick made while another uploads waits its turn
   const uploadQueue = useRef<Attachment[]>([]);
   const uploadsRunning = useRef(0);
-  /** dropped files' paths placed so far, by attachment id: ids follow pick order */
-  const placedMentions = useRef(new Map<number, string>());
   /** the box's text right after a pick that goes bare when sent unchanged (sendsBarePick), or null */
   const barePick = useRef<string | null>(null);
   /** finished uploads whose paths wait for a /command or an IME composition to end, or for room */
   const waitingMentions = useRef<{ id: number; path: string; name: string }[]>([]);
-  /** where each pasted or picked file's path goes, by attachment id, and the text that place was read in (#3216) */
-  const places = useRef(new Map<number, { at: number; text: string }>());
-
-  /** the tile and its upload go; its path, if placed, is the caller's */
-  const dropTile = useCallback((id: number) => {
-    removedAttachments.current.add(id);
-    placedMentions.current.delete(id);
-    places.current.delete(id);
-    const previewUrl = attachmentsRef.current.find((item) => item.id === id)?.previewUrl;
-    if (previewUrl) URL.revokeObjectURL(previewUrl);
-    setAttachments((current) => current.filter((item) => item.id !== id));
-    // the note about this tile's failed upload goes with the tile
-    setNote((current) => typeof current === "object" && current !== null && "failure" in current && current.attachment.id === id ? null : current);
-  }, []);
-
-  /** the places follow each edit of the text; a file whose draft was cleared or replaced goes with it, never into the new one */
-  const followPlaces = useCallback((current: string) => {
-    for (const [id, place] of places.current) {
-      const at = followPlace(place.text, current, place.at);
-      if (at === null) dropTile(id);
-      else places.current.set(id, { at, text: current });
-    }
-  }, [dropTile]);
-
   const placeWaitingMentions = useCallback(() => {
     if (waitingMentions.current.length === 0) return;
     if (composingRef.current || /^\/\S*$/u.test(textRef.current)) return;
-    followPlaces(textRef.current);
+    syncPlaces(textRef.current);
     const waiting = waitingMentions.current.sort((a, b) => a.id - b.id);
     waitingMentions.current = [];
     const attached: string[] = [];
     for (const [index, { id, path, name }] of waiting.entries()) {
       if (removedAttachments.current.has(id)) continue;
-      const mention = imageMention(path);
       const place = places.current.get(id);
-      const earlier = [...placedMentions.current].filter(([placed]) => placed < id).map(([, placed]) => placed);
-      const next = place ? insertMentionAt(textRef.current, mention, place.at) : insertLeadingMention(textRef.current, mention, earlier);
-      // no room for the whole path: this attachment and the ones picked after it stay waiting, in
-      // their order, Send stays off, and the next edit of the text tries again (the effect below);
-      // a cut path would name a file that is not there, so the tile says how much to cut instead
-      if (next.missing !== undefined) {
-        const missing = next.missing;
-        waitingMentions.current.push(...waiting.slice(index));
-        setAttachments((current) => current.map((item) => (item.id === id ? { ...item, state: "no-room", missing } : item)));
-        break;
+      /** the text this path went in as, once it went in */
+      let inserted: string | undefined;
+      // no place: the draft it was pasted in was written over from elsewhere (syncPlaces), and the
+      // file stays attached without its path going into the new one
+      if (place !== undefined) {
+        const next = insertMentionAt(textRef.current, imageMention(path), place);
+        // no room for the whole path: this attachment and the ones picked after it stay waiting, in
+        // their order, Send stays off, and the next edit of the text tries again (the effect below);
+        // a cut path would name a file that is not there, so the tile says how much to cut instead
+        if (next.missing !== undefined) {
+          const missing = next.missing;
+          waitingMentions.current.push(...waiting.slice(index));
+          setAttachments((current) => current.map((item) => (item.id === id ? { ...item, state: "no-room", missing } : item)));
+          break;
+        }
+        // a selection across the place: the path would join it, and typing over it would delete it,
+        // so it waits, with the ones picked after it, until the selection changes (onSelect)
+        const selected = readSelection();
+        if (selected.start < next.at && next.at < selected.end) {
+          waitingMentions.current.push(...waiting.slice(index));
+          break;
+        }
+        // the other places move with it; one that lands at the same place (after a leading /command
+        // too) goes after it when picked after it, so a batch keeps its order
+        places.current.delete(id);
+        for (const [other, at] of places.current) {
+          const lands = mentionPlace(textRef.current, at);
+          places.current.set(other, lands > next.at || (lands === next.at && other > id) ? lands + next.length : at);
+        }
+        insertMention(next, selected);
+        inserted = next.text.slice(next.at, next.at + next.length);
       }
-      // the other places move with it, before the text changes so the effect that follows edits finds them
-      // moved already; one that lands at the same place goes after it when picked after it, so a batch keeps its order
-      places.current.delete(id);
-      for (const [other, { at }] of places.current) {
-        const lands = mentionPlace(textRef.current, at);
-        places.current.set(other, { at: lands > next.at || (lands === next.at && other > id) ? lands + next.length : at, text: next.text });
-      }
-      insertMention(next);
-      if (!place) placedMentions.current.set(id, mention);
-      const inserted = next.text.slice(next.at, next.at + next.length);
-      setAttachments((current) => current.map((item) => (item.id === id ? { ...item, path, inserted, state: "ready" } : item)));
-      attached.push(t("{name} attached", { name }));
+      setAttachments((current) => current.map((item) => (item.id === id ? { ...item, path, inserted, state: inserted === undefined ? "unplaced" : "ready" } : item)));
+      if (inserted !== undefined) attached.push(t("{name} attached", { name }));
     }
     if (attached.length > 0) announce(attached.join(" "));
-  }, [announce, followPlaces, insertMention, t]);
+  }, [announce, insertMention, readSelection, syncPlaces, t]);
 
   // whatever wrote the text (typing, a completion, dictation, a cleared draft), a waiting path tries
   // again in the next frame, after that write's own caret placement has landed
@@ -762,20 +791,33 @@ export function Composer({
     return () => cancelAnimationFrame(frame);
   }, [placeWaitingMentions, text]);
 
-  useEffect(() => followPlaces(text), [followPlaces, text]);
+  useEffect(() => syncPlaces(text), [syncPlaces, text]);
 
-  // typing over the whole draft selected replaces it: an upload started in it never lands in the new one
+  // typing over the whole draft selected replaces it: an upload started in it never lands in the new
+  // one on its own; its file stays, unplaced, until the user puts it in or removes it
   useEffect(() => {
     const element = textareaRef.current;
     if (!element) return;
     const replacing = () => {
-      if (element.value !== "" && element.selectionStart === 0 && element.selectionEnd === element.value.length) {
-        for (const id of [...places.current.keys()]) dropTile(id);
-      }
+      // an IME's own input (its candidate replaced, then committed) types over nothing of the user's
+      if (composingRef.current) return;
+      if (element.value !== "" && element.selectionStart === 0 && element.selectionEnd === element.value.length) places.current.clear();
     };
     element.addEventListener("beforeinput", replacing);
     return () => element.removeEventListener("beforeinput", replacing);
-  }, [dropTile]);
+  }, []);
+
+  /** the unplaced files' paths go where the user put the caret: they wait for it after their draft went */
+  const placeUnplaced = useCallback((at: number) => {
+    const waiting = attachmentsRef.current.filter((item): item is Attachment & { path: string } => item.state === "unplaced" && item.path !== null);
+    if (waiting.length === 0) return;
+    syncPlaces(textRef.current);
+    for (const { id, path, file } of waiting) {
+      places.current.set(id, at);
+      waitingMentions.current.push({ id, path, name: file.name });
+    }
+    placeWaitingMentions();
+  }, [placeWaitingMentions, syncPlaces]);
 
   const selectCompletion = useCallback(
     (choice: SlashCommand | string, currentTrigger: ActiveTrigger) => {
@@ -838,9 +880,12 @@ export function Composer({
     }
   }, [onUploadImage, placeWaitingMentions]);
 
-  /** `place`: where in the text the paste or pick was made, which its paths go to; a drop has none */
+  /** where a paste or pick is made: the caret or the selection's start, or where an IME composition still in progress began */
+  const placeHere = useCallback(() => (composingRef.current ? compositionStart.current : readSelection().start), [readSelection]);
+
+  /** `place`: where in the text the paste, pick or drop was made, which its paths go to */
   const uploadImages = useCallback(
-    (incoming: readonly File[], place?: number) => {
+    (incoming: readonly File[], place: number) => {
       const images = incoming.slice(0, ATTACH_LIMIT);
       if (images.length === 0) return;
 
@@ -861,13 +906,14 @@ export function Composer({
           leftOut,
         };
       });
-      if (place !== undefined) for (const { id } of added) places.current.set(id, { at: place, text: textRef.current });
+      syncPlaces(textRef.current);
+      for (const { id } of added) places.current.set(id, place);
       setAttachments((current) => [...current, ...added]);
       setNote(leftOut);
       uploadQueue.current.push(...added);
       pumpUploads();
     },
-    [pumpUploads, t],
+    [pumpUploads, syncPlaces, t],
   );
 
   /** Try again on a failed upload: the tile uploads once more, its note gone */
@@ -879,11 +925,21 @@ export function Composer({
   }, [pumpUploads]);
 
   const removeAttachment = useCallback((attachment: Attachment) => {
-    dropTile(attachment.id);
+    removedAttachments.current.add(attachment.id);
+    places.current.delete(attachment.id);
+    URL.revokeObjectURL(attachment.previewUrl);
+    setAttachments((current) => current.filter((item) => item.id !== attachment.id));
+    // the note about this tile's failed upload goes with the tile
+    setNote((current) => typeof current === "object" && current !== null && "failure" in current && current.attachment.id === attachment.id ? null : current);
     if (attachment.path) {
       const mention = imageMention(attachment.path);
       setText((current) => {
+        syncPlaces(current);
         const next = removeMention(current, mention, attachment.inserted);
+        // one stretch of text went: it starts where the two first differ
+        let start = 0;
+        while (start < next.length && current[start] === next[start]) start++;
+        movePlaces({ start, removed: current.length - next.length, inserted: 0 }, next);
         textRef.current = next;
         caretRef.current = Math.min(caretRef.current, next.length);
         return next;
@@ -893,13 +949,13 @@ export function Composer({
       // would wait for the next edit: try them now
       placeWaitingMentions();
     }
-  }, [dropTile, placeWaitingMentions]);
+  }, [movePlaces, placeWaitingMentions, setText, syncPlaces]);
 
   /** `clearDraft`: the terminal draft a DraftRefusal named, which the user asked to clear and send over;
    * `sendAnyway`: the user saw the box a DraftRefusal showed and sends over it; `now`: Ctrl+Enter; `hold`: Alt+Enter. */
   const send = useCallback((clearDraft?: string, sendAnyway = false, now = false, hold = false): boolean => {
     if (composingRef.current) return false;
-    if (viewOnly || !connected || uploading || roomless || sending || (text.trim().length === 0 && carried.length === 0)) return false;
+    if (viewOnly || !connected || uploading || roomless || unplaced || sending || (text.trim().length === 0 && carried.length === 0)) return false;
     if (terminalTyped?.name === "resume" && onOpenHistory) { setMenuDismissed(true); onOpenHistory(); return true; }
     // the pick alone, unchanged: its space only closed the menu here, and OpenCode would send `/new ` as a prompt
     const picked = carried.length === 0 && text === barePick.current && /^\/\S+ $/u.test(text);
@@ -932,7 +988,7 @@ export function Composer({
       textRef.current = rest;
       caretRef.current = rest.length;
       setNote(edited ? t("Sent as it was. Your changes made while it was sending stayed here and were not sent.") : null);
-      for (const attachment of sentAttachments) { URL.revokeObjectURL(attachment.previewUrl); placedMentions.current.delete(attachment.id); places.current.delete(attachment.id); }
+      for (const attachment of sentAttachments) { URL.revokeObjectURL(attachment.previewUrl); places.current.delete(attachment.id); }
       setAttachments((current) => current.filter((attachment) => !sentAttachments.includes(attachment)));
     };
     const ended = (): void => { composerDrafts.end(draftKey, sendId); replyComments.release(sentComments); };
@@ -974,7 +1030,7 @@ export function Composer({
     return underSendLock(draftKey, () => {
       try { return claim(); } finally { release(); }
     });
-  }, [attachments, carried, commentsKey, connected, dictation.forget, draftKey, machineId, onClaim, onOpenHistory, onSend, roomless, sending, t, terminalTyped, text, uploading, viewOnly]);
+  }, [attachments, carried, commentsKey, connected, dictation.forget, draftKey, machineId, onClaim, onOpenHistory, onSend, roomless, sending, t, terminalTyped, text, unplaced, uploading, viewOnly]);
   const sendRef = useRef(send);
   sendRef.current = send;
   const connectedRef = useRef(connected);
@@ -1230,16 +1286,17 @@ export function Composer({
         .filter((file): file is File => file !== null);
       if (images.length === 0) return;
       event.preventDefault();
-      void uploadImages(images, box.selectionStart);
+      void uploadImages(images, placeHere());
     },
-    [t, uploadImages],
+    [placeHere, t, uploadImages],
   );
 
   const onDrop = useCallback(
     (event: DragEvent<HTMLDivElement>) => {
       event.preventDefault();
       setDragging(false);
-      void uploadImages(Array.from(event.dataTransfer.files));
+      // a drop names no place in the text: its paths go to the start, and follow the edits made meanwhile as a paste's do
+      void uploadImages(Array.from(event.dataTransfer.files), 0);
     },
     [uploadImages],
   );
@@ -1259,7 +1316,7 @@ export function Composer({
   // a take started, by the mic or its shortcut
   const dictating = dictation.voice.state === "starting" || dictation.voice.state === "recording";
   useEffect(() => { if (dictating) tally(() => usageCounters.paneUse("composer_voice", machineId)); }, [dictating, machineId]);
-  const hint = composerStatusHint({ uploading, connected, text, noRoom: roomless !== undefined });
+  const hint = composerStatusHint({ uploading, connected, text, noRoom: roomless !== undefined, unplaced });
   const model = metadata?.model ? modelLabel(metadata.model) : null;
   const modelShown = Boolean(metadata?.model || metadata?.reasoning_effort);
   const usageDetail = usageWindows.map((window) => {
@@ -1273,6 +1330,7 @@ export function Composer({
   const hintText = hint === null ? null
     : hint === "no-room" ? t("{max}-character limit · {count} over", { max: formatChars(MAX_COMPOSER_CHARS), count: formatChars(roomless?.missing ?? 0) })
     : hint === "near-limit" ? composerFull(text.length, MAX_COMPOSER_CHARS) ? t("{max}-character limit", { max: formatChars(MAX_COMPOSER_CHARS) }) : t("{count} characters left", { count: MAX_COMPOSER_CHARS - text.length })
+    : hint === "unplaced" ? t("A file is not in the message: put the caret where it goes, or remove it")
     : hint === "uploading" ? t("Uploading file…") : offlineSentence;
   /** an upload's failure as one line: what failed and the cause it knows, then what the pick left out */
   const noteLine = note === null ? null : typeof note === "string" ? note : "failure" in note
@@ -1374,7 +1432,7 @@ export function Composer({
             ? offersRetry(note.failure) && <button type="button" className="composer-note-action" disabled={!connected} onClick={() => retryUpload(note.attachment)}>{t("Try again")}</button>
             : <div className="composer-note-actions">
               {"draft" in note && <button type="button" className="composer-note-action" disabled={!connected || sending} onClick={() => sendDraft(note.draft)}>{t("Send it")}</button>}
-              <button type="button" className="composer-note-action" disabled={!connected || uploading || roomless !== undefined || sending || (text.trim().length === 0 && carried.length === 0)}
+              <button type="button" className="composer-note-action" disabled={!connected || uploading || roomless !== undefined || unplaced || sending || (text.trim().length === 0 && carried.length === 0)}
                 onClick={() => "draft" in note ? send(note.draft) : send(undefined, true)}>{"draft" in note ? t("Clear it and send") : t("Send anyway")}</button>
             </div>)}
         </div>
@@ -1526,10 +1584,10 @@ export function Composer({
                 {attachment.previewUrl ? <img src={attachment.previewUrl} alt={attachment.file.name} />
                   : <span className="composer-attachment-file" title={attachment.file.name}><FileText aria-hidden="true" /><span>{attachment.file.name}</span></span>}
                 <span className="composer-attachment-state">
-                  {/* a tile that failed or has no room shows the glyph alone: the line above or below the box
-                      already says what happened, once */}
-                  {attachment.state === "no-room" || attachment.state === "error"
-                    ? <><TriangleAlert aria-hidden="true" /><span className="visually-hidden">{t(attachment.state === "error" ? "Failed" : "No room")}</span></>
+                  {/* a tile that failed, has no room or is in no message shows the glyph alone: the line above
+                      or below the box already says what happened, once */}
+                  {attachment.state === "no-room" || attachment.state === "error" || attachment.state === "unplaced"
+                    ? <><TriangleAlert aria-hidden="true" /><span className="visually-hidden">{t(attachment.state === "error" ? "Failed" : attachment.state === "no-room" ? "No room" : "Not in message")}</span></>
                     : t(attachment.state === "uploading" ? "Uploading" : "Attached")}
                 </span>
                 <button type="button" aria-label={t("Remove {file}", { file: attachment.file.name })} onClick={() => removeAttachment(attachment)}>
@@ -1542,7 +1600,10 @@ export function Composer({
 
         <textarea
           ref={textareaRef}
-        onCompositionStart={() => { composingRef.current = true; }}
+        onCompositionStart={() => {
+          composingRef.current = true;
+          compositionStart.current = readSelection().start;
+        }}
         onCompositionEnd={() => {
           composingRef.current = false;
           const waiting = commitWait.current;
@@ -1579,13 +1640,33 @@ export function Composer({
           onClick={(event) => {
             setCaret(event.currentTarget.selectionStart);
             setMenuDismissed(false);
+            // a click or tap in the text puts an unplaced file's path there
+            placeUnplaced(event.currentTarget.selectionStart);
           }}
-          onKeyUp={(event) => setCaret(event.currentTarget.selectionStart)}
+          onKeyUp={(event) => {
+            setCaret(event.currentTarget.selectionStart);
+            // a caret moved by the keys (not typed) is a place the user chose
+            if (/^(Arrow|Home$|End$|Page)/u.test(event.key)) placeUnplaced(event.currentTarget.selectionStart);
+          }}
+          onSelect={(event) => {
+            selection.current = { start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd };
+            // a path that waited for a selection across its place to change
+            placeWaitingMentions();
+          }}
           onChange={(event) => {
+            const box = event.target;
             // typed or pasted: whatever the box holds now is the user's own text, never a pick (sendsBarePick)
             barePick.current = null;
-            setText(event.target.value);
-            setCaret(event.target.selectionStart);
+            // the places follow the edit the box made, over the selection it had (#3216)
+            syncPlaces(textRef.current);
+            movePlaces(editBetween(placesText.current, box.value, { caret: box.selectionStart, selected: selection.current }), box.value);
+            // the box emptied: the draft its uploads were started in is gone, and so are their places
+            // (not an IME clearing its own candidate on the way to committing it)
+            if (box.value === "" && !composingRef.current) places.current.clear();
+            selection.current = { start: box.selectionStart, end: box.selectionEnd };
+            textRef.current = box.value;
+            setText(box.value);
+            setCaret(box.selectionStart);
             setMenuDismissed(false);
             setNote((current) => typeof current === "object" && current !== null && "failure" in current ? current : pasteCutNote.current);
           }}
@@ -1610,8 +1691,7 @@ export function Composer({
             onChange={(event) => {
               const picked = Array.from(event.currentTarget.files ?? []);
               event.currentTarget.value = "";
-              const box = textareaRef.current;
-              void uploadImages(picked, box?.value === textRef.current ? box.selectionStart : caretRef.current);
+              void uploadImages(picked, placeHere());
             }}
           />
           <button
@@ -1714,7 +1794,7 @@ export function Composer({
               aria-label={t("Send message")}
               title={sending ? t("Sending…") : t("Send message")}
               aria-busy={sending || undefined}
-              disabled={viewOnly || !connected || uploading || roomless !== undefined || sending || (text.trim().length === 0 && carried.length === 0)}
+              disabled={viewOnly || !connected || uploading || roomless !== undefined || unplaced || sending || (text.trim().length === 0 && carried.length === 0)}
               // focus stays in the text box: leaving it closes the soft keyboard and moves the button
               // out from under the tap before the click lands
               onPointerDown={(event) => event.preventDefault()}
