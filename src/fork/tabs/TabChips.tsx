@@ -3,7 +3,7 @@ import { Terminal } from "lucide-react";
 import type { HerdrPane, HerdrTab, PaneInfo } from "../../../shared/protocol.ts";
 import { rowMenuAnchor } from "../../components/RowMenu.tsx";
 import type { useTabReorder } from "../../lib/useTabReorder.ts";
-import { ROLE_ICONS } from "../friends/AgentRole.tsx";
+import { SUB_AGENT_ICON } from "../friends/AgentRole.tsx";
 import type { groupAgentTabs } from "./groupAgentTabs.ts";
 import "./tab-chips.css";
 
@@ -56,7 +56,7 @@ export function ForkTabChips({ tabs, paneFor, nameOf, selectedTab, onSelect, onM
   return <span className="fork-tab-chips">
     {tabs.map((tab) => {
       const pane = paneFor(tab) as HerdrPane | undefined;
-      const Icon = pane?.agent_role ? ROLE_ICONS[pane.agent_role] : Terminal;
+      const Icon = pane?.agent_role ? SUB_AGENT_ICON : Terminal;
       const active = tab.tab_id === selectedTab;
       return <button key={tab.tab_id} type="button" role={sheet ? popup === "menu" ? "menuitemcheckbox" : undefined : "tab"} className={`fork-tab-chip${sheet ? " row-sheet-aside" : ""}`} data-tab-id={tab.tab_id} data-status={status(tab) ?? undefined}
         title={nameOf(tab)} aria-label={nameOf(tab)} aria-selected={sheet ? undefined : active} aria-pressed={sheet && popup === "dialog" ? active : undefined} aria-checked={sheet && popup === "menu" ? active : undefined}

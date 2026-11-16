@@ -9,7 +9,7 @@ const panes: HerdrPane[] = tabs.map((tab) => ({ pane_id: `pane:${tab.tab_id}`, t
 let renderer: ReactTestRenderer | undefined;
 afterEach(async () => { await act(async () => renderer?.unmount()); renderer = undefined; });
 
-it("uses role chips, not repeated friends, and opens the child's pane", async () => {
+it("uses sub-agent chips, not repeated friends, and opens the child's pane", async () => {
   let selected = "";
   await act(async () => { renderer = create(<ForkTabChips tabs={tabs} paneFor={(tab) => panes.find((pane) => pane.tab_id === tab.tab_id)} nameOf={(tab) => tab.label} selectedTab="review" onSelect={(id) => { selected = id; }} onMenu={() => {}} status={() => "working"} />); });
   const buttons = renderer!.root.findAllByType("button");
@@ -17,7 +17,7 @@ it("uses role chips, not repeated friends, and opens the child's pane", async ()
   expect(buttons.map((button) => button.props.title)).toEqual(tabs.map((tab) => tab.label));
   expect(buttons.map((button) => button.props["aria-selected"])).toEqual([false, true, false]);
   expect(buttons[1]!.props.tabIndex).toBe(0);
-  expect(renderer!.root.findAllByType("svg").map((svg) => svg.props.className)).toEqual(["lucide lucide-code-xml lucide-code-2", "lucide lucide-check", "lucide lucide-search"]);
+  expect(renderer!.root.findAllByType("svg").map((svg) => svg.props.className)).toEqual(Array(3).fill("lucide lucide-bot"));
   expect(renderer!.root.findAllByProps({ "data-status": "working" })).toHaveLength(3);
   expect(renderer!.root.findAllByType("img")).toHaveLength(0);
   await act(async () => buttons[0]!.props.onClick({ ctrlKey: false, currentTarget: { focus() {} } }));

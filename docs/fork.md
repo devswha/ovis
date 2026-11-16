@@ -7,7 +7,7 @@ This fork is `ricardofelixb/ovis`; upstream is `devswha/ovis`. This inventory co
 Upstream candidate (A), behind **Agent friends** (off by default). `src/fork/tabs/groupAgentTabs.ts`
 folds same-workspace descendants into their visible parent without changing real tabs or order;
 missing parents/cycles remain ordinary tabs. `src/fork/tabs/TabChips.tsx` and `src/fork/tabs/tab-chips.css`
-provide tiny role controls (CodeXml/Check/Search, a neutral Terminal when the role is unknown), without a repeated
+provide tiny sub-agent controls (one Bot icon for every role, a neutral Terminal when the role is unknown), without a repeated
 friend. Their named controls select the real child pane, keep its menu/rename/close, and highlight
 selection; touch hold opens its menu. Chips stay pinned in their parent group. The desktop row,
 phone header row and phone tabs sheet all share these controls; selecting a child leaves the
