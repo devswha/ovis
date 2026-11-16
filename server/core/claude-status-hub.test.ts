@@ -347,6 +347,20 @@ describe("a Claude pane whose turn ended on an API error", () => {
     expect(h.failures).toEqual([h.pane.pane_id]);
   });
 
+  it("tells no failure held on its background work when a new prompt, not its work's end, ends the wait", async () => {
+    const h = await workingClaude();
+    const failures: string[] = [];
+    spyOn(h.status.push, "onFailed").mockImplementation(async (paneId: string) => { failures.push(paneId); });
+    appendFileSync(h.path, failedEntry);
+    handlers.onStatus(h.pane.pane_id, "idle", "claude");
+    expect(h.last()).toEqual({ status: "idle", tasks: 1, bg: true });
+    // the user sends a new prompt: the tracker reads it before herdr says the pane works
+    appendFileSync(h.path, line({ type: "user", origin: { kind: "human" }, timestamp: new Date(Date.now() + 1000).toISOString(), message: { role: "user", content: "next" } }));
+    await h.poll();
+    expect(h.last().bg).toBe(false);
+    expect(failures).toEqual([]);
+  });
+
   it("tells nothing of a failure it never saw run: a pane found already at rest, after a restart", async () => {
     const h = await claudeHub(failed);
     handlers.onStatus(h.pane.pane_id, "idle", "claude");

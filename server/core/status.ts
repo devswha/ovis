@@ -386,8 +386,11 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   const CLAUDE_START_SLACK_MS = 5000;
   /** when each Claude pane last came to rest, as its status event told it: a transcript begun before then is no later turn's */
   const claudeRested = new Map<string, number>();
-  /** Claude panes whose failure alert waits for the end of the background wait their failed rest is held on (claudeFailedAlert) */
-  const claudeFailHeld = new Set<string>();
+  /**
+   * Claude panes whose failure alert waits for the end of the background wait their failed rest is held on
+   * (claudeFailedAlert), and the prompt that wait knew then: a newer one ends the wait with a turn after it
+   */
+  const claudeFailHeld = new Map<string, number | null>();
   /** A Claude pane is at work again (`began`), or no Claude pane any more: what its last turn ended on is no longer its rest. */
   const claudeWorking = (paneId: string, began: boolean): void => {
     claudeFailed.delete(paneId);
@@ -411,7 +414,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
    * after it, at the same rest (claudeFailHeldEnds).
    */
   function claudeFailedAlert(paneId: string): void {
-    if (waits.waiting(paneId)) { claudeFailHeld.add(paneId); return; }
+    if (waits.waiting(paneId)) { claudeFailHeld.set(paneId, waits.promptAt(paneId)); return; }
     claudeFailHeld.delete(paneId);
     push.onFailed(paneId).catch(logPushError);
   }
@@ -667,6 +670,9 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
    */
   function claudeAgentsChanged(paneId: string, running: number, turnRunning: number, promptAt: number | null, resetHold = false, agent: string | null = null, settled = false, capped = true): void {
     const changed = waits.running(paneId, turnRunning, promptAt, capped, settled) || resetHold;
+    // a prompt newer than the one a held failure's rest knew: a turn follows it, and that failure is no longer the rest
+    const held = claudeFailHeld.get(paneId);
+    if (held !== undefined && promptAt !== null && (held === null || promptAt > held)) claudeFailHeld.delete(paneId);
     if (paneId === settling) return;
     // a pane herdr reads as working: its session's turn came to rest under its subagents' spinner, or moved on again
     if (agent === "claude" && agentNow.get(paneId) === "claude" && !gjc.runs(paneId) && heard.get(paneId) === "working" && (completions.current(paneId) === "working") === claudeAgents.restsOn(paneId)) {
@@ -994,7 +1000,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       // and a Claude pane's
       if (claudeLooked.has(from)) { claudeLooked.set(to, claudeLooked.get(from)!); claudeLooked.delete(from); }
       if (claudeFailed.delete(from)) claudeFailed.add(to);
-      if (claudeFailHeld.delete(from)) claudeFailHeld.add(to);
+      if (claudeFailHeld.has(from)) { claudeFailHeld.set(to, claudeFailHeld.get(from) ?? null); claudeFailHeld.delete(from); }
       if (claudeRested.has(from)) { claudeRested.set(to, claudeRested.get(from)!); claudeRested.delete(from); }
       // a read record that cannot be written costs that record, never the rest of the move
       try { options.seenMoved?.(from, to, renumber); }
