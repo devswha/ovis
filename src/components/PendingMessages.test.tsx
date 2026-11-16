@@ -57,7 +57,7 @@ describe("a pending row's refusal note", () => {
     const message = kind === "behind" ? grokQueuedBehindMessage(2) : GROK_QUEUED_MESSAGE;
     const note = kind === "behind"
       ? translate(language, "In Grok's queue behind {count} queued before it; it goes when they do. Nothing more was pressed. This copy stays here to read and is not sent again.", { count: 2 })
-      : translate(language, "In Grok's queue; it goes when Grok gets to it. Grok's screen did not show its empty prompt with only this message queued, so nothing more was pressed. This copy stays here to read and is not sent again.");
+      : translate(language, "In Grok's queue; it goes when Grok gets to it. Nothing more was pressed. This copy stays here to read and is not sent again.");
     const expected = renderToStaticMarkup(createElement("span", null, note)).slice("<span>".length, -"</span>".length);
     const html = render("submit_changed", message, [language], true, "uncertain");
     expect(html).toContain(expected);

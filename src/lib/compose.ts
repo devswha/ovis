@@ -163,7 +163,7 @@ export function grokQueueNote(code: string, message: string, tt: (text: string, 
   if (code !== "submit_changed") return null;
   const ahead = grokQueuedAhead(message);
   if (ahead !== null) return tt("In Grok's queue behind {count} queued before it; it goes when they do. Nothing more was pressed. This copy stays here to read and is not sent again.", { count: ahead });
-  if (message === GROK_QUEUED_MESSAGE) return tt("In Grok's queue; it goes when Grok gets to it. Grok's screen did not show its empty prompt with only this message queued, so nothing more was pressed. This copy stays here to read and is not sent again.");
+  if (message === GROK_QUEUED_MESSAGE) return tt("In Grok's queue; it goes when Grok gets to it. Nothing more was pressed. This copy stays here to read and is not sent again.");
   return null;
 }
 

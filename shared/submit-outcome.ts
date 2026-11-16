@@ -11,10 +11,11 @@ export const NO_AGENT_MESSAGE = "No agent is in front of this pane now; nothing 
 
 /**
  * The bridge's `submit_changed` message when Send now queued its message in a working Grok and pressed nothing more
- * (server/core/grok-queue.ts): Grok's screen showed the message on top of its queue, but not the empty prompt whose
- * Enter sends it now, or Grok was in minimal mode, where Send now presses nothing more.
+ * (server/core/grok-queue.ts): Grok's screen showed the message queued, but not as the one row of a queue empty before
+ * it under Grok's empty prompt, whose Enter sends it now; or Grok was in minimal mode, where Send now presses nothing more.
+ * It names no reason, as these differ.
  */
-export const GROK_QUEUED_MESSAGE = "The message is in Grok's queue and goes when Grok gets to it: Grok's screen did not show its empty prompt with only this message queued, so nothing more was pressed";
+export const GROK_QUEUED_MESSAGE = "The message is in Grok's queue and goes when Grok gets to it; nothing more was pressed";
 
 /** The same, when the user had `count` rows queued in Grok before it: Send now never sends those. */
 export const grokQueuedBehindMessage = (count: number): string =>
