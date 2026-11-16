@@ -329,20 +329,24 @@ setInterval(() => {}, 1 << 30);
     writeFileSync(join(shifty, "fake.ts"), `${STAND_IN_DOOR}
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 const [command, sub] = process.argv.slice(2);
-// /var/tmp/fake-status-fails holds how many account status reads still fail (the server restarting, say)
-function statusFails(): boolean {
-  const left = existsSync("/var/tmp/fake-status-fails") ? Number(readFileSync("/var/tmp/fake-status-fails", "utf8")) : 0;
+// /var/tmp/fake-status-<how> holds how many account status reads are still answered that way: fails (an error status,
+// the server restarting, say), cut (a body cut off after "account":null, sent whole), stall (that body, then nothing)
+// or malformed (a whole answer that is no JSON object, holding "account":null)
+function statusAnswers(how: string): boolean {
+  const file = "/var/tmp/fake-status-" + how;
+  const left = existsSync(file) ? Number(readFileSync(file, "utf8")) : 0;
   if (!(left > 0)) return false;
-  writeFileSync("/var/tmp/fake-status-fails", String(left - 1));
+  writeFileSync(file, String(left - 1));
   return true;
 }
+const CUT = '{"account":null';
 if (command === "--version") console.log(${VERSION});
 if (command === "plugin") {
   if (sub !== "add") process.exit(0);
   // a device of some account pairs during the add: the server names that account from then on
   if (existsSync("/var/tmp/fake-add-links")) writeFileSync("/var/tmp/fake-account-listed", "");
   // the server is back by the time the add has run
-  rmSync("/var/tmp/fake-status-fails", { force: true });
+  for (const how of ["fails", "cut", "stall", "malformed"]) rmSync("/var/tmp/fake-status-" + how, { force: true });
   if (existsSync("/var/tmp/fake-add-fails")) { console.log("stand-in add: failed"); process.exit(1); }
   console.log("stand-in add: done");
   process.exit(0);
@@ -354,7 +358,11 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
   setInterval(() => {}, 1 << 30);
 } else {
   serveAsProfile((request) => new URL(request.url).pathname === "/api/account/status"
-    ? (statusFails() ? new Response("restarting", { status: 503 }) : existsSync("/var/tmp/fake-account-listed") ? Response.json({ account: "acct_standin" })
+    ? (statusAnswers("fails") ? new Response("restarting", { status: 503 })
+      : statusAnswers("cut") ? new Response(CUT, { headers: { "content-type": "application/json" } })
+      : statusAnswers("malformed") ? new Response('<p>"account":null</p>', { headers: { "content-type": "application/json" } })
+      : statusAnswers("stall") ? new Response(new ReadableStream({ start(body) { body.enqueue(new TextEncoder().encode(CUT)); } }), { headers: { "content-type": "application/json" } })
+      : existsSync("/var/tmp/fake-account-listed") ? Response.json({ account: "acct_standin" })
       : existsSync("/var/tmp/fake-account-null") ? Response.json({ account: null }) : new Response("no account here", { status: 503 }))
     : Response.json({ ok: true, machine_profile: { engine: "herdr" }, herdr: { terminal_attach: true },
       // its pairing gate as /var/tmp/fake-gate-open or -closed says; with neither, its health names none
@@ -992,6 +1000,53 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
     expect((await m.sh(`rm /var/tmp/fake-add-fails /var/tmp/fake-account-listed /var/tmp/fake-gate-closed && sh ${TRIAL}/join.sh --uninstall`)).code).toBe(0);
   }, 300_000);
 
+  test("a run again whose account reads before the add get a cut-off body naming no account, the add failing: kept (exit 39 or 38), never removed", async () => {
+    const m = await runnerMachine();
+    await serveHerdr(m);
+    expect((await m.sh("touch /var/tmp/fake-account-listed /var/tmp/fake-gate-closed")).code).toBe(0);
+    expect((await m.sh(`${fakeKit.line} --yes </dev/null`)).code).toBe(38);
+    // run 2: every read before the add gets {"account":null, sent whole but cut off; the add fails; after it the server
+    // names the account again
+    expect((await m.sh("echo 99 > /var/tmp/fake-status-cut && touch /var/tmp/fake-add-fails")).code).toBe(0);
+    const cut = await m.sh(`${fakeKit.line} --yes </dev/null`);
+    note("caseBodyCut", `[cut off, every read] exit ${cut.code}\n${cut.stdout}${cut.stderr}`);
+    // regression (before: taken for "no account", exit 37, the install removed)
+    expect([cut.code, (await m.sh(`test -f ${TRIAL}/receipt`)).code, (await m.processes()).includes("ovis-server serve")]).toEqual([39, 0, false]);
+    // run 3: the first read gets that body and then nothing (curl times out), the next one answers
+    expect((await m.sh("echo 1 > /var/tmp/fake-status-stall")).code).toBe(0);
+    const stalled = await m.sh(`${fakeKit.line} --yes </dev/null`);
+    note("caseBodyCut", `[cut off, then a timeout, once] exit ${stalled.code}\n${stalled.stdout}${stalled.stderr}`);
+    expect([stalled.code, (await m.sh(`test -f ${TRIAL}/receipt`)).code, (await m.processes()).includes("ovis-server serve")]).toEqual([38, 0, true]);
+    expect((await m.sh(`rm /var/tmp/fake-add-fails /var/tmp/fake-account-listed /var/tmp/fake-gate-closed && sh ${TRIAL}/join.sh --uninstall`)).code).toBe(0);
+  }, 300_000);
+
+  test("a run again whose account reads before the add get a whole answer that is no JSON object, holding \"account\":null, the add failing: kept (exit 39)", async () => {
+    const m = await runnerMachine();
+    await serveHerdr(m);
+    expect((await m.sh("touch /var/tmp/fake-account-listed /var/tmp/fake-gate-closed")).code).toBe(0);
+    expect((await m.sh(`${fakeKit.line} --yes </dev/null`)).code).toBe(38);
+    expect((await m.sh("echo 99 > /var/tmp/fake-status-malformed && touch /var/tmp/fake-add-fails")).code).toBe(0);
+    const malformed = await m.sh(`${fakeKit.line} --yes </dev/null`);
+    note("caseBodyMalformed", `exit ${malformed.code}\n${malformed.stdout}${malformed.stderr}`);
+    // regression (before: taken for "no account", exit 37, the install removed)
+    expect([malformed.code, (await m.sh(`test -f ${TRIAL}/receipt`)).code, (await m.processes()).includes("ovis-server serve")]).toEqual([39, 0, false]);
+    expect((await m.sh(`rm /var/tmp/fake-add-fails /var/tmp/fake-account-listed /var/tmp/fake-gate-closed && sh ${TRIAL}/join.sh --uninstall`)).code).toBe(0);
+  }, 300_000);
+
+  test("a fresh install whose account cannot be read before the add, the add failing while a device pairs it: removed (exit 37)", async () => {
+    const m = await runnerMachine();
+    await serveHerdr(m);
+    const home = await m.home();
+    // no read before the add answers; a device of some account pairs during the add, and the add fails
+    expect((await m.sh("echo 99 > /var/tmp/fake-status-fails && touch /var/tmp/fake-add-fails /var/tmp/fake-add-links")).code).toBe(0);
+    const run = await m.sh(`${fakeKit.line} --yes </dev/null`);
+    note("caseFresh37", `exit ${run.code}\n${run.stdout}${run.stderr}`);
+    // only a run again keeps an install whose earlier account could not be read: this run's own install goes
+    expect([run.code, (await m.sh(`test -e ${TRIAL}`)).code, (await m.processes()).includes("ovis-server serve")]).toEqual([37, 1, false]);
+    expect((await m.sh("rm /var/tmp/fake-add-fails /var/tmp/fake-add-links /var/tmp/fake-account-listed")).code).toBe(0);
+    expect(await m.home()).toBe(home);
+  }, 300_000);
+
   test("a run again on a machine already in an account, the add returning at once: exit 38 naming it, the server kept only with the gate closed", async () => {
     const m = await runnerMachine();
     await serveHerdr(m);
@@ -1102,6 +1157,22 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
     expect(probeLeft).toBe("gone");
     expect(serversLeft).toBe(false);
     expect((await m.sh("rm /var/tmp/fake-probe-hangs /var/tmp/fake-probe-ignores-term /var/tmp/probe-started")).code).toBe(0);
+    expect(await m.home()).toBe(home);
+  }, 300_000);
+
+  test("a kit's server that never answers its check and ignores TERM: stopped by KILL, and the join refuses (exit 24) instead of hanging", async () => {
+    const m = await runnerMachine();
+    await serveHerdr(m);
+    const home = await m.home();
+    expect((await m.sh("touch /var/tmp/fake-probe-hangs /var/tmp/fake-probe-ignores-term")).code).toBe(0);
+    // bounded by timeout(1) in the container: the check's 60 s, 5 s for TERM, then KILL, well within 100 s
+    expect((await m.sh(`printf '%s --yes </dev/null\\n' '${fakeKit.line.replaceAll("'", "'\\''")}' > /var/tmp/line.sh`)).code).toBe(0);
+    const run = await m.sh("timeout 100 sh /var/tmp/line.sh; echo \"rc=$?\"");
+    note("caseProbeHangs", `${run.stdout}${run.stderr}`);
+    const probe = (await m.sh("cat /var/tmp/probe-started")).stdout.trim();
+    // regression (before: the join waited on the probe for ever, ended only by timeout's TERM: rc=124)
+    expect([run.stdout.trim().split("\n").pop(), (await m.sh(`kill -0 ${probe}`)).code === 0, (await m.processes()).includes("ovis-server")]).toEqual(["rc=24", false, false]);
+    expect((await m.sh("rm /var/tmp/fake-probe-hangs /var/tmp/fake-probe-ignores-term /var/tmp/probe-started /var/tmp/line.sh")).code).toBe(0);
     expect(await m.home()).toBe(home);
   }, 300_000);
 

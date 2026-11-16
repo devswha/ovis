@@ -8,5 +8,5 @@
   root or sudo. Its printed undo line, and the roll back after a refusal or an interruption (Ctrl+C,
   TERM or a dropped connection), remove what it made: its unit, its server, its folder, lingering
   if it turned that on (or say how to turn it off when that fails), and the empty folders it made
-  on the way. It says that the machine is in your account only when a sign-in of that run put it
-  there; otherwise it names the account it is in.
+  on the way. It names the account the machine is in, as the add shows it, and never calls that
+  account yours.
