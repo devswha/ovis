@@ -10,6 +10,7 @@
 import { createElement, useMemo, useRef, useState, type ReactNode } from "react";
 
 import type { ConversationTurn } from "../../../shared/protocol.ts";
+import type { MarkdownDraw, MarkdownPieceProps } from "../../components/Markdown.tsx";
 
 /** words 100ms apart, an update's words all started within 1000ms (Streamdown: 40 and 320); the fade's 350ms is in chat.css */
 const STAGGER_MS = 100;
@@ -123,27 +124,35 @@ export class WordFade {
   }
 
   /** `text` drawn a span per word, each new one fading in (MarkdownTextContext's drawing). */
-  draw(text: string, place: string): ReactNode {
+  text(text: string, place: string): ReactNode {
     return splitWords(text).map((word, index) => {
       if (ONLY_SPACE.test(word)) return word;
-      const delay = this.delay(`${place}:${index}`);
-      return delay === null
-        ? createElement("span", { key: index }, word)
-        : createElement("span", { key: index, "data-fork-fade": "", style: { animationDelay: `${delay}ms` } }, word);
+      return createElement("span", { key: index, ...fadeProps(this.delay(`${place}:${index}`)) }, word);
     });
+  }
+
+  /**
+   * A piece that is not a word (a bullet, code, a quote, a rule, a table, an image): it takes the
+   * next turn among the words, so it never shows before the words written ahead of it. Its markup
+   * (`-`, the backticks, the fence) is counted among the words, so it takes no turn from them.
+   */
+  piece(place: string): MarkdownPieceProps | undefined {
+    return fadeProps(this.delay(`${place}#`));
   }
 }
 
-export type DrawText = (text: string, place: string) => ReactNode;
+function fadeProps(delay: number | null): MarkdownPieceProps | undefined {
+  return delay === null ? undefined : { "data-fork-fade": "", style: { animationDelay: `${delay}ms` } };
+}
 
 /**
  * The row of `turns` whose words fade in (the last, while it is the agent's and Animated replies
  * is on) and the drawing for its MarkdownTextContext. A reply already there when the chat is
  * opened or shown again is drawn as it stands.
  */
-export function useWordFade(turns: readonly ConversationTurn[], on: boolean, visible: boolean): { row: number | null; draw: DrawText } {
+export function useWordFade(turns: readonly ConversationTurn[], on: boolean, visible: boolean): { row: number | null; draw: MarkdownDraw } {
   const [fade] = useState(() => new WordFade());
-  const draw = useMemo((): DrawText => (text, place) => fade.draw(text, place), [fade]);
+  const draw = useMemo((): MarkdownDraw => ({ text: (text, place) => fade.text(text, place), piece: (place) => fade.piece(place) }), [fade]);
   const shownSince = useRef(performance.now());
   const wasVisible = useRef(visible);
   const rows = useRef(turns.length);

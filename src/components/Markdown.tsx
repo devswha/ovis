@@ -177,12 +177,29 @@ export const MarkdownImageContext = createContext<MarkdownImageResolver | null>(
 export const MarkdownImageOpenContext = createContext<((image: GalleryImage) => void) | null>(null);
 /** A reconnect retries only failed images; decoded images and pending stats stay as they are. */
 export const MarkdownImageRetryContext = createContext(0);
+/** What a piece that is not text (a list item, code, a quote, a rule, a table, an image) adds to its element. */
+export interface MarkdownPieceProps {
+  style?: CSSProperties;
+  [data: `data-${string}`]: string | undefined;
+}
+
 /**
- * Draws a run of plain text in place of the text itself, given an id unique to the run's place in
- * the tree (stable while that place is drawn): a streaming answer can draw each new word in its own
- * element. Null, the default, draws the text as it is.
+ * How text and the other pieces are drawn, each given an id unique to its place in the tree (stable
+ * while that place is drawn): a streaming answer can draw each new word in its own element and fade
+ * the pieces in their turn among the words. Null, the default, draws everything as it is.
  */
-export const MarkdownTextContext = createContext<((text: string, place: string) => ReactNode) | null>(null);
+export interface MarkdownDraw {
+  text(text: string, place: string): ReactNode;
+  piece(place: string): MarkdownPieceProps | undefined;
+}
+export const MarkdownTextContext = createContext<MarkdownDraw | null>(null);
+
+/** The props MarkdownTextContext gives the piece drawn by the calling component, or none. */
+function usePiece(): MarkdownPieceProps | undefined {
+  const draw = useContext(MarkdownTextContext);
+  const place = useId();
+  return draw?.piece(place);
+}
 
 /**
  * An image that holds its box until it decodes (lib/imageBox.ts). With `slot`, the wrapper is the
@@ -312,8 +329,13 @@ function Inline({ nodes, interactive = true, standalone = false }: { nodes: Inli
   const skillMatcher = useContext(SkillMatcherContext);
   const openWebPage = useContext(WebPanelContext);
   const machineId = useContext(MachineContext);
-  const drawText = useContext(MarkdownTextContext);
+  const draw = useContext(MarkdownTextContext);
   const place = useId();
+  // a piece among the words: it fades in its turn, after the words before it
+  const fadeIn = (key: string, element: ReactNode): ReactNode => {
+    const props = draw?.piece(`${place}${key}`);
+    return props === undefined ? element : <span key={key} {...props}>{element}</span>;
+  };
   const { settings } = useSettings();
   // a plain or Shift click may open the address beside the pane; Ctrl, Cmd and Alt keep the browser's own meaning
   const webClick = (href: string) => (event: MouseEvent<HTMLAnchorElement>): void => {
@@ -330,22 +352,22 @@ function Inline({ nodes, interactive = true, standalone = false }: { nodes: Inli
         // a skill chip carries its raw text, so a selection copies what the agent wrote; not inside a link or file label
         return <span key={key}>{(interactive && skillMatcher !== null ? skillMatcher(node.value) : [node.value]).map((piece, p) => {
           if (typeof piece !== "string") return <span key={p} className="markdown-skill"><BookOpen aria-hidden="true" />{piece.raw}</span>;
-          if (open === null) return drawText === null ? piece : <Fragment key={p}>{drawText(piece, `${place}${key}.${p}`)}</Fragment>;
+          if (open === null) return draw === null ? piece : <Fragment key={p}>{draw.text(piece, `${place}${key}.${p}`)}</Fragment>;
           return <Fragment key={p}>{splitFilePaths(piece).map((part, n) => typeof part !== "string" ? <FilePathLink key={n} path={part.path} code={false} open={open} />
-            : drawText === null ? part : <Fragment key={n}>{drawText(part, `${place}${key}.${p}.${n}`)}</Fragment>)}</Fragment>;
+            : draw === null ? part : <Fragment key={n}>{draw.text(part, `${place}${key}.${p}.${n}`)}</Fragment>)}</Fragment>;
         })}</span>;
       case "code": {
         const file = fileUriPath(node.value);
-        if (open !== null && file !== null) return <FilePathLink key={key} path={file} code open={open} />;
+        if (open !== null && file !== null) return fadeIn(key, <FilePathLink key={key} path={file} code open={open} />);
         // agents often put an address in backticks: it stays code to the eye, and opens
-        if (interactive && /^https?:\/\/\S+$/i.test(node.value)) return <a key={key} className="markdown-code-link" href={node.value} target="_blank" rel="noopener noreferrer" onClick={webClick(node.value)}><code>{node.value}</code></a>;
-        if (open === null || !codeIsFilePath(node.value)) return <code key={key}>{node.value}</code>;
+        if (interactive && /^https?:\/\/\S+$/i.test(node.value)) return fadeIn(key, <a key={key} className="markdown-code-link" href={node.value} target="_blank" rel="noopener noreferrer" onClick={webClick(node.value)}><code>{node.value}</code></a>);
+        if (open === null || !codeIsFilePath(node.value)) return fadeIn(key, <code key={key}>{node.value}</code>);
         // a bare name may be a unit, a host or a key: it stays a link only while the pane's PC may have it
-        return node.value.includes("/") ? <FilePathLink key={key} path={node.value} code open={open} /> : <CodeFileName key={key} name={node.value} open={open} />;
+        return fadeIn(key, node.value.includes("/") ? <FilePathLink key={key} path={node.value} code open={open} /> : <CodeFileName key={key} name={node.value} open={open} />);
       }
-      case "math": return <MathExpression key={key} value={node.value} dollar={node.dollar} />;
+      case "math": return fadeIn(key, <MathExpression key={key} value={node.value} dollar={node.dollar} />);
       case "image": {
-        return <span key={key}>{imageResolver === null
+        return <span key={key} {...draw?.piece(`${place}${key}`)}>{imageResolver === null
           ? <Inline key={key} nodes={node.fallback} interactive={interactive} />
           : <MarkdownImage src={node.src} alt={node.alt} width={node.width} resolve={imageResolver} interactive={interactive} standalone={standalone} fallback={<Inline nodes={node.fallback} interactive={interactive} />} />}</span>;
       }
@@ -373,10 +395,11 @@ function List({ block }: { block: ListBlock }) {
   const digits = block.ordered ? String(first + block.items.length - 1).length : 1;
   const t = useT();
   const id = useId();
+  const draw = useContext(MarkdownTextContext);
   return (
     <Tag className="markdown-list" start={block.ordered ? block.start : undefined} style={digits > 1 ? { "--markdown-list-digits": digits } as CSSProperties : undefined}>
       {block.items.map((item, index) => (
-        <li key={index} className={item.checked === undefined ? undefined : "markdown-task"}>
+        <li key={index} className={item.checked === undefined ? undefined : "markdown-task"} {...draw?.piece(`${id}-${index}`)}>
           {/* a task's box shows its state; the agent's text owns it, so it cannot be ticked here. Drawn,
               not an <input>: a disabled checkbox is greyed by the browser and ignores the accent. It is
               named by the item's text, or, with none (`- [ ]`), as an empty task */}
@@ -403,6 +426,7 @@ function CodeBlock({ language, value }: { language: string; value: string }) {
   const [copyFailed, setCopyFailed] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const block = useRef<HTMLDivElement>(null);
+  const fade = usePiece();
   // no inner scroll: a long block folds, with a visible "Show all" row
   const fold = useMemo(() => foldCode(value), [value]);
   const copy = async (): Promise<void> => {
@@ -426,7 +450,7 @@ function CodeBlock({ language, value }: { language: string; value: string }) {
     if (node && view && node.getBoundingClientRect().top < view.getBoundingClientRect().top) node.scrollIntoView({ block: "start" });
   }, [expanded]);
   return (
-    <div className="markdown-code" ref={block}>
+    <div className="markdown-code" ref={block} {...fade}>
       <div className="markdown-code-header">
         <span>{language || "text"}</span>
         <button type="button" className="icon-button markdown-code-copy" onClick={() => void copy()} aria-label={t(copied ? "Code copied" : "Copy code")} title={t(copied ? "Code copied" : "Copy code")}>
@@ -447,6 +471,8 @@ function CodeBlock({ language, value }: { language: string; value: string }) {
 
 function Blocks({ blocks }: { blocks: MarkdownBlock[] }) {
   const visualizations = new Map<string, number>();
+  const draw = useContext(MarkdownTextContext);
+  const place = useId();
   return <>{blocks.map((block, index): ReactNode => {
     const key = `${block.type}-${index}`;
     switch (block.type) {
@@ -465,7 +491,7 @@ function Blocks({ blocks }: { blocks: MarkdownBlock[] }) {
       case "paragraph":
         return <p key={key} className={block.align ? "markdown-center" : undefined}>{block.lines.map((line, lineIndex) => <span key={lineIndex}><Inline nodes={line} standalone={standaloneImage(line)} />{lineIndex < block.lines.length - 1 && <br />}</span>)}</p>;
       case "list": return <List key={key} block={block} />;
-      case "blockquote": return <blockquote key={key}><Blocks blocks={block.blocks} /></blockquote>;
+      case "blockquote": return <blockquote key={key} {...draw?.piece(`${place}${key}`)}><Blocks blocks={block.blocks} /></blockquote>;
       case "code": return block.language === "mermaid"
         ? <MermaidDiagram key={key} value={block.value} />
         : block.language.toLowerCase() === "svg"
@@ -475,9 +501,9 @@ function Blocks({ blocks }: { blocks: MarkdownBlock[] }) {
             ? <MathExpression key={key} value={block.value} displayMode fallback={<CodeBlock language="math" value={block.value} />} />
             : <CodeBlock key={key} language={block.language} value={block.value} />;
       case "math": return <MathExpression key={key} value={block.value} displayMode dollar={block.dollar} oneLine={block.oneLine} />;
-      case "hr": return <hr key={key} />;
+      case "hr": return <hr key={key} {...draw?.piece(`${place}${key}`)} />;
       case "table": return (
-        <div className="markdown-table-wrap" key={key}>
+        <div className="markdown-table-wrap" key={key} {...draw?.piece(`${place}${key}`)}>
           <table><thead><tr>{block.header.map((cell, cellIndex) => <th key={cellIndex}><Inline nodes={cell} /></th>)}</tr></thead>
             <tbody>{block.rows.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex}><Inline nodes={cell} /></td>)}</tr>)}</tbody>
           </table>
