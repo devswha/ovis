@@ -437,3 +437,34 @@ GitHub names as trusted (above), each under the run that built it, which is the 
 restore it: a trusted run's build never reaches another run, main's included. A job can write its
 own outbox (on disk, as its workspace is) and the 16 MiB locks volume, so at worst it makes the jobs
 waiting on a key wait up to five minutes and build themselves.
+
+### Mac runner
+
+`eamac-ovis-mac` (labels `self-hosted, macOS, ARM64, self-hosted-ovis-mac`) is a plain GitHub
+Actions runner on the maintainer's test MacBook Air (`ssh eamac`), not this directory's Docker
+launcher: `~/actions-runner-ovis`, run by the LaunchAgent `actions.runner.devswha-ovis.eamac-ovis-mac`.
+A fork can name it in `runs-on` as it can name the Linux runners, so it runs the same
+`job-started.sh`, with the same refusals: macOS has no `/proc`, so there the hook finds the job's
+`Runner.Worker` with `ps` and writes the refusal to the system log (`logger -t ovis-runner-guard`)
+instead of a container's output. The runner starts it with the macOS `/bin/bash` 3.2 and its `jq`
+(`/usr/bin/jq`). It lets a job through only when its event names no other head repository: a
+`push`, `workflow_dispatch`, `schedule`, `repository_dispatch`, `merge_group` or comment event
+runs code from this repository (a fork's push runs in the fork), and a `pull_request` (or review)
+event only when its head is this repository. It refuses `pull_request_target` from a fork too,
+though that event runs the base branch's workflow, since such a workflow may check out the fork's
+head; and a `workflow_run` whose triggering run came from a fork, as it may use that run's
+artifacts.
+
+- Install: copy the file to `~/actions-runner-ovis/hooks/job-started.sh` (mode 755) and set
+  `ACTIONS_RUNNER_HOOK_JOB_STARTED=/Users/ea/actions-runner-ovis/hooks/job-started.sh` in that
+  runner's `.env`. The runner reads `.env` at its start (restart the LaunchAgent after changing
+  it: `launchctl kickstart -k gui/$(id -u)/actions.runner.devswha-ovis.eamac-ovis-mac`, while no
+  job runs) and the hook file at every job.
+- Check: the `.env` line, the file's `shasum -a 256` against this one, and the hook run by hand
+  with `GITHUB_REPOSITORY=devswha/ovis` and `GITHUB_EVENT_PATH` naming a fork pull request's
+  payload (exit 1) and a same-repository one (exit 0). A job's "Set up runner" step shows
+  `Runner guard: <event> from devswha/ovis`.
+- Undo: restore the `.env` and hook file kept before the install, then restart the LaunchAgent.
+
+Fork runs still wait for a maintainer's approval (above); the hook is the second lock, the one a
+fork's own workflow cannot change.

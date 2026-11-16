@@ -20,14 +20,22 @@ refuse() {
   # nothing may stop this before the kill: a closed output (SIGPIPE) or a signal ends the shell
   # inside its EXIT trap, and the worker would go on
   trap '' PIPE HUP INT TERM
-  local refusal pid parent
+  local refusal pid parent name
   # A failing hook only fails its own step: runner v2.338 still runs the job's `if: always()` and
   # `if: failure()` steps and its actions' post steps. So end the job first: SIGKILL the
   # Runner.Worker that runs it (an ancestor of this hook), which leaves no step to run.
+  # Linux reads /proc; macOS (the Mac runner, README "Mac runner") has none and asks ps.
   pid=$PPID
   while [[ "$pid" -gt 1 ]]; do
-    parent="$(sed -n 's/^PPid:[[:space:]]*//p' "/proc/$pid/status" 2>/dev/null)" || break
-    if [[ "$(cat "/proc/$pid/comm" 2>/dev/null)" == Runner.Worker ]]; then
+    if [[ -d /proc/$pid ]]; then
+      parent="$(sed -n 's/^PPid:[[:space:]]*//p' "/proc/$pid/status" 2>/dev/null)" || break
+      name="$(cat "/proc/$pid/comm" 2>/dev/null)"
+    else
+      parent="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')" || break
+      name="$(ps -o comm= -p "$pid" 2>/dev/null)"
+      name="${name##*/}"
+    fi
+    if [[ "$name" == Runner.Worker ]]; then
       kill -KILL "$pid"
       break
     fi
@@ -36,8 +44,12 @@ refuse() {
   refusal="This self-hosted runner only runs code from ${GITHUB_REPOSITORY:-its own repository}; refusing ${GITHUB_EVENT_NAME:-this} job${GITHUB_RUN_ID:+ $GITHUB_RUN_ID}: $reason."
   echo "::error::$refusal" 2>/dev/null
   # the job's log never reaches GitHub once its worker is killed: say it in the container's own
-  # output too, which the launcher's journal keeps
-  echo "[job-started] $refusal" 2>/dev/null >/proc/1/fd/2
+  # output too, which the launcher's journal keeps (the Mac runner has no /proc: its system log)
+  if [[ -e /proc/1/fd/2 ]]; then
+    echo "[job-started] $refusal" 2>/dev/null >/proc/1/fd/2
+  else
+    logger -t ovis-runner-guard "$refusal" 2>/dev/null
+  fi
   exit 1
 }
 trap refuse EXIT

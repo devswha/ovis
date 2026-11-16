@@ -9,7 +9,11 @@ import { DEFAULT_LOCK_PORT, MAX_RUNS_LIMIT, applyHostLimits, maxRuns, ticketPort
 const script = fileURLToPath(new URL("./self-hosted-runner/run.sh", import.meta.url));
 const jobStarted = fileURLToPath(new URL("./self-hosted-runner/job-started.sh", import.meta.url));
 
-/** Runs the hook as the runner does, under a process named Runner.Worker (a copy of bash) that goes on after it. */
+/**
+ * Runs the hook as the runner does, under a process named Runner.Worker (a copy of bash) that goes on after it.
+ * `logged` is what it sent to `logger` (the Mac's system log); `psCalls` is every `ps` it ran on Linux, where a
+ * stub that fails stands in for ps: there the worker must be found through /proc alone.
+ */
 function runJobStarted(eventName: string, payload: unknown, event: { raw?: string; path?: "missing" | "directory" | "unset"; repository?: "unset"; closedOutput?: boolean } = {}) {
   const tempDir = mkdtempSync(join(tmpdir(), "herdr-runner-hook-test-"));
   try {
@@ -18,9 +22,18 @@ function runJobStarted(eventName: string, payload: unknown, event: { raw?: strin
     if (event.path === "missing") eventPath = join(tempDir, "no-such-event.json");
     if (event.path === "directory") eventPath = tempDir;
     if (event.path === "unset") eventPath = undefined;
+    const bin = join(tempDir, "bin");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "logger"), `#!/bin/sh\nprintf '%s\\n' "$*" >>'${tempDir}/logger.log'\n`, { mode: 0o755 });
+    if (process.platform === "linux") writeFileSync(join(bin, "ps"), `#!/bin/sh\nprintf '%s\\n' "$*" >>'${tempDir}/ps.log'\nexit 1\n`, { mode: 0o755 });
     const worker = join(tempDir, "Runner.Worker");
-    copyFileSync(spawnSync("bash", ["-c", "command -v bash"], { encoding: "utf8" }).stdout.trim(), worker);
-    chmodSync(worker, 0o755);
+    const bash = spawnSync("bash", ["-c", "command -v bash"], { encoding: "utf8" }).stdout.trim();
+    // macOS kills a copy of its signed /bin/bash at once; its ps names a process by the path it was started from
+    if (process.platform === "darwin") symlinkSync(bash, worker);
+    else {
+      copyFileSync(bash, worker);
+      chmodSync(worker, 0o755);
+    }
     // closedOutput: the hook's stdout and stderr are a pipe nobody reads any more (a FIFO whose only
     // reader is closed before the hook starts), so its first write, even an error message, raises SIGPIPE
     const hook = event.closedOutput
@@ -30,14 +43,15 @@ function runJobStarted(eventName: string, payload: unknown, event: { raw?: strin
       encoding: "utf8",
       timeout: 5_000,
       env: {
-        PATH: process.env.PATH ?? "",
+        PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`,
         GITHUB_EVENT_NAME: eventName,
         ...(event.repository === "unset" ? {} : { GITHUB_REPOSITORY: "devswha/ovis" }),
         ...(eventPath === undefined ? {} : { GITHUB_EVENT_PATH: eventPath }),
       },
     });
     expect(result.error).toBeUndefined();
-    return result;
+    const read = (name: string) => (existsSync(join(tempDir, name)) ? readFileSync(join(tempDir, name), "utf8") : "");
+    return { ...result, logged: read("logger.log"), psCalls: read("ps.log") };
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
@@ -1037,8 +1051,9 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
   });
 });
 
-// the runner image is Linux, and the hook finds the worker through /proc
-describe.skipIf(process.platform !== "linux")("self-hosted runner job-started hook", () => {
+// the runner image is Linux, where the hook finds the worker through /proc; the Mac runner (README
+// "Mac runner") runs the same file, which finds it with ps there
+describe.skipIf(process.platform === "win32")("self-hosted runner job-started hook", () => {
   it("runs a job from this repository", () => {
     for (const [event, payload] of [
       ["push", { ref: "refs/heads/main" }],
@@ -1063,6 +1078,9 @@ describe.skipIf(process.platform !== "linux")("self-hosted runner job-started ho
       expect(result.signal).toBe("SIGKILL");
       expect(result.stdout).toContain("::error::");
       expect(result.stdout).not.toContain("next step ran");
+      expect(result.psCalls).toBe("");
+      // with no container output to write to, the refusal stays in the Mac's system log
+      if (process.platform !== "linux") expect(result.logged).toContain("only runs code from devswha/ovis; refusing");
     }
   });
 
@@ -1086,6 +1104,7 @@ describe.skipIf(process.platform !== "linux")("self-hosted runner job-started ho
       // a closed output takes the refusal with it: the kill alone is the evidence there
       if (!("closedOutput" in event)) expect(result.stdout).toContain("::error::");
       expect(result.stdout).not.toContain("next step ran");
+      expect(result.psCalls).toBe("");
     }
   });
 });
