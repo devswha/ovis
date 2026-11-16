@@ -348,11 +348,33 @@ const MOUSE_BUTTONS = { left: "LEFT", middle: "MIDDLE", right: "RIGHT", wheelUp:
 const KEY_ACTIONS = { press: "PRESS", repeat: "REPEAT", release: "RELEASE" } as const;
 const MOUSE_ACTIONS = { press: "PRESS", release: "RELEASE", motion: "MOTION" } as const;
 
-/** The type layout the module reports, as ghostty_type_json() returns it. */
+/** every layout text a module has reported, parsed: identical bytes describe an identical layout */
+const layouts = new Map<string, TypeLayout>();
+
+/**
+ * The type layout the module reports, as ghostty_type_json() returns it: parsed once per distinct text and shared,
+ * frozen to the last level, by every module that reports that text. Parsing the same 187-type object again for each
+ * module (a screen makes one per pane) crashed Bun 1.4.2 in a few percent of processes that made many: an abort in
+ * materializePropertyTable, a segmentation fault, or a type name missing from the parsed result.
+ */
 export function readTypeLayout(exports: Pick<GhosttyExports, "memory" | "ghostty_type_json">): TypeLayout {
   const ptr = exports.ghostty_type_json();
   const bytes = new Uint8Array(exports.memory.buffer, ptr);
-  return JSON.parse(new TextDecoder().decode(bytes.subarray(0, bytes.indexOf(0)))) as TypeLayout;
+  const text = new TextDecoder().decode(bytes.subarray(0, bytes.indexOf(0)));
+  let layout = layouts.get(text);
+  if (!layout) {
+    layout = frozen(JSON.parse(text) as TypeLayout);
+    layouts.set(text, layout);
+  }
+  return layout;
+}
+
+function frozen<T>(value: T): T {
+  if (typeof value === "object" && value !== null) {
+    for (const inner of Object.values(value)) frozen(inner);
+    Object.freeze(value);
+  }
+  return value;
 }
 
 function resolve<T extends Record<string, readonly string[]>>(table: T, read: (type: string, name: string) => number | undefined): Resolved<T> {

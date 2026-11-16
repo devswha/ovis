@@ -38,6 +38,13 @@ const thrown = (run: () => unknown): unknown => {
   return null;
 };
 const message = (run: () => unknown): string => (thrown(run) as Error | null)?.message ?? "returned";
+/** writes `value` and its 0 into the module's memory, as ghostty_type_json() hands its text over */
+function placeText(exports: GhosttyExports, value: string): number {
+  const bytes = new TextEncoder().encode(`${value}\0`);
+  const ptr = exports.ghostty_wasm_alloc(bytes.length);
+  new Uint8Array(exports.memory.buffer, ptr, bytes.length).set(bytes);
+  return ptr;
+}
 
 /** an engine as the screen makes it, with everything it reports collected */
 function screenEngine(cols: number, rows: number, options: Partial<EngineOptions> = {}, module = shared) {
@@ -98,12 +105,63 @@ describe("shared/ghostty engine", () => {
 
   it("engine names a type name the module does not have", () => {
     const exports = new GhosttyModule(instantiate()).exports;
-    const layout = readTypeLayout(exports);
+    const layout = structuredClone(readTypeLayout(exports));
     delete layout.types["GhosttyTerminalOption"]!.values!["SCROLLBACK_MAX_LINES"];
-    const json = new TextEncoder().encode(`${JSON.stringify(layout)}\0`);
-    const ptr = exports.ghostty_wasm_alloc(json.length);
-    new Uint8Array(exports.memory.buffer, ptr, json.length).set(json);
-    expect(() => new GhosttyModule({ ...exports, ghostty_type_json: () => ptr })).toThrow("GhosttyTerminalOption.SCROLLBACK_MAX_LINES");
+    const ptr = placeText(exports, JSON.stringify(layout));
+    // a second module from the same text is refused the same way: a layout that lacks a name is never taken as whole
+    for (let time = 0; time < 2; time++) {
+      expect(() => new GhosttyModule({ ...exports, ghostty_type_json: () => ptr })).toThrow("GhosttyTerminalOption.SCROLLBACK_MAX_LINES");
+    }
+  });
+
+  it("engine shares one parsed type layout between modules", () => {
+    const first = new GhosttyModule(instantiate());
+    const second = new GhosttyModule(instantiate());
+    const layout = readTypeLayout(first.exports);
+    expect(readTypeLayout(second.exports)).toBe(layout);
+    expect(second.keys).toBe(first.keys);
+
+    // frozen all the way down: a write through one module throws and the other still reads what the module reported
+    const enter = first.keys["ENTER"]!;
+    const wideLsb = layout.types["GhosttyCell"]!.bits!["wide"]!.lsb;
+    expect(() => { (first.keys as Record<string, number>)["ENTER"] = enter + 1; }).toThrow(TypeError);
+    expect(() => { delete layout.types["GhosttyKey"]; }).toThrow(TypeError);
+    expect(() => { layout.types["GhosttyCell"]!.bits!["wide"]!.lsb = wideLsb + 1; }).toThrow(TypeError);
+    expect(second.keys["ENTER"]).toBe(enter);
+    expect(readTypeLayout(second.exports).types["GhosttyCell"]!.bits!["wide"]!.lsb).toBe(wideLsb);
+
+    // a module whose layout text differs gets a layout of its own, and that text too is parsed once for every module made from it
+    const exports = instantiate().exports as unknown as GhosttyExports;
+    const changed = structuredClone(layout);
+    changed.types["RowFiftyFive"] = { size: 55 };
+    const json = JSON.stringify(changed);
+    const ptr = placeText(exports, json);
+    const parse = JSON.parse;
+    let parses = 0;
+    JSON.parse = ((text: string, reviver?: Parameters<typeof JSON.parse>[1]) => {
+      if (text === json) parses++;
+      return parse(text, reviver);
+    }) as typeof JSON.parse;
+    let others: GhosttyModule[];
+    try {
+      others = [0, 1, 2].map(() => new GhosttyModule({ ...exports, ghostty_type_json: () => ptr }));
+    } finally {
+      JSON.parse = parse;
+    }
+    expect(parses).toBe(1);
+    const own = readTypeLayout(others[0]!.exports);
+    expect(own).not.toBe(layout);
+    expect(own.types["RowFiftyFive"]).toEqual({ size: 55 });
+    expect(layout.types["RowFiftyFive"]).toBeUndefined();
+    expect(others.every((module) => readTypeLayout(module.exports) === own)).toBe(true);
+  });
+
+  it("engine keeps no layout from a text that is not JSON", () => {
+    const exports = instantiate().exports as unknown as GhosttyExports;
+    const ptr = placeText(exports, '{"types":{"GhosttyKey":');
+    for (let time = 0; time < 2; time++) {
+      expect(thrown(() => new GhosttyModule({ ...exports, ghostty_type_json: () => ptr }))).toBeInstanceOf(SyntaxError);
+    }
   });
 
   it("engine split feed", () => {
