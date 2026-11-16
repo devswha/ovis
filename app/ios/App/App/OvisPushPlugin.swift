@@ -47,30 +47,7 @@ public class OvisPushPlugin: CAPPlugin, CAPBridgedPlugin, NotificationHandlerPro
         [.banner, .list, .sound]
     }
 
-    /// A tapped alert opens its pane on the PC that sent it, as a browser's does (public/sw.js
-    /// notificationclick), switching PC when another is open. The PC is the saved one this phone gave
-    /// the alert's endpoint to (each endpoint is kept under its PC's key), or the relay PC its relay ID
-    /// names; an alert from an older PC, or one this phone no longer keeps, leaves the app as it was.
-    /// The extension keeps what the tap needs in `ovis_tap` (OvisNotifications). Android's twin:
-    /// MainActivity.openAlert.
-    public func didReceive(response: UNNotificationResponse) {
-        guard response.actionIdentifier == UNNotificationDefaultActionIdentifier,
-              let tap = response.notification.request.content.userInfo["ovis_tap"] as? [String: String],
-              let pane = tap["pane_id"], !pane.isEmpty else { return }
-        let endpoint = tap["endpoint"]
-        DispatchQueue.main.async { [self] in
-            let saved = PCStore.saved
-            let key = endpoint.flatMap { sent in saved.first { savedEndpoint($0)?.endpoint == sent } }
-                ?? PCStore.relayKey(tap["server_id"], in: saved)
-            guard let key = key else { return }
-            PCStore.current = key
-            PCStore.last = key
-            PCStore.pendingStart = PCStore.alertPage(key, machine: tap["machine_id"], workspace: tap["workspace_id"], pane: pane)
-            PCStore.failure = nil
-            PCStore.redirects = 0
-            HerdrBridgeViewController.reopen()
-        }
-    }
+    public func didReceive(response: UNNotificationResponse) {}
 
     private func permission(_ status: UNAuthorizationStatus) -> String {
         switch status {
