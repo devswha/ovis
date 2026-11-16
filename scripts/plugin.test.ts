@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { platform, tmpdir, uptime } from "node:os";
-import { join } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 
-import { COMMAND_ALIASES } from "./plugin-link.ts";
+import { COMMAND_ALIASES } from "./plugin-runtime.ts";
 import { herdrStateDir } from "./plugin-state.ts";
 import { quietPort } from "./quiet-port.ts";
 import { readProcessBirth } from "../server/process-owner.ts";
@@ -1043,4 +1043,115 @@ describe("pair relay offer", () => {
     expect(offer.err).toContain("Could not read Ovis relay pairing:");
     expect(offer.out).not.toContain("#offer=");
   });
+});
+
+describe("a command handed on to the release the app updated to", () => {
+  // POSIX signals: on Windows herdr runs scripts/plugin.ps1, and no SIGTERM or SIGHUP reaches the plugin there
+  const posix = it.skipIf(process.platform === "win32");
+  const plugin = JSON.stringify(join(ROOT, "scripts", "plugin.ts"));
+  const releaseScript = join("release-test", "scripts", "plugin.ts");
+  const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  /** `promise`, or a failure after 10 s: a command that hangs fails its test, which still reaches its `finally` */
+  async function within<T>(promise: Promise<T>, what: string): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([promise, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(what)), 10_000); })]);
+    } finally { clearTimeout(timer); }
+  }
+
+  /**
+   * plugin.ts `command` with a release the app updated to whose plugin.ts is a stand-in: it writes its pid, ends with 3
+   * on SIGTERM and 4 on SIGHUP, and says "up" once it listens. The process notes in `notes`, as it starts the release,
+   * how many SIGTERM and SIGHUP listeners it has; with `fail`, the release cannot be started, and once the command gave
+   * up the process sends itself a SIGTERM. Its stderr goes into a file: a release left running would hold a pipe open.
+   */
+  function handOn(command: string, fail = false) {
+    const port = quietPort();
+    writeFileSync(join(configDir, ".env"), `PORT=${port}\n`);
+    const release = join(updateStateDir(ROOT, port, join(scratch, "app-state")), "release-test");
+    mkdirSync(join(release, "scripts"), { recursive: true });
+    const pidFile = join(scratch, "release-pid");
+    writeFileSync(join(release, "scripts", "plugin.ts"), `import { writeFileSync } from "node:fs";
+process.on("SIGTERM", () => process.exit(3));
+process.on("SIGHUP", () => process.exit(4));
+writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+console.log("up");
+setInterval(() => {}, 1 << 30);
+`);
+    const revision = Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: ROOT, windowsHide: true }).stdout.toString().trim();
+    writeFileSync(join(release, "..", "current.json"), JSON.stringify({ source_revision: revision, directory: release }));
+    const notes = join(scratch, "notes");
+    const child = Bun.spawn([process.execPath, "-e", `import { appendFileSync } from "node:fs";
+const spawn = Bun.spawn;
+Bun.spawn = (argv, options) => {
+  if (!String(argv[1]).endsWith(${JSON.stringify(releaseScript)})) return spawn(argv, options);
+  appendFileSync(${JSON.stringify(notes)}, \`spawn \${process.listenerCount("SIGTERM")} \${process.listenerCount("SIGHUP")}\n\`);
+  ${fail ? "throw new Error(\"the release cannot start\");" : "return spawn(argv, options);"}
+};
+process.argv = [process.execPath, ${plugin}, ${JSON.stringify(command)}];
+const { runPlugin } = await import(${plugin});
+try { await runPlugin(); } catch (error) { appendFileSync(${JSON.stringify(notes)}, \`threw \${error.message}\n\`); }
+process.kill(process.pid, "SIGTERM");
+setInterval(() => {}, 1_000);`], {
+      cwd: ROOT, stdout: "pipe", stderr: Bun.file(join(scratch, "stderr")),
+      env: launchEnv({ HOST: "127.0.0.1", HERDR_PLUGIN_ROOT: ROOT, HERDR_PLUGIN_CONFIG_DIR: configDir, OVIS_STATE_DIR: join(scratch, "app-state"), OVIS_TOKEN: "" }),
+    });
+    const released = () => existsSync(pidFile) ? Number(readFileSync(pidFile, "utf8")) : 0;
+    return {
+      child, released,
+      notes: () => existsSync(notes) ? readFileSync(notes, "utf8") : "",
+      said: () => existsSync(join(scratch, "stderr")) ? readFileSync(join(scratch, "stderr"), "utf8") : "",
+      [Symbol.dispose]: () => {
+        child.kill("SIGKILL");
+        if (released() > 0 && alive(released())) process.kill(released(), "SIGKILL");
+      },
+    };
+  }
+
+  for (const command of ["link", "phone-setup", "a-later-command"]) {
+    for (const [signal, exit] of [["SIGTERM", 3], ["SIGHUP", 4]] as const) {
+      posix(`${command}: listens before the release starts, passes it a ${signal} and exits as it did, leaving no release behind`, async () => {
+        using run = handOn(command);
+        const up = await within(run.child.stdout.getReader().read(), "the release never started");
+        expect(new TextDecoder().decode(up.value)).toBe("up\n");
+        run.child.kill(signal);
+        const code = await within(run.child.exited, "the command never exited");
+        // regression for phone-setup (fails on main: it listened for nothing, ended by the signal, and left the release running)
+        expect({ notes: run.notes(), code, releaseLeft: alive(run.released()) }, run.said()).toEqual({ notes: "spawn 1 1\n", code: exit, releaseLeft: false });
+      }, 30_000);
+    }
+
+    posix(`${command}: stops listening when the release cannot be started, so a later SIGTERM ends the process as it would`, async () => {
+      using run = handOn(command, true);
+      await within(run.child.exited, "the command never exited");
+      // regression for link and a-later-command (fails on main: the listener left behind throws on the release that never
+      // started, and the process ends with 1 instead)
+      expect({ notes: run.notes(), signal: run.child.signalCode }, run.said()).toEqual({ notes: "spawn 1 1\nthrew the release cannot start\n", signal: "SIGTERM" });
+    }, 30_000);
+  }
+});
+
+describe("stop and status over a checkout whose packages are not installed", () => {
+  it("load and answer with an empty node_modules, where Bun installs nothing on its own", async () => {
+    // every file of the checkout plugin.ts can load, at any command, without the packages: what an install cut off
+    // before it got to them leaves
+    const copy = join(scratch, "checkout");
+    const built = await Bun.build({ entrypoints: [join(ROOT, "scripts", "plugin.ts")], target: "bun", packages: "external", metafile: true });
+    for (const input of Object.keys(built.metafile!.inputs)) {
+      const to = join(copy, relative(ROOT, resolve(input)));
+      mkdirSync(dirname(to), { recursive: true });
+      copyFileSync(resolve(input), to);
+    }
+    mkdirSync(join(copy, "node_modules"));
+    const port = quietPort();
+    for (const [command, said] of [["status", `down http://127.0.0.1:${port}\n`], ["stop", "Ovis is not running\n"]] as const) {
+      const child = Bun.spawn([process.execPath, join("scripts", "plugin.ts"), command], {
+        cwd: copy, stdout: "pipe", stderr: "pipe",
+        env: launchEnv({ PORT: String(port), HOST: "127.0.0.1", HERDR_PLUGIN_ROOT: copy, HERDR_PLUGIN_CONFIG_DIR: configDir, OVIS_STATE_DIR: join(scratch, "app-state") }),
+      });
+      const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+      // regression (fails on main: Cannot find package 'qrcode-generator', then the relay's and the account's packages)
+      expect({ command, code, first: out.split("\n")[0] + "\n" }, err).toEqual({ command, code: 0, first: said });
+    }
+  }, 30_000);
 });
