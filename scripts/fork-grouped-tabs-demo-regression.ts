@@ -1,0 +1,107 @@
+import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { chromium } from "playwright-core";
+import type { SessionSnapshot } from "../shared/protocol.ts";
+import panes from "../site/demo/fixtures/panes.json";
+import { buildDemoApp } from "./demo-build.ts";
+import { chromePath } from "./chrome-path.ts";
+
+/** All metadata is synthetic and confined to this disposable demo, never a live session. */
+function fixture(snapshot: SessionSnapshot | null, ids: string[]): void {
+  const parent = snapshot?.panes.find((pane) => pane.pane_id === ids[0]);
+  if (!snapshot || !parent) return;
+  for (const [index, id] of ids.slice(0, Number(localStorage.getItem("qa:children") ?? 2) + 1).entries()) {
+    const pane = snapshot.panes.find((candidate) => candidate.pane_id === id)!;
+    const name = ["QA parent", "QA implementer", "QA reviewer"][index] ?? `QA helper ${index}`;
+    Object.assign(pane, { workspace_id: parent.workspace_id, label: name, ...(index ? { parent_pane_id: parent.pane_id, agent_role: index === 1 ? "implement" : index === 2 ? "review" : "explore" } : {}) });
+    Object.assign(snapshot.tabs.find((tab) => tab.tab_id === pane.tab_id)!, { workspace_id: parent.workspace_id, label: name });
+    const layout = snapshot.layouts?.find((candidate) => candidate.tab_id === pane.tab_id);
+    if (layout) layout.workspace_id = parent.workspace_id;
+  }
+}
+
+const app = mkdtempSync(join(tmpdir(), "ovis-grouped-tabs-demo-"));
+try {
+  await buildDemoApp(app);
+  const transportPath = join(app, "demo-transport.js");
+  const transport = readFileSync(transportPath, "utf8");
+  assert.ok(transport.includes("function readSnapshot(machine) {"), "the demo's snapshot hook is available");
+  writeFileSync(transportPath, transport.replace("function readSnapshot(machine) {", `function readSnapshot(machine) { (${fixture.toString()})(machine.snapshot, ${JSON.stringify([panes.api, panes.web, panes.flaky, panes.omp, panes.cli, panes.hermes, panes.shell])});`));
+  const index = join(app, "index.html");
+  writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, '<script src="./demo-transport.js"></script>\n<script type="module"'));
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+    const path = decodeURIComponent(new URL(request.url).pathname).replace(/^\/herdr-web-ui\/demo\/app\//, "");
+    if (path.split("/").includes("..") || path.includes("\\")) return new Response(null, { status: 400 });
+    const file = Bun.file(join(app, path || "index.html"));
+    return await file.exists() ? new Response(file) : new Response(null, { status: 404 });
+  } });
+  try {
+    const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
+    try {
+      for (const width of [1280, 390]) for (const { enabled, children } of [{ enabled: false, children: 2 }, { enabled: true, children: 2 }, { enabled: true, children: 6 }]) {
+        const context = await browser.newContext({ viewport: { width, height: 844 }, isMobile: width < 768, hasTouch: width < 768, locale: "en-US" });
+        try {
+          await context.addInitScript(({ enabled: agentFriends, children: count }) => {
+            localStorage.setItem("qa:children", String(count));
+            localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", agentFriends, alertsOn: false }));
+            localStorage.setItem("ovis:phone-tabs", JSON.stringify("header"));
+            Reflect.set(window, "__ovisDemoHoldTurn", true);
+          }, { enabled, children });
+          const page = await context.newPage();
+          const errors: string[] = [];
+          page.on("pageerror", (error) => errors.push(error.message));
+          await page.goto(`http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/?pane=${encodeURIComponent(panes.api)}`);
+          await page.locator(".conn-live").waitFor();
+          const row = page.locator(".header-tabs .tab-strip");
+          await row.getByRole("tab", { name: /^QA parent/ }).waitFor();
+          if (!enabled) {
+            assert.equal(await row.locator(".fork-tab-chip").count(), 0);
+            assert.equal(await row.getByRole("tab", { name: /^QA implementer/ }).count(), 1);
+          } else {
+            const chip = row.getByRole("tab", { name: "QA implementer", exact: true });
+            assert.equal(await row.locator(".fork-tab-chip").count(), children);
+            assert.equal(await chip.locator(".lucide-hammer").count(), 1);
+            assert.equal(await chip.locator(".fork-tab-friend").count(), 0);
+            await chip.click();
+            await page.locator(`[data-layout-pane=${JSON.stringify(panes.web)}]`).waitFor({ state: "visible" });
+            assert.equal(await chip.getAttribute("aria-selected"), "true");
+            await page.waitForFunction(() => {
+              const selected = document.querySelector('.header-tabs .fork-tab-chip[aria-selected="true"]')?.getBoundingClientRect();
+              const strip = document.querySelector(".header-tabs .tab-strip")?.getBoundingClientRect();
+              return selected && strip && selected.left >= strip.left - 1 && selected.right <= strip.right + 1;
+            }, null, { timeout: 5_000 });
+            assert.ok((await page.title()).includes("QA implementer"), "the window title names the selected child");
+            assert.equal(await row.locator(".tab-strip-item.is-active .tab-strip-label").textContent(), "QA parent");
+            if (width < 768) {
+              const box = (await chip.boundingBox())!;
+              assert.ok(box.width >= 44 && box.height >= 44, "phone chips are touch targets");
+              await page.locator(".header-tabs-sheet").click();
+              const sheet = page.locator(".row-sheet");
+              const review = sheet.getByRole("button", { name: "QA reviewer", exact: true });
+              await review.waitFor();
+              assert.equal(await review.locator(".lucide-check").count(), 1);
+              await review.click();
+              await sheet.waitFor({ state: "detached" });
+              await page.locator(`[data-layout-pane=${JSON.stringify(panes.flaky)}]`).waitFor({ state: "visible" });
+            } else {
+              await chip.press("F2");
+              const rename = row.getByRole("textbox");
+              await rename.waitFor();
+              await rename.press("Escape");
+              await chip.waitFor();
+            }
+            if (process.env.UI_EVIDENCE_DIR && children === 2) {
+              mkdirSync(process.env.UI_EVIDENCE_DIR, { recursive: true });
+              await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, `grouped-tabs-${width}.png`) });
+            }
+          }
+          assert.deepEqual(errors, []);
+          assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+          console.log(`PASS grouped tabs: width=${width}, agentFriends=${enabled}, children=${children}`);
+        } finally { await context.close(); }
+      }
+    } finally { await browser.close(); }
+  } finally { await server.stop(true); }
+} finally { rmSync(app, { recursive: true, force: true }); }

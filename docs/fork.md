@@ -29,6 +29,31 @@ and one spread in `paneOf`; `shared/protocol.ts` adds one type import and one in
 `server/fork/fork-pane-role.test.ts` failed before implementation, then passed with both app-owned
 and Ovis-owned layouts. No generated file or setting default changed.
 
+Hook footprint (insertions/deletions vs `upstream/main`, merge base, measured with
+`git diff --shortstat upstream/main...<ref> -- <file>`; before is `491a5965`):
+
+| Upstream file | Before | After | Hooks added here |
+| --- | --- | --- | --- |
+| `src/components/TabStrip.tsx` | +23/-8 | +50/-24 | 3 imports; grouping/layout calls, selection guards, 2 chip mounts |
+| `src/components/RowMenu.tsx` | +10/-3 | +19/-8 | optional trailing slot, 2 generic sibling render sites |
+| `shared/protocol.ts` | +15/-1 | +17/-2 | type import + intersection |
+| `server/herdr-core/snapshot.ts` | +3/-1 | +4/-1 | existing fork import extended + pane spread |
+
+Regression coverage: `src/fork/fork-group-agent-tabs.test.ts`,
+`src/fork/fork-tab-chips.test.tsx`, `src/fork/fork-tabGroupLayout.test.ts`,
+`server/fork/fork-pane-role.test.ts` and the added opt-in TabStrip integration cases.
+`scripts/fork-grouped-tabs-demo-regression.ts` uses synthetic demo-only parents and hc roles to
+exercise desktop/phone grouping, child selection/title, rename, phone sheet, touch targets,
+large sibling groups and the setting disabled. No real session or user state is used.
+
+Validation: scoped fork/TabStrip/RowMenu/hc tests, conventions and changelog tests passed (261
+cases); changed-file TypeScript diagnostics passed for both configs. In `herdr-ci-runner:local`,
+`tab-menu-regression`, `tab-overflow-regression`, `mobile-tabs-regression`,
+`fork-grouped-tabs-demo-regression`, `fork-tab-alignment-demo-regression`,
+`tab-agent-mark-demo-regression`, `phone-glass-header-demo-regression` and
+`phone-safe-area-demo-regression` passed. Demo UI artifacts were built for these checks only;
+project-wide fast checks, full typecheck and production build were skipped per implementer scope.
+
 ## Project friends and inbox clarity
 
 Reusable upstream candidate, behind the existing **Agent friends** opt-in (off on new devices).
