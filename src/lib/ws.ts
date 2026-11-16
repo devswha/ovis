@@ -71,12 +71,14 @@ const NOT_TRANSMITTED: SubmitResult = { ok: false, code: "not_transmitted", mess
 const CAPABILITIES_UNKNOWN: SubmitResult = { ok: false, code: "capabilities_unknown", message: "this PC has not said yet what it supports; nothing was sent" };
 
 /**
- * Full-jitter reconnect delay: a random point in `[0, min(5000, 250 * 2 ** retries))`. Randomizing
- * the delay keeps every client and remote PC from retrying on an identical schedule after a herdr
- * restart, so a synchronized retry wave cannot knock a recovering server over again.
+ * Jittered reconnect delay for the browser's WebSocket: `step * (0.5 + random)`, where `step` is
+ * `min(5000, 250 * 2 ** retries)`. Centring the jitter on the fixed delay keeps the total number
+ * of attempts the same while spreading them out, so tabs no longer retry in lockstep after a
+ * herdr restart.
  */
 export function backoffDelay(retries: number): number {
-  return Math.random() * Math.min(5000, 250 * 2 ** retries);
+  const step = Math.min(5000, 250 * 2 ** retries);
+  return step * (0.5 + Math.random());
 }
 
 /**
