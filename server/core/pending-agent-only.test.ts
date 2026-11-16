@@ -176,7 +176,9 @@ it("presses nothing at Send now into Grok's approval card drawn right after the 
   const d = delivery({ pid: 41001, name: "grok" }, "working", undefined, "grok");
   // Grok 1.0.77's recorded approval card, whose selected `2 (●) Yes, proceed` an Enter would answer
   const card = readFileSync(join(import.meta.dir, "../../src/lib/fixtures-input-rows/grok-1.0.77/permission-119.txt"), "utf8");
-  const grok = grokStandIn(d, { onQueued: () => { d.hooks.read = () => { d.hooks.read = undefined; d.screen(card); }; } });
+  // drawn right after the second read after the queueing Enter, which confirms the first and decides the Enter
+  let reads = 0;
+  const grok = grokStandIn(d, { onQueued: () => { d.hooks.read = () => { if (++reads < 2) return; d.hooks.read = undefined; d.screen(card); }; } });
   await d.submit(1, "hold");
   await d.sendNow(2, held(d));
   expect(d.writes).toEqual(["\u001b[200~> backup.txt\nkeep it\u001b[201~", "Enter"]);

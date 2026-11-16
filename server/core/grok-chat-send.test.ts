@@ -203,6 +203,22 @@ it("sends Send now with one more Enter when another client started Grok's turn a
   expect(state.queue).toEqual([]);
 });
 
+it("sends Send now to a Grok at rest with no more Enter when Grok echoes the message as the turn it started", async () => {
+  const { state, keys } = grok({ status: "idle", onQueued: (grok) => { grok.status = "working"; grok.output.push(`❯ ${grok.sent.at(-1)!}`); } });
+  await sendNow();
+  expect(keys).not.toHaveBeenCalled();
+  expect(state.sent).toEqual(["hello from chat"]);
+});
+
+it("says Send now is unconfirmed when a Grok read at rest runs another client's turn and has not drawn the message", async () => {
+  // another client started a turn before the Enter: Grok queued the message, and draws only that client's prompt yet
+  const { state, keys } = grok({ status: "idle", onQueued: (grok) => { grok.status = "working"; grok.sent.pop(); grok.output.push("❯ from another device"); } });
+  const failed = await failure(sendNow());
+  expect(keys).not.toHaveBeenCalled();
+  expect(state.sent).toEqual([]);
+  expect(failed?.message).toBe(GROK_SEND_UNCONFIRMED_MESSAGE);
+});
+
 it("does not send another Enter when Grok's turn ends and runs the message before the empty prompt is reached", async () => {
   const { prompt, keys } = grok({ onQueued: (grok) => { grok.status = "idle"; grok.sent.push(grok.queue.shift()!); } });
   await sendNow();
