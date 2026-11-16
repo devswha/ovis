@@ -10,7 +10,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
-import type { Browser, Page } from "playwright-core";
+import type { Browser, Page, Response } from "playwright-core";
 
 const quoted = (path: string): string => `'${path.replaceAll("'", "'\\''")}'`;
 const unbracket = (text: string): string => text.replace(/^\x1b\[200~/, "").replace(/\x1b\[201~$/, "");
@@ -48,13 +48,18 @@ async function openPhone(browser: Browser, origin: string, pane: string, attach:
 /** picks `files` through the picker `open` raises, and resolves to the stored paths in pick order */
 async function pick(page: Page, open: () => Promise<void>, files: Array<{ name: string; mimeType: string; buffer: Buffer }>): Promise<string[]> {
   const stored: string[] = [];
-  const responses = new Promise<void>((resolve) => {
-    page.on("response", async (response) => {
+  // a wrong answer fails the pick where it is awaited, not the run from a handler; once every file is stored the
+  // listener leaves, so no later answer (the next picks', the held upload's) is read as the page closes
+  const responses = new Promise<void>((resolve, reject) => {
+    const heard = async (response: Response): Promise<void> => {
       if (!response.url().endsWith("/api/pane/image") || response.request().method() !== "POST") return;
-      assert.equal(response.status(), 200);
-      stored.push(((await response.json()) as { path: string }).path);
-      if (stored.length === files.length) resolve();
-    });
+      try {
+        assert.equal(response.status(), 200);
+        stored.push(((await response.json()) as { path: string }).path);
+      } catch (error) { page.off("response", heard); reject(error); return; }
+      if (stored.length === files.length) { page.off("response", heard); resolve(); }
+    };
+    page.on("response", heard);
   });
   const chooser = page.waitForEvent("filechooser");
   await open();

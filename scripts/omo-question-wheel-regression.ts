@@ -12,6 +12,7 @@ import { herdrRpc, paneScrollInfo, workspaceClose, workspaceCreate } from "../se
 import { omoSessionFolder } from "../server/omo.ts";
 import { FLING_STOPPED_MS } from "../src/lib/touchFling.ts";
 import { chromePath } from "./chrome-path.ts";
+import { unlessGone } from "./response-gone.ts";
 import type { ServerMessage, SessionSnapshot } from "../shared/protocol.ts";
 
 const state = mkdtempSync(join(tmpdir(), "omo-question-wheel-"));
@@ -22,15 +23,9 @@ const workspaces: string[] = [];
 let server: ReturnType<typeof createServer> | undefined;
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
-type ScrollBody = { scroll?: { offset_from_bottom: number; viewport_rows: number } };
-/**
- * A /pane/scroll answer's body, or undefined when the browser no longer has it (a navigation, or an eviction, let it
- * go): a log or a wait passes over that answer instead of ending the run on the protocol error.
- */
-const bodyOf = (response: PageResponse): Promise<ScrollBody | undefined> => response.json().catch((error: unknown) => {
-  console.log("SCROLL body gone:", response.request().method(), response.url(), (error as Error).message.split("\n")[0]);
-  return undefined;
-});
+type ScrollBody = { scroll: { offset_from_bottom: number; viewport_rows: number } | null };
+/** A /pane/scroll answer's body, or undefined when the browser no longer has it; a body that is not JSON throws. */
+const bodyOf = (response: PageResponse) => unlessGone(response, (answer) => answer.json() as Promise<ScrollBody>);
 const waitOutput = (pane: string, value: string) => herdrRpc("pane.wait_for_output", {
   pane_id: pane, source: "visible", match: { type: "substring", value }, timeout_ms: 10000,
 }, undefined, 12000);
@@ -100,6 +95,7 @@ process.stdout.write(Array.from({ length: 400 }, (_, n) => "history " + n + "\\r
   }));
   page.on("response", response => {
     if (response.url().endsWith("/pane/scroll") && response.request().method() === "POST") {
+      // an answer whose body is gone is passed over; one that is not JSON still ends the run, as on main
       void bodyOf(response).then(body => { if (body !== undefined) console.log("SCROLL", JSON.stringify(body)); });
     }
   });
@@ -159,9 +155,12 @@ process.stdout.write(Array.from({ length: 400 }, (_, n) => "history " + n + "\\r
       // two real wheel events at speed two: three lines each, twice over, as the reports would scroll
       assert.equal(after.offset_from_bottom, 2 * 3 * 2, "wheel steps accumulate while the first metrics read is held");
       assert.equal(input, "", "no wheel report reaches OmO");
-      const scrollResponse = (offset: number) => page.waitForResponse(async response =>
-        response.url().endsWith("/pane/scroll") && response.request().method() === "POST"
-        && (await bodyOf(response))?.scroll?.offset_from_bottom === offset);
+      const scrollResponse = (offset: number) => page.waitForResponse(async response => {
+        if (!response.url().endsWith("/pane/scroll") || response.request().method() !== "POST") return false;
+        const body = await bodyOf(response);
+        // a scroll's answer holds where it went: one without it (an error's answer) fails the wait
+        return body !== undefined && body.scroll!.offset_from_bottom === offset;
+      });
       // each event is one step whatever its delta, so a clamp is reached by enough events
       const lineWheel = async (deltaY: number, offset: number, events = 1) => {
         console.log("line wheel", deltaY, "x", events, "expects", offset);
@@ -175,6 +174,7 @@ process.stdout.write(Array.from({ length: 400 }, (_, n) => "history " + n + "\\r
       await lineWheel(-1, after.max_offset_from_bottom, Math.ceil(after.max_offset_from_bottom / 3) + 2);
       await lineWheel(1, 0, Math.ceil(after.max_offset_from_bottom / 3) + 2);
       // A real phone drag takes the same path; end-of-gesture rounding keeps the final partial step.
+      // a metrics read may answer `{ scroll: null }` (no scroll info yet), hence `?.` on the two size waits
       const resizedMetrics = page.waitForResponse(async response => {
         if (!response.url().includes("/pane/scroll?")) return false;
         const body = await bodyOf(response);
