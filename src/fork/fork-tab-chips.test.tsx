@@ -32,6 +32,22 @@ it("keeps overflow chips reachable by the More menu's arrow keys", async () => {
   expect(chip.props["aria-pressed"]).toBeUndefined();
 });
 
+it("offers sibling moves by keyboard and mouse drag without selecting the child", async () => {
+  const actions: unknown[] = [];
+  await act(async () => { renderer = create(<ForkTabChips tabs={tabs} paneFor={(tab) => panes.find((pane) => pane.tab_id === tab.tab_id)} nameOf={(tab) => tab.label} selectedTab="parent" onSelect={() => actions.push("select")} onMenu={() => {}} onMove={(id, direction) => actions.push([id, direction])} canDrop={(from, to) => from !== to} onDrop={(from, to, after) => actions.push([from, to, after])} statusMark={() => null} />); });
+  const [first, second] = renderer!.root.findAllByType("button");
+  const event = { key: "ArrowRight", altKey: true, shiftKey: true, repeat: false, preventDefault() {}, stopPropagation() {} };
+  await act(async () => first!.props.onKeyDown(event));
+  expect(actions).toEqual([["implement", 1]]);
+  expect(first!.props.draggable).toBe(true);
+  const dataTransfer = { effectAllowed: "none", setData() {} };
+  await act(async () => {
+    first!.props.onDragStart({ ...event, dataTransfer });
+    second!.props.onDrop({ ...event, clientX: 20, currentTarget: { getBoundingClientRect: () => ({ left: 0, width: 20 }) } });
+  });
+  expect(actions).toEqual([["implement", 1], ["implement", "review", true]]);
+});
+
 it("keeps close, rename and a contextual menu on chips, also in a phone sheet", async () => {
   const actions: string[] = [];
   await act(async () => { renderer = create(<ForkTabChips tabs={[tabs[0]!]} paneFor={() => panes[0]} nameOf={(tab) => tab.label} selectedTab="implement" onSelect={() => actions.push("select")} onMenu={() => actions.push("menu")} onClose={() => actions.push("close")} onRename={() => actions.push("rename")} onDismiss={() => actions.push("dismiss")} sheet popup="dialog" statusMark={() => null} />); });

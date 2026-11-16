@@ -133,6 +133,32 @@ describe("the tab strip on a PC the Herdr app lays out", () => {
     } finally { delete child.parent_pane_id; }
   });
 
+  for (const action of ["menu", "keyboard", "drag"]) it(`moves children among siblings using ${action}, never among root tabs`, async () => {
+    const child = { ...snapshot.panes[1]!, parent_pane_id: snapshot.panes[0]!.pane_id } as HerdrPane;
+    const sibling = { ...child, pane_id: "w1:t3:p", tab_id: "w1:t3" };
+    const grouped = { ...snapshot, tabs: [...snapshot.tabs, { ...snapshot.tabs[1]!, tab_id: sibling.tab_id }], panes: [snapshot.panes[0]!, child, sibling, snapshot.panes[2]!] };
+    stored.set("ovis:settings", JSON.stringify({ agentFriends: true }));
+    await withFetch(async () => {
+      await draw(TUI, undefined, undefined, { snapshot: grouped });
+      const chip = renderer!.root.findByProps({ "data-tab-id": child.tab_id });
+      if (action === "menu") {
+        await act(async () => chip.props.onKeyDown({ ...noKeys, key: "ContextMenu", currentTarget: node() }));
+        const items = renderer!.root.findByType(RowMenu).props.items as { id: string; run(): void }[];
+        expect(items.some((item) => item.id === "move-left")).toBe(false);
+        expect(items.some((item) => item.id === "move-right")).toBe(true);
+        await act(async () => items.find((item) => item.id === "move-right")!.run());
+      } else if (action === "keyboard") {
+        await act(async () => chip.props.onKeyDown({ ...noKeys, key: "ArrowRight", altKey: true, shiftKey: true }));
+      } else {
+        await act(async () => {
+          chip.props.onDragStart({ stopPropagation() {}, dataTransfer: { setData() {} } });
+          renderer!.root.findByProps({ "data-tab-id": sibling.tab_id }).props.onDrop({ preventDefault() {}, stopPropagation() {}, clientX: 10, currentTarget: node() });
+        });
+      }
+      expect(requested).toEqual(["/api/tab/move"]);
+    });
+  });
+
   it("does not move a parent against its own folded child by menu or keys", async () => {
     const child = snapshot.panes[1]! as HerdrPane;
     child.parent_pane_id = snapshot.panes[0]!.pane_id;

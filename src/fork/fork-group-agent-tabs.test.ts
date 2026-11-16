@@ -33,6 +33,27 @@ it("moves a parent to its visible neighbour in one step, keeping children pinned
   expect(groupAgentTabs(tabs, panes, false).adjacentBoundary("child", 1)).toBe(3);
 });
 
+it("reorders only siblings while keeping descendants and unrelated roots in their groups", () => {
+  const tabs = [tab("parent"), tab("a"), tab("grandchild"), tab("other"), tab("b"), tab("c")];
+  const panes = [pane("parent"), pane("a", "parent"), pane("grandchild", "a"), pane("other"), pane("b", "parent"), pane("c", "parent")];
+  const group = groupAgentTabs(tabs, panes, true);
+  expect(group.adjacentBoundary("a", 1)).toBe(5);
+  expect(group.adjacentBoundary("b", -1)).toBe(1);
+  expect(group.adjacentBoundary("a", -1)).toBeNull();
+  expect(group.adjacentBoundary("c", 1)).toBeNull();
+  expect(group.adjacentBoundary("grandchild", 1)).toBeNull();
+  expect(group.dropBoundary("a", "b", true)).toBe(5);
+  expect(group.dropBoundary("b", "a", false)).toBe(1);
+  for (const [from, to] of [["a", "grandchild"], ["a", "other"], ["parent", "b"], ["a", "a"]]) {
+    expect(group.dropBoundary(from!, to!, true)).toBeNull();
+  }
+  expect(groupAgentTabs(tabs, panes, false).dropBoundary("a", "b", true)).toBeNull();
+  const moved = movedTabOrder(ids(tabs), "a", group.adjacentBoundary("a", 1)!)!;
+  const reordered = groupAgentTabs(moved.map((id) => tabs.find((tab) => tab.tab_id === id)!), panes, true);
+  expect(ids(reordered.tabs)).toEqual(["parent", "other"]);
+  expect(ids(reordered.children.get("parent")!)).toEqual(["b", "a", "grandchild", "c"]);
+});
+
 it("keeps orphans, same-tab children, other workspaces and cycles as normal tabs", () => {
   const tabs = [tab("orphan"), tab("parent", "elsewhere"), tab("child"), tab("self"), tab("a"), tab("b")];
   const panes = [pane("orphan", "gone"), pane("parent", undefined, "elsewhere"), pane("child", "parent"), pane("self", "self"), pane("a", "b"), pane("b", "a")];
