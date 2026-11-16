@@ -94,8 +94,14 @@
   display: none;
 }
 
+/* lighter than an agent's own name, so the agents stay what the eye finds first; the open one keeps its selection weight */
 [data-fork-agent-friends="true"] .mode-inbox .fork-inbox-helper .inbox-name {
+  color: var(--text);
   font-size: var(--fs-md);
+}
+
+[data-fork-agent-friends="true"] .mode-inbox .fork-inbox-helper:not(.is-current) .inbox-name {
+  font-weight: var(--fw-regular);
 }
 
 [data-fork-agent-friends="true"] .mode-inbox.is-wide .fork-inbox-helper .inbox-name {
