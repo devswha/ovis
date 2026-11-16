@@ -17,4 +17,4 @@
 ### Changed
 - `ovis-server` does not start on a state folder that holds a machine profile's marker
   (`machine-profile.json`): it names the folder, says to give it another `OVIS_STATE_DIR`, and
-  exits. Only a folder a machine profile was started on holds that marker.
+  exits. A machine profile writes that marker into the folder it is started on.
