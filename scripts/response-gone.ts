@@ -5,7 +5,7 @@ import type { Response } from "playwright-core";
  * page closed under the read. Seen in a run: `Protocol error (Network.getResponseBody): No resource with given
  * identifier found`, the body of an answer read after the page had navigated on.
  */
-const GONE = /No resource with given identifier found|No data found for resource with given identifier|Target page, context or browser has been closed/;
+const GONE = /Protocol error \(Network\.getResponseBody\): (No resource with given identifier found|No data found for resource with given identifier)|Target page, context or browser has been closed/;
 
 /**
  * `read` of `response` (its JSON, body or headers), or undefined, said in the log, when the browser no longer has it:

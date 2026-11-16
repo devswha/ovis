@@ -61,6 +61,8 @@ async function pick(page: Page, open: () => Promise<void>, files: Array<{ name: 
     };
     page.on("response", heard);
   });
+  // a rejection is reported at `await responses` below, not as an unhandled one if it comes before that await
+  responses.catch(() => {});
   const chooser = page.waitForEvent("filechooser");
   await open();
   const picker = await chooser;
@@ -141,7 +143,11 @@ export async function checkTerminalAttach(browser: Browser, origin: string, pane
   const quiet = sent.length;
   const answered = page.waitForResponse((response) => response.url().endsWith("/api/pane/image"));
   release();
-  await (await answered).finished();
+  const heldAnswer = await answered;
+  await heldAnswer.finished();
+  // the upload stored its file as any other: it is a stored answer, not a refused one, that must type nothing
+  assert.equal(heldAnswer.status(), 200, "the held upload is stored");
+  assert.equal(typeof ((await heldAnswer.json()) as { path?: unknown }).path, "string", "the held upload answers its stored path");
   await page.unroute("**/api/pane/image");
   // the paste would follow the stored answer within a frame: two frames after it, nothing went
   await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
