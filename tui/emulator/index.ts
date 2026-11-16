@@ -1,5 +1,4 @@
 import type {
-  ColorForm,
   EngineColors,
   EngineCursor,
   EngineEvents,
@@ -13,15 +12,25 @@ import type {
   WrittenColor,
 } from "../../shared/ghostty/engine.ts";
 
+export {
+  STYLE_BOLD,
+  STYLE_FAINT,
+  STYLE_INVERSE,
+  STYLE_INVISIBLE,
+  STYLE_ITALIC,
+  STYLE_STRIKE,
+  STYLE_UNDERLINE_MASK,
+} from "../../shared/ghostty/engine.ts";
 export type { EngineColors, EngineCursor, EngineEvents, EngineHistory, EngineKey, EngineModes, EngineMouse, GhosttyRun, ScreenPoint, ScreenRange, WrittenColor };
 
 /**
  * Why a call gave no answer:
- * - `size`: a size outside the range, refused before the engine saw it; the emulator is as it was.
- * - `disposed`: the emulator was disposed.
- * - `trapped`: the engine's module trapped (a `WebAssembly.RuntimeError`); the emulator is dead.
- * - `failed`: the engine, or a handler passed in `events`, threw; the emulator is dead.
- * A dead emulator answers every later call with the same error: the pane machine makes a new one by reattaching.
+ * - `trapped`: the engine's module trapped (a `WebAssembly.RuntimeError`). This is the only kind that ends the emulator: it
+ *   drops its engine and every later call answers the same error; the pane machine makes a new one by reattaching.
+ * - `disposed`: the emulator was disposed; every later call answers this.
+ * - `failed`: the engine or a handler passed in `events` threw something else (a bad argument, a throwing callback); that call
+ *   only, the emulator stays alive.
+ * - `size`: a size outside the range, refused before the engine saw it; the emulator stays alive.
  */
 export interface EmulatorError {
   kind: "size" | "disposed" | "trapped" | "failed";
@@ -41,7 +50,7 @@ export interface EmulatorOptions {
 
 /** One pane's terminal state. Not shared: its own wasm instance, freed by `dispose`. */
 export interface Emulator {
-  /** the error that killed this emulator, or null while it lives (a refused size leaves it null) */
+  /** the trap that killed this emulator, or null while it lives (only a trap ends it) */
   readonly failure: EmulatorError | null;
 
   write(bytes: Uint8Array): EmulatorResult<void>;
@@ -51,9 +60,9 @@ export interface Emulator {
   /** frees the terminal; safe to call twice and on a dead emulator, and it cannot fail */
   dispose(): void;
 
-  /** rows changed since the last call, as runs of cells that share a style; true when any row was drawn */
-  frame<F extends ColorForm = "hex">(draw: (y: number, runs: GhosttyRun<F extends "written" ? WrittenColor : string>[]) => void, colors?: F): EmulatorResult<boolean>;
-  frameAll<F extends ColorForm = "hex">(draw: (y: number, runs: GhosttyRun<F extends "written" ? WrittenColor : string>[]) => void, colors?: F): EmulatorResult<void>;
+  /** rows changed since the last call, as runs of cells that share a style, colours as the program wrote them; true when any row was drawn */
+  frame(draw: (y: number, runs: GhosttyRun<WrittenColor>[]) => void): EmulatorResult<boolean>;
+  frameAll(draw: (y: number, runs: GhosttyRun<WrittenColor>[]) => void): EmulatorResult<void>;
   /** the cursor of the last frame; draw first */
   cursorState(): EmulatorResult<EngineCursor>;
   modes(): EmulatorResult<EngineModes>;

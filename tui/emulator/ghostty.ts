@@ -4,12 +4,12 @@ import { TERMINAL_HISTORY_LINES } from "../../shared/terminal-flow.ts";
 import type { Emulator, EmulatorError, EmulatorLoader, EmulatorOptions, EmulatorResult } from "./index.ts";
 
 /** The smallest pane the engine is asked for. */
-export const MIN_CELLS = 1;
+const MIN_CELLS = 1;
 /** The engine can hang or exhaust its module on absurd sizes, so a pane is never asked for more than this. */
 export const MAX_COLS = 1000;
 export const MAX_ROWS = 500;
 /** The largest cell, in pixels, a resize may name. */
-export const MAX_CELL_PIXELS = 1000;
+const MAX_CELL_PIXELS = 1000;
 
 export interface LoaderOptions {
   /** the engine file's bytes; read once, on the first emulator */
@@ -84,19 +84,35 @@ class GhosttyEmulator implements Emulator {
     this.engine = engine;
   }
 
-  /** runs one engine call; an error kills the emulator: its engine and module are dropped and it is never used again */
+  /** the error every call answers once the emulator is disposed or dead, or null while it lives */
+  private ended(): EmulatorError | null {
+    if (this.disposed) return { kind: "disposed", message: "the emulator was disposed" };
+    return this.failure;
+  }
+
+  /**
+   * runs one engine call. A trap (a thrown `WebAssembly.RuntimeError`, or one recorded on the module) kills the emulator: its
+   * engine and module are dropped and every later call answers the same error. Any other error fails that call only.
+   */
   private call<T>(run: (engine: GhosttyEngine) => T): EmulatorResult<T> {
-    if (this.disposed) return refuse({ kind: "disposed", message: "the emulator was disposed" });
-    if (this.failure) return refuse(this.failure);
+    const ended = this.ended();
+    if (ended) return refuse(ended);
+    let value: T;
     try {
-      return { ok: true, value: run(this.engine!) };
+      value = run(this.engine!);
     } catch (error) {
-      this.failure = errorOf(error);
-      if (this.module?.trap) this.failure.kind = "trapped";
-      this.engine = null;
-      this.module = null;
-      return refuse(this.failure);
+      const trap = this.module!.trap ?? (error instanceof WebAssembly.RuntimeError ? error : null);
+      return refuse(trap ? this.die(trap) : errorOf(error));
     }
+    const trap = this.module!.trap;
+    return trap ? refuse(this.die(trap)) : { ok: true, value };
+  }
+
+  private die(trap: WebAssembly.RuntimeError): EmulatorError {
+    this.failure = errorOf(trap);
+    this.engine = null;
+    this.module = null;
+    return this.failure;
   }
 
   dispose(): void {
@@ -110,13 +126,13 @@ class GhosttyEmulator implements Emulator {
   write: Emulator["write"] = (bytes) => this.call((engine) => engine.write(bytes));
 
   resize: Emulator["resize"] = (cols, rows, cellW, cellH) => {
-    const refused = badSize(cols, rows) ?? badCell(cellW, cellH);
+    const refused = this.ended() ?? badSize(cols, rows) ?? badCell(cellW, cellH);
     return refused ? refuse(refused) : this.call((engine) => engine.resize(cols, rows, cellW, cellH));
   };
 
   reset: Emulator["reset"] = () => this.call((engine) => engine.reset());
-  frame: Emulator["frame"] = (draw, colors) => this.call((engine) => engine.frame(draw as never, colors));
-  frameAll: Emulator["frameAll"] = (draw, colors) => this.call((engine) => engine.frameAll(draw as never, colors));
+  frame: Emulator["frame"] = (draw) => this.call((engine) => engine.frame(draw, "written"));
+  frameAll: Emulator["frameAll"] = (draw) => this.call((engine) => engine.frameAll(draw, "written"));
   cursorState: Emulator["cursorState"] = () => this.call((engine) => engine.cursorState());
   modes: Emulator["modes"] = () => this.call((engine) => engine.modes());
   setMode: Emulator["setMode"] = (mode, on) => this.call((engine) => engine.setMode(mode, on));

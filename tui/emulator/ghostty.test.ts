@@ -1,9 +1,9 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import { join } from "node:path";
 
 import type { GhosttyExports, GhosttyModule } from "../../shared/ghostty/engine.ts";
 import { TERMINAL_HISTORY_LINES } from "../../shared/terminal-flow.ts";
-import { createEmulator, createEmulatorLoader, MAX_COLS, MAX_ROWS } from "./ghostty.ts";
+import { createEmulatorLoader, MAX_COLS, MAX_ROWS } from "./ghostty.ts";
 import type { Emulator, EmulatorResult } from "./index.ts";
 
 const wasmPath = join(import.meta.dir, "../../shared/ghostty/ghostty-vt.wasm");
@@ -34,7 +34,7 @@ function rowText(emulator: Emulator, y: number): string {
   let found = "";
   const result = emulator.frameAll((row, runs) => {
     if (row === y) found = runs.flatMap((run) => run.cells.map((cell) => cell.text)).join("").trimEnd();
-  }, "written");
+  });
   expect(result.ok).toBe(true);
   return found;
 }
@@ -72,35 +72,52 @@ describe("emulator per pane", () => {
     replies.length = 0;
     emulator.write(bytesOf("\x1b_Gi=1,a=q;AAAA\x1b\\"));
     expect(replies).toEqual([]);
-    emulator.write(bytesOf("\x1b[2J\x1b[H" + "line\r\n".repeat(TERMINAL_HISTORY_LINES + 200)));
+  });
+
+  it("keeps about the shared history line count of rows, not the module's byte limit", async () => {
+    const { loader } = countingLoader();
+    const { emulator } = await pane(loader, 120, 40);
+    const line = "x".repeat(110) + "\r\n";
+    emulator.write(bytesOf(line.repeat(TERMINAL_HISTORY_LINES + 200)));
     const history = emulator.history();
-    expect(history.ok && history.value.scrollback).toBeGreaterThanOrEqual(TERMINAL_HISTORY_LINES * 0.75);
+    expect(history.ok).toBe(true);
+    const kept = history.ok ? history.value.scrollback : 0;
+    expect(kept).toBeGreaterThan(1500);
+    expect(kept).toBeLessThanOrEqual(TERMINAL_HISTORY_LINES + 40);
   });
 
   it("frees on dispose and reports the error value afterwards", async () => {
-    const { loader, state } = countingLoader();
+    let frees = 0;
+    const loader = createEmulatorLoader({
+      read: async () => Bun.file(wasmPath).arrayBuffer(),
+      onModule: (module) => {
+        const real = module.exports;
+        (module as { exports: GhosttyExports }).exports = {
+          ...real,
+          ghostty_terminal_free: (terminal) => {
+            frees++;
+            return real.ghostty_terminal_free(terminal);
+          },
+        };
+      },
+    });
     const { emulator, replies } = await pane(loader);
     emulator.write(bytesOf("x"));
+    expect(frees).toBe(0);
     emulator.dispose();
+    expect(frees).toBe(1);
     emulator.dispose();
+    expect(frees).toBe(1);
     const after = emulator.write(bytesOf("\x1b[6n"));
     expect(after.ok).toBe(false);
     expect(!after.ok && after.error.kind).toBe("disposed");
+    const badSizeAfter = emulator.resize(0, 0, 8, 16);
+    expect(!badSizeAfter.ok && badSizeAfter.error.kind).toBe("disposed");
     for (const result of [emulator.resize(30, 6, 8, 16), emulator.frameAll(() => {}), emulator.cursorState(), emulator.encodePaste("a")]) {
       expect(!result.ok && result.error.kind).toBe("disposed");
     }
     expect(replies).toEqual([]);
-
-    const first = state.modules.length;
-    for (let round = 0; round < 200; round++) {
-      const next = await pane(loader);
-      next.emulator.write(bytesOf("round\x1b[6n"));
-      next.emulator.dispose();
-    }
-    const sizes = state.modules.slice(first).map((module) => module.exports.memory.buffer.byteLength);
-    expect(sizes).toHaveLength(200);
-    expect(Math.max(...sizes)).toBeLessThanOrEqual(sizes[0]! * 2);
-  }, 60_000);
+  });
 
   it("keeps a second emulator answering after the first one's engine throws", async () => {
     let armed = false;
@@ -126,6 +143,9 @@ describe("emulator per pane", () => {
     expect(!failed.ok && failed.error.kind).toBe("trapped");
     const again = a.emulator.write(bytesOf("later"));
     expect(!again.ok && again.error.kind).toBe("trapped");
+    const laterFrame = a.emulator.frameAll(() => {});
+    expect(a.emulator.failure).not.toBeNull();
+    for (const result of [again, laterFrame]) expect(result.ok ? null : result.error).toBe(a.emulator.failure);
     expect(a.emulator.failure?.kind).toBe("trapped");
 
     expect(b.emulator.write(bytesOf("alive\x1b[6n")).ok).toBe(true);
@@ -139,15 +159,50 @@ describe("emulator per pane", () => {
     expect(modules[2]).not.toBe(modules[0]);
     c.emulator.write(bytesOf("\x1b[6n"));
     expect(c.replies).toEqual(["\x1b[1;1R"]);
+    const badSizeDead = a.emulator.resize(0, 0, 8, 16);
+    expect(!badSizeDead.ok && badSizeDead.error.kind).toBe("trapped");
     a.emulator.dispose();
   });
 
-  it("reports an error thrown by the caller's handler as an error value", async () => {
+  it("keeps the pane alive after an argument error", async () => {
     const { loader } = countingLoader();
-    const emulator = made(await loader.create({ cols: 10, rows: 3, events: { onReply: () => { throw new Error("handler broke"); } } }));
+    const { emulator, replies } = await pane(loader);
+    const bad = emulator.encodeKey({ key: "NO_SUCH_KEY" });
+    expect(!bad.ok && bad.error.kind).toBe("failed");
+    expect(emulator.failure).toBeNull();
+    expect(emulator.write(bytesOf("ok\x1b[6n")).ok).toBe(true);
+    expect(replies).toEqual(["\x1b[1;3R"]);
+    expect(rowText(emulator, 0)).toBe("ok");
+  });
+
+  it("keeps the pane alive after a handler throws once", async () => {
+    let throwNext = true;
+    const replies: string[] = [];
+    const emulator = made(await countingLoader().loader.create({
+      cols: 10,
+      rows: 3,
+      events: {
+        onReply: (bytes) => {
+          if (throwNext) {
+            throwNext = false;
+            throw new Error("handler broke");
+          }
+          replies.push(text(bytes));
+        },
+      },
+    }));
     const result = emulator.write(bytesOf("\x1b[6n"));
     expect(!result.ok && result.error.kind).toBe("failed");
-    expect(!result.ok && result.error.message).toContain("handler broke");
+    expect(emulator.failure).toBeNull();
+    expect(emulator.write(bytesOf("a\x1b[6n")).ok).toBe(true);
+    expect(replies).toEqual(["\x1b[1;2R"]);
+    expect(emulator.frameAll(() => {}).ok).toBe(true);
+    emulator.write(bytesOf("c"));
+    const thrownDraw = emulator.frame(() => {
+      throw new Error("draw broke");
+    });
+    expect(!thrownDraw.ok && thrownDraw.error.kind).toBe("failed");
+    expect(emulator.write(bytesOf("b")).ok).toBe(true);
   });
 
   it("refuses a size outside the range before the engine sees it", async () => {
@@ -200,8 +255,19 @@ describe("the engine file", () => {
   });
 
   it("is not read by importing the loader, and a missing file is an error value that a later call retries", async () => {
-    // the default loader reads the embedded file only when it is asked for an emulator
-    expect(typeof createEmulator).toBe("function");
+    const spy = spyOn(Bun, "file");
+    try {
+      const wasmCalls = () => spy.mock.calls.filter(([path]) => String(path).endsWith(".wasm")).length;
+      const fresh = (await import("./ghostty.ts?fresh=" + Math.random())) as typeof import("./ghostty.ts");
+      expect(wasmCalls()).toBe(0);
+      const options = { cols: 10, rows: 3, events: {} };
+      const [first, second] = await Promise.all([fresh.createEmulator(options), fresh.createEmulator(options)]);
+      made(first).dispose();
+      made(second).dispose();
+      expect(wasmCalls()).toBe(1);
+    } finally {
+      spy.mockRestore();
+    }
     let reads = 0;
     let exists = false;
     const loader = createEmulatorLoader({
