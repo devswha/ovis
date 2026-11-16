@@ -1,3 +1,4 @@
+import { machineFailure, machineHealth, machineLayoutReason, machineReadError, machineRoster, machineRouteRestricted, machineTcpAnswer, machineUnauthorized } from "./machine-profile.ts";
 import { handleWorkspaceRequest } from "./workspace-routes.ts";
 import { handleAlertWebhookRequest } from "./alert-webhook.ts";
 import { connectionData, type createCore, type SocketData } from "./core/index.ts";
@@ -13,13 +14,13 @@ import type { OrderSequence } from "./order-sequence.ts";
 import type { DevicePairedEvent, DeviceRemovedEvent, HealthAuth, RelayPairingsEvent, RemotePairingsEvent, SecuritySummary, SessionSnapshot } from "../shared/protocol.ts";
 import { DEFAULT_PORT } from "../shared/protocol.ts";
 import { authClient, deviceAuthorizationValue, deviceCookieValue, bearerMatches, handleAuthRequest, isAuthenticated, isSecureRequest, parseCookies, presentedToken, presentedTokenHeld, recordPresentedTokenFailure, requiresAuth, unauthorizedJson } from "./auth.ts";
-import { bindScope, cameThroughProxy, decideAccess, forwardingHeaders, inTailnet, isLoopbackAddress, isServeOwnerRequest, lanExposed, observedIngress, ownerAccess } from "./access.ts";
+import { bindScope, cameThroughProxy, decideAccess, decideMachineAccess, forwardingHeaders, inTailnet, isLoopbackAddress, isServeOwnerRequest, lanExposed, machineForwardingHeaders, observedIngress, ownerAccess } from "./access.ts";
 import { type DeviceStore, handleDeviceRequest, newStreamKey, sameBrowser, streamCookie, streamKeys, type DeviceMatch } from "./devices.ts";
 import type { OmarchyThemeStore } from "./omarchy-themes.ts";
 import { handlePreferencesRequest, type PreferenceStore } from "./preferences.ts";
 import { handleSeenRequest, type SeenStore } from "./seen.ts";
 import { remoteAccess } from "./tailscale.ts";
-import { badRequest, errorResponse, jsonResponse, setRequestRoute } from "./http.ts";
+import { badRequest, errorResponse, jsonResponse, setRequestRoute, wordedHeaders, wordHerdrFailures } from "./http.ts";
 import { requestOrigin, serveStatic } from "./static.ts";
 import { compressResponse } from "./compress.ts";
 import { handleTasksRequest } from "./tasks-routes.ts";
@@ -141,6 +142,11 @@ export interface ServerContext {
   /** the Bun server itself, for the routes that upgrade to sockets of their own (the Computer view, a Pi voice call); none over a relay */
   readonly server?: Server<SocketData | ForkSocketData>;
   /**
+   * The request came in on the machine profile's owner socket (`<state folder>/serve.sock`): set by the
+   * server for that listener alone, never read from the request. Only there is a local owner of the profile.
+   */
+  readonly ownerSocket?: boolean;
+  /**
    * The request came to the opt-in LAN HTTPS listener (server/lan-https.ts), from a private IPv4 peer:
    * it gets in only with the token or a paired device, never as an open install, by the bridge token,
    * and its wrong tokens share one budget with every other peer there.
@@ -155,6 +161,8 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   const { options, hostname, token, bridgeToken, bootId, devices, preferences, herdrSidebar, identityOf, serveOnly, portalGuards, shellAgents, agentDetector, agentOffered, agentInstaller, openCodeState, cliProxyRoutes, usageLogin, usage, voice, browserSnapshot, core, seen, piReader, orderSequence, clientConnectionLog, requestLog, portalStartupResult, portalStartup, omarchyThemes } = ctx.services;
   const { sidecar, serialize, push, alertWebhook, logPushError, omo, claudeAgents, opencodeAgents, plans, clientSnapshot, machines, broadcastAll, collector, queueFirstMessage } = core;
   return requestLog.handle(request, async (headers) => {
+  // the machine profile words every failed herdr call of this request itself (machineFailure)
+  if (options.profile === "machine") wordHerdrFailures(machineFailure, machineLayoutReason);
   const startup = portalStartupResult ?? await portalStartup;
   if (!startup.ok) {
     setRequestRoute("startup");
@@ -165,7 +173,9 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   const url = new URL(request.url);
   let { pathname } = url;
   const relayPeer = ctx.peer.kind === "relay" ? ctx.peer.device : undefined;
-  const bridgeAuthorized = relayPeer === undefined && ctx.lanHttps !== true && isAuthenticated(request, bridgeToken);
+  // the machine profile on TCP: its liveness for every caller; no credential or header of the request is read
+  if (options.profile === "machine" && relayPeer === undefined && ctx.ownerSocket !== true) return machineTcpAnswer(request, pathname);
+  const bridgeAuthorized = options.profile !== "machine" && relayPeer === undefined && ctx.lanHttps !== true && isAuthenticated(request, bridgeToken);
   // the connection server that reaches this one as its PC reads its update status and asks for the
   // update on offer: an Ovis run on this PC by itself is updated through its own updater, never
   // replaced (server/machines.ts ownOffer). An install still names the offered revision and the
@@ -195,7 +205,8 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   let pairedDevice: DeviceMatch | null;
   try {
     // a script's `Authorization: Device` header stands for the cookie a browser holds (#2744)
-    pairedDevice = relayPeer ?? devices.match(deviceAuthorizationValue(request) ?? deviceCookieValue(parseCookies(request.headers.get("cookie"))));
+    // the machine profile reads no device cookie: it lets in no device but through the relay
+    pairedDevice = relayPeer ?? (options.profile === "machine" ? null : devices.match(deviceAuthorizationValue(request) ?? deviceCookieValue(parseCookies(request.headers.get("cookie")))));
   } catch (error) {
     // First-cookie confirmation is an authorization write, not best-effort telemetry.
     return errorResponse(error);
@@ -209,7 +220,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     : { owner: null, tagged: false, soleLogin: null, dnsName: null, tailnetIp: null };
   // Portal reaches this server over loopback, never the LAN listener: its proof is not a way in there
   const portalProven = relayPeer === undefined && ctx.lanHttps !== true && (options.portal?.vouches(request.headers.get("x-portal-proof") ?? null) ?? false);
-  const access = decideAccess({
+  const access = options.profile === "machine" ? decideMachineAccess({ relayPeer, ownerSocket: ctx.ownerSocket === true, host: requestHost, forwarded: machineForwardingHeaders(request.headers) }) : decideAccess({
     relayPeer,
     ...requestShape,
     host: requestHost,
@@ -227,6 +238,9 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   });
   const authenticated = access.level === "full" || (bridgePath && bridgeAuthorized);
 
+  // on the owner's socket a request naming another host or showing a proxy gets nothing, its health included
+  if (options.profile === "machine" && access.level !== "full") return machineUnauthorized(pathname);
+
   if (requiresAuth(pathname) && !authenticated) {
     setRequestRoute("auth-refusal");
     // a script's Bearer guess is told to wait; a browser's cookie gets the usual 401 and its sign-in form
@@ -234,6 +248,14 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     // The WS client never parses a body, so the upgrade refusal stays plain text.
     return pathname === "/ws" || pathname === PI_VOICE_PATH ? new Response("unauthorized", { status: 401 }) : unauthorizedJson(access.level === "none" ? access.reason : "token_required");
   }
+
+  if (options.profile === "machine" && machineRouteRestricted(pathname, request.method)) {
+    setRequestRoute("machine-profile-refusal");
+    return jsonResponse({ error: { code: "machine_profile", message: "This control is unavailable in the machine profile" } }, 409);
+  }
+  // a herdr that started after the profile is looked for here too, not only at a health check: a device may read its session
+  // (or its PC list, which holds it) first. What it says is why the engine is down, for that list
+  const engineRefusal = options.profile === "machine" && (pathname === "/api/session" || pathname === "/api/machines" || pathname === "/ws") ? await options.machineRefusal?.() : undefined;
 
   const readOnly = access.level === "full" && access.role === "watch";
   // who started a followed sign-in: only that device (or that signed-in browser) reaches it again
@@ -381,6 +403,15 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     } catch (error) { return errorResponse(error); }
   }
   if (pathname === "/api/machines" || pathname.startsWith("/api/machines/")) {
+    // the machine profile manages no other PC: its list is this machine alone, and every other route here was refused above
+    if (options.profile === "machine") {
+      setRequestRoute("/api/machines");
+      if (!sameOrigin(request)) return jsonResponse({ error: { code: "invalid_origin", message: "Use PC controls from this app" } }, 403);
+      try {
+        const roster = await machineRoster(url, async () => browserSnapshot(await clientSnapshot()), { bootId, serverId: ctx.services.relay.serverId() }, options.machineEngine ?? "herdr", engineRefusal);
+        return jsonResponse(roster, 200, { "cache-control": "no-store" });
+      } catch (error) { return machineReadError(error, options.machineEngine ?? "herdr", engineRefusal); }
+    }
     if (!machines) return jsonResponse({ error: { code: "bridge_only", message: "Manage PCs on the connection server" } }, 404);
     // /local aliases preserve every existing endpoint without a self-proxy.
     if (pathname.startsWith("/api/machines/local/")) {
@@ -635,6 +666,13 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     const owner = access.level === "full" && access.role === "drive" && access.via !== "open" && access.via !== "portal";
     // the connection server that reaches this PC with its bridge token shows its move badge from them
     const herdr_runtime = owner || bridgeAuthorized ? options.runtimeService?.facts() : undefined;
+    if (options.profile === "machine") {
+      const health = await machineHealth(options.machineEngine ?? "herdr", await options.machineRefusal?.());
+      return jsonResponse({ ok: true, auth, version, runtime: "herdr", ...relay, ...health,
+        ...(health.herdr ? { herdr: attachableIdentity(health.herdr, sidecar) } : {}),
+        ...(security ? { security } : {}), web_ui: { boot_id: bootId, ...(serverId ? { server_id: serverId } : {}) },
+      }, 200, { "cache-control": "no-store" });
+    }
     // the boot id lets the launcher know its own new bridge without waiting on herdr (server/supervisor.ts);
     // the runtime facts ride along, so Settings can switch back while herdr's TUI is stopped
     if (url.searchParams.get("scope") === "bridge") return jsonResponse({ ok: true, auth, bridge_protocol: BRIDGE_PROTOCOL, ...relay, ...(security ? { security } : {}), web_ui: { boot_id: bootId }, runtime: runtime(), ...(options.launchAccepted ? { accepted: options.launchAccepted() } : {}), ...(herdr_runtime ? { herdr_runtime } : {}) }, 200, securityHeaders);
@@ -792,9 +830,10 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     try {
       // another Ovis server reading this PC (its bridge token) applies its own rows; a browser gets this server's
       const snapshot = await clientSnapshot();
-      return jsonResponse({ snapshot: bridgeAuthorized ? snapshot : browserSnapshot(snapshot) });
+      return jsonResponse({ snapshot: bridgeAuthorized ? snapshot : browserSnapshot(snapshot) }, 200, wordedHeaders());
     } catch (error) {
-      return errorResponse(error);
+      // the machine profile answers a failed herdr read with its health's reason
+      return options.profile === "machine" ? machineReadError(error, options.machineEngine ?? "herdr", engineRefusal) : errorResponse(error);
     }
   }
 

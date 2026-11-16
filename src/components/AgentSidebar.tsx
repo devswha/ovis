@@ -9,7 +9,7 @@ import { currentAgentRowTokens, subscribeAgentRowTokens } from "../lib/agentRowT
 import { useT } from "../lib/i18n.ts";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { useEdgeFades } from "../lib/useEdgeFades.ts";
-import { AGENT_GROUPS, agentGroup, agentRoster, groupAgentRows, splitBackgroundRows, type AgentGroup, type AgentRow } from "../lib/agentRoster.ts";
+import { AGENT_GROUPS, agentGroup, agentRoster, groupAgentRows, splitBackgroundRows, treeLines, type AgentGroup, type AgentRow } from "../lib/agentRoster.ts";
 import { stampState, stateSince } from "../lib/agentStateSince.ts";
 import { useAgentStateStamps } from "../lib/useAgentStateSince.ts";
 import { knownStatus } from "../lib/status.ts";
@@ -562,25 +562,10 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     }
     return depth;
   };
-  // the tree line of each helper: it runs on (`more`) while a later helper of the same agent follows before a
-  // shallower row, and a depth-2 row has its agent's line pass through it (`through`) when that line runs on
-  const treeLines = (list: readonly AgentRow[], listDepths: ReadonlyMap<AgentRow, number>): Map<AgentRow, { more: boolean; through: boolean }> => {
-    const level = list.map((row) => Math.min(2, listDepths.get(row) ?? 0));
-    const more = level.map((depth, index) => {
-      if (depth === 0) return false;
-      for (let next = index + 1; next < level.length; next++) {
-        if (level[next]! < depth) return false;
-        if (level[next] === depth) return true;
-      }
-      return false;
-    });
-    const lines = new Map<AgentRow, { more: boolean; through: boolean }>();
-    let parentMore = false;
-    list.forEach((row, index) => {
-      if (level[index] === 1) parentMore = more[index]!;
-      lines.set(row, { more: more[index]!, through: level[index] === 2 && parentMore });
-    });
-    return lines;
+  // the tree line of each helper (lib/agentRoster.ts treeLines)
+  const rowLines = (list: readonly AgentRow[], listDepths: ReadonlyMap<AgentRow, number>): Map<AgentRow, { more: boolean; through: boolean }> => {
+    const lines = treeLines(list.map((row) => Math.min(2, listDepths.get(row) ?? 0)));
+    return new Map(list.map((row, index) => [row, lines[index]!]));
   };
   // Settings → Fold helpers under their agent (this device): an agent's helpers fold under one line after its row,
   // except one that needs the reader and the selected one; the filter shows what it kept, folding nothing
@@ -610,7 +595,7 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
       }
       // the tree lines join the rows in sight
       const shown = list.filter((row) => !foldedHelpers.has(row));
-      for (const [row, line] of treeLines(shown, listDepths)) restLines.set(row, line);
+      for (const [row, line] of rowLines(shown, listDepths)) restLines.set(row, line);
     }
     return { restDepths, restLines, helpersOf, foldedHelpers };
   }, [parts, people, groups, named, foldHelpers, openHelpers, selectedMachineId, selectedPaneId, rowStatus]);

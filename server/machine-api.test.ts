@@ -441,3 +441,20 @@ describe("a device's Omarchy theme", () => {
     }
   });
 });
+
+it("answers every roster read, the verified one too, without a PC's own agent_refs or a value herdr's rows hide", async () => {
+  const snapshot = { version: "test", protocol: 22, workspaces: [], tabs: [], layouts: [],
+    panes: [{ pane_id: "pA", terminal_id: "tA", workspace_id: "w1", tab_id: "w1:t1", focused: false, revision: 1, agent_status: "idle" }],
+    agents: [{ pane_id: "pA", agent: "codex", agent_status: "working", tokens: { quota: "SECRET" } }],
+    agent_refs: [{ pane_id: "pA", agent: "codex", agent_status: "done", tokens: { quota: "SECRET" } }] };
+  const remote = { id: "remote", name: "Away", kind: "ssh", enabled: true, state: "connected", error: null, snapshot } as unknown as Machine;
+  const manager = { list: () => [remote], verifySourceBoot: async () => ({ boot_id: "R" }) } as unknown as MachineManager;
+  const rows = { rows: [{ name: "quota", rules: [{ equals: "SECRET", hide: true }] }], by_agent: {} };
+  const herdrSidebar = { get: () => rows, subscribe: () => () => {} };
+  for (const query of ["", "?compact_agents=1", "?verify_source_boot=remote"]) {
+    const response = await handleMachineRequest(new Request(`http://127.0.0.1/api/machines${query}`), manager, undefined, undefined, false, herdrSidebar);
+    expect(response.status).toBe(200);
+    const text = await response.text();
+    expect({ query, marker: text.includes("agent_refs"), hidden: text.includes("SECRET") }).toEqual({ query, marker: false, hidden: false });
+  }
+});

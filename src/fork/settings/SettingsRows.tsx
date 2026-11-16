@@ -18,6 +18,7 @@ export function ForkFeatures() {
     ["computerView", t("Computer view")],
     ["readAloud", t("Read aloud")],
     ["inboxFooter", t("Inbox footer")],
+    ["muteSubAgents", t("Mute sub-agents")],
   ] as const;
   const row = (key: typeof choices[number][0] | "pullRequests", label: string) => <SettingsRow key={key} label={label} reset={[key]}>
     <Toggle label={label} checked={settings[key]} onChange={(checked) => update({ [key]: checked })} />

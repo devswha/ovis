@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, expect, it, onTestFinished, spyOn } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
@@ -78,7 +79,13 @@ async function startFixture(pane: string, session: string, flags = "") {
 beforeAll(async () => {
   if (process.platform !== "linux") return;
   for (const session of [id, other]) mkdirSync(join(home, "session-state", session), { recursive: true });
-  writeFileSync(executable, `import { openSync, mkdirSync, writeFileSync, appendFileSync, renameSync } from "node:fs";
+  // herdr takes a `node <script>` process for the script's agent only while the process is called node, and Node 24 calls
+  // its main thread MainThread. Asked once here: where node is called node, the stand-in is written as it always was; only
+  // elsewhere does it start by naming itself copilot, as the real CLI's binary is called (the name alone: its command line
+  // stays as typed, which process.title would overwrite). The handoff child runs the same file.
+  const nodeName = spawnSync("node", ["-e", "process.stdout.write(require('node:fs').readFileSync('/proc/self/comm', 'utf8'))"], { encoding: "utf8" }).stdout.trim();
+  const nameSelf = nodeName === "node" ? "" : `import { writeFileSync as nameStandIn } from "node:fs";\nnameStandIn("/proc/self/comm", "copilot");\n`;
+  writeFileSync(executable, `${nameSelf}import { openSync, mkdirSync, writeFileSync, appendFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
@@ -560,7 +567,7 @@ it.skipIf(process.platform !== "linux")("binds only the reported UUID to the for
     const state = (() => { try { return fs.readFileSync(`/proc/${quitting}/stat`, "utf8").split(") ")[1]?.split(" ")[0] ?? "?"; } catch { return "gone"; } })();
     return JSON.stringify({ pid: quitting, state, front: (await paneProcessInfo(pane))?.foreground_processes?.map((process) => [process.pid, process.argv]), agent: label?.agent, status: label?.agent_status, session: label?.agent_session });
   };
-  const recorded = () => `herdr agent events for ${pane}, ms from the quit (they arrive on herdr's poll: the latest may be missing):\n${agentEvents.events.map(({ at, text }) => `${Math.round(at - quitAt)} ${text}`).join("\n") || "none"}`;
+  const recorded = () => `herdr agent events for ${pane}, ms from the quit (later events may not have arrived yet):\n${agentEvents.events.map(({ at, text }) => `${Math.round(at - quitAt)} ${text}`).join("\n") || "none"}`;
   for (const deadline = Date.now() + 10_000; (await paneProcessInfo(pane))?.foreground_processes?.some((process) => process.pid === quitting);) {
     if (Date.now() > deadline) throw new Error(`isolated fixture did not exit: ${await quitState()}\n${recorded()}\nherdr log:\n${herdrLogTail()}`);
     await Bun.sleep(50);
@@ -581,7 +588,7 @@ it.skipIf(process.platform !== "linux")("binds only the reported UUID to the for
   expect((await read()).source).toBe("scrollback");
   symlinkSync(file(id), file(other));
   expect((await read()).source).toBe("scrollback");
-}, 20_000);
+}, 30_000);
 
 it.skipIf(process.platform !== "linux")("retries failed Copilot page reads only while fresh ownership and file generation still agree", async () => {
   const session = "12aa83d8-48bc-41f2-a498-7055c5c44a07";

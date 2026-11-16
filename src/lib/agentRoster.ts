@@ -70,6 +70,27 @@ export function nestRows<T>(entries: readonly T[], idOf: (entry: T) => string, p
   return ordered;
 }
 
+/**
+ * The tree line of each row of a list, by its depth under its agent (0 for an agent, at most 2): a helper's line runs
+ * on (`more`) while a later helper of the same agent follows before a shallower row, and a depth-2 row has its
+ * agent's line pass through it (`through`) when that line runs on. The sidebar's and the agent inbox's trees.
+ */
+export function treeLines(levels: readonly number[]): { more: boolean; through: boolean }[] {
+  const more = levels.map((depth, index) => {
+    if (depth === 0) return false;
+    for (let next = index + 1; next < levels.length; next++) {
+      if (levels[next]! < depth) return false;
+      if (levels[next] === depth) return true;
+    }
+    return false;
+  });
+  let parentMore = false;
+  return levels.map((depth, index) => {
+    if (depth === 1) parentMore = more[index]!;
+    return { more: more[index]!, through: depth === 2 && parentMore };
+  });
+}
+
 /** Every PC's agent rows as the list draws them: the pinned ones first, then the rest in source order. */
 export function agentRoster(machines: readonly Machine[], options: AgentRosterOptions): { pinned: AgentRow[]; rest: AgentRow[] } {
   const rows = machines.flatMap((machine) => {

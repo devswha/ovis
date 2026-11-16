@@ -9,7 +9,7 @@
 }
 @keyframes chat-bubble-pop { from { opacity: 0; transform: translateY(6px) scale(0.96); } }
 /* a streaming reply's new word (src/fork/chat/wordFade.ts): Streamdown's fade; its delay is on the word */
-[data-fork-chat-motion="true"] [data-fork-fade] { animation: fork-word-fade 350ms ease both; }
+[data-fork-chat-motion="true"] [data-fork-fade] { animation: fork-word-fade 350ms ease backwards; }
 @keyframes fork-word-fade { from { opacity: 0; } }
 
 @media (prefers-reduced-motion: reduce) {

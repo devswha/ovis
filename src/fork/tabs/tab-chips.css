@@ -58,3 +58,32 @@
   .fork-tab-chips, .tab-strip-item:has(> .fork-tab-chips) { --fork-chip-size: 44px; }
   .fork-tab-chip { min-height: 44px; }
 }
+
+/* A phone's tab is as wide as its content (TabStrip.css): with chips it hugs its title and them, no desktop
+   minimum. The phone's cap applies to the title alone, which never shrinks for the chips: the strip scrolls. */
+.header-tabs.is-phone .tab-strip-item:has(> .fork-tab-chips) {
+  min-width: 0;
+  max-width: none;
+}
+.header-tabs.is-phone .tab-strip-item:has(> .fork-tab-chips) > .tab-strip-tab {
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: 6rem;
+}
+.header-tabs.is-phone .tab-strip-item.is-active:has(> .fork-tab-chips) > .tab-strip-tab { max-width: 7rem; }
+
+/* A phone's chip keeps its 44px target, but the open one is marked by a circle inside the active tab's pill
+   (TabStrip.css), never by its whole square, which stood out of the pill. */
+.header-tabs.is-phone .fork-tab-chip:is([aria-selected="true"], [aria-pressed="true"]) { background: transparent; }
+.header-tabs.is-phone .fork-tab-chip:is([aria-selected="true"], [aria-pressed="true"])::before {
+  content: "";
+  position: absolute;
+  inset-block: calc(var(--space-1-5) + var(--space-1));
+  inset-inline-start: 50%;
+  aspect-ratio: 1;
+  translate: -50% 0;
+  border-radius: var(--radius-circle);
+  background: var(--bg-hover);
+  pointer-events: none;
+}
+.header-tabs.is-phone .fork-tab-chip > svg { position: relative; }

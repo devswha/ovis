@@ -25,6 +25,8 @@ function stateOf(detail: GithubPullDetail, t: Translate) {
 
 /** Pages read this visit: reopening one draws it at once while it is read again behind it. */
 const pageCache = new Map<string, GithubPullDetail>();
+/** A page already read elsewhere (a chat's link, GithubInbox.tsx openGithubLink) is drawn at once. */
+export function keepGithubPage(detail: GithubPullDetail): void { pageCache.set(detail.url, detail); }
 type Tab = "overview" | "conversation" | "checks" | "files";
 /** The tab each pull request was left on, so coming back to it opens where it was. */
 const tabs = new Map<string, Tab>();

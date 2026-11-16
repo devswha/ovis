@@ -97,6 +97,15 @@ const ACTION_LABEL_MAX = 24;
 const PROMPT_SUMMARY_LINES = 4;
 const PROMPT_SUMMARY_MAX = 300;
 const DEFAULT_SUBJECT = "https://github.com/devswha/ovis";
+/**
+ * The largest encrypted body the phone app's push relay passes on (push-relay/worker.ts `push`): it
+ * base64s the body into `{"aps":{"alert":{"body":FALLBACK_BODY},"mutable-content":1},"ovis":"…"}`,
+ * 74 bytes besides the base64, and answers 413 when that is over MAX_APNS_BYTES, 4,096 (FCM's
+ * limit too). floor((4096 - 74) / 4) * 3 = 3,015.
+ */
+export const RELAY_MAX_BODY_BYTES = 3015;
+/** The path of an endpoint the push relay hands the phone app (push-relay/worker.ts `register`, OvisPushPlugin.registerWithRelay). */
+const RELAY_ENDPOINT_PATH = /^\/v1\/push\/[^/]+$/;
 /** How many retired endpoints are remembered; the oldest is forgotten first. */
 const RETIRED_LIMIT = 1000;
 /** The key pairs, besides vapid.json's, that subscriptions taken over from another state dir were made for. */
@@ -240,7 +249,7 @@ export interface PushServiceOptions {
   /** whether a window of the app is in use right now: then no alert goes to any device (the test push still does) */
   inUse?: () => boolean;
   /** whether the pane's alerts are off for everyone (shared/notify-policy.ts paneAlertsMuted on the shared preferences) */
-  muted?: (machineId: string, paneId: string) => boolean;
+  muted?: (machineId: string, paneId: string, pane?: Pick<HerdrPane, "parent_pane_id">) => boolean;
   /** accept plain-http loopback endpoints: only for the tests' fake push service (push.fake.ts) */
   loopbackHttp?: boolean;
   /** The friend an agent pane wears (FriendStore.friendOf), named in its alert. */
@@ -670,12 +679,20 @@ export function createPushService(options: PushServiceOptions): PushService {
     // registered again by another owner or with other keys, and that subscription is not told
     const identity = identityOf(subscription);
     const { publicKey, privateKey } = keysFor(subscription.endpoint);
-    const details = webpush.generateRequestDetails(subscription, JSON.stringify(message), {
+    const request = (payload: PushPayload) => webpush.generateRequestDetails(subscription, JSON.stringify(payload), {
       vapidDetails: { subject, publicKey, privateKey },
       TTL: PUSH_TTL_SECONDS,
       urgency,
       contentEncoding: "aes128gcm",
     });
+    // which PC sent it, for the phone app's tap (shared/push.ts endpoint): a pane alert to the push
+    // relay only, as a browser's worker knows its PC by its own scope
+    const toRelay = message.pane_id !== null && RELAY_ENDPOINT_PATH.test(new URL(subscription.endpoint).pathname);
+    const serverId = toRelay ? options.serverId?.() : undefined;
+    const named: PushPayload | null = toRelay ? { ...message, endpoint: subscription.endpoint, ...(serverId ? { server_id: serverId } : {}) } : null;
+    let details = request(named ?? message);
+    // past what the relay takes, it goes without them: the tap then only opens the app, but the alert arrives
+    if (named && details.body.length > RELAY_MAX_BODY_BYTES) details = request(message);
     const headers: Record<string, string> = {};
     for (const [name, value] of Object.entries(details.headers)) headers[name] = String(value);
     let status: number | null = null;
@@ -836,7 +853,7 @@ export function createPushService(options: PushServiceOptions): PushService {
     waiting.delete(key);
   }
 
-  const muted = (machineId: string, paneId: string): boolean => options.muted?.(machineId, paneId) === true;
+  const muted = (machineId: string, paneId: string): boolean => options.muted?.(machineId, paneId, friends.pane(machineId, paneId)) === true;
   /** whether the subscription, as it is now, wants this kind of alert from this PC: asked again as an alert goes out */
   const wants = (subscription: PushSubscriptionRecord, kind: AlertKind, machineId: string): boolean => {
     const prefs = subscription.alerts ?? DEFAULT_ALERTS;

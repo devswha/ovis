@@ -7,14 +7,17 @@
  * one more than MAX_BACKLOG_MS out, so a burst reads as evenly as a trickle. A word keeps the
  * delay it was given, so a later update never replays or cuts short its fade.
  */
-import { createElement, useMemo, useRef, useState, type ReactNode } from "react";
+import { createElement, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import type { ConversationTurn } from "../../../shared/protocol.ts";
+import type { MarkdownDraw, MarkdownPieceProps } from "../../components/Markdown.tsx";
 
 /** words 100ms apart, an update's words all started within 1000ms (Streamdown: 40 and 320); the fade's 350ms is in chat.css */
 const STAGGER_MS = 100;
 const MAX_BACKLOG_MS = 1000;
 const MIN_STEP_MS = 4;
+/** the fade's own length (chat.css): a word has faded in this long after its delay */
+const FADE_MS = 350;
 /** the chat was opened or shown again this recently: the reply is drawn as it stands */
 export const OPEN_GRACE_MS = 1500;
 
@@ -88,6 +91,23 @@ export class WordFade {
   private seen = new Map<string, number | null>();
   private pass: Pass = { base: 0, step: 0, count: 0 };
   private started = 0;
+  /** the reply was drawn as plain text again (settle) and has not grown since */
+  settled = false;
+
+  /** When the last word given a fade has faded in (the clock `update` was given). */
+  get settlesAt(): number {
+    return this.cursor + FADE_MS;
+  }
+
+  /**
+   * The reply is done and its fades have played: it is drawn as plain text, its word spans gone, and
+   * each word drawn again later (the agent took the turn up again) is drawn as it is, not faded twice.
+   */
+  settle(): void {
+    for (const place of this.seen.keys()) this.seen.set(place, null);
+    this.pass = { base: 0, step: 0, count: 0 };
+    this.settled = true;
+  }
 
   /**
    * Starts an update's pass when the reply drawn at row `key` holds `words` words and held fewer
@@ -106,6 +126,7 @@ export class WordFade {
     if (words === this.words) return false;
     const grew = still ? 0 : Math.max(0, words - this.words);
     this.words = words;
+    if (grew > 0) this.settled = false;
     const taken = takePass(this.cursor, grew, now);
     if (grew > 0) this.cursor = taken.cursor;
     this.pass = taken.pass;
@@ -123,27 +144,38 @@ export class WordFade {
   }
 
   /** `text` drawn a span per word, each new one fading in (MarkdownTextContext's drawing). */
-  draw(text: string, place: string): ReactNode {
+  text(text: string, place: string): ReactNode {
     return splitWords(text).map((word, index) => {
       if (ONLY_SPACE.test(word)) return word;
-      const delay = this.delay(`${place}:${index}`);
-      return delay === null
-        ? createElement("span", { key: index }, word)
-        : createElement("span", { key: index, "data-fork-fade": "", style: { animationDelay: `${delay}ms` } }, word);
+      return createElement("span", { key: index, ...fadeProps(this.delay(`${place}:${index}`)) }, word);
     });
+  }
+
+  /**
+   * A piece that is not a word (a bullet, code, a quote, a rule, a table, an image): it takes the
+   * next turn among the words, so it never shows before the words written ahead of it. Its markup
+   * (`-`, the backticks, the fence) is counted among the words, so it takes no turn from them.
+   */
+  piece(place: string): MarkdownPieceProps | undefined {
+    return fadeProps(this.delay(`${place}#`));
   }
 }
 
-export type DrawText = (text: string, place: string) => ReactNode;
+function fadeProps(delay: number | null): MarkdownPieceProps | undefined {
+  return delay === null ? undefined : { "data-fork-fade": "", style: { animationDelay: `${delay}ms` } };
+}
 
 /**
  * The row of `turns` whose words fade in (the last, while it is the agent's and Animated replies
  * is on) and the drawing for its MarkdownTextContext. A reply already there when the chat is
- * opened or shown again is drawn as it stands.
+ * opened or shown again is drawn as it stands. Once the agent is done (`live` false) and the last
+ * fade has played, the row is drawn as plain text again, as Streamdown does: a word per span and
+ * its finished animation would otherwise stay on the page, and slow a phone, until the chat closes.
  */
-export function useWordFade(turns: readonly ConversationTurn[], on: boolean, visible: boolean): { row: number | null; draw: DrawText } {
+export function useWordFade(turns: readonly ConversationTurn[], on: boolean, visible: boolean, live: boolean): { row: number | null; draw: MarkdownDraw } {
   const [fade] = useState(() => new WordFade());
-  const draw = useMemo((): DrawText => (text, place) => fade.draw(text, place), [fade]);
+  const [, wake] = useState(0);
+  const draw = useMemo((): MarkdownDraw => ({ text: (text, place) => fade.text(text, place), piece: (place) => fade.piece(place) }), [fade]);
   const shownSince = useRef(performance.now());
   const wasVisible = useRef(visible);
   const rows = useRef(turns.length);
@@ -155,5 +187,15 @@ export function useWordFade(turns: readonly ConversationTurn[], on: boolean, vis
   const words = useMemo(() => row === null ? 0 : turnWords(last), [row, last]);
   fade.update(row, words, turns.length > rows.current, !visible || now - shownSince.current < OPEN_GRACE_MS, now);
   rows.current = turns.length;
-  return { row, draw };
+  const settlesAt = fade.settlesAt;
+  if (!live && now >= settlesAt && !fade.settled) fade.settle();
+  else if (live) fade.settled = false;
+  const plain = fade.settled;
+  // the agent is done but a fade still plays: draw the reply again once it has
+  useEffect(() => {
+    if (live || plain) return;
+    const timer = window.setTimeout(() => wake((count) => count + 1), Math.max(0, settlesAt - performance.now()) + 16);
+    return () => window.clearTimeout(timer);
+  }, [live, plain, settlesAt]);
+  return { row: plain ? null : row, draw };
 }

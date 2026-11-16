@@ -119,7 +119,7 @@ export async function showNativeAlert(alert: NativeAlert): Promise<void> {
 }
 
 /** A tapped native alert as public/sw.js posts a tapped notification: a `select-pane` message (lib/notificationTarget.ts). */
-export function nativeAlertTaps(): { addEventListener: (type: "message", listener: (event: MessageEvent) => void) => void } | undefined {
+export function nativeAlertTaps(): { addEventListener: (type: string, listener: (event: Event) => void) => void } | undefined {
   const callback = bridge()?.nativeCallback;
   if (!nativeAlerts() || !callback) return undefined;
   return {

@@ -53,20 +53,72 @@
   border: 0;
 }
 
-[data-fork-agent-friends="true"] .mode-inbox .fork-inbox-helper > .inbox-row {
-  position: relative;
-  padding-inline-start: calc(var(--inbox-inset) + var(--space-5));
+/* a helper reads under its agent as in the sidebar: one line, its mark and title, stepped in past the sidebar's own
+   tree line (AgentSidebar.css), which stands under the agent's mark. The line's place is worked out on the list,
+   where the mark's size is the agent row's. */
+.mode-inbox .inbox-rows {
+  --tree-x: calc(var(--inbox-inset) + var(--inbox-avatar) / 2);
+  --tree-step: calc(var(--space-3) + var(--space-2) + var(--mark-size) / 2);
 }
 
-[data-fork-agent-friends="true"] .mode-inbox .fork-inbox-helper > .inbox-row::before {
-  content: "";
+.mode-inbox .inbox-item[data-depth] {
+  position: relative;
+  --inbox-avatar: var(--mark-size);
+}
+
+/* A wide list spaces its rows with a gap (InboxList.css), which broke the tree line between them: there the space
+   is each row's own, half above and half below, so the rows meet and the line runs on through them. */
+.mode-inbox.is-wide .inbox-rows { gap: 0; }
+.mode-inbox.is-wide .inbox-item { padding-block: calc(var(--space-1) / 2); }
+
+/* the agent's row has room under its mark: the line starts right under the mark, as the sidebar's does */
+.mode-inbox .inbox-item:has(+ .inbox-item[data-depth="1"]):not([data-depth]) {
+  position: relative;
+}
+
+.mode-inbox .inbox-item:has(+ .inbox-item[data-depth="1"]):not([data-depth])::after {
   position: absolute;
-  inset-inline-start: var(--inbox-inset);
-  bottom: 50%;
-  width: var(--space-3);
-  height: var(--space-4);
+  top: calc(50% + var(--inbox-avatar) / 2 + var(--space-1));
+  bottom: 0;
+  inset-inline-start: var(--tree-x);
   border-inline-start: var(--hairline) solid var(--border-strong);
-  border-bottom: var(--hairline) solid var(--border-strong);
+  content: "";
+  pointer-events: none;
+}
+
+.mode-inbox .inbox-item[data-depth] > .inbox-row {
+  gap: var(--space-2);
+  min-height: var(--control-h);
+  padding-inline-start: calc(var(--tree-x) + var(--space-3) + var(--space-2));
+}
+
+.mode-inbox .inbox-item[data-depth="2"] > .inbox-row {
+  padding-inline-start: calc(var(--tree-x) + var(--tree-step) + var(--space-3) + var(--space-2));
+}
+
+.mode-inbox .inbox-item[data-depth] .inbox-body {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.mode-inbox .inbox-item[data-depth] .inbox-line {
+  flex: 1 1 auto;
+}
+
+.mode-inbox .inbox-item[data-depth] .inbox-words {
+  display: none;
+}
+
+.mode-inbox .inbox-item[data-depth]:not(.is-current) .inbox-name {
+  font-weight: var(--fw-regular);
+}
+
+/* a finger still gets its target */
+@media (pointer: coarse) {
+  .mode-inbox .inbox-item[data-depth] > .inbox-row {
+    min-height: var(--touch-target);
+  }
 }
 
 /* src/components/Machines.css */

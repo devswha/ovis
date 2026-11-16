@@ -3,14 +3,15 @@ import { ArrowLeft, Check, ChevronRight, CircleAlert, CircleCheck, CircleDot, Ci
 
 import { RowMenu } from "../../components/RowMenu.tsx";
 
-import type { GithubPull, GithubPulls } from "../../../shared/github.ts";
+import type { GithubPull, GithubPullDetail, GithubPulls } from "../../../shared/github.ts";
 import type { WorktreeOpened } from "../../../shared/protocol.ts";
 import { ApiError, getJson } from "../../lib/api.ts";
 import { useT } from "../../lib/i18n.ts";
 import { useSettings } from "../../lib/settings.ts";
 import { githubGroups, githubSearched, githubStatus, loadGithubRepo, saveGithubRepo, useKeptScroll } from "./github.ts";
 import { ago } from "./GithubConversation.tsx";
-import { GithubPullPage } from "./GithubPull.tsx";
+import { GithubPullPage, keepGithubPage } from "./GithubPull.tsx";
+import { setPullLinkOpener } from "./pullLinks.ts";
 import "./GithubInbox.css";
 
 type Section = "inbox" | "github";
@@ -42,12 +43,14 @@ function openPull(next: GithubPull, phone: boolean): void {
   if (phone && !pullEntry()) { window.history.pushState({ ...(window.history.state ?? {}), [PULL_KEY]: true }, ""); onPullEntry = true; }
   pull = next; emit();
 }
+/* On a phone, a pull request a chat's link opened covers the chat (ForkGithubPane) while the list stays as it was. */
+let linked = false;
 export function closeGithubPull(): void {
   if (onPullEntry && pullEntry()) window.history.back();
-  else { pull = null; emit(); }
+  else { pull = null; linked = false; emit(); }
 }
 if (typeof window !== "undefined") window.addEventListener("popstate", () => {
-  if (!pullEntry() && onPullEntry) { onPullEntry = false; pull = null; emit(); }
+  if (!pullEntry() && onPullEntry) { onPullEntry = false; pull = null; linked = false; emit(); }
   if (githubEntry()) { onEntry = true; setGithubSection("github"); }
   else if (onEntry) { onEntry = false; pull = null; setGithubSection("inbox"); }
 });
@@ -55,6 +58,43 @@ const useSection = () => useSyncExternalStore(subscribe, () => section, () => "i
 /** Which list the agent inbox shows: its agents, or Pull requests. */
 export const useGithubSection = useSection;
 const useOpenPull = () => useSyncExternalStore(subscribe, () => pull, () => null);
+const useLinked = () => useSyncExternalStore(subscribe, () => linked, () => false);
+
+/** The row a link stands for: the list's own when it has one, so its account and workspace come with it, else the
+    page as the first account that can read it sees it. Unread, the page says so and offers GitHub. */
+async function linkedPull(repository: string, number: number, url: string): Promise<GithubPull> {
+  if (listingCache === null) listingCache = { value: await getJson<GithubPulls>("/api/fork/github/pulls", { cache: "no-store" }), at: Date.now() };
+  const listing = listingCache.value;
+  const rows = [...listing.review, ...listing.yours, ...listing.team];
+  const sameRepo = (row: GithubPull) => row.repository.toLowerCase() === repository.toLowerCase();
+  const listed = rows.find((row) => sameRepo(row) && row.number === number);
+  if (listed) return listed;
+  const workspace_id = rows.find((row) => sameRepo(row) && row.workspace_id)?.workspace_id;
+  const row: GithubPull = { repository, number, url, title: `${repository} #${number}`, branch: "", author: null, draft: false, fork: false,
+    updated_at: "", checks: "none", review: "none", checkout: null, account: listing.accounts[0], ...(workspace_id ? { workspace_id } : {}) };
+  for (const account of listing.accounts) {
+    try {
+      const detail = await getJson<GithubPullDetail>(`/api/fork/github/pull?${new URLSearchParams({ repo: repository, number: String(number), account })}`, { cache: "no-store" });
+      keepGithubPage(detail);
+      const checks = detail.checks.failing > 0 ? "failing" : detail.checks.pending > 0 ? "pending" : detail.checks.passing > 0 ? "passing" : "none";
+      return { ...row, url: detail.url, title: detail.title, branch: detail.head, author: detail.author, draft: detail.draft, fork: detail.fork,
+        updated_at: detail.updated_at, checks, review: detail.review, account };
+    } catch { /* another account may see it */ }
+  }
+  return row;
+}
+
+/** A chat's link opens its pull request: wide, in the inbox's Pull requests; on a phone, over the chat, Back returning to it. */
+function openLinked(enter: () => void, inMode: boolean) {
+  return (repository: string, number: number, url: string): void => {
+    const phone = window.matchMedia?.("(min-width: 769px)").matches !== true;
+    if (!phone) { if (!inMode) enter(); setGithubSection("github"); }
+    void linkedPull(repository, number, url).then((row) => {
+      if (phone) linked = true;
+      openPull(row, phone);
+    }, () => window.open(url, "_blank", "noopener,noreferrer"));
+  };
+}
 
 /** Wrap the existing Inbox button: its original action and focus behavior still run on return. */
 export function ForkGithubRail({ children }: { children: ReactElement<{ "aria-current"?: "page"; onClick?: MouseEventHandler<HTMLButtonElement> }> }) {
@@ -80,11 +120,20 @@ export function ForkGithubSection({ children, ...props }: ViewProps & { children
 }
 
 /** One line in App's pane area: while GitHub is the wide column's section, its page (or a placeholder) covers the chat. */
-export function ForkGithubPane({ wide, watching, onOpened }: ViewProps) {
+export function ForkGithubPane({ wide, watching, onOpened, inMode = false, enter }: ViewProps & { inMode?: boolean; enter?(): void }) {
   const { settings } = useSettings();
   const current = useSection();
   const open = useOpenPull();
+  const fromLink = useLinked();
   const t = useT();
+  useEffect(() => {
+    if (watching || enter === undefined) return;
+    setPullLinkOpener(openLinked(enter, inMode));
+    return () => setPullLinkOpener(null);
+  }, [enter, inMode, watching]);
+  if (settings.pullRequests && !wide && fromLink && open !== null) {
+    return <div className="fork-github-pane"><GithubPullPage key={open.url} pull={open} wide={false} watching={watching} onOpened={onOpened} /></div>;
+  }
   if (!settings.pullRequests || !wide || current !== "github") return null;
   return <div className="fork-github-pane">
     {open === null ? <p className="inbox-unchosen" role="status">{t("Choose a pull request to open it here.")}</p>

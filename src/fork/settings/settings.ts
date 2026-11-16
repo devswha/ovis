@@ -22,6 +22,7 @@ export interface ForkSettings {
   pullRequests: boolean;
   inboxFooter: boolean;
   readAloud: boolean;
+  muteSubAgents: boolean;
 }
 
 export const FORK_DEFAULTS: ForkSettings = {
@@ -30,10 +31,13 @@ export const FORK_DEFAULTS: ForkSettings = {
   squareCorners: false, moreViewToggle: false, agentFriends: false,
   piModelPicker: false, chatMotion: false, piLiveVoice: false,
   computerView: false, pullRequests: false, inboxFooter: false, readAloud: false,
+  muteSubAgents: true,
 };
 
 export const FORK_SCOPE = {
   ...(Object.fromEntries(Object.keys(FORK_DEFAULTS).map((key) => [key, "device"])) as Record<keyof ForkSettings, "device">),
+  // the server's push alerts read it too (shared/fork/alerts.ts)
+  muteSubAgents: "shared",
 } as const;
 
 export function sanitizeForkSettings(record: Record<string, unknown>): ForkSettings {

@@ -85,7 +85,7 @@ try {
           } else {
             const chip = row.getByRole("tab", { name: "QA implementer", exact: true });
             assert.equal(await row.locator(".fork-tab-chip").count(), children);
-            assert.equal(await chip.locator(".lucide-code-xml").count(), 1);
+            assert.equal(await chip.locator(".lucide-bot").count(), 1);
             assert.equal(await chip.locator(".fork-tab-friend").count(), 0);
             await chip.click();
             await page.locator(`[data-layout-pane=${JSON.stringify(panes.web)}]`).waitFor({ state: "visible" });
@@ -100,6 +100,13 @@ try {
             if (width < 768) {
               const box = (await chip.boundingBox())!;
               assert.ok(box.width >= 44 && box.height >= 44, "phone chips are touch targets");
+              const gap = await row.locator(".tab-strip-item.is-active").evaluate((item) => {
+                const label = item.querySelector(".tab-strip-label")!.getBoundingClientRect();
+                const chips = item.querySelector(".fork-tab-chips")!.getBoundingClientRect();
+                return chips.left - label.right;
+              });
+              assert.ok(gap < 24, `a phone's tab hugs its short title and its chips (gap ${gap}px)`);
+              if (process.env.QA_SHOTS) await page.screenshot({ path: `${process.env.QA_SHOTS}/phone-${children}.png`, clip: { x: 0, y: 0, width, height: 120 } });
               const inactive = row.getByRole("tab", { name: "QA reviewer", exact: true });
               const before = await inactive.evaluate((node) => node.previousElementSibling?.getAttribute("aria-label"));
               assert.ok(before);
@@ -118,7 +125,7 @@ try {
               const sheet = page.locator(".row-sheet");
               const review = sheet.getByRole("button", { name: "QA reviewer", exact: true });
               await review.waitFor();
-              assert.equal(await review.locator(".lucide-check").count(), 1);
+              assert.equal(await review.locator(".lucide-bot").count(), 1);
               await review.click();
               await sheet.waitFor({ state: "detached" });
               await page.locator(`[data-layout-pane=${JSON.stringify(panes.flaky)}]`).waitFor({ state: "visible" });

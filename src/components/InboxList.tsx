@@ -207,7 +207,7 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
 
   const severalPcs = machines.length > 1;
   const rows = forkInboxNesting(shown, settings.agentFriends).map((row) => {
-    const { machine, entry, forkNested } = row;
+    const { machine, entry, forkTree } = row;
     const { pane, workspace, tab } = entry;
     const online = machine.state === "connected";
     const status = inboxStatus(row, activity);
@@ -227,7 +227,7 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
     const state = !online ? t("Offline") : failed ? t("Turn failed") : inboxStateWord(group, t);
     const line = inboxRowLine({ online, group, words: wordsOf(row), place, machine: severalPcs ? machine.name : null, failed }, t);
     return {
-      key, machine, pane, online, status, group, title, line, failed, mark: paneMark(entry) ?? "", kind, state, forkNested,
+      key, machine, pane, online, status, group, title, line, failed, mark: paneMark(entry) ?? "", kind, state, forkTree,
       asks: online && inboxAsks(group), since: online ? inboxSinceAt(group, summary, group === "blocked" ? stateSince(stamps, machine.id, pane.pane_id, pane.terminal_id, "blocked") : null) : null,
     };
   });
@@ -405,7 +405,7 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
               // what a screen reader hears for the row: who it is, how it is, what it says, then for how long
               const spoken = [row.kind ? agentName(row.kind) : null, row.title, row.state, row.line === row.state ? null : row.line, age].filter((part) => part !== null).join(", ");
               return (
-                <li key={row.key} className={`inbox-item${row.online ? "" : " is-offline"}${row.asks ? " is-asking" : ""}${open ? " is-current" : ""}${row.forkNested ? " fork-inbox-helper" : ""}`} data-machine={row.machine.id} data-pane={row.pane.pane_id} data-state={row.group}>
+                <li key={row.key} className={`inbox-item${row.online ? "" : " is-offline"}${row.asks ? " is-asking" : ""}${open ? " is-current" : ""}`} {...row.forkTree} data-machine={row.machine.id} data-pane={row.pane.pane_id} data-state={row.group}>
                   <button type="button" className="inbox-row" disabled={!row.online} aria-label={spoken} aria-current={open ? "true" : undefined}
                     ref={(node) => { if (node) rowNodes.current.set(row.key, node); else rowNodes.current.delete(row.key); }}
                     title={wide ? [row.title, row.line, at === null ? null : `${age} · ${at.toLocaleString(resolvedLanguage)}`].filter((part) => part !== null).join("\n") : undefined}

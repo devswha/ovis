@@ -6,6 +6,7 @@ import type { HerdrPane } from "../../shared/protocol.ts";
 import { createPushService } from "../push.ts";
 import { startFakePushService } from "../push.fake.ts";
 import { FriendStore } from "./friends.ts";
+import { helperAlertsMuted } from "../../shared/fork/alerts.ts";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -40,3 +41,25 @@ for (const managed of [false, true]) {
     } finally { fake.stop(); }
   });
 }
+
+test("a sub-agent's push alert is held back while sub-agents are muted, and its agent's still goes out", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "alert-helpers-"));
+  dirs.push(dir);
+  const fake = await startFakePushService();
+  // unset, as on a server no browser has sent the setting to: muted
+  let muteSubAgents: boolean | undefined;
+  const push = createPushService({
+    stateDir: dir, loopbackHttp: true, timing: { short: 0, long: 0, longTurn: 0 },
+    muted: (_machine, _id, seen) => helperAlertsMuted(muteSubAgents, seen),
+  });
+  try {
+    push.subscribe(fake.subscription);
+    push.seed([pane("agent", "project"), pane("helper", "project", "agent")]);
+    await push.onStatus("helper", "blocked"); await push.settled();
+    await push.onStatus("agent", "blocked"); await push.settled();
+    expect(fake.received.map((message) => message.payload.pane_id)).toEqual(["agent"]);
+    muteSubAgents = false;
+    await push.onStatus("helper", "working"); await push.onStatus("helper", "blocked"); await push.settled();
+    expect(fake.received.map((message) => message.payload.pane_id)).toEqual(["agent", "helper"]);
+  } finally { fake.stop(); }
+});
