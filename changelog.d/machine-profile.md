@@ -11,5 +11,10 @@
   state folder. A profile starts only on a state folder that is empty or that it marked itself
   (`machine-profile.json`), not on one another server wrote to before it. An ordinary server
   started with `OVIS_PREVIEW=fleet` holds a lock file `serve.own` in its state folder (not on
-  Windows) and does not start on a folder a running profile holds; without the preview an ordinary
-  server takes no lock and is not kept off a profile's folder. The machine profile stays a preview.
+  Windows) and does not start on a folder a running profile holds; without the preview it takes no
+  lock. The machine profile stays a preview.
+
+### Changed
+- `ovis-server` does not start on a state folder that holds a machine profile's marker
+  (`machine-profile.json`): it names the folder, says to give it another `OVIS_STATE_DIR`, and
+  exits. Only a folder a machine profile was started on holds that marker.
