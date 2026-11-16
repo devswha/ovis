@@ -247,4 +247,9 @@ export const DEVICES_ZH: Record<string, string> = {
   "Asking {name}…": "正在请求 {name}…",
   "Approve on another device of your account": "请在你账户的另一台设备上批准",
   "That PC could not be added. Try again.": "无法添加那台 PC。请重试。",
+  "The relay did not start: {message}": "中继未能启动：{message}",
+  "Push alerts need HTTPS or localhost, and on iPhone the home-screen app.": "推送通知需要 HTTPS 或 localhost。在 iPhone 上请使用添加到主屏幕的应用。",
+  "Allow notifications in your browser settings, then try again.": "请在浏览器设置中允许通知，然后重试。",
+  "Allow notifications for Ovis in the phone's Settings, then try again.": "请在手机的设置中允许 Ovis 的通知，然后重试。",
+  "Could not send the test notification. Try again.": "无法发送测试通知。请重试。",
 };

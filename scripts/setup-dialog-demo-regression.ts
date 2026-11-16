@@ -4,9 +4,9 @@
  *
  * - A fresh run's guide is a modal dialog named "Set up Ovis" over the app, not a page in the main area: at
  *   1920x1080 it is the 1200x675 16:9 card in the middle of the window, at 1280x720 the same card with no
- *   scroll, and at 390 the app's bottom sheet. The keyboard starts on "I'm new to Ovis", Tab stays inside it,
+ *   scroll, and at 390 the app's bottom sheet. The keyboard starts on "Start setup", Tab stays inside it,
  *   and its close button is named.
- * - The fast path is two clicks from the welcome: I'm new to Ovis, then Start now, finish setup later, which
+ * - The fast path is two clicks from the welcome: Start setup, then Start now, which
  *   opens a new workspace with the agent picked for you (one more in the sidebar) and closes the guide.
  * - The full path: Continue leads to the theme step, whose cards are a radio group (an arrow picks the next
  *   theme and the whole app takes it at once, the side panel naming it), then to Done, whose Start with
@@ -133,26 +133,26 @@ try {
           assert.ok(Math.abs(box.y + box.height - size.height) <= 1 && Math.round(box.width) === size.width, `a bottom sheet at 390 ${at}: ${JSON.stringify(box)}`);
         }
         // the keyboard starts on the first choice and Tab stays in the dialog
-        assert.match(await focusedName(page), /^I'm new to Ovis/, `the keyboard starts on I'm new to Ovis ${at}`);
+        assert.match(await focusedName(page), /^Start setup/, `the keyboard starts on Start setup ${at}`);
         const order: string[] = [];
         for (let step = 0; step < 12; step++) {
           await page.keyboard.press("Tab");
           order.push(await focusedName(page));
           assert.ok(await page.evaluate(() => document.activeElement?.closest(".setup-dialog") != null), `Tab stays in the dialog ${at}: ${order.join(" | ")}`);
         }
-        assert.ok(order.includes("I've used Ovis before Skip the setup and go straight in"), `Tab reaches the second choice ${at}: ${order.join(" | ")}`);
+        assert.ok(order.includes("Go straight in"), `Tab reaches the second choice ${at}: ${order.join(" | ")}`);
         assert.ok(order.includes("Close setup"), `the close button is named Close setup ${at}: ${order.join(" | ")}`);
         await shot("1-welcome");
 
         // the fast path: two clicks from the welcome to a running agent
-        await dialog.getByRole("button", { name: /^I'm new to Ovis/ }).click();
-        const title = dialog.getByRole("heading", { name: "Pick your coding agent", exact: true });
+        await dialog.getByRole("button", { name: /^Start setup/ }).click();
+        const title = dialog.getByRole("heading", { name: "Pick an agent", exact: true });
         await title.waitFor();
         await dialog.locator(".setup-found .setup-tile").first().waitFor();
         await settled(page);
-        assert.equal(await focusedName(page), "Pick your coding agent", `the step's title takes the keyboard ${at}`);
+        assert.equal(await focusedName(page), "Pick an agent", `the step's title takes the keyboard ${at}`);
         const footer = dialog.locator(".setup-foot");
-        assert.deepEqual((await footer.getByRole("button").allInnerTexts()).map((text) => text.trim()), ["Start now, finish setup later", "Back", "Continue"], `the agent step's footer ${at}`);
+        assert.deepEqual((await footer.getByRole("button").allInnerTexts()).map((text) => text.trim()), ["Start now", "Back", "Continue"], `the agent step's footer ${at}`);
         assert.equal(await dialog.locator(".btn-primary").count(), 1, `one primary button on the agent step ${at}`);
         assert.ok(await dialog.locator(".setup-side").getByText("Claude Code", { exact: true }).count() > 0, `the side panel names the agent picked for you ${at}`);
         if (!phone) {
@@ -186,10 +186,10 @@ try {
 
         // Continue: phone and alerts. This computer's chips are Settings' own, and Send test shows one alert here at once
         await footer.getByRole("button", { name: "Continue", exact: true }).click();
-        const touch = dialog.getByRole("heading", { name: "Stay in touch with your agents", exact: true });
+        const touch = dialog.getByRole("heading", { name: "Stay in touch", exact: true });
         await touch.waitFor();
         await settled(page);
-        assert.equal(await focusedName(page), "Stay in touch with your agents", `the phone and alerts step's title takes the keyboard ${at}`);
+        assert.equal(await focusedName(page), "Stay in touch", `the phone and alerts step's title takes the keyboard ${at}`);
         assert.equal((await steps.locator('[aria-current="step"]').textContent())?.replace(/\s+/g, ""), "3Phoneandalerts", `the head marks Phone and alerts as the current step ${at}`);
         // nothing asked the browser for permission on the way here; Turn on alerts asks it once
         const asks = () => page.evaluate(() => (window as unknown as { permissionAsks: { count: number } }).permissionAsks.count);
@@ -200,7 +200,7 @@ try {
         const chips = dialog.getByRole("group", { name: "Alert me when", exact: true });
         assert.deepEqual((await chips.getByRole("button", { pressed: true }).allInnerTexts()).map((text) => text.trim()), ["Needs input", "Needs permission", "Long turn finished"], `the default alerts ${at}`);
         await dialog.getByRole("button", { name: "Send test", exact: true }).click();
-        await dialog.getByRole("status").filter({ hasText: "Test alert sent." }).waitFor();
+        await dialog.getByRole("status").filter({ hasText: "Sent. Check your screen." }).waitFor();
         assert.deepEqual(await page.evaluate(() => (window as unknown as { shownAlerts: string[] }).shownAlerts), ["Test alert"], `Send test shows one alert ${at}`);
         assert.ok(await dialog.locator(".setup-side").getByText("On your phone", { exact: true }).count() > 0, `the phone is beside the alerts ${at}`);
         await chips.getByRole("button", { name: "Any turn finished", exact: true }).click();
@@ -228,14 +228,14 @@ try {
         await title.waitFor();
 
         if (size.width === 1920) {
-          // the fast path straight from a fresh welcome: I'm new to Ovis, then Start now opens a workspace and closes the guide
+          // the fast path straight from a fresh welcome: Start setup, then Start now opens a workspace and closes the guide
           await page.evaluate((guide) => localStorage.setItem("ovis:setup-guide", guide), WELCOME);
           await page.reload();
-          await dialog.getByRole("button", { name: /^I'm new to Ovis/ }).click();
+          await dialog.getByRole("button", { name: /^Start setup/ }).click();
           await title.waitFor();
           const workspaces = page.locator(".workspace-group[data-workspace]");
           const before = await workspaces.count();
-          await dialog.locator(".setup-foot").getByRole("button", { name: "Start now, finish setup later", exact: true }).click();
+          await dialog.locator(".setup-foot").getByRole("button", { name: "Start now", exact: true }).click();
           await dialog.waitFor({ state: "detached" });
           await page.waitForFunction((count) => document.querySelectorAll(".workspace-group[data-workspace]").length > count, before);
           assert.equal(JSON.parse((await page.evaluate(() => localStorage.getItem("ovis:setup-guide"))) ?? "{}").status, "closed", `the fast path closes the guide ${at}`);
@@ -248,7 +248,7 @@ try {
           // (modalOpen: the terminal's focus, the drawer, Escape) finds nothing, and Back to setup brings it back
           await page.evaluate((guide) => localStorage.setItem("ovis:setup-guide", guide), WELCOME);
           await page.reload();
-          await dialog.getByRole("button", { name: /^I'm new to Ovis/ }).click();
+          await dialog.getByRole("button", { name: /^Start setup/ }).click();
           await title.waitFor();
           await page.keyboard.press("Control+Shift+K");
           await page.getByRole("searchbox").fill("Guard the export button");
@@ -267,7 +267,7 @@ try {
             // arrow moves off it, and the mode switch draws the other side's cards (#3885 review)
             await page.evaluate((guide) => localStorage.setItem("ovis:setup-guide", guide), WELCOME);
             await page.reload();
-            await dialog.getByRole("button", { name: /^I'm new to Ovis/ }).click();
+            await dialog.getByRole("button", { name: /^Start setup/ }).click();
             await title.waitFor();
             await dialog.locator(".setup-foot").getByRole("button", { name: "Continue", exact: true }).click();
             await dialog.getByRole("heading", { name: "Pick a look", exact: true }).waitFor();
@@ -323,9 +323,9 @@ try {
             await page.evaluate((guide) => { localStorage.setItem("ovis:setup-guide", guide); (window as unknown as { pushStandIn: { fails: boolean } }).pushStandIn.fails = true; }, WELCOME);
             await page.reload();
             await page.evaluate(() => { (window as unknown as { pushStandIn: { fails: boolean } }).pushStandIn.fails = true; });
-            await dialog.getByRole("button", { name: /^I'm new to Ovis/ }).click();
+            await dialog.getByRole("button", { name: /^Start setup/ }).click();
             await title.waitFor();
-            for (const heading of ["Pick a look", "Stay in touch with your agents"]) {
+            for (const heading of ["Pick a look", "Stay in touch"]) {
               await dialog.locator(".setup-foot").getByRole("button", { name: "Continue", exact: true }).click();
               await dialog.getByRole("heading", { name: heading, exact: true }).waitFor();
             }
@@ -346,12 +346,12 @@ try {
           try {
             await other.goto(`${root}?demo_devices=list`);
             const guide = other.getByRole("dialog", { name: DIALOG, exact: true });
-            await guide.getByRole("button", { name: /^I'm new to Ovis/ }).click();
-            await guide.getByRole("heading", { name: "Pick your coding agent", exact: true }).waitFor();
+            await guide.getByRole("button", { name: /^Start setup/ }).click();
+            await guide.getByRole("heading", { name: "Pick an agent", exact: true }).waitFor();
             await guide.locator(".setup-foot").getByRole("button", { name: "Continue", exact: true }).click();
             await guide.getByRole("heading", { name: "Pick a look", exact: true }).waitFor();
             await guide.locator(".setup-foot").getByRole("button", { name: "Continue", exact: true }).click();
-            await guide.locator(".setup-side").getByText("Pixel 9 is paired.", { exact: true }).waitFor();
+            await guide.locator(".setup-side").getByText("Pixel 9 is connected.", { exact: true }).waitFor();
             await guide.locator(".setup-foot").getByRole("button", { name: "Continue", exact: true }).click();
             await guide.getByRole("heading", { name: "Ovis is ready", exact: true }).waitFor();
             const row = guide.locator(".setup-summary li").filter({ hasText: "Phone" });
@@ -455,8 +455,8 @@ try {
       await page.keyboard.press("Tab");
       await page.waitForFunction(() => (window as unknown as { counts: { seen: unknown[] } }).counts.seen.length === 1);
       // recorded on the welcome, the line stays on the next step, its one-tap Turn off with it
-      await dialog.getByRole("button", { name: /^I'm new to Ovis/ }).click();
-      await dialog.getByRole("heading", { name: "Pick your coding agent", exact: true }).waitFor();
+      await dialog.getByRole("button", { name: /^Start setup/ }).click();
+      await dialog.getByRole("heading", { name: "Pick an agent", exact: true }).waitFor();
       await dialog.locator(".setup-note-usage").getByRole("button", { name: "Turn off", exact: true }).waitFor({ state: "attached" });
       assert.equal(await seen(), 1, "the next step's copy does not record it again");
       // Turn off in the guide's copy is every copy's: the guide closed, the page's own line does not come back and
@@ -477,6 +477,80 @@ try {
     } finally {
       await context.close();
     }
+  }
+
+  // The phone and alerts step: at both desktop sizes its body never scrolls, in every state (start, the QR code of each
+  // way, the other ways, Tailscale's command or absence, the Wi-Fi line, each store's QR code, a connection that does not
+  // turn on), and the dialog keeps its 16:9 size
+  for (const size of [{ width: 1920, height: 1080 }, { width: 1280, height: 720 }] as const) {
+    const at = `${size.width}x${size.height}`;
+    const open = async (query: string) => {
+      const context = await browser!.newContext({ viewport: size, locale: "en-US", colorScheme: "dark" });
+      await context.addInitScript(([guide]) => {
+        if (sessionStorage.getItem("seeded") !== null) return;
+        localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "dark", palette: "codex", darkTheme: "codex", lightTheme: "codex" }));
+        localStorage.setItem("ovis:setup-guide", guide);
+        sessionStorage.setItem("seeded", "1");
+      }, [WELCOME] as const);
+      const page = await context.newPage();
+      await page.goto(`${root}?demo_devices=empty&demo_via=device${query}`);
+      const dialog = page.getByRole("dialog", { name: DIALOG, exact: true });
+      await dialog.getByRole("button", { name: /^Start setup/ }).click();
+      for (const heading of ["Pick an agent", "Pick a look"]) {
+        await dialog.getByRole("heading", { name: heading, exact: true }).waitFor();
+        await dialog.locator(".setup-foot").getByRole("button", { name: "Continue", exact: true }).click();
+      }
+      await dialog.getByRole("heading", { name: "Stay in touch", exact: true }).waitFor();
+      return { context, page, side: dialog.locator(".setup-side-phone") };
+    };
+    const fits = async (page: Page, state: string) => {
+      await settled(page);
+      const body = await page.locator(".setup-dialog .setup-body").evaluate((node) => ({ scroll: node.scrollHeight, client: node.clientHeight }));
+      assert.ok(body.scroll <= body.client + 1, `${at}: the step's body does not scroll (${state}): ${JSON.stringify(body)}`);
+      const card = (await page.locator(".setup-dialog").boundingBox())!;
+      assert.ok(Math.abs(card.width / card.height - 16 / 9) < 0.02, `${at}: the dialog stays 16:9 (${state})`);
+    };
+    const tab = (side: ReturnType<Page["locator"]>, name: RegExp) => side.getByRole("tab", { name }).click();
+    {
+      const { context, page, side } = await open("");
+      // step 3 is a heading of its own, whatever way is picked
+      assert.equal(await side.locator(".setup-path-head").nth(2).textContent(), "3Scan with your phone", `${at}: step 3 names what to do`);
+      await fits(page, "start");
+      await side.getByRole("button", { name: "Turn on" }).click();
+      await side.locator(".setup-relay-tight .qr").waitFor();
+      await fits(page, "the QR code to connect from anywhere");
+      await side.getByRole("button", { name: "Other ways" }).click();
+      await side.getByRole("button", { name: "Show a code to type" }).waitFor();
+      await fits(page, "the other ways");
+      await side.getByRole("button", { name: "Back to QR" }).click();
+      await tab(side, /Tailscale/);
+      await side.locator(".setup-qr-panel").waitFor();
+      await fits(page, "Tailscale's QR code");
+      await tab(side, /Same Wi-Fi/);
+      await side.locator(".setup-method-area .setup-note").waitFor();
+      await fits(page, "the Wi-Fi line");
+      for (const store of ["Download on the App Store", "Get it on Google Play"]) {
+        await side.getByRole("button", { name: store }).click();
+        await side.locator(".setup-qr-panel").waitFor();
+        await fits(page, store);
+      }
+      await context.close();
+    }
+    for (const [query, state] of [["&demo_tailscale=command", "Tailscale's command"], ["&demo_tailscale=missing", "Tailscale not installed"]] as const) {
+      const { context, page, side } = await open(query);
+      await tab(side, /Tailscale/);
+      await side.locator(".setup-method-area .setup-method-step, .setup-method-area .setup-note").first().waitFor();
+      await fits(page, state);
+      await context.close();
+    }
+    {
+      const { context, page, side } = await open("&demo_relay_fail=1");
+      await side.getByRole("button", { name: "Turn on" }).click();
+      await side.getByRole("alert").first().waitFor();
+      await fits(page, "a connection that did not turn on");
+      await context.close();
+    }
+    console.log(`PASS the phone and alerts step's body does not scroll in any state (${at})`);
   }
 } finally {
   await browser?.close();

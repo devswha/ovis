@@ -771,7 +771,7 @@ async function welcomeSignIn(browser: import("playwright-core").Browser, url: st
         page.on("pageerror", (error) => errors.push(error.message));
         await page.goto(url);
         const guide = page.getByRole("dialog", { name: "Set up Ovis", exact: true });
-        await guide.getByRole("button", { name: /I've used Ovis before/ }).waitFor();
+        await guide.getByRole("button", { name: /Go straight in/ }).waitFor();
         const signIn = guide.locator(".setup-signin");
         const shot = async (name: string) => {
           if (process.env.UI_EVIDENCE_DIR) await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, `${name}-${width}.png`), animations: "disabled" });
@@ -798,15 +798,15 @@ async function welcomeSignIn(browser: import("playwright-core").Browser, url: st
           await page.keyboard.press("Enter");
           await signIn.waitFor({ state: "detached" });
           assert.equal(await page.evaluate(() => document.activeElement?.classList.contains("setup-choice") ?? false), true, `Not now hands the keyboard to the first choice ${at}`);
-          assert.equal(await guide.getByRole("button", { name: /I'm new to Ovis/ }).count(), 1, `Not now leaves the welcome's choices ${at}`);
-          assert.equal(await guide.getByRole("button", { name: /I've used Ovis before/ }).count(), 1, `Not now leaves the welcome's choices ${at}`);
+          assert.equal(await guide.getByRole("button", { name: /Start setup/ }).count(), 1, `Not now leaves the welcome's choices ${at}`);
+          assert.equal(await guide.getByRole("button", { name: /Go straight in/ }).count(), 1, `Not now leaves the welcome's choices ${at}`);
         } else {
           // the account's id is the service's own, never shown: the line names the way in, as Settings does
           await signIn.getByText("Signed in with Google", { exact: true }).waitFor();
           assert.equal(await signIn.getByRole("button", { name: "Not now", exact: true }).count(), 0, `no Not now once signed in ${at}`);
           assert.equal(await signIn.locator(".account-provider").count(), 0, `no provider buttons once signed in ${at}`);
           await shot("welcome-signin-signed-in");
-          await guide.getByRole("button", { name: /I've used Ovis before/ }).click();
+          await guide.getByRole("button", { name: /Go straight in/ }).click();
           await guide.waitFor({ state: "detached" });
           await openSettings(page);
           await openSettingsPage(page, "Devices and PCs");
