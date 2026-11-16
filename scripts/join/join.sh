@@ -51,8 +51,8 @@ trap 'j_cleanup; exit 129' HUP
 case $HOME in *[[:cntrl:]]*) printf 'Ovis: HOME holds a line break or another control character, which the trial cannot use; nothing was changed\n' >&2; exit 2 ;; esac
 HOME=$(j_canonical "$HOME")
 export HOME
-J_HOME="$(j_canonical "$HOME/.local/share")/ovis-trial"
-J_UNIT=ovis-trial.service
+J_HOME="$(j_canonical "$HOME/.local/share")/ovis-machine"
+J_UNIT=ovis-machine.service
 # the port the trial server never takes: an ordinary Ovis listens there by default
 J_RESERVED=" 7317 "
 J_PORTS="17690 17691 17692 17693 17694 17695 17696 17697 17698 17699"
@@ -90,7 +90,7 @@ j_systemd_user() { command -v systemctl >/dev/null 2>&1 && systemctl --user show
 # j_servers: the pids of this install's background server, one per line: processes of this account whose program is
 # the trial's bin/ovis-server (also once replaced on disk) and whose command line is exactly `<it> serve`. A pid file is
 # not read: one that is gone, or names another process, neither hides the server nor points at anything else. Nothing
-# that is not found here is ever signalled (the undo, every rollback and `ovis-trial stop` use this one rule).
+# that is not found here is ever signalled (the undo, every rollback and `ovis-machine stop` use this one rule).
 # The programs of all processes are read in one listing (ls -l of every /proc/<pid>/exe, which shows only this account's
 # own); only the few whose program is the trial's are then looked at one by one.
 j_servers() {
@@ -656,9 +656,9 @@ set --
 while IFS= read -r kv; do set -- "$@" "$kv"; done <"$D/server.env"
 exec env -i "$@" "$D/bin/ovis-server" serve
 EOF
-  j_put "$J_HOME/bin/ovis-trial" 755 <<'EOF'
+  j_put "$J_HOME/bin/ovis-machine" 755 <<'EOF'
 #!/bin/sh
-# ovis-trial: the trial Ovis server's own command. add and status are the plugin's (ovis-server plugin), run against
+# ovis-machine: the trial Ovis server's own command. add and status are the plugin's (ovis-server plugin), run against
 # the trial server's state, config and port; stop and start go to its service. Another Ovis here is never reached.
 L=$(cd "$(dirname "$0")/.." && pwd -L) || exit 2
 # the join never makes a link in its folder: with one there (or the folder itself a link), nothing is read, written or
@@ -673,7 +673,7 @@ D=$(cd "$L" && pwd -P) || exit 2
 # a clean environment: only these names of the login pass, so an OVIS_TOKEN, PORT or HOST exported there cannot reach
 # the plugin's commands; the trial's own settings come from its config/env below
 # the clean run is marked by a first argument of its own, not by anything a login could export
-if [ "${1:-}" = --ovis-trial-clean ]; then
+if [ "${1:-}" = --ovis-machine-clean ]; then
   shift
 else
   # the kept NAME=value words are appended after the arguments, each one quoted whole; then the arguments are moved
@@ -683,7 +683,7 @@ else
     eval "isset=\${$name+x} value=\${$name-}"
     [ -z "$isset" ] || set -- "$@" "$name=$value"
   done
-  set -- "$@" sh "$0" --ovis-trial-clean
+  set -- "$@" sh "$0" --ovis-machine-clean
   i=0
   while [ "$i" -lt "$n" ]; do set -- "$@" "$1"; shift; i=$((i + 1)); done
   exec env -i HOME="$HOME" PATH="$PATH" SHELL="${SHELL:-/bin/sh}" TERM="${TERM:-dumb}" "$@"
@@ -692,7 +692,7 @@ fi
 # here (scripts/plugin.ts:72-76), and those files win over this process's environment (:172)
 export HERDR_PLUGIN_STATE_DIR="$D/plugin-state" HERDR_PLUGIN_CONFIG_DIR="$D/config"
 # the plugin's words name the command to run again by this: the trial's own command, by its absolute path
-export OVIS_CLI_NAME="$D/bin/ovis-trial"
+export OVIS_CLI_NAME="$D/bin/ovis-machine"
 # the trial server's own settings, from the file it is started with
 while IFS= read -r kv; do
   case ${kv%%=*} in PORT | OVIS_STATE_DIR | OVIS_PROFILE | OVIS_PREVIEW | OVIS_RUNTIME | HERDR_SOCKET | OVIS_RELAY_URL | OVIS_ACCOUNT_SERVICE_URL | OVIS_RELAY_APP_URL | OVIS_TELEMETRY | NODE_EXTRA_CA_CERTS) export "$kv" ;; esac
@@ -700,12 +700,12 @@ done <"$D/server.env"
 service=$(sed -n 's/^service //p' "$D/trial")
 case ${1:-status} in
   stop)
-    if [ "$service" = systemd-user ]; then exec systemctl --user stop ovis-trial.service; fi
+    if [ "$service" = systemd-user ]; then exec systemctl --user stop ovis-machine.service; fi
     # the background server is found and stopped as the undo does it (join.sh j_servers, j_stop_background)
     exec sh "$D/join.sh" --stop
     ;;
   start)
-    if [ "$service" = systemd-user ]; then exec systemctl --user start ovis-trial.service; fi
+    if [ "$service" = systemd-user ]; then exec systemctl --user start ovis-machine.service; fi
     # running or not, found as stop and the undo find it (join.sh j_servers), not by its pid file
     if sh "$D/join.sh" --running; then echo "The trial Ovis server is running."; exit 0; fi
     setsid nohup sh "$D/serve.sh" >>"$D/logs/server.log" 2>&1 </dev/null &
@@ -813,7 +813,7 @@ j_probe_profile() {
 # --- the undo ---
 # j_no_links: the join never makes a link in the trial folder, so a link there (or the folder itself a link) was put
 # there by someone else, and anything written, read or signalled through it could reach another file or process. Run
-# first by the join (a run again too) and the undo, as ovis-trial runs it first: refused before anything else, exit 14.
+# first by the join (a run again too) and the undo, as ovis-machine runs it first: refused before anything else, exit 14.
 j_no_links() {
   if [ -L "$J_HOME" ]; then j_link=$J_HOME
   elif [ -d "$J_HOME" ]; then j_link=$(find "$J_HOME" -type l 2>/dev/null | sed -n 1p)
@@ -824,7 +824,7 @@ j_no_links() {
   exit 14
 }
 
-# --stop: what `ovis-trial stop` runs for a background server, so that it finds and stops it by the undo's one rule
+# --stop: what `ovis-machine stop` runs for a background server, so that it finds and stops it by the undo's one rule
 j_stop_mode() {
   j_no_links
   if [ -z "$(j_servers)" ]; then say "The trial Ovis server is not running."; exit 0; fi
@@ -1120,7 +1120,7 @@ j_added=0
 # sign-in of this run put it there (an add that finds the machine already in an account returns without a sign-in)
 j_before=$(j_account_of "$(j_read -f /api/account/status)")
 trap ':' INT
-if [ "$j_add_done" = 1 ]; then j_added=1; else "$J_HOME/bin/ovis-trial" add && j_added=1; fi
+if [ "$j_add_done" = 1 ]; then j_added=1; else "$J_HOME/bin/ovis-machine" add && j_added=1; fi
 trap 'j_interrupted 130' INT
 say ""
 # j_gate_closed: with the relay on (the add turns it on, even when it then fails), the pairing gate must be closed: no
@@ -1161,8 +1161,8 @@ j_gate_open() {
     say "$j_lead_en $j_why_en, so the trial server was stopped. Undo the join: $(j_undo_line)"
     say "$j_lead_ko $j_why_ko 체험용 서버를 멈췄습니다. 모두 되돌리려면: $(j_undo_line)"
   else
-    say "$j_lead_en $j_why_en, and the trial server could not be seen stopped: stop it now: $J_HOME/bin/ovis-trial stop"
-    say "$j_lead_ko $j_why_ko 체험용 서버가 멈춘 것을 확인하지 못했습니다. 지금 멈추세요: $J_HOME/bin/ovis-trial stop"
+    say "$j_lead_en $j_why_en, and the trial server could not be seen stopped: stop it now: $J_HOME/bin/ovis-machine stop"
+    say "$j_lead_ko $j_why_ko 체험용 서버가 멈춘 것을 확인하지 못했습니다. 지금 멈추세요: $J_HOME/bin/ovis-machine stop"
   fi
   exit 34
 }
@@ -1190,28 +1190,28 @@ if [ "$j_added" = 1 ]; then
   fi
   if [ "$j_after" = null ]; then j_none_en="the trial Ovis server names no account" j_none_ko="체험용 Ovis 서버가 계정을 밝히지 않아"
   else j_none_en="the trial Ovis server's account could not be read" j_none_ko="체험용 Ovis 서버의 계정을 읽지 못해"; fi
-  say "The add returned, but $j_none_en, so it could not tell whether the machine is listed in your Ovis account; check with:  $J_HOME/bin/ovis-trial status"
+  say "The add returned, but $j_none_en, so it could not tell whether the machine is listed in your Ovis account; check with:  $J_HOME/bin/ovis-machine status"
   say "Undo the whole join with:  $(j_undo_line)"
-  say "추가는 끝났지만 $j_none_ko, 이 머신이 내 Ovis 계정 목록에 올라 있는지 알 수 없습니다. $J_HOME/bin/ovis-trial status 로 확인하거나 되돌리세요."
+  say "추가는 끝났지만 $j_none_ko, 이 머신이 내 Ovis 계정 목록에 올라 있는지 알 수 없습니다. $J_HOME/bin/ovis-machine status 로 확인하거나 되돌리세요."
   exit 30
 fi
 # where the machine stands after an add that did not finish (its return is the path above), from the trial server itself
 # (this machine's own, on its owner socket): an account it names means a device paired with it through an add that did
 # not finish: removed, on a run again too (exit 37), unless it is the account named before this run's add (kept, exit 38). No account (null): "could not tell", with the server kept for
-# `ovis-trial add` while its pairing gate is closed. No answer: stopped first, the install kept for the undo (exit 39)
+# `ovis-machine add` while its pairing gate is closed. No answer: stopped first, the install kept for the undo (exit 39)
 j_account=$(j_read -f /api/account/status)
 j_named=$(j_account_of "$j_account")
 case $j_named in
   '')
     if j_halt; then refuse 39 "the add did not finish, and the trial server's account could not be read, so the trial server was stopped; the install stays for the undo: $(j_undo_line)"
-    else refuse 39 "the add did not finish, the trial server's account could not be read, and the trial server could not be seen stopped: stop it now: $J_HOME/bin/ovis-trial stop"; fi
+    else refuse 39 "the add did not finish, the trial server's account could not be read, and the trial server could not be seen stopped: stop it now: $J_HOME/bin/ovis-machine stop"; fi
     ;;
   null)
     # kept only with its pairing gate closed: the add may have turned the relay on before it ended
     j_gate_closed || j_gate_open unfinished
-    say "The trial Ovis server runs on this machine, but it could not tell whether the machine is listed in your Ovis account; check with:  $J_HOME/bin/ovis-trial status"
-    say "Add it with:  $J_HOME/bin/ovis-trial add      (or undo the whole join: $(j_undo_line))"
-    say "체험용 Ovis 서버는 실행 중이지만, 이 머신이 내 Ovis 계정 목록에 올라 있는지 알 수 없습니다. $J_HOME/bin/ovis-trial status 로 확인하고, 위 명령으로 추가하거나 되돌리세요."
+    say "The trial Ovis server runs on this machine, but it could not tell whether the machine is listed in your Ovis account; check with:  $J_HOME/bin/ovis-machine status"
+    say "Add it with:  $J_HOME/bin/ovis-machine add      (or undo the whole join: $(j_undo_line))"
+    say "체험용 Ovis 서버는 실행 중이지만, 이 머신이 내 Ovis 계정 목록에 올라 있는지 알 수 없습니다. $J_HOME/bin/ovis-machine status 로 확인하고, 위 명령으로 추가하거나 되돌리세요."
     ;;
   "$j_before")
     # the account it named before this run's add, unchanged: the earlier install is kept as after an add that returned

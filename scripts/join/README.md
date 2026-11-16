@@ -17,7 +17,7 @@ A folder of exactly five files:
 | `SHA256SUMS` | `<sha256>  <name>` for the four files above, nothing else |
 
 The trial's add runs under the fleet preview, so the words it prints name the line's app (`OVIS_RELAY_APP_URL`) and the
-trial's own command (`ovis-trial`, by its absolute path), as the QR code's offer does.
+trial's own command (`ovis-machine`, by its absolute path), as the QR code's offer does.
 
 Make it, from a checkout with nothing but the two programs, into an empty folder outside the checkout (`make` refuses a
 folder that holds anything, and any folder inside the checkout):
@@ -63,22 +63,22 @@ download stops after 120 s; an INT, TERM or HUP before `join.sh` runs removes th
    given in the line and list exactly the four files, each once (a fifth name, a missing or repeated one, or a file
    that differs is refused, nothing installed). Over `https://` only those four names are fetched, so nothing else on
    the server is ever read; a `file://` folder must also hold nothing beside the five files;
-5. installs them in `~/.local/share/ovis-trial` (with a receipt of everything it makes, and its own copy of `join.sh`
+5. installs them in `~/.local/share/ovis-machine` (with a receipt of everything it makes, and its own copy of `join.sh`
    for the undo);
-6. starts `ovis-server serve` there as the user service `ovis-trial.service` (or in the background where no user service
-   manager answers), with these settings: `OVIS_PROFILE=machine` with `OVIS_PREVIEW=fleet` (the machine profile is a
-   preview, which a server refuses to start without it; the interlock's probe server gets both too), a port of its own (17690-17699, or
-   `--port`), its own state folder (`~/.local/share/ovis-trial/state`, which the server makes at its first start: the
+6. starts `ovis-server serve` there as the user service `ovis-machine.service` (or in the background where no user
+   service manager answers), with these settings: `OVIS_PROFILE=machine` with `OVIS_PREVIEW=fleet` (the machine
+   profile is a preview, which a server refuses to start without it; the interlock's probe server gets both too), a port of its own (17690-17699, or
+   `--port`), its own state folder (`~/.local/share/ovis-machine/state`, which the server makes at its first start: the
    join writes nothing in it), `OVIS_RUNTIME=herdr`, the chosen session's socket, the three origins and
    `OVIS_TELEMETRY=0`, and `OVIS_HERDR_BIN`: the program of the herdr server that listens on that socket, read from its
    process (`/proc/<pid>/exe`), never a herdr found on PATH (a machine may hold several); never `HOST` or `OVIS_TOKEN`.
    `NODE_EXTRA_CA_CERTS` is carried only when the login sets it (never set by the join), and the consent then says so.
-   Its output, from the unit as from the background start, goes to `~/.local/share/ovis-trial/logs/server.log`;
+   Its output, from the unit as from the background start, goes to `~/.local/share/ovis-machine/logs/server.log`;
    Before anything is written it refuses (exit 33) a trial state folder that leads, through any link, into an Ovis
    default folder (`~/.config/ovis`, `~/.config/herdr-web-ui`, or one under them): a server started there would answer
    with that Ovis's relay key;
 7. waits until the trial server's port answers, from the trial's own `bin/ovis-server`, then reads `/api/health` on the
-   server's owner socket (`~/.local/share/ovis-trial/state/serve.sock`) until it names the machine profile and says
+   server's owner socket (`~/.local/share/ovis-machine/state/serve.sock`) until it names the machine profile and says
    that terminals attach; a server with no owner socket, or whose health does not name the machine profile, is stopped
    and everything is rolled back (exit 29). The machine profile refuses some folders, and the join then passes its words
    on and rolls back: a state folder it will not start on (one another account could change, or that another server wrote
@@ -86,7 +86,7 @@ download stops after 120 s; an INT, TERM or HUP before `join.sh` runs removes th
    whose state folder is a temporary one, under `TMPDIR`); a herdr socket it will not use, because a folder on its path
    could be changed by another account, ends it at once with that folder named (exit 36); a herdr session that does not
    answer the trial server within 90 s ends it with the server's reason (exit 26);
-8. runs today's add for that server (`~/.local/share/ovis-trial/bin/ovis-trial add`), under the fleet preview: a
+8. runs today's add for that server (`~/.local/share/ovis-machine/bin/ovis-machine add`), under the fleet preview: a
    sign-in code, then the add names the account it signed in to and waits for Enter, then a QR code that a phone of the
    account scans. It needs a terminal for that: without one the add refuses, and the join ends with exit 30.
 
@@ -97,19 +97,26 @@ One condition for running it:
 The undo, printed by the join:
 
 ```sh
+sh ~/.local/share/ovis-machine/join.sh --uninstall
+```
+
+Earlier versions of this line installed under another name. A machine that still has such an install removes it with
+that install's own undo line before it joins under the new name; the join neither moves nor removes it:
+
+```sh
 sh ~/.local/share/ovis-trial/join.sh --uninstall
 ```
 
-The join never makes a link inside the trial folder. So the join (a run again too), the undo and every `ovis-trial`
-command first look for one, and for the folder itself being a link: finding one, they refuse (exit 14) before
-anything is written, read for a decision or signalled, and name the link. `ovis-trial stop` says the server stopped
-only once it saw its process end; otherwise it says what it could not tell and exits non-zero. Where no user service
-manager answers, the trial server runs in the background, and `ovis-trial stop`, the undo and every rollback find it by
-one rule: a process of this account whose program is the trial's `bin/ovis-server` and whose command line is exactly
+The join never makes a link inside the trial folder. So the join (a run again too), the undo and every `ovis-machine`
+command first look for one, and for the folder itself being a link: finding one, they refuse (exit 14) before anything
+is written, read for a decision or signalled, and name the link. `ovis-machine stop` says the server stopped only once
+it saw its process end; otherwise it says what it could not tell and exits non-zero. Where no user service manager
+answers, the trial server runs in the background, and `ovis-machine stop`, the undo and every rollback find it by one
+rule: a process of this account whose program is the trial's `bin/ovis-server` and whose command line is exactly
 `<that program> serve`. `run/server.pid` is not trusted for this, and no other process is ever signalled; a server that
-does not end within 10 s of TERM and then KILL is named, and the undo then removes nothing (exit 14). `ovis-trial start`
-decides by the same rule whether the server already runs. An undo that cannot remove the whole trial folder (a folder
-in it this account cannot write in, say) names what is left and exits 14.
+does not end within 10 s of TERM and then KILL is named, and the undo then removes nothing (exit 14).
+`ovis-machine start` decides by the same rule whether the server already runs. An undo that cannot remove the whole
+trial folder (a folder in it this account cannot write in, say) names what is left and exits 14.
 
 The port: a port another program already listens on is refused (exit 14), on a run again once the previous trial
 server is stopped, and a health answer counts only when the program listening on the port is the trial's own
@@ -141,7 +148,7 @@ before the add and names one after it. It exits 38 when the add returned and the
 sign-in of this run put it in (the machine was in it before, or its account could not be read before the add): the
 join names that account, says "your account" nowhere, and keeps the server only with its pairing gate closed. It exits
 30 when the add did not finish and the trial server answers that it names no account (the server is kept with its
-gate closed, and `ovis-trial add` finishes the add), or when the add returned and the server names none. It exits 37
+gate closed, and `ovis-machine add` finishes the add), or when the add returned and the server names none. It exits 37
 when the add did not finish but the trial server names an account it did not name before this run's add, which the
 join cannot confirm is the one signed in to: the server and the install are removed, on a run again too, and that
 account's list may still name the machine. When the account it names is the one it named before this run's add, the
@@ -154,10 +161,10 @@ server, the start, the wait for it to answer), and TERM or HUP during the add, r
 is left, with the undo line if anything is (130, 143 or 129); the roll back does not depend on a terminal to print to. Ctrl+C at the QR code ends only the add: the
 join then goes on as after any add that did not finish. When the trial server names an account it rolls back (exit 37),
 and that account's list may still name the machine. Otherwise it keeps the server only when its pairing gate reads
-`closed` (exit 30, `ovis-trial add` finishes the add), and else stops it (exit 34). A real machine profile names no
+`closed` (exit 30, `ovis-machine add` finishes the add), and else stops it (exit 34). A real machine profile names no
 account until a device has paired with it, and its gate is closed from its first start, so a Ctrl+C at the QR code
 ends with exit 30 and the server kept. The shell around it may still report 130 for the whole session (`script(1)` did in
-the container tests), so a caller should read `ovis-trial status` and the account, not that code.
+the container tests), so a caller should read `ovis-machine status` and the account, not that code.
 
 After the add, finished or not finished with the server kept, the join reads `security.pairing_gate` from the trial
 server's health (on its owner socket) and requires `closed` (the machine profile closes it at its first start, and the
@@ -191,13 +198,13 @@ permissions for `file://`).
 
 ## The trial's own command
 
-`~/.local/share/ovis-trial/bin/ovis-trial add | status | stop | start`: `add` and `status` are the plugin's commands,
-run from a clean environment (only HOME, PATH, SHELL, TERM, LANG, LC_ALL, LC_CTYPE, XDG_* and the session bus pass) with
-`HERDR_PLUGIN_CONFIG_DIR` and `HERDR_PLUGIN_STATE_DIR` set to the trial's own folders: the plugin reads the settings of
-its config folder over its environment, and unset, that folder is another Ovis plugin's. `stop` and `start` go to the
-trial's service. `ovis-trial` exports `OVIS_PROFILE=machine` and `OVIS_PREVIEW=fleet` to the plugin, which then reads the
-trial server on its owner socket, as the profile's record `state/serve.lock/http.json` names it; its TCP port answers
-only whether it is alive.
+`~/.local/share/ovis-machine/bin/ovis-machine add | status | stop | start`: `add` and `status` are the plugin's
+commands, run from a clean environment (only HOME, PATH, SHELL, TERM, LANG, LC_ALL, LC_CTYPE, XDG_* and the session bus
+pass) with `HERDR_PLUGIN_CONFIG_DIR` and `HERDR_PLUGIN_STATE_DIR` set to the trial's own folders: the plugin reads the
+settings of its config folder over its environment, and unset, that folder is another Ovis plugin's. `stop` and `start`
+go to the trial's service. `ovis-machine` exports `OVIS_PROFILE=machine` and `OVIS_PREVIEW=fleet` to the plugin, which
+then reads the trial server on its owner socket, as the profile's record `state/serve.lock/http.json` names it; its TCP
+port answers only whether it is alive.
 
 ## Tests
 

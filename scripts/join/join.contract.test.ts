@@ -46,7 +46,7 @@ const PLAIN = "OVIS_JOIN_TEST_PLAIN_SERVER=1";
 /** OVIS_JOIN_QA_REAL_PROFILE=1: the kit is made as for a person (no TEST-KIT) and case 1's machine has no test switch, so
  * its server must be the machine profile (OVIS_PROFILE=machine) to pass the interlock. Run with -t "1, 5, 7" only. */
 const REAL_PROFILE = process.env["OVIS_JOIN_QA_REAL_PROFILE"] === "1";
-const TRIAL = ".local/share/ovis-trial";
+const TRIAL = ".local/share/ovis-machine";
 
 function note(name: string, text: string): void {
   if (EVIDENCE === undefined) return;
@@ -418,7 +418,7 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
     expect(joined.text).not.toContain("was not added");
     // the exit status script(1) reports for a session ended by Ctrl+C is the terminal's, not the join's: recorded only
     note("case1", `${joined.text}\n[the terminal session ended with ${joined.code}]`);
-    expect((await m.sh("systemctl --user is-active ovis-trial.service")).stdout.trim()).toBe("active");
+    expect((await m.sh("systemctl --user is-active ovis-machine.service")).stdout.trim()).toBe("active");
     const answer = await health(m);
     expect(answer?.herdr?.terminal_attach).toBe(true);
     // the add turned the relay on, which closes the pairing gate: no device pairs without the account's approval
@@ -428,11 +428,11 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
     const file = (await m.sh(`cat ${TRIAL}/server.env`)).stdout.trim().split("\n");
     expect(file.map((line) => line.slice(0, line.indexOf("="))).sort()).toEqual(["HERDR_SOCKET", "HOME", "NODE_EXTRA_CA_CERTS", "OVIS_ACCOUNT_SERVICE_URL", "OVIS_HERDR_BIN", "OVIS_PREVIEW", "OVIS_PROFILE",
       "OVIS_RELAY_APP_URL", "OVIS_RELAY_URL", "OVIS_RUNTIME", "OVIS_STATE_DIR", "OVIS_TELEMETRY", "PATH", "PORT", "SHELL", "XDG_RUNTIME_DIR"]);
-    const mainPid = (await m.sh("systemctl --user show -p MainPID --value ovis-trial.service")).stdout.trim();
+    const mainPid = (await m.sh("systemctl --user show -p MainPID --value ovis-machine.service")).stdout.trim();
     const environ = (await m.sh(`tr '\\000' '\\n' < /proc/${mainPid}/environ`)).stdout.split("\n");
     for (const line of file) expect(environ).toContain(line);
     expect(environ.some((line) => /^(HOST|OVIS_TOKEN)=/.test(line))).toBe(false);
-    const unit = (await m.sh("systemctl --user show -p EnvironmentFiles -p Environment -p UnsetEnvironment -p ExecStart ovis-trial.service; cat ~/.config/systemd/user/ovis-trial.service")).stdout;
+    const unit = (await m.sh("systemctl --user show -p EnvironmentFiles -p Environment -p UnsetEnvironment -p ExecStart ovis-machine.service; cat ~/.config/systemd/user/ovis-machine.service")).stdout;
     note("case1", `--- ${TRIAL}/server.env:\n${file.join("\n")}\n--- the unit as systemd holds it:\n${unit}\n--- ss -ltnp after the add, relay on:\n${(await m.root("ss -ltnp")).stdout}`);
     expect(herdrProcesses(await m.processes())).toBe(enginesBefore);
     const lingerNow = (await root("loginctl show-user ovis -p Linger --value")).stdout.trim();
@@ -444,11 +444,11 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
     note("case1", `lingering before ${lingerBefore} (as root), as the user reads it ${lingerSeen || "(no answer)"}, after the join ${lingerNow}, in the receipt ${inReceipt}`);
 
     // 7: herdr stopped while the trial server runs: nothing starts it; started again by the user, the server takes it up
-    const trialPid = (await m.sh("systemctl --user show -p MainPID --value ovis-trial.service")).stdout.trim();
+    const trialPid = (await m.sh("systemctl --user show -p MainPID --value ovis-machine.service")).stdout.trim();
     const serverEnv = (await m.sh(`tr '\\0' '\\n' < /proc/${trialPid}/environ | cut -d= -f1 | sort`)).stdout;
     note("case1", `the trial server's environment names (pid ${trialPid}):\n${serverEnv}`);
     expect(serverEnv.split("\n").filter((name) => ["OVIS_PTY_SIDECAR_BIN", "NODE_OPTIONS", "OVIS_TOKEN"].includes(name))).toEqual([]);
-    expect((await m.sh(`readlink /proc/${trialPid}/exe`)).stdout.trim()).toBe("/home/ovis/.local/share/ovis-trial/bin/ovis-server");
+    expect((await m.sh(`readlink /proc/${trialPid}/exe`)).stdout.trim()).toBe("/home/ovis/.local/share/ovis-machine/bin/ovis-server");
     expect((await m.sh("systemctl --user unset-environment OVIS_PTY_SIDECAR_BIN NODE_OPTIONS OVIS_TOKEN")).code).toBe(0);
     expect((await m.sh("~/.local/bin/herdr server stop")).code).toBe(0);
     // the event: herdr's own server process ends; the health then asks herdr live (server/dispatch.ts ping) and fails
@@ -459,7 +459,7 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
     // the event: herdr says its server runs (and a pane was opened in it); the health asks herdr live
     await serveHerdr(m);
     expect((await health(m))?.herdr?.terminal_attach).toBe(true);
-    expect((await m.sh("systemctl --user show -p MainPID --value ovis-trial.service")).stdout.trim()).toBe(trialPid);
+    expect((await m.sh("systemctl --user show -p MainPID --value ovis-machine.service")).stdout.trim()).toBe(trialPid);
     const enginesNow = herdrProcesses(await m.processes());
     note("case7", `herdr started again by the user; the trial server (pid ${trialPid}) attaches again; the process table:\n${await m.processes()}`);
 
@@ -468,8 +468,8 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
     const noBus = await m.sh(`env -u DBUS_SESSION_BUS_ADDRESS -u XDG_RUNTIME_DIR ${joined.undo}`);
     note("case5", `[no user bus] exit ${noBus.code}\n${noBus.stdout}${noBus.stderr}`);
     expect(noBus.code).toBe(14);
-    expect((await m.sh("systemctl --user is-active ovis-trial.service")).stdout.trim()).toBe("active");
-    expect((await m.sh(`test -f ~/.config/systemd/user/ovis-trial.service && test -f ${TRIAL}/receipt && echo kept`)).stdout.trim()).toBe("kept");
+    expect((await m.sh("systemctl --user is-active ovis-machine.service")).stdout.trim()).toBe("active");
+    expect((await m.sh(`test -f ~/.config/systemd/user/ovis-machine.service && test -f ${TRIAL}/receipt && echo kept`)).stdout.trim()).toBe("kept");
 
     // a run again whose service start fails and whose stops after it do nothing (a systemctl that passes all else on):
     // the rollback cannot confirm the server stopped, and says so with the undo line, while the service still runs
@@ -487,11 +487,11 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
     expect(plainRun.code).toBe(29);
     expect(plainRun.stderr).toContain("whether its server stopped could not be confirmed (undo: sh ");
     expect(plainRun.stderr).not.toContain("earlier install");
-    expect((await m.sh("systemctl --user is-active ovis-trial.service")).stdout.trim()).toBe("active");
+    expect((await m.sh("systemctl --user is-active ovis-machine.service")).stdout.trim()).toBe("active");
     expect(unconfirmed.code).toBe(14);
     expect(unconfirmed.stderr).toContain("whether its server stopped could not be confirmed (undo: sh ");
     expect(unconfirmed.stderr).not.toContain("nothing was kept");
-    expect((await m.sh("systemctl --user is-active ovis-trial.service")).stdout.trim()).toBe("active");
+    expect((await m.sh("systemctl --user is-active ovis-machine.service")).stdout.trim()).toBe("active");
 
     // 5: the undo, exactly as the question printed it, from the folder the person stood in
     const undo = await m.sh(joined.undo);
@@ -499,7 +499,7 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
     expect(undo.code).toBe(0);
     expect(undo.stdout).toMatch(/[가-힣]/);
     expect(await m.home()).toBe(homeBefore);
-    expect((await m.sh("systemctl --user is-active ovis-trial.service")).stdout.trim()).not.toBe("active");
+    expect((await m.sh("systemctl --user is-active ovis-machine.service")).stdout.trim()).not.toBe("active");
     expect((await m.processes()).includes("ovis-server")).toBe(false);
     if (!REAL_PROFILE) {
       // exit 34 under a user manager, on a fresh install (its gate open: the relay never went on): the service is stopped
@@ -508,8 +508,8 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
       note("case5", `[a fresh install, the gate open, under a user manager] exit ${gate.code}\n${gate.stdout}${gate.stderr}`);
       expect(gate.code).toBe(34);
       expect(gate.stdout).toContain("so the trial server was stopped");
-      expect((await m.sh("systemctl --user is-enabled ovis-trial.service")).stdout.trim()).toBe("disabled");
-      expect((await m.sh("systemctl --user is-active ovis-trial.service")).stdout.trim()).not.toBe("active");
+      expect((await m.sh("systemctl --user is-enabled ovis-machine.service")).stdout.trim()).toBe("disabled");
+      expect((await m.sh("systemctl --user is-active ovis-machine.service")).stdout.trim()).not.toBe("active");
       expect((await m.sh(`sh ${TRIAL}/join.sh --uninstall`)).code).toBe(0);
       // the same, where is-enabled gives no answer and lingering's state cannot be read (show-user prints "no" but fails): the stop is not
       // claimed, lingering is neither turned on nor noted, and the undo leaves it alone (a recording loginctl sees no change)
@@ -606,8 +606,8 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
     expect(/process (\d+)\)/.exec(byFlag.text)?.[1]).toBe(before.pid);
     expect((await m.sh(`sed -n 's/^session //p' ${TRIAL}/trial`)).stdout.trim()).toBe("s3");
     const port = await trialPort(m);
-    const status = await m.sh(`${TRIAL}/bin/ovis-trial status`);
-    note("case3", `--- ovis-trial status with ${leaked.join(" ")} exported:\n${status.stdout}${status.stderr}`);
+    const status = await m.sh(`${TRIAL}/bin/ovis-machine status`);
+    note("case3", `--- ovis-machine status with ${leaked.join(" ")} exported:\n${status.stdout}${status.stderr}`);
     expect(status.stdout).toMatch(new RegExp(`^running http://127\\.0\\.0\\.1:${port}\\b`, "m"));
     expect(/^config: (.*)$/m.exec(status.stdout)?.[1]).toBe(`/home/runner/${TRIAL}/config/env`);
     const trialPid = (await m.sh(`cat ${TRIAL}/run/server.pid`)).stdout.trim();
@@ -672,7 +672,7 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
     expect((await health(m))?.web_ui?.server_id).toBe(first!.web_ui!.server_id!);
     expect((await world.pcs(account)).map((pc) => pc.server_id)).toEqual([first!.web_ui!.server_id!]);
     expect((await m.sh(`ps -eo args --no-headers | grep -c '^/home/runner/${TRIAL}/bin/ovis-server serve'`)).stdout.trim()).toBe("1");
-    expect((await m.sh(`ls -d ~/.local/share/ovis-trial* | wc -l; sort ${TRIAL}/receipt | uniq -d | wc -l`)).stdout.trim().split("\n")).toEqual(["1", "0"]);
+    expect((await m.sh(`ls -d ~/.local/share/ovis-machine* | wc -l; sort ${TRIAL}/receipt | uniq -d | wc -l`)).stdout.trim().split("\n")).toEqual(["1", "0"]);
     const undo = await m.sh(third.undo);
     note("case4", undo.stdout);
     expect(undo.code).toBe(0);
@@ -738,16 +738,16 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
   test("5b: a changed receipt cannot make the undo touch anything outside the trial folder", async () => {
     const m = await runnerMachine();
     // a home with an empty ~/.local/share before the join: it must still be there after the undo
-    expect((await m.sh("rm -rf ~/.local/share/other-app && echo his > ~/victim && mkdir -p ~/other && echo his-unit > ~/other/ovis-trial.service")).code).toBe(0);
+    expect((await m.sh("rm -rf ~/.local/share/other-app && echo his > ~/victim && mkdir -p ~/other && echo his-unit > ~/other/ovis-machine.service")).code).toBe(0);
     await serveHerdr(m);
     const home = await m.home();
-    const outside = async () => (await m.sh("sha256sum ~/victim ~/other/ovis-trial.service; ls -ld ~/.local/share | cut -c1-10")).stdout;
+    const outside = async () => (await m.sh("sha256sum ~/victim ~/other/ovis-machine.service; ls -ld ~/.local/share | cut -c1-10")).stdout;
     const was = await outside();
     // installed, the add refused at once: no terminal to draw the QR code on (the folder and server stay, exit 30)
     const installed = await m.sh(`${kit.line} --yes </dev/null`);
     expect(installed.code).toBe(30);
     // a same-named unit elsewhere under HOME: refused, nothing removed or stopped
-    expect((await m.sh(`printf 'unit %s/other/ovis-trial.service\\n' "$HOME" >> ${TRIAL}/receipt`)).code).toBe(0);
+    expect((await m.sh(`printf 'unit %s/other/ovis-machine.service\\n' "$HOME" >> ${TRIAL}/receipt`)).code).toBe(0);
     const trialWas = (await m.sh(`find ${TRIAL} | sort | sha256sum; pgrep -f '^/home/runner/${TRIAL}/bin/ovis-server serve'`)).stdout;
     const refused = await m.sh(`sh ${TRIAL}/join.sh --uninstall`);
     note("case5b", `[a same-named unit elsewhere] exit ${refused.code}\n${refused.stdout}${refused.stderr}`);
@@ -756,11 +756,11 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
     expect((await m.sh(`find ${TRIAL} | sort | sha256sum; pgrep -f '^/home/runner/${TRIAL}/bin/ovis-server serve'`)).stdout).toBe(trialWas);
     expect((await m.sh(`sed -i '$d' ${TRIAL}/receipt`)).code).toBe(0);
     // a unit at the trial's own path that the join did not write (no marker): refused, the file intact
-    expect((await m.sh("mkdir -p ~/.config/systemd/user && echo his-own > ~/.config/systemd/user/ovis-trial.service")).code).toBe(0);
+    expect((await m.sh("mkdir -p ~/.config/systemd/user && echo his-own > ~/.config/systemd/user/ovis-machine.service")).code).toBe(0);
     const unmarked = await m.sh(`sh ${TRIAL}/join.sh --uninstall`);
     note("case5b", `[a unit without the join's marker at its path] exit ${unmarked.code}\n${unmarked.stdout}${unmarked.stderr}`);
     expect(unmarked.code).toBe(14);
-    expect((await m.sh("cat ~/.config/systemd/user/ovis-trial.service")).stdout).toBe("his-own\n");
+    expect((await m.sh("cat ~/.config/systemd/user/ovis-machine.service")).stdout).toBe("his-own\n");
     expect((await m.sh("rm -r ~/.config/systemd")).code).toBe(0);
     // the run folder a link to an outside folder whose server.pid names a foreign process: refused (exit 14), that file
     // intact and that process not signalled
@@ -795,7 +795,7 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
     expect(await m.home()).toBe(home);
   }, 300_000);
 
-  test("5b-stop: ovis-trial stop with its run folder a link to an outside folder says it stopped nothing and signals nothing", async () => {
+  test("5b-stop: ovis-machine stop with its run folder a link to an outside folder says it stopped nothing and signals nothing", async () => {
     const m = await runnerMachine();
     await serveHerdr(m);
     // installed, the add refused at once: no terminal to draw the QR code on (the folder and the background server stay)
@@ -806,8 +806,8 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
     const foreignWas = await foreign();
     expect(foreignWas).toContain("sleep 4243");
     // the trial's own stop, through the same link: it says it stopped nothing, and signals nothing
-    const stopLinked = await m.sh(`${TRIAL}/bin/ovis-trial stop`);
-    note("case5b", `[ovis-trial stop, the run folder a link] exit ${stopLinked.code}\n${stopLinked.stdout}${stopLinked.stderr}`);
+    const stopLinked = await m.sh(`${TRIAL}/bin/ovis-machine stop`);
+    note("case5b", `[ovis-machine stop, the run folder a link] exit ${stopLinked.code}\n${stopLinked.stdout}${stopLinked.stderr}`);
     expect(stopLinked.code).not.toBe(0);
     expect(stopLinked.stdout).not.toContain("stopped.");
     expect(stopLinked.stderr).toContain("is a link");
@@ -815,13 +815,13 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
     expect((await m.sh(`kill $(cat ~/outside-run/server.pid); rm ${TRIAL}/run && mv ~/run-real ${TRIAL}/run && rm -r ~/outside-run`)).code).toBe(0);
     // stop with nothing linked: it says stopped only once it saw the server's process end
     const serverPid = (await m.sh(`cat ${TRIAL}/run/server.pid`)).stdout.trim();
-    const stopped = await m.sh(`${TRIAL}/bin/ovis-trial stop`);
+    const stopped = await m.sh(`${TRIAL}/bin/ovis-machine stop`);
     expect(stopped.code).toBe(0);
     expect(stopped.stdout).toContain("stopped.");
-    // a login that exports OVIS_TRIAL_CLEAN=1 still gets the clean run: an env on PATH that records its arguments sees -i
+    // a login that exports OVIS_MACHINE_CLEAN=1 still gets the clean run: an env on PATH that records its arguments sees -i
     expect((await m.sh("mkdir -p /var/tmp/env-stub && printf '#!/bin/sh\\necho \"$1\" >> /var/tmp/env-stub/calls\\nexec /usr/bin/env \"$@\"\\n' > /var/tmp/env-stub/env && chmod 755 /var/tmp/env-stub/env")).code).toBe(0);
-    const cleaned = await m.sh(`export OVIS_TRIAL_CLEAN=1 PATH=/var/tmp/env-stub:$PATH; ${TRIAL}/bin/ovis-trial stop`);
-    note("case5b", `[ovis-trial stop, OVIS_TRIAL_CLEAN=1 exported] exit ${cleaned.code}\n${cleaned.stdout}${cleaned.stderr}`);
+    const cleaned = await m.sh(`export OVIS_MACHINE_CLEAN=1 PATH=/var/tmp/env-stub:$PATH; ${TRIAL}/bin/ovis-machine stop`);
+    note("case5b", `[ovis-machine stop, OVIS_MACHINE_CLEAN=1 exported] exit ${cleaned.code}\n${cleaned.stdout}${cleaned.stderr}`);
     expect(cleaned.code).toBe(0);
     expect((await m.sh("cat /var/tmp/env-stub/calls")).stdout.split("\n")).toContain("-i");
     expect((await m.sh(`kill -0 ${serverPid}`)).code).not.toBe(0);
@@ -835,13 +835,13 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
     const installed = await m.sh(`${kit.line} --yes </dev/null`);
     expect(installed.code).toBe(30);
     // stopped first (it says so once its process ended), so that the start would write the log if it ran
-    expect((await m.sh(`${TRIAL}/bin/ovis-trial stop`)).code).toBe(0);
+    expect((await m.sh(`${TRIAL}/bin/ovis-machine stop`)).code).toBe(0);
     // the server's log a link to an outside file: the start, a run of the line again and the undo each refuse, and
     // that file is unchanged by all three
     expect((await m.sh(`echo his-log > ~/outside.log && mv ${TRIAL}/logs/server.log ~/log-real && ln -s ~/outside.log ${TRIAL}/logs/server.log`)).code).toBe(0);
     const logHash = async () => (await m.sh("sha256sum ~/outside.log")).stdout;
     const logWas = await logHash();
-    for (const [label, command] of [["ovis-trial start", `${TRIAL}/bin/ovis-trial start`], ["the line again", `${kit.line} --yes </dev/null`], ["the undo", `sh ${TRIAL}/join.sh --uninstall`]] as const) {
+    for (const [label, command] of [["ovis-machine start", `${TRIAL}/bin/ovis-machine start`], ["the line again", `${kit.line} --yes </dev/null`], ["the undo", `sh ${TRIAL}/join.sh --uninstall`]] as const) {
       const through = await m.sh(command);
       note("case5b", `[server.log a link: ${label}] exit ${through.code}\n${through.stdout}${through.stderr}`);
       expect(through.code, label).toBe(14);
@@ -1104,11 +1104,11 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
     const joined = await m.sh(`${as} ${fakeKit.line} --yes </dev/null`);
     note("caseHome", `[join] exit ${joined.code}\n${joined.stdout}${joined.stderr}`);
     expect(joined.code).toBe(30);
-    expect(joined.stdout).toContain("sh /home/runner/.local/share/ovis-trial/join.sh --uninstall");
+    expect(joined.stdout).toContain("sh /home/runner/.local/share/ovis-machine/join.sh --uninstall");
     expect(await serving()).toBe(true);
-    const status = await m.sh(`${as} ~/.local/share/ovis-trial/bin/ovis-trial status`);
+    const status = await m.sh(`${as} ~/.local/share/ovis-machine/bin/ovis-machine status`);
     note("caseHome", `[status] exit ${status.code}\n${status.stdout}${status.stderr}`);
-    const stopped = await m.sh(`${as} ~/.local/share/ovis-trial/bin/ovis-trial stop`);
+    const stopped = await m.sh(`${as} ~/.local/share/ovis-machine/bin/ovis-machine stop`);
     note("caseHome", `[stop] exit ${stopped.code}\n${stopped.stdout}${stopped.stderr}`);
     expect(stopped.code).toBe(0);
     expect(stopped.stdout).toContain("stopped.");
@@ -1120,11 +1120,11 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
     expect(gate.code).toBe(34);
     expect(gate.stdout).toContain("so the trial server was stopped");
     expect(await serving()).toBe(false);
-    const undo = await m.sh(`${as} sh ~/.local/share/ovis-trial/join.sh --uninstall`);
+    const undo = await m.sh(`${as} sh ~/.local/share/ovis-machine/join.sh --uninstall`);
     note("caseHome", `[undo] exit ${undo.code}\n${undo.stdout}${undo.stderr}`);
     expect(undo.code).toBe(0);
     expect(await serving()).toBe(false);
-    expect((await m.sh("test -e ~/.local/share/ovis-trial && echo there || echo none")).stdout.trim()).toBe("none");
+    expect((await m.sh("test -e ~/.local/share/ovis-machine && echo there || echo none")).stdout.trim()).toBe("none");
     expect((await m.sh("rm /var/tmp/fake-gate-open")).code).toBe(0);
   }, 300_000);
 
