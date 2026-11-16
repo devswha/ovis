@@ -118,6 +118,20 @@ describe("the tab strip on a PC the Herdr app lays out", () => {
     } finally { delete child.parent_pane_id; }
   });
 
+  it("does not move a parent against its own folded child by menu or keys", async () => {
+    const child = snapshot.panes[1]! as HerdrPane;
+    child.parent_pane_id = snapshot.panes[0]!.pane_id;
+    stored.set("ovis:settings", JSON.stringify({ agentFriends: true }));
+    try {
+      await withFetch(async () => {
+        await draw(TUI);
+        expect(await menuOf()).not.toContain("move-right");
+        await keyDown("ArrowRight", { altKey: true, shiftKey: true });
+        expect(requested).toEqual([]);
+      });
+    } finally { delete child.parent_pane_id; }
+  });
+
   it("offers a TUI PC's tab its moves and rename, by menu, keys and a double-click", async () => {
     await withFetch(async () => {
       await draw(TUI);
