@@ -429,6 +429,23 @@ describe("writing a body", () => {
     expect(refusal(() => writeBody({ ...genesisBody, own: [{ name: "seq", value: encoder.encode("1") }] }))).toBe("entry_malformed");
     expect(refusal(() => writeBody({ ...genesisBody, own: [{ name: "zz", value: new Uint8Array(LIST_BODY_MAX) }] }))).toBe("entry_malformed");
   });
+
+  test("refuses a field of the envelope passed through own", async () => {
+    const field = (name: string, value: string) => ({ name, value: encoder.encode(value) });
+    for (const own of [[field("adds", other.key), field("power", "full")], [field("ends", other.key)]]) {
+      const names = own.map(({ name }) => name);
+      expect([names, refusal(() => writeBody(nextBody({ own })))]).toEqual([names, "entry_malformed"]);
+      expect([names, await asyncRefusal(() => signEntry(nextBody({ own }), owner.pair.privateKey))]).toEqual([names, "entry_malformed"]);
+    }
+    expect(refusal(() => writeBody(nextBody({ own: [field("note", "x")] })))).toBe("none");
+  });
+
+  test("a body above the limit is refused by its size, before anything of that size is allocated", () => {
+    // A value that says it is longer than any buffer can be: a body allocated for it is a RangeError, and no refusal.
+    const value = Object.defineProperty(new Uint8Array(1), "length", { value: Number.MAX_SAFE_INTEGER });
+    expect(refusal(() => writeFields([{ name: "zz", value }]))).toBe("entry_malformed");
+    expect(refusal(() => writeBody({ ...genesisBody, own: [{ name: "zz", value }] }))).toBe("entry_malformed");
+  });
 });
 
 describe("the entry hash and the list id", () => {
@@ -691,6 +708,20 @@ describe("the signature", () => {
   test("a signature of another length has not the form", async () => {
     expect(await asyncRefusal(() => entryHolds({ body: genesis.body, signature: genesis.signature.subarray(0, 63) }, null))).toBe("entry_malformed");
   });
+
+  test("what is verified is the bytes as they were handed over, whatever the caller does to them while the key is imported", async () => {
+    const unsigned = genesis.signature.slice();
+    unsigned[5] = (unsigned[5] ?? 0) ^ 1;
+    // A signature that verifies, zeroed with its body once the call is under way; and one that does not, replaced by the one that does.
+    for (const [handed, after, verdict] of [[genesis.signature, new Uint8Array(64), true], [unsigned, genesis.signature, false]] as const) {
+      const signature = handed.slice();
+      const body = genesis.body.slice();
+      const pending = verifySignature(body, signature, owner.key);
+      signature.set(after);
+      if (verdict) body.fill(0);
+      expect([verdict, await pending]).toEqual([verdict, verdict]);
+    }
+  });
 });
 
 describe("when an entry holds", () => {
@@ -781,6 +812,38 @@ describe("when an entry holds", () => {
         changing.mockRestore();
       }
     }
+  });
+
+  test("the state an entry is held against is read once: changed while the signature is checked, it changes nothing that comes back", async () => {
+    const one = await signEntry(nextBody(), owner.pair.privateKey);
+    const elsewhere = "f".repeat(64);
+    const before = { ...held0 };
+    const verify = crypto.subtle.verify.bind(crypto.subtle);
+    // The runtime verifies entry 1, and the state it is held against changes before the runtime answers.
+    const changing = spyOn(crypto.subtle, "verify").mockImplementation(async (...args) => {
+      const verified = await verify(...args);
+      before.list = elsewhere;
+      before.hash = elsewhere;
+      before.body = { ...before.body, seq: 7 };
+      return verified;
+    });
+    let held: HeldEntry;
+    try {
+      held = await entryHolds(one, before);
+    } finally {
+      changing.mockRestore();
+    }
+    expect([before.list, held.list, held.body.list, held.hash, held.body.seq]).toEqual([elsewhere, held0.list, held0.list, entryHash(one.body), 1]);
+    // So an entry signed for the other id continues nothing, and the list's own next entry does.
+    const two = (list: string) => signEntry(nextBody({ seq: 2, list, prev: held.hash }), owner.pair.privateKey);
+    expect(await asyncRefusal(async () => entryHolds(await two(elsewhere), held))).toBe("chain_broken");
+    expect(await asyncRefusal(async () => entryHolds(await two(held0.list), held))).toBe("none");
+  });
+
+  test("a body that says it is above the limit is refused by that size, before a byte of it is read", async () => {
+    // The bytes of an entry that holds, under a length of 64 MiB: only a check of the size, made first, refuses them.
+    const body = Object.defineProperty(genesis.body.slice(), "length", { value: 64 * 1024 * 1024 });
+    expect(await asyncRefusal(() => entryHolds({ body, signature: genesis.signature }, null))).toBe("entry_malformed");
   });
 });
 

@@ -44,6 +44,10 @@ function refuse(code: ListRefusalCode, message: string): never {
   throw new ListEntryError(code, message);
 }
 const malformed = (message: string): never => refuse("entry_malformed", message);
+/** The one size limit, judged from a size alone: before anything of that size is copied or allocated. */
+function withinLimit(size: number): void {
+  if (size > LIST_BODY_MAX) malformed(`A body is at most ${LIST_BODY_MAX} bytes, not ${size}`);
+}
 
 export interface ListField {
   readonly name: string;
@@ -176,7 +180,7 @@ function latin1(bytes: Uint8Array): string {
  */
 export function readFieldsUnder(prefix: string, bytes: Uint8Array): ListField[] {
   const head = utf8ToBytes(prefix);
-  if (bytes.length > LIST_BODY_MAX) malformed(`A body is at most ${LIST_BODY_MAX} bytes, not ${bytes.length}`);
+  withinLimit(bytes.length);
   if (bytes.length < head.length || !head.every((byte, index) => bytes[index] === byte)) malformed(`A body starts with ${prefix}`);
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const take = (offset: number, what: string): Uint8Array => {
@@ -207,6 +211,7 @@ export function writeFieldsUnder(prefix: string, fields: readonly ListField[]): 
   const head = utf8ToBytes(prefix);
   const sorted = [...fields].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   const size = sorted.reduce((sum, field) => sum + 8 + field.name.length + field.value.length, head.length);
+  withinLimit(size);
   const bytes = new Uint8Array(size);
   const view = new DataView(bytes.buffer);
   bytes.set(head);
@@ -274,8 +279,10 @@ export function readBody(body: Uint8Array): EntryBody {
   };
 }
 
-/** The field form and the fields every entry carries: the one body of these fields; refuses `entry_malformed` for fields no entry can hold. */
+/** The field form and the fields every entry carries: the one body of these fields; refuses `entry_malformed` for fields no entry can hold, and for a field of the envelope passed through `own`. */
 export function writeBody(body: EntryBody): Uint8Array {
+  const taken = body.own.find(({ name }) => ENVELOPE_NAMES.has(name));
+  if (taken) malformed(`${taken.name} is a field of the envelope: it is written from its own property, never through own`);
   const field = (name: string, value: string): ListField => ({ name, value: utf8ToBytes(value) });
   const fields = [
     field("issued_at", String(body.issued_at)), field("kind", body.kind), field("list", body.list), field("prev", body.prev),
@@ -318,40 +325,49 @@ export async function signEntry(body: EntryBody, privateKey: CryptoKey): Promise
  * spelling or whose point is not on the curve, verify nothing: false, judged here before the
  * runtime is asked. So the runtime gets only a key it must take, and whatever it throws is a
  * fault, as is a runtime without WebCrypto (a page on plain http at a LAN address): it says
- * nothing about the entry.
+ * nothing about the entry. The body and the signature are copied before anything is judged, and
+ * the runtime verifies those copies: the verdict is of the bytes as they were handed over,
+ * whatever the caller does to them while the key is imported.
  */
 export async function verifySignature(body: Uint8Array, signature: Uint8Array, signer: string): Promise<boolean> {
   const subtle = globalThis.crypto?.subtle;
   if (!subtle) throw new Error("WebCrypto is not available here (crypto.subtle is missing), so no signature can be checked");
-  if (!signatureInRange(signature) || !isListPoint(signer)) return false;
+  if (signature.length !== LIST_SIGNATURE_BYTES) return false;
+  const signed = new Uint8Array(body);
+  const judged = new Uint8Array(signature);
+  if (!signatureInRange(judged) || !isListPoint(signer)) return false;
   const key = await subtle.importKey("spki", new Uint8Array(fromBase64Url(signer)), P256, false, ["verify"]);
-  return await subtle.verify(SIGN, key, new Uint8Array(signature), new Uint8Array(body));
+  return await subtle.verify(SIGN, key, judged, signed);
 }
 
 /**
  * When an entry holds (docs/account-list.md): entry n holds, given the entry before it (null for
  * entry 0) and nothing else: (1) its body has the form, (2) its `seq` is n and it continues the
  * chain, (3) its signature verifies. Checked in that order; throws ListEntryError with the first
- * that fails. The entry is copied first, so the hash and the fields that come back are those of
- * the bytes whose signature was checked, whatever the caller does to its buffers meanwhile or
- * later (copied with `new Uint8Array`: on Node's Buffer, `slice()` is a view of the same memory).
+ * that fails. Everything is read once, before the signature is awaited: the entry is copied (with
+ * `new Uint8Array`: on Node's Buffer, `slice()` is a view of the same memory), once its sizes are
+ * judged, and the seq, hash and list id of the entry before are taken. What comes back is built
+ * from those alone, so it is of the bytes whose signature was checked and of the state they were
+ * checked against, whatever the caller does to its buffers or to that state meanwhile or later.
  */
 export async function entryHolds(shown: Entry, before: HeldEntry | null): Promise<HeldEntry> {
+  if (shown.signature.length !== LIST_SIGNATURE_BYTES) malformed(`A signature is ${LIST_SIGNATURE_BYTES} bytes`);
+  withinLimit(shown.body.length);
   const entry: Entry = { body: new Uint8Array(shown.body), signature: new Uint8Array(shown.signature) };
-  if (entry.signature.length !== LIST_SIGNATURE_BYTES) malformed(`A signature is ${LIST_SIGNATURE_BYTES} bytes`);
+  const chain = before === null ? null : { seq: before.body.seq, hash: before.hash, list: before.list };
   const body = readBody(entry.body);
-  const n = before === null ? 0 : before.body.seq + 1;
+  const n = chain === null ? 0 : chain.seq + 1;
   if (body.seq !== n) refuse("chain_broken", `seq is ${body.seq}, not ${n}`);
-  if (before === null) {
+  if (chain === null) {
     if (body.list !== "" || body.prev !== "") refuse("chain_broken", "Entry 0 has an empty list and prev");
     if (body.adds !== undefined || body.ends !== undefined) refuse("chain_broken", "Entry 0 carries no adds and no ends");
   } else {
-    if (body.list !== before.list) refuse("chain_broken", "list is not this list's id");
-    if (body.prev !== before.hash) refuse("chain_broken", "prev is not the hash of the entry before");
+    if (body.list !== chain.list) refuse("chain_broken", "list is not this list's id");
+    if (body.prev !== chain.hash) refuse("chain_broken", "prev is not the hash of the entry before");
   }
-  if (!(await verifySignature(entry.body, entry.signature, body.signer))) refuse("signature_invalid", "The signature is not the signer's over this body");
   const hash = entryHash(entry.body);
-  return { entry, body, hash, list: before === null ? hash : before.list };
+  if (!(await verifySignature(entry.body, entry.signature, body.signer))) refuse("signature_invalid", "The signature is not the signer's over this body");
+  return { entry, body, hash, list: chain === null ? hash : chain.list };
 }
 
 /**
