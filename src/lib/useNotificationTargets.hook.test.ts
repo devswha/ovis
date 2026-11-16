@@ -205,21 +205,21 @@ describe("a desktop link to a pane the cached roster lacks", () => {
     await act(async () => { await landed; });
   }
 
-  it("selects the fallback pane with the not-found note when this PC cannot be asked", async () => {
+  it("selects the fallback pane without a word when this PC cannot be asked", async () => {
     answer("fails");
     await mount();
     await open("?ws=9-gone&pane=t99");
     expect(reads).toBeGreaterThan(0);
-    expect(shown).toEqual({ pane: "t4", note: "workspace-closed" });
-    expect(misses).toBe(1);
+    expect(shown).toEqual({ pane: "t4", note: null });
+    expect(misses).toBe(0);
   });
 
-  it("opens the link's workspace with its note when this PC cannot be asked", async () => {
+  it("opens the link's workspace without a word when this PC cannot be asked", async () => {
     answer("fails");
     await mount();
     await open("?ws=3-alpha&pane=t99");
-    expect(shown).toEqual({ pane: "t2", note: "pane-closed" });
-    expect(misses).toBe(1);
+    expect(shown).toEqual({ pane: "t2", note: null });
+    expect(misses).toBe(0);
   });
 
   it("selects the fallback pane with the not-found note when this PC answers without the pane", async () => {

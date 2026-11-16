@@ -223,10 +223,10 @@ export function useSelectTarget({ selectedMachineId, setConnected, setConnectedB
           if (cancelled || pendingLink.current !== linked) return;
           // A failed read is not evidence that anything closed: a pane still selected stays, and the
           // link settles without a word. A link that left nothing selected while it waited lands as
-          // the cached roster says, with its word, so the window is never left empty.
+          // the cached roster says, still without a word, so the window is never left empty.
           if (read === null) {
             if (selectedPaneId !== null) { land({ pane: null, workspace: null, note: null }); return; }
-            if (!land(landed)) setSelectedPaneId(fallback(snapshot));
+            if (!land({ ...landed, note: null })) setSelectedPaneId(fallback(snapshot));
             return;
           }
           const { current, confirmed } = read;
