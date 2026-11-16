@@ -117,10 +117,53 @@ describe("emulator per pane", () => {
       expect(!result.ok && result.error.kind).toBe("disposed");
     }
     expect(replies).toEqual([]);
+
+    const trapping = createEmulatorLoader({
+      read: async () => Bun.file(wasmPath).arrayBuffer(),
+      onModule: (module) => {
+        (module as { exports: GhosttyExports }).exports = {
+          ...module.exports,
+          ghostty_terminal_free: () => {
+            throw new WebAssembly.RuntimeError("forced trap");
+          },
+        };
+      },
+    });
+    const trapped = made(await trapping.create({ cols: 20, rows: 5, events: {} }));
+    expect(() => trapped.dispose()).not.toThrow();
+    expect(trapped.failure?.kind).toBe("trapped");
+    const afterTrap = trapped.write(bytesOf("x"));
+    expect(afterTrap.ok).toBe(false);
+  });
+
+  it("returns a value when a handler disposes the emulator during a call", async () => {
+    const { loader } = countingLoader();
+    const bell = bytesOf("\x07");
+    const hold = bytesOf("\x1b[?2026h");
+    const reply = bytesOf("a\x1b[6nb");
+    const withHandler = async (name: "onReply" | "onEffect" | "onHold", bytes: Uint8Array) => {
+      let emulator: Emulator | undefined;
+      emulator = made(await loader.create({ cols: 20, rows: 5, events: { [name]: () => emulator?.dispose() } }));
+      const result = emulator.write(bytes);
+      expect(typeof result.ok).toBe("boolean");
+      const later = emulator.write(bytesOf("x"));
+      expect(!later.ok && later.error.kind).toBe("disposed");
+    };
+    await withHandler("onReply", reply);
+    await withHandler("onEffect", bell);
+    await withHandler("onHold", hold);
+
+    const drawn = made(await loader.create({ cols: 20, rows: 5, events: {} }));
+    drawn.write(bytesOf("a"));
+    const result = drawn.frameAll(() => drawn.dispose());
+    expect(typeof result.ok).toBe("boolean");
+    const later = drawn.frameAll(() => {});
+    expect(!later.ok && later.error.kind).toBe("disposed");
   });
 
   it("keeps a second emulator answering after the first one's engine throws", async () => {
     let armed = false;
+    let trapReads = 0;
     const modules: GhosttyModule[] = [];
     const loader = createEmulatorLoader({
       read: async () => Bun.file(wasmPath).arrayBuffer(),
@@ -134,6 +177,18 @@ describe("emulator per pane", () => {
           return real.ghostty_terminal_vt_write(terminal, ptr, len);
         } };
         (module as { exports: GhosttyExports }).exports = forced;
+        if (first) {
+          let recorded = module.trap;
+          Object.defineProperty(module, "trap", {
+            get: () => {
+              trapReads++;
+              return recorded;
+            },
+            set: (value) => {
+              recorded = value;
+            },
+          });
+        }
       },
     });
     const a = await pane(loader);
@@ -147,6 +202,9 @@ describe("emulator per pane", () => {
     expect(a.emulator.failure).not.toBeNull();
     for (const result of [again, laterFrame]) expect(result.ok ? null : result.error).toBe(a.emulator.failure);
     expect(a.emulator.failure?.kind).toBe("trapped");
+    const readsAtDeath = trapReads;
+    for (let n = 0; n < 3; n++) a.emulator.write(bytesOf("more"));
+    expect(trapReads).toBe(readsAtDeath);
 
     expect(b.emulator.write(bytesOf("alive\x1b[6n")).ok).toBe(true);
     expect(b.replies).toEqual(["\x1b[1;6R"]);
@@ -221,6 +279,9 @@ describe("emulator per pane", () => {
       expect(!created.ok && created.error.kind).toBe("size");
     }
     expect(emulator.failure).toBeNull();
+    const wide = emulator.resize(1001, 5, 8, 16);
+    expect(!wide.ok && wide.error.kind).toBe("size");
+    expect(emulator.resize(1000, 5, 8, 16).ok).toBe(true);
     expect(emulator.resize(MAX_COLS, MAX_ROWS, 8, 16).ok).toBe(true);
     expect(emulator.resize(1, 1, 8, 16).ok).toBe(true);
     emulator.write(bytesOf("\x1b[6n"));

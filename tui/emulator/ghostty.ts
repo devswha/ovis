@@ -97,15 +97,16 @@ class GhosttyEmulator implements Emulator {
   private call<T>(run: (engine: GhosttyEngine) => T): EmulatorResult<T> {
     const ended = this.ended();
     if (ended) return refuse(ended);
+    const module = this.module!;
     let value: T;
     try {
       value = run(this.engine!);
     } catch (error) {
-      const trap = this.module!.trap ?? (error instanceof WebAssembly.RuntimeError ? error : null);
-      return refuse(trap ? this.die(trap) : errorOf(error));
+      const trap = module.trap ?? (error instanceof WebAssembly.RuntimeError ? error : null);
+      if (trap) return refuse(this.die(trap));
+      return refuse(this.ended() ?? errorOf(error));
     }
-    const trap = this.module!.trap;
-    return trap ? refuse(this.die(trap)) : { ok: true, value };
+    return module.trap ? refuse(this.die(module.trap)) : { ok: true, value };
   }
 
   private die(trap: WebAssembly.RuntimeError): EmulatorError {
@@ -118,7 +119,11 @@ class GhosttyEmulator implements Emulator {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    this.engine?.dispose();
+    try {
+      this.engine?.dispose();
+    } catch (error) {
+      this.failure ??= errorOf(error);
+    }
     this.engine = null;
     this.module = null;
   }

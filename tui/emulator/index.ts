@@ -48,7 +48,10 @@ export interface EmulatorOptions {
   events: EngineEvents;
 }
 
-/** One pane's terminal state. Not shared: its own wasm instance, freed by `dispose`. */
+/**
+ * One pane's terminal state. Not shared: its own wasm instance, freed by `dispose`. A handler passed in `events` or a draw callback
+ * must not call the emulator it belongs to, except `dispose()`, which is safe.
+ */
 export interface Emulator {
   /** the trap that killed this emulator, or null while it lives (only a trap ends it) */
   readonly failure: EmulatorError | null;
@@ -57,7 +60,7 @@ export interface Emulator {
   /** a no-op when nothing changed; cell sizes are in pixels */
   resize(cols: number, rows: number, cellW: number, cellH: number): EmulatorResult<void>;
   reset(): EmulatorResult<void>;
-  /** frees the terminal; safe to call twice and on a dead emulator, and it cannot fail */
+  /** frees the terminal; safe to call twice, on a dead emulator and from inside a handler, and it never throws */
   dispose(): void;
 
   /** rows changed since the last call, as runs of cells that share a style, colours as the program wrote them; true when any row was drawn */
