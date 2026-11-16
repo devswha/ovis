@@ -31,7 +31,14 @@
   gap: var(--space-2);
 }
 
-.fork-github .inbox-top h2 { flex: 1; }
+.fork-github .inbox-top > .fork-github-gap { flex: 1; }
+
+.fork-github-note {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+}
 
 /* beside New workspace at the row's end, whatever sits before them */
 .mode-inbox .inbox-top > .fork-github-open {

@@ -1,4 +1,4 @@
-/** Fork GitHub inbox, read with the active github.com account in gh. */
+/** Fork GitHub inbox, read with every github.com account gh is signed in with. */
 import type { PullRequestEntry } from "./workspace-lifecycle.ts";
 
 export interface GithubPull extends PullRequestEntry {
@@ -6,7 +6,10 @@ export interface GithubPull extends PullRequestEntry {
   workspace_id?: string;
 }
 export interface GithubPulls {
-  account: string;
+  /** every gh account on github.com that was read */
+  accounts: string[];
+  /** signed-in accounts whose read failed; the rest are still listed */
+  failed?: string[];
   review: GithubPull[];
   yours: GithubPull[];
 }

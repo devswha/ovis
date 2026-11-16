@@ -2,6 +2,7 @@
 export const FORK_I18N = {
   ja: {
     "GitHub|fork": "GitHub",
+    "Could not read {accounts}": "{accounts} を読み込めませんでした",
     "Review requested": "レビュー依頼",
     "Yours": "自分のプルリクエスト",
     "Nothing needs you": "対応が必要なものはありません",
@@ -26,6 +27,7 @@ export const FORK_I18N = {
   },
   ko: {
     "GitHub|fork": "GitHub",
+    "Could not read {accounts}": "{accounts}을(를) 읽을 수 없습니다",
     "Review requested": "리뷰 요청됨",
     "Yours": "내 풀 리퀘스트",
     "Nothing needs you": "처리할 항목이 없습니다",
@@ -50,6 +52,7 @@ export const FORK_I18N = {
   },
   zh: {
     "GitHub|fork": "GitHub",
+    "Could not read {accounts}": "无法读取 {accounts}",
     "Review requested": "请求你审查",
     "Yours": "你的拉取请求",
     "Nothing needs you": "没有需要你处理的内容",

@@ -24,6 +24,24 @@ let section: Section = "inbox";
 const listeners = new Set<() => void>();
 export function setGithubSection(next: Section): void { section = next; for (const listener of listeners) listener(); }
 const subscribe = (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; };
+
+/* A phone opens GitHub on a history entry of its own, so the phone's Back leaves it like the arrow does. The entry
+   copies the state it stands on (the app's own keys stay), adding one key; the listener only reads. */
+const GITHUB_KEY = "ovis:fork-github";
+let onEntry = false;
+const githubEntry = (): boolean => typeof window !== "undefined" && (window.history.state as Record<string, unknown> | null)?.[GITHUB_KEY] === true;
+function openGithub(phone: boolean): void {
+  if (phone && !githubEntry()) { window.history.pushState({ ...(window.history.state ?? {}), [GITHUB_KEY]: true }, ""); onEntry = true; }
+  setGithubSection("github");
+}
+function closeGithub(): void {
+  if (onEntry && githubEntry()) window.history.back();
+  else setGithubSection("inbox");
+}
+if (typeof window !== "undefined") window.addEventListener("popstate", () => {
+  if (githubEntry()) { onEntry = true; setGithubSection("github"); }
+  else if (onEntry) { onEntry = false; setGithubSection("inbox"); }
+});
 const useSection = () => useSyncExternalStore(subscribe, () => section, () => "inbox" as Section);
 
 /** Wrap the existing Inbox button: its original action and focus behavior still run on return. */
@@ -55,7 +73,7 @@ export function ForkGithubOpen() {
   const t = useT();
   if (!settings.pullRequests) return null;
   return <button type="button" className="icon-button inbox-round fork-github-open" aria-label={t("GitHub|fork")} title={t("GitHub|fork")}
-    onClick={() => setGithubSection("github")}><GitPullRequest aria-hidden="true" /></button>;
+    onClick={() => openGithub(true)}><GitPullRequest aria-hidden="true" /></button>;
 }
 
 export function GithubInbox({ wide, watching, onOpened }: ViewProps) {
@@ -85,7 +103,7 @@ export function GithubInbox({ wide, watching, onOpened }: ViewProps) {
     });
     return () => { cancelled = true; };
   }, [refresh]);
-  const groups = githubGroups(listing ?? { account: "", review: [], yours: [] }, repo);
+  const groups = githubGroups(listing ?? { accounts: [], review: [], yours: [] }, repo);
   const { checks, reviews } = pullRequestWords(t);
   const statuses = { "Checks failing": t("Checks failing"), "Changes requested": t("Changes requested"), "Review requested": t("Review requested"), Draft: t("Draft"), "Checks running": t("Checks running"), Approved: t("Approved"), Ready: t("Ready") };
 
@@ -137,14 +155,15 @@ export function GithubInbox({ wide, watching, onOpened }: ViewProps) {
   </section>;
   return <section className={`mode-inbox fork-github${wide ? " is-wide" : ""}`} aria-label={t("GitHub|fork")}>
     <header className="inbox-top">
-      {!wide && <button type="button" className="icon-button inbox-round" aria-label={t("Back|fork inbox")} title={t("Back|fork inbox")} onClick={() => setGithubSection("inbox")}><ArrowLeft aria-hidden="true" /></button>}
-      <h2>{t("GitHub|fork")}</h2>
+      {!wide && <button type="button" className="icon-button inbox-round" aria-label={t("Back|fork inbox")} title={t("Back|fork inbox")} onClick={closeGithub}><ArrowLeft aria-hidden="true" /></button>}
+      <span className="fork-github-gap" />
       {groups.repos.length > 1 && <button type="button" className={`icon-button inbox-round inbox-filter-toggle${groups.selected === "" ? "" : " is-on"}`} aria-label={t("Repositories")} title={groups.selected || t("Repositories")}
         aria-haspopup="menu" aria-expanded={repoMenu !== null} onClick={(event) => setRepoMenu(repoMenu === null ? event.currentTarget : null)}><ListFilter aria-hidden="true" /></button>}
       {repoMenu !== null && <RowMenu anchor={repoMenu} title={t("Repositories")} choice onClose={() => setRepoMenu(null)}
         items={[["", 0] as const, ...groups.repos].map(([name]) => ({ id: name || "all", label: name ? name.split("/").pop() ?? name : t("All"), icon: name ? FolderGit2 : ListFilter, checked: groups.selected === name, run: () => { setRepo(name); saveGithubRepo(name); } }))} />}
       <button type="button" className="icon-button inbox-round" aria-label={t("Refresh")} title={t("Refresh")} disabled={loading || busy !== null} onClick={() => setRefresh((value) => value + 1)}><RefreshCw aria-hidden="true" /></button></header>
     <div className="inbox-scroll">
+      {!loading && error === null && (listing?.failed?.length ?? 0) > 0 && <p className="fork-github-note" role="status">{t("Could not read {accounts}", { accounts: listing!.failed!.join(", ") })}</p>}
       {loading ? <p className="inbox-empty" role="status">{t("Reading pull requests…")}</p> : error !== null ? <p className="inbox-empty" role="alert">{error === "checkout_failed" ? t("Could not check out this pull request") : errors[error] ?? errors.gh_failed}</p> : listing !== null && <>
         {groups.review.length + groups.yours.length === 0 ? <p className="inbox-empty" role="status">{t("Nothing needs you")}</p> : <>{group(groups.review, true)}{group(groups.yours, false)}</>}
       </>}

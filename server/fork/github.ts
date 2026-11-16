@@ -1,10 +1,11 @@
 import type { GithubPull, GithubPulls } from "../../shared/github.ts";
 import type { SessionSnapshot } from "../../shared/protocol.ts";
 import { conflictResponse, jsonResponse } from "../http.ts";
-import { originRepository, parsePullRequests, PullRequestError, runGithub } from "./pull-requests.ts";
+import { ghAccounts, originRepository, parsePullRequests, PullRequestError, runGithub } from "./pull-requests.ts";
 
 // Search ideas and failure states: ricardofelixb/omarchy-github (MIT),
-// Service.qml / omarchy-github-fetch. No code copied; one active account here.
+// Service.qml / omarchy-github-fetch. No code copied. Every signed-in account is read, each with its own
+// token (`gh auth token --user`), never by switching gh's active account.
 const FIELDS = `number title url headRefName isDraft isCrossRepository updatedAt author { login }
   repository { nameWithOwner } reviewDecision
   commits(last:1) { nodes { commit { statusCheckRollup { state } } } }`;
@@ -35,27 +36,55 @@ export function parseGithubPulls(output: string): GithubPulls {
       }
       return [...unique.values()].sort((a, b) => b.updated_at.localeCompare(a.updated_at));
     };
-    return { account: data.viewer.login, review: group(data.review), yours: group(data.yours) };
+    return { accounts: [data.viewer.login], review: group(data.review), yours: group(data.yours) };
   } catch { throw unreadable(); }
 }
 
-/** One in-flight read and a 20-second cache; no timers or background refreshes. I/O is injectable. */
-export function createGithubReader(run = runGithub, now = Date.now): () => Promise<GithubPulls> {
+/** Rows from several accounts as one list: a PR both accounts see appears once per group, newest first. */
+export function mergeGithubPulls(listings: GithubPulls[], failed: string[] = []): GithubPulls {
+  const merge = (rows: GithubPull[]): GithubPull[] => [...new Map(rows.map((row) => [row.url, row] as const)).values()].sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+  return {
+    accounts: listings.flatMap((listing) => listing.accounts),
+    ...(failed.length > 0 ? { failed } : {}),
+    review: merge(listings.flatMap((listing) => listing.review)),
+    yours: merge(listings.flatMap((listing) => listing.yours)),
+  };
+}
+
+type Run = typeof runGithub;
+/** One account's read, with that account's token. */
+async function readAccount(run: Run, account: string): Promise<GithubPulls> {
+  const token = await run(["auth", "token", "--user", account]);
+  if (!token) throw new PullRequestError("gh_missing", "The GitHub CLI (gh) is not installed on this PC");
+  if (token.code !== 0 || !token.stdout.trim()) throw new PullRequestError("gh_signed_out", "Sign in on this PC with gh auth login");
+  const result = await run(["api", "graphql", "--hostname", "github.com", "-f", `query=${QUERY}`], { GH_TOKEN: token.stdout.trim() });
+  if (!result) throw new PullRequestError("gh_missing", "The GitHub CLI (gh) is not installed on this PC");
+  if (result.code !== 0) {
+    const detail = `${result.stderr}\n${result.stdout}`;
+    if (/rate limit|HTTP 429/i.test(detail)) throw new PullRequestError("rate_limited", "GitHub is limiting requests; try again in a few minutes");
+    if (/gh auth login|not logged|authentication|HTTP 401|bad credentials/i.test(detail)) throw new PullRequestError("gh_signed_out", "Sign in on this PC with gh auth login");
+    throw new PullRequestError("gh_failed", "Could not read GitHub pull requests");
+  }
+  return parseGithubPulls(result.stdout);
+}
+
+/** One in-flight read and a 20-second cache; no timers or background refreshes. I/O is injectable. Every account gh
+ * is signed in with on github.com is read side by side; one that fails is named in `failed` and the others still show. */
+export function createGithubReader(run: Run = runGithub, now = Date.now): () => Promise<GithubPulls> {
   let cached: { until: number; value: GithubPulls } | undefined;
   let pending: Promise<GithubPulls> | undefined;
   return () => {
     if (cached && now() < cached.until) return Promise.resolve(cached.value);
     if (pending) return pending;
     pending = (async () => {
-      const result = await run(["api", "graphql", "--hostname", "github.com", "-f", `query=${QUERY}`]);
-      if (!result) throw new PullRequestError("gh_missing", "The GitHub CLI (gh) is not installed on this PC");
-      if (result.code !== 0) {
-        const detail = `${result.stderr}\n${result.stdout}`;
-        if (/rate limit|HTTP 429/i.test(detail)) throw new PullRequestError("rate_limited", "GitHub is limiting requests; try again in a few minutes");
-        if (/gh auth login|not logged|authentication|HTTP 401|bad credentials/i.test(detail)) throw new PullRequestError("gh_signed_out", "Sign in on this PC with gh auth login");
-        throw new PullRequestError("gh_failed", "Could not read GitHub pull requests");
-      }
-      const value = parseGithubPulls(result.stdout);
+      const status = await run(["auth", "status"]);
+      if (!status) throw new PullRequestError("gh_missing", "The GitHub CLI (gh) is not installed on this PC");
+      const accounts = ghAccounts(`${status.stdout}\n${status.stderr}`);
+      if (accounts.length === 0) throw new PullRequestError("gh_signed_out", "Sign in on this PC with gh auth login");
+      const reads = await Promise.allSettled(accounts.map((account) => readAccount(run, account)));
+      const read = reads.flatMap((outcome) => outcome.status === "fulfilled" ? [outcome.value] : []);
+      if (read.length === 0) throw (reads[0] as PromiseRejectedResult).reason;
+      const value = mergeGithubPulls(read, accounts.filter((_, index) => reads[index]!.status === "rejected"));
       cached = { value, until: now() + 20_000 };
       return value;
     })().finally(() => { pending = undefined; });

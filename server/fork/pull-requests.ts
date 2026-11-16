@@ -79,8 +79,8 @@ async function run(argv: string[], env: Record<string, string>, cwd: string | un
 }
 
 /** The active github.com login, without inherited tokens or an interactive prompt. */
-export function runGithub(args: string[]) {
-  return run([options.gh, ...args], { GH_HOST: "github.com", GH_PROMPT_DISABLED: "1", GH_NO_UPDATE_NOTIFIER: "1" }, undefined, options.deadlineMs);
+export function runGithub(args: string[], env: Record<string, string> = {}) {
+  return run([options.gh, ...args], { GH_HOST: "github.com", GH_PROMPT_DISABLED: "1", GH_NO_UPDATE_NOTIFIER: "1", ...env }, undefined, options.deadlineMs);
 }
 
 /** git never asks for a password here. */

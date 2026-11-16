@@ -8,7 +8,7 @@ test("demo GitHub feed has both groups across two repositories and resolves curr
     worktree: { repo_name: name, repo_key: name, repo_root: `/demo/${name}`, checkout_path: `/demo/${name}`, is_linked_worktree: false },
   }));
   const listing = demoGithubPulls(workspaces);
-  expect(listing.account).toBe("demo");
+  expect(listing.accounts).toEqual(["demo"]);
   expect(listing.review).toHaveLength(2);
   expect(listing.yours).toHaveLength(2);
   expect(new Set([...listing.review, ...listing.yours].map((pr) => pr.repository))).toEqual(new Set(["demo/checkout-api", "demo/cli-tools"]));

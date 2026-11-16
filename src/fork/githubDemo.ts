@@ -11,7 +11,7 @@ export function demoGithubPulls(workspaces: WorkspaceInfo[]): GithubPulls {
     workspace_id: workspaces.find((workspace) => workspace.worktree?.repo_name === repo)?.workspace_id,
   });
   return {
-    account: "demo",
+    accounts: ["demo"],
     review: [
       row("checkout-api", { number: 127, title: "Document the release steps", branch: "docs/release-steps", checks: "passing", review: "review_required", author: "maria" }),
       row("cli-tools", { number: 88, title: "Validate the config file before starting", branch: "fix/config-validation", checks: "failing", review: "review_required", author: "sam" }),

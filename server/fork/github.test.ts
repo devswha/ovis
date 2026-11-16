@@ -1,13 +1,13 @@
 import { expect, test } from "bun:test";
 import type { SessionSnapshot } from "../../shared/protocol.ts";
-import { createGithubReader, githubWorkspaces, handleGithubPulls, parseGithubPulls } from "./github.ts";
+import { createGithubReader, githubWorkspaces, handleGithubPulls, mergeGithubPulls, parseGithubPulls } from "./github.ts";
 
 const pr = (number: number, repository = "owner/repo") => ({ number, title: `PR ${number}`, url: `https://github.com/${repository}/pull/${number}`, repository: { nameWithOwner: repository }, headRefName: "feature", updatedAt: `2026-01-${number.toString().padStart(2, "0")}T00:00:00Z`, author: { login: "me" }, reviewDecision: "APPROVED", commits: { nodes: [{ commit: { statusCheckRollup: { state: "FAILURE", contexts: { nodes: [{ status: "COMPLETED", conclusion: "FAILURE" }] } } } }] } });
 const fixture = () => JSON.stringify({ data: { viewer: { login: "me" }, review: { nodes: [pr(1), pr(3)] }, yours: { nodes: [pr(2), pr(3)] } } });
 
 test("parses both groups, reuses check verdicts, sorts newest first and deduplicates within a group", () => {
   const listing = parseGithubPulls(fixture());
-  expect(listing.account).toBe("me");
+  expect(listing.accounts).toEqual(["me"]);
   expect(listing.review.map((row) => row.number)).toEqual([3, 1]);
   expect(listing.yours.map((row) => row.number)).toEqual([3, 2]);
   expect(listing.review[0]).toMatchObject({ repository: "owner/repo", checks: "failing", review: "approved", checkout: null });
@@ -33,11 +33,41 @@ test("rejects malformed and partial GraphQL responses instead of claiming an emp
   expect(() => parseGithubPulls(JSON.stringify(data))).toThrow();
 });
 
+const signedIn = (...accounts: string[]) => accounts.map((name) => `  ✓ Logged in to github.com account ${name} (keyring)`).join("\n");
+const ok = (stdout: string) => ({ code: 0, stdout, stderr: "" });
+
 test("coalesces reads, caps searches, and expires the cache within 30 seconds", async () => {
   let calls = 0, now = 0;
-  const read = createGithubReader(async (args) => { calls++; expect(args.join(" ")).toContain("first:50"); expect(args.join(" ")).toContain("review-requested:@me"); expect(args.join(" ")).toContain("statusCheckRollup { state }"); expect(args.join(" ")).not.toContain("contexts("); return { code: 0, stdout: fixture(), stderr: "" }; }, () => now);
+  const read = createGithubReader(async (args) => {
+    if (args[1] === "status") return ok(signedIn("me"));
+    if (args[1] === "token") return ok("token\n");
+    calls++; expect(args.join(" ")).toContain("first:50"); expect(args.join(" ")).toContain("review-requested:@me"); expect(args.join(" ")).toContain("statusCheckRollup { state }"); expect(args.join(" ")).not.toContain("contexts("); return ok(fixture());
+  }, () => now);
   await Promise.all([read(), read()]); await read(); expect(calls).toBe(1);
   now = 30_001; await read(); expect(calls).toBe(2);
+});
+
+test("reads every signed-in account with its own token and lists what the readable ones see", async () => {
+  const tokens: string[] = [];
+  const own = (login: string, number: number, repository: string) => JSON.stringify({ data: { viewer: { login }, review: { nodes: [pr(number, repository)] }, yours: { nodes: [pr(3)] } } });
+  const read = createGithubReader(async (args, env = {}) => {
+    if (args[1] === "status") return { code: 1, stdout: "", stderr: signedIn("me", "work", "gone") };
+    if (args[1] === "token") return args[3] === "gone" ? { code: 1, stdout: "", stderr: "no token" } : ok(`t-${args[3]}\n`);
+    tokens.push(env.GH_TOKEN ?? "");
+    return ok(env.GH_TOKEN === "t-me" ? own("me", 1, "owner/repo") : own("work", 2, "corp/app"));
+  });
+  const listing = await read();
+  expect(tokens.sort()).toEqual(["t-me", "t-work"]);
+  expect(listing.accounts).toEqual(["me", "work"]);
+  expect(listing.failed).toEqual(["gone"]);
+  expect(listing.review.map((row) => row.repository)).toEqual(["corp/app", "owner/repo"]);
+  expect(listing.yours.map((row) => row.number)).toEqual([3]);
+});
+
+test("fails as the first account failed when no account can be read", async () => {
+  const read = createGithubReader(async (args) => args[1] === "status" ? ok(signedIn("me")) : args[1] === "token" ? ok("t\n") : { code: 1, stdout: "", stderr: "HTTP 429 rate limit" });
+  await expect(read()).rejects.toMatchObject({ code: "rate_limited" });
+  expect(mergeGithubPulls([]).failed).toBeUndefined();
 });
 
 test("matches repositories by local roots or pane folders and tolerates non-GitHub workspaces", async () => {
@@ -80,7 +110,7 @@ test("refuses observers and non-GET requests before reading gh or the user's sna
 
 test("reports missing gh, signed out, rate limited, and generic errors without leaking stderr", async () => {
   for (const [result, code] of [[null, "gh_missing"], [{ code: 1, stdout: "", stderr: "To get started with GitHub CLI, please run: gh auth login" }, "gh_signed_out"], [{ code: 1, stdout: "", stderr: "API rate limit exceeded" }, "rate_limited"], [{ code: 1, stdout: "", stderr: "secret unexpected failure" }, "gh_failed"]] as const) {
-    const read = createGithubReader(async () => result);
+    const read = createGithubReader(async (args) => result !== null && args[1] === "status" ? ok(signedIn("me")) : result !== null && args[1] === "token" ? ok("t\n") : result);
     await expect(read()).rejects.toMatchObject({ code });
   }
 });
