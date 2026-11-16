@@ -23,22 +23,25 @@
 import { mergeEnvLayers } from "../server/legacy-env.ts";
 import { acquireOwnerDirectory, guardPath, type OwnerLease } from "../server/owner-guard.ts";
 import { parseBirth, readProcessBirth } from "../server/process-owner.ts";
+import { writeStateDocument } from "../server/state-document.ts";
 import { defaultStateDir } from "../server/update-state.ts";
+import { fleetPreview } from "../server/preview.ts";
+import { stateDirRefusal } from "../server/machine-profile.ts";
 import { COMPILED, entryCommand, ROOT as SERVER_ROOT } from "../server/entries.ts";
 import { version as builtVersion } from "../package.json";
 import { spawn, spawnSync } from "node:child_process";
-import { appendFileSync, chmodSync, closeSync, copyFileSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, closeSync, constants, copyFileSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, platform, uptime } from "node:os";
 import { basename, delimiter, dirname, join, resolve, sep } from "node:path";
 
-import qrcode from "qrcode-generator";
-
+// No application package (node_modules) is loaded with this file: `stop` and `status` must work in a checkout whose
+// install was cut off, so a server that runs from it can be stopped. The commands that need one (the QR code, the
+// relay's and the account's code, through scripts/plugin-link.ts and shared/relay-offer.ts) import it where they use it.
 import { DEFAULT_PORT } from "../shared/protocol.ts";
-import { decodeOffer } from "../shared/relay-offer.ts";
 import type { RemoteAccess } from "../shared/protocol.ts";
 import { canServe, FALLBACK_PORTS, freePort, savedPort } from "./plugin-port.ts";
-import { approveWaiting, COMMAND_ALIASES, discardTyped, link as linkPc, type WaitingDevice } from "./plugin-link.ts";
-import { activePluginScript } from "./plugin-runtime.ts";
+import type { WaitingDevice } from "./plugin-link.ts";
+import { activePluginScript, COMMAND_ALIASES } from "./plugin-runtime.ts";
 import { runTui } from "./plugin-tui.ts";
 import { accountServiceOrigin, DEFAULT_ACCOUNT_SERVICE } from "../server/static.ts";
 import { herdrStateDir } from "./plugin-state.ts";
@@ -183,6 +186,99 @@ const originOf = (value: number): string => `http://${host === "0.0.0.0" ? "127.
 let origin = originOf(port);
 
 /**
+ * This plugin runs for a machine profile: OVIS_PROFILE=machine under the fleet preview (server/preview.ts), both read
+ * from the plugin's settings as the server it starts gets them (`env`: its environment, then its settings files).
+ */
+const machineProfile = fleetPreview(env) && env["OVIS_PROFILE"] === "machine";
+/** The most a profile's record may hold: its own is one short line (a port, a host and a socket path of at most 100 bytes). */
+const RECORD_MAX_BYTES = 4096;
+/**
+ * How the record is opened, as server/profile-marker.ts opens the profile's marker: never through a link, never waiting
+ * (opening a FIFO for reading would wait for a writer), and never as this process's terminal.
+ */
+const RECORD_OPEN = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0) | (constants.O_NOCTTY ?? 0);
+
+/**
+ * The profile's record at `path`, opened once and asked of that descriptor only: a regular file of at most
+ * RECORD_MAX_BYTES, read to its end and never more than one byte past that. null for anything else.
+ */
+function profileRecord(path: string): unknown {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, RECORD_OPEN);
+    const entry = fstatSync(fd);
+    if (!entry.isFile() || entry.size > RECORD_MAX_BYTES) return null;
+    const bytes = Buffer.alloc(RECORD_MAX_BYTES + 1);
+    let length = 0;
+    for (let read = 1; read > 0 && length < bytes.length; length += read) read = readSync(fd, bytes, length, bytes.length - length, length);
+    if (length > RECORD_MAX_BYTES) return null;
+    return JSON.parse(bytes.toString("utf8", 0, length));
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+/**
+ * The machine profile's local owner, when this plugin runs for one (`machineProfile`). The profile records its owner's
+ * unix socket in its state folder (`serve.lock/http.json`, with `door: 1`) and answers only liveness on its TCP port, so
+ * the requests to the server go to that socket, addressed as `http://localhost`, the one Host and Origin it takes
+ * there. The plugin takes the socket only when the state folder passes the profile's own check (server/machine-profile.ts
+ * stateDirRefusal), the record names `serve.sock` in the folder's real path, as the profile names it, and `serve.sock`
+ * is a socket this account owns and no group or other may write to, not a link. Otherwise null, also when the record is
+ * missing, unreadable, larger than RECORD_MAX_BYTES, not a regular file, names no door or another socket, or the folder
+ * is absent: the server then counts as not running (appHealth), and no request goes to it. Without the profile, null at
+ * once, and the requests go to `origin` over TCP. Read until a health check passes (serverDoor): the record is written
+ * once the server listens.
+ */
+function ownerDoor(): string | null {
+  if (!machineProfile) return null;
+  try {
+    // the folder as the profile takes it (server/machine-profile.ts walkedStateDir): its record and its socket are there
+    const dir = realpathSync(APP_STATE_DIR);
+    if (stateDirRefusal(dir) !== null) return null;
+    const record = profileRecord(join(dir, "serve.lock", "http.json")) as { door?: unknown; socket?: unknown } | null;
+    const own = join(dir, "serve.sock");
+    if (typeof record !== "object" || record === null || record.door !== 1 || record.socket !== own) return null;
+    const socket = lstatSync(own);
+    return socket.isSocket() && socket.uid === process.getuid?.() && (socket.mode & 0o022) === 0 ? own : null;
+  } catch { return null; }
+}
+/**
+ * The door of this command: the one its first passing health check went to (appHealth), kept for every later request
+ * of the command, so a command never moves from one door to the other. undefined until a health check passed.
+ */
+let commandDoor: string | null | undefined;
+/** The door a request goes to: the command's (commandDoor), or ownerDoor's answer now while no health check passed. */
+const serverDoor = (): string | null => commandDoor === undefined ? ownerDoor() : commandDoor;
+/** The origin the requests to the server name: `origin`, or `http://localhost` on a machine profile's owner socket. */
+const serverOrigin = (): string => serverDoor() === null ? origin : "http://localhost";
+/**
+ * A request on a machine profile's owner socket (`door`), as given but with no `authorization` header: the profile
+ * takes its owner on that socket itself, and the plugin sends no token there.
+ */
+function ownerFetch(door: string, input: string | URL | Request, init?: RequestInit): Promise<Response> {
+  const request = new Request(input, init);
+  request.headers.delete("authorization");
+  return fetch(request, { unix: door });
+}
+/**
+ * What `pair`, `phone` and `phone-setup` say for a machine profile instead of an address, a pairing code or a Tailscale
+ * serve: its TCP port answers liveness only (server/machine-profile.ts machineTcpAnswer), and a phone pairs with it
+ * through the Ovis relay. The commands are named as `add` names its own (OVIS_CLI_NAME, scripts/plugin-link.ts cli).
+ */
+function profileRelayOnly(): string {
+  const cli = env["OVIS_CLI_NAME"] || "ovis";
+  return `A phone reaches this machine profile through the Ovis relay only, not at an address: run ${cli} add to add this machine to your Ovis account, or ${cli} link --code to pair one device.`;
+}
+
+/** One request to the server at `path`: over TCP to `origin`, or on a machine profile's owner socket (`door`, serverDoor). */
+function serverFetch(path: string, init: RequestInit = {}, door = serverDoor()): Promise<Response> {
+  return door === null ? fetch(`${origin}${path}`, init) : ownerFetch(door, `http://localhost${path}`, init);
+}
+
+/**
  * herdr's PATH plus where the one-line installer (install.sh) puts Bun, Node and herdr: herdr may
  * have been started from a shell that has none of them, and the server spawns `node` for every
  * terminal. Appended, so a Node the user chose (nvm, Homebrew) still comes first.
@@ -199,24 +295,56 @@ function link(url: string): string {
   return process.stdout.isTTY ? `\x1b]8;;${url}\x1b\\${url}\x1b]8;;\x1b\\` : url;
 }
 
-function qr(text: string): string {
-  const code = qrcode(0, "M");
-  code.addData(text);
-  code.make();
-  return code.createASCII(1, 1);
+/**
+ * What draws a QR code, from its package. A command that draws one loads it before it changes anything (a pairing code,
+ * Tailscale), so in a checkout whose install was cut off it fails with nothing changed.
+ */
+async function qrDrawer(): Promise<(text: string) => string> {
+  const { default: qrcode } = await import("qrcode-generator");
+  return (text) => {
+    const code = qrcode(0, "M");
+    code.addData(text);
+    code.make();
+    return code.createASCII(1, 1);
+  };
+}
+
+/** What `pair` draws and checks a relay offer with, loaded before it asks for a code (see qrDrawer) */
+async function pairingParts(): Promise<{ qr: (text: string) => string; decodeOffer: (url: string) => unknown }> {
+  const [qr, { decodeOffer }] = await Promise.all([qrDrawer(), import("../shared/relay-offer.ts")]);
+  return { qr, decodeOffer };
+}
+
+/**
+ * The server's health, when the app answers it; null otherwise. For a machine profile it is asked on the owner socket
+ * only: with no socket the plugin may take (ownerDoor), it is null and nothing is sent, since the profile answers its
+ * TCP port with liveness only. There the answer also counts without `herdr` when it carries `machine_profile` with
+ * `runtime_down` (server/machine-profile.ts machineHealth): the profile runs, and `engineDown` is its reason while its
+ * engine does not answer ("" with none given). Over TCP `engineDown` is always null.
+ */
+async function appHealth(): Promise<{ readonly engineDown: string | null } | null> {
+  // the door the request goes to and the answer is judged by: decided once, and kept for the command once it passes
+  const door = serverDoor();
+  if (machineProfile && door === null) return null;
+  try {
+    const response = await serverFetch("/api/health", { signal: AbortSignal.timeout(1500) }, door);
+    if (!response.ok) return null;
+    // the port may hold another program's 200 (a kept port that went stale): only the app's answer
+    // counts, in the shape every release has sent (server/index.ts)
+    const body = await response.json() as { ok?: unknown; herdr?: unknown; auth?: unknown; machine_profile?: unknown };
+    if (body.ok !== true || !appAuth(body.auth)) return null;
+    const profile = door === null ? null : body.machine_profile as { runtime_down?: unknown; reason?: unknown } | null | undefined;
+    const engine = typeof profile === "object" && profile !== null && typeof profile.runtime_down === "boolean" ? profile : null;
+    if ((typeof body.herdr !== "object" || body.herdr === null) && engine === null) return null;
+    commandDoor = door;
+    return { engineDown: engine?.runtime_down === true ? (typeof engine.reason === "string" ? engine.reason : "") : null };
+  } catch {
+    return null;
+  }
 }
 
 async function health(): Promise<boolean> {
-  try {
-    const response = await fetch(`${origin}/api/health`, { signal: AbortSignal.timeout(1500) });
-    if (!response.ok) return false;
-    // the port may hold another program's 200 (a kept port that went stale): only the app's answer
-    // counts, in the shape every release has sent (server/index.ts)
-    const body = await response.json() as { ok?: unknown; herdr?: unknown; auth?: unknown };
-    return body.ok === true && typeof body.herdr === "object" && body.herdr !== null && appAuth(body.auth);
-  } catch {
-    return false;
-  }
+  return (await appHealth()) !== null;
 }
 
 /** Whether the app holds the port: its bridge health answers without asking herdr. */
@@ -431,8 +559,9 @@ async function settlePort(): Promise<"ready" | "running" | "failed"> {
     if (await health()) return "running";
     await Bun.sleep(250);
   }
-  // the app holds the port but cannot reach herdr: another port would put a second server beside it (#428)
-  if (await appOnPort()) {
+  // the app holds the port but cannot reach herdr: another port would put a second server beside it (#428). A machine
+  // profile answers its TCP port with liveness only, so for one the app found there is another server
+  if (!machineProfile && await appOnPort()) {
     if (await health()) return "running";
     const why = await healthError();
     if (why === null) return "running";
@@ -464,6 +593,11 @@ async function start(): Promise<number> {
   if (await health()) {
     process.stdout.write(`Ovis already running at ${origin}\n`);
     return 0;
+  }
+  // a machine profile is started on its own, not by the managed launcher: nothing is spawned, made or written for it
+  if (machineProfile) {
+    process.stderr.write("This plugin does not start a machine profile. Start it with OVIS_PROFILE=machine, OVIS_PREVIEW=fleet and OVIS_STATE_DIR naming a folder of its own, running ovis-server serve.\n");
+    return 1;
   }
   mkdirSync(REQUESTED_STATE_DIR, { recursive: true });
   const turn = await takeTurn();
@@ -565,16 +699,9 @@ async function startInTurn(): Promise<number> {
   return failStart(why, `; ${LOG_FILE} ends with:\n${logSince(log, logged)}`, log);
 }
 
-/** Written whole or not at all: a reader never finds half a record. */
+/** Written whole or not at all, and flushed before it replaces the old one: a reader never finds half a record, nor an empty one after a power cut. */
 function writeRecord(file: string, text: string): void {
-  const staging = `${file}.tmp`;
-  try {
-    writeFileSync(staging, text, { mode: 0o600 });
-    renameSync(staging, file);
-  } catch (error) {
-    rmSync(staging, { force: true });
-    throw error;
-  }
+  writeStateDocument(file, text, false);
 }
 
 /** Removes the records that name `pid`, and only those: a start that ran meanwhile may have recorded its own server. */
@@ -821,15 +948,21 @@ async function stopInTurn(dependencies: StopDependencies): Promise<number> {
  * open Settings → Devices in, so this is how its owner lets a phone in: the code, the address the
  * phone opens (when Tailscale serves one), and that address as a QR code for a screen to scan.
  */
-async function pair(): Promise<number> {
+async function pair(parts?: Awaited<ReturnType<typeof pairingParts>>): Promise<number> {
   if (process.argv.includes("--approve")) return approvePairings();
+  // a code started on a machine profile is entered at no address: no pairing is started for it
+  if (machineProfile) {
+    process.stderr.write(`${profileRelayOnly()}\n`);
+    return 1;
+  }
+  const { qr, decodeOffer } = parts ?? await pairingParts();
   if (!(await health())) {
     process.stderr.write(`Ovis is not running at ${origin}; start it first\n`);
     return 1;
   }
   const headers: Record<string, string> = { "content-type": "application/json", "x-herdr-machine": "1" };
   if ((env["OVIS_TOKEN"] ?? "") !== "") headers["authorization"] = `Bearer ${env["OVIS_TOKEN"]}`;
-  const started = await fetch(`${origin}/api/devices/pair/start`, { method: "POST", headers, body: "{}" });
+  const started = await serverFetch("/api/devices/pair/start", { method: "POST", headers, body: "{}" });
   if (!started.ok) {
     process.stderr.write(`could not start a pairing (${started.status}): ${await started.text()}\n`);
     return 1;
@@ -837,7 +970,7 @@ async function pair(): Promise<number> {
   const { code } = (await started.json()) as { code: string; expires_at: string };
   let url: string | null = null;
   try {
-    const access = (await (await fetch(`${origin}/api/access`, { headers })).json()) as { tailscale: { serving_url: string | null } };
+    const access = (await (await serverFetch("/api/access", { headers })).json()) as { tailscale: { serving_url: string | null } };
     url = access.tailscale.serving_url;
   } catch { /* an older server: the code alone */ }
   const out: string[] = [`Pairing code: ${code.slice(0, 3)} ${code.slice(3)}   (good for 10 minutes, for one device)`];
@@ -848,7 +981,7 @@ async function pair(): Promise<number> {
     out.push("On the other device, open the app's address and enter the code. Settings → Phone, on any signed-in device, shows the address and how to get one.");
   }
   try {
-    const relayResponse = await fetch(`${origin}/api/relay`, { headers, signal: AbortSignal.timeout(5000) });
+    const relayResponse = await serverFetch("/api/relay", { headers, signal: AbortSignal.timeout(5000) });
     if (relayResponse.status !== 404) {
       if (!relayResponse.ok) throw new Error(`relay status request failed (${relayResponse.status})`);
       const relayStatus: unknown = await relayResponse.json();
@@ -856,9 +989,9 @@ async function pair(): Promise<number> {
         throw new Error("invalid relay status response");
       }
       if (relayStatus.phase === "online") {
-        const offerResponse = await fetch(`${origin}/api/relay/offer`, {
+        const offerResponse = await serverFetch("/api/relay/offer", {
           method: "POST",
-          headers: { ...headers, "x-herdr-update": "1", origin },
+          headers: { ...headers, "x-herdr-update": "1", origin: serverOrigin() },
           body: "{}",
           signal: AbortSignal.timeout(5000),
         });
@@ -886,13 +1019,15 @@ async function pair(): Promise<number> {
  * itself, so this is approval on this PC (docs/account.md, "Who may admit a device").
  */
 async function approvePairings(): Promise<number> {
+  // loaded before a request is decided, as qrDrawer is
+  const { approveWaiting, discardTyped } = await import("./plugin-link.ts");
   if (!(await health())) {
     process.stderr.write(`Ovis is not running at ${origin}; start it first\n`);
     return 1;
   }
-  const headers: Record<string, string> = { "content-type": "application/json", "x-herdr-machine": "1", "x-herdr-update": "1", origin };
+  const headers: Record<string, string> = { "content-type": "application/json", "x-herdr-machine": "1", "x-herdr-update": "1", origin: serverOrigin() };
   if ((env["OVIS_TOKEN"] ?? "") !== "") headers["authorization"] = `Bearer ${env["OVIS_TOKEN"]}`;
-  const listed = await fetch(`${origin}/api/relay/pairings`, { headers });
+  const listed = await serverFetch("/api/relay/pairings", { headers });
   if (!listed.ok) {
     process.stderr.write(`could not read the waiting pairings (${listed.status}): ${await listed.text()}\n`);
     return 1;
@@ -913,17 +1048,42 @@ async function approvePairings(): Promise<number> {
     signal: new AbortController().signal,
     // read again before three digits approve: a request that came since may end in the same three
     list: async () => {
-      const again = await fetch(`${origin}/api/relay/pairings`, { headers, signal: AbortSignal.timeout(15_000) });
+      const again = await serverFetch("/api/relay/pairings", { headers, signal: AbortSignal.timeout(15_000) });
       if (!again.ok) throw new Error(`could not read the waiting pairings (${again.status})`);
       return ((await again.json()) as { pairings: WaitingDevice[] }).pairings;
     },
     decide: async (id, decision) => {
       try {
-        const decided = await fetch(`${origin}/api/relay/pairing`, { method: "POST", headers, body: JSON.stringify({ id, decision }), signal: AbortSignal.timeout(15_000) });
+        const decided = await serverFetch("/api/relay/pairing", { method: "POST", headers, body: JSON.stringify({ id, decision }), signal: AbortSignal.timeout(15_000) });
         return decided.ok ? "taken" : "gone";
       } catch { return "away"; }
     },
   });
+}
+
+/**
+ * Runs the release Settings → Updates installed (its scripts/plugin.ts, `active`) with `args` in this terminal, and gives
+ * back its exit code: the checkout survives in-app updates, and the release that runs has the command that fits its
+ * server. A SIGINT, SIGTERM or SIGHUP sent to this process is passed on, and this process waits for the release, which
+ * ends with it and takes back what it handed out (link's code). A Ctrl+C on the terminal they share reaches the release
+ * itself too, so it gets that SIGINT twice: every release ends at the first or catches each (link). On Windows a SIGINT
+ * is not passed on: there Bun ends a child outright for any signal it is sent, without the clean-up the release's own
+ * Ctrl+C gives it, and a Ctrl+C reaches every process of the console anyway.
+ * Listening starts before the release does, so a signal that comes while it starts no longer ends this process with the
+ * release left running: Bun runs the listener from the event loop, after `child` is set. A release that could not be
+ * started has nothing to pass one on to, and the listeners go on every way out.
+ */
+async function handOn(active: string, args: readonly string[]): Promise<number> {
+  let child: Bun.Subprocess | undefined;
+  const pass = (signal: NodeJS.Signals) => () => { child?.kill(signal); };
+  const handlers = { SIGINT: process.platform === "win32" ? () => undefined : pass("SIGINT"), SIGTERM: pass("SIGTERM"), SIGHUP: pass("SIGHUP") } as const;
+  for (const [signal, handler] of Object.entries(handlers)) process.on(signal, handler);
+  try {
+    child = Bun.spawn([process.execPath, active, ...args], { cwd: ROOT, windowsHide: true, env, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
+    return await child.exited;
+  } finally {
+    for (const [signal, handler] of Object.entries(handlers)) process.off(signal, handler);
+  }
 }
 
 /**
@@ -934,17 +1094,10 @@ async function approvePairings(): Promise<number> {
 async function linkCommand(): Promise<number> {
   // the checkout survives in-app updates: the release that runs has the link that fits its server (as phone-setup)
   const active = activePluginScript(ROOT, port, APP_STATE_DIR);
-  if (active !== join(resolve(ROOT), "scripts", "plugin.ts") && resolve(active) !== resolve(import.meta.filename)) {
-    // Ctrl+C reaches the release's link too, which takes its code back; this one waits for it.
-    // Always "link", whichever name it was run by: a release from before `add` and `login` knows only that one
-    process.on("SIGINT", () => undefined);
-    // a SIGTERM or SIGHUP sent to this process alone is passed on, so the release takes its code back too.
-    // Listening starts before the release does, so a signal that comes while it starts no longer ends this
-    // process with the release left running: Bun runs the listener from the event loop, after `child` is set.
-    for (const signal of ["SIGTERM", "SIGHUP"] as const) process.on(signal, () => child.kill(signal));
-    const child = Bun.spawn([process.execPath, active, "link", ...process.argv.slice(3)], { cwd: ROOT, windowsHide: true, env, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
-    return await child.exited;
-  }
+  // Always "link", whichever name it was run by: a release from before `add` and `login` knows only that one
+  if (active !== join(resolve(ROOT), "scripts", "plugin.ts") && resolve(active) !== resolve(import.meta.filename)) return await handOn(active, ["link", ...process.argv.slice(3)]);
+  // loaded before anything is asked or listened for, as qrDrawer is
+  const { discardTyped, link: linkPc, linkSettings } = await import("./plugin-link.ts");
   if (!(await health())) {
     process.stderr.write(`Ovis is not running at ${origin}; start it first\n`);
     return 1;
@@ -965,9 +1118,14 @@ async function linkCommand(): Promise<number> {
   // hears ends the process where it stands, or leaves it running with nobody to read it: the code stays valid either
   // way. It is heard instead, and stops the run as its signal would
   process.stdout.on("error", halt);
+  // a machine profile's owner calls go to its socket, the door health() passed on (serverDoor), with the origin it takes there
+  const door = serverDoor();
   return linkPc(process.argv.slice(3), {
-    origin, headers, signal: stop.signal,
+    origin: door === null ? origin : "http://localhost", headers, signal: stop.signal,
+    ...(door === null ? {} : { fetch: (input: string | URL | Request, init?: RequestInit) => ownerFetch(door, input, init) }),
     accountService: accountServiceOrigin(env["OVIS_ACCOUNT_SERVICE_URL"] ?? DEFAULT_ACCOUNT_SERVICE),
+    // the fleet preview, the command's name and the app the server pairs with, from the settings the server it starts gets
+    ...linkSettings(env),
     out: (text) => process.stdout.write(text),
     lines: console[Symbol.asyncIterator](),
     // a pipe, a file or a closed stdin approves nothing, whatever it carries and whenever (`yes | ovis add`)
@@ -987,6 +1145,13 @@ async function linkCommand(): Promise<number> {
  * server nor startup ever calls it.
  */
 async function phone(): Promise<number> {
+  // a machine profile serves no app at its port: no address is shown and Tailscale is not asked or changed
+  if (machineProfile) {
+    process.stdout.write(`${profileRelayOnly()}\n`);
+    return 0;
+  }
+  // before `tailscale serve` (see qrDrawer)
+  const qr = await qrDrawer();
   const say = (line = "") => process.stdout.write(line + "\n");
   const running = await health();
   say(`Ovis on this PC: ${link(origin)}${running ? "" : " (not running yet: it starts with herdr)"}`);
@@ -1053,27 +1218,28 @@ async function phone(): Promise<number> {
 /** The marketplace action has a real pane, so its address, QR and pairing code stay visible. */
 async function phoneSetup(): Promise<number> {
   const active = activePluginScript(ROOT, port, APP_STATE_DIR);
-  if (active !== join(resolve(ROOT), "scripts", "plugin.ts") && resolve(active) !== resolve(import.meta.filename)) {
-    const child = Bun.spawn([process.execPath, active, "phone-setup"], { cwd: ROOT, windowsHide: true, env, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
-    return await child.exited;
-  }
-  process.stdout.write(`Phone setup\n\nApp on this PC: ${link(origin)}\n`);
+  if (active !== join(resolve(ROOT), "scripts", "plugin.ts") && resolve(active) !== resolve(import.meta.filename)) return await handOn(active, ["phone-setup"]);
+  // before the pairing code is asked for (see qrDrawer), and not taken for a failed read of the app below; none for a
+  // machine profile, which shows no address and starts no pairing (profileRelayOnly)
+  const parts = machineProfile ? null : await pairingParts();
+  process.stdout.write(`Phone setup\n\n${parts === null ? profileRelayOnly() : `App on this PC: ${link(origin)}`}\n`);
   let code = 0;
-  if (!(await health())) {
+  if (parts === null) code = 0;
+  else if (!(await health())) {
     process.stdout.write("The app is not running. Run the Start Ovis action, then reopen Phone setup.\n");
     code = 1;
   } else {
     const headers: Record<string, string> = {};
     if (env["OVIS_TOKEN"]) headers["authorization"] = `Bearer ${env["OVIS_TOKEN"]}`;
     try {
-      const response = await fetch(`${origin}/api/access`, { headers, signal: AbortSignal.timeout(5000) });
+      const response = await serverFetch("/api/access", { headers, signal: AbortSignal.timeout(5000) });
       if (!response.ok) throw new Error(`access request failed (${response.status})`);
       const access = await response.json() as RemoteAccess;
       if (!access.tailscale.serving_url) {
         if (access.tailscale.serve_command) process.stdout.write(`To make a phone address, run this on the PC, then reopen Phone setup:\n\n  ${access.tailscale.serve_command}\n\n`);
         else process.stdout.write("For a phone address, set up Tailscale on both devices, or use your own HTTPS proxy. Settings → Phone shows the connection options.\n\n");
       }
-      code = await pair();
+      code = await pair(parts);
     } catch {
       process.stderr.write("Could not read phone setup. Check the app's token and connection, then reopen this pane.\n");
       code = 1;
@@ -1104,8 +1270,10 @@ function runningVersion(): string | null {
 /** Reporting "down" is not an action failure: herdr logs a nonzero exit as failed. */
 async function status(): Promise<number> {
   const pid = recordedPid();
-  const up = await health();
-  process.stdout.write(`${up ? "running" : "down"} ${origin}${pid === null ? "" : ` (pid ${pid})`}\n`);
+  const answer = await appHealth();
+  process.stdout.write(`${answer !== null ? "running" : "down"} ${origin}${pid === null ? "" : ` (pid ${pid})`}\n`);
+  // a machine profile that runs while its engine does not answer (appHealth)
+  if (typeof answer?.engineDown === "string") process.stdout.write(`engine: down${answer.engineDown === "" ? "" : ` (${answer.engineDown})`}\n`);
   const version = runningVersion();
   if (version !== null) process.stdout.write(`version: ${version}\n`);
   process.stdout.write(`config: ${CONFIG_FILES.length === 0 ? `none (settings go in ${join(CONFIG_DIR, "env")})` : CONFIG_FILES.join(", ")}\n`);
@@ -1123,17 +1291,12 @@ export async function runPlugin(): Promise<void> {
   else if (command === "link") process.exit(await linkCommand());
   else if (command === "phone") process.exit(await phone());
   else if (command === "phone-setup") process.exit(await phoneSetup());
-  else if (command === "tui") process.exit(await runTui(process.argv.slice(3), { platform: platform(), where: { root: ROOT, home: homedir() }, caller: process.env, settings: env, err: (text) => process.stderr.write(text), on: (signal, handler) => process.on(signal, handler) }));
+  else if (command === "tui") process.exit(await runTui(process.argv.slice(3), { platform: platform(), where: { root: ROOT, home: homedir() }, caller: process.env, settings: env, err: (text) => process.stderr.write(text), on: (signal, handler) => { process.on(signal, handler); return () => process.off(signal, handler); } }));
   else {
     // a launcher runs the checkout's own script, which stays at the version first installed: a
     // command it does not know may be one of the release Settings → Updates installed since
     const active = activePluginScript(ROOT, port, APP_STATE_DIR);
-    if (active !== join(resolve(ROOT), "scripts", "plugin.ts") && resolve(active) !== resolve(import.meta.filename)) {
-      process.on("SIGINT", () => undefined);
-      const child = Bun.spawn([process.execPath, active, ...process.argv.slice(2)], { cwd: ROOT, windowsHide: true, env, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
-      for (const signal of ["SIGTERM", "SIGHUP"] as const) process.on(signal, () => child.kill(signal));
-      process.exit(await child.exited);
-    }
+    if (active !== join(resolve(ROOT), "scripts", "plugin.ts") && resolve(active) !== resolve(import.meta.filename)) process.exit(await handOn(active, process.argv.slice(2)));
     process.stderr.write([
       "usage: bun scripts/plugin.ts <start|stop|status|pair|link|add|login|phone|phone-setup|tui>",
       "add (also login, link): sign this PC in, then scan its QR code with a device of your Ovis account to add it (--approve: approve that device here instead; --print: write the QR code where there is no terminal).",
