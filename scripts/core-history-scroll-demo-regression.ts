@@ -279,7 +279,9 @@ try {
           await scrolledAbove(page, start.viewportY, at, `${theme}: read up before the switch`);
           const jump = page.locator(".pane-frame.is-current .terminal-jump-bottom");
           await jump.waitFor();
-          const contrasts = await page.evaluate(async ({ entries, mode }) => {
+          // each theme's own edge, at rest and under a resting pointer: with no transition still carrying the last one's
+          const still = await page.addStyleTag({ content: "*, *::before, *::after { transition: none !important; }" });
+          const measure = () => page.evaluate(async ({ entries, mode }) => {
             const root = document.documentElement;
             const was = { theme: root.dataset["theme"], palette: root.dataset["palette"] };
             const rgb = (color: string): number[] => {
@@ -303,6 +305,12 @@ try {
             if (was.palette === undefined) delete root.dataset["palette"]; else root.dataset["palette"] = was.palette;
             return found;
           }, { entries: SUPPORTED_ENTRIES.map((entry) => ({ id: entry.id, mode: entry.mode })), mode: theme });
+          const resting = await measure();
+          await jump.hover();
+          const hovered = await measure();
+          await page.mouse.move(at.x, at.y);
+          await still.evaluate((node) => node.remove());
+          const contrasts = resting.map((each, index) => ({ entry: each.entry, edge: Math.min(each.edge, hovered[index]!.edge), rest: each.edge, hover: hovered[index]!.edge }));
           if (evidence) await page.screenshot({ path: join(evidence, `terminal-jump-bottom-1440-${theme}.png`) });
           // over to the chat and back: the newest rows, and nothing left to jump to
           await page.locator(".view-switch .lens-option.is-chat").click();
@@ -334,7 +342,7 @@ try {
           assert.ok(await selectionRows() > 0, `${theme}: the selection is still there back on the terminal`);
           assert.equal((await history(page))!.viewportY, readUp.viewportY, `${theme}: a switch with a selection being made leaves the view on its rows`);
           const faint = contrasts.filter((each) => each.edge < 3);
-          assert.deepEqual(faint, [], `${theme}: the way to the bottom stands out from the terminal in every theme (edge contrast ${JSON.stringify(contrasts)})`);
+          assert.deepEqual(faint, [], `${theme}: the way to the bottom stands out from the terminal in every theme, at rest and hovered (edge contrast ${JSON.stringify(contrasts)})`);
           assert.deepEqual(errors, [], `${theme}: no page errors`);
           console.log(`PASS ${theme}: from the chat back to the terminal shows its newest rows once (not under a selection being made), and the way to the bottom stands out over every theme's terminal (${contrasts.map((each) => `${each.entry} ${each.edge}`).join(", ")})`);
         } finally {

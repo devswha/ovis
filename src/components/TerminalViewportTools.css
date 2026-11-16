@@ -17,6 +17,10 @@
   pointer-events: auto;
 }
 .terminal-jump-bottom svg { width: var(--icon-size); height: var(--icon-size); }
+/* a resting pointer fills it as a .btn is filled, and keeps its edge: .btn's hover edge would be the faint one again */
+@media (hover: hover) {
+  .terminal-jump-bottom:hover:not(:disabled) { border-color: var(--border-input); }
+}
 @media (pointer: coarse) {
   .terminal-jump-bottom { width: var(--touch-target); min-height: var(--touch-target); }
 }
