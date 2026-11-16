@@ -20,6 +20,7 @@ import { dirname, join } from "node:path";
 import { ACTIVE_LATE_DAYS, countBucket, COUNTS_LATE_DAYS, emptyUsage, harnessOf, sameUsage, TELEMETRY_COUNT_MAX, TELEMETRY_COUNTERS, TELEMETRY_SHOWN, telemetryCountsChange, telemetryHarnesses, telemetrySettings, telemetrySurface, telemetryUsage, type InstallMethod, type TelemetryActive, type TelemetryBucket, type TelemetryChange, type TelemetryCounter, type TelemetryCounts, type TelemetryCountsChange, type TelemetryEvent, type TelemetryHarness, type TelemetryIngress, type TelemetryRuntime, type TelemetrySettings, type TelemetryShown, type TelemetryStatus, type TelemetrySurface, type TelemetryUsage, type TelemetryUsageCount, type TelemetryWidthCounts } from "../shared/telemetry.ts";
 import { COUNTS_ON, NOTICE_VERSION } from "../shared/telemetry-notice.ts";
 import { badRequest, errorResponse, isJsonObject, jsonResponse } from "./http.ts";
+import { FileBusyError } from "./file-pool.ts";
 import { updateRequestAllowed } from "./update-api.ts";
 
 export const TELEMETRY_URL = "https://herdr-web-ui-telemetry.devswha.workers.dev/v1/events";
@@ -42,12 +43,16 @@ const LOCK_STALE_MS = 5_000;
 /** blocks this thread for `ms`: a lock section is synchronous, so the wait is too */
 function sleepSync(ms: number): void { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
 
-/** whether the lock file was left by a server that is gone, or held past LOCK_STALE_MS */
+/**
+ * whether the lock file was left by a server that is gone: its pid no longer runs (a live holder is never taken over by
+ * age, however long it holds it), or it never got a pid written and is older than LOCK_STALE_MS (a lock being made has no
+ * pid for a moment). A pid reused by another process after its server stopped reads as alive (rare; a limit)
+ */
 function staleLock(file: string): boolean {
   try {
-    const [pid = NaN, at = NaN] = readFileSync(file, "utf8").split(" ").map(Number);
-    if (!Number.isSafeInteger(pid) || !Number.isFinite(at) || Date.now() - at > LOCK_STALE_MS) return true;
-    if (pid === process.pid) return true;
+    const [pid = NaN] = readFileSync(file, "utf8").split(" ").map(Number);
+    if (!Number.isSafeInteger(pid) || pid <= 0) return Date.now() - statSync(file).mtimeMs > LOCK_STALE_MS;
+    if (pid === process.pid) return false;
     try { process.kill(pid, 0); return false; } catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
   } catch (error) {
     // removed meanwhile: not stale, try again; unreadable or half written: stale once it is old enough
@@ -569,7 +574,11 @@ export class Telemetry {
     // turned off while an event is on its way: stop it before anything is read or written (a read may write the mark), and
     // even if OFF_FILE cannot be written
     if (clean.enabled === false) { this.abort?.abort(); this.activeAbort?.abort(); this.countsAbort?.abort(); }
-    const applied = this.locked(() => {
+    // the off mark as this change found it: one made meanwhile (another server's off that could not wait for the lock)
+    // wins, and this change neither writes over it nor removes it
+    const markOf = (): number | null => { try { return statSync(this.offFile).mtimeMs; } catch { return null; } };
+    const apply = () => this.locked((): "applied" | "superseded" => {
+      const markAtStart = markOf();
       this.refresh();
       // the counter as the request found it: settings told with the generation the page heard last are from now
       const heard = this.saved.forgotten;
@@ -587,24 +596,30 @@ export class Telemetry {
       // a request that names no generation, or one from before an off the page had not heard, keeps none: they may be from
       // before it (a request delayed while another page turned the counts off and on)
       if (clean.settings !== undefined && clean.generation === heard && this.saved.notice_seen_at !== null && this.saved.enabled && !this.blocked()) this.saved.settings = clean.settings;
+      if (clean.enabled !== false && markOf() !== markAtStart) return "superseded";
       this.persist();
       // and again after: an on from another server between the two writes cannot leave this off without its mark
       if (clean.enabled === false) this.markOff();
-      // on removes the mark only once FILE says on, so no read in between finds FILE off and no mark (readSaved would mark it)
-      if (clean.enabled === true) rmSync(this.offFile, { force: true });
-      return true;
-    }, () => {
-      // another server holds the lock: an off still goes, with its mark and without what was not sent; anything else is lost
-      if (clean.enabled !== false) { this.skipped("a change"); return false; }
+      // on removes the mark only once FILE says on, so no read in between finds FILE off and no mark (readSaved would mark it),
+      // and only the mark it found: one another server made meanwhile stays
+      if (clean.enabled === true && markOf() === markAtStart) rmSync(this.offFile, { force: true });
+      return "applied";
+    }, (): "applied" | "superseded" | "busy" => {
+      // another server holds the lock: an off still goes, with its mark and without what was not sent; anything else waits
+      if (clean.enabled !== false) return "busy";
       this.markOff();
       this.refresh();
       this.forgetUnsent();
       this.saved.enabled = false;
       try { this.persist(); } catch (error) { console.error(`telemetry: ${this.file} could not be written (${message(error)})`); }
       this.markOff();
-      return true;
+      return "applied";
     });
-    if (!applied) return this.status();
+    // a change kept out by another server's lock is tried once more, then refused, so the page does not take it as done
+    let applied = apply();
+    if (applied === "busy") applied = apply();
+    if (applied === "busy") throw new FileBusyError("Another Ovis server on this PC is changing the usage counts; try again");
+    if (applied === "superseded") return this.status();
     if (clean.alert_opened) {
       this.tally("alerts_opened");
       // a tap alone sends nothing: the day's next visit carries it, so no message tells when it was
@@ -803,10 +818,11 @@ export class Telemetry {
     }
     const lock = join(this.options.stateDir, LOCK_FILE);
     const deadline = Date.now() + LOCK_WAIT_MS;
+    const stamp = `${process.pid} ${Date.now()} ${randomUUID()}`;
     for (;;) {
       try {
         const fd = openSync(lock, "wx", 0o600);
-        try { writeSync(fd, `${process.pid} ${Date.now()}`); } finally { closeSync(fd); }
+        try { writeSync(fd, stamp); } finally { closeSync(fd); }
         break;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") return busy();
@@ -818,7 +834,8 @@ export class Telemetry {
     this.lockDepth = 1;
     try { return section(); } finally {
       this.lockDepth = 0;
-      rmSync(lock, { force: true });
+      // only the lock this section took: one another server took over since is not this one's to remove
+      try { if (readFileSync(lock, "utf8") === stamp) rmSync(lock, { force: true }); } catch { /* gone already */ }
     }
   }
 
@@ -974,8 +991,11 @@ export class Telemetry {
           }, () => { this.skipped("an active message about to go"); return "stop"; });
           if (next === "stop") return;
           if (next === "skip") continue;
-          // last, right before it goes: turned off here or by another server on the same state directory meanwhile
+          // last, right before it goes: turned off here or by another server on the same state directory meanwhile, or off and
+          // on again (a new counter) since the message was built
           if (offMarked(this.offFile)) return;
+          this.refresh();
+          if (this.saved.forgotten !== forgotten) return;
           try {
             const response = await this.options.fetch(this.options.activeUrl ?? ACTIVE_URL, {
               method: "POST",
@@ -1039,6 +1059,8 @@ export class Telemetry {
       try {
         // right before it goes: turned off by another server on the same state directory since the read above
         if (offMarked(this.offFile)) return;
+        this.refresh();
+        if (this.saved.forgotten !== forgotten) return;
         const response = await this.options.fetch(this.options.url ?? TELEMETRY_URL, {
           method: "POST",
           headers: { "content-type": "application/json" },
