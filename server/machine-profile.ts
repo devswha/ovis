@@ -4,11 +4,13 @@
  * TCP port tells everyone that it is alive and nothing else; its devices come through the relay.
  */
 import { closeSync, constants, type Dirent, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, rmdirSync, rmSync, statSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, hostname } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { LOCAL_MACHINE, type Machine, type MachineRoster } from "../shared/machines.ts";
+import type { SessionSnapshot } from "../shared/protocol.ts";
 import { trustRefusal } from "./herdr-core/discovery.ts";
 import { discoverPinnableHerdrSessions, heldHerdrSocketStatus, type HerdrSocketPlace, pinnedHerdrSocketStatus, profileGroups, validHerdrSocket } from "./herdr-discovery.ts";
-import { checkHerdrSockets, herdrSocketPath, ping } from "./herdr/client.ts";
+import { checkHerdrSockets, HerdrError, herdrSocketPath, ping } from "./herdr/client.ts";
 import { isJsonObject, jsonResponse, setRequestRoute } from "./http.ts";
 import { acquireOwnerDirectory, holdForLife, liveOwner, OwnerGuardBusy } from "./owner-guard.ts";
 import { writePrivateState } from "./private-state.ts";
@@ -239,10 +241,37 @@ export async function machineHealth(engine: string, refusal: string | null = eng
   return { machine_profile: { engine, runtime_down: reason !== null, reason }, ...(herdr ? { herdr } : {}) };
 }
 
-/** Refused before optional route handlers, for local owners and devices alike. A device cookie opens nothing here, so none is handed out. */
-export function machineRouteRestricted(path: string): boolean {
+/**
+ * Refused before optional route handlers, for local owners and devices alike. A device cookie opens nothing here, so none is
+ * handed out. Of /api/machines only its list is read (GET, machineRoster), and it holds this machine alone.
+ */
+export function machineRouteRestricted(path: string, method: string): boolean {
+  if (path === "/api/machines" && method === "GET") return false;
   return /^\/api\/(?:herdr\/update$|runtime(?:\/|$)|portal(?:\/|$)|fleet(?:\/|$)|machines(?:\/|$)|bridge$|devices\/pair$)/.test(path)
     || path === "/api/relay/direct" && !MACHINE_DIRECT_CARRIER_ENABLED;
+}
+
+/**
+ * GET /api/machines: this machine alone, as an ordinary server lists its own PC (server/machines.ts list()), so the app's
+ * PC list, and the terminals it draws from it, read here what they read everywhere else. Its name is the machine's host
+ * name, as that server and the pairing offer give it; while its engine is down it is listed with the reason its health
+ * gives (`refusal` as health is handed it) and no terminals. A read that fails while the engine answers is that read's
+ * failure, thrown as /api/session answers it, so the app keeps the list it has. `?verify_source_boot=local` proves this
+ * server's own boot, as the manager proves its local PC's (src/lib/workspaceOrder.ts asks it after a move).
+ */
+export async function machineRoster(url: URL, read: () => Promise<SessionSnapshot>, ids: { bootId: string; serverId: string | undefined },
+  engine: string, refusal: string | null | undefined): Promise<MachineRoster> {
+  const machine: Machine = { id: LOCAL_MACHINE, name: hostname(), kind: "local", enabled: true, state: "connected", error: null, snapshot: null,
+    source_boot_id: ids.bootId, ...(ids.serverId ? { server_id: ids.serverId } : {}) };
+  try { machine.snapshot = await read(); }
+  catch (error) {
+    const reason = error instanceof HerdrError ? (await machineHealth(engine, refusal)).machine_profile.reason : null;
+    if (reason === null) throw error;
+    machine.state = "error";
+    machine.error = reason;
+  }
+  const asked = url.searchParams.getAll("verify_source_boot");
+  return { machines: [machine], ...(asked.length === 1 && asked[0] === LOCAL_MACHINE ? { verified_source_boot: { machine_id: LOCAL_MACHINE, boot_id: ids.bootId } } : {}) };
 }
 
 /** The answer to a caller the profile does not let in, the plain text the terminal socket's client reads included. */
