@@ -1,5 +1,5 @@
 import { cloneElement, useEffect, useState, useSyncExternalStore, type MouseEventHandler, type ReactElement, type ReactNode } from "react";
-import { FolderGit2, GitPullRequest, ListFilter, RefreshCw } from "lucide-react";
+import { ArrowLeft, FolderGit2, GitPullRequest, ListFilter, RefreshCw } from "lucide-react";
 
 import { RowMenu } from "../components/RowMenu.tsx";
 
@@ -49,15 +49,13 @@ export function ForkGithubSection({ children, ...props }: ViewProps & { children
   </div>;
 }
 
-/** The phone's way in: one button beside the drawer toggle, toggling the list between the inbox and GitHub. */
-export function ForkGithubButton({ phone, listShown, open }: { phone: boolean; listShown: boolean; open(): void }) {
+/** The phone's way in: a round button in the agent inbox's top row, beside New workspace. */
+export function ForkGithubOpen() {
   const { settings } = useSettings();
-  const current = useSection();
   const t = useT();
-  if (!settings.pullRequests || !phone) return null;
-  const on = current === "github" && listShown;
-  return <button type="button" className="icon-button fork-github-toggle" aria-label={t("GitHub|fork")} title={t("GitHub|fork")} aria-pressed={on}
-    onClick={() => { setGithubSection(on ? "inbox" : "github"); if (!on) open(); }}><GitPullRequest aria-hidden="true" /></button>;
+  if (!settings.pullRequests) return null;
+  return <button type="button" className="icon-button inbox-round fork-github-open" aria-label={t("GitHub|fork")} title={t("GitHub|fork")}
+    onClick={() => setGithubSection("github")}><GitPullRequest aria-hidden="true" /></button>;
 }
 
 export function GithubInbox({ wide, watching, onOpened }: ViewProps) {
@@ -138,12 +136,14 @@ export function GithubInbox({ wide, watching, onOpened }: ViewProps) {
     })}</ul>
   </section>;
   return <section className={`mode-inbox fork-github${wide ? " is-wide" : ""}`} aria-label={t("GitHub|fork")}>
-    <header className="inbox-top"><h2>{t("GitHub|fork")}</h2>
+    <header className="inbox-top">
+      {!wide && <button type="button" className="icon-button inbox-round" aria-label={t("Back|fork inbox")} title={t("Back|fork inbox")} onClick={() => setGithubSection("inbox")}><ArrowLeft aria-hidden="true" /></button>}
+      <h2>{t("GitHub|fork")}</h2>
       {groups.repos.length > 1 && <button type="button" className={`icon-button inbox-round inbox-filter-toggle${groups.selected === "" ? "" : " is-on"}`} aria-label={t("Repositories")} title={groups.selected || t("Repositories")}
         aria-haspopup="menu" aria-expanded={repoMenu !== null} onClick={(event) => setRepoMenu(repoMenu === null ? event.currentTarget : null)}><ListFilter aria-hidden="true" /></button>}
       {repoMenu !== null && <RowMenu anchor={repoMenu} title={t("Repositories")} choice onClose={() => setRepoMenu(null)}
         items={[["", 0] as const, ...groups.repos].map(([name]) => ({ id: name || "all", label: name ? name.split("/").pop() ?? name : t("All"), icon: name ? FolderGit2 : ListFilter, checked: groups.selected === name, run: () => { setRepo(name); saveGithubRepo(name); } }))} />}
-      <button type="button" className="icon-button" aria-label={t("Refresh")} title={t("Refresh")} disabled={loading || busy !== null} onClick={() => setRefresh((value) => value + 1)}><RefreshCw aria-hidden="true" /></button></header>
+      <button type="button" className="icon-button inbox-round" aria-label={t("Refresh")} title={t("Refresh")} disabled={loading || busy !== null} onClick={() => setRefresh((value) => value + 1)}><RefreshCw aria-hidden="true" /></button></header>
     <div className="inbox-scroll">
       {loading ? <p className="inbox-empty" role="status">{t("Reading pull requests…")}</p> : error !== null ? <p className="inbox-empty" role="alert">{error === "checkout_failed" ? t("Could not check out this pull request") : errors[error] ?? errors.gh_failed}</p> : listing !== null && <>
         {groups.review.length + groups.yours.length === 0 ? <p className="inbox-empty" role="status">{t("Nothing needs you")}</p> : <>{group(groups.review, true)}{group(groups.yours, false)}</>}

@@ -33,7 +33,10 @@
 
 .fork-github .inbox-top h2 { flex: 1; }
 
-.fork-github-toggle[aria-pressed="true"] { color: var(--text-strong); background: var(--bg-hover); }
+/* beside New workspace at the row's end, whatever sits before them */
+.mode-inbox .inbox-top > .fork-github-open {
+  margin-inline: auto var(--space-2);
+}
 
 .fork-github h2,
 .fork-github h3 {
