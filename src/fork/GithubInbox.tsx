@@ -107,8 +107,13 @@ export function GithubInbox({ wide, watching, onOpened }: ViewProps) {
       if (existing) opened = await openWorktree({ workspace_id: pr.workspace_id, path: existing.path }, "local");
       else {
         if (pr.fork) throw new Error("The fork worktree no longer exists");
-        const { ref } = await fetchPullRequestBranch(pr.workspace_id, pr.branch, "local");
-        opened = await createWorktree({ workspace_id: pr.workspace_id, branch: pr.branch, base: ref }, "local");
+        // Creation must start at the main checkout, even when only a linked workspace is open.
+        let source = listing.source.source_workspace_id ?? pr.workspace_id;
+        if (!listing.source.source_workspace_id && listing.source.source_checkout_path !== listing.source.repo_root) {
+          source = (await openWorktree({ workspace_id: pr.workspace_id, path: listing.source.repo_root }, "local")).workspace_id;
+        }
+        const { ref } = await fetchPullRequestBranch(source, pr.branch, "local");
+        opened = await createWorktree({ workspace_id: source, branch: pr.branch, base: ref }, "local");
       }
       setGithubSection("inbox"); onOpened(opened);
     } catch { setError("checkout_failed"); }
