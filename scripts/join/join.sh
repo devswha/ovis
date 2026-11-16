@@ -17,7 +17,7 @@
 # 26 the chosen session does not answer (the join, or the trial server), 28 run as root, 29 the kit's server is not the
 # machine profile, 30 installed but not added, 31 a join without --trial, 32 the program of the chosen session's herdr
 # server cannot be read from its process, 33 the trial's state folder resolves into an Ovis default folder, 34 the
-# pairing gate is not closed once the machine is in the account, 35 the kit's server refuses to start here (in its own
+# pairing gate is not closed after the add (finished, or not finished with the server kept), 35 the kit's server refuses to start here (in its own
 # words, which name the folder or setting), 36 the trial server refuses the chosen session's herdr socket (it names the
 # folder another account could change), 37 the add did not finish while the trial server names an Ovis account (rolled
 # back). A HUP ends it as INT and TERM do (129).
@@ -1079,44 +1079,54 @@ say ""
 say "Add this machine to your account / 이 머신을 내 계정에 추가"
 j_added=0
 # a test kit only: OVIS_JOIN_TEST_ADD_DONE=1 counts the add as done without a device (the gate check after it is the test)
-# Ctrl+C during the add ends the add only (it ends its code or its QR code itself): the join then says truthfully where
-# the machine stands, with the server running and the undo line. From the add's return on, Ctrl+C rolls back again
+# Ctrl+C during the add ends the add only (it ends its code or its QR code itself): the join then goes on as after an
+# add that did not finish (below): rolled back when the trial server names an account (exit 37), else kept only with its
+# pairing gate closed (exit 30), else stopped (exit 34). From the add's return on, Ctrl+C rolls back again
 trap ':' INT
 if [ "$j_add_done" = 1 ]; then j_added=1; else "$J_HOME/bin/ovis-trial" add && j_added=1; fi
 trap 'j_interrupted 130' INT
 say ""
-if [ "$j_added" = 1 ]; then
-  # with the relay on, the pairing gate must be closed: no device gets in without the account's approval
+# j_gate_closed: with the relay on (the add turns it on, even when it then fails), the pairing gate must be closed: no
+# device gets in without the account's approval. Read a few times: one failed read must not stop a working server for a
+# gate nobody saw open. True when it reads closed, or under the plain-server test switch when the health names none.
+j_gate_closed() {
   say "Reading the trial server's pairing gate..."
-  # read a few times: one failed read must not stop a working server for a gate nobody saw open
   j_gate=""
   for j_try in 1 2 3 4 5; do
     j_gate=$(j_read /api/health | grep -Eo '"pairing_gate"[[:space:]]*:[[:space:]]*"[a-z]*"' | sed 's/.*"\([a-z]*\)"$/\1/')
     [ -z "$j_gate" ] || break
     j_pause 1
   done
-  if [ "$j_gate" != closed ]; then
-    if [ "$j_plain_ok" = 1 ] && [ -z "$j_gate" ]; then
-      say "Test switch: this server's health names no pairing gate, so the gate was not checked."
-    else
-      if [ -n "$j_gate" ]; then
-        j_why_en="the trial server's pairing gate is $j_gate, not closed: devices could pair with it without your account's approval"
-        j_why_ko="체험용 서버의 페어링 관문이 닫혀 있지 않아($j_gate)"
-      else
-        j_why_en="the trial server's pairing gate could not be read (no answer in 5 tries), so it may be open"
-        j_why_ko="체험용 서버의 페어링 관문을 읽지 못해(5번 시도, 열려 있을 수 있음)"
-      fi
-      # it fails closed: the server is stopped first, and said stopped only once seen stopped
-      if j_halt; then
-        say "The machine is in your Ovis account, but $j_why_en, so the trial server was stopped. Undo the join: $(j_undo_line)"
-        say "기기가 내 Ovis 계정에 들어갔지만 $j_why_ko 체험용 서버를 멈췄습니다. 모두 되돌리려면: $(j_undo_line)"
-      else
-        say "The machine is in your Ovis account, but $j_why_en, and the trial server could not be seen stopped: stop it now: $J_HOME/bin/ovis-trial stop"
-        say "기기가 내 Ovis 계정에 들어갔지만 $j_why_ko 체험용 서버가 멈춘 것을 확인하지 못했습니다. 지금 멈추세요: $J_HOME/bin/ovis-trial stop"
-      fi
-      exit 34
-    fi
+  [ "$j_gate" != closed ] || return 0
+  if [ "$j_plain_ok" = 1 ] && [ -z "$j_gate" ]; then
+    say "Test switch: this server's health names no pairing gate, so the gate was not checked."
+    return 0
   fi
+  return 1
+}
+# j_gate_open <done|unfinished>: the gate not closed fails closed: the server is stopped first, and said stopped only once
+# seen stopped; exit 34. After an add that did not finish, nothing is said about an account
+j_gate_open() {
+  if [ -n "$j_gate" ]; then
+    j_why_en="the trial server's pairing gate is $j_gate, not closed: devices could pair with it without your account's approval"
+    j_why_ko="체험용 서버의 페어링 관문이 닫혀 있지 않아($j_gate)"
+  else
+    j_why_en="the trial server's pairing gate could not be read (no answer in 5 tries), so it may be open"
+    j_why_ko="체험용 서버의 페어링 관문을 읽지 못해(5번 시도, 열려 있을 수 있음)"
+  fi
+  if [ "$1" = done ]; then j_lead_en="The machine is in your Ovis account, but" j_lead_ko="기기가 내 Ovis 계정에 들어갔지만"
+  else j_lead_en="The add did not finish, and" j_lead_ko="추가가 끝나지 않았고"; fi
+  if j_halt; then
+    say "$j_lead_en $j_why_en, so the trial server was stopped. Undo the join: $(j_undo_line)"
+    say "$j_lead_ko $j_why_ko 체험용 서버를 멈췄습니다. 모두 되돌리려면: $(j_undo_line)"
+  else
+    say "$j_lead_en $j_why_en, and the trial server could not be seen stopped: stop it now: $J_HOME/bin/ovis-trial stop"
+    say "$j_lead_ko $j_why_ko 체험용 서버가 멈춘 것을 확인하지 못했습니다. 지금 멈추세요: $J_HOME/bin/ovis-trial stop"
+  fi
+  exit 34
+}
+if [ "$j_added" = 1 ]; then
+  j_gate_closed || j_gate_open done
   say "Done: this machine runs the trial Ovis server and is in your Ovis account; on your phone, open it under PCs or Overview in the Ovis app."
   say "완료: 이 머신에서 체험용 Ovis 서버가 실행 중이며 내 Ovis 계정에 들어 있습니다. 휴대폰의 Ovis 앱에서 PC 또는 개요를 열고 이 머신을 고르세요."
   say "Undo / 되돌리기:  $(j_undo_line)"
@@ -1125,7 +1135,7 @@ fi
 # where the machine stands after an add that did not finish (its success is the done path above): the trial server itself
 # (this machine's own, on its owner socket) naming an account means a device paired with it, through an add that did not
 # finish: rolled back (exit 37). The add gives no result of its own that proves the machine was not added, and no file
-# does, so anything else is "could not tell", with the server kept for `ovis-trial add`
+# does, so anything else is "could not tell", with the server kept for `ovis-trial add` while its pairing gate is closed
 j_account=$(j_read -f /api/account/status)
 case $j_account in *'"account":"'*) j_where=listed ;; *) j_where=unknown ;; esac
 case $j_where in
@@ -1134,9 +1144,13 @@ case $j_where in
     # confirm (the add's own words above say what it saw), so the server does not stay
     j_named=$(printf '%s' "$j_account" | sed -n 's/.*"account":"\([^"]*\)".*/\1/p')
     say "체험용 서버가 Ovis 계정($j_named)에 들어갔지만 추가가 끝나지 않아, 그 계정이 내 계정인지 확인할 수 없습니다. 체험용 서버를 멈추고 되돌립니다."
+    say "That account's list may still name this machine, and nothing on this machine can take it off that list today: the Ovis guide says how such an entry goes (docs/guide.md, section \"Through an account\")."
+    say "그 계정의 목록에는 이 머신이 아직 남아 있을 수 있으며, 지금은 이 머신에서 목록에서 뺄 방법이 없습니다. 그런 항목이 어떻게 되는지는 Ovis 안내서에 있습니다(docs/guide.md, \"Through an account\" 절)."
     refuse 37 "the add did not finish, but the trial server names an Ovis account ($j_named), which the join cannot confirm is the one you signed in to (the add's words above say what it saw), so the trial server does not stay; $(j_rolled_back)"
     ;;
   *)
+    # kept only with its pairing gate closed: the add may have turned the relay on before it ended
+    j_gate_closed || j_gate_open unfinished
     say "The trial Ovis server runs on this machine, but it could not tell whether the machine is listed in your Ovis account; check with:  $J_HOME/bin/ovis-trial status"
     say "Add it with:  $J_HOME/bin/ovis-trial add      (or undo the whole join: $(j_undo_line))"
     say "체험용 Ovis 서버는 실행 중이지만, 이 머신이 내 Ovis 계정 목록에 올라 있는지 알 수 없습니다. $J_HOME/bin/ovis-trial status 로 확인하고, 위 명령으로 추가하거나 되돌리세요."

@@ -142,12 +142,17 @@ character is refused first (exit 2). Ctrl+C at a question ends the join with 130
 Ctrl+C, TERM or HUP (a dropped SSH connection) after the yes, before the add (the download, the check of the kit's
 server, the start, the wait for it to answer), and TERM or HUP during the add, roll back as a refusal does and say what
 is left, with the undo line if anything is (130, 143 or 129); the roll back does not depend on a terminal to print to. Ctrl+C at the QR code ends only the add: the
-join prints its ending and exits 30; the shell around it may still report 130 for the whole session (`script(1)` did in
+join then goes on as after any add that did not finish. When the trial server names an account it rolls back (exit 37),
+and that account's list may still name the machine. Otherwise it keeps the server only when its pairing gate reads
+`closed` (exit 30, `ovis-trial add` finishes the add), and else stops it (exit 34). A real machine profile names no
+account until a device has paired with it, and its gate is closed from its first start, so a Ctrl+C at the QR code
+ends with exit 30 and the server kept. The shell around it may still report 130 for the whole session (`script(1)` did in
 the container tests), so a caller should read `ovis-trial status` and the account, not that code.
 
-Once the machine is in the account, the join reads `security.pairing_gate` from the trial server's health (on its owner
-socket) and requires
-`closed` (the relay closes it); otherwise it says so and exits 34. Under the test switch, a server whose health names no
+After the add, finished or not finished with the server kept, the join reads `security.pairing_gate` from the trial
+server's health (on its owner socket) and requires `closed` (the machine profile closes it at its first start, and the
+relay closes it); otherwise it stops the server first, says so (after an add that did not finish, with nothing said
+about an account), and exits 34. Under the test switch, a server whose health names no
 gate is let through with that said.
 
 Nothing is put in front of the trial server's port: the join adds no `tailscale serve` entry and no proxy,

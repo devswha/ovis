@@ -344,7 +344,9 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
 } else {
   serveAsProfile((request) => new URL(request.url).pathname === "/api/account/status"
     ? (existsSync("/var/tmp/fake-account-listed") ? Response.json({ account: "acct_standin" }) : new Response("no account here", { status: 503 }))
-    : Response.json({ ok: true, machine_profile: { engine: "herdr" }, herdr: { terminal_attach: true } }));
+    : Response.json({ ok: true, machine_profile: { engine: "herdr" }, herdr: { terminal_attach: true },
+      // its pairing gate as /var/tmp/fake-gate-open or -closed says; with neither, its health names none
+      ...(existsSync("/var/tmp/fake-gate-open") ? { security: { pairing_gate: "open" } } : existsSync("/var/tmp/fake-gate-closed") ? { security: { pairing_gate: "closed" } } : {}) }));
 }
 `);
     const builtFake = Bun.spawnSync([process.execPath, "build", "--compile", join(shifty, "fake.ts"), "--outfile", join(shifty, "fake", "ovis-server")], { stdout: "pipe", stderr: "pipe" });
@@ -892,14 +894,26 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
   test("an add whose server cannot say where the machine stands: the ending says it could not tell", async () => {
     const m = await runnerMachine();
     await serveHerdr(m);
-    expect((await m.sh("touch /var/tmp/fake-add-fails")).code).toBe(0);
+    expect((await m.sh("touch /var/tmp/fake-add-fails /var/tmp/fake-gate-closed")).code).toBe(0);
     const run = await m.sh(`${fakeKit.line} --yes </dev/null`);
     note("caseUnknown", `exit ${run.code}\n${run.stdout}${run.stderr}`);
     expect(run.code).toBe(30);
+    expect((await m.processes()).includes("ovis-server serve")).toBe(true);
     expect(run.stdout).toContain("it could not tell whether the machine is listed in your Ovis account; check with:");
     expect(run.stdout).not.toContain("was not added");
     expect(run.stdout).not.toContain("is listed in your Ovis account, but");
-    expect((await m.sh(`rm /var/tmp/fake-add-fails && sh ${TRIAL}/join.sh --uninstall`)).code).toBe(0);
+    expect((await m.sh(`rm /var/tmp/fake-add-fails /var/tmp/fake-gate-closed && sh ${TRIAL}/join.sh --uninstall`)).code).toBe(0);
+  }, 300_000);
+
+  test("a failed add with no account named and the pairing gate open: the server is stopped first, exit 34", async () => {
+    const m = await runnerMachine();
+    await serveHerdr(m);
+    expect((await m.sh("touch /var/tmp/fake-add-fails /var/tmp/fake-gate-open")).code).toBe(0);
+    const run = await m.sh(`${fakeKit.line} --yes </dev/null`);
+    note("caseFailedGateOpen", `exit ${run.code}\n${run.stdout}${run.stderr}`);
+    // regression (before: exit 30, the gate never read, the server kept running)
+    expect([run.code, (await m.processes()).includes("ovis-server serve")]).toEqual([34, false]);
+    expect((await m.sh(`rm /var/tmp/fake-add-fails /var/tmp/fake-gate-open && sh ${TRIAL}/join.sh --uninstall`)).code).toBe(0);
   }, 300_000);
 
   test("Ctrl+C after the add returned (in the gate check): rolled back as a refusal is, no server left", async () => {
