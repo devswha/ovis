@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { act } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
+import type { WorktreeListing } from "../../shared/protocol.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { ForkGithubRail, GithubInbox, setGithubSection } from "./GithubInbox.tsx";
 
@@ -31,6 +32,61 @@ async function rail(enabled: boolean) {
   records.set("ovis:settings", JSON.stringify({ pullRequests: enabled }));
   await act(async () => { renderer = create(<SettingsProvider><ForkGithubRail><button aria-current="page">Inbox</button></ForkGithubRail></SettingsProvider>); });
 }
+
+const checkoutListing = (sourceId: string | null = "w1"): WorktreeListing => ({
+  source: { repo_key: "repo", repo_name: "repo", repo_root: "/repo", source_checkout_path: sourceId ? "/repo" : "/linked", source_workspace_id: sourceId },
+  worktrees: [{ path: "/pr", branch: "topic", label: "topic", is_linked_worktree: true, is_bare: false, is_detached: false, is_prunable: false, open_workspace_id: null }],
+});
+function checkoutApi(listings: WorktreeListing[], replies: Record<string, unknown> = {}) {
+  const requests: { path: string; body?: unknown }[] = [];
+  let reads = 0;
+  Object.defineProperty(globalThis, "fetch", { configurable: true, value: async (path: string, init?: RequestInit) => {
+    requests.push({ path, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+    if (path === "/api/fork/github/pulls") return Response.json(payload);
+    if (path === "/api/worktree/list?workspace_id=w1") return Response.json(listings[Math.min(reads++, listings.length - 1)]);
+    expect(Object.hasOwn(replies, path)).toBe(true);
+    return Response.json(replies[path]);
+  } });
+  return requests;
+}
+async function openPull(onOpened = (_opened: unknown) => {}) {
+  await act(async () => { renderer = create(<SettingsProvider><GithubInbox wide watching={false} onOpened={onOpened} /></SettingsProvider>); });
+  await act(async () => button("Fix this").props.onClick());
+}
+
+test("opens an existing fork worktree without fetching or creating a branch", async () => {
+  (payload as { review: { fork: boolean }[] }).review[0]!.fork = true;
+  const opened = { workspace_id: "fork", pane_id: "p1", path: "/pr", branch: "topic", already_open: true };
+  const requests = checkoutApi([checkoutListing()], { "/api/worktree/open": opened });
+  let result: unknown;
+  await openPull((next) => { result = next; });
+  expect(button("Checkout")).toBeDefined();
+  await act(async () => button("Checkout").props.onClick());
+  expect(result).toEqual(opened);
+  expect(requests.filter((request) => request.body)).toEqual([{ path: "/api/worktree/open", body: { workspace_id: "w1", path: "/pr" } }]);
+});
+
+test("does not offer a new fork checkout or a prunable fork worktree", async () => {
+  (payload as { review: { fork: boolean }[] }).review[0]!.fork = true;
+  for (const worktrees of [[], checkoutListing().worktrees.map((entry) => ({ ...entry, is_prunable: true }))]) {
+    const requests = checkoutApi([{ ...checkoutListing(), worktrees }]);
+    await openPull();
+    expect(requests.some((request) => request.path.startsWith("/api/worktree/list"))).toBe(true);
+    expect(button("Checkout")).toBeUndefined();
+    expect(requests.filter((request) => request.body)).toHaveLength(0);
+    await act(async () => renderer?.unmount());
+  }
+});
+
+test("revalidates a fork worktree on checkout and never fetches when it has disappeared", async () => {
+  (payload as { review: { fork: boolean }[] }).review[0]!.fork = true;
+  const requests = checkoutApi([checkoutListing(), { ...checkoutListing(), worktrees: [] }]);
+  await openPull();
+  expect(button("Checkout")).toBeDefined();
+  await act(async () => button("Checkout").props.onClick());
+  expect(renderer!.root.findByProps({ role: "alert" })).toBeDefined();
+  expect(requests.filter((request) => request.body)).toHaveLength(0);
+});
 
 test("rail is opt-in, switches current place, and Inbox switches back", async () => {
   await rail(false); expect(button("GitHub")).toBeUndefined();
