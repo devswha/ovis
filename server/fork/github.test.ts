@@ -35,9 +35,12 @@ test("matches repositories by local roots or pane folders and tolerates non-GitH
 });
 
 test("matches beyond 50 workspaces with bounded repository reads", async () => {
-  const workspaces = Array.from({ length: 60 }, (_, i) => ({ workspace_id: `w${i}`, worktree: { repo_root: `/repo${i}` } }));
+  const workspaces = Array.from({ length: 60 }, (_, i) => ({
+    workspace_id: `w${i}`, active_tab_id: "", agent_status: "idle", focused: false, label: "repo", number: i, pane_count: 0, tab_count: 0,
+    worktree: { repo_root: `/repo${i}`, checkout_path: `/repo${i}`, repo_key: `r${i}`, repo_name: `repo${i}`, is_linked_worktree: false },
+  }));
   let active = 0, peak = 0, calls = 0;
-  const known = await githubWorkspaces({ workspaces, panes: [] } as unknown as SessionSnapshot, async (path) => {
+  const known = await githubWorkspaces({ workspaces, panes: [], agents: [], layouts: [], tabs: [], protocol: 1, version: "fixture" }, async (path) => {
     calls++; active++; peak = Math.max(peak, active);
     await Promise.resolve();
     active--;
