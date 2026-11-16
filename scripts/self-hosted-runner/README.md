@@ -412,7 +412,7 @@ vm-runner.sh supervise                              # forever: one container per
 
 ## Security model
 
-This is a public repository. A fork PR's run uses the fork's workflow files and `scripts/ci-runner-route.sh`, so it can choose `runs-on` itself. The runner therefore enforces the boundary: `job-started.sh` runs before every job (`ACTIONS_RUNNER_HOOK_JOB_STARTED`, set in the image, outside the workflow's control) and refuses any job whose event names another head repository (a fork pull request, a deleted head repository, a `workflow_run` of a fork). It fails closed: any exit before it explicitly allows the job, an error of its own included (a missing or unreadable event file, broken JSON, an unset variable), refuses it, and the refusal kills the worker before it logs anything, with SIGPIPE and termination signals ignored, so a closed output cannot stop it halfway. A failing hook alone is not enough: runner v2.338 marks only its "Set up runner" step failed and still runs the job's `if: always()` and `if: failure()` steps. So the hook SIGKILLs the job's `Runner.Worker` before it returns; the job then ends as failed within seconds with no step run and an empty log, and the refusal is written to the container's output (`journalctl --user -u ovis-ci-runner`). Both were checked on a live runner with a refused job: the old exit-only hook ran the `always()` and `failure()` steps, the killing hook ran none. Fork PR runs also need maintainer approval (repository setting: all outside collaborators); never approve one that changes `runs-on`. Containers are ephemeral (`--ephemeral`, `--rm`), unprivileged (`--cap-drop ALL`, `no-new-privileges`, no `--privileged`), have no host mounts but the read-only host caches and no Docker socket, and the image has no sudo. The registration token reaches the container on stdin, never through its environment, so a job cannot read it from `/proc/1/environ`.
+This is a public repository. A fork PR's run uses the fork's workflow files and `scripts/ci-runner-route.sh`, so it can choose `runs-on` itself. The runner therefore enforces the boundary: `job-started.sh` runs before every job (`ACTIONS_RUNNER_HOOK_JOB_STARTED`, set in the image, outside the workflow's control) and refuses any job whose event names another head repository (a fork pull request, a deleted head repository, a `workflow_run` of a fork), or a `pull_request*` or `workflow_run` event that names none. It fails closed: any exit before it explicitly allows the job, an error of its own included (a missing or unreadable event file, broken JSON, an unset variable), refuses it, with SIGPIPE and termination signals ignored, so a closed output cannot stop the refusal halfway. A failing hook alone is not enough: runner v2.338 marks only its "Set up runner" step failed and still runs the job's `if: always()` and `if: failure()` steps (checked on a live runner: the old exit-only hook ran them). So a refusal SIGKILLs the job's `Runner.Worker`, and nothing else: the runner starts the hook as the worker's direct child, and the hook kills its own parent only when every check, made again right before the kill, proves that parent the worker. It is still the hook's parent (an orphaned hook's parent is whatever adopted it, which may be a user's systemd manager), its executable is `Runner.Worker` (on Linux by `/proc/<pid>/exe` and its name), it runs as the hook's user, and its start time is unchanged (on Linux, no later than the hook's). The job then ends as failed within seconds with no step run and an empty log (checked on a live runner with the earlier hook, which found the worker by its name); as the job's log goes with the worker, the refusal is written to the container's output too (`journalctl --user -u ovis-ci-runner`). When any check fails, the hook kills nothing: it writes the refusal with its own pid and blocks in its step, so no later step starts. A cancel or the job's timeout then ends the job without another step, by runner v2.338.2's source (not yet seen on a live runner): the hook's step runs under `always()`, so a cancel leaves the worker in it, and the runner kills the worker itself once the cancel timeout (at least 45 seconds) has passed. A blocked refusal means the hook could not prove its parent the worker, which on these runners points at the runner itself: look at it before its next job. The hook's tests reach a refusal only where it cannot kill a process they did not start: in a PID namespace of their own, or in a container of this image (its marker `/opt/runner-hooks/ovis-runner-image`, tini as PID 1); anywhere else they skip. Fork PR runs also need maintainer approval (repository setting: all outside collaborators); never approve one that changes `runs-on`. Containers are ephemeral (`--ephemeral`, `--rm`), unprivileged (`--cap-drop ALL`, `no-new-privileges`, no `--privileged`), have no host mounts but the read-only host caches and no Docker socket, and the image has no sudo. The registration token reaches the container on stdin, never through its environment, so a job cannot read it from `/proc/1/environ`.
 
 No job reaches another over the network: each slot's container is alone on its docker network, so
 the servers a job's tests keep on its loopback, and the two they bind to every address, answer
@@ -440,30 +440,42 @@ waiting on a key wait up to five minutes and build themselves.
 
 ### Mac runner
 
-`eamac-ovis-mac` (labels `self-hosted, macOS, ARM64, self-hosted-ovis-mac`) is a plain GitHub
+`<runner-name>` (labels `self-hosted, macOS, ARM64, self-hosted-ovis-mac`) is a plain GitHub
 Actions runner on the maintainer's test MacBook Air (`ssh eamac`), not this directory's Docker
-launcher: `~/actions-runner-ovis`, run by the LaunchAgent `actions.runner.devswha-ovis.eamac-ovis-mac`.
-A fork can name it in `runs-on` as it can name the Linux runners, so it runs the same
-`job-started.sh`, with the same refusals: macOS has no `/proc`, so there the hook finds the job's
-`Runner.Worker` with `ps` and writes the refusal to the system log (`logger -t ovis-runner-guard`)
-instead of a container's output. The runner starts it with the macOS `/bin/bash` 3.2 and its `jq`
-(`/usr/bin/jq`). It lets a job through only when its event names no other head repository: a
-`push`, `workflow_dispatch`, `schedule`, `repository_dispatch`, `merge_group` or comment event
-runs code from this repository (a fork's push runs in the fork), and a `pull_request` (or review)
-event only when its head is this repository. It refuses `pull_request_target` from a fork too,
-though that event runs the base branch's workflow, since such a workflow may check out the fork's
-head; and a `workflow_run` whose triggering run came from a fork, as it may use that run's
-artifacts.
+launcher: a runner directory (`<runner>` below) run by a LaunchAgent of that Mac's user (`<label>`,
+from the runner's `./svc.sh install`). A fork can name it in `runs-on` as it can name the Linux
+runners, so it runs the same `job-started.sh`, with the same refusals: macOS has no `/proc`, so
+there the hook proves its parent the job's `Runner.Worker` with `/bin/ps` (its parent now, the path
+it was started from, its user and its start time, again right before the kill) and writes the
+refusal to the system log (`logger -t ovis-runner-guard`) instead of a container's output. The
+runner starts it with the macOS `/bin/bash` 3.2 and its `jq` (`/usr/bin/jq`); CI's Native macOS
+session identity job runs the test of a job it allows there (its refusals are tested on Linux
+alone). It lets a job through only when its event names no other head repository: a `push`,
+`workflow_dispatch`, `schedule`, `repository_dispatch`, `merge_group` or comment event runs code
+from this repository (a fork's push runs in the fork), and a `pull_request`,
+`pull_request_review` or `pull_request_review_comment` event only when its payload names this
+repository as its head. It refuses `pull_request_target` from a fork too, though that event runs
+the base branch's workflow, since such a workflow may check out the fork's head; and a
+`workflow_run` whose triggering run came from a fork, as it may use that run's artifacts. Each of
+these is refused when its payload names no head repository, and a job with no event name always.
 
-- Install: copy the file to `~/actions-runner-ovis/hooks/job-started.sh` (mode 755) and set
-  `ACTIONS_RUNNER_HOOK_JOB_STARTED=/Users/ea/actions-runner-ovis/hooks/job-started.sh` in that
+- Install: copy the file to `<runner>/hooks/job-started.sh` (mode 755) and set
+  `ACTIONS_RUNNER_HOOK_JOB_STARTED=<runner>/hooks/job-started.sh` (an absolute path) in the
   runner's `.env`. The runner reads `.env` at its start (restart the LaunchAgent after changing
-  it: `launchctl kickstart -k gui/$(id -u)/actions.runner.devswha-ovis.eamac-ovis-mac`, while no
-  job runs) and the hook file at every job.
-- Check: the `.env` line, the file's `shasum -a 256` against this one, and the hook run by hand
-  with `GITHUB_REPOSITORY=devswha/ovis` and `GITHUB_EVENT_PATH` naming a fork pull request's
-  payload (exit 1) and a same-repository one (exit 0). A job's "Set up runner" step shows
+  it: `launchctl kickstart -k gui/$(id -u)/<label>`, while no job runs) and the hook file at
+  every job. The `.env` must not set `DYLD_INSERT_LIBRARIES`: with it, the runner starts every
+  script through its `node` (runner v2.338.2's `ScriptHandler.cs`), the hook's parent is not the
+  worker, and every refusal blocks.
+- Check: the `.env` line, and the file's `shasum -a 256` against this one. Run by hand, the hook
+  allows a same-repository payload (`GITHUB_REPOSITORY=devswha/ovis`, `GITHUB_EVENT_NAME=pull_request`,
+  `GITHUB_EVENT_PATH` naming it): exit 0 and `Runner guard: pull_request from devswha/ovis`. It
+  refuses a fork's, but a shell is not `Runner.Worker`, so it kills nothing: it blocks, printing
+  its pid, and ignores Ctrl-C and `kill`'s TERM; end it from another terminal with
+  `kill -KILL <hook pid>`, that pid. A job's "Set up runner" step shows
   `Runner guard: <event> from devswha/ovis`.
+- A blocked refusal on the Mac (its system log says the parent was not proven, with the hook's
+  pid) outlives its job: the runner ends the job but leaves the hook sleeping. Read why, then end
+  it with `kill -KILL <hook pid>` once `ps -o command= -p <hook pid>` shows that hook.
 - Undo: restore the `.env` and hook file kept before the install, then restart the LaunchAgent.
 
 Fork runs still wait for a maintainer's approval (above); the hook is the second lock, the one a

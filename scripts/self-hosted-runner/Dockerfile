@@ -85,6 +85,9 @@ RUN chmod 0755 /entrypoint.sh
 COPY job-started.sh /opt/runner-hooks/job-started.sh
 RUN chmod 0755 /opt/runner-hooks/job-started.sh
 ENV ACTIONS_RUNNER_HOOK_JOB_STARTED=/opt/runner-hooks/job-started.sh
+# Only this image has it (root's, read-only): the hook's kill tests run in its containers, never on a host
+# (scripts/self-hosted-runner/hook-test-harness.sh).
+RUN printf 'ovis CI runner image\n' >/opt/runner-hooks/ovis-runner-image && chmod 0444 /opt/runner-hooks/ovis-runner-image
 
 USER runner
 ENV USER=runner
