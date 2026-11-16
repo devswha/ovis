@@ -201,6 +201,17 @@ it("takes a removed attachment's path out of the text when it was placed before 
   expect(tiles()).toBe(0);
 });
 
+it("keeps the user's own space when a path placed after it, before a line break, is removed", async () => {
+  await open();
+  await type("before \nafter", 7);
+  await paste(7, "shot");
+  await finish("shot");
+  expect(box().props.value).toBe(`before @${path("shot")}\nafter`);
+  const remove = renderer!.root.find((node) => node.type === "button" && node.props["aria-label"] === "Remove shot.png");
+  await act(async () => { remove.props.onClick(); });
+  expect(box().props.value).toBe("before \nafter");
+});
+
 it("puts a retried upload's path where the paste was made", async () => {
   await open();
   await type("before after", 7);

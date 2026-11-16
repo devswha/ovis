@@ -284,10 +284,13 @@ export function mentionPlace(text: string, place: number): number {
 }
 
 /**
- * The text without an attached file's mention: as imageMention writes it, or as insertMentionAt
+ * The text without an attached file's mention: `inserted`, the exact text the insert added, when it
+ * is still there, so a space the user typed stays; else as imageMention writes it, or as insertMentionAt
  * wrote it before a line break or a tab, without its trailing space and with the space put before it.
  */
-export function removeMention(text: string, mention: string): string {
+export function removeMention(text: string, mention: string, inserted?: string): string {
+  const exact = inserted ? text.indexOf(inserted) : -1;
+  if (exact >= 0) return text.slice(0, exact) + text.slice(exact + inserted!.length);
   const at = text.indexOf(mention);
   if (at >= 0) return text.slice(0, at) + text.slice(at + mention.length);
   const bare = mention.trimEnd();

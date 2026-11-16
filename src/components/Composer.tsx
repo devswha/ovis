@@ -165,6 +165,8 @@ type Attachment = {
   file: File;
   previewUrl: string;
   path: string | null;
+  /** the text its upload put in the message, with the spaces it added: what removing it takes out */
+  inserted?: string;
   state: "uploading" | "ready" | "error" | "no-room";
   /** for "no-room": how many characters the message must lose for the path to fit */
   missing?: number;
@@ -745,7 +747,8 @@ export function Composer({
       }
       insertMention(next);
       if (!place) placedMentions.current.set(id, mention);
-      setAttachments((current) => current.map((item) => (item.id === id ? { ...item, path, state: "ready" } : item)));
+      const inserted = next.text.slice(next.at, next.at + next.length);
+      setAttachments((current) => current.map((item) => (item.id === id ? { ...item, path, inserted, state: "ready" } : item)));
       attached.push(t("{name} attached", { name }));
     }
     if (attached.length > 0) announce(attached.join(" "));
@@ -880,7 +883,7 @@ export function Composer({
     if (attachment.path) {
       const mention = imageMention(attachment.path);
       setText((current) => {
-        const next = removeMention(current, mention);
+        const next = removeMention(current, mention, attachment.inserted);
         textRef.current = next;
         caretRef.current = Math.min(caretRef.current, next.length);
         return next;

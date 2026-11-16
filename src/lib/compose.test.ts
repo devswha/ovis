@@ -442,6 +442,12 @@ describe("removeMention (#3216)", () => {
     expect(removeMention(insertMentionAt("before\tafter", mention, 6).text, mention)).toBe("before\tafter");
     expect(removeMention("before @/tmp/1.pngs\nafter", mention)).toBe("before @/tmp/1.pngs\nafter");
   });
+
+  it("keeps a space the user typed before the mention", () => {
+    const placed = insertMentionAt("before \nafter", mention, 7);
+    const inserted = placed.text.slice(placed.at, placed.at + placed.length);
+    expect(removeMention(placed.text, mention, inserted)).toBe("before \nafter");
+  });
 });
 
 describe("composer presentation helpers", () => {
