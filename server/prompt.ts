@@ -25,6 +25,7 @@ import { executeInteractionPlan } from "./dialogs/interaction-plan.ts";
 import { liveScreen, parsePrompt, promptTailIsActive } from "./dialogs/live.ts";
 import { LETTA_SEARCH_MAX, lettaPick, lettaSearchShown } from "./dialogs/letta.ts";
 import { agyCustomEditorMatches, agySameQuestion, parseAgyQuestion } from "./dialogs/agy.ts";
+import { dshFreeTextRow, dshTypedText } from "./dialogs/dsh.ts";
 import { sameText } from "./dialogs/omo.ts";
 import { OMP_REVIEW_HINT_RE, OMP_TABS_HINT_RE } from "./dialogs/omp.ts";
 import { INVISIBLE_CHAR_RE } from "./dialogs/claude.ts";
@@ -1127,8 +1128,9 @@ async function readKnownPrompt(
 
   // Antigravity's question has a reader (dialogs/agy.ts); its other screens, the folder trust at start among them, stay
   // with the fallback card and the picker guard, so it is named here and not in SCREEN_READ_AGENTS; dsh-tui's
-  // ask_user_question has a reader too (dialogs/dsh.ts)
-  if (!SCREEN_READ_AGENTS.has(agent) && agent !== "agy" && agent !== "dsh-tui") return { prompt: null };
+  // ask_user_question has a reader too (dialogs/dsh.ts), read only while herdr says the pane waits on the user, as
+  // its fallback card is: a panel's text on the screen of a dsh that is not asking takes no Enter
+  if (!SCREEN_READ_AGENTS.has(agent) && agent !== "agy" && !(agent === "dsh-tui" && pane.agent_status === "blocked")) return { prompt: null };
   const piTranscript = agent === "pi" ? await piTranscriptPath(paneId).catch(() => null) : null;
   // pi-ask's ask_user form, as the web UI's pi extension reports it: answered through pi-ask, never keys
   if (piTranscript && "path" in piTranscript) {
@@ -2024,6 +2026,8 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
             const dialog = parsePiDialog(screen, true);
             return dialog?.id === parsed.id && dialog.selectedIndex === cursor && promptTailIsActive(dialog, screen);
           }
+          // dsh-tui's single choice with the cursor on its free-text row has no card (dialogs/dsh.ts): the row itself, empty
+          if (responder === "dsh-question" && cursor === parsed.customMenuIndex) return dshFreeTextRow(screen, parsed, "") === "typed";
           if (shown === null || !(responder === "agy-question" ? agySameQuestion(shown, parsed) : shown.id === parsed.id)) return false;
           return shown.selectedIndex === cursor && ticked(shown)
             && (responder !== "pi-questionnaire-question" || shown.piQuestionnaireInput === undefined);
@@ -2058,6 +2062,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
          */
         const sameQuestion = (shown: ParsedPrompt | null, screen: string, onCursor: boolean, settled: ParsedPrompt | null): boolean => {
           if (interaction) return shown?.responder === responder && interaction.matches(screen);
+          if (responder === "dsh-question" && cursor === parsed.customMenuIndex) return dshFreeTextRow(screen, parsed, "") === "typed";
           if (responder === "pi-question" || responder === "pi-confirm") {
             const dialog = parsePiDialog(screen, true);
             return dialog?.id === parsed.id && (!onCursor || dialog.selectedIndex === cursor);
@@ -2161,6 +2166,22 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
             }
             return false;
           }
+          if (responder === "dsh-question") {
+            // the row holds this answer's text and nothing else: words typed there meanwhile would go out with the Enter,
+            // and a question answered or cancelled meanwhile would hand it to dsh-tui's own input box
+            const typed = dshTypedText(draft);
+            while (asks() && !request.signal.aborted && Date.now() < deadline) {
+              const read = await Promise.race([
+                paneRead({ paneId: body.pane_id, source: "detection" }),
+                Bun.sleep(Math.max(0, deadline - Date.now())).then(() => null),
+              ]);
+              if (!read || !asks() || request.signal.aborted || Date.now() >= deadline) return false;
+              const row = dshFreeTextRow(read.text, parsed, typed);
+              if (row !== "typing") return row === "typed";
+              await Bun.sleep(50);
+            }
+            return false;
+          }
           if (responder === "agy-question") {
             while (asks() && !request.signal.aborted && Date.now() < deadline) {
               const read = await Promise.race([
@@ -2212,9 +2233,8 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
             const move = step.keys?.every((key) => key === KEY.up || key === KEY.down || (sideways && (key === KEY.left || key === KEY.right))) ?? false;
             // the asking ended under the answer: no further key, whatever the screen shows
             if (!asks()) return promptChanged();
-            if ((responder === "fallback-gjc-menu" || responder === "pi-ask-question" || responder === "pi-questionnaire-question" || (responder === "agy-question" && agyWriteInOpened)) && body.custom_text !== undefined && committed) {
+            if ((responder === "fallback-gjc-menu" || responder === "pi-ask-question" || responder === "pi-questionnaire-question" || (responder === "agy-question" && agyWriteInOpened) || responder === "dsh-question") && body.custom_text !== undefined && committed) {
               if (!(await customEditorReady(customTyped ? body.custom_text.trim() : ""))) return promptChanged();
-              if (step.text !== undefined) customTyped = true;
             }
             // Letta's search goes in a key at a time, each only into the picker showing the search the keys before it left
             if (responder === "letta-model" && body.custom_text !== undefined && committed && !(await customEditorReady(lettaSearch))) return promptChanged();
@@ -2232,7 +2252,12 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
             if (key === null) return promptChanged();
             await sendStep(key, move, index < steps.length - 1);
             if (responder === "agy-question" && body.custom_text !== undefined && !move && key.keys?.includes(KEY.enter)) agyWriteInOpened = true;
-            if (key.text !== undefined) lettaSearch += key.text;
+            // from here the editor holds this answer's text (customEditorReady looks for it before the next key): dsh-tui's
+            // text is its answer's first key that cannot be undone, so no editor check came before it
+            if (key.text !== undefined) {
+              customTyped = true;
+              lettaSearch += key.text;
+            }
             for (const pressed of key.keys ?? []) if (pressed === KEY.backspace) lettaSearch = lettaSearch.slice(0, -1);
             if (move) {
               moved = true;

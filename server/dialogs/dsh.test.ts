@@ -5,9 +5,13 @@ import { join } from "node:path";
 import { answerKeys, parseInteractivePrompt } from "../prompt.ts";
 import { parsedByPublicPrompt } from "./shared.ts";
 import { registry } from "./registry.ts";
+import { dshFreeTextRow } from "./dsh.ts";
 
 // recorded from dsh-tui 0.20.0 in a 100x50 tmux pane (narrow: 52 columns), ask_user_question asked by dsh-deepseek-flash
 const screen = (name: string) => readFileSync(join(import.meta.dir, "..", "fixtures", `dsh-question-0.20.0-${name}.txt`), "utf8");
+/** The panel with the cursor moved down to its free-text row, as dsh-tui draws it there (the q1-custom fixture). */
+const onFreeText = (panel: string) => panel.replace(/❯([○◉])/, " $1").replace(" ✎ Custom answer： Type directly…", "❯✎ Custom answer：")
+  .replace(/↑\/↓ select[^]*?click the header/, "Type answer · Ctrl+V paste · Enter submit · ↑ back to options · Esc cancel · ←/→ at the text edge switches question · Ctrl+K to fold\n    / click the header");
 
 const HEADLESS = [
   { label: "Device + WebDriverAgent (Recommended)", description: "Uses iphone172 and the MacBook; no App Attest workaround, no ToS risk, durable." },
@@ -37,23 +41,51 @@ describe("DeepSeek Harness ask_user_question panel", () => {
   it("answers from wherever the cursor stands: moves, then Enter", () => {
     expect(answerKeys(parseInteractivePrompt("dsh-tui", screen("q1"))!, { option_index: 1 })).toEqual([{ keys: ["down"] }, { keys: ["enter"] }]);
     expect(answerKeys(parseInteractivePrompt("dsh-tui", screen("q1-down"))!, { option_index: 0 })).toEqual([{ keys: ["up"] }, { keys: ["enter"] }]);
-    expect(answerKeys(parseInteractivePrompt("dsh-tui", screen("q1-custom"))!, { option_index: 1 })).toEqual([{ keys: ["up"] }, { keys: ["enter"] }]);
+  });
+
+  it("has no card with the cursor on the free-text row and nothing ticked: a multiple choice draws there as a single choice does", () => {
+    expect(parseInteractivePrompt("dsh-tui", screen("q1-custom"))).toBeNull();
+    expect(parseInteractivePrompt("dsh-tui", onFreeText(screen("multi-q1")))).toBeNull();
+    // a tick says it is a multiple choice
+    expect(parseInteractivePrompt("dsh-tui", onFreeText(screen("multi-q1-checked")))).toMatchObject({ multi_select: true, default_option_indices: [0, 2] });
   });
 
   it("types a custom answer on the free-text row, never Enter first (it would only ask for text)", () => {
     expect(answerKeys(parseInteractivePrompt("dsh-tui", screen("q1"))!, { custom_text: "node --test" }))
       .toEqual([{ keys: ["down"] }, { keys: ["down"] }, { text: "node --test" }, { keys: ["enter"] }]);
-    expect(answerKeys(parseInteractivePrompt("dsh-tui", screen("q1-custom"))!, { custom_text: "a\nb" }))
-      .toEqual([{ text: "a b" }, { keys: ["enter"] }]);
+    expect(answerKeys(parseInteractivePrompt("dsh-tui", screen("q1-down"))!, { custom_text: "a\nb" }))
+      .toEqual([{ keys: ["down"] }, { text: "a b" }, { keys: ["enter"] }]);
   });
 
   it.each(["x\u001b[By", "x\u0003y", "\u001b", "a\rb", "a\tb"])("refuses a custom answer dsh would read as keys (%j) before any key", (text) => {
     expect(() => answerKeys(parseInteractivePrompt("dsh-tui", screen("q1"))!, { custom_text: text })).toThrow("control characters");
   });
 
+  it("reads a typed answer back from its row, the label squeezed into a column once the text wraps (recorded at 118 columns)", () => {
+    const card = parsedByPublicPrompt.get(parseInteractivePrompt("dsh-tui", screen("q1"))!)!;
+    const typed = "Use the device with WebDriverAgent first, then keep the staging API as a fallback for nightly runs when the phone is offline, and log both paths so we can compare flakiness over two weeks";
+    expect(dshFreeTextRow(screen("q1-typed-wrapped"), card, typed)).toBe("typed");
+    // more than the answer typed: someone else's words
+    expect(dshFreeTextRow(screen("q1-typed-wrapped"), card, typed.slice(0, 50))).toBeNull();
+    // the answer not all drawn yet
+    expect(dshFreeTextRow(screen("q1-typed-wrapped"), card, `${typed} too`)).toBe("typing");
+  });
+
   it("refuses the panel once text was typed into its free-text row in the terminal", () => {
-    const typed = screen("q1-custom").replace(/(✎ Custom answer：)\s*$/m, "$1node");
+    // typed on an option row: dsh-tui attaches that option's label to the text (recorded on 0.20.0)
+    const typed = screen("q1").replace("✎ Custom answer： Type directly…", "✎ Custom answer(attached: Device + WebDriverAgent (Recommended))：node▏");
     expect(parseInteractivePrompt("dsh-tui", typed)).toBeNull();
+  });
+
+  it("reads the panel as dsh-tui draws it in Chinese", () => {
+    const zh = screen("q1").replace("📋 Question 1/1 ", "📋 提问 · 第 1/1 题 ")
+      .replace("✎ Custom answer： Type directly…", "✎ 自定义回答： 直接输入…")
+      .replace(/↑\/↓ select[^]*?click the header/, "↑/↓ 选择 · Ctrl+V 粘贴 · 输入文字附带回答 · Enter 提交 · Esc 中断 · Ctrl+K 折叠 / 点标题行收起");
+    const prompt = parseInteractivePrompt("dsh-tui", zh)!;
+    expect(prompt).toMatchObject({ question: "Which headless approach should I build?", multi_select: false, options: HEADLESS, custom_option_index: 2 });
+    expect(answerKeys(prompt, { option_index: 1 })).toEqual([{ keys: ["down"] }, { keys: ["enter"] }]);
+    const multi = screen("multi-q1").replace(/↑\/↓ select[^]*?click the header/, "↑/↓ 选择 · Space 多选 · Enter 提交 · Esc 中断 · Ctrl+K 折叠 / 点标题行收起");
+    expect(parseInteractivePrompt("dsh-tui", multi)?.multi_select).toBe(true);
   });
 
   it("reads a multiple choice of a batch, its ticks and its question switch", () => {
@@ -84,5 +116,11 @@ describe("DeepSeek Harness ask_user_question panel", () => {
 
   it("is no card once the panel is answered and the conversation goes on under it", () => {
     expect(parseInteractivePrompt("dsh-tui", `${screen("q1")}\n  ● Answers received.\n  ╭────╮\n  ⌸ ❯\n  ╰────╯\n${"  more output\n".repeat(10)}`)).toBeNull();
+  });
+
+  it("is no card with anything but dsh-tui's own footer under the hint", () => {
+    const [panel, footer] = [screen("q1").split("\n").slice(0, 46), screen("q1").split("\n").slice(46)];
+    expect(parseInteractivePrompt("dsh-tui", [...panel, "  ● Done.", "  a", "  b", ...footer].join("\n"))).toBeNull();
+    expect(parseInteractivePrompt("dsh-tui", [...panel, "  ╭────╮", "  ⌸ ❯", "  ╰────╯", ...footer.slice(0, 2)].join("\n"))).toBeNull();
   });
 });
