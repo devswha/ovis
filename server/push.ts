@@ -249,7 +249,7 @@ export interface PushServiceOptions {
   /** whether a window of the app is in use right now: then no alert goes to any device (the test push still does) */
   inUse?: () => boolean;
   /** whether the pane's alerts are off for everyone (shared/notify-policy.ts paneAlertsMuted on the shared preferences) */
-  muted?: (machineId: string, paneId: string) => boolean;
+  muted?: (machineId: string, paneId: string, pane?: Pick<HerdrPane, "parent_pane_id">) => boolean;
   /** accept plain-http loopback endpoints: only for the tests' fake push service (push.fake.ts) */
   loopbackHttp?: boolean;
   /** The friend an agent pane wears (FriendStore.friendOf), named in its alert. */
@@ -853,7 +853,7 @@ export function createPushService(options: PushServiceOptions): PushService {
     waiting.delete(key);
   }
 
-  const muted = (machineId: string, paneId: string): boolean => options.muted?.(machineId, paneId) === true;
+  const muted = (machineId: string, paneId: string): boolean => options.muted?.(machineId, paneId, friends.pane(machineId, paneId)) === true;
   /** whether the subscription, as it is now, wants this kind of alert from this PC: asked again as an alert goes out */
   const wants = (subscription: PushSubscriptionRecord, kind: AlertKind, machineId: string): boolean => {
     const prefs = subscription.alerts ?? DEFAULT_ALERTS;

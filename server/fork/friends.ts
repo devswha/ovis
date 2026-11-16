@@ -20,6 +20,10 @@ export function forkAlertFriends(lookup?: FriendLookup) {
       const source = sources.get(machineId);
       return lookup?.(machineId, paneId, source ? [source] : []);
     },
+    /** the pane as last seen, for what its alert depends on: whether another agent started it (shared/fork/alerts.ts) */
+    pane(machineId: string, paneId: string): Pick<HerdrPane, "parent_pane_id"> | undefined {
+      return sources.get(machineId)?.snapshot?.panes.find((pane) => pane.pane_id === paneId);
+    },
   };
 }
 

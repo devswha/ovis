@@ -1561,7 +1561,7 @@ export function App() {
           {/* the mode's list is the screen on a phone; from 769px it is the column, and a pane with no thread says so */}
           {listScreen && modeList(false)}
           {inboxWide && inbox.shown && <InboxUnchosen />}
-          <ForkGithubPane wide={inboxWide} watching={auth?.role === "watch"} onOpened={(opened) => selectTarget("local", opened.pane_id)} />
+          <ForkGithubPane wide={inboxWide} watching={auth?.role === "watch"} onOpened={(opened) => selectTarget("local", opened.pane_id)} inMode={inMode} enter={enterInbox} />
           {dividers.length > 0 && !inMode && <SplitDividers dividers={dividers} areaRef={paneAreaRef} onResize={resizeDivider} />}
           <SplitDropPreview visible={!inMode && splitDragOn && (paneDragging || tabDrag !== null)} grid={gridPreview} />
         </div>}

@@ -22,6 +22,7 @@ export interface ForkSettings {
   pullRequests: boolean;
   inboxFooter: boolean;
   readAloud: boolean;
+  muteSubAgents: boolean;
 }
 
 export const FORK_DEFAULTS: ForkSettings = {
@@ -30,10 +31,13 @@ export const FORK_DEFAULTS: ForkSettings = {
   squareCorners: false, moreViewToggle: false, agentFriends: false,
   piModelPicker: false, chatMotion: false, piLiveVoice: false,
   computerView: false, pullRequests: false, inboxFooter: false, readAloud: false,
+  muteSubAgents: false,
 };
 
 export const FORK_SCOPE = {
   ...(Object.fromEntries(Object.keys(FORK_DEFAULTS).map((key) => [key, "device"])) as Record<keyof ForkSettings, "device">),
+  // the server's push alerts read it too (shared/fork/alerts.ts)
+  muteSubAgents: "shared",
 } as const;
 
 export function sanitizeForkSettings(record: Record<string, unknown>): ForkSettings {
@@ -59,7 +63,7 @@ export function migrateForkSettings(raw: unknown): unknown {
   // Once a new setting is explicit it always wins, including false and a reset to upstream defaults.
   return { phoneTabs: "header", ...keyBarDefaults, squareCorners: true, moreViewToggle: true,
     agentFriends: true, piModelPicker: true, chatMotion: true,
-    piLiveVoice: true, computerView: true, pullRequests: true, inboxFooter: true, readAloud: true, ...record };
+    piLiveVoice: true, computerView: true, pullRequests: true, inboxFooter: true, readAloud: true, muteSubAgents: true, ...record };
 }
 
 /** Kept apart from the main record: an older upstream tab must not erase fork choices on save. */

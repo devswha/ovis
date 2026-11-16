@@ -9,6 +9,7 @@ import type { SelectionMark } from "./selectionMark.ts";
 import { alertPcAllowed, shouldNotifyStatus, alertStatus, alertsAllow, paneAlertsMuted, showPaneEndedNotification, showPaneStatusNotification } from "./notifications.ts";
 import { paneFriend } from "./friends.ts";
 import { currentPaneMutes, subscribePaneMutes } from "./paneMutes.ts";
+import { helperAlertsMuted } from "../../shared/fork/alerts.ts";
 import type { NotificationTarget } from "./notificationTarget.ts";
 import { dropletAllows, endedTurn, seedStatuses, showDroplet, trackTurn, type DropletKind } from "./droplet.ts";
 import { canPlayAlertSound, playAlertSound, recheckAlertSounds, unlockAlertSound, type AlertSoundKind } from "./alertSound.ts";
@@ -43,6 +44,11 @@ export interface AlertSignalsParams {
 
 /** The in-app alert and the alert sound, and what the event stream does with a status change. */
 export function useAlertSignals({ settings, selectionRef, drawerOpenRef, splitRef, splitShownRef, machinesRef, alertsRef, alertsOnRef, pushOnRef, statusRef, turnStartRef, lastTurnRef, alertSoundRef }: AlertSignalsParams) {
+  // a pane on the mute list, or (fork) a sub-agent while sub-agents are muted, is told on no channel
+  const muteHelpersRef = useRef(settings.muteSubAgents);
+  muteHelpersRef.current = settings.muteSubAgents;
+  const paneMuted = useCallback((machineId: string, paneId: string, pane: HerdrPane | undefined): boolean =>
+    paneAlertsMuted(currentPaneMutes(), machineId, paneId) || helperAlertsMuted(muteHelpersRef.current, pane), []);
   // In-app alerts (components/Droplet.tsx): only while the app is on screen - a hidden app has
   // its system notifications - and never for the pane already open in front of the user.
   const dropIn = useCallback((machine: Machine, pane: HerdrPane, kind: DropletKind) => {
@@ -111,7 +117,7 @@ export function useAlertSignals({ settings, selectionRef, drawerOpenRef, splitRe
     const worked = trackTurn(turnStartRef.current, key, previous, status, Date.now());
     if (worked !== null) lastTurnRef.current.set(key, worked);
     // a muted pane (lib/paneMutes.ts), or one on a PC this device turned off, is tracked as every other, and told on no channel
-    const muted = paneAlertsMuted(currentPaneMutes(), machine.id, message.pane_id) || !alertPcAllowed(alertsRef.current, pcAlertKey(machine), machine.name);
+    const muted = paneMuted(machine.id, message.pane_id, pane) || !alertPcAllowed(alertsRef.current, pcAlertKey(machine), machine.name);
     if (pane && !muted && shouldNotifyStatus(previous, status) && dropletAllows(alertsRef.current, status, worked, pane.agent_kind)) {
       const kind = status === "blocked" ? "blocked" : "done";
       dropIn(machine, pane, kind);
@@ -123,11 +129,11 @@ export function useAlertSignals({ settings, selectionRef, drawerOpenRef, splitRe
     const pane = machine.snapshot?.panes.find((p) => p.pane_id === message.pane_id);
     const worked = endedTurn(turnStartRef.current, lastTurnRef.current, paneStorageId(machine.id, message.pane_id), Date.now());
     if (!alertPcAllowed(alertsRef.current, pcAlertKey(machine), machine.name)) return;
-    if (pane && !paneAlertsMuted(currentPaneMutes(), machine.id, message.pane_id) && dropletAllows(alertsRef.current, "done", worked)) {
+    if (pane && !paneMuted(machine.id, message.pane_id, pane) && dropletAllows(alertsRef.current, "done", worked)) {
       dropIn(machine, pane, "ended");
       chime(machine, pane, "done");
     }
-    if (message.type === "pane-exited" && alertsOnRef.current && !pushOnRef.current && alertsRef.current.done !== "off" && !paneAlertsMuted(currentPaneMutes(), machine.id, message.pane_id)) {
+    if (message.type === "pane-exited" && alertsOnRef.current && !pushOnRef.current && alertsRef.current.done !== "off" && !paneMuted(machine.id, message.pane_id, pane)) {
       const pane = machine.snapshot?.panes.find((p) => p.pane_id === message.pane_id);
       if (pane) showPaneEndedNotification(message.pane_id, `${machine.name} · ${alertPaneTitle(pane)}`, () => takeNotificationTargetRef.current({ machine_id: machine.id, pane_id: message.pane_id, view: "chat", workspace_id: pane.workspace_id }), machine.id, pane.workspace_id);
     }
