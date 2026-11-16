@@ -9,6 +9,7 @@ import * as runtime from "./herdr-core/runtime.ts";
 import * as shellAgent from "./shell-agent.ts";
 import { agentLaunch, dshEffortArgs } from "./agent-launch.ts";
 import { launchedAgents } from "./launched-agents.ts";
+import { requestIdContext, wordHerdrFailures } from "./http.ts";
 
 const ULTRACODE = JSON.stringify({ ultracode: true });
 const PANE = "agent-launch-test-pane";
@@ -238,5 +239,21 @@ describe("agentLaunch", () => {
       machine.mockRestore();
       typed.mockRestore();
     }
+  });
+});
+
+describe("a failed agent start's answer", () => {
+  it("is worded by the request's view of failed herdr calls, and is herdr's own pair without one", async () => {
+    const view = () => ({ code: "worded", message: "the view's words" });
+    const start = spyOn(herdr, "agentStart").mockImplementation(async () => { throw new herdr.HerdrError("agent_name_taken", "herdr's own words", true, true); });
+    try {
+      const plain = await agentLaunch(PANE, { kind: "claude", name: "claude-view-test" });
+      expect(plain).toEqual({ agent_started: false, error: { code: "agent_name_taken", message: "herdr's own words" } });
+      const worded = await requestIdContext.run({ id: "r", route: "" }, async () => {
+        wordHerdrFailures(view);
+        return agentLaunch(PANE, { kind: "claude", name: "claude-view-test" });
+      });
+      expect(worded).toEqual({ agent_started: false, error: view() });
+    } finally { start.mockRestore(); }
   });
 });

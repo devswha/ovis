@@ -8,7 +8,8 @@ import { files, read, stripComments } from "../scripts/source-scan.ts";
 import { FakeAccountService } from "../shared/account-service-fake.ts";
 import { unmanagedUpdateStatus } from "../shared/update.ts";
 import { createServer } from "./index.ts";
-import { herdrRpc, paneRead } from "./herdr/client.ts";
+import * as herdr from "./herdr/client.ts";
+import { HerdrError, herdrRpc, paneRead } from "./herdr/client.ts";
 import { harmlessGroups, trustRefusal } from "./herdr-core/discovery.ts";
 import { claimServerState, MachineProfileError } from "./machine-profile.ts";
 import { guardLibrary } from "./owner-guard.ts";
@@ -1214,6 +1215,19 @@ it.each(["refusing every call", "not listening"])("answers every failed herdr ca
     }
   }
 }, 180_000);
+
+it("answers a find herdr refused as stale with the code the app acts on, in its own words", async () => {
+  const { ordinary, stateDir } = pair({ token, tailscaleOwner: null });
+  const refused = { code: "stale_content", message: `herdr-own-${Math.random().toString(36).slice(2)}` };
+  const find = spyOn(herdr, "paneFind").mockImplementation(async () => { throw new HerdrError(refused.code, refused.message, true, true); });
+  cleanup.push(() => find.mockRestore());
+  const body = JSON.stringify({ pane_id: "w1:p1", query: "x", direction: "forward" });
+  const profile = await owner(stateDir, "/api/pane/find", { method: "POST", headers: { ...headers, origin: "http://localhost", "content-type": "application/json" }, body });
+  const own = await fetch(`http://127.0.0.1:${ordinary}/api/pane/find`, { method: "POST", headers: { ...headers, origin: `http://127.0.0.1:${ordinary}`, "content-type": "application/json" }, body });
+  const [mine, theirs] = [await profile.json(), await own.json()] as { error: { code: string; message: string } }[];
+  expect([profile.status, mine!.error.code, mine!.error.message === refused.message]).toEqual([409, "stale_content", false]);
+  expect([own.status, theirs!.error]).toEqual([409, refused]);
+});
 
 it("words a failed herdr call on its own answers only, when a profile and an ordinary server run in one process", async () => {
   const { ordinary, stateDir } = pair({ token, tailscaleOwner: null });

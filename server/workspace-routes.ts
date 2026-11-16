@@ -13,7 +13,7 @@ import type { MoveReceipt } from "./order-sequence.ts";
 import { agentFault, agentLaunch, type AgentPayload } from "./agent-launch.ts";
 import { createDirectory, expandedDirectory, listDirectories } from "./directories.ts";
 import { HerdrError, paneMoveToNewTab, sessionSnapshot, tabClose, tabCreate, tabMove, tabRename, workspaceClose, workspaceCreate, workspaceMove, workspaceRename, worktreeCreate, worktreeList, worktreeOpen, worktreeRemove } from "./herdr/client.ts";
-import { badRequest, conflictResponse, errorResponse, isJsonObject, jsonResponse, readJsonObject, setRequestRoute } from "./http.ts";
+import { badRequest, conflictResponse, errorResponse, herdrErrorBody, isJsonObject, jsonResponse, readJsonObject, setRequestRoute } from "./http.ts";
 import { paneContext } from "./pane-context.ts";
 import { PullRequestError, mergeInputOf, mergePullRequest, pullRequestLog, pullRequestView } from "./pull-request.ts";
 import { repoDiffResponse } from "./repo-diff.ts";
@@ -76,7 +76,7 @@ function envFault(env: unknown): string | null {
 }
 
 /** a create request's first message the bridge could not queue for the agent that did start: its own refusal */
-const notQueued = (error: unknown): { error: { code: string; message: string } } => ({ error: {
+const notQueued = (error: unknown): { error: { code: string; message: string } } => error instanceof HerdrError ? { error: herdrErrorBody(error) } : ({ error: {
   code: typeof (error as { code?: unknown } | null)?.code === "string" ? (error as { code: string }).code : "first_message_not_queued",
   message: error instanceof Error ? error.message : String(error),
 } });

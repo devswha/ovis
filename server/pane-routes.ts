@@ -9,7 +9,7 @@ import { mergeCatalogSources } from "./catalog-sources.ts";
 import { rememberPaneCommands, scanPaneCommands } from "./commands.ts";
 import { paneDocuments, paneFiles } from "./files.ts";
 import { FILE_POLICY } from "./file-view.ts";
-import { badRequest, conflictResponse, errorResponse, isCount, isJsonObject, jsonResponse, readJsonObject, requestIdContext, setRequestRoute } from "./http.ts";
+import { badRequest, conflictResponse, errorResponse, herdrErrorBody, isCount, isJsonObject, jsonResponse, readJsonObject, requestIdContext, setRequestRoute } from "./http.ts";
 import { conversationImage, ConversationReadPending, ConversationUnavailable, forgetPaneTranscriptState, HistoryChanged, paneConversation, paneProcessRoots, paneTranscript, toolOutput, type ConversationPage } from "./conversation.ts";
 import { copilotRecoverable, unavailableReason } from "./conversation-shared.ts";
 import { MAX_SEARCH_QUERY, searchPattern, type ConversationSearchResponse } from "../shared/conversation-search.ts";
@@ -259,7 +259,10 @@ export async function handlePaneRequest(request: Request, url: URL, pathname: st
         ...(payload.content_revision !== undefined ? { content_revision: payload.content_revision } : {}),
       }));
     } catch (error) {
-      if (error instanceof HerdrError && error.code === "stale_content") return conflictResponse(error.code, error.message);
+      if (error instanceof HerdrError && error.code === "stale_content") {
+        const { code, message } = herdrErrorBody(error);
+        return conflictResponse(code, message);
+      }
       return errorResponse(error);
     }
   }

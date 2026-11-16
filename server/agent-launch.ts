@@ -9,6 +9,7 @@ import { freeAgentName } from "./agent-name.ts";
 import { launchedAgents } from "./launched-agents.ts";
 import { isShellAgentKind, startShellAgent, type ShellAgentLocator } from "./shell-agent.ts";
 import { agentStart, HerdrError, sessionSnapshot } from "./herdr/client.ts";
+import { herdrErrorBody } from "./http.ts";
 import { agentStartArgs } from "./claude-settings-file.ts";
 import { DSH_EFFORTS, launchArgsFault } from "../shared/launch-rules.ts";
 import { hcMachine } from "./herdr-core/runtime.ts";
@@ -139,8 +140,8 @@ export async function agentLaunch(paneId: string, agent: AgentPayload, launched?
   } catch (error) {
     return {
       agent_started: false,
-      error: {
-        code: error instanceof HerdrError ? error.code : "agent_start_failed",
+      error: error instanceof HerdrError ? herdrErrorBody(error) : {
+        code: "agent_start_failed",
         message: error instanceof Error ? error.message : String(error),
       },
     };
