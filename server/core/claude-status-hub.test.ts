@@ -279,6 +279,18 @@ describe("a Claude pane whose turn ended on an API error", () => {
     expect(h.failures).toEqual([h.pane.pane_id]);
   });
 
+  it("tells no failure of a turn that wrote no prompt into a new session's transcript of entries copied with fresh stamps", async () => {
+    const h = await claudeHub(null);
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    // a session continued into a new file: its summary, then entries of the old one stamped anew, ending on its API error
+    const now = new Date().toISOString();
+    const summary = line({ type: "user", isCompactSummary: true, timestamp: now, message: { role: "user", content: "This session is being continued from a previous conversation." } });
+    writeFileSync(h.path, `${summary}${answer("Earlier")}${line({ ...JSON.parse(failedEntry) as object, timestamp: now })}`);
+    handlers.onStatus(h.pane.pane_id, "idle", "claude");
+    expect(h.last().status).toBe("done");
+    expect(h.failures).toEqual([]);
+  });
+
   it("tells nothing of a failure it never saw run: a pane found already at rest, after a restart", async () => {
     const h = await claudeHub(failed);
     handlers.onStatus(h.pane.pane_id, "idle", "claude");

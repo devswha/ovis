@@ -893,18 +893,31 @@ export function claudeLastTurnEnd(path: string, file: { size: number; exact: str
 }
 
 /**
- * When a Claude transcript began: the time of its first entry that carries one, within its first `headBytes`, read as
- * claudeLastTurnEnd reads (`file`: what `plain` found), or null while no such entry is written whole.
+ * When a Claude transcript a turn began began: the earlier of the time of its first entry that carries one and the time
+ * of its first entry that tells a turn (claudeTurnEnd), which must be a prompt, within its first `headBytes`, read as
+ * claudeLastTurnEnd reads (`file`: what `plain` found). null while no such prompt is written whole, or when that first
+ * entry is no prompt: a file that opens on an answer, a tool call or its result (entries a session continued into it
+ * copied, freshly stamped) holds a turn this one did not write.
  */
 export function claudeTranscriptStart(path: string, file: { size: number; exact: string }, headBytes = 64 * 1024): number | null {
   const head = readBytes(path, file.exact, 0, Math.min(file.size, headBytes))?.toString("utf8") ?? "";
-  for (const line of head.split("\n").slice(0, -1)) {
-    let entry: unknown;
-    try { entry = JSON.parse(line); } catch { return null; }
-    const at = typeof entry === "object" && entry !== null ? (entry as { timestamp?: unknown }).timestamp : undefined;
-    if (typeof at !== "string") continue;
-    const time = Date.parse(at);
+  const stamp = (value: unknown): number | null => {
+    const time = typeof value === "string" ? Date.parse(value) : Number.NaN;
     return Number.isNaN(time) ? null : time;
+  };
+  let first: number | null = null;
+  for (const line of head.split("\n").slice(0, -1)) {
+    let entry: (TranscriptEntry & { isSidechain?: unknown }) | null;
+    try { entry = JSON.parse(line) as typeof entry; } catch { return null; }
+    if (entry === null || typeof entry !== "object") continue;
+    first ??= stamp(entry.timestamp);
+    if (entry.isSidechain === true || entry.isMeta === true || entry.isCompactSummary === true) continue;
+    const content = entry.message?.content;
+    if (entry.type === "assistant") return null;
+    if (entry.type !== "user" || (typeof content === "string" && LOCAL_LINE_RE.test(content))) continue;
+    const result = Array.isArray(content) && content.some((block: unknown) => typeof block === "object" && block !== null && (block as { type?: unknown }).type === "tool_result");
+    const at = stamp(entry.timestamp);
+    return result || at === null ? null : Math.min(first ?? at, at);
   }
   return null;
 }
