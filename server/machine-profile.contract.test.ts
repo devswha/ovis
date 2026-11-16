@@ -1114,23 +1114,42 @@ it("starts an ordinary server whose hold cannot be taken for another reason, and
   expect(await refused(launch(dir, { HOME: scratch() }))).toContain("serve.own");
 });
 
-/** A herdr that answers ping and refuses every other method with `refusal`, counting the calls it refused. */
-function refusingHerdr(socket: string, refusal: { code: string; message: string }) {
+/**
+ * A herdr that answers ping, each method of `answers` with what its function gives (the call's params, and how many
+ * calls of that method came before), and refuses every other method with `refusal`, counting the calls it refused
+ * that a request made (not the status collector's own: its event stream and process lookups).
+ */
+function refusingHerdr(socket: string, refusal: { code: string; message: string }, answers: Record<string, (params: Record<string, unknown>, before: number) => unknown> = {}) {
   let calls = 0;
+  const asked = new Map<string, number>();
   const listener = Bun.listen<{ line: string }>({ unix: socket, socket: {
     open(client) { client.data = { line: "" }; },
     data(client, chunk) {
       client.data.line += chunk.toString();
       if (!client.data.line.includes("\n")) return;
-      const { id, method } = JSON.parse(client.data.line) as { id: string; method: string };
-      if (method !== "ping") calls++;
-      client.write(`${JSON.stringify(method === "ping" ? { id, result: { version: "fixture", protocol: 22 } } : { id, error: refusal })}\n`);
+      const { id, method, params } = JSON.parse(client.data.line) as { id: string; method: string; params: Record<string, unknown> };
+      const before = asked.get(method) ?? 0;
+      asked.set(method, before + 1);
+      const result = method === "ping" ? { version: "fixture", protocol: 22 } : answers[method]?.(params, before);
+      if (result === undefined && method !== "events.subscribe" && method !== "pane.process_info") calls++;
+      client.write(`${JSON.stringify(result === undefined ? { id, error: refusal } : { id, result })}\n`);
       client.end();
     },
   } });
   cleanup.push(() => listener.stop(true));
   return { calls: () => calls };
 }
+
+/** A pane of the walk's one tab (the ids it asks with), or of another tab. */
+const walkPane = (cwd: string, id: string, tab = "w1:t1") => ({ pane_id: id, workspace_id: "w1", tab_id: tab, terminal_id: `term-${id}`, focused: id === "w1:p1",
+  agent_status: "unknown", revision: 0, cwd });
+/** herdr's snapshot and pane reads answered, with the walk's ids, so that a route goes past its first look to the call after it. */
+const reads = (cwd: string): Record<string, () => unknown> => ({
+  "session.snapshot": () => ({ snapshot: { focused_pane_id: "w1:p1", workspaces: [{ workspace_id: "w1", label: "x", number: 1, focused: true, pane_count: 2, tab_count: 1,
+    active_tab_id: "w1:t1", agent_status: "unknown" }], tabs: [{ tab_id: "w1:t1", workspace_id: "w1", label: "1" }], panes: [walkPane(cwd, "w1:p1"), walkPane(cwd, "w1:p2")],
+    layouts: [{ tab_id: "w1:t1", zoomed: false, panes: [] }] } }),
+  "pane.get": () => ({ pane: walkPane(cwd, "w1:p1") }),
+});
 
 /** Every "/api/..." the shipped server code names: what the walk asks. A route is in it by being written. */
 function shippedRoutes(): string[] {
@@ -1179,30 +1198,33 @@ async function walk(ask: (path: string, init: RequestInit) => Promise<Response>,
 /** What the profile answers before any herdr call: refused, unknown, or not that method. */
 const answeredFirst = (answer: { status: number; code: string | null }) => answer.code === "machine_profile" || answer.code === "not_found" && answer.status === 404 || answer.code === "method_not_allowed" || answer.status === 405;
 
-it.each(["refusing every call", "not listening"])("answers every failed herdr call with its own words while herdr is %s", async (mode) => {
+it.each(["refusing every call", "answering only its snapshot and panes", "not listening"])("answers every failed herdr call with its own words while herdr is %s", async (mode) => {
   const dir = state();
   const config = herdrConfig();
   const socket = join(config, "herdr", "sessions", "a", "herdr.sock");
-  // herdr's own words in both the code and the message, or, with no herdr, the socket's path the client names
+  // the stand-in's marker, or with no herdr the client's own words
   const marker = `herdr-own-${Math.random().toString(36).slice(2)}`;
   let calls = () => 0;
-  if (mode === "refusing every call") {
+  if (mode !== "not listening") {
     mkdirSync(dirname(socket), { recursive: true, mode: 0o700 });
-    calls = refusingHerdr(socket, { code: marker, message: `${marker} at ${socket}` }).calls;
+    calls = refusingHerdr(socket, { code: marker, message: `${marker} at ${socket}` }, mode === "refusing every call" ? {} : reads(scratch())).calls;
   }
   const server = launch(dir, { XDG_CONFIG_HOME: config, HERDR_REMOTE_SOCKET: "", HERDR_REMOTE_SESSION: "a" });
   await bounded(server.ready, 20_000);
   const answers = await walk((path, init) => owner(dir, path, init), calls);
   const shown = answers.filter((answer) => [marker, socket, dirname(socket), realpathSync(dir)].some((text) => answer.text.includes(text) || answer.headers.includes(text)));
   expect(shown.map((answer) => `${answer.route} ${answer.status} ${answer.text.slice(0, 160)}`)).toEqual([]);
-  if (mode === "refusing every call") {
-    // every route the profile did not answer first called herdr: one the walk cannot take there is named here
-    expect(answers.filter((answer) => !answeredFirst(answer) && !answer.reached && !NOT_WALKED.test(answer.route)).map((answer) => `${answer.route} ${answer.status} ${answer.code}`)).toEqual([]);
+  if (mode !== "not listening") {
+    // every route the profile did not answer first called herdr: one the walk cannot take there is named here (with
+    // the snapshot answered, a route may answer from it, so this is asked of the walk that refuses every call)
+    if (mode === "refusing every call") {
+      expect(answers.filter((answer) => !answeredFirst(answer) && !answer.reached && !NOT_WALKED.test(answer.route)).map((answer) => `${answer.route} ${answer.status} ${answer.code}`)).toEqual([]);
+    }
     // the profile's own answer to the stand-in's refusal, wherever a route answers with it, is never stored
     const worded = answers.filter((each) => each.code === "herdr_error");
     expect(worded.length).toBeGreaterThan(0);
     for (const answer of worded) expect([answer.route, answer.headers]).toEqual([answer.route, expect.stringContaining("no-store")]);
-    // control: an ordinary server on the same herdr answers those routes with the same status and herdr's own pair, as before
+    // control: an ordinary server on the same herdr answers those routes with the same status and the stand-in's pair
     const ordinary = await bounded(launch(state(), { OVIS_PROFILE: "", OVIS_PREVIEW: undefined, HERDR_SOCKET: socket }).ready, 20_000);
     // GET /api/machines is the profile's own list, not the route an ordinary server answers it with
     for (const answer of worded.filter((each) => each.route !== "GET /api/machines")) {
@@ -1214,7 +1236,83 @@ it.each(["refusing every call", "not listening"])("answers every failed herdr ca
       expect([answer.route, response.status, body.error, response.headers.get("cache-control")]).toEqual([answer.route, answer.status, { code: marker, message: `${marker} at ${socket}` }, null]);
     }
   }
-}, 180_000);
+}, 240_000);
+
+/** The profile and an ordinary server on one stand-in herdr, and a POST to each. */
+async function bothOn(socket: string) {
+  const dir = state();
+  await bounded(launch(dir, { XDG_CONFIG_HOME: dirname(dirname(dirname(dirname(socket)))), HERDR_REMOTE_SOCKET: "", HERDR_REMOTE_SESSION: "a" }).ready, 20_000);
+  const ordinary = await bounded(launch(state(), { OVIS_PROFILE: "", OVIS_PREVIEW: undefined, HERDR_SOCKET: socket }).ready, 20_000);
+  const post = async (on: "profile" | "ordinary", path: string, body: object) => {
+    const init = { method: "POST", headers: { ...headers, origin: on === "profile" ? "http://localhost" : ordinary, "content-type": "application/json" }, body: JSON.stringify(body) };
+    const response = on === "profile" ? await owner(dir, path, init) : await fetch(`${ordinary}${path}`, init);
+    return { status: response.status, text: await response.text(), cache: response.headers.get("cache-control") };
+  };
+  return post;
+}
+
+it("answers a pane move herdr did not make with its own reason and words, and keeps a reason the app acts on", async () => {
+  const config = herdrConfig();
+  const socket = join(config, "herdr", "sessions", "a", "herdr.sock");
+  mkdirSync(dirname(socket), { recursive: true, mode: 0o700 });
+  const marker = `herdr-own-${Math.random().toString(36).slice(2)}`;
+  const cwd = scratch();
+  let script: "plain" | "swap" | "stray" = "plain";
+  let moves = 0;
+  const pane = (id: string, tab?: string) => walkPane(cwd, id, tab);
+  refusingHerdr(socket, { code: marker, message: `${marker} at ${socket}` }, {
+    ...reads(cwd),
+    "pane.move": () => {
+      moves++;
+      if (script === "plain") return { move_result: { changed: false, reason: marker, pane: pane("w1:p1") } };
+      if (script === "swap") return { move_result: { changed: true, pane: pane("w1:p1"), source_layout: { focused_pane_id: "w1:p2" } } };
+      // out of its tab, then herdr will not bring it back beside any pane
+      if (moves === 1) return { move_result: { changed: false, reason: "same_tab", pane: pane("w1:p1") } };
+      if (moves === 2) return { move_result: { changed: true, pane: pane("w1:p9", "w1:t9"), source_layout: { focused_pane_id: "w1:p2" } } };
+      return { move_result: { changed: false, reason: `${marker}-reason`, pane: pane("w1:p9", "w1:t9") } };
+    },
+  });
+  const post = await bothOn(socket);
+  const asks = { plain: { side: "right" }, swap: { side: "left" }, stray: { side: "right" } } as const;
+  for (const each of ["plain", "swap", "stray"] as const) {
+    const body = { pane_id: "w1:p1", target_pane_id: "w1:p2", ...asks[each] };
+    script = each; moves = 0;
+    const theirs = await post("ordinary", "/api/pane/move", body);
+    script = each; moves = 0;
+    const mine = await post("profile", "/api/pane/move", body);
+    expect([each, mine.text.includes(marker), mine.cache]).toEqual([each, false, "no-store"]);
+    expect([each, theirs.text.includes(marker), theirs.cache]).toEqual([each, true, null]);
+    if (each === "stray") {
+      // the same refusal, in the profile's words: the code the bridge made is kept
+      expect([mine.status, (JSON.parse(mine.text) as { error: { code: string } }).error.code]).toEqual([theirs.status, "pane_not_moved"]);
+    } else {
+      const [own, plain] = [JSON.parse(mine.text) as { reason: string }, JSON.parse(theirs.text) as { reason: string }];
+      expect([mine.status, own]).toEqual([200, { ...plain, reason: "herdr_error" }]);
+    }
+  }
+}, 60_000);
+
+it("keeps a layout reason the app acts on, and answers any other reason herdr gave with its own code", async () => {
+  const config = herdrConfig();
+  const socket = join(config, "herdr", "sessions", "a", "herdr.sock");
+  mkdirSync(dirname(socket), { recursive: true, mode: 0o700 });
+  const marker = `herdr-own-${Math.random().toString(36).slice(2)}`;
+  let reason = "no_neighbor";
+  const outcome = () => ({ changed: false, reason, focused_pane_id: "w1:p1", layout: { tab_id: "w1:t1", zoomed: false, panes: [] } });
+  refusingHerdr(socket, { code: marker, message: marker }, { ...reads(scratch()), "pane.swap": () => ({ swap: { ...outcome(), target_pane_id: null } }),
+    "pane.zoom": () => ({ zoom: { ...outcome(), zoomed: false } }), "pane.resize": () => ({ resize: outcome() }) });
+  const post = await bothOn(socket);
+  const routes = [["/api/pane/swap", { pane_id: "w1:p1", direction: "right" }], ["/api/pane/zoom", { pane_id: "w1:p1" }], ["/api/pane/resize", { pane_id: "w1:p1", direction: "right" }]] as const;
+  for (const given of ["no_neighbor", marker]) {
+    reason = given;
+    for (const [path, body] of routes) {
+      const [mine, theirs] = [await post("profile", path, body), await post("ordinary", path, body)];
+      const kept = given === marker ? "herdr_error" : given;
+      expect([path, mine.status, (JSON.parse(mine.text) as { reason: string }).reason, mine.cache]).toEqual([path, 200, kept, "no-store"]);
+      expect([path, theirs.status, (JSON.parse(theirs.text) as { reason: string }).reason, theirs.cache]).toEqual([path, 200, given, null]);
+    }
+  }
+}, 60_000);
 
 it("answers a find herdr refused as stale with the code the app acts on, in its own words", async () => {
   const { ordinary, stateDir } = pair({ token, tailscaleOwner: null });
@@ -1253,7 +1351,7 @@ function nextError(socket: WebSocket): Promise<{ code: string; message: string }
   return bounded(frame.promise, 15_000);
 }
 
-it("words a failed herdr call in its WebSocket frames, and an ordinary server's frames keep herdr's pair", async () => {
+it("words a failed herdr call in its WebSocket frames, and an ordinary server's frames are the stand-in's pair", async () => {
   const config = herdrConfig();
   const socket = join(config, "herdr", "sessions", "a", "herdr.sock");
   mkdirSync(dirname(socket), { recursive: true, mode: 0o700 });

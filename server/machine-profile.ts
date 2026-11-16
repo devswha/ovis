@@ -253,6 +253,15 @@ const READ_FAILED_CODE = "herdr_error";
 const KEPT_HERDR_CODES: ReadonlySet<string> = new Set(["pane_not_found", "stale_content", "agent_blocked", "agent_not_ready", "not_git_worktree", "invalid_request"]);
 
 /**
+ * Layout reasons the profile keeps in a move's, swap's, zoom's or resize's answer, each because the app acts on it or
+ * the bridge gives it itself: `same_pane`, `cross_tab`, `not_found` and `no_neighbor` (the app says which), and
+ * `zoomed_tab` and `unchanged` (the bridge's own answers for a move).
+ */
+const KEPT_LAYOUT_REASONS: ReadonlySet<string> = new Set(["same_pane", "cross_tab", "not_found", "no_neighbor", "zoomed_tab", "unchanged"]);
+/** A layout answer's reason on the profile: kept (KEPT_LAYOUT_REASONS), else READ_FAILED_CODE. */
+export const machineLayoutReason = (reason: string): string => KEPT_LAYOUT_REASONS.has(reason) ? reason : READ_FAILED_CODE;
+
+/**
  * The one place that words a failed call to herdr on the profile, for every answer and frame: its code when this
  * server's herdr client made it, or when it is a reply's code the app acts on (KEPT_HERDR_CODES), else
  * READ_FAILED_CODE; and as its message `reason` (health's, where a route has it), or READ_FAILED.

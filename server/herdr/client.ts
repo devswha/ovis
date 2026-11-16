@@ -1131,7 +1131,8 @@ export async function paneMoveBeside(paneId: string, targetPaneId: string, side:
         } catch (error) {
           return await strayed(out, failed(error));
         }
-        if (moved.changed === false) return await strayed(out, new HerdrError("pane_not_moved", `herdr answered ${moved.reason ?? "unchanged"}`));
+        // built from herdr's answer: a failed call, as one herdr refused
+        if (moved.changed === false) return await strayed(out, new HerdrError("pane_not_moved", `herdr answered ${moved.reason ?? "unchanged"}`, false, true));
       }
       if (moved.changed === false) return { changed: false, reason: moved.reason ?? null };
       const id = moved.pane.pane_id;

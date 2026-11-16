@@ -250,7 +250,7 @@ describe("a failed agent start's answer", () => {
       const plain = await agentLaunch(PANE, { kind: "claude", name: "claude-view-test" });
       expect(plain).toEqual({ agent_started: false, error: { code: "agent_name_taken", message: "herdr's own words" } });
       const worded = await requestIdContext.run({ id: "r", route: "" }, async () => {
-        wordHerdrFailures(view);
+        wordHerdrFailures(view, (reason) => reason);
         return agentLaunch(PANE, { kind: "claude", name: "claude-view-test" });
       });
       expect(worded).toEqual({ agent_started: false, error: view() });

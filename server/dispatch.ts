@@ -1,4 +1,4 @@
-import { machineFailure, machineHealth, machineReadError, machineRoster, machineRouteRestricted, machineTcpAnswer, machineUnauthorized } from "./machine-profile.ts";
+import { machineFailure, machineHealth, machineLayoutReason, machineReadError, machineRoster, machineRouteRestricted, machineTcpAnswer, machineUnauthorized } from "./machine-profile.ts";
 import { handleWorkspaceRequest } from "./workspace-routes.ts";
 import { handleAlertWebhookRequest } from "./alert-webhook.ts";
 import { connectionData, type createCore, type SocketData } from "./core/index.ts";
@@ -155,7 +155,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   const { sidecar, serialize, push, alertWebhook, logPushError, omo, claudeAgents, opencodeAgents, plans, clientSnapshot, machines, broadcastAll, collector, queueFirstMessage } = core;
   return requestLog.handle(request, async (headers) => {
   // the machine profile words every failed herdr call of this request itself (machineFailure)
-  if (options.profile === "machine") wordHerdrFailures(machineFailure);
+  if (options.profile === "machine") wordHerdrFailures(machineFailure, machineLayoutReason);
   const startup = portalStartupResult ?? await portalStartup;
   if (!startup.ok) {
     setRequestRoute("startup");

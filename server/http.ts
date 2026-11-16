@@ -13,12 +13,23 @@ import { FileBusyError } from "./file-pool.ts";
 import { HerdrError, herdrFault, type HerdrFailureView } from "./herdr/client.ts";
 
 /** The outer HTTP boundary also correlates errors caught inside route handlers. */
-export const requestIdContext = new AsyncLocalStorage<{ readonly id: string; route: string; herdrFailure?: HerdrFailureView }>();
+export const requestIdContext = new AsyncLocalStorage<{ readonly id: string; route: string; herdrFailure?: HerdrFailureView; herdrReason?: (reason: string) => string }>();
 
-/** For the rest of this request, a failed call to herdr is answered as `view` words it (the machine profile's). */
-export function wordHerdrFailures(view: HerdrFailureView): void {
+/**
+ * For the rest of this request, a failed call to herdr is answered as `view` words it, and a layout answer's reason as
+ * `reason` words it (the machine profile's).
+ */
+export function wordHerdrFailures(view: HerdrFailureView, reason: (reason: string) => string): void {
   const context = requestIdContext.getStore();
-  if (context !== undefined) context.herdrFailure = view;
+  if (context === undefined) return;
+  context.herdrFailure = view;
+  context.herdrReason = reason;
+}
+/** A layout answer, whose `reason` may be herdr's: never stored, its reason worded, inside a request that words them; else as it is. */
+export function layoutResponse<T extends { reason: string | null }>(body: T): Response {
+  const word = requestIdContext.getStore()?.herdrReason;
+  if (word === undefined) return jsonResponse(body);
+  return jsonResponse({ ...body, reason: body.reason === null ? null : word(body.reason) }, 200, { "cache-control": "no-store" });
 }
 /** The code and message this request answers for a HerdrError: the error's own, unless this request words failed calls. */
 export const herdrErrorBody = (error: HerdrError): { code: string; message: string } => herdrFault(error, requestIdContext.getStore()?.herdrFailure);
