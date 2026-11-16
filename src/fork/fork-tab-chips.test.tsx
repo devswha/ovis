@@ -11,7 +11,7 @@ afterEach(async () => { await act(async () => renderer?.unmount()); renderer = u
 
 it("uses role chips, not repeated friends, and opens the child's pane", async () => {
   let selected = "";
-  await act(async () => { renderer = create(<ForkTabChips tabs={tabs} paneFor={(tab) => panes.find((pane) => pane.tab_id === tab.tab_id)} nameOf={(tab) => tab.label} selectedTab="review" onSelect={(id) => { selected = id; }} onMenu={() => {}} statusMark={() => <span data-status="working" />} />); });
+  await act(async () => { renderer = create(<ForkTabChips tabs={tabs} paneFor={(tab) => panes.find((pane) => pane.tab_id === tab.tab_id)} nameOf={(tab) => tab.label} selectedTab="review" onSelect={(id) => { selected = id; }} onMenu={() => {}} status={() => "working"} />); });
   const buttons = renderer!.root.findAllByType("button");
   expect(buttons.map((button) => button.props["aria-label"])).toEqual(tabs.map((tab) => tab.label));
   expect(buttons.map((button) => button.props.title)).toEqual(tabs.map((tab) => tab.label));
@@ -25,7 +25,7 @@ it("uses role chips, not repeated friends, and opens the child's pane", async ()
 });
 
 it("keeps overflow chips reachable by the More menu's arrow keys", async () => {
-  await act(async () => { renderer = create(<ForkTabChips tabs={[tabs[0]!]} paneFor={() => panes[0]} nameOf={(tab) => tab.label} selectedTab="implement" onSelect={() => {}} onMenu={() => {}} sheet popup="menu" statusMark={() => null} />); });
+  await act(async () => { renderer = create(<ForkTabChips tabs={[tabs[0]!]} paneFor={() => panes[0]} nameOf={(tab) => tab.label} selectedTab="implement" onSelect={() => {}} onMenu={() => {}} sheet popup="menu" status={() => null} />); });
   const chip = renderer!.root.findByType("button");
   expect(chip.props.role).toBe("menuitemcheckbox");
   expect(chip.props["aria-checked"]).toBe(true);
@@ -34,7 +34,7 @@ it("keeps overflow chips reachable by the More menu's arrow keys", async () => {
 
 it("offers sibling moves by keyboard without selecting the child", async () => {
   const actions: unknown[] = [];
-  await act(async () => { renderer = create(<ForkTabChips tabs={tabs} paneFor={(tab) => panes.find((pane) => pane.tab_id === tab.tab_id)} nameOf={(tab) => tab.label} selectedTab="parent" onSelect={() => actions.push("select")} onMenu={() => {}} onMove={(id, direction) => actions.push([id, direction])} statusMark={() => null} />); });
+  await act(async () => { renderer = create(<ForkTabChips tabs={tabs} paneFor={(tab) => panes.find((pane) => pane.tab_id === tab.tab_id)} nameOf={(tab) => tab.label} selectedTab="parent" onSelect={() => actions.push("select")} onMenu={() => {}} onMove={(id, direction) => actions.push([id, direction])} status={() => null} />); });
   const [first] = renderer!.root.findAllByType("button");
   const event = { key: "ArrowRight", altKey: true, shiftKey: true, repeat: false, preventDefault() {}, stopPropagation() {} };
   await act(async () => first!.props.onKeyDown(event));
@@ -43,7 +43,7 @@ it("offers sibling moves by keyboard without selecting the child", async () => {
 
 it("keeps close, rename and a contextual menu on chips, also in a phone sheet", async () => {
   const actions: string[] = [];
-  await act(async () => { renderer = create(<ForkTabChips tabs={[tabs[0]!]} paneFor={() => panes[0]} nameOf={(tab) => tab.label} selectedTab="implement" onSelect={() => actions.push("select")} onMenu={() => actions.push("menu")} onClose={() => actions.push("close")} onRename={() => actions.push("rename")} onDismiss={() => actions.push("dismiss")} sheet popup="dialog" statusMark={() => null} />); });
+  await act(async () => { renderer = create(<ForkTabChips tabs={[tabs[0]!]} paneFor={() => panes[0]} nameOf={(tab) => tab.label} selectedTab="implement" onSelect={() => actions.push("select")} onMenu={() => actions.push("menu")} onClose={() => actions.push("close")} onRename={() => actions.push("rename")} onDismiss={() => actions.push("dismiss")} sheet popup="dialog" status={() => null} />); });
   const chip = renderer!.root.findByType("button");
   expect(chip.props.className).toContain("row-sheet-aside");
   expect(chip.props["aria-pressed"]).toBe(true);

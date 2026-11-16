@@ -34,6 +34,7 @@ import { AgentFriend } from "./AgentFriend.tsx";
 import type { Friend } from "../../shared/friends.ts";
 import { friendKey } from "../../shared/friends.ts";
 import { useFriends } from "../lib/friends.ts";
+import { ForkRoleBadge } from "../fork/AgentRole.tsx";
 import { RowMenu } from "./RowMenu.tsx";
 import { BackgroundBadge, compactWorktreeName, ContextBadge, displayPaneTitle, onRowContextMenu, PlanBadge, StatusBadge } from "./Sidebar.tsx";
 import "./AgentSidebar.css";
@@ -70,6 +71,8 @@ interface AgentRowBodyProps {
   progress?: number;
   /** a helper under the agent that started it: one line, its place and plugin values left to the tooltip */
   helper?: boolean;
+  /** a job agent's role (fork: its badge on the mark) */
+  role?: HerdrPane["agent_role"];
   /** how long the agent has been in its state (lib/agentStateSince.ts), dim before its state; null where this device did not see that state begin */
   since?: string | null;
 }
@@ -106,11 +109,11 @@ export function blockedLabel(pane: Pick<HerdrPane, "agent_kind" | "agent_message
  * One agent in a list: the coding agent's mark, what it is working on, who and where it is, what
  * its plugins report, and how it is doing.
  */
-function AgentRowBody({ mark, friend, markKind, title, name, context, tokens, backgroundTasks, plan, paneContext, status, note = null, muted, locked = false, blockedNote: blocked = null, blockedLabel: blockedShort = null, progress, helper = false, since = null }: AgentRowBodyProps) {
+function AgentRowBody({ mark, friend, markKind, title, name, context, tokens, backgroundTasks, plan, paneContext, status, note = null, muted, locked = false, blockedNote: blocked = null, blockedLabel: blockedShort = null, progress, helper = false, since = null, role }: AgentRowBodyProps) {
   const t = useT();
   const showProgress = progress !== undefined && (status === "working" || status === "blocked");
   return <>
-    <span className="sidebar-mark" aria-hidden="true">{mark === null ? <Terminal /> : friend ? <AgentFriend friend={friend} status={status} /> : <AgentMark agent={mark} size={18} />}</span>
+    <span className="sidebar-mark" aria-hidden="true">{mark === null ? <Terminal /> : friend ? <AgentFriend friend={friend} status={status} /> : <AgentMark agent={mark} size={18} />}<ForkRoleBadge role={role} /></span>
     <span className="agent-copy">
       {markKind && <span className="visually-hidden">{markKind}: </span>}
       <span className="agent-main">
@@ -713,7 +716,7 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
         }}>
         {missingContext && <span className="visually-hidden">{missingContext} · </span>}
         {/* a saved roster's state is not news: a PC that is away says nothing about its agents */}
-        <AgentRowBody mark={mark} friend={friends[friendKey(machine.id, entry.pane.pane_id)]} markKind={markKind} title={title} name={name} context={context} tokens={tokens} backgroundTasks={online ? pane.background_tasks : 0} plan={online ? pane.plan : undefined} paneContext={online && settings.sidebarContext ? pane.context : undefined} status={status} note={filterContext && selected ? t("Selected") : null} muted={muted?.includes(paneMuteKey(machine.id, pane.pane_id)) === true} locked={locked.has(pinKey)} blockedNote={blocked} blockedLabel={blockedShort} progress={online ? pane.agent_progress : undefined} helper={depth > 0} since={since} />
+        <AgentRowBody mark={mark} friend={friends[friendKey(machine.id, entry.pane.pane_id)]} markKind={markKind} title={title} name={name} context={context} tokens={tokens} backgroundTasks={online ? pane.background_tasks : 0} plan={online ? pane.plan : undefined} paneContext={online && settings.sidebarContext ? pane.context : undefined} status={status} note={filterContext && selected ? t("Selected") : null} muted={muted?.includes(paneMuteKey(machine.id, pane.pane_id)) === true} locked={locked.has(pinKey)} blockedNote={blocked} blockedLabel={blockedShort} progress={online ? pane.agent_progress : undefined} helper={depth > 0} since={since} role={pane.agent_role} />
       </button>
       <div className="agent-actions">
         <button type="button" className="sidebar-row-action row-menu-toggle" aria-label={t("More for {title}", { title })} aria-haspopup={sheet ? "dialog" : "menu"} aria-expanded={menuOpen} onClick={(event) => toggleMenu(event.currentTarget)}>
