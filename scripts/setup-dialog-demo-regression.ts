@@ -586,12 +586,25 @@ try {
     await dialog.getByRole("heading", { name: "Pick an agent", exact: true }).waitFor();
     await dialog.locator(".setup-found .setup-tile").first().waitFor();
     const settingsBefore = await page.evaluate(() => localStorage.getItem("ovis:settings"));
+    // the sign-ins are not known before the usage read: nothing is said about them
+    assert.equal(await dialog.getByText(/needs a sign-in/).count(), 0, "no sign-in line while the sign-ins are unknown");
     await dialog.locator(".setup-foot").getByRole("button", { name: "Set up later", exact: true }).click();
     await dialog.waitFor({ state: "detached" });
     await settled(page);
     const sent = await page.evaluate(() => (window as unknown as { sent: string[] }).sent);
     assert.deepEqual(sent.filter((request) => request === "GET /api/usage" || request.startsWith("PUT /api/preferences") || request.startsWith("POST /api/preferences")), [], `opening the guide and Set up later read no usage and write no shared setting: ${sent.join(", ")}`);
     assert.equal(await page.evaluate(() => localStorage.getItem("ovis:settings")), settingsBefore, "Set up later leaves this browser's settings byte for byte as they were");
+    // reopened from Setup: N left without Continue ever pressed (it opens at a later step), and after a reload there:
+    // still no usage read
+    await page.locator(".setup-row .setup-row-open").click();
+    await dialog.waitFor();
+    await settled(page);
+    assert.equal((await page.evaluate(() => (window as unknown as { sent: string[] }).sent)).includes("GET /api/usage"), false, "a guide reopened without Continue reads no usage");
+    await page.reload();
+    await dialog.waitFor();
+    await settled(page);
+    const reopened = await page.evaluate(() => (window as unknown as { sent: string[] }).sent);
+    assert.equal(reopened.includes("GET /api/usage"), false, `a guide reopened without Continue reads no usage, nor after a reload: ${reopened.join(", ")}`);
     // the user's own press on the agent step: Continue reads the plan usage
     await page.evaluate((guide) => { localStorage.setItem("ovis:setup-guide", guide); (window as unknown as { sent: string[] }).sent.length = 0; }, WELCOME);
     await page.reload();
@@ -672,6 +685,12 @@ try {
     assert.equal(await coded.count(), 0, "a code that ran out leaves the QR code");
     await side.getByRole("button", { name: "New code", exact: true }).click();
     await coded.waitFor();
+    // a store's QR code uses no pairing code: the way under it keeps its own
+    await side.getByRole("button", { name: "Download on the App Store" }).click();
+    await side.getByRole("img", { name: /^QR code that opens App Store/ }).waitFor();
+    await side.getByRole("tab", { name: /Tailscale/ }).click();
+    await coded.waitFor();
+    assert.equal(await side.getByRole("button", { name: "New code", exact: true }).count(), 0, "a store badge leaves the way's code as it was");
     // the PC keeps one pairing code: another way's tab (here Anywhere's) may replace it, so a way left drops its code,
     // and back in view it shows New code, never a code the PC no longer takes
     await coded.waitFor();

@@ -40,6 +40,7 @@ import { agentRows, checkList, foundAgents, installedHere, phoneBoxMode, phoneBo
 import { focusInOtherModal, nativeModalOver, useFocusTrap } from "../lib/useFocusTrap.ts";
 import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import { inRelayShell, useRelay, type RelayState } from "../lib/useRelay.ts";
+import { browserStorage, USAGE_ARMED_KEY } from "../lib/firstHints.ts";
 import { useOtherDevice, useSignedInUsage } from "../lib/useSetupGuide.ts";
 import { userErrorMessage, userFailure } from "../lib/userError.ts";
 import { AgentMark } from "./AgentMark.tsx";
@@ -350,15 +351,18 @@ function Steps({ page, setPage, onEnableAlerts, notifications, settingsOpen = fa
   // the agents already signed in here: their plan usage is turned on as soon as they are seen, without a question
   // plan usage: nothing is read from the PC's sign-ins, nor turned on, before the user's own press on the agent step
   // (Continue), as main waited for I'm new to Ovis; Set up later from the first step reads nothing
-  const [usageArmed, setUsageArmed] = useState(page !== "agent");
-  useEffect(() => { if (page !== "agent") setUsageArmed(true); }, [page]);
+  const [usageArmed, setUsageArmed] = useState(() => browserStorage()?.getItem(USAGE_ARMED_KEY) === "1");
+  const armUsage = (): void => {
+    setUsageArmed(true);
+    try { browserStorage()?.setItem(USAGE_ARMED_KEY, "1"); } catch { /* not kept: the next press arms it again */ }
+  };
   const signedIn = useSignedInUsage(ready, (refresh) => fetchUsage(refresh).then((report) => signedInAgents(report.providers)), settings.showUsage || !usageOn, () => update({ showUsage: true }), usageArmed);
   // Claude Code and Codex, installed here and not signed in yet: signed in from the guide, in the browser
   // (UsageSignInDialog). Accounts are read on the server's PC, so only its own guide offers it, and a
   // watching device signs in to nothing
   // signed in from here: the usage read that would say so may not come again while the guide is open
   const [signedHere, setSignedHere] = useState<readonly string[]>([]);
-  const unsigned = machineId === "local" && auth?.role !== "watch" ? installed.filter((agent) => (agent.id === "claude" || agent.id === "codex") && !signedIn.includes(agent.id) && !signedHere.includes(agent.id)) : [];
+  const unsigned = machineId === "local" && auth?.role !== "watch" && signedIn !== null ? installed.filter((agent) => (agent.id === "claude" || agent.id === "codex") && !signedIn.includes(agent.id) && !signedHere.includes(agent.id)) : [];
   const [signingIn, setSigningIn] = useState<{ provider: "claude" | "codex"; default: true } | null>(null);
   // the tiles whose install runs: Look again waits for them (a fresh read would end their watch);
   // Start does not: an install runs on in its tab whatever the guide does
@@ -458,7 +462,7 @@ function Steps({ page, setPage, onEnableAlerts, notifications, settingsOpen = fa
   const uncheckable = useLongerThan(alerts === "checking", ALERTS_CHECK_GIVE_UP_MS);
   const alertsDone = alertsSurfaces(alerts).done;
   const alertsSummary = alertsDone === "done" && alertKinds.length > 0 ? alertKinds.join(", ") : null;
-  const usageNote = signedIn.length > 0 && (settings.showUsage || usageOn) && <p className="setup-note"><Gauge aria-hidden="true" />{t("Your plan usage shows in the sidebar.")}</p>;
+  const usageNote = signedIn !== null && signedIn.length > 0 && (settings.showUsage || usageOn) && <p className="setup-note"><Gauge aria-hidden="true" />{t("Your plan usage shows in the sidebar.")}</p>;
   const errorLine = error !== null && <p className="setup-error" role="alert">{error}</p>;
   const signInDialog = signingIn && <UsageSignInDialog request={signingIn} onOpenTerminal={(paneId) => { setSigningIn(null); onOpenTerminal(paneId); }} onSignedIn={() => setSignedHere((done) => [...done, signingIn.provider])} onClose={() => setSigningIn(null)} />;
 
@@ -594,7 +598,7 @@ function Steps({ page, setPage, onEnableAlerts, notifications, settingsOpen = fa
         <button type="button" className="btn btn-ghost setup-later" title={t("Reopen it in Settings → Agents.")} onClick={onClose}>{t("Set up later")}</button>
         {madeWithout !== null
           ? <button type="button" className="btn btn-primary" onClick={() => void start()}><Play aria-hidden="true" />{t("Open the workspace")}</button>
-          : <button type="button" className="btn btn-primary" disabled={chosen === null || locked || busy} onClick={() => setPage("theme")}>{t("Continue")}<ArrowRight aria-hidden="true" /></button>}
+          : <button type="button" className="btn btn-primary" disabled={chosen === null || locked || busy} onClick={() => { armUsage(); setPage("theme"); }}>{t("Continue")}<ArrowRight aria-hidden="true" /></button>}
       </footer>
       {signInDialog}
     </>
@@ -1028,7 +1032,19 @@ function PhoneQr({ auth, onOpenSettings, onPaired, onPhonePaired, given, large =
   const [agreed, setAgreed] = useState(false);
   // hidden behind another way's tab: the PC keeps one pairing code at a time, and that way (or Settings) may replace
   // this one, so its code goes, and its device check with it; back in view, New code asks for one on a press
-  useEffect(() => { if (!shown) setCode(null); }, [shown]);
+  // a phone that paired while it was hidden is said once it is shown again (one read of the devices)
+  const dropped = useRef(false);
+  useEffect(() => {
+    if (!shown) { if (code !== null) dropped.current = true; setCode(null); return; }
+    if (!dropped.current) return;
+    dropped.current = false;
+    let live = true;
+    fetchDevices().then((devices) => {
+      const fresh = devices.find((device) => !(before.current?.has(device.id) ?? true));
+      if (live && fresh !== undefined) { setPaired(fresh.label); onPhonePaired(fresh.label); }
+    }, () => { /* unknown: New code stays offered */ });
+    return () => { live = false; };
+  }, [shown]); // eslint-disable-line react-hooks/exhaustive-deps
   const ready = mode === "qr" || (mode === "pair-self" && (!large || pairedHere || agreed));
   // the devices paired before this code: a new id among them later is the phone that used it
   const before = useRef<ReadonlySet<string> | null>(null);
@@ -1247,7 +1263,9 @@ function TailscaleMethod(props: MethodProps & { shown?: boolean }) {
     return () => { live = false; };
   }, []);
   if (access === undefined) return <p className="setup-muted"><LoaderCircle aria-hidden="true" className="setup-spin" /></p>;
-  const plan = phonePlan({ protocol: window.location.protocol, hostname: window.location.hostname, origin: window.location.origin, secure: window.isSecureContext, shell: inRelayShell() }, access);
+  // Tailscale's own address, never the page's: `shell: true` skips phonePlan's "this page itself" answer (an HTTPS page,
+  // the relay app), which Settings → Phone gives and this tab must not
+  const plan = phonePlan({ protocol: window.location.protocol, hostname: window.location.hostname, origin: window.location.origin, secure: window.isSecureContext, shell: true }, access);
   if (plan.kind === "here" || plan.kind === "served") return <PhoneQr given={plan.url} large shown={props.shown ?? true} auth={props.auth} onOpenSettings={props.onOpenSettings} onPaired={props.onPaired} onPhonePaired={props.onPhonePaired} />;
   if (plan.kind === "command") return (
     <div className="setup-method-step">
@@ -1335,7 +1353,7 @@ function PhonePanel(props: MethodProps) {
         <div id="setup-path-panel" role="tabpanel" aria-labelledby={`setup-path-tab-${method}`} className="setup-method-area" ref={area}>
           {store !== null && <StoreQr store={store} />}
           {/* a way once opened stays mounted while hidden: going back to it asks for no new code (one only on New code) */}
-          {opened.map((way) => <div key={way} hidden={store !== null || way !== method}><MethodPanel method={way} shown={store === null && way === method} {...props} /></div>)}
+          {opened.map((way) => <div key={way} hidden={store !== null || way !== method}><MethodPanel method={way} shown={way === method} {...props} /></div>)}
         </div>
       </li>
     </ol>

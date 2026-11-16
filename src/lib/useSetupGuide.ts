@@ -147,8 +147,9 @@ export function useSetupGuide({ enabled, workspaces, pairingGate, watching }: Se
  * them afresh. Closing the guide stops it: no retry reads again, and no late answer turns usage on
  * over a choice made since in Settings.
  */
-export function useSignedInUsage(ready: readonly string[], read: (refresh: boolean) => Promise<readonly string[]>, showing: boolean, turnOn: () => void, enabled = true): readonly string[] {
-  const [signedIn, setSignedIn] = useState<readonly string[]>([]);
+export function useSignedInUsage(ready: readonly string[], read: (refresh: boolean) => Promise<readonly string[]>, showing: boolean, turnOn: () => void, enabled = true): readonly string[] | null {
+  // null until a read answers: the sign-ins are not known, and nothing may be said about them
+  const [signedIn, setSignedIn] = useState<readonly string[] | null>(null);
   const shown = useRef(showing);
   shown.current = showing;
   const readyKey = ready.join(",");
