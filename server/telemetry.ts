@@ -390,6 +390,8 @@ export class Telemetry {
   private countsAbort?: AbortController;
   /** how deep this server is in a lock section: one inside another takes no second lock, so a server never waits on itself */
   private lockDepth = 0;
+  /** the stamp written into the lock this server holds now, or null outside a section */
+  private lockStamp: string | null = null;
   /** the one flush armed for the end of COUNTS_SETTLE_MS, when a day has ended but is still settling */
   private countsTimer?: Timer;
   private readonly file: string;
@@ -496,6 +498,17 @@ export class Telemetry {
     }
     const temp = `${this.file}.${process.pid}.tmp`;
     writeFileSync(temp, JSON.stringify(this.saved), { mode: 0o600 });
+    // inside a section, right before the rename: a lock that no longer holds this section's stamp was taken over (this
+    // server stalled past LOCK_MAX_HOLD_MS), so another server may have written since, and this state is not put back
+    if (this.lockStamp !== null) {
+      let still = false;
+      try { still = readFileSync(join(this.options.stateDir, LOCK_FILE), "utf8") === this.lockStamp; } catch { /* gone */ }
+      if (!still) {
+        rmSync(temp, { force: true });
+        console.error(`telemetry: ${this.file} was not written: this server's lock was taken over while it held it`);
+        return;
+      }
+    }
     renameSync(temp, this.file);
     this.writable = true;
   }
@@ -841,8 +854,10 @@ export class Telemetry {
       }
     }
     this.lockDepth = 1;
+    this.lockStamp = stamp;
     try { return section(); } finally {
       this.lockDepth = 0;
+      this.lockStamp = null;
       heldLocks.delete(lock);
       // only the lock this section took: one another server took over since is not this one's to remove
       try { if (readFileSync(lock, "utf8") === stamp) rmSync(lock, { force: true }); } catch { /* gone already */ }

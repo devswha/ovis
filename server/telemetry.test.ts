@@ -859,6 +859,26 @@ describe("daily active message", () => {
     rmSync(file);
   });
 
+  test("a section whose lock was taken over while it held it writes nothing back", async () => {
+    const { telemetry, stateDir } = setup({ grace: 600_000 });
+    seen(telemetry);
+    await telemetry.active(["claude"]);
+    const file = join(stateDir, "telemetry.lock");
+    const errors = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      // stalled past the take-over: another server took the lock and turned the counts off and on meanwhile
+      (telemetry as unknown as { locked<T>(section: () => T, busy: () => T): T }).locked(() => {
+        writeFileSync(file, `${process.ppid} ${Date.now()} other`);
+        setup({ stateDir }).telemetry.change({ enabled: false });
+        rmSync(join(stateDir, "telemetry-off"), { force: true });
+        writeFileSync(join(stateDir, "telemetry.json"), JSON.stringify({ ...savedFile(stateDir), enabled: true }));
+        telemetry.tally("prompt_answers");
+      }, () => undefined);
+    } finally { errors.mockRestore(); }
+    expect(savedFile(stateDir)).toMatchObject({ active: [], forgotten: 1 });
+    rmSync(file);
+  });
+
   test("a server never waits on its own lock and leaves none behind", async () => {
     const { telemetry, stateDir } = setup({ grace: 600_000 });
     const errors = spyOn(console, "error").mockImplementation(() => {});
