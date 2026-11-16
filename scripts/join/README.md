@@ -121,9 +121,10 @@ of the kit's server, the one process the join starts and then signals by its pid
 while that pid is still the kit's server in the temporary folder, of this account, with the command line
 `<that program> serve` (a pid freed when it ended may belong to another process by then). Every end of that check is
 bounded: TERM, up to 5 s, KILL, then up to 2 s for it to end. A check that still runs then is named with its pid, and
-whether it was signalled, and the join stops (exit 14) instead of waiting on it; a server that never answers the check
-is stopped that way and refused (exit 24). Whether it still runs is read from `/proc`, so a machine without `ps` is no
-different.
+with what it was sent (TERM, TERM and KILL, or nothing), and the join stops (exit 14) instead of waiting on it; a
+server that never answers the check is stopped that way and refused (exit 24). Whether it still runs is read from
+`/proc`, so a machine without `ps` is no different. The programs copied into the trial folder are checked against the
+kit's copies by SHA-256, so a machine without `cmp` (no diffutils) is no different either.
 
 The port: a port another program already listens on is refused (exit 14), on a run again once the previous trial
 server is stopped, and a health answer counts only when the program listening on the port is the trial's own

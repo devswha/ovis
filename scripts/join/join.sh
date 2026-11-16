@@ -816,17 +816,18 @@ j_probe_running() {
 # probe just started to become the kit's server (env execs it); then, only while it is the probe (j_probe_is), TERM, up
 # to 5 s for it to end (it may ignore TERM), and KILL, which it cannot; then up to 2 s for it to end. Only an ended child
 # is waited for, so the join never hangs on it. False, with nothing waited for, when a child of this shell still runs
-# then (one that is not the probe is never signalled; j_signalled says whether it was); true once it has ended
+# then (one that is not the probe is never signalled; j_signalled names what it was sent: TERM, TERM and KILL, or
+# nothing); true once it has ended
 j_probe_stop() {
   j_i=0
   j_signalled=""
   while ! j_probe_is && j_probe_running && [ "$j_i" -lt 5 ]; do j_pause 0.2; j_i=$((j_i + 1)); done
   if j_probe_is; then
-    j_signalled=1
+    j_signalled=TERM
     kill -TERM "$probe" 2>/dev/null
     j_i=0
     while j_probe_is && [ "$j_i" -lt 25 ]; do j_pause 0.2; j_i=$((j_i + 1)); done
-    ! j_probe_is || kill -KILL "$probe" 2>/dev/null
+    if j_probe_is; then j_signalled="TERM and KILL"; kill -KILL "$probe" 2>/dev/null; fi
   fi
   j_i=0
   while j_probe_running && [ "$j_i" -lt 10 ]; do j_pause 0.2; j_i=$((j_i + 1)); done
@@ -867,7 +868,7 @@ j_probe_profile() {
   done
   # a server that does not end is not left to run on unseen: the join stops here and names it
   if ! j_probe_stop; then
-    if [ -n "$j_signalled" ]; then j_how="did not end after TERM and KILL"; else j_how="still runs, and was not signalled: it is no longer the kit's server the join started"; fi
+    if [ -n "$j_signalled" ]; then j_how="did not end after $j_signalled"; else j_how="still runs, and was not signalled: it is no longer the kit's server the join started"; fi
     refuse 14 "this kit's server, started once for its check (pid $probe), $j_how: stop it yourself (kill -KILL $probe); nothing was changed"
   fi
   probe=""
@@ -1114,7 +1115,8 @@ mkdir -p "$J_HOME/bin/bin" "$J_HOME/config" "$J_HOME/plugin-state" "$J_HOME/run"
   || { j_rollback; refuse 14 "$J_HOME cannot be filled"; }
 for name in bin/ovis-server bin/bin/ovis-pty-sidecar bin/bin/ovis-pty-sidecar.json; do
   case $name in *.json) mode=600 ;; *) mode=755 ;; esac
-  j_put "$J_HOME/$name" "$mode" <"$j_stage/$name" && cmp -s "$J_HOME/$name" "$j_stage/$name" \
+  # compared by SHA-256 (sha256sum is checked for above), not cmp: diffutils is missing on some minimal systems
+  j_put "$J_HOME/$name" "$mode" <"$j_stage/$name" && [ "$(j_sha256 "$J_HOME/$name")" = "$(j_sha256 "$j_stage/$name")" ] \
     || { j_rollback; refuse 14 "the kit's programs cannot be copied into $J_HOME"; }
 done
 rm -rf "$j_stage"

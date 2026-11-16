@@ -1239,6 +1239,24 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
     expect(await m.home()).toBe(home);
   }, 300_000);
 
+  test("on a machine without cmp (no diffutils), the join installs and starts its server, and the undo gives everything back", async () => {
+    const m = await runnerMachine();
+    await serveHerdr(m);
+    const home = await m.home();
+    expect((await m.root("mv /usr/bin/cmp /usr/bin/cmp.off")).code).toBe(0);
+    expect((await m.sh("command -v cmp")).code).not.toBe(0);
+    // installed, the add refused at once (no terminal): the server runs from the copied programs
+    const run = await m.sh(`${kit.line} --yes </dev/null`);
+    note("caseNoCmp", `exit ${run.code}\n${run.stdout}${run.stderr}`);
+    const running = (await m.processes()).includes(`${TRIAL}/bin/ovis-server serve`);
+    const undo = await m.sh(`sh ${TRIAL}/join.sh --uninstall`);
+    note("caseNoCmp", `[undo] exit ${undo.code}\n${undo.stdout}${undo.stderr}`);
+    expect((await m.root("mv /usr/bin/cmp.off /usr/bin/cmp")).code).toBe(0);
+    // regression (before: exit 14, "the kit's programs cannot be copied", after the yes)
+    expect([run.code, running, undo.code]).toEqual([30, true, 0]);
+    expect(await m.home()).toBe(home);
+  }, 300_000);
+
   test("34: the pairing gate not closed after the add: the trial server is stopped first, and said stopped", async () => {
     const m = await runnerMachine();
     await serveHerdr(m);
