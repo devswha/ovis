@@ -17,7 +17,9 @@ mapping; original tabs still drive commands. `src/components/RowMenu.tsx` adds a
 `trailing` sibling-control slot (one type field and two render sites), needed for attached chips
 in a sheet without invalid nested buttons. TabStrip's missing grouped-tab presentation extension
 point is an upstream PR candidate. This differs from Warp's collapsible tab groups: job roles stay
-reachable on the parent, per the requested lower-noise design; no code or pixels were copied. Fork-only role metadata lives
+reachable on the parent, per the requested lower-noise design; no code or pixels were copied.
+`src/fork/tabGroupLayout.ts` budgets attached chip widths in the desktop More overflow, delegating
+to upstream's existing calculation unchanged with no groups. Phone chips keep 44px touch targets. Fork-only role metadata lives
 in `shared/fork/pane.ts` and `server/fork/core-terminals.ts`: only hc labels `role=implement`,
 `review` or `explore` become optional `agent_role`; herdr and old bridges omit it.
 Upstream hooks: `server/herdr-core/snapshot.ts` adds `forkPaneFields` to the existing fork import

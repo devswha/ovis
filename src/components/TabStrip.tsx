@@ -29,7 +29,7 @@ import type { RenameRequest } from "../lib/useRenameRequest.ts";
 import { autoTabLabel, customTabLabel, tabLabel } from "../lib/tabName.ts";
 import { shownTabLabels, subscribeTabLabels } from "../lib/tabLabels.ts";
 import { STRIP_AT_REST, stripPlaced, stripScrolled, stripSelected, type StripScroll } from "../lib/tabStripScroll.ts";
-import { TAB_MIN_WIDTH, tabsInRow } from "../lib/tabOverflow.ts";
+import { TAB_MIN_WIDTH } from "../lib/tabOverflow.ts";
 import { PANE_TABPANEL_ID, paneTabPanelLabel } from "../lib/paneRegion.ts";
 import { CRAMPED_QUERY, SOLO_PANE_QUERY, tabRowHidden } from "../lib/paneCanvas.ts";
 import { rosterPanes } from "../lib/dagPane.ts";
@@ -44,7 +44,8 @@ import { indicatorGlyph, paneStatus, rollupStatus, STATUS_WORD, type KnownStatus
 import { useSettings } from "../lib/settings.ts";
 import { TabFriends } from "../fork/TabFriends.tsx";
 import { groupAgentTabs } from "../fork/groupAgentTabs.ts";
-import { ForkTabChips, forkTabGroupStyle } from "../fork/TabChips.tsx";
+import { ForkTabChips } from "../fork/TabChips.tsx";
+import { forkTabGroupStyle, forkTabsInRow } from "../fork/tabGroupLayout.ts";
 import { AgentMark } from "./AgentMark.tsx";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { displayPaneTitle } from "./Sidebar.tsx";
@@ -461,7 +462,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   const openIndex = Math.max(0, stripTabs.findIndex((tab) => tab.tab_id === (forkTabs.parentOf.get(selectedPane.tab_id) ?? selectedPane.tab_id)));
   // a name being typed keeps its tab in the row, as a window narrowed under it would take the field away
   const editingIndex = editing ? stripTabs.findIndex((tab) => tab.tab_id === editing.tabId) : -1;
-  const inRow = room === null ? null : new Set(tabsInRow(stripTabs.length, openIndex, room.width, room.add, room.open, editingIndex));
+  const inRow = room === null ? null : new Set(forkTabsInRow(stripTabs, forkTabs.children, openIndex, room.width, room.add, room.open, editingIndex));
   const leftOut = inRow === null ? [] : stripTabs.filter((_, index) => !inRow.has(index));
   const drawnNext = (index: number): boolean => stripTabs.some((tab, shown) => tabs.indexOf(tab) === index + 1 && (inRow === null || inRow.has(shown)));
   // a window grown wide enough for every tab takes the More list with its button

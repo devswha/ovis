@@ -12,7 +12,7 @@
   align-items: center;
   justify-content: center;
   flex: 0 0 auto;
-  width: 24px;
+  width: var(--fork-chip-size, 24px);
   min-height: var(--pointer-target);
   padding: 0;
   border: 0;
@@ -37,4 +37,8 @@
 .row-sheet-line:has(> .fork-tab-chips) > .row-sheet-item { min-width: 0; }
 .row-sheet-line:has(> .fork-tab-chips) { flex-wrap: wrap; }
 .row-sheet-line > .fork-tab-chips { margin-inline-start: auto; }
-.fork-tab-chip.row-sheet-aside { width: var(--pointer-target); }
+.fork-tab-chip.row-sheet-aside { width: max(var(--pointer-target), 44px); min-height: 44px; }
+@media (max-width: 768px) {
+  .fork-tab-chips, .tab-strip-item:has(> .fork-tab-chips) { --fork-chip-size: 44px; }
+  .fork-tab-chip { min-height: 44px; }
+}
