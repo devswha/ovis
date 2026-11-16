@@ -167,6 +167,17 @@ describe("dsh-tui's question through the answer route", () => {
     }, (drawn) => drawn.text ? row : screen(drawn));
   });
 
+  test.each(["idle", "done", "working"])("keeps the keys of a picker card on a dsh-tui pane at rest (%s), as without a dsh card", async (status) => {
+    const panel = newPanel(status);
+    const picker = ["", "  Pick a model", "", "  ❯ deepseek-flash", "    deepseek-pro", "", "  ↑/↓ move · Enter select · Esc cancel"].join("\n");
+    await withDsh(panel, async () => {
+      const shown = (await card())!;
+      expect(shown.fallback).toBe(true);
+      expect(await answer({ prompt_id: shown.id, option_index: 0 })).toBe(200);
+      expect(panel.sent).toEqual(["up"]);
+    }, () => picker);
+  });
+
   test("sends no key once herdr stops reporting the pane's dsh-tui as waiting, its panel still on the screen", async () => {
     const panel = newPanel();
     let answering = false;

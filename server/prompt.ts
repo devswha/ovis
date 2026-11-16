@@ -898,14 +898,11 @@ class MoveLapsed extends KeyRefused {}
 /**
  * Right before each key an answer or a move sends: a pi-ask form that opened since the read takes none of them,
  * and an omp stopped behind its shell since the read takes none either: the shell would. A stop between this
- * look and herdr writing the key is not seen: herdr's send_keys takes no condition on the foreground. A dsh-tui
- * herdr no longer reports waiting on the user takes none: a dsh that died under the answer can leave its panel
- * on the screen, with the shell after it taking the keys.
+ * look and herdr writing the key is not seen: herdr's send_keys takes no condition on the foreground.
  */
 async function beforeKey(paneId: string, agent: string, deadline: AbortSignal): Promise<void> {
   if (agent === "pi" && await piAskRefusesKeys(paneId, deadline)) throw new PiAskFormOpen();
   if (agent === "omp" && !(await ompOwnsInput(paneId, deadline))) throw new OmpNotInFront();
-  if (agent === "dsh-tui" && !(await dshAsks(paneId, deadline))) throw new DshNotAsking();
 }
 
 /** dsh-tui stopped asking (or ended) since the card was read: nothing more is sent. */
@@ -1583,6 +1580,10 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         await keyGuard(paneId, keyAgent, signal);
         // a key-driven card of pi's own goes to pi only while pi holds the pane (piOwnsInput)
         if (parsedPrompt?.responder?.startsWith("pi-") && !(await piOwnsInput(paneId))) throw new PiNotInFront();
+        // dsh-tui's question card goes to dsh only while herdr still reports it waiting on the user: a dsh that died under
+        // the answer can leave its panel on the screen, with the shell after it taking the keys (a picker card at rest
+        // keeps main's keys)
+        if (parsedPrompt?.responder === "dsh-question" && !(await dshAsks(paneId, signal))) throw new DshNotAsking();
         if (ompCall !== undefined && !(await ompCallStillOpen(paneId, pane.cwd ?? "", ompCall, signal))) throw new OmpCallChanged();
       };
       /**
