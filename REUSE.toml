@@ -1,0 +1,10 @@
+# Licence annotations for files that cannot carry their own (REUSE Specification 3.3, https://reuse.software).
+# The account layer's JSON test vectors hold no comment and must not gain a field: two implementations and a reader
+# read them byte for byte. Their licence is the account layer's, LICENSES/ACCOUNT-LAYER.md; every other file of the
+# account layer starts with its own SPDX line (scripts/account-layer-licence.test.ts checks both).
+version = 1
+
+[[annotations]]
+path = "shared/account-list-vectors/**"
+SPDX-FileCopyrightText = "2026 devswha"
+SPDX-License-Identifier = "FSL-1.1-MIT"
