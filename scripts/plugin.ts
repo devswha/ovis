@@ -38,7 +38,7 @@ import { DEFAULT_PORT } from "../shared/protocol.ts";
 import { decodeOffer } from "../shared/relay-offer.ts";
 import type { RemoteAccess } from "../shared/protocol.ts";
 import { canServe, FALLBACK_PORTS, freePort, savedPort } from "./plugin-port.ts";
-import { approveWaiting, COMMAND_ALIASES, discardTyped, link as linkPc, type WaitingDevice } from "./plugin-link.ts";
+import { approveWaiting, COMMAND_ALIASES, discardTyped, link as linkPc, linkSettings, type WaitingDevice } from "./plugin-link.ts";
 import { activePluginScript } from "./plugin-runtime.ts";
 import { runTui } from "./plugin-tui.ts";
 import { accountServiceOrigin, DEFAULT_ACCOUNT_SERVICE } from "../server/static.ts";
@@ -962,8 +962,8 @@ async function linkCommand(): Promise<number> {
   return linkPc(process.argv.slice(3), {
     origin, headers, signal: stop.signal,
     accountService: accountServiceOrigin(env["OVIS_ACCOUNT_SERVICE_URL"] ?? DEFAULT_ACCOUNT_SERVICE),
-    // the app the server pairs with, as server/relay/service.ts reads it from the same settings
-    ...(env["OVIS_RELAY_APP_URL"] ? { app: env["OVIS_RELAY_APP_URL"] } : {}),
+    // the fleet preview, the command's name and the app the server pairs with, from the settings the server it starts gets
+    ...linkSettings(env),
     out: (text) => process.stdout.write(text),
     lines: console[Symbol.asyncIterator](),
     // a pipe, a file or a closed stdin approves nothing, whatever it carries and whenever (`yes | ovis add`)
