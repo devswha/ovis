@@ -486,16 +486,19 @@
 
 /* a helper an agent started (herdr-core's parent) reads under that agent on one line, a workspace
    row's height: its row steps in per level, and an elbow drawn from under its parent's mark leads
-   to its own. Its place and plugin values are in its tooltip. */
+   to its own. Its place and plugin values are in its tooltip. A list that draws its marks elsewhere
+   (the agent inbox's, fork/component-overrides.css) sets where the line stands (--tree-x) and how far
+   a level steps in (--tree-step). */
 .agent-item[data-depth] .agent-row { min-height: var(--side-row); }
 .agent-item[data-depth="1"] .agent-row { padding-inline-start: var(--space-6); }
 .agent-item[data-depth="2"] .agent-row { padding-inline-start: calc(2 * var(--space-6)); }
 
 .agent-item[data-depth]::after,
+.inbox-item[data-depth]::after,
 .agent-helpers::after {
   position: absolute;
   top: 0;
-  inset-inline-start: calc(var(--side-box) / 2);
+  inset-inline-start: var(--tree-x, calc(var(--side-box) / 2));
   width: var(--space-3);
   height: 50%;
   border-inline-start: var(--hairline) solid var(--border-strong);
@@ -505,11 +508,12 @@
   pointer-events: none;
 }
 
-.agent-item[data-depth="2"]::after { inset-inline-start: calc(var(--side-box) / 2 + var(--space-6)); }
+:is(.agent-item, .inbox-item)[data-depth="2"]::after { inset-inline-start: calc(var(--tree-x, calc(var(--side-box) / 2)) + var(--tree-step, var(--space-6))); }
 
 /* a helper with a sibling further down (AgentSidebar.tsx, data-more): its line runs on through the
    row to the next one's elbow, so the siblings hang from one line with no break between them */
 .agent-item[data-more]::after,
+.inbox-item[data-more]::after,
 .agent-helpers[data-more]::after {
   height: 100%;
   border: 0;
@@ -521,10 +525,11 @@
 }
 
 /* a helper's own helper between two siblings (data-through): their line passes by it */
-.agent-item[data-through]::before {
+.agent-item[data-through]::before,
+.inbox-item[data-through]::before {
   position: absolute;
   inset-block: 0;
-  inset-inline-start: calc(var(--side-box) / 2);
+  inset-inline-start: var(--tree-x, calc(var(--side-box) / 2));
   width: var(--space-3);
   /* drawn as the elbow's line is (a gradient, not a border), so the two land on the same pixel */
   background: linear-gradient(var(--border-strong), var(--border-strong)) 0 0 / var(--hairline) 100% no-repeat;

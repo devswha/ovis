@@ -8,34 +8,41 @@ test("helpers follow their conductor like the sidebar, moving the family to its 
   const rows = [row("child", "root"), row("other"), row("root"), row("grandchild", "child"), row("sibling", "root")];
   const result = forkInboxRows(rows, true);
   expect(ids(result)).toEqual(["local:root", "local:child", "local:grandchild", "local:sibling", "local:other"]);
-  expect(result.map((entry) => entry.forkNested)).toEqual([false, true, true, true, false]);
+  expect(result.map((entry) => entry.forkTree["data-depth"] ?? 0)).toEqual([0, 1, 2, 1, 0]);
   expect(rows.map((row) => row.entry.pane.pane_id)).toEqual(["child", "other", "root", "grandchild", "sibling"]);
 });
 
 test("a filtered-out conductor leaves a normal row; parents never match across PCs", () => {
   const result = forkInboxRows([row("child", "root"), row("root", undefined, "remote"), row("other")], true);
   expect(ids(result)).toEqual(["local:child", "remote:root", "local:other"]);
-  expect(result.every((entry) => !entry.forkNested)).toBe(true);
+  expect(result.every((entry) => entry.forkTree["data-depth"] === undefined)).toBe(true);
 });
 
 test("decoration follows the drawn family, without sorting held rows or connecting across an unrelated row", () => {
   for (const rows of [[row("other"), row("child", "root"), row("root")], [row("root"), row("other"), row("child", "root")]]) {
     const result = forkInboxNesting(rows, true);
     expect(ids(result)).toEqual(ids(rows));
-    expect(result.every((entry) => !entry.forkNested)).toBe(true);
+    expect(result.every((entry) => entry.forkTree["data-depth"] === undefined)).toBe(true);
   }
   const family = [row("root"), row("child", "root"), row("grandchild", "child"), row("sibling", "root")];
-  expect(forkInboxNesting(family, true).map((entry) => entry.forkNested)).toEqual([false, true, true, true]);
-  expect(forkInboxNesting(family, false).every((entry) => !entry.forkNested)).toBe(true);
+  expect(forkInboxNesting(family, true).map((entry) => entry.forkTree["data-depth"] ?? 0)).toEqual([0, 1, 2, 1]);
+  expect(forkInboxNesting(family, false).every((entry) => entry.forkTree["data-depth"] === undefined)).toBe(true);
 });
 
 test("off preserves upstream order and styling; empty and malformed parent chains lose no rows", () => {
   const rows = [row("child", "root"), row("root")];
   const result = forkInboxRows(rows, false);
   expect(ids(result)).toEqual(ids(rows));
-  expect(result.every((entry) => !entry.forkNested)).toBe(true);
+  expect(result.every((entry) => entry.forkTree["data-depth"] === undefined)).toBe(true);
   expect(forkInboxRows([], true)).toEqual([]);
   const cycle = forkInboxRows([row("self", "self"), row("a", "b"), row("b", "a")], true);
   expect(new Set(ids(cycle)).size).toBe(3);
-  expect(cycle[0]!.forkNested).toBe(false);
+  expect(cycle[0]!.forkTree).toEqual({});
+});
+
+test("the tree lines are the sidebar's: a line runs on to a later sibling and passes by a grandchild between them", () => {
+  const family = [row("root"), row("child", "root"), row("grandchild", "child"), row("sibling", "root")];
+  expect(forkInboxNesting(family, true).map((entry) => entry.forkTree)).toEqual([
+    {}, { "data-depth": 1, "data-more": "" }, { "data-depth": 2, "data-through": "" }, { "data-depth": 1 },
+  ]);
 });

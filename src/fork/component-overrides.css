@@ -53,63 +53,65 @@
   border: 0;
 }
 
-[data-fork-agent-friends="true"] .mode-inbox .fork-inbox-helper > .inbox-row {
+/* a helper reads under its agent as in the sidebar: one line, its mark and title, stepped in past the sidebar's own
+   tree line (AgentSidebar.css), which stands under the agent's mark. The line's place is worked out on the list,
+   where the mark's size is the agent row's. */
+.mode-inbox .inbox-rows {
+  --tree-x: calc(var(--inbox-inset) + var(--inbox-avatar) / 2);
+  --tree-step: calc(var(--space-3) + var(--space-2) + var(--mark-size) / 2);
+}
+
+.mode-inbox .inbox-item[data-depth] {
   position: relative;
-  padding-inline-start: calc(var(--inbox-inset) + var(--space-5));
-}
-
-[data-fork-agent-friends="true"] .mode-inbox .fork-inbox-helper > .inbox-row::before {
-  content: "";
-  position: absolute;
-  inset-inline-start: var(--inbox-inset);
-  bottom: 50%;
-  width: var(--space-3);
-  height: var(--space-4);
-  border-inline-start: var(--hairline) solid var(--border-strong);
-  border-bottom: var(--hairline) solid var(--border-strong);
-}
-
-/* a sub-agent's row is one line, its role, title and state, about half a row: what it last said is in its chat */
-[data-fork-agent-friends="true"] .mode-inbox .fork-inbox-helper {
   --inbox-avatar: var(--mark-size);
-  --inbox-gutter: var(--space-1);
 }
 
-[data-fork-agent-friends="true"] .mode-inbox .fork-inbox-helper > .inbox-row {
+/* the agent's row has room under its mark: the line starts right under the mark, as the sidebar's does */
+.mode-inbox .inbox-item:has(+ .inbox-item[data-depth="1"]):not([data-depth]) {
+  position: relative;
+}
+
+.mode-inbox .inbox-item:has(+ .inbox-item[data-depth="1"]):not([data-depth])::after {
+  position: absolute;
+  top: calc(50% + var(--inbox-avatar) / 2 + var(--space-1));
+  bottom: 0;
+  inset-inline-start: var(--tree-x);
+  border-inline-start: var(--hairline) solid var(--border-strong);
+  content: "";
+  pointer-events: none;
+}
+
+.mode-inbox .inbox-item[data-depth] > .inbox-row {
   gap: var(--space-2);
-  min-height: calc(var(--inbox-avatar) + var(--inbox-gutter) * 2);
+  min-height: var(--control-h);
+  padding-inline-start: calc(var(--tree-x) + var(--space-3) + var(--space-2));
 }
 
-[data-fork-agent-friends="true"] .mode-inbox .fork-inbox-helper .inbox-body {
+.mode-inbox .inbox-item[data-depth="2"] > .inbox-row {
+  padding-inline-start: calc(var(--tree-x) + var(--tree-step) + var(--space-3) + var(--space-2));
+}
+
+.mode-inbox .inbox-item[data-depth] .inbox-body {
   flex-direction: row;
   align-items: center;
   gap: var(--space-2);
 }
 
-[data-fork-agent-friends="true"] .mode-inbox .fork-inbox-helper .inbox-line {
+.mode-inbox .inbox-item[data-depth] .inbox-line {
   flex: 1 1 auto;
 }
 
-[data-fork-agent-friends="true"] .mode-inbox .fork-inbox-helper .inbox-words {
+.mode-inbox .inbox-item[data-depth] .inbox-words {
   display: none;
 }
 
-/* lighter than an agent's own name, so the agents stay what the eye finds first; the open one keeps its selection weight */
-[data-fork-agent-friends="true"] .mode-inbox .fork-inbox-helper .inbox-name {
-  font-size: var(--fs-md);
-}
-
-[data-fork-agent-friends="true"] .mode-inbox .fork-inbox-helper:not(.is-current) .inbox-name {
+.mode-inbox .inbox-item[data-depth]:not(.is-current) .inbox-name {
   font-weight: var(--fw-regular);
-}
-
-[data-fork-agent-friends="true"] .mode-inbox.is-wide .fork-inbox-helper .inbox-name {
-  font-size: var(--fs-sm);
 }
 
 /* a finger still gets its target */
 @media (pointer: coarse) {
-  [data-fork-agent-friends="true"] .mode-inbox .fork-inbox-helper > .inbox-row {
+  .mode-inbox .inbox-item[data-depth] > .inbox-row {
     min-height: var(--touch-target);
   }
 }

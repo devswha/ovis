@@ -65,8 +65,8 @@ test.each([false, true])("a conductor arriving during keyboard focus cannot move
   await act(async () => { list().props.onFocus({ target: { matches: () => true } }); });
   await act(async () => { renderer!.update(view(true)); });
   expect(order()).toEqual([...initial, conductor!].map((pane) => pane.pane_id));
-  expect(root.findAll((node) => node.type === "li" && String(node.props.className).includes("fork-inbox-helper"))).toHaveLength(0);
+  expect(root.findAll((node) => node.type === "li" && node.props["data-depth"] !== undefined)).toHaveLength(0);
   await act(async () => { list().props.onBlur({ relatedTarget: null, currentTarget: {} }); });
   expect(order()).toEqual((otherFirst ? [other!, conductor!, helper!] : [conductor!, helper!, other!]).map((pane) => pane.pane_id));
-  expect(root.findAll((node) => node.type === "li" && String(node.props.className).includes("fork-inbox-helper"))).toHaveLength(1);
+  expect(root.findAll((node) => node.type === "li" && node.props["data-depth"] !== undefined)).toHaveLength(1);
 });
