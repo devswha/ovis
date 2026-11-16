@@ -37,22 +37,30 @@ const OFF_FILE = "telemetry-off";
 const LOCK_FILE = "telemetry.lock";
 /** how long a server waits for another's lock before it skips its write (an off never waits: it goes without the lock) */
 const LOCK_WAIT_MS = 200;
-/** a lock older than this, or one whose server is gone, was left by a server that stopped while holding it */
+/** a lock that has no pid yet is being made; older than this, it was left half made */
 const LOCK_STALE_MS = 5_000;
+/** a section holds the lock for well under a millisecond: one held this long, by anyone, was left behind */
+const LOCK_MAX_HOLD_MS = 5 * 60_000;
+/** the lock files this process holds now: one carrying this process's pid that is not here was left by an earlier run */
+const heldLocks = new Set<string>();
 
 /** blocks this thread for `ms`: a lock section is synchronous, so the wait is too */
 function sleepSync(ms: number): void { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
 
 /**
- * whether the lock file was left by a server that is gone: its pid no longer runs (a live holder is never taken over by
- * age, however long it holds it), or it never got a pid written and is older than LOCK_STALE_MS (a lock being made has no
- * pid for a moment). A pid reused by another process after its server stopped reads as alive (rare; a limit)
+ * whether the lock file was left by a server that is gone: its pid no longer runs, or it is this process's pid and this
+ * process does not hold it (an earlier run with the same pid), or it never got a pid written and is older than
+ * LOCK_STALE_MS (a lock being made has no pid for a moment), or anyone has held it past LOCK_MAX_HOLD_MS (a section takes
+ * well under a millisecond; this also ends a lock whose pid another process reuses)
  */
 function staleLock(file: string): boolean {
   try {
     const [pid = NaN] = readFileSync(file, "utf8").split(" ").map(Number);
-    if (!Number.isSafeInteger(pid) || pid <= 0) return Date.now() - statSync(file).mtimeMs > LOCK_STALE_MS;
-    if (pid === process.pid) return false;
+    const age = Date.now() - statSync(file).mtimeMs;
+    if (age > LOCK_MAX_HOLD_MS) return true;
+    if (!Number.isSafeInteger(pid) || pid <= 0) return age > LOCK_STALE_MS;
+    // this process's pid on a lock it does not hold: an earlier run with the same pid (a container's) stopped inside a section
+    if (pid === process.pid) return !heldLocks.has(file);
     try { process.kill(pid, 0); return false; } catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
   } catch (error) {
     // removed meanwhile: not stale, try again; unreadable or half written: stale once it is old enough
@@ -823,6 +831,7 @@ export class Telemetry {
       try {
         const fd = openSync(lock, "wx", 0o600);
         try { writeSync(fd, stamp); } finally { closeSync(fd); }
+        heldLocks.add(lock);
         break;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") return busy();
@@ -834,6 +843,7 @@ export class Telemetry {
     this.lockDepth = 1;
     try { return section(); } finally {
       this.lockDepth = 0;
+      heldLocks.delete(lock);
       // only the lock this section took: one another server took over since is not this one's to remove
       try { if (readFileSync(lock, "utf8") === stamp) rmSync(lock, { force: true }); } catch { /* gone already */ }
     }

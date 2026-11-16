@@ -787,7 +787,7 @@ describe("daily active message", () => {
     expect(actives).toEqual([]);
   });
 
-  test("a lock whose server is gone, or one never given a pid, is taken over; a live holder's is not, however old", () => {
+  test("a lock whose server is gone, this process's own from an earlier run, one never given a pid, or one held for minutes is taken over; a live holder's is not", () => {
     // a live holder (this test's parent process), stamped a minute ago: still held, so the count waits and is kept out
     {
       const { telemetry, stateDir } = setup({ grace: 600_000 });
@@ -808,6 +808,19 @@ describe("daily active message", () => {
       const errors = spyOn(console, "error").mockImplementation(() => {});
       try { telemetry.tally("prompt_answers"); } finally { errors.mockRestore(); }
       expect(savedFile(stateDir).active[0].usage.prompt_answers).toBe(0);
+    }
+    // this process's own pid on a lock it does not hold (an earlier run with the same pid stopped inside a section), and any
+    // lock held for minutes (its pid may be another process's now): taken over at once
+    for (const lock of [`${process.pid} ${Date.now()} earlier-run`, `${process.ppid} ${Date.now() - 10 * 60_000}`]) {
+      const { telemetry, stateDir } = setup({ grace: 600_000 });
+      seen(telemetry);
+      void telemetry.active(["claude"]);
+      const file = join(stateDir, "telemetry.lock");
+      writeFileSync(file, lock);
+      if (lock.startsWith(`${process.ppid} `)) utimesSync(file, new Date(Date.now() - 10 * 60_000), new Date(Date.now() - 10 * 60_000));
+      telemetry.tally("prompt_answers");
+      expect(savedFile(stateDir).active[0].usage.prompt_answers).toBe(1);
+      expect(existsSync(file)).toBe(false);
     }
     for (const lock of [`999999999 ${Date.now()}`, "garbage"]) {
       const { telemetry, stateDir } = setup({ grace: 600_000 });
