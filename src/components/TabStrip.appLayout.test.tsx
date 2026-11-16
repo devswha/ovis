@@ -2,12 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { act, createElement } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 
-import type { PaneInfo, SessionSnapshot, WorkspaceInfo } from "../../shared/protocol.ts";
+import type { HerdrPane, PaneInfo, SessionSnapshot, WorkspaceInfo } from "../../shared/protocol.ts";
 import { AppLayoutContext, appLayoutOf, type LayoutOffer } from "../lib/machineContext.tsx";
 import { SettingsProvider } from "../lib/settings.ts";
 import { setSidebarPins } from "../lib/sidebarPins.ts";
 import { RowMenu } from "./RowMenu.tsx";
-import { TabStrip } from "./TabStrip.tsx";
+import { TabStrip, type TabStripProps } from "./TabStrip.tsx";
 
 /** herdr's TUI server, a herdr-core PC the Herdr app lays out, and one whose layout Ovis keeps (lib/machineContext.tsx) */
 const TUI = appLayoutOf({ version: "0.9.5", protocol: 22 });
@@ -74,8 +74,8 @@ describe("the tab strip on a PC the Herdr app lays out", () => {
     }
   });
 
-  async function draw(offer: LayoutOffer, workspace: WorkspaceInfo | null = snapshot.workspaces[0]!, beside?: WorkspaceInfo): Promise<void> {
-    const strip = (shown: WorkspaceInfo) => createElement(TabStrip, { snapshot, workspace: shown, selectedPane: snapshot.panes[0]!, onSelectPane: () => {}, onNewTab: () => {}, onNewTerminal: async () => {}, onMoveToWorkspace: async () => {} });
+  async function draw(offer: LayoutOffer, workspace: WorkspaceInfo | null = snapshot.workspaces[0]!, beside?: WorkspaceInfo, options: Partial<TabStripProps> = {}): Promise<void> {
+    const strip = (shown: WorkspaceInfo) => createElement(TabStrip, { snapshot, workspace: shown, selectedPane: snapshot.panes[0]!, onSelectPane: () => {}, onNewTab: () => {}, onNewTerminal: async () => {}, onMoveToWorkspace: async () => {}, ...options });
     const tree = createElement(SettingsProvider, null, createElement(AppLayoutContext.Provider, { value: offer },
       workspace && strip(workspace), beside && strip(beside)));
     await act(async () => { if (renderer) renderer.update(tree); else renderer = create(tree, { createNodeMock: node }); });
@@ -97,6 +97,26 @@ describe("the tab strip on a PC the Herdr app lays out", () => {
     }, { preconnect: globalThis.fetch.preconnect }));
     try { await run(); } finally { fetch.mockRestore(); }
   };
+
+  for (const phoneRow of [false, true]) it(`folds child tabs into the selected parent, including the phone sheet (phone row: ${phoneRow})`, async () => {
+    const child = snapshot.panes[1]! as HerdrPane;
+    child.parent_pane_id = snapshot.panes[0]!.pane_id;
+    stored.set("ovis:settings", JSON.stringify({ agentFriends: true }));
+    let selected = "";
+    try {
+      await draw(OVIS_CORE, undefined, undefined, { phoneRow, sheet: node(), onSheetClose() {}, selectedPane: child, onSelectPane: (id) => { selected = id; } });
+      expect(renderer!.root.findAllByProps({ className: "tab-strip-label" })).toHaveLength(1);
+      const parent = renderer!.root.findAllByType("div").find((item) => item.props.className?.startsWith("tab-strip-item"));
+      expect(parent?.props.className).toContain("is-active");
+      const chip = renderer!.root.findAllByType("button").find((item) => item.props.className?.includes("fork-tab-chip"))!;
+      expect(chip.props["aria-selected"]).toBe(true);
+      await act(async () => chip.props.onClick({ ctrlKey: false, currentTarget: { focus() {} } }));
+      expect(selected).toBe(child.pane_id);
+      const sheet = renderer!.root.findByType(RowMenu);
+      expect(sheet.props.items.filter((item: { id: string }) => item.id.startsWith("tab:")).map((item: { id: string }) => item.id)).toEqual(["tab:w1:t1"]);
+      expect(sheet.props.items[0].trailing).toBeTruthy();
+    } finally { delete child.parent_pane_id; }
+  });
 
   it("offers a TUI PC's tab its moves and rename, by menu, keys and a double-click", async () => {
     await withFetch(async () => {
