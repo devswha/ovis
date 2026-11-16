@@ -88,6 +88,29 @@ test("revalidates a fork worktree on checkout and never fetches when it has disa
   expect(requests.filter((request) => request.body)).toHaveLength(0);
 });
 
+test("creates from the main workspace when only a linked checkout is selected", async () => {
+  for (const sourceId of [null, "main"]) {
+    const listing = checkoutListing(sourceId);
+    listing.source.source_checkout_path = "/linked"; listing.worktrees = [];
+    const opened = { workspace_id: "new", pane_id: "p2", path: "/new", branch: "topic", already_open: false };
+    const requests = checkoutApi([listing], {
+      "/api/worktree/open": { workspace_id: "main", pane_id: "p0", path: "/repo", branch: "main", already_open: false },
+      "/api/worktree/pull-request-fetch": { ref: "origin/topic" },
+      "/api/worktree/create": opened,
+    });
+    let result: unknown;
+    await openPull((next) => { result = next; });
+    await act(async () => button("Checkout").props.onClick());
+    expect(requests.filter((request) => request.body)).toEqual([
+      ...(sourceId ? [] : [{ path: "/api/worktree/open", body: { workspace_id: "w1", path: "/repo" } }]),
+      { path: "/api/worktree/pull-request-fetch", body: { workspace_id: "main", branch: "topic" } },
+      { path: "/api/worktree/create", body: { workspace_id: "main", branch: "topic", base: "origin/topic" } },
+    ]);
+    expect(result).toEqual(opened);
+    await act(async () => renderer?.unmount());
+  }
+});
+
 test("rail is opt-in, switches current place, and Inbox switches back", async () => {
   await rail(false); expect(button("GitHub")).toBeUndefined();
   await act(async () => renderer?.unmount()); await rail(true);
