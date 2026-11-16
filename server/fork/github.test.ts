@@ -34,6 +34,29 @@ test("matches repositories by local roots or pane folders and tolerates non-GitH
   expect([...known]).toEqual([["owner/repo", "w1"], ["other/tools", "w2"]]);
 });
 
+test("matches beyond 50 workspaces with bounded repository reads", async () => {
+  const workspaces = Array.from({ length: 60 }, (_, i) => ({ workspace_id: `w${i}`, worktree: { repo_root: `/repo${i}` } }));
+  let active = 0, peak = 0, calls = 0;
+  const known = await githubWorkspaces({ workspaces, panes: [] } as unknown as SessionSnapshot, async (path) => {
+    calls++; active++; peak = Math.max(peak, active);
+    await Promise.resolve();
+    active--;
+    return `owner/${path.slice(1)}`;
+  });
+  expect(known.get("owner/repo59")).toBe("w59");
+  expect(calls).toBe(60);
+  expect(peak).toBeGreaterThan(1);
+  expect(peak).toBeLessThanOrEqual(4);
+});
+
+test("does not advertise a second pane's repository that workspace APIs cannot resolve", async () => {
+  const snapshot = { workspaces: [{ workspace_id: "w1" }], panes: [{ workspace_id: "w1", cwd: "/home/user" }, { workspace_id: "w1", cwd: "/repo" }] } as SessionSnapshot;
+  const folders: string[] = [];
+  const known = await githubWorkspaces(snapshot, async (path) => { folders.push(path); throw new Error("not git"); });
+  expect(folders).toEqual(["/home/user"]);
+  expect(known.size).toBe(0);
+});
+
 test("refuses observers and non-GET requests before reading gh or the user's snapshot", async () => {
   const never = async (): Promise<SessionSnapshot> => { throw new Error("must not read"); };
   expect((await handleGithubPulls(new Request("http://localhost/api/fork/github/pulls"), never, true)).status).toBe(403);
