@@ -45,7 +45,7 @@ export interface LinkOptions {
   readonly headers: Record<string, string>;
   /** the account service the server's pages sign in to; null when the account is off */
   readonly accountService: string | null;
-  /** the app the server pairs with (OVIS_RELAY_APP_URL); unset, https://app.ovis.sh */
+  /** the app the server pairs with (OVIS_RELAY_APP_URL); unset, https://app.ovis.sh. Named only under the fleet preview (appHost) */
   readonly app?: string;
   readonly out: (text: string) => void;
   /** the person's answers, a line at a time */
@@ -643,11 +643,12 @@ export async function approveWaiting(pairings: readonly WaitingDevice[], options
 const groups = (id: string): string => id.match(/.{1,4}/g)?.join(" ") ?? id;
 
 /**
- * The command a person types to run this script again, as printed in its instructions: OVIS_CLI_NAME where a wrapper
- * runs the plugin under another name or path, else `ovis`.
+ * The command a person types to run this script again, as printed in its instructions: under the fleet preview
+ * (server/preview.ts), OVIS_CLI_NAME where a wrapper runs the plugin under another name or path; otherwise, and with it
+ * unset, `ovis`.
  */
 function cli(): string {
-  return process.env["OVIS_CLI_NAME"] || "ovis";
+  return (fleetPreview() && process.env["OVIS_CLI_NAME"]) || "ovis";
 }
 
 /**
@@ -680,8 +681,12 @@ async function askLine(options: LinkOptions, prompt: string): Promise<string | n
 
 const PROVIDER_NAMES: Readonly<Record<AccountProvider, string>> = { github: "GitHub", google: "Google", apple: "Apple" };
 
-/** The app's address as a person types it: its host, with the port when it has one ("app.ovis.sh"). */
+/**
+ * The app's address as a person types it: under the fleet preview, the host of `url` (the app the server pairs with),
+ * with the port when it has one; otherwise app.ovis.sh, whatever the server pairs with.
+ */
 function appHost(url: string): string {
+  if (!fleetPreview()) return "app.ovis.sh";
   try { return new URL(url.includes("://") ? url : `https://${url}`).host; } catch { return url; }
 }
 
