@@ -7,7 +7,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { FakeAccountService } from "../shared/account-service-fake.ts";
 import { unmanagedUpdateStatus } from "../shared/update.ts";
 import { createServer } from "./index.ts";
-import { HERDR_CLIENT_CODES, herdrRpc, paneRead } from "./herdr/client.ts";
+import { herdrRpc, paneRead } from "./herdr/client.ts";
 import { harmlessGroups, trustRefusal } from "./herdr-core/discovery.ts";
 import { claimServerState, MachineProfileError } from "./machine-profile.ts";
 import { guardLibrary } from "./owner-guard.ts";
@@ -71,9 +71,9 @@ function contents(dir: string) {
 }
 /**
  * A herdr at `socket` that answers ping with protocol 22, and counts the connections it gets. `refuse` names one
- * method it answers with an error instead, whose message is `refuse.message`.
+ * method it answers with an error of its own instead, whose message is `refuse.message`, or closes the connection on.
  */
-function fakeHerdr(socket: string, refuse?: { method: string; message: string }) {
+function fakeHerdr(socket: string, refuse?: { method: string; message: string } | { method: string; close: true }) {
   let connections = 0;
   const listener = Bun.listen<{ line: string }>({ unix: socket, socket: {
     open(client) { connections++; client.data = { line: "" }; },
@@ -81,7 +81,8 @@ function fakeHerdr(socket: string, refuse?: { method: string; message: string })
       client.data.line += chunk.toString();
       if (!client.data.line.includes("\n")) return;
       const { id, method } = JSON.parse(client.data.line) as { id: string; method: string };
-      const answer = method === refuse?.method ? { error: { code: "server_error", message: refuse.message } } : { result: { version: "fixture", protocol: 22 } };
+      if (method === refuse?.method && "close" in refuse) { client.end(); return; }
+      const answer = method === refuse?.method && "message" in refuse ? { error: { code: "server_error", message: refuse.message } } : { result: { version: "fixture", protocol: 22 } };
       client.write(`${JSON.stringify({ id, ...answer })}\n`);
       client.end();
     },
@@ -555,10 +556,17 @@ it.each(["/api/session", "/api/machines"])("answers a herdr read that fails on %
   expect(response.headers.get("cache-control")).toBe("no-store");
 });
 
-it("keeps on a failed read exactly the codes the herdr client makes itself", () => {
-  // what the profile's failed-read answer keeps (machineReadError): every code the client constructs, and only those
-  const made = [...readFileSync(join(import.meta.dir, "herdr", "client.ts"), "utf8").matchAll(/new HerdrError\("([a-z_]+)"/g)].map((match) => match[1] ?? "");
-  expect([...HERDR_CLIENT_CODES].sort()).toEqual([...new Set(made)].sort());
+it("keeps the bridge's own code when herdr closes the connection before it answers the read", async () => {
+  const dir = state();
+  const config = herdrConfig();
+  const socket = join(config, "herdr", "sessions", "a", "herdr.sock");
+  mkdirSync(dirname(socket), { recursive: true, mode: 0o700 });
+  fakeHerdr(socket, { method: "session.snapshot", close: true });
+  const server = launch(dir, { XDG_CONFIG_HOME: config, HERDR_REMOTE_SOCKET: "", HERDR_REMOTE_SESSION: "a" });
+  await bounded(server.ready, 20_000);
+  const response = await owner(dir, "/api/session", { headers });
+  expect([response.status, await response.json()]).toEqual([404, { error: { code: "closed", message: "herdr did not answer this request" } }]);
+  expect(response.headers.get("cache-control")).toBe("no-store");
 });
 
 it("answers an ordinary server's failed /api/session with herdr's own message", async () => {
