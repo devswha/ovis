@@ -1,4 +1,4 @@
-import type { GithubPull, GithubPulls } from "../../shared/github.ts";
+import type { GithubPull, GithubPullDetail, GithubPulls } from "../../shared/github.ts";
 import type { SessionSnapshot } from "../../shared/protocol.ts";
 import { conflictResponse, jsonResponse } from "../http.ts";
 import { ghAccounts, originRepository, parsePullRequests, PullRequestError, runGithub } from "./pull-requests.ts";
@@ -32,7 +32,7 @@ export function parseGithubPulls(output: string): GithubPulls {
         const rollup = row.commits?.nodes?.[0]?.commit?.statusCheckRollup;
         const [entry] = parsePullRequests(JSON.stringify([{ ...row, statusCheckRollup: rollup ? [{ state: rollup.state }] : [] }]), []);
         if (!entry) throw unreadable();
-        unique.set(entry.url, { ...entry, repository });
+        unique.set(entry.url, { ...entry, repository, account: data.viewer.login });
       }
       return [...unique.values()].sort((a, b) => b.updated_at.localeCompare(a.updated_at));
     };
@@ -114,6 +114,105 @@ export async function githubWorkspaces(snapshot: SessionSnapshot, repositoryOf =
     }
   }));
   return new Map(matches.filter((match) => match !== null).map(([repo, id]) => [repo.toLowerCase(), id]));
+}
+
+const PULL_QUERY = `query($owner:String!,$name:String!,$number:Int!) { repository(owner:$owner,name:$name) { pullRequest(number:$number) {
+  number title url body state isDraft createdAt updatedAt author { login } headRefName baseRefName isCrossRepository
+  additions deletions changedFiles commits { totalCount } reviewDecision
+  labels(first:20) { nodes { name color } }
+  latestReviews(first:30) { nodes { author { login } state } }
+  reviewRequests(first:30) { nodes { requestedReviewer { ... on User { login } ... on Team { name } } } }
+  statusCheckRollup: commits(last:1) { nodes { commit { statusCheckRollup { contexts(first:100) { nodes {
+    __typename ... on CheckRun { status conclusion } ... on StatusContext { state } } } } } } }
+} } }`;
+
+type Context = { __typename?: string; status?: string; conclusion?: string | null; state?: string };
+/** Each check run or commit status counted once, by what it came to. */
+export function countChecks(contexts: Context[]): GithubPullDetail["checks"] {
+  const counts = { passing: 0, failing: 0, pending: 0, skipped: 0 };
+  for (const context of contexts) {
+    const outcome = context.__typename === "StatusContext" ? context.state : context.status === "COMPLETED" ? context.conclusion : "PENDING";
+    if (outcome === "SUCCESS") counts.passing++;
+    else if (outcome === "SKIPPED" || outcome === "NEUTRAL") counts.skipped++;
+    else if (outcome === "FAILURE" || outcome === "ERROR" || outcome === "TIMED_OUT" || outcome === "CANCELLED" || outcome === "ACTION_REQUIRED" || outcome === "STARTUP_FAILURE") counts.failing++;
+    else counts.pending++;
+  }
+  return counts;
+}
+
+const REVIEW_STATES = { APPROVED: "approved", CHANGES_REQUESTED: "changes_requested", COMMENTED: "commented" } as const;
+export function parseGithubPull(output: string, repository: string): GithubPullDetail {
+  try {
+    const { data, errors } = JSON.parse(output);
+    const pr = data?.repository?.pullRequest;
+    if (errors?.length || !pr || !Number.isSafeInteger(pr.number) || typeof pr.title !== "string") throw unreadable();
+    const reviewers: GithubPullDetail["reviewers"] = [];
+    for (const review of pr.latestReviews?.nodes ?? []) {
+      const state = REVIEW_STATES[review?.state as keyof typeof REVIEW_STATES];
+      if (state && typeof review.author?.login === "string") reviewers.push({ login: review.author.login, state });
+    }
+    for (const request of pr.reviewRequests?.nodes ?? []) {
+      const login = request?.requestedReviewer?.login ?? request?.requestedReviewer?.name;
+      if (typeof login === "string" && !reviewers.some((reviewer) => reviewer.login === login)) reviewers.push({ login, state: "requested" });
+    }
+    const decision = pr.reviewDecision === "APPROVED" ? "approved" : pr.reviewDecision === "CHANGES_REQUESTED" ? "changes_requested" : pr.reviewDecision === "REVIEW_REQUIRED" ? "review_required" : "none";
+    return {
+      repository, number: pr.number, url: pr.url, title: pr.title, body: typeof pr.body === "string" ? pr.body : "",
+      state: pr.state === "MERGED" ? "merged" : pr.state === "CLOSED" ? "closed" : "open", draft: pr.isDraft === true,
+      author: pr.author?.login ?? null, created_at: pr.createdAt, updated_at: pr.updatedAt,
+      head: pr.headRefName, base: pr.baseRefName, fork: pr.isCrossRepository === true,
+      additions: pr.additions ?? 0, deletions: pr.deletions ?? 0, changed_files: pr.changedFiles ?? 0, commits: pr.commits?.totalCount ?? 0,
+      checks: countChecks(pr.statusCheckRollup?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? []),
+      review: decision, reviewers,
+      labels: (pr.labels?.nodes ?? []).filter((label: { name?: unknown }) => typeof label?.name === "string").map((label: { name: string; color?: string }) => ({ name: label.name, color: /^[0-9a-f]{6}$/i.test(label.color ?? "") ? label.color! : "888888" })),
+    };
+  } catch { throw unreadable(); }
+}
+
+/** A pull request's page with the given account's token; 20 seconds of cache per page. I/O is injectable. */
+export function createGithubPullReader(run: Run = runGithub, now = Date.now) {
+  const cache = new Map<string, { until: number; value: Promise<GithubPullDetail> }>();
+  return (repository: string, number: number, account: string): Promise<GithubPullDetail> => {
+    const key = `${account}\n${repository}#${number}`;
+    const hit = cache.get(key);
+    if (hit && now() < hit.until) return hit.value;
+    const value = (async () => {
+      const token = await run(["auth", "token", "--user", account]);
+      if (!token) throw new PullRequestError("gh_missing", "The GitHub CLI (gh) is not installed on this PC");
+      if (token.code !== 0 || !token.stdout.trim()) throw new PullRequestError("gh_signed_out", "Sign in on this PC with gh auth login");
+      const [owner, name] = repository.split("/");
+      const result = await run(["api", "graphql", "--hostname", "github.com", "-f", `query=${PULL_QUERY}`, "-f", `owner=${owner}`, "-f", `name=${name}`, "-F", `number=${number}`], { GH_TOKEN: token.stdout.trim() });
+      if (!result) throw new PullRequestError("gh_missing", "The GitHub CLI (gh) is not installed on this PC");
+      if (result.code !== 0) {
+        const detail = `${result.stderr}\n${result.stdout}`;
+        if (/rate limit|HTTP 429/i.test(detail)) throw new PullRequestError("rate_limited", "GitHub is limiting requests; try again in a few minutes");
+        if (/gh auth login|not logged|authentication|HTTP 401|bad credentials/i.test(detail)) throw new PullRequestError("gh_signed_out", "Sign in on this PC with gh auth login");
+        throw new PullRequestError("gh_failed", "Could not read this pull request");
+      }
+      return parseGithubPull(result.stdout, repository);
+    })();
+    cache.set(key, { until: now() + 20_000, value });
+    value.catch(() => cache.delete(key));
+    return value;
+  };
+}
+const readPull = createGithubPullReader();
+
+export async function handleGithubPull(request: Request, readOnly: boolean): Promise<Response> {
+  if (readOnly) return jsonResponse({ error: { code: "read_only", message: "This device only watches" } }, 403);
+  if (request.method !== "GET") return jsonResponse({ error: { code: "method_not_allowed", message: "Use GET" } }, 405);
+  const params = new URL(request.url).searchParams;
+  const repository = params.get("repo") ?? "";
+  const number = Number(params.get("number"));
+  const account = params.get("account") ?? "";
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repository) || !Number.isSafeInteger(number) || number < 1 || !/^[\w-]+$/.test(account)) {
+    return jsonResponse({ error: { code: "bad_request", message: "Name a repository, a pull request number and an account" } }, 400);
+  }
+  try {
+    return jsonResponse(await readPull(repository, number, account));
+  } catch (error) {
+    return conflictResponse(error instanceof PullRequestError ? error.code : "gh_failed", error instanceof PullRequestError ? error.message : "Could not read this pull request");
+  }
 }
 
 export async function handleGithubPulls(request: Request, snapshot: () => Promise<SessionSnapshot>, readOnly: boolean): Promise<Response> {

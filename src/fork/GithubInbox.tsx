@@ -5,11 +5,11 @@ import { RowMenu } from "../components/RowMenu.tsx";
 
 import type { GithubPull, GithubPulls } from "../../shared/github.ts";
 import type { WorktreeOpened } from "../../shared/protocol.ts";
-import { ApiError, createWorktree, fetchPullRequestBranch, getJson, listWorktrees, openWorktree } from "../lib/api.ts";
+import { ApiError, getJson } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
 import { useSettings } from "../lib/settings.ts";
 import { githubGroups, githubStatus, loadGithubRepo, saveGithubRepo } from "./github.ts";
-import { pullRequestWords } from "./pullRequestWords.ts";
+import { GithubPullPage } from "./GithubPull.tsx";
 import "./PullRequestsDialog.css";
 import "./GithubInbox.css";
 
@@ -38,11 +38,27 @@ function closeGithub(): void {
   if (onEntry && githubEntry()) window.history.back();
   else setGithubSection("inbox");
 }
+/* The open pull request: the wide pane's page, or the phone's screen over the list on an entry of its own. */
+const PULL_KEY = "ovis:fork-github-pull";
+let pull: GithubPull | null = null;
+let onPullEntry = false;
+const pullEntry = (): boolean => typeof window !== "undefined" && (window.history.state as Record<string, unknown> | null)?.[PULL_KEY] === true;
+const emit = () => { for (const listener of listeners) listener(); };
+function openPull(next: GithubPull, phone: boolean): void {
+  if (phone && !pullEntry()) { window.history.pushState({ ...(window.history.state ?? {}), [PULL_KEY]: true }, ""); onPullEntry = true; }
+  pull = next; emit();
+}
+export function closeGithubPull(): void {
+  if (onPullEntry && pullEntry()) window.history.back();
+  else { pull = null; emit(); }
+}
 if (typeof window !== "undefined") window.addEventListener("popstate", () => {
+  if (!pullEntry() && onPullEntry) { onPullEntry = false; pull = null; emit(); }
   if (githubEntry()) { onEntry = true; setGithubSection("github"); }
-  else if (onEntry) { onEntry = false; setGithubSection("inbox"); }
+  else if (onEntry) { onEntry = false; pull = null; setGithubSection("inbox"); }
 });
 const useSection = () => useSyncExternalStore(subscribe, () => section, () => "inbox" as Section);
+const useOpenPull = () => useSyncExternalStore(subscribe, () => pull, () => null);
 
 /** Wrap the existing Inbox button: its original action and focus behavior still run on return. */
 export function ForkGithubRail({ children }: { children: ReactElement<{ "aria-current"?: "page"; onClick?: MouseEventHandler<HTMLButtonElement> }> }) {
@@ -67,6 +83,19 @@ export function ForkGithubSection({ children, ...props }: ViewProps & { children
   </div>;
 }
 
+/** One line in App's pane area: while GitHub is the wide column's section, its page (or a placeholder) covers the chat. */
+export function ForkGithubPane({ wide, watching, onOpened }: ViewProps) {
+  const { settings } = useSettings();
+  const current = useSection();
+  const open = useOpenPull();
+  const t = useT();
+  if (!settings.pullRequests || !wide || current !== "github") return null;
+  return <div className="fork-github-pane">
+    {open === null ? <p className="inbox-unchosen" role="status">{t("Choose a pull request to open it here.")}</p>
+      : <GithubPullPage key={open.url} pull={open} wide watching={watching} onOpened={(opened) => { setGithubSection("inbox"); onOpened(opened); }} />}
+  </div>;
+}
+
 /** The phone's way in: a round button in the agent inbox's top row, beside New workspace. */
 export function ForkGithubOpen() {
   const { settings } = useSettings();
@@ -78,13 +107,12 @@ export function ForkGithubOpen() {
 
 export function GithubInbox({ wide, watching, onOpened }: ViewProps) {
   const t = useT();
+  const open = useOpenPull();
   const [listing, setListing] = useState<GithubPulls | null>(null);
   const [repo, setRepo] = useState(loadGithubRepo);
   const [refresh, setRefresh] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [expanded, setExpanded] = useState<string | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
   const [repoMenu, setRepoMenu] = useState<HTMLElement | null>(null);
   const errors: Record<string, string> = {
     gh_missing: t("Install gh on this PC"), gh_signed_out: t("Sign in on this PC with gh auth login"),
@@ -104,55 +132,22 @@ export function GithubInbox({ wide, watching, onOpened }: ViewProps) {
     return () => { cancelled = true; };
   }, [refresh]);
   const groups = githubGroups(listing ?? { accounts: [], review: [], yours: [] }, repo);
-  const { checks, reviews } = pullRequestWords(t);
   const statuses = { "Checks failing": t("Checks failing"), "Changes requested": t("Changes requested"), "Review requested": t("Review requested"), Draft: t("Draft"), "Checks running": t("Checks running"), Approved: t("Approved"), Ready: t("Ready") };
 
-  const checkout = async (pr: GithubPull): Promise<void> => {
-    // Branch names alone cannot establish which fork a local checkout belongs to.
-    if (pr.fork || !pr.workspace_id || busy !== null || watching) return;
-    setBusy(pr.url); setError(null);
-    try {
-      // Re-read local checkouts when pressed, rather than assuming a branch isn't already open.
-      const listing = await listWorktrees(pr.workspace_id, "local");
-      const existing = listing.worktrees.find((entry) => entry.branch === pr.branch && !entry.is_prunable);
-      let opened: WorktreeOpened;
-      if (existing) opened = await openWorktree({ workspace_id: pr.workspace_id, path: existing.path }, "local");
-      else {
-        // Creation must start at the main checkout, even when only a linked workspace is open.
-        let source = listing.source.source_workspace_id ?? pr.workspace_id;
-        if (!listing.source.source_workspace_id && listing.source.source_checkout_path !== listing.source.repo_root) {
-          source = (await openWorktree({ workspace_id: pr.workspace_id, path: listing.source.repo_root }, "local")).workspace_id;
-        }
-        const { ref } = await fetchPullRequestBranch(source, pr.branch, "local");
-        opened = await createWorktree({ workspace_id: source, branch: pr.branch, base: ref }, "local");
-      }
-      setGithubSection("inbox"); onOpened(opened);
-    } catch { setError("checkout_failed"); }
-    finally { setBusy(null); }
-  };
   const group = (rows: GithubPull[], requested: boolean) => rows.length > 0 && <section aria-label={requested ? t("Review requested") : t("Yours")}>
     <h3>{requested ? t("Review requested") : t("Yours")}</h3>
     <ul className="worktree-list pr-list">{rows.map((pr) => {
-      const key = `${requested ? "review" : "yours"}:${pr.url}`;
-      const open = expanded === key;
       const status = githubStatus(pr, requested);
       return <li key={pr.url} className="fork-github-row">
-        <button type="button" className="fork-github-summary" aria-expanded={open} onClick={() => setExpanded(open ? null : key)}>
+        <button type="button" className="fork-github-summary" aria-current={open?.url === pr.url ? "true" : undefined} onClick={() => openPull(pr, !wide)}>
           <span className="worktree-path">{pr.repository} · #{pr.number}</span>
           <span className="pr-title" dir="auto">{pr.title}</span>
           <span className={`pill ${statusClasses[status]}`}>{statuses[status]}</span>
         </button>
-        {open && <div className="fork-github-details">
-          <p>{checks[pr.checks] ?? t("No checks")} · {reviews[pr.review] ?? t("No review yet")}</p>
-          <p className="worktree-path">{pr.branch}</p>
-          <div className="fork-github-actions">
-            {!watching && pr.workspace_id && !pr.fork && <button type="button" className="btn" disabled={busy !== null} onClick={() => void checkout(pr)}>{busy === pr.url ? t("Checking out…") : t("Checkout")}</button>}
-            <a className="btn btn-ghost" href={pr.url} target="_blank" rel="noreferrer noopener">{t("Open on GitHub")}</a>
-          </div>
-        </div>}
       </li>;
     })}</ul>
   </section>;
+  if (!wide && open !== null) return <GithubPullPage key={open.url} pull={open} wide={false} watching={watching} onOpened={(opened) => { setGithubSection("inbox"); onOpened(opened); }} />;
   return <section className={`mode-inbox fork-github${wide ? " is-wide" : ""}`} aria-label={t("GitHub|fork")}>
     <header className="inbox-top">
       {!wide && <button type="button" className="icon-button inbox-round" aria-label={t("Back|fork inbox")} title={t("Back|fork inbox")} onClick={closeGithub}><ArrowLeft aria-hidden="true" /></button>}
@@ -161,10 +156,10 @@ export function GithubInbox({ wide, watching, onOpened }: ViewProps) {
         aria-haspopup="menu" aria-expanded={repoMenu !== null} onClick={(event) => setRepoMenu(repoMenu === null ? event.currentTarget : null)}><ListFilter aria-hidden="true" /></button>}
       {repoMenu !== null && <RowMenu anchor={repoMenu} title={t("Repositories")} choice onClose={() => setRepoMenu(null)}
         items={[["", 0] as const, ...groups.repos].map(([name]) => ({ id: name || "all", label: name ? name.split("/").pop() ?? name : t("All"), icon: name ? FolderGit2 : ListFilter, checked: groups.selected === name, run: () => { setRepo(name); saveGithubRepo(name); } }))} />}
-      <button type="button" className="icon-button inbox-round" aria-label={t("Refresh")} title={t("Refresh")} disabled={loading || busy !== null} onClick={() => setRefresh((value) => value + 1)}><RefreshCw aria-hidden="true" /></button></header>
+      <button type="button" className="icon-button inbox-round" aria-label={t("Refresh")} title={t("Refresh")} disabled={loading} onClick={() => setRefresh((value) => value + 1)}><RefreshCw aria-hidden="true" /></button></header>
     <div className="inbox-scroll">
       {!loading && error === null && (listing?.failed?.length ?? 0) > 0 && <p className="fork-github-note" role="status">{t("Could not read {accounts}", { accounts: listing!.failed!.join(", ") })}</p>}
-      {loading ? <p className="inbox-empty" role="status">{t("Reading pull requests…")}</p> : error !== null ? <p className="inbox-empty" role="alert">{error === "checkout_failed" ? t("Could not check out this pull request") : errors[error] ?? errors.gh_failed}</p> : listing !== null && <>
+      {loading ? <p className="inbox-empty" role="status">{t("Reading pull requests…")}</p> : error !== null ? <p className="inbox-empty" role="alert">{errors[error] ?? errors.gh_failed}</p> : listing !== null && <>
         {groups.review.length + groups.yours.length === 0 ? <p className="inbox-empty" role="status">{t("Nothing needs you")}</p> : <>{group(groups.review, true)}{group(groups.yours, false)}</>}
       </>}
     </div>

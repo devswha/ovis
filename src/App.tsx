@@ -152,7 +152,7 @@ import { inboxOrder } from "./lib/agentInbox.ts";
 import { layoutCells } from "./lib/layoutMap.ts";
 import { pageStartsInInbox, useInboxMode } from "./lib/inboxMode.ts";
 import { InboxList } from "./components/InboxList.tsx";
-import { ForkGithubSection } from "./fork/GithubInbox.tsx";
+import { ForkGithubPane, ForkGithubSection } from "./fork/GithubInbox.tsx";
 import { InboxConnecting, InboxFootEntry, InboxUnchosen, ThreadTitle, ThreadTop } from "./components/InboxMode.tsx";
 import { InboxRail } from "./components/InboxRail.tsx";
 import { OvisMark } from "./components/OvisMark.tsx";
@@ -1544,6 +1544,7 @@ export function App() {
           {/* the mode's list is the screen on a phone; from 769px it is the column, and a pane with no thread says so */}
           {listScreen && modeList(false)}
           {inboxWide && inbox.shown && <InboxUnchosen />}
+          <ForkGithubPane wide={inboxWide} watching={auth?.role === "watch"} onOpened={(opened) => selectTarget("local", opened.pane_id)} />
           {dividers.length > 0 && !inMode && <SplitDividers dividers={dividers} areaRef={paneAreaRef} onResize={resizeDivider} />}
           <SplitDropPreview visible={!inMode && splitDragOn && (paneDragging || tabDrag !== null)} grid={gridPreview} />
         </div>}
