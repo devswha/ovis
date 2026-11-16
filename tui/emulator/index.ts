@@ -30,10 +30,13 @@ export type { EngineColors, EngineCursor, EngineEvents, EngineHistory, EngineKey
  * - `disposed`: the emulator was disposed; every later call answers this.
  * - `failed`: the engine or a handler passed in `events` threw something else (a bad argument, a throwing callback); that call
  *   only, the emulator stays alive.
- * - `size`: a size outside the range, refused before the engine saw it; the emulator stays alive.
+ * - `size`: a size outside the range (or no options object, which names no size), refused before the engine saw it; the
+ *   emulator stays alive.
+ * - `busy`: a handler or draw callback called its own emulator while that emulator's call was running; refused, nothing done,
+ *   the emulator stays alive.
  */
 export interface EmulatorError {
-  kind: "size" | "disposed" | "trapped" | "failed";
+  kind: "size" | "disposed" | "trapped" | "failed" | "busy";
   message: string;
   cause?: unknown;
 }
@@ -50,17 +53,25 @@ export interface EmulatorOptions {
 
 /**
  * One pane's terminal state. Not shared: its own wasm instance, freed by `dispose`. A handler passed in `events` or a draw callback
- * must not call the emulator it belongs to, except `dispose()`, which is safe.
+ * may call `dispose()` on its own emulator (it takes effect when the running call returns, and no handler or draw callback of it
+ * is called after it); any other call on its own emulator answers `busy`. Other emulators may be called freely.
  */
 export interface Emulator {
-  /** the trap that killed this emulator, or null while it lives (only a trap ends it) */
+  /**
+   * Null while the emulator lives and after a clean `dispose()`. Otherwise why it ended: the trap that killed it (`trapped`), or
+   * what the engine threw while `dispose()` freed it (`trapped` for a trap, `failed` for anything else; the emulator is
+   * disposed all the same).
+   */
   readonly failure: EmulatorError | null;
 
   write(bytes: Uint8Array): EmulatorResult<void>;
   /** a no-op when nothing changed; cell sizes are in pixels */
   resize(cols: number, rows: number, cellW: number, cellH: number): EmulatorResult<void>;
   reset(): EmulatorResult<void>;
-  /** frees the terminal; safe to call twice, on a dead emulator and from inside a handler, and it never throws */
+  /**
+   * frees the terminal; safe to call twice and on a dead emulator, and it never throws. From inside a handler or draw callback
+   * of a running call it frees when that call returns; that call still returns its own result.
+   */
   dispose(): void;
 
   /** rows changed since the last call, as runs of cells that share a style, colours as the program wrote them; true when any row was drawn */

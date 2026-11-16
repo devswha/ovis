@@ -1,6 +1,7 @@
 import wasmFile from "../../shared/ghostty/ghostty-vt.wasm" with { type: "file" };
 import { GhosttyEngine, GhosttyModule } from "../../shared/ghostty/engine.ts";
 import { TERMINAL_HISTORY_LINES } from "../../shared/terminal-flow.ts";
+import type { EngineEvents } from "../../shared/ghostty/engine.ts";
 import type { Emulator, EmulatorError, EmulatorLoader, EmulatorOptions, EmulatorResult } from "./index.ts";
 
 /** The smallest pane the engine is asked for. */
@@ -48,14 +49,19 @@ export function createEmulatorLoader(options: LoaderOptions): EmulatorLoader {
   };
 
   return {
-    async create({ cols, rows, events }: EmulatorOptions): Promise<EmulatorResult<Emulator>> {
+    async create(given: EmulatorOptions): Promise<EmulatorResult<Emulator>> {
+      // no options object names no size: refused like any other bad size, before the engine file is read
+      const { cols, rows, events }: EmulatorOptions =
+        typeof given === "object" && given !== null ? given : { cols: Number.NaN, rows: Number.NaN, events: {} };
       const size = badSize(cols, rows);
       if (size) return refuse(size);
       try {
         const module = new GhosttyModule(new WebAssembly.Instance(await compile(), {}));
         options.onModule?.(module);
-        const engine = new GhosttyEngine(module, cols, rows, { widths: "core", images: false, scrollbackLines: TERMINAL_HISTORY_LINES, events });
-        return { ok: true, value: new GhosttyEmulator(module, engine) };
+        // always a screen's engine (one made with `events`), never the browser's, whatever the caller passed as `events`
+        const emulator = new GhosttyEmulator(module, events ?? {}, (guarded) =>
+          new GhosttyEngine(module, cols, rows, { widths: "core", images: false, scrollbackLines: TERMINAL_HISTORY_LINES, events: guarded }));
+        return { ok: true, value: emulator };
       } catch (error) {
         return refuse(errorOf(error));
       }
@@ -68,20 +74,50 @@ const embedded = createEmulatorLoader({ read: () => Bun.file(wasmFile).arrayBuff
 
 export const createEmulator = (options: EmulatorOptions): Promise<EmulatorResult<Emulator>> => embedded.create(options);
 
+const busyError = (): EmulatorError => ({ kind: "busy", message: "a call of this emulator is still running; it was not entered again" });
+
 function errorOf(error: unknown): EmulatorError {
   const message = error instanceof Error ? error.message : String(error);
   return { kind: error instanceof WebAssembly.RuntimeError ? "trapped" : "failed", message, cause: error };
 }
 
+/**
+ * An emulator never runs inside its own call: a handler or draw callback that calls it again is refused with `busy`, and one that
+ * disposes it only marks it disposed, so the engine is freed after the module finished the running call (freeing it earlier frees
+ * memory the module is still parsing). From the mark on, no handler or draw callback of the emulator is called.
+ */
 class GhosttyEmulator implements Emulator {
   failure: EmulatorError | null = null;
   private module: GhosttyModule | null;
   private engine: GhosttyEngine | null;
   private disposed = false;
+  /** whether a call of this emulator is running; at most one is, since a nested call is refused */
+  private running = false;
 
-  constructor(module: GhosttyModule, engine: GhosttyEngine) {
+  /**
+   * `make` builds the engine on the caller's handlers, each looked up when the engine calls it and skipped once the emulator is
+   * disposed (also in the rest of the call that disposed it)
+   */
+  constructor(module: GhosttyModule, events: EngineEvents, make: (events: EngineEvents) => GhosttyEngine) {
     this.module = module;
-    this.engine = engine;
+    this.engine = make({
+      onReply: (bytes) => {
+        if (!this.disposed) events.onReply?.(bytes);
+      },
+      onHold: (held) => {
+        if (!this.disposed) events.onHold?.(held);
+      },
+      onEffect: (effect) => {
+        if (!this.disposed) events.onEffect?.(effect);
+      },
+    });
+  }
+
+  /** a draw callback of the caller's, skipped once the emulator is disposed (also for the rest of the frame that disposed it) */
+  private live<A extends unknown[]>(callback: (...args: A) => void): (...args: A) => void {
+    return (...args) => {
+      if (!this.disposed) callback(...args);
+    };
   }
 
   /** the error every call answers once the emulator is disposed or dead, or null while it lives */
@@ -91,22 +127,28 @@ class GhosttyEmulator implements Emulator {
   }
 
   /**
-   * runs one engine call. A trap (a thrown `WebAssembly.RuntimeError`, or one recorded on the module) kills the emulator: its
-   * engine and module are dropped and every later call answers the same error. Any other error fails that call only.
+   * runs one engine call, unless the emulator ended, another of its calls is running (`busy`) or `check` refuses it. A trap (a
+   * thrown `WebAssembly.RuntimeError`, or one recorded on the module) kills the emulator: its engine and module are dropped and
+   * every later call answers the same error. Any other error fails that call only. A dispose during the call frees the engine
+   * when the call is over.
    */
-  private call<T>(run: (engine: GhosttyEngine) => T): EmulatorResult<T> {
-    const ended = this.ended();
-    if (ended) return refuse(ended);
+  private call<T>(run: (engine: GhosttyEngine) => T, check?: () => EmulatorError | null): EmulatorResult<T> {
+    const refused = this.ended() ?? (this.running ? busyError() : null) ?? check?.() ?? null;
+    if (refused) return refuse(refused);
     const module = this.module!;
-    let value: T;
+    this.running = true;
+    let result: EmulatorResult<T>;
     try {
-      value = run(this.engine!);
+      const value = run(this.engine!);
+      result = module.trap ? refuse(this.die(module.trap)) : { ok: true, value };
     } catch (error) {
       const trap = module.trap ?? (error instanceof WebAssembly.RuntimeError ? error : null);
-      if (trap) return refuse(this.die(trap));
-      return refuse(this.ended() ?? errorOf(error));
+      result = refuse(trap ? this.die(trap) : this.ended() ?? errorOf(error));
+    } finally {
+      this.running = false;
     }
-    return module.trap ? refuse(this.die(module.trap)) : { ok: true, value };
+    if (this.disposed) this.free();
+    return result;
   }
 
   private die(trap: WebAssembly.RuntimeError): EmulatorError {
@@ -116,9 +158,14 @@ class GhosttyEmulator implements Emulator {
     return this.failure;
   }
 
+  /** inside a running call only marks the emulator disposed: `call` frees it when the call is over */
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    if (!this.running) this.free();
+  }
+
+  private free(): void {
     try {
       this.engine?.dispose();
     } catch (error) {
@@ -130,14 +177,12 @@ class GhosttyEmulator implements Emulator {
 
   write: Emulator["write"] = (bytes) => this.call((engine) => engine.write(bytes));
 
-  resize: Emulator["resize"] = (cols, rows, cellW, cellH) => {
-    const refused = this.ended() ?? badSize(cols, rows) ?? badCell(cellW, cellH);
-    return refused ? refuse(refused) : this.call((engine) => engine.resize(cols, rows, cellW, cellH));
-  };
+  resize: Emulator["resize"] = (cols, rows, cellW, cellH) =>
+    this.call((engine) => engine.resize(cols, rows, cellW, cellH), () => badSize(cols, rows) ?? badCell(cellW, cellH));
 
   reset: Emulator["reset"] = () => this.call((engine) => engine.reset());
-  frame: Emulator["frame"] = (draw) => this.call((engine) => engine.frame(draw, "written"));
-  frameAll: Emulator["frameAll"] = (draw) => this.call((engine) => engine.frameAll(draw, "written"));
+  frame: Emulator["frame"] = (draw) => this.call((engine) => engine.frame(this.live(draw), "written"));
+  frameAll: Emulator["frameAll"] = (draw) => this.call((engine) => engine.frameAll(this.live(draw), "written"));
   cursorState: Emulator["cursorState"] = () => this.call((engine) => engine.cursorState());
   modes: Emulator["modes"] = () => this.call((engine) => engine.modes());
   setMode: Emulator["setMode"] = (mode, on) => this.call((engine) => engine.setMode(mode, on));

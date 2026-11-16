@@ -39,6 +39,57 @@ function rowText(emulator: Emulator, y: number): string {
   return found;
 }
 
+/**
+ * a loader whose modules log, by name, every export the engine calls; `force` runs before each call and may throw. It keeps only
+ * the newest module: a fuzz that kept them all would hold every wasm instance it made.
+ */
+function recordingLoader(force?: (name: string) => void) {
+  const log: string[] = [];
+  let newest: GhosttyModule | null = null;
+  const loader = createEmulatorLoader({
+    read: async () => Bun.file(wasmPath).arrayBuffer(),
+    onModule: (module) => {
+      newest = module;
+      const logged: Record<string, unknown> = {};
+      for (const [name, value] of Object.entries(module.exports)) {
+        logged[name] = typeof value !== "function" ? value : (...args: unknown[]) => {
+          log.push(name);
+          force?.(name);
+          return (value as (...args: unknown[]) => unknown)(...args);
+        };
+      }
+      (module as { exports: GhosttyExports }).exports = logged as unknown as GhosttyExports;
+    },
+  });
+  return { loader, log, newest: () => newest };
+}
+
+/** what the engine called after it freed the terminal, other than the frees that end its own dispose */
+function callsAfterFree(log: string[]): string[] {
+  const freed = log.indexOf("ghostty_terminal_free");
+  return freed < 0 ? [] : log.slice(freed + 1).filter((name) => name !== "ghostty_wasm_free");
+}
+
+/** a small seeded generator (mulberry32), so that a fuzz run can be repeated */
+function seeded(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(state ^ (state >>> 15), state | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** every row an emulator draws, the cursor and the modes after it */
+function screenOf(emulator: Emulator) {
+  const rows: string[] = [];
+  const drawn = emulator.frameAll((y, runs) => {
+    rows[y] = runs.flatMap((run) => run.cells.map((cell) => cell.text)).join("").trimEnd();
+  });
+  return { drawn, rows, cursor: emulator.cursorState(), modes: emulator.modes() };
+}
+
 /** an emulator with its replies collected */
 async function pane(loader: ReturnType<typeof countingLoader>["loader"], cols = 20, rows = 5) {
   const replies: string[] = [];
@@ -134,6 +185,24 @@ describe("emulator per pane", () => {
     expect(trapped.failure?.kind).toBe("trapped");
     const afterTrap = trapped.write(bytesOf("x"));
     expect(afterTrap.ok).toBe(false);
+
+    // a free that throws anything else is recorded as `failed`; the emulator is disposed all the same
+    const throwing = createEmulatorLoader({
+      read: async () => Bun.file(wasmPath).arrayBuffer(),
+      onModule: (module) => {
+        (module as { exports: GhosttyExports }).exports = {
+          ...module.exports,
+          ghostty_terminal_free: () => {
+            throw new Error("forced free error");
+          },
+        };
+      },
+    });
+    const broken = made(await throwing.create({ cols: 20, rows: 5, events: {} }));
+    expect(() => broken.dispose()).not.toThrow();
+    expect(broken.failure?.kind).toBe("failed");
+    const afterBroken = broken.write(bytesOf("x"));
+    expect(!afterBroken.ok && afterBroken.error.kind).toBe("disposed");
   });
 
   it("returns a value when a handler disposes the emulator during a call", async () => {
@@ -145,7 +214,7 @@ describe("emulator per pane", () => {
       let emulator: Emulator | undefined;
       emulator = made(await loader.create({ cols: 20, rows: 5, events: { [name]: () => emulator?.dispose() } }));
       const result = emulator.write(bytes);
-      expect(typeof result.ok).toBe("boolean");
+      expect(result).toEqual({ ok: true, value: undefined });
       const later = emulator.write(bytesOf("x"));
       expect(!later.ok && later.error.kind).toBe("disposed");
     };
@@ -156,7 +225,7 @@ describe("emulator per pane", () => {
     const drawn = made(await loader.create({ cols: 20, rows: 5, events: {} }));
     drawn.write(bytesOf("a"));
     const result = drawn.frameAll(() => drawn.dispose());
-    expect(typeof result.ok).toBe("boolean");
+    expect(result).toEqual({ ok: true, value: undefined });
     const later = drawn.frameAll(() => {});
     expect(!later.ok && later.error.kind).toBe("disposed");
   });
@@ -283,6 +352,9 @@ describe("emulator per pane", () => {
     expect(!wide.ok && wide.error.kind).toBe("size");
     expect(emulator.resize(1000, 5, 8, 16).ok).toBe(true);
     expect(emulator.resize(MAX_COLS, MAX_ROWS, 8, 16).ok).toBe(true);
+    const tall = emulator.resize(5, 501, 8, 16);
+    expect(!tall.ok && tall.error.kind).toBe("size");
+    expect(emulator.resize(5, 500, 8, 16).ok).toBe(true);
     expect(emulator.resize(1, 1, 8, 16).ok).toBe(true);
     emulator.write(bytesOf("\x1b[6n"));
     expect(replies).toEqual(["\x1b[1;1R"]);
@@ -302,6 +374,256 @@ describe("emulator per pane", () => {
     }
     expect(() => emulator.frameAll(() => {})).not.toThrow();
   }, 60_000);
+});
+
+describe("calls from inside a running call", () => {
+  it("frees the engine only after a call whose handler disposed it returned, however much of the write is left", async () => {
+    const { loader } = countingLoader();
+    for (const tail of [64, 256, 70000]) {
+      let emulator: Emulator | undefined;
+      let replies = 0;
+      emulator = made(await loader.create({ cols: 80, rows: 24, events: { onReply: () => {
+        replies++;
+        emulator?.dispose();
+      } } }));
+      const result = emulator.write(bytesOf("\x1b[6n" + "x".repeat(tail) + "\x1b[6n"));
+      expect(result).toEqual({ ok: true, value: undefined });
+      expect(emulator.failure).toBeNull();
+      // the second query of the same write reaches no handler: the emulator was already disposed
+      expect(replies).toBe(1);
+      const later = emulator.write(bytesOf("x"));
+      expect(!later.ok && later.error.kind).toBe("disposed");
+    }
+  });
+
+  it("calls no module export after the free, and frees once, after the running call's last module call", async () => {
+    const { loader, log } = recordingLoader();
+    let emulator: Emulator | undefined;
+    let freedInHandler: boolean | undefined;
+    emulator = made(await loader.create({ cols: 40, rows: 5, events: { onReply: () => {
+      emulator?.dispose();
+      freedInHandler = log.includes("ghostty_terminal_free");
+    } } }));
+    log.length = 0;
+    // after the query the write goes on, and a hold makes the engine call the module again from its callback
+    const result = emulator.write(bytesOf("a\x1b[6n" + "y".repeat(300) + "\x1b[?2026h" + "z".repeat(300)));
+    expect(result.ok).toBe(true);
+    expect(freedInHandler).toBe(false);
+    expect(log.filter((name) => name === "ghostty_terminal_free")).toHaveLength(1);
+    expect(log.lastIndexOf("ghostty_render_state_update")).toBeLessThan(log.indexOf("ghostty_terminal_free"));
+    expect(log.lastIndexOf("ghostty_terminal_vt_write")).toBeLessThan(log.indexOf("ghostty_terminal_free"));
+    expect(callsAfterFree(log)).toEqual([]);
+    const calls = log.length;
+    for (const later of [emulator.write(bytesOf("x")), emulator.frameAll(() => {}), emulator.cursorState(), emulator.reset()]) {
+      expect(!later.ok && later.error.kind).toBe("disposed");
+    }
+    emulator.dispose();
+    expect(log).toHaveLength(calls);
+
+    // a draw callback that disposes: the rest of the frame is not drawn, and the free comes after the frame
+    const drawn = made(await loader.create({ cols: 40, rows: 5, events: {} }));
+    drawn.write(bytesOf("one\r\ntwo\r\nthree"));
+    log.length = 0;
+    let rows = 0;
+    const frame = drawn.frameAll(() => {
+      rows++;
+      drawn.dispose();
+    });
+    expect(frame).toEqual({ ok: true, value: undefined });
+    expect(rows).toBe(1);
+    expect(log.filter((name) => name === "ghostty_terminal_free")).toHaveLength(1);
+    expect(callsAfterFree(log)).toEqual([]);
+  });
+
+  it("answers disposed, not failed, when a handler disposes and then throws, and frees once", async () => {
+    let armed = false;
+    const { loader, log } = recordingLoader((name) => {
+      if (armed && name === "ghostty_render_state_update") throw new WebAssembly.RuntimeError("forced trap");
+    });
+    let emulator: Emulator | undefined;
+    emulator = made(await loader.create({ cols: 20, rows: 5, events: { onReply: () => {
+      emulator?.dispose();
+      throw new Error("handler broke after dispose");
+    } } }));
+    const result = emulator.write(bytesOf("\x1b[6n" + "x".repeat(500)));
+    expect(!result.ok && result.error.kind).toBe("disposed");
+    expect(emulator.failure).toBeNull();
+    const later = emulator.write(bytesOf("x"));
+    expect(!later.ok && later.error.kind).toBe("disposed");
+    expect(log.filter((name) => name === "ghostty_terminal_free")).toHaveLength(1);
+    expect(callsAfterFree(log)).toEqual([]);
+
+    // a call that traps after its handler disposed the emulator (the second hold captures the screen again):
+    // that call answers the trap, later ones `disposed`
+    let trapping: Emulator | undefined;
+    trapping = made(await loader.create({ cols: 20, rows: 5, events: { onHold: () => {
+      trapping?.dispose();
+      armed = true;
+    } } }));
+    const trapped = trapping.write(bytesOf("\x1b[?2026h\x1b[?2026l\x1b[?2026h"));
+    armed = false;
+    expect(!trapped.ok && trapped.error.kind).toBe("trapped");
+    expect(trapping.failure?.kind).toBe("trapped");
+    const next = trapping.write(bytesOf("x"));
+    expect(!next.ok && next.error.kind).toBe("disposed");
+  });
+
+  it("never traps when a reply handler disposes during 3000 seeded writes of 1 to 70000 bytes", async () => {
+    const seed = 54;
+    const random = seeded(seed);
+    const { loader, log } = recordingLoader();
+    const pieces = ["\x1b[6n", "\x1b[5n", "\x1b[?2026h", "\x1b[?2026l", "\x07", "\r\n", "\x1b[31m", "\x1b]0;t\x07", "\x1b[2J", "\u{D55C}"];
+    const payload = (): Uint8Array => {
+      const length = 1 + Math.floor(random() * 70000);
+      const bytes = new Uint8Array(length);
+      let at = 0;
+      while (at < length) {
+        const pick = random();
+        if (pick < 0.3) {
+          const piece = bytesOf(pieces[Math.floor(random() * pieces.length)]!);
+          bytes.set(piece.subarray(0, length - at), at);
+          at += piece.length;
+        } else if (pick < 0.5) {
+          for (const end = Math.min(length, at + 1 + Math.floor(random() * 256)); at < end; at++) bytes[at] = Math.floor(random() * 256);
+        } else {
+          const end = Math.min(length, at + 1 + Math.floor(random() * 2048));
+          bytes.fill(0x61 + Math.floor(random() * 26), at, end);
+          at = end;
+        }
+      }
+      // one query that random bytes before it cannot swallow (CAN and ST end any sequence or string)
+      const query = bytesOf("\x18\x1b\\\x1b[6n");
+      bytes.set(query.subarray(0, length), Math.floor(random() * Math.max(1, length - query.length)));
+      return bytes;
+    };
+    const answers = new Map<string, number>();
+    let writes = 0;
+    let disposedInCall = 0;
+    const late: string[] = [];
+    while (writes < 3000) {
+      let emulator: Emulator | undefined;
+      let repliesLeft = 1 + Math.floor(random() * 3);
+      emulator = made(await loader.create({ cols: 1 + Math.floor(random() * 200), rows: 1 + Math.floor(random() * 60), events: { onReply: () => {
+        if (--repliesLeft === 0) emulator?.dispose();
+      } } }));
+      log.length = 0;
+      for (let round = 0; round < 4 && writes < 3000; round++) {
+        writes++;
+        const result = emulator.write(payload());
+        const answer = result.ok ? "ok" : result.error.kind;
+        answers.set(answer, (answers.get(answer) ?? 0) + 1);
+        if (answer === "disposed") break;
+        if (repliesLeft <= 0 && answer === "ok") disposedInCall++;
+      }
+      late.push(...callsAfterFree(log));
+      if (repliesLeft <= 0) expect(log.filter((name) => name === "ghostty_terminal_free")).toHaveLength(1);
+      emulator.dispose();
+    }
+    expect([...answers.keys()].filter((answer) => answer !== "ok" && answer !== "disposed")).toEqual([]);
+    expect(late).toEqual([]);
+    // most rounds really disposed from inside a running write
+    expect(disposedInCall).toBeGreaterThan(500);
+  }, 60_000);
+
+  const nestedCalls: Record<string, (emulator: Emulator) => EmulatorResult<unknown>> = {
+    write: (emulator) => emulator.write(bytesOf("NESTED")),
+    reset: (emulator) => emulator.reset(),
+    resize: (emulator) => emulator.resize(10, 2, 8, 16),
+    frame: (emulator) => emulator.frame(() => {}),
+    cursorState: (emulator) => emulator.cursorState(),
+  };
+  const callbacks = ["onReply", "onEffect", "onHold", "draw"] as const;
+
+  /** one outer call whose callback (once) makes `nested` on its own emulator; the outer call's result and the screen after it */
+  async function outerCall(loader: ReturnType<typeof recordingLoader>, callback: (typeof callbacks)[number], nested?: string) {
+    let emulator: Emulator | undefined;
+    let nestedResult: EmulatorResult<unknown> | undefined;
+    let nestedModuleCalls = -1;
+    const replies: string[] = [];
+    const once = () => {
+      if (!nested || nestedResult || !emulator) return;
+      const before = loader.log.length;
+      nestedResult = nestedCalls[nested]!(emulator);
+      nestedModuleCalls = loader.log.length - before;
+    };
+    const events = {
+      onReply: (bytes: Uint8Array) => {
+        replies.push(text(bytes));
+        if (callback === "onReply") once();
+      },
+      onEffect: () => callback === "onEffect" && once(),
+      onHold: () => callback === "onHold" && once(),
+    };
+    emulator = made(await loader.loader.create({ cols: 30, rows: 3, events }));
+    const input = { onReply: "A\x1b[6nB tail", onEffect: "A\x07B tail", onHold: "A\x1b[?2026hB tail\x1b[?2026l", draw: "A B tail" }[callback];
+    let outer: EmulatorResult<unknown> = emulator.write(bytesOf(input));
+    if (callback === "draw") outer = emulator.frameAll((y) => y === 0 && once());
+    emulator.write(bytesOf("\x1b[6n"));
+    return { outer, screen: screenOf(emulator), replies, nestedResult, nestedModuleCalls };
+  }
+
+  it("refuses a call of its own emulator from a handler or draw callback with busy, and does nothing", async () => {
+    const loader = recordingLoader();
+    for (const callback of callbacks) {
+      const control = await outerCall(loader, callback);
+      expect(control.outer.ok).toBe(true);
+      for (const nested of Object.keys(nestedCalls)) {
+        const run = await outerCall(loader, callback, nested);
+        expect({ callback, nested, kind: run.nestedResult && !run.nestedResult.ok && run.nestedResult.error.kind }).toEqual({ callback, nested, kind: "busy" });
+        expect(run.nestedModuleCalls).toBe(0);
+        expect(run.outer).toEqual(control.outer);
+        expect(run.screen).toEqual(control.screen);
+        expect(run.replies).toEqual(control.replies);
+      }
+    }
+  });
+
+  it("lets a handler call another emulator freely", async () => {
+    const { loader } = recordingLoader();
+    const b = await pane(loader, 30, 3);
+    let fromA: EmulatorResult<unknown> | undefined;
+    const a = made(await loader.create({ cols: 30, rows: 3, events: { onReply: () => {
+      fromA = b.emulator.write(bytesOf("from-A\x1b[6n"));
+    } } }));
+    expect(a.write(bytesOf("A\x1b[6nB")).ok).toBe(true);
+    expect(fromA).toEqual({ ok: true, value: undefined });
+    expect(rowText(a, 0)).toBe("AB");
+    expect(rowText(b.emulator, 0)).toBe("from-A");
+    expect(b.replies).toEqual(["\x1b[1;7R"]);
+  });
+});
+
+describe("the options", () => {
+  it("answers a missing or non-object options argument with a size error, before the engine file is read", async () => {
+    const { loader, state } = countingLoader();
+    for (const options of [undefined, null, "80x24", 5, true]) {
+      const created = await loader.create(options as never);
+      expect(!created.ok && created.error.kind).toBe("size");
+    }
+    expect(state.reads).toBe(0);
+  });
+
+  it("builds a screen's engine when events is undefined or null", async () => {
+    let armed = false;
+    const { loader, newest } = recordingLoader((name) => {
+      if (armed && name === "ghostty_terminal_vt_write") throw new WebAssembly.RuntimeError("forced trap");
+    });
+    for (const events of [undefined, null]) {
+      const emulator = made(await loader.create({ cols: 20, rows: 5, events: events as never }));
+      const module = newest();
+      // only a screen's engine watches for mode 9001; a reply with no handler to take it is dropped
+      expect(emulator.write(bytesOf("\x1b[?9001h\x1b[6n")).ok).toBe(true);
+      const modes = emulator.modes();
+      expect(modes.ok && modes.value.win32Input).toBe(true);
+      armed = true;
+      const failed = emulator.write(bytesOf("x"));
+      armed = false;
+      expect(!failed.ok && failed.error.kind).toBe("trapped");
+      expect(module?.trap).toBeInstanceOf(WebAssembly.RuntimeError);
+      const next = emulator.cursorState();
+      expect(!next.ok && next.error.kind).toBe("trapped");
+    }
+  });
 });
 
 describe("the engine file", () => {
