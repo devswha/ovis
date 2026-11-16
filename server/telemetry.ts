@@ -594,7 +594,12 @@ export class Telemetry {
     if (!clean) throw new TypeError("Invalid telemetry change");
     // turned off while an event is on its way: stop it before anything is read or written (a read may write the mark), and
     // even if OFF_FILE cannot be written
-    if (clean.enabled === false) { this.abort?.abort(); this.activeAbort?.abort(); this.countsAbort?.abort(); }
+    if (clean.enabled === false) {
+      this.abort?.abort(); this.activeAbort?.abort(); this.countsAbort?.abort();
+      // marked before the lock is even asked for: another server's send checks the mark right before it goes, so an off
+      // stops it at once, whatever the wait for the lock
+      this.markOff();
+    }
     // the off mark as this change found it: one made meanwhile (another server's off that could not wait for the lock)
     // wins, and this change neither writes over it nor removes it
     const markOf = (): number | null => { try { return statSync(this.offFile).mtimeMs; } catch { return null; } };
@@ -798,12 +803,19 @@ export class Telemetry {
             if (!abort.signal.aborted) console.error(`telemetry: the counts message was not delivered (${message(error)})`);
             return;
           }
-          this.countsDelivered.add(counts.day);
           this.locked(() => {
             this.refresh();
+            // an off and on since it went began a new generation: a day recorded under it is a new batch, kept and sent
+            if (this.saved.forgotten !== generation) return;
+            this.countsDelivered.add(counts.day);
             this.saved.counts = this.saved.counts.filter((entry) => entry.day !== counts.day);
             this.persist();
-          }, () => this.skipped("a counts day's delivery"));
+          }, () => {
+            // the file cannot be locked (a read-only folder, another server's lock): the day the receiver took is not sent
+            // again from this server, unless an off and on it knows of began a new generation
+            if (this.saved.forgotten === generation) this.countsDelivered.add(counts.day);
+            this.skipped("a counts day's delivery");
+          });
         }
       } catch (error) {
         console.error(`telemetry: ${this.file} could not be written (${message(error)})`);
@@ -998,8 +1010,9 @@ export class Telemetry {
     this.activeAbort = abort;
     this.activeSending = (async () => {
       try {
-        for (const { active, fresh } of due) {
+        for (const { active: built } of due) {
           if (abort.signal.aborted) return;
+          let active = built;
           const next = this.locked((): "stop" | "skip" | "send" => {
             // as the file stands now: an off here or by another server since the list was made deleted its days, and they
             // are neither sent nor written back
@@ -1008,6 +1021,10 @@ export class Telemetry {
             // kept before it goes: a receiver may read it even when its answer never comes back, so the hour counts from here
             const going = this.saved.active.find((known) => known.day === active.day);
             if (!going) return "skip";
+            // built again from the day as it stands under the lock: another server may have sent a sample since the list was made
+            if (!owed(going)) return "skip";
+            const fresh = usageDue(going);
+            active = this.activeMessage({ ...going, usage: carried(going) });
             going.wire_usage = active.usage;
             if (fresh) going.sent_at = this.now();
             this.persist();

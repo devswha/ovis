@@ -879,6 +879,23 @@ describe("daily active message", () => {
     rmSync(file);
   });
 
+  test("an off is marked before it waits for another server's lock, so that server's next send already finds it", async () => {
+    const { telemetry, stateDir } = setup({ grace: 600_000 });
+    seen(telemetry);
+    const lock = join(stateDir, "telemetry.lock");
+    const off = join(stateDir, "telemetry-off");
+    // another server holds the lock for 150 ms and looks for the off mark meanwhile, as its send would right before it goes
+    const child = Bun.spawn(["bun", "-e", `const fs = require("node:fs"); fs.writeFileSync(${JSON.stringify(lock)}, process.pid + " " + Date.now(), { flag: "wx" }); console.log("HELD"); const start = Date.now(); let seen = false; while (Date.now() - start < 150) { if (fs.existsSync(${JSON.stringify(off)})) { seen = true; break; } Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2); } console.log(seen ? "SEEN" : "NOT"); fs.rmSync(${JSON.stringify(lock)});`], { stdout: "pipe" });
+    const reader = child.stdout.getReader();
+    expect(new TextDecoder().decode((await reader.read()).value)).toContain("HELD");
+    telemetry.change({ enabled: false });
+    expect(await child.exited).toBe(0);
+    let rest = "";
+    for (;;) { const { value, done } = await reader.read(); if (done) break; rest += new TextDecoder().decode(value); }
+    expect(rest).toContain("SEEN");
+    expect(savedFile(stateDir).enabled).toBe(false);
+  });
+
   test("a server never waits on its own lock and leaves none behind", async () => {
     const { telemetry, stateDir } = setup({ grace: 600_000 });
     const errors = spyOn(console, "error").mockImplementation(() => {});
