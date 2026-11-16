@@ -9,7 +9,10 @@ Reusable upstream candidate, behind the existing **Agent friends** opt-in (off o
 ID survives bridge/runtime restarts and renames without following a pane's changing cwd; separate
 workspaces intentionally remain separate projects. Descendants resolve their conductor's workspace,
 even across workspaces. The browser/alert response stays `{ friends: { [machine:pane]: friend } }`;
-`src/fork/friends.ts`, avatars and notification callers need no changes and add no child tint.
+avatars and notification callers keep that shape and add no child tint. `src/fork/friends.ts` refreshes
+when workspace or parent metadata changes, including non-agent ancestors, even if pane IDs stay the
+same. Only its local refresh key carries metadata; the request remains `{ live, machines }`. Sorted
+keys avoid requests on unchanged snapshots or mere pane/machine reordering. No new upstream hook.
 
 `project-friends.json`, owned by FriendStore, is a new flat workspace-to-friend document beside the
 unchanged pane cache `friends.json`. A project's first observed pane/conductor inherits its old pick;
@@ -122,6 +125,13 @@ or host credentials. Logs, exact commands/exits and screenshots are under
 types, coverage and hook scope: no new dependency, generated source, wire contract, polling or RPC.
 Whole-project checks/build remain skipped; browser runs built only disposable demo bundles. No push,
 PR, deployment or merge. The Bigpowers churn/RED-isolation scripts are absent and were not recreated.
+
+Second review, friend refresh: the unchanged-ID workspace-move regression exited 1 (one request
+instead of two), then `TMPDIR="$HOME/.cache/ovis-tmp/inbox-agent-clarity-review2" bun test
+src/fork/AgentAvatar.test.tsx src/fork/notifications.test.ts src/fork/conventions.test.ts
+src/conventions.test.ts` exited 0 (22 tests). It also covers reparenting, a non-agent ancestor moving,
+unchanged-snapshot deduplication and the unchanged API payload. All changes are fork-owned; upstream
+hook counts are unchanged. No settings/default changes or deployment.
 
 ## Three piles
 
