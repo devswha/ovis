@@ -339,9 +339,12 @@ export async function verifySignature(body: Uint8Array, signature: Uint8Array, s
  * When an entry holds (docs/account-list.md): entry n holds, given the entry before it (null for
  * entry 0) and nothing else: (1) its body has the form, (2) its `seq` is n and it continues the
  * chain, (3) its signature verifies. Checked in that order; throws ListEntryError with the first
- * that fails.
+ * that fails. The entry is copied first, so the hash and the fields that come back are those of
+ * the bytes whose signature was checked, whatever the caller does to its buffers meanwhile or
+ * later (copied with `new Uint8Array`: on Node's Buffer, `slice()` is a view of the same memory).
  */
-export async function entryHolds(entry: Entry, before: HeldEntry | null): Promise<HeldEntry> {
+export async function entryHolds(shown: Entry, before: HeldEntry | null): Promise<HeldEntry> {
+  const entry: Entry = { body: new Uint8Array(shown.body), signature: new Uint8Array(shown.signature) };
   if (entry.signature.length !== LIST_SIGNATURE_BYTES) malformed(`A signature is ${LIST_SIGNATURE_BYTES} bytes`);
   const body = readBody(entry.body);
   const n = before === null ? 0 : before.body.seq + 1;

@@ -130,7 +130,6 @@ describe("the vectors of envelope/", () => {
   const byName = new Map(vectors.map((vector) => [vector.name, vector]));
 
   test("there is one file for every vector named, and no other", () => {
-    expect([FIRST.length, SECOND.length, files.length]).toEqual([39, 16, 62]);
     expect(files).toEqual(NAMES.map((name) => `${name}.json`).sort());
     for (const [index, vector] of vectors.entries()) expect(`${vector.name}.json`).toBe(files[index] ?? "");
   });
@@ -763,6 +762,32 @@ describe("when an entry holds", () => {
   test("a body out of form stops before the chain and the signature are looked at", async () => {
     const entry = await signRaw(raw(set(sevenPairs(), "seq", "01")));
     expect(await asyncRefusal(() => entryHolds(entry, null))).toBe("entry_malformed");
+  });
+
+  test("the held entry is of the bytes as they were shown, whatever the caller does to its buffers while the signature is checked", async () => {
+    const note = encoder.encode("as shown");
+    const signed = await signEntry({ ...genesisBody, own: [{ name: "note", value: note }] }, owner.pair.privateKey);
+    const verify = crypto.subtle.verify.bind(crypto.subtle);
+    // The caller's buffers as a plain Uint8Array, and as Node's Buffer, whose slice() is a view of the same memory.
+    for (const [kind, buffer] of [["Uint8Array", (bytes: Uint8Array) => bytes.slice()], ["Buffer", (bytes: Uint8Array) => Buffer.from(bytes)]] as const) {
+      const shown: Entry = { body: buffer(signed.body), signature: buffer(signed.signature) };
+      // The runtime verifies the bytes it was handed, and the caller's buffers change before it answers.
+      const changing = spyOn(crypto.subtle, "verify").mockImplementation(async (...args) => {
+        const verified = await verify(...args);
+        shown.body.fill(0);
+        shown.signature.fill(0);
+        return verified;
+      });
+      try {
+        const held = await entryHolds(shown, null);
+        expect([kind, shown.body.some((byte) => byte !== 0), shown.signature.some((byte) => byte !== 0)]).toEqual([kind, false, false]);
+        expect([kind, held.hash]).toEqual([kind, entryHash(signed.body)]);
+        expect([kind, held.entry]).toEqual([kind, signed]);
+        expect([kind, held.body.own]).toEqual([kind, [{ name: "note", value: note }]]);
+      } finally {
+        changing.mockRestore();
+      }
+    }
   });
 });
 

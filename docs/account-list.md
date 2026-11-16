@@ -67,7 +67,9 @@ or `power` without `adds`. Whether a key may stand in `adds` or `ends` is not a 
   address), is a fault, never a verdict on the entry.
 - The **entry hash** is SHA-256 over `ovis-list-entry/1` and the body, as a hash. It covers the
   body only, so two entries are the same entry when their hashes are equal, whatever their
-  signatures.
+  signatures. Where `r || s` verifies, `r || n-s` verifies too, and anyone can write it without
+  the key, so one body can come with two signatures and as two texts: nothing may identify an
+  entry by its signature bytes or its text, only by its entry hash.
 - The **list id** is the hash of entry 0.
 
 ## On the wire and in files
