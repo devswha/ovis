@@ -343,7 +343,8 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
   setInterval(() => {}, 1 << 30);
 } else {
   serveAsProfile((request) => new URL(request.url).pathname === "/api/account/status"
-    ? (existsSync("/var/tmp/fake-account-listed") ? Response.json({ account: "acct_standin" }) : new Response("no account here", { status: 503 }))
+    ? (existsSync("/var/tmp/fake-account-listed") ? Response.json({ account: "acct_standin" })
+      : existsSync("/var/tmp/fake-account-null") ? Response.json({ account: null }) : new Response("no account here", { status: 503 }))
     : Response.json({ ok: true, machine_profile: { engine: "herdr" }, herdr: { terminal_attach: true },
       // its pairing gate as /var/tmp/fake-gate-open or -closed says; with neither, its health names none
       ...(existsSync("/var/tmp/fake-gate-open") ? { security: { pairing_gate: "open" } } : existsSync("/var/tmp/fake-gate-closed") ? { security: { pairing_gate: "closed" } } : {}) }));
@@ -891,29 +892,74 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
     expect(await m.home()).toBe(home);
   }, 300_000);
 
-  test("an add whose server cannot say where the machine stands: the ending says it could not tell", async () => {
+  test("a failed add whose server names no account, the gate closed: the server is kept (exit 30)", async () => {
+    const m = await runnerMachine();
+    await serveHerdr(m);
+    expect((await m.sh("touch /var/tmp/fake-add-fails /var/tmp/fake-account-null /var/tmp/fake-gate-closed")).code).toBe(0);
+    const run = await m.sh(`${fakeKit.line} --yes </dev/null`);
+    note("caseUnknown", `exit ${run.code}\n${run.stdout}${run.stderr}`);
+    expect([run.code, (await m.processes()).includes("ovis-server serve")]).toEqual([30, true]);
+    expect((await m.sh(`rm /var/tmp/fake-add-fails /var/tmp/fake-account-null /var/tmp/fake-gate-closed && sh ${TRIAL}/join.sh --uninstall`)).code).toBe(0);
+  }, 300_000);
+
+  test("a failed add whose server's account cannot be read: the server is stopped, the install kept for the undo (exit 39)", async () => {
     const m = await runnerMachine();
     await serveHerdr(m);
     expect((await m.sh("touch /var/tmp/fake-add-fails /var/tmp/fake-gate-closed")).code).toBe(0);
     const run = await m.sh(`${fakeKit.line} --yes </dev/null`);
-    note("caseUnknown", `exit ${run.code}\n${run.stdout}${run.stderr}`);
-    expect(run.code).toBe(30);
-    expect((await m.processes()).includes("ovis-server serve")).toBe(true);
-    expect(run.stdout).toContain("it could not tell whether the machine is listed in your Ovis account; check with:");
-    expect(run.stdout).not.toContain("was not added");
-    expect(run.stdout).not.toContain("is listed in your Ovis account, but");
+    note("caseUnreadable", `exit ${run.code}\n${run.stdout}${run.stderr}`);
+    // regression (before: exit 30 with the server kept running)
+    expect([run.code, (await m.processes()).includes("ovis-server serve"), (await m.sh(`test -f ${TRIAL}/receipt`)).code]).toEqual([39, false, 0]);
     expect((await m.sh(`rm /var/tmp/fake-add-fails /var/tmp/fake-gate-closed && sh ${TRIAL}/join.sh --uninstall`)).code).toBe(0);
+  }, 300_000);
+
+  test("a run again whose add fails while the server names an account removes the install; a fresh run in an account says that account (exit 38)", async () => {
+    const m = await runnerMachine();
+    await serveHerdr(m);
+    const home = await m.home();
+    expect((await m.sh("touch /var/tmp/fake-add-fails /var/tmp/fake-account-null /var/tmp/fake-gate-closed")).code).toBe(0);
+    expect((await m.sh(`${fakeKit.line} --yes </dev/null`)).code).toBe(30);
+    // another account's device linked it, and the add failed: on a run again too, nothing stays
+    expect((await m.sh("rm /var/tmp/fake-account-null && touch /var/tmp/fake-account-listed")).code).toBe(0);
+    const second = await m.sh(`${fakeKit.line} --yes </dev/null`);
+    note("caseRunAgain37", `exit ${second.code}\n${second.stdout}${second.stderr}`);
+    // regression (before: exit 37 with the install kept, stopped)
+    expect([second.code, (await m.sh(`test -e ${TRIAL}`)).code, (await m.processes()).includes("ovis-server serve")]).toEqual([37, 1, false]);
+    expect(await m.home()).toBe(home);
+    // the line again, the add returning at once: the machine is in an account no sign-in of this run put it in
+    expect((await m.sh("rm /var/tmp/fake-add-fails")).code).toBe(0);
+    const third = await m.sh(`${fakeKit.line} --yes </dev/null`);
+    note("caseRunAgain37", `exit ${third.code}\n${third.stdout}${third.stderr}`);
+    expect([third.code, third.stdout.includes("acct_standin"), (await m.processes()).includes("ovis-server serve")]).toEqual([38, true, true]);
+    expect((await m.sh(`rm /var/tmp/fake-account-listed /var/tmp/fake-gate-closed && sh ${TRIAL}/join.sh --uninstall`)).code).toBe(0);
+  }, 300_000);
+
+  test("a run again on a machine already in an account, the add returning at once: exit 38 naming it, the server kept only with the gate closed", async () => {
+    const m = await runnerMachine();
+    await serveHerdr(m);
+    expect((await m.sh("touch /var/tmp/fake-add-fails /var/tmp/fake-account-null /var/tmp/fake-gate-closed")).code).toBe(0);
+    expect((await m.sh(`${fakeKit.line} --yes </dev/null`)).code).toBe(30);
+    expect((await m.sh("rm /var/tmp/fake-add-fails /var/tmp/fake-account-null && touch /var/tmp/fake-account-listed")).code).toBe(0);
+    const again = await m.sh(`${fakeKit.line} --yes </dev/null`);
+    note("caseAlready", `exit ${again.code}\n${again.stdout}${again.stderr}`);
+    // regression (before: exit 0, the machine said to be in the account of whoever ran the line)
+    expect([again.code, again.stdout.includes("acct_standin"), (await m.processes()).includes("ovis-server serve")]).toEqual([38, true, true]);
+    expect((await m.sh("rm /var/tmp/fake-gate-closed && touch /var/tmp/fake-gate-open")).code).toBe(0);
+    const open = await m.sh(`${fakeKit.line} --yes </dev/null`);
+    note("caseAlready", `exit ${open.code}\n${open.stdout}${open.stderr}`);
+    expect([open.code, (await m.processes()).includes("ovis-server serve")]).toEqual([34, false]);
+    expect((await m.sh(`rm /var/tmp/fake-account-listed /var/tmp/fake-gate-open && sh ${TRIAL}/join.sh --uninstall`)).code).toBe(0);
   }, 300_000);
 
   test("a failed add with no account named and the pairing gate open: the server is stopped first, exit 34", async () => {
     const m = await runnerMachine();
     await serveHerdr(m);
-    expect((await m.sh("touch /var/tmp/fake-add-fails /var/tmp/fake-gate-open")).code).toBe(0);
+    expect((await m.sh("touch /var/tmp/fake-add-fails /var/tmp/fake-account-null /var/tmp/fake-gate-open")).code).toBe(0);
     const run = await m.sh(`${fakeKit.line} --yes </dev/null`);
     note("caseFailedGateOpen", `exit ${run.code}\n${run.stdout}${run.stderr}`);
     // regression (before: exit 30, the gate never read, the server kept running)
     expect([run.code, (await m.processes()).includes("ovis-server serve")]).toEqual([34, false]);
-    expect((await m.sh(`rm /var/tmp/fake-add-fails /var/tmp/fake-gate-open && sh ${TRIAL}/join.sh --uninstall`)).code).toBe(0);
+    expect((await m.sh(`rm /var/tmp/fake-add-fails /var/tmp/fake-account-null /var/tmp/fake-gate-open && sh ${TRIAL}/join.sh --uninstall`)).code).toBe(0);
   }, 300_000);
 
   test("Ctrl+C after the add returned (in the gate check): rolled back as a refusal is, no server left", async () => {
@@ -1030,7 +1076,7 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
     const as = "export HOME=/var/hl/runner/; cd;";
     const serving = async () => (await m.processes()).includes("ovis-server serve");
     // the stand-in profile: an add that fails, with the gate closed, keeps the server
-    expect((await m.sh("touch /var/tmp/fake-add-fails /var/tmp/fake-gate-closed")).code).toBe(0);
+    expect((await m.sh("touch /var/tmp/fake-add-fails /var/tmp/fake-account-null /var/tmp/fake-gate-closed")).code).toBe(0);
     const joined = await m.sh(`${as} ${fakeKit.line} --yes </dev/null`);
     note("caseHome", `[join] exit ${joined.code}\n${joined.stdout}${joined.stderr}`);
     expect(joined.code).toBe(30);
@@ -1044,7 +1090,7 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
     expect(stopped.stdout).toContain("stopped.");
     expect(await serving()).toBe(false);
     // a run again of the same kit whose add now succeeds, with the stand-in's gate open
-    expect((await m.sh("rm /var/tmp/fake-add-fails /var/tmp/fake-gate-closed && touch /var/tmp/fake-gate-open")).code).toBe(0);
+    expect((await m.sh("rm /var/tmp/fake-add-fails /var/tmp/fake-account-null /var/tmp/fake-gate-closed && touch /var/tmp/fake-gate-open")).code).toBe(0);
     const gate = await m.sh(`${as} ${fakeKit.line} --yes </dev/null`);
     note("caseHome", `[a run again, the gate open] exit ${gate.code}\n${gate.stdout}${gate.stderr}`);
     expect(gate.code).toBe(34);

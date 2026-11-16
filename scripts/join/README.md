@@ -107,7 +107,9 @@ only once it saw its process end; otherwise it says what it could not tell and e
 manager answers, the trial server runs in the background, and `ovis-trial stop`, the undo and every rollback find it by
 one rule: a process of this account whose program is the trial's `bin/ovis-server` and whose command line is exactly
 `<that program> serve`. `run/server.pid` is not trusted for this, and no other process is ever signalled; a server that
-does not end within 10 s of TERM and then KILL is named, and the undo then removes nothing (exit 14).
+does not end within 10 s of TERM and then KILL is named, and the undo then removes nothing (exit 14). `ovis-trial start`
+decides by the same rule whether the server already runs. An undo that cannot remove the whole trial folder (a folder
+in it this account cannot write in, say) names what is left and exits 14.
 
 The port: a port another program already listens on is refused (exit 14), on a run again once the previous trial
 server is stopped, and a health answer counts only when the program listening on the port is the trial's own
@@ -134,10 +136,16 @@ The undo removes its own `join.sh` with the folder, so running the same undo lin
 
 ## Exit codes, and Ctrl+C
 
-`join.sh` exits 0 when the machine is in the account, 30 when the trial server runs but the add did not finish and the
-server names no account (the folder stays, `ovis-trial add` finishes it), 37 when the add did not finish but the trial
-server names an account, which the join cannot confirm is the one signed in to (rolled back, as a refusal is), and a
-code from 2 to 36 for a refusal (its list is at the head of `join.sh`). A HOME holding a line break or another control
+`join.sh` exits 0 when the machine is in the account a sign-in of this run put it in: the trial server named no account
+before the add and names one after it. It exits 38 when the add returned and the trial server names an account that no
+sign-in of this run put it in (the machine was in it before, or its account could not be read before the add): the
+join names that account, says "your account" nowhere, and keeps the server only with its pairing gate closed. It exits
+30 when the add did not finish and the trial server answers that it names no account (the server is kept with its
+gate closed, and `ovis-trial add` finishes the add), or when the add returned and the server names none. It exits 37
+when the add did not finish but the trial server names an account, which the join cannot confirm is the one signed in
+to: the server and the install are removed, on a run again too, and that account's list may still name the machine.
+It exits 39 when the add did not finish and the trial server's account could not be read: the server is stopped first
+and the install kept for the undo. Any other code from 2 to 36 is a refusal (its list is at the head of `join.sh`). A HOME holding a line break or another control
 character is refused first (exit 2). Ctrl+C at a question ends the join with 130, a HUP with 129, nothing changed.
 Ctrl+C, TERM or HUP (a dropped SSH connection) after the yes, before the add (the download, the check of the kit's
 server, the start, the wait for it to answer), and TERM or HUP during the add, roll back as a refusal does and say what
