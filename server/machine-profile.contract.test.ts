@@ -885,20 +885,64 @@ it("leaves no socket and no lease when its port is taken", async () => {
   expect(existsSync(join(dir, "serve.lock"))).toBe(false);
 });
 
-it("keeps an ordinary server off a folder a profile runs on and the other way round, until the holder is gone", async () => {
+it("keeps an ordinary server with the preview off a folder a profile marked, running or killed, and a profile off a folder an ordinary server uses", async () => {
   const dir = state();
   // a HOME of its own for each: Bun and the programs a server asks write into HOME
   const profile = launch(dir, { HOME: scratch() });
   await bounded(profile.ready, 20_000);
   const before = readdirSync(dir).sort();
-  await refused(launch(dir, { OVIS_PROFILE: "", HOME: scratch() }));
+  // the marker is read before the hold is tried: its sentence, naming the marker, is the one
+  expect(await refused(launch(dir, { OVIS_PROFILE: "", HOME: scratch() }))).toContain(join(dir, "machine-profile.json"));
   expect(readdirSync(dir).sort()).toEqual(before);
   profile.child.kill("SIGKILL");
   await bounded(profile.exited, 15_000);
-  // a killed holder blocks nobody
-  const ordinary = launch(dir, { OVIS_PROFILE: "", HOME: scratch() });
+  // a killed profile holds nothing, but the folder it marked is still its own
+  expect(await refused(launch(dir, { OVIS_PROFILE: "", HOME: scratch() }))).toContain(join(dir, "machine-profile.json"));
+  const other = state();
+  const ordinary = launch(other, { OVIS_PROFILE: "", HOME: scratch() });
   const base = await bounded(ordinary.ready, 20_000);
-  await refused(launch(dir, { HOME: scratch() }));
+  await refused(launch(other, { HOME: scratch() }));
+  expect((await fetch(`${base}/api/health`, { headers })).status).toBe(200);
+});
+
+it("refuses an ordinary server without the preview on a folder a profile runs on, leaves the folder as it was, and the profile keeps answering", async () => {
+  const dir = state();
+  const profile = launch(dir);
+  await bounded(profile.ready, 20_000);
+  const before = contents(dir);
+  const ordinary = launch(dir, { OVIS_PROFILE: "", OVIS_PREVIEW: undefined });
+  expect(await bounded(ordinary.ready.then(() => "started", () => ordinary.exited), 20_000)).toBe(1);
+  expect(await refused(ordinary)).toContain(join(dir, "machine-profile.json"));
+  expect(contents(dir)).toEqual(before);
+  expect((await owner(dir, "/api/health")).status).toBe(200);
+});
+
+it("refuses an ordinary server without the preview on a folder a stopped profile marked, and leaves it as it was", async () => {
+  const dir = state();
+  const profile = launch(dir);
+  await bounded(profile.ready, 20_000);
+  profile.child.kill("SIGTERM");
+  expect(await bounded(profile.exited, 20_000)).toBe(0);
+  const before = contents(dir);
+  expect(before.map(([name]) => name)).toContain("machine-profile.json");
+  const ordinary = launch(dir, { OVIS_PROFILE: "", OVIS_PREVIEW: undefined });
+  expect(await bounded(ordinary.ready.then(() => "started", () => ordinary.exited), 20_000)).toBe(1);
+  expect(await refused(ordinary)).toContain(join(dir, "machine-profile.json"));
+  expect(contents(dir)).toEqual(before);
+});
+
+it("starts an ordinary server without the preview on a folder whose machine-profile.json is a FIFO, as main does", async () => {
+  const dir = state();
+  // opened for reading, a FIFO would wait for a writer that never comes
+  expect(Bun.spawnSync(["mkfifo", join(dir, "machine-profile.json")]).exitCode).toBe(0);
+  const base = await bounded(launch(dir, { OVIS_PROFILE: "", OVIS_PREVIEW: undefined }).ready, 20_000);
+  expect((await fetch(`${base}/api/health`, { headers })).status).toBe(200);
+});
+
+it("starts an ordinary server without the preview beside a machine-profile.json that is not a profile's marker", async () => {
+  const dir = state();
+  writeFileSync(join(dir, "machine-profile.json"), '{"profile":"other"}', { mode: 0o600 });
+  const base = await bounded(launch(dir, { OVIS_PROFILE: "", OVIS_PREVIEW: undefined }).ready, 20_000);
   expect((await fetch(`${base}/api/health`, { headers })).status).toBe(200);
 });
 
@@ -915,13 +959,14 @@ it("lets exactly one of a profile and an ordinary server started at the same mom
 
 it("starts an ordinary server whose hold cannot be taken for another reason, and refuses a profile there", async () => {
   const dir = state();
-  // a folder the profile took before: what refuses it is the hold
-  marked(dir);
   mkdirSync(join(dir, "serve.own"));
   const ordinary = launch(dir, { OVIS_PROFILE: "", HOME: scratch() });
   await bounded(ordinary.ready, 20_000);
   expect(ordinary.errors()).toContain(join(dir, "serve.own"));
   ordinary.child.kill("SIGTERM");
   await bounded(ordinary.exited, 20_000);
+  // marked only now, as if the profile had taken it before: an ordinary server does not start on a marked folder
+  // (so it is marked after that server), and what refuses the profile is the hold
+  marked(dir);
   expect(await refused(launch(dir, { HOME: scratch() }))).toContain("serve.own");
 });

@@ -2,6 +2,7 @@ import type { TailnetPcsOptions } from "./tailnet-pcs.ts";
 import type { SshCandidatesOptions } from "./ssh-candidates.ts";
 import "./adopt-legacy-env.ts";
 import { claimServerState, machineEngine, machineHerdrBinary, machineSocket, machineSocketRefusal, machineUnauthorized, MACHINE_DIRECT_CARRIER_ENABLED, ownerSocketPath } from "./machine-profile.ts";
+import { profileFolderRefusal } from "./profile-marker.ts";
 import { holdForLife, OwnerGuardBusy } from "./owner-guard.ts";
 import { fleetPreview } from "./preview.ts";
 import type { RelaySocket } from "../shared/relay-channel.ts";
@@ -678,6 +679,13 @@ export async function serve(): Promise<void> {
     process.once("exit", ownership.release);
     console.log(machineHerdrBinary());
     if (process.env["OVIS_TOKEN"]) console.log(`OVIS_TOKEN is not used by the machine profile: this account's programs reach it on ${ownership.socket}, and its port tells anyone only that it is alive.`);
+  } else {
+    // a folder a machine profile marked is its own, with or without the preview, before anything reads, moves or writes it
+    const refusal = profileFolderRefusal(defaultStateDir());
+    if (refusal !== null) {
+      console.error(refusal);
+      process.exit(1);
+    }
   }
   moveLegacyStateDir();
   // SSH connection folders an earlier server left in /tmp; here, not in createServer, so tests never touch them

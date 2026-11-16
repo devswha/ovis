@@ -12,6 +12,7 @@ import { checkHerdrSockets, herdrSocketPath, ping } from "./herdr/client.ts";
 import { isJsonObject, jsonResponse, setRequestRoute } from "./http.ts";
 import { acquireOwnerDirectory, holdForLife, liveOwner, OwnerGuardBusy } from "./owner-guard.ts";
 import { writePrivateState } from "./private-state.ts";
+import { MARKER, markedByProfile } from "./profile-marker.ts";
 import { stateDirNames } from "./update-state.ts";
 
 /** The machine profile takes no direct connections, only the relay. This is deliberately not an environment override. */
@@ -23,22 +24,6 @@ export class MachineProfileError extends Error {}
 export function ownerSocketPath(stateDir: string): string { return join(stateDir, "serve.sock"); }
 /** The longest socket path served: a longer one Bun would listen on, while curl's --unix-socket cannot reach it. */
 const SOCKET_PATH_MAX = 100;
-/**
- * The profile's mark in a state folder it took empty (`{"profile":"machine"}`, mode 0600): the one sign that a
- * folder holding anything is its own, since an ordinary server without the preview takes no hold there.
- */
-const MARKER = "machine-profile.json";
-
-function markedByProfile(path: string): boolean {
-  try {
-    const marker: unknown = JSON.parse(readFileSync(path, "utf8"));
-    return isJsonObject(marker) && marker.profile === "machine";
-  } catch (error) {
-    if (error instanceof SyntaxError || error instanceof Error && "code" in error) return false;
-    throw error;
-  }
-}
-
 /** Read the selection without invoking runtime discovery, hc, a login shell or any core connection. */
 export function machineEngine(stateDir: string, port: number): string {
   const named = process.env["OVIS_RUNTIME"];
