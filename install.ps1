@@ -752,16 +752,18 @@ if (-not $plugin) {
                 $release.version -eq $checkoutVersion -and $sha -cmatch '^[0-9a-f]{64}$' -and (Test-Path -LiteralPath (Join-Path $kept 'dist\index.html')) -and
                     "$(try { (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $kept 'ovis-server.exe') -ErrorAction Stop).Hash } catch { '' })".ToLowerInvariant() -ceq $sha
             }
-            # With such a binary kept and the release out of reach, the launcher's stop below would go to the sources and stop a
-            # server that herdr's start, which asks the release for that binary, could not start again if the build then
-            # failed (offline, bun install fetches nothing): nothing is stopped then. A release in reach without this
-            # version's (a branch's) is no reason: the stop and the start go to the sources, as before.
-            if ($keptBinary -and -not (& $keptRuns)) {
+            # The release is asked first whenever the launcher's stop or herdr's next start would have to ask it: no kept
+            # binary the launcher runs without it. Out of reach, the stop below would stop a server (through the binary's
+            # absence, the sources) that herdr's start, with the marker taken back, could not start again if the build then
+            # failed (offline, bun install fetches nothing): nothing is stopped or changed then. A release in reach without
+            # this version's (a branch's) is no reason: the stop and the start go to the sources, as before.
+            if (-not (& $keptRuns)) {
                 $probe = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
                 $unreachable = try { $null = Save-ReleaseFile "$(Get-ReleasesBase)/v$checkoutVersion/ovis-server.json" $probe 65536 'ovis-server.json'; '' }
                     catch { "$($_.Exception.Message)" } finally { Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue }
                 if ($unreachable) {
-                    throw "The release of version $checkoutVersion could not be reached ($unreachable). The release's binary kept in $kept is not one the launcher runs without it, so the branch was not built: Ovis would be stopped for the build, and if the build failed too, herdr could not start it again until the release can be reached. So $unchanged. Run this again once the release can be reached."
+                    $without = if ($keptBinary) { "the release's binary kept in $kept is not one the launcher runs without it" } else { 'this checkout keeps no release binary' }
+                    throw "The release of version $checkoutVersion could not be reached ($unreachable), and $without`: Ovis would be stopped for the build, and if the build failed too, herdr could not start it again until the release can be reached. So the branch was not built, and $unchanged. Run this again once the release can be reached."
                 }
             }
             Write-Host "Ovis: the installed branch was not built from its own sources; building it"
@@ -831,16 +833,17 @@ if (-not $plugin) {
                 & bun $launcherScript install
                 if ($LASTEXITCODE -ne 0) {
                     $code = $LASTEXITCODE
-                    # without the marker (taken back below), the launcher's start runs the release's binary where the checkout
-                    # keeps one it runs without the release ($keptRuns), as before this run
+                    # without the marker (taken back below), the launcher's start runs the release's binary the checkout keeps
+                    # once it accepts it without the release, which $keptRuns tells but for the manifest's signature: said as
+                    # what may be, not promised
                     $back = if (& $keptRuns) {
-                        " Until then, herdr plugin action invoke $pluginId.start-windows starts the release's binary this checkout ran before."
+                        " Until then, herdr plugin action invoke $pluginId.start-windows may start the release's binary this checkout keeps, if the launcher still accepts it (its signature, which this installer does not check, included)."
                     } else { '' }
                     # Without a stop that stopped one, a server no record named may still run from the checkout, holding its
                     # files; hardly where neither packages nor a release binary were there to run one (nor a stop).
                     $how = if ($stoppedOne) { 'and Ovis is stopped' }
                         elseif ($null -eq $stopped) { 'with no server recorded as running, nor packages or a release binary here to run one' }
-                        else { "and an Ovis no stop reached may still run from this checkout, holding its files open: Get-CimInstance Win32_Process | Where-Object CommandLine -like '*$($plugin.plugin_root -replace "'", "''")*' finds it, and Stop-Process -Id <its ProcessId> stops it" }
+                        else { "and an Ovis no stop reached may still run from this checkout, holding its files open: Get-CimInstance Win32_Process | Where-Object CommandLine -like '*$([WildcardPattern]::Escape($plugin.plugin_root) -replace "'", "''")*' finds it, and Stop-Process -Id <its ProcessId> stops it" }
                     throw "bun failed (exit $code) building the installed branch, $how. Fix the error above, then run this again with OVIS_REF=$Ref to build it and start Ovis.$back$legacyNote"
                 }
                 $built = $true
