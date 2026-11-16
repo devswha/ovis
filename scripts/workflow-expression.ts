@@ -2,7 +2,8 @@
 // only. It evaluates both sides of && and || before choosing, and does not implement format()'s {{ }} escapes: do not
 // build a guard on it.
 // GitHub Actions expressions, the part of the language the workflows use, evaluated against contexts a test gives:
-// literals, context paths (case-insensitive), `!`, `==`/`!=` (strings compared ignoring case, mixed types as numbers),
+// literals, context paths (case-insensitive), `!`, `<`/`<=`/`>`/`>=` and `==`/`!=` (strings compared ignoring case, mixed
+// types as numbers),
 // `&&`/`||` (which return an operand, as GitHub's do), and fromJSON, toJSON, contains, startsWith, endsWith, format and
 // the status functions. light-runner-workflow.test.ts uses it to show where a job runs for each event.
 
@@ -23,7 +24,7 @@ function tokenize(source: string): Token[] {
     if (number) { tokens.push({ kind: "number", text: number[0] }); at += number[0].length; continue; }
     const name = /^[A-Za-z_][\w-]*/.exec(rest);
     if (name) { tokens.push({ kind: "name", text: name[0] }); at += name[0].length; continue; }
-    const op = /^(==|!=|&&|\|\||[!().,[\]])/.exec(rest);
+    const op = /^(==|!=|<=|>=|&&|\|\||[<>!().,[\]])/.exec(rest);
     if (!op) throw new Error(`cannot read the expression at: ${rest}`);
     tokens.push({ kind: "op", text: op[0] });
     at += op[0].length;
@@ -42,6 +43,11 @@ function equal(left: Value, right: Value): boolean {
   }
   if (typeof left === "object" || typeof right === "object") return left === right;
   return typeof left === typeof right ? left === right : asNumber(left) === asNumber(right);
+}
+/** `<` and the like: two strings ignoring case, anything else as numbers (NaN, as from an object, compares false). */
+function compare(left: Value, right: Value, op: string): boolean {
+  const [a, b] = typeof left === "string" && typeof right === "string" ? [left.toLowerCase(), right.toLowerCase()] : [asNumber(left), asNumber(right)];
+  return op === "<" ? a < b : op === "<=" ? a <= b : op === ">" ? a > b : a >= b;
 }
 const text = (value: Value): string => (value === null ? "" : typeof value === "object" ? JSON.stringify(value) : String(value));
 function member(object: Value, key: string): Value {
@@ -84,8 +90,13 @@ export function evaluate(expression: string, contexts: Contexts): Value {
     return left;
   };
   const equality = (): Value => {
+    let left = relation();
+    while (peek("==") || peek("!=")) { const negate = tokens[at++]!.text === "!="; const right = relation(); left = equal(left, right) !== negate; }
+    return left;
+  };
+  const relation = (): Value => {
     let left = unary();
-    while (peek("==") || peek("!=")) { const negate = tokens[at++]!.text === "!="; const right = unary(); left = equal(left, right) !== negate; }
+    while (["<", "<=", ">", ">="].some((op) => peek(op))) { const op = tokens[at++]!.text; const right = unary(); left = compare(left, right, op); }
     return left;
   };
   const unary = (): Value => {

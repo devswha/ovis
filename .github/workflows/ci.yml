@@ -49,6 +49,8 @@ jobs:
       draft: ${{ steps.filter.outputs.draft }}
       linux: ${{ steps.route.outputs.linux }}
       fast: ${{ steps.route.outputs.fast }}
+      # empty unless the route printed parts= (a push to main, scripts/ci-runner-route.sh)
+      parts: ${{ steps.route.outputs.parts }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -70,6 +72,11 @@ jobs:
           # only in ci.yml's own runs: a workflow that calls ci.yml (relay-deploy on a push to main, say) is named otherwise
           LINUX_LABELS: ${{ github.workflow == 'CI' && vars.CI_LINUX_SELF_HOSTED_LABELS || '' }}
           MAIN_LABELS: ${{ vars.CI_MAIN_SELF_HOSTED_LABELS }}
+          # parts 1 and 2 of Browser regression (other scripts) on a further self-hosted host while its heartbeat is
+          # fresh and it is free: ci.yml's own push runs of main only (scripts/ci-runner-route.sh). A called workflow's
+          # github context is its caller's, so workflow_ref names this file only in ci.yml's own runs.
+          PARTS_LABELS: ${{ startsWith(github.workflow_ref, format('{0}/.github/workflows/ci.yml@', github.repository)) && vars.CI_MAIN_BROWSER_PARTS_LABELS || '' }}
+          PARTS_SEEN: ${{ vars.CI_BROWSER_PARTS_RUNNERS_SEEN }}
           SELF_HOSTED_CAPACITY: ${{ vars.CI_SELF_HOSTED_CAPACITY }}
           FAST_LABELS: ${{ vars.CI_FAST_SELF_HOSTED_LABELS }}
           GH_TOKEN: ${{ github.token }}
@@ -433,7 +440,10 @@ jobs:
     name: Browser regression (other scripts${{ strategy.job-total > 1 && format(' {0}/{1}', matrix.shard, strategy.job-total) || '' }})
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: ${{ inputs.hosted_only && 'ubuntu-24.04' || fromJSON(needs.changes.outputs.linux) }}
+    # parts 1 and 2 take the route's parts= labels when it printed them (main's push runs only), every other part and
+    # run the Linux jobs' runner: an empty output is false (scripts/ci-runner-route.test.ts). hosted_only comes first, so a
+    # Release or Pages run never reaches the parts host (scripts/privileged-jobs-workflow.test.ts)
+    runs-on: ${{ inputs.hosted_only && 'ubuntu-24.04' || fromJSON(matrix.shard <= 2 && needs.changes.outputs.parts || needs.changes.outputs.linux) }}
     # A hosted runner has 4 CPUs: one job running every script there took about 28 minutes, and
     # frame-timing checks failed under the load. So hosted runs split the scripts over four jobs
     # (scripts/ci-browser-parallel.ts's BROWSER_SHARD). On the self-hosted PC one job of six workers

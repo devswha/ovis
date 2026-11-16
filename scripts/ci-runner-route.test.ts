@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, it } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,10 +22,13 @@ afterAll(() => {
 // A fake `gh` that answers the Actions API from the JSON files in $FAKE_GH and logs each call; a
 // missing file makes it fail like an API error, and a `fail-<file>` beside one makes the next call
 // for it print part of its answer and then fail, as a 502 on a later page does; a `refuse-<file>`
-// makes every call for it fail as the API's refusal (HTTP 404) does.
+// makes every call for it fail as the API's refusal (HTTP 404) does. With $ROUTE_TEST_SECONDS_FILE set (the route's
+// test seam for the seconds it has run), each call moves that file on by $FAKE_CALL_SECONDS: a read that takes time,
+// with no time spent.
 const bin = tempDir();
 writeFileSync(join(bin, "gh"), `#!/bin/sh
 echo "$*" >> "$FAKE_GH/calls"
+if [ -n "$ROUTE_TEST_SECONDS_FILE" ]; then echo $(( $(cat "$ROUTE_TEST_SECONDS_FILE") + FAKE_CALL_SECONDS )) > "$ROUTE_TEST_SECONDS_FILE"; fi
 [ "$1" = api ] && [ "$2" = --paginate ] || exit 1
 case "$3" in
   */jobs*) id=\${3#*/runs/}; f=jobs-\${id%%/*} ;;
@@ -38,6 +41,22 @@ if [ -f "$FAKE_GH/fail-$f" ]; then rm "$FAKE_GH/fail-$f"; cat "$FAKE_GH/$f.json"
 cat "$FAKE_GH/$f.json"
 `);
 chmodSync(join(bin, "gh"), 0o755);
+// `date +%s` answers $FAKE_NOW (`fail` fails) when it is set, so a heartbeat's age is exact; anything else is the real
+// date
+writeFileSync(join(bin, "date"), `#!/bin/sh
+if [ "$*" = +%s ]; then
+  if [ "$FAKE_NOW" = fail ]; then exit 1; fi
+  if [ -n "$FAKE_NOW" ]; then echo "$FAKE_NOW"; exit 0; fi
+fi
+PATH=\${PATH#*:} exec date "$@"
+`);
+chmodSync(join(bin, "date"), 0o755);
+// `jq` fails, as a process that could not start would, for the one call that names $FAKE_JQ_FAIL among its arguments
+writeFileSync(join(bin, "jq"), `#!/bin/sh
+if [ -n "$FAKE_JQ_FAIL" ]; then for arg in "$@"; do [ "$arg" = "$FAKE_JQ_FAIL" ] && exit 5; done; fi
+PATH=\${PATH#*:} exec jq "$@"
+`);
+chmodSync(join(bin, "jq"), 0o755);
 
 type Job = { status: string; labels: string[]; name?: string };
 const ovis = ["self-hosted", "self-hosted-ovis"];
@@ -121,6 +140,7 @@ describe.skipIf(process.platform === "win32")("CI runner route", () => {
       expect(routed({ ...pr, FAKE_GH: actions({ in_progress: { 1: [...others, ...running(4, ["Self-Hosted", "self-hosted-ovis"])] } }) }))
         .toEqual(ovis);
       expect(routed({ ...pr, FAKE_GH: actions({ in_progress: { 1: [...others, ...running(7)] } }) })).toBe("ubuntu-24.04");
+      expect(routed({ ...pr, FAKE_GH: actions({ in_progress: { 1: running(7, ["self-hosted-ovis"]) } }) })).toEqual(ovis);
       // a job asking for fewer labels can take those runners too
       for (const labels of [["self-hosted"], ["self-hosted", "linux", "x64"]]) {
         expect(routed({ ...pr, FAKE_GH: actions({ in_progress: { 1: running(7, labels) } }) })).toBe("ubuntu-24.04");
@@ -322,12 +342,20 @@ describe.skipIf(process.platform === "win32")("CI runner route", () => {
   });
 
   it("refuses a CI_MAIN_SELF_HOSTED_LABELS that is not self-hosted labels or the hosted image", () => {
-    for (const value of ['["self-hosted",', '["self-hosted-ovis-main"]', '"self-hosted"', "[]"]) {
+    for (const value of ['["self-hosted",', '["self-hosted-ovis-main"]', '"self-hosted"', "[]", '["self-hosted"] ["self-hosted"]']) {
       const result = route({ EVENT_NAME: "push", REF: "refs/heads/main", MAIN_LABELS: value });
       expect(result.status).toBe(1);
       expect(result.stdout).toBe("");
       expect(result.stderr).toContain("::error::repository variable CI_MAIN_SELF_HOSTED_LABELS");
     }
+  });
+
+  it("prints a valid value of the older label variables compacted, one line each", () => {
+    const spaced = '[ "self-hosted" ,  "x" ]\n';
+    expect(route({ EVENT_NAME: "push", CONFIGURED_LABELS: spaced }).stdout).toBe('linux=["self-hosted","x"]\nfast=["self-hosted","x"]\n');
+    expect(route({ EVENT_NAME: "push", REF: "refs/heads/main", MAIN_LABELS: spaced }).stdout).toBe('linux=["self-hosted","x"]\nfast=["self-hosted","x"]\n');
+    expect(route({ EVENT_NAME: "workflow_dispatch", REQUESTED_LABELS: spaced }).stdout).toBe('linux=["self-hosted","x"]\nfast=["self-hosted","x"]\n');
+    expect(route({ EVENT_NAME: "push", CONFIGURED_LABELS: '["self-hosted","ovis-vm"]', FAST_LABELS: spaced }).stdout).toBe('linux=["self-hosted","ovis-vm"]\nfast=["self-hosted","x"]\n');
   });
 
   it("refuses malformed JSON", () => {
@@ -348,6 +376,13 @@ describe.skipIf(process.platform === "win32")("CI runner route", () => {
 
   describe("hosted_only (pages.yml's call of ci.yml)", () => {
     const vm = '["self-hosted","ovis-vm"]';
+    const partsOnHost = {
+      EVENT_NAME: "push",
+      REF: "refs/heads/main",
+      PARTS_LABELS: '["self-hosted","self-hosted-ovis-parts"]',
+      PARTS_SEEN: '2000000000 ["self-hosted","self-hosted-ovis-parts"] ["self-hosted-ovis-parts"]',
+      FAKE_NOW: "2000000000",
+    };
     // every routing above: the input unset or false changes none of them, and true sends each to the hosted image
     const scenarios = (): Record<string, string>[] => [
       { EVENT_NAME: "push" },
@@ -360,6 +395,8 @@ describe.skipIf(process.platform === "win32")("CI runner route", () => {
       { EVENT_NAME: "workflow_dispatch" },
       { EVENT_NAME: "workflow_dispatch", REQUESTED_LABELS: labels },
       { EVENT_NAME: "workflow_dispatch", CONFIGURED_LABELS: labels },
+      // main's browser parts on their host, fresh and free (below)
+      { ...partsOnHost, FAKE_GH: actions({}) },
     ];
 
     it("changes nothing when it is unset or false", () => {
@@ -373,9 +410,291 @@ describe.skipIf(process.platform === "win32")("CI runner route", () => {
     });
 
     it("sends the Linux jobs and Fast checks to the hosted image when true, before it reads anything else", () => {
+      // without the input, the parts scenario does print parts=; with it, outputs() takes exactly the two lines
+      expect(route({ ...partsOnHost, FAKE_GH: actions({}) }).stdout).toEndWith('\nparts=["self-hosted","self-hosted-ovis-parts"]\n');
       for (const env of scenarios()) expect(outputs({ ...env, HOSTED_ONLY: "true" })).toEqual({ linux: "ubuntu-24.04", fast: "ubuntu-24.04" });
       // a label list the route would refuse is never read
       expect(outputs({ EVENT_NAME: "workflow_dispatch", REQUESTED_LABELS: '"self-hosted"', HOSTED_ONLY: "true" })).toEqual({ linux: "ubuntu-24.04", fast: "ubuntu-24.04" });
+    });
+  });
+
+  describe("main's browser parts on a further self-hosted host (CI_MAIN_BROWSER_PARTS_LABELS)", () => {
+    const host = '["self-hosted","self-hosted-ovis-parts"]';
+    const onHost = ["self-hosted", "self-hosted-ovis-parts"];
+    const now = 2_000_000_000;
+    /** The heartbeat runner-heartbeat.sh writes: when, the labels the runners it counted carry, and those no other runner carries. */
+    const beat = (at: number, carried = ["linux", "self-hosted", "self-hosted-ovis-parts", "x64"], alone = ["self-hosted-ovis-parts"]): string =>
+      `${at} ${JSON.stringify(carried)} ${JSON.stringify(alone)}`;
+    const main = { EVENT_NAME: "push", REF: "refs/heads/main", FAKE_NOW: String(now) };
+    const set = { PARTS_LABELS: host, PARTS_SEEN: beat(now - 30) };
+    const calls = (dir: string): string => (existsSync(join(dir, "calls")) ? readFileSync(join(dir, "calls"), "utf8") : "");
+
+    /**
+     * The route for `env` with `variables` added, against the same run without them (each with its own copy of the API
+     * state `state`): stdout must be that run's with at most a `parts=` line after it. parts is that line's labels, or
+     * null without one.
+     */
+    function withParts(env: Record<string, string>, variables: Record<string, string> = set, state: () => string = () => actions({})) {
+      const [todayState, partsState] = [state(), state()];
+      const today = route({ ...env, FAKE_GH: todayState });
+      const result = route({ ...env, ...variables, FAKE_GH: partsState });
+      expect(result.status).toBe(today.status);
+      expect(result.stdout).toStartWith(today.stdout);
+      const added = result.stdout.slice(today.stdout.length);
+      expect(added).toMatch(/^(parts=[^\n]+\n)?$/);
+      return { parts: added === "" ? null : JSON.parse(added.slice("parts=".length)) as unknown, today, result, calls: [calls(todayState), calls(partsState)] };
+    }
+
+    it("sends parts 1 and 2 of ci.yml's own push run of main to the host while it is fresh and free", () => {
+      expect(route({ ...main, ...set, FAKE_GH: actions({}) }).stdout)
+        .toBe('linux=["self-hosted","self-hosted-ovis"]\nfast=["self-hosted","self-hosted-ovis"]\nparts=["self-hosted","self-hosted-ovis-parts"]\n');
+      // main's own runners and the other variables keep their lines
+      expect(withParts({ ...main, MAIN_LABELS: '["self-hosted","self-hosted-ovis-main"]' }).parts).toEqual(onHost);
+      expect(withParts({ ...main, CONFIGURED_LABELS: labels }).parts).toEqual(onHost);
+    });
+
+    it("changes nothing while the variable is unset, empty or blank, and reads nothing more", () => {
+      const vm = '["self-hosted","ovis-vm"]';
+      const today: [Record<string, string>, () => string][] = [
+        [main, () => actions({})],
+        [{ ...main, MAIN_LABELS: '["self-hosted","self-hosted-ovis-main"]' }, () => actions({})],
+        [{ ...main, EVENT_NAME: "push", REF: "refs/heads/topic" }, () => actions({})],
+        [{ ...main, EVENT_NAME: "pull_request", HEAD_REPO: repo }, () => actions({})],
+        [{ ...main, EVENT_NAME: "pull_request", HEAD_REPO: repo }, () => actions({ in_progress: { 1: running(5) } })],
+        [{ ...main, EVENT_NAME: "pull_request", HEAD_REPO: "someone/fork" }, () => actions({})],
+        [{ ...main, EVENT_NAME: "pull_request_target", HEAD_REPO: "someone/fork" }, () => actions({})],
+        [{ ...main, EVENT_NAME: "workflow_dispatch" }, () => actions({})],
+        [{ ...main, EVENT_NAME: "workflow_dispatch", REQUESTED_LABELS: labels }, () => actions({})],
+        [{ ...main, CONFIGURED_LABELS: '"ubuntu-24.04"' }, () => actions({})],
+        [{ ...main, LINUX_LABELS: vm }, () => actions({})],
+      ];
+      for (const [env, state] of today) {
+        for (const value of ["", " ", "\n"]) {
+          const { parts, today: before, result, calls: [beforeCalls, afterCalls] } = withParts(env, { PARTS_LABELS: value, PARTS_SEEN: beat(now) }, state);
+          expect(parts).toBeNull();
+          expect(result.stderr).toBe(before.stderr);
+          expect(afterCalls).toBe(beforeCalls!);
+        }
+        const unset = withParts(env, { PARTS_SEEN: beat(now) }, state);
+        expect([unset.parts, unset.result.stderr, unset.calls[1]]).toEqual([null, unset.today.stderr, unset.calls[0]]);
+      }
+    });
+
+    it("leaves every run but a push to main as it is, whatever the variables say", () => {
+      for (const env of [
+        { ...main, EVENT_NAME: "pull_request", HEAD_REPO: repo, REF: "refs/pull/1/merge" },
+        { ...main, EVENT_NAME: "pull_request", HEAD_REPO: repo },
+        { ...main, EVENT_NAME: "pull_request", HEAD_REPO: "someone/fork" },
+        { ...main, EVENT_NAME: "pull_request_target", HEAD_REPO: "someone/fork" },
+        { ...main, REF: "refs/heads/topic" },
+        { ...main, REF: "refs/tags/v1.0.0" },
+        { ...main, REF: "" },
+        { ...main, EVENT_NAME: "workflow_dispatch" },
+        { ...main, EVENT_NAME: "workflow_dispatch", REQUESTED_LABELS: labels },
+        { ...main, EVENT_NAME: "workflow_run" },
+      ]) {
+        const { parts, today, result, calls } = withParts(env);
+        expect(parts).toBeNull();
+        expect(result.stderr).toBe(today.stderr);
+        expect(calls[1]).toBe(calls[0]!);
+      }
+    });
+
+    it("leaves main's parts with the Linux jobs when those are not three self-hosted parts", () => {
+      for (const env of [
+        { ...main, MAIN_LABELS: '"ubuntu-24.04"' },
+        { ...main, CONFIGURED_LABELS: '"ubuntu-24.04"' },
+        { ...main, LINUX_LABELS: '["self-hosted","ovis-vm"]' },
+        { ...main, MAIN_LABELS: '["self-hosted","OVIS-VM"]' },
+      ]) {
+        const { parts, calls } = withParts(env);
+        expect(parts).toBeNull();
+        expect(calls[1]).toBe("");
+      }
+    });
+
+    it("sends the parts only while the heartbeat is at most 180 s old, or less than a minute ahead", () => {
+      for (const at of [now, now - 180, now + 60]) expect(withParts(main, { ...set, PARTS_SEEN: beat(at) }).parts).toEqual(onHost);
+      for (const seen of [beat(now - 181), beat(now + 61), beat(now + 3600)]) {
+        const { parts, result, calls } = withParts(main, { ...set, PARTS_SEEN: seen });
+        expect(parts).toBeNull();
+        expect(result.stderr).not.toContain("::warning::");
+        // a stale host costs no API call
+        expect(calls[1]).toBe("");
+      }
+      expect(withParts(main, { PARTS_LABELS: host }).parts).toBeNull();
+    });
+
+    it("sends the parts only to labels every runner the heartbeat counted carries", () => {
+      // a heartbeat in an older form (the time alone, or without the host's own labels) or not two label lists
+      for (const seen of [String(now - 30), `${now - 30} ["linux","self-hosted","self-hosted-ovis-parts","x64"]`, "", "soon", `${now} ["self-hosted"`, `${now} ["self-hosted"] ["x64"]`, `${now} "self-hosted"`, `${now} [1]`, "-5 []", "1e9 []"]) {
+        const { parts, result, calls } = withParts(main, { ...set, PARTS_SEEN: seen });
+        expect(parts).toBeNull();
+        expect(result.stderr).not.toContain("::warning::");
+        expect(calls[1]).toBe("");
+      }
+      // a label no counted runner carries would leave the parts queued while the heartbeat stays fresh
+      const typo = withParts(main, { ...set, PARTS_LABELS: '["self-hosted","self-hosted-ovis-parts","typo"]' });
+      expect(typo.parts).toBeNull();
+      expect(typo.result.stderr).toContain('["typo"]');
+      expect(typo.result.stderr).not.toContain("::warning::");
+      expect(typo.calls[1]).toBe("");
+      expect(withParts(main, { ...set, PARTS_SEEN: beat(now, ["self-hosted"]) }).parts).toBeNull();
+      // labels compare without case, as GitHub matches them
+      expect(withParts(main, { ...set, PARTS_LABELS: '["self-hosted","Self-Hosted-Ovis-Parts"]', PARTS_SEEN: beat(now, ["SELF-HOSTED", "self-hosted-ovis-parts"]) }).parts)
+        .toEqual(["self-hosted", "Self-Hosted-Ovis-Parts"]);
+    });
+
+    it("sends the parts only to a list that names a label the host's runners alone carry", () => {
+      // labels other runners carry too (the PC's, the Mac) could hand a part to one of them
+      for (const labels of ['["self-hosted"]', '["self-hosted","linux","x64"]', '["self-hosted","LINUX","X64"]']) {
+        const { parts, result, calls } = withParts(main, { ...set, PARTS_LABELS: labels });
+        expect(parts).toBeNull();
+        expect(result.stderr).not.toContain("::warning::");
+        expect(calls[1]).toBe("");
+      }
+      // the host's own label, with self-hosted (which every label list here names) and with the rest of its labels
+      expect(withParts(main, { ...set, PARTS_LABELS: '["self-hosted","self-hosted-ovis-parts"]' }).parts).toEqual(onHost);
+      expect(withParts(main, { ...set, PARTS_LABELS: '["self-hosted","linux","x64","Self-Hosted-Ovis-Parts"]' }).parts)
+        .toEqual(["self-hosted", "linux", "x64", "Self-Hosted-Ovis-Parts"]);
+      // a heartbeat whose host has no label of its own, or names one it does not carry, is no heartbeat
+      for (const alone of [[], ["gpu"]]) expect(withParts(main, { ...set, PARTS_SEEN: beat(now - 30, undefined, alone) }).parts).toBeNull();
+    });
+
+    it("keeps the parts with the Linux jobs while a job the host's runners could take is queued or running", () => {
+      for (const state of [
+        () => actions({ in_progress: { 1: running(1, onHost) } }),
+        () => actions({ in_progress: { 1: waiting(1, onHost) } }),
+        () => actions({ queued: { 2: waiting(1, onHost) } }),
+        () => actions({ in_progress: { 1: running(1, ["Self-Hosted", "Self-Hosted-Ovis-Parts"]) } }),
+        // a job that asks for fewer labels can take the host's runners too
+        () => actions({ in_progress: { 1: running(1, ["self-hosted"]) } }),
+        () => actions({ queued: { 2: waiting(1, ["self-hosted", "linux", "x64", "self-hosted-ovis-parts"]) } }),
+        // a light job holds a runner as any job does: the pull requests' count leaves it out, this one does not
+        () => actions({ in_progress: { 1: [{ status: "in_progress", labels: onHost, name: "Detect changes" }] } }),
+        // a job that asks for the runners' own label alone matches them without self-hosted
+        () => actions({ queued: { 2: waiting(1, ["self-hosted-ovis-parts"]) } }),
+      ]) {
+        const { parts, result } = withParts(main, set, state);
+        expect(parts).toBeNull();
+        expect(result.stderr).not.toContain("::warning::");
+      }
+      // a label the runners carry beyond CI_MAIN_BROWSER_PARTS_LABELS: a job asking for it can take them as well
+      const gpu = { ...set, PARTS_SEEN: beat(now - 30, ["linux", "self-hosted", "self-hosted-ovis-parts", "x64", "gpu"]) };
+      expect(withParts(main, gpu, () => actions({ in_progress: { 1: running(1, ["self-hosted", "gpu"]) } })).parts).toBeNull();
+      // the PC's jobs and finished ones are not the host's
+      const others = actions({ in_progress: { 1: [...running(9), ...running(3, ["self-hosted", "self-hosted-ovis-main"]), { status: "completed", labels: onHost }] } });
+      expect(withParts(main, set, () => others).parts).toEqual(onHost);
+    });
+
+    it("warns and keeps the parts with the Linux jobs when the host's jobs cannot be read", () => {
+      const failing = withParts(main, set, () => tempDir());
+      expect(failing.parts).toBeNull();
+      expect(failing.result.stderr).toContain("::warning::");
+      // asked three times, as every read is
+      expect(failing.calls[1]!.trim().split("\n").filter((call) => call.includes("status=in_progress"))).toHaveLength(3);
+      const refused = withParts(main, set, () => {
+        const dir = actions({});
+        writeFileSync(join(dir, "refuse-in_progress"), "");
+        return dir;
+      });
+      expect(refused.parts).toBeNull();
+      expect(refused.result.stderr).toContain("::warning::");
+      expect(refused.calls[1]!.trim().split("\n")).toHaveLength(1);
+      // one failed read asked again is no failure
+      const flaky = withParts(main, set, () => {
+        const dir = actions({ in_progress: { 1: running(1) } });
+        for (const file of ["in_progress", "jobs-1"]) writeFileSync(join(dir, `fail-${file}`), "");
+        return dir;
+      });
+      expect(flaky.parts).toEqual(onHost);
+    });
+
+    it("takes an empty answer for a failed read, not an idle host", () => {
+      for (const body of ["", " \n"]) {
+        for (const file of ["in_progress", "jobs-1"]) {
+          const { parts, result } = withParts(main, set, () => {
+            const dir = actions({ in_progress: { 1: running(1) } });
+            writeFileSync(join(dir, `${file}.json`), body);
+            return dir;
+          });
+          expect(parts).toBeNull();
+          expect(result.stderr).toContain("::warning::");
+        }
+      }
+    });
+
+    it("gives the host's count 30 s of reads, then warns and keeps the parts with the Linux jobs", () => {
+      // twenty unfinished runs, none on the host: every one is read while the reads are quick
+      const runs = () => actions({ in_progress: Object.fromEntries(Array.from({ length: 20 }, (_, index) => [index + 1, running(1)])) });
+      /** The run's elapsed seconds, through the route's test seam: each read takes callSeconds of them. */
+      const taking = (callSeconds: number): Record<string, string> => {
+        const file = join(tempDir(), "seconds");
+        writeFileSync(file, "0");
+        return { ...main, ROUTE_TEST_SECONDS_FILE: file, FAKE_CALL_SECONDS: String(callSeconds) };
+      };
+      expect(withParts(taking(1), set, runs).parts).toEqual(onHost);
+      // ten seconds a read: the two run lists and one run's jobs fill the 30 s, far inside the script's 240
+      const slow = withParts(taking(10), set, runs);
+      expect(slow.parts).toBeNull();
+      expect(slow.result.stderr).toContain("::warning::");
+      expect(slow.calls[1]!.trim().split("\n")).toHaveLength(3);
+    });
+
+it("warns and keeps the parts with the Linux jobs when the labels cannot be compared with the heartbeat's", () => {
+      const { parts, result, calls } = withParts({ ...main, FAKE_JQ_FAIL: "have" });
+      expect(result.status).toBe(0);
+      expect(parts).toBeNull();
+      expect(result.stderr).toContain("::warning::");
+      expect(calls[1]).toBe("");
+    });
+
+    it("warns and reads nothing when no timeout or gtimeout could stop a read that hangs", () => {
+      // the tools the route and the fakes use, without timeout or gtimeout
+      const tools = tempDir();
+      for (const tool of ["bash", "sh", "jq", "tr", "mktemp", "cat", "grep", "rm", "date"]) symlinkSync(Bun.which(tool)!, join(tools, tool));
+      expect(Bun.which("timeout", { PATH: tools })).toBeNull();
+      const { parts, result, calls } = withParts({ ...main, PATH: `${bin}:${tools}` });
+      expect(result.status).toBe(0);
+      expect(parts).toBeNull();
+      expect(result.stderr).toContain("::warning::");
+      expect(calls[1]).toBe("");
+    });
+
+    it("reads a clock with leading zeroes in base 10", () => {
+      // 002000000000 in base 10 is now; read in base 8 it would be decades back, and 000000000008 no number at all
+      expect(withParts({ ...main, FAKE_NOW: "002000000000" }).parts).toEqual(onHost);
+      const early = withParts({ ...main, FAKE_NOW: "000000000008" });
+      expect(early.result.status).toBe(0);
+      expect(early.parts).toBeNull();
+      expect(early.result.stderr).not.toMatch(/value too great|syntax error|invalid/);
+    });
+
+    it("warns and keeps the parts with the Linux jobs when the clock cannot be read", () => {
+      for (const clock of ["fail", "soon", "12a"]) {
+        const { parts, result, calls } = withParts({ ...main, FAKE_NOW: clock });
+        expect(result.status).toBe(0);
+        expect(parts).toBeNull();
+        expect(result.stderr).toContain("::warning::");
+        expect(calls[1]).toBe("");
+      }
+    });
+
+    it("warns and never fails main's run when the variable is not one label list with self-hosted", () => {
+      for (const value of ['"self-hosted"', '["self-hosted-ovis-parts"]', '["self-hosted",', "[]", '["self-hosted", 1]', '"ubuntu-24.04"', `${host}\n${host}`, `${host} ${host}`]) {
+        const { parts, result, calls } = withParts(main, { ...set, PARTS_LABELS: value });
+        expect(result.status).toBe(0);
+        expect(parts).toBeNull();
+        expect(result.stderr).toContain("::warning::repository variable CI_MAIN_BROWSER_PARTS_LABELS");
+        expect(calls[1]).toBe("");
+      }
+    });
+
+    it("never writes the variable's value to the log, where a line of it could be a workflow command", () => {
+      const { parts, result } = withParts(main, { ...set, PARTS_LABELS: '["self-hosted"\n::error::from the variable' });
+      expect(parts).toBeNull();
+      expect(result.stderr).toContain("::warning::");
+      expect(result.stderr).not.toContain("from the variable");
     });
   });
 
@@ -390,6 +709,37 @@ describe.skipIf(process.platform === "win32")("CI runner route", () => {
       const linux = route(env).stdout.split("\n")[0]!.slice("linux=".length).toLowerCase();
       return JSON.parse(branches.find(({ label }) => linux.includes(label.toLowerCase()))?.parts ?? otherwise) as number[];
     };
+
+    const runsOn = ci.jobs["browser-other"]!["runs-on"] as string;
+    const routedParts = /^\$\{\{ inputs\.hosted_only && 'ubuntu-24\.04' \|\| fromJSON\(matrix\.shard <= (\d+) && needs\.changes\.outputs\.parts \|\| needs\.changes\.outputs\.linux\) \}\}$/.exec(runsOn);
+    /** Each part's runner, as ci.yml's `runs-on` picks it from the route's outputs (an unset `parts` output is empty, which is false). */
+    const runners = (env: Record<string, string>): unknown[] => {
+      const printed = Object.fromEntries(route(env).stdout.trimEnd().split("\n").map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]));
+      return parts(env).map((shard) => JSON.parse((shard <= Number(routedParts![1]) && printed["parts"]) || printed["linux"]!) as unknown);
+    };
+    const now = 2_000_000_000;
+    const carried = ' ["linux","self-hosted","self-hosted-ovis-parts","x64"] ["self-hosted-ovis-parts"]';
+    const everything = { PARTS_LABELS: '["self-hosted","self-hosted-ovis-parts"]', PARTS_SEEN: `${now}${carried}`, FAKE_NOW: String(now) };
+
+    it("take the route's parts labels for parts 1 and 2 only, and the Linux jobs' runner otherwise", () => {
+      expect(routedParts?.[1]).toBe("2");
+      const ovisParts = ["self-hosted", "self-hosted-ovis-parts"];
+      expect(runners({ EVENT_NAME: "push", REF: "refs/heads/main", ...everything, FAKE_GH: actions({}) })).toEqual([ovisParts, ovisParts, ovis]);
+      expect(runners({ EVENT_NAME: "push", REF: "refs/heads/main", ...everything, PARTS_SEEN: `${now - 600}${carried}`, FAKE_GH: actions({}) })).toEqual([ovis, ovis, ovis]);
+      expect(runners({ EVENT_NAME: "push", REF: "refs/heads/main", FAKE_GH: actions({}) })).toEqual([ovis, ovis, ovis]);
+      expect(runners({ EVENT_NAME: "pull_request", HEAD_REPO: repo, ...everything, FAKE_GH: actions({}) })).toEqual([ovis, ovis, ovis]);
+    });
+
+    it("keep every part of a fork pull request hosted, whatever the variables say", () => {
+      const vm = '["self-hosted","ovis-vm"]';
+      for (const env of [
+        { EVENT_NAME: "pull_request", HEAD_REPO: "someone/fork", ...everything },
+        { EVENT_NAME: "pull_request", HEAD_REPO: "someone/fork", REF: "refs/heads/main", ...everything, MAIN_LABELS: labels, CONFIGURED_LABELS: labels, REQUESTED_LABELS: labels, LINUX_LABELS: vm, FAST_LABELS: vm },
+        { EVENT_NAME: "pull_request_target", HEAD_REPO: "someone/fork", REF: "refs/heads/main", ...everything, CONFIGURED_LABELS: labels },
+      ]) {
+        expect(runners({ ...env, FAKE_GH: actions({}) })).toEqual(["ubuntu-24.04", "ubuntu-24.04", "ubuntu-24.04", "ubuntu-24.04"]);
+      }
+    });
 
     it("reads the whole matrix expression", () => {
       expect(`\${{ fromJSON(${branches.map(({ label, parts }) => `contains(needs.changes.outputs.linux, '${label}') && '${parts}' || `).join("")}'${otherwise}') }}`).toBe(shard);
@@ -415,7 +765,9 @@ describe.skipIf(process.platform === "win32")("CI runner route", () => {
     });
 
     it("count in the route's room for one run: every routed Linux job, the matrix job as its self-hosted parts", () => {
-      const routedJobs = Object.entries(ci.jobs).filter(([, job]) => ["linux", "fast"].some((output) => job["runs-on"] === `\${{ inputs.hosted_only && 'ubuntu-24.04' || fromJSON(needs.changes.outputs.${output}) }}`));
+      // browser-other's parts 1 and 2 leave the PC only on main's push runs, never on a pull request's this room is for
+      const routedJobs = Object.entries(ci.jobs).filter(([, job]) => ["needs.changes.outputs.linux", "needs.changes.outputs.fast", "matrix.shard <= 2 && needs.changes.outputs.parts || needs.changes.outputs.linux"]
+        .some((output) => job["runs-on"] === `\${{ inputs.hosted_only && 'ubuntu-24.04' || fromJSON(${output}) }}`));
       const selfHosted = parts({ EVENT_NAME: "pull_request", HEAD_REPO: repo, FAKE_GH: actions({}) }).length;
       const needed = routedJobs.reduce((sum, [id]) => sum + (id === "browser-other" ? selfHosted : 1), 0);
       expect(routedJobs.map(([id]) => id).sort()).toEqual(["browser-main", "browser-other", "fast", "integration"]);

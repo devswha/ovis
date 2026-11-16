@@ -26,6 +26,18 @@ describe("workflow expressions, as GitHub evaluates them", () => {
     expect(evaluate("true || false && false", {})).toBe(true);
   });
 
+  test("< <= > >= compare numbers, mixed types as numbers and strings ignoring case, and bind tighter than == and &&", () => {
+    for (const [expression, value] of [
+      ["1 <= 2", true], ["2 <= 2", true], ["3 <= 2", false], ["1 < 1", false], ["2 > 1", true], ["2 >= 3", false],
+      ["'2' <= 2", true], ["matrix.shard <= 2", true], ["'B' > 'a'", true], ["fromJSON('[]') < 1", false],
+      ["1 < 2 == true", true], ["matrix.shard <= 2 && 'a' || 'b'", true],
+    ] as const) {
+      expect([expression, Boolean(evaluate(expression, { matrix: { shard: 1 } }))]).toEqual([expression, value]);
+    }
+    expect(evaluate("3 <= 2 && 'parts' || 'linux'", {})).toBe("linux");
+    expect(evaluate("matrix.shard <= 2 && 'parts' || 'linux'", { matrix: { shard: 2 } })).toBe("parts");
+  });
+
   test("contexts ignore case, functions follow GitHub, a whole ${{ }} keeps its type", () => {
     expect(evaluate("GitHub.Ref", { github: { ref: "refs/heads/main" } })).toBe("refs/heads/main");
     expect(evaluate("contains(fromJSON('[\"Self-Hosted\"]'), 'self-hosted')", {})).toBe(true);

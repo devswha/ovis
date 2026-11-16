@@ -307,6 +307,47 @@ runners is online, main's Linux jobs wait, so delete the variable when the P620 
 slots of every other runner: they take runners away from pull requests, not load, and main's herdr-backed jobs still
 share `check.ts`'s slots (`CHECK_HOST_MAX_RUNS`) with theirs, so they can wait there for one.
 
+Main's pushes can run two of the three parts of Browser regression (other scripts) on a further self-hosted host
+with its own label, so the PC's runners take less of each merge. Set `CI_MAIN_BROWSER_PARTS_LABELS` to that host's
+labels (one JSON array with `"self-hosted"`): parts 1 and 2 of a push run of main go there, and part 3 and every other
+job stay where they go now. `ci.yml` hands that variable to `scripts/ci-runner-route.sh` only in its own runs (by its
+file, not its name), and the script acts on it only for a push to main; the heartbeat `CI_BROWSER_PARTS_RUNNERS_SEEN`
+is handed over in every run and is not a secret. The script sends the parts only while that heartbeat is at most three
+minutes old, the runners it counted carry every label of `CI_MAIN_BROWSER_PARTS_LABELS` and at least one of those labels
+is theirs alone, and no job those runners could take is queued or running, light jobs included; its reads have 30
+seconds. So the variable must name a label that only that host's runners carry, which the heartbeat checks on every
+beat: `["self-hosted"]` alone would match the PC's runners and the Mac as well. Otherwise the parts run where they
+always did, and a value that is not one such label list, a failed read or an unreadable clock only gives a warning.
+That check is a snapshot, not a reservation: a job those runners can take may be queued after it and before the parts
+start, and the parts then wait behind it.
+
+The heartbeat comes from the maintainer's machine, with the repository admin's `gh`, once a minute from the loop
+that hands the host its registration tokens, so it stops when that loop or the host stops.
+`runner-heartbeat.sh <runner-name-prefix> <label> <variable> [min-online]` lists the repository's runners and, while
+at least `min-online` (default 2) of those whose name starts with the prefix and that carry the label are online,
+writes `<epoch seconds> <labels> <their own labels>` to the variable: those runners' labels, and those of them no
+other runner of the repository carries (online or offline), each lower-case as one JSON array. The host's runners must
+carry identical labels: while they differ, the heartbeat is not written, since a job asking for a label only some of
+them carry could take one unseen. Nor is it written while every one of their labels is carried by some other runner
+too. Too few runners, differing labels or no label of their own write nothing; a failed listing
+writes nothing and exits 1, so a loop that runs under `set -e` calls it with `|| true`. The parts check also needs
+`timeout` or `gtimeout` on the runner of Detect changes to bound its reads, and reads nothing without one.
+
+```sh
+runner-heartbeat.sh <runner-name-prefix> <label> CI_BROWSER_PARTS_RUNNERS_SEEN || true   # every minute, in the token loop
+gh variable set CI_MAIN_BROWSER_PARTS_LABELS --body '["self-hosted","<label>"]'              # on, once the heartbeat runs
+gh variable delete CI_MAIN_BROWSER_PARTS_LABELS                                              # off: every part where it was
+```
+
+A run whose Detect changes chose the host in the minutes after it failed waits for it: the parts stay queued, and
+re-running only the failed jobs would queue them there again. Cancel the run (`gh run cancel <run>`), wait until the
+cancel has finished (cancelled parts still upload their logs for about a minute), then re-run all of its jobs
+(`gh run rerun <run>`), so Detect changes chooses again; delete the variable first if the heartbeat is still under
+three minutes old. If a newer push of main is already waiting, cancelling is enough: that run chooses afresh. If the
+host comes back first, the queued parts simply run. A rerun after a stranded rerun is the run's third attempt, and
+release reuse (`scripts/release-ci-reuse.ts`) takes only a first or second one, so a Release of that commit then runs
+CI itself.
+
 On the maintainer PC the launcher runs as the systemd user unit `ovis-ci-runner.service`
 (`run.sh --repo devswha/ovis --count 4 --labels self-hosted-ovis` from a copy of this directory in
 `~/.local/share/ovis-ci-runner`): four slots start four of one CI run's six Linux jobs together, and

@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Picks the runner for ci.yml's Linux jobs and prints `linux=<json>` for $GITHUB_OUTPUT, then `fast=<json>` for Fast checks.
+# Picks the runner for ci.yml's Linux jobs and prints `linux=<json>` for $GITHUB_OUTPUT, then `fast=<json>` for Fast checks,
+# and for a push to main only, while a further self-hosted host is set, fresh and free, `parts=<json>` for parts 1 and 2 of
+# Browser regression (other scripts) (at the end of this script).
 # A fork pull request always gets the GitHub-hosted image: its code must never reach the
 # self-hosted runner. Otherwise the workflow_dispatch input wins over the repository variable
 # CI_SELF_HOSTED_LABELS. With neither, a push goes to the maintainer PC's runners
@@ -38,9 +40,15 @@ capacity="${SELF_HOSTED_CAPACITY:-}"
 # scripts) (scripts/ci-runner-route.test.ts holds this to ci.yml)
 linux_jobs=6
 
+# Prints the one JSON value in $1, compacted, when it is a non-empty array of strings that contains "self-hosted";
+# fails otherwise, also for two values one after the other, which would each print a line of their own
+label_list() {
+  jq -sce 'if length == 1 and (.[0] | type == "array" and length > 0 and all(.[]; type == "string") and any(.[]; . == "self-hosted")) then .[0] else error("invalid") end' <<<"$1" 2>/dev/null
+}
+
 choose_labels() {
   local source="$1" value="$2" compact
-  if ! compact=$(jq -ce 'if type == "array" and length > 0 and all(.[]; type == "string") and any(.[]; . == "self-hosted") then . else error("invalid") end' <<<"$value" 2>/dev/null); then
+  if ! compact=$(label_list "$value"); then
     echo "::error::$source must be a JSON array of strings that contains \"self-hosted\", got: $value" >&2
     exit 1
   fi
@@ -69,11 +77,23 @@ bound=""
 if command -v timeout >/dev/null 2>&1; then bound=timeout
 elif command -v gtimeout >/dev/null 2>&1; then bound=gtimeout
 fi
+# The seconds this script has run. ROUTE_TEST_SECONDS_FILE is a test seam and nothing else: in
+# scripts/ci-runner-route.test.ts it names a file the fake gh moves on, so a read can take time without any being
+# spent; ci.yml never sets it.
+elapsed() {
+  if [[ -n "${ROUTE_TEST_SECONDS_FILE:-}" ]]; then cat "$ROUTE_TEST_SECONDS_FILE"; else echo "$SECONDS"; fi
+}
+# set by the browser parts' check alone (below): its reads also stop once elapsed reaches it
+api_until=""
 api() {
-  local out errors left
+  local out errors left spent
   errors=$(mktemp)
   for _ in 1 2 3; do
     left=$((API_BUDGET - SECONDS))
+    if [[ -n "$api_until" ]]; then
+      spent=$(elapsed)
+      if (( api_until - spent < left )); then left=$((api_until - spent)); fi
+    fi
     if [ "$left" -le 0 ]; then break; fi
     if [ "$left" -gt 60 ]; then left=60; fi
     if out=$(${bound:+$bound "$left"} gh api --paginate "$1" 2>"$errors"); then rm -f "$errors"; printf '%s\n' "$out"; return 0; fi
@@ -84,18 +104,30 @@ api() {
   return 1
 }
 
-# Prints how many unfinished jobs of queued or running workflow runs could take one of those
-# runners, stopping once the count passes $1 (one API call per run adds up while many runs wait);
-# fails when the API does three times in a row.
+# api for the browser parts' check: the answer counts only when every page is a JSON object with the array $2, so an
+# empty or cut answer is a failed read there, never an idle host
+api_array() {
+  local out
+  out=$(api "$1") || return 1
+  jq -se --arg key "$2" 'length > 0 and all(.[]; type == "object" and (.[$key] | type) == "array")' <<<"$out" >/dev/null 2>&1 || return 1
+  printf '%s\n' "$out"
+}
+
+# Prints how many unfinished jobs of queued or running workflow runs could take one of the runners
+# whose labels are $2 (lowercase), leaving out the jobs named in $3, stopping once the count passes $1
+# (one API call per run adds up while many runs wait); fails when the API does three times in a row.
+# With $4 set (the browser parts' check), a job counts without asking for self-hosted, since one that asks only for
+# the runners' own label takes them too, and every read goes through api_array.
 busy_jobs() {
-  local limit="$1" ids id jobs n total=0
+  local limit="$1" pool="$2" light="$3" read=api need='index("self-hosted") != null and ' ids id jobs n total=0
+  if [[ -n "${4:-}" ]]; then read=api_array need=''; fi
   ids=$(for status in in_progress queued; do
-    api "repos/$REPOSITORY/actions/runs?status=$status&per_page=100" | jq '.workflow_runs[].id' || exit 1
+    "$read" "repos/$REPOSITORY/actions/runs?status=$status&per_page=100" workflow_runs | jq '.workflow_runs[].id' || exit 1
   done) || return 1
   for id in $ids; do
-    jobs=$(api "repos/$REPOSITORY/actions/runs/$id/jobs?filter=latest&per_page=100") || return 1
-    n=$(jq -s -e --argjson pool "$pool_labels" --argjson light "$light_job_names" '[.[].jobs[] | select(.status != "completed" and (.name as $name | $light | index($name)) == null)
-      | [.labels[] | ascii_downcase] | select(index("self-hosted") != null and all(.[]; . as $x | $pool | index($x) != null))]
+    jobs=$("$read" "repos/$REPOSITORY/actions/runs/$id/jobs?filter=latest&per_page=100" jobs) || return 1
+    n=$(jq -s -e --argjson pool "$pool" --argjson light "$light" '[.[].jobs[] | select(.status != "completed" and (.name as $name | $light | index($name)) == null)
+      | [.labels[] | ascii_downcase] | select('"$need"'all(.[]; . as $x | $pool | index($x) != null))]
       | length' <<<"$jobs") || return 1
     total=$((total + n))
     if (( total > limit )); then break; fi
@@ -112,7 +144,7 @@ route_pull_request() {
     exit 1
   fi
   capacity=$((10#$capacity))
-  if ! busy=$(busy_jobs $((capacity - linux_jobs))); then
+  if ! busy=$(busy_jobs $((capacity - linux_jobs)) "$pool_labels" "$light_job_names"); then
     echo "::warning::could not count the self-hosted runners' jobs; using ubuntu-24.04" >&2
     echo "linux=$hosted"
   elif (( capacity - busy >= linux_jobs )); then
@@ -164,7 +196,7 @@ fast=$linux
 fast_labels="${FAST_LABELS:-}"
 # (a manual run that names ovis-vm itself keeps Fast checks with the rest)
 if [[ ("$event" == pull_request || "$event" == push) && "$linux" == *'"ovis-vm"'* && -n "${fast_labels//[[:space:]]/}" ]]; then
-  if chosen=$(jq -ce 'if type == "array" and length > 0 and all(.[]; type == "string") and any(.[]; . == "self-hosted") then . else error("invalid") end' <<<"$fast_labels" 2>/dev/null); then
+  if chosen=$(label_list "$fast_labels"); then
     echo "Fast checks: self-hosted $chosen (from repository variable CI_FAST_SELF_HOSTED_LABELS)" >&2
     fast=$chosen
   else
@@ -172,3 +204,65 @@ if [[ ("$event" == pull_request || "$event" == push) && "$linux" == *'"ovis-vm"'
   fi
 fi
 echo "fast=$fast"
+
+# Parts 1 and 2 of Browser regression (other scripts) on a further self-hosted host (scripts/self-hosted-runner/README.md,
+# "Routing jobs to it"): PARTS_LABELS, the repository variable CI_MAIN_BROWSER_PARTS_LABELS that ci.yml hands over in its
+# own runs alone, names the host's labels. A push to main sends the two parts there while the Linux jobs take the
+# self-hosted PC's three parts, the host's heartbeat is fresh, its runners carry every one of those labels and at
+# least one of them is theirs alone, and no job those runners could take is queued or running. The heartbeat
+# PARTS_SEEN (CI_BROWSER_PARTS_RUNNERS_SEEN, which scripts/self-hosted-runner/runner-heartbeat.sh writes while the
+# host's runners are online) is "<epoch seconds> <their labels> <those of them no other runner carries>", each a
+# lower-case JSON array. Anything else prints
+# nothing more, so every part goes where `linux=` sends it; a bad variable, a failed read or the clock only warn,
+# since the host only makes main's run shorter. The check is a snapshot, not a reservation: a job queued after it
+# can still take a runner first.
+parts_seen_seconds=180
+# the check's own share of the API budget: two run lists and one read per unfinished run take seconds even at a
+# busy hour, and past it the parts stay with the Linux jobs, leaving Detect changes the rest of its five minutes
+parts_budget=30
+parts_labels="${PARTS_LABELS:-}"
+if [[ "$event" == push && "${REF:-}" == refs/heads/main && -n "${parts_labels//[[:space:]]/}" ]]; then
+  # the matrix's own test (ci.yml's shard): three parts when the Linux label names self-hosted and not ovis-vm
+  shape=$(tr '[:upper:]' '[:lower:]' <<<"$linux")
+  # the heartbeat: "<epoch seconds> <the host's runners' labels> <those no other runner carries>"
+  seen_at="" seen_labels="" seen_alone=""
+  if [[ "${PARTS_SEEN:-}" =~ ^([0-9]{1,12})\ (.+)$ ]] && seen=$(jq -sce 'map(if type == "array" and all(.[]; type == "string") then map(ascii_downcase) | unique else error("invalid") end)
+    | if length == 2 and (.[1] | length > 0) and (.[1] - .[0] | length == 0) then . else error("invalid") end' <<<"${BASH_REMATCH[2]}" 2>/dev/null); then
+    seen_at=${BASH_REMATCH[1]}
+    seen_labels=$(jq -c '.[0]' <<<"$seen") && seen_alone=$(jq -c '.[1]' <<<"$seen") || seen_labels=""
+  fi
+  # the value itself is not shown: a line of it could read as a workflow command
+  if ! parts=$(label_list "$parts_labels"); then
+    echo "::warning::repository variable CI_MAIN_BROWSER_PARTS_LABELS must be one JSON array of strings that contains \"self-hosted\"; every browser part runs with the Linux jobs" >&2
+  elif [[ "$shape" == *ovis-vm* || "$shape" != *self-hosted* ]]; then
+    echo "Browser parts: with the Linux jobs, which do not run three parts on self-hosted runners" >&2
+  elif ! now=$(date +%s) || ! [[ "$now" =~ ^[0-9]{1,12}$ ]]; then
+    echo "::warning::could not read the clock; every browser part runs with the Linux jobs" >&2
+  # base 10 from here on: leading zeroes must not make it octal
+  elif now=$((10#$now)); [[ -z "$seen_labels" ]]; then
+    echo "Browser parts: with the Linux jobs (CI_BROWSER_PARTS_RUNNERS_SEEN is not \"<epoch seconds> <the runners' labels> <their own labels>\")" >&2
+  elif (( now - 10#$seen_at > parts_seen_seconds || 10#$seen_at - now > 60 )); then
+    # a heartbeat up to a minute ahead is a clock that differs, not a stale one
+    echo "Browser parts: with the Linux jobs (the host's heartbeat is from $seen_at, now is $now: older than $parts_seen_seconds s or ahead)" >&2
+  elif ! missing=$(jq -c --argjson have "$seen_labels" '[map(ascii_downcase)[] | select(. as $label | $have | index($label) | not)]' <<<"$parts"); then
+    echo "::warning::could not compare $parts with the labels of the host's runners; every browser part runs with the Linux jobs" >&2
+  elif [[ "$missing" != "[]" ]]; then
+    echo "Browser parts: with the Linux jobs (no runner the heartbeat counted carries $missing)" >&2
+  # a list with none of the host's own labels would match other runners too (the PC's, the Mac), which a part could take
+  elif ! alone=$(jq -c --argjson alone "$seen_alone" '[map(ascii_downcase)[] | select(. as $label | $alone | index($label))]' <<<"$parts"); then
+    echo "::warning::could not compare $parts with the labels of the host's runners; every browser part runs with the Linux jobs" >&2
+  elif [[ "$alone" == "[]" ]]; then
+    echo "Browser parts: with the Linux jobs (no label of CI_MAIN_BROWSER_PARTS_LABELS is carried by the host's runners alone)" >&2
+  # without timeout or gtimeout nothing could stop a read that hangs inside the 30 s: no reads then
+  elif [[ -z "$bound" ]]; then
+    echo "::warning::neither timeout nor gtimeout is installed to bound the count of the jobs on $parts; every browser part runs with the Linux jobs" >&2
+  # every job the host's runners could take counts here, light ones too: any of them makes the parts wait
+  elif api_until=$(($(elapsed) + parts_budget)); ! busy=$(busy_jobs 0 "$seen_labels" '[]' parts); then
+    echo "::warning::could not count the jobs on $parts within $parts_budget s; every browser part runs with the Linux jobs" >&2
+  elif (( busy > 0 )); then
+    echo "Browser parts: with the Linux jobs (a job is queued or running on $parts)" >&2
+  else
+    echo "Browser parts 1 and 2: self-hosted $parts (from repository variable CI_MAIN_BROWSER_PARTS_LABELS)" >&2
+    echo "parts=$parts"
+  fi
+fi

@@ -740,6 +740,8 @@ describe("ci.yml", () => {
   const HOSTED_ONLY_READS = [
     "${{ inputs.hosted_only && 'ubuntu-24.04' || fromJSON(needs.changes.outputs.fast) }}",
     "${{ inputs.hosted_only && 'ubuntu-24.04' || fromJSON(needs.changes.outputs.linux) }}",
+    // browser-other: parts 1 and 2 of main's push run may take the route's parts= labels (scripts/ci-runner-route.sh)
+    "${{ inputs.hosted_only && 'ubuntu-24.04' || fromJSON(matrix.shard <= 2 && needs.changes.outputs.parts || needs.changes.outputs.linux) }}",
     "${{ inputs.hosted_only && 'none' || 'save' }}",
     "${{ inputs.hosted_only && 'none' || 'restore' }}",
     "needs.changes.outputs.draft != 'true' && !inputs.hosted_only",

@@ -1379,7 +1379,9 @@ A push to main takes the repository variable `CI_MAIN_SELF_HOSTED_LABELS` over
 jobs to the runners `run.sh --reserved` keeps for them, so a merge's CI does not queue behind pull
 request runs, and `"ubuntu-24.04"` keeps only main GitHub-hosted. `CI_SELF_HOSTED_LABELS` set to
 `"ubuntu-24.04"` still keeps every job hosted. Delete the variable while no reserved runner is online,
-or main's jobs wait for one.
+or main's jobs wait for one. `CI_MAIN_BROWSER_PARTS_LABELS` can send parts 1 and 2 of a push run of main's Browser
+regression (other scripts) to a further self-hosted host while its heartbeat is fresh and it is free
+([Routing jobs to it](../scripts/self-hosted-runner/README.md#routing-jobs-to-it)).
 
 `ci.yml`'s Native macOS session identity job can run on the self-hosted Mac `eamac-ovis-mac`
 (labels `self-hosted, macOS, ARM64, self-hosted-ovis-mac`): ci.yml's own same-repository runs off

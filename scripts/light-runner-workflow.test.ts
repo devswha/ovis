@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { GITHUB_HOSTED_LABELS, parseWorkflow, root, type Job } from "./shell-workflow-rules.ts";
+import { GITHUB_HOSTED_LABELS, parseWorkflow, root, type Job, type Workflow } from "./shell-workflow-rules.ts";
 import { evaluateValue, type Contexts, type Value } from "./workflow-expression.ts";
 
 // Light jobs (Detect changes, the PR title check, ...) take the self-hosted pool so they do not wait
@@ -13,6 +13,9 @@ const LIGHT = `\${{ ${FORK_GUARD} || fromJSON(github.ref == 'refs/heads/main' &&
 const ROUTED = "${{ fromJSON(needs.changes.outputs.linux) }}";
 // Fast checks: the Linux jobs' runner, or CI_FAST_SELF_HOSTED_LABELS only when those name ovis-vm (never a fork's)
 const ROUTED_FAST = "${{ fromJSON(needs.changes.outputs.fast) }}";
+// Browser regression (other scripts): parts 1 and 2 take the route's parts= labels, which it prints for a push to main
+// alone, and every part otherwise the Linux jobs' runner (both outputs: scripts/ci-runner-route.test.ts, every shard of a fork)
+const ROUTED_PARTS = "${{ fromJSON(matrix.shard <= 2 && needs.changes.outputs.parts || needs.changes.outputs.linux) }}";
 // ci.yml's macOS session job: a fork stays on macos-15, ci.yml's own same-repository runs off main take CI_MAC_LABELS (the
 // self-hosted Mac), macos-15 while it is unset (releases: scripts/release-ci-reuse.test.ts)
 const MAC_FORK_GUARD = "github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository && 'macos-15'";
@@ -56,6 +59,7 @@ function forkSafe(job: Job & { strategy?: { matrix?: { include?: { os?: unknown 
   if (runsOn === MAC || runsOn === hostedOnly("macos-15", MAC)) return "mac";
   if (runsOn === ROUTED || runsOn === hostedOnly("ubuntu-24.04", ROUTED)) return "routed";
   if (runsOn === ROUTED_FAST || runsOn === hostedOnly("ubuntu-24.04", ROUTED_FAST)) return "routed (fast)";
+  if (runsOn === ROUTED_PARTS || runsOn === hostedOnly("ubuntu-24.04", ROUTED_PARTS)) return "routed (parts)";
   if (runsOn === "${{ matrix.os }}") {
     const include = job.strategy?.matrix?.include ?? [];
     return include.length > 0 && include.every((entry) => typeof entry.os === "string" && HOSTED.test(entry.os)) ? "hosted matrix" : null;
@@ -88,9 +92,25 @@ describe("self-hosted runners and fork pull requests", () => {
     const changes = ci.jobs.changes!;
     expect(changes.outputs?.linux).toBe("${{ steps.route.outputs.linux }}");
     expect(changes.outputs?.fast).toBe("${{ steps.route.outputs.fast }}");
+    expect(changes.outputs?.parts).toBe("${{ steps.route.outputs.parts }}");
+    expect(ci.jobs["browser-other"]!["runs-on"]).toBe(hostedOnly("ubuntu-24.04", ROUTED_PARTS));
+    // CI_MAIN_BROWSER_PARTS_LABELS reaches the route only in ci.yml's own runs, by the file and not the name: a called workflow's
+    // github.workflow_ref is its caller's, so relay-deploy's call on a push to main never puts parts on the host
+    expect(changes.steps?.find((step) => step.id === "route")?.env?.["PARTS_LABELS"])
+      .toBe("${{ startsWith(github.workflow_ref, format('{0}/.github/workflows/ci.yml@', github.repository)) && vars.CI_MAIN_BROWSER_PARTS_LABELS || '' }}");
     // CI_LINUX_SELF_HOSTED_LABELS reaches the route only in ci.yml's own runs, never in a caller's (relay-deploy on a push to main)
     expect(changes.steps?.find((step) => step.id === "route")?.env?.["LINUX_LABELS"]).toBe("${{ github.workflow == 'CI' && vars.CI_LINUX_SELF_HOSTED_LABELS || '' }}");
     expect(changes.steps?.find((step) => step.id === "route")?.run).toBe('bash scripts/ci-runner-route.sh >> "$GITHUB_OUTPUT"');
+    // the route's test seam for its elapsed seconds stays a test's
+    expect(Object.keys(changes.steps?.find((step) => step.id === "route")?.env ?? {})).not.toContain("ROUTE_TEST_SECONDS_FILE");
+  });
+
+  test("no workflow that calls ci.yml is named CI, which CI_LINUX_SELF_HOSTED_LABELS' guard takes for ci.yml's own runs", () => {
+    const named = (workflow: Workflow): unknown => (workflow as Workflow & { name?: unknown }).name;
+    const callers = workflows.filter(({ workflow }) => Object.values(workflow.jobs).some((job) => job.uses === "./.github/workflows/ci.yml"));
+    expect(callers.length).toBeGreaterThan(0);
+    expect(callers.filter(({ workflow }) => named(workflow) === "CI").map(({ name }) => name)).toEqual([]);
+    expect(named(workflows.find(({ name }) => name === "ci.yml")!.workflow)).toBe("CI");
   });
 
   // remote-bundles.yml's bundle-windows now runs GitHub-hosted, but a pull request on an older revision still runs it on
@@ -177,7 +197,7 @@ describe("ci.yml's hosted_only input", () => {
       expect(prefix, `${id}: runs-on starts with the hosted_only prefix`).not.toBeNull();
       const label = prefix![1]!;
       const before = `\${{ ${inner.slice(prefix![0].length)} }}`;
-      expect([LIGHT, MAC, ROUTED, ROUTED_FAST], `${id}: behind the prefix, the expression it had`).toContain(before);
+      expect([LIGHT, MAC, ROUTED, ROUTED_FAST, ROUTED_PARTS], `${id}: behind the prefix, the expression it had`).toContain(before);
       expect(GITHUB_HOSTED_LABELS).toContain(label);
       for (const context of ownRuns) expect([id, evaluateValue(runsOn, context)]).toEqual([id, evaluateValue(before, context)]);
       for (const context of ownRuns) expect([id, evaluateValue(runsOn, called(context))]).toEqual([id, label]);
@@ -239,7 +259,7 @@ describe("ci.yml's hosted_only input", () => {
       runner("browser-main", "ubuntu-24.04", ROUTED),
       cache("browser-main", "save"),
       `jobs.browser-main.steps.${PLAYWRIGHT}`,
-      runner("browser-other", "ubuntu-24.04", ROUTED),
+      runner("browser-other", "ubuntu-24.04", ROUTED_PARTS),
       cache("browser-other", "save"),
       `jobs.browser-other.steps.${PLAYWRIGHT}`,
       runner("integration-browser", "ubuntu-24.04", LIGHT),
