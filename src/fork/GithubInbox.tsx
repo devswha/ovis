@@ -41,15 +41,21 @@ interface ViewProps { wide: boolean; watching: boolean; onOpened(opened: Worktre
 export function ForkGithubSection({ children, ...props }: ViewProps & { children: ReactNode }) {
   const { settings } = useSettings();
   const current = useSection();
-  const t = useT();
   if (!settings.pullRequests) return children;
   return <div className="fork-github-slot">
-    {!props.wide && <nav className="fork-github-nav" aria-label={t("Inbox mode")}>
-      <button type="button" className="btn btn-ghost" aria-current={current === "inbox" ? "page" : undefined} onClick={() => setGithubSection("inbox")}>{t("Agent inbox")}</button>
-      <button type="button" className="btn btn-ghost" aria-current={current === "github" ? "page" : undefined} onClick={() => setGithubSection("github")}><GitPullRequest aria-hidden="true" />{t("GitHub|fork")}</button>
-    </nav>}
     {current === "github" ? <GithubInbox {...props} /> : children}
   </div>;
+}
+
+/** The phone's way in: one button beside the drawer toggle, toggling the list between the inbox and GitHub. */
+export function ForkGithubButton({ phone, listShown, open }: { phone: boolean; listShown: boolean; open(): void }) {
+  const { settings } = useSettings();
+  const current = useSection();
+  const t = useT();
+  if (!settings.pullRequests || !phone) return null;
+  const on = current === "github" && listShown;
+  return <button type="button" className="icon-button fork-github-toggle" aria-label={t("GitHub|fork")} title={t("GitHub|fork")} aria-pressed={on}
+    onClick={() => { setGithubSection(on ? "inbox" : "github"); if (!on) open(); }}><GitPullRequest aria-hidden="true" /></button>;
 }
 
 export function GithubInbox({ wide, watching, onOpened }: ViewProps) {
@@ -129,13 +135,14 @@ export function GithubInbox({ wide, watching, onOpened }: ViewProps) {
     })}</ul>
   </section>;
   return <section className={`mode-inbox fork-github${wide ? " is-wide" : ""}`} aria-label={t("GitHub|fork")}>
-    <header className="inbox-top"><h2>{t("GitHub|fork")}</h2><button type="button" className="icon-button" aria-label={t("Refresh")} title={t("Refresh")} disabled={loading || busy !== null} onClick={() => setRefresh((value) => value + 1)}><RefreshCw aria-hidden="true" /></button></header>
+    <header className="inbox-top"><h2>{t("GitHub|fork")}</h2>
+      {groups.repos.length > 1 && <select className="fork-github-repo" aria-label={t("Repositories")} value={groups.selected} onChange={(event) => { setRepo(event.target.value); saveGithubRepo(event.target.value); }}>
+        <option value="">{t("All")}</option>
+        {groups.repos.map(([name]) => <option key={name} value={name}>{name.split("/").pop()}</option>)}
+      </select>}
+      <button type="button" className="icon-button" aria-label={t("Refresh")} title={t("Refresh")} disabled={loading || busy !== null} onClick={() => setRefresh((value) => value + 1)}><RefreshCw aria-hidden="true" /></button></header>
     <div className="inbox-scroll">
       {loading ? <p className="inbox-empty" role="status">{t("Reading pull requests…")}</p> : error !== null ? <p className="inbox-empty" role="alert">{error === "checkout_failed" ? t("Could not check out this pull request") : errors[error] ?? errors.gh_failed}</p> : listing !== null && <>
-        <div className="fork-github-chips" role="group" aria-label={t("Repositories")}>
-          <button type="button" className="btn btn-ghost" aria-pressed={groups.selected === ""} onClick={() => { setRepo(""); saveGithubRepo(""); }}>{t("All")}</button>
-          {groups.repos.map(([name, count]) => <button type="button" className="btn btn-ghost" key={name} aria-pressed={groups.selected === name} onClick={() => { setRepo(name); saveGithubRepo(name); }}>{name}<span className="pill">{count}</span></button>)}
-        </div>
         {groups.review.length + groups.yours.length === 0 ? <p className="inbox-empty" role="status">{t("Nothing needs you")}</p> : <>{group(groups.review, true)}{group(groups.yours, false)}</>}
       </>}
     </div>

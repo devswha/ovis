@@ -152,7 +152,7 @@ import { inboxOrder } from "./lib/agentInbox.ts";
 import { layoutCells } from "./lib/layoutMap.ts";
 import { pageStartsInInbox, useInboxMode } from "./lib/inboxMode.ts";
 import { InboxList } from "./components/InboxList.tsx";
-import { ForkGithubSection } from "./fork/GithubInbox.tsx";
+import { ForkGithubButton, ForkGithubSection } from "./fork/GithubInbox.tsx";
 import { InboxConnecting, InboxFootEntry, InboxUnchosen, ThreadTitle, ThreadTop } from "./components/InboxMode.tsx";
 import { InboxRail } from "./components/InboxRail.tsx";
 import { OvisMark } from "./components/OvisMark.tsx";
@@ -1136,6 +1136,7 @@ export function App() {
           >
             {drawerOpen ? <X /> : <Menu />}
           </button>}
+          <ForkGithubButton phone={!wideScreen} listShown={inMode && inbox.shown} open={() => { if (!inMode) enterInbox(); else if (!inbox.shown) inbox.show(); }} />
           {/* New workspace's + beside the logo, from 769px in one-line rows: it starts one on the selected PC. A phone's
               drawer has none here: each PC's own row carries its +, which says which PC (MachineSidebar.tsx) */}
           {!inMode && wideScreen && !sidebarCollapsed && settings.sidebarRows !== "two" && <button type="button" className="icon-button new-workspace-button" disabled={auth?.role === "watch" || selectedMachine?.state !== "connected"} aria-label={t("New workspace")} title={auth?.role === "watch" ? `${t("New workspace")} · ${t("View only")}` : t("New workspace")} onClick={() => { actions.counted?.("new_workspace", "button"); actions.openNewSession(); }}>

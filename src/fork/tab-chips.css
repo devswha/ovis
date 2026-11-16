@@ -2,8 +2,18 @@
   display: inline-flex;
   align-items: center;
   flex: 0 0 auto;
-  gap: var(--space-half);
+  gap: 0;
   padding-inline-end: var(--space-1);
+}
+
+/* A hairline before the chips: they read as part of the parent tab, not loose buttons. */
+.header-tabs .fork-tab-chips::before {
+  content: "";
+  align-self: center;
+  width: var(--hairline);
+  height: 12px;
+  margin-inline-end: var(--space-half);
+  background: var(--border);
 }
 
 .fork-tab-chip {
@@ -12,7 +22,7 @@
   align-items: center;
   justify-content: center;
   flex: 0 0 auto;
-  width: var(--fork-chip-size, 24px);
+  width: var(--fork-chip-size, 20px);
   min-height: var(--pointer-target);
   padding: 0;
   border: 0;
@@ -22,9 +32,12 @@
   cursor: pointer;
 }
 
-.fork-tab-chip > svg { width: var(--icon-size-sm); height: var(--icon-size-sm); }
-.fork-tab-chip > .tab-strip-dot { position: absolute; inset-inline-end: 0; bottom: var(--space-half); }
-.fork-tab-chip:is([aria-selected="true"], [aria-pressed="true"]) { color: var(--text-strong); background: var(--bg-elevated); }
+.fork-tab-chip > svg { width: 13px; height: 13px; stroke-width: 2.25; }
+/* The icon carries the sub-agent's state: no dot on top of it. */
+.fork-tab-chip[data-status="working"], .fork-tab-chip[data-status="waiting"] { color: var(--status-working); }
+.fork-tab-chip[data-status="blocked"] { color: var(--status-blocked); }
+.fork-tab-chip[data-status="done"] { color: var(--status-done); }
+.fork-tab-chip:is([aria-selected="true"], [aria-pressed="true"]) { color: var(--text-strong); background: var(--bg-hover); }
 .fork-tab-chip:focus-visible { outline: var(--ring); outline-offset: var(--ring-inset-offset); }
 @media (hover: hover) { .fork-tab-chip:hover { color: var(--text-strong); background: var(--bg-hover); } }
 

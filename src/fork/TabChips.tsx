@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef } from "react";
 import { Check, Hammer, Terminal } from "lucide-react";
 import type { HerdrPane, HerdrTab, PaneInfo } from "../../shared/protocol.ts";
 import { rowMenuAnchor } from "../components/RowMenu.tsx";
@@ -18,7 +18,8 @@ interface Props {
   onRename?: (tab: HerdrTab) => void;
   onMove?: (tabId: string, direction: -1 | 1) => void;
   drag?: Pick<ReturnType<typeof useTabReorder>, "onPointerDown" | "onPointerMove" | "onPointerUp" | "cancelDrag" | "consumeClick">;
-  statusMark: (tab: HerdrTab) => ReactNode;
+  /** working / blocked / waiting / done colour the icon itself; no separate dot */
+  status: (tab: HerdrTab) => string | null;
   sheet?: boolean;
   onDismiss?: () => void;
   panelId?: string;
@@ -36,7 +37,7 @@ export function forkChipBoundary(group: ReturnType<typeof groupAgentTabs>, row: 
 }
 
 /** Sibling controls, never buttons inside the parent's tab/menu button. */
-export function ForkTabChips({ tabs, paneFor, nameOf, selectedTab, onSelect, onMenu, onClose, onRename, onMove, drag, statusMark, sheet = false, onDismiss, panelId, popup = "menu" }: Props) {
+export function ForkTabChips({ tabs, paneFor, nameOf, selectedTab, onSelect, onMenu, onClose, onRename, onMove, drag, status, sheet = false, onDismiss, panelId, popup = "menu" }: Props) {
   const held = useRef<{ timer: ReturnType<typeof setTimeout>; x: number; y: number; fired: boolean } | null>(null);
   const cancel = (): void => { if (held.current) clearTimeout(held.current.timer); held.current = null; };
   useEffect(() => cancel, []);
@@ -51,7 +52,7 @@ export function ForkTabChips({ tabs, paneFor, nameOf, selectedTab, onSelect, onM
       const pane = paneFor(tab) as HerdrPane | undefined;
       const Icon = pane?.agent_role === "implement" ? Hammer : pane?.agent_role === "review" ? Check : Terminal;
       const active = tab.tab_id === selectedTab;
-      return <button key={tab.tab_id} type="button" role={sheet ? popup === "menu" ? "menuitemcheckbox" : undefined : "tab"} className={`fork-tab-chip${sheet ? " row-sheet-aside" : ""}`} data-tab-id={tab.tab_id}
+      return <button key={tab.tab_id} type="button" role={sheet ? popup === "menu" ? "menuitemcheckbox" : undefined : "tab"} className={`fork-tab-chip${sheet ? " row-sheet-aside" : ""}`} data-tab-id={tab.tab_id} data-status={status(tab) ?? undefined}
         title={nameOf(tab)} aria-label={nameOf(tab)} aria-selected={sheet ? undefined : active} aria-pressed={sheet && popup === "dialog" ? active : undefined} aria-checked={sheet && popup === "menu" ? active : undefined}
         aria-controls={sheet ? undefined : panelId} tabIndex={sheet || active ? 0 : -1} aria-haspopup={popup}
         aria-keyshortcuts={onMove ? "Shift+F10 Alt+Shift+ArrowLeft Alt+Shift+ArrowRight" : "Shift+F10"}
@@ -95,7 +96,7 @@ export function ForkTabChips({ tabs, paneFor, nameOf, selectedTab, onSelect, onM
             if (!event.repeat) onMove?.(tab.tab_id, event.key === "ArrowLeft" ? -1 : 1);
           }
         }}>
-        <Icon aria-hidden="true" />{statusMark(tab)}
+        <Icon aria-hidden="true" />
       </button>;
     })}
   </span>;
