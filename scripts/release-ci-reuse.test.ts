@@ -743,6 +743,9 @@ describe("ci.yml", () => {
     "jobs.changes.runs-on": LIGHT,
     "jobs.herdr-core-live.runs-on": LIGHT,
     "jobs.integration-browser.runs-on": LIGHT,
+    // the macOS session job's guard against a fork's pull request (scripts/light-runner-workflow.test.ts): a push and a
+    // Release run carry none, and both then take the repository variable CI_MAC_LABELS, the same tests on either runner
+    "jobs.macos-session.runs-on": "${{ github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository && 'macos-15' || fromJSON(vars.CI_MAC_LABELS || '\"macos-15\"') }}",
     // the runner of the Linux jobs (scripts/ci-runner-route.sh): the self-hosted PC for a push,
     // GitHub's for the Release run's own call. The jobs and their steps are the same on either;
     // the unit tests the self-hosted runner skips run in release-validate.yml's own Fast checks, on

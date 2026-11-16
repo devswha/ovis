@@ -130,7 +130,9 @@ jobs:
     name: Native macOS session identity
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: macos-15
+    # mac: fork pull requests stay on macos-15; same-repository runs take the repository variable CI_MAC_LABELS
+    # (a JSON label list such as ["self-hosted","self-hosted-ovis-mac"]), macos-15 while it is unset (scripts/light-runner-workflow.test.ts)
+    runs-on: ${{ github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository && 'macos-15' || fromJSON(vars.CI_MAC_LABELS || '"macos-15"') }}
     timeout-minutes: 5
     env:
       HERDR_TEST_MODE: unit
