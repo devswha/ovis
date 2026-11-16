@@ -274,7 +274,8 @@ old; one it cannot even move is emptied where it is, and logged once a day while
 
 `ci.yml`'s Linux jobs of a push go to `["self-hosted","self-hosted-ovis"]` by default, the launcher's
 default label. A same-repository pull request goes there only while at most
-`CI_SELF_HOSTED_CAPACITY` (default 10) minus its four Linux jobs are queued or running on that label,
+`CI_SELF_HOSTED_CAPACITY` (default 10) minus its six Linux jobs (Fast checks, Integration tests and the
+browser jobs: ui-regression and the three parts of the other scripts) are queued or running on that label,
 and GitHub-hosted otherwise. Set the capacity to the number of `self-hosted-ovis` runners you keep
 online. The repository variable overrides the choice:
 
@@ -308,7 +309,7 @@ share `check.ts`'s slots (`CHECK_HOST_MAX_RUNS`) with theirs, so they can wait t
 
 On the maintainer PC the launcher runs as the systemd user unit `ovis-ci-runner.service`
 (`run.sh --repo devswha/ovis --count 4 --labels self-hosted-ovis` from a copy of this directory in
-`~/.local/share/ovis-ci-runner`): four slots let one CI run's four Linux jobs start together, and
+`~/.local/share/ovis-ci-runner`): four slots start four of one CI run's six Linux jobs together, and
 `check.ts`'s shared slots cap its herdr-backed lanes at `ci.yml`'s `CHECK_MAX_RUNS`. Copy the directory again
 after changing these files, on every host whose launcher runs with `--build-cache`. For a change to
 `build-cache-promote.sh` the copy is all it takes: the launcher starts the promoter from that
