@@ -28,9 +28,9 @@ function delivery(foreground: { pid: number; name: string; argv0?: string; argv?
   });
   spyOn(processStart, "processStartedAtAsync").mockResolvedValue(1000);
   spyOn(herdr, "paneRead").mockImplementation(async () => ({ text: screen }) as Awaited<ReturnType<typeof herdr.paneRead>>);
-  const hooks: { paste?: () => void } = {};
+  const hooks: { paste?: () => void; keys?: () => void } = {};
   spyOn(herdr, "paneSendText").mockImplementation(async (_pane, text) => { if (count.atPaste < 0) count.atPaste = count.reads; writes.push(text); hooks.paste?.(); if (afterPaste !== undefined) screen = afterPaste; });
-  spyOn(herdr, "paneSendKeys").mockImplementation(async (_pane, keys) => { if (count.atEnter < 0) count.atEnter = count.reads; writes.push(keys.join(",")); });
+  spyOn(herdr, "paneSendKeys").mockImplementation(async (_pane, keys) => { if (count.atEnter < 0) count.atEnter = count.reads; writes.push(keys.join(",")); hooks.keys?.(); });
   const owner = { data: connectionData({ deviceId: undefined, readOnly: false }), getBufferedAmount: () => 0, send: (value: string) => { frames.push(JSON.parse(value) as Frame); return 1; } };
   owner.data.attached.set("p", { keepSize: false });
   const pane = { pane_id: "p", terminal_id: "p", workspace_id: "w", tab_id: "t", agent, agent_status: status, focused: false, revision: 0 };
@@ -71,6 +71,47 @@ it("holds back the Enter of an agent-only Send now when Codex's question queue c
 
 it("sends an agent-only Send now to Codex in front, paste and Enter (control)", async () => {
   const d = delivery({ pid: 41001, name: "codex" }, "idle");
+  await d.submit(1, "hold");
+  const held = d.result("submit-result", 1) as unknown as { pending: { id: string } };
+  await d.sendNow(2, held.pending.id);
+  expect(d.writes).toEqual(["\u001b[200~> backup.txt\nkeep it\u001b[201~", "Enter"]);
+  expect(d.result("pending-result", 2)).toMatchObject({ ok: true });
+});
+
+it("sends a working Grok's Send now with the Enter that queues it and the Enter that sends that queue", async () => {
+  const d = delivery({ pid: 41001, name: "grok" }, "working", undefined, "grok");
+  await d.submit(1, "hold");
+  const held = d.result("submit-result", 1) as unknown as { pending: { id: string } };
+  await d.sendNow(2, held.pending.id);
+  expect(d.writes).toEqual(["\u001b[200~> backup.txt\nkeep it\u001b[201~", "Enter", "Enter"]);
+  expect(d.result("pending-result", 2)).toMatchObject({ ok: true });
+});
+
+it("reports a working Grok's Send now as unconfirmed when the read after its queue Enter fails", async () => {
+  const d = delivery({ pid: 41001, name: "grok" }, "working", undefined, "grok");
+  d.hooks.keys = () => { d.pane.agent_status = "blocked"; };
+  await d.submit(1, "hold");
+  const held = d.result("submit-result", 1) as unknown as { pending: { id: string } };
+  await d.sendNow(2, held.pending.id);
+  expect(d.writes).toEqual(["\u001b[200~> backup.txt\nkeep it\u001b[201~", "Enter"]);
+  expect(d.result("pending-result", 2)).toMatchObject({ ok: false, code: "submit_changed" });
+  expect(JSON.stringify(d.result("pending-result", 2))).not.toContain("input line");
+});
+
+it("drains a working Grok's Send now while the queue footer stays on the live screen", async () => {
+  const d = delivery({ pid: 41001, name: "grok" }, "working", undefined, "grok");
+  let enters = 0;
+  d.screen("2 queued, Enter to send now");
+  d.hooks.keys = () => { if (++enters >= 3) d.screen("grok> "); };
+  await d.submit(1, "hold");
+  const held = d.result("submit-result", 1) as unknown as { pending: { id: string } };
+  await d.sendNow(2, held.pending.id);
+  expect(d.writes).toEqual(["\u001b[200~> backup.txt\nkeep it\u001b[201~", "Enter", "Enter", "Enter"]);
+  expect(d.result("pending-result", 2)).toMatchObject({ ok: true });
+});
+
+it("sends an idle Grok's Send now with one Enter", async () => {
+  const d = delivery({ pid: 41001, name: "grok" }, "idle", undefined, "grok");
   await d.submit(1, "hold");
   const held = d.result("submit-result", 1) as unknown as { pending: { id: string } };
   await d.sendNow(2, held.pending.id);

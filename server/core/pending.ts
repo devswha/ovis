@@ -17,7 +17,7 @@
  * pane after, so another session or process of the same kind gets none.
  * First messages live in memory: a restart of the bridge loses those not sent yet.
  */
-import { AGENT_PICKER_MESSAGE, closeBackslash, closeMention, type createSubmitText, freeAgentInput, freeClaudeBox, freeHermesInput, InputDraftError, modelSwitchText, OMP_REPORT_POLL_MS, OMP_STARTUP_MS, ompStartingUntil, pendingFault, pendingIdentity, pendingText, submitFraming, untilOmpReported } from "./composer.ts";
+import { AGENT_PICKER_MESSAGE, closeBackslash, closeMention, type createSubmitText, drainGrokQueue, freeAgentInput, freeClaudeBox, freeHermesInput, grokQueueShown, InputDraftError, modelSwitchText, OMP_REPORT_POLL_MS, OMP_STARTUP_MS, ompStartingUntil, pendingFault, pendingIdentity, pendingText, submitFraming, untilOmpReported } from "./composer.ts";
 import { type Client, connectionOf, send } from "./connections.ts";
 import { ATTACH_HELD_MESSAGE } from "./terminal-process.ts";
 import type { AttachmentView, TerminalSighting } from "./terminals.ts";
@@ -900,14 +900,44 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       committing(steering);
       // Claude Code queues what Enter commits during a turn; Ctrl+Enter sends it now (#737). herdr
       // encodes the key as the pane asked, and as a plain CR for a program that asked for nothing.
+      // Grok queues that same Enter while a turn runs. Chat Send now then sends an empty-prompt
+      // Enter for each row the live screen still shows queued (drainGrokQueue).
       const sentAt = Date.now();
       // the connection to herdr is awaited, and a task may fire meanwhile: the hold is read once more once connected,
       // right before the key's own write. A key refused there was not sent, and its paste is not confirmed. Not seen: a
       // task whose fire Claude has not written by then (the entry reaches the transcript some tens of milliseconds
       // after the task fires), or that fires while herdr hands the key to the pane
       let refused = false;
-      await paneSendKeys(paneId, [steering && beforeEnter.identity.agent === "claude" ? "ctrl+enter" : "Enter"], undefined, () => allowed() && !(refused = resumed()))
+      const commitKey = (): boolean => allowed() && !(refused = resumed());
+      await paneSendKeys(paneId, [steering && beforeEnter.identity.agent === "claude" ? "ctrl+enter" : "Enter"], undefined, commitKey)
         .catch((error: unknown) => { if (refused) refuseResumed(); throw error; });
+      if (steering && beforeEnter.identity.agent === "grok") {
+        // the queue Enter already went. enterRefused would call that paste unsent and tell the user
+        // to press Enter in the terminal; a retry would queue the follow-up twice. wrote is already
+        // set, and a failure here is the same unconfirmed send as any other key that followed a paste.
+        // The terminal's input line does not come here. A Send now from the terminal view uses this
+        // same steer, so it drains too: the frame does not say which view asked.
+        try {
+          await drainGrokQueue({
+            delayMs: options.submitDelayMs ?? SUBMIT_DELAY_MS,
+            look: async () => {
+              const queued = await pendingContext(owner, paneId, lease, identity, true, agentOnly);
+              if (resumed()) throw new HerdrError("pending_wait", "The agent started another turn before this queued message could be committed");
+              authorizePending(owner, paneId, lease);
+              return { grok: queued.identity.agent === "grok", queued: grokQueueShown(queued.screen), release: queued.working };
+            },
+            sendEnter: async () => {
+              if (resumed()) throw new HerdrError("pending_wait", "The agent started another turn before this queued message could be committed");
+              authorizePending(owner, paneId, lease);
+              await paneSendKeys(paneId, ["Enter"], undefined, commitKey)
+                .catch((error: unknown) => { if (refused) throw new HerdrError("pending_wait", "The agent started another turn before this queued message could be committed"); throw error; });
+            },
+          });
+        } catch (error) {
+          if (error instanceof HerdrError && error.code === "submit_changed") throw error;
+          throw new HerdrError("submit_changed", "The follow-up was queued in Grok, but sending it now was not confirmed. Check the terminal before sending again.");
+        }
+      }
       if (endsOmpStart) forgetOmpStart(paneId);
       // This proves only that Ovis committed Enter to Pi, not that Pi accepted, queued or recorded
       // the message. Keep a non-resendable receipt until the bound JSONL active branch appends it.
