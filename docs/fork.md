@@ -2,6 +2,16 @@
 
 This fork is `ricardofelixb/ovis`; upstream is `devswha/ovis`. This inventory compares the starting commit `da5afc54` with its upstream merge base, `2decd453d6a28eb6cf21647c6f928150d1196c5c`. It includes inherited fork changes, not just this refactor.
 
+## Grouped sub-agent tabs
+
+Upstream candidate (A), behind **Agent friends** (off by default). Fork-only role metadata lives
+in `shared/fork/pane.ts` and `server/fork/core-terminals.ts`: only hc labels `role=implement`,
+`review` or `explore` become optional `agent_role`; herdr and old bridges omit it.
+Upstream hooks: `server/herdr-core/snapshot.ts` adds `forkPaneFields` to the existing fork import
+and one spread in `paneOf`; `shared/protocol.ts` adds one type import and one intersection.
+`server/fork/fork-pane-role.test.ts` failed before implementation, then passed with both app-owned
+and Ovis-owned layouts. No generated file or setting default changed.
+
 ## Project friends and inbox clarity
 
 Reusable upstream candidate, behind the existing **Agent friends** opt-in (off on new devices).
