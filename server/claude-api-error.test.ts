@@ -49,3 +49,9 @@ test("reads a person's prompt that holds bash mode's tags as a prompt, and only 
   expect(claudeTurnEnd(`${recorded}${entry({ type: "user", message: { role: "user", content: "<bash-input>ls</bash-input>" } })}${entry({ type: "user", message: { role: "user", content: "<bash-stdout>ok</bash-stdout><bash-stderr></bash-stderr>" } })}`)).toBe("failed");
 });
 
+test("reads a person's prompt taken in from the queue as the turn under way", () => {
+  const answer = entry({ type: "assistant", message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "Done" }] } });
+  const queued = entry({ type: "attachment", attachment: { type: "queued_command", commandMode: "prompt", prompt: "and this", origin: { kind: "human" } } });
+  expect(claudeTurnEnd(`${answer}${queued}`)).toBe("running");
+  expect(claudeTurnEnd(`${answer}${queued}${recorded.trim().split("\n").at(-1)!}\n`)).toBe("failed");
+});

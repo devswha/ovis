@@ -330,6 +330,23 @@ describe("a Claude pane whose turn ended on an API error", () => {
     expect(h.failures).toEqual([h.pane.pane_id]);
   });
 
+  it("reads an API error written after a rest whose turn took a queued prompt in after an answer", async () => {
+    const h = await claudeHub("");
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    const queued = line({ type: "attachment", timestamp: new Date().toISOString(), attachment: { type: "queued_command", commandMode: "prompt", prompt: "and this", origin: { kind: "human" } } });
+    writeFileSync(h.path, `${prompt("go")}${answer("Done")}${queued}`);
+    handlers.onStatus(h.pane.pane_id, "idle", "claude");
+    expect(h.last().status).toBe("done");
+    expect(h.failures).toEqual([]);
+    appendFileSync(h.path, failedEntry);
+    h.herdrSays({ ...h.pane, agent_status: "done" });
+    expect((await h.snapshot()).panes[0]!.agent_status).toBe("idle");
+    expect(h.last().status).toBe("idle");
+    expect(h.failures).toEqual([h.pane.pane_id]);
+    await h.snapshot();
+    expect(h.failures).toEqual([h.pane.pane_id]);
+  });
+
   it("tells nothing of a failure it never saw run: a pane found already at rest, after a restart", async () => {
     const h = await claudeHub(failed);
     handlers.onStatus(h.pane.pane_id, "idle", "claude");

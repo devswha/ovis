@@ -865,13 +865,14 @@ const localLine = (entry: TranscriptEntry, content: unknown): boolean => typeof 
  * How a Claude transcript's last turn stands, by the last entry of the session's own that tells it: `failed` when
  * that is the answer Claude Code wrote for a request the API refused (`isApiErrorMessage`: a rate limit, a cooldown,
  * an overloaded model), `answered` when it is an answer (one a retry got after such an error included), `running`
- * when it is a prompt, a tool's result or a tool call. A subagent's entries (`isSidechain`), Claude Code's own records
- * (meta entries, a compaction's summary, a local command's output) and every other entry tell nothing.
+ * when it is a prompt (one sent while Claude worked and taken in from the queue included: a `queued_command` record,
+ * as parseClaudeTranscript reads it), a tool's result or a tool call. A subagent's entries (`isSidechain`), Claude
+ * Code's own records (meta entries, a compaction's summary, a local command's output) and every other entry tell nothing.
  */
 export function claudeTurnEnd(text: string): ClaudeTurnEnd {
   let end: ClaudeTurnEnd = null;
   for (const line of text.split("\n")) {
-    if (!line.includes('"assistant"') && !line.includes('"user"')) continue;
+    if (!line.includes('"assistant"') && !line.includes('"user"') && !line.includes('"queued_command"')) continue;
     let entry: (TranscriptEntry & { isSidechain?: unknown }) | null;
     try { entry = JSON.parse(line) as typeof entry; } catch { continue; /* a record cut by the tail read */ }
     if (entry === null || typeof entry !== "object" || entry.isSidechain === true || entry.isMeta === true || entry.isCompactSummary === true) continue;
@@ -882,6 +883,7 @@ export function claudeTurnEnd(text: string): ClaudeTurnEnd {
         || (Array.isArray(content) && content.some((block: unknown) => typeof block === "object" && block !== null && (block as { type?: unknown }).type === "tool_use"));
       end = calling ? "running" : "answered";
     } else if (entry.type === "user" && !localLine(entry, content)) end = "running";
+    else if (entry.type === "attachment" && entry.attachment?.type === "queued_command" && entry.attachment.commandMode === "prompt") end = "running";
   }
   return end;
 }
