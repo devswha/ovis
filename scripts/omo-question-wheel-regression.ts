@@ -5,7 +5,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFile
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { chromium } from "playwright-core";
+import { chromium, type Response as PageResponse } from "playwright-core";
 import { createServer } from "../server/index.ts";
 import { UsageService } from "../server/usage.ts";
 import { herdrRpc, paneScrollInfo, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
@@ -22,6 +22,15 @@ const workspaces: string[] = [];
 let server: ReturnType<typeof createServer> | undefined;
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+type ScrollBody = { scroll?: { offset_from_bottom: number; viewport_rows: number } };
+/**
+ * A /pane/scroll answer's body, or undefined when the browser no longer has it (a navigation, or an eviction, let it
+ * go): a log or a wait passes over that answer instead of ending the run on the protocol error.
+ */
+const bodyOf = (response: PageResponse): Promise<ScrollBody | undefined> => response.json().catch((error: unknown) => {
+  console.log("SCROLL body gone:", response.request().method(), response.url(), (error as Error).message.split("\n")[0]);
+  return undefined;
+});
 const waitOutput = (pane: string, value: string) => herdrRpc("pane.wait_for_output", {
   pane_id: pane, source: "visible", match: { type: "substring", value }, timeout_ms: 10000,
 }, undefined, 12000);
@@ -91,7 +100,7 @@ process.stdout.write(Array.from({ length: 400 }, (_, n) => "history " + n + "\\r
   }));
   page.on("response", response => {
     if (response.url().endsWith("/pane/scroll") && response.request().method() === "POST") {
-      void response.json().then(body => console.log("SCROLL", JSON.stringify(body)));
+      void bodyOf(response).then(body => { if (body !== undefined) console.log("SCROLL", JSON.stringify(body)); });
     }
   });
   for (const fixture of fixtures) {
@@ -152,7 +161,7 @@ process.stdout.write(Array.from({ length: 400 }, (_, n) => "history " + n + "\\r
       assert.equal(input, "", "no wheel report reaches OmO");
       const scrollResponse = (offset: number) => page.waitForResponse(async response =>
         response.url().endsWith("/pane/scroll") && response.request().method() === "POST"
-        && (await response.json()).scroll.offset_from_bottom === offset);
+        && (await bodyOf(response))?.scroll?.offset_from_bottom === offset);
       // each event is one step whatever its delta, so a clamp is reached by enough events
       const lineWheel = async (deltaY: number, offset: number, events = 1) => {
         console.log("line wheel", deltaY, "x", events, "expects", offset);
@@ -166,8 +175,11 @@ process.stdout.write(Array.from({ length: 400 }, (_, n) => "history " + n + "\\r
       await lineWheel(-1, after.max_offset_from_bottom, Math.ceil(after.max_offset_from_bottom / 3) + 2);
       await lineWheel(1, 0, Math.ceil(after.max_offset_from_bottom / 3) + 2);
       // A real phone drag takes the same path; end-of-gesture rounding keeps the final partial step.
-      const resizedMetrics = page.waitForResponse(async response => response.url().includes("/pane/scroll?")
-        && (await response.json()).scroll?.viewport_rows !== after.viewport_rows);
+      const resizedMetrics = page.waitForResponse(async response => {
+        if (!response.url().includes("/pane/scroll?")) return false;
+        const body = await bodyOf(response);
+        return body !== undefined && body.scroll?.viewport_rows !== after.viewport_rows;
+      });
       await page.setViewportSize({ width: 390, height: 844 });
       await page.waitForFunction(() => {
         const screen = document.querySelector(".xterm-screen");
@@ -205,7 +217,7 @@ process.stdout.write(Array.from({ length: 400 }, (_, n) => "history " + n + "\\r
       // back to the desktop size: herdr reflows the history at the new width, which moves the view's place in it,
       // so the wheels that bring it back to the end go once that size has reached herdr, not alongside it
       const desktopMetrics = page.waitForResponse(async response => response.url().includes("/pane/scroll?")
-        && (await response.json()).scroll?.viewport_rows === after.viewport_rows);
+        && (await bodyOf(response))?.scroll?.viewport_rows === after.viewport_rows);
       await page.setViewportSize({ width: 1280, height: 800 });
       await desktopMetrics;
       console.log("PASS speed-two line wheels, maximum/bottom clamps, and phone touch history");
