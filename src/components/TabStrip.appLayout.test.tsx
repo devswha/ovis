@@ -118,6 +118,21 @@ describe("the tab strip on a PC the Herdr app lays out", () => {
     } finally { delete child.parent_pane_id; }
   });
 
+  it("keeps an unselected child's keyboard menu open until that tab disappears", async () => {
+    const child = snapshot.panes[1]! as HerdrPane;
+    child.parent_pane_id = snapshot.panes[0]!.pane_id;
+    stored.set("ovis:settings", JSON.stringify({ agentFriends: true }));
+    try {
+      await draw(TUI, undefined, undefined, { phoneRow: true });
+      const chip = renderer!.root.findByProps({ "data-tab-id": "w1:t2" });
+      await act(async () => chip.props.onKeyDown({ ...noKeys, key: "ContextMenu", currentTarget: node() }));
+      expect(renderer!.root.findAllByType(RowMenu)).toHaveLength(1);
+      expect(renderer!.root.findByType(RowMenu).props.title).toBe("Tab 2");
+      await draw(TUI, undefined, undefined, { phoneRow: true, snapshot: { ...snapshot, tabs: snapshot.tabs.filter((tab) => tab.tab_id !== child.tab_id) } });
+      expect(renderer!.root.findAllByType(RowMenu)).toHaveLength(0);
+    } finally { delete child.parent_pane_id; }
+  });
+
   it("does not move a parent against its own folded child by menu or keys", async () => {
     const child = snapshot.panes[1]! as HerdrPane;
     child.parent_pane_id = snapshot.panes[0]!.pane_id;
