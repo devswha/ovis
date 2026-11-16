@@ -25,8 +25,9 @@ or auth/observe guard changes.
 
 `src/fork/inboxRows.ts` applies the sidebar's existing family ordering after inbox filters/search,
 before held ordering: a waiting helper brings its conductor with it, siblings keep their input order, and a
-filtered-out conductor leaves a normal row. IDs are machine-scoped. Fork CSS draws an indent and
-connector; pictures keep their normal full color. This follows the existing Ovis sidebar rather than
+filtered-out conductor leaves a normal row. `forkInboxNesting` then decorates only families contiguous
+in the drawn order: held helpers cannot connect to a parent below them or across an unrelated row.
+IDs are machine-scoped. Fork CSS draws an indent and connector; pictures keep their normal full color. This follows the existing Ovis sidebar rather than
 introducing a competing agent-group interaction.
 
 `src/fork/InboxBack.tsx` replaces inbox branding with an accessible, fork-translated Back arrow on
@@ -47,8 +48,8 @@ Hooks added/changed by this task (upstream files only):
 - `server/core/status.ts`: existing friend type import and option use the fork lookup type so the
   collector can pass metadata; no new runtime hook. Fork diff **+4/-0 → +4/-0** in the review fix.
 - `src/components/InboxList.tsx`: one import, one `forkInboxRows(..., settings.agentFriends)`
-  wrapper before the hold, one carried nesting flag, one row-class suffix. Fork diff
-  **+2/-1 → +7/-5** (review fix: **+6/-4 → +7/-5**).
+  wrapper before the hold, one `forkInboxNesting` call after it, one carried nesting flag and one
+  row-class suffix. Fork diff **+2/-1 → +8/-6** (first review **+7/-5**).
 - `src/App.tsx`: one import plus one `ForkInboxBack` mount in the existing inbox-only branch.
   Fork diff **+43/-62 → +45/-63**.
 - `src/components/InboxRail.tsx`: one import plus a two-line `ForkInboxBack` wrapper around
@@ -132,6 +133,24 @@ src/fork/AgentAvatar.test.tsx src/fork/notifications.test.ts src/fork/convention
 src/conventions.test.ts` exited 0 (22 tests). It also covers reparenting, a non-agent ancestor moving,
 unchanged-snapshot deduplication and the unchanged API payload. All changes are fork-owned; upstream
 hook counts are unchanged. No settings/default changes or deployment.
+
+Second review, held decoration: both focused-list orders reproduced the incorrect connector
+(exit 1). The fixture initially assumed snapshot order controlled activity ties; the existing inbox
+actually uses workspace order, so the regression now sets explicit activity ranks. The new pure
+`forkInboxNesting` test also went RED before its implementation. It walks the drawn ancestor path
+without sorting, breaking it at unrelated rows; `forkInboxRows` reuses it for unheld families. The
+only new upstream hook is the one-line decoration call before rendering. Agent friends remains the
+explicitly approved opt-in (the reviewer withdrew that finding).
+
+Final second-review verification: 171 tests across 20 touched/fork/conventions files, scoped strict
+TypeScript, the three inbox browser regressions in the CI image and whitespace checks all exited 0.
+Exact commands/exits and audit checklist are under
+`$HOME/.cache/ovis-tmp/inbox-agent-clarity-review2/verification.md`; browser logs/screenshots are beside
+it. No server code changed this round, so server suites were not repeated. Full-suite typecheck,
+`bun run check fast` and production `bun run build` remain skipped per scoped-check instructions;
+browser regressions build only disposable demo bundles. Self-audit covered correctness, security,
+performance, types, coverage and fork hook scope: no new dependency, payload, setting or poller.
+No push, PR, deployment, merge, generated-source edit or Bigpowers state/spec artifact.
 
 ## Three piles
 

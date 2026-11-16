@@ -25,7 +25,7 @@ import { summaryTargets, useInboxSummaries, type RowSummary, type SummaryReads }
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { AgentMark } from "./AgentMark.tsx";
 import { ForkInboxAvatar } from "../fork/InboxAvatar.tsx";
-import { forkInboxRows } from "../fork/inboxRows.ts";
+import { forkInboxNesting, forkInboxRows } from "../fork/inboxRows.ts";
 import { agentRowTitle, blockedNote, stateAge } from "./AgentSidebar.tsx";
 import { RowMenu } from "./RowMenu.tsx";
 import { compactWorktreeName, StatusBadge } from "./Sidebar.tsx";
@@ -205,7 +205,7 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
   useLayoutEffect(() => { if (wide && searchAsked) search.current?.focus(); }, [wide, searchAsked]);
 
   const severalPcs = machines.length > 1;
-  const rows = shown.map((row) => {
+  const rows = forkInboxNesting(shown, settings.agentFriends).map((row) => {
     const { machine, entry, forkNested } = row;
     const { pane, workspace, tab } = entry;
     const online = machine.state === "connected";
