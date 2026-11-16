@@ -123,9 +123,10 @@ export async function checkTerminalAttach(browser: Browser, origin: string, pane
   await page.locator(".terminal-input").waitFor({ state: "detached" });
   let release: () => void = () => {};
   const held = new Promise<void>((resolve) => { release = resolve; });
-  const reached = new Promise<void>((resolve) => {
-    void page.route("**/api/pane/image", async (route) => { resolve(); await held; await route.continue(); });
-  });
+  let arrived: () => void = () => {};
+  const reached = new Promise<void>((resolve) => { arrived = resolve; });
+  // installed before the click that uploads, so the upload cannot pass before the route holds it
+  await page.route("**/api/pane/image", async (route) => { arrived(); await held; await route.continue(); });
   const chooser = page.waitForEvent("filechooser");
   await key.click();
   await (await chooser).setFiles([{ name: "slow.txt", mimeType: "text/plain", buffer: Buffer.from("slow\n") }]);
