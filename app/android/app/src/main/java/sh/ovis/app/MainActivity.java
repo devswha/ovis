@@ -971,8 +971,9 @@ public class MainActivity extends BridgeActivity {
 
     /**
      * Told to the page just before it is replaced (reopen): the client then leaves the unsent text it
-     * keeps in memory alone (an older server's pane drafts) in storage, where its PC's next page takes
-     * it back as a draft (src/lib/paneLifetime.ts, PAGE_LEAVING_EVENT). Any other page has no listener.
+     * keeps in memory alone (the panes of a PC that names no herdr lifetime) in storage, where its PC's
+     * next page puts it in Recover unsent text (src/lib/paneLifetime.ts, PAGE_LEAVING_EVENT). Any other
+     * page has no listener.
      */
     private static final String LEAVING_SCRIPT = "window.dispatchEvent(new Event('ovis-page-leaving'))";
 
@@ -985,7 +986,7 @@ public class MainActivity extends BridgeActivity {
     /**
      * Starts this activity again, so the next page (a PC, or the connect screen) is a first load. The
      * page shown is told first (LEAVING_SCRIPT), so a PC switch, an alert's included, keeps its
-     * memory-only drafts; nothing is asked and nothing is sent.
+     * memory-only unsent text for Recover unsent text; nothing is asked and nothing is sent.
      */
     void reopen() {
         if (leaving) return;

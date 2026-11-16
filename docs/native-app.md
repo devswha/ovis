@@ -418,8 +418,10 @@ pieces are the Java twins of the iOS ones, in `app/android/app/src/main/java/sh/
   (`src/lib/paneLifetime.ts`, `carry`). Held input older than a day is dropped, as it is from an
   open page. A terminal line that looks like a key and a secret prompt's input are never written
   down (#2532), and unsaved edits in the file editor are not carried, so they still go with the
-  page. Nor is anything kept when the page being left is from an Ovis that predates this (0.4.18 or
-  older, served by the PC itself): it has no listener.
+  page. Nor is anything kept that a page served directly by a PC on an Ovis release before this one
+  held in memory alone: it has no listener. On 0.4.18 or older (no herdr lifetime) that is all of its
+  panes' unsent text; on later releases only text typed while the PC's herdr was not proven, or for
+  a remote PC that names none.
 - Until the PC's page shows, a native cover over the WebView says which PC is opening and offers
   Change PC, as on iOS. When the PC's page has not answered after 20 seconds (`PCStore.ANSWER_SECONDS`,
   counted from Open on the connect screen when it checked the address first, with at least 5 s left
