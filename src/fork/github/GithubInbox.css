@@ -228,9 +228,11 @@
   border-top: var(--hairline) solid var(--border);
 }
 
-/* the place shown, drawn heavier, as the rail drew it */
-.fork-github-foot > [aria-current="page"] { color: var(--text-strong); }
-.fork-github-foot > [aria-current="page"] svg { stroke-width: 2.5; }
+/* the place shown, as the inbox rail marks it (InboxRail.css) and the sidebar its open row: a tonal fill and a
+   heavier, stronger glyph, hover adding nothing. The glyph's own color is set on it (Sidebar.css), so it is set here. */
+.fork-github-foot > [aria-current="page"],
+.fork-github-foot > [aria-current="page"]:hover:not(:disabled) { background: var(--side-selected); }
+.fork-github-foot > [aria-current="page"] svg { color: var(--text-strong); stroke-width: 2.5; }
 
 /* the agents that wait: the app's own waiting pill on the glyph's top end corner */
 .fork-github-foot > .fork-foot-waiting { position: relative; }
