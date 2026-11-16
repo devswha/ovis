@@ -118,6 +118,7 @@ import { ConnectionRouteMark } from "./components/ConnectionRouteMark.tsx";
 import { StatusBar } from "./components/StatusBar.tsx";
 import { LensToggle } from "./components/LensToggle.tsx";
 import { HeaderLens } from "./fork/HeaderLens.tsx";
+import { ForkInboxBack } from "./fork/InboxBack.tsx";
 import { PcLoadStatus } from "./components/MachineStats.tsx";
 import logoDark from "./assets/brand/logo-dark.png";
 import logoLight from "./assets/brand/logo-light.png";
@@ -1189,7 +1190,7 @@ export function App() {
               <ChevronDown aria-hidden="true" />
             </button>}
           </div>
-        ) : note !== null ? null : inbox.shown ? <Brand /> : inMode && selectedPane ? (
+        ) : note !== null ? null : inbox.shown ? <ForkInboxBack wide={wideScreen} onBack={leaveMode}><Brand /></ForkInboxBack> : inMode && selectedPane ? (
           <ThreadTitle machines={machines} activity={activity} machineId={selectedMachineId} pane={selectedPane} connection={headerConnection} watching={auth?.role === "watch"} severalPcs={sidebarMachines.length > 1} />
         ) : selectedPane && crumb ? (
           <div className={`context${headerConnection === null ? "" : " has-connection"}${tabsInHeader && selectedWorkspace && !guideShown ? " has-tabs" : ""}`} title={crumb.tooltip}>

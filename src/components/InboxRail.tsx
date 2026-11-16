@@ -18,6 +18,7 @@ import type { HeaderConnection } from "../lib/headerConnection.ts";
 import { useT, type Translate } from "../lib/i18n.ts";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { OvisMark } from "./OvisMark.tsx";
+import { ForkInboxBack } from "../fork/InboxBack.tsx";
 import { RowMenu } from "./RowMenu.tsx";
 import "./InboxRail.css";
 
@@ -95,9 +96,11 @@ export function InboxRail({ onExit, onInbox, waiting, alerts, onSettings, pcs, s
   return (
     <nav className="inbox-rail" aria-label={t("Inbox mode")}>
       <div className="inbox-rail-group is-top">
+        <ForkInboxBack wide onBack={onExit} className="inbox-rail-item inbox-rail-exit">
         <button type="button" className="icon-button inbox-rail-item inbox-rail-exit" aria-label={t("Back to Ovis")} title={t("Back to Ovis")} onClick={onExit}>
           <OvisMark width="22" height="22" className="inbox-rail-mark" />
         </button>
+        </ForkInboxBack>
         <button type="button" className="icon-button inbox-rail-item inbox-rail-place" aria-label={t("Agent inbox")} title={t("Agent inbox")} aria-current="page" onClick={() => { tally(() => usageCounters.count("inbox_rail_inbox")); onInbox(); }}>
           <Inbox aria-hidden="true" />
         </button>

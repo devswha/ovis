@@ -25,6 +25,7 @@ import { summaryTargets, useInboxSummaries, type RowSummary, type SummaryReads }
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { AgentMark } from "./AgentMark.tsx";
 import { ForkInboxAvatar } from "../fork/InboxAvatar.tsx";
+import { forkInboxNesting, forkInboxRows } from "../fork/inboxRows.ts";
 import { agentRowTitle, blockedNote, stateAge } from "./AgentSidebar.tsx";
 import { RowMenu } from "./RowMenu.tsx";
 import { compactWorktreeName, StatusBadge } from "./Sidebar.tsx";
@@ -139,7 +140,7 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
       question: questions.get(key) ?? null, plan: online ? row.entry.pane.plan : undefined, last: lastWords(summaries.get(key), t),
     });
   };
-  const found = inboxSearched(inboxFiltered(all, filter, activity), query, machines, t, wordsOf);
+  const found = forkInboxRows(inboxSearched(inboxFiltered(all, filter, activity), query, machines, t, wordsOf), settings.agentFriends);
 
   // a state change never moves a row under a finger or the keyboard's focus (AgentSidebar.tsx): while either is in
   // the list, rows keep the order last drawn; the reader's own doing (a filter, a query) draws them as they are at
@@ -204,8 +205,8 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
   useLayoutEffect(() => { if (wide && searchAsked) search.current?.focus(); }, [wide, searchAsked]);
 
   const severalPcs = machines.length > 1;
-  const rows = shown.map((row) => {
-    const { machine, entry } = row;
+  const rows = forkInboxNesting(shown, settings.agentFriends).map((row) => {
+    const { machine, entry, forkNested } = row;
     const { pane, workspace, tab } = entry;
     const online = machine.state === "connected";
     const status = inboxStatus(row, activity);
@@ -225,7 +226,7 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
     const state = !online ? t("Offline") : failed ? t("Turn failed") : inboxStateWord(group, t);
     const line = inboxRowLine({ online, group, words: wordsOf(row), place, machine: severalPcs ? machine.name : null, failed }, t);
     return {
-      key, machine, pane, online, status, group, title, line, failed, mark: paneMark(entry) ?? "", kind, state,
+      key, machine, pane, online, status, group, title, line, failed, mark: paneMark(entry) ?? "", kind, state, forkNested,
       asks: online && inboxAsks(group), since: online ? inboxSinceAt(group, summary, group === "blocked" ? stateSince(stamps, machine.id, pane.pane_id, pane.terminal_id, "blocked") : null) : null,
     };
   });
@@ -402,7 +403,7 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
               // what a screen reader hears for the row: who it is, how it is, what it says, then for how long
               const spoken = [row.kind ? agentName(row.kind) : null, row.title, row.state, row.line === row.state ? null : row.line, age].filter((part) => part !== null).join(", ");
               return (
-                <li key={row.key} className={`inbox-item${row.online ? "" : " is-offline"}${row.asks ? " is-asking" : ""}${open ? " is-current" : ""}`} data-machine={row.machine.id} data-pane={row.pane.pane_id} data-state={row.group}>
+                <li key={row.key} className={`inbox-item${row.online ? "" : " is-offline"}${row.asks ? " is-asking" : ""}${open ? " is-current" : ""}${row.forkNested ? " fork-inbox-helper" : ""}`} data-machine={row.machine.id} data-pane={row.pane.pane_id} data-state={row.group}>
                   <button type="button" className="inbox-row" disabled={!row.online} aria-label={spoken} aria-current={open ? "true" : undefined}
                     ref={(node) => { if (node) rowNodes.current.set(row.key, node); else rowNodes.current.delete(row.key); }}
                     title={wide ? [row.title, row.line, at === null ? null : `${age} · ${at.toLocaleString(resolvedLanguage)}`].filter((part) => part !== null).join("\n") : undefined}

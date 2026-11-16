@@ -61,7 +61,7 @@ import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import webpush from "web-push";
 
-import type { Friend } from "../shared/friends.ts";
+import { forkAlertFriends, type FriendLookup } from "./fork/friends.ts";
 import { paneStorageId } from "../shared/machines.ts";
 import type { AgentStatus, DevicePairedEvent, HerdrPane, InteractivePrompt, PushAction, PushDeliveryFailure, PushPayload, PushSubscriptionStatus } from "../shared/protocol.ts";
 import {
@@ -244,7 +244,7 @@ export interface PushServiceOptions {
   /** accept plain-http loopback endpoints: only for the tests' fake push service (push.fake.ts) */
   loopbackHttp?: boolean;
   /** The friend an agent pane wears (FriendStore.friendOf), named in its alert. */
-  friendOf?: (machineId: string, paneId: string) => Friend;
+  friendOf?: FriendLookup;
   /** a pane's alert reached one device (the push service took it); not the test push or a pairing notice */
   onAlertDelivered?: () => void;
   /** Settings → Alerts → Also send to (server/alert-webhook.ts): told the alerts it chose, with the same waits and holds as a device */
@@ -414,6 +414,7 @@ export function createPushService(options: PushServiceOptions): PushService {
   const workspaces = new Map<string, string>();
   // the panes seen running an agent: only theirs wear their workspace's friend, as in the sidebar
   const agentPanes = new Set<string>();
+  const friends = forkAlertFriends(options.friendOf);
   // what a blocked pane last said it waits for (herdr-core's agent_kind), for a PC whose pane is not looked up
   const kinds = new Map<string, string>();
   // each PC's name and relay ID, either of which a device's `pcs_off` lists (shared/machines.ts pcAlertKey)
@@ -751,7 +752,7 @@ export function createPushService(options: PushServiceOptions): PushService {
    */
   function where(key: string, machineId: string, paneId: string): Pick<PushPayload, "machine_id" | "workspace_id" | "friend"> {
     const workspace = workspaces.get(key);
-    const friend = agentPanes.has(key) ? options.friendOf?.(machineId, paneId) : undefined;
+    const friend = agentPanes.has(key) ? friends.friendOf(machineId, paneId) : undefined;
     return { ...(machineId === "local" ? {} : { machine_id: machineId }), ...(workspace ? { workspace_id: workspace } : {}), ...(friend ? { friend } : {}) };
   }
 
@@ -964,6 +965,7 @@ export function createPushService(options: PushServiceOptions): PushService {
     },
 
     seed(panes, machineId = "local", machineName, serverId) {
+      friends.seed(panes, machineId);
       if (machineName) pcNames.set(machineId, machineName);
       if (serverId) pcIds.set(machineId, serverId);
       for (const pane of panes) {

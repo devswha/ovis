@@ -134,6 +134,77 @@ describe("AgentAvatar", () => {
     expect(friend).not.toContain("agent-mark");
   });
 
+  it("refreshes project friends after a move or parent change with the same pane IDs", async () => {
+    device(true, {});
+    const requests: unknown[] = [];
+    const picks = ["neko", "kuma", "hoshi", "mikan"];
+    globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+      requests.push(JSON.parse(String(init?.body)));
+      return new Response(JSON.stringify({ friends: { "moving:p1": picks[requests.length - 1] } }));
+    }) as typeof fetch;
+    const roster = (workspace: string, parent?: string, parentWorkspace = "conductor-project"): Machine[] => [{ ...machine, id: "moving", snapshot: { ...machine.snapshot!,
+      panes: machine.snapshot!.panes.map((pane, index) => ({ ...pane,
+        agent: index === 0 ? pane.agent : null, workspace_id: index === 0 ? workspace : parentWorkspace,
+        parent_pane_id: index === 0 ? parent : undefined,
+      })),
+    } }];
+    function Reading({ machines }: { machines: Machine[] }) {
+      const friends = useAgentFriends(machines);
+      return <output>{friends["moving:p1"] ?? ""}</output>;
+    }
+    const view = (machines: Machine[]) => <SettingsProvider><Reading machines={machines} /></SettingsProvider>;
+    const update = async (machines: Machine[], pick: string, count: number) => {
+      await act(async () => { renderer!.update(view(machines)); });
+      expect(requests).toHaveLength(count);
+      expect(renderer!.root.findByType("output").children).toEqual([pick]);
+    };
+    await act(async () => { renderer = create(view(roster("project-a"))); });
+    expect(renderer!.root.findByType("output").children).toEqual(["neko"]);
+    await update(roster("project-b"), "kuma", 2);
+    await update(roster("project-b", "p2"), "hoshi", 3);
+    await update(roster("project-b", "p2", "parent-moved"), "mikan", 4);
+    // Snapshot churn that leaves project identities alone must not add requests.
+    await update(roster("project-b", "p2", "parent-moved"), "mikan", 4);
+    expect(requests).toEqual(Array.from({ length: 4 }, () => ({ live: ["moving:p1"], machines: ["moving"] })));
+  });
+
+  it.each(["response", "body"])("ignores an old project's late %s after a newer move finishes", async (delay) => {
+    device(true, {});
+    const id = `race-${delay}`;
+    const oldFetch = Promise.withResolvers<Response>();
+    const oldBody = Promise.withResolvers<string>();
+    const oldResponse = new Response(new ReadableStream({
+      async start(controller) {
+        controller.enqueue(new TextEncoder().encode(await oldBody.promise));
+        controller.close();
+      },
+    }));
+    let requests = 0;
+    globalThis.fetch = Object.assign(async () => {
+      requests += 1;
+      if (requests === 1) return delay === "body" ? oldResponse : oldFetch.promise;
+      return new Response(JSON.stringify({ friends: { [`${id}:p1`]: "kuma" } }));
+    }, { preconnect() {} });
+    function Reading({ workspace }: { workspace: string }) {
+      const friends = useAgentFriends([{ ...machine, id, snapshot: { ...machine.snapshot!,
+        panes: machine.snapshot!.panes.map((pane) => ({ ...pane, workspace_id: workspace })),
+      } }]);
+      return <output>{friends[`${id}:p1`] ?? ""}</output>;
+    }
+    const view = (workspace: string) => <SettingsProvider><Reading workspace={workspace} /></SettingsProvider>;
+    await act(async () => { renderer = create(view("project-a")); });
+    expect(requests).toBe(1);
+    await act(async () => { renderer!.update(view("project-b")); });
+    expect(requests).toBe(2);
+    expect(renderer!.root.findByType("output").children).toEqual(["kuma"]);
+    await act(async () => {
+      oldBody.resolve(JSON.stringify({ friends: { [`${id}:p1`]: "neko" } }));
+      oldFetch.resolve(oldResponse);
+    });
+    expect(renderer!.root.findByType("output").children).toEqual(["kuma"]);
+    expect(requests).toBe(2);
+  });
+
   it("maps a pane's status to its friend's mood", () => {
     expect([friendMood("waiting"), friendMood("unknown"), friendMood("done"), friendMood(undefined)]).toEqual(["working", undefined, "done", undefined]);
   });

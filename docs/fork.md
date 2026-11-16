@@ -2,6 +2,159 @@
 
 This fork is `ricardofelixb/ovis`; upstream is `devswha/ovis`. This inventory compares the starting commit `da5afc54` with its upstream merge base, `2decd453d6a28eb6cf21647c6f928150d1196c5c`. It includes inherited fork changes, not just this refactor.
 
+## Project friends and inbox clarity
+
+Reusable upstream candidate, behind the existing **Agent friends** opt-in (off on new devices).
+`server/fork/friends.ts` now assigns one friend per machine + workspace ID, not per pane. A workspace
+ID survives bridge/runtime restarts and renames without following a pane's changing cwd; separate
+workspaces intentionally remain separate projects. Descendants resolve their conductor's workspace,
+even across workspaces. The browser/alert response stays `{ friends: { [machine:pane]: friend } }`;
+avatars and notification callers keep that shape and add no child tint. `src/fork/friends.ts` refreshes
+when workspace or parent metadata changes, including non-agent ancestors, even if pane IDs stay the
+same. Only its local refresh key carries metadata; the request remains `{ live, machines }`. Sorted
+keys avoid requests on unchanged snapshots or mere pane/machine reordering. A monotonic request
+generation fences publication after JSON decoding: a late response/body cannot replace a newer
+project's picks, and stale errors cannot clear its deduplication key. Deterministic out-of-order fetch
+and body regressions cover this. No new upstream hook or change to the hook counts below.
+
+`project-friends.json`, owned by FriendStore, is a new flat workspace-to-friend document beside the
+unchanged pane cache `friends.json`. A project's first observed pane/conductor inherits its old pick;
+other panes converge on it. Reads alone do not write. Old releases ignore the new file and can rewrite
+the pane cache without erasing project picks; a downgrade still reads the original pane-cache shape.
+Malformed, unreadable or future-shaped project documents are never overwritten. Project picks remain
+when the last agent exits so a new pane after a restart keeps the same friend. Missing snapshot
+metadata retains the legacy fallback until the next roster observation. No API request/response shape
+or auth/observe guard changes.
+
+`src/fork/inboxRows.ts` applies the sidebar's existing family ordering after inbox filters/search,
+before held ordering: a waiting helper brings its conductor with it, siblings keep their input order, and a
+filtered-out conductor leaves a normal row. `forkInboxNesting` then decorates only families contiguous
+in the drawn order: held helpers cannot connect to a parent below them or across an unrelated row.
+IDs are machine-scoped. Fork CSS draws an indent and connector; pictures keep their normal full color. This follows the existing Ovis sidebar rather than
+introducing a competing agent-group interaction.
+
+`src/fork/InboxBack.tsx` replaces inbox branding with an accessible, fork-translated Back arrow on
+wide windows only. Both App's header slot and the inbox's actual desktop rail use the existing exit
+action. The classic shell never mounts an arrow; a phone's inbox home mounts neither arrow nor brand.
+When Agent friends is off both slots keep their upstream contents. Fork CSS alone hides the classic
+sidebar brand (no App hook), removing its flex gap while keeping New workspace and Collapse sidebar.
+The footer's Open agent inbox entry and the menu remain reachable.
+
+Hooks added/changed by this task (upstream files only):
+- `server/index.ts`: one existing `friendOf` option binds the fork store. Alerts never consult the
+  machine manager's possibly absent/stale roster. Fork diff vs `upstream/main` before/after:
+  **+12/-5 → +12/-5** (unchanged hook footprint).
+- `server/push.ts`: existing friend import/type/lookup hooks plus one fork initializer and one seed
+  call. `forkAlertFriends` keeps the collector's pane/workspace/parent metadata, independently per
+  machine, before its roster is published. Alerts and the first browser listing agree even with
+  the machine manager off. Fork diff **+17/-6 → +19/-6** in the review fix.
+- `server/core/status.ts`: existing friend type import and option use the fork lookup type so the
+  collector can pass metadata; no new runtime hook. Fork diff **+4/-0 → +4/-0** in the review fix.
+- `src/components/InboxList.tsx`: one import, one `forkInboxRows(..., settings.agentFriends)`
+  wrapper before the hold, one `forkInboxNesting` call after it, one carried nesting flag and one
+  row-class suffix. Fork diff **+2/-1 → +8/-6** (first review **+7/-5**).
+- `src/App.tsx`: one import plus one `ForkInboxBack` mount in the existing inbox-only branch.
+  Fork diff **+43/-62 → +45/-63**.
+- `src/components/InboxRail.tsx`: one import plus a two-line `ForkInboxBack` wrapper around
+  upstream's exit button (its fallback). Fork diff **0 → +3/-0**. Upstream now hides App's header in
+  inbox mode, so this additional mount is needed for the requested desktop exit to actually appear.
+- `src/lib/agentRoster.ts`: export the already-generic `nestRows` helper (one changed line, no
+  behavior change), avoiding a duplicate algorithm in the fork. Fork diff **0 → +1/-1**.
+- `server/fork/routes.ts` (fork-owned): supplies cached snapshots, or a local snapshot when the
+  machine manager is disabled. No extra upstream route hook.
+
+Scoped nesting checks: `TMPDIR="$HOME/.cache/ovis-tmp/inbox-agent-clarity" bun test
+src/fork/inboxRows.test.ts src/lib/agentRoster.test.ts src/components/InboxList.test.tsx` exited 0
+(71 tests), after the test-only commit exited 1 with the fork function still absent.
+
+Scoped red/green evidence: `TMPDIR="$HOME/.cache/ovis-tmp/inbox-agent-clarity" bun test
+server/fork/fork-friends.test.ts` exited 1 (three meaningful project/migration failures) before
+implementation. Server conventions (`bun test server/conventions.test.ts`, same TMPDIR) exited 0
+(16 tests). `TMPDIR="$HOME/.cache/ovis-tmp/inbox-agent-clarity" bun test
+server/fork/fork-friends.test.ts server/friends.test.ts` exited 0 (6 tests). No Bigpowers timing or
+RED-isolation scripts exist in this checkout; the failing test-only commit records RED directly.
+
+Final scoped verification: `TMPDIR="$HOME/.cache/ovis-tmp/inbox-agent-clarity" bun test
+src/fork/*.test.ts* server/fork/fork-friends.test.ts server/friends.test.ts
+src/components/InboxList.test.tsx src/components/InboxMode.test.tsx src/components/InboxRail.test.tsx
+src/lib/agentRoster.test.ts src/conventions.test.ts server/conventions.test.ts` exited 0 (166 tests,
+18 files). Back-button RED exited 1 before implementation; its first GREEN attempt exposed an
+incomplete browser stub in the new test. Adding the SettingsProvider's DOM/event boundary fixed it
+(33 tests passed, including InboxMode and InboxRail). Scoped TypeScript over the changed TS/TSX roots
+exited 0, after generating the vendor declarations as `scripts/typecheck.ts` does. An initial scoped
+config without that vendor reference checked upstream vendor sources under app strictness; the same
+16 vendor errors reproduced on base `ae7bb1e2`. That diagnostic setup was corrected, not vendor code.
+
+The three inbox browser regressions (`inbox-mode-demo-regression.ts`, `inbox-mode-panes-demo-regression.ts`,
+`inbox-mode-rail-demo-regression.ts`) each exited 0 in `herdr-ci-runner:local` as user `runner`, with no
+host network or credentials. A separate demo-only capture exited 0 at 1440px and 390px with Agent
+friends on: the desktop arrow leaves the inbox, classic has no arrow/logo or empty brand gap, the
+footer entry is visible, and phone home has no arrow/logo. Evidence remains under
+`$HOME/.cache/ovis-tmp/inbox-agent-clarity/screenshots/fork/` (the demo's per-pane friend fixtures are
+not evidence of server project assignment). All browser TMPDIRs were under the runner's home cache.
+Whole-project typecheck, `bun run check fast` and `bun run build` were skipped per implementer scope;
+the browser regressions built their own disposable demo bundles. No push, PR, deployment or merge.
+
+Self-audit: no auth/API shape changes, secrets, dependencies, generated-source edits or tint; retained
+old cache format and protect unknown project documents. Ordering reuses upstream's cycle-safe helper.
+Minimal upstream hooks and disabled-state fallback verified. No Bigpowers state/plan files created.
+
+Review finding 1 reproduced with decrypted alerts before any browser request: both disabled-manager
+and stale-manager cases picked three different friends for one project. Collector metadata now feeds
+FriendStore directly, with no extra RPC, async delay or change to the alert payload. The new fork alert
+regression exited 1 before implementation, then `TMPDIR="$HOME/.cache/ovis-tmp/inbox-agent-clarity-review"
+bun test server/fork/fork-alert-friends.test.ts server/fork/fork-friends.test.ts server/friends.test.ts
+server/push.test.ts server/conventions.test.ts` exited 0 (109 tests). All tests use disposable state
+and a fake loopback push service, not a real herdr session or device.
+
+Review finding 2 reproduced in a focused InboxList: an orphan helper and another row moved when
+their conductor appeared. Nesting now precedes `heldOrder`, so the new conductor appends while the
+reader holds a place, and the family nests once focus leaves. The fork component regression exited
+1 before implementation; `TMPDIR="$HOME/.cache/ovis-tmp/inbox-agent-clarity-review" bun test
+src/fork/fork-InboxList.test.tsx src/fork/inboxRows.test.ts src/lib/agentRoster.test.ts
+src/components/InboxList.test.tsx src/conventions.test.ts` exited 0 (86 tests).
+
+Finding 3 describes intentional opt-in behavior, not an implementation regression: before code was
+written, the user explicitly chose **With Agent friends** when offered that or a **Separate inbox
+setting**. The selected option said "project friends, nesting and cleaner header turn on together;
+no new setting." Nesting, CSS and Back therefore stay behind that off-by-default setting. Existing
+fork tests cover disabled branding, ordering and styling. Separating these controls would revise
+that approved choice and is not part of the review fixes.
+
+Review verification: the combined touched/fork, push and conventions suites passed (254 tests,
+21 files); scoped TypeScript passed after correcting the new alert test's optional-value assertion
+typing. All three inbox browser regressions passed again in the CI image as `runner`, with no network
+or host credentials. Logs, exact commands/exits and screenshots are under
+`$HOME/.cache/ovis-tmp/inbox-agent-clarity-review/`. Self-audit passed correctness, security, performance,
+types, coverage and hook scope: no new dependency, generated source, wire contract, polling or RPC.
+Whole-project checks/build remain skipped; browser runs built only disposable demo bundles. No push,
+PR, deployment or merge. The Bigpowers churn/RED-isolation scripts are absent and were not recreated.
+
+Second review, friend refresh: the unchanged-ID workspace-move regression exited 1 (one request
+instead of two), then `TMPDIR="$HOME/.cache/ovis-tmp/inbox-agent-clarity-review2" bun test
+src/fork/AgentAvatar.test.tsx src/fork/notifications.test.ts src/fork/conventions.test.ts
+src/conventions.test.ts` exited 0 (22 tests). It also covers reparenting, a non-agent ancestor moving,
+unchanged-snapshot deduplication and the unchanged API payload. All changes are fork-owned; upstream
+hook counts are unchanged. No settings/default changes or deployment.
+
+Second review, held decoration: both focused-list orders reproduced the incorrect connector
+(exit 1). The fixture initially assumed snapshot order controlled activity ties; the existing inbox
+actually uses workspace order, so the regression now sets explicit activity ranks. The new pure
+`forkInboxNesting` test also went RED before its implementation. It walks the drawn ancestor path
+without sorting, breaking it at unrelated rows; `forkInboxRows` reuses it for unheld families. The
+only new upstream hook is the one-line decoration call before rendering. Agent friends remains the
+explicitly approved opt-in (the reviewer withdrew that finding).
+
+Final second-review verification: 257 tests across 21 touched/fork/conventions files, scoped strict
+TypeScript, the three inbox browser regressions in the CI image and whitespace checks all exited 0.
+Exact commands/exits and audit checklist are under
+`$HOME/.cache/ovis-tmp/inbox-agent-clarity-review2/verification.md`; browser logs/screenshots are beside
+it. The combined run included the earlier server friend/push regressions. Full-suite typecheck,
+`bun run check fast` and production `bun run build` remain skipped per scoped-check instructions;
+browser regressions build only disposable demo bundles. Self-audit covered correctness, security,
+performance, types, coverage and fork hook scope: no new dependency, payload, setting or poller.
+No push, PR, deployment, merge, generated-source edit or Bigpowers state/spec artifact.
+
 ## Three piles
 
 - **A: reusable changes.** Upstream PR candidates, not submitted. Optional presentation features should arrive upstream disabled; protocol correctness fixes should retain their focused tests rather than acquire a switch.
