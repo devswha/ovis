@@ -120,6 +120,24 @@ Removing that override and restarting restores the WebSocket transport. The SSE 
 available to older clients and bridge/relay consumers. A reconnect negotiates the transport again;
 no terminal input is replayed by this subscription.
 
+New clients request `compact_agents: true` on their `machine-events` subscription and
+`compact_agents=1` on `/api/machines` and `/api/machines/events`. Only these opt-in responses
+replace a snapshot's `agents` with `agent_refs`, and only where that is smaller (otherwise the
+snapshot keeps its `agents`): each row keeps its `pane_id`, agent-only fields
+and overrides, and inherits matching fields from the pane in the same snapshot. `_omit` lists
+optional pane fields that were absent from that agent. Clients restore full agent rows before
+updating application state; a restored row equals the full one after parsing, though its keys may
+come in another order, and the roster compares rows regardless of key order. Order, recency and completion counters, nulls, differing values and
+agents without a pane are preserved: a snapshot with an agent whose pane it does not list goes out
+full. `agent_refs` and a row's `_omit` are the server's alone: those a PC put in its own snapshot
+are removed from every response, compact or not, and clients expand only a snapshot with `agent_refs` and no
+`agents`. A compact snapshot a client cannot read (a reference naming no pane of its snapshot, a
+malformed `_omit`) keeps that PC's last roster, and the client reads the roster again without
+`compact_agents`. Redaction happens before compaction, and WebSocket size
+limits measure the compact frame. Legacy responses and the bridge protocol do not change;
+new clients also accept full rows from older servers. This reduces duplicate data without raising
+the machine-event backlog limit; an even larger roster can still fall back to SSE.
+
 A page takes machine events over SSE whenever its socket does not carry them: a connection that
 has not said whether it does within five seconds, a socket stopped for output (4008, which only
 reconnects on an attach), or a connection whose server sent `machine-events-ended`. Machine events
@@ -1355,7 +1373,22 @@ request runs, and `"ubuntu-24.04"` keeps only main GitHub-hosted. `CI_SELF_HOSTE
 `"ubuntu-24.04"` still keeps every job hosted. Delete the variable while no reserved runner is online,
 or main's jobs wait for one.
 
-The Windows and macOS jobs, the Rust PTY host job (the runner image has no Rust toolchain),
+`ci.yml`'s Native macOS session identity job can run on the self-hosted Mac `eamac-ovis-mac`
+(labels `self-hosted, macOS, ARM64, self-hosted-ovis-mac`): ci.yml's own same-repository runs off
+`main` take the repository variable `CI_MAC_LABELS`, a JSON label list
+(`["self-hosted","self-hosted-ovis-mac"]`) or the JSON string `"macos-15"`; unset, the job stays on
+`macos-15`. Its `runs-on` sends a fork pull request to `macos-15` before it reads the variable. A
+release never validates there: Release validation calls ci.yml under its own name, and main's run,
+which a Release run may take instead, stays on `macos-15`. One runner takes one job at a time, so
+while the Mac is off or busy the job waits for it: delete the variable to go back to `macos-15`.
+The runner runs jobs as the Mac's own account, so on it `setup-ci` installs Bun under the job's temp
+folder, not that account's `~/.bun`; the prepared-image check and the host's Bun cache are for the
+self-hosted Linux runners alone. Before the variable is set, the Mac runner needs a fork refusal
+that works on macOS: `job-started.sh` finds the job's worker through `/proc`, which macOS lacks.
+Until then, only the repository's approval policy for fork pull request workflows (every outside
+contributor's run waits for a maintainer) keeps a fork's own workflow from naming the Mac's labels.
+
+The other Windows and macOS jobs, the Rust PTY host job (the runner image has no Rust toolchain),
 `remote-bundles.yml`'s other jobs (Rust builds, and the SSH job's `sudo apt-get` and Docker),
 `desktop.yml`, `windows-install.yml` and `windows-terminal-qa.yml` always stay GitHub-hosted.
 
