@@ -382,3 +382,62 @@
 
 .fork-github-replies { padding: var(--space-2) var(--space-3); }
 .fork-github-replies .fork-github-text { padding: var(--space-1) 0 0; }
+
+/* The page's tabs: Ovis's own segmented control, on a line of its own under the always-shown head. */
+.fork-github-tabs {
+  margin-top: var(--space-4);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.fork-github-tabs .segmented { display: flex; width: max-content; }
+
+.fork-github-tab-page {
+  margin-top: var(--space-4);
+}
+
+.fork-github-tabs + .fork-github-facts { margin-top: var(--space-4); }
+
+.fork-github-files {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+}
+
+.fork-github-files > li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+}
+
+.fork-github-files > li + li { border-top: var(--hairline) solid var(--border); }
+
+.fork-github-files svg {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--text-dim);
+}
+
+.fork-github-files .is-added > svg { color: var(--status-done); }
+.fork-github-files .is-deleted > svg { color: var(--status-blocked); }
+
+.fork-github-files code {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.fork-github-file-lines {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.fork-github-file-lines .is-added { color: var(--status-done); }
+.fork-github-file-lines .is-removed { color: var(--status-blocked); }
+.fork-github-pull-meta + .fork-github-merge { margin: var(--space-3) 0 0; }

@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { ArrowLeft, Check, ChevronDown, CircleAlert, CircleCheck, CircleDot, CircleSlash, CircleX, ExternalLink, FileDiff, GitBranch, GitCommitHorizontal, GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft, LoaderCircle, MessageSquare, X } from "lucide-react";
+import { ArrowLeft, FileMinus, FilePlus, FileSymlink, Check, ChevronDown, CircleAlert, CircleCheck, CircleDot, CircleSlash, CircleX, ExternalLink, FileDiff, GitBranch, GitCommitHorizontal, GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft, LoaderCircle, MessageSquare, X } from "lucide-react";
 
 import { Markdown } from "../components/Markdown.tsx";
+import { Segmented } from "../components/SettingsControls.tsx";
 
 import type { GithubCheck, GithubPull, GithubPullDetail } from "../../shared/github.ts";
 import type { WorktreeOpened } from "../../shared/protocol.ts";
@@ -20,6 +21,9 @@ function stateOf(detail: GithubPullDetail, t: Translate) {
 
 /** Pages read this visit: reopening one draws it at once while it is read again behind it. */
 const pageCache = new Map<string, GithubPullDetail>();
+type Tab = "overview" | "conversation" | "checks" | "files";
+/** The tab each pull request was left on, so coming back to it opens where it was. */
+const tabs = new Map<string, Tab>();
 
 const reviewIcons = { approved: Check, changes_requested: X, commented: MessageSquare, requested: CircleDot } as const;
 
@@ -38,10 +42,10 @@ function span(from: string | null, to: string | null): string | null {
 }
 
 const checkIcons = { passing: CircleCheck, failing: CircleX, pending: LoaderCircle, skipped: CircleSlash } as const;
-/** Every check: problems and running ones always shown, the passing and skipped ones folded behind their count. */
+/** Every check, problems first: the failing and running ones always shown, the passing and skipped ones folded behind their count when asked. */
 function ChecksBox({ checks }: { checks: GithubCheck[] }) {
   const t = useT();
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(true);
   if (checks.length === 0) return <p className="fork-github-pull-dim">{t("No checks")}</p>;
   const counts = { failing: 0, pending: 0, passing: 0, skipped: 0 };
   for (const check of checks) counts[check.outcome]++;
@@ -67,12 +71,34 @@ function ChecksBox({ checks }: { checks: GithubCheck[] }) {
   </div>;
 }
 
+/** A tab's name with its count, when there is one. */
+const counted = (label: string, count: number): string => count > 0 ? `${label} ${count}` : label;
+
+const changeIcons = { added: FilePlus, deleted: FileMinus, renamed: FileSymlink, copied: FileSymlink, modified: FileDiff } as const;
+/** The changed files with their added and removed lines; the diff itself comes next. */
+function FileList({ files, total }: { files: GithubPullDetail["files"]; total: number }) {
+  const t = useT();
+  if (files.length === 0) return <p className="fork-github-pull-dim">{t("No files changed.")}</p>;
+  return <>
+    <ul className="fork-github-files">{files.map((file) => {
+      const Icon = changeIcons[file.change];
+      return <li key={file.path} className={`is-${file.change}`}>
+        <Icon aria-hidden="true" /><code dir="auto">{file.path}</code>
+        <span className="fork-github-file-lines"><span className="is-added">+{file.additions}</span> <span className="is-removed">−{file.deletions}</span></span>
+      </li>;
+    })}</ul>
+    {total > files.length && <p className="fork-github-pull-dim">{t("And {count} more files", { count: total - files.length })}</p>}
+  </>;
+}
+
 /** One pull request, drawn from GitHub's API in Ovis's own design: the wide pane's page, or the phone's screen. */
 export function GithubPullPage({ pull, wide, watching, onOpened }: { pull: GithubPull; wide: boolean; watching: boolean; onOpened(opened: WorktreeOpened): void }) {
   const t = useT();
   const [detail, setDetail] = useState<GithubPullDetail | null>(() => pageCache.get(pull.url) ?? null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [tab, setTabState] = useState<Tab>(() => tabs.get(pull.url) ?? "overview");
+  const setTab = (next: Tab): void => { tabs.set(pull.url, next); setTabState(next); };
   useEffect(() => {
     let cancelled = false;
     const query = new URLSearchParams({ repo: pull.repository, number: String(pull.number), account: pull.account ?? "" });
@@ -134,27 +160,36 @@ export function GithubPullPage({ pull, wide, watching, onOpened }: { pull: Githu
           <span>{t("{author} wants to merge into {base} from {head}", { author: detail.author ?? t("Someone"), base: detail.base, head: detail.head })}</span>
           <span className="fork-github-pull-dim">{t("Updated {when}", { when: ago(detail.updated_at) })}</span>
         </div>
-        <ul className="fork-github-facts">
-          <li><GitCommitHorizontal aria-hidden="true" />{t("{count} commits", { count: detail.commits })}</li>
-          <li><FileDiff aria-hidden="true" />{t("{count} files", { count: detail.changed_files })} <span className="is-added">+{detail.additions}</span> <span className="is-removed">−{detail.deletions}</span></li>
-          <li><GitBranch aria-hidden="true" /><code>{detail.head}</code></li>
-        </ul>
-        {detail.labels.length > 0 && <ul className="fork-github-labels">{detail.labels.map((label) => <li key={label.name} style={{ ["--label" as string]: `#${label.color}` }}>{label.name}</li>)}</ul>}
-        <section className="fork-github-status" aria-label={t("Status")}>
-          {detail.state === "open" && <p className={`fork-github-merge is-${detail.merge}`}><MergeIcon merge={detail.merge} />{mergeWords[detail.merge]}</p>}
-          <ChecksBox checks={detail.check_list} />
-          {detail.reviewers.length === 0 ? <p className="fork-github-pull-dim fork-github-reviews-none">{t("No review yet")}</p>
-            : <ul className="fork-github-reviewers">{detail.reviewers.map((reviewer) => {
-              const Icon = reviewIcons[reviewer.state];
-              return <li key={reviewer.login} className={`is-${reviewer.state}`} title={reviewWords[reviewer.state]}><Icon aria-hidden="true" />{reviewer.login}<span className="fork-github-pull-dim">{reviewWords[reviewer.state]}</span></li>;
-            })}</ul>}
-        </section>
-        <section className="fork-github-body" aria-label={t("Description")}>
-          {detail.body.trim() ? <Markdown html>{detail.body}</Markdown> : <p className="fork-github-pull-dim">{t("No description.")}</p>}
-        </section>
-        <section className="fork-github-talk" aria-label={t("Conversation")}>
-          <GithubConversation entries={detail.conversation ?? []} />
-        </section>
+        {detail.state === "open" && <p className={`fork-github-merge is-${detail.merge}`}><MergeIcon merge={detail.merge} />{mergeWords[detail.merge]}</p>}
+        <div className="fork-github-tabs">
+          <Segmented<Tab> label={t("Pull request")} value={tab} onChange={setTab} options={[
+            { value: "overview", label: t("Overview") },
+            { value: "conversation", label: counted(t("Conversation"), detail.conversation?.length ?? 0) },
+            { value: "checks", label: counted(t("Checks"), detail.check_list.length) },
+            { value: "files", label: counted(t("Files"), detail.changed_files) },
+          ]} />
+        </div>
+        {tab === "overview" && <>
+          <ul className="fork-github-facts">
+            <li><GitCommitHorizontal aria-hidden="true" />{t("{count} commits", { count: detail.commits })}</li>
+            <li><FileDiff aria-hidden="true" />{t("{count} files", { count: detail.changed_files })} <span className="is-added">+{detail.additions}</span> <span className="is-removed">−{detail.deletions}</span></li>
+            <li><GitBranch aria-hidden="true" /><code>{detail.head}</code></li>
+          </ul>
+          {detail.labels.length > 0 && <ul className="fork-github-labels">{detail.labels.map((label) => <li key={label.name} style={{ ["--label" as string]: `#${label.color}` }}>{label.name}</li>)}</ul>}
+          <section className="fork-github-status" aria-label={t("Reviews")}>
+            {detail.reviewers.length === 0 ? <p className="fork-github-pull-dim fork-github-reviews-none">{t("No review yet")}</p>
+              : <ul className="fork-github-reviewers">{detail.reviewers.map((reviewer) => {
+                const Icon = reviewIcons[reviewer.state];
+                return <li key={reviewer.login} className={`is-${reviewer.state}`} title={reviewWords[reviewer.state]}><Icon aria-hidden="true" />{reviewer.login}<span className="fork-github-pull-dim">{reviewWords[reviewer.state]}</span></li>;
+              })}</ul>}
+          </section>
+          <section className="fork-github-body" aria-label={t("Description")}>
+            {detail.body.trim() ? <Markdown html>{detail.body}</Markdown> : <p className="fork-github-pull-dim">{t("No description.")}</p>}
+          </section>
+        </>}
+        {tab === "conversation" && <section className="fork-github-tab-page" aria-label={t("Conversation")}><GithubConversation entries={detail.conversation ?? []} /></section>}
+        {tab === "checks" && <section className="fork-github-tab-page" aria-label={t("Checks")}><ChecksBox checks={detail.check_list} /></section>}
+        {tab === "files" && <section className="fork-github-tab-page" aria-label={t("Files")}><FileList files={detail.files ?? []} total={detail.changed_files} /></section>}
       </>}
     </div>
   </article>;

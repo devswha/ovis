@@ -135,6 +135,7 @@ const PULL_QUERY = `query($owner:String!,$name:String!,$number:Int!) { repositor
     ... on ReopenedEvent { actor { login } createdAt }
     ... on ReadyForReviewEvent { actor { login } createdAt }
     ... on ConvertToDraftEvent { actor { login } createdAt } } }
+  files(first:100) { nodes { path additions deletions changeType } }
   reviewThreads(last:100) { nodes { isResolved isOutdated path line originalLine
     comments(first:50) { nodes { author { login } createdAt body diffHunk pullRequestReview { id } } } } }
 } } }`;
@@ -217,6 +218,7 @@ export function parseConversation(timeline: any[], threads: any[]): GithubEntry[
   return entries.filter((entry) => !(entry.kind === "event" && entry.event === "closed" && merged.has(entry.at.slice(0, 16))));
 }
 
+const FILE_CHANGES = { ADDED: "added", DELETED: "deleted", RENAMED: "renamed", COPIED: "copied", MODIFIED: "modified", CHANGED: "modified" } as const;
 const MERGE = { CLEAN: "clean", HAS_HOOKS: "clean", DIRTY: "conflicts", BEHIND: "behind", BLOCKED: "blocked", UNSTABLE: "unstable", DRAFT: "draft" } as const;
 
 const REVIEW_STATES = { APPROVED: "approved", CHANGES_REQUESTED: "changes_requested", COMMENTED: "commented" } as const;
@@ -245,6 +247,10 @@ export function parseGithubPull(output: string, repository: string): GithubPullD
       checks: countChecks(checkList), check_list: checkList,
       merge: MERGE[pr.mergeStateStatus as keyof typeof MERGE] ?? "unknown",
       review: decision, reviewers,
+      files: (pr.files?.nodes ?? []).filter((file: { path?: unknown }) => typeof file?.path === "string").map((file: { path: string; additions?: number; deletions?: number; changeType?: string }) => ({
+        path: file.path, additions: file.additions ?? 0, deletions: file.deletions ?? 0,
+        change: FILE_CHANGES[file.changeType as keyof typeof FILE_CHANGES] ?? "modified",
+      })),
       conversation: parseConversation(pr.timelineItems?.nodes ?? [], pr.reviewThreads?.nodes ?? []),
       labels: (pr.labels?.nodes ?? []).filter((label: { name?: unknown }) => typeof label?.name === "string").map((label: { name: string; color?: string }) => ({ name: label.name, color: /^[0-9a-f]{6}$/i.test(label.color ?? "") ? label.color! : "888888" })),
     };

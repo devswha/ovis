@@ -48,6 +48,8 @@ export interface GithubPullDetail {
   labels: { name: string; color: string }[];
   /** comments, reviews and state changes, oldest first */
   conversation: GithubEntry[];
+  /** the changed files, as GitHub lists them (the first 100) */
+  files: { path: string; additions: number; deletions: number; change: "added" | "deleted" | "renamed" | "copied" | "modified" }[];
 }
 
 export type GithubEntry =
