@@ -47,6 +47,10 @@ describe("DeepSeek Harness ask_user_question panel", () => {
       .toEqual([{ text: "a b" }, { keys: ["enter"] }]);
   });
 
+  it.each(["x\u001b[By", "x\u0003y", "\u001b", "a\rb", "a\tb"])("refuses a custom answer dsh would read as keys (%j) before any key", (text) => {
+    expect(() => answerKeys(parseInteractivePrompt("dsh-tui", screen("q1"))!, { custom_text: text })).toThrow("control characters");
+  });
+
   it("refuses the panel once text was typed into its free-text row in the terminal", () => {
     const typed = screen("q1-custom").replace(/(✎ Custom answer：)\s*$/m, "$1node");
     expect(parseInteractivePrompt("dsh-tui", typed)).toBeNull();

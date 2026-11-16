@@ -486,7 +486,9 @@ export function answerKeys(prompt: InteractivePrompt, answer: Pick<PromptAnswer,
     if ((parsed.responder === "pi-ask-question" || parsed.responder === "pi-questionnaire-question") && /[\u0000-\u001f\u007f-\u009f]/.test(answer.custom_text)) {
       throw new InvalidAnswer("Pi custom answers must be one line without control characters.");
     }
-    if (parsed.responder === "agy-question" && (/[\u0000-\u0009\u000b\u000c\u000e-\u001f\u007f-\u009f]|\r(?!\n)/.test(answer.custom_text))) {
+    // dsh-tui reads a control byte inside the typed run as its key (measured on 0.20.0): ESC [B moves to an option the
+    // answer then carries, Ctrl+C or a lone ESC cancels the question
+    if ((parsed.responder === "agy-question" || parsed.responder === "dsh-question") && (/[\u0000-\u0009\u000b\u000c\u000e-\u001f\u007f-\u009f]|\r(?!\n)/.test(answer.custom_text))) {
       throw new InvalidAnswer("Custom text contains unsupported control characters.");
     }
     // Letta's model search takes each character as a key: a control one is a command there (Enter picks, Esc closes
