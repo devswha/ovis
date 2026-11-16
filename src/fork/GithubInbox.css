@@ -1,9 +1,28 @@
 .fork-github-slot {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
   display: flex;
   flex: 1;
   flex-direction: column;
   min-width: 0;
   min-height: 0;
+}
+
+.app.is-inbox-wide .fork-github-slot {
+  position: relative;
+  inset: auto;
+}
+
+.fork-github-slot > .mode-inbox {
+  position: relative;
+  inset: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.fork-github-nav {
+  flex: none;
 }
 
 .fork-github-nav,
