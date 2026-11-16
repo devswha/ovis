@@ -78,8 +78,18 @@ async function run(argv: string[], env: Record<string, string>, cwd: string | un
   }
 }
 
+/** The active github.com login, without inherited tokens or an interactive prompt. */
+export function runGithub(args: string[], env: Record<string, string> = {}, deadlineMs = options.deadlineMs) {
+  return run([options.gh, ...args], { GH_HOST: "github.com", GH_PROMPT_DISABLED: "1", GH_NO_UPDATE_NOTIFIER: "1", ...env }, undefined, deadlineMs);
+}
+
 /** git never asks for a password here. */
 const GIT_ENV = { GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" };
+
+/** git, never asking for a password. */
+export function runGit(args: string[]) {
+  return run([options.git, ...args], GIT_ENV, undefined, options.deadlineMs);
+}
 
 /** `owner/name` from a GitHub remote (https, ssh, or an ssh host alias such as `github.com-work`); null for any other host. */
 export function githubRepository(remote: string): string | null {
@@ -142,7 +152,7 @@ export function parsePullRequests(output: string, worktrees: readonly WorktreeEn
 }
 
 /** The repository's GitHub name from its `origin` remote. */
-async function originRepository(repoRoot: string): Promise<string> {
+export async function originRepository(repoRoot: string): Promise<string> {
   const result = await run([options.git, "-C", repoRoot, "remote", "get-url", "origin"], GIT_ENV, undefined, options.deadlineMs);
   const repository = result?.code === 0 ? githubRepository(result.stdout) : null;
   if (!repository) throw new PullRequestError("not_github", "This repository's origin is not on GitHub");

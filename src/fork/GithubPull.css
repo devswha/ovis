@@ -1,0 +1,554 @@
+/* The GitHub section's pane: over the wide chat area, a page or the placeholder. */
+.fork-github-pane {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg);
+}
+
+.fork-github-pull {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.fork-github-slot > .fork-github-pull {
+  position: absolute;
+  inset: 0;
+}
+
+.fork-github-pull-top {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: var(--hairline) solid var(--border);
+}
+
+.fork-github-pull-where {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fork-github-pull-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-4) var(--space-4) calc(var(--space-4) + env(safe-area-inset-bottom, 0px));
+}
+
+.fork-github-pull.is-wide .fork-github-pull-scroll > * {
+  max-width: 820px;
+  margin-inline: auto;
+}
+
+.fork-github-pull h1 {
+  margin: 0 0 var(--space-3);
+  font-size: var(--fs-xl);
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.fork-github-pull-dim {
+  color: var(--text-dim);
+}
+
+.fork-github-pull-error {
+  color: var(--status-blocked);
+}
+
+.fork-github-spin {
+  width: 1em;
+  height: 1em;
+  vertical-align: -0.15em;
+  animation: fork-github-spin 1s steps(8) infinite;
+}
+
+@keyframes fork-github-spin { to { transform: rotate(360deg); } }
+
+.fork-github-pull-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  font-size: var(--fs-sm);
+}
+
+.fork-github-state {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  border: var(--hairline) solid currentColor;
+  border-radius: var(--radius-pill);
+  font-weight: 600;
+}
+
+.fork-github-state svg { width: 14px; height: 14px; }
+.fork-github-state.is-open { color: var(--status-done); }
+.fork-github-state.is-merged { color: var(--accent); }
+.fork-github-state.is-closed { color: var(--status-blocked); }
+.fork-github-state.is-draft { color: var(--text-dim); }
+
+.fork-github-facts,
+.fork-github-labels,
+.fork-github-reviewers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  margin: var(--space-3) 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+}
+
+.fork-github-facts li,
+.fork-github-reviewers li {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.fork-github-facts svg,
+.fork-github-reviewers svg { width: 14px; height: 14px; flex: none; }
+.fork-github-facts code { font-family: var(--font-mono); overflow-wrap: anywhere; }
+.fork-github-facts .is-added { color: var(--status-done); }
+.fork-github-facts .is-removed { color: var(--status-blocked); }
+
+.fork-github-labels { gap: var(--space-1); }
+.fork-github-labels li {
+  padding: 1px var(--space-2);
+  border: var(--hairline) solid color-mix(in srgb, var(--label) 60%, transparent);
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--label) 16%, transparent);
+  color: var(--text);
+  font-size: var(--fs-xs);
+}
+
+.fork-github-status {
+  margin-top: var(--space-4);
+  padding: var(--space-3);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+}
+
+.fork-github-status p { margin: 0; }
+.fork-github-status .is-passing { color: var(--status-done); }
+.fork-github-status .is-failing { color: var(--status-blocked); }
+.fork-github-status .is-pending { color: var(--status-working); }
+.fork-github-status .fork-github-reviewers { margin-top: var(--space-2); color: var(--text); }
+.fork-github-reviewers .fork-github-pull-dim { margin-inline-start: var(--space-1); }
+.fork-github-reviewers .is-approved svg { color: var(--status-done); }
+.fork-github-reviewers .is-changes_requested svg { color: var(--status-blocked); }
+.fork-github-reviewers .is-requested svg { color: var(--status-working); }
+
+.fork-github-body {
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: var(--hairline) solid var(--border);
+  overflow-wrap: anywhere;
+}
+
+/* the open pull request's row in the list */
+.fork-github-summary[aria-current="true"] {
+  background: var(--bg-hover);
+}
+
+/* The thread's own top bar sits above the panes; under a GitHub page it hides but keeps its room, so the pane
+   underneath keeps its size (a terminal refit would resize its pty). */
+.pane-split:has(> .fork-github-pane) .thread-top {
+  visibility: hidden;
+}
+
+.fork-github-status { display: flex; flex-direction: column; gap: var(--space-3); }
+.fork-github-status .fork-github-reviewers { margin-top: 0; }
+
+.fork-github-merge {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: 600;
+}
+.fork-github-merge svg { width: 16px; height: 16px; flex: none; }
+.fork-github-merge.is-clean { color: var(--status-done); }
+.fork-github-merge.is-conflicts,
+.fork-github-merge.is-blocked { color: var(--status-blocked); }
+.fork-github-merge.is-behind,
+.fork-github-merge.is-unstable { color: var(--status-working); }
+.fork-github-merge.is-draft,
+.fork-github-merge.is-unknown { color: var(--text-dim); }
+
+.fork-github-checks ul { margin: var(--space-1) 0 0; padding: 0; list-style: none; }
+.fork-github-checks-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: 0;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+.fork-github-checks-head:disabled { cursor: default; }
+.fork-github-checks-head > span { flex: 1; }
+.fork-github-checks-head svg { width: 16px; height: 16px; transition: transform 150ms ease; }
+.fork-github-checks-head svg.is-open { transform: rotate(180deg); }
+.fork-github-checks-head.is-passing { color: var(--status-done); }
+.fork-github-checks-head.is-failing { color: var(--status-blocked); }
+.fork-github-checks-head.is-pending { color: var(--status-working); }
+
+.fork-github-checks li > a,
+.fork-github-checks li > span {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  margin-inline: calc(var(--space-2) * -1);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  text-decoration: none;
+}
+.fork-github-checks li > a:hover { background: var(--bg-hover); }
+.fork-github-checks li svg { width: 14px; height: 14px; flex: none; }
+.fork-github-checks svg.is-passing { color: var(--status-done); }
+.fork-github-checks svg.is-failing { color: var(--status-blocked); }
+.fork-github-checks svg.is-pending { color: var(--status-working); }
+.fork-github-checks svg.is-skipped { color: var(--text-dim); }
+.fork-github-check-name { display: flex; flex: 1; flex-wrap: wrap; gap: 0 var(--space-2); min-width: 0; overflow-wrap: anywhere; }
+.fork-github-check-time { flex: none; font-variant-numeric: tabular-nums; }
+.fork-github-required {
+  flex: none;
+  padding: 0 var(--space-1);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+}
+
+/* The conversation: comments and reviews as cards on a line, state changes as quiet lines between them. */
+.fork-github-talk {
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: var(--hairline) solid var(--border);
+}
+
+.fork-github-conversation,
+.fork-github-replies {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fork-github-comment,
+.fork-github-review {
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.fork-github-comment > .fork-github-byline,
+.fork-github-review-head {
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-elevated);
+  border-bottom: var(--hairline) solid var(--border);
+}
+
+.fork-github-review-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.fork-github-review:not(:has(.fork-github-review-body)) .fork-github-review-head { border-bottom: 0; }
+
+.fork-github-review-head > svg,
+.fork-github-event > svg {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--text-dim);
+}
+
+.fork-github-review.is-approved .fork-github-review-head > svg { color: var(--status-done); }
+.fork-github-review.is-changes_requested .fork-github-review-head > svg { color: var(--status-blocked); }
+.fork-github-event.is-merged > svg { color: var(--accent); }
+.fork-github-event.is-closed > svg { color: var(--status-blocked); }
+
+.fork-github-byline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-2);
+  min-width: 0;
+  font-size: var(--fs-sm);
+}
+
+.fork-github-byline time {
+  color: var(--text-dim);
+}
+
+.fork-github-text,
+.fork-github-review-body {
+  padding: var(--space-2) var(--space-3);
+  overflow-wrap: anywhere;
+}
+
+.fork-github-review-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.fork-github-review-body > .fork-github-text { padding: 0; }
+
+.fork-github-event {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding-inline: var(--space-3);
+  color: var(--text-dim);
+}
+
+.fork-github-thread {
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.fork-github-thread-where,
+.fork-github-thread > summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  background: var(--bg-elevated);
+  font-size: var(--fs-sm);
+}
+
+.fork-github-thread > summary { cursor: pointer; }
+
+.fork-github-thread code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.fork-github-tag {
+  padding: 0 var(--space-2);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-pill);
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+}
+
+.fork-github-hunk {
+  margin: 0;
+  padding: var(--space-1) 0;
+  overflow-x: auto;
+  border-block: var(--hairline) solid var(--border);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+}
+
+.fork-github-hunk > span {
+  display: block;
+  padding-inline: var(--space-3);
+  white-space: pre;
+}
+
+.fork-github-hunk > .is-added { background: var(--status-done-tint); }
+.fork-github-hunk > .is-removed { background: var(--status-blocked-tint); }
+
+.fork-github-replies { padding: var(--space-2) var(--space-3); }
+.fork-github-replies .fork-github-text { padding: var(--space-1) 0 0; }
+
+/* The page's tabs: Ovis's own segmented control, on a line of its own under the always-shown head. */
+.fork-github-tabs {
+  margin-top: var(--space-4);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.fork-github-tabs .segmented { display: flex; width: max-content; }
+
+.fork-github-tab-page {
+  margin-top: var(--space-4);
+}
+
+.fork-github-tabs + .fork-github-facts { margin-top: var(--space-4); }
+
+.fork-github-files {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+}
+
+.fork-github-files > li { min-width: 0; }
+
+/* a file's row is its toggle: the diff opens under it */
+.fork-github-file {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.fork-github-file:hover { background: var(--bg-hover); }
+.fork-github-file:focus-visible { outline-offset: var(--ring-inset-offset); }
+.fork-github-files svg.fork-github-file-chevron { width: 14px; height: 14px; transition: transform var(--dur-fast) ease; }
+.fork-github-files .is-open .fork-github-file-chevron { transform: rotate(90deg); }
+.is-open > .fork-github-file { border-bottom: var(--hairline) solid var(--border); }
+
+.fork-github-file-comments {
+  flex: none;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+}
+
+.fork-github-file-open {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  background: var(--bg);
+}
+
+/* Ovis's diff view fills its box and scrolls inside it: a box as tall as the patch, up to most of the screen */
+.fork-github-diff {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  /* the measured diff with its notes, else its rows until the first measure */
+  height: min(var(--content, calc((var(--rows) + 1) * var(--fs-xs) * var(--lh-base))), 70vh);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.fork-github-files-bar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: var(--space-2);
+}
+
+.fork-github-files > li + li { border-top: var(--hairline) solid var(--border); }
+
+.fork-github-files svg {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--text-dim);
+}
+
+.fork-github-files .is-added > .fork-github-file > svg:not(.fork-github-file-chevron) { color: var(--status-done); }
+.fork-github-files .is-deleted > .fork-github-file > svg:not(.fork-github-file-chevron) { color: var(--status-blocked); }
+
+.fork-github-files code {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.fork-github-file-lines {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.fork-github-file-lines .is-added { color: var(--status-done); }
+.fork-github-file-lines .is-removed { color: var(--status-blocked); }
+.fork-github-pull-meta + .fork-github-merge { margin: var(--space-3) 0 0; }
+
+/* the merge line, and the merge button beside it (under it on a narrow page) */
+.fork-github-merge-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin: var(--space-3) 0 0;
+}
+
+.fork-github-merge-row > .fork-github-merge { margin: 0; }
+.fork-github-merge-do { display: grid; gap: var(--space-1); justify-items: end; }
+
+/* the merge button and its method arrow, one control */
+.fork-github-split { display: inline-flex; }
+.fork-github-split > .btn { display: inline-flex; align-items: center; gap: var(--space-1); }
+.fork-github-split > .btn svg { width: 14px; height: 14px; flex: none; }
+.fork-github-split > .btn:first-child:not(:only-child) { border-start-end-radius: 0; border-end-end-radius: 0; }
+.fork-github-split > .btn + .btn { border-start-start-radius: 0; border-end-start-radius: 0; margin-inline-start: calc(var(--hairline) * -1); padding-inline: var(--space-2); }
+
+/* the reply box under the conversation */
+.fork-github-reply {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
+
+.fork-github-reply-text {
+  width: 100%;
+  min-height: calc(var(--fs-sm) * var(--lh-base) * 3 + var(--space-2) * 2);
+  resize: vertical;
+  font: inherit;
+  font-size: var(--fs-sm);
+}
+
+.fork-github-reply-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+/* a thread under its line in the diff: set in from the gutter, in the page's own type */
+.fork-github-diff .repo-diff-annotation {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  font-family: var(--font-ui);
+  white-space: normal;
+}
+
+.fork-github-thread.is-in-diff {
+  background: var(--bg);
+}
+
+.fork-github-thread.is-in-diff > summary {
+  color: var(--text-dim);
+}
+
+.fork-github-thread.is-in-diff > summary svg {
+  width: 1em;
+  height: 1em;
+}

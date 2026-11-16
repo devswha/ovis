@@ -30,7 +30,11 @@ function installServices() {
   word(36, "data"); view.setUint32(40, wav.byteLength - 44, true);
   window.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = new URL(input instanceof Request ? input.url : String(input), location.href).pathname;
-    if (["/api/speech", "/api/screen", "/api/pane/pi-voice", "/api/worktree/pull-requests", "/api/worktree/pull-request-fetch", "/api/worktree/create", "/api/worktree/open"].includes(path)) record(path, init);
+    if (["/api/fork/github/pulls", "/api/speech", "/api/screen", "/api/pane/pi-voice", "/api/worktree/pull-requests", "/api/worktree/pull-request-fetch", "/api/worktree/create", "/api/worktree/open"].includes(path)) record(path, init);
+    if (path === "/api/fork/github/pulls") {
+      const pr = { number: 18, title: "Improve inbox", url: "https://github.com/demo/ovis/pull/18", branch: "docs/release-steps", repository: "demo/ovis", workspace_id: "w1C", checks: "failing", review: "review_required", updated_at: "2026-01-02", draft: false, fork: false };
+      return Response.json({ account: "demo", review: [pr], yours: [{ ...pr, number: 19, title: "Remote PR", url: "https://github.com/other/tools/pull/19", repository: "other/tools", workspace_id: undefined, checks: "pending" }] });
+    }
     if (path === "/api/speech") return new Response(wav, { headers: { "content-type": "audio/wav" } });
     if (path === "/api/screen") return Response.json({ path: "/fork-desktop.html" });
     if (path === "/api/pane/pi-voice") return Response.json({ available: true, busy: false });
@@ -119,6 +123,45 @@ async function checkPullRequests(page: Page) {
   assert.equal(after.filter(({ path }) => path === "/api/worktree/open").length, 1);
 }
 
+async function checkGithub(page: Page, url: string, enabled: boolean) {
+  await page.evaluate(() => localStorage.setItem("ovis:phone-inbox", "true"));
+  await page.setViewportSize({ width: 1200, height: 900 });
+  await page.goto(`${url}?app=inbox`);
+  await page.locator(".mode-inbox .inbox-item").first().waitFor();
+  const github = page.getByRole("button", { name: "GitHub", exact: true });
+  assert.equal(await github.count(), enabled ? 1 : 0);
+  if (!enabled) return;
+  await github.click();
+  await page.getByRole("heading", { name: "Review requested", exact: true }).waitFor();
+  assert.equal(await github.getAttribute("aria-current"), "page");
+  const view = page.locator(".fork-github");
+  const chip = view.getByRole("group", { name: "Repositories", exact: true }).getByRole("button", { name: "demo/ovis", exact: false });
+  await view.locator(".fork-github-summary").filter({ hasText: "Remote PR" }).click();
+  assert.equal(await view.getByRole("button", { name: "Checkout", exact: true }).count(), 0, "unknown repo has no checkout action");
+  assert.equal(await view.getByRole("link", { name: "Open on GitHub", exact: true }).getAttribute("href"), "https://github.com/other/tools/pull/19");
+  await chip.click();
+  assert.equal(await view.getByText("Remote PR", { exact: true }).count(), 0);
+  await view.locator(".fork-github-summary").filter({ hasText: "Improve inbox" }).click();
+  await view.getByText("docs/release-steps", { exact: true }).waitFor();
+  assert.equal(await view.getByRole("link", { name: "Open on GitHub", exact: true }).count(), 1);
+  const before = (await requests(page)).filter(({ path }) => path === "/api/fork/github/pulls").length;
+  await view.getByRole("button", { name: "Refresh", exact: true }).click();
+  await page.waitForFunction((before) => JSON.parse(document.documentElement.dataset["forkRequests"] ?? "[]").filter((request: RequestRecord) => request.path === "/api/fork/github/pulls").length === before + 1, before);
+  await page.getByRole("navigation", { name: "Inbox mode", exact: true }).getByRole("button", { name: "Agent inbox", exact: true }).click();
+  await page.locator(".mode-inbox .inbox-item").first().waitFor();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await github.click();
+  await chip.waitFor();
+  assert.equal(await chip.getAttribute("aria-pressed"), "true", "repo choice survives reopening on the phone");
+  assert.ok(await view.evaluate((node) => node.getBoundingClientRect().width <= window.innerWidth), "phone list stays inside viewport");
+  await view.locator(".fork-github-summary").filter({ hasText: "Improve inbox" }).click();
+  await view.getByRole("button", { name: "Checkout", exact: true }).click();
+  await view.waitFor({ state: "detached" });
+  const calls = await requests(page);
+  assert.deepEqual(calls.find(({ path }) => path === "/api/worktree/pull-request-fetch")?.body, { workspace_id: "w1C", branch: "docs/release-steps" });
+  assert.deepEqual(calls.find(({ path }) => path === "/api/worktree/create")?.body, { workspace_id: "w1C", branch: "docs/release-steps", base: "origin/docs/release-steps" });
+}
+
 const app = mkdtempSync(join(tmpdir(), "ovis-fork-features-"));
 const voiceFrames: PhoneToPiFrame[] = [];
 try {
@@ -193,8 +236,9 @@ try {
             assert.deepEqual(voiceFrames.filter((frame) => frame.type === "set-muted"), [{ type: "set-muted", muted: true }, { type: "set-muted", muted: false }]);
             assert.ok(voiceFrames.some((frame) => frame.type === "stop"));
           }
+          await checkGithub(page, url, legacy);
           assert.deepEqual(errors, []);
-          console.log(`PASS ${legacy ? "migrated fork" : "upstream defaults"}: read aloud, Computer, pull requests and Pi voice`);
+          console.log(`PASS ${legacy ? "migrated fork" : "upstream defaults"}: read aloud, Computer, pull requests, GitHub inbox and Pi voice`);
         } finally { await context.close(); }
       }
     } finally { await browser.close(); }

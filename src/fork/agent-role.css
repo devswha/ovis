@@ -1,0 +1,8 @@
+/* A job agent's role icon stands in for its picture, colored by its state like the folded tab chips. */
+.fork-role-icon { color: var(--text-dim); stroke-width: 2.25; }
+.fork-role-icon:is([data-status="working"], [data-status="waiting"]) { color: var(--status-working); }
+.fork-role-icon[data-status="blocked"] { color: var(--status-blocked); }
+.fork-role-icon[data-status="done"] { color: var(--status-done); }
+.sidebar-mark > .fork-role-icon { width: 16px; height: 16px; }
+/* In the agent inbox too the role icon stands bare, as in the sidebar: no disc behind it, same slot. */
+:is(.mode-inbox, .thread-title, .thread-chip) .inbox-avatar-face.fork-role-face { background: none; border: 0; }

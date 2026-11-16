@@ -13,12 +13,14 @@ import { ExternalLink, GitPullRequest, X } from "lucide-react";
 import "../components/WorktreeDialog.css";
 import "./PullRequestsDialog.css";
 
-import type { PullRequestChecks, PullRequestEntry, PullRequestListing, WorkspaceInfo, WorktreeOpened } from "../../shared/protocol.ts";
+import type { PullRequestEntry, PullRequestListing, WorkspaceInfo, WorktreeOpened } from "../../shared/protocol.ts";
 import { ApiError } from "../lib/api.ts";
 import { currentLocale, useT } from "../lib/i18n.ts";
 import { useMachineApi } from "../lib/machineContext.tsx";
 import { useSheetSwipe } from "../lib/sheets.ts";
 import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
+
+import { pullRequestWords } from "./pullRequestWords.ts";
 
 interface Props {
   workspace: WorkspaceInfo;
@@ -145,8 +147,7 @@ export function PullRequestsDialog({ workspace, onClose, onOpened }: Props) {
 
 function PullRequestRow({ pr, busy, locked, onAct }: { pr: PullRequestEntry; busy: boolean; locked: boolean; onAct: () => void }) {
   const t = useT();
-  const checks: Record<PullRequestChecks, string | null> = { passing: t("Checks passing"), failing: t("Checks failing"), pending: t("Checks running"), none: null };
-  const reviews: Record<PullRequestEntry["review"], string | null> = { approved: t("Approved"), changes_requested: t("Changes requested"), review_required: t("Review required"), none: null };
+  const { checks, reviews } = pullRequestWords(t);
   const blocked = pr.fork && !pr.checkout;
   const label = pr.checkout ? (pr.checkout.open_workspace_id ? t("Go to workspace") : t("Open checkout")) : busy ? t("Checking out…") : t("Checkout");
   return (

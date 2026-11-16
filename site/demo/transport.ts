@@ -37,6 +37,7 @@ import { neighborPane } from "../../src/lib/layoutMap.ts";
 import { closeLayoutPane, moveLayoutPane, resizeLayout, setLayoutSplitRatio, splitLayout, swapLayoutPanes } from "../../src/lib/layoutTree.ts";
 import { deviceLabel } from "../../src/lib/phone.ts";
 import { rollupStatus } from "../../src/lib/status.ts";
+import { demoGithubFiles, demoGithubPull, demoGithubPulls } from "../../src/fork/githubDemo.ts";
 import { movedTabOrder } from "../../src/lib/tabOrder.ts";
 import { agentSkillRows, CHATS, DEMO_AGENT_CATALOG, DEMO_PUSH, PROMPT, resumedSession, SESSION_HISTORY_AGENTS, sessionHistoryRows, SPECS, type DemoSpec } from "./fixtures.ts";
 import { DemoHistory } from "./history.ts";
@@ -1568,6 +1569,20 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
     if (!created.ok) return created;
     return json({ action: "created", ...(await created.json() as { workspace_id: string; pane_id: string; agent_started: boolean }) } satisfies SessionResumeResponse);
   }
+
+  if (path === "/api/fork/github/pulls") return method === "GET" ? json(demoGithubPulls(snapshot().workspaces)) : error("method_not_allowed", "use GET", 400);
+  if (path === "/api/fork/github/pull") {
+    const pull = demoGithubPull(snapshot().workspaces, url.searchParams.get("repo") ?? "", Number(url.searchParams.get("number")));
+    return pull ? json(pull) : error("not_found", "no such pull request in the demo", 404);
+  }
+  if (path === "/api/fork/github/pull/files") return json({ files: demoGithubFiles() });
+  if (path === "/api/fork/github/clone") {
+    if (method !== "GET") return error("gh_refused", "The demo clones nothing.", 409);
+    const name = (url.searchParams.get("repo") ?? "").split("/")[1] ?? "repo";
+    return json({ path: `/home/demo/Projects/${name}`, shown: `~/Projects/${name}`, state: "free" });
+  }
+  // the demo sends nothing to GitHub; the page shows this in place of GitHub's answer
+  if (path === "/api/fork/github/pull/action") return error("gh_refused", "The demo sends nothing to GitHub.", 409);
 
   if (path === "/api/worktree/pull-requests" || path === "/api/worktree/pull-request-fetch") {
     const listing = path === "/api/worktree/pull-requests";

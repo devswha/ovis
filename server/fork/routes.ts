@@ -6,6 +6,8 @@ import { handleScreenOpen, handleScreenRequest, isScreenPath } from "./screen.ts
 import { handlePiVoiceRequest } from "./pi-voice.ts";
 import { handleFriendsRequest } from "./friends.ts";
 import { handleSpeechRequest } from "./speech.ts";
+import { handleGithubAction, handleGithubFiles, handleGithubPull, handleGithubPulls } from "./github.ts";
+import { handleGithubClone } from "./github-clone.ts";
 
 /** null is not our route; a promise resolving undefined is a successful socket upgrade. */
 export function routeForkScreen(request: Request, url: URL, ctx: ServerContext, readOnly: boolean): Promise<Response | undefined> | null {
@@ -26,6 +28,11 @@ export function routeForkScreen(request: Request, url: URL, ctx: ServerContext, 
 /** Called only after upstream's authentication, origin, drive and observe guards. */
 export function routeForkApi(request: Request, url: URL, ctx: ServerContext, caller: { readOnly: boolean; deviceId: string | undefined; headers: Headers }): Promise<Response | undefined> | null {
   const { pathname } = url;
+  if (pathname === "/api/fork/github/clone") { setRequestRoute(pathname); ctx.timeout(request, 0); return handleGithubClone(request, url, caller.readOnly, () => ctx.services.core.clientSnapshot()); }
+  if (pathname === "/api/fork/github/pull/action") { setRequestRoute(pathname); ctx.timeout(request, 45); return handleGithubAction(request, caller.readOnly); }
+  if (pathname === "/api/fork/github/pull/files") { setRequestRoute(pathname); ctx.timeout(request, 45); return handleGithubFiles(request, caller.readOnly); }
+  if (pathname === "/api/fork/github/pull") { setRequestRoute(pathname); ctx.timeout(request, 45); return handleGithubPull(request, caller.readOnly); }
+  if (pathname === "/api/fork/github/pulls") { setRequestRoute(pathname); ctx.timeout(request, 75); return handleGithubPulls(request, () => ctx.services.core.clientSnapshot(), caller.readOnly); }
   if (pathname === "/api/friends") { setRequestRoute(pathname); return handleFriendsRequest(request, ctx.services.friends, async () => ctx.services.core.machines?.list() ?? [{ id: "local", snapshot: await ctx.services.core.clientSnapshot() }]); }
   if (pathname === "/api/speech") { ctx.timeout(request, 0); return handleSpeechRequest(request, ctx.services.speech); }
   if (pathname !== PI_VOICE_PATH && pathname !== PI_VOICE_STATUS_PATH) return null;

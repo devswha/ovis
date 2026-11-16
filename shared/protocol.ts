@@ -1,3 +1,4 @@
+import type { ForkPaneFields } from "./fork/pane.ts";
 import type { HerdrKeys } from "./herdr-keys.ts";
 import type { MachineEvent } from "./machines.ts";
 /**
@@ -63,7 +64,7 @@ export type HerdrTab = TabInfo;
 /** What a request filled of the model's context, in tokens; `window` is null when nothing says it. */
 export type PaneContext = { used: number; window: number | null };
 
-export type HerdrPane = PaneInfo & {
+export type HerdrPane = PaneInfo & ForkPaneFields & {
   background_tasks?: number; background_wait?: true; plan?: PlanSummary; context?: PaneContext;
   parent_pane_id?: string;
   own_tab?: true;

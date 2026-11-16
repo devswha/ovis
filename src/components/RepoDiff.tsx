@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { DEFAULT_VIRTUAL_FILE_METRICS, parsePatchFiles, trimPatchContext, type FileDiffMetadata, type VirtualizedFileDiff, type Virtualizer as VirtualizerInstance } from "@pierre/diffs";
 import { FileDiff, useVirtualizer, Virtualizer, type FileDiffOptions } from "@pierre/diffs/react";
 import { Plus } from "lucide-react";
@@ -32,6 +32,15 @@ export interface RepoDiffProps {
   onLine?: (side: "deletions" | "additions", lineNumber: number, open: boolean) => void;
   /** why no note can be begun (the hovered + then says so, disabled), or null */
   noteBlocked?: string | null;
+  /** content shown under a line of the diff, such as the comments on it; several on one line stack in order */
+  notes?: readonly DiffNote[];
+}
+
+/** Content under one line of the diff, by its side and number. */
+export interface DiffNote {
+  side: DiffSide;
+  line: number;
+  node: ReactNode;
 }
 
 /** A logical line of the patch (an unchanged line is anchored to the new side) and the columns of a match in it. */
@@ -141,7 +150,7 @@ function parseFile(text: string): FileDiffMetadata | null {
  * the virtualizer renders by identity, and its host fills the scroll root so it has a box before
  * the first anchor pass (the contracts VirtualSource measured).
  */
-export default function RepoDiff({ patch, style, folded, wrap, theme, colored, active = null, onUnfold, onLine, noteBlocked = null }: RepoDiffProps) {
+export default function RepoDiff({ patch, style, folded, wrap, theme, colored, active = null, onUnfold, onLine, noteBlocked = null, notes }: RepoDiffProps) {
   const t = useT();
   const onLineRef = useRef(onLine);
   onLineRef.current = onLine;
@@ -291,6 +300,21 @@ export default function RepoDiff({ patch, style, folded, wrap, theme, colored, a
     <Plus aria-hidden="true" />
   </button>, [noteLabel, noteBlocked]);
   const metrics = useMemo(() => (lineHeight === null ? null : { ...DEFAULT_VIRTUAL_FILE_METRICS, lineHeight }), [lineHeight]);
+  // the notes by line: the package takes one annotation per line and asks for its content by side and number
+  const noteLines = useMemo(() => {
+    const byLine = new Map<string, ReactNode[]>();
+    for (const note of notes ?? []) {
+      const key = `${note.side === "old" ? "deletions" : "additions"}:${note.line}`;
+      byLine.set(key, [...byLine.get(key) ?? [], note.node]);
+    }
+    return byLine;
+  }, [notes]);
+  const lineAnnotations = useMemo(() => [...noteLines.keys()].map((key) => {
+    const [side, line] = key.split(":");
+    return { side: side as "deletions" | "additions", lineNumber: Number(line) };
+  }), [noteLines]);
+  const renderAnnotation = useCallback((annotation: { side: "deletions" | "additions"; lineNumber: number }) =>
+    <div className="repo-diff-annotation">{noteLines.get(`${annotation.side}:${annotation.lineNumber}`)}</div>, [noteLines]);
 
   if (fileDiff === null || fileDiff.hunks.length === 0) return <p className="repo-diff-note">{t("No lines changed.")}</p>;
   // plain rows go through the pool too, though they never reach a worker (tokenizeMaxLength 0 keeps
@@ -302,7 +326,8 @@ export default function RepoDiff({ patch, style, folded, wrap, theme, colored, a
     <DiffWorkerPool>
       <Virtualizer className="repo-diff-scroll" contentClassName="repo-diff-column" config={SCROLL_CONFIG}>
         <VirtualizerProbe onInstance={onVirtualizer} />
-        {metrics !== null && <FileDiff className="repo-diff-file" fileDiff={fileDiff} options={options} metrics={metrics} selectedLines={selected} renderGutterUtility={noting ? renderGutterUtility : undefined} />}
+        {metrics !== null && <FileDiff className="repo-diff-file" fileDiff={fileDiff} options={options} metrics={metrics} selectedLines={selected} renderGutterUtility={noting ? renderGutterUtility : undefined}
+          lineAnnotations={lineAnnotations.length > 0 ? lineAnnotations : undefined} renderAnnotation={lineAnnotations.length > 0 ? renderAnnotation : undefined} />}
       </Virtualizer>
     </DiffWorkerPool>
   </div>;

@@ -19,6 +19,7 @@ import { useT, type Translate } from "../lib/i18n.ts";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { OvisMark } from "./OvisMark.tsx";
 import { ForkInboxBack } from "../fork/InboxBack.tsx";
+import { ForkGithubRail } from "../fork/GithubInbox.tsx";
 import { RowMenu } from "./RowMenu.tsx";
 import "./InboxRail.css";
 
@@ -101,9 +102,9 @@ export function InboxRail({ onExit, onInbox, waiting, alerts, onSettings, pcs, s
           <OvisMark width="22" height="22" className="inbox-rail-mark" />
         </button>
         </ForkInboxBack>
-        <button type="button" className="icon-button inbox-rail-item inbox-rail-place" aria-label={t("Agent inbox")} title={t("Agent inbox")} aria-current="page" onClick={() => { tally(() => usageCounters.count("inbox_rail_inbox")); onInbox(); }}>
+        <ForkGithubRail><button type="button" className="icon-button inbox-rail-item inbox-rail-place" aria-label={t("Agent inbox")} title={t("Agent inbox")} aria-current="page" onClick={() => { tally(() => usageCounters.count("inbox_rail_inbox")); onInbox(); }}>
           <Inbox aria-hidden="true" />
-        </button>
+        </button></ForkGithubRail>
       </div>
       <div className="inbox-rail-group is-lower">
         {/* the first of the lower group, so nothing under it moves when it comes or goes; the pill is the app's own

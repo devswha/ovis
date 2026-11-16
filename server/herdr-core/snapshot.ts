@@ -1,6 +1,6 @@
 import type { AgentInfo, AgentSessionInfo, AgentStatus, PaneInfo, PaneLayoutSnapshot, PaneProcessInfo, SessionSnapshot, TabInfo, WorkspaceInfo } from "../../shared/herdr-api.generated.ts";
 import { HC_OTHER_WORKSPACE_ID } from "../../shared/machines.ts";
-import { hiddenTerminal } from "../fork/core-terminals.ts";
+import { forkPaneFields, hiddenTerminal } from "../fork/core-terminals.ts";
 import type { HerdrPane } from "../../shared/protocol.ts";
 import type { Foreground, Status, Terminal } from "./hc-api.generated.ts";
 import { clampRatio, type Grouping, type LayoutNode, LAYOUT_AREA, parseOvisLayout, place, reconcile, sideBySide } from "./layout-doc.ts";
@@ -403,6 +403,7 @@ function paneOf(terminal: HcTerminal, workspaceId: string, tabId: string, shown:
   const cwd = terminal.foreground?.cwd ?? terminal.cwd;
   const session = sessionOf?.(terminal) ?? null;
   return {
+    ...forkPaneFields(terminal.labels),
     ...(session ? { agent_session: session } : {}),
     ...(terminal.parent && terminal.parent !== terminal.address && shown.has(terminal.parent) ? { parent_pane_id: terminal.parent } : {}),
     // only a tab its labels make takes a split (adapter.ts `pane.split`)
