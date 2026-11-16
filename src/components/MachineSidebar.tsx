@@ -29,6 +29,8 @@ import { ComputerButton } from "../fork/computer/ComputerButton.tsx";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { machineErrorText, saysHerdrAway, sshFailure } from "../lib/userError.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
+import { changePc } from "../lib/nativeApp.ts";
+import { serverIdOfPath } from "../lib/shellMode.ts";
 import { SHEET_QUERY } from "../lib/sheets.ts";
 import { canHideMachine, HIDDEN_MACHINES_MAX, setHiddenMachines, useHiddenMachines, withMachineHidden } from "../lib/hiddenMachines.ts";
 

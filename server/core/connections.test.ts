@@ -11,7 +11,7 @@ import type { PendingInputs } from "../pending-input.ts";
 import type { MachineEventDocument } from "../machine-events.ts";
 import { handleMachineRequest, subscribeOpen } from "../machine-api.ts";
 import type { MachineManager } from "../machines.ts";
-import type { Machine, MachineEvent } from "../../shared/machines.ts";
+import type { Machine } from "../../shared/machines.ts";
 import type { ServerMessage } from "../../shared/protocol.ts";
 import type { SharedPreferences } from "../../shared/preferences.ts";
 import type { AgentInfo, HerdrPane, SessionSnapshot } from "../../shared/protocol.ts";
