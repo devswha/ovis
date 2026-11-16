@@ -170,6 +170,36 @@ describe("resolveAllHerdrKeys", () => {
     expect(refusal(keys, "zoom")).toEqual([{ action: "zoom", binding: "prefix+1..9", code: "index", holder: null }]);
   });
 
+  test("herdr's navigate-mode keys are read, plain keys included, and not called unknown", () => {
+    const keys = resolveAllHerdrKeys({ navigate_pane_down: "j", navigate_workspace_up: ["K", "ctrl+p"], frobnicate: "x" });
+    expect(keys.refusals.map(({ action: name, code }) => ({ name, code }))).toEqual([{ name: "frobnicate", code: "unknown_action" }]);
+    expect(keys.navigate).toEqual([
+      { name: "navigate_pane_down", text: "j", chord: chord("j") },
+      { name: "navigate_workspace_up", text: "K", chord: chord("k", { shift: true }) },
+      { name: "navigate_workspace_up", text: "ctrl+p", chord: chord("p", { ctrl: true }) },
+    ]);
+    // a navigate key is no terminal-mode binding
+    expect(keys.direct).toEqual([]);
+    expect(resolveAllHerdrKeys(undefined).navigate).toEqual([]);
+  });
+
+  test("a navigate key herdr cannot read or keeps for navigate mode itself is refused", () => {
+    const keys = resolveAllHerdrKeys({ navigate_pane_left: ["prefix+h", "enter", "esc", "left", "tab", "3", "pagedown", "ctrl+b", ""], navigate_pane_right: "l", navigate_pane_up: "l", navigate_pane_down: 5 });
+    expect(keys.configRead).toBe(true);
+    expect(refusal(keys, "navigate_pane_left").map(({ binding, code }) => [binding, code])).toEqual([
+      ["prefix+h", "unparsable"], ["enter", "reserved"], ["esc", "reserved"], ["left", "reserved"], ["tab", "reserved"], ["3", "reserved"], ["pagedown", "unparsable"], ["ctrl+b", "prefix"],
+    ]);
+    expect(refusal(keys, "navigate_pane_up")).toEqual([{ action: "navigate_pane_up", binding: "l", code: "taken", holder: "navigate_pane_right" }]);
+    expect(refusal(keys, "navigate_pane_down").map((entry) => entry.code)).toEqual(["unparsable"]);
+    expect(keys.navigate).toEqual([{ name: "navigate_pane_right", text: "l", chord: chord("l") }]);
+  });
+
+  test("a prefix list with a hole is read without it, as the existing resolver always did", () => {
+    expect(resolveHerdrKeys({ prefix: [, "ctrl+a"] }).prefixes).toEqual(["ctrl+a"]);
+    expect(resolveHerdrKeys({ prefix: "ctrl+a", extra_prefixes: ["ctrl+space", , "ctrl+q"] }).prefixes).toEqual(["ctrl+a", "ctrl+space", "ctrl+q"]);
+    expect(resolveAllHerdrKeys({ prefix: [, "ctrl+a"], navigate_pane_down: [, "j"] })).toMatchObject({ prefixes: [{ text: "ctrl+a" }], navigate: [{ name: "navigate_pane_down", text: "j" }], refusals: [] });
+  });
+
   test("modifier and key names in any case herdr reads, the prefix word in lowercase only", () => {
     const keys = resolveAllHerdrKeys({ prefix: "  Control+A  ", rename_tab: "prefix+SHIFT+t", split_vertical: "prefix+V", toggle_sidebar: "prefix+TAB", zoom: "ALT+F5", next_tab: "Prefix+n" });
     expect(keys.prefixes).toEqual([{ text: "Control+A", chord: chord("a", { ctrl: true, shift: true }) }]);
