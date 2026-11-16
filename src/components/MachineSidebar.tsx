@@ -34,7 +34,8 @@ import { serverIdOfPath, shellMode } from "../lib/shellMode.ts";
 import { canHideMachine, HIDDEN_MACHINES_MAX, setHiddenMachines, useHiddenMachines, withMachineHidden } from "../lib/hiddenMachines.ts";
 
 /** the width under which the sidebar is a drawer (src/styles.css), as AgentSidebar.tsx reads it */
-const DRAWER_QUERY = "(max-width: 768px)";
+/** the widths where the sidebar is a drawer over the pane, and its foot keeps to the gear (Change PC is in Settings' list there) */
+export const DRAWER_QUERY = "(max-width: 768px)";
 
 /** the release a PC's own Ovis offers as its card shows it: an update installs only that one (docs/remote-pcs.md) */
 const shownRevision = (machine: Machine) => machine.ovis_update?.revision ? { revision: machine.ovis_update.revision } : undefined;
@@ -97,7 +98,7 @@ export function MachineSidebar(props: Props) {
   const loneHost = props.machines.length === 1 && props.machines[0]!.kind === "local" ? props.machines[0]!.id : null;
   const unnamed = useMemo(() => new Set(loneHost === null ? [] : [loneHost]), [loneHost]);
   const exitToPcs = useMemo(() => pcListExit({ nativeApp: inNativeApp(), relayShell: shellMode() === "relay", pathname: window.location.pathname }), []);
-  // a phone's drawer keeps its foot to the gear: Change PC is Settings' first row there (SettingsDialog)
+  // a phone's drawer keeps its foot to the gear: Change PC is the last row of Settings' list there (SettingsDialog)
   const drawerWidth = useMediaQuery(DRAWER_QUERY);
   const loneHostName = loneHost === null ? null : props.machines[0]!.name || null;
   const filter = useMemo(() => sidebarFilter(query, props.machines, { machineId: props.selectedMachineId, paneId: props.selectedPaneId }, t, branchLabels, unnamed), [query, props.machines, props.selectedMachineId, props.selectedPaneId, t, branchLabels, unnamed]);

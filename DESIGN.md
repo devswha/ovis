@@ -2214,9 +2214,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   relay shell, or the phone app), one full-width row (`.sidebar-footer-pc`) names the PC, the lone
   Host's name its header no longer shows, then **Change PC** in `--text-dim` and a switch glyph: a
   tap goes back to the list of PCs (the shell's front page, or the app's list), as the Claude app's
-  sidebar foot names whose account it is and switches it in one tap. Only from `769px`: a phone's
-  drawer keeps its foot to the gear, and a phone's Settings list of pages ends in **Change PC**
-  (`.settings-change-pc`, under the pages), so the way back is the gear and that row. Settings →
+  sidebar foot names whose account it is and switches it in one tap. Only from `769px`: below that
+  the drawer keeps its foot to the gear, and Settings' list of pages ends in **Change PC** at the
+  same widths (`.settings-change-pc`, under the pages, `DRAWER_QUERY`), so the way back is the gear
+  and that row. Settings →
   Devices and PCs keeps its Change PC row. A PC's own app never shows it: its sidebar lists its PCs itself.
 
 ### Inbox mode (`.mode-inbox`, `.inbox-rail`, `.thread-title`, `.thread-top`)

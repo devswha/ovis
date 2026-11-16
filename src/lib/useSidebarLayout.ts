@@ -8,6 +8,11 @@ import { useMediaQuery } from "./useMediaQuery.ts";
 /** a tap on the open drawer's Ovis mark this soon after the menu button's click that opened the drawer, on the same spot, is that double tap's second half */
 export const SECOND_TAP_MS = 400;
 
+/** Whether a tap at `at` on the open drawer's Ovis mark is the second half of the double tap whose first, at `openedAt`, opened it. */
+export function secondTapOf(openedAt: number | null, at: number): boolean {
+  return openedAt !== null && at - openedAt < SECOND_TAP_MS;
+}
+
 export interface SidebarLayoutParams {
   initialLink: AppLink | null;
   /** while true the shell has no drawer (the inbox mode, lib/inboxMode.ts): nothing opens one, a swipe included */
@@ -36,7 +41,9 @@ export function useSidebarLayout({ initialLink, drawerBlocked }: SidebarLayoutPa
     if (!drawerOpenRef.current) drawerOpenedAt.current = at;
     setDrawerOpen((open) => !open);
   }, [setDrawerOpen]);
-  const secondTapOfOpening = useCallback((at: number): boolean => drawerOpenedAt.current !== null && at - drawerOpenedAt.current < SECOND_TAP_MS, []);
+  const secondTapOfOpening = useCallback((at: number): boolean => secondTapOf(drawerOpenedAt.current, at), []);
+  // closed any way at all, the drawer has no opening tap left to pair with
+  useEffect(() => { if (!drawerOpen) drawerOpenedAt.current = null; }, [drawerOpen]);
   // While the drawer is out on a phone it holds the keyboard as a dialog does (G-003): App.tsx's useDrawerDialog
   // (lib/headerSessions.ts) owns its Tab and Escape and gives the focus back when it closes
   // a desktop opened by a link that says so starts with the sidebar collapsed, and the address says so while it is

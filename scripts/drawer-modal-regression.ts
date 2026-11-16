@@ -176,13 +176,23 @@ try {
     assert.equal((await change.textContent())?.trim(), "Change PC");
     await change.tap();
     await page.waitForFunction(() => window.nativeCalls.includes("HerdrShell.disconnect"), undefined, { timeout: 5_000 });
+    // a small tablet upright (641-768px) has the drawer too, and Settings' list beside its page: Change PC is in that list
+    const tablet = await app.newPage();
+    await tablet.setViewportSize({ width: 700, height: 1000 });
+    await tablet.goto(`http://127.0.0.1:${server.port}/?pane=w1C%3Ap1&view=chat`);
+    await tablet.locator(".conn-live").first().waitFor();
+    await tablet.getByRole("button", { name: "Open workspace list", exact: true }).tap();
+    await tablet.locator("#workspace-drawer.is-open").waitFor();
+    assert.equal(await tablet.locator("#workspace-drawer .sidebar-footer-pc").count(), 0, "at 700px the drawer has no Change PC row");
+    await tablet.locator("#workspace-drawer .sidebar-footer-settings").tap();
+    await tablet.locator(".settings-dialog .settings-change-pc").waitFor();
     const wide = await app.newPage();
     await wide.setViewportSize({ width: 1440, height: 900 });
     await wide.goto(`http://127.0.0.1:${server.port}/?pane=w1C%3Ap1&view=chat`);
     await wide.locator(".conn-live").first().waitFor();
     await wide.locator("#workspace-drawer .sidebar-footer-pc").waitFor();
     await app.close();
-    console.log("PASS in the phone app the drawer's foot is the gear alone, and the gear's Settings list ends in Change PC, which goes back to the app's list; a wide window keeps its Change PC row");
+    console.log("PASS in the phone app the drawer's foot is the gear alone, and the gear's Settings list ends in Change PC, which goes back to the app's list, at 390 and at 700; a wide window keeps its Change PC row");
   }
 } finally {
   await browser.close();
