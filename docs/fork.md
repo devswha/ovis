@@ -39,6 +39,7 @@ Hook footprint (insertions/deletions vs `upstream/main`, merge base, measured wi
 | `src/lib/useTabReorder.ts` | +1/-2 | +12/-6 | optional adjacent/drop-boundary callbacks, original geometry fallback preserved |
 | `shared/protocol.ts` | +15/-1 | +17/-2 | type import + intersection |
 | `server/herdr-core/snapshot.ts` | +3/-1 | +4/-1 | existing fork import extended + pane spread |
+| `scripts/ci-browser.sh` | +5/-2 | +6/-2 | one fork regression registration, shared by serial/parallel browser lanes |
 
 Regression coverage: `src/fork/fork-group-agent-tabs.test.ts`,
 `src/fork/fork-tab-chips.test.tsx`, `src/fork/fork-tabGroupLayout.test.ts`,
@@ -72,7 +73,13 @@ cases); changed-file TypeScript diagnostics passed for both configs. In `herdr-c
 `fork-grouped-tabs-demo-regression`, `fork-tab-alignment-demo-regression`,
 `tab-agent-mark-demo-regression`, `phone-glass-header-demo-regression` and
 `phone-safe-area-demo-regression` passed. Demo UI artifacts were built for these checks only;
-project-wide fast checks, full typecheck and production build were skipped per implementer scope.
+the initial implementer scope skipped project-wide checks. The required pre-push `bun run check fast`
+later passed workflow syntax, generated-file freshness, full typecheck and production build, but its
+unit lane found 14 OMP failures. `TMPDIR="$HOME/.cache/ovis-tmp/grouped-tabs-pr" bun test server/omp.test.ts`
+reproduced the same 14 failures on base `491a5965` (48 passed), chiefly `ConversationUnavailable:
+no_session_path`; no OMP code was changed. Its first complete run also caught a missing registration
+for the new browser regression. `scripts/ci-browser.sh` now registers it with one line, so the serial
+and parallel lanes both run it; the existing browser-lane assignment test caught this before the fix.
 
 ## Project friends and inbox clarity
 
