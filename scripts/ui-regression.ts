@@ -1542,8 +1542,8 @@ try {
     await composer.fill("");
     console.log("PASS a path that does not fit waits whole and says how much to cut, and the count shows only near the limit");
 
-    // A placed path the user erased: the tile no longer says Attached, its glyph and the status line say
-    // the file is in no message, Send waits, and a click in the text puts the path there (#3216).
+    // A placed path the user erased: its file is detached with it, nothing new is shown (no status
+    // line), Send is not held, and an undo brings path and tile back (#3216).
     // It starts with no file in the box: the one above was left with its path cleared
     while (await tileRemove.count() > 0) await tileRemove.first().click();
     held.clear();
@@ -1556,18 +1556,16 @@ try {
     await composer.focus();
     await composer.evaluate((element: HTMLTextAreaElement) => { const at = element.value.indexOf(".txt"); element.setSelectionRange(at, at + 1); });
     await page.keyboard.press("Backspace");
-    const unplacedTile = page.locator(".composer-attachment.is-unplaced");
-    await unplacedTile.waitFor();
-    assert.equal(await unplacedTile.locator(".composer-attachment-state .visually-hidden").innerText(), "Not in message", "the tile says its path is in no message");
-    await until(async () => (await statusHint.textContent())?.includes("A file is not in the message") === true, "the status line says so");
-    assert.equal(await sendButton.isDisabled(), true, "Send waits for the file");
-    await composer.evaluate((element: HTMLTextAreaElement) => element.setSelectionRange(element.value.length, element.value.length));
-    await composer.click({ position: { x: 4, y: 4 } });
+    await until(async () => await page.locator(".composer-attachment").count() === 0, "the file went with its path");
+    assert.equal(await statusHint.count(), 0, "no status line for it");
+    assert.equal(await sendButton.isDisabled(), false, "Send is not held");
+    await page.keyboard.press("ControlOrMeta+z");
     await page.locator(".composer-attachment.is-ready").waitFor();
-    assert.match(await composer.inputValue(), /@\S*erased-\S*/u, "a click put the path back");
+    assert.match(await composer.inputValue(), /^look at @\S*erased-\S* this$/u, "the undo brought the path back whole");
+    assert.equal(await statusHint.count(), 0, "and the status line is clear again");
     await page.getByRole("button", { name: "Remove erased.txt", exact: true }).click();
     await composer.fill("");
-    console.log("PASS a placed path the user erased: its tile and the status line say the file is in no message, Send waits, and a click puts it back");
+    console.log("PASS a placed path the user erased: its file goes with it, nothing new is shown, Send is not held, and an undo brings both back");
     // One pick takes up to 100 files, and says what it left out.
     await page.unroute("**/api/pane/image");
     const limitedUploads: string[] = [];

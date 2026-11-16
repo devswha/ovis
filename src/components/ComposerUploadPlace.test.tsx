@@ -104,13 +104,12 @@ async function compose(phase: "start" | "end"): Promise<void> {
     }
   });
 }
-/** a click or tap in the text, which puts the caret at `at` */
-async function click(at: number): Promise<void> {
-  Object.assign(element, { selectionStart: at, selectionEnd: at });
-  await act(async () => { box().props.onClick({ currentTarget: element }); });
-}
-/** each tile's state, as its class draws it ("unplaced": the warning glyph, its path in no message) */
+/** each tile's state, as its class draws it */
 const badges = () => renderer!.root.findAll((node) => typeof node.props.className === "string" && node.props.className.startsWith("composer-attachment is-")).map((node) => (node.props.className as string).slice("composer-attachment is-".length));
+/** what the polite live region last said, for assistive tech */
+const announced = () => renderer!.root.findAll((node) => node.props["aria-live"] === "polite").map((node) => node.findAll((child) => typeof child.type === "string" && child.type === "span").map((span) => span.children.join("")).join("")).join("");
+/** what the status line under the box says */
+const hint = () => renderer!.root.findAll((node) => typeof node.props.className === "string" && node.props.className.startsWith("composer-status-hint")).map((node) => node.children.join("")).join("");
 const sendOff = () => renderer!.root.find((node) => node.type === "button" && node.props["aria-label"] === "Send message").props.disabled as boolean;
 const button = (name: string) => renderer!.root.find((node) => node.type === "button" && (node.props["aria-label"] === name || node.props.children === name));
 async function paste(at: number, ...names: string[]): Promise<void> {
@@ -178,7 +177,7 @@ it("waits for a Korean IME composition to end, then goes before the syllable com
   expect(box().props.value).toBe(`before @${path("shot")} 한after`);
 });
 
-it("never puts the path of an upload started in a draft cleared elsewhere into the new one, and keeps its file", async () => {
+it("never puts the path of an upload started in a draft cleared elsewhere into the new one, and detaches its file", async () => {
   await open();
   await type("before after", 7);
   await paste(7, "shot");
@@ -187,7 +186,10 @@ it("never puts the path of an upload started in a draft cleared elsewhere into t
   await type("new draft");
   await finish("shot");
   expect(box().props.value).toBe("new draft");
-  expect(tiles()).toBe(1);
+  expect(tiles()).toBe(0);
+  // only detached from this message, said in one line for assistive tech, with nothing new on screen
+  expect(announced()).toBe("shot.png detached from the message");
+  expect(hint()).toBe("");
 });
 
 it("puts the path of an upload whose draft was typed over whole before the new words, never inside one", async () => {
@@ -353,24 +355,20 @@ it("never puts the path into a draft another tab replaced, whatever the two shar
   await writeElsewhere("hello other");
   await finish("shot");
   expect(box().props.value).toBe("hello other");
-  expect(tiles()).toBe(1);
+  expect(tiles()).toBe(0);
 });
 
-it("says a file whose draft was replaced elsewhere is not in the message, holds Send, and puts its path where the user clicks", async () => {
+it("detaches a file whose draft was replaced elsewhere, in one line for assistive tech, and holds no Send", async () => {
   await open();
   await type("hello world");
   await paste(11, "shot");
   await writeElsewhere("hello other");
   await finish("shot");
-  expect(badges()).toEqual(["unplaced"]);
-  expect(sendOff()).toBe(true);
-  await click(5);
-  expect(box().props.value).toBe(`hello @${path("shot")} other`);
-  expect(badges()).toEqual(["ready"]);
+  expect(tiles()).toBe(0);
+  // only detached from this message, said in one line for assistive tech, with nothing new on screen
+  expect(announced()).toBe("shot.png detached from the message");
+  expect(hint()).toBe("");
   expect(sendOff()).toBe(false);
-  // placed late, it is removed as it went in
-  await act(async () => { button("Remove shot.png").props.onClick(); });
-  expect(box().props.value).toBe("hello other");
 });
 
 it("never puts a dropped file's path into a draft another tab replaced", async () => {
@@ -451,7 +449,7 @@ it("never puts the path into a draft another tab rewrote in writes read at once,
   await writeInOtherTab("", "hello, a new unrelated question");
   await finish("shot");
   expect(box().props.value).toBe("hello, a new unrelated question");
-  expect(badges()).toEqual(["unplaced"]);
+  expect(tiles()).toBe(0);
 });
 
 it("never puts the path of a file picked into a restored message, cleared since, into what is typed next", async () => {
@@ -462,7 +460,7 @@ it("never puts the path of a file picked into a restored message, cleared since,
   await type("brand new");
   await finish("shot");
   expect(box().props.value).toBe("brand new");
-  expect(badges()).toEqual(["unplaced"]);
+  expect(tiles()).toBe(0);
 });
 
 it("keeps the path of a quote added after the pick, as an append that moves no place", async () => {
@@ -476,18 +474,22 @@ it("keeps the path of a quote added after the pick, as an append that moves no p
 
 // once placed, the tile follows the path: when it is gone from the message, the tile says so and Send waits
 it.each([
-  ["a character of it deleted", async (value: string) => { const cut = value.indexOf(".png"); await type(value.slice(0, cut) + value.slice(cut + 1), cut); }],
+  // "at @path" selected and typed over with "the cat": " this" stays
+  ["a selection over it typed over", async (value: string) => { await select(5, value.length - 5); await type(`look the cat${value.slice(-5)}`, 12); }],
+  ["backspace through it", async (value: string) => { const cut = value.indexOf(".png"); await type(value.slice(0, cut) + value.slice(cut + 1), cut); }],
   ["the whole draft typed over", async (value: string) => { await select(0, value.length); await type("n", 1); await type("new words"); }],
   ["another tab replacing the draft", async () => { await writeInOtherTab("something else"); }],
-] as const)("stops saying Attached once the placed path is gone: %s", async (_name, edit) => {
+] as const)("detaches the file once its placed path is no longer in the message, %s; nothing new on screen, Send not held", async (_name, edit) => {
   await open();
   await type("look at this", 8);
   await paste(8, "shot");
   await finish("shot");
   expect(badges()).toEqual(["ready"]);
   await edit(box().props.value as string);
-  expect(badges()).toEqual(["unplaced"]);
-  expect(sendOff()).toBe(true);
+  expect(tiles()).toBe(0);
+  expect(announced()).toBe("shot.png detached from the message");
+  expect(hint()).toBe("");
+  expect(sendOff()).toBe(false);
 });
 
 it("removes the path the upload put in, not the user's own copy of it earlier", async () => {
@@ -500,17 +502,6 @@ it("removes the path the upload put in, not the user's own copy of it earlier", 
   expect(box().props.value).toBe(`see @${path("shot")} x`);
 });
 
-it("removes nothing from the text with a tile whose path is in no message", async () => {
-  await open();
-  await type("hello", 5);
-  await paste(5, "shot");
-  await writeInOtherTab(`other text @${path("shot")} `);
-  await finish("shot");
-  expect(badges()).toEqual(["unplaced"]);
-  await act(async () => { button("Remove shot.png").props.onClick(); });
-  expect(box().props.value).toBe(`other text @${path("shot")} `);
-  expect(tiles()).toBe(0);
-});
 
 // a send's acknowledgement is this box's own edit: a path placed while the send was on its way stays attached
 it("keeps a path placed while a send was on its way attached once the send is acknowledged, and Remove takes it out", async () => {
@@ -542,7 +533,7 @@ it("never puts the path into a draft another tab cleared and retyped the same, b
   });
   await finish("shot");
   expect(box().props.value).toBe("hello");
-  expect(badges()).toEqual(["unplaced"]);
+  expect(tiles()).toBe(0);
 });
 
 it("keeps a space the user typed where the upload's own space was, when the file is removed", async () => {
@@ -564,4 +555,44 @@ it("puts the path before a word typed on straight from where it was pasted, neve
   await type("screenshot", 10);
   await finish("shot");
   expect(box().props.value).toBe(`@${path("shot")} screenshot`);
+});
+
+// an undo of the edit that took a file out brings its path and its tile back
+it.each([
+  ["a character deleted from the path", (value: string) => { const cut = value.indexOf(".png"); return [value.slice(0, cut) + value.slice(cut + 1), cut] as const; }],
+  ["the whole draft typed over", () => ["new words", 9] as const],
+] as const)("brings the path and its tile back when %s is undone", async (_name, erase) => {
+  await open();
+  await type("look at this", 8);
+  await paste(8, "shot");
+  await finish("shot");
+  const whole = box().props.value as string;
+  const [erased, caret] = erase(whole);
+  await select(0, whole.length);
+  await type(erased, caret);
+  expect(tiles()).toBe(0);
+  // the undo: the text as it was before that edit
+  await type(whole, whole.length);
+  expect(box().props.value).toBe(whole);
+  expect(badges()).toEqual(["ready"]);
+  expect(hint()).toBe("");
+  await act(async () => { button("Remove shot.png").props.onClick(); });
+  expect(box().props.value).toBe("look at this");
+});
+
+it("leaves what is left of a partly deleted path as the user's own text, and sends nothing until Send, then as shown", async () => {
+  const sent: string[] = [];
+  await open(null, (message) => { sent.push(message); return true; });
+  await type("look at this", 8);
+  await paste(8, "shot");
+  await finish("shot");
+  const whole = box().props.value as string;
+  const cut = whole.indexOf(".png");
+  const partly = whole.slice(0, cut) + whole.slice(cut + 1);
+  await type(partly, cut);
+  expect(tiles()).toBe(0);
+  expect(box().props.value).toBe(partly);
+  expect(sent).toEqual([]);
+  await act(async () => { button("Send message").props.onClick(); });
+  expect(sent).toEqual([partly]);
 });

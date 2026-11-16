@@ -308,42 +308,55 @@ export function mentionPlace(text: string, place: number): number {
 }
 
 /**
- * A path an upload put in the message (#3216): its `@path` (`bare`) at `start`, and whether the
- * upload added the space before it (`lead`) and after it (`trail`).
+ * A path an upload put in the message (#3216): what is left of it is `start`..`end` (its whole
+ * `@path`, `bare`, until an edit damages it), and whether the upload added the space before it
+ * (`lead`) and after it (`trail`).
  */
-export interface PlacedMention { readonly start: number; readonly bare: string; readonly lead: boolean; readonly trail: boolean }
+export interface PlacedMention { readonly start: number; readonly end: number; readonly bare: string; readonly lead: boolean; readonly trail: boolean }
 
 /** The path insertMentionAt put in: `next` is what it returned. */
 export function placedMention(next: { text: string; at: number; length: number }, mention: string): PlacedMention {
   const snippet = next.text.slice(next.at, next.at + next.length);
   const lead = snippet.startsWith(" ");
-  return { start: next.at + (lead ? 1 : 0), bare: mention.trimEnd(), lead, trail: snippet.endsWith(" ") };
+  const bare = mention.trimEnd();
+  const start = next.at + (lead ? 1 : 0);
+  return { start, end: start + bare.length, bare, lead, trail: snippet.endsWith(" ") };
 }
 
 /**
- * The placed path after an edit that gave `text`, or null once the edit took a character of it, or
- * typed one onto either end of it: the message then names no such file.
+ * What is left of a placed path after an edit, or null once the edit took all of it. An edit inside
+ * it keeps what it typed there with it; one across an end keeps only the path's own side.
  */
-export function followMention(text: string, mention: PlacedMention, edit: TextEdit): PlacedMention | null {
-  const end = mention.start + mention.bare.length;
-  const start = edit.start + edit.removed <= mention.start ? mention.start + edit.inserted - edit.removed
-    : edit.start >= end ? mention.start : null;
-  if (start === null || text.slice(start, start + mention.bare.length) !== mention.bare) return null;
-  if (/\S/u.test(text[start - 1] ?? " ") || /\S/u.test(text[start + mention.bare.length] ?? " ")) return null;
+export function followMention(mention: PlacedMention, edit: TextEdit): PlacedMention | null {
+  const editEnd = edit.start + edit.removed;
+  const shift = edit.inserted - edit.removed;
+  let { start, end } = mention;
+  if (editEnd <= start) { start += shift; end += shift; }
+  else if (edit.start >= end) { /* after it: it stays */ }
+  else if (edit.start <= start && editEnd >= end) return null;
+  else if (edit.start < start) { start = edit.start + edit.inserted; end += shift; }
+  else if (editEnd > end) end = edit.start;
+  else end += shift;
+  if (end <= start) return null;
   // a space the upload added that the edit took is gone: one typed there since is the user's
-  const trail = mention.trail && !(edit.removed > 0 && edit.start === end);
-  const lead = mention.lead && !(edit.removed > 0 && edit.start + edit.removed === mention.start);
-  return start === mention.start && trail === mention.trail && lead === mention.lead ? mention : { ...mention, start, lead, trail };
+  const trail = mention.trail && !(edit.removed > 0 && edit.start === mention.end);
+  const lead = mention.lead && !(edit.removed > 0 && editEnd === mention.start);
+  return { ...mention, start, end, lead, trail };
+}
+
+/** Whether the placed path is whole in `text`: all of it, and no character glued to either end. */
+export function mentionWhole(text: string, mention: PlacedMention): boolean {
+  return mention.end - mention.start === mention.bare.length && text.slice(mention.start, mention.end) === mention.bare
+    && !/\S/u.test(text[mention.start - 1] ?? " ") && !/\S/u.test(text[mention.end] ?? " ");
 }
 
 /**
- * The text without a placed path, and the edit that takes it out: the path where it was put, with the
- * spaces the upload added and none the user typed (a path the user typed elsewhere stays).
+ * The text without a placed path, whole or what is left of it, and the edit that takes it out: with
+ * the spaces the upload added and none the user typed (a path the user typed elsewhere stays).
  */
 export function removeMention(text: string, mention: PlacedMention): { text: string; edit: TextEdit } {
-  const end = mention.start + mention.bare.length;
   const start = mention.lead && text[mention.start - 1] === " " ? mention.start - 1 : mention.start;
-  const stop = mention.trail && text[end] === " " ? end + 1 : end;
+  const stop = mention.trail && text[mention.end] === " " ? mention.end + 1 : mention.end;
   return { text: text.slice(0, start) + text.slice(stop), edit: { start, removed: stop - start, inserted: 0 } };
 }
 
@@ -488,11 +501,10 @@ export function claudeMainAtRest(row: string | null, lines: readonly string[]): 
 /** Characters left at which the composer starts counting them: further off, a count is noise. */
 export const COMPOSER_CHARS_WARNING = 200;
 
-/** `noRoom`: a finished upload's path waits for the message to be shortened; `unplaced`: one's path is in no message (#3216). */
-export function composerStatusHint(state: { uploading: boolean; connected: boolean; text: string; noRoom?: boolean; unplaced?: boolean }): "uploading" | "offline" | "no-room" | "unplaced" | "near-limit" | null {
+/** `noRoom`: a finished upload's path waits for the message to be shortened. */
+export function composerStatusHint(state: { uploading: boolean; connected: boolean; text: string; noRoom?: boolean }): "uploading" | "offline" | "no-room" | "near-limit" | null {
   if (!state.connected && state.text.length > 0) return "offline";
   if (state.noRoom) return "no-room";
-  if (state.unplaced) return "unplaced";
   if (state.uploading) return "uploading";
   return MAX_COMPOSER_CHARS - state.text.length <= COMPOSER_CHARS_WARNING ? "near-limit" : null;
 }

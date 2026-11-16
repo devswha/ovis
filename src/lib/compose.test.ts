@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 
 import { skillSyntax } from "../../shared/skill-syntax.ts";
 import { AGENT_INPUT_DRAFT_MESSAGE, CLAUDE_FOLDED_DRAFT_MESSAGE } from "../../shared/submit-outcome.ts";
-import { agentDisplayLabel, claudeMainAtRest, composerDelivery, composerMessage, composerSendShown, composerPayload, composerModelDraw, composerStatusCompact, composerStatusHint, composerStatusWord, COMPOSER_STATUS_COMPACT_BELOW, contextLeftPercent, editBetween, followPlace, formatTokens, imageMention, insertMentionAt, insertNote, placedMention, removeMention, followMention, MAX_COMPOSER_CHARS, QUEUE_READY_STATUS, rankSlashCommands, submitNote, submitNotTyped, submitRefusal, sameMessage, pendingActionUncertain, draftSendNote, endsWithTurn, stoppedTurn } from "./compose.ts";
+import { agentDisplayLabel, claudeMainAtRest, composerDelivery, composerMessage, composerSendShown, composerPayload, composerModelDraw, composerStatusCompact, composerStatusHint, composerStatusWord, COMPOSER_STATUS_COMPACT_BELOW, contextLeftPercent, editBetween, followPlace, formatTokens, imageMention, insertMentionAt, insertNote, placedMention, removeMention, followMention, mentionWhole, MAX_COMPOSER_CHARS, QUEUE_READY_STATUS, rankSlashCommands, submitNote, submitNotTyped, submitRefusal, sameMessage, pendingActionUncertain, draftSendNote, endsWithTurn, stoppedTurn } from "./compose.ts";
 import { briefDescription, COMMAND_GROUPS, commandGroup, commandsForTrigger, namesHiddenCommand, sendsBarePick, slashCommandReplacement, terminalCommand, typedTerminalCommand } from "./compose.ts";
 import type { ConversationTurn, SlashCommand } from "../../shared/protocol.ts";
 import { activeTrigger, applyCompletion, type ActiveTrigger } from "./mentions.ts";
@@ -442,17 +442,25 @@ describe("followMention (#3216)", () => {
   const next = insertMentionAt("look at this", mention, 8);
   const placed = placedMention(next, mention);
 
-  it("moves with text typed before it and stays for text typed after it", () => {
-    expect(followMention(`so ${next.text}`, placed, { start: 0, removed: 0, inserted: 3 })?.start).toBe(placed.start + 3);
-    expect(followMention(`${next.text}now`, placed, { start: next.text.length, removed: 0, inserted: 3 })).toBe(placed);
+  it("moves with text typed before it, stays for text typed after it, and stays whole", () => {
+    const moved = followMention(placed, { start: 0, removed: 0, inserted: 3 })!;
+    expect(moved.start).toBe(placed.start + 3);
+    expect(mentionWhole(`so ${next.text}`, moved)).toBe(true);
+    expect(followMention(placed, { start: next.text.length, removed: 0, inserted: 3 })).toEqual(placed);
   });
 
-  it("is gone once an edit takes a character of it or types one onto it", () => {
-    const cut = next.text.slice(0, placed.start + 3) + next.text.slice(placed.start + 4);
-    expect(followMention(cut, placed, { start: placed.start + 3, removed: 1, inserted: 0 })).toBeNull();
-    const end = placed.start + placed.bare.length;
-    const glued = next.text.slice(0, end) + "x" + next.text.slice(end + 1);
-    expect(followMention(glued, placed, { start: end, removed: 1, inserted: 1 })).toBeNull();
+  it("keeps what is left of it once an edit takes a character of it, and is whole again once it is put back", () => {
+    const cut = followMention(placed, { start: placed.start + 3, removed: 1, inserted: 0 })!;
+    const damaged = next.text.slice(0, placed.start + 3) + next.text.slice(placed.start + 4);
+    expect([cut.end - cut.start, mentionWhole(damaged, cut)]).toEqual([placed.bare.length - 1, false]);
+    const undone = followMention(cut, { start: placed.start + 3, removed: 0, inserted: 1 })!;
+    expect(mentionWhole(next.text, undone)).toBe(true);
+  });
+
+  it("is gone once an edit takes all of it, and is not whole with a character glued to it", () => {
+    expect(followMention(placed, { start: 0, removed: next.text.length, inserted: 3 })).toBeNull();
+    const glued = next.text.slice(0, placed.end) + "x" + next.text.slice(placed.end);
+    expect(mentionWhole(glued, followMention(placed, { start: placed.end, removed: 0, inserted: 1 })!)).toBe(false);
   });
 });
 
