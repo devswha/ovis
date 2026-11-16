@@ -41,9 +41,11 @@ import {
   contextLeftPercent,
   type DraftRefusal,
   draftSendNote,
+  followPlace,
   formatTokens,
   imageMention,
   insertLeadingMention,
+  insertMentionAt,
   MAX_COMPOSER_CHARS,
   namesHiddenCommand,
   rankSlashCommands,
@@ -658,18 +660,15 @@ export function Composer({
     if (element) element.scrollTop = element.scrollHeight;
   }), [draftKey, machineId, paneId, setTextAndCaret]);
 
-  // an upload finishes while the user may be typing: its mention goes to the start (insertLeadingMention),
-  // and the caret and selection only move along with the text they sit in, without taking focus
-  /** 0 once inserted; otherwise how many characters short the message is, and nothing changed */
-  const insertMentionAtStart = useCallback((mention: string, earlier: readonly string[]): number => {
+  // an upload finishes while the user may be typing: its mention goes where it was pasted or picked
+  // (insertMentionAt), or to the start for a drop (insertLeadingMention), and the caret and selection
+  // only move along with the text they sit in, without taking focus
+  const insertMention = useCallback((next: { text: string; at: number; length: number }): void => {
     const element = textareaRef.current;
-    const currentText = textRef.current;
-    const selectionIsCurrent = element?.value === currentText;
+    const selectionIsCurrent = element?.value === textRef.current;
     const start = selectionIsCurrent ? (element.selectionStart ?? caretRef.current) : caretRef.current;
     const end = selectionIsCurrent ? (element.selectionEnd ?? start) : start;
     const direction = selectionIsCurrent ? (element.selectionDirection ?? undefined) : undefined;
-    const next = insertLeadingMention(currentText, mention, earlier);
-    if (next.missing !== undefined) return next.missing;
     const moved = (position: number) => (position >= next.at ? position + next.length : position);
     textRef.current = next.text;
     caretRef.current = moved(start);
@@ -678,44 +677,75 @@ export function Composer({
       setCaret(moved(start));
     });
     if (element) element.setSelectionRange(moved(start), moved(end), direction);
-    return 0;
   }, []);
 
   // one queue for the whole box: a pick made while another uploads waits its turn
   const uploadQueue = useRef<Attachment[]>([]);
   const uploadsRunning = useRef(0);
-  /** paths placed so far, by attachment id: ids follow pick order */
+  /** dropped files' paths placed so far, by attachment id: ids follow pick order */
   const placedMentions = useRef(new Map<number, string>());
   /** the box's text right after a pick that goes bare when sent unchanged (sendsBarePick), or null */
   const barePick = useRef<string | null>(null);
   /** finished uploads whose paths wait for a /command or an IME composition to end, or for room */
   const waitingMentions = useRef<{ id: number; path: string; name: string }[]>([]);
+  /** where each pasted or picked file's path goes, by attachment id, and the text that place was read in (#3216) */
+  const places = useRef(new Map<number, { at: number; text: string }>());
+
+  /** the tile and its upload go; its path, if placed, is the caller's */
+  const dropTile = useCallback((id: number) => {
+    removedAttachments.current.add(id);
+    placedMentions.current.delete(id);
+    places.current.delete(id);
+    const previewUrl = attachmentsRef.current.find((item) => item.id === id)?.previewUrl;
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    setAttachments((current) => current.filter((item) => item.id !== id));
+    // the note about this tile's failed upload goes with the tile
+    setNote((current) => typeof current === "object" && current !== null && "failure" in current && current.attachment.id === id ? null : current);
+  }, []);
+
+  /** the places follow each edit of the text; a file whose draft was cleared or replaced goes with it, never into the new one */
+  const followPlaces = useCallback((current: string) => {
+    for (const [id, place] of places.current) {
+      const at = followPlace(place.text, current, place.at);
+      if (at === null) dropTile(id);
+      else places.current.set(id, { at, text: current });
+    }
+  }, [dropTile]);
 
   const placeWaitingMentions = useCallback(() => {
     if (waitingMentions.current.length === 0) return;
     if (composingRef.current || /^\/\S*$/u.test(textRef.current)) return;
+    followPlaces(textRef.current);
     const waiting = waitingMentions.current.sort((a, b) => a.id - b.id);
     waitingMentions.current = [];
     const attached: string[] = [];
     for (const [index, { id, path, name }] of waiting.entries()) {
       if (removedAttachments.current.has(id)) continue;
       const mention = imageMention(path);
+      const place = places.current.get(id);
       const earlier = [...placedMentions.current].filter(([placed]) => placed < id).map(([, placed]) => placed);
+      const next = place ? insertMentionAt(textRef.current, mention, place.at) : insertLeadingMention(textRef.current, mention, earlier);
       // no room for the whole path: this attachment and the ones picked after it stay waiting, in
       // their order, Send stays off, and the next edit of the text tries again (the effect below);
       // a cut path would name a file that is not there, so the tile says how much to cut instead
-      const missing = insertMentionAtStart(mention, earlier);
-      if (missing > 0) {
+      if (next.missing !== undefined) {
+        const missing = next.missing;
         waitingMentions.current.push(...waiting.slice(index));
         setAttachments((current) => current.map((item) => (item.id === id ? { ...item, state: "no-room", missing } : item)));
         break;
       }
-      placedMentions.current.set(id, mention);
+      insertMention(next);
+      // the other places move with it; one at the same place goes after it when picked after it, so a batch keeps its order
+      places.current.delete(id);
+      for (const [other, { at }] of places.current) {
+        places.current.set(other, { at: at > next.at || (at === next.at && other > id) ? at + next.length : at, text: next.text });
+      }
+      if (!place) placedMentions.current.set(id, mention);
       setAttachments((current) => current.map((item) => (item.id === id ? { ...item, path, state: "ready" } : item)));
       attached.push(t("{name} attached", { name }));
     }
     if (attached.length > 0) announce(attached.join(" "));
-  }, [announce, insertMentionAtStart, t]);
+  }, [announce, followPlaces, insertMention, t]);
 
   // whatever wrote the text (typing, a completion, dictation, a cleared draft), a waiting path tries
   // again in the next frame, after that write's own caret placement has landed
@@ -724,6 +754,8 @@ export function Composer({
     const frame = requestAnimationFrame(placeWaitingMentions);
     return () => cancelAnimationFrame(frame);
   }, [placeWaitingMentions, text]);
+
+  useEffect(() => followPlaces(text), [followPlaces, text]);
 
   const selectCompletion = useCallback(
     (choice: SlashCommand | string, currentTrigger: ActiveTrigger) => {
@@ -786,8 +818,9 @@ export function Composer({
     }
   }, [onUploadImage, placeWaitingMentions]);
 
+  /** `place`: where in the text the paste or pick was made, which its paths go to; a drop has none */
   const uploadImages = useCallback(
-    (incoming: readonly File[]) => {
+    (incoming: readonly File[], place?: number) => {
       const images = incoming.slice(0, ATTACH_LIMIT);
       if (images.length === 0) return;
 
@@ -808,6 +841,7 @@ export function Composer({
           leftOut,
         };
       });
+      if (place !== undefined) for (const { id } of added) places.current.set(id, { at: place, text: textRef.current });
       setAttachments((current) => [...current, ...added]);
       setNote(leftOut);
       uploadQueue.current.push(...added);
@@ -825,12 +859,7 @@ export function Composer({
   }, [pumpUploads]);
 
   const removeAttachment = useCallback((attachment: Attachment) => {
-    removedAttachments.current.add(attachment.id);
-    placedMentions.current.delete(attachment.id);
-    URL.revokeObjectURL(attachment.previewUrl);
-    setAttachments((current) => current.filter((item) => item.id !== attachment.id));
-    // the note about this tile's failed upload goes with the tile
-    setNote((current) => typeof current === "object" && current !== null && "failure" in current && current.attachment.id === attachment.id ? null : current);
+    dropTile(attachment.id);
     if (attachment.path) {
       const mention = imageMention(attachment.path);
       setText((current) => {
@@ -844,7 +873,7 @@ export function Composer({
       // would wait for the next edit: try them now
       placeWaitingMentions();
     }
-  }, [placeWaitingMentions]);
+  }, [dropTile, placeWaitingMentions]);
 
   /** `clearDraft`: the terminal draft a DraftRefusal named, which the user asked to clear and send over;
    * `sendAnyway`: the user saw the box a DraftRefusal showed and sends over it; `now`: Ctrl+Enter; `hold`: Alt+Enter. */
@@ -883,7 +912,7 @@ export function Composer({
       textRef.current = rest;
       caretRef.current = rest.length;
       setNote(edited ? t("Sent as it was. Your changes made while it was sending stayed here and were not sent.") : null);
-      for (const attachment of sentAttachments) { URL.revokeObjectURL(attachment.previewUrl); placedMentions.current.delete(attachment.id); }
+      for (const attachment of sentAttachments) { URL.revokeObjectURL(attachment.previewUrl); placedMentions.current.delete(attachment.id); places.current.delete(attachment.id); }
       setAttachments((current) => current.filter((attachment) => !sentAttachments.includes(attachment)));
     };
     const ended = (): void => { composerDrafts.end(draftKey, sendId); replyComments.release(sentComments); };
@@ -1181,7 +1210,7 @@ export function Composer({
         .filter((file): file is File => file !== null);
       if (images.length === 0) return;
       event.preventDefault();
-      void uploadImages(images);
+      void uploadImages(images, box.selectionStart);
     },
     [t, uploadImages],
   );
@@ -1561,7 +1590,8 @@ export function Composer({
             onChange={(event) => {
               const picked = Array.from(event.currentTarget.files ?? []);
               event.currentTarget.value = "";
-              void uploadImages(picked);
+              const box = textareaRef.current;
+              void uploadImages(picked, box?.value === textRef.current ? box.selectionStart : caretRef.current);
             }}
           />
           <button

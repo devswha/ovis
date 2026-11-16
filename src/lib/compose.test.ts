@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 
 import { skillSyntax } from "../../shared/skill-syntax.ts";
 import { AGENT_INPUT_DRAFT_MESSAGE, CLAUDE_FOLDED_DRAFT_MESSAGE } from "../../shared/submit-outcome.ts";
-import { agentDisplayLabel, claudeMainAtRest, composerDelivery, composerMessage, composerSendShown, composerPayload, composerModelDraw, composerStatusCompact, composerStatusHint, composerStatusWord, COMPOSER_STATUS_COMPACT_BELOW, contextLeftPercent, formatTokens, imageMention, insertLeadingMention, insertNote, MAX_COMPOSER_CHARS, QUEUE_READY_STATUS, rankSlashCommands, submitNote, submitNotTyped, submitRefusal, sameMessage, pendingActionUncertain, draftSendNote, endsWithTurn, stoppedTurn } from "./compose.ts";
+import { agentDisplayLabel, claudeMainAtRest, composerDelivery, composerMessage, composerSendShown, composerPayload, composerModelDraw, composerStatusCompact, composerStatusHint, composerStatusWord, COMPOSER_STATUS_COMPACT_BELOW, contextLeftPercent, followPlace, formatTokens, imageMention, insertLeadingMention, insertMentionAt, insertNote, MAX_COMPOSER_CHARS, QUEUE_READY_STATUS, rankSlashCommands, submitNote, submitNotTyped, submitRefusal, sameMessage, pendingActionUncertain, draftSendNote, endsWithTurn, stoppedTurn } from "./compose.ts";
 import { briefDescription, COMMAND_GROUPS, commandGroup, commandsForTrigger, namesHiddenCommand, sendsBarePick, slashCommandReplacement, terminalCommand, typedTerminalCommand } from "./compose.ts";
 import type { ConversationTurn, SlashCommand } from "../../shared/protocol.ts";
 import { activeTrigger, applyCompletion, type ActiveTrigger } from "./mentions.ts";
@@ -392,6 +392,45 @@ describe("insertLeadingMention", () => {
     // the separating space counts: after a command with no room for it, nothing goes in
     const command = `/review${"x".repeat(MAX_COMPOSER_CHARS - 7 - first.length)}`;
     expect(insertLeadingMention(command, first, [])).toEqual({ text: command, at: command.length, length: 0, missing: 1 });
+  });
+});
+
+describe("insertMentionAt (#3216)", () => {
+  const mention = imageMention("/tmp/1.png");
+
+  it("goes where the paste was made, with one space on each side", () => {
+    expect(insertMentionAt("before after", mention, 7)).toEqual({ text: "before @/tmp/1.png after", at: 7, length: 12 });
+    expect(insertMentionAt("before after", mention, 6)).toEqual({ text: "before @/tmp/1.png after", at: 6, length: 12 });
+    expect(insertMentionAt("before after", mention, 12)).toEqual({ text: "before after @/tmp/1.png ", at: 12, length: 13 });
+    expect(insertMentionAt("", mention, 0)).toEqual({ text: "@/tmp/1.png ", at: 0, length: 12 });
+  });
+
+  it("keeps a leading slash command whole and first", () => {
+    expect(insertMentionAt("/review the menu", mention, 3)).toEqual({ text: "/review @/tmp/1.png the menu", at: 7, length: 12 });
+  });
+
+  it("goes in whole or not at all", () => {
+    const full = "x".repeat(MAX_COMPOSER_CHARS - 2);
+    expect(insertMentionAt(full, mention, 4)).toEqual({ text: full, at: 4, length: 0, missing: 11 });
+  });
+});
+
+describe("followPlace (#3216)", () => {
+  it("stays before text typed at it and moves with text typed or removed before it", () => {
+    expect(followPlace("before after", "before after more", 7)).toBe(7);
+    expect(followPlace("before after", "before xafter", 7)).toBe(7);
+    expect(followPlace("before after", "so before after", 7)).toBe(10);
+    expect(followPlace("before after", "beforeafter", 7)).toBe(6);
+  });
+
+  it("goes to where an edit across it began", () => {
+    expect(followPlace("before after", "befter", 7)).toBe(3);
+  });
+
+  it("is gone once the whole draft is cleared or replaced", () => {
+    expect(followPlace("before after", "", 7)).toBeNull();
+    expect(followPlace("before after", "new draft", 7)).toBeNull();
+    expect(followPlace("", "typed", 0)).toBe(0);
   });
 });
 

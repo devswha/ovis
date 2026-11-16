@@ -211,7 +211,8 @@ export function imageMention(path: string): string {
 }
 
 /**
- * Where an attached file's mention goes: at the start of the message, after a leading `/command`
+ * Where a dropped file's mention goes (a paste or a pick goes to its own place: insertMentionAt):
+ * at the start of the message, after a leading `/command`
  * (it must stay first to be one), and after the mentions of files picked before it in the same
  * batch that are still there, so a batch reads in pick order however its uploads finish. An upload
  * finishes while the user may be typing, so the mention never goes where the caret is: the caller
@@ -235,6 +236,45 @@ export function insertLeadingMention(
   const missing = text.length + snippet.length - MAX_COMPOSER_CHARS;
   if (missing > 0) return { text, at, length: 0, missing };
   return { text: before + snippet + text.slice(at), at, length: snippet.length };
+}
+
+/**
+ * Where a place read in `before` is in `after`, one edit later (#3216): text added at the place
+ * goes after it, text removed before it moves it back, and an edit across it leaves it where the
+ * edit began. null when the edit took the whole message: the draft it was in was cleared or replaced.
+ */
+export function followPlace(before: string, after: string, at: number): number | null {
+  if (before === after) return at;
+  const shorter = Math.min(before.length, after.length);
+  let start = 0;
+  while (start < shorter && before[start] === after[start]) start++;
+  let end = 0;
+  while (end < shorter - start && before[before.length - 1 - end] === after[after.length - 1 - end]) end++;
+  if (start === 0 && end === 0 && before.length > 0) return null;
+  if (at <= start) return at;
+  if (at >= before.length - end) return at + after.length - before.length;
+  return start;
+}
+
+/**
+ * A pasted or picked file's mention at the place the paste or pick was made (#3216), after a leading
+ * `/command` (it must stay first to be one), with a space on each side and no doubled one. As with
+ * insertLeadingMention, the caller shifts the caret and selection at or after `at` by `length`, and
+ * `missing` says how far short the message is of room for it.
+ */
+export function insertMentionAt(
+  text: string,
+  mention: string,
+  place: number,
+): { text: string; at: number; length: number; missing?: number } {
+  const at = Math.min(Math.max(place, /^\/\S+/u.exec(text)?.[0].length ?? 0), text.length);
+  const before = text.slice(0, at);
+  const after = text.slice(at);
+  const body = /^\s/u.test(after) ? mention.trimEnd() : mention;
+  const snippet = before.length > 0 && !/\s$/u.test(before) ? ` ${body}` : body;
+  const missing = text.length + snippet.length - MAX_COMPOSER_CHARS;
+  if (missing > 0) return { text, at, length: 0, missing };
+  return { text: before + snippet + after, at, length: snippet.length };
 }
 
 /** Ready states affect the held-message hint only; sending always requires a user action. */
