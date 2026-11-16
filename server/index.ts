@@ -287,7 +287,8 @@ export function createServer(
     machineEngine: machineEngine(stateDir, provided.port ?? Number(process.env["PORT"] ?? 0)),
     // OVIS_TOKEN lets nobody in: the local owner is the caller on the owner's socket
     token: "", hostname: "127.0.0.1", ipv6Loopback: false, lanHttps: undefined, portal: undefined,
-    herdrUpdate: undefined, herdrCoreInstaller: undefined, herdrCoreFacts: undefined, runtimeService: undefined,
+    // nothing updates this server from inside it: its updates answer `updates_unmanaged`, whatever updater it is given
+    updates: undefined, herdrUpdate: undefined, herdrCoreInstaller: undefined, herdrCoreFacts: undefined, runtimeService: undefined,
     machines: false, bridgeOnly: false, localFiles: true, registerBridge: false, tailscaleServeOnly: false,
   } : provided;
   if (options.profile === "machine") {

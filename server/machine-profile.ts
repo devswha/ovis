@@ -3,11 +3,11 @@
  * whoever connects to `<state folder>/serve.sock`: the kernel lets only this account (and root) in there. Its
  * TCP port tells everyone that it is alive and nothing else; its devices come through the relay.
  */
-import { type Dirent, mkdirSync, readdirSync, readFileSync, realpathSync, rmdirSync, rmSync, statSync } from "node:fs";
+import { type Dirent, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmdirSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { harmlessGroups, trustRefusal } from "./herdr-core/discovery.ts";
-import { discoverHerdrSessions, heldHerdrSocketStatus, type HerdrSocketPlace, pinnedHerdrSocketStatus, validHerdrSocket } from "./herdr-discovery.ts";
+import { trustRefusal } from "./herdr-core/discovery.ts";
+import { discoverPinnableHerdrSessions, heldHerdrSocketStatus, type HerdrSocketPlace, pinnedHerdrSocketStatus, profileGroups, validHerdrSocket } from "./herdr-discovery.ts";
 import { checkHerdrSockets, herdrSocketPath, ping } from "./herdr/client.ts";
 import { isJsonObject, jsonResponse, setRequestRoute } from "./http.ts";
 import { acquireOwnerDirectory, holdForLife, liveOwner, OwnerGuardBusy } from "./owner-guard.ts";
@@ -73,7 +73,7 @@ function walkedStateDir(told: string): string {
   const made = mkdirSync(told, { recursive: true, mode: 0o700 });
   const stateDir = realpathSync(told);
   const stats = statSync(stateDir);
-  const refusal = trustRefusal(stateDir, harmlessGroups(), true)
+  const refusal = trustRefusal(stateDir, profileGroups(), true)
     ?? (stats.uid !== process.getuid?.() ? `${stateDir} belongs to uid ${stats.uid}, not to this account`
       : (stats.mode & 0o7777) !== 0o700 ? `${stateDir} has mode ${(stats.mode & 0o7777).toString(8).padStart(4, "0")}, not 0700` : null);
   if (refusal === null) return stateDir;
@@ -112,20 +112,37 @@ export function claimServerState(told: string | undefined) {
     if (holder !== null) throw new MachineProfileError(`An Ovis already runs on this state folder (${holder}), so no second server was started; ${own}`);
   }
   const marker = join(stateDir, MARKER);
-  // `serve.own` alone is what a start killed between its hold and its mark leaves; a holder of it refuses below
-  const entries = readdirSync(stateDir).filter((name) => name !== "serve.own");
-  const marked = entries.includes(MARKER) && markedByProfile(marker);
-  if (!marked && entries.length > 0) {
-    throw new MachineProfileError(`The state folder ${stateDir} holds files that are not the machine profile's and no ${MARKER}, so no server was started; name an empty folder or the profile's own with OVIS_STATE_DIR`);
-  }
+  // `serve.own` alone is what a start killed between its hold and its mark leaves; a holder of it refuses at the hold
+  const look = () => {
+    const entries = readdirSync(stateDir).filter((name) => name !== "serve.own");
+    const marked = entries.includes(MARKER) && markedByProfile(marker);
+    return { marked, foreign: !marked && entries.length > 0, wrongMarker: !marked && entries.includes(MARKER) };
+  };
+  const foreign = (found: ReturnType<typeof look>) => new MachineProfileError(found.wrongMarker
+    ? `The state folder's ${marker} is not the machine profile's own, so no server was started; name an empty folder or the profile's own with OVIS_STATE_DIR`
+    : `The state folder ${stateDir} holds files that are not the machine profile's and no ${MARKER}, so no server was started; name an empty folder or the profile's own with OVIS_STATE_DIR`);
+  // first before the hold: a refused start writes nothing into the folder, not even serve.own
+  const first = look();
+  if (first.foreign) throw foreign(first);
   const running = "Another server already owns this Ovis state directory, so no second server was started";
   const hold = join(stateDir, "serve.own");
-  try { holdForLife(hold, "exclusive"); }
+  const made = !existsSync(hold);
+  let release: () => void;
+  try { release = holdForLife(hold, "exclusive"); }
   catch (error) {
     if (error instanceof OwnerGuardBusy) throw new MachineProfileError(`${running} (${hold} is held)`);
     throw new MachineProfileError(`The machine profile cannot hold its state folder, so no server was started (${error instanceof Error ? error.message : String(error)})`);
   }
-  if (!marked) writePrivateState(marker, { profile: "machine" });
+  // again under the hold: an ordinary preview server may have held the folder, written its state and gone between
+  // the first look and the hold. Its refusal leaves the folder as it was found: the serve.own this start made goes,
+  // while still held, so no other server takes a hold on a file about to vanish
+  const held = look();
+  if (held.foreign) {
+    if (made) rmSync(hold, { force: true });
+    release();
+    throw foreign(held);
+  }
+  if (!held.marked) writePrivateState(marker, { profile: "machine" });
   const lease = acquireOwnerDirectory(join(stateDir, "serve.lock"), {
     running,
     starting: "Another server is claiming this Ovis state directory, so no second server was started",
@@ -184,9 +201,11 @@ async function selectSocket(stateDir: string, engine: string): Promise<string | 
 }
 
 async function discovered(unavailable: string): Promise<string | null> {
-  const found = await discoverHerdrSessions();
-  const refusal = found.length !== 1 ? found.length === 0 ? "herdr is not running for the selected session" : "Several herdr sessions are running; select one with HERDR_REMOTE_SOCKET"
-    : await pinned(found[0]!.socket_path, unavailable);
+  const { sessions: found, refused } = await discoverPinnableHerdrSessions();
+  // none found while the walk dropped one: a herdr runs where no other account must reach it, and the owner reads why
+  const refusal = found.length === 1 ? await pinned(found[0]!.socket_path, unavailable)
+    : found.length > 1 ? "Several herdr sessions are running; select one with HERDR_REMOTE_SOCKET"
+      : refused !== null ? unsafeSocket(refused) : "herdr is not running for the selected session";
   // looked for again until one session is pinned, also when the one found was refused
   rediscovery = refusal === null ? null : () => discovered(unavailable);
   return refusal;

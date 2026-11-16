@@ -4,11 +4,15 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, 
 import { hostname, tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { FakeAccountService } from "../shared/account-service-fake.ts";
+import { unmanagedUpdateStatus } from "../shared/update.ts";
 import { createServer } from "./index.ts";
 import { herdrRpc, paneRead } from "./herdr/client.ts";
 import { harmlessGroups, trustRefusal } from "./herdr-core/discovery.ts";
+import { claimServerState, MachineProfileError } from "./machine-profile.ts";
+import { guardLibrary } from "./owner-guard.ts";
 import { RelayService } from "./relay/service.ts";
 import { bounded, deferred } from "./relay/test-helpers.ts";
+import { connectUpdater } from "./update-api.ts";
 import { updateStateDir } from "./update-state.ts";
 
 /**
@@ -452,16 +456,53 @@ it("refuses its pinned herdr at once when a folder on the way becomes writable b
   expect(herdr.connections()).toBe(used);
 });
 
-it("looks again at the next health check when the one session it found was refused", async () => {
+it("connects to no session its walk refuses while it looks for one, names why to its owner, and takes it once its place is safe", async () => {
   const { home, socket } = openHome();
   mkdirSync(dirname(socket), { recursive: true, mode: 0o700 });
-  fakeHerdr(socket);
+  const unsafe = fakeHerdr(socket);
   const dir = state();
   const server = launch(dir, { HOME: home, XDG_CONFIG_HOME: undefined, HERDR_REMOTE_SOCKET: "", HERDR_REMOTE_SESSION: "", HERDR_SOCKET: undefined });
   await bounded(server.ready, 20_000);
-  expect(await (await owner(dir, "/api/health", { headers })).json()).toMatchObject({ machine_profile: { runtime_down: true, reason: unsafeSocket } });
+  // the one session under a HOME everyone may write is not a session found: the discovery before the start did not even connect to it
+  expect(unsafe.connections()).toBe(0);
+  // but a herdr runs there, so the owner reads the walk's reason for that folder, not that none runs
+  const health = await (await owner(dir, "/api/health", { headers })).json() as { machine_profile: { reason: string } };
+  const { reason } = health.machine_profile;
+  expect(health).toMatchObject({ machine_profile: { runtime_down: true, reason: unsafeSocket } });
+  expect(reason).toContain(`${home} `);
+  expect(server.output()).toContain(`Machine engine: herdr (${reason})\n`);
+  expect(server.errors()).not.toContain(home);
+  expect(unsafe.connections()).toBe(0);
   chmodSync(home, 0o700);
   expect(await (await owner(dir, "/api/health", { headers })).json()).toMatchObject({ machine_profile: { runtime_down: false, reason: null }, herdr: { protocol: 22 } });
+});
+
+it("pins the one safe session running beside an unsafe one", async () => {
+  const { home, socket } = openHome();
+  mkdirSync(dirname(socket), { recursive: true, mode: 0o700 });
+  const unsafe = fakeHerdr(socket);
+  const config = herdrConfig();
+  const safe = join(config, "herdr", "sessions", "b", "herdr.sock");
+  mkdirSync(dirname(safe), { recursive: true, mode: 0o700 });
+  fakeHerdr(safe);
+  const dir = state();
+  const server = launch(dir, { HOME: home, XDG_CONFIG_HOME: config, HERDR_REMOTE_SOCKET: "", HERDR_REMOTE_SESSION: "", HERDR_SOCKET: undefined });
+  await bounded(server.ready, 20_000);
+  expect(await (await owner(dir, "/api/health", { headers })).json()).toMatchObject({ machine_profile: { runtime_down: false, reason: null }, herdr: { protocol: 22 } });
+  expect(unsafe.connections()).toBe(0);
+});
+
+it("still asks which one when two safe sessions run", async () => {
+  const config = herdrConfig();
+  for (const name of ["a", "b"]) {
+    const socket = join(config, "herdr", "sessions", name, "herdr.sock");
+    mkdirSync(dirname(socket), { recursive: true, mode: 0o700 });
+    fakeHerdr(socket);
+  }
+  const dir = state();
+  const server = launch(dir, { XDG_CONFIG_HOME: config, HERDR_REMOTE_SOCKET: "", HERDR_REMOTE_SESSION: "", HERDR_SOCKET: undefined });
+  await bounded(server.ready, 20_000);
+  expect(await (await owner(dir, "/api/health", { headers })).json()).toMatchObject({ machine_profile: { runtime_down: true, reason: "Several herdr sessions are running; select one with HERDR_REMOTE_SOCKET" } });
 });
 
 it("looks for a herdr that started after it on a session request too, before any health check", async () => {
@@ -505,6 +546,25 @@ it("refuses a state folder an ordinary server has used, and leaves it as it was"
   expect(contents(dir)).toEqual(before);
 });
 
+it("refuses a folder another server wrote into while the profile took its hold, and leaves what that server left", () => {
+  const dir = realpathSync(state());
+  // the other server, an ordinary one with the preview: between the profile's first look at the empty folder and
+  // its hold, it holds the folder, writes its state and is gone
+  guardLibrary.posix = (calls) => ({ ...calls, flock: (fd, operation) => { writeFileSync(join(dir, "telemetry.json"), "{}"); return calls.flock(fd, operation); } });
+  cleanup.push(() => { delete guardLibrary.posix; });
+  expect(() => claimServerState(dir)).toThrow(MachineProfileError);
+  // nothing of the profile's stays: not its marker, not the serve.own its hold made
+  expect(readdirSync(dir)).toEqual(["telemetry.json"]);
+});
+
+it("refuses a state folder whose machine-profile.json is not its own, naming that file, and leaves it as it was", async () => {
+  const dir = realpathSync(state());
+  writeFileSync(join(dir, "machine-profile.json"), '{"profile":"other"}', { mode: 0o600 });
+  const before = contents(dir);
+  expect(await refused(launch(dir))).toContain(join(dir, "machine-profile.json"));
+  expect(contents(dir)).toEqual(before);
+});
+
 it("takes an empty state folder and marks it as its own, and starts again on the folder it marked", async () => {
   const dir = state();
   const first = launch(dir);
@@ -531,6 +591,21 @@ it.each(restricted)("refuses %s even to an owner in the machine profile", async 
   const response = await owner(stateDir, path, { method: "POST", headers: { ...headers, origin: "http://localhost", "content-type": "application/json" }, body: '{}' });
   expect(response.status).toBe(409);
   expect(await response.json()).toMatchObject({ error: { code: "machine_profile" } });
+});
+
+it("answers its owner's check for updates as unmanaged, and asks the updater nothing, even when given a managed one", async () => {
+  // a managed updater as a supervisor's channel makes it (server/update-api.ts)
+  const sent: unknown[] = [];
+  let deliver: (message: unknown) => void = () => {};
+  const updates = connectUpdater({ send: (message) => { sent.push(message); }, onMessage: (listener) => { deliver = listener; } });
+  deliver({ type: "update-status", status: { ...unmanagedUpdateStatus(), managed: true, blocked_reason: null } });
+  expect(updates.status().managed).toBe(true);
+  const stateDir = scratch();
+  const server = createServer({ profile: "machine", stateDir, port: 0, hostname: "127.0.0.1", token, tailscaleOwner: null, sidecar: false, updates });
+  cleanup.push(() => server.stop());
+  const response = await owner(stateDir, "/api/updates/check", { method: "POST", headers: { origin: "http://localhost", "x-herdr-update": "1" } });
+  expect([response.status, (await response.json() as { error?: { code: string } }).error?.code]).toEqual([409, "updates_unmanaged"]);
+  expect(sent).toEqual([{ type: "update-status-request" }]);
 });
 
 it.each(["", "?scope=bridge"])("gives an unknown caller only plain liveness at /api/health%s", async (query) => {

@@ -141,10 +141,11 @@ export function guardPath(lockPath: string): string { return `${lockPath}.guard`
  * Holds the file `path` (made 0600 where absent, never through a link) for the rest of this process, POSIX
  * only: `shared` beside other shared holders, `exclusive` alone. Never waited for: OwnerGuardBusy while
  * another process holds it the other way, OwnerGuardUnavailable when it cannot be opened or locked. The
- * kernel drops the hold when the process ends, however it ends, so a killed holder keeps nobody out.
+ * kernel drops the hold when the process ends, however it ends, so a killed holder keeps nobody out. Returns
+ * its release, for a start that gives the file back before it ends (claimServerState).
  */
-export function holdForLife(path: string, kind: "shared" | "exclusive"): void {
-  lockGuard(path, false, kind === "shared");
+export function holdForLife(path: string, kind: "shared" | "exclusive"): () => void {
+  return lockGuard(path, false, kind === "shared");
 }
 
 /**

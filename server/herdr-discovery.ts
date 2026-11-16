@@ -132,11 +132,22 @@ const PLACE_ACL_AGE_MS = 60_000;
  * folder the walk accepts: every such folder is theirs.
  */
 function placeWalk(): (folder: string) => string | null {
-  let harmless = harmlessGroups(), acl = aclReader(), since = Date.now();
+  let harmless = profileGroups(), acl = aclReader(), since = Date.now();
   return (folder) => {
-    if (Date.now() - since >= PLACE_ACL_AGE_MS) { harmless = harmlessGroups(); acl = aclReader(); since = Date.now(); }
+    if (Date.now() - since >= PLACE_ACL_AGE_MS) { harmless = profileGroups(); acl = aclReader(); since = Date.now(); }
     return trustRefusal(folder, harmless, true, acl);
   };
+}
+
+/**
+ * The groups whose write access lets nobody else into the machine profile's own folders (its herdr sockets' and its
+ * state folder's walks): this account's provably private group alone. harmlessGroups' Homebrew rule, which trusts
+ * macOS's admin group under /opt/homebrew and /usr/local for the hc found there, is left out: a second admin
+ * account could write there. Its rule without the darwin case, whatever the platform; `own` stands in for the
+ * account's private group in a test.
+ */
+export function profileGroups(own?: () => number | null): (gid: number, path: string) => boolean {
+  return harmlessGroups("linux", own);
 }
 
 /** The nearest folder of `path` that exists, from its parent up, and its lstat; null when one on the way cannot be read. */
@@ -188,6 +199,29 @@ export function heldHerdrSocketStatus(path: string, place: HerdrSocketPlace): "u
   } catch (error) {
     return error instanceof Error && "code" in error && error.code === "ENOENT" ? "gone" : "refused";
   }
+}
+
+/**
+ * discoverHerdrSessions for the machine profile: a candidate whose walk from `/` refuses its folder is never
+ * connected to and is not a session found, so one safe session beside an unsafe one is the one found. The rest,
+ * this account's socket under its herdr folders and answering, is chosenHerdrSocketStatus's, as discovery's.
+ * `refused`: the walk's reason for the first candidate it dropped (null: it dropped none), for the owner when no
+ * session is found.
+ */
+export async function discoverPinnableHerdrSessions(host: HerdrDiscoveryHost = currentHost()): Promise<{ sessions: FoundHerdrSession[]; refused: string | null }> {
+  const scope = await discoveryScope(host);
+  const walk = placeWalk();
+  const results = await Promise.all([...scope.paths].map(async (path): Promise<FoundHerdrSession | string | null> => {
+    const unsafe = walk(dirname(path));
+    if (unsafe !== null) return unsafe;
+    if (await chosenHerdrSocketStatus(path, host, scope) !== "usable") return null;
+    const session = /\/herdr\/sessions\/([a-zA-Z0-9_-]{1,64})\/herdr\.sock$/.exec(path)?.[1];
+    return { socket_path: path, ...(session ? { session } : {}), label: session ?? "Default session" };
+  }));
+  return {
+    sessions: results.filter((result): result is FoundHerdrSession => result !== null && typeof result !== "string"),
+    refused: results.find((result): result is string => typeof result === "string") ?? null,
+  };
 }
 
 export async function discoverHerdrSessions(host: HerdrDiscoveryHost = currentHost()): Promise<FoundHerdrSession[]> {
