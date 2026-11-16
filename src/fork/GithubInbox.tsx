@@ -105,13 +105,16 @@ export function ForkGithubOpen() {
     onClick={() => openGithub(true)}><GitPullRequest aria-hidden="true" /></button>;
 }
 
+/** The last list read, kept across visits so going back to GitHub draws it at once. */
+let listingCache: { value: GithubPulls; at: number } | null = null;
+
 export function GithubInbox({ wide, watching, onOpened }: ViewProps) {
   const t = useT();
   const open = useOpenPull();
-  const [listing, setListing] = useState<GithubPulls | null>(null);
+  const [listing, setListing] = useState<GithubPulls | null>(() => listingCache?.value ?? null);
   const [repo, setRepo] = useState(loadGithubRepo);
   const [refresh, setRefresh] = useState(0);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [repoMenu, setRepoMenu] = useState<HTMLElement | null>(null);
   const errors: Record<string, string> = {
@@ -119,9 +122,12 @@ export function GithubInbox({ wide, watching, onOpened }: ViewProps) {
     rate_limited: t("GitHub is limiting requests; try again later"), gh_failed: t("Could not read GitHub pull requests"),
   };
   useEffect(() => {
+    // Coming back shows the last list at once; it is read again only when a minute old, or on Refresh.
+    if (refresh === 0 && listingCache && Date.now() - listingCache.at < 60_000) return;
     let cancelled = false;
     setLoading(true); setError(null);
     getJson<GithubPulls>("/api/fork/github/pulls", { cache: "no-store" }).then((next) => {
+      listingCache = { value: next, at: Date.now() };
       if (cancelled) return;
       setListing(next); setLoading(false);
       setRepo((previous) => { const selected = githubGroups(next, previous).selected; saveGithubRepo(selected); return selected; });
@@ -156,10 +162,11 @@ export function GithubInbox({ wide, watching, onOpened }: ViewProps) {
         aria-haspopup="menu" aria-expanded={repoMenu !== null} onClick={(event) => setRepoMenu(repoMenu === null ? event.currentTarget : null)}><ListFilter aria-hidden="true" /></button>}
       {repoMenu !== null && <RowMenu anchor={repoMenu} title={t("Repositories")} choice onClose={() => setRepoMenu(null)}
         items={[["", 0] as const, ...groups.repos].map(([name]) => ({ id: name || "all", label: name ? name.split("/").pop() ?? name : t("All"), icon: name ? FolderGit2 : ListFilter, checked: groups.selected === name, run: () => { setRepo(name); saveGithubRepo(name); } }))} />}
-      <button type="button" className="icon-button inbox-round" aria-label={t("Refresh")} title={t("Refresh")} disabled={loading} onClick={() => setRefresh((value) => value + 1)}><RefreshCw aria-hidden="true" /></button></header>
+      <button type="button" className="icon-button inbox-round" aria-label={t("Refresh")} title={t("Refresh")} disabled={loading} onClick={() => setRefresh((value) => value + 1)}><RefreshCw className={loading && listing !== null ? "fork-github-spin" : undefined} aria-hidden="true" /></button></header>
     <div className="inbox-scroll">
-      {!loading && error === null && (listing?.failed?.length ?? 0) > 0 && <p className="fork-github-note" role="status">{t("Could not read {accounts}", { accounts: listing!.failed!.join(", ") })}</p>}
-      {loading ? <p className="inbox-empty" role="status">{t("Reading pull requests…")}</p> : error !== null ? <p className="inbox-empty" role="alert">{errors[error] ?? errors.gh_failed}</p> : listing !== null && <>
+      {error === null && (listing?.failed?.length ?? 0) > 0 && <p className="fork-github-note" role="status">{t("Could not read {accounts}", { accounts: listing!.failed!.join(", ") })}</p>}
+      {error !== null && listing !== null && <p className="fork-github-note" role="alert">{errors[error] ?? errors.gh_failed}</p>}
+      {listing === null ? loading || error === null ? <p className="inbox-empty" role="status">{t("Reading pull requests…")}</p> : <p className="inbox-empty" role="alert">{errors[error] ?? errors.gh_failed}</p> : <>
         {groups.review.length + groups.yours.length === 0 ? <p className="inbox-empty" role="status">{t("Nothing needs you")}</p> : <>{group(groups.review, true)}{group(groups.yours, false)}</>}
       </>}
     </div>

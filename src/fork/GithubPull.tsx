@@ -27,20 +27,23 @@ function stateOf(detail: GithubPullDetail, t: Translate) {
   return { icon: GitPullRequest, label: t("Open"), tone: "open" };
 }
 
+/** Pages read this visit: reopening one draws it at once while it is read again behind it. */
+const pageCache = new Map<string, GithubPullDetail>();
+
 const reviewIcons = { approved: Check, changes_requested: X, commented: MessageSquare, requested: CircleDot } as const;
 
 /** One pull request, drawn from GitHub's API in Ovis's own design: the wide pane's page, or the phone's screen. */
 export function GithubPullPage({ pull, wide, watching, onOpened }: { pull: GithubPull; wide: boolean; watching: boolean; onOpened(opened: WorktreeOpened): void }) {
   const t = useT();
-  const [detail, setDetail] = useState<GithubPullDetail | null>(null);
+  const [detail, setDetail] = useState<GithubPullDetail | null>(() => pageCache.get(pull.url) ?? null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   useEffect(() => {
     let cancelled = false;
     const query = new URLSearchParams({ repo: pull.repository, number: String(pull.number), account: pull.account ?? "" });
     getJson<GithubPullDetail>(`/api/fork/github/pull?${query}`, { cache: "no-store" }).then(
-      (next) => { if (!cancelled) setDetail(next); },
-      (reason: unknown) => { if (!cancelled) setError(reason instanceof ApiError ? reason.code ?? "gh_failed" : "gh_failed"); },
+      (next) => { pageCache.set(pull.url, next); if (!cancelled) setDetail(next); },
+      (reason: unknown) => { if (!cancelled && !pageCache.has(pull.url)) setError(reason instanceof ApiError ? reason.code ?? "gh_failed" : "gh_failed"); },
     );
     return () => { cancelled = true; };
   }, [pull.repository, pull.number, pull.account]);
