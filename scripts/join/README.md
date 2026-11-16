@@ -120,11 +120,16 @@ trial folder (a folder in it this account cannot write in, say) names what is le
 of the kit's server, the one process the join starts and then signals by its pid, is signalled by the same rule: only
 while that pid is still the kit's server in the temporary folder, of this account, with the command line
 `<that program> serve` (a pid freed when it ended may belong to another process by then). Every end of that check is
-bounded: TERM, up to 5 s, KILL, then up to 2 s for it to end. A check that still runs then is named with its pid, and
-with what it was sent (TERM, TERM and KILL, or nothing), and the join stops (exit 14) instead of waiting on it; a
-server that never answers the check is stopped that way and refused (exit 24). Whether it still runs is read from
-`/proc`, so a machine without `ps` is no different. The programs copied into the trial folder are checked against the
-kit's copies by SHA-256, so a machine without `cmp` (no diffutils) is no different either.
+bounded: TERM, up to 5 s, KILL, then up to 2 s for it to be seen ended, and the join waits on it only once it is
+seen ended. Whether it still runs is read from `/proc`, so a machine without `ps` is no different; a process with
+that pid that `/proc` does not show as the join's child (its entry unreadable, or `/proc` of another PID namespace)
+counts as still running. A check that still runs then, or was not seen to end, is named with its pid and with what it
+was sent (TERM, TERM and KILL, or nothing), in English and Korean, and the join stops (exit 14) instead of waiting on
+it. It gives no command that signals that pid: it says how to look at the process first (`ps -o pid,user,args -p
+<pid>`, or `ls -l /proc/<pid>/exe`), and to stop it only if it is the kit's `ovis-server serve`. A server that never
+answers the check is stopped that way and refused (exit 24). Each program copied into the trial folder is checked by
+its SHA-256, read from the copy itself, against the sum the kit's `SHA256SUMS` lists for it, so a machine without
+`cmp` (no diffutils) is no different, and a `sha256sum` that fails there matches nothing and is refused (exit 14).
 
 The port: a port another program already listens on is refused (exit 14), on a run again once the previous trial
 server is stopped, and a health answer counts only when the program listening on the port is the trial's own

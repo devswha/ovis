@@ -181,8 +181,8 @@ function machineOf(name: string, who: Who): Machine {
 }
 
 /** a machine of the CI runner image: the runner account, herdr linked into ~/.local/bin as its installer puts it, the test CA trusted */
-async function runnerMachine(options: { herdr?: boolean; mounts?: string[]; env?: string[] } = {}): Promise<Machine> {
-  const name = await container("ovis-join-m", ["--init", "--tmpfs", "/usr/local/bin", "-e", "PATH=/usr/sbin:/usr/bin:/sbin:/bin",
+async function runnerMachine(options: { herdr?: boolean; mounts?: string[]; env?: string[]; args?: string[] } = {}): Promise<Machine> {
+  const name = await container("ovis-join-m", ["--init", "--tmpfs", "/usr/local/bin", "-e", "PATH=/usr/sbin:/usr/bin:/sbin:/bin", ...(options.args ?? []),
     "-v", `${HERDR}:/opt/eng/herdr:ro`, "-v", `${scratch}/certs/ca.pem:/certs/ca.pem:ro`,
     ...(options.mounts ?? []).flatMap((mount) => ["-v", mount]), "--entrypoint", "sleep", "herdr-ci-runner:local", "infinity"]);
   const m = machineOf(name, { user: "runner", env: ["NODE_EXTRA_CA_CERTS=/certs/ca.pem", ...(options.env ?? [PLAIN])] });
@@ -1230,12 +1230,46 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
     expect((await m.root("mv /usr/bin/ps.off /usr/bin/ps")).code).toBe(0);
     note("caseProbeLeft", `${run.stdout}${run.stderr}`);
     const probe = (await m.sh("cat /var/tmp/probe-started")).stdout.trim();
-    // regression (before: the join waited on that process for ever, ended only by timeout's TERM: rc=124)
-    expect([run.stdout.trim().split("\n").pop(), run.stderr.includes(`(pid ${probe}), still runs, and was not signalled`), run.stderr.includes("TERM and KILL"),
-      (await m.sh(`kill -0 ${probe}`)).code]).toEqual(["rc=14", true, false, 0]);
+    // regression (before: the join waited on that process for ever, ended only by timeout's TERM: rc=124). The refusal
+    // names the pid, says no signal was sent, and gives no command that signals it (it could not be identified)
+    expect([run.stdout.trim().split("\n").pop(), run.stderr.includes(`(pid ${probe})`), /kill -/.test(run.stderr), run.stderr.includes("TERM"),
+      (await m.sh(`kill -0 ${probe}`)).code]).toEqual(["rc=14", true, false, false, 0]);
     // the join names it and leaves it; the test ends it, inside its own machine
     expect((await m.sh(`kill -KILL ${probe}`)).code).toBe(0);
     expect((await m.sh("rm /var/tmp/fake-probe-hangs /var/tmp/fake-probe-leaves /var/tmp/probe-started /var/tmp/line.sh")).code).toBe(0);
+    expect(await m.home()).toBe(home);
+  }, 300_000);
+
+  test("a check of the kit's server whose /proc entry cannot be read while it lives (the join in a PID namespace of its own): refused (exit 14) naming its pid, no hang", async () => {
+    // SYS_ADMIN for this machine only: root enters a PID namespace (without a /proc of its own), then runs the join as runner
+    const m = await runnerMachine({ args: ["--cap-add", "SYS_ADMIN"] });
+    await serveHerdr(m);
+    const home = await m.home();
+    expect((await m.sh(`printf '%s --yes </dev/null\\n' '${fakeKit.line.replaceAll("'", "'\\''")}' > /var/tmp/line.sh`)).code).toBe(0);
+    // the probe's pid ($!) is the namespace's own, which /proc (the machine's) does not show as the join's child; it
+    // answers its check, so only the stop is in question. Bounded by timeout(1): before, the join waited on it for ever
+    const run = await m.root("timeout 100 unshare --pid --fork --kill-child setpriv --reuid=runner --regid=runner --init-groups "
+      + "env -i HOME=/home/runner PATH=/usr/sbin:/usr/bin:/sbin:/bin NODE_EXTRA_CA_CERTS=/certs/ca.pem sh -c 'cd && sh /var/tmp/line.sh'; echo \"rc=$?\"");
+    note("caseProbeUnreadable", `${run.stdout}${run.stderr}`);
+    // regression (before: rc=124, the join's wait never returned)
+    expect([run.stdout.trim().split("\n").pop(), /\(pid \d+\)/.test(run.stderr), /kill -/.test(run.stderr)]).toEqual(["rc=14", true, false]);
+    // the namespace ends with the join, and the probe with it; nothing was installed
+    expect([(await m.processes()).includes("ovis-server"), (await m.sh(`test -e ${TRIAL}`)).code]).toEqual([false, 1]);
+    expect((await m.sh("rm /var/tmp/line.sh")).code).toBe(0);
+    expect(await m.home()).toBe(home);
+  }, 300_000);
+
+  test("a sha256sum that fails once the programs are copied: refused (exit 14) and rolled back, never taken for a match", async () => {
+    const m = await runnerMachine();
+    await serveHerdr(m);
+    const home = await m.home();
+    // first on PATH: the real sha256sum until the join has made its trial folder's bin, then a failure with no output
+    expect((await m.sh(`mkdir -p ~/stub && printf '%s\\n' '#!/bin/sh' '[ ! -d "$HOME/${TRIAL}/bin" ] || exit 1' 'exec /usr/bin/sha256sum "$@"' > ~/stub/sha256sum && chmod 755 ~/stub/sha256sum`)).code).toBe(0);
+    const run = await m.sh(`PATH=$HOME/stub:$PATH ${kit.line} --yes </dev/null`);
+    note("caseHashFails", `exit ${run.code}\n${run.stdout}${run.stderr}`);
+    // regression (before: both hashes empty, taken as equal: exit 30, installed and running)
+    expect([run.code, (await m.sh(`test -e ${TRIAL}`)).code, (await m.processes()).includes("ovis-server serve")]).toEqual([14, 1, false]);
+    expect((await m.sh("rm -r ~/stub")).code).toBe(0);
     expect(await m.home()).toBe(home);
   }, 300_000);
 

@@ -802,22 +802,35 @@ j_probe_is() {
   [ "$(readlink "/proc/$probe/exe" 2>/dev/null)" = "$(j_canonical "$j_stage/bin/ovis-server")" ] || return 1
   [ "$({ tr '\000' '\n' <"/proc/$probe/cmdline"; } 2>/dev/null)" = "$j_stage/bin/ovis-server${J_NL}serve" ]
 }
-# j_probe_running: $probe is a child of this shell that has not ended (a zombie has); a pid that is no longer this
-# shell's child is not. Read from /proc/<pid>/stat, so it holds without ps: its state and its parent are the first two
-# fields after the program's name, which is in parentheses and may itself hold spaces or parentheses
-j_probe_running() {
-  j_stat=$(cat "/proc/$probe/stat" 2>/dev/null) || return 1
-  j_stat=${j_stat##*") "}
-  j_state=${j_stat%% *}
-  j_stat=${j_stat#* }
-  [ "${j_stat%% *}" = "$$" ] && [ "$j_state" != Z ]
+# j_probe_state: sets j_run to what /proc/<pid>/stat says of $probe (so it holds without ps): running (a child of this
+# shell that has not ended), ended (a zombie child of this shell, or no process with that pid: `wait` returns at once
+# on either), or unknown (a process with that pid that /proc does not show as this shell's child: its stat could not
+# be read, or /proc is another PID namespace's). The state and the parent are the first two fields after the program's
+# name, which is in parentheses and may itself hold spaces or parentheses
+j_probe_state() {
+  j_run=ended
+  if j_stat=$(cat "/proc/$probe/stat" 2>/dev/null); then
+    j_stat=${j_stat##*") "}
+    j_state=${j_stat%% *}
+    j_stat=${j_stat#* }
+    if [ "${j_stat%% *}" = "$$" ]; then
+      [ "$j_state" = Z ] || j_run=running
+      return 0
+    fi
+  fi
+  ! kill -0 "$probe" 2>/dev/null || j_run=unknown
 }
+j_probe_running() { j_probe_state; [ "$j_run" = running ]; }
+# j_look <pid>: how to look at a process the join could not stop or could not tell, before stopping it by hand (a pid
+# the join could not identify is never given with a command that signals it)
+j_look() { printf 'look at it first: ps -o pid,user,args -p %s, or ls -l /proc/%s/exe, which shows its program ("(deleted)" once its temporary folder is gone); stop it only if it is the kit'"'"'s ovis-server serve' "$1" "$1"; }
+j_look_ko() { printf '먼저 확인하세요: ps -o pid,user,args -p %s 또는 ls -l /proc/%s/exe (그 프로그램을 보여 주며, 임시 폴더가 지워졌으면 "(deleted)"가 붙습니다). 키트의 ovis-server serve 일 때만 멈추세요' "$1" "$1"; }
 # j_probe_stop: ends the check of the kit's server, bounded, on every path (its end and an interruption): up to 1 s for a
 # probe just started to become the kit's server (env execs it); then, only while it is the probe (j_probe_is), TERM, up
-# to 5 s for it to end (it may ignore TERM), and KILL, which it cannot; then up to 2 s for it to end. Only an ended child
-# is waited for, so the join never hangs on it. False, with nothing waited for, when a child of this shell still runs
-# then (one that is not the probe is never signalled; j_signalled names what it was sent: TERM, TERM and KILL, or
-# nothing); true once it has ended
+# to 5 s for it to end (it may ignore TERM), and KILL, which it cannot; then up to 2 s for it to be seen ended. `wait`
+# runs only on a child seen ended (j_probe_state), where it returns at once: every wait here is bounded. False, with
+# nothing waited for, when it was not seen ended then, running or unknown (j_run); one that is not the probe is never
+# signalled, and j_signalled names what it was sent: TERM, TERM and KILL, or nothing. True once it has ended
 j_probe_stop() {
   j_i=0
   j_signalled=""
@@ -830,8 +843,8 @@ j_probe_stop() {
     if j_probe_is; then j_signalled="TERM and KILL"; kill -KILL "$probe" 2>/dev/null; fi
   fi
   j_i=0
-  while j_probe_running && [ "$j_i" -lt 10 ]; do j_pause 0.2; j_i=$((j_i + 1)); done
-  ! j_probe_running || return 1
+  while j_probe_state; [ "$j_run" != ended ] && [ "$j_i" -lt 10 ]; do j_pause 0.2; j_i=$((j_i + 1)); done
+  [ "$j_run" = ended ] || return 1
   wait "$probe" 2>/dev/null
   return 0
 }
@@ -868,8 +881,16 @@ j_probe_profile() {
   done
   # a server that does not end is not left to run on unseen: the join stops here and names it
   if ! j_probe_stop; then
-    if [ -n "$j_signalled" ]; then j_how="did not end after $j_signalled"; else j_how="still runs, and was not signalled: it is no longer the kit's server the join started"; fi
-    refuse 14 "this kit's server, started once for its check (pid $probe), $j_how: stop it yourself (kill -KILL $probe); nothing was changed"
+    if [ -z "$j_signalled" ]; then
+      j_how="was not signalled, as the join could not tell that it is still the kit's server"
+      j_how_ko="아직 키트의 서버인지 알 수 없어 신호를 보내지 않았습니다"
+    elif [ "$j_run" = running ]; then
+      j_how="did not end after $j_signalled" j_how_ko="보낸 신호($j_signalled) 뒤에도 끝나지 않았습니다"
+    else
+      j_how="could not be seen to end after $j_signalled" j_how_ko="보낸 신호($j_signalled) 뒤에 끝났는지 확인하지 못했습니다"
+    fi
+    printf 'Ovis: 확인용으로 한 번 실행한 이 키트의 서버(pid %s)는 %s. %s. 아무것도 바꾸지 않았습니다.\n' "$probe" "$j_how_ko" "$(j_look_ko "$probe")" >&2
+    refuse 14 "this kit's server, started once for its check (pid $probe), $j_how; $(j_look "$probe"); nothing was changed"
   fi
   probe=""
   if [ -z "$answer" ]; then
@@ -1065,7 +1086,7 @@ j_interrupted() {
   # the check of the kit's server, if it runs: stopped and waited for, and seen gone, before anything is reported
   if [ -n "${probe:-}" ]; then
     if ! j_probe_stop; then
-      printf 'Ovis: interrupted; the check of the kit'"'"'s server (pid %s) could not be stopped: stop it yourself\n' "$probe" >&2
+      printf 'Ovis: interrupted; the check of the kit'"'"'s server (pid %s) could not be stopped; %s\n' "$probe" "$(j_look "$probe")" >&2
       exit "$1"
     fi
     probe=""
@@ -1115,8 +1136,10 @@ mkdir -p "$J_HOME/bin/bin" "$J_HOME/config" "$J_HOME/plugin-state" "$J_HOME/run"
   || { j_rollback; refuse 14 "$J_HOME cannot be filled"; }
 for name in bin/ovis-server bin/bin/ovis-pty-sidecar bin/bin/ovis-pty-sidecar.json; do
   case $name in *.json) mode=600 ;; *) mode=755 ;; esac
-  # compared by SHA-256 (sha256sum is checked for above), not cmp: diffutils is missing on some minimal systems
-  j_put "$J_HOME/$name" "$mode" <"$j_stage/$name" && [ "$(j_sha256 "$J_HOME/$name")" = "$(j_sha256 "$j_stage/$name")" ] \
+  # the copy's SHA-256 (sha256sum, checked for above; not cmp, which some minimal systems lack), read from stdin so its
+  # path cannot change the output, against the sum SHA256SUMS lists for it, which is never empty: a sha256sum that
+  # fails gives nothing, which matches no sum
+  j_put "$J_HOME/$name" "$mode" <"$j_stage/$name" && [ "$(sha256sum <"$J_HOME/$name" | cut -c1-64)" = "$(j_kit_sum "$name")" ] \
     || { j_rollback; refuse 14 "the kit's programs cannot be copied into $J_HOME"; }
 done
 rm -rf "$j_stage"
