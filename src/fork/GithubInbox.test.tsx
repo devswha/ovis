@@ -54,8 +54,7 @@ async function openPull(onOpened = (_opened: unknown) => {}) {
   await act(async () => button("Fix this").props.onClick());
 }
 
-test("opens an existing fork worktree without fetching or creating a branch", async () => {
-  (payload as { review: { fork: boolean }[] }).review[0]!.fork = true;
+test("opens an existing same-repository worktree without fetching or creating a branch", async () => {
   const opened = { workspace_id: "fork", pane_id: "p1", path: "/pr", branch: "topic", already_open: true };
   const requests = checkoutApi([checkoutListing()], { "/api/worktree/open": opened });
   let result: unknown;
@@ -66,26 +65,16 @@ test("opens an existing fork worktree without fetching or creating a branch", as
   expect(requests.filter((request) => request.body)).toEqual([{ path: "/api/worktree/open", body: { workspace_id: "w1", path: "/pr" } }]);
 });
 
-test("does not offer a new fork checkout or a prunable fork worktree", async () => {
+test("fork PRs offer only GitHub, even when an unrelated local branch has the same name", async () => {
   (payload as { review: { fork: boolean }[] }).review[0]!.fork = true;
-  for (const worktrees of [[], checkoutListing().worktrees.map((entry) => ({ ...entry, is_prunable: true }))]) {
+  for (const worktrees of [checkoutListing().worktrees, []]) {
     const requests = checkoutApi([{ ...checkoutListing(), worktrees }]);
     await openPull();
-    expect(requests.some((request) => request.path.startsWith("/api/worktree/list"))).toBe(true);
     expect(button("Checkout")).toBeUndefined();
-    expect(requests.filter((request) => request.body)).toHaveLength(0);
+    expect(renderer!.root.findByType("a").props.href).toBe("https://github.com/owner/repo/pull/1");
+    expect(requests).toEqual([{ path: "/api/fork/github/pulls", body: undefined }]);
     await act(async () => renderer?.unmount());
   }
-});
-
-test("revalidates a fork worktree on checkout and never fetches when it has disappeared", async () => {
-  (payload as { review: { fork: boolean }[] }).review[0]!.fork = true;
-  const requests = checkoutApi([checkoutListing(), { ...checkoutListing(), worktrees: [] }]);
-  await openPull();
-  expect(button("Checkout")).toBeDefined();
-  await act(async () => button("Checkout").props.onClick());
-  expect(renderer!.root.findByProps({ role: "alert" })).toBeDefined();
-  expect(requests.filter((request) => request.body)).toHaveLength(0);
 });
 
 test("creates from the main workspace when only a linked checkout is selected", async () => {
