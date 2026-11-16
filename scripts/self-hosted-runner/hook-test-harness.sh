@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # Test harness of job-started.sh (scripts/self-hosted-runner.test.ts): the only place a test starts the hook,
-# which may kill, and only after one of two guards has passed. Before the guard it starts nothing.
+# which may kill, and only after one of two guards has passed: before that it starts no hook and no parent of one
+# (the container guard runs stat, and its orphan check one bash that reads a FIFO).
 #   namespace: PID 1 of a PID namespace of its own, started as
 #     unshare --user --map-root-user --pid --fork --mount-proc --kill-child bash hook-test-harness.sh <token> ...
 #     It is PID 1, PID 1 of /proc carries the run's <token> (so /proc is this namespace's), and no other
 #     process is visible: every pid it can name is one it started, and the kernel kills them all when it exits.
-#   container: inside the runner image's container (scripts/self-hosted-runner/Dockerfile), started as
+#   container: inside a throwaway container of a test image built FROM the runner image with the marker below
+#     added (the live runner image has none, so these tests never run in a live runner's container), started as
 #     python3 (PR_SET_CHILD_SUBREAPER on itself, then exec) bash hook-test-harness.sh container ...
-#     The image's marker is there, root's and read-only, /.dockerenv is there, and PID 1 is the container's
+#     The marker is there, root's and read-only, /.dockerenv is there, and PID 1 is the container's
 #     init (tini or docker-init). Then it proves that an orphan of its subtree comes to it, not to any process
 #     above it: the hook's parent can only be a process of this subtree or this harness (a bash), never the
 #     container's real Runner.Worker. It notes every process above it (pid and start time) and reports whether

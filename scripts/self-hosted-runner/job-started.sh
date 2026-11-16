@@ -91,7 +91,8 @@ refuse() {
   worker=$PPID
   is_pid "$worker" && (( worker > 1 && worker != $$ )) || block "no parent process"
   if [[ $os == linux ]]; then
-    # still this shell's parent: an orphan's parent is whatever adopted it, a subreaper included
+    # still this shell's parent: a parent that ended since this shell's start is caught here (an orphan adopted
+    # before the start, a subreaper included, is caught by the executable below)
     stat_of $$ && [[ $stat_ppid == "$worker" ]] || block "it is no longer this hook's parent"
     own_start=$stat_start
     # the kernel's path of its executable, which a process cannot rename, and its name
@@ -106,8 +107,8 @@ refuse() {
     [[ $uid_ok == 1 ]] || block "it runs as another user"
     stat_of "$worker" && (( stat_start <= own_start )) || block "it started after this hook"
     worker_start=$stat_start
-    # once more, right before the kill: still this shell's parent, still the same process
-    stat_of $$ && [[ $stat_ppid == "$worker" ]] && stat_of "$worker" && [[ $stat_start == "$worker_start" ]] || block "it changed during the checks"
+    # once more, right before the kill: still the same process, and, read last, still this shell's parent
+    stat_of "$worker" && [[ $stat_start == "$worker_start" ]] && stat_of $$ && [[ $stat_ppid == "$worker" ]] || block "it changed during the checks"
   else
     [[ $(ps_of ppid $$) == "$worker" ]] || block "it is no longer this hook's parent"
     # macOS's ps names a process by the path it was started from
@@ -115,7 +116,7 @@ refuse() {
     [[ $(ps_of ruid "$worker") == "$UID" && $(ps_of uid "$worker") == "$UID" ]] || block "it runs as another user"
     # to the second only: the same start time, as this shell's parent all along, is the same process
     worker_start=$(ps_of lstart "$worker") || block "its start time cannot be read"
-    [[ $(ps_of ppid $$) == "$worker" && $(ps_of lstart "$worker") == "$worker_start" ]] || block "it changed during the checks"
+    [[ $(ps_of lstart "$worker") == "$worker_start" && $(ps_of ppid $$) == "$worker" ]] || block "it changed during the checks"
   fi
   builtin kill -KILL "$worker" 2>/dev/null || block "the kill failed"
   say "$refusal"

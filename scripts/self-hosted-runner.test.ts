@@ -12,23 +12,27 @@ const jobStarted = fileURLToPath(new URL("./self-hosted-runner/job-started.sh", 
 const hookHarness = fileURLToPath(new URL("./self-hosted-runner/hook-test-harness.sh", import.meta.url));
 
 /**
- * Runs the hook on this host as the runner does, under a process named Runner.Worker (a copy of bash) that goes
- * on after it: for jobs it allows only. Every refusal may kill, so it runs in runHookIsolated alone.
+ * Runs the hook on this host, for jobs it allows only, under a parent that can never pass its proof of the worker:
+ * a copy of bash (on macOS a symlink to it) named not-the-worker. The hook may kill only its direct parent, and only
+ * when that parent's executable is Runner.Worker: /proc/<pid>/exe and the name on Linux, the path ps prints on macOS,
+ * all of which name this file. So a refusal nobody meant here blocks and kills nothing, and the test fails at its
+ * 5 s timeout, which ends the parent spawnSync holds and nothing else. Every refusal the tests mean runs in
+ * runHookIsolated.
  */
 function runJobStarted(eventName: string, payload: unknown) {
   const tempDir = mkdtempSync(join(tmpdir(), "herdr-runner-hook-test-"));
   try {
     const eventPath = join(tempDir, "event.json");
     writeFileSync(eventPath, JSON.stringify(payload));
-    const worker = join(tempDir, "Runner.Worker");
+    const parent = join(tempDir, "not-the-worker");
     const bash = spawnSync("bash", ["-c", "command -v bash"], { encoding: "utf8" }).stdout.trim();
     // macOS kills a copy of its signed /bin/bash at once
-    if (process.platform === "darwin") symlinkSync(bash, worker);
+    if (process.platform === "darwin") symlinkSync(bash, parent);
     else {
-      copyFileSync(bash, worker);
-      chmodSync(worker, 0o755);
+      copyFileSync(bash, parent);
+      chmodSync(parent, 0o755);
     }
-    const result = spawnSync(worker, ["-c", 'bash "$0"; echo "next step ran"', jobStarted], {
+    const result = spawnSync(parent, ["-c", 'bash "$0"; echo "next step ran"', jobStarted], {
       encoding: "utf8",
       timeout: 5_000,
       env: { PATH: process.env.PATH ?? "", GITHUB_EVENT_NAME: eventName, GITHUB_REPOSITORY: "devswha/ovis", GITHUB_EVENT_PATH: eventPath },
@@ -1165,7 +1169,7 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
 // can reach one runs isolated (runHookIsolated: a PID namespace of its own or the runner image's container), or not at all.
 describe.skipIf(process.platform === "win32")("self-hosted runner job-started hook", () => {
   it("runs a job from this repository", () => {
-    // without jq the hook would refuse: never on the host
+    // without jq the hook would refuse (and, under runJobStarted's parent, block): fail before it starts
     expect(Bun.which("jq")).not.toBeNull();
     for (const [event, payload] of [
       ["push", { ref: "refs/heads/main" }],
