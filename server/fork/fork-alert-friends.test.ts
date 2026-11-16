@@ -36,7 +36,7 @@ for (const managed of [false, true]) {
       expect(friends[0]).toBeDefined();
       expect(new Set(friends).size).toBe(1);
       const listed = store.see(panes.map((current) => `local:${current.pane_id}`), ["local"], [{ id: "local", snapshot: { panes } }]).friends;
-      expect(Object.values(listed)).toEqual(friends);
+      expect(friends).toEqual(Object.values(listed));
     } finally { fake.stop(); }
   });
 }
