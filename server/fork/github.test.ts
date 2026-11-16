@@ -21,7 +21,7 @@ test("uses the aggregate state when a failed check is beyond 100 passing context
   // GitHub's aggregate includes the failed 101st check, absent from this first page.
   commit.statusCheckRollup = { state: "FAILURE", contexts: { pageInfo: { hasNextPage: true }, nodes: Array.from({ length: 100 }, () => ({ status: "COMPLETED", conclusion: "SUCCESS" })) } };
   expect(parseGithubPulls(JSON.stringify(data)).review.find((row) => row.number === 1)?.checks).toBe("failing");
-  for (const [state, expected] of [["ERROR", "failing"], ["PENDING", "pending"], ["EXPECTED", "pending"], ["SUCCESS", "passing"], [null, "none"]]) {
+  for (const [state, expected] of [["ERROR", "failing"], ["PENDING", "pending"], ["EXPECTED", "pending"], ["SUCCESS", "passing"], [null, "none"]] as const) {
     commit.statusCheckRollup = state === null ? null : { state };
     expect(parseGithubPulls(JSON.stringify(data)).review.find((row) => row.number === 1)?.checks).toBe(expected);
   }
