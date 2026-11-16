@@ -1337,8 +1337,9 @@ export function App() {
         </aside>) : <aside id="workspace-drawer" className={`sidebar${drawerOpen ? " is-open" : ""}${sidebarPeeking ? " is-peek" : ""}`} role={drawerModal ? "dialog" : undefined} aria-modal={drawerModal ? true : undefined} tabIndex={drawerModal ? -1 : undefined} aria-label={drawerModal ? t("Workspace list") : undefined}
           // the header's toggle is drawn as the open drawer's top row: a screen reader that keeps to the modal finds it in it
           aria-owns={drawerModal ? "drawer-toggle" : undefined} ref={drawerRef} {...peekSidebarHandlers}>
-          {/* the X became the Ovis mark: the modal drawer still starts with a named way out, drawn while the keyboard is on it */}
-          {markInDrawer && <button type="button" className="visually-hidden drawer-close" onClick={() => setDrawerOpen(false)}>{t("Close workspace list")}</button>}
+          {/* the X became the Ovis mark: the modal drawer still starts with a named way out, drawn while the keyboard is on it,
+              and the open drawer's disclosure state goes with it (expanded, and the list it closes) */}
+          {markInDrawer && <button type="button" className="visually-hidden drawer-close" aria-controls="workspace-drawer" aria-expanded="true" onClick={() => setDrawerOpen(false)}>{t("Close workspace list")}</button>}
           {error && <div className="error-state" role="alert"><p>{error}</p><button className="btn" onClick={() => void load()}>{t("Retry")}</button></div>}
           {/* a sidebar that cannot be drawn leaves the panes working */}
           <RenderBoundary resetKey={null} fallback={(retry) => <RegionCrash message={t("The sidebar can't be shown.")} retry={retry} />}>
