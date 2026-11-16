@@ -672,8 +672,17 @@ try {
     assert.equal(await coded.count(), 0, "a code that ran out leaves the QR code");
     await side.getByRole("button", { name: "New code", exact: true }).click();
     await coded.waitFor();
+    // the PC keeps one pairing code: another way's tab (here Anywhere's) may replace it, so a way left drops its code,
+    // and back in view it shows New code, never a code the PC no longer takes
+    await coded.waitFor();
+    await side.getByRole("tab", { name: /^Anywhere/ }).click();
+    await side.getByRole("tab", { name: /Tailscale/ }).click();
+    await side.getByRole("button", { name: "New code", exact: true }).waitFor();
+    assert.equal(await coded.count(), 0, "a way left and shown again keeps no code another way may have replaced");
+    await side.getByRole("button", { name: "New code", exact: true }).click();
+    await coded.waitFor();
     await context.close();
-    console.log("PASS a pairing code that runs out is renewed only by New code (1920x1080)");
+    console.log("PASS a pairing code that runs out, or a way left for another, is renewed only by New code (1920x1080)");
   }
 
 } finally {

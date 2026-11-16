@@ -1000,7 +1000,7 @@ function RelayQr({ onPhonePaired }: { onPhonePaired: (name: string) => void }) {
  * paired next does not shut it out. Settings → Phone takes over where this page has no address a
  * phone can open (the PC's own loopback) or the server does not say how this browser got in.
  */
-function PhoneQr({ auth, onOpenSettings, onPaired, onPhonePaired, given, large = false }: { auth: HealthAuth | null; onOpenSettings: () => void; onPaired: () => void; onPhonePaired: (name: string) => void; given?: string; large?: boolean }) {
+function PhoneQr({ auth, onOpenSettings, onPaired, onPhonePaired, given, large = false, shown = true }: { auth: HealthAuth | null; onOpenSettings: () => void; onPaired: () => void; onPhonePaired: (name: string) => void; given?: string; large?: boolean; shown?: boolean }) {
   const t = useT();
   const [access, setAccess] = useState<RemoteAccess | null | undefined>(undefined);
   useEffect(() => {
@@ -1026,6 +1026,9 @@ function PhoneQr({ auth, onOpenSettings, onPaired, onPhonePaired, given, large =
   const [failure, setFailure] = useState<string | null>(null);
   // this browser paired itself first (it was in only because nothing was paired yet)
   const [agreed, setAgreed] = useState(false);
+  // hidden behind another way's tab: the PC keeps one pairing code at a time, and that way (or Settings) may replace
+  // this one, so its code goes, and its device check with it; back in view, New code asks for one on a press
+  useEffect(() => { if (!shown) setCode(null); }, [shown]);
   const ready = mode === "qr" || (mode === "pair-self" && (!large || pairedHere || agreed));
   // the devices paired before this code: a new id among them later is the phone that used it
   const before = useRef<ReadonlySet<string> | null>(null);
@@ -1133,7 +1136,11 @@ function badgeSrc(store: Store, language: string): string {
   return `${import.meta.env.BASE_URL}store-badges/google-play-${lang}.png`;
 }
 
-/** A private LAN address this page was opened at (a phone on the same Wi-Fi opens it too), else null. */
+/**
+ * A private IPv4 LAN address or a .local name this page was opened at (a phone on the same Wi-Fi opens it too), else
+ * null. Deliberately narrow: an IPv6 link-local address needs a zone a phone's browser cannot type, and a bare machine
+ * name may not resolve on a phone; those pages keep the line that sends the user to another way.
+ */
 function wifiAddress(): string | null {
   const host = window.location.hostname;
   const lan = /^10\./.test(host) || /^192\.168\./.test(host) || /^172\.(1[6-9]|2\d|3[01])\./.test(host) || host.endsWith(".local");
@@ -1212,7 +1219,7 @@ interface MethodProps {
 }
 
 /** What a method shows once picked: its QR code, or the one step it needs first, or why it cannot here. Nothing starts until its own button is pressed. */
-function MethodPanel({ method, ...props }: MethodProps & { method: PhoneMethod }) {
+function MethodPanel({ method, shown = true, ...props }: MethodProps & { method: PhoneMethod; shown?: boolean }) {
   const t = useT();
   const relay = useRelay();
   if (method === "relay") {
@@ -1224,13 +1231,13 @@ function MethodPanel({ method, ...props }: MethodProps & { method: PhoneMethod }
   if (method === "wifi") {
     const address = wifiAddress();
     if (address === null) return <p className="setup-note"><Info aria-hidden="true" />{t("No Wi-Fi address to show here. Use Anywhere instead.")}</p>;
-    return <PhoneQr given={address} large auth={props.auth} onOpenSettings={props.onOpenSettings} onPaired={props.onPaired} onPhonePaired={props.onPhonePaired} />;
+    return <PhoneQr given={address} large shown={shown} auth={props.auth} onOpenSettings={props.onOpenSettings} onPaired={props.onPaired} onPhonePaired={props.onPhonePaired} />;
   }
-  return <TailscaleMethod {...props} />;
+  return <TailscaleMethod shown={shown} {...props} />;
 }
 
 /** Tailscale: the HTTPS address it already serves this PC at, the one command that makes it, or why it cannot. */
-function TailscaleMethod(props: MethodProps) {
+function TailscaleMethod(props: MethodProps & { shown?: boolean }) {
   const t = useT();
   const [access, setAccess] = useState<RemoteAccess | null | undefined>(undefined);
   const [copied, setCopied] = useState(false);
@@ -1241,7 +1248,7 @@ function TailscaleMethod(props: MethodProps) {
   }, []);
   if (access === undefined) return <p className="setup-muted"><LoaderCircle aria-hidden="true" className="setup-spin" /></p>;
   const plan = phonePlan({ protocol: window.location.protocol, hostname: window.location.hostname, origin: window.location.origin, secure: window.isSecureContext, shell: inRelayShell() }, access);
-  if (plan.kind === "here" || plan.kind === "served") return <PhoneQr given={plan.url} large auth={props.auth} onOpenSettings={props.onOpenSettings} onPaired={props.onPaired} onPhonePaired={props.onPhonePaired} />;
+  if (plan.kind === "here" || plan.kind === "served") return <PhoneQr given={plan.url} large shown={props.shown ?? true} auth={props.auth} onOpenSettings={props.onOpenSettings} onPaired={props.onPaired} onPhonePaired={props.onPhonePaired} />;
   if (plan.kind === "command") return (
     <div className="setup-method-step">
       <p className="setup-text">{t("Run this once on this PC.")}</p>
@@ -1328,7 +1335,7 @@ function PhonePanel(props: MethodProps) {
         <div id="setup-path-panel" role="tabpanel" aria-labelledby={`setup-path-tab-${method}`} className="setup-method-area" ref={area}>
           {store !== null && <StoreQr store={store} />}
           {/* a way once opened stays mounted while hidden: going back to it asks for no new code (one only on New code) */}
-          {opened.map((way) => <div key={way} hidden={store !== null || way !== method}><MethodPanel method={way} {...props} /></div>)}
+          {opened.map((way) => <div key={way} hidden={store !== null || way !== method}><MethodPanel method={way} shown={store === null && way === method} {...props} /></div>)}
         </div>
       </li>
     </ol>
