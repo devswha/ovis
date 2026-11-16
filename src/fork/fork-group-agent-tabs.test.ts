@@ -1,5 +1,6 @@
 import { expect, it } from "bun:test";
 import { groupAgentTabs } from "./groupAgentTabs.ts";
+import { movedTabOrder } from "../lib/tabOrder.ts";
 
 const tab = (id: string, workspace = "w") => ({ tab_id: id, workspace_id: workspace });
 const pane = (id: string, parent?: string, workspace = "w") => ({ pane_id: id, tab_id: id, workspace_id: workspace, parent_pane_id: parent });
@@ -14,6 +15,22 @@ it("folds children beside their parent in stable sibling order without changing 
   expect(grouped.parentOf.get("review")).toBe("parent");
   expect(ids(tabs)).toEqual(["review", "other", "parent", "implement"]);
   expect(groupAgentTabs(tabs, panes, false).tabs).toEqual(tabs);
+});
+
+it("moves a parent to its visible neighbour in one step, keeping children pinned", () => {
+  const tabs = [tab("parent"), tab("child"), tab("next"), tab("next-child"), tab("last")];
+  const panes = [pane("parent"), pane("child", "parent"), pane("next"), pane("next-child", "next"), pane("last")];
+  const group = groupAgentTabs(tabs, panes, true);
+  const boundary = group.adjacentBoundary("parent", 1);
+  expect(boundary).toBe(3);
+  const moved = movedTabOrder(ids(tabs), "parent", boundary!)!;
+  const reordered = moved.map((id) => tabs.find((tab) => tab.tab_id === id)!);
+  expect(ids(groupAgentTabs(reordered, panes, true).tabs)).toEqual(["next", "parent", "last"]);
+  expect(group.adjacentBoundary("next", -1)).toBe(0);
+  expect(group.adjacentBoundary("parent", -1)).toBeNull();
+  expect(group.adjacentBoundary("last", 1)).toBeNull();
+  expect(group.adjacentBoundary("child", 1)).toBeNull();
+  expect(groupAgentTabs(tabs, panes, false).adjacentBoundary("child", 1)).toBe(3);
 });
 
 it("keeps orphans, same-tab children, other workspaces and cycles as normal tabs", () => {
