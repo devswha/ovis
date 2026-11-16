@@ -4,9 +4,11 @@
  */
 import { FORK_I18N } from "./i18n.ts";
 import { FORK_FEATURE_I18N } from "./featureI18n.ts";
+import { GITHUB_I18N } from "./githubI18n.ts";
 
 export const FORK_ZH: Record<string, string> = {
   ...FORK_FEATURE_I18N.zh,
+  ...GITHUB_I18N.zh,
   ...FORK_I18N.zh,
   "Follow Omarchy": "跟随 Omarchy",
   "This device has not sent its Omarchy theme. Its theme-set hook (scripts/omarchy-theme-hook.sh) sends it whenever the theme changes.": "这台设备还没有发送它的 Omarchy 主题。它的 theme-set 钩子 (scripts/omarchy-theme-hook.sh) 会在每次换主题时发送。",

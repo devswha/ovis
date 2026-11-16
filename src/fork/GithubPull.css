@@ -72,7 +72,7 @@
   width: 1em;
   height: 1em;
   vertical-align: -0.15em;
-  animation: fork-github-spin 1s linear infinite;
+  animation: fork-github-spin 1s steps(8) infinite;
 }
 
 @keyframes fork-github-spin { to { transform: rotate(360deg); } }

@@ -8,7 +8,7 @@ const OWNERS: Record<string, string> = {
   "Pull requests…": "sidebar",
 };
 // Extracted components also use these upstream labels, so they are no longer private to one part.
-const SHARED = ["No microphone found", "Draft"];
+const SHARED = ["No microphone found", "Draft", "Closed", "Comment", "{count} comments", "This change can't be shown.", "Checks", "Merged", "Outdated", "Pull request", "Rebase and merge", "Squash and merge", "Overview"];
 
 /** Extend upstream dictionaries without changing their files or their ownership tests. */
 export function withForkI18n<T extends Parts>(parts: T, fork: Record<string, string>): T {
