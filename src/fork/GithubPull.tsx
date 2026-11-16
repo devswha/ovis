@@ -8,17 +8,8 @@ import type { WorktreeOpened } from "../../shared/protocol.ts";
 import { ApiError, createWorktree, fetchPullRequestBranch, getJson, listWorktrees, openWorktree } from "../lib/api.ts";
 import { useT, type Translate } from "../lib/i18n.ts";
 import { closeGithubPull } from "./GithubInbox.tsx";
+import { ago, GithubConversation } from "./GithubConversation.tsx";
 import "./GithubPull.css";
-
-/** "3 hours ago", in the browser's language. */
-function ago(iso: string): string {
-  const seconds = (Date.parse(iso) - Date.now()) / 1000;
-  const format = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
-  for (const [unit, size] of [["year", 31_536_000], ["month", 2_592_000], ["week", 604_800], ["day", 86_400], ["hour", 3_600], ["minute", 60]] as const) {
-    if (Math.abs(seconds) >= size) return format.format(Math.round(seconds / size), unit);
-  }
-  return format.format(0, "minute");
-}
 
 function stateOf(detail: GithubPullDetail, t: Translate) {
   if (detail.state === "merged") return { icon: GitMerge, label: t("Merged"), tone: "merged" };
@@ -159,7 +150,10 @@ export function GithubPullPage({ pull, wide, watching, onOpened }: { pull: Githu
             })}</ul>}
         </section>
         <section className="fork-github-body" aria-label={t("Description")}>
-          {detail.body.trim() ? <Markdown>{detail.body}</Markdown> : <p className="fork-github-pull-dim">{t("No description.")}</p>}
+          {detail.body.trim() ? <Markdown html>{detail.body}</Markdown> : <p className="fork-github-pull-dim">{t("No description.")}</p>}
+        </section>
+        <section className="fork-github-talk" aria-label={t("Conversation")}>
+          <GithubConversation entries={detail.conversation ?? []} />
         </section>
       </>}
     </div>

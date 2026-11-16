@@ -46,6 +46,24 @@ export interface GithubPullDetail {
   /** each reviewer's latest word, then who is still asked */
   reviewers: { login: string; state: "approved" | "changes_requested" | "commented" | "requested" }[];
   labels: { name: string; color: string }[];
+  /** comments, reviews and state changes, oldest first */
+  conversation: GithubEntry[];
+}
+
+export type GithubEntry =
+  | { kind: "comment"; author: string | null; at: string; body: string; url: string | null }
+  | { kind: "review"; author: string | null; at: string; state: "approved" | "changes_requested" | "commented" | "dismissed"; body: string; url: string | null; threads: GithubThread[] }
+  | { kind: "event"; author: string | null; at: string; event: "merged" | "closed" | "reopened" | "ready" | "draft" };
+
+/** Comments on lines of code, opened in one review and answered after it. */
+export interface GithubThread {
+  path: string;
+  line: number | null;
+  resolved: boolean;
+  outdated: boolean;
+  /** the last lines of the diff hunk the thread is on, as GitHub sends them (+, - or space first) */
+  hunk: string;
+  comments: { author: string | null; at: string; body: string }[];
 }
 
 export interface GithubCheck {

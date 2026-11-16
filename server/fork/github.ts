@@ -1,4 +1,4 @@
-import type { GithubCheck, GithubPull, GithubPullDetail, GithubPulls } from "../../shared/github.ts";
+import type { GithubCheck, GithubEntry, GithubPull, GithubPullDetail, GithubPulls, GithubThread } from "../../shared/github.ts";
 import type { SessionSnapshot } from "../../shared/protocol.ts";
 import { conflictResponse, jsonResponse } from "../http.ts";
 import { ghAccounts, originRepository, parsePullRequests, PullRequestError, runGithub } from "./pull-requests.ts";
@@ -126,6 +126,17 @@ const PULL_QUERY = `query($owner:String!,$name:String!,$number:Int!) { repositor
     __typename
     ... on CheckRun { name status conclusion startedAt completedAt detailsUrl isRequired(pullRequestNumber:$number) checkSuite { workflowRun { workflow { name } } } }
     ... on StatusContext { context state description targetUrl createdAt isRequired(pullRequestNumber:$number) } } } } } } }
+  timelineItems(last:100, itemTypes:[ISSUE_COMMENT, PULL_REQUEST_REVIEW, MERGED_EVENT, CLOSED_EVENT, REOPENED_EVENT, READY_FOR_REVIEW_EVENT, CONVERT_TO_DRAFT_EVENT]) { nodes {
+    __typename
+    ... on IssueComment { author { login } createdAt body url }
+    ... on PullRequestReview { id author { login } submittedAt createdAt state body url }
+    ... on MergedEvent { actor { login } createdAt }
+    ... on ClosedEvent { actor { login } createdAt }
+    ... on ReopenedEvent { actor { login } createdAt }
+    ... on ReadyForReviewEvent { actor { login } createdAt }
+    ... on ConvertToDraftEvent { actor { login } createdAt } } }
+  reviewThreads(last:100) { nodes { isResolved isOutdated path line originalLine
+    comments(first:50) { nodes { author { login } createdAt body diffHunk pullRequestReview { id } } } } }
 } } }`;
 
 type Context = {
@@ -163,6 +174,49 @@ export function countChecks(checks: GithubCheck[]): GithubPullDetail["checks"] {
   for (const check of checks) counts[check.outcome]++;
   return counts;
 }
+type Login = { login?: unknown } | null | undefined;
+const login = (who: Login): string | null => typeof who?.login === "string" ? who.login : null;
+const text = (value: unknown): string => typeof value === "string" ? value : "";
+/** The last few lines of a hunk: the ones a line comment sits under. */
+const hunkTail = (hunk: string): string => hunk.split("\n").filter((line) => !line.startsWith("@@")).slice(-4).join("\n");
+const EVENTS = { MergedEvent: "merged", ClosedEvent: "closed", ReopenedEvent: "reopened", ReadyForReviewEvent: "ready", ConvertToDraftEvent: "draft" } as const;
+const ENTRY_REVIEW = { APPROVED: "approved", CHANGES_REQUESTED: "changes_requested", COMMENTED: "commented", DISMISSED: "dismissed" } as const;
+
+/** The conversation, oldest first: each line thread under the review that opened it; a review that only answered threads, with nothing of its own, is left out. */
+export function parseConversation(timeline: any[], threads: any[]): GithubEntry[] {
+  const byReview = new Map<string, GithubThread[]>();
+  for (const thread of threads) {
+    const comments = (thread?.comments?.nodes ?? []).filter((comment: { createdAt?: unknown }) => typeof comment?.createdAt === "string");
+    const first = comments[0];
+    if (!first || typeof thread.path !== "string") continue;
+    const review = typeof first.pullRequestReview?.id === "string" ? first.pullRequestReview.id : "";
+    const list = byReview.get(review) ?? [];
+    list.push({
+      path: thread.path, line: thread.line ?? thread.originalLine ?? null, resolved: thread.isResolved === true, outdated: thread.isOutdated === true,
+      hunk: hunkTail(text(first.diffHunk)),
+      comments: comments.map((comment: { author?: Login; createdAt: string; body?: unknown }) => ({ author: login(comment.author), at: comment.createdAt, body: text(comment.body) })),
+    });
+    byReview.set(review, list);
+  }
+  const entries: GithubEntry[] = [];
+  for (const node of timeline) {
+    if (node?.__typename === "IssueComment" && typeof node.createdAt === "string") {
+      entries.push({ kind: "comment", author: login(node.author), at: node.createdAt, body: text(node.body), url: safeUrl(node.url) });
+    } else if (node?.__typename === "PullRequestReview") {
+      const state = ENTRY_REVIEW[node.state as keyof typeof ENTRY_REVIEW];
+      const at = node.submittedAt ?? node.createdAt;
+      const found = byReview.get(node.id) ?? [];
+      if (!state || typeof at !== "string" || (state === "commented" && !text(node.body).trim() && found.length === 0)) continue;
+      entries.push({ kind: "review", author: login(node.author), at, state, body: text(node.body), url: safeUrl(node.url), threads: found });
+    } else if (node?.__typename in EVENTS && typeof node.createdAt === "string") {
+      entries.push({ kind: "event", author: login(node.actor), at: node.createdAt, event: EVENTS[node.__typename as keyof typeof EVENTS] });
+    }
+  }
+  // GitHub closes a pull request as it merges it: the merge says it all.
+  const merged = new Set(entries.filter((entry) => entry.kind === "event" && entry.event === "merged").map((entry) => entry.at.slice(0, 16)));
+  return entries.filter((entry) => !(entry.kind === "event" && entry.event === "closed" && merged.has(entry.at.slice(0, 16))));
+}
+
 const MERGE = { CLEAN: "clean", HAS_HOOKS: "clean", DIRTY: "conflicts", BEHIND: "behind", BLOCKED: "blocked", UNSTABLE: "unstable", DRAFT: "draft" } as const;
 
 const REVIEW_STATES = { APPROVED: "approved", CHANGES_REQUESTED: "changes_requested", COMMENTED: "commented" } as const;
@@ -191,6 +245,7 @@ export function parseGithubPull(output: string, repository: string): GithubPullD
       checks: countChecks(checkList), check_list: checkList,
       merge: MERGE[pr.mergeStateStatus as keyof typeof MERGE] ?? "unknown",
       review: decision, reviewers,
+      conversation: parseConversation(pr.timelineItems?.nodes ?? [], pr.reviewThreads?.nodes ?? []),
       labels: (pr.labels?.nodes ?? []).filter((label: { name?: unknown }) => typeof label?.name === "string").map((label: { name: string; color?: string }) => ({ name: label.name, color: /^[0-9a-f]{6}$/i.test(label.color ?? "") ? label.color! : "888888" })),
     };
   } catch { throw unreadable(); }
