@@ -818,8 +818,15 @@ export function Composer({
   const waitingMentions = useRef<{ id: number; path: string; name: string }[]>([]);
   const placeWaitingMentions = useCallback(() => {
     if (waitingMentions.current.length === 0) return;
-    if (composingRef.current || /^\/\S*$/u.test(textRef.current)) return;
     syncPlaces(textRef.current);
+    // a finished upload whose draft was replaced has no place left: it is detached now, not after
+    // whatever the new text waits for (a lone /command, a composition), which would hold Send meanwhile
+    const placeless = waitingMentions.current.filter(({ id }) => !places.current.has(id) && !removedAttachments.current.has(id)).map(({ id }) => id);
+    if (placeless.length > 0) {
+      waitingMentions.current = waitingMentions.current.filter(({ id }) => !placeless.includes(id));
+      takeOut(placeless);
+    }
+    if (composingRef.current || /^\/\S*$/u.test(textRef.current)) return;
     const waiting = waitingMentions.current.sort((a, b) => a.id - b.id);
     waitingMentions.current = [];
     const attached: string[] = [];
@@ -834,7 +841,8 @@ export function Composer({
       if (place !== undefined) {
         const selected = readSelection();
         // a selection across the place: the path goes before it, at the start of its first word, and the
-        // selection stays on the same text; typing over it never deletes the path, and nothing waits
+        // selection stays on the same text, so typing over it leaves the path; nothing waits. (A selection
+        // that starts inside a leading /command is the exception: the path goes after the command, inside it)
         let at = selected.start < place && place < selected.end ? selected.start : place;
         if (at !== place) while (at > 0 && /\S/u.test(textRef.current[at - 1]!)) at--;
         // never inside a path already placed: it goes to the front of that one, which stays whole
@@ -1002,7 +1010,7 @@ export function Composer({
     setNote((current) => typeof current === "object" && current !== null && "failure" in current && current.attachment.id === attachment.id ? null : current);
     if (inserted) {
       setText((current) => {
-        const { text: next, edit } = removeMention(current, inserted);
+        const { text: next, edit } = removeMention(current, inserted, [...placed.current.values()]);
         movePlaces(edit, next);
         textRef.current = next;
         caretRef.current = Math.min(caretRef.current, next.length);

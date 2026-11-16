@@ -435,6 +435,17 @@ describe("removeMention (#3216)", () => {
     expect(removed("before \nafter", 7)).toBe("before \nafter");
     expect(removed("see @/tmp/1.png x", 17)).toBe("see @/tmp/1.png x");
   });
+
+  it("keeps one space when taking both of its own would glue another placed path to a word", () => {
+    const second = imageMention("/tmp/2.png");
+    const first = insertMentionAt("see", mention, 3);
+    const both = insertMentionAt(first.text, second, first.text.length);
+    expect(both.text).toBe("see @/tmp/1.png @/tmp/2.png ");
+    const kept = placedMention(both, second);
+    expect(removeMention(both.text, placedMention(first, mention), [kept]).text).toBe("see @/tmp/2.png ");
+    // with no other path beside it, the word split by the paste comes back as it was
+    expect(removeMention(first.text, placedMention(first, mention), [kept]).text).toBe("see");
+  });
 });
 
 describe("followMention (#3216)", () => {

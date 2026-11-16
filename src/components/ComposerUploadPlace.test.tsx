@@ -623,3 +623,56 @@ it.each([["pasted", "paste"], ["picked", "pick"]] as const)("keeps a placed path
   await act(async () => { button("Remove b.png").props.onClick(); });
   expect(box().props.value).toBe("see ");
 });
+
+// Remove never glues the path beside it to a word: one space stays, and that file stays attached
+it.each([
+  ["two files picked together at the end of a word", async () => { await type("x", 1); await pick(1, "one", "two"); await finish("one"); await finish("two"); }],
+  ["a second file pasted at the end of the first one's path", async () => {
+    await type("x", 1);
+    await paste(1, "one");
+    await finish("one");
+    element.value = box().props.value as string;
+    await paste(1 + ` @${path("one")}`.length, "two");
+    await finish("two");
+  }],
+] as const)("keeps the other path apart from the word before it when the first is removed: %s", async (_name, setUp) => {
+  await open();
+  await setUp();
+  expect(box().props.value).toBe(`x @${path("one")} @${path("two")} `);
+  await act(async () => { button("Remove one.png").props.onClick(); });
+  expect(box().props.value).toBe(`x @${path("two")} `);
+  expect(badges()).toEqual(["ready"]);
+  expect(sendOff()).toBe(false);
+});
+
+// a finished upload whose draft another tab replaced with a lone /command is detached at once: Send is not held
+it("detaches a finished upload at once when another tab replaced its draft with a lone /command, and holds no Send", async () => {
+  await open();
+  await type("hello", 5);
+  await paste(5, "shot");
+  await writeInOtherTab("/help");
+  await finish("shot");
+  expect(box().props.value).toBe("/help");
+  expect(tiles()).toBe(0);
+  expect(sendOff()).toBe(false);
+  expect(announced()).toBe("shot.png detached from the message");
+});
+
+// the space before a path that another path went in front of is now that path's: Remove never takes it
+it("keeps the front path apart from the next word when the path it went in front of is removed", async () => {
+  await open();
+  await type("see", 3);
+  await paste(3, "a");
+  await finish("a");
+  const a = `@${path("a")}`;
+  await type(`see ${a} more`);
+  element.value = box().props.value as string;
+  await paste(4 + "@/tmp/".length, "b");
+  await finish("b");
+  const b = `@${path("b")}`;
+  expect(box().props.value).toBe(`see ${b} ${a} more`);
+  await act(async () => { button("Remove a.png").props.onClick(); });
+  expect(box().props.value).toBe(`see ${b} more`);
+  expect(badges()).toEqual(["ready"]);
+  expect(sendOff()).toBe(false);
+});

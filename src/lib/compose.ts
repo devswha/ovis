@@ -352,11 +352,17 @@ export function mentionWhole(text: string, mention: PlacedMention): boolean {
 
 /**
  * The text without a placed path, whole or what is left of it, and the edit that takes it out: with
- * the spaces the upload added and none the user typed (a path the user typed elsewhere stays).
+ * the spaces the upload added and none the user typed (a path the user typed elsewhere stays). One
+ * of its spaces stays when taking both would glue one of the `others` placed paths to a word, so
+ * that path stays whole.
  */
-export function removeMention(text: string, mention: PlacedMention): { text: string; edit: TextEdit } {
-  const start = mention.lead && text[mention.start - 1] === " " ? mention.start - 1 : mention.start;
-  const stop = mention.trail && text[mention.end] === " " ? mention.end + 1 : mention.end;
+export function removeMention(text: string, mention: PlacedMention, others: readonly PlacedMention[] = []): { text: string; edit: TextEdit } {
+  let start = mention.lead && text[mention.start - 1] === " " ? mention.start - 1 : mention.start;
+  let stop = mention.trail && text[mention.end] === " " ? mention.end + 1 : mention.end;
+  const glued = /\S/u.test(text[start - 1] ?? " ") && /\S/u.test(text[stop] ?? " ")
+    && others.some((other) => other.start === stop || other.end === start);
+  if (glued && stop > mention.end) stop--;
+  else if (glued && start < mention.start) start++;
   return { text: text.slice(0, start) + text.slice(stop), edit: { start, removed: stop - start, inserted: 0 } };
 }
 
