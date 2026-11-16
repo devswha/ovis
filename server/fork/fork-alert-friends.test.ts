@@ -46,7 +46,8 @@ test("a sub-agent's push alert is held back while sub-agents are muted, and its 
   const dir = mkdtempSync(join(tmpdir(), "alert-helpers-"));
   dirs.push(dir);
   const fake = await startFakePushService();
-  let muteSubAgents = true;
+  // unset, as on a server no browser has sent the setting to: muted
+  let muteSubAgents: boolean | undefined;
   const push = createPushService({
     stateDir: dir, loopbackHttp: true, timing: { short: 0, long: 0, longTurn: 0 },
     muted: (_machine, _id, seen) => helperAlertsMuted(muteSubAgents, seen),

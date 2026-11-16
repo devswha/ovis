@@ -136,6 +136,12 @@ Hooks added/changed by this task (upstream files only):
   row-class suffix. Fork diff **+2/-1 → +8/-6** (first review **+7/-5**).
 - `src/App.tsx`: one import plus one `ForkInboxBack` mount in the existing inbox-only branch, `ForkSidebarFoot` wrapping the sidebar foot's `InboxFootEntry`, and `ForkInboxFoot` wrapping the wide inbox's `InboxRail` (`src/fork/inbox/SidebarFoot.tsx`): the places (workspaces, agent inbox, Pull requests) become icons at the end of the gear's row, and with Settings → Fork features → Inbox footer on, the agent inbox's column drops the rail for that same foot under its list, with the gear, plan meters and the agents that wait (alerts and the PCs menu are left out). That foot is upstream's own, extracted from `MachineSidebar.tsx` into `src/components/SidebarFooter.tsx` (a move, a candidate upstream PR; its row sizes move from `.sidebar-shell` to a shared rule in `Sidebar.css`), so both columns render the same component. `useForkInboxStatusBar` adds the open inbox thread to where `statusBarShown` holds, so with Inbox footer on that thread ends in the workspaces view's status bar too (not while Pull requests is up). CSS in `src/fork/github/GithubInbox.css`.
   Fork diff **+43/-62 → +45/-63**.
+- Mute sub-agents (Settings → Fork features, on by default): `shared/fork/alerts.ts` `helperAlertsMuted` mutes a
+  pane with a `parent_pane_id` on every channel. Hooks: `server/core/status.ts` (the push `muted` option),
+  `server/push.ts` (passes the pane to `muted`), `src/lib/useAlertSignals.ts` (one `paneMuted` for its three checks)
+  and `shared/preferences.ts` (`FORK_SHARED_SETTING_KEYS`, so the server reads the setting; unset counts as on).
+- `src/components/Markdown.tsx`: one `openPullLink` call in the link click handler (`src/fork/github/pullLinks.ts`): a
+  plain click on a github.com pull request link opens its page in the Pull requests view (`GithubInbox.tsx`).
 - `src/components/InboxRail.tsx`: one import plus a two-line `ForkInboxBack` wrapper around
   upstream's exit button (its fallback). Fork diff **0 → +3/-0**. Upstream now hides App's header in
   inbox mode, so this additional mount is needed for the requested desktop exit to actually appear.
