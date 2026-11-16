@@ -986,7 +986,7 @@ describe.skipIf(platform() === "win32")("a machine profile, under the fleet prev
     }
   }, 60_000);
 
-  it("is asked on its TCP port when the preview is off, OVIS_PROFILE is not machine, or its record is missing, unreadable, names no door or another socket than its own: no socket is asked", async () => {
+  it("is asked on its TCP port when the preview is off or OVIS_PROFILE is not machine; with both, a record that is missing, unreadable, names no door or another socket than its own leaves it not running and asks nothing", async () => {
     const elsewhere = join(scratch, "elsewhere", "serve.sock");
     const linked = join(scratch, "linked-state");
     const ways: [string, Record<string, string | undefined>, Record<string, unknown> | string | null, { at?: string; named?: string }?][] = [
@@ -1015,19 +1015,52 @@ describe.skipIf(platform() === "win32")("a machine profile, under the fleet prev
         expect([label, status.out.split("\n")[0], add.err, add.exitCode]).toEqual([label, `down http://127.0.0.1:${pc.port}`, `Ovis is not running at http://127.0.0.1:${pc.port}; start it first\n`, 1]);
         printed(pc, status, add);
       } finally { await pc.stop(); }
-      expect([label, pc.calls]).toEqual([label, [
+      // with both switches the health check goes to the owner socket only: none here, so nothing is asked
+      const both = !("OVIS_PREVIEW" in change) && !("OVIS_PROFILE" in change);
+      expect([label, pc.calls]).toEqual([label, !both ? [
         { door: "tcp", call: "GET /api/health", host: `127.0.0.1:${pc.port}`, origin: null },
         { door: "tcp", call: "GET /api/health", host: `127.0.0.1:${pc.port}`, origin: null },
-      ]]);
+      ] : []]);
     }
   }, 90_000);
+
+  it("takes the health check on the owner socket only: an app answering full health on the TCP port is not taken, and gets no request", async () => {
+    // a state folder that fails the profile's own check, and an ordinary app's full health on the port
+    const pc = profilePc({ door: 1 }, { folderMode: 0o777, tcp: true });
+    try {
+      const status = await run("status", pc.env);
+      const pair = await run("pair", pc.env);
+      expect([status.out.split("\n")[0], pair.err, pair.exitCode]).toEqual([`down http://127.0.0.1:${pc.port}`, `Ovis is not running at http://127.0.0.1:${pc.port}; start it first\n`, 1]);
+      printed(pc, status, pair);
+    } finally { await pc.stop(); }
+    expect(pc.calls).toEqual([]);
+  }, 30_000);
+
+  it("does not take an app on the PORT it was given for the profile when starting, and starts nothing", async () => {
+    const pc = profilePc({ door: 1 }, { folderMode: 0o777 });
+    const asked: string[] = [];
+    // an ordinary app on the port: bridge health and full health
+    const app = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (request) => {
+      asked.push(`${request.method} ${new URL(request.url).pathname}${new URL(request.url).search}`);
+      return Response.json(new URL(request.url).searchParams.get("scope") === "bridge" ? BRIDGE_HEALTH : APP_HEALTH);
+    } });
+    try {
+      pc.settings();
+      writeFileSync(join(configDir, ".env"), `PORT=${app.port}\n`);
+      const started = await run("start", pc.env);
+      expect([started.exitCode, started.out.includes("already running")], started.out + started.err).toEqual([1, false]);
+      expect(started.err).toContain(`port ${app.port} on 127.0.0.1 cannot be opened`);
+      expect(existsSync(join(scratch, "state", "server.pid"))).toBe(false);
+    } finally { await app.stop(true); await pc.stop(); }
+    expect([asked, pc.calls]).toEqual([[], []]);
+  }, 30_000);
 
   it.each([
     ["serve.sock is a link to a socket elsewhere, in a 0700 folder", { linked: true }],
     ["serve.sock is a link to a socket elsewhere, in a 0777 folder", { linked: true, folderMode: 0o777 }],
     ["the record and the socket are in a 0777 folder", { folderMode: 0o777 }],
     ["the record and the socket are in a 0700 folder inside a 0777 folder", { parentMode: 0o777 }],
-  ] as const)("takes no owner socket when %s: the state folder must pass the profile's own check and serve.sock be a socket this account owns, else TCP", async (_label, how) => {
+  ] as const)("takes no owner socket when %s: the state folder must pass the profile's own check and serve.sock be a socket this account owns, else it is not running", async (_label, how) => {
     const pc = profilePc({ door: 1 }, how);
     try {
       const status = await run("status", pc.env);
@@ -1035,7 +1068,7 @@ describe.skipIf(platform() === "win32")("a machine profile, under the fleet prev
       expect([status.out.split("\n")[0], pair.err, pair.exitCode]).toEqual([`down http://127.0.0.1:${pc.port}`, `Ovis is not running at http://127.0.0.1:${pc.port}; start it first\n`, 1]);
       printed(pc, status, pair);
     } finally { await pc.stop(); }
-    expect(pc.calls.map((call) => `${call.door} ${call.call}`)).toEqual(["tcp GET /api/health", "tcp GET /api/health"]);
+    expect(pc.calls).toEqual([]);
   }, 30_000);
 
   it("takes its own socket in a state folder that passes the profile's own check", async () => {
@@ -1046,7 +1079,7 @@ describe.skipIf(platform() === "win32")("a machine profile, under the fleet prev
     expect(pc.calls.map((call) => `${call.door} ${call.call}`)).toEqual(["socket GET /api/health"]);
   }, 30_000);
 
-  it("does not wait for a writer when the record is a FIFO: status answers from TCP", async () => {
+  it("does not wait for a writer when the record is a FIFO: status says down at once", async () => {
     const pc = profilePc();
     try {
       const record = join(pc.state, "serve.lock", "http.json");
@@ -1056,7 +1089,7 @@ describe.skipIf(platform() === "win32")("a machine profile, under the fleet prev
       const status = await run("status", pc.env, { timeout: 20_000 });
       expect([status.out.split("\n")[0], status.exitCode], status.err).toEqual([`down http://127.0.0.1:${pc.port}`, 0]);
     } finally { await pc.stop(); }
-    expect(pc.calls.map((call) => `${call.door} ${call.call}`)).toEqual(["tcp GET /api/health"]);
+    expect(pc.calls).toEqual([]);
   }, 30_000);
 
   it("takes no record larger than 4 KiB", async () => {
@@ -1069,7 +1102,7 @@ describe.skipIf(platform() === "win32")("a machine profile, under the fleet prev
       writeFileSync(join(pc.state, "serve.lock", "http.json"), own);
       expect((await run("status", pc.env)).out.split("\n")[0]).toBe(`running http://127.0.0.1:${pc.port}`);
     } finally { await pc.stop(); }
-    expect(pc.calls.map((call) => `${call.door} ${call.call}`)).toEqual(["tcp GET /api/health", "socket GET /api/health"]);
+    expect(pc.calls.map((call) => `${call.door} ${call.call}`)).toEqual(["socket GET /api/health"]);
   }, 30_000);
 
   it("keeps the door a command's health check passed on: with the record gone after that, the later requests of pair, pair --approve and phone-setup still go to the socket", async () => {
@@ -1213,7 +1246,7 @@ describe.skipIf(platform() === "win32")("a machine profile, under the fleet prev
       rmSync(join(scratch, "herdr.sock"), { force: true });
       const down = await run("status", env);
       expect(down.out.split("\n").slice(0, 2), down.err).toEqual([`running http://127.0.0.1:${server.port}`, "engine: down (herdr is not running for the selected session)"]);
-      // control: the same profile with no door in its record is asked on TCP, which answers liveness only
+      // control: the same profile with no door in its record is not taken as running (its TCP port is not asked)
       writeFileSync(join(state, "serve.lock", "http.json"), JSON.stringify({ port: server.port, hostname: "127.0.0.1", socket }));
       expect((await run("status", env)).out.split("\n")[0]).toBe(`down http://127.0.0.1:${server.port}`);
     } finally {

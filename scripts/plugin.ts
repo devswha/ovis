@@ -226,10 +226,11 @@ function profileRecord(path: string): unknown {
  * the requests to the server go to that socket, addressed as `http://localhost`, the one Host and Origin it takes
  * there. The plugin takes the socket only when the state folder passes the profile's own check (server/machine-profile.ts
  * stateDirRefusal), the record names `serve.sock` in the folder's real path, as the profile names it, and `serve.sock`
- * is a socket this account owns and no group or other may write to, not a link. Otherwise null, and the requests go to
- * `origin` over TCP, also when the record is missing, unreadable, larger than RECORD_MAX_BYTES, not a regular file,
- * names no door or another socket, or the folder is absent. Read until a health check passes (serverDoor): the record is
- * written once the server listens.
+ * is a socket this account owns and no group or other may write to, not a link. Otherwise null, also when the record is
+ * missing, unreadable, larger than RECORD_MAX_BYTES, not a regular file, names no door or another socket, or the folder
+ * is absent: the server then counts as not running (appHealth), and no request goes to it. Without the profile, null at
+ * once, and the requests go to `origin` over TCP. Read until a health check passes (serverDoor): the record is written
+ * once the server listens.
  */
 function ownerDoor(): string | null {
   if (!machineProfile) return null;
@@ -305,14 +306,16 @@ async function pairingParts(): Promise<{ qr: (text: string) => string; decodeOff
 }
 
 /**
- * The server's health, when the app answers it; null otherwise. On a machine profile's owner socket the answer also
- * counts without `herdr` when it carries `machine_profile` with `runtime_down` (server/machine-profile.ts machineHealth):
- * the profile runs, and `engineDown` is its reason while its engine does not answer ("" with none given). Over TCP
- * `engineDown` is always null.
+ * The server's health, when the app answers it; null otherwise. For a machine profile it is asked on the owner socket
+ * only: with no socket the plugin may take (ownerDoor), it is null and nothing is sent, since the profile answers its
+ * TCP port with liveness only. There the answer also counts without `herdr` when it carries `machine_profile` with
+ * `runtime_down` (server/machine-profile.ts machineHealth): the profile runs, and `engineDown` is its reason while its
+ * engine does not answer ("" with none given). Over TCP `engineDown` is always null.
  */
 async function appHealth(): Promise<{ readonly engineDown: string | null } | null> {
   // the door the request goes to and the answer is judged by: decided once, and kept for the command once it passes
   const door = serverDoor();
+  if (machineProfile && door === null) return null;
   try {
     const response = await serverFetch("/api/health", { signal: AbortSignal.timeout(1500) }, door);
     if (!response.ok) return null;
@@ -546,8 +549,9 @@ async function settlePort(): Promise<"ready" | "running" | "failed"> {
     if (await health()) return "running";
     await Bun.sleep(250);
   }
-  // the app holds the port but cannot reach herdr: another port would put a second server beside it (#428)
-  if (await appOnPort()) {
+  // the app holds the port but cannot reach herdr: another port would put a second server beside it (#428). A machine
+  // profile answers its TCP port with liveness only, so for one the app found there is another server
+  if (!machineProfile && await appOnPort()) {
     if (await health()) return "running";
     const why = await healthError();
     if (why === null) return "running";

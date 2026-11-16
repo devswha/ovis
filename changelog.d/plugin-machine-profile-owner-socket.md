@@ -9,6 +9,8 @@
   requests. The plugin takes the socket only when the state folder passes the profile's own check
   and `serve.sock` is a socket this account owns, and reads the record only as a regular file of
   at most 4 KiB. A profile whose herdr does not answer counts as running, and `status` adds
-  `engine: down` with the profile's reason. Without the preview, without `OVIS_PROFILE=machine`,
-  or without a readable record there that names that socket (`door: 1`), the plugin uses the TCP
-  port as before.
+  `engine: down` with the profile's reason. With both, the server counts as running only when it
+  answers on that socket: without a readable record that names it (`door: 1`), or a socket the
+  plugin takes, it is not running and the plugin sends it nothing, and `start` does not take an app
+  it finds on the port for the profile. Without the preview or without `OVIS_PROFILE=machine`, the
+  plugin uses the TCP port as before.
