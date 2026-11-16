@@ -246,6 +246,15 @@ describe("a desktop link to a pane the cached roster lacks", () => {
     expect(shown).toEqual({ pane: "t5", note: "pane-closed" });
   });
 
+  it("selects a live pane by its hyphenated workspace id when that workspace was renamed and its old name given to another", async () => {
+    // the app wrote `?ws=<gamma>-alpha` while gamma was "alpha"; gamma is now "gamma", and "alpha" is workspace 3
+    answer("roster");
+    await mount();
+    await act(async () => { take(linkTarget(`?ws=${gamma}-alpha&pane=t5`)!); });
+    expect(shown).toEqual({ pane: "t5", note: null });
+    expect(misses).toBe(0);
+  });
+
   it("keeps the workspace-closed note and the fallback for a hyphenated id no workspace has", async () => {
     answer("roster");
     await mount();

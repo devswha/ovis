@@ -199,7 +199,8 @@ export function resolveLink(snapshot: Pick<SessionSnapshot, "workspaces" | "pane
 /**
  * The link with the workspace id as the roster holds it. readLink cuts `ws` at its first hyphen,
  * but herdr-core's ids hold hyphens (`ovis-<uuid>`): when no workspace has the cut id, the whole
- * value is a workspace's id, or its id followed by the slug.
+ * value is a workspace's id, or its id followed by the slug. Such an id is never handed out again,
+ * so it alone names the workspace: its slug is dropped, never preferred as a short id's is.
  */
 function withRosterId<T extends Pick<AppLink, "workspace" | "workspaceSlug">>(snapshot: Pick<SessionSnapshot, "workspaces">, link: T): T {
   if (!link.workspace || !link.workspaceSlug || snapshot.workspaces.some((candidate) => candidate.workspace_id === link.workspace)) return link;
@@ -207,7 +208,7 @@ function withRosterId<T extends Pick<AppLink, "workspace" | "workspaceSlug">>(sn
   const id = snapshot.workspaces.map((candidate) => candidate.workspace_id)
     .filter((candidate) => whole === candidate || whole.startsWith(`${candidate}-`))
     .sort((one, other) => other.length - one.length)[0];
-  return id === undefined ? link : { ...link, workspace: id, workspaceSlug: whole.slice(id.length + 1) || null };
+  return id === undefined ? link : { ...link, workspace: id, workspaceSlug: null };
 }
 
 /** Whether going from one place to another is a move the history keeps (another pane or PC). */
