@@ -144,6 +144,35 @@ try {
                 return names.includes(neighbour) && names.indexOf("QA implementer") < names.indexOf(neighbour);
               }, next);
               assert.equal(await chip.getAttribute("aria-selected"), "true", "dragging does not select another child");
+              if (children === 2) {
+                await row.getByRole("tab", { name: "QA parent", exact: true }).click();
+                const area = (await page.locator(".pane-split").boundingBox())!;
+                const source = (await chip.boundingBox())!;
+                const start = { x: source.x + source.width / 2, y: source.y + source.height / 2 };
+                const end = { x: area.x + area.width * 0.8, y: area.y + area.height / 2 };
+                const guide = page.locator(".split-drop.is-visible");
+                await page.mouse.move(start.x, start.y);
+                await page.mouse.down();
+                await page.mouse.move(end.x, end.y, { steps: 6 });
+                await guide.waitFor({ timeout: 5_000 });
+                await page.mouse.move(start.x, start.y, { steps: 6 });
+                await guide.waitFor({ state: "hidden" });
+                await page.mouse.move(end.x, end.y, { steps: 6 });
+                await guide.waitFor();
+                await page.keyboard.press("Escape");
+                await page.mouse.up();
+                await guide.waitFor({ state: "hidden" });
+                assert.equal(await page.locator(".pane-split.is-split").count(), 0, "Escape cancels the split drag");
+                await page.mouse.move(start.x, start.y);
+                await page.mouse.down();
+                await page.mouse.move(end.x, end.y, { steps: 6 });
+                await guide.waitFor();
+                await page.mouse.up();
+                await page.locator(".pane-split.is-split").waitFor();
+                await page.locator(`[data-layout-pane=${JSON.stringify(panes.api)}]`).waitFor({ state: "visible" });
+                await page.locator(`[data-layout-pane=${JSON.stringify(panes.web)}]`).waitFor({ state: "visible" });
+                await guide.waitFor({ state: "hidden" });
+              }
             }
             if (process.env.UI_EVIDENCE_DIR && children === 2) {
               mkdirSync(process.env.UI_EVIDENCE_DIR, { recursive: true });

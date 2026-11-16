@@ -6,6 +6,7 @@ import type { HerdrPane, PaneInfo, SessionSnapshot, WorkspaceInfo } from "../../
 import { AppLayoutContext, appLayoutOf, type LayoutOffer } from "../lib/machineContext.tsx";
 import { SettingsProvider } from "../lib/settings.ts";
 import { setSidebarPins } from "../lib/sidebarPins.ts";
+import { paneDrag } from "../lib/paneDrag.ts";
 import { RowMenu } from "./RowMenu.tsx";
 import { TabStrip, type TabStripProps } from "./TabStrip.tsx";
 
@@ -46,7 +47,7 @@ describe("the tab strip on a PC the Herdr app lays out", () => {
   let activeTab: { dataset: { tabId: string } };
 
   beforeEach(() => {
-    for (const key of ["window", "document", "navigator", "getComputedStyle", "localStorage", "HTMLElement", "CSS", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    for (const key of ["window", "document", "navigator", "getComputedStyle", "localStorage", "HTMLElement", "CSS", "IS_REACT_ACT_ENVIRONMENT", "requestAnimationFrame", "cancelAnimationFrame"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     stored.clear();
     requested = [];
     activeTab = { dataset: { tabId: "w1:t1" } };
@@ -55,6 +56,8 @@ describe("the tab strip on a PC the Herdr app lays out", () => {
     media = { matches: false, addEventListener() {}, removeEventListener() {} };
     const define = (key: string, value: unknown) => Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
     define("IS_REACT_ACT_ENVIRONMENT", true);
+    define("requestAnimationFrame", () => 1);
+    define("cancelAnimationFrame", () => {});
     define("HTMLElement", class HTMLElement {});
     define("CSS", { escape: (value: string) => value });
     define("localStorage", storage);
@@ -131,6 +134,37 @@ describe("the tab strip on a PC the Herdr app lays out", () => {
       await draw(TUI, undefined, undefined, { phoneRow: true, snapshot: { ...snapshot, tabs: snapshot.tabs.filter((tab) => tab.tab_id !== child.tab_id) } });
       expect(renderer!.root.findAllByType(RowMenu)).toHaveLength(0);
     } finally { delete child.parent_pane_id; }
+  });
+
+  it("drags a folded child out to split, back to the strip, or cancels without selecting it", async () => {
+    const child = { ...snapshot.panes[1]!, parent_pane_id: snapshot.panes[0]!.pane_id } as HerdrPane;
+    const grouped = { ...snapshot, panes: [snapshot.panes[0]!, child, snapshot.panes[2]!] };
+    stored.set("ovis:settings", JSON.stringify({ agentFriends: true }));
+    const drops: unknown[] = [];
+    let selected = false;
+    paneDrag.onDrop((...args) => drops.push(args));
+    try {
+      await draw(TUI, undefined, undefined, { snapshot: grouped, splitDrag: true, onSelectPane: () => { selected = true; } });
+      const chip = renderer!.root.findByProps({ "data-tab-id": child.tab_id });
+      const event = { ...noKeys, pointerType: "mouse", pointerId: 1, button: 0, isPrimary: true, clientX: 0, clientY: 0,
+        currentTarget: { ...node(), setPointerCapture() {}, hasPointerCapture: () => false } };
+      await act(async () => chip.props.onPointerDown(event));
+      await act(async () => chip.props.onPointerMove({ ...event, clientY: 70 }));
+      expect(paneDrag.snapshot()).toEqual({ target: { machineId: "local", paneId: child.pane_id }, point: { x: 0, y: 70 } });
+      await act(async () => chip.props.onPointerMove(event));
+      expect(paneDrag.snapshot()?.point).toBeNull();
+      await act(async () => chip.props.onPointerMove({ ...event, clientY: 70 }));
+      await act(async () => chip.props.onPointerUp({ ...event, clientY: 70 }));
+      expect(drops).toEqual([[{ machineId: "local", paneId: child.pane_id }, 0, 70]]);
+      expect(paneDrag.snapshot()).toBeNull();
+      await act(async () => chip.props.onClick({ ...event, detail: 1 }));
+      expect(selected).toBe(false);
+      await act(async () => chip.props.onPointerDown(event));
+      await act(async () => chip.props.onPointerMove({ ...event, clientY: 70 }));
+      await act(async () => chip.props.onPointerCancel());
+      expect(paneDrag.snapshot()).toBeNull();
+      expect(drops).toHaveLength(1);
+    } finally { paneDrag.cancel(); paneDrag.onDrop(null); }
   });
 
   for (const action of ["menu", "keyboard", "drag"]) it(`moves children among siblings using ${action}, never among root tabs`, async () => {
