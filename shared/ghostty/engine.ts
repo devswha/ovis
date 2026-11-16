@@ -15,6 +15,7 @@ export interface TypeLayout {
   types: Record<string, { values?: Record<string, number>; fields?: Record<string, { offset: number }>; bits?: Record<string, Bits> }>;
 }
 
+// every wasm function the core calls is declared here: the compiler and ENGINE_FUNCTIONS are the guard
 export interface GhosttyExports {
   memory: WebAssembly.Memory;
   ghostty_type_json(): number;
@@ -145,10 +146,9 @@ export const STYLE_STRIKE = 1 << 6;
 export const STYLE_UNDERLINE_MASK = 0x7 << 8;
 
 /** The type layout the module reports, as ghostty_type_json() returns it. */
-export function readTypeLayout(exports: WebAssembly.Exports): TypeLayout {
-  const x = exports as unknown as Pick<GhosttyExports, "memory" | "ghostty_type_json">;
-  const ptr = x.ghostty_type_json();
-  const bytes = new Uint8Array(x.memory.buffer, ptr);
+export function readTypeLayout(exports: Pick<GhosttyExports, "memory" | "ghostty_type_json">): TypeLayout {
+  const ptr = exports.ghostty_type_json();
+  const bytes = new Uint8Array(exports.memory.buffer, ptr);
   return JSON.parse(new TextDecoder().decode(bytes.subarray(0, bytes.indexOf(0)))) as TypeLayout;
 }
 
@@ -167,9 +167,10 @@ export class GhosttyModule {
   readonly fields: Resolved<typeof ENGINE_FIELDS>;
   readonly bit: Record<"codepoint" | "content_tag" | "wide" | "style_id", Bits>;
 
-  constructor(instance: WebAssembly.Instance | WebAssembly.Exports) {
+  constructor(instance: WebAssembly.Instance | WebAssembly.Instance["exports"]) {
+    // the one place untyped exports are taken as GhosttyExports; the `engine exports` test checks them against the module
     this.exports = (instance instanceof WebAssembly.Instance ? instance.exports : instance) as unknown as GhosttyExports;
-    const layout = readTypeLayout(this.exports as unknown as WebAssembly.Exports);
+    const layout = readTypeLayout(this.exports);
     this.enums = resolve(ENGINE_ENUMS, (type, name) => layout.types[type]?.values?.[name]);
     this.fields = resolve(ENGINE_FIELDS, (type, name) => layout.types[type]?.fields?.[name]?.offset);
     const cell = layout.types["GhosttyCell"]?.bits;

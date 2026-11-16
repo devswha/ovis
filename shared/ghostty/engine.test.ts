@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { join } from "node:path";
 
-import { ENGINE_ENUMS, ENGINE_FIELDS, ENGINE_FUNCTIONS, GhosttyEngine, GhosttyModule, readTypeLayout, type GhosttyRun } from "./engine.ts";
+import { ENGINE_ENUMS, ENGINE_FIELDS, ENGINE_FUNCTIONS, GhosttyEngine, GhosttyModule, readTypeLayout, type GhosttyExports, type GhosttyRun } from "./engine.ts";
 
 const repo = join(import.meta.dir, "../..");
 const wasmPath = join(import.meta.dir, "ghostty-vt.wasm");
@@ -17,7 +17,7 @@ describe("shared/ghostty engine", () => {
   it("engine exports", () => {
     const exported = new Set(WebAssembly.Module.exports(wasm).map((entry) => entry.name));
     expect(Object.keys(ENGINE_FUNCTIONS).filter((name) => !exported.has(name))).toEqual([]);
-    const layout = readTypeLayout(instantiate().exports);
+    const layout = readTypeLayout(instantiate().exports as unknown as GhosttyExports);
     const unresolved = [
       ...Object.entries(ENGINE_ENUMS).flatMap(([type, names]) =>
         names.filter((name) => layout.types[type]?.values?.[name] === undefined).map((name) => `${type}.${name}`)),
@@ -49,7 +49,7 @@ describe("shared/ghostty engine", () => {
   });
 
   it("engine names a type name the module does not have", () => {
-    const exports = instantiate().exports as WebAssembly.Exports & { memory: WebAssembly.Memory; ghostty_wasm_alloc(len: number): number };
+    const exports = new GhosttyModule(instantiate()).exports;
     const layout = readTypeLayout(exports);
     delete layout.types["GhosttyTerminalOption"]!.values!["SCROLLBACK_MAX_LINES"];
     const json = new TextEncoder().encode(`${JSON.stringify(layout)}\0`);
