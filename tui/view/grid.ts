@@ -69,11 +69,11 @@ export class Grid {
     this.style = new Uint32Array(size);
   }
 
-  clearRow(row: number, style = 0): void {
+  clearRow(row: number): void {
     const start = row * this.cols;
     this.text.fill(" ", start, start + this.cols);
     this.width.fill(1, start, start + this.cols);
-    this.style.fill(style, start, start + this.cols);
+    this.style.fill(0, start, start + this.cols);
   }
 
   clear(): void {

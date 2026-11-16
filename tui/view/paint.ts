@@ -1,6 +1,7 @@
 import { STYLE_BOLD, STYLE_FAINT, STYLE_INVERSE, STYLE_INVISIBLE, STYLE_ITALIC, STYLE_STRIKE, STYLE_UNDERLINE_MASK, type EngineCursor, type WrittenColor } from "../emulator/index.ts";
 import { holds, intersect, type Rect } from "./geometry.ts";
 import { Grid, STYLE_BLINK, STYLE_OVERLINE, Styles, type PaneGrid, type Style } from "./grid.ts";
+import { hostLayout, type HostLayout } from "./host-layout.ts";
 
 /** What a cell of the hit map belongs to: a pane, or a part of the chrome or an overlay (`id` "" for the part as a whole). */
 export type HitTarget = { pane: string } | { part: string; id: string };
@@ -90,18 +91,6 @@ const ESC = "\x1b";
 const CAN = "\x18";
 const cup = (row: number, col: number): string => `${ESC}[${row + 1};${col + 1}H`;
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/gu;
-/** code points that a terminal joins to the cell on their left, wherever the cursor was moved before them */
-const JOINS_ANY = /^[\p{Mn}\p{Me}\p{Cf}\u200d\ufe00-\ufe0f\u{e0020}-\u{e007f}]/u;
-/** code points that join only a cell of their own kind on their left: emoji modifiers, regional indicators, Hangul vowel and final jamo */
-const JOINS_KIN = /^[\u{1f3fb}-\u{1f3ff}\u{1f1e6}-\u{1f1ff}\u1160-\u11ff\ud7b0-\ud7ff]/u;
-const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
-
-function joinsLeft(left: string, text: string): boolean {
-  if (JOINS_ANY.test(text)) return true;
-  if (left === "" || left === " " || !JOINS_KIN.test(text)) return false;
-  const first = graphemes.segment(left + text)[Symbol.iterator]().next().value;
-  return first !== undefined && first.segment !== left;
-}
 
 const SHAPES: Record<CursorShape, [blink: number, steady: number]> = { block: [1, 2], underline: [3, 4], bar: [5, 6] };
 
@@ -159,8 +148,11 @@ export class Painter {
   private cut = false;
   private pending: Pending | null = null;
 
-  /** `styles` is the table the panes' grids were filled through; a painter shares it to read their cells */
-  constructor(private readonly options: PainterOptions, readonly styles: Styles = new Styles()) {}
+  /**
+   * `styles` is the table the panes' grids were filled through; a painter shares it to read their cells. `host` answers how a
+   * host lays cells and chrome text out.
+   */
+  constructor(private readonly options: PainterOptions, readonly styles: Styles = new Styles(), private readonly host: HostLayout = hostLayout) {}
 
   get screen(): Grid {
     return this.next;
@@ -189,9 +181,16 @@ export class Painter {
 
     const screen: Rect = { x: 0, y: 0, width, height };
     const hits: Hit[] = [];
-    for (const part of scene.parts) this.drawPart(part, screen, hits, full || this.versions.get(part.key) !== part.version);
-    for (const pane of scene.panes) this.drawPane(pane, screen, hits, full);
-    for (const overlay of scene.overlays) this.drawPart(overlay, screen, hits, true);
+    // a part drawn again blanks its rectangle first: what lies over it there (a later part, a pane's rows) is drawn again too
+    const redrawn: Rect[] = [];
+    for (const part of scene.parts) {
+      const clip = intersect(part.rect, screen);
+      const redraw = full || this.versions.get(part.key) !== part.version || redrawn.some((rect) => intersect(rect, clip).width > 0);
+      this.drawPart(part, clip, hits, redraw);
+      if (redraw && !full && clip.width > 0) redrawn.push(clip);
+    }
+    for (const pane of scene.panes) this.drawPane(pane, screen, hits, full, redrawn);
+    for (const overlay of scene.overlays) this.drawPart(overlay, intersect(overlay.rect, screen), hits, true);
     this.fitHost();
 
     const rows = this.prevValid ? [...this.touched.keys()].filter((row) => this.touched[row]) : "all";
@@ -227,6 +226,14 @@ export class Painter {
     this.cut = false;
   }
 
+  /** the host's screen can no longer be trusted (another program drew on it, or a host lost it): the next frame writes every cell */
+  invalidate(): void {
+    this.pending = null;
+    this.prevValid = false;
+    this.written = null;
+    this.shape = null;
+  }
+
   /** one cell of `next`, keeping wide cells whole: a wide cell half covered by this one becomes a blank */
   private put(col: number, row: number, text: string, width: 1 | 2, style: number): void {
     const grid = this.next;
@@ -252,8 +259,7 @@ export class Painter {
     grid.style[i] = this.styles.blank(grid.style[i]!);
   }
 
-  private drawPart(part: Part, screen: Rect, hits: Hit[], redraw: boolean): void {
-    const clip = intersect(part.rect, screen);
+  private drawPart(part: Part, clip: Rect, hits: Hit[], redraw: boolean): void {
     hits.push({ rect: clip, target: { part: part.key, id: "" } });
     if (!redraw) {
       hits.push(...(this.partHits.get(part.key) ?? []));
@@ -280,13 +286,9 @@ export class Painter {
       style: ({ fg = null, bg = null, flags = 0 }) => this.styles.id(fg, bg, flags),
       put,
       print: (col, row, text, style) => {
-        for (const { segment } of graphemes.segment(text)) {
-          const width = Math.min(2, Bun.stringWidth(segment));
-          if (width === 0) continue;
-          put(col, row, segment, width as 1 | 2, style);
-          col += width;
-        }
-        return col;
+        const laid = this.host.layout(text.replace(CONTROL, "\ufffd"));
+        for (const cell of laid.cells) put(col + cell.col, row, cell.text, cell.width, style);
+        return col + laid.end;
       },
       fill: (style, text = " ") => {
         for (let row = clip.y; row < clip.y + clip.height; row++) for (let col = clip.x; col < clip.x + clip.width; col++) put(col, row, text, 1, style);
@@ -298,16 +300,22 @@ export class Painter {
     };
   }
 
-  /** a pane's rows through its view offset, clipped to its rectangle: every row on a full frame, else the rows its frames changed */
-  private drawPane(pane: PaneScene, screen: Rect, hits: Hit[], full: boolean): void {
+  /**
+   * A pane's rows through its view offset, clipped to its rectangle: every row on a full frame, else the rows its frames
+   * changed and the rows a part drawn again in this frame blanked.
+   */
+  private drawPane(pane: PaneScene, screen: Rect, hits: Hit[], full: boolean, redrawn: readonly Rect[]): void {
     const clip = intersect(pane.rect, screen);
     hits.push({ rect: clip, target: { pane: pane.id } });
     const source = pane.grid;
     const view = pane.view ?? { col: 0, row: 0 };
-    const all = full || source.allDirty;
     if (clip.width > 0) {
-      const rows = all ? range(clip.y, clip.y + clip.height) : [...source.dirty].map((gy) => pane.rect.y + gy - view.row).filter((row) => row >= clip.y && row < clip.y + clip.height);
-      for (const row of rows) this.drawPaneRow(pane, clip, view, row);
+      const rows = new Set(full || source.allDirty ? range(clip.y, clip.y + clip.height) : [...source.dirty].map((gy) => pane.rect.y + gy - view.row));
+      for (const rect of redrawn) {
+        const under = intersect(rect, clip);
+        for (let row = under.y; row < under.y + under.height; row++) rows.add(row);
+      }
+      for (const row of rows) if (row >= clip.y && row < clip.y + clip.height) this.drawPaneRow(pane, clip, view, row);
     }
     source.dirty.clear();
     source.allDirty = false;
@@ -340,9 +348,11 @@ export class Painter {
   }
 
   /**
-   * Cells a host cannot draw where the model has them become blanks, so the host and the model agree: one whose text would join
-   * the cell on its left (a combining mark with no base, a lone emoji modifier after an emoji), and, in the last column, a
-   * narrow one that starts with a wide character (an emoji narrowed by U+FE0E is laid out wide first, and wraps).
+   * Cells a host cannot draw where the model has them become blanks, so the host and the model agree. Whether a cell lands as
+   * itself is asked of the host layout, for that cell after its left neighbour at its column (first, last, or on a screen one
+   * column wide): it catches a cell the host joins to its left neighbour (a mark with no base, a lone leading jamo, a cell
+   * ending in ZWJ before an emoji) and one it wraps (an emoji narrowed by U+FE0E in the last column). Only two plain ASCII
+   * cells side by side are never asked.
    */
   private fitHost(): void {
     const grid = this.next;
@@ -352,10 +362,11 @@ export class Painter {
       for (let col = 0; col < grid.cols; col++) {
         const i = start + col;
         const text = grid.text[i]!;
-        if (grid.width[i] === 0 || text.charCodeAt(0) < 0x80) continue;
+        if (grid.width[i] === 0) continue;
         const leftAt = col === 0 ? -1 : grid.width[i - 1] === 0 ? i - 2 : i - 1;
-        const wraps = col === grid.cols - 1 && Bun.stringWidth(String.fromCodePoint(text.codePointAt(0)!)) === 2;
-        if (!wraps && !joinsLeft(leftAt < start ? "" : grid.text[leftAt]!, text)) continue;
+        const left = leftAt < start ? "" : grid.text[leftAt]!;
+        if (isPlainAscii(text) && (left === "" || isPlainAscii(left))) continue;
+        if (this.host.fits(left, leftAt < start ? 0 : grid.width[leftAt]!, text, grid.width[i]!, col, grid.cols)) continue;
         const wide = grid.width[i] === 2;
         this.blankAt(i);
         if (wide) this.blankAt(i + 1);

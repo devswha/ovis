@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import type { LayoutNode } from "../../server/herdr-core/layout-doc.ts";
-import { cellsOf, intersect, NO_CELLS, regions, within, type Rect } from "./geometry.ts";
+import { cellsOf, intersect, NO_CELLS, regions, type Rect } from "./geometry.ts";
 
 const area = (rect: Rect): number => rect.width * rect.height;
+/** `inner` lies inside `outer` (an empty rectangle lies anywhere) */
+const inside = (outer: Rect, inner: Rect): boolean => area(inner) === 0 || JSON.stringify(intersect(outer, inner)) === JSON.stringify(inner);
 
 describe("regions", () => {
   test("a wide screen: sidebar left, tab bar over the panes, mode bar along the bottom, every cell in exactly one region", () => {
@@ -52,7 +54,7 @@ describe("cellsOf", () => {
       const { panes } = cellsOf(tree, box);
       expect(panes.map(({ pane }) => pane)).toEqual(["a", "b", "c"]);
       for (const [i, pane] of panes.entries()) {
-        expect(within(box, pane.outer) && within(pane.outer, pane.inner)).toBe(true);
+        expect(inside(box, pane.outer) && inside(pane.outer, pane.inner)).toBe(true);
         expect(pane.cols >= 1 && pane.rows >= 1).toBe(true);
         for (const other of panes.slice(i + 1)) expect(intersect(pane.outer, other.outer)).toEqual(NO_CELLS);
       }

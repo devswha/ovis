@@ -16,10 +16,6 @@ export function intersect(a: Rect, b: Rect): Rect {
 export const holds = (rect: Rect, col: number, row: number): boolean =>
   col >= rect.x && col < rect.x + rect.width && row >= rect.y && row < rect.y + rect.height;
 
-export const within = (outer: Rect, inner: Rect): boolean =>
-  inner.width <= 0 || inner.height <= 0
-  || (inner.x >= outer.x && inner.y >= outer.y && inner.x + inner.width <= outer.x + outer.width && inner.y + inner.height <= outer.y + outer.height);
-
 /** At or below this many columns the screen is narrow: it shows no sidebar. */
 export const NARROW_COLUMNS = 64;
 
