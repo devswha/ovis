@@ -48,6 +48,20 @@ describe("WordFade", () => {
     expect(opened.delay("x")).toBeNull();
   });
 
+  test("a settled reply's words are drawn as they are, and only words added after it fade", () => {
+    const fade = new WordFade();
+    fade.update(0, 2, true, false, 0);
+    expect(fade.delay("a")).toBe(0);
+    expect(fade.settlesAt).toBe(200 + 350);
+    fade.settle();
+    expect(fade.settled).toBe(true);
+    expect(fade.delay("a")).toBeNull();
+    fade.update(0, 3, false, false, 1000);
+    expect(fade.settled).toBe(false);
+    expect(fade.delay("a")).toBeNull();
+    expect(fade.delay("c")).toBe(0);
+  });
+
   test("a row that was there before (a send under it dropped) does not fade again", () => {
     const fade = new WordFade();
     fade.update(1, 2, false, false, 0);

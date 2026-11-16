@@ -2650,7 +2650,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     ?? (goneOut && endsWithTurn(turns, goingCancel.turn) ? goingCancel.turn : null);
   const hiddenSend = restored ?? hiddenTurn?.text ?? null;
   const shownTurns = useMemo(() => hiddenTurn !== null ? turns.slice(0, -1) : turns, [turns, hiddenTurn]);
-  const wordFade = useWordFade(shownTurns, settings.chatMotion, visible);
+  const wordFade = useWordFade(shownTurns, settings.chatMotion, visible, streamingLast || agentStatus === "working");
   heldPage.current = state.turns;
   shownCount.current = shownTurns.length;
   const popRow = popFrom === null ? -1 : shownTurns.findIndex((turn, index) => index >= popFrom && turn.role === "user");
