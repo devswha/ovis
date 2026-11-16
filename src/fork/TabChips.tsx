@@ -32,9 +32,10 @@ export function ForkTabChips({ tabs, paneFor, nameOf, selectedTab, onSelect, onM
       const pane = paneFor(tab) as HerdrPane | undefined;
       const Icon = pane?.agent_role === "implement" ? Hammer : pane?.agent_role === "review" ? Check : Terminal;
       const active = tab.tab_id === selectedTab;
-      return <button key={tab.tab_id} type="button" role={sheet ? undefined : "tab"} className={`fork-tab-chip${sheet ? " row-sheet-aside" : ""}`} data-tab-id={tab.tab_id}
-        title={nameOf(tab)} aria-label={nameOf(tab)} aria-selected={sheet ? undefined : active} aria-pressed={sheet ? active : undefined}
+      return <button key={tab.tab_id} type="button" role={sheet ? popup === "menu" ? "menuitemcheckbox" : undefined : "tab"} className={`fork-tab-chip${sheet ? " row-sheet-aside" : ""}`} data-tab-id={tab.tab_id}
+        title={nameOf(tab)} aria-label={nameOf(tab)} aria-selected={sheet ? undefined : active} aria-pressed={sheet && popup === "dialog" ? active : undefined} aria-checked={sheet && popup === "menu" ? active : undefined}
         aria-controls={sheet ? undefined : panelId} tabIndex={sheet || active ? 0 : -1} aria-haspopup={popup}
+        onMouseDown={sheet ? (event) => event.preventDefault() : undefined}
         onPointerDown={(event) => {
           cancel();
           if (event.pointerType === "mouse") return;

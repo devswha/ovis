@@ -34,6 +34,9 @@
   max-width: calc(var(--tab-max-w) + var(--fork-chip-room));
 }
 
+.row-menu-line:has(> .fork-tab-chips) { display: flex; align-items: center; }
+.row-menu-line:has(> .fork-tab-chips) > .menu-item { flex: 1; min-width: 0; }
+.row-menu-line .fork-tab-chip { width: 24px; min-height: var(--pointer-target); }
 .row-sheet-line:has(> .fork-tab-chips) > .row-sheet-item { min-width: 0; }
 .row-sheet-line:has(> .fork-tab-chips) { flex-wrap: wrap; }
 .row-sheet-line > .fork-tab-chips { margin-inline-start: auto; }

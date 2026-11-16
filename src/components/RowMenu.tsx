@@ -85,6 +85,7 @@ const TYPE_AHEAD_MS = 500;
 const POPOVER_ITEMS = '[role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]';
 // the sheet is modal: its Cancel is one of the stops
 const SHEET_ITEMS = '.row-sheet-item, .row-sheet-aside, .row-sheet-cancel';
+const menuLine = (button: ReactNode, trailing: ReactNode): ReactNode => trailing ? <div className="row-menu-line">{button}{trailing}</div> : button;
 /** a choice's chosen item, where the sheet's focus starts */
 const CHOSEN = '.row-sheet-item[aria-checked="true"]';
 
@@ -332,13 +333,12 @@ export function RowMenu({ anchor, point, restoreFocusTo, title, subtitle, alert,
       {items.map((item) => (
         <Fragment key={item.id}>
           {item.divider && <span className="row-menu-divider" role="separator" />}
-          <button type="button" data-item={item.id} role={choice ? "menuitemradio" : item.checked === undefined ? "menuitem" : "menuitemcheckbox"} aria-checked={choice ? item.checked === true : item.checked} className={`menu-item${item.danger ? " is-danger" : ""}${item.disabled ? " is-disabled" : ""}`} aria-current={item.current ? "true" : undefined} aria-disabled={item.disabled || undefined} title={item.title} onMouseDown={keepFocus} onMouseEnter={point ? (event) => event.currentTarget.focus({ preventScroll: true }) : undefined} onClick={() => run(item)}>
+          {menuLine(<button type="button" data-item={item.id} role={choice ? "menuitemradio" : item.checked === undefined ? "menuitem" : "menuitemcheckbox"} aria-checked={choice ? item.checked === true : item.checked} className={`menu-item${item.danger ? " is-danger" : ""}${item.disabled ? " is-disabled" : ""}`} aria-current={item.current ? "true" : undefined} aria-disabled={item.disabled || undefined} title={item.title} onMouseDown={keepFocus} onMouseEnter={point ? (event) => event.currentTarget.focus({ preventScroll: true }) : undefined} onClick={() => run(item)}>
             {item.glyph ?? <item.icon aria-hidden="true" />}
             <span className="menu-item-main">{item.label}</span>
             {item.hint && <span className="menu-item-hint">{item.hint}</span>}
             {item.switch ? <span className="row-menu-switch-track" data-checked={item.checked} aria-hidden="true"><span /></span> : item.checked && <Check className="menu-item-check" aria-hidden="true" />}
-          </button>
-          {item.trailing}
+          </button>, item.trailing)}
           {item.aside && <button type="button" role="menuitem" className="menu-item row-menu-aside" aria-label={item.aside.label} title={item.aside.label} onMouseDown={keepFocus} onClick={() => runAside(item.aside!)}>
             <item.aside.icon aria-hidden="true" />
             <span className="menu-item-main">{item.aside.label}</span>

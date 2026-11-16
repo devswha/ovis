@@ -12,6 +12,8 @@ friend. Their named controls select the real child pane, keep its menu/rename/cl
 selection; touch hold opens its menu. Chips stay pinned in their parent group. The desktop row,
 phone header row and phone tabs sheet all share these controls; selecting a child leaves the
 parent highlighted while the existing header/pane title continues to name the selected child.
+Overflow chips retain menuitem semantics for the existing arrow-key navigation; sheet chips remain
+ordinary buttons. Their mouse press preserves the menu on browsers that do not focus clicked buttons.
 `src/components/TabStrip.tsx` hooks the grouping, chip mount and presentation-only selected/root
 mapping; original tabs still drive commands. `src/components/RowMenu.tsx` adds a generic optional
 `trailing` sibling-control slot (one type field and two render sites), needed for attached chips
