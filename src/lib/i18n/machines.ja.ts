@@ -110,7 +110,6 @@ export const MACHINES_JA: Record<string, string> = {
   "Trust fingerprint": "フィンガープリントを信頼",
   "Install and connect": "インストールして接続",
   "Retry connection": "接続を再試行",
-  "Settings (⌘⇧,)": "設定 (⌘⇧,)",
   "The computer this app runs on": "このアプリが動作しているコンピューター",
   "Host": "ホスト",
   "Clear filter": "絞り込みを消去",

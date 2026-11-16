@@ -152,7 +152,8 @@ import { inboxOrder } from "./lib/agentInbox.ts";
 import { layoutCells } from "./lib/layoutMap.ts";
 import { pageStartsInInbox, useInboxMode } from "./lib/inboxMode.ts";
 import { InboxList } from "./components/InboxList.tsx";
-import { ForkGithubFoot, ForkGithubPane, ForkGithubSection } from "./fork/GithubInbox.tsx";
+import { ForkGithubPane, ForkGithubSection } from "./fork/GithubInbox.tsx";
+import { ForkInboxFoot, ForkSidebarFoot, useForkInboxStatusBar } from "./fork/SidebarFoot.tsx";
 import { InboxConnecting, InboxFootEntry, InboxUnchosen, ThreadTitle, ThreadTop } from "./components/InboxMode.tsx";
 import { InboxRail } from "./components/InboxRail.tsx";
 import { OvisMark } from "./components/OvisMark.tsx";
@@ -1000,7 +1001,8 @@ export function App() {
   const stripInHeader = classicStripInHeader && !inMode && screenMachineId === null;
   // from 769px with a mouse the pane column ends in the Herdr app's status bar: where the pane is, its branch,
   // the connection. A touch screen keeps that room for its key bar and says them in More and the chip.
-  const statusBarShown = wideScreen && keyboardLikely && selectedPane !== null && crumb !== null && !guideShown && !inMode;
+  const forkInboxStatusBar = useForkInboxStatusBar(inMode && !inbox.shown);
+  const statusBarShown = wideScreen && keyboardLikely && selectedPane !== null && crumb !== null && !guideShown && (!inMode || forkInboxStatusBar);
   // nor does More count where the mode's list stands beside the thread, its waiting rows first: one fact, one place
   const waitingDot = waitingInMore && !statusBarShown && !inboxWide;
   const openNewOn = (id: string): void => { setNewSessionMachineId(id); setNewTab(null); setNewSessionOpen(true); setDrawerOpen(false); };
@@ -1298,12 +1300,12 @@ export function App() {
             mode's rail comes first in that column, then the list, then the column's edge: the keyboard follows
             the drawn order */}
         {inMode ? (inboxWide && <aside className="sidebar inbox-column">
-          <InboxRail onExit={leaveMode} onInbox={() => inbox.list.current?.toTop()} waiting={railWaiting}
+          <ForkInboxFoot watching={auth?.role === "watch"} onUsageLogin={(paneId) => { selectTarget("local", paneId, "terminal"); void load(); }}><InboxRail onExit={leaveMode} onInbox={() => inbox.list.current?.toTop()} waiting={railWaiting}
             alerts={{ on: bell.on, title: bell.title, toggle: () => void bell.run() }} onSettings={actions.openSettings} shortcutTitle={shortcutTitle}
             pcs={{ machines: sidebarMachines, selectedId: selectedMachineId, connection: rosterConnection,
               saidByThread: !inbox.shown && selectedPane !== null && note === null && rosterConnection === headerConnection,
               // a PC alone, as the classic app opens one: no thread of it is chosen, so the list stands with none open
-              onSelect: (machineId) => selectTarget(machineId, null) }} />
+              onSelect: (machineId) => selectTarget(machineId, null) }} /></ForkInboxFoot>
           {modeList(true)}
           <SidebarResizer width={sidebarWidth} onResize={setSidebarWidth} />
         </aside>) : <aside id="workspace-drawer" className={`sidebar${drawerOpen ? " is-open" : ""}${sidebarPeeking ? " is-peek" : ""}`} role={drawerModal ? "dialog" : undefined} aria-modal={drawerModal ? true : undefined} tabIndex={drawerModal ? -1 : undefined} aria-label={drawerModal ? t("Workspace list") : undefined}
@@ -1314,7 +1316,7 @@ export function App() {
           <RenderBoundary resetKey={null} fallback={(retry) => <RegionCrash message={t("The sidebar can't be shown.")} retry={retry} />}>
             <CrashProbe region="sidebar" />
             <ReorderContext.Provider value={reorderCoordinator}><MachineSidebar machines={sidebarMachines} allMachines={machines} watching={auth?.role === "watch"} appLayout={appLayoutOn} drawerOpen={drawerOpen} filterRequest={sidebarFilterRequest} selectedMachineId={screenMachineId ?? selectedMachineId} selectedPaneId={screenMachineId === null ? selectedPaneId : null} screenMachineId={screenMachineId} onScreen={(id) => { setScreenMachineId((open) => open === id ? null : id); setDrawerOpen(false); }} activity={activity} actions={actions} onSelect={selectTarget} onUsageLogin={(paneId) => { selectTarget("local", paneId, "terminal"); void load(); }} onSetup={(machine, update = false) => { setUpdateRemote(update); setMachineDialog(machine); }} onNew={openNewOn}
-              footerStart={<>{setupRow}{modeOffered && <ForkGithubFoot><InboxFootEntry onOpen={() => { actions.counted?.("inbox", "button"); enterInbox(); }} /></ForkGithubFoot>}</>} /></ReorderContext.Provider>
+              footerStart={<>{setupRow}{modeOffered && <ForkSidebarFoot><InboxFootEntry onOpen={() => { actions.counted?.("inbox", "button"); enterInbox(); }} /></ForkSidebarFoot>}</>} /></ReorderContext.Provider>
           </RenderBoundary>
           <SidebarResizer width={sidebarWidth} onResize={setSidebarWidth} />
         </aside>}

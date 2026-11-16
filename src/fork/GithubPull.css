@@ -449,8 +449,9 @@
   display: flex;
   flex-direction: column;
   min-width: 0;
-  /* the measured diff with its notes, else its rows until the first measure */
-  height: min(var(--content, calc((var(--rows) + 1) * var(--fs-xs) * var(--lh-base))), 70vh);
+  /* the measured diff with its notes, else its rows until the first measure: whole, so the page is its only
+     vertical scroller, as a chat's outputs are, and a swipe never gets caught inside a file */
+  height: var(--content, calc((var(--rows) + 1) * var(--fs-xs) * var(--lh-base)));
   border-radius: var(--radius-sm);
   overflow: hidden;
 }
@@ -532,6 +533,12 @@
 }
 
 /* a thread under its line in the diff: set in from the gutter, in the page's own type */
+/* nothing scrolls up and down inside the diff: a wheel or swipe on it moves the page */
+.fork-github-diff .repo-diff-scroll {
+  overflow-y: hidden;
+  overscroll-behavior: auto;
+}
+
 .fork-github-diff .repo-diff-annotation {
   display: flex;
   flex-direction: column;

@@ -110,7 +110,6 @@ export const MACHINES_KO: Record<string, string> = {
   "Trust fingerprint": "지문 신뢰",
   "Install and connect": "설치하고 연결",
   "Retry connection": "다시 연결",
-  "Settings (⌘⇧,)": "설정 (⌘⇧,)",
   "The computer this app runs on": "이 앱이 실행되는 컴퓨터",
   "Host": "호스트",
   "Clear filter": "필터 지우기",

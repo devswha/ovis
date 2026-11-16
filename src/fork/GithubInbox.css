@@ -170,16 +170,23 @@
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
   line-clamp: 2;
-  font-size: var(--fs-md);
-  line-height: 1.35;
+  color: var(--text-strong);
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-heading);
   overflow-wrap: anywhere;
 }
 
+/* the agent inbox's row sizes: its name's and its words', a step smaller on a wide screen (InboxList.css) */
 .fork-github-row-sub {
   grid-column: 1 / -1;
   color: var(--text-dim);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-row-sub);
+  line-height: var(--lh-base);
 }
+
+.mode-inbox.is-wide .fork-github-row-title { font-size: var(--fs-md); }
+.mode-inbox.is-wide .fork-github-row-sub { font-size: var(--fs-sm); }
 
 .fork-github-row-mark {
   display: inline-flex;
@@ -210,3 +217,34 @@
 .mode-inbox.fork-github:not(.is-wide) .inbox-scroll {
   padding-inline: var(--inbox-gutter);
 }
+
+/* The agent inbox's wide column with the inbox footer on (SidebarFoot.tsx): the list over the workspaces
+   sidebar's foot, where the rail stood beside it, and no rail's width taken from the top row's start */
+.app.is-inbox-wide:has(.inbox-column > .sidebar-footer) { --inbox-rail-w: 0px; }
+.app.is-inbox-wide .inbox-column:has(> .sidebar-footer) { flex-direction: column; }
+.inbox-column:has(> .sidebar-footer) > :not(.sidebar-footer, .sidebar-resizer) { flex: 1 1 auto; min-height: 0; }
+.inbox-column > .sidebar-footer {
+  order: 1;
+  border-top: var(--hairline) solid var(--border);
+}
+
+/* the place shown, drawn heavier, as the rail drew it */
+.fork-github-foot > [aria-current="page"] { color: var(--text-strong); }
+.fork-github-foot > [aria-current="page"] svg { stroke-width: 2.5; }
+
+/* the agents that wait: the app's own waiting pill on the glyph's top end corner */
+.fork-github-foot > .fork-foot-waiting { position: relative; }
+.fork-github-foot > .fork-foot-waiting > .header-more-dot {
+  top: var(--space-half);
+  right: var(--space-half);
+}
+
+/* the open thread's status bar (useForkInboxStatusBar) takes the room the mode's terminal kept for one */
+@media (hover: hover) and (pointer: fine) {
+  .app.is-inbox-wide.is-inbox-terminal:has(.status-bar) .pane-column {
+    padding-bottom: calc(var(--header-h) - var(--inbox-zone-h));
+  }
+}
+
+/* the status bar says who waits where it shows, as in the workspaces view: the foot then leaves it to the bar */
+.app:has(.status-bar) .fork-github-foot > .fork-foot-waiting { display: none; }

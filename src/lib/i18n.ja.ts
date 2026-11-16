@@ -117,6 +117,7 @@ const BASE: Record<string, string> = {
   "Input line": "入力欄",
   // ---- settings ----
   "Settings": "設定",
+  "Settings (⌘⇧,)": "設定 (⌘⇧,)",
   "PCs": "PC",
   "PC {name}": "PC {name}",
   "PCs, {n} of {m} connected": "PC {m} 台のうち {n} 台が接続済み",
