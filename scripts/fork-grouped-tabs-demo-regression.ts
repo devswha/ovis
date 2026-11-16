@@ -101,6 +101,8 @@ try {
               const box = (await chip.boundingBox())!;
               assert.ok(box.width >= 44 && box.height >= 44, "phone chips are touch targets");
               const inactive = row.getByRole("tab", { name: "QA reviewer", exact: true });
+              const before = await inactive.evaluate((node) => node.previousElementSibling?.getAttribute("aria-label"));
+              assert.ok(before);
               await inactive.dispatchEvent("pointerdown", { pointerType: "touch", pointerId: 1, clientX: 0, clientY: 0 });
               const childMenu = page.getByRole("dialog", { name: "QA reviewer", exact: true });
               await childMenu.waitFor();
@@ -108,7 +110,10 @@ try {
               assert.equal(await chip.getAttribute("aria-selected"), "true", "a long press does not select the child");
               await childMenu.getByRole("button", { name: "Move tab left", exact: true }).click();
               await childMenu.waitFor({ state: "detached" });
-              await page.waitForFunction(() => document.querySelector(".header-tabs .fork-tab-chip")?.getAttribute("aria-label") === "QA reviewer");
+              await page.waitForFunction((previous) => {
+                const names = [...document.querySelectorAll(".header-tabs .fork-tab-chip")].map((node) => node.getAttribute("aria-label"));
+                return names.includes(previous) && names.indexOf("QA reviewer") < names.indexOf(previous);
+              }, before);
               await page.locator(".header-tabs-sheet").click();
               const sheet = page.locator(".row-sheet");
               const review = sheet.getByRole("button", { name: "QA reviewer", exact: true });
@@ -123,13 +128,21 @@ try {
               await rename.waitFor();
               await rename.press("Escape");
               await chip.waitFor();
+              const next = await chip.evaluate((node) => node.nextElementSibling?.getAttribute("aria-label"));
+              assert.ok(next);
               await chip.press("Alt+Shift+ArrowRight");
-              await page.waitForFunction(() => document.querySelector(".header-tabs .fork-tab-chip")?.getAttribute("aria-label") === "QA reviewer");
+              await page.waitForFunction((neighbour) => {
+                const names = [...document.querySelectorAll(".header-tabs .fork-tab-chip")].map((node) => node.getAttribute("aria-label"));
+                return names.includes(neighbour) && names.indexOf(neighbour) < names.indexOf("QA implementer");
+              }, next);
               await page.locator('.header-tabs .tab-strip[aria-busy="false"]').waitFor();
-              const reviewer = row.getByRole("tab", { name: "QA reviewer", exact: true });
+              const sibling = row.getByRole("tab", { name: next, exact: true });
               const target = (await chip.boundingBox())!;
-              await reviewer.dragTo(chip, { targetPosition: { x: target.width - 2, y: target.height / 2 } });
-              await page.waitForFunction(() => document.querySelector(".header-tabs .fork-tab-chip")?.getAttribute("aria-label") === "QA implementer");
+              await sibling.dragTo(chip, { targetPosition: { x: target.width - 2, y: target.height / 2 } });
+              await page.waitForFunction((neighbour) => {
+                const names = [...document.querySelectorAll(".header-tabs .fork-tab-chip")].map((node) => node.getAttribute("aria-label"));
+                return names.includes(neighbour) && names.indexOf("QA implementer") < names.indexOf(neighbour);
+              }, next);
               assert.equal(await chip.getAttribute("aria-selected"), "true", "dragging does not select another child");
             }
             if (process.env.UI_EVIDENCE_DIR && children === 2) {

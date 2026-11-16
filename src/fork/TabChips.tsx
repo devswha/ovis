@@ -14,6 +14,9 @@ interface Props {
   onMenu: (tab: HerdrTab, anchor: HTMLElement, point?: Point) => void;
   onClose?: (tab: HerdrTab) => void;
   onRename?: (tab: HerdrTab) => void;
+  onMove?: (tabId: string, direction: -1 | 1) => void;
+  canDrop?: (from: string, to: string) => boolean;
+  onDrop?: (from: string, to: string, after: boolean) => void;
   statusMark: (tab: HerdrTab) => ReactNode;
   sheet?: boolean;
   onDismiss?: () => void;
@@ -22,7 +25,8 @@ interface Props {
 }
 
 /** Sibling controls, never buttons inside the parent's tab/menu button. */
-export function ForkTabChips({ tabs, paneFor, nameOf, selectedTab, onSelect, onMenu, onClose, onRename, statusMark, sheet = false, onDismiss, panelId, popup = "menu" }: Props) {
+export function ForkTabChips({ tabs, paneFor, nameOf, selectedTab, onSelect, onMenu, onClose, onRename, onMove, canDrop, onDrop, statusMark, sheet = false, onDismiss, panelId, popup = "menu" }: Props) {
+  const dragged = useRef<string | null>(null);
   const held = useRef<{ timer: ReturnType<typeof setTimeout>; x: number; y: number; fired: boolean } | null>(null);
   const cancel = (): void => { if (held.current) clearTimeout(held.current.timer); held.current = null; };
   useEffect(() => cancel, []);
@@ -40,6 +44,19 @@ export function ForkTabChips({ tabs, paneFor, nameOf, selectedTab, onSelect, onM
       return <button key={tab.tab_id} type="button" role={sheet ? popup === "menu" ? "menuitemcheckbox" : undefined : "tab"} className={`fork-tab-chip${sheet ? " row-sheet-aside" : ""}`} data-tab-id={tab.tab_id}
         title={nameOf(tab)} aria-label={nameOf(tab)} aria-selected={sheet ? undefined : active} aria-pressed={sheet && popup === "dialog" ? active : undefined} aria-checked={sheet && popup === "menu" ? active : undefined}
         aria-controls={sheet ? undefined : panelId} tabIndex={sheet || active ? 0 : -1} aria-haspopup={popup}
+        aria-keyshortcuts={onMove ? "Shift+F10 Alt+Shift+ArrowLeft Alt+Shift+ArrowRight" : "Shift+F10"}
+        draggable={onDrop !== undefined}
+        onDragStart={(event) => { cancel(); event.stopPropagation(); dragged.current = tab.tab_id; event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", tab.tab_id); }}
+        onDragEnd={() => { dragged.current = null; }}
+        onDragOver={(event) => { if (dragged.current && canDrop?.(dragged.current, tab.tab_id)) { event.preventDefault(); event.dataTransfer.dropEffect = "move"; } }}
+        onDrop={(event) => {
+          const from = dragged.current;
+          dragged.current = null;
+          if (!from || !canDrop?.(from, tab.tab_id)) return;
+          event.preventDefault(); event.stopPropagation();
+          const box = event.currentTarget.getBoundingClientRect();
+          onDrop?.(from, tab.tab_id, event.clientX >= box.left + box.width / 2);
+        }}
         onMouseDown={sheet ? (event) => event.preventDefault() : undefined}
         onPointerDown={(event) => {
           cancel();
@@ -72,7 +89,10 @@ export function ForkTabChips({ tabs, paneFor, nameOf, selectedTab, onSelect, onM
             if (event.key === "F2") onRename?.(tab);
             else if (event.key === "Delete") onClose?.(tab);
             else menu(tab, event.currentTarget);
-          } else if (event.altKey && event.shiftKey) { event.preventDefault(); event.stopPropagation(); }
+          } else if (event.altKey && event.shiftKey && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
+            event.preventDefault(); event.stopPropagation();
+            if (!event.repeat) onMove?.(tab.tab_id, event.key === "ArrowLeft" ? -1 : 1);
+          }
         }}>
         <Icon aria-hidden="true" />{statusMark(tab)}
       </button>;

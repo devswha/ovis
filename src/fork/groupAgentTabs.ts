@@ -42,10 +42,15 @@ export function groupAgentTabs<T extends Tab>(tabs: readonly T[], panes: readonl
     if (own.length) children.set(tab.tab_id, own);
   }
   const adjacentBoundary = (id: string, direction: -1 | 1): number | null => {
-    const boundary = adjacentTabBoundary(visible.map((tab) => tab.tab_id), id, direction);
+    const pool = parentOf.has(id) ? tabs.filter((tab) => parentOf.has(tab.tab_id) && parents.get(tab.tab_id) === parents.get(id)) : visible;
+    const boundary = adjacentTabBoundary(pool.map((tab) => tab.tab_id), id, direction);
     if (boundary === null) return null;
-    const neighbour = visible[direction === 1 ? boundary - 1 : boundary]!;
+    const neighbour = pool[direction === 1 ? boundary - 1 : boundary]!;
     return tabs.indexOf(neighbour) + (direction === 1 ? 1 : 0);
   };
-  return { tabs: visible, children, parentOf, adjacentBoundary };
+  const dropBoundary = (id: string, target: string, after: boolean): number | null => {
+    if (id === target || !parentOf.has(id) || !parentOf.has(target) || parents.get(id) !== parents.get(target)) return null;
+    return tabs.findIndex((tab) => tab.tab_id === target) + (after ? 1 : 0);
+  };
+  return { tabs: visible, children, parentOf, adjacentBoundary, dropBoundary };
 }

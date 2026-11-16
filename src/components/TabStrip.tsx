@@ -611,7 +611,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
       previousFocus: touch ? tabButton : document.activeElement instanceof HTMLElement ? document.activeElement : null, touch });
   };
 
-  const chipsOf = (tab: HerdrTab, sheet = false): ReactNode => !forkTabs.children.has(tab.tab_id) ? null : <ForkTabChips tabs={forkTabs.children.get(tab.tab_id) ?? []} paneFor={paneFor} nameOf={nameOf} selectedTab={selectedPane.tab_id} onSelect={onSelectPane} sheet={sheet} panelId={panePanel} popup={popup} onDismiss={sheet ? () => { setMoreAnchor(null); onSheetClose?.(); } : undefined} onClose={closable ? requestClose : undefined} onRename={closable && renameOffered ? beginRename : undefined} statusMark={(child) => busyStatus(statusOf(child)) ? statusMark(statusOf(child)) : null} onMenu={(child, anchor, point) => { reorder.cancelDrag(); setPicker({ tab: child, anchor, point, previousFocus: anchor, touch: !point, independent: true }); }} />;
+  const chipsOf = (tab: HerdrTab, sheet = false): ReactNode => !forkTabs.children.has(tab.tab_id) ? null : <ForkTabChips tabs={forkTabs.children.get(tab.tab_id) ?? []} paneFor={paneFor} nameOf={nameOf} selectedTab={selectedPane.tab_id} onSelect={onSelectPane} sheet={sheet} panelId={panePanel} popup={popup} onDismiss={sheet ? () => { setMoreAnchor(null); onSheetClose?.(); } : undefined} onClose={closable ? requestClose : undefined} onRename={closable && renameOffered ? beginRename : undefined} onMove={reorderable ? reorder.moveAdjacent : undefined} canDrop={(from, to) => forkTabs.dropBoundary(from, to, false) !== null} onDrop={!reorderable || reorder.moving ? undefined : (from, to, after) => { const boundary = forkTabs.dropBoundary(from, to, after); if (boundary !== null) reorder.moveTo(from, boundary); }} statusMark={(child) => busyStatus(statusOf(child)) ? statusMark(statusOf(child)) : null} onMenu={(child, anchor, point) => { reorder.cancelDrag(); setPicker({ tab: child, anchor, point, previousFocus: anchor, touch: !point, independent: true }); }} />;
 
   // Native tab menu: pane actions live on the pane itself. A split tab drawn one pane at a time
   // has no other way to its panes, so they lead its menu, the open one marked.
@@ -653,11 +653,10 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   const tabActions = (tab: HerdrTab): RowMenuItem[] => {
     const name = nameOf(tab);
     const about = (label: string): string => `${label} · ${name}`;
-    const canReorder = reorderable && !forkTabs.parentOf.has(tab.tab_id);
     return [
-      ...(canReorder && !reorder.moving && stripTabs.findIndex((entry) => entry.tab_id === tab.tab_id) > 0
+      ...(reorderable && !reorder.moving && forkTabs.adjacentBoundary(tab.tab_id, -1) !== null
         ? [{ id: "move-left", label: t("Move tab left"), title: about(t("Move tab left")), icon: ArrowLeft, run: () => reorder.moveAdjacent(tab.tab_id, -1) }] : []),
-      ...(canReorder && !reorder.moving && stripTabs.findIndex((entry) => entry.tab_id === tab.tab_id) < stripTabs.length - 1
+      ...(reorderable && !reorder.moving && forkTabs.adjacentBoundary(tab.tab_id, 1) !== null
         ? [{ id: "move-right", label: t("Move tab right"), title: about(t("Move tab right")), icon: ArrowRight, run: () => reorder.moveAdjacent(tab.tab_id, 1) }] : []),
       ...(canMoveOut(tab) ? [{ id: "move-workspace", label: t("Move to workspace…"), title: t("Move {tab} to", { tab: name }), icon: FolderInput, disabled: !closable,
         // RowMenu closes before it runs an item: the picker is set again, not updated

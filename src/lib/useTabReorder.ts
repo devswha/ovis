@@ -182,6 +182,6 @@ export function useTabReorder({ owner, tabs, strip, moveTab, failed, stale, outs
     return () => { window.removeEventListener("keydown", escape, true); window.removeEventListener("blur", cancelDrag); };
   }, [drag?.tabId]);
 
-  return { drag, moving, moveAdjacent, cancelDrag, onPointerDown, onPointerMove, onPointerUp,
+  return { drag, moving, moveAdjacent, moveTo: requestMove, cancelDrag, onPointerDown, onPointerMove, onPointerUp,
     consumeClick: (detail: number): boolean => { const suppress = detail !== 0 && suppressClick.current; suppressClick.current = false; return suppress; } };
 }
