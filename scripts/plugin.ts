@@ -25,10 +25,11 @@ import { acquireOwnerDirectory, guardPath, type OwnerLease } from "../server/own
 import { parseBirth, readProcessBirth } from "../server/process-owner.ts";
 import { writeStateDocument } from "../server/state-document.ts";
 import { defaultStateDir } from "../server/update-state.ts";
+import { fleetPreview } from "../server/preview.ts";
 import { COMPILED, entryCommand, ROOT as SERVER_ROOT } from "../server/entries.ts";
 import { version as builtVersion } from "../package.json";
 import { spawn, spawnSync } from "node:child_process";
-import { appendFileSync, chmodSync, closeSync, copyFileSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, closeSync, copyFileSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, platform, uptime } from "node:os";
 import { basename, delimiter, dirname, join, resolve, sep } from "node:path";
 
@@ -184,6 +185,45 @@ const originOf = (value: number): string => `http://${host === "0.0.0.0" ? "127.
 let origin = originOf(port);
 
 /**
+ * This plugin runs for a machine profile: OVIS_PROFILE=machine under the fleet preview (server/preview.ts), both read
+ * from the plugin's settings as the server it starts gets them (`env`: its environment, then its settings files).
+ */
+const machineProfile = fleetPreview(env) && env["OVIS_PROFILE"] === "machine";
+/**
+ * The machine profile's local owner, when this plugin runs for one (`machineProfile`). The profile records its owner's
+ * unix socket in its state folder (`serve.lock/http.json`, with `door: 1`) and answers only liveness on its TCP port, so
+ * the requests to the server go to that socket, addressed as `http://localhost`, the one Host and Origin it takes
+ * there. The plugin takes only the profile's own socket in its state folder: `serve.sock` in the folder's real path, as
+ * the profile names it (server/machine-profile.ts claimServerState). Otherwise null, and the requests go to `origin`
+ * over TCP, also when the record is missing, unreadable, names no door or another socket, or the folder is absent.
+ * Read for each request, by `link` once at its start: the record is written once the server listens.
+ */
+function ownerDoor(): string | null {
+  if (!machineProfile) return null;
+  try {
+    const record = JSON.parse(readFileSync(join(APP_STATE_DIR, "serve.lock", "http.json"), "utf8")) as { door?: unknown; socket?: unknown };
+    const own = join(realpathSync(APP_STATE_DIR), "serve.sock");
+    return record.door === 1 && record.socket === own ? own : null;
+  } catch { return null; }
+}
+/** The origin the requests to the server name: `origin`, or `http://localhost` on a machine profile's owner socket. */
+const serverOrigin = (): string => ownerDoor() === null ? origin : "http://localhost";
+/**
+ * A request on a machine profile's owner socket (`door`), as given but with no `authorization` header: the profile
+ * takes its owner on that socket itself, and the plugin sends no token there.
+ */
+function ownerFetch(door: string, input: string | URL | Request, init?: RequestInit): Promise<Response> {
+  const request = new Request(input, init);
+  request.headers.delete("authorization");
+  return fetch(request, { unix: door });
+}
+/** One request to the server at `path`: over TCP to `origin`, or on a machine profile's owner socket (ownerDoor). */
+function serverFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const door = ownerDoor();
+  return door === null ? fetch(`${origin}${path}`, init) : ownerFetch(door, `http://localhost${path}`, init);
+}
+
+/**
  * herdr's PATH plus where the one-line installer (install.sh) puts Bun, Node and herdr: herdr may
  * have been started from a shell that has none of them, and the server spawns `node` for every
  * terminal. Appended, so a Node the user chose (nvm, Homebrew) still comes first.
@@ -222,7 +262,7 @@ async function pairingParts(): Promise<{ qr: (text: string) => string; decodeOff
 
 async function health(): Promise<boolean> {
   try {
-    const response = await fetch(`${origin}/api/health`, { signal: AbortSignal.timeout(1500) });
+    const response = await serverFetch("/api/health", { signal: AbortSignal.timeout(1500) });
     if (!response.ok) return false;
     // the port may hold another program's 200 (a kept port that went stale): only the app's answer
     // counts, in the shape every release has sent (server/index.ts)
@@ -837,7 +877,7 @@ async function pair(parts?: Awaited<ReturnType<typeof pairingParts>>): Promise<n
   }
   const headers: Record<string, string> = { "content-type": "application/json", "x-herdr-machine": "1" };
   if ((env["OVIS_TOKEN"] ?? "") !== "") headers["authorization"] = `Bearer ${env["OVIS_TOKEN"]}`;
-  const started = await fetch(`${origin}/api/devices/pair/start`, { method: "POST", headers, body: "{}" });
+  const started = await serverFetch("/api/devices/pair/start", { method: "POST", headers, body: "{}" });
   if (!started.ok) {
     process.stderr.write(`could not start a pairing (${started.status}): ${await started.text()}\n`);
     return 1;
@@ -845,7 +885,7 @@ async function pair(parts?: Awaited<ReturnType<typeof pairingParts>>): Promise<n
   const { code } = (await started.json()) as { code: string; expires_at: string };
   let url: string | null = null;
   try {
-    const access = (await (await fetch(`${origin}/api/access`, { headers })).json()) as { tailscale: { serving_url: string | null } };
+    const access = (await (await serverFetch("/api/access", { headers })).json()) as { tailscale: { serving_url: string | null } };
     url = access.tailscale.serving_url;
   } catch { /* an older server: the code alone */ }
   const out: string[] = [`Pairing code: ${code.slice(0, 3)} ${code.slice(3)}   (good for 10 minutes, for one device)`];
@@ -856,7 +896,7 @@ async function pair(parts?: Awaited<ReturnType<typeof pairingParts>>): Promise<n
     out.push("On the other device, open the app's address and enter the code. Settings → Phone, on any signed-in device, shows the address and how to get one.");
   }
   try {
-    const relayResponse = await fetch(`${origin}/api/relay`, { headers, signal: AbortSignal.timeout(5000) });
+    const relayResponse = await serverFetch("/api/relay", { headers, signal: AbortSignal.timeout(5000) });
     if (relayResponse.status !== 404) {
       if (!relayResponse.ok) throw new Error(`relay status request failed (${relayResponse.status})`);
       const relayStatus: unknown = await relayResponse.json();
@@ -864,9 +904,9 @@ async function pair(parts?: Awaited<ReturnType<typeof pairingParts>>): Promise<n
         throw new Error("invalid relay status response");
       }
       if (relayStatus.phase === "online") {
-        const offerResponse = await fetch(`${origin}/api/relay/offer`, {
+        const offerResponse = await serverFetch("/api/relay/offer", {
           method: "POST",
-          headers: { ...headers, "x-herdr-update": "1", origin },
+          headers: { ...headers, "x-herdr-update": "1", origin: serverOrigin() },
           body: "{}",
           signal: AbortSignal.timeout(5000),
         });
@@ -900,9 +940,9 @@ async function approvePairings(): Promise<number> {
     process.stderr.write(`Ovis is not running at ${origin}; start it first\n`);
     return 1;
   }
-  const headers: Record<string, string> = { "content-type": "application/json", "x-herdr-machine": "1", "x-herdr-update": "1", origin };
+  const headers: Record<string, string> = { "content-type": "application/json", "x-herdr-machine": "1", "x-herdr-update": "1", origin: serverOrigin() };
   if ((env["OVIS_TOKEN"] ?? "") !== "") headers["authorization"] = `Bearer ${env["OVIS_TOKEN"]}`;
-  const listed = await fetch(`${origin}/api/relay/pairings`, { headers });
+  const listed = await serverFetch("/api/relay/pairings", { headers });
   if (!listed.ok) {
     process.stderr.write(`could not read the waiting pairings (${listed.status}): ${await listed.text()}\n`);
     return 1;
@@ -923,13 +963,13 @@ async function approvePairings(): Promise<number> {
     signal: new AbortController().signal,
     // read again before three digits approve: a request that came since may end in the same three
     list: async () => {
-      const again = await fetch(`${origin}/api/relay/pairings`, { headers, signal: AbortSignal.timeout(15_000) });
+      const again = await serverFetch("/api/relay/pairings", { headers, signal: AbortSignal.timeout(15_000) });
       if (!again.ok) throw new Error(`could not read the waiting pairings (${again.status})`);
       return ((await again.json()) as { pairings: WaitingDevice[] }).pairings;
     },
     decide: async (id, decision) => {
       try {
-        const decided = await fetch(`${origin}/api/relay/pairing`, { method: "POST", headers, body: JSON.stringify({ id, decision }), signal: AbortSignal.timeout(15_000) });
+        const decided = await serverFetch("/api/relay/pairing", { method: "POST", headers, body: JSON.stringify({ id, decision }), signal: AbortSignal.timeout(15_000) });
         return decided.ok ? "taken" : "gone";
       } catch { return "away"; }
     },
@@ -993,8 +1033,11 @@ async function linkCommand(): Promise<number> {
   // hears ends the process where it stands, or leaves it running with nobody to read it: the code stays valid either
   // way. It is heard instead, and stops the run as its signal would
   process.stdout.on("error", halt);
+  // a machine profile's owner calls go to its socket (ownerDoor, read once for the run), with the origin it takes there
+  const door = ownerDoor();
   return linkPc(process.argv.slice(3), {
-    origin, headers, signal: stop.signal,
+    origin: door === null ? origin : "http://localhost", headers, signal: stop.signal,
+    ...(door === null ? {} : { fetch: (input: string | URL | Request, init?: RequestInit) => ownerFetch(door, input, init) }),
     accountService: accountServiceOrigin(env["OVIS_ACCOUNT_SERVICE_URL"] ?? DEFAULT_ACCOUNT_SERVICE),
     // the fleet preview, the command's name and the app the server pairs with, from the settings the server it starts gets
     ...linkSettings(env),
@@ -1097,7 +1140,7 @@ async function phoneSetup(): Promise<number> {
     const headers: Record<string, string> = {};
     if (env["OVIS_TOKEN"]) headers["authorization"] = `Bearer ${env["OVIS_TOKEN"]}`;
     try {
-      const response = await fetch(`${origin}/api/access`, { headers, signal: AbortSignal.timeout(5000) });
+      const response = await serverFetch("/api/access", { headers, signal: AbortSignal.timeout(5000) });
       if (!response.ok) throw new Error(`access request failed (${response.status})`);
       const access = await response.json() as RemoteAccess;
       if (!access.tailscale.serving_url) {
