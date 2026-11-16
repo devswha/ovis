@@ -371,18 +371,25 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   /** Claude panes whose last turn ended on an API error, until the next one starts (claudeRest) */
   const claudeFailed = new Set<string>();
   /**
-   * each Claude pane this server saw work, and its transcript as claudeRest last read it (null: not read since the pane
-   * worked): only such a turn's failure is told, as only a Codex turn this server saw run is (codexWorking)
+   * each Claude pane this server saw work, and where its turn began in its transcript: the file, its size then (`from`)
+   * and how far claudeRest has read it since (`read`). Only such a turn's failure is told, as only a Codex turn this
+   * server saw run is (codexWorking), and only on what that turn wrote. null: no transcript was bound as it began
    */
-  const claudeLooked = new Map<string, string | null>();
+  const claudeLooked = new Map<string, { path: string; id: string; from: number; read: number } | null>();
   /** Claude panes whose failure alert waits for the end of the background wait their failed rest is held on (claudeFailedAlert) */
   const claudeFailHeld = new Set<string>();
   /** A Claude pane is at work again (`began`), or no Claude pane any more: what its last turn ended on is no longer its rest. */
   const claudeWorking = (paneId: string, began: boolean): void => {
     claudeFailed.delete(paneId);
     claudeFailHeld.delete(paneId);
-    if (began) claudeLooked.set(paneId, null); else claudeLooked.delete(paneId);
+    if (began) claudeLooked.set(paneId, claudeMark(paneId)); else claudeLooked.delete(paneId);
   };
+  /** Where a Claude pane's transcript stands as a turn begins there: what follows is what that turn writes. */
+  function claudeMark(paneId: string): { path: string; id: string; from: number; read: number } | null {
+    const session = claudeAgents.sessionOf(paneId);
+    const file = session?.live === true ? plain(session.path) : null;
+    return session === null || file === null ? null : { path: session.path, id: file.id, from: file.size, read: file.size };
+  }
   /**
    * The failure alert of a Claude turn that ended on an API error, after its status was told. A rest held on the turn's
    * background work is no stop to the alerts (push.ts onFailed): its failure is told once that wait ends with no turn
@@ -401,20 +408,20 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   /**
    * A Claude turn this server saw run came to rest: the transcript the chat reads says whether it ended on an API error
    * (a rate limit, a cooldown, an overloaded model), which is at rest, not finished (#687's rule, on Claude Code's own
-   * record, as codexRest reads Codex's). Read at once, as the subagent tracker reads the same file, and again only once
-   * it changed; a transcript not found or not read leaves herdr's word.
+   * record, as codexRest reads Codex's). Only what the turn wrote is read, at once, as the subagent tracker reads the
+   * same file, and again only once it grew. Nothing written since the turn began, another transcript (a /clear or a
+   * /resume the pane's binding moved to, or still names the old one of) or another file in its place says nothing of
+   * this turn, and leaves herdr's word.
    */
   function claudeRest(paneId: string): ClaudeTurnEnd {
-    const known = claudeLooked.get(paneId);
-    if (known === undefined || omo.runs(paneId) || gjc.runs(paneId)) return null;
+    const mark = claudeLooked.get(paneId);
+    if (mark === undefined || mark === null || omo.runs(paneId) || gjc.runs(paneId)) return null;
     const session = claudeAgents.sessionOf(paneId);
-    const file = session?.live === true ? plain(session.path) : null;
-    if (session === null || file === null) return null;
-    const read = `${session.path}\0${file.id}\0${file.size}`;
-    if (read === known) return null;
+    const file = session?.live === true && session.path === mark.path ? plain(mark.path) : null;
+    if (file === null || file.id !== mark.id || file.size <= mark.read) return null;
     let end: ClaudeTurnEnd;
-    try { end = claudeLastTurnEnd(session.path); } catch { return null; }
-    claudeLooked.set(paneId, read);
+    try { end = claudeLastTurnEnd(mark.path, mark.from, file.size); } catch { return null; }
+    mark.read = file.size;
     return end;
   }
   /**

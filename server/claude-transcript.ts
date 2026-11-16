@@ -1,4 +1,4 @@
-import { closeSync, fstatSync, openSync, readSync } from "node:fs";
+import { closeSync, openSync, readSync } from "node:fs";
 import type { ConversationPart, ConversationTurn, OmoTaskResult } from "../shared/protocol.ts";
 import { invokedSkill } from "./skill-activity.ts";
 import { claudeCommandEcho } from "./skill-invocations/claude.ts";
@@ -881,17 +881,18 @@ export function claudeTurnEnd(text: string): ClaudeTurnEnd {
 }
 
 /**
- * The end of a Claude transcript, where its last turn's end is: what claudeTurnEnd reads. Read at once, as the
- * subagent tracker reads the same file (claude-subagents.ts scanParent), so a status is told on what it says.
+ * How the turn that wrote a Claude transcript's bytes from `from` to `size` stands: what claudeTurnEnd reads in them
+ * (their last `tailBytes`). Read at once, as the subagent tracker reads the same file (claude-subagents.ts scanParent),
+ * so a status is told on what it says. A record still being written leaves the turn's end unknown: it is read whole
+ * once the file grows.
  */
-export function claudeLastTurnEnd(path: string, tailBytes = 256 * 1024): ClaudeTurnEnd {
+export function claudeLastTurnEnd(path: string, from: number, size: number, tailBytes = 256 * 1024): ClaudeTurnEnd {
   const fd = openSync(path, "r");
   try {
-    const { size } = fstatSync(fd);
-    const start = Math.max(0, size - tailBytes);
+    const start = Math.max(from, size - tailBytes);
     const buffer = Buffer.alloc(size - start);
-    readSync(fd, buffer, 0, buffer.length, start);
-    return claudeTurnEnd(buffer.toString("utf8"));
+    const text = buffer.subarray(0, readSync(fd, buffer, 0, buffer.length, start)).toString("utf8");
+    return text.endsWith("\n") ? claudeTurnEnd(text) : null;
   } finally {
     closeSync(fd);
   }

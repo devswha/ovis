@@ -134,6 +134,55 @@ describe("a Claude pane whose turn ended on an API error", () => {
     expect(h.failures).toEqual([]);
   });
 
+  it("tells no failure of a turn that answered in a new session while the pane still names the old transcript (/clear)", async () => {
+    const h = await claudeHub("");
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    writeFileSync(h.path, failed);
+    handlers.onStatus(h.pane.pane_id, "idle", "claude");
+    expect(h.failures).toEqual([h.pane.pane_id]);
+    // /clear: the next turn writes a transcript of its own, and rests before a snapshot binds the pane to it
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    writeFileSync(join(root, `44444444-4444-4444-8444-${String(++sessions).padStart(12, "0")}.jsonl`), `${prompt("again")}${answer("Done")}`);
+    handlers.onStatus(h.pane.pane_id, "idle", "claude");
+    expect(h.last().status).toBe("done");
+    expect(h.alerts.at(-1)).toBe("done");
+    expect(h.failures).toEqual([h.pane.pane_id]);
+  });
+
+  it("tells a failure once, however often the pane works and rests after it without writing to its transcript", async () => {
+    const h = await claudeHub("");
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    writeFileSync(h.path, failed);
+    handlers.onStatus(h.pane.pane_id, "idle", "claude");
+    expect(h.failures).toEqual([h.pane.pane_id]);
+    for (let cycle = 0; cycle < 2; cycle++) {
+      handlers.onStatus(h.pane.pane_id, "working", "claude");
+      handlers.onStatus(h.pane.pane_id, "idle", "claude");
+      expect(h.last().status).toBe("done");
+    }
+    expect(h.failures).toEqual([h.pane.pane_id]);
+  });
+
+  it("reads a retry whose prompt is only half written at its rest by herdr's word, not by the failure before it", async () => {
+    const h = await claudeHub("");
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    writeFileSync(h.path, failed);
+    handlers.onStatus(h.pane.pane_id, "idle", "claude");
+    expect(h.failures).toEqual([h.pane.pane_id]);
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    const retry = prompt("again");
+    appendFileSync(h.path, retry.slice(0, 20));
+    handlers.onStatus(h.pane.pane_id, "idle", "claude");
+    expect(h.last().status).toBe("done");
+    expect(h.failures).toEqual([h.pane.pane_id]);
+    // the retry, written whole and answered, is the finish told already
+    appendFileSync(h.path, `${retry.slice(20)}${answer("Done")}`);
+    h.herdrSays({ ...h.pane, agent_status: "done" });
+    expect((await h.snapshot()).panes[0]!.agent_status).toBe("done");
+    expect(h.last().status).toBe("done");
+    expect(h.failures).toEqual([h.pane.pane_id]);
+  });
+
   it("tells nothing of a failure it never saw run: a pane found already at rest, after a restart", async () => {
     const h = await claudeHub(failed);
     handlers.onStatus(h.pane.pane_id, "idle", "claude");
