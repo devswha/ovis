@@ -316,6 +316,8 @@ describe.skipIf(!bin)("another machine of a real hc's core", () => {
   let dir = "";
   /** each core's env, set only once every isolating variable is in it */
   const envs: Record<string, string>[] = [];
+  /** each core's pid and its holder's, in the order of `envs`: stopped (or killed) in afterAll */
+  const pids: number[][] = [];
   let hc: MachineScopedConnection | null = null;
   let stopAdapter: (() => void) | null = null;
   let socket = "";
@@ -361,6 +363,10 @@ describe.skipIf(!bin)("another machine of a real hc's core", () => {
     const assignments = Object.entries(lab).filter(([key]) => key.startsWith("HC_") || key.startsWith("XDG_") || key === "PATH").map(([key, value]) => `${key}='${value}'`).join(" ");
     writeFileSync(via, `#!/bin/sh\nexec env ${assignments} sh -c "$1"\n`);
     chmodSync(via, 0o755);
+    for (const env of envs) {
+      const running = JSON.parse(await run(env, ["server", "status", "--json"])) as { pid: number; holder?: { pid: number } | null };
+      pids.push([running.pid, ...(running.holder ? [running.holder.pid] : [])]);
+    }
     await run(here, ["machine", "add", "--name", "lab", "--via", via]);
     await run(here, ["run", "--bg", "bash"]);
     hc = new MachineScopedConnection(() => {
@@ -379,10 +385,21 @@ describe.skipIf(!bin)("another machine of a real hc's core", () => {
   afterAll(async () => {
     stopAdapter?.();
     hc?.close();
-    // only this test's cores, each by its own isolated env
-    const stopped = await Promise.all(envs.map((env) => Bun.spawn([bin!, "server", "stop"], { env, stdout: "ignore", stderr: "ignore" }).exited));
+    // only this test's cores, each by its own isolated env. `here` goes first: while it runs it keeps
+    // dialing `lab` through the --via command, and an `hc connect` there starts a core again once
+    // `lab` is stopped (and, with `dir` deleted, from the hc on the PATH rather than this one)
+    const running = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+    const stopped: number[] = [];
+    for (const [at, env] of envs.entries()) {
+      stopped.push(await Bun.spawn([bin!, "server", "stop"], { env, stdout: "ignore", stderr: "ignore" }).exited);
+      // hc's cores and holders are detached daemons, not children: their exit has no event to await
+      const deadline = Date.now() + WAIT_MS;
+      while ((pids[at] ?? []).some(running) && Date.now() < deadline) await Bun.sleep(25);
+    }
+    const alive = pids.flat().filter(running);
+    for (const pid of alive) process.kill(pid, "SIGKILL");
     if (dir) rmSync(dir, { recursive: true, force: true });
-    expect(stopped.every((code) => code === 0)).toBe(true);
+    expect({ stopped, killed: alive }).toEqual({ stopped: envs.map(() => 0), killed: [] });
   }, TEST_MS);
 
   it("lists the machine, then starts, types into and reads a terminal there by its own address", async () => {
