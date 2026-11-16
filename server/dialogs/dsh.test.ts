@@ -49,6 +49,11 @@ describe("DeepSeek Harness ask_user_question panel", () => {
     expect(parseInteractivePrompt("dsh-tui", screen("q1-folded"))).toBeNull();
   });
 
+  it("keeps the card for a question whose own words start a line with …: only dsh's fold line folds it", () => {
+    const own = screen("q1").replace("    Which headless approach should I build?\n", "    Which headless approach should I build?\n    … or skip headless runs for now.\n");
+    expect(parseInteractivePrompt("dsh-tui", own)?.question).toBe("Which headless approach should I build? … or skip headless runs for now.");
+  });
+
   it("shows the header chip over the question", () => {
     expect(parseInteractivePrompt("dsh-tui", screen("q1"))?.body).toBe("Choose Approach");
   });
@@ -84,6 +89,17 @@ describe("DeepSeek Harness ask_user_question panel", () => {
     expect(dshFreeTextRow(screen("q1-typed-wrapped"), card, typed.slice(0, 50))).toBeNull();
     // the answer not all drawn yet
     expect(dshFreeTextRow(screen("q1-typed-wrapped"), card, `${typed} too`)).toBe("typing");
+  });
+
+  it("reads a wrap back as dsh draws it: one space, or none or one under a line that reaches the row's end (recorded at 118 columns)", () => {
+    const card = parsedByPublicPrompt.get(parseInteractivePrompt("dsh-tui", screen("q1"))!)!;
+    const typed = "Use the device with WebDriverAgent first, then keep the staging API as a fallback for nightly runs when the phone is offline, and log both paths so we can compare flakiness over two weeks";
+    // a space at the wrap that the answer does not have: someone else's
+    expect(dshFreeTextRow(screen("q1-typed-wrapped"), card, typed.replace("nightly runs", "nightlyruns"))).toBeNull();
+    // a word longer than the row, broken inside it
+    expect(dshFreeTextRow(screen("q1-typed-url"), card, `see https://example.com/${"a".repeat(140)} ok`)).toBe("typed");
+    // a word that ends right at the row's end, the space after it dropped by the wrap
+    expect(dshFreeTextRow(screen("q1-typed-edge"), card, typed.replace("nightly runs", "nightlyy runs"))).toBe("typed");
   });
 
   it("refuses the panel once text was typed into its free-text row in the terminal", () => {
@@ -140,7 +156,7 @@ describe("DeepSeek Harness ask_user_question panel", () => {
     expect(parseInteractivePrompt("dsh-tui", [...screen("q1").split("\n").slice(0, 46), "  ● Done.", ...footer].join("\n"))).toBeNull();
   });
 
-  it.each(["default", "not compact", "no ctx field", "a wake on the hint row", "a hover's detail", "idle"])("reads the live panel under dsh-tui's footer set to %s, on a wide, a 100- and a 52-column pane", (setting) => {
+  it.each(["default", "not compact", "no ctx field", "a wake on the hint row", "a hover's detail", "idle", "a background job and no model field"])("reads the live panel under dsh-tui's footer set to %s, on a wide, a 100- and a 52-column pane", (setting) => {
     for (const panel of [oneLineHint(screen("q1")), screen("q1"), screen("narrow-52")]) {
       const lines = panel.split("\n");
       const status = lines.findIndex((line) => line.includes("ctx 1.1% (11k/1.0m)"));
@@ -150,6 +166,7 @@ describe("DeepSeek Harness ask_user_question panel", () => {
       if (setting === "a wake on the hint row") lines[hint] = "   esc to interrupt                      ▁▂▃";
       if (setting === "a hover's detail") lines[hint] = "   1.1% · 11k/1.0m · free 989k · used 11k";
       if (setting === "idle") lines.splice(hint, 1);
+      if (setting === "a background job and no model field") lines[status] = "   ● 1 · high · cache 97.5% · ≈ unpriced 11.2k tok · dshq   ctx 1.1% (11k/1.0m)";
       expect(parseInteractivePrompt("dsh-tui", lines.join("\n"))?.question).toBe("Which headless approach should I build?");
     }
   });

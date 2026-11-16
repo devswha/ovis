@@ -54,8 +54,13 @@ const DSH_HINT_END_RE = /(?:click the header|点标题行收起)$/;
  * and the key hint, whatever its settings put in them (a ctx field or none, compact or not, a wake or a hover's detail).
  */
 const DSH_FOOTER_ROWS = 3;
-/** a line of dsh-tui's conversation or its input box, which its footer never starts with */
-const DSH_TRANSCRIPT_RE = /^[╭╰│⌸●❯!⎿▾▴◈✎·]/;
+/**
+ * a line of dsh-tui's conversation or its input box, which its footer never starts with; but for its status row's
+ * background-jobs chip (`● 1 · high · …` with the model field off)
+ */
+const DSH_TRANSCRIPT_RE = /^(?!● \d+(?: ·|$))[╭╰│⌸●❯!⎿▾▴◈✎·]/;
+/** the line saying how much of a long question dsh-tui folds out of view (i18n `question-detail-scroll`) */
+const DSH_FOLD_RE = /^…\s+\d+\s+(?:lines?\s+outside view|行未显示)/;
 
 /** What an answer types into the free-text row: one line (dsh-tui submits the row on Enter). */
 export function dshTypedText(text: string): string {
@@ -83,6 +88,8 @@ interface DshPanel {
   prompt: ParsedPrompt;
   /** the free-text row's text, a piece per line the pane wrapped it onto; null with an option's label attached */
   typed: string[] | null;
+  /** for each of those lines, whether it reaches the row's end, where dsh may break inside a word */
+  typedFull: boolean[];
   /**
    * The cursor on the free-text row of a question no mark says is a multiple choice: a single choice marks no row
    * then, and neither does a multiple choice with nothing ticked, whose hint there names no Space either
@@ -109,7 +116,16 @@ export function dshFreeTextRow(screen: string, expected: ParsedPrompt, text: str
   if (!panel?.typed || expected.multi_select || panel.prompt.multi_select || panel.prompt.id !== expected.id
     || panel.prompt.selectedIndex !== panel.prompt.options.length || !dshQuestionActive(screen)) return null;
   // a wrapped line may drop or keep the space it broke at
-  const pieces = panel.typed.filter(Boolean).map((piece) => piece.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s*");
+  // dsh wraps at a space and drops it: exactly one space between two lines, but none or one under a line that
+  // reaches the row's end (a word broken there, or one that ends right there)
+  let pieces = "";
+  let fullAbove = false;
+  panel.typed.forEach((piece, at) => {
+    if (!piece) return;
+    const escaped = piece.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    pieces += pieces ? `${fullAbove ? " ?" : " "}${escaped}` : escaped;
+    fullAbove = panel.typedFull[at] === true;
+  });
   if (new RegExp(`^${pieces}$`).test(text)) return "typed";
   return new RegExp(`^${pieces}`).test(text) ? "typing" : null;
 }
@@ -143,6 +159,9 @@ function readDshPanel(screen: string): DshPanel | null {
   const text = custom[4]!;
   const typed = !DSH_LABEL_RE.test(label) ? null
     : [!customCursor && DSH_PLACEHOLDER_RE.test(text) ? "" : text.trim(), ...wrapped.map(([, after]) => after.trim())];
+  // the row ends one cell short of the header's divider: the caret takes the last one (recorded on 0.20.0)
+  const rowEnd = Bun.stringWidth(lines[headerIndex]!) - 1;
+  const typedFull = lines.slice(customIndex, typedEnd).map((line) => Bun.stringWidth(line) >= rowEnd);
   // the options: the run of rows right over the free-text row, each with its continuation lines
   // (a wrapped label or a description, set past the row's mark), read upwards from it
   const rows: { cursor: boolean; checked: boolean; ticked: boolean; head: string; rest: string[] }[] = [];
@@ -185,7 +204,7 @@ function readDshPanel(screen: string): DshPanel | null {
     const line = cleanLine(raw);
     if (!line) { blank = true; continue; }
     if (chip === null && paragraphs.length === 0 && line.startsWith("◈ ")) { chip = line.slice(2).trim(); continue; }
-    if (/^…\s/.test(line)) return null;
+    if (DSH_FOLD_RE.test(line)) return null;
     if (blank) paragraphs.push([]);
     paragraphs.at(-1)!.push(raw);
     blank = false;
@@ -253,7 +272,7 @@ function readDshPanel(screen: string): DshPanel | null {
       },
     } : {}),
   }, { default_option_indices: undefined, can_step_back: undefined, can_step_next: undefined });
-  return { prompt, typed, modeUnknown };
+  return { prompt, typed, typedFull, modeUnknown };
 }
 
 /**

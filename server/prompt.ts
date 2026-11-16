@@ -9,7 +9,7 @@ import { resolveAgent } from "./pane-context.ts";
 import { processAlive, processStartedAt, processStartUpperBoundAsync } from "./process-start.ts";
 import { commandInvocations, commandOutcome, CommandReservations, dialogSettlingScreen, ownsCommandDialog, WINDOW_MS as COMMAND_WINDOW_MS, type CommandSend } from "./outcome.ts";
 import { codexTranscriptPath, paneCodexHomePlaced, unansweredCodexQuestions } from "./codex.ts";
-import { HerdrError, paneProcessInfo, paneRead, paneScrollInfo, paneSendKeys, paneSendText, type ProcessInfo } from "./herdr/client.ts";
+import { HerdrError, paneProcessInfo, paneRead, paneScrollInfo, paneSendKeys, paneSendText, type ProcessInfo, sessionSnapshot } from "./herdr/client.ts";
 import { isPiProcess, piTranscriptPath } from "./pi.ts";
 import { heldOmoProcess } from "./omo.ts";
 import { OmoAskReader, ompAsksAfter, type OmoAsks } from "./omo-ask.ts";
@@ -898,11 +898,23 @@ class MoveLapsed extends KeyRefused {}
 /**
  * Right before each key an answer or a move sends: a pi-ask form that opened since the read takes none of them,
  * and an omp stopped behind its shell since the read takes none either: the shell would. A stop between this
- * look and herdr writing the key is not seen: herdr's send_keys takes no condition on the foreground.
+ * look and herdr writing the key is not seen: herdr's send_keys takes no condition on the foreground. A dsh-tui
+ * herdr no longer reports waiting on the user takes none: a dsh that died under the answer can leave its panel
+ * on the screen, with the shell after it taking the keys.
  */
 async function beforeKey(paneId: string, agent: string, deadline: AbortSignal): Promise<void> {
   if (agent === "pi" && await piAskRefusesKeys(paneId, deadline)) throw new PiAskFormOpen();
   if (agent === "omp" && !(await ompOwnsInput(paneId, deadline))) throw new OmpNotInFront();
+  if (agent === "dsh-tui" && !(await dshAsks(paneId, deadline))) throw new DshNotAsking();
+}
+
+/** dsh-tui stopped asking (or ended) since the card was read: nothing more is sent. */
+class DshNotAsking extends KeyRefused {}
+
+/** Whether herdr, asked now, still reports the pane's dsh-tui waiting on the user. */
+async function dshAsks(paneId: string, signal: AbortSignal): Promise<boolean> {
+  const pane = (await untilAborted(sessionSnapshot(), signal))?.panes.find((candidate) => candidate.pane_id === paneId);
+  return pane?.agent === "dsh-tui" && pane.agent_status === "blocked";
 }
 
 /** omp asked again (or its call closed) since the card was read: nothing more is sent. */

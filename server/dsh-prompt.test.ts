@@ -133,6 +133,32 @@ describe("dsh-tui's question through the answer route", () => {
     });
   });
 
+  test("sends no Enter onto a row where a space was put in at the wrap (the row recorded at 118 columns)", async () => {
+    const panel = newPanel();
+    const typed = "Use the device with WebDriverAgent first, then keep the staging API as a fallback for nightlyruns when the phone is offline, and log both paths so we can compare flakiness over two weeks";
+    const wrapped = readFileSync(join(import.meta.dir, "fixtures", "dsh-question-0.20.0-q1-typed-wrapped.txt"), "utf8");
+    await withDsh(panel, async () => {
+      expect(await answer({ prompt_id: (await card())!.id, custom_text: typed })).toBe(409);
+      expect(panel.sent).toEqual(["down", "down", `text:${typed}`]);
+    }, (drawn) => drawn.text ? wrapped : screen(drawn));
+  });
+
+  test("sends no key once herdr stops reporting the pane's dsh-tui as waiting, its panel still on the screen", async () => {
+    const panel = newPanel();
+    let answering = false;
+    // dsh killed right after the answer's first read: its panel stays, the shell's prompt on the footer's last row
+    const killed = (drawn: Panel): string => {
+      if (answering) drawn.status = "unknown";
+      return screen(drawn).replace(/   esc to interrupt\s*$/, "bash-5.3$ ");
+    };
+    await withDsh(panel, async () => {
+      const id = (await card())!.id;
+      answering = true;
+      expect(await answer({ prompt_id: id, option_index: 1 })).toBe(409);
+      expect(panel.sent).toEqual([]);
+    }, (drawn) => answering ? killed(drawn) : screen(drawn));
+  });
+
   test.each(["idle", "done", "working"])("offers no card for the panel while herdr says %s", async (status) => {
     const panel = newPanel(status);
     await withDsh(panel, async () => {
