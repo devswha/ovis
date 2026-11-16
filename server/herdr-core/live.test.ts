@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { HC_METHODS } from "../../scripts/hc-types.ts";
 import { herdrRpc, paneMoveToNewTab, paneRead, paneSendText, ping, sessionSnapshot, tabRename, workspaceClose, workspaceCreate, workspaceRename } from "../herdr/client.ts";
 import { startHerdrCoreAdapter } from "./adapter.ts";
 import { CoreAttachSession } from "./attach-session.ts";
@@ -85,11 +86,21 @@ describe.skipIf(!bin)("hc client against a real hc", () => {
     expect({ stopped, killed: alive }).toEqual({ stopped: 0, killed: [] });
   }, TEST_MS);
 
-  it("publishes the schema hc-api.generated.ts was made from", async () => {
+  it("publishes the schema hc-api.generated.ts was made from, or what the types rely on in an older hc", async () => {
     const proc = Bun.spawn([bin!, "schema"], { env: env!, stdout: "pipe", stderr: "ignore" });
-    const schema: unknown = JSON.parse(await new Response(proc.stdout).text());
+    const schema = JSON.parse(await new Response(proc.stdout).text()) as { info: { version: string }; methods: { name: string }[] };
     expect(await proc.exited).toBe(0);
-    expect(schema).toEqual(JSON.parse(readFileSync(join(import.meta.dir, "..", "..", "scripts", "hc-schema.json"), "utf8")));
+    const stored = JSON.parse(readFileSync(join(import.meta.dir, "..", "..", "scripts", "hc-schema.json"), "utf8")) as typeof schema;
+    const hello = await hc.hello();
+    if (hello.version === stored.info.version) {
+      // the hc the types were made from: refresh with OVIS_HC_BIN=<it> bun run generate:types --refresh-hc
+      expect(schema).toEqual(stored);
+    } else {
+      // an older supported hc publishes another schema; what the types and the client call must still be there
+      expect(schema.methods.map((method) => method.name)).toEqual(expect.arrayContaining([...HC_METHODS]));
+      expect(hello.methods).toEqual(expect.arrayContaining([...HC_METHODS]));
+      expect(hello.features).toEqual(expect.arrayContaining(["framed", "attach", "events", "resize_notifications"]));
+    }
   }, TEST_MS);
 
   it("speaks generation 1 in framed mode", async () => {
