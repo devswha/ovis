@@ -401,7 +401,7 @@ export function Composer({
   /**
    * The draft replaced by a write that is not this box's own edit (another tab, a restored send): no
    * place or placed path points into it any more. A file still uploading keeps a place at the start
-   * only while the box is empty; the placed ones are taken out, and the status line says so.
+   * only while the box is empty; the placed ones are detached.
    */
   const dropPlaces = useCallback((next: string) => {
     forgetErased();
@@ -832,7 +832,14 @@ export function Composer({
       // no place: the draft it was pasted in was written over from elsewhere (syncPlaces), and the
       // file stays attached without its path going into the new one
       if (place !== undefined) {
-        const next = insertMentionAt(textRef.current, mention, place);
+        const selected = readSelection();
+        // a selection across the place: the path goes before it, at the start of its first word, and the
+        // selection stays on the same text; typing over it never deletes the path, and nothing waits
+        let at = selected.start < place && place < selected.end ? selected.start : place;
+        if (at !== place) while (at > 0 && /\S/u.test(textRef.current[at - 1]!)) at--;
+        // never inside a path already placed: it goes to the front of that one, which stays whole
+        for (const other of placed.current.values()) if (other.start < at && at < other.end) at = other.start;
+        const next = insertMentionAt(textRef.current, mention, at);
         // no room for the whole path: this attachment and the ones picked after it stay waiting, in
         // their order, Send stays off, and the next edit of the text tries again (the effect below);
         // a cut path would name a file that is not there, so the tile says how much to cut instead
@@ -840,13 +847,6 @@ export function Composer({
           const missing = next.missing;
           waitingMentions.current.push(...waiting.slice(index));
           setAttachments((current) => current.map((item) => (item.id === id ? { ...item, state: "no-room", missing } : item)));
-          break;
-        }
-        // a selection across the place: the path would join it, and typing over it would delete it,
-        // so it waits, with the ones picked after it, until the selection changes (onSelect)
-        const selected = readSelection();
-        if (selected.start < next.at && next.at < selected.end) {
-          waitingMentions.current.push(...waiting.slice(index));
           break;
         }
         // the other places move with it; one that lands at the same place (after a leading /command
@@ -1715,8 +1715,6 @@ export function Composer({
           onKeyUp={(event) => setCaret(event.currentTarget.selectionStart)}
           onSelect={(event) => {
             selection.current = { start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd };
-            // a path that waited for a selection across its place to change
-            placeWaitingMentions();
           }}
           onChange={(event) => {
             const box = event.target;

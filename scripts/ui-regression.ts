@@ -1486,8 +1486,8 @@ try {
     await until(async () => /^h @\S*eleventh-\S* ello$/.test(await composer.inputValue()), "the path went to the selection's start, where the pick was made");
     const selection = await composer.evaluate((element: HTMLTextAreaElement) => ({ text: element.value.slice(element.selectionStart, element.selectionEnd), direction: element.selectionDirection }));
     assert.deepEqual(selection, { text: "ell", direction: "backward" }, "the selection keeps its text and direction");
-    // done with these files: Remove takes each one and its path out. Clearing the box instead would
-    // leave their tiles saying their paths are in no message, and the status line with them (#3216)
+    // done with these files: Remove takes each one and its path out (clearing the box would only
+    // detach them from the message, #3216)
     const tileRemove = page.locator(".composer-attachment button");
     while (await tileRemove.count() > 0) await tileRemove.first().click();
     await composer.fill("");

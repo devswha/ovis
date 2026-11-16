@@ -243,8 +243,8 @@ try {
         await feed(page, null, null);
         await boxValue(page, "@/tmp/notes.txt ");
         console.log("PASS a path that waited on a restored /command goes in once the fill is cleared");
-        // done with the file: Remove takes it and its path out (a path deleted by hand would leave the
-        // tile saying it is in no message, and Send waits for it, #3216)
+        // done with the file: Remove takes it and its path out (clearing the box would only detach it
+        // from the message, #3216)
         await page.getByRole("button", { name: "Remove notes.txt", exact: true }).click();
         await boxValue(page, "");
 

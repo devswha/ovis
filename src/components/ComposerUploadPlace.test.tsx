@@ -297,7 +297,7 @@ it("keeps a failed upload and its Try again when the box is emptied", async () =
   expect(box().props.value).toBe(`@${path("shot")} `);
 });
 
-it("keeps a selection that ends at the place before the path, and waits while one spans it", async () => {
+it("keeps a selection that ends at the place before the path, and puts the path before one that spans it, Send not held", async () => {
   await open();
   await type("look at this");
   await paste(12, "shot");
@@ -310,10 +310,15 @@ it("keeps a selection that ends at the place before the path, and waits while on
   await paste(7, "next");
   await select(3, 10);
   await finish("next");
-  expect(box().props.value).toBe("before after");
-  // typed over: the path goes where the edit began, and nothing deletes it
-  await type("befXer", 4);
-  expect(box().props.value).toBe(`bef @${path("next")} Xer`);
+  // nothing waits: the path goes before the selection's first word, the selection stays on the same text
+  const placed = `@${path("next")} `;
+  expect(box().props.value).toBe(`${placed}before after`);
+  expect(box().props.value.slice(element.selectionStart, element.selectionEnd)).toBe("ore aft");
+  expect(badges()).toEqual(["ready"]);
+  expect(sendOff()).toBe(false);
+  // typed over: the selected text goes, and the path stays whole
+  await type(`${placed}befXer`, placed.length + 4);
+  expect(badges()).toEqual(["ready"]);
 });
 
 it("takes a removed attachment's path out of the text when it was placed before a tab", async () => {
@@ -595,4 +600,26 @@ it("leaves what is left of a partly deleted path as the user's own text, and sen
   expect(sent).toEqual([]);
   await act(async () => { button("Send message").props.onClick(); });
   expect(sent).toEqual([partly]);
+});
+
+// a paste or pick with the caret inside a placed path puts the new path at the front of that one; both stay whole
+it.each([["pasted", "paste"], ["picked", "pick"]] as const)("keeps a placed path whole when another file is %s inside it, and Remove takes out only each file's own path", async (_name, how) => {
+  await open();
+  await type("see ", 4);
+  await paste(4, "a");
+  await finish("a");
+  const a = `@${path("a")}`;
+  expect(box().props.value).toBe(`see ${a} `);
+  // the box holds the path as the browser shows it, with the caret after "@/tmp/"
+  element.value = box().props.value as string;
+  if (how === "paste") await paste(4 + "@/tmp/".length, "b"); else await pick(4 + "@/tmp/".length, "b");
+  await finish("b");
+  const b = `@${path("b")}`;
+  expect(box().props.value).toBe(`see ${b} ${a} `);
+  expect(badges()).toEqual(["ready", "ready"]);
+  await act(async () => { button("Remove a.png").props.onClick(); });
+  expect(box().props.value).toBe(`see ${b} `);
+  expect(badges()).toEqual(["ready"]);
+  await act(async () => { button("Remove b.png").props.onClick(); });
+  expect(box().props.value).toBe("see ");
 });
