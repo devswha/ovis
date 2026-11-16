@@ -40,14 +40,16 @@ afterEach(async () => {
   saved.clear();
 });
 
-test("a conductor arriving while the list has keyboard focus cannot move the reader's existing rows", async () => {
+test.each([false, true])("a conductor arriving during keyboard focus cannot move rows or connect to an unrelated row (other first: %s)", async (otherFirst) => {
   const machines = structuredClone(fixture.machines) as Machine[];
   const machine = machines[0]!;
   const panes = machine.snapshot!.panes.slice(0, 3);
   const [helper, other, conductor] = panes;
   helper!.parent_pane_id = conductor!.pane_id;
-  const roster = (withConductor: boolean): Machine[] => [{ ...machine, snapshot: { ...machine.snapshot!, panes: withConductor ? panes : [helper!, other!] } }];
-  const activity: SidebarActivity = { seqs: () => new Map(), status: () => "working" };
+  const initial = otherFirst ? [other!, helper!] : [helper!, other!];
+  const roster = (withConductor: boolean): Machine[] => [{ ...machine, snapshot: { ...machine.snapshot!, panes: withConductor ? [...initial, conductor!] : initial } }];
+  // Within a state the inbox sorts by activity, not snapshot pane order (workspace order wins ties).
+  const activity: SidebarActivity = { seqs: () => new Map(initial.map((pane, index) => [pane.pane_id, index])), status: () => "working" };
   const questionReads = newQuestionReads(() => () => {});
   const summaryReads = new SummaryReads(() => new Promise(() => {}), () => () => {});
   const scroll = { current: 0 };
@@ -59,11 +61,12 @@ test("a conductor arriving while the list has keyboard focus cannot move the rea
   const root = renderer!.root;
   const order = () => root.findAll((node) => node.type === "li" && node.props["data-pane"]).map((node) => node.props["data-pane"]);
   const list = () => root.findByType("ul");
-  expect(order()).toEqual([helper!.pane_id, other!.pane_id]);
+  expect(order()).toEqual(initial.map((pane) => pane.pane_id));
   await act(async () => { list().props.onFocus({ target: { matches: () => true } }); });
   await act(async () => { renderer!.update(view(true)); });
-  expect(order()).toEqual([helper!.pane_id, other!.pane_id, conductor!.pane_id]);
+  expect(order()).toEqual([...initial, conductor!].map((pane) => pane.pane_id));
+  expect(root.findAll((node) => node.type === "li" && String(node.props.className).includes("fork-inbox-helper"))).toHaveLength(0);
   await act(async () => { list().props.onBlur({ relatedTarget: null, currentTarget: {} }); });
-  expect(order()).toEqual([conductor!.pane_id, helper!.pane_id, other!.pane_id]);
+  expect(order()).toEqual((otherFirst ? [other!, conductor!, helper!] : [conductor!, helper!, other!]).map((pane) => pane.pane_id));
   expect(root.findAll((node) => node.type === "li" && String(node.props.className).includes("fork-inbox-helper"))).toHaveLength(1);
 });
