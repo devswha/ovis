@@ -422,7 +422,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
    * same file, and again only once it grew. Nothing written since the turn began, another transcript (a /clear or a
    * /resume the pane's binding moved to, or still names the old one of) or another file in its place says nothing of
    * this turn, and leaves herdr's word. A turn begun before its session's transcript was written reads the one the pane
-   * names from its start, only once that is found to have begun with the turn: an older one is another session's.
+   * names from its start, only once that is found to have begun with the turn: an older one is another session's, and
+   * so is one of another session than herdr names for the pane now (a lookup not caught up with a /clear).
    */
   function claudeRest(paneId: string): ClaudeTurnEnd {
     let mark = claudeLooked.get(paneId);
@@ -430,7 +431,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     const session = claudeAgents.sessionOf(paneId);
     if (session?.live !== true) return null;
     if (mark.path === null) {
-      const found = plain(session.path);
+      const found = basename(session.path, ".jsonl") === claudeAgents.sessionIdOf(paneId) ? plain(session.path) : null;
       const looked = found === null ? null : `${session.path}\0${found.id}\0${found.size}`;
       if (found === null || looked === mark.looked) return null;
       const began = claudeTranscriptStart(session.path, found);

@@ -1,6 +1,7 @@
-import { describe, expect, it, jest, spyOn } from "bun:test";
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { describe, expect, it, jest, type Mock, setSystemTime, spyOn } from "bun:test";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import * as conversation from "../conversation.ts";
 import { claude, handlers, hub, line, root, workingClaude } from "./status.fake.ts";
 
 // Claude Code 2.1.321 at an API rate limit, as recorded: the turn's answer entry is the error (isApiErrorMessage)
@@ -9,18 +10,22 @@ const failed = readFileSync(join(import.meta.dir, "..", "fixtures", "claude-api-
 const failedEntry = `${failed.trim().split("\n").at(-1)!}\n`;
 const prompt = (text: string) => line({ type: "user", origin: { kind: "human" }, timestamp: new Date().toISOString(), message: { role: "user", content: text } });
 const answer = (text: string) => line({ type: "assistant", timestamp: new Date().toISOString(), message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text }] } });
+/** the stood-in lookup of a pane's transcript (status.fake.ts) */
+const lookup = () => conversation.claudePaneSession as Mock<typeof conversation.claudePaneSession>;
 
 let sessions = 0;
 /**
  * a hub whose Claude pane reads `path` as its transcript, found by a snapshot while the pane is at rest; `text` null: a
- * new session, whose transcript Claude Code writes only with its first message
+ * new session, whose transcript Claude Code writes only with its first message. `found`: the lookup finds the transcript
+ * only once it exists, as the real one does (conversation.ts claudeTranscriptPath)
  */
-async function claudeHub(text: string | null) {
+async function claudeHub(text: string | null, found = false) {
   const id = `44444444-4444-4444-8444-${String(++sessions).padStart(12, "0")}`;
   const path = join(root, `${id}.jsonl`);
   if (text !== null) writeFileSync(path, text);
   const pane = { ...claude, agent_session: { ...claude.agent_session, value: id } };
   const h = hub(path);
+  if (found) lookup().mockImplementation(async () => existsSync(path) ? { path, startedAt: null, pid: null } : null);
   const failures: string[] = [];
   spyOn(h.status.push, "onFailed").mockImplementation(async (paneId: string) => { failures.push(paneId); });
   h.herdrSays(pane);
@@ -186,16 +191,25 @@ describe("a Claude pane whose turn ended on an API error", () => {
     expect(h.failures).toEqual([h.pane.pane_id]);
   });
 
-  it("reads the first turn of a new session, whose transcript did not exist as it began, at rest with one failure alert", async () => {
-    const h = await claudeHub(null);
+  it("reads the first turn of a new session, whose transcript did not exist as it began, at rest with one failure alert once its transcript is found", async () => {
+    const h = await claudeHub(null, true);
     handlers.onStatus(h.pane.pane_id, "working", "claude");
     writeFileSync(h.path, `${prompt("go")}${failedEntry}`);
     handlers.onStatus(h.pane.pane_id, "idle", "claude");
-    expect(h.last().status).toBe("idle");
-    expect(h.alerts).toEqual(["working", "idle"]);
-    expect(h.failures).toEqual([h.pane.pane_id]);
+    // no transcript found for the pane yet: herdr's word, as on main
+    expect(h.last().status).toBe("done");
+    expect(h.failures).toEqual([]);
     h.herdrSays({ ...h.pane, agent_status: "done" });
-    expect((await h.snapshot()).panes[0]!.agent_status).toBe("idle");
+    // the lookup is tried again only a while after the last one: the snapshot then finds the transcript, the next reads it
+    setSystemTime(new Date(Date.now() + 6000));
+    try {
+      await h.snapshot();
+      expect((await h.snapshot()).panes[0]!.agent_status).toBe("idle");
+    } finally { setSystemTime(); }
+    expect(h.last().status).toBe("idle");
+    expect(h.alerts).toEqual(["working", "done", "idle"]);
+    expect(h.failures).toEqual([h.pane.pane_id]);
+    await h.snapshot();
     expect(h.failures).toEqual([h.pane.pane_id]);
   });
 
@@ -241,6 +255,28 @@ describe("a Claude pane whose turn ended on an API error", () => {
     h.herdrSays({ ...h.pane, agent_status: "done" });
     expect((await h.snapshot()).panes[0]!.agent_status).toBe("done");
     expect(h.failures).toEqual([]);
+  });
+
+  it("tells no failure of a turn that answered in a new session while the lookup still names the previous one, begun moments before and ending on an error", async () => {
+    const h = await claudeHub("");
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    writeFileSync(h.path, `${prompt("go")}${failedEntry}`);
+    handlers.onStatus(h.pane.pane_id, "idle", "claude");
+    expect(h.failures).toEqual([h.pane.pane_id]);
+    // /clear at once: herdr names the new session, and the turn begins while the lookup for it, which names the
+    // previous session's transcript, is under way
+    const cleared = { ...h.pane, agent_session: { ...h.pane.agent_session, value: `44444444-4444-4444-8444-${String(++sessions).padStart(12, "0")}` } };
+    h.herdrSays(cleared);
+    const looking = Promise.withResolvers<{ path: string; startedAt: null; pid: null }>();
+    lookup().mockImplementation(() => looking.promise);
+    const bound = h.status.claudeAgents.refresh([cleared as never]);
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    looking.resolve({ path: h.path, startedAt: null, pid: null });
+    await bound;
+    writeFileSync(join(root, `${cleared.agent_session.value}.jsonl`), `${prompt("again")}${answer("Done")}`);
+    handlers.onStatus(h.pane.pane_id, "idle", "claude");
+    expect(h.last().status).toBe("done");
+    expect(h.failures).toEqual([h.pane.pane_id]);
   });
 
   it("tells nothing of a failure it never saw run: a pane found already at rest, after a restart", async () => {

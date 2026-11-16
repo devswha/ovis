@@ -1751,6 +1751,11 @@ export class ClaudeSubagentStatus {
     return tracked?.path ? { path: tracked.path, live: tracked.live, startedAt: tracked.startedAt, read: tracked.read } : null;
   }
 
+  /** The id of the Claude session herdr names for the pane, as the last snapshot read it, or null: it names none. */
+  sessionIdOf(paneId: string): string | null {
+    return this.sessions.get(paneId) || null;
+  }
+
   /** Finds the Claude panes of a snapshot and their transcripts; a lookup costs process calls, so a known one is not repeated. */
   refresh(panes: HerdrPane[]): Promise<void> {
     const ids = new Set(panes.map((pane) => pane.pane_id));
