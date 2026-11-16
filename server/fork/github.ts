@@ -7,9 +7,7 @@ import { originRepository, parsePullRequests, PullRequestError, runGithub } from
 // Service.qml / omarchy-github-fetch. No code copied; one active account here.
 const FIELDS = `number title url headRefName isDraft isCrossRepository updatedAt author { login }
   repository { nameWithOwner } reviewDecision
-  commits(last:1) { nodes { commit { statusCheckRollup { contexts(first:100) {
-    pageInfo { hasNextPage } nodes { ... on CheckRun { status conclusion } ... on StatusContext { state } }
-  } } } } }`;
+  commits(last:1) { nodes { commit { statusCheckRollup { state } } } }`;
 const QUERY = `query {
   viewer { login }
   review: search(query:"is:pr is:open review-requested:@me sort:updated-desc",type:ISSUE,first:50) { nodes { ... on PullRequest { ${FIELDS} } } }
@@ -26,13 +24,13 @@ export function parseGithubPulls(output: string): GithubPulls {
       if (!Array.isArray(search?.nodes)) throw unreadable();
       const unique = new Map<string, GithubPull>();
       for (const value of search.nodes.slice(0, 50)) {
-        const row = value as { number: number; url: string; repository?: { nameWithOwner?: unknown }; commits?: { nodes?: { commit?: { statusCheckRollup?: { contexts?: { nodes?: unknown[]; pageInfo?: { hasNextPage?: boolean } } } } }[] } };
+        const row = value as { number: number; url: string; repository?: { nameWithOwner?: unknown }; commits?: { nodes?: { commit?: { statusCheckRollup?: { state?: string } | null } }[] } };
         const repository = row?.repository?.nameWithOwner;
         if (typeof repository !== "string" || !/^[\w.-]+\/[\w.-]+$/.test(repository) || !Number.isSafeInteger(row.number) || row.number < 1 || row.url !== `https://github.com/${repository}/pull/${row.number}`) throw unreadable();
-        const contexts = row.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts;
-        const [entry] = parsePullRequests(JSON.stringify([{ ...row, statusCheckRollup: contexts?.nodes }]), []);
+        // The aggregate covers every check, including contexts beyond GitHub's first page.
+        const rollup = row.commits?.nodes?.[0]?.commit?.statusCheckRollup;
+        const [entry] = parsePullRequests(JSON.stringify([{ ...row, statusCheckRollup: rollup ? [{ state: rollup.state }] : [] }]), []);
         if (!entry) throw unreadable();
-        if (contexts?.pageInfo?.hasNextPage && entry.checks !== "failing") entry.checks = "pending";
         unique.set(entry.url, { ...entry, repository });
       }
       return [...unique.values()].sort((a, b) => b.updated_at.localeCompare(a.updated_at));
