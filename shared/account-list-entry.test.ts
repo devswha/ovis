@@ -6,7 +6,7 @@ import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  LIST_BODY_MAX, LIST_LEVEL, LIST_LEVEL_TABLE, ListEntryError, entryFromText, entryHash, entryHolds, entryToText, firstState, isListHash, isListKey, isListName,
+  LIST_BODY_MAX, ListEntryError, entryFromText, entryHash, entryHolds, entryToText, firstState, isListHash, isListKey, isListName,
   isListNumber, isListPoint, readBody, readFields, readFieldsUnder, signEntry, signatureInRange, verifySignature, writeBody, writeFields, writeFieldsUnder,
   type Entry, type EntryBody, type HeldEntry, type ListRefusalCode,
 } from "./account-list-entry.ts";
@@ -428,13 +428,6 @@ describe("writing a body", () => {
     }
     expect(refusal(() => writeBody({ ...genesisBody, own: [{ name: "seq", value: encoder.encode("1") }] }))).toBe("entry_malformed");
     expect(refusal(() => writeBody({ ...genesisBody, own: [{ name: "zz", value: new Uint8Array(LIST_BODY_MAX) }] }))).toBe("entry_malformed");
-  });
-});
-
-describe("the level table", () => {
-  test("level 1 is five kinds, each written with v 1", () => {
-    expect(LIST_LEVEL).toBe(1);
-    expect(LIST_LEVEL_TABLE).toEqual({ genesis: { 1: 1 }, device: { 1: 1 }, invite: { 1: 1 }, join: { 1: 1 }, remove: { 1: 1 } });
   });
 });
 

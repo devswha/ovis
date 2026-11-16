@@ -104,8 +104,8 @@ not hold stops the member with the code of the first check that fails:
 
 A level is a number from 1; a build of level L reads every form of levels 1 to L. Each kind writes
 in `v` the level that first defined it in that form. Level 1 is five kinds, each written with `v`
-1: `genesis`, `device`, `invite`, `join` and `remove`. The code holds this as the table
-`LIST_LEVEL_TABLE`; what each kind carries and means is not part of this page.
+1: `genesis`, `device`, `invite`, `join` and `remove`. What each kind carries and means is not part
+of this page.
 
 ## The vectors
 

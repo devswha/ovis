@@ -15,7 +15,9 @@ export const LIST_BODY_PREFIX = "ovis-list/1";
 export const LIST_ENTRY_HASH_PREFIX = "ovis-list-entry/1";
 /** The one size limit of an entry that every member holds: its body, prefix included. */
 export const LIST_BODY_MAX = 8192;
+/** A name is at most this many bytes. */
 export const LIST_NAME_MAX = 32;
+/** A number is at most this many digits. */
 export const LIST_NUMBER_DIGITS = 15;
 /** A key's characters: the base64url of its 91 SPKI bytes. */
 export const LIST_KEY_LENGTH = 122;
@@ -30,17 +32,6 @@ export const LIST_SIGNATURE_TEXT_LENGTH = 86;
  * the list id a member was given.
  */
 export type ListRefusalCode = "entry_malformed" | "chain_broken" | "signature_invalid" | "list_mismatch";
-
-/** The level of this build (docs/account-list.md, "Levels"): it reads every form of levels 1 to this. */
-export const LIST_LEVEL = 1;
-/** The level table: for each kind, the level that defines each of its forms (`v`). Level 1 is five kinds, each written with `v` 1. */
-export const LIST_LEVEL_TABLE = {
-  genesis: { 1: 1 },
-  device: { 1: 1 },
-  invite: { 1: 1 },
-  join: { 1: 1 },
-  remove: { 1: 1 },
-} as const satisfies { readonly [kind: string]: { readonly [v: number]: number } };
 
 export class ListEntryError extends Error {
   constructor(readonly code: ListRefusalCode, message: string) {
@@ -113,15 +104,17 @@ const SIGN = { name: "ECDSA", hash: "SHA-256" } as const;
 const ENVELOPE_NAMES = new Set(["issued_at", "kind", "list", "prev", "seq", "signer", "v", "adds", "power", "ends"]);
 /** The longest text of a body of LIST_BODY_MAX bytes. */
 const BODY_TEXT_MAX = Math.ceil((LIST_BODY_MAX * 4) / 3);
+const NAME_FORM = new RegExp(`^[a-z][a-z_]{0,${LIST_NAME_MAX - 1}}$`);
+const NUMBER_FORM = new RegExp(`^(?:0|[1-9][0-9]{0,${LIST_NUMBER_DIGITS - 1}})$`);
 
 /** 1 to 32 bytes: the first a-z, each other a-z or `_`. */
 export function isListName(text: string): boolean {
-  return /^[a-z][a-z_]{0,31}$/.test(text);
+  return NAME_FORM.test(text);
 }
 
 /** 1 to 15 digits, no sign, no leading zero. */
 export function isListNumber(text: string): boolean {
-  return /^(?:0|[1-9][0-9]{0,14})$/.test(text);
+  return NUMBER_FORM.test(text);
 }
 
 /** 64 characters 0-9a-f. */
