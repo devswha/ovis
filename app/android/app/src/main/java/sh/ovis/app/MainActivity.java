@@ -902,16 +902,23 @@ public class MainActivity extends BridgeActivity {
     }
 
     /**
-     * Readies a tapped alert's pane for the next first load (PCStore.alertLink): the PC that sent it,
-     * on that pane in its chat, switching PC when another is open. False, leaving the open page alone,
-     * for any other intent, an alert that names no saved PC, and one the system hands back with the
-     * activity restored or started from Recents, which was opened before. The alert is taken out of
-     * the intent, so it opens once.
+     * Opens a tapped alert's pane (PCStore.alertTap). The page of the PC that sent it, already up, is
+     * handed the pane as the browser's worker hands an open window, and keeps what it holds; true
+     * readies another PC on that pane in its chat for the next first load, switching PC. False,
+     * leaving the open page alone, for any other intent, an alert that names no saved PC, and one the
+     * system hands back with the activity restored or started from Recents, which was opened before.
+     * The alert is taken out of the intent, so it opens once.
      */
     private boolean openAlert(Intent intent, boolean fresh) {
         if (intent == null || !OvisMessagingService.ACTION_OPEN_ALERT.equals(intent.getAction())) return false;
-        String[] alert = PCStore.alertLink(
+        WebView view = bridge == null ? null : bridge.getWebView();
+        String url = view == null ? null : view.getUrl();
+        // the PC's page with its client up: not under the cover of a first load, nor the error page
+        String shown = openingView != null || url == null || url.equals(bridge.getErrorUrl()) ? null : url;
+        PCStore.AlertTap alert = PCStore.alertTap(
             PCStore.saved(this),
+            PCStore.current(this),
+            shown,
             intent.getStringExtra(OvisMessagingService.EXTRA_ORIGIN),
             intent.getStringExtra(OvisMessagingService.EXTRA_SERVER_ID),
             intent.getStringExtra(OvisMessagingService.EXTRA_MACHINE),
@@ -922,7 +929,18 @@ public class MainActivity extends BridgeActivity {
         intent.setData(null);
         boolean fromRecents = (intent.getFlags() & Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) != 0;
         if (alert == null || !fresh || fromRecents) return false;
-        PCStore.open(this, alert[0], alert[1]);
+        if (alert.selection != null) {
+            // as public/sw.js posts it to the open window: src/lib/notificationTarget.ts hears it on
+            // navigator.serviceWorker, which a page on plain http lacks, and then the app only comes forward
+            view.evaluateJavascript(
+                "(() => { const worker = navigator.serviceWorker; if (worker) worker.dispatchEvent(new MessageEvent('message', { data: " + alert.selection + " })); })()",
+                null
+            );
+            return false;
+        }
+        // the alert is the newer ask: a pairing link still waiting for the connect screen would show that instead
+        PCStore.link = null;
+        PCStore.open(this, alert.pc, alert.address);
         PCStore.fail(null, null);
         PCStore.redirects = 0;
         return true;

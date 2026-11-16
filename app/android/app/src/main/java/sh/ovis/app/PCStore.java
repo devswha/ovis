@@ -85,13 +85,52 @@ final class PCStore {
             + (workspace == null || workspace.isEmpty() ? "" : "&ws=" + encoded(workspace))
             + "&pane=" + encoded(pane) + "&view=chat";
         String key = origin(origin);
-        if (key != null && saved.contains(key) && !scoped(key)) return new String[] { key, key + "/?" + query };
+        // the hosted shell's own origin is every relay PC's, and "Your PCs" when that is saved: never the PC itself
+        if (key != null && saved.contains(key) && !scoped(key) && !sameOrigin(key, "https://app.ovis.sh")) return new String[] { key, key + "/?" + query };
         if (serverId != null && SERVER_ID.matcher(serverId).matches()) {
             String scope = "https://app.ovis.sh/s/" + serverId + "/";
             // an endpoint kept for the hosted shell, or none found: then the relay ID alone names the PC
             if (saved.contains(scope) && (key == null || sameOrigin(key, scope))) return new String[] { scope, scope + "#" + query };
         }
         return null;
+    }
+
+    /** What a tapped alert does (alertTap): hand the open page `selection`, or open `pc` at `address` as a first load. */
+    static final class AlertTap {
+        final String pc;
+        final String address;
+        final String selection;
+
+        private AlertTap(String pc, String address, String selection) {
+            this.pc = pc;
+            this.address = address;
+            this.selection = selection;
+        }
+    }
+
+    /**
+     * What a tapped alert does (MainActivity.openAlert), or null when it names no pane or no saved PC
+     * (alertLink) and the app stays as it was. When its PC is the one whose page is shown (`current`;
+     * `shown`, the WebView's address once the client is up, else null), `selection` is the message
+     * the browser's worker posts to an open window (public/sw.js notificationclick "select-pane"),
+     * for the page to take as src/lib/notificationTarget.ts does, so nothing reloads. For another
+     * saved PC, or its page not up, `pc` opens at `address` as a first load, as switching PC does.
+     */
+    static AlertTap alertTap(List<String> saved, String current, String shown, String origin, String serverId, String machine, String workspace, String pane) {
+        String[] link = alertLink(saved, origin, serverId, machine, workspace, pane);
+        if (link == null) return null;
+        if (!link[0].equals(current) || shown == null || !belongs(shown, current)) return new AlertTap(link[0], link[1], null);
+        try {
+            JSONObject selection = new JSONObject()
+                .put("type", "select-pane")
+                .put("pane_id", pane)
+                .put("machine_id", machine == null || machine.isEmpty() ? "local" : machine)
+                .put("view", "chat");
+            if (workspace != null && !workspace.isEmpty()) selection.put("workspace_id", workspace);
+            return new AlertTap(link[0], null, selection.toString());
+        } catch (JSONException never) {
+            throw new IllegalStateException(never);
+        }
     }
 
     private static String encoded(String text) {

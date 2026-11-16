@@ -478,6 +478,50 @@ public class PCStoreTest {
         assertNull(PCStore.alertLink(saved, null, null, null, null, "w1:p1"));
         // a relay ID never moves an alert from a saved address to the hosted shell
         assertNull(PCStore.alertLink(java.util.Collections.singletonList(scope), "http://forgotten.lan:7317", id, null, null, "w1:p1"));
+        // with "Your PCs" (the hosted shell's own origin) saved too, a relay alert still opens its PC
+        java.util.List<String> withList = java.util.Arrays.asList(home, scope, "https://app.ovis.sh");
+        assertArrayEquals(new String[] { scope, scope + "#machine=local&pane=w1%3Ap1&view=chat" },
+            PCStore.alertLink(withList, "https://app.ovis.sh", id, null, null, "w1:p1"));
+    }
+
+    @Test
+    public void handsATappedAlertToTheOpenPageOfItsPcAndOpensAnyOtherPc() throws Exception {
+        String scope = "https://app.ovis.sh/s/0123456789abcdef0123456789abcdef/";
+        String id = "0123456789abcdef0123456789abcdef";
+        String home = "http://desktop.lan:7317";
+        String laptop = "https://laptop.example.ts.net";
+        java.util.List<String> saved = java.util.Arrays.asList(home, scope, laptop, "https://app.ovis.sh");
+        // the PC whose page is up: that page is handed the pane as public/sw.js posts it, and nothing opens
+        PCStore.AlertTap same = PCStore.alertTap(saved, home, home + "/?machine=local&pane=w1%3Ap0", home, id, null, "w1", "w1:p1");
+        assertNull(same.address);
+        org.json.JSONObject selection = new org.json.JSONObject(same.selection);
+        assertEquals("select-pane", selection.getString("type"));
+        assertEquals("w1:p1", selection.getString("pane_id"));
+        assertEquals("local", selection.getString("machine_id"));
+        assertEquals("chat", selection.getString("view"));
+        assertEquals("w1", selection.getString("workspace_id"));
+        // a relay PC's page at its scope too; the values reach the page as they came, whatever they hold
+        String odd = "p\"); alert(1); //\u2028</script>";
+        PCStore.AlertTap relay = PCStore.alertTap(saved, scope, scope + "#machine=local", "https://app.ovis.sh", id, "build box", null, odd);
+        assertNull(relay.address);
+        org.json.JSONObject relaySelection = new org.json.JSONObject(relay.selection);
+        assertEquals(odd, relaySelection.getString("pane_id"));
+        assertEquals("build box", relaySelection.getString("machine_id"));
+        assertFalse(relaySelection.has("workspace_id"));
+        // another saved PC is open: the alert's PC opens on the pane, as a switch of PC does
+        PCStore.AlertTap other = PCStore.alertTap(saved, laptop, laptop + "/", home, id, null, "w1", "w1:p1");
+        assertNull(other.selection);
+        assertEquals(home, other.pc);
+        assertEquals(home + "/?machine=local&ws=w1&pane=w1%3Ap1&view=chat", other.address);
+        // its own PC with no page of it up (a first load under the cover, the error page, a sign-in in front of it): opened
+        for (String shown : new String[] { null, "https://sso.example.com/login", scope }) {
+            PCStore.AlertTap opened = PCStore.alertTap(saved, home, shown, home, id, null, null, "w1:p1");
+            assertNull(shown, opened.selection);
+            assertEquals(home + "/?machine=local&pane=w1%3Ap1&view=chat", opened.address);
+        }
+        // an alert that names no saved PC, or no pane: nothing, whatever is open
+        assertNull(PCStore.alertTap(saved, home, home + "/", "http://forgotten.lan:7317", null, null, null, "w1:p1"));
+        assertNull(PCStore.alertTap(saved, home, home + "/", home, id, null, null, null));
     }
 
     @Test
