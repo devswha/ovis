@@ -39,31 +39,31 @@ export function feedReads(reads: readonly Uint8Array[], setup?: (framer: Framer)
   return events;
 }
 
+type WayKind = "whole" | "cut" | "byte by byte";
+
 /** The ways one input is read: whole, cut in two at every offset (0 to its length), and byte by byte. */
-export function readWays(input: Uint8Array): { name: string; reads: Uint8Array[] }[] {
-  const ways = [{ name: "whole", reads: [input] }];
-  for (let cut = 0; cut <= input.length; cut++) ways.push({ name: `cut at ${cut}`, reads: [input.subarray(0, cut), input.subarray(cut)] });
-  ways.push({ name: "byte by byte", reads: Array.from(input, (_, i) => input.subarray(i, i + 1)) });
+export function readWays(input: Uint8Array): { kind: WayKind; name: string; reads: Uint8Array[] }[] {
+  const ways: { kind: WayKind; name: string; reads: Uint8Array[] }[] = [{ kind: "whole", name: "whole", reads: [input] }];
+  for (let cut = 0; cut <= input.length; cut++) ways.push({ kind: "cut", name: `cut at ${cut}`, reads: [input.subarray(0, cut), input.subarray(cut)] });
+  ways.push({ kind: "byte by byte", name: "byte by byte", reads: Array.from(input, (_, i) => input.subarray(i, i + 1)) });
   return ways;
 }
 
 /**
- * Runs `input` every way it can be read and expects the same events each time; fails when fewer than
- * three runs were made. In the whole run every event read from the bytes carries the stamp of that one
+ * Runs `input` every way it can be read and expects the same events each time. Fails unless all three
+ * kinds ran: once whole, once cut at each of the `input.length + 1` offsets, once byte by byte. In the whole run every event read from the bytes carries the stamp of that one
  * read (a probe's timeout is stamped with the end of its wait).
  */
 export function expectEveryWay(input: Uint8Array, expected: unknown[], setup?: (framer: Framer) => void): void {
-  const ways = readWays(input);
-  expect(ways.length).toBeGreaterThanOrEqual(3);
-  let runs = 0;
-  for (const { name, reads } of ways) {
+  const ran: Record<WayKind, number> = { whole: 0, cut: 0, "byte by byte": 0 };
+  for (const { kind, name, reads } of readWays(input)) {
     const events = feedReads(reads, setup);
     expect({ way: name, events: normalize(events) }).toEqual({ way: name, events: expected });
     if (name === "whole") {
       const read = events.filter((event) => !(event.type === "reply" && event.kind === "timeout"));
       expect(read.map((event) => event.at)).toEqual(read.map(() => T0));
     }
-    runs++;
+    ran[kind]++;
   }
-  expect(runs).toBeGreaterThanOrEqual(3);
+  expect({ ways: ran }).toEqual({ ways: { whole: 1, cut: input.length + 1, "byte by byte": 1 } });
 }

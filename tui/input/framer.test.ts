@@ -36,6 +36,15 @@ describe("esc", () => {
     expect(normalize(framer.feed(bytes("<0;3;4M"), T0 + ESC_WAIT_MS + 1))).toEqual([{ type: "mouse", action: "press", button: "left", mods: {}, col: 2, row: 3 }]);
   });
 
+  it("counts the Esc wait from the read that ended in the introducer, not from the ESC's own read", () => {
+    const framer = new Framer();
+    framer.feed(bytes("\x1b"), T0);
+    framer.feed(bytes("["), T0 + 20);
+    expect(framer.deadline()).toBe(T0 + 20 + ESC_WAIT_MS);
+    expect(framer.tick(T0 + 49)).toEqual([]);
+    expect(framer.tick(T0 + 50)).toEqual([{ type: "key", key: "BRACKET_LEFT", mods: { alt: true }, action: "press", text: "[", unshifted: "[", at: T0 }]);
+  });
+
   it("gives ESC then [A inside the wait as one arrow", () => {
     const framer = new Framer();
     framer.feed(bytes("\x1b"), T0);
@@ -64,6 +73,15 @@ describe("esc", () => {
     expect(framer.tick(T0 + SEQUENCE_DROP_MS - 1)).toEqual([]);
     expect(framer.tick(T0 + SEQUENCE_DROP_MS)).toEqual([{ type: "unknown", raw: "\x1b[<", at: T0 }]);
     expect(framer.deadline()).toBeUndefined();
+  });
+
+  it("counts the drop of a longer sequence from the read that held its first byte, not from its last read", () => {
+    const framer = new Framer();
+    framer.feed(bytes("\x1b[1"), T0);
+    framer.feed(bytes(";5"), T0 + 400);
+    expect(framer.deadline()).toBe(T0 + 500);
+    expect(framer.tick(T0 + 499)).toEqual([]);
+    expect(framer.tick(T0 + 500)).toEqual([{ type: "unknown", raw: "\x1b[1;5", at: T0 }]);
   });
 });
 
@@ -97,6 +115,28 @@ describe("paste", () => {
     expect(fits[0]?.type === "paste" && fits[0].text.length).toBe(PASTE_LIMIT_BYTES);
     const over = feedReads([bytes("\x1b[200~"), new Uint8Array(PASTE_LIMIT_BYTES + 1).fill(0x61), bytes("\x1b[201~z")]);
     expect(normalize(over)).toEqual([{ type: "paste", text: "", complete: false }, { type: "text", text: "z" }]);
+  });
+
+  it("refuses a paste as soon as it passes the limit, and swallows the rest of it up to its end mark", () => {
+    const framer = new Framer();
+    const start = framer.feed(Buffer.concat([bytes("\x1b[200~"), new Uint8Array(PASTE_LIMIT_BYTES + 1).fill(0x61)]), T0);
+    expect(start).toEqual([{ type: "paste", text: "", complete: false, at: T0 }]);
+    expect(framer.feed(bytes("more of the paste\x1b[A"), T0 + 1)).toEqual([]);
+    expect(framer.feed(bytes("\x1b[201~y"), T0 + 2)).toEqual([{ type: "text", text: "y", at: T0 + 2 }]);
+  });
+
+  it("drops a paste or sequence in progress on reset, keeping the host modes", () => {
+    const framer = new Framer();
+    framer.setModes({ mouse: true });
+    framer.feed(bytes("\x1b[200~never ends"), T0);
+    framer.reset();
+    expect(framer.feed(bytes("x"), T0 + 1)).toEqual([{ type: "text", text: "x", at: T0 + 1 }]);
+    framer.feed(bytes("\x1b"), T0 + 2);
+    framer.reset();
+    expect(framer.deadline()).toBeUndefined();
+    expect(framer.tick(T0 + 60_000)).toEqual([]);
+    framer.feed(bytes("\x1b"), T0 + 3);
+    expect(framer.deadline()).toBe(T0 + 3 + ESC_WAIT_SLOW_MS);
   });
 });
 

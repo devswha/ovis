@@ -1,5 +1,5 @@
 import { ESC_WAIT_MS, ESC_WAIT_SLOW_MS, PASTE_LIMIT_BYTES, REPLY_WAIT_MS, SEQUENCE_DROP_MS, SEQUENCE_LIMIT_BYTES } from "../model/deadlines.ts";
-import { decodeControl, decodeCsi, decodeSs3, decodeString, typedKey, withAlt, type InputEvent, type Unstamped } from "./decode.ts";
+import { decodeControl, decodeCsi, decodeLinuxFunction, decodeSs3, decodeString, typedKey, withAlt, type InputEvent, type Unstamped } from "./decode.ts";
 
 /** What the host terminal was set up with, as far as it changes how its bytes are cut. */
 interface HostModes {
@@ -50,7 +50,8 @@ function firstContinuation(lead: number): [number, number] {
  * - A longer unfinished sequence never becomes a key: it is dropped as `unknown` SEQUENCE_DROP_MS after
  *   its first byte.
  * - An unfinished UTF-8 character waits for the next read, however late, and is never split.
- * - A bracketed paste is one event; no wait ends it, and past PASTE_LIMIT_BYTES it is refused whole.
+ * - A bracketed paste is one event; no wait ends it. Once it passes PASTE_LIMIT_BYTES it is refused whole
+ *   at once, and the rest of it is swallowed up to its end mark; if that mark never comes, `reset` ends it.
  * - A reply's shape gives a `reply` only while the start probe waits (`expectReplies`), else `unknown`.
  */
 export class Framer {
@@ -68,7 +69,9 @@ export class Framer {
   private stringKind: "osc" | "dcs" | "apc" = "osc";
   /** an ESC inside a string, which ends it when a backslash follows */
   private stringEscAt: number | undefined;
-  private x10Left = 0;
+  /** bytes still to come after a CSI that a fixed number of raw bytes follow: an X10 mouse report, a Linux console key */
+  private trailLeft = 0;
+  private trailKind: "x10" | "linux" = "x10";
   private text: number[] = [];
   private textAt = 0;
   private char: number[] = [];
@@ -79,6 +82,16 @@ export class Framer {
 
   setModes(modes: Partial<HostModes>): void {
     this.modes = { ...this.modes, ...modes };
+  }
+
+  /**
+   * Drops what is in progress (a paste, a sequence, a cut character) and its wait, for a caller that
+   * must get the keyboard back, such as after a paste whose end mark never came. Host modes and the
+   * probe's wait stay.
+   */
+  reset(): void {
+    this.ground();
+    this.pending = undefined;
   }
 
   /** The start probe was sent at `now`: replies are read until its DA1 reply comes or REPLY_WAIT_MS pass. */
@@ -154,22 +167,19 @@ export class Framer {
     this.seq = [];
     this.cutShort = false;
     this.stringEscAt = undefined;
-    this.x10Left = 0;
+    this.trailLeft = 0;
   }
 
-  /** One byte outside a paste; a byte that ends a sequence it cannot belong to is read again in ground. */
+  /** One byte outside a paste. A handler that answers false ended its sequence in ground, where the byte is read again. */
   private step(byte: number, now: number): void {
-    for (;;) {
-      switch (this.state) {
-        case "ground": return this.onGround(byte, now);
-        case "esc": return this.onEsc(byte, now);
-        case "utf8": if (this.onUtf8(byte)) return; break;
-        case "csi": if (this.onCsi(byte)) return; break;
-        case "ss3": if (this.onSs3(byte)) return; break;
-        case "string": if (this.onString(byte, now)) return; break;
-        case "paste": return;
-      }
+    switch (this.state) {
+      case "esc": return this.onEsc(byte, now);
+      case "utf8": if (this.onUtf8(byte)) return; break;
+      case "csi": if (this.onCsi(byte)) return; break;
+      case "ss3": if (this.onSs3(byte)) return; break;
+      case "string": if (this.onString(byte, now)) return; break;
     }
+    this.onGround(byte, now);
   }
 
   private onGround(byte: number, now: number): void {
@@ -237,9 +247,12 @@ export class Framer {
   }
 
   private onCsi(byte: number): boolean {
-    if (this.x10Left > 0) {
+    if (this.trailLeft > 0) return this.onTrailing(byte);
+    // rxvt ends a shifted `CSI n ~` key with `$`, which ECMA-48 counts as an intermediate byte
+    if (byte === 0x24 && !this.cutShort && /^\d+$/.test(latin1(this.seq.slice(2)))) {
+      const body = latin1(this.seq.slice(2));
       this.keep(byte);
-      if (--this.x10Left === 0) this.finish(undefined);
+      this.finish(decodeCsi(body, "$", this.replyUntil !== undefined));
       return true;
     }
     if (byte >= 0x20 && byte <= 0x3f) {
@@ -254,9 +267,31 @@ export class Framer {
     const body = latin1(this.seq.slice(2, -1));
     const final = String.fromCharCode(byte);
     if (this.cutShort) this.finish(undefined);
-    else if (body === "" && final === "M") this.x10Left = X10_REPORT_BYTES;
+    else if (body === "" && final === "M") this.trail("x10", X10_REPORT_BYTES);
+    else if (body === "" && final === "[") this.trail("linux", 1);
     else if (body === PASTE_START && final === "~") this.beginPaste();
     else this.finish(decodeCsi(body, final, this.replyUntil !== undefined));
+    return true;
+  }
+
+  private trail(kind: "x10" | "linux", count: number): void {
+    this.trailKind = kind;
+    this.trailLeft = count;
+  }
+
+  /** The raw bytes after `CSI M` (any three) or the Linux console's `CSI [` (one final byte); a key never turns into text. */
+  private onTrailing(byte: number): boolean {
+    if (this.trailKind === "x10") {
+      this.keep(byte);
+      if (--this.trailLeft === 0) this.finish(undefined);
+      return true;
+    }
+    if (byte < 0x40 || byte > 0x7e) {
+      this.finish(undefined);
+      return false;
+    }
+    this.keep(byte);
+    this.finish(decodeLinuxFunction(String.fromCharCode(byte)));
     return true;
   }
 
@@ -281,7 +316,8 @@ export class Framer {
       }
       this.finish(undefined);
       this.begin("esc", [ESC], escAt);
-      return false;
+      this.onEsc(byte, now);
+      return true;
     }
     if (byte === ESC) {
       this.stringEscAt = now;
@@ -339,12 +375,15 @@ export class Framer {
 
   private pasteData(data: Uint8Array): void {
     const paste = this.paste;
+    if (paste.refused) return;
     paste.size += data.length;
-    if (paste.size > PASTE_LIMIT_BYTES) {
-      paste.refused = true;
-      paste.chunks = [];
+    if (paste.size <= PASTE_LIMIT_BYTES) {
+      paste.chunks.push(data.slice());
+      return;
     }
-    if (!paste.refused) paste.chunks.push(data.slice());
+    paste.refused = true;
+    paste.chunks = [];
+    this.emit({ type: "paste", text: "", complete: false }, this.seqAt);
   }
 
   private endPaste(): void {
@@ -352,7 +391,7 @@ export class Framer {
     const at = this.seqAt;
     this.paste = { chunks: [], size: 0, refused: false, endMatched: 0 };
     this.ground();
-    this.emit({ type: "paste", text: refused ? "" : utf8.decode(Buffer.concat(chunks)), complete: !refused }, at);
+    if (!refused) this.emit({ type: "paste", text: utf8.decode(Buffer.concat(chunks)), complete: true }, at);
   }
 
   /** Sets the wait a read leaves behind: the Esc wait after a lone ESC, `ESC [` or `ESC O`, the drop wait inside a longer sequence. */

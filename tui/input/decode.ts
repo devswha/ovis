@@ -96,13 +96,29 @@ const LETTER_KEYS: Readonly<Record<string, string>> = {
   A: "ARROW_UP", B: "ARROW_DOWN", C: "ARROW_RIGHT", D: "ARROW_LEFT", E: "NUMPAD_BEGIN", F: "END", H: "HOME",
   P: "F1", Q: "F2", R: "F3", S: "F4",
 };
-
-// Keys sent as `CSI n ~` (xterm and the VT220 forms, and kitty's keypad begin).
-const TILDE_KEYS: Readonly<Record<number, string>> = {
-  2: "INSERT", 3: "DELETE", 5: "PAGE_UP", 6: "PAGE_DOWN", 7: "HOME", 8: "END",
-  11: "F1", 12: "F2", 13: "F3", 14: "F4", 15: "F5", 17: "F6", 18: "F7", 19: "F8", 20: "F9", 21: "F10", 23: "F11", 24: "F12",
-  29: "CONTEXT_MENU", 57427: "NUMPAD_BEGIN",
+// The Linux console's keypad 5 is `CSI G`.
+const CSI_LETTER_KEYS: Readonly<Record<string, string>> = { ...LETTER_KEYS, G: "NUMPAD_BEGIN" };
+// rxvt's arrows: with shift `CSI a` to `CSI d`, with ctrl `ESC O a` to `ESC O d`.
+const RXVT_ARROWS: Readonly<Record<string, string>> = { a: "ARROW_UP", b: "ARROW_DOWN", c: "ARROW_RIGHT", d: "ARROW_LEFT" };
+// SS3 forms: the letter keys, and the keypad while the host is in application keypad mode.
+const SS3_KEYS: Readonly<Record<string, string>> = {
+  ...LETTER_KEYS, M: "NUMPAD_ENTER", X: "NUMPAD_EQUAL", j: "NUMPAD_MULTIPLY", k: "NUMPAD_ADD", l: "NUMPAD_SEPARATOR",
+  m: "NUMPAD_SUBTRACT", n: "NUMPAD_DECIMAL", o: "NUMPAD_DIVIDE",
+  ...Object.fromEntries(Array.from({ length: 10 }, (_, i) => [String.fromCharCode(0x70 + i), `NUMPAD_${i}`])),
 };
+// The Linux console's F1 to F5: `CSI [ A` to `CSI [ E`.
+const LINUX_FUNCTION_KEYS: Readonly<Record<string, string>> = { A: "F1", B: "F2", C: "F3", D: "F4", E: "F5" };
+
+// Keys sent as `CSI n ~`: xterm's, the VT220's (1 Home and 4 End under tmux, screen, linux and putty;
+// 25 to 34 F13 to F20), rxvt's 7 and 8, and kitty's menu and keypad begin. 29 is kitty's menu; the
+// VT220 hosts send it for F16.
+const TILDE_KEYS: Readonly<Record<number, string>> = {
+  1: "HOME", 2: "INSERT", 3: "DELETE", 4: "END", 5: "PAGE_UP", 6: "PAGE_DOWN", 7: "HOME", 8: "END",
+  11: "F1", 12: "F2", 13: "F3", 14: "F4", 15: "F5", 17: "F6", 18: "F7", 19: "F8", 20: "F9", 21: "F10", 23: "F11", 24: "F12",
+  25: "F13", 26: "F14", 28: "F15", 29: "CONTEXT_MENU", 31: "F17", 32: "F18", 33: "F19", 34: "F20", 57427: "NUMPAD_BEGIN",
+};
+// rxvt writes the modifiers of a `CSI n ~` key in its final byte instead.
+const RXVT_FINAL_MODS: Readonly<Record<string, Mods>> = { "$": { shift: true }, "^": { ctrl: true }, "@": { shift: true, ctrl: true } };
 
 // Key numbers of `CSI n u` (kitty) and `CSI 27;m;n ~` (modifyOtherKeys) that are not a printable character.
 const NUMBERED_KEYS: Readonly<Record<number, string>> = {
@@ -179,14 +195,25 @@ function tildeKey(fields: readonly string[][]): Unstamped | undefined {
   return name && held && fields.length <= 2 ? key(name, held.mods, held.action) : undefined;
 }
 
-/** `CSI A` with no parameters, or `CSI 1 ; mods A`. */
+/** `CSI A` with no parameters, or `CSI 1 ; mods A`; rxvt's shifted arrows `CSI a` to `CSI d`. */
 function letterKey(final: string, fields: readonly string[][]): Unstamped | undefined {
-  const name = LETTER_KEYS[final];
+  const rxvt = RXVT_ARROWS[final];
+  if (rxvt) return fields.length === 0 ? key(rxvt, { shift: true }) : undefined;
+  const name = CSI_LETTER_KEYS[final];
   if (!name) return undefined;
-  // a bare `CSI R` is a cursor position report's shape, never F3
-  if (fields.length === 0) return final === "R" ? undefined : key(name, {});
+  // `CSI row ; column R` is a cursor position report. F3 takes only xterm's modified form `CSI 1 ; m R`
+  // with m from 2: a report for row 1 has that same shape, so the screen never asks its host for one (`CSI 6 n`).
+  if (final === "R" && !(fields.length === 2 && (num(fields[1]?.[0]) ?? 0) >= 2)) return undefined;
+  if (fields.length === 0) return key(name, {});
   const held = modifiers(fields[1]);
   return fields.length === 2 && fields[0]?.length === 1 && num(fields[0][0]) === 1 && held ? key(name, held.mods, held.action) : undefined;
+}
+
+/** rxvt's `CSI n $`, `CSI n ^` and `CSI n @`: a `CSI n ~` key with shift, ctrl, or both. */
+function rxvtKey(final: string, params: string): Unstamped | undefined {
+  const name = /^\d+$/.test(params) ? TILDE_KEYS[Number(params)] : undefined;
+  const mods = RXVT_FINAL_MODS[final];
+  return name && mods ? key(name, mods) : undefined;
 }
 
 const BUTTONS: readonly MouseButton[] = ["left", "middle", "right"];
@@ -236,6 +263,7 @@ export function decodeCsi(body: string, final: string, awaitingReplies: boolean)
     case "~": return tildeKey(fields);
     case "I": case "O": return params === "" ? { type: "focus", focused: final === "I" } : undefined;
     case "Z": return params === "" ? key("TAB", { shift: true }) : undefined;
+    case "$": case "^": case "@": return rxvtKey(final, params);
     case "t": return awaitingReplies && fields.length === 3 && num(fields[0]?.[0]) === 6 && /^6;\d+;\d+$/.test(params) ? reply("cellSize", params.slice(2)) : undefined;
     default: return letterKey(final, fields);
   }
@@ -243,7 +271,15 @@ export function decodeCsi(body: string, final: string, awaitingReplies: boolean)
 
 /** `ESC O` and one final byte. */
 export function decodeSs3(final: string): Unstamped | undefined {
-  const name = LETTER_KEYS[final];
+  const ctrlArrow = RXVT_ARROWS[final];
+  if (ctrlArrow) return key(ctrlArrow, { ctrl: true });
+  const name = SS3_KEYS[final];
+  return name ? key(name, {}) : undefined;
+}
+
+/** The byte after the Linux console's `CSI [`. */
+export function decodeLinuxFunction(final: string): Unstamped | undefined {
+  const name = LINUX_FUNCTION_KEYS[final];
   return name ? key(name, {}) : undefined;
 }
 
