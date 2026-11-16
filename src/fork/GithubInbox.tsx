@@ -11,6 +11,12 @@ import { pullRequestWords } from "./pullRequestWords.ts";
 import "./PullRequestsDialog.css";
 import "./GithubInbox.css";
 
+const statusClasses = {
+  "Checks failing": "pr-checks-failing", "Changes requested": "pr-review-changes_requested",
+  "Checks running": "pr-checks-pending", Approved: "pr-review-approved", Ready: "pr-checks-passing",
+  "Review requested": "", Draft: "",
+};
+
 type Section = "inbox" | "github";
 let section: Section = "inbox";
 const listeners = new Set<() => void>();
@@ -98,11 +104,12 @@ export function GithubInbox({ wide, watching, onOpened }: ViewProps) {
     <ul className="worktree-list pr-list">{rows.map((pr) => {
       const key = `${requested ? "review" : "yours"}:${pr.url}`;
       const open = expanded === key;
+      const status = githubStatus(pr, requested);
       return <li key={pr.url} className="fork-github-row">
         <button type="button" className="fork-github-summary" aria-expanded={open} onClick={() => setExpanded(open ? null : key)}>
           <span className="worktree-path">{pr.repository} · #{pr.number}</span>
           <span className="pr-title" dir="auto">{pr.title}</span>
-          <span className={`pill pr-checks-${pr.checks} pr-review-${pr.review}`}>{statuses[githubStatus(pr, requested)]}</span>
+          <span className={`pill ${statusClasses[status]}`}>{statuses[status]}</span>
         </button>
         {open && <div className="fork-github-details">
           <p>{checks[pr.checks] ?? t("No checks")} · {reviews[pr.review] ?? t("No review yet")}</p>

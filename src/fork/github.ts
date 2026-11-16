@@ -14,7 +14,7 @@ export function githubGroups(listing: GithubPulls, selected: string) {
 export function githubStatus(pr: GithubPull, requested: boolean) {
   if (pr.checks === "failing") return "Checks failing";
   if (pr.review === "changes_requested") return "Changes requested";
-  if (requested) return "Review requested";
+  if (requested || pr.review === "review_required") return "Review requested";
   if (pr.draft) return "Draft";
   if (pr.checks === "pending") return "Checks running";
   if (pr.review === "approved") return "Approved";
