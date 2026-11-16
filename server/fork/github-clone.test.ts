@@ -17,9 +17,22 @@ describe("clone folder", () => {
   });
 
   it("suggests the repository's name in the last parent, or ~/Projects", () => {
-    expect(suggestedFolder("acme/api", null, "/home/u")).toBe("/home/u/Projects/api");
-    expect(suggestedFolder("acme/api", "~/work", "/home/u")).toBe("/home/u/work/api");
-    expect(suggestedFolder("acme/api", "/etc", "/home/u")).toBe("/home/u/Projects/api");
+    expect(suggestedFolder("acme/api", null, [], "/home/u")).toBe("/home/u/Projects/api");
+    expect(suggestedFolder("acme/api", "", [], "/home/u")).toBe("/home/u/Projects/api");
+    expect(suggestedFolder("acme/api", "~/work", [], "/home/u")).toBe("/home/u/work/api");
+    expect(suggestedFolder("acme/api", "/etc", [], "/home/u")).toBe("/home/u/Projects/api");
+  });
+
+  it("suggests the folder the same owner's checkouts share first", () => {
+    const roots = [
+      { repository: "Acme/web", root: "/home/u/acme/web" },
+      { repository: "acme/docs", root: "/home/u/acme/docs" },
+      { repository: "acme/old", root: "/home/u/Projects/old" },
+      { repository: "other/tool", root: "/home/u/tools/tool" },
+      { repository: "acme/outside", root: "/srv/outside" },
+    ];
+    expect(suggestedFolder("acme/api", "~/work", roots, "/home/u")).toBe("/home/u/acme/api");
+    expect(suggestedFolder("new/api", "~/work", roots, "/home/u")).toBe("/home/u/work/api");
   });
 
   it("never calls a folder with something else in it free", async () => {

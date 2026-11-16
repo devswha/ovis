@@ -10,9 +10,9 @@ import { ApiError, createWorktree, fetchPullRequestBranch, getJson, listWorktree
 import { useT, type Translate } from "../lib/i18n.ts";
 import { closeGithubPull, refreshGithubListing } from "./GithubInbox.tsx";
 import { GithubMerge, GithubReply } from "./GithubActions.tsx";
-import { ago, GithubConversation } from "./GithubConversation.tsx";
+import { ago, GithubConversation, type JumpToLine } from "./GithubConversation.tsx";
 import { GithubCloneDialog } from "./GithubClone.tsx";
-import { GithubFiles } from "./GithubFiles.tsx";
+import { GithubFiles, type FilesJump } from "./GithubFiles.tsx";
 import "./GithubPull.css";
 
 function stateOf(detail: GithubPullDetail, t: Translate) {
@@ -85,6 +85,12 @@ export function GithubPullPage({ pull, wide, watching, onOpened }: { pull: Githu
   const [busy, setBusy] = useState(false);
   const [tab, setTabState] = useState<Tab>(() => tabs.get(pull.url) ?? "overview");
   const setTab = (next: Tab): void => { tabs.set(pull.url, next); setTabState(next); };
+  const [jump, setJump] = useState<FilesJump | null>(null);
+  const jumpTo: JumpToLine = (thread) => {
+    if (thread.line === null) return;
+    setJump({ path: thread.path, side: thread.side, line: thread.line, seq: (jump?.seq ?? 0) + 1 });
+    setTab("files");
+  };
   // bumped after an action, so the page is read again and shows what GitHub made of it
   const [reload, setReload] = useState(0);
   const acted = (): void => { setReload((value) => value + 1); refreshGithubListing(); };
@@ -184,9 +190,9 @@ export function GithubPullPage({ pull, wide, watching, onOpened }: { pull: Githu
             {detail.body.trim() ? <Markdown html>{detail.body}</Markdown> : <p className="fork-github-pull-dim">{t("No description.")}</p>}
           </section>
         </>}
-        {tab === "conversation" && <section className="fork-github-tab-page" aria-label={t("Conversation")}><GithubConversation entries={detail.conversation ?? []} /><GithubReply key={pull.url} pull={pull} detail={detail} watching={watching} onDone={acted} /></section>}
+        {tab === "conversation" && <section className="fork-github-tab-page" aria-label={t("Conversation")}><GithubConversation entries={detail.conversation ?? []} onJump={jumpTo} /><GithubReply key={pull.url} pull={pull} detail={detail} watching={watching} onDone={acted} /></section>}
         {tab === "checks" && <section className="fork-github-tab-page" aria-label={t("Checks")}><ChecksBox checks={detail.check_list} /></section>}
-        {tab === "files" && <section className="fork-github-tab-page" aria-label={t("Files")}><GithubFiles pull={pull} detail={detail} /></section>}
+        {tab === "files" && <section className="fork-github-tab-page" aria-label={t("Files")}><GithubFiles key={pull.url} pull={pull} detail={detail} jump={jump} /></section>}
       </>}
     </div>
   </article>;

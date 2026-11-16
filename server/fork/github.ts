@@ -93,8 +93,11 @@ export function createGithubReader(run: Run = runGithub, now = Date.now): (() =>
 }
 const readPulls = createGithubReader();
 
-/** Match only this server's workspaces, never another PC's similarly named branch. */
-export async function githubWorkspaces(snapshot: SessionSnapshot, repositoryOf = originRepository): Promise<Map<string, string>> {
+/** A GitHub repository checked out in one of this server's workspaces, at the workspace's folder. */
+export interface GithubCheckout { repository: string; path: string; workspaceId: string }
+
+/** Only this server's workspaces, never another PC's similarly named branch. */
+export async function githubCheckouts(snapshot: SessionSnapshot, repositoryOf = originRepository): Promise<GithubCheckout[]> {
   const folders = new Map<string, string>();
   for (const workspace of snapshot.workspaces) {
     // Match the workspace API's repository: metadata or its first pane only. A later pane's
@@ -103,17 +106,22 @@ export async function githubWorkspaces(snapshot: SessionSnapshot, repositoryOf =
     if (path && !folders.has(path)) folders.set(path, workspace.workspace_id);
   }
   const entries = [...folders];
-  const matches = new Array<readonly [string, string] | null>(entries.length).fill(null);
+  const matches = new Array<GithubCheckout | null>(entries.length).fill(null);
   let next = 0;
   // No workspace cap: bound subprocess concurrency, not which repositories can match.
   await Promise.all(Array.from({ length: Math.min(4, entries.length) }, async () => {
     while (next < entries.length) {
       const index = next++;
       const [path, id] = entries[index]!;
-      try { matches[index] = [await repositoryOf(path), id]; } catch { /* not a GitHub repository */ }
+      try { matches[index] = { repository: await repositoryOf(path), path, workspaceId: id }; } catch { /* not a GitHub repository */ }
     }
   }));
-  return new Map(matches.filter((match) => match !== null).map(([repo, id]) => [repo.toLowerCase(), id]));
+  return matches.filter((match) => match !== null);
+}
+
+/** The workspace each repository is checked out in, by its lowercased `owner/name`. */
+export async function githubWorkspaces(snapshot: SessionSnapshot, repositoryOf = originRepository): Promise<Map<string, string>> {
+  return new Map((await githubCheckouts(snapshot, repositoryOf)).map((checkout) => [checkout.repository.toLowerCase(), checkout.workspaceId]));
 }
 
 const PULL_QUERY = `query($owner:String!,$name:String!,$number:Int!) { viewer { login } repository(owner:$owner,name:$name) { viewerPermission squashMergeAllowed mergeCommitAllowed rebaseMergeAllowed pullRequest(number:$number) {

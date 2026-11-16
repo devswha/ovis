@@ -29,11 +29,20 @@ function Body({ text }: { text: string }) {
 }
 
 /** The lines a thread is on, then its comments; a resolved thread stays folded until opened. */
-export function GithubThreadView({ thread, inDiff = false }: { thread: GithubThread; inDiff?: boolean }) {
+/** A thread still on a line of the head's diff, which the Files tab shows it under; an outdated one, or one on no line, is not. */
+export const onDiff = (thread: GithubThread): boolean => !thread.outdated && thread.line !== null;
+
+/** Opens the Files tab at a thread's line. */
+export type JumpToLine = (thread: GithubThread) => void;
+
+export function GithubThreadView({ thread, inDiff = false, onJump }: { thread: GithubThread; inDiff?: boolean; onJump?: JumpToLine }) {
   const t = useT();
-  // under its line in the diff, the code and the place are already in view
+  const place = <code dir="auto">{thread.path}{thread.line !== null && `:${thread.line}`}</code>;
+  // under its line in the diff, the code and the place are already in view; elsewhere the place opens it there
   const where = <>
-    {inDiff ? <MessageSquare aria-hidden="true" /> : <code dir="auto">{thread.path}{thread.line !== null && `:${thread.line}`}</code>}
+    {inDiff ? <MessageSquare aria-hidden="true" />
+      : onJump && onDiff(thread) ? <button type="button" className="fork-github-jump" title={t("Show in Files")} onClick={(event) => { event.preventDefault(); onJump(thread); }}>{place}</button>
+      : place}
     {thread.outdated && <span className="fork-github-tag">{t("Outdated")}</span>}
     {thread.resolved && <span className="fork-github-tag">{t("Resolved")}</span>}
   </>;
@@ -55,7 +64,7 @@ const eventIcons = { merged: GitMerge, closed: GitPullRequestClosed, reopened: G
 const reviewIcons = { approved: Check, changes_requested: X, commented: MessageSquare, dismissed: CircleDot } as const;
 
 /** Comments, reviews with their line threads, and state changes, oldest first. */
-export function GithubConversation({ entries }: { entries: GithubEntry[] }) {
+export function GithubConversation({ entries, onJump }: { entries: GithubEntry[]; onJump?: JumpToLine }) {
   const t = useT();
   const reviewWords = { approved: t("approved"), changes_requested: t("requested changes"), commented: t("reviewed"), dismissed: t("review dismissed") };
   const eventWords = { merged: t("merged it"), closed: t("closed it"), reopened: t("reopened it"), ready: t("marked it ready for review"), draft: t("made it a draft") };
@@ -71,7 +80,7 @@ export function GithubConversation({ entries }: { entries: GithubEntry[] }) {
         <div className="fork-github-review-head"><Icon aria-hidden="true" /><Byline author={entry.author} at={entry.at}><span>{reviewWords[entry.state]}</span></Byline></div>
         {(entry.body.trim() || entry.threads.length > 0) && <div className="fork-github-review-body">
           <Body text={entry.body} />
-          {entry.threads.map((thread, at) => <GithubThreadView key={at} thread={thread} />)}
+          {entry.threads.map((thread, at) => <GithubThreadView key={at} thread={thread} onJump={onJump} />)}
         </div>}
       </li>;
     }

@@ -28,7 +28,7 @@ export function routeForkScreen(request: Request, url: URL, ctx: ServerContext, 
 /** Called only after upstream's authentication, origin, drive and observe guards. */
 export function routeForkApi(request: Request, url: URL, ctx: ServerContext, caller: { readOnly: boolean; deviceId: string | undefined; headers: Headers }): Promise<Response | undefined> | null {
   const { pathname } = url;
-  if (pathname === "/api/fork/github/clone") { setRequestRoute(pathname); ctx.timeout(request, 0); return handleGithubClone(request, url, caller.readOnly); }
+  if (pathname === "/api/fork/github/clone") { setRequestRoute(pathname); ctx.timeout(request, 0); return handleGithubClone(request, url, caller.readOnly, () => ctx.services.core.clientSnapshot()); }
   if (pathname === "/api/fork/github/pull/action") { setRequestRoute(pathname); ctx.timeout(request, 45); return handleGithubAction(request, caller.readOnly); }
   if (pathname === "/api/fork/github/pull/files") { setRequestRoute(pathname); ctx.timeout(request, 45); return handleGithubFiles(request, caller.readOnly); }
   if (pathname === "/api/fork/github/pull") { setRequestRoute(pathname); ctx.timeout(request, 45); return handleGithubPull(request, caller.readOnly); }

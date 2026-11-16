@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from "react";
-import { ChevronRight, FileDiff, FileMinus, FilePlus, FileSymlink, LoaderCircle } from "lucide-react";
+import { ChevronRight, FileDiff, FileMinus, FilePlus, FileSymlink, LoaderCircle, MessageSquare } from "lucide-react";
 
 import { RenderBoundary } from "../components/RenderBoundary.tsx";
 
@@ -10,7 +10,8 @@ import { diffColorable, diffStyleFor } from "../lib/repoDiff.ts";
 import { useSettings } from "../lib/settings.ts";
 import { SHEET_QUERY } from "../lib/sheets.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
-import { GithubThreadView } from "./GithubConversation.tsx";
+import type { DiffMark } from "../components/RepoDiff.tsx";
+import { GithubThreadView, onDiff } from "./GithubConversation.tsx";
 
 // Ovis's own diff view, loaded with the first file opened, as the diff viewer loads it.
 const RepoDiff = lazy(() => import("../components/RepoDiff.tsx"));
@@ -32,9 +33,6 @@ function readPatches(pull: GithubPull): Promise<Map<string, GithubFilePatch>> {
 function rowsOf(patch: string): number {
   return patch.split("\n").filter((line) => !/^(diff --git|new file mode|deleted file mode|--- |\+\+\+ )/.test(line)).length;
 }
-
-/** A thread still on a line of the head's diff goes under that line; an outdated one, or one on no line, stays after the file's diff. */
-const onDiff = (thread: GithubThread): boolean => !thread.outdated && thread.line !== null;
 
 /**
  * The box of one file's diff: as tall as the diff with its notes, measured from the view's column,
@@ -75,12 +73,21 @@ function threadsByFile(entries: GithubEntry[]): Map<string, GithubThread[]> {
   return byFile;
 }
 
+/** A line to bring into view: a thread's, asked for from the conversation; `seq` tells one ask from the next. */
+export interface FilesJump { path: string; side: "old" | "new"; line: number; seq: number }
+
+/** The line of a file's first thread in its diff, which opening the file brings into view. */
+function firstMark(threads: GithubThread[]): DiffMark | null {
+  const first = threads.filter(onDiff).sort((a, b) => (a.line ?? 0) - (b.line ?? 0))[0];
+  return first ? { side: first.side, line: first.line ?? 0, start: 0, end: 0 } : null;
+}
+
 type Patches = { status: "idle" } | { status: "loading" } | { status: "ready"; files: Map<string, GithubFilePatch> } | { status: "failed" };
 
 const changeIcons = { added: FilePlus, deleted: FileMinus, renamed: FileSymlink, copied: FileSymlink, modified: FileDiff } as const;
 
 /** The changed files; a tap opens a file's diff under it, in Ovis's own diff view, with the comments on its lines after it. */
-export function GithubFiles({ pull, detail }: { pull: GithubPull; detail: GithubPullDetail }) {
+export function GithubFiles({ pull, detail, jump = null }: { pull: GithubPull; detail: GithubPullDetail; jump?: FilesJump | null }) {
   const t = useT();
   const { settings, resolvedEntry } = useSettings();
   const narrow = useMediaQuery(SHEET_QUERY);
@@ -88,16 +95,34 @@ export function GithubFiles({ pull, detail }: { pull: GithubPull; detail: Github
   const [patches, setPatches] = useState<Patches>({ status: "idle" });
   const files = detail.files ?? [];
   const threads = threadsByFile(detail.conversation ?? []);
+  // the line each open file's diff is brought to: its first thread, or the one asked for
+  const [marks, setMarks] = useState<ReadonlyMap<string, DiffMark>>(() => new Map());
+  const rows = useRef(new Map<string, HTMLLIElement>());
 
   const load = (): void => {
     if (patches.status === "loading" || patches.status === "ready") return;
     setPatches({ status: "loading" });
     readPatches(pull).then((next) => setPatches({ status: "ready", files: next }), () => setPatches({ status: "failed" }));
   };
+  const mark = (path: string, next: DiffMark | null): void => setMarks((before) => {
+    const after = new Map(before);
+    if (next === null) after.delete(path); else after.set(path, next);
+    return after;
+  });
   const toggle = (path: string): void => {
     load();
-    setOpen((before) => { const next = new Set(before); if (!next.delete(path)) next.add(path); return next; });
+    const opening = !open.has(path);
+    if (opening) mark(path, firstMark(threads.get(path) ?? []));
+    setOpen((before) => { const next = new Set(before); if (opening) next.add(path); else next.delete(path); return next; });
   };
+  // a thread asked for from the conversation: its file opens, scrolled into view, with its diff at the thread's line
+  useEffect(() => {
+    if (jump === null) return;
+    load();
+    mark(jump.path, { side: jump.side, line: jump.line, start: 0, end: 0 });
+    setOpen((before) => new Set([...before, jump.path]));
+    requestAnimationFrame(() => rows.current.get(jump.path)?.scrollIntoView({ block: "start" }));
+  }, [jump?.seq]);
   const all = open.size === files.length && files.length > 0;
   const toggleAll = (): void => {
     if (all) { setOpen(new Set()); return; }
@@ -115,7 +140,7 @@ export function GithubFiles({ pull, detail }: { pull: GithubPull; detail: Github
     return <DiffBox rows={rowsOf(patch)}>
       <RenderBoundary resetKey={patch} fallback={() => <p className="fork-github-pull-dim" role="alert">{t("This change can't be shown.")}</p>}>
         <Suspense fallback={<p className="fork-github-pull-dim" role="status">{t("Opening…")}</p>}>
-          <RepoDiff patch={patch} style={diffStyleFor(settings.diffStyle, narrow)} folded={false} wrap={settings.wrapCode} theme={resolvedEntry.mode} colored={diffColorable(path, patch)} notes={notes} />
+          <RepoDiff patch={patch} style={diffStyleFor(settings.diffStyle, narrow)} folded={false} wrap={settings.wrapCode} theme={resolvedEntry.mode} colored={diffColorable(path, patch)} notes={notes} active={marks.get(path) ?? null} />
         </Suspense>
       </RenderBoundary>
     </DiffBox>;
@@ -129,11 +154,11 @@ export function GithubFiles({ pull, detail }: { pull: GithubPull; detail: Github
       const Icon = changeIcons[file.change];
       const expanded = open.has(file.path);
       const comments = threads.get(file.path) ?? [];
-      return <li key={file.path} className={`is-${file.change}${expanded ? " is-open" : ""}`}>
+      return <li key={file.path} ref={(node) => { if (node) rows.current.set(file.path, node); else rows.current.delete(file.path); }} className={`is-${file.change}${expanded ? " is-open" : ""}`}>
         <button type="button" className="fork-github-file" aria-expanded={expanded} onClick={() => toggle(file.path)}>
           <ChevronRight className="fork-github-file-chevron" aria-hidden="true" />
           <Icon aria-hidden="true" /><code dir="auto">{file.path}</code>
-          {comments.length > 0 && <span className="fork-github-file-comments">{t("{count} threads", { count: comments.length })}</span>}
+          {comments.length > 0 && <span className="fork-github-file-comments" title={t("{count} threads", { count: comments.length })}><MessageSquare aria-hidden="true" />{comments.length}</span>}
           <span className="fork-github-file-lines"><span className="is-added">+{file.additions}</span> <span className="is-removed">−{file.deletions}</span></span>
         </button>
         {expanded && <div className="fork-github-file-open">
