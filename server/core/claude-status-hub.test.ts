@@ -315,6 +315,21 @@ describe("a Claude pane whose turn ended on an API error", () => {
     expect(h.failures).toEqual([]);
   });
 
+  it("tells no second failure for a turn after a failure whose prompt opens on bash mode's tags", async () => {
+    const h = await claudeHub("");
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    writeFileSync(h.path, failed);
+    handlers.onStatus(h.pane.pane_id, "idle", "claude");
+    expect(h.failures).toEqual([h.pane.pane_id]);
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    appendFileSync(h.path, prompt("<bash-stdout>ok</bash-stdout> please explain this output"));
+    handlers.onStatus(h.pane.pane_id, "idle", "claude");
+    expect(h.last().status).toBe("done");
+    h.herdrSays({ ...h.pane, agent_status: "done" });
+    await h.snapshot();
+    expect(h.failures).toEqual([h.pane.pane_id]);
+  });
+
   it("tells nothing of a failure it never saw run: a pane found already at rest, after a restart", async () => {
     const h = await claudeHub(failed);
     handlers.onStatus(h.pane.pane_id, "idle", "claude");

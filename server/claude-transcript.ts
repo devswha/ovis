@@ -854,6 +854,12 @@ export type ClaudeTurnEnd = "failed" | "answered" | "running" | null;
 
 /** A local command's output and bash mode's lines, which Claude Code writes as user entries of its own: no turn. */
 const LOCAL_LINE_RE = /^<(?:local-command-(?:stdout|stderr|caveat)|bash-(?:input|stdout|stderr))>/;
+/**
+ * A user entry Claude Code wrote of its own (LOCAL_LINE_RE): bash mode's lines only when they carry no origin and no
+ * permission mode, as parseClaudeTranscript reads them; a person's prompt that opens on such a tag is a prompt.
+ */
+const localLine = (entry: TranscriptEntry, content: unknown): boolean => typeof content === "string" && LOCAL_LINE_RE.test(content)
+  && (content.startsWith("<local-command-") || (!("origin" in entry) && !("permissionMode" in entry)));
 
 /**
  * How a Claude transcript's last turn stands, by the last entry of the session's own that tells it: `failed` when
@@ -875,7 +881,7 @@ export function claudeTurnEnd(text: string): ClaudeTurnEnd {
       const calling = entry.message?.stop_reason === "tool_use"
         || (Array.isArray(content) && content.some((block: unknown) => typeof block === "object" && block !== null && (block as { type?: unknown }).type === "tool_use"));
       end = calling ? "running" : "answered";
-    } else if (entry.type === "user" && !(typeof content === "string" && LOCAL_LINE_RE.test(content))) end = "running";
+    } else if (entry.type === "user" && !localLine(entry, content)) end = "running";
   }
   return end;
 }
@@ -914,7 +920,7 @@ export function claudeTranscriptStart(path: string, file: { size: number; exact:
     if (entry.isSidechain === true || entry.isMeta === true || entry.isCompactSummary === true) continue;
     const content = entry.message?.content;
     if (entry.type === "assistant") return null;
-    if (entry.type !== "user" || (typeof content === "string" && LOCAL_LINE_RE.test(content))) continue;
+    if (entry.type !== "user" || localLine(entry, content)) continue;
     const result = Array.isArray(content) && content.some((block: unknown) => typeof block === "object" && block !== null && (block as { type?: unknown }).type === "tool_result");
     const at = stamp(entry.timestamp);
     return result || at === null ? null : Math.min(first ?? at, at);

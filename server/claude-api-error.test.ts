@@ -38,3 +38,14 @@ test("reads a turn whose last entry is the API error as failed, and one a retry 
   expect(claudeTurnEnd(`${recorded}${own}`)).toBe("failed");
   expect(claudeTurnEnd("")).toBeNull();
 });
+
+const entry = (value: unknown) => `${JSON.stringify(value)}\n`;
+
+test("reads a person's prompt that holds bash mode's tags as a prompt, and only the runtime's own bash lines as none", () => {
+  const human = (content: string) => entry({ type: "user", origin: { kind: "human" }, permissionMode: "default", message: { role: "user", content } });
+  expect(claudeTurnEnd(`${recorded}${human("<bash-stdout>ok</bash-stdout> please explain this output")}`)).toBe("running");
+  expect(claudeTurnEnd(`${recorded}${human("please explain this <bash-stdout>ok</bash-stdout> output")}`)).toBe("running");
+  // bash mode's own lines, which Claude Code writes with no origin, tell nothing of the turn
+  expect(claudeTurnEnd(`${recorded}${entry({ type: "user", message: { role: "user", content: "<bash-input>ls</bash-input>" } })}${entry({ type: "user", message: { role: "user", content: "<bash-stdout>ok</bash-stdout><bash-stderr></bash-stderr>" } })}`)).toBe("failed");
+});
+
