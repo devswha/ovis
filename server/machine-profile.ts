@@ -11,7 +11,7 @@ import type { SessionSnapshot } from "../shared/protocol.ts";
 import { trustRefusal } from "./herdr-core/discovery.ts";
 import { discoverPinnableHerdrSessions, heldHerdrSocketStatus, type HerdrSocketPlace, pinnedHerdrSocketStatus, profileGroups, validHerdrSocket } from "./herdr-discovery.ts";
 import { checkHerdrSockets, HerdrError, herdrSocketPath, ping } from "./herdr/client.ts";
-import { isJsonObject, jsonResponse, setRequestRoute } from "./http.ts";
+import { errorResponse, isJsonObject, jsonResponse, setRequestRoute } from "./http.ts";
 import { acquireOwnerDirectory, holdForLife, liveOwner, OwnerGuardBusy } from "./owner-guard.ts";
 import { writePrivateState } from "./private-state.ts";
 import { MARKER, markedByProfile } from "./profile-marker.ts";
@@ -241,6 +241,21 @@ export async function machineHealth(engine: string, refusal: string | null = eng
   return { machine_profile: { engine, runtime_down: reason !== null, reason }, ...(herdr ? { herdr } : {}) };
 }
 
+/** What a herdr read that failed answers on the profile while its health gives no reason. */
+const READ_FAILED = "herdr did not answer this request";
+
+/**
+ * The profile's answer to a herdr read that failed (/api/session, GET /api/machines): the status and error code
+ * errorResponse gives it, and as its message the reason the profile's health gives (`refusal` as health is handed
+ * it), or READ_FAILED while health gives none. An error that is not herdr's is errorResponse's.
+ */
+export async function machineReadError(error: unknown, engine: string, refusal: string | null | undefined): Promise<Response> {
+  const answer = errorResponse(error);
+  if (!(error instanceof HerdrError)) return answer;
+  const reason = (await machineHealth(engine, refusal)).machine_profile.reason;
+  return jsonResponse({ error: { code: error.code, message: reason ?? READ_FAILED } }, answer.status);
+}
+
 /**
  * Refused before optional route handlers, for local owners and devices alike. A device cookie opens nothing here, so none is
  * handed out. Of /api/machines only its list is read (GET, machineRoster), and it holds this machine alone.
@@ -256,8 +271,9 @@ export function machineRouteRestricted(path: string, method: string): boolean {
  * PC list, and the terminals it draws from it, read here what they read everywhere else. Its name is the machine's host
  * name, as that server and the pairing offer give it; while its engine is down it is listed with the reason its health
  * gives (`refusal` as health is handed it) and no terminals. A read that fails while the engine answers is that read's
- * failure, thrown as /api/session answers it, so the app keeps the list it has. `?verify_source_boot=local` proves this
- * server's own boot, as the manager proves its local PC's (src/lib/workspaceOrder.ts asks it after a move).
+ * failure, thrown and answered as /api/session answers it (machineReadError), so the app keeps the list it has.
+ * `?verify_source_boot=local` proves this server's own boot, as the manager proves its local PC's
+ * (src/lib/workspaceOrder.ts asks it after a move).
  */
 export async function machineRoster(url: URL, read: () => Promise<SessionSnapshot>, ids: { bootId: string; serverId: string | undefined },
   engine: string, refusal: string | null | undefined): Promise<MachineRoster> {

@@ -1,4 +1,4 @@
-import { machineHealth, machineRoster, machineRouteRestricted, machineTcpAnswer, machineUnauthorized } from "./machine-profile.ts";
+import { machineHealth, machineReadError, machineRoster, machineRouteRestricted, machineTcpAnswer, machineUnauthorized } from "./machine-profile.ts";
 import { handleWorkspaceRequest } from "./workspace-routes.ts";
 import { handleAlertWebhookRequest } from "./alert-webhook.ts";
 import { connectionData, type createCore, type SocketData } from "./core/index.ts";
@@ -399,7 +399,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
       try {
         const roster = await machineRoster(url, async () => browserSnapshot(await clientSnapshot()), { bootId, serverId: ctx.services.relay.serverId() }, options.machineEngine ?? "herdr", engineRefusal);
         return jsonResponse(roster, 200, { "cache-control": "no-store" });
-      } catch (error) { return errorResponse(error); }
+      } catch (error) { return machineReadError(error, options.machineEngine ?? "herdr", engineRefusal); }
     }
     if (!machines) return jsonResponse({ error: { code: "bridge_only", message: "Manage PCs on the connection server" } }, 404);
     // /local aliases preserve every existing endpoint without a self-proxy.
@@ -812,7 +812,8 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
       const snapshot = await clientSnapshot();
       return jsonResponse({ snapshot: bridgeAuthorized ? snapshot : browserSnapshot(snapshot) });
     } catch (error) {
-      return errorResponse(error);
+      // the machine profile answers a failed herdr read with its health's reason
+      return options.profile === "machine" ? machineReadError(error, options.machineEngine ?? "herdr", engineRefusal) : errorResponse(error);
     }
   }
 

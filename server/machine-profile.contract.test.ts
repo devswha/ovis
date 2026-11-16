@@ -69,16 +69,20 @@ function contents(dir: string) {
     return [name, entry.isFile() ? readFileSync(path, "base64") : entry.isDirectory() ? "folder" : "other"];
   });
 }
-/** A herdr at `socket` that answers ping with protocol 22, and counts the connections it gets. */
-function fakeHerdr(socket: string) {
+/**
+ * A herdr at `socket` that answers ping with protocol 22, and counts the connections it gets. `refuse` names one
+ * method it answers with an error instead, whose message is `refuse.message`.
+ */
+function fakeHerdr(socket: string, refuse?: { method: string; message: string }) {
   let connections = 0;
   const listener = Bun.listen<{ line: string }>({ unix: socket, socket: {
     open(client) { connections++; client.data = { line: "" }; },
     data(client, chunk) {
       client.data.line += chunk.toString();
       if (!client.data.line.includes("\n")) return;
-      const { id } = JSON.parse(client.data.line) as { id: string };
-      client.write(`${JSON.stringify({ id, result: { version: "fixture", protocol: 22 } })}\n`);
+      const { id, method } = JSON.parse(client.data.line) as { id: string; method: string };
+      const answer = method === refuse?.method ? { error: { code: "server_error", message: refuse.message } } : { result: { version: "fixture", protocol: 22 } };
+      client.write(`${JSON.stringify({ id, ...answer })}\n`);
       client.end();
     },
   } });
@@ -516,6 +520,46 @@ it.each(["/api/session", "/api/machines"])("looks for a herdr that started after
   const herdr = fakeHerdr(socket);
   await (await owner(dir, path, { headers })).text();
   expect(herdr.connections()).toBeGreaterThan(0);
+});
+
+it("answers /api/session with its health's reason while its herdr is down", async () => {
+  const dir = state();
+  // a named session whose herdr has not started yet
+  const server = launch(dir, { XDG_CONFIG_HOME: herdrConfig(), HERDR_REMOTE_SOCKET: "", HERDR_REMOTE_SESSION: "a" });
+  await bounded(server.ready, 20_000);
+  const reason = (await (await owner(dir, "/api/health", { headers })).json() as { machine_profile: { reason: string } }).machine_profile.reason;
+  expect(reason).toBe("herdr is not running for the selected session");
+  const response = await owner(dir, "/api/session", { headers });
+  const text = await response.text();
+  // the status and code the app reads, as for every failed herdr read
+  expect([response.status, JSON.parse(text)]).toEqual([502, { error: { code: "connect_failed", message: reason } }]);
+  expect([text.includes(realpathSync(dir)), text.includes("herdr.sock")]).toEqual([false, false]);
+});
+
+it.each(["/api/session", "/api/machines"])("answers a herdr read that fails on %s while herdr answers its health with one sentence of its own", async (path) => {
+  const dir = state();
+  const config = herdrConfig();
+  const socket = join(config, "herdr", "sessions", "a", "herdr.sock");
+  mkdirSync(dirname(socket), { recursive: true, mode: 0o700 });
+  // herdr answers ping, and fails the session read with a message of its own that names its socket
+  fakeHerdr(socket, { method: "session.snapshot", message: `cannot read the session behind ${socket}` });
+  const server = launch(dir, { XDG_CONFIG_HOME: config, HERDR_REMOTE_SOCKET: "", HERDR_REMOTE_SESSION: "a" });
+  await bounded(server.ready, 20_000);
+  expect(await (await owner(dir, "/api/health", { headers })).json()).toMatchObject({ machine_profile: { runtime_down: false, reason: null } });
+  const response = await owner(dir, path, { headers });
+  const text = await response.text();
+  expect([response.status, JSON.parse(text)]).toEqual([404, { error: { code: "server_error", message: "herdr did not answer this request" } }]);
+  expect([text.includes(config), text.includes(realpathSync(dir)), text.includes("herdr.sock")]).toEqual([false, false, false]);
+});
+
+it("answers an ordinary server's failed /api/session with herdr's own message", async () => {
+  // control: only the machine profile changes this answer
+  const socket = join(scratch(), "herdr.sock");
+  const base = await bounded(launch(state(), { OVIS_PROFILE: "", OVIS_PREVIEW: undefined, HERDR_SOCKET: socket }).ready, 20_000);
+  const response = await fetch(`${base}/api/session`, { headers });
+  const body = await response.json() as { error: { code: string; message: string } };
+  expect([response.status, body.error.code]).toEqual([502, "connect_failed"]);
+  expect(body.error.message).toContain(`cannot reach herdr at ${socket}`);
 });
 
 it("lists this machine alone on GET /api/machines, under its own name, and says why its engine is down", async () => {
