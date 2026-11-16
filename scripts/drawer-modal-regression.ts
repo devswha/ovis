@@ -123,7 +123,8 @@ try {
   console.log("PASS phone drawer is a modal focus-trapped surface, headed by the Ovis mark, closed by a tap outside, a swipe, Back, Escape and its named close");
 
   // The mark takes the menu button's place: a double tap there opens the drawer and goes no further. The test reads
-  // the two taps' own times: within SECOND_TAP_MS the second is not a way into the inbox, after it a tap is
+  // the two taps' own times: the second must land within SECOND_TAP_MS (the guard's arithmetic at its edges is
+  // lib/useSidebarLayout.hook.test.ts's), and a tap past it opens the inbox
   {
     const guarded = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
     const page = await guarded.newPage();
@@ -141,12 +142,11 @@ try {
     const [opened, second] = await page.evaluate(() => window.toggleClicks) as [number, number];
     // the click's own handlers ran in its dispatch; the render a way in would cause is drawn by the next frame
     await page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
-    if (second - opened < SECOND_TAP_MS) {
-      assert.equal(await page.locator(".mode-inbox").count(), 0, `the second tap of a double tap (${Math.round(second - opened)} ms apart) on the mark's spot is not a way into the inbox`);
-      assert.equal(await page.locator("#workspace-drawer.is-open").count(), 1, "and the drawer stays open");
-      await page.waitForFunction((at) => performance.now() - at >= 400, opened);
-      await toggle.tap();
-    }
+    assert.ok(second - opened < SECOND_TAP_MS, `the two taps landed ${Math.round(second - opened)} ms apart, not a double tap: the guard was not exercised`);
+    assert.equal(await page.locator(".mode-inbox").count(), 0, `the second tap of a double tap (${Math.round(second - opened)} ms apart) on the mark's spot is not a way into the inbox`);
+    assert.equal(await page.locator("#workspace-drawer.is-open").count(), 1, "and the drawer stays open");
+    await page.waitForFunction(([at, window]) => performance.now() - at >= window, [opened, SECOND_TAP_MS] as const);
+    await toggle.tap();
     await page.locator(".mode-inbox").waitFor();
     assert.equal(new URL(page.url()).searchParams.get("app"), "inbox", "a tap on the mark past the double tap opens the agent inbox");
     await guarded.close();
