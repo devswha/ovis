@@ -263,6 +263,16 @@ function ownerFetch(door: string, input: string | URL | Request, init?: RequestI
   request.headers.delete("authorization");
   return fetch(request, { unix: door });
 }
+/**
+ * What `pair`, `phone` and `phone-setup` say for a machine profile instead of an address, a pairing code or a Tailscale
+ * serve: its TCP port answers liveness only (server/machine-profile.ts machineTcpAnswer), and a phone pairs with it
+ * through the Ovis relay. The commands are named as `add` names its own (OVIS_CLI_NAME, scripts/plugin-link.ts cli).
+ */
+function profileRelayOnly(): string {
+  const cli = env["OVIS_CLI_NAME"] || "ovis";
+  return `A phone reaches this machine profile through the Ovis relay only, not at an address: run ${cli} add to add this machine to your Ovis account, or ${cli} link --code to pair one device.`;
+}
+
 /** One request to the server at `path`: over TCP to `origin`, or on a machine profile's owner socket (`door`, serverDoor). */
 function serverFetch(path: string, init: RequestInit = {}, door = serverDoor()): Promise<Response> {
   return door === null ? fetch(`${origin}${path}`, init) : ownerFetch(door, `http://localhost${path}`, init);
@@ -583,6 +593,11 @@ async function start(): Promise<number> {
   if (await health()) {
     process.stdout.write(`Ovis already running at ${origin}\n`);
     return 0;
+  }
+  // a machine profile is started on its own, not by the managed launcher: nothing is spawned, made or written for it
+  if (machineProfile) {
+    process.stderr.write("This plugin does not start a machine profile. Start it with OVIS_PROFILE=machine, OVIS_PREVIEW=fleet and OVIS_STATE_DIR naming a folder of its own, running ovis-server serve.\n");
+    return 1;
   }
   mkdirSync(REQUESTED_STATE_DIR, { recursive: true });
   const turn = await takeTurn();
@@ -935,6 +950,11 @@ async function stopInTurn(dependencies: StopDependencies): Promise<number> {
  */
 async function pair(parts?: Awaited<ReturnType<typeof pairingParts>>): Promise<number> {
   if (process.argv.includes("--approve")) return approvePairings();
+  // a code started on a machine profile is entered at no address: no pairing is started for it
+  if (machineProfile) {
+    process.stderr.write(`${profileRelayOnly()}\n`);
+    return 1;
+  }
   const { qr, decodeOffer } = parts ?? await pairingParts();
   if (!(await health())) {
     process.stderr.write(`Ovis is not running at ${origin}; start it first\n`);
@@ -1125,6 +1145,11 @@ async function linkCommand(): Promise<number> {
  * server nor startup ever calls it.
  */
 async function phone(): Promise<number> {
+  // a machine profile serves no app at its port: no address is shown and Tailscale is not asked or changed
+  if (machineProfile) {
+    process.stdout.write(`${profileRelayOnly()}\n`);
+    return 0;
+  }
   // before `tailscale serve` (see qrDrawer)
   const qr = await qrDrawer();
   const say = (line = "") => process.stdout.write(line + "\n");
@@ -1194,11 +1219,13 @@ async function phone(): Promise<number> {
 async function phoneSetup(): Promise<number> {
   const active = activePluginScript(ROOT, port, APP_STATE_DIR);
   if (active !== join(resolve(ROOT), "scripts", "plugin.ts") && resolve(active) !== resolve(import.meta.filename)) return await handOn(active, ["phone-setup"]);
-  // before the pairing code is asked for (see qrDrawer), and not taken for a failed read of the app below
-  const parts = await pairingParts();
-  process.stdout.write(`Phone setup\n\nApp on this PC: ${link(origin)}\n`);
+  // before the pairing code is asked for (see qrDrawer), and not taken for a failed read of the app below; none for a
+  // machine profile, which shows no address and starts no pairing (profileRelayOnly)
+  const parts = machineProfile ? null : await pairingParts();
+  process.stdout.write(`Phone setup\n\n${parts === null ? profileRelayOnly() : `App on this PC: ${link(origin)}`}\n`);
   let code = 0;
-  if (!(await health())) {
+  if (parts === null) code = 0;
+  else if (!(await health())) {
     process.stdout.write("The app is not running. Run the Start Ovis action, then reopen Phone setup.\n");
     code = 1;
   } else {

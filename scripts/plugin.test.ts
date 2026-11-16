@@ -1029,9 +1029,9 @@ describe.skipIf(platform() === "win32")("a machine profile, under the fleet prev
     const pc = profilePc({ door: 1 }, { folderMode: 0o777, tcp: true });
     try {
       const status = await run("status", pc.env);
-      const pair = await run("pair", pc.env);
-      expect([status.out.split("\n")[0], pair.err, pair.exitCode]).toEqual([`down http://127.0.0.1:${pc.port}`, `Ovis is not running at http://127.0.0.1:${pc.port}; start it first\n`, 1]);
-      printed(pc, status, pair);
+      const add = await run("add", pc.env);
+      expect([status.out.split("\n")[0], add.err, add.exitCode]).toEqual([`down http://127.0.0.1:${pc.port}`, `Ovis is not running at http://127.0.0.1:${pc.port}; start it first\n`, 1]);
+      printed(pc, status, add);
     } finally { await pc.stop(); }
     expect(pc.calls).toEqual([]);
   }, 30_000);
@@ -1048,8 +1048,7 @@ describe.skipIf(platform() === "win32")("a machine profile, under the fleet prev
       pc.settings();
       writeFileSync(join(configDir, ".env"), `PORT=${app.port}\n`);
       const started = await run("start", pc.env);
-      expect([started.exitCode, started.out.includes("already running")], started.out + started.err).toEqual([1, false]);
-      expect(started.err).toContain(`port ${app.port} on 127.0.0.1 cannot be opened`);
+      expect([started.exitCode, started.out.includes("already running"), started.err.includes("ovis-server serve")], started.out + started.err).toEqual([1, false, true]);
       expect(existsSync(join(scratch, "state", "server.pid"))).toBe(false);
     } finally { await app.stop(true); await pc.stop(); }
     expect([asked, pc.calls]).toEqual([[], []]);
@@ -1064,9 +1063,9 @@ describe.skipIf(platform() === "win32")("a machine profile, under the fleet prev
     const pc = profilePc({ door: 1 }, how);
     try {
       const status = await run("status", pc.env);
-      const pair = await run("pair", pc.env);
-      expect([status.out.split("\n")[0], pair.err, pair.exitCode]).toEqual([`down http://127.0.0.1:${pc.port}`, `Ovis is not running at http://127.0.0.1:${pc.port}; start it first\n`, 1]);
-      printed(pc, status, pair);
+      const add = await run("add", pc.env);
+      expect([status.out.split("\n")[0], add.err, add.exitCode]).toEqual([`down http://127.0.0.1:${pc.port}`, `Ovis is not running at http://127.0.0.1:${pc.port}; start it first\n`, 1]);
+      printed(pc, status, add);
     } finally { await pc.stop(); }
     expect(pc.calls).toEqual([]);
   }, 30_000);
@@ -1105,7 +1104,7 @@ describe.skipIf(platform() === "win32")("a machine profile, under the fleet prev
     expect(pc.calls.map((call) => `${call.door} ${call.call}`)).toEqual(["socket GET /api/health"]);
   }, 30_000);
 
-  it("keeps the door a command's health check passed on: with the record gone after that, the later requests of pair, pair --approve and phone-setup still go to the socket", async () => {
+  it("keeps the door a command's health check passed on: with the record gone after that, the later requests of pair --approve and add still go to the socket", async () => {
     let record = "";
     const pc: ReturnType<typeof profilePc> = profilePc({ door: 1 }, { owner: (path) => {
       // the record goes as the socket answers health
@@ -1115,27 +1114,26 @@ describe.skipIf(platform() === "win32")("a machine profile, under the fleet prev
     } });
     record = readFileSync(join(pc.state, "serve.lock", "http.json"), "utf8");
     try {
-      for (const [command, args] of [["pair", []], ["pair", ["--approve"]], ["phone-setup", []]] as const) {
+      for (const [command, args] of [["pair", ["--approve"]], ["add", []]] as const) {
         writeFileSync(join(pc.state, "serve.lock", "http.json"), record);
         printed(pc, await run(command, pc.env, { args: [...args] }));
       }
     } finally { await pc.stop(); }
     expect(pc.calls.filter((call) => call.door === "tcp")).toEqual([]);
     expect(pc.calls.map((call) => call.call)).toEqual([
-      "GET /api/health", "POST /api/devices/pair/start", "GET /api/access", "GET /api/relay",
       "GET /api/health", "GET /api/relay/pairings",
-      "GET /api/health", "GET /api/access",
+      "GET /api/health", "GET /api/account/status",
     ]);
   }, 60_000);
 
   it("sends no token on its owner socket, while the same commands send it over TCP", async () => {
     const pc = profilePc({ door: 1 }, { tcp: true });
     try {
-      for (const [command, args] of [["status", []], ["add", []], ["pair", []], ["pair", ["--approve"]]] as const) printed(pc, await run(command, pc.env, { args: [...args] }));
+      for (const [command, args] of [["status", []], ["add", []], ["pair", ["--approve"]]] as const) printed(pc, await run(command, pc.env, { args: [...args] }));
       expect(pc.bearers.filter((call) => call.startsWith("tcp"))).toEqual([]);
       expect(pc.bearers.filter((call) => call.includes(" with "))).toEqual([]);
       expect(pc.bearers).toContain("socket GET /api/account/status without authorization");
-      expect(pc.bearers).toContain("socket POST /api/devices/pair/start without authorization");
+      expect(pc.bearers).toContain("socket GET /api/relay/pairings without authorization");
       // control: no profile, so TCP, where the token goes as before
       pc.bearers.length = 0;
       for (const command of ["add", "pair"]) printed(pc, await run(command, { ...pc.env, OVIS_PROFILE: undefined }));
@@ -1206,6 +1204,58 @@ describe.skipIf(platform() === "win32")("a machine profile, under the fleet prev
     } finally { await pc.stop(); }
     expect(pc.calls.map((call) => `${call.door} ${call.call}`)).toEqual(["socket GET /api/health", "socket GET /api/health"]);
   }, 30_000);
+
+  /** A profile's owner socket answering pair/start with a code and /api/access with a Tailscale serve command */
+  const pairing = (path: string): Response | undefined => path === "/api/devices/pair/start" ? Response.json({ code: "123456", expires_at: new Date(Date.now() + 600_000).toISOString() })
+    : path === "/api/access" ? Response.json({ tailscale: { state: "running", serving_url: null, serve_command: "tailscale serve --bg --https=7317 http://127.0.0.1:1" } }) : undefined;
+
+  it("pair and phone-setup start no pairing on a running profile and show no address or Tailscale command: they name the relay's commands", async () => {
+    const pc = profilePc({ door: 1 }, { owner: pairing });
+    try {
+      const pair = await run("pair", pc.env);
+      const setup = await run("phone-setup", pc.env);
+      for (const [label, ran, code] of [["pair", pair, 1], ["phone-setup", setup, 0]] as const) {
+        const text = printed(pc, ran);
+        expect([label, ran.exitCode, text.includes("link --code"), text.includes(" add "), text.includes("tailscale serve"), text.includes("open the app's address"), text.includes("Pairing code"), text.includes("App on this PC")]).toEqual([label, code, true, true, false, false, false, false]);
+      }
+    } finally { await pc.stop(); }
+    expect(pc.calls).toEqual([]);
+  }, 30_000);
+
+  it("phone asks and changes nothing of Tailscale for a profile, and names the relay's commands", async () => {
+    const pc = profilePc({ door: 1 }, { owner: pairing });
+    // a Tailscale that runs and serves nothing yet, so `phone` would publish the app; it records every call
+    const calls = join(scratch, "tailscale-calls");
+    writeFileSync(join(scratch, "bin", "tailscale"), `#!/bin/sh\necho "$*" >> ${JSON.stringify(calls)}\ncase "$1 $2" in\n  "status --json") echo '{"BackendState":"Running","Self":{"DNSName":"pc.example.ts.net."}}' ;;\n  "serve status") echo '{}' ;;\nesac\n`);
+    chmodSync(join(scratch, "bin", "tailscale"), 0o755);
+    try {
+      const phone = await run("phone", pc.env);
+      const text = printed(pc, phone);
+      expect([phone.exitCode, text.includes("link --code"), text.includes("tailscale serve"), existsSync(calls)]).toEqual([0, true, false, false]);
+    } finally { await pc.stop(); }
+    expect(pc.calls).toEqual([]);
+  }, 30_000);
+
+  it("start spawns nothing for a profile that does not answer, and exits 1; one that answers is reported running", async () => {
+    // a launcher that marks that it was spawned, under a root of its own
+    const root = join(scratch, "root");
+    mkdirSync(join(root, "server"), { recursive: true });
+    writeFileSync(join(root, "server", "managed.ts"), `require("node:fs").writeFileSync(${JSON.stringify(join(scratch, "spawned"))}, ""); process.exit(1);\n`);
+    const absent = profilePc("");
+    try {
+      rmSync(join(absent.state, "serve.lock", "http.json"));
+      absent.settings();
+      writeFileSync(join(configDir, ".env"), `PORT=${quietPort()}\n`);
+      const started = await run("start", { ...absent.env, HERDR_PLUGIN_ROOT: root }, { timeout: 20_000 });
+      expect([started.exitCode, started.err.includes("ovis-server serve"), existsSync(join(scratch, "spawned")), existsSync(join(scratch, "state", "server.pid"))], started.out + started.err).toEqual([1, true, false, false]);
+    } finally { await absent.stop(); }
+    expect(absent.calls).toEqual([]);
+    const running = profilePc();
+    try {
+      const started = await run("start", { ...running.env, HERDR_PLUGIN_ROOT: root }, { timeout: 20_000 });
+      expect([started.exitCode, started.out.startsWith("Ovis already running at "), existsSync(join(scratch, "spawned"))], started.err).toEqual([0, true, false]);
+    } finally { await running.stop(); }
+  }, 60_000);
 
   it("reaches a real machine profile on its owner socket: status says it runs and add reads its account status there, and status says when its herdr is down", async () => {
     const { createServer } = await import("../server/index.ts");
