@@ -46,10 +46,12 @@ say() {
 
 # The worker is not proven: kill nothing. This step stays running (HUP, INT and TERM are ignored,
 # by sleep too), so no other step of the job starts, for as long as the parent this shell started
-# under lives. Once a read of its own parent succeeds and names another process, that parent is gone:
-# only it waited on this hook (the worker; or a process between them, whose step the worker ends 5 s
-# after it exits), and with the worker gone no step can run, so ending releases nothing. A failed
-# read keeps blocking. Never returns otherwise, and signals nothing.
+# under lives. Once a read of its own parent succeeds and names another process, that parent is gone,
+# and only it waited on this hook. When that parent is the worker itself, as the runner starts the hook,
+# no step can run once it is gone, so ending releases nothing. A process between them that exits while
+# the worker lives lets the worker finish the step itself (5 s later), and the job's always() and
+# failure() steps can then run; the hook cannot prevent that. A failed read keeps blocking. Never
+# returns otherwise, and signals nothing.
 block() {
   local now me
   say "$refusal Its parent is not proven to be the job's Runner.Worker ($1), so nothing was killed; this hook blocks (pid $$) until its parent is gone."
