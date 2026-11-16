@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import * as herdr from "./herdr/client.ts";
 import { HerdrError, herdrFault } from "./herdr/client.ts";
-import { errorResponse, herdrErrorBody, layoutResponse, requestIdContext, wordHerdrFailures } from "./http.ts";
+import { errorResponse, layoutResponse, requestFault, requestIdContext, wordHerdrFailures } from "./http.ts";
 import { createServer } from "./index.ts";
 
 describe("errorResponse", () => {
@@ -115,7 +115,7 @@ describe("a failed herdr call's answer", () => {
       expect([worded.status, await worded.json(), worded.headers.get("cache-control")]).toEqual([502, { error: view() }, "no-store"]);
       // a refusal the bridge words itself is no failed call: its own words stay
       expect(await errorResponse(new HerdrError("read_only", "this device can only watch")).json()).toEqual({ error: { code: "read_only", message: "this device can only watch" } });
-      expect(herdrErrorBody(failed())).toEqual(view());
+      expect(requestFault(failed(), "unused")).toEqual(view());
       const layout = layoutResponse({ ok: true, changed: false, reason: "herdr's reason" });
       expect([await layout.json(), layout.headers.get("cache-control")]).toEqual([{ ok: true, changed: false, reason: "worded herdr's reason" }, "no-store"]);
     });

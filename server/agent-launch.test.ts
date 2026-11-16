@@ -257,3 +257,19 @@ describe("a failed agent start's answer", () => {
     } finally { start.mockRestore(); }
   });
 });
+
+describe("an agent start that failed in the bridge", () => {
+  it("keeps agent_start_failed in the view's sentence, and its own words without a view", async () => {
+    const view = () => ({ code: "worded", message: "the view's words" });
+    const start = spyOn(herdr, "agentStart").mockImplementation(async () => { throw new TypeError("a fault of the bridge's own"); });
+    try {
+      const plain = await agentLaunch(PANE, { kind: "claude", name: "claude-type-test" });
+      const worded = await requestIdContext.run({ id: "r", route: "" }, async () => {
+        wordHerdrFailures(view, (reason) => reason);
+        return agentLaunch(PANE, { kind: "claude", name: "claude-type-test" });
+      });
+      expect([plain, worded]).toEqual([{ agent_started: false, error: { code: "agent_start_failed", message: "a fault of the bridge's own" } },
+        { agent_started: false, error: { code: "agent_start_failed", message: view().message } }]);
+    } finally { start.mockRestore(); }
+  });
+});

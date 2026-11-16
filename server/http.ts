@@ -10,7 +10,7 @@ import { randomBytes } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 
 import { FileBusyError } from "./file-pool.ts";
-import { HerdrError, herdrFault, type HerdrFailureView } from "./herdr/client.ts";
+import { faultOf, HerdrError, type HerdrFailureView } from "./herdr/client.ts";
 
 /** The outer HTTP boundary also correlates errors caught inside route handlers. */
 export const requestIdContext = new AsyncLocalStorage<{ readonly id: string; route: string; herdrFailure?: HerdrFailureView; herdrReason?: (reason: string) => string }>();
@@ -33,8 +33,8 @@ export function layoutResponse<T extends { reason: string | null }>(body: T): Re
   if (word === undefined) return jsonResponse(body);
   return jsonResponse({ ...body, reason: body.reason === null ? null : word(body.reason) }, 200, wordedHeaders());
 }
-/** The code and message this request answers for a HerdrError: the error's own, unless this request words failed calls. */
-export const herdrErrorBody = (error: HerdrError): { code: string; message: string } => herdrFault(error, requestIdContext.getStore()?.herdrFailure);
+/** The code and message this request answers for a fault (`code` for one that is no HerdrError): as faultOf words it by this request's view. */
+export const requestFault = (error: unknown, code: string): { code: string; message: string } => faultOf(error, code, requestIdContext.getStore()?.herdrFailure);
 
 /** Call only from a matched dispatch branch, with a fixed template or a finite matched literal. */
 export function setRequestRoute(route: string): void {

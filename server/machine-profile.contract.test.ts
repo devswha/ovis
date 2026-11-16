@@ -1331,6 +1331,18 @@ it("answers a find herdr refused as stale with the code the app acts on, in its 
   expect([own.status, theirs!.error, own.headers.get("cache-control")]).toEqual([409, refused, null]);
 });
 
+it("answers a worktree inventory whose read herdr refused in its own words, never stored, and an ordinary server answers as main does", async () => {
+  const { ordinary, stateDir } = pair({ token, tailscaleOwner: null });
+  const refused = { code: `herdr-own-${Math.random().toString(36).slice(2)}`, message: "herdr's own words" };
+  const list = spyOn(herdr, "worktreeList").mockImplementation(async () => { throw new HerdrError(refused.code, refused.message, true, true); });
+  cleanup.push(() => list.mockRestore());
+  const profile = await owner(stateDir, "/api/worktree/inventory?workspace_id=w1", { headers });
+  const own = await fetch(`http://127.0.0.1:${ordinary}/api/worktree/inventory?workspace_id=w1`, { headers });
+  const [mine, theirs] = [await profile.text(), await own.text()];
+  expect([profile.status, mine.includes(refused.code), profile.headers.get("cache-control")]).toEqual([200, false, "no-store"]);
+  expect([own.status, theirs.includes(refused.code), own.headers.get("cache-control")]).toEqual([200, true, null]);
+});
+
 it("answers a create whose agent herdr did not start in its own words, never stored, and an ordinary server answers as main does", async () => {
   const { ordinary, stateDir } = pair({ token, tailscaleOwner: null });
   const refused = { code: "agent_name_taken", message: `herdr-own-${Math.random().toString(36).slice(2)}` };
