@@ -962,6 +962,8 @@ async function linkCommand(): Promise<number> {
   return linkPc(process.argv.slice(3), {
     origin, headers, signal: stop.signal,
     accountService: accountServiceOrigin(env["OVIS_ACCOUNT_SERVICE_URL"] ?? DEFAULT_ACCOUNT_SERVICE),
+    // the app the server pairs with, as server/relay/service.ts reads it from the same settings
+    ...(env["OVIS_RELAY_APP_URL"] ? { app: env["OVIS_RELAY_APP_URL"] } : {}),
     out: (text) => process.stdout.write(text),
     lines: console[Symbol.asyncIterator](),
     // a pipe, a file or a closed stdin approves nothing, whatever it carries and whenever (`yes | ovis add`)
