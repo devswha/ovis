@@ -1,2 +1,2 @@
 /** Compatibility entry point; implementation belongs to the fork. */
-export * from "../fork/AgentFriend.tsx";
+export * from "../fork/friends/AgentFriend.tsx";

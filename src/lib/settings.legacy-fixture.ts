@@ -1,5 +1,5 @@
 /** Pinned from 82d556b9 src/lib/settings.ts for old-tab migration tests. Never used by the app. */
-import type { ForkSettings } from "../fork/settings.ts";
+import type { ForkSettings } from "../fork/settings/settings.ts";
 import { DEFAULT_KEY_BAR_ITEMS, migrateKeyBarItems, sanitizeKeyBarItems } from "./keyBar.ts";
 import { sanitizeShortcutOverrides } from "./shortcutBindings.ts";
 import { sanitizeFontFamily } from "./fontFamily.ts";

@@ -25,7 +25,7 @@ import "./SidebarSections.css";
 import { useT } from "../lib/i18n.ts";
 import { asksChoice, FoundHerdrChoices } from "./FoundHerdrChoices.tsx";
 import { useSettings } from "../lib/settings.ts";
-import { ComputerButton } from "../fork/ComputerButton.tsx";
+import { ComputerButton } from "../fork/computer/ComputerButton.tsx";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { machineErrorText, saysHerdrAway, sshFailure } from "../lib/userError.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";

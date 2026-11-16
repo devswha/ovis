@@ -1,5 +1,5 @@
-@import "./chat.css";
-@import "./composer.css";
+@import "./chat/chat.css";
+@import "./chat/composer.css";
 @import "./component-overrides.css";
 
 /* Semantic discs used by fork-owned components, independent of box corners. */

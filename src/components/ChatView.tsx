@@ -30,9 +30,9 @@ import { useWholeOutput as useScopedOutput } from "../lib/useWholeOutput.ts";
 import { turnSkills } from "../lib/skillActivity.ts";
 import { ApiError, pinPaneConversation, unpinPaneConversation } from "../lib/api.ts";
 import { copyText } from "../lib/clipboard.ts";
-import { SpeakButton } from "../fork/SpeakButton.tsx";
-import { useSendMotion, withoutEmptyLiveTurn } from "../fork/chatPresentation.ts";
-import { useWordFade } from "../fork/wordFade.ts";
+import { SpeakButton } from "../fork/voice/SpeakButton.tsx";
+import { useSendMotion, withoutEmptyLiveTurn } from "../fork/chat/chatPresentation.ts";
+import { useWordFade } from "../fork/chat/wordFade.ts";
 import type { GalleryImage } from "../lib/imageViewer.ts";
 import { toolGalleryImage, userGalleryImages } from "../lib/chatImages.ts";
 import { useMachineApi } from "../lib/machineContext.tsx";
@@ -122,7 +122,7 @@ import { replyCommentsKey } from "../lib/replyComments.ts";
 import { ReplyCommentAction } from "./ReplyComments.tsx";
 import { ConversationSearch, type RevealResult } from "./ConversationSearch.tsx";
 import { useResourceUrl } from "../lib/useResourceUrl.ts";
-import { AgentAvatar } from "../fork/AgentAvatar.tsx";
+import { AgentAvatar } from "../fork/friends/AgentAvatar.tsx";
 
 /** Slow reads in a row the chat waits through quietly before it alarms: about 50 s at the local 15 s deadline. */
 const SLOW_READS_BEFORE_ALARM = 3;

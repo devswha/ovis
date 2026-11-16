@@ -1,0 +1,20 @@
+[data-fork-read-aloud="true"] .chat-speak.is-active { opacity: 1; color: var(--accent); }
+[data-fork-read-aloud="true"] .chat-speak-progress { animation: chat-speak-spin var(--dur-spin) steps(8) infinite; }
+@keyframes chat-speak-spin { to { transform: rotate(360deg); } }
+
+[data-fork-chat-motion="true"] .chat-turn-new .chat-bubble,
+[data-fork-chat-motion="true"] .chat-turn-sent .chat-bubble {
+  transform-origin: bottom right;
+  animation: chat-bubble-pop 140ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+@keyframes chat-bubble-pop { from { opacity: 0; transform: translateY(6px) scale(0.96); } }
+/* a streaming reply's new word (src/fork/chat/wordFade.ts): Streamdown's fade; its delay is on the word */
+[data-fork-chat-motion="true"] [data-fork-fade] { animation: fork-word-fade 350ms ease both; }
+@keyframes fork-word-fade { from { opacity: 0; } }
+
+@media (prefers-reduced-motion: reduce) {
+  [data-fork-read-aloud="true"] .chat-speak-progress,
+  [data-fork-chat-motion="true"] .chat-turn-new .chat-bubble,
+  [data-fork-chat-motion="true"] .chat-turn-sent .chat-bubble,
+  [data-fork-chat-motion="true"] [data-fork-fade] { animation: none; }
+}

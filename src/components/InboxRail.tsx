@@ -18,8 +18,8 @@ import type { HeaderConnection } from "../lib/headerConnection.ts";
 import { useT, type Translate } from "../lib/i18n.ts";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { OvisMark } from "./OvisMark.tsx";
-import { ForkInboxBack } from "../fork/InboxBack.tsx";
-import { ForkGithubRail } from "../fork/GithubInbox.tsx";
+import { ForkInboxBack } from "../fork/inbox/InboxBack.tsx";
+import { ForkGithubRail } from "../fork/github/GithubInbox.tsx";
 import { RowMenu } from "./RowMenu.tsx";
 import "./InboxRail.css";
 

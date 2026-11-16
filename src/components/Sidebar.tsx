@@ -42,7 +42,7 @@ import { agentTabName, paneMark, sidebarAgents, workspaceAgentLabels, type Sideb
 import { PANE_DRAG_TYPE, paneDragData } from "../lib/split.ts";
 import { publishWorkspaceRows, workspaceRows } from "../lib/adjacentTarget.ts";
 import { currentSidebarPins, pinnedGroupIds, pinnedWorkspaceIds, pruneWorkspacePins, reorderWorkspacePins, setSidebarPins, splitPinnedGroups, subscribeSidebarPins, toggleSidebarPin, workspacePinKey, type WorkspaceGroup } from "../lib/sidebarPins.ts";
-import { AgentAvatar } from "../fork/AgentAvatar.tsx";
+import { AgentAvatar } from "../fork/friends/AgentAvatar.tsx";
 
 const ERROR_NOTE_MS = 5000;
 

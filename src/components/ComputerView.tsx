@@ -1,2 +1,2 @@
 /** Compatibility entry point; implementation belongs to the fork. */
-export * from "../fork/ComputerView.tsx";
+export * from "../fork/computer/ComputerView.tsx";

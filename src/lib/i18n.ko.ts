@@ -1,5 +1,5 @@
-import { FORK_KO } from "../fork/i18n.ko.ts";
-import { withForkI18n } from "../fork/i18nParts.ts";
+import { FORK_KO } from "../fork/i18n/i18n.ko.ts";
+import { withForkI18n } from "../fork/i18n/i18nParts.ts";
 import { SETTINGS_KO } from "./i18n/settings.ko.ts";
 import { SETTINGS_ACCESS_KO } from "./i18n/settings-access.ko.ts";
 import { SETTINGS_AGENTS_KO } from "./i18n/settings-agents.ko.ts";

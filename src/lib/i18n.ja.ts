@@ -1,5 +1,5 @@
-import { FORK_JA } from "../fork/i18n.ja.ts";
-import { withForkI18n } from "../fork/i18nParts.ts";
+import { FORK_JA } from "../fork/i18n/i18n.ja.ts";
+import { withForkI18n } from "../fork/i18n/i18nParts.ts";
 import { SETTINGS_JA } from "./i18n/settings.ja.ts";
 import { SETTINGS_ACCESS_JA } from "./i18n/settings-access.ja.ts";
 import { SETTINGS_AGENTS_JA } from "./i18n/settings-agents.ja.ts";

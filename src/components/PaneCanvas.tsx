@@ -33,7 +33,7 @@ import { displayPaneTitle } from "./Sidebar.tsx";
 import { RowMenu, type RowMenuItem } from "./RowMenu.tsx";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import "./PaneCanvas.css";
-import { AgentAvatar } from "../fork/AgentAvatar.tsx";
+import { AgentAvatar } from "../fork/friends/AgentAvatar.tsx";
 import { paneStatus } from "../lib/status.ts";
 
 type PaneLayoutSplit = PaneLayoutSnapshot["splits"][number];

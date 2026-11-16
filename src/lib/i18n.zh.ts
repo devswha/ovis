@@ -1,5 +1,5 @@
-import { FORK_ZH } from "../fork/i18n.zh.ts";
-import { withForkI18n } from "../fork/i18nParts.ts";
+import { FORK_ZH } from "../fork/i18n/i18n.zh.ts";
+import { withForkI18n } from "../fork/i18n/i18nParts.ts";
 import { SETTINGS_ZH } from "./i18n/settings.zh.ts";
 import { SETTINGS_ACCESS_ZH } from "./i18n/settings-access.zh.ts";
 import { SETTINGS_AGENTS_ZH } from "./i18n/settings-agents.zh.ts";

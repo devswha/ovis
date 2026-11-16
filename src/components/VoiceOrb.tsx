@@ -1,2 +1,2 @@
 /** Compatibility entry point; implementation belongs to the fork. */
-export * from "../fork/VoiceOrb.tsx";
+export * from "../fork/voice/VoiceOrb.tsx";

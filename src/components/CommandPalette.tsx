@@ -42,7 +42,7 @@ import { recentDirectories } from "../lib/recent-directories.ts";
 
 import { availableTarget, groupMachinePanes, loadRecentTargets, rankMachinePanes, recentTargets, rememberTarget, targetKey, RECENT_KEY, type MachineBranches, type MachinePane, type RecentPane } from "../lib/machinePalette.ts";
 import { worktreeWorkspaceSignature, type WorkspaceBranch } from "../lib/worktreeBranches.ts";
-import { AgentAvatar } from "../fork/AgentAvatar.tsx";
+import { AgentAvatar } from "../fork/friends/AgentAvatar.tsx";
 const RECENT_SHOWN = 3;
 /** pinned and recent folders offered as jumps, each */
 const FOLDERS_SHOWN = 5;

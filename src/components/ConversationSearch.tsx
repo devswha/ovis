@@ -15,7 +15,7 @@ import { useMachineApi } from "../lib/machineContext.tsx";
 import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import { useSheetSwipe } from "../lib/sheets.ts";
 import { useFocusTrap } from "../lib/useFocusTrap.ts";
-import { AgentAvatar } from "../fork/AgentAvatar.tsx";
+import { AgentAvatar } from "../fork/friends/AgentAvatar.tsx";
 
 /** a query shorter than this matches too much to be worth a read of the whole conversation */
 const MIN_QUERY = 2;

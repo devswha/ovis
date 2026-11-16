@@ -30,7 +30,7 @@ import { FileTextSizeRow } from "./FileTextSizeRow.tsx";
 import { FoldHelpersRow } from "./FoldHelpersRow.tsx";
 import { FilesPanelRow } from "./FilesPanelRow.tsx";
 import { onSettingsHistory, recordSettings, settingsEntry, settingsLevels, type SettingsLevel } from "../lib/settingsHistory.ts";
-import { ForkFeatures, LiveVoiceRow, OmarchyRow, OpenLiveWorkRow, ReadAloudVoiceRow } from "../fork/SettingsRows.tsx";
+import { ForkFeatures, LiveVoiceRow, OmarchyRow, OpenLiveWorkRow, ReadAloudVoiceRow } from "../fork/settings/SettingsRows.tsx";
 import { ThemeFiles, themeLabel } from "./ThemeFiles.tsx";
 import { THEME_NAMES, ThemeCard } from "./ThemeCard.tsx";
 import { ChipToggles, SettingsBare, Segmented, SettingsFold, SettingsGroup, SettingsQuery, SettingsRow, SettingsSelect, Stepper, Toggle, settingsQueryWords, useSettingsRowSentence } from "./SettingsControls.tsx";

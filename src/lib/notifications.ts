@@ -1,5 +1,5 @@
 import type { AgentStatus } from "../../shared/protocol.ts";
-import { forkAlert, forkNotificationIcon, forkNotificationState, refreshForkNotificationState, requestForkNotificationPermission } from "../fork/notifications.ts";
+import { forkAlert, forkNotificationIcon, forkNotificationState, refreshForkNotificationState, requestForkNotificationPermission } from "../fork/friends/notifications.ts";
 import { ENDED_NOTIFICATION_BODY, paneNotificationTag, statusNotificationBody } from "../../shared/notify-policy.ts";
 import { callNative, hasNativePlugin, nativeAlerts, PUSH_PLUGIN } from "./nativeApp.ts";
 

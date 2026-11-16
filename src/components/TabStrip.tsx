@@ -42,17 +42,17 @@ import { SHEET_QUERY } from "../lib/sheets.ts";
 import { useTabReorder } from "../lib/useTabReorder.ts";
 import { indicatorGlyph, paneStatus, rollupStatus, STATUS_WORD, type KnownStatus } from "../lib/status.ts";
 import { useSettings } from "../lib/settings.ts";
-import { TabFriends } from "../fork/TabFriends.tsx";
-import { groupAgentTabs } from "../fork/groupAgentTabs.ts";
-import { ForkTabChips, forkChipBoundary, forkOpenTab } from "../fork/TabChips.tsx";
-import { forkTabGroupStyle, forkTabsInRow } from "../fork/tabGroupLayout.ts";
+import { TabFriends } from "../fork/friends/TabFriends.tsx";
+import { groupAgentTabs } from "../fork/tabs/groupAgentTabs.ts";
+import { ForkTabChips, forkChipBoundary, forkOpenTab } from "../fork/tabs/TabChips.tsx";
+import { forkTabGroupStyle, forkTabsInRow } from "../fork/tabs/tabGroupLayout.ts";
 import { AgentMark } from "./AgentMark.tsx";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { displayPaneTitle } from "./Sidebar.tsx";
 import { RowMenu, type RowMenuItem } from "./RowMenu.tsx";
 import { paneDrag } from "../lib/paneDrag.ts";
 import { lastViewedPane, rememberViewedPane } from "../lib/lastViewedPane.ts";
-import { AgentAvatar } from "../fork/AgentAvatar.tsx";
+import { AgentAvatar } from "../fork/friends/AgentAvatar.tsx";
 
 /** a strip that held the focus went (TabStrip's handoff effect): its workspace, whether the window was
  *  wide when it mounted, and when. Only that workspace's strip on the other side of the width the

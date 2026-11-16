@@ -34,7 +34,7 @@ import { AgentFriend } from "./AgentFriend.tsx";
 import type { Friend } from "../../shared/friends.ts";
 import { friendKey } from "../../shared/friends.ts";
 import { useFriends } from "../lib/friends.ts";
-import { ForkRolePicture } from "../fork/AgentRole.tsx";
+import { ForkRolePicture } from "../fork/friends/AgentRole.tsx";
 import { RowMenu } from "./RowMenu.tsx";
 import { BackgroundBadge, compactWorktreeName, ContextBadge, displayPaneTitle, onRowContextMenu, PlanBadge, StatusBadge } from "./Sidebar.tsx";
 import "./AgentSidebar.css";

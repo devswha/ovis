@@ -1,2 +1,2 @@
 /** Compatibility entry point; implementation belongs to the fork. */
-export * from "../fork/speech.ts";
+export * from "../fork/voice/speech.ts";

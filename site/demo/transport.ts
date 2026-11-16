@@ -37,7 +37,7 @@ import { neighborPane } from "../../src/lib/layoutMap.ts";
 import { closeLayoutPane, moveLayoutPane, resizeLayout, setLayoutSplitRatio, splitLayout, swapLayoutPanes } from "../../src/lib/layoutTree.ts";
 import { deviceLabel } from "../../src/lib/phone.ts";
 import { rollupStatus } from "../../src/lib/status.ts";
-import { demoGithubFiles, demoGithubPull, demoGithubPulls } from "../../src/fork/githubDemo.ts";
+import { demoGithubFiles, demoGithubPull, demoGithubPulls } from "../../src/fork/github/githubDemo.ts";
 import { movedTabOrder } from "../../src/lib/tabOrder.ts";
 import { agentSkillRows, CHATS, DEMO_AGENT_CATALOG, DEMO_PUSH, PROMPT, resumedSession, SESSION_HISTORY_AGENTS, sessionHistoryRows, SPECS, type DemoSpec } from "./fixtures.ts";
 import { DemoHistory } from "./history.ts";

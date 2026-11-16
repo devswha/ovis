@@ -128,7 +128,8 @@ async function checkGithub(page: Page, url: string, enabled: boolean) {
   await page.setViewportSize({ width: 1200, height: 900 });
   await page.goto(`${url}?app=inbox`);
   await page.locator(".mode-inbox .inbox-item").first().waitFor();
-  const github = page.getByRole("navigation", { name: "Inbox mode", exact: true }).getByRole("button", { name: "Pull requests", exact: true });
+  const inboxColumn = page.locator(".inbox-column");
+  const github = inboxColumn.getByRole("button", { name: "Pull requests", exact: true });
   assert.equal(await github.count(), enabled ? 1 : 0);
   if (!enabled) return;
   await github.click();
@@ -148,7 +149,7 @@ async function checkGithub(page: Page, url: string, enabled: boolean) {
   const before = (await requests(page)).filter(({ path }) => path === "/api/fork/github/pulls").length;
   await view.getByRole("button", { name: "Refresh", exact: true }).click();
   await page.waitForFunction((before) => JSON.parse(document.documentElement.dataset["forkRequests"] ?? "[]").filter((request: RequestRecord) => request.path === "/api/fork/github/pulls").length === before + 1, before);
-  await page.getByRole("navigation", { name: "Inbox mode", exact: true }).getByRole("button", { name: "Agent inbox", exact: true }).click();
+  await inboxColumn.getByRole("button", { name: "Agent inbox", exact: true }).click();
   await page.locator(".mode-inbox .inbox-item").first().waitFor();
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole("button", { name: "Pull requests", exact: true }).click();
@@ -240,6 +241,13 @@ try {
             assert.ok(voiceFrames.some((frame) => frame.type === "stop"));
           }
           await checkGithub(page, url, legacy);
+          if (legacy) {
+            await page.evaluate(() => {
+              localStorage.setItem("ovis:fork-settings", JSON.stringify({ inboxFooter: false }));
+              localStorage.removeItem("ovis:fork-github-repo");
+            });
+            await checkGithub(page, url, true);
+          }
           assert.deepEqual(errors, []);
           console.log(`PASS ${legacy ? "migrated fork" : "upstream defaults"}: read aloud, Computer, pull requests, GitHub inbox and Pi voice`);
         } finally { await context.close(); }

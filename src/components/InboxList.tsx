@@ -1,7 +1,7 @@
 import { tally, usageCounters } from "../lib/usageCounters.ts";
 import { useContext, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type Ref, type RefObject } from "react";
 import { Ellipsis, ListFilter, Monitor, Plus, Search, Terminal, TriangleAlert, X } from "lucide-react";
-import { ForkGithubOpen } from "../fork/GithubInbox.tsx";
+import { ForkGithubOpen } from "../fork/github/GithubInbox.tsx";
 
 import type { Machine } from "../../shared/machines.ts";
 import type { AgentStatus } from "../../shared/protocol.ts";
@@ -25,8 +25,8 @@ import { questionTargets, useInboxQuestions, type QuestionReads } from "../lib/u
 import { summaryTargets, useInboxSummaries, type RowSummary, type SummaryReads } from "../lib/useInboxSummaries.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { AgentMark } from "./AgentMark.tsx";
-import { ForkInboxAvatar } from "../fork/InboxAvatar.tsx";
-import { forkInboxNesting, forkInboxRows } from "../fork/inboxRows.ts";
+import { ForkInboxAvatar } from "../fork/inbox/InboxAvatar.tsx";
+import { forkInboxNesting, forkInboxRows } from "../fork/inbox/inboxRows.ts";
 import { agentRowTitle, blockedNote, stateAge } from "./AgentSidebar.tsx";
 import { RowMenu } from "./RowMenu.tsx";
 import { compactWorktreeName, StatusBadge } from "./Sidebar.tsx";

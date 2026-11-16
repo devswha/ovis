@@ -3,11 +3,11 @@ import type { Machine } from "../../shared/machines.ts";
 import { tabPaneTitle } from "../components/Sidebar.tsx";
 import { usePaneLinkOpener } from "../lib/webPanel.ts";
 import { useNotificationState } from "../lib/useNotifications.ts";
-import { useForkNotificationState } from "./notifications.ts";
-import { ComputerView } from "./ComputerView.tsx";
-import { forgetComputerLogins, useComputerView } from "./computerSettings.ts";
-import { useAgentFriends } from "./friends.ts";
-import { PiVoiceView } from "./PiVoiceView.tsx";
+import { useForkNotificationState } from "./friends/notifications.ts";
+import { ComputerView } from "./computer/ComputerView.tsx";
+import { forgetComputerLogins, useComputerView } from "./computer/computerSettings.ts";
+import { useAgentFriends } from "./friends/friends.ts";
+import { PiVoiceView } from "./voice/PiVoiceView.tsx";
 
 /** The fork's retained desktop, phone voice, friends and desktop-script title contract. */
 export function useForkApp({ machines, selectedMachine, selectedMachineId, selectedPaneId, snapshot, inboxShown, openWebPage }: {

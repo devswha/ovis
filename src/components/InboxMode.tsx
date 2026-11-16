@@ -19,7 +19,7 @@ import type { SidebarActivity } from "../lib/sidebarActivity.tsx";
 import { paneMark } from "../lib/sidebarAgents.ts";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { agentRowTitle } from "./AgentSidebar.tsx";
-import { ForkInboxAvatar } from "../fork/InboxAvatar.tsx";
+import { ForkInboxAvatar } from "../fork/inbox/InboxAvatar.tsx";
 import { InboxRailBlank } from "./InboxRail.tsx";
 import { displayPaneTitle } from "./Sidebar.tsx";
 import "./InboxMode.css";

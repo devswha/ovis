@@ -9,7 +9,7 @@ import type { TelemetrySettings } from "../../shared/telemetry.ts";
 import { MAX_PINS, mirrorPalette, SHARED_SETTING_KEYS, type SharedSettingKey } from "../../shared/preferences.ts";
 import { createContext, createElement, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode, useSyncExternalStore } from "react";
 import { DEFAULT_THEME, terminalColors, themeColor as themeTableColor, type ThemeId, type DrawnTheme } from "./themes.ts";
-import { applyForkSettings, FORK_DEFAULTS, FORK_SCOPE, loadForkSettings, migrateForkSettings, sanitizeForkSettings, saveForkSettings, type ForkSettings } from "../fork/settings.ts";
+import { applyForkSettings, FORK_DEFAULTS, FORK_SCOPE, loadForkSettings, migrateForkSettings, sanitizeForkSettings, saveForkSettings, type ForkSettings } from "../fork/settings/settings.ts";
 import { currentOmarchyTheme, drawnOmarchyTheme, subscribeOmarchyTheme } from "./omarchyTheme.ts";
 import type { OmarchyTheme } from "../../shared/omarchy-theme.ts";
 import { bootRows, drawnTheme, NO_CUSTOM_THEMES, sanitizeCustomThemes, type CustomThemes } from "./customThemes.ts";

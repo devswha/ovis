@@ -65,7 +65,7 @@ import { composerUsage, formatPercent, formatResetIn, HIGH_PERCENT, isCurrent, m
 import { Artifacts } from "./Artifacts.tsx";
 import { OmpBtw } from "./OmpBtw.tsx";
 import { BackgroundTasks } from "./BackgroundTasks.tsx";
-import { useForkComposer } from "../fork/ComposerPill.tsx";
+import { useForkComposer } from "../fork/chat/ComposerPill.tsx";
 import { MicButton, VoiceRecordingPill, useDictation } from "./VoiceInput.tsx";
 import { usePaneCommands } from "../lib/usePaneCommands.ts";
 import { useT } from "../lib/i18n.ts";

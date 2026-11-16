@@ -1,2 +1,2 @@
 /** Compatibility entry point; implementation belongs to the fork. */
-export * from "../fork/liveTurn.ts";
+export * from "../fork/chat/liveTurn.ts";
