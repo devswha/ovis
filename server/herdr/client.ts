@@ -97,6 +97,10 @@ export function terminalAttachSupported(capabilities?: Record<string, unknown>):
   return typeof declared === "boolean" ? declared : process.platform !== "win32";
 }
 
+/** The codes this client gives a HerdrError itself; any other code a HerdrError carries is herdr's own (a reply's `error.code`). */
+export const HERDR_CLIENT_CODES: ReadonlySet<string> = new Set(["bad_frame", "cancelled", "closed", "connect_failed", "live_herdr_refused",
+  "pane_not_found", "pane_not_moved", "socket_error", "stale_content", "timeout"]);
+
 export class HerdrError extends Error {
   readonly code: string;
 

@@ -7,7 +7,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { FakeAccountService } from "../shared/account-service-fake.ts";
 import { unmanagedUpdateStatus } from "../shared/update.ts";
 import { createServer } from "./index.ts";
-import { herdrRpc, paneRead } from "./herdr/client.ts";
+import { HERDR_CLIENT_CODES, herdrRpc, paneRead } from "./herdr/client.ts";
 import { harmlessGroups, trustRefusal } from "./herdr-core/discovery.ts";
 import { claimServerState, MachineProfileError } from "./machine-profile.ts";
 import { guardLibrary } from "./owner-guard.ts";
@@ -531,9 +531,10 @@ it("answers /api/session with its health's reason while its herdr is down", asyn
   expect(reason).toBe("herdr is not running for the selected session");
   const response = await owner(dir, "/api/session", { headers });
   const text = await response.text();
-  // the status and code the app reads, as for every failed herdr read
+  // the status every failed herdr read answers with, and the client's own code, kept
   expect([response.status, JSON.parse(text)]).toEqual([502, { error: { code: "connect_failed", message: reason } }]);
   expect([text.includes(realpathSync(dir)), text.includes("herdr.sock")]).toEqual([false, false]);
+  expect(response.headers.get("cache-control")).toBe("no-store");
 });
 
 it.each(["/api/session", "/api/machines"])("answers a herdr read that fails on %s while herdr answers its health with one sentence of its own", async (path) => {
@@ -541,15 +542,23 @@ it.each(["/api/session", "/api/machines"])("answers a herdr read that fails on %
   const config = herdrConfig();
   const socket = join(config, "herdr", "sessions", "a", "herdr.sock");
   mkdirSync(dirname(socket), { recursive: true, mode: 0o700 });
-  // herdr answers ping, and fails the session read with a message of its own that names its socket
+  // herdr answers ping, and fails the session read with an error of its own: its code, and a message that names its socket
   fakeHerdr(socket, { method: "session.snapshot", message: `cannot read the session behind ${socket}` });
   const server = launch(dir, { XDG_CONFIG_HOME: config, HERDR_REMOTE_SOCKET: "", HERDR_REMOTE_SESSION: "a" });
   await bounded(server.ready, 20_000);
   expect(await (await owner(dir, "/api/health", { headers })).json()).toMatchObject({ machine_profile: { runtime_down: false, reason: null } });
   const response = await owner(dir, path, { headers });
   const text = await response.text();
-  expect([response.status, JSON.parse(text)]).toEqual([404, { error: { code: "server_error", message: "herdr did not answer this request" } }]);
+  // a code herdr gave is answered as one fixed code; the status is the one every failed herdr read answers with
+  expect([response.status, JSON.parse(text)]).toEqual([404, { error: { code: "herdr_error", message: "herdr did not answer this request" } }]);
   expect([text.includes(config), text.includes(realpathSync(dir)), text.includes("herdr.sock")]).toEqual([false, false, false]);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+});
+
+it("keeps on a failed read exactly the codes the herdr client makes itself", () => {
+  // what the profile's failed-read answer keeps (machineReadError): every code the client constructs, and only those
+  const made = [...readFileSync(join(import.meta.dir, "herdr", "client.ts"), "utf8").matchAll(/new HerdrError\("([a-z_]+)"/g)].map((match) => match[1] ?? "");
+  expect([...HERDR_CLIENT_CODES].sort()).toEqual([...new Set(made)].sort());
 });
 
 it("answers an ordinary server's failed /api/session with herdr's own message", async () => {

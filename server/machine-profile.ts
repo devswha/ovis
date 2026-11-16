@@ -10,7 +10,7 @@ import { LOCAL_MACHINE, type Machine, type MachineRoster } from "../shared/machi
 import type { SessionSnapshot } from "../shared/protocol.ts";
 import { trustRefusal } from "./herdr-core/discovery.ts";
 import { discoverPinnableHerdrSessions, heldHerdrSocketStatus, type HerdrSocketPlace, pinnedHerdrSocketStatus, profileGroups, validHerdrSocket } from "./herdr-discovery.ts";
-import { checkHerdrSockets, HerdrError, herdrSocketPath, ping } from "./herdr/client.ts";
+import { checkHerdrSockets, HERDR_CLIENT_CODES, HerdrError, herdrSocketPath, ping } from "./herdr/client.ts";
 import { errorResponse, isJsonObject, jsonResponse, setRequestRoute } from "./http.ts";
 import { acquireOwnerDirectory, holdForLife, liveOwner, OwnerGuardBusy } from "./owner-guard.ts";
 import { writePrivateState } from "./private-state.ts";
@@ -241,19 +241,22 @@ export async function machineHealth(engine: string, refusal: string | null = eng
   return { machine_profile: { engine, runtime_down: reason !== null, reason }, ...(herdr ? { herdr } : {}) };
 }
 
-/** What a herdr read that failed answers on the profile while its health gives no reason. */
+/** What a herdr read that failed answers on the profile while its health gives no reason, and its code for an error of herdr's own. */
 const READ_FAILED = "herdr did not answer this request";
+const READ_FAILED_CODE = "herdr_error";
 
 /**
- * The profile's answer to a herdr read that failed (/api/session, GET /api/machines): the status and error code
- * errorResponse gives it, and as its message the reason the profile's health gives (`refusal` as health is handed
- * it), or READ_FAILED while health gives none. An error that is not herdr's is errorResponse's.
+ * The profile's answer to a herdr read that failed (/api/session, GET /api/machines), never stored: the status
+ * errorResponse gives it; its code when this server's herdr client made it (HERDR_CLIENT_CODES), else
+ * READ_FAILED_CODE; and as its message the reason the profile's health gives (`refusal` as health is handed it), or
+ * READ_FAILED while health gives none. An error that is not herdr's is errorResponse's.
  */
 export async function machineReadError(error: unknown, engine: string, refusal: string | null | undefined): Promise<Response> {
   const answer = errorResponse(error);
   if (!(error instanceof HerdrError)) return answer;
   const reason = (await machineHealth(engine, refusal)).machine_profile.reason;
-  return jsonResponse({ error: { code: error.code, message: reason ?? READ_FAILED } }, answer.status);
+  const code = HERDR_CLIENT_CODES.has(error.code) ? error.code : READ_FAILED_CODE;
+  return jsonResponse({ error: { code, message: reason ?? READ_FAILED } }, answer.status, { "cache-control": "no-store" });
 }
 
 /**
