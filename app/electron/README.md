@@ -68,9 +68,10 @@ when the Ovis pages have it (Korean, Japanese, Chinese; `src/text.ts`), English 
   again, and the slug picks the workspace meant, as a deep link's does.
 
   On Windows the app registers the scheme for the user as it starts, and only while no program has
-  it; removing the app removes the registration only when it still starts that install. An install
-  whose folder was deleted without its uninstaller can leave its registration behind, which the app
-  then does not take over: delete `HKCU\Software\Classes\ovis` and start the app again.
+  it: the installer registers nothing, so a link is handled only once the app has been started at
+  least once after installing. Removing the app removes the registration only when it still starts
+  that install. An install whose folder was deleted without its uninstaller can leave its
+  registration behind, which the app then does not take over: delete `HKCU\Software\Classes\ovis` and start the app again.
 
   The scheme is shared by host: `ovis://open` is the desktop app's, `ovis://account/callback` the
   phone apps' sign-in (`src/lib/account/native.ts`); any other host only brings the window forward.

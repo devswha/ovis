@@ -124,10 +124,12 @@ describe("a desktop link to a pane the cached roster lacks", () => {
   let reads: number;
   let landed: Promise<void>;
 
-  // workspace 3 "alpha" (t1 selected, t2 in front), workspace 4 "beta" (t4, herdr's focus)
+  // workspace 3 "alpha" (t1 selected, t2 in front), workspace 4 "beta" (t4, herdr's focus), and
+  // "gamma" (t5) with an id as herdr-core gives them, hyphens included
+  const gamma = "ovis-367b423f-b9d6-4055-8a21-95d49868783e";
   const snapshot = {
-    workspaces: [{ workspace_id: "3", label: "alpha", active_tab_id: "3:1" }, { workspace_id: "4", label: "beta", active_tab_id: "4:1" }],
-    panes: [{ pane_id: "t1", workspace_id: "3", focused: false }, { pane_id: "t2", workspace_id: "3", focused: true }, { pane_id: "t4", workspace_id: "4", focused: true }],
+    workspaces: [{ workspace_id: "3", label: "alpha", active_tab_id: "3:1" }, { workspace_id: "4", label: "beta", active_tab_id: "4:1" }, { workspace_id: gamma, label: "gamma", active_tab_id: `${gamma}:1` }],
+    panes: [{ pane_id: "t1", workspace_id: "3", focused: false }, { pane_id: "t2", workspace_id: "3", focused: true }, { pane_id: "t4", workspace_id: "4", focused: true }, { pane_id: "t5", workspace_id: gamma, focused: true }],
     layouts: [],
     focused_pane_id: "t4",
   };
@@ -227,6 +229,28 @@ describe("a desktop link to a pane the cached roster lacks", () => {
     expect(reads).toBeGreaterThan(0);
     expect(shown).toEqual({ pane: "t4", note: "workspace-closed" });
     expect(misses).toBe(1);
+  });
+
+  it("opens the link's workspace when its id holds hyphens, as the address writes it, with the pane's note", async () => {
+    answer("roster");
+    await mount();
+    await open(`?ws=${gamma}-gamma&pane=t99`);
+    expect(shown).toEqual({ pane: "t5", note: "pane-closed" });
+    expect(misses).toBe(1);
+  });
+
+  it("opens the link's workspace when its hyphenated id comes with no slug, with the pane's note", async () => {
+    answer("roster");
+    await mount();
+    await open(`?ws=${gamma}&pane=t99`);
+    expect(shown).toEqual({ pane: "t5", note: "pane-closed" });
+  });
+
+  it("keeps the workspace-closed note and the fallback for a hyphenated id no workspace has", async () => {
+    answer("roster");
+    await mount();
+    await open("?ws=ovis-00000000-0000-4000-8000-000000000000-gone&pane=t99");
+    expect(shown).toEqual({ pane: "t4", note: "workspace-closed" });
   });
 
   it("selects a listed pane at once, asking nothing and saying nothing", async () => {
