@@ -3,6 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, w
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HC_METHODS } from "../../scripts/hc-types.ts";
+import { corePids, stopTestCores } from "../../scripts/test-hc.ts";
 import { herdrRpc, paneMoveToNewTab, paneRead, paneSendText, ping, sessionSnapshot, tabRename, workspaceClose, workspaceCreate, workspaceRename } from "../herdr/client.ts";
 import { startHerdrCoreAdapter } from "./adapter.ts";
 import { CoreAttachSession } from "./attach-session.ts";
@@ -63,9 +64,7 @@ describe.skipIf(!bin)("hc client against a real hc", () => {
     env = isolated;
     const started = Bun.spawn([bin!, "server", "start"], { env: isolated, stdout: "ignore", stderr: "pipe" });
     expect({ exit: await started.exited, stderr: await new Response(started.stderr).text() }).toMatchObject({ exit: 0 });
-    const status = Bun.spawn([bin!, "server", "status", "--json"], { env: isolated, stdout: "pipe", stderr: "ignore" });
-    const running = JSON.parse(await new Response(status.stdout).text()) as { pid: number; holder?: { pid: number } | null };
-    pids = [running.pid, ...(running.holder ? [running.holder.pid] : [])];
+    pids = await corePids(bin!, isolated);
     // spawnHcConnect would run hc with the env this process started with: this core's env is passed explicitly
     hc = new HcConnection(() => {
       const child = Bun.spawn([bin!, "connect"], { env: isolated, stdin: "pipe", stdout: "pipe", stderr: "ignore" });
@@ -80,17 +79,11 @@ describe.skipIf(!bin)("hc client against a real hc", () => {
 
   afterAll(async () => {
     hc?.close();
-    // a core started with anything but the isolated env could be the user's: only this test's is stopped
-    let stopped = 0;
-    if (bin && env) stopped = await Bun.spawn([bin, "server", "stop"], { env, stdout: "ignore", stderr: "ignore" }).exited;
-    // hc's core and holder are detached daemons, not children: their exit has no event to await
-    const running = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
-    const deadline = Date.now() + WAIT_MS;
-    while (pids.some(running) && Date.now() < deadline) await Bun.sleep(25);
-    const alive = pids.filter(running);
-    for (const pid of alive) process.kill(pid, "SIGKILL");
+    // a core started with anything but the isolated env could be the user's: only this test's is stopped,
+    // its holder included (read again: there was none right after the start)
+    const { stopped, killed } = bin && env ? await stopTestCores(bin, [{ env, pids }], WAIT_MS) : { stopped: [], killed: [] };
     if (dir) rmSync(dir, { recursive: true, force: true });
-    expect({ stopped, killed: alive }).toEqual({ stopped: 0, killed: [] });
+    expect({ stopped, killed }).toEqual({ stopped: bin && env ? [0] : [], killed: [] });
   }, TEST_MS);
 
   it("publishes the schema hc-api.generated.ts was made from, or what the types rely on in an older hc", async () => {
@@ -363,10 +356,7 @@ describe.skipIf(!bin)("another machine of a real hc's core", () => {
     const assignments = Object.entries(lab).filter(([key]) => key.startsWith("HC_") || key.startsWith("XDG_") || key === "PATH").map(([key, value]) => `${key}='${value}'`).join(" ");
     writeFileSync(via, `#!/bin/sh\nexec env ${assignments} sh -c "$1"\n`);
     chmodSync(via, 0o755);
-    for (const env of envs) {
-      const running = JSON.parse(await run(env, ["server", "status", "--json"])) as { pid: number; holder?: { pid: number } | null };
-      pids.push([running.pid, ...(running.holder ? [running.holder.pid] : [])]);
-    }
+    for (const env of envs) pids.push(await corePids(bin!, env));
     await run(here, ["machine", "add", "--name", "lab", "--via", via]);
     await run(here, ["run", "--bg", "bash"]);
     hc = new MachineScopedConnection(() => {
@@ -385,21 +375,12 @@ describe.skipIf(!bin)("another machine of a real hc's core", () => {
   afterAll(async () => {
     stopAdapter?.();
     hc?.close();
-    // only this test's cores, each by its own isolated env. `here` goes first: while it runs it keeps
-    // dialing `lab` through the --via command, and an `hc connect` there starts a core again once
-    // `lab` is stopped (and, with `dir` deleted, from the hc on the PATH rather than this one)
-    const running = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
-    const stopped: number[] = [];
-    for (const [at, env] of envs.entries()) {
-      stopped.push(await Bun.spawn([bin!, "server", "stop"], { env, stdout: "ignore", stderr: "ignore" }).exited);
-      // hc's cores and holders are detached daemons, not children: their exit has no event to await
-      const deadline = Date.now() + WAIT_MS;
-      while ((pids[at] ?? []).some(running) && Date.now() < deadline) await Bun.sleep(25);
-    }
-    const alive = pids.flat().filter(running);
-    for (const pid of alive) process.kill(pid, "SIGKILL");
+    // only this test's cores, each by its own isolated env, holders included. `here` goes first: while it
+    // runs it keeps dialing `lab` through the --via command, and an `hc connect` there starts a core again
+    // once `lab` is stopped (and, with `dir` deleted, from the hc on the PATH rather than this one)
+    const { stopped, killed } = await stopTestCores(bin!, envs.map((env, at) => ({ env, pids: pids[at] ?? [] })), WAIT_MS);
     if (dir) rmSync(dir, { recursive: true, force: true });
-    expect({ stopped, killed: alive }).toEqual({ stopped: envs.map(() => 0), killed: [] });
+    expect({ stopped, killed }).toEqual({ stopped: envs.map(() => 0), killed: [] });
   }, TEST_MS);
 
   it("lists the machine, then starts, types into and reads a terminal there by its own address", async () => {
