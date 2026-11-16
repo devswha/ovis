@@ -1,30 +1,6 @@
-/* The badge sits on the picture it marks: its holder is the positioned box, the badge hangs off its corner. */
-:is(.sidebar-mark, .inbox-avatar):has(> .fork-role-badge) {
-  position: relative;
-}
-
-.fork-role-badge {
-  --fork-role-badge: 12px;
-  position: absolute;
-  inset-inline-end: calc(var(--fork-role-badge) / -3);
-  inset-block-end: calc(var(--fork-role-badge) / -3);
-  display: grid;
-  place-items: center;
-  width: var(--fork-role-badge);
-  height: var(--fork-role-badge);
-  border: var(--hairline) solid var(--border);
-  border-radius: var(--radius-pill);
-  background: var(--bg-elevated);
-  color: var(--text-strong);
-  pointer-events: none;
-}
-
-.inbox-avatar > .fork-role-badge {
-  --fork-role-badge: 18px;
-}
-
-.fork-role-badge > svg {
-  width: 66%;
-  height: 66%;
-  stroke-width: 2.5;
-}
+/* A job agent's role icon stands in for its picture, colored by its state like the folded tab chips. */
+.fork-role-icon { color: var(--text-dim); stroke-width: 2.25; }
+.fork-role-icon:is([data-status="working"], [data-status="waiting"]) { color: var(--status-working); }
+.fork-role-icon[data-status="blocked"] { color: var(--status-blocked); }
+.fork-role-icon[data-status="done"] { color: var(--status-done); }
+.sidebar-mark > .fork-role-icon { width: 16px; height: 16px; }

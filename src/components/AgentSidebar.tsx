@@ -34,7 +34,7 @@ import { AgentFriend } from "./AgentFriend.tsx";
 import type { Friend } from "../../shared/friends.ts";
 import { friendKey } from "../../shared/friends.ts";
 import { useFriends } from "../lib/friends.ts";
-import { ForkRoleBadge } from "../fork/AgentRole.tsx";
+import { ForkRolePicture } from "../fork/AgentRole.tsx";
 import { RowMenu } from "./RowMenu.tsx";
 import { BackgroundBadge, compactWorktreeName, ContextBadge, displayPaneTitle, onRowContextMenu, PlanBadge, StatusBadge } from "./Sidebar.tsx";
 import "./AgentSidebar.css";
@@ -71,7 +71,7 @@ interface AgentRowBodyProps {
   progress?: number;
   /** a helper under the agent that started it: one line, its place and plugin values left to the tooltip */
   helper?: boolean;
-  /** a job agent's role (fork: its badge on the mark) */
+  /** a job agent's role (fork: its icon stands in for the mark) */
   role?: HerdrPane["agent_role"];
   /** how long the agent has been in its state (lib/agentStateSince.ts), dim before its state; null where this device did not see that state begin */
   since?: string | null;
@@ -113,7 +113,7 @@ function AgentRowBody({ mark, friend, markKind, title, name, context, tokens, ba
   const t = useT();
   const showProgress = progress !== undefined && (status === "working" || status === "blocked");
   return <>
-    <span className="sidebar-mark" aria-hidden="true">{mark === null ? <Terminal /> : friend ? <AgentFriend friend={friend} status={status} /> : <AgentMark agent={mark} size={18} />}<ForkRoleBadge role={role} /></span>
+    <span className="sidebar-mark" aria-hidden="true"><ForkRolePicture role={role} status={status}>{mark === null ? <Terminal /> : friend ? <AgentFriend friend={friend} status={status} /> : <AgentMark agent={mark} size={18} />}</ForkRolePicture></span>
     <span className="agent-copy">
       {markKind && <span className="visually-hidden">{markKind}: </span>}
       <span className="agent-main">

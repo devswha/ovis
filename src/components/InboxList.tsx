@@ -98,12 +98,11 @@ function lastWords(summary: RowSummary | undefined, t: Translate): string | null
 }
 
 /** An agent's round mark: a tile mark fills the face, any other sits on it; a pane with no agent draws the shell's glyph. */
-export function InboxAvatar({ mark, children = null }: { mark: string | null; children?: ReactNode }) {
+export function InboxAvatar({ mark }: { mark: string | null }) {
   const tile = mark !== null && TILE_MARKS.has(mark);
   return (
     <span className={`inbox-avatar${tile ? " is-tile" : ""}`} aria-hidden="true">
       <span className="inbox-avatar-face">{mark === null ? <Terminal /> : <AgentMark agent={mark} size={32} />}</span>
-      {children}
     </span>
   );
 }
