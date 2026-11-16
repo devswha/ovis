@@ -1029,7 +1029,9 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
     expect((await m.root("ln -s /home /var/hl")).code).toBe(0);
     const as = "export HOME=/var/hl/runner/; cd;";
     const serving = async () => (await m.processes()).includes("ovis-server serve");
-    const joined = await m.sh(`${as} ${plainKit.line} --yes </dev/null`);
+    // the stand-in profile: an add that fails, with the gate closed, keeps the server
+    expect((await m.sh("touch /var/tmp/fake-add-fails /var/tmp/fake-gate-closed")).code).toBe(0);
+    const joined = await m.sh(`${as} ${fakeKit.line} --yes </dev/null`);
     note("caseHome", `[join] exit ${joined.code}\n${joined.stdout}${joined.stderr}`);
     expect(joined.code).toBe(30);
     expect(joined.stdout).toContain("sh /home/runner/.local/share/ovis-trial/join.sh --uninstall");
@@ -1041,7 +1043,9 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
     expect(stopped.code).toBe(0);
     expect(stopped.stdout).toContain("stopped.");
     expect(await serving()).toBe(false);
-    const gate = await m.sh(`${as} export OVIS_JOIN_TEST_ADD_DONE=1; ${plainKit.line} --yes </dev/null`);
+    // a run again of the same kit whose add now succeeds, with the stand-in's gate open
+    expect((await m.sh("rm /var/tmp/fake-add-fails /var/tmp/fake-gate-closed && touch /var/tmp/fake-gate-open")).code).toBe(0);
+    const gate = await m.sh(`${as} ${fakeKit.line} --yes </dev/null`);
     note("caseHome", `[a run again, the gate open] exit ${gate.code}\n${gate.stdout}${gate.stderr}`);
     expect(gate.code).toBe(34);
     expect(gate.stdout).toContain("so the trial server was stopped");
@@ -1051,6 +1055,7 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
     expect(undo.code).toBe(0);
     expect(await serving()).toBe(false);
     expect((await m.sh("test -e ~/.local/share/ovis-trial && echo there || echo none")).stdout.trim()).toBe("none");
+    expect((await m.sh("rm /var/tmp/fake-gate-open")).code).toBe(0);
   }, 300_000);
 
   describe("6: refusals, each one plain line, nothing installed", () => {
