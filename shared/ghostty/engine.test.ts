@@ -22,7 +22,7 @@ const checkedWasmPath = process.env.OVIS_GHOSTTY_WASM || wasmPath;
 
 const wasm = await WebAssembly.compile(await Bun.file(wasmPath).arrayBuffer());
 const instantiate = (): WebAssembly.Instance => new WebAssembly.Instance(wasm, {});
-/** one module for the cases below, as the screen keeps one per pane */
+/** the module the cases share unless one makes its own; the screen itself keeps one module per pane */
 const shared = new GhosttyModule(instantiate());
 
 const rowText = (runs: GhosttyRun<unknown>[]): string => runs.flatMap((run) => run.cells.map((cell) => cell.text)).join("").trimEnd();
@@ -247,6 +247,8 @@ describe("shared/ghostty engine", () => {
       engine.write(bytesOf("B\x1b[?2026hC"));
       expect(holds).toEqual([true]);
       expect(firstRow()).toBe("AB");
+      engine.write(bytesOf("\x1b[?2026h"));
+      expect(holds).toEqual([true]);
       expect(engine.frame(() => {})).toBe(false);
       engine.write(bytesOf("\x1b[?2026l"));
       expect(holds).toEqual([true, false]);
@@ -255,9 +257,12 @@ describe("shared/ghostty engine", () => {
       expect(firstRow()).toBe("ABC");
       expect(engine.modes().syncOutput).toBe(true);
       engine.releaseHold();
+      expect(holds).toEqual([true, false, true, false]);
       expect(engine.modes().syncOutput).toBe(false);
       expect(firstRow()).toBe("ABCD");
-      expect(holds).toEqual([true, false, true]);
+      engine.write(bytesOf("\x1b[?2026l"));
+      engine.releaseHold();
+      expect(holds).toEqual([true, false, true, false]);
     } finally {
       engine.dispose();
     }
@@ -357,14 +362,24 @@ describe("shared/ghostty engine", () => {
     } finally {
       engine.dispose();
     }
-    const wide = screenEngine(120, 40, { scrollbackLines: 2000 });
-    try {
-      for (let i = 0; i < 5000; i++) wide.engine.write(bytesOf(`${"x".repeat(100)} ${i}\r\n`));
-      // the kept rows move between about 1618 and 2000 as whole pages are dropped; the byte limit alone keeps about 365
-      expect(wide.engine.history().scrollback).toBeGreaterThan(1500);
-    } finally {
-      wide.engine.dispose();
-    }
+    // 6000 lines of 107 columns: past 2000 the kept rows move between about 1623 and 1998 as whole pages are
+    // dropped; with the module's byte limit on, about 600 stay whatever the line limit says
+    const lines = bytesOf(Array.from({ length: 6000 }, (_, i) => `H${String(i).padStart(5, "0")} ${"x".repeat(100)}\r\n`).join(""));
+    const keptRows = (engine: GhosttyEngine): number => {
+      try {
+        engine.write(lines);
+        return engine.history().scrollback;
+      } finally {
+        engine.dispose();
+      }
+    };
+    expect(keptRows(screenEngine(120, 40, { scrollbackLines: 2000 }).engine)).toBeGreaterThan(1500);
+    const changedLater = screenEngine(120, 40, { scrollbackLines: 500 }).engine;
+    changedLater.setScrollback(2000);
+    expect(keptRows(changedLater)).toBeGreaterThan(1500);
+    const browsers = new GhosttyEngine(shared, 120, 40, { widths: "xterm", images: false });
+    browsers.setScrollback(2000);
+    expect(keptRows(browsers)).toBeLessThan(1000);
   });
 
   it("engine refuses every call after a trap in its module", () => {
@@ -372,9 +387,38 @@ describe("shared/ghostty engine", () => {
     const module = new GhosttyModule({ ...exports, ghostty_terminal_vt_write: () => { throw new WebAssembly.RuntimeError("unreachable"); } });
     const first = screenEngine(20, 4, {}, module);
     const second = screenEngine(20, 4, {}, module);
-    expect(() => first.engine.write(bytesOf("x"))).toThrow(WebAssembly.RuntimeError);
-    expect(() => first.engine.modes()).toThrow("ghostty-vt: the module trapped");
-    expect(() => second.engine.encodePaste("x")).toThrow("ghostty-vt: the module trapped");
-    expect(() => new GhosttyEngine(module, 20, 4, { widths: "core", images: false })).toThrow("ghostty-vt: the module trapped");
+    const thrown = (run: () => unknown): unknown => {
+      try {
+        run();
+      } catch (error) {
+        return error;
+      }
+      return null;
+    };
+    const trap = thrown(() => first.engine.write(bytesOf("x")));
+    expect(trap).toBeInstanceOf(WebAssembly.RuntimeError);
+    expect(module.trap).toBe(trap as WebAssembly.RuntimeError);
+    for (const refusal of [
+      thrown(() => first.engine.modes()),
+      thrown(() => second.engine.encodePaste("x")),
+      thrown(() => new GhosttyEngine(module, 20, 4, { widths: "core", images: false })),
+    ]) {
+      expect(refusal).toBeInstanceOf(Error);
+      expect(refusal).not.toBeInstanceOf(WebAssembly.RuntimeError);
+      expect((refusal as Error).cause).toBe(trap);
+    }
+
+    // the browser's engines record no trap: the module they share stays usable for the page's other terminals
+    const trapping = (): never => { throw new WebAssembly.RuntimeError("unreachable"); };
+    const browsers = new GhosttyModule({ ...exports, ghostty_terminal_vt_write: trapping, ghostty_terminal_resize: trapping });
+    const failing = new GhosttyEngine(browsers, 20, 4, { widths: "xterm", images: false });
+    const other = new GhosttyEngine(browsers, 20, 4, { widths: "xterm", images: false });
+    expect(thrown(() => failing.write(bytesOf("x")))).toBeInstanceOf(WebAssembly.RuntimeError);
+    expect(thrown(() => failing.resize(30, 5, 8, 16))).toBeInstanceOf(WebAssembly.RuntimeError);
+    expect(browsers.trap).toBeNull();
+    other.setColors({ foreground: [1, 2, 3], background: null, cursor: null, palette: [] });
+    expect(other.frame(() => {})).toBe(true);
+    failing.dispose();
+    other.dispose();
   });
 });

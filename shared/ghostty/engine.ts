@@ -11,8 +11,9 @@
  *
  * An engine made with `events` is a terminal screen's: the module calls back into it (through a small helper
  * module, as Bun has no WebAssembly.Function) with its replies, holds, bells and clipboard writes, and its
- * frames keep showing the frame a synchronized-output hold began with. One without them (the browser's) gets
- * no callback at all.
+ * frames keep showing the frame a synchronized-output hold began with; it also follows win32-input-mode and
+ * records a trap on its module. One without them (the browser's) adds nothing to the module's own behaviour:
+ * no callback, no 9001 watch and no trap bookkeeping, each call running as the browser's loader always had it.
  */
 
 interface Bits { lsb: number; width: number; arms?: Record<string, { bits: Record<string, Bits> } | null> }
@@ -246,7 +247,7 @@ export interface EngineModes {
   appCursor: boolean;
   appKeypad: boolean;
   altScroll: boolean;
-  /** win32-input-mode (DEC 9001): the module does not keep it, so the engine watches the written bytes for it */
+  /** win32-input-mode (DEC 9001): the module does not keep it, so a screen's engine watches the written bytes for it; false on the browser's */
   win32Input: boolean;
 }
 
@@ -314,9 +315,15 @@ export interface EngineOptions {
   widths: "xterm" | "core";
   /** bytes of decoded Kitty pictures the terminal keeps; false keeps none, and a graphics query then gets no answer */
   images: bigint | false;
-  /** lines of history above the screen (setScrollback); absent leaves the module's default */
+  /**
+   * a terminal screen's lines of history above the screen: sets the line limit and lifts the module's byte
+   * limit for the engine's life; absent (the browser's loader) leaves both as the module sets them
+   */
   scrollbackLines?: number;
-  /** a terminal screen's: the module calls back with replies, holds and effects; none is registered without it */
+  /**
+   * a terminal screen's: the module calls back with replies, holds and effects, and the engine follows 9001
+   * and records traps; without it none of that happens
+   */
   events?: EngineEvents;
 }
 
@@ -413,8 +420,10 @@ export class GhosttyModule {
   readonly keys: Readonly<Record<string, number>>;
   readonly bit: Record<"codepoint" | "content_tag" | "wide" | "style_id" | "bg_index" | "bg_r" | "bg_g" | "bg_b", Bits>;
   /**
-   * The trap that broke this module: a trap leaves the module's stack pointer moved for good, so every
-   * engine on it refuses from then on and its owner makes a new module (one per pane).
+   * The trap that broke this module, recorded by a screen's engine (one made with `events`): a trap leaves
+   * the module's stack pointer moved for good, so every engine on it refuses from then on and its owner makes
+   * a new module (one per pane). The browser's engines record none: its loader shares one module among a
+   * page's terminals and hands a terminal whose call threw to xterm, the others drawing on as they did.
    */
   trap: WebAssembly.RuntimeError | null = null;
   private slots: CallbackSlots | null = null;
@@ -523,7 +532,7 @@ export class GhosttyEngine {
   private held = false;
   private win32Input = false;
   /** where the written bytes stand in a `CSI ? Pm h|l` that may name 9001, carried from one write to the next */
-  private scan: "ground" | "esc" | "csi" | "private" | "other" = "ground";
+  private scan: "ground" | "esc" | "csi" | "private" = "ground";
   private scanParam = 0;
   private scanNames9001 = false;
   /** an error a callback of the caller threw while the module ran: kept out of the wasm frames and thrown after them */
@@ -559,7 +568,11 @@ export class GhosttyEngine {
     this.view().setBigUint64(this.scratch, options.images === false ? 0n : options.images, true);
     this.check(exports.ghostty_terminal_set(this.terminal, option.KITTY_IMAGE_STORAGE_LIMIT, this.scratch), "image storage limit");
     if (options.widths === "core") this.setModeConfig(option.MODE_DEFAULT, MODE.graphemeCluster, true);
-    if (options.scrollbackLines !== undefined) this.setScrollback(options.scrollbackLines);
+    if (options.scrollbackLines !== undefined) {
+      this.setLineLimit(options.scrollbackLines);
+      // a NULL value removes the byte limit, which would otherwise cut history long before the line limit
+      this.check(exports.ghostty_terminal_set(this.terminal, option.SCROLLBACK_MAX_BYTES, 0), "scrollback bytes");
+    }
 
     this.events = options.events;
     if (this.events) {
@@ -601,7 +614,7 @@ export class GhosttyEngine {
     return new DataView(this.x.memory.buffer);
   }
 
-  /** runs one public call: refuses on a trapped module, marks the module on a trap, and throws what a callback threw */
+  /** runs one public call: refuses on a trapped module, records a screen engine's trap, and throws what a callback threw */
   private guard<T>(run: () => T): T {
     const trap = this.module.trap;
     if (trap) throw new Error("ghostty-vt: the module trapped earlier; make a new one", { cause: trap });
@@ -609,7 +622,7 @@ export class GhosttyEngine {
     try {
       result = run();
     } catch (error) {
-      if (error instanceof WebAssembly.RuntimeError) this.module.trap = error;
+      if (error instanceof WebAssembly.RuntimeError && this.events) this.module.trap = error;
       throw error;
     }
     const failed = this.callbackError;
@@ -648,21 +661,29 @@ export class GhosttyEngine {
   /** feeds bytes to the terminal as they are */
   write(bytes: Uint8Array): void {
     if (bytes.length === 0) return;
+    // the browser's loader writes in many small pieces: its engines feed the module directly, as they always did
+    if (!this.events) return this.feed(bytes);
     this.guard(() => {
-      if (bytes.length > this.inputCap) {
-        if (this.input) this.x.ghostty_wasm_free(this.input, this.inputCap);
-        this.inputCap = Math.max(bytes.length, 64 * 1024);
-        this.input = this.x.ghostty_wasm_alloc(this.inputCap);
-      }
-      new Uint8Array(this.x.memory.buffer, this.input, bytes.length).set(bytes);
-      this.x.ghostty_terminal_vt_write(this.terminal, this.input, bytes.length);
+      this.feed(bytes);
       this.watchWin32Input(bytes);
     });
   }
 
+  private feed(bytes: Uint8Array): void {
+    if (bytes.length > this.inputCap) {
+      if (this.input) this.x.ghostty_wasm_free(this.input, this.inputCap);
+      this.inputCap = Math.max(bytes.length, 64 * 1024);
+      this.input = this.x.ghostty_wasm_alloc(this.inputCap);
+    }
+    new Uint8Array(this.x.memory.buffer, this.input, bytes.length).set(bytes);
+    this.x.ghostty_terminal_vt_write(this.terminal, this.input, bytes.length);
+  }
+
   /**
    * Follows `CSI ? Pm h` and `CSI ? Pm l` naming 9001 (win32-input-mode), which the module parses but does not
-   * keep, and a full reset (ESC c), across writes. Only bytes after an ESC are looked at.
+   * keep, and a full reset (ESC c), across writes. Only the byte after an ESC and the inside of a `CSI ?`
+   * are looked at: any other sequence is skipped to the next ESC, so plain and styled output costs one
+   * indexOf per escape sequence.
    */
   private watchWin32Input(bytes: Uint8Array): void {
     for (let at = 0; at < bytes.length; at++) {
@@ -682,12 +703,9 @@ export class GhosttyEngine {
           this.scan = byte === 0x5b ? "csi" : "ground";
           continue;
         case "csi":
-          this.scan = byte === 0x3f ? "private" : byte >= 0x40 && byte <= 0x7e ? "ground" : "other";
+          this.scan = byte === 0x3f ? "private" : "ground";
           this.scanParam = 0;
           this.scanNames9001 = false;
-          continue;
-        case "other":
-          if (byte >= 0x40 && byte <= 0x7e) this.scan = "ground";
           continue;
         case "private":
           if (byte >= 0x30 && byte <= 0x39) this.scanParam = Math.min(this.scanParam * 10 + byte - 0x30, 1e6);
@@ -712,6 +730,8 @@ export class GhosttyEngine {
 
   /** sets a terminal mode as ghostty_mode_new() encodes it (a DEC private mode is its own number) */
   setMode(mode: number, on: boolean): void {
+    // the browser's loader toggles 2027 around every emoji joiner: as with write, no guard on its engines
+    if (!this.events) return this.setModeConfig(this.e.GhosttyTerminalOption.MODE, mode, on);
     this.guard(() => this.setModeConfig(this.e.GhosttyTerminalOption.MODE, mode, on));
   }
 
@@ -749,12 +769,17 @@ export class GhosttyEngine {
     });
   }
 
-  /** ends a hold the program forgot (synchronized output left on): the next frame shows what it wrote since */
+  /**
+   * Ends a hold the program forgot (synchronized output left on): the next frame shows what it wrote since,
+   * and onHold(false) reports the end, as it does when the program ends a hold itself.
+   */
   releaseHold(): void {
     this.guard(() => {
-      // turning the mode off this way does not call back
+      if (!this.held) return;
+      // turning the mode off this way does not call back, so the end is reported here
       this.setModeConfig(this.e.GhosttyTerminalOption.MODE, MODE.syncOutput, false);
       this.held = false;
+      this.callback(() => this.events?.onHold?.(false));
     });
   }
 
@@ -778,18 +803,18 @@ export class GhosttyEngine {
   }
 
   /**
-   * Lines of history above the screen. A positive count also lifts the module's byte limit, which would
-   * otherwise keep only about 430 rows of 120 columns. 0 sets no line limit of the engine's own and leaves
-   * the byte limit, which still keeps about a page of history (the browser's setting: it never shows it).
+   * Lines of history above the screen, as a line limit only (the module prunes whole pages, so 0 still
+   * keeps about 200 rows of 120 columns). The module's byte limit stays as it is: on the browser's engines
+   * it keeps about 600 rows of 120 columns whatever the line count. An engine made with `scrollbackLines`
+   * has the byte limit lifted for good, so there the line count alone decides.
    */
   setScrollback(lines: number): void {
-    this.guard(() => {
-      const option = this.e.GhosttyTerminalOption;
-      this.view().setUint32(this.scratch, lines, true);
-      this.check(this.x.ghostty_terminal_set(this.terminal, option.SCROLLBACK_MAX_LINES, this.scratch), "scrollback");
-      // a NULL value removes the byte limit
-      if (lines > 0) this.check(this.x.ghostty_terminal_set(this.terminal, option.SCROLLBACK_MAX_BYTES, 0), "scrollback bytes");
-    });
+    this.guard(() => this.setLineLimit(lines));
+  }
+
+  private setLineLimit(lines: number): void {
+    this.view().setUint32(this.scratch, lines, true);
+    this.check(this.x.ghostty_terminal_set(this.terminal, this.e.GhosttyTerminalOption.SCROLLBACK_MAX_LINES, this.scratch), "scrollback");
   }
 
   /** shows the screen `rowsAboveBottom` rows up in the history (0: the newest rows) */
