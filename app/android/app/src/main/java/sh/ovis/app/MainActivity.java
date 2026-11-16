@@ -914,10 +914,18 @@ public class MainActivity extends BridgeActivity {
      */
     private boolean openAlert(Intent intent, boolean fresh) {
         if (intent == null || !OvisMessagingService.ACTION_OPEN_ALERT.equals(intent.getAction())) return false;
-        boolean own = AlertProof.own(this, intent);
+        boolean own;
+        try {
+            own = AlertProof.own(this, intent);
+            intent.removeExtra(AlertProof.EXTRA);
+        } catch (RuntimeException unreadable) {
+            // another app's intent with an extra of a class this app lacks: Android 8 to 12 unparcel
+            // every extra at the first read and throw, which would crash the app. Its extras go
+            intent.replaceExtras((Bundle) null);
+            own = false;
+        }
         intent.setAction(Intent.ACTION_MAIN);
         intent.setData(null);
-        intent.removeExtra(AlertProof.EXTRA);
         boolean fromRecents = (intent.getFlags() & Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) != 0;
         if (!own || !fresh || fromRecents) return false;
         WebView view = bridge == null ? null : bridge.getWebView();
