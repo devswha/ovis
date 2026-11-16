@@ -18,7 +18,7 @@
  * First messages live in memory: a restart of the bridge loses those not sent yet.
  */
 import { AGENT_PICKER_MESSAGE, closeBackslash, closeMention, type createSubmitText, freeAgentInput, freeClaudeBox, freeHermesInput, InputDraftError, modelSwitchText, OMP_REPORT_POLL_MS, OMP_STARTUP_MS, ompStartingUntil, pendingFault, pendingIdentity, pendingText, submitFraming, untilOmpReported } from "./composer.ts";
-import { grokQueue, sendGrokQueuedNow } from "./grok-queue.ts";
+import { grokEcho, grokQueue, sendGrokQueuedNow } from "./grok-queue.ts";
 import { type Client, connectionOf, send } from "./connections.ts";
 import { ATTACH_HELD_MESSAGE } from "./terminal-process.ts";
 import type { AttachmentView, TerminalSighting } from "./terminals.ts";
@@ -921,7 +921,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
         // a Send now from the terminal view uses this same steer, as the frame does not say which view asked.
         await sendGrokQueuedNow({
           message: closeMention(sent),
-          before: { working: beforeEnter.working, queue: grokQueue(beforeEnter.screen) },
+          before: { working: beforeEnter.working, queue: grokQueue(beforeEnter.screen), echo: grokEcho(beforeEnter.screen) },
           delayMs: options.submitDelayMs ?? SUBMIT_DELAY_MS,
           // pendingContext refuses another terminal, session or process, a blocked or unknown state and a masked prompt
           look: async () => {

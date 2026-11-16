@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { inputRowState, screenFromAnsi } from "../../shared/input-row.ts";
 import { GROK_QUEUED_MESSAGE, GROK_SEND_UNCONFIRMED_MESSAGE, grokQueuedBehindMessage } from "../../shared/submit-outcome.ts";
 import { HerdrError } from "../herdr/client.ts";
-import { grokQueue, sendGrokQueuedNow, showsMessage } from "./grok-queue.ts";
+import { grokEcho, grokQueue, sendGrokQueuedNow, showsMessage } from "./grok-queue.ts";
 import { grokScreen, type GrokScreenState } from "./grok-screen.fake.ts";
 
 // Grok 1.0.77's screens as herdr's detection read gave them (src/lib/fixtures-input-rows/README.md)
@@ -71,7 +71,7 @@ describe("Send now's one more Enter, decided on recorded screens", () => {
     const screen = (name: string): string => name.includes("\n") ? name : recorded(name);
     const sendEnter = mock(async () => {});
     const failed = await sendGrokQueuedNow({
-      message, before: { working: true, queue: grokQueue(screen(before)) }, delayMs: 0, sendEnter,
+      message, before: { working: true, queue: grokQueue(screen(before)), echo: grokEcho(screen(before)) }, delayMs: 0, sendEnter,
       look: async () => ({ status: "working", screen: screen(after) }),
     }).then(() => null, (error: unknown) => error as HerdrError);
     expect(sendEnter).toHaveBeenCalledTimes(outcome === null ? 1 : 0);
@@ -79,17 +79,20 @@ describe("Send now's one more Enter, decided on recorded screens", () => {
   });
 
   // another client queued a row drawn the same way as the message between the read before the send and its Enter: the
-  // read after it shows that row alone, and the read SUBMIT_DELAY_MS later the message's own row under it
+  // read after it shows that row alone, and the read SUBMIT_DELAY_MS later the message's own row under it. A second row
+  // under the same first one can as well be another client's queued after the message: queued, whose first the screen
+  // does not tell
   it.each([
     ["the same one row on both reads", [withRows("fix config (+1 line)"), withRows("fix config (+1 line)")], "fix config\nuse dev", null],
-    ["another client's row of the same first line and line count, then the message's", [withRows("fix config (+1 line)"), withRows("fix config (+1 line)", "fix config (+1 line)")], "fix config\nuse dev", grokQueuedBehindMessage(1)],
-    ["another client's row of the same words, then the message's", [withRows("yes"), withRows("yes", "yes")], "yes", grokQueuedBehindMessage(1)],
+    ["another client's row of the same first line and line count, then the message's", [withRows("fix config (+1 line)"), withRows("fix config (+1 line)", "fix config (+1 line)")], "fix config\nuse dev", GROK_QUEUED_MESSAGE],
+    ["another client's row of the same words, then the message's", [withRows("yes"), withRows("yes", "yes")], "yes", GROK_QUEUED_MESSAGE],
+    ["the message's row, then another client's under it", [withRows("fourth follow-up please"), withRows("fourth follow-up please", "fix config (+1 line)")], "fourth follow-up please", GROK_QUEUED_MESSAGE],
     ["another row in place of the one read first", [withRows("continue"), withRows("continue later")], "continue", grokQueuedBehindMessage(1)],
   ] as const)("%s", async (_, screens, message, outcome) => {
     const sendEnter = mock(async () => {});
     let reads = 0;
     const failed = await sendGrokQueuedNow({
-      message, before: { working: true, queue: grokQueue(recorded("working")) }, delayMs: 0, sendEnter,
+      message, before: { working: true, queue: grokQueue(recorded("working")), echo: grokEcho(recorded("working")) }, delayMs: 0, sendEnter,
       look: async () => ({ status: "working", screen: screens[Math.min(reads++, screens.length - 1)]! }),
     }).then(() => null, (error: unknown) => error as HerdrError);
     expect(sendEnter).toHaveBeenCalledTimes(outcome === null ? 1 : 0);
@@ -97,17 +100,22 @@ describe("Send now's one more Enter, decided on recorded screens", () => {
   });
 
   // read at rest before the send, working with no queued row after it: the message started that turn only when Grok
-  // echoes it as its newest prompt; another client's turn shows that client's prompt, the message's row not drawn yet
+  // echoes it as its newest prompt, drawn since the read before; another client's turn shows that client's prompt, or
+  // nothing new yet, the message's row not drawn yet
   it.each([
     ["the message echoed as the newest prompt", "idle", withEcho("fourth follow-up please"), "fourth follow-up please", null],
     ["the message's lines echoed one per row", "idle", withEcho("fix config", "use dev"), "fix config\nuse dev", null],
     ["another client's prompt echoed", "idle", recorded("working"), "fourth follow-up please", GROK_SEND_UNCONFIRMED_MESSAGE],
     ["only the first line echoed of a message of two", "idle", withEcho("fix config", "use prod"), "fix config\nuse dev", GROK_SEND_UNCONFIRMED_MESSAGE],
     ["the queue not read before the send", "queue-pane-focused", withEcho("fourth follow-up please"), "fourth follow-up please", GROK_SEND_UNCONFIRMED_MESSAGE],
+    ["an earlier prompt of the same words echoed before the send", withEcho("continue"), withEcho("continue"), "continue", GROK_SEND_UNCONFIRMED_MESSAGE],
+    ["the same words echoed once more since the send", withEcho("continue"),
+      withEcho("continue").replace(/^( {5}word1 .*)$/m, `$1\n\n     ❯ ${"continue".padEnd(98)}7:23 PM`), "continue", null],
   ] as const)("%s", async (_, before, after, message, outcome) => {
     const sendEnter = mock(async () => {});
+    const screen = before.includes("\n") ? before : recorded(before);
     const failed = await sendGrokQueuedNow({
-      message, before: { working: false, queue: grokQueue(recorded(before)) }, delayMs: 0, sendEnter,
+      message, before: { working: false, queue: grokQueue(screen), echo: grokEcho(screen) }, delayMs: 0, sendEnter,
       look: async () => ({ status: "working", screen: after }),
     }).then(() => null, (error: unknown) => error as HerdrError);
     expect(sendEnter).not.toHaveBeenCalled();

@@ -69,21 +69,38 @@ const ECHO_ROW = /^ {5}❯ (.*)$/;
 const ECHO_MORE = /^ {7}\S/;
 
 /**
- * Whether the newest prompt Grok echoes above its input box is `message`: its rows joined, as Grok wraps a long line and
- * draws each of its lines on a row, or cut with `…` as a queued row is.
+ * The newest prompt Grok echoes above its input box, its rows joined as Grok wraps a long line and draws each of its lines
+ * on a row, and how many prompts it echoes there. null: none is echoed.
  */
-function echoesMessage(screen: string, message: string): boolean {
+export type GrokEcho = { readonly text: string; readonly echoes: number };
+
+export function grokEcho(screen: string): GrokEcho | null {
   const rows = stripVTControlCharacters(screen).split("\n").map((row) => row.replace(/\s+█$/, "").trimEnd());
   const box = rows.map((row) => /^\s*╭/.test(row)).lastIndexOf(true);
   const above = rows.slice(0, box < 0 ? rows.length : box);
-  const at = above.map((row) => ECHO_ROW.test(row)).lastIndexOf(true);
-  if (at < 0) return false;
+  const echoes = above.map((row) => ECHO_ROW.test(row));
+  const at = echoes.lastIndexOf(true);
+  if (at < 0) return null;
   const echo = [ECHO_ROW.exec(above[at]!)![1]!.replace(/\s{2,}\d{1,2}:\d{2}(?: [AP]M)?$/, "")];
   for (const row of above.slice(at + 1)) {
     if (!ECHO_MORE.test(row)) break;
     echo.push(row);
   }
-  const shown = squash(echo.join(" "));
+  return { text: squash(echo.join(" ")), echoes: echoes.filter(Boolean).length };
+}
+
+/**
+ * Whether Grok echoes `message` as a prompt drawn since the read before the send (`before`, that read's newest echo): a
+ * newest echo of other words than that one, or one more echo above the box. An echo already drawn then (an earlier
+ * prompt of the same words) is not the message's, nor a new one drawn as the oldest scrolls off the top (the safe
+ * direction); the echo's time is to the minute, so it does not tell. Its text is the message whole, or cut with `…` as a
+ * queued row is.
+ */
+function echoesMessage(screen: string, before: GrokEcho | null, message: string): boolean {
+  const echo = grokEcho(screen);
+  if (echo === null) return false;
+  if (before !== null && echo.text === before.text && echo.echoes <= before.echoes) return false;
+  const shown = echo.text;
   const whole = squash(message);
   if (!shown.endsWith("…")) return shown === whole;
   const cut = shown.slice(0, -1).trimEnd();
@@ -101,8 +118,11 @@ const onlyRows = (screen: string): readonly string[] => {
   return queue?.mode === "fullscreen" ? queue.rows : [];
 };
 
-/** The Grok as read before the Enter that typed the message: whether herdr reported it working, and its queue (null: not read). */
-export type GrokBeforeSend = { readonly working: boolean; readonly queue: GrokQueue | null };
+/**
+ * The Grok as read before the Enter that typed the message: whether herdr reported it working, its queue (null: not read),
+ * and the newest prompt it echoed (null: none).
+ */
+export type GrokBeforeSend = { readonly working: boolean; readonly queue: GrokQueue | null; readonly echo: GrokEcho | null };
 
 /**
  * What a read after the queueing Enter says: `press` the one more Enter, or `done` with the send herdr's Enter made.
@@ -123,8 +143,9 @@ function sendNowStep(seen: { status: string; screen: string }, before: GrokBefor
         if (seen.status !== "working") return "done";
         // working with nothing queued: from a working Grok, or one whose queue was not read, the message's row is not
         // drawn yet or it went somewhere the screen does not show. From a Grok at rest, another client can have started
-        // the turn with the message's row not drawn yet: the message started it only when Grok echoes it as its newest prompt
-        if (before.working || before.queue?.mode !== "fullscreen" || !echoesMessage(seen.screen, message)) throw changed(GROK_SEND_UNCONFIRMED_MESSAGE);
+        // the turn with the message's row not drawn yet: the message started it only when Grok echoes it as its newest
+        // prompt, drawn since that read
+        if (before.working || before.queue?.mode !== "fullscreen" || !echoesMessage(seen.screen, before.echo, message)) throw changed(GROK_SEND_UNCONFIRMED_MESSAGE);
         return "done";
       }
       const at = queue.rows.map((row) => showsMessage(row, message)).lastIndexOf(true);
@@ -149,8 +170,9 @@ function sendNowStep(seen: { status: string; screen: string }, before: GrokBefor
  * After the Enter that typed `message` into Grok (`delayMs` later, on a fresh read `look` that throws once the pane holds
  * another Grok session), one more Enter goes only when the screen shows the message as the one row of a queue that held
  * none before the send (`before`), herdr reports the pane working, and the shortcuts row offers `Enter:send now` over
- * Grok's empty prompt; and once more `delayMs` later, with the same one row: two rows, or another row, say the message is
- * behind a row another client queued. `lastScreen`: the screen once more, read last before the Enter's write when `look`
+ * Grok's empty prompt; and once more `delayMs` later, with the same one row: another row in its place says the message is
+ * behind a row another client queued, and a second row under the same one says it is queued (the screen does not tell
+ * whose the first row is). `lastScreen`: the screen once more, read last before the Enter's write when `look`
  * awaits more after its own read; that read must say the same, or nothing is pressed. The screen decides every other
  * outcome, and nothing more is pressed:
  * - the message queued behind other rows, any row queued before it, a row queued after it, or the prompt not empty: it
@@ -183,7 +205,8 @@ export async function sendGrokQueuedNow(opts: {
   const again = await opts.look().catch(() => { throw changed(GROK_SEND_UNCONFIRMED_MESSAGE); });
   const [row] = onlyRows(seen.screen);
   const rows = onlyRows(again.screen);
-  if (rows.length > 1 || (rows.length === 1 && rows[0] !== row)) throw changed(grokQueuedBehindMessage(1));
+  if (rows.length > 0 && rows[0] !== row) throw changed(grokQueuedBehindMessage(1));
+  if (rows.length > 1) throw changed(GROK_QUEUED_MESSAGE);
   if (sendNowStep(again, opts.before, opts.message) !== "press") throw changed(GROK_SEND_UNCONFIRMED_MESSAGE);
   if (opts.lastScreen) {
     const screen = await opts.lastScreen().catch(() => { throw changed(GROK_SEND_UNCONFIRMED_MESSAGE); });
