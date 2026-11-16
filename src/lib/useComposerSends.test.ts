@@ -417,7 +417,7 @@ it("puts an edited agent-only message back in the box agent-only", async () => {
     expect(composerDrafts.read(key).text).toBe("> q\nc");
     expect(composerDrafts.isAgentOnly(key)).toBe(true);
   } finally {
-    composerDrafts.set(key, "");
+    composerDrafts.set(key, "", "replace");
     pendingMessages.removeCopy(owner, "srv-only");
     saved.restore();
   }

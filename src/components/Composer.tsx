@@ -342,7 +342,7 @@ export function Composer({
   }, []);
   /** the box's own edit: the places and placed paths move with it */
   const movePlaces = useCallback((edit: TextEdit, next: string) => {
-    for (const [id, at] of places.current) places.current.set(id, followPlace(at, edit));
+    for (const [id, at] of places.current) places.current.set(id, followPlace(at, edit, next));
     const broken: number[] = [];
     for (const [id, mention] of placed.current) {
       const moved = followMention(next, mention, edit);
@@ -1015,6 +1015,8 @@ export function Composer({
         } catch (error) { console.error("usage counts", error); }
       }
       // a send for a pane another herdr has replaced since leaves the new pane's box alone (#1608)
+      // the places as they are now: the acknowledgement below is this box's own edit, and moves them
+      if (result === true && mounted.current) syncPlaces(textRef.current);
       const acknowledged = result === true ? composerDrafts.settle(draftKey, sent, sendId) : null;
       // the comments it carried are sent: any written meanwhile wait for the next message
       if (result === true && sentComments.length > 0) replyComments.removeSent(commentsKey, sentComments);
@@ -1024,6 +1026,10 @@ export function Composer({
       // only what was sent leaves the box: text added after it stays exactly as typed. Changed
       // inside while on its way, the whole edit stays, and the note says it was not sent
       const { text: rest, edited } = acknowledged;
+      // the sent prefix left the box: the places after it move back with the rest (unless another tab
+      // wrote the draft meanwhile, which syncPlaces counts as a replacement); an edited draft stays as it was
+      if (composerDrafts.replacements(draftKey) !== seenReplacements.current) syncPlaces(rest);
+      else if (!edited) movePlaces({ start: 0, removed: sent.length, inserted: 0 }, rest);
       setCaret(rest.length);
       textRef.current = rest;
       caretRef.current = rest.length;
@@ -1216,7 +1222,7 @@ export function Composer({
       textRef.current = clip;
       caretRef.current = clip.length;
       pasted.current = { key, text: clip };
-      composerDrafts.set(key, clip);
+      composerDrafts.set(key, clip, "replace");
       setCaret(clip.length);
     }, () => {
       if (here()) setNote(t("The clipboard could not be read. Use the keyboard's own paste in the message box."));

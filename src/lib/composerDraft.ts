@@ -6,9 +6,10 @@ interface Draft { text: string; sending: boolean }
 interface InFlight { sent: string; at: number }
 /**
  * Who wrote a draft, so the composer knows what its upload places (#3216) still point into: "box" is
- * the composer's own edit, which moves them itself; "append" adds after the draft and keeps them (a
- * quote, a recovered or withdrawn message); "replace" is any other write (another tab, a send's
- * acknowledgement, a restored or new draft), after which no place points into the text any more.
+ * the composer's own edit, which moves them itself (a send's acknowledgement too); "append" adds
+ * after the draft and keeps them (a quote, a recovered or withdrawn message); "replace" is any other
+ * write (another tab, a restored or new draft, a pane move), after which no place points into the
+ * text any more. Every write names one: there is no default to forget.
  */
 export type DraftWrite = "box" | "append" | "replace";
 /**
@@ -61,6 +62,14 @@ export class ComposerDraftStore {
   private replace(key: string): void { this.replaced.set(key, (this.replaced.get(key) ?? 0) + 1); }
   /** A count that changes each time the draft `key` is replaced by a write that is not its composer's own edit or an append. */
   replacements(key: string): number { return this.replaced.get(key) ?? 0; }
+  /**
+   * Another tab wrote the draft `key` (a storage event): a replacement, whatever its text. Counted per
+   * event, as its value may already have been overwritten again by the same text when this tab reads it.
+   */
+  writtenElsewhere(key: string): void {
+    this.replace(key);
+    this.refresh(key);
+  }
   constructor(
     // the pane's herdr's storage, or this page's memory (lib/paneLifetime.ts)
     private storage: () => DraftStorage = () => paneLifetimes.paneStorage,
@@ -112,7 +121,7 @@ export class ComposerDraftStore {
     this.drafts.set(key, { text: text ?? "", sending });
     this.notify();
   }
-  set(key: string, value: string | ((previous: string) => string), write: DraftWrite = "replace"): void {
+  set(key: string, value: string | ((previous: string) => string), write: DraftWrite): void {
     const draft = this.read(key);
     const text = typeof value === "string" ? value : value(draft.text);
     if (write === "replace") this.replace(key);
@@ -208,8 +217,8 @@ export class ComposerDraftStore {
     const text = this.read(from).text;
     if (text === "" || this.own.has(from) || this.inFlight(from) !== null || this.read(to).text !== "") return;
     if (this.isAgentOnly(from)) this.markAgentOnly(to);
-    this.set(to, text);
-    this.set(from, "");
+    this.set(to, text, "replace");
+    this.set(from, "", "replace");
   }
   /** Another herdr took the PC's pane IDs: its drafts are read again from where they now are. */
   forget(machineId: string, lifetimes: Pick<PaneLifetimes, "keep"> = paneLifetimes): void {
@@ -251,7 +260,8 @@ export class ComposerDraftStore {
     this.pending.delete(key);
     const edited = editedMeanwhile || current !== sent && !current.startsWith(sent);
     const text = edited ? current : current.slice(sent.length);
-    this.set(key, text);
+    // the composer's own send: it moves its upload places itself (Composer's settle)
+    this.set(key, text, "box");
     return { text, edited };
   }
 }
@@ -286,7 +296,11 @@ export function storageEventDraft(key: string | null): string | null {
   if (key.startsWith(SENDING_PREFIX)) return key.slice(SENDING_PREFIX.length);
   return key.startsWith("ovis:composer-draft:") ? key : null;
 }
-if (typeof window !== "undefined") window.addEventListener("storage", (event) => {
-  const key = storageEventDraft(event.key);
-  if (key !== null) composerDrafts.refresh(key);
-});
+/** Another tab's storage event: a draft's own key is a write of it, counted even when its text came back the same; a send's lease only refreshes it. */
+export function onDraftStorage(eventKey: string | null): void {
+  const key = storageEventDraft(eventKey);
+  if (key === null) return;
+  if (key === eventKey) composerDrafts.writtenElsewhere(key);
+  else composerDrafts.refresh(key);
+}
+if (typeof window !== "undefined") window.addEventListener("storage", (event) => onDraftStorage(event.key));

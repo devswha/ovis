@@ -6,7 +6,7 @@ import * as commandsModule from "../lib/usePaneCommands.ts";
 import * as usageModule from "../lib/usage.ts";
 import * as voiceModule from "./VoiceInput.tsx";
 import * as facesModule from "../lib/fontFaces.ts";
-import { composerDrafts } from "../lib/composerDraft.ts";
+import { composerDrafts, onDraftStorage } from "../lib/composerDraft.ts";
 import { paneLifetimes } from "../lib/paneLifetime.ts";
 
 // #3216: a pasted or picked file's path goes where the paste or pick was made, however the text changes while it uploads
@@ -38,13 +38,13 @@ beforeEach(() => {
   spyOn(usageModule, "useUsage").mockReturnValue({ report: null } as ReturnType<typeof usageModule.useUsage>);
   spyOn(facesModule, "useFacesArrived").mockReturnValue(0);
   spyOn(voiceModule, "useDictation").mockReturnValue({ shown: false, voice: { state: "idle" }, forget() {} } as unknown as ReturnType<typeof voiceModule.useDictation>);
-  composerDrafts.set(draftKey, "");
+  composerDrafts.set(draftKey, "", "replace");
 });
 
 afterEach(() => {
   act(() => { renderer?.unmount(); });
   renderer = undefined;
-  composerDrafts.set(draftKey, "");
+  composerDrafts.set(draftKey, "", "replace");
   mock.restore();
   for (const [key, descriptor] of saved) {
     if (descriptor) Object.defineProperty(globalThis, key, descriptor);
@@ -60,10 +60,10 @@ const uploads = new Map<string, { resolve: (path: string) => void; reject: (erro
 const path = (name: string) => `/tmp/proj/.ovis/${name}-20261116-101010-0123abcd.png`;
 
 let props: ComposerProps;
-/** `restored`: a cancelled send the agent put back in its box, which fills the empty composer */
-async function open(restored: string | null = null): Promise<void> {
+/** `restored`: a cancelled send the agent put back in its box, which fills the empty composer; `onSend`: how a send is answered */
+async function open(restored: string | null = null, onSend: ComposerProps["onSend"] = () => true): Promise<void> {
   props = {
-    paneId: pane, agent: "claude", agentStatus: "idle", connected: true, autoFocus: false, onSend: () => true, onAbort() {},
+    paneId: pane, agent: "claude", agentStatus: "idle", connected: true, autoFocus: false, onSend, onAbort() {},
     onUploadImage: (file) => new Promise<string>((resolve, reject) => { uploads.set(file.name.replace(/\.png$/u, ""), { resolve, reject }); }),
   };
   element = { value: "", selectionStart: 0, selectionEnd: 0, selectionDirection: "none", focused: 0, style: {}, focus() { this.focused++; }, setSelectionRange(start, end) { this.selectionStart = start; this.selectionEnd = end; } };
@@ -86,7 +86,7 @@ async function select(start: number, end = start): Promise<void> {
 }
 /** the draft written from elsewhere (a send's acknowledgement, a new or restored draft): a write that is no edit of this box */
 async function writeElsewhere(value: string): Promise<void> {
-  await act(async () => { composerDrafts.set(draftKey, value); });
+  await act(async () => { composerDrafts.set(draftKey, value, "replace"); });
 }
 /** another tab's writes, read here at once as its storage event brings them */
 async function writeInOtherTab(...values: string[]): Promise<void> {
@@ -510,4 +510,58 @@ it("removes nothing from the text with a tile whose path is in no message", asyn
   await act(async () => { button("Remove shot.png").props.onClick(); });
   expect(box().props.value).toBe(`other text @${path("shot")} `);
   expect(tiles()).toBe(0);
+});
+
+// a send's acknowledgement is this box's own edit: a path placed while the send was on its way stays attached
+it("keeps a path placed while a send was on its way attached once the send is acknowledged, and Remove takes it out", async () => {
+  let acknowledge!: (ok: boolean) => void;
+  await open(null, () => new Promise<boolean>((resolve) => { acknowledge = resolve; }));
+  await type("first");
+  await act(async () => { button("Send message").props.onClick(); });
+  await type("first second");
+  await paste(12, "shot");
+  await finish("shot");
+  expect(box().props.value).toBe(`first second @${path("shot")} `);
+  await act(async () => { acknowledge(true); });
+  expect(box().props.value).toBe(` second @${path("shot")} `);
+  expect(badges()).toEqual(["ready"]);
+  await act(async () => { button("Remove shot.png").props.onClick(); });
+  expect(box().props.value).toBe(" second");
+});
+
+// every storage event on the draft is another tab's write, even one that leaves the same text
+it("never puts the path into a draft another tab cleared and retyped the same, both read at once", async () => {
+  await open();
+  await type("hello", 5);
+  await paste(5, "shot");
+  await act(async () => {
+    paneLifetimes.paneStorage.removeItem(draftKey);
+    paneLifetimes.paneStorage.setItem(draftKey, "hello");
+    onDraftStorage(draftKey);
+    onDraftStorage(draftKey);
+  });
+  await finish("shot");
+  expect(box().props.value).toBe("hello");
+  expect(badges()).toEqual(["unplaced"]);
+});
+
+it("keeps a space the user typed where the upload's own space was, when the file is removed", async () => {
+  await open();
+  await paste(0, "shot");
+  await finish("shot");
+  const placed = box().props.value as string;
+  await type(placed.slice(0, -1), placed.length - 1);
+  await type(`${placed.slice(0, -1)} more`, placed.length + 4);
+  await act(async () => { button("Remove shot.png").props.onClick(); });
+  expect(box().props.value).toBe(" more");
+});
+
+it("puts the path before a word typed on straight from where it was pasted, never inside it", async () => {
+  await open();
+  await type("scree", 5);
+  await paste(5, "shot");
+  await type("screen", 6);
+  await type("screenshot", 10);
+  await finish("shot");
+  expect(box().props.value).toBe(`@${path("shot")} screenshot`);
 });

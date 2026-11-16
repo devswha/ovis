@@ -41,13 +41,13 @@ beforeEach(() => {
   spyOn(paneLifetimes.paneStorage, "getItem").mockImplementation((key) => data.get(key) ?? null);
   spyOn(paneLifetimes.paneStorage, "setItem").mockImplementation((key, value) => { data.set(key, value); });
   spyOn(paneLifetimes.paneStorage, "removeItem").mockImplementation((key) => { data.delete(key); });
-  composerDrafts.set(draftKey, "");
+  composerDrafts.set(draftKey, "", "replace");
 });
 
 afterEach(async () => {
   await act(async () => renderer?.unmount());
   renderer = undefined;
-  composerDrafts.set(draftKey, "");
+  composerDrafts.set(draftKey, "", "replace");
   jest.restoreAllMocks();
   for (const [name, descriptor] of saved) {
     if (descriptor) Object.defineProperty(globalThis, name, descriptor);
@@ -72,7 +72,7 @@ const textOf = (node: ReactTestInstance | string): string => typeof node === "st
 
 test("puts a failing check's name and the end of its log into the pane's draft, and sends nothing", async () => {
   const requests = serve(VIEW);
-  composerDrafts.set(draftKey, "my own words");
+  composerDrafts.set(draftKey, "my own words", "replace");
   await act(async () => { renderer = create(panel()); });
   const send = buttonNamed("Send to agent");
   // only the failing check offers it

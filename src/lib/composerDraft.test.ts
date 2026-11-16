@@ -30,7 +30,7 @@ it("does not edit another tab's saved held copy without authoritative withdrawal
     // the bridge's held receipt proves it untyped for this page: only then is a saved held copy sent again
     pendingMessages.publish(owner, [], [{ id: message.id, outcome: "held", resumed: true, until: Date.now() + 60_000 }], "receipt");
     expect(pendingMessages.read(owner)[0]).toMatchObject({ state: "held", serverOwned: false });
-    composerDrafts.set(key, "existing draft");
+    composerDrafts.set(key, "existing draft", "replace");
     let actions!: ReturnType<typeof useComposerSends>;
     function Composer() {
       const deps: Partial<ComposerSendsDeps> = {
@@ -49,7 +49,7 @@ it("does not edit another tab's saved held copy without authoritative withdrawal
     expect(original.read(owner)).toMatchObject([{ id: message.id, serverOwned: true }]);
   } finally {
     pendingMessages.removeCopy(owner, message.id);
-    composerDrafts.set(key, "");
+    composerDrafts.set(key, "", "replace");
     for (const spy of spies) spy.mockRestore();
   }
 });
@@ -67,7 +67,7 @@ it.each(["sent", "discarded", "dismissed"] as const)("restores an edited row onl
   try {
     pendingMessages.accept(owner, message, "scope");
     expect(other.read(owner)).toHaveLength(1);
-    composerDrafts.set(key, "existing draft");
+    composerDrafts.set(key, "existing draft", "replace");
     const socket: Pick<HerdrSocket, "on" | "pendingAction"> = {
       on: (listener: (frame: ServerMessage) => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
       pendingAction: async (pane: string, id: string, action: string) => {
@@ -103,7 +103,7 @@ it.each(["sent", "discarded", "dismissed"] as const)("restores an edited row onl
     expect(listeners.size).toBe(0);
   } finally {
     pendingMessages.publish(owner, [], [{ id: message.id, outcome: "discarded" }], "scope");
-    composerDrafts.set(key, "");
+    composerDrafts.set(key, "", "replace");
     for (const spy of spies) spy.mockRestore();
   }
 });
@@ -175,7 +175,7 @@ it("does not restore an already-editing row after another tab's ambiguous resend
   try {
     // its sender asked the bridge to hold it (enqueue's `held`): another tab's saved copy is held too, as before
     expect(other.read(owner)[0]).toMatchObject({ state: "held", serverOwned: false, heldByRequest: true });
-    composerDrafts.set(key, "existing draft");
+    composerDrafts.set(key, "existing draft", "replace");
     const socket: Pick<HerdrSocket, "on" | "pendingAction"> = {
       on: (listener: (frame: ServerMessage) => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
       pendingAction: async (_pane, _id, _action, _generation, withdrawalOnly) => {
@@ -211,13 +211,13 @@ it("does not restore an already-editing row after another tab's ambiguous resend
     expect(listeners.size).toBe(0);
   } finally {
     pendingMessages.publish(owner, [], [{ id: item.message.id, outcome: "discarded" }], "scope");
-    composerDrafts.set(key, "");
+    composerDrafts.set(key, "", "replace");
     for (const spy of spies) spy.mockRestore();
   }
 });
 it("restores withdrawn text into the latest draft without losing mentions, typing or an in-flight send", () => {
   const { store, data } = fixture();
-  store.set("a", "@/tmp/image.png draft");
+  store.set("a", "@/tmp/image.png draft", "replace");
   store.begin("a", "@/tmp/image.png draft");
   data.set("a", "@/tmp/image.png draft plus concurrent typing");
   store.restorePending("a", "withdrawn");
@@ -231,14 +231,14 @@ it("restores withdrawn text into the latest draft without losing mentions, typin
 });
 it("keeps the draft busy and intact until an acknowledged send settles, and releases a refused send for retry", () => {
   const { store } = fixture();
-  store.set("a", "check delivery");
+  store.set("a", "check delivery", "replace");
   expect(store.begin("a", "check delivery")).toBe(true);
   expect(store.read("a")).toEqual({ text: "check delivery", sending: true });
   expect(store.begin("a", "check delivery")).toBe(false);
   store.settle("a", "check delivery");
   store.end("a");
   expect(store.read("a")).toEqual({ text: "", sending: false });
-  store.set("a", "retry this");
+  store.set("a", "retry this", "replace");
   store.begin("a", "retry this");
   store.end("a");
   expect(store.read("a")).toEqual({ text: "retry this", sending: false });
@@ -246,8 +246,8 @@ it("keeps the draft busy and intact until an acknowledged send settles, and rele
 });
 it("settles an unmounted pane's draft and pending send without changing another owner", () => {
   const { store, data } = fixture();
-  store.set("local:a", "sent"); store.begin("local:a");
-  store.set("remote:a", "other PC");
+  store.set("local:a", "sent", "replace"); store.begin("local:a");
+  store.set("remote:a", "other PC", "replace");
   expect(store.begin("local:a")).toBe(false);
   store.settle("local:a", "sent"); store.end("local:a");
   expect(store.read("local:a")).toEqual({ text: "", sending: false });
@@ -256,16 +256,16 @@ it("settles an unmounted pane's draft and pending send without changing another 
 });
 it("preserves appended text, internal edits and newer edits from another tab", () => {
   const { store, data } = fixture();
-  store.set("a", "sent plus next");
+  store.set("a", "sent plus next", "replace");
   expect(store.settle("a", "sent")).toEqual({ text: " plus next", edited: false });
-  store.set("a", "edited sent");
+  store.set("a", "edited sent", "replace");
   expect(store.settle("a", "sent")).toEqual({ text: "edited sent", edited: true });
   data.set("a", "another tab's draft");
   expect(store.settle("a", "sent").text).toBe("another tab's draft");
 });
 it("notifies a remounted composer and keeps a failed send's draft", () => {
   const { store } = fixture();
-  store.set("a", "sent"); store.begin("a");
+  store.set("a", "sent", "replace"); store.begin("a");
   let updates = 0;
   const off = store.subscribe(() => { updates++; });
   store.end("a");
@@ -276,24 +276,24 @@ it("notifies a remounted composer and keeps a failed send's draft", () => {
 });
 it("retains unsaved edits when browser storage is unavailable", () => {
   const store = new ComposerDraftStore(() => { throw new Error("blocked"); });
-  store.set("a", "sent then next");
+  store.set("a", "sent then next", "replace");
   expect(store.settle("a", "sent").text).toBe(" then next");
 });
 it("keeps a draft cleared and retyped while its send was on its way", () => {
   const { store } = fixture();
-  store.set("a", "a"); store.begin("a", "a");
-  store.set("a", ""); store.set("a", "ab");
+  store.set("a", "a", "replace"); store.begin("a", "a");
+  store.set("a", "", "replace"); store.set("a", "ab", "replace");
   expect(store.settle("a", "a")).toEqual({ text: "ab", edited: true });
   store.end("a");
   // a plain append during the next send still loses only the sent prefix
-  store.set("a", "x"); store.begin("a", "x");
-  store.set("a", "xy");
+  store.set("a", "x", "replace"); store.begin("a", "x");
+  store.set("a", "xy", "replace");
   expect(store.settle("a", "x")).toEqual({ text: "y", edited: false });
   store.end("a");
 });
 it("keeps a draft another tab cleared and retyped while this tab's send was on its way", () => {
   const { store, data } = fixture();
-  store.set("a", "sent"); store.begin("a", "sent");
+  store.set("a", "sent", "replace"); store.begin("a", "sent");
   data.delete("a"); store.refresh("a");
   data.set("a", "sent again"); store.refresh("a");
   expect(store.settle("a", "sent")).toEqual({ text: "sent again", edited: true });
@@ -306,7 +306,7 @@ it("refuses a second tab's send while the first is still on its way", () => {
     setItem: (key: string, value: string) => { data.set(key, value); },
     removeItem: (key: string) => { data.delete(key); },
   }));
-  first.set("a", "do the thing");
+  first.set("a", "do the thing", "replace");
   first.begin("a", "do the thing");
   // the other tab reads the same draft and sees the send, so it cannot send it again
   second.read("a");
@@ -336,7 +336,7 @@ it("ignores a hand-edited sending record instead of blocking the pane", () => {
 });
 it("still reconciles another tab's text when no send is in flight", () => {
   const { data, store } = fixture();
-  store.set("a", "mine");
+  store.set("a", "mine", "replace");
   store.refresh("a");
   data.set("a", "theirs");
   store.refresh("a");

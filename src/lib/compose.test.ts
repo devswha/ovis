@@ -393,19 +393,27 @@ describe("insertMentionAt (#3216)", () => {
 
 describe("followPlace (#3216)", () => {
   it("stays before text typed at it and moves with text typed or removed before it", () => {
-    expect(followPlace(7, { start: 12, removed: 0, inserted: 5 })).toBe(7);
-    expect(followPlace(7, { start: 7, removed: 0, inserted: 1 })).toBe(7);
-    expect(followPlace(7, { start: 0, removed: 0, inserted: 3 })).toBe(10);
-    expect(followPlace(7, { start: 5, removed: 1, inserted: 0 })).toBe(6);
+    expect(followPlace(7, { start: 12, removed: 0, inserted: 5 }, "before after more")).toBe(7);
+    expect(followPlace(7, { start: 7, removed: 0, inserted: 1 }, "before xafter")).toBe(7);
+    expect(followPlace(7, { start: 0, removed: 0, inserted: 3 }, "so before after")).toBe(10);
+    expect(followPlace(7, { start: 5, removed: 1, inserted: 0 }, "befor after")).toBe(6);
+  });
+
+  it("goes to the start of a word typed on straight from it, never into it", () => {
+    // "scree|" pasted at, then "n" typed: the path goes before the word, not inside "screen"
+    expect(followPlace(5, { start: 5, removed: 0, inserted: 1 }, "screen")).toBe(0);
+    expect(followPlace(12, { start: 12, removed: 0, inserted: 1 }, "look at this,")).toBe(8);
+    // after a space, the typed word goes after the place
+    expect(followPlace(8, { start: 8, removed: 0, inserted: 1 }, "look at nthis")).toBe(8);
   });
 
   it("goes to where an edit across it began, also when it ends where text was typed over", () => {
-    expect(followPlace(7, { start: 3, removed: 6, inserted: 0 })).toBe(3);
+    expect(followPlace(7, { start: 3, removed: 6, inserted: 0 }, "befter")).toBe(3);
     // "this" (4..8) typed over by "t": the place after it goes before the new word
-    expect(followPlace(8, { start: 4, removed: 4, inserted: 1 })).toBe(4);
+    expect(followPlace(8, { start: 4, removed: 4, inserted: 1 }, "fix t bug")).toBe(4);
     // only removed before it: it moves back with the text
-    expect(followPlace(8, { start: 4, removed: 4, inserted: 0 })).toBe(4);
-    expect(followPlace(12, { start: 0, removed: 13, inserted: 1 })).toBe(0);
+    expect(followPlace(8, { start: 4, removed: 4, inserted: 0 }, "fix  bug")).toBe(4);
+    expect(followPlace(12, { start: 0, removed: 13, inserted: 1 }, "n")).toBe(0);
   });
 });
 

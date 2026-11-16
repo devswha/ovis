@@ -13,12 +13,12 @@ it("keeps a draft Edit put back from an agent-only message agent-only until the 
   const key = "ovis:composer-draft:p1";
   store.restorePending(key, "> quote\ncomment");
   expect(store.isAgentOnly(key)).toBe(false); // control: an ordinary queued message
-  store.set(key, "");
+  store.set(key, "", "replace");
   store.restorePending(key, "> quote\ncomment", true);
   expect(store.isAgentOnly(key)).toBe(true);
-  store.set(key, "> quote\ncomment, edited");
+  store.set(key, "> quote\ncomment, edited", "replace");
   expect(store.isAgentOnly(key)).toBe(true);
-  store.set(key, "");
+  store.set(key, "", "replace");
   expect(store.isAgentOnly(key)).toBe(false);
 });
 
@@ -39,9 +39,9 @@ it("keeps the draft agent-only in this page when storage refuses the mark", () =
   const other = new ComposerDraftStore(() => storage);
   expect(other.read(key).text).toBe("existing draft");
   expect(store.isUnsaved(key)).toBe(true);
-  store.set(key, "> quote\ncomment, edited");
+  store.set(key, "> quote\ncomment, edited", "replace");
   expect(data.get(key)).toBe("existing draft");
-  store.set(key, "");
+  store.set(key, "", "replace");
   expect(store.isAgentOnly(key)).toBe(false);
 });
 
@@ -52,9 +52,9 @@ it("keeps the mark of a marked draft another tab shows, if this one cleared it m
   const key = "ovis:composer-draft:p1";
   a.restorePending(key, "> backup.txt\ncomment", true);
   expect(b.read(key).text).toBe("> backup.txt\ncomment");
-  a.set(key, "");
+  a.set(key, "", "replace");
   // b edits the draft it still shows before the clear reaches it: its text is stored with the mark
-  b.set(key, "> backup.txt\ncomment, edited");
+  b.set(key, "> backup.txt\ncomment, edited", "replace");
   expect(b.isAgentOnly(key)).toBe(true);
   expect(new ComposerDraftStore(() => storage).isAgentOnly(key)).toBe(true);
 });

@@ -260,12 +260,20 @@ export function editBetween(
 }
 
 /**
- * Where a place moves with an edit (#3216): text added at it goes after it, text added or removed
- * before it moves it, and an edit across it leaves it where the edit began. A place at the end of
- * text that was typed over is one the edit crossed: it goes before the new text, never into it.
+ * Where a place moves with an edit that gave `text` (#3216): text added at it goes after it, text
+ * added or removed before it moves it, and an edit across it leaves it where the edit began. A place
+ * at the end of text that was typed over is one the edit crossed: it goes before the new text, never
+ * into it. A word typed on straight from the place (glued to the word before it) takes it to the
+ * start of that word: the path never splits the word being typed.
  */
-export function followPlace(at: number, edit: TextEdit): number {
-  if (at <= edit.start) return at;
+export function followPlace(at: number, edit: TextEdit, text: string): number {
+  if (at < edit.start) return at;
+  if (at === edit.start) {
+    if (edit.removed > 0 || edit.inserted === 0 || !/\S/u.test(text[at] ?? " ") || !/\S/u.test(text[at - 1] ?? " ")) return at;
+    let start = at;
+    while (start > 0 && /\S/u.test(text[start - 1]!)) start--;
+    return start;
+  }
   const end = edit.start + edit.removed;
   if (at > end || (at === end && (edit.removed === 0 || edit.inserted === 0))) return at + edit.inserted - edit.removed;
   return edit.start;
@@ -322,7 +330,10 @@ export function followMention(text: string, mention: PlacedMention, edit: TextEd
     : edit.start >= end ? mention.start : null;
   if (start === null || text.slice(start, start + mention.bare.length) !== mention.bare) return null;
   if (/\S/u.test(text[start - 1] ?? " ") || /\S/u.test(text[start + mention.bare.length] ?? " ")) return null;
-  return start === mention.start ? mention : { ...mention, start };
+  // a space the upload added that the edit took is gone: one typed there since is the user's
+  const trail = mention.trail && !(edit.removed > 0 && edit.start === end);
+  const lead = mention.lead && !(edit.removed > 0 && edit.start + edit.removed === mention.start);
+  return start === mention.start && trail === mention.trail && lead === mention.lead ? mention : { ...mention, start, lead, trail };
 }
 
 /**

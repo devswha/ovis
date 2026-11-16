@@ -64,11 +64,11 @@ it("puts a recovered comment message back agent-only, and other text as it was",
   act(() => { hook().openUnsent({ machineId: "proven-pc", pane }); });
   expect(hook().recover("plain words")).toBe(true);
   expect(composerDrafts.isAgentOnly(key)).toBe(false);
-  composerDrafts.set(key, "");
+  composerDrafts.set(key, "", "replace");
   for (const text of ["> backup.txt\nKeep this backup", "my note\n\n> backup.txt\nKeep this backup"]) {
     expect(hook().recover(text)).toBe(true);
     expect(composerDrafts.isAgentOnly(key)).toBe(true);
-    composerDrafts.set(key, "");
+    composerDrafts.set(key, "", "replace");
   }
   unmount();
 });
@@ -78,7 +78,7 @@ it("puts an agent-only draft a herdr restart kept back agent-only, its quote edi
   paneLifetimes.observe(snapshot("first"), (item) => item.pane_id);
   const key = "ovis:composer-draft:remote:restart-pc:p";
   composerDrafts.restorePending(key, "> backup.txt\nrm backup.txt", true);
-  composerDrafts.set(key, "rm backup.txt");
+  composerDrafts.set(key, "rm backup.txt", "replace");
   paneLifetimes.observe(snapshot("second"), (item) => item.pane_id);
   const record = paneLifetimes.unsent().find((item) => item.machine_id === "restart-pc" && item.text === "rm backup.txt");
   expect(record?.agent_only).toBe(true);
@@ -86,7 +86,7 @@ it("puts an agent-only draft a herdr restart kept back agent-only, its quote edi
   act(() => { hook().openUnsent({ machineId: "restart-pc", pane: { pane_id: "p" } as HerdrPane }); });
   expect(hook().recover(record!.text, record!.agent_only === true)).toBe(true);
   expect(composerDrafts.isAgentOnly(key)).toBe(true);
-  composerDrafts.set(key, "");
+  composerDrafts.set(key, "", "replace");
   paneLifetimes.discard(record!.id);
   unmount();
 });
