@@ -1576,6 +1576,11 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
     return pull ? json(pull) : error("not_found", "no such pull request in the demo", 404);
   }
   if (path === "/api/fork/github/pull/files") return json({ files: demoGithubFiles() });
+  if (path === "/api/fork/github/clone") {
+    if (method !== "GET") return error("gh_refused", "The demo clones nothing.", 409);
+    const name = (url.searchParams.get("repo") ?? "").split("/")[1] ?? "repo";
+    return json({ path: `/home/demo/Projects/${name}`, shown: `~/Projects/${name}`, state: "free" });
+  }
   // the demo sends nothing to GitHub; the page shows this in place of GitHub's answer
   if (path === "/api/fork/github/pull/action") return error("gh_refused", "The demo sends nothing to GitHub.", 409);
 

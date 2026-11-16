@@ -11,6 +11,7 @@ import { useT, type Translate } from "../lib/i18n.ts";
 import { closeGithubPull, refreshGithubListing } from "./GithubInbox.tsx";
 import { GithubMerge, GithubReply } from "./GithubActions.tsx";
 import { ago, GithubConversation } from "./GithubConversation.tsx";
+import { GithubCloneDialog } from "./GithubClone.tsx";
 import { GithubFiles } from "./GithubFiles.tsx";
 import "./GithubPull.css";
 
@@ -97,21 +98,22 @@ export function GithubPullPage({ pull, wide, watching, onOpened }: { pull: Githu
     return () => { cancelled = true; };
   }, [pull.repository, pull.number, pull.account, pull.url, reload]);
 
-  const checkout = async (): Promise<void> => {
+  const [cloning, setCloning] = useState(false);
+  const checkout = async (workspaceId: string): Promise<void> => {
     // Branch names alone cannot establish which fork a local checkout belongs to.
-    if (pull.fork || !pull.workspace_id || busy || watching) return;
+    if (pull.fork || busy || watching) return;
     setBusy(true); setError(null);
     try {
       // Re-read local checkouts when pressed, rather than assuming a branch isn't already open.
-      const listing = await listWorktrees(pull.workspace_id, "local");
+      const listing = await listWorktrees(workspaceId, "local");
       const existing = listing.worktrees.find((entry) => entry.branch === pull.branch && !entry.is_prunable);
       let opened: WorktreeOpened;
-      if (existing) opened = await openWorktree({ workspace_id: pull.workspace_id, path: existing.path }, "local");
+      if (existing) opened = await openWorktree({ workspace_id: workspaceId, path: existing.path }, "local");
       else {
         // Creation must start at the main checkout, even when only a linked workspace is open.
-        let source = listing.source.source_workspace_id ?? pull.workspace_id;
+        let source = listing.source.source_workspace_id ?? workspaceId;
         if (!listing.source.source_workspace_id && listing.source.source_checkout_path !== listing.source.repo_root) {
-          source = (await openWorktree({ workspace_id: pull.workspace_id, path: listing.source.repo_root }, "local")).workspace_id;
+          source = (await openWorktree({ workspace_id: workspaceId, path: listing.source.repo_root }, "local")).workspace_id;
         }
         const { ref } = await fetchPullRequestBranch(source, pull.branch, "local");
         opened = await createWorktree({ workspace_id: source, branch: pull.branch, base: ref }, "local");
@@ -136,7 +138,11 @@ export function GithubPullPage({ pull, wide, watching, onOpened }: { pull: Githu
     <header className="fork-github-pull-top">
       {!wide && <button type="button" className="icon-button inbox-round" aria-label={t("Back|fork inbox")} title={t("Back|fork inbox")} onClick={closeGithubPull}><ArrowLeft aria-hidden="true" /></button>}
       <span className="fork-github-pull-where">{pull.repository} · #{pull.number}</span>
-      {!watching && pull.workspace_id && !pull.fork && <button type="button" className="btn" disabled={busy} onClick={() => void checkout()}>{busy ? t("Checking out…") : t("Checkout")}</button>}
+      {!watching && !pull.fork && <button type="button" className="btn" disabled={busy}
+        onClick={() => { if (pull.workspace_id) void checkout(pull.workspace_id); else setCloning(true); }}>
+        {busy ? t("Checking out…") : pull.workspace_id ? t("Checkout") : t("Clone and checkout")}</button>}
+      {cloning && <GithubCloneDialog pull={pull} onClose={() => setCloning(false)}
+        onOpened={(workspaceId) => { setCloning(false); refreshGithubListing(); void checkout(workspaceId); }} />}
       <a className="icon-button inbox-round" href={pull.url} target="_blank" rel="noreferrer noopener" aria-label={t("Open on GitHub")} title={t("Open on GitHub")}><ExternalLink aria-hidden="true" /></a>
     </header>
     <div className="fork-github-pull-scroll">

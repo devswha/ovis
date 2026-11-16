@@ -98,3 +98,11 @@ export interface GithubFilePatch {
   previous: string | null;
   patch: string | null;
 }
+
+/** Where a clone of a repository would go, and what is there now: nothing, a checkout of it, or something else. */
+export interface GithubClonePlace {
+  path: string;
+  /** the folder as shown, with `~` for the home folder */
+  shown: string;
+  state: "free" | "same" | "taken";
+}
