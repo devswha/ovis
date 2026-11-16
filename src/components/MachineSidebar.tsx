@@ -33,10 +33,28 @@ import { SHEET_QUERY } from "../lib/sheets.ts";
 import { canHideMachine, HIDDEN_MACHINES_MAX, setHiddenMachines, useHiddenMachines, withMachineHidden } from "../lib/hiddenMachines.ts";
 
 /** the width under which the sidebar is a drawer (src/styles.css), as AgentSidebar.tsx reads it */
-const DRAWER_QUERY = "(max-width: 768px)";
+/** the widths where the sidebar is a drawer over the pane, and its foot keeps to the gear (Change PC is in Settings' list there) */
+export const DRAWER_QUERY = "(max-width: 768px)";
 
 /** the release a PC's own Ovis offers as its card shows it: an update installs only that one (docs/remote-pcs.md) */
 const shownRevision = (machine: Machine) => machine.ovis_update?.revision ? { revision: machine.ovis_update.revision } : undefined;
+
+/**
+ * Which list of PCs this page goes back to, when it shows one PC of a phone's list: the phone app's
+ * own list ("app"), or the hosted shell's front page on a PC's page there ("shell"). Null in a PC's
+ * own app, whose sidebar lists its PCs itself.
+ */
+export function pcListExit(page: { nativeApp: boolean; relayShell: boolean; pathname: string }): "app" | "shell" | null {
+  // the phone app first: its own list holds every PC it opens, those it reaches through the relay included
+  if (page.nativeApp) return "app";
+  if (page.relayShell && serverIdOfPath(page.pathname) !== null) return "shell";
+  return null;
+}
+
+/** Goes back to the list of PCs `exit` names (pcListExit). */
+export function leavePcList(exit: "app" | "shell"): void {
+  if (exit === "app") void changePc(); else window.location.assign("/");
+}
 
 /** The PC header's state word; "connected" is the quiet default and shows as a dot alone, every other state also writes its word under the name. */
 /** The PC waits on a fresh choice of what to connect to: the card's own rule (FoundHerdrChoices), so the dot, the menu

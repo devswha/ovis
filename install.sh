@@ -1308,12 +1308,43 @@ EOF
   fi
 }
 
+# OVIS_REF names what a fresh install takes: an Ovis already installed in the checkout $1 is not moved by it, which is
+# said with its commit, without asking GitHub
+ref_not_moved() {
+  [ -n "${OVIS_REF:-${HERDR_WEB_UI_REF:-}}" ] || return 0
+  # What git answers, by the rule scripts/plugin-launch.ts (checkoutCommit) and install.ps1 read the installed commit
+  # by: a checkout's top level has its commit; a folder inside another repository (--show-prefix names its path there:
+  # git would read that repository's commit, not the plugin's) or one git says is no repository has none; anything else
+  # is git failing, which is said with git's first line (untranslated: LC_ALL=C). Only git's stdout is the prefix and
+  # the commit: a warning it prints on stderr while it succeeds is neither. With no checkout to read (herdr did not name
+  # the plugin's root), git -C "" would read the current directory's. With no file for git's stderr (mktemp failed), the
+  # commit is still read, git's stderr discarded, and git's failures, which can no longer be told apart, are not said.
+  ref_not_moved_at=""
+  if [ -n "$1" ]; then
+    ref_not_moved_err=$(mktemp 2>/dev/null) || ref_not_moved_err=""
+    if ref_not_moved_git=$(LC_ALL=C git -C "$1" rev-parse --show-prefix 2>"${ref_not_moved_err:-/dev/null}" </dev/null); then
+      if [ -z "$ref_not_moved_git" ]; then
+        if ref_not_moved_git=$(LC_ALL=C git -C "$1" rev-parse --short=12 HEAD 2>"${ref_not_moved_err:-/dev/null}" </dev/null); then
+          ref_not_moved_at="the installed checkout is at commit $ref_not_moved_git; "
+        elif [ -n "$ref_not_moved_err" ]; then
+          ref_not_moved_at="git could not read the installed checkout's commit ($(sed -n 1p "$ref_not_moved_err")); "
+        fi
+      fi
+    elif [ -n "$ref_not_moved_err" ] && ! grep -q "not a git repository" "$ref_not_moved_err"; then
+      ref_not_moved_at="git could not read the installed checkout's commit ($(sed -n 1p "$ref_not_moved_err")); "
+    fi
+    [ -z "$ref_not_moved_err" ] || rm -f "$ref_not_moved_err"
+  fi
+  say "${ref_not_moved_at}OVIS_REF does not move an installed Ovis (INSTALL.md, Update)"
+}
+
 # Ovis on herdr-core, without herdr or its plugin: its own checkout in APP_DIR, built with herdr-plugin.toml's
 # [[build]] steps as herdr builds the plugin (the Rust PTY host aside: herdr-core's terminals need none),
 # its settings, its service, and a start now.
 install_core() {
   if [ -d "$APP_DIR/.git" ]; then
     say "already installed in $APP_DIR, on herdr-core; Settings → Updates keeps it current"
+    ref_not_moved "$APP_DIR"
   elif [ -e "$APP_DIR" ]; then
     fail "$APP_DIR is there but is not an Ovis checkout; move it away and run this again"
   else
@@ -1388,6 +1419,7 @@ install_plugin() {
 
   if herdr plugin list 2>/dev/null | grep -q "$PLUGIN "; then
     say "already installed as a herdr plugin; Settings → Updates keeps it current"
+    ref_not_moved "$(plugin_root "$PLUGIN")"
   else
     say "installing the herdr plugin at $ref (herdr clones and builds it: about a minute)"
     # a branch builds its own sources: the plugin's launcher (scripts/plugin-launch.ts) would otherwise run the

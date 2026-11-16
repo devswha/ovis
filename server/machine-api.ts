@@ -1,4 +1,5 @@
 import { subscribeMachineEvents } from "./machine-events.ts";
+import { wireMachine, wireMachineEvent, type WireMachine } from "../shared/compact-agents.ts";
 import type { DevicePairedEvent, DeviceRemovedEvent, MachineRoster, PcInstallJob, PcInstallRequest, PcUpdateAll, PcUpdateStarted, RelayPairingsEvent, RemotePairingsEvent, SetupAction, SetupRequest, Machine, MachineEvent, OpenRequest, ReadFinish } from "../shared/machines.ts";
 import { isIP } from "node:net";
 import { networkInterfaces } from "node:os";
@@ -200,9 +201,13 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
     if (!parts.length && request.method === "GET") {
       setRequestRoute("/api/machines");
       const asked = url.searchParams.getAll("verify_source_boot");
-      // as the machine events tell it: without the token values herdr's rows hide (withoutHiddenTokens)
-      const shown = () => withoutHiddenTokens(herdrSidebar?.get() ?? null, manager.list());
-      if (asked.length === 0) return jsonResponse({ machines: shown() } satisfies MachineRoster);
+      // as the machine events tell it, for every answer below: without the token values herdr's rows hide
+      // (withoutHiddenTokens), and without a PC's own agent_refs (wireMachine)
+      const shown = () => withoutHiddenTokens(herdrSidebar?.get() ?? null, manager.list()).map((machine) => wireMachine(machine, false));
+      if (asked.length === 0) {
+        if (url.searchParams.get("compact_agents") !== "1") return jsonResponse({ machines: shown() } satisfies MachineRoster);
+        return jsonResponse({ machines: shown().map((machine) => wireMachine(machine, true)) } satisfies { machines: WireMachine[] });
+      }
       if (asked.length > 1 || asked[0] === "") return fail("invalid_query", "verify_source_boot names one PC", 400);
       const machineId = asked[0]!;
       const proof = await manager.verifySourceBoot(machineId, request.signal);
@@ -305,7 +310,7 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
           };
           const device = deviceOf(request);
           stop = subscribeMachineEvents({ manager, preferences, herdrSidebar, seen, pairings, hidden, open: { subscribe: (listener) => subscribeOpen(device, listener) } },
-            (event) => send(`data: ${JSON.stringify(event)}\n\n`));
+            (event) => send(`data: ${JSON.stringify(wireMachineEvent(event, url.searchParams.get("compact_agents") === "1"))}\n\n`));
           // the Omarchy theme of the device this browser runs on, when that device's hook sent one; none over a relay
           if (omarchyThemes) {
             const sendTheme = (theme: ReturnType<OmarchyThemeStore["get"]>) => send(`data: ${JSON.stringify({ type: "omarchy-theme", theme } satisfies MachineEvent)}\n\n`);
