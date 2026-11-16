@@ -24,11 +24,16 @@ export interface ListItem {
   /**
    * An ordered item's number as written, when its list's numbers neither count up from the first
    * nor all repeat it: `1.` then `4.` shows 1 and 4, as typed, where markdown would renumber them
-   * 1 and 2 and change what was said. Absent from a list that counts up, and from one written all
-   * `1.` (markdown's way to let the numbers count), which counts up from its first.
+   * 1 and 2 and change what was said. Absent, so the list counts up from its first number, from a
+   * list that counts up; from one whose first two items share a number (`1.` `1.` …, markdown's way
+   * to let the numbers count), so a `2.` arriving in a streamed reply changes no number already on
+   * screen; and from one holding a number past `LIST_NUMBER_LIMIT`, which the browser cannot draw.
    */
   number?: number;
 }
+
+/** The largest list number a browser draws: past a 32-bit integer it ignores `start` and `value`. */
+export const LIST_NUMBER_LIMIT = 2 ** 31 - 1;
 
 export interface ListBlock {
   type: "list";
@@ -462,8 +467,9 @@ function parseList(lines: string[], start: number, visualizations = false): { bl
     index += 1;
   }
   const counts = numbers.every((written, at) => written === number + at);
-  const repeats = numbers.every((written) => written === number);
-  if (!counts && !repeats) block.items.forEach((item, at) => { item.number = numbers[at]; });
+  const lazy = numbers.length > 1 && numbers[1] === number;
+  const drawable = numbers.every((written) => written <= LIST_NUMBER_LIMIT);
+  if (!counts && !lazy && drawable) block.items.forEach((item, at) => { item.number = numbers[at]; });
   return { block, next: index };
 }
 

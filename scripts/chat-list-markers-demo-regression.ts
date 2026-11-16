@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chromium, type Browser, type Locator } from "playwright-core";
+import { chromium, type Browser, type Locator, type Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { appFaces } from "./app-faces.ts";
 import { buildDemoApp } from "./demo-build.ts";
@@ -42,33 +42,59 @@ const CASES = [
 ] as const;
 
 interface Marker { list: number; text: string; width: number; indent: number; font: string }
-/** Every marker of the transcript's lists: the text the browser draws for it, its width in its own font, and its list's indent. */
-const markers = (scope: Locator): Promise<Marker[]> => scope.locator(".markdown-list").evaluateAll((lists) => {
-  const bullets: Record<string, string> = { disc: "\u2022 ", circle: "\u25e6 ", square: "\u25aa " };
-  const found: Marker[] = [];
-  lists.forEach((list, index) => {
-    const indent = parseFloat(getComputedStyle(list).paddingLeft);
-    const start = list instanceof HTMLOListElement ? list.start : 1;
-    [...list.children].forEach((item, position) => {
-      const marker = getComputedStyle(item, "::marker");
-      const type = getComputedStyle(item).listStyleType;
-      // an item written with its own number carries it (Markdown.tsx); the others count from the start
-      const ordinal = item instanceof HTMLLIElement && item.hasAttribute("value") ? item.value : start + position;
-      const text = type === "decimal" ? `${ordinal}. ` : bullets[type];
-      if (text === undefined) throw new Error(`no marker text for list-style-type ${type}`);
-      const probe = document.createElement("span");
-      probe.style.cssText = "position: absolute; visibility: hidden; white-space: pre";
-      for (const property of ["font-family", "font-size", "font-weight", "font-style", "font-stretch", "font-variant-numeric", "letter-spacing"]) {
-        probe.style.setProperty(property, marker.getPropertyValue(property));
-      }
-      probe.textContent = text;
-      document.body.append(probe);
-      found.push({ list: index, text, width: probe.getBoundingClientRect().width, indent, font: `${marker.fontSize} ${marker.fontFamily}` });
-      probe.remove();
-    });
+/**
+ * Every marker of the transcript's lists: the text the browser draws for it, as its accessibility
+ * tree names the marker (so an item's own `value`, or the count from the list's `start`, is read as
+ * drawn, not worked out here), its width in its own font, and its list's indent.
+ */
+async function markers(page: Page, scope: Locator): Promise<Marker[]> {
+  const count = await scope.locator(".markdown-list").evaluateAll((lists) => {
+    let at = 0;
+    for (const list of lists) for (const item of list.children) item.setAttribute("data-marker-at", String(at++));
+    return at;
   });
-  return found;
-});
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    const { root } = await cdp.send("DOM.getDocument", { depth: -1 });
+    const { nodeIds } = await cdp.send("DOM.querySelectorAll", { nodeId: root.nodeId, selector: "[data-marker-at]" });
+    const at = new Map<number, number>();
+    for (const nodeId of nodeIds) {
+      const { node } = await cdp.send("DOM.describeNode", { nodeId });
+      const attributes = node.attributes ?? [];
+      at.set(node.backendNodeId, Number(attributes[attributes.indexOf("data-marker-at") + 1]));
+    }
+    const { nodes } = await cdp.send("Accessibility.getFullAXTree");
+    const byId = new Map(nodes.map((node) => [node.nodeId, node]));
+    const texts: string[] = Array.from({ length: count }, () => "");
+    for (const node of nodes) {
+      if (node.role?.value !== "ListMarker") continue;
+      const item = node.parentId === undefined ? undefined : byId.get(node.parentId);
+      const index = item?.backendDOMNodeId === undefined ? undefined : at.get(item.backendDOMNodeId);
+      if (index !== undefined) texts[index] = String(node.name?.value ?? "");
+    }
+    assert.ok(texts.every((text) => text !== ""), "every item's marker is named in the accessibility tree");
+    return await scope.locator(".markdown-list").evaluateAll((lists, drawn) => {
+      const found: Marker[] = [];
+      lists.forEach((list, index) => {
+        const indent = parseFloat(getComputedStyle(list).paddingLeft);
+        for (const item of list.children) {
+          const marker = getComputedStyle(item, "::marker");
+          const text = drawn[Number(item.getAttribute("data-marker-at"))]!;
+          const probe = document.createElement("span");
+          probe.style.cssText = "position: absolute; visibility: hidden; white-space: pre";
+          for (const property of ["font-family", "font-size", "font-weight", "font-style", "font-stretch", "font-variant-numeric", "letter-spacing"]) {
+            probe.style.setProperty(property, marker.getPropertyValue(property));
+          }
+          probe.textContent = text;
+          document.body.append(probe);
+          found.push({ list: index, text, width: probe.getBoundingClientRect().width, indent, font: `${marker.fontSize} ${marker.fontFamily}` });
+          probe.remove();
+        }
+      });
+      return found;
+    }, texts);
+  } finally { await cdp.detach(); }
+}
 
 async function prepareDemo(): Promise<void> {
   await buildDemoApp(app);
@@ -112,7 +138,7 @@ async function check(browser: Browser, origin: string, width: number, testCase: 
     await scope.getByText("a hundred", { exact: true }).waitFor();
     await appFaces(page);
 
-    const found = await markers(scope);
+    const found = await markers(page, scope);
     assert.equal(found.length, 2 + 3 + 5 + 2 + 3, `${testCase.name} ${width}px: every item of the message's and the reply's lists is drawn`);
     assert.deepEqual(found.filter((marker) => marker.list === 0).map((marker) => marker.text.trim()), ["1.", "4."],
       `${testCase.name} ${width}px: the user's skipping list keeps the numbers typed`);

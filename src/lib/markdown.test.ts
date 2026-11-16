@@ -719,6 +719,12 @@ describe("numbered lists as agents write them", () => {
     expect(numbers("1. a\n2. b\n3. c")).toEqual([null, null, null]);
     expect(numbers("3. c\n4. d")).toEqual([null, null]);
     expect(numbers("1. a\n1. b\n1. c")).toEqual([null, null, null]);
+    // a list begun all one number counts up however it goes on: while a reply streams, a `2.` after
+    // `1.` `1.` `1.` changes no number already drawn (1, 2, 3, then 4)
+    expect(numbers("1. a\n1. b\n1. c\n2. d")).toEqual([null, null, null, null]);
+    // a list that counts up before it skips keeps the numbers it drew: only the new item differs
+    expect(numbers("1. a\n2. b\n3. c")).toEqual([null, null, null]);
+    expect(numbers("1. a\n2. b\n3. c\n5. e")).toEqual([1, 2, 3, 5]);
     expect(numbers("- a\n- b")).toEqual([null, null]);
     // a nested list keeps its own numbers apart from its parent's
     const parent = parseMarkdown("1. a\n   3. x\n   7. y\n2. b")[0];
@@ -730,8 +736,9 @@ describe("numbered lists as agents write them", () => {
     expect(html).toContain('<li value="1"><span>a</span></li><li value="12"><span>b</span></li>');
     expect(html).toMatch(/--markdown-list-digits:2/);
     expect(render("1. a\n2. b")).not.toContain("value=");
-    // past a 32-bit integer the browser ignores `value`: none is set
-    expect(render("1. a\n100000000000000000000. b")).toContain('<li value="1"><span>a</span></li><li><span>b</span></li>');
+    // past a 32-bit integer the browser ignores `start` and `value`: such a list counts up from 1, as before
+    expect(numbers("3000000000. a\n1. b")).toEqual([null, null]);
+    expect(render("1. a\n100000000000000000000. b")).not.toContain("value=");
   });
 
   it("tells the list how many digits its widest number has, as the browser numbers it (#1993)", () => {
