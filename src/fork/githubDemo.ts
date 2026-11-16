@@ -20,6 +20,9 @@ export function demoGithubPulls(workspaces: WorkspaceInfo[]): GithubPulls {
       row("checkout-api", { number: 142, title: "Retry the export when the connection drops", branch: "feat/export-guard", checks: "passing", review: "approved" }),
       row("cli-tools", { number: 139, title: "Add the retry flag to the CLI", branch: "feat/retry-flag", checks: "pending", review: "none", draft: true }),
     ],
+    team: [
+      row("checkout-api", { number: 145, title: "Cache the tax tables per region", branch: "perf/tax-cache", checks: "passing", review: "review_required", author: "lee" }),
+    ],
   };
 }
 

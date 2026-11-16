@@ -263,6 +263,7 @@ it("reads a process's store from its own argv and environment, and nothing it ca
 describe("an omp pane's chat", () => {
   let home = "";
   let savedHome: string | undefined;
+  let savedSessionDir: string | undefined;
   let agentSession: unknown;
   let processes: { pid: number; name?: string; argv?: string[] }[] = [];
   let pane: HerdrPane;
@@ -278,6 +279,8 @@ describe("an omp pane's chat", () => {
   beforeEach(() => {
     home = realpathSync(mkdtempSync(join(tmpdir(), "herdr-omp-pane-")));
     savedHome = process.env["HOME"];
+    savedSessionDir = process.env["PI_CODING_AGENT_SESSION_DIR"];
+    delete process.env["PI_CODING_AGENT_SESSION_DIR"];
     process.env["HOME"] = home;
     const cwd = join(home, "project");
     mkdirSync(cwd);
@@ -297,6 +300,7 @@ describe("an omp pane's chat", () => {
   afterEach(() => {
     for (const restore of restores.splice(0)) restore();
     if (savedHome === undefined) delete process.env["HOME"]; else process.env["HOME"] = savedHome;
+    if (savedSessionDir === undefined) delete process.env["PI_CODING_AGENT_SESSION_DIR"]; else process.env["PI_CODING_AGENT_SESSION_DIR"] = savedSessionDir;
     rmSync(home, { recursive: true, force: true });
     agentSession = undefined;
     processes = [];

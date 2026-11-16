@@ -8,7 +8,7 @@ import { ApiError, sendJson } from "../lib/api.ts";
 import { useT, type Translate } from "../lib/i18n.ts";
 
 type Method = GithubPullDetail["merge_methods"][number];
-type Action = { action: "comment" | "approve" | "request_changes"; body: string } | { action: "merge"; method: Method; sha: string };
+type Action = { action: "comment" | "approve" | "request_changes"; body: string } | { action: "merge"; method: Method; sha: string } | { action: "close" | "reopen" };
 
 /** Sends an action with the account that listed the pull request; GitHub's own words when it refuses. */
 async function act(pull: GithubPull, action: Action, t: Translate): Promise<string | null> {
@@ -65,6 +65,35 @@ export function GithubMerge({ pull, detail, watching, onDone }: { pull: GithubPu
     </div>
     {menu !== null && <RowMenu anchor={menu} title={t("Merge method")} choice onClose={() => setMenu(null)}
       items={methods.map((entry) => ({ id: entry, label: words[entry], icon: methodIcons[entry], checked: entry === method, run: () => { setMethod(entry); setArmed(false); try { localStorage.setItem(METHOD_KEY, entry); } catch { /* private mode */ } } }))} />}
+    {error !== null && <p className="fork-github-pull-error" role="alert">{error}</p>}
+  </div>;
+}
+
+/** Close an open pull request (the first press asks, the second within a few seconds closes), or reopen a closed one. */
+export function GithubClose({ pull, detail, watching, onDone }: { pull: GithubPull; detail: GithubPullDetail; watching: boolean; onDone(): void }) {
+  const t = useT();
+  const [armed, setArmed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!armed) return;
+    const timer = window.setTimeout(() => setArmed(false), 4000);
+    return () => window.clearTimeout(timer);
+  }, [armed]);
+  // its author may close or reopen it without write access; a merged one stays as it is
+  if (watching || detail.state === "merged" || !(detail.can_write || detail.viewer !== null && detail.viewer === detail.author)) return null;
+  const closing = detail.state === "open";
+  const press = async (): Promise<void> => {
+    if (closing && !armed) { setArmed(true); setError(null); return; }
+    setArmed(false); setBusy(true);
+    const refused = await act(pull, { action: closing ? "close" : "reopen" }, t);
+    setBusy(false); setError(refused);
+    if (refused === null) onDone();
+  };
+  return <div className="fork-github-merge-do">
+    <button type="button" className={armed ? "btn btn-danger" : "btn"} disabled={busy} onClick={() => void press()}>
+      {busy ? closing ? t("Closing…") : t("Reopening…") : closing ? armed ? t("Confirm: close") : t("Close") : t("Reopen")}
+    </button>
     {error !== null && <p className="fork-github-pull-error" role="alert">{error}</p>}
   </div>;
 }

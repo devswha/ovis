@@ -16,18 +16,23 @@ import { GithubThreadView, onDiff } from "./GithubConversation.tsx";
 // Ovis's own diff view, loaded with the first file opened, as the diff viewer loads it.
 const RepoDiff = lazy(() => import("../components/RepoDiff.tsx"));
 
-/** Every file's patch of a pull request, read once per visit to its page and kept for the next. */
+/** Every file's patch of a pull request at one head commit, read once and kept for this visit to the app. */
 const patchCache = new Map<string, Promise<Map<string, GithubFilePatch>>>();
-function readPatches(pull: GithubPull): Promise<Map<string, GithubFilePatch>> {
-  const hit = patchCache.get(pull.url);
+/** The same patches once read, so a page opened again draws its open files at once. */
+const patchesRead = new Map<string, Map<string, GithubFilePatch>>();
+function readPatches(pull: GithubPull, key: string, head: string, base: string): Promise<Map<string, GithubFilePatch>> {
+  const hit = patchCache.get(key);
   if (hit) return hit;
-  const query = new URLSearchParams({ repo: pull.repository, number: String(pull.number), account: pull.account ?? "" });
+  const query = new URLSearchParams({ repo: pull.repository, number: String(pull.number), account: pull.account ?? "", head, base });
   const value = getJson<{ files: GithubFilePatch[] }>(`/api/fork/github/pull/files?${query}`, { cache: "no-store" })
-    .then(({ files }) => new Map(files.map((file) => [file.path, file])));
-  patchCache.set(pull.url, value);
-  value.catch(() => patchCache.delete(pull.url));
+    .then(({ files }) => { const read = new Map(files.map((file) => [file.path, file])); patchesRead.set(key, read); return read; });
+  patchCache.set(key, value);
+  value.catch(() => patchCache.delete(key));
   return value;
 }
+
+/** The files each pull request's tab was left with open, and the line each was brought to. */
+const views = new Map<string, { open: ReadonlySet<string>; marks: ReadonlyMap<string, DiffMark> }>();
 
 /** A patch's rows, for a box tall enough to hold a short diff whole, before the view scrolls inside it. */
 function rowsOf(patch: string): number {
@@ -91,19 +96,25 @@ export function GithubFiles({ pull, detail, jump = null }: { pull: GithubPull; d
   const t = useT();
   const { settings, resolvedEntry } = useSettings();
   const narrow = useMediaQuery(SHEET_QUERY);
-  const [open, setOpen] = useState<ReadonlySet<string>>(() => new Set());
-  const [patches, setPatches] = useState<Patches>({ status: "idle" });
+  // a new head commit has new patches: they are read again for it
+  const key = `${pull.url}@${detail.base}@${detail.head_sha}`;
+  const kept = views.get(pull.url);
+  const [open, setOpen] = useState<ReadonlySet<string>>(() => kept?.open ?? new Set());
+  const [patches, setPatches] = useState<Patches>(() => { const read = patchesRead.get(key); return read ? { status: "ready", files: read } : { status: "idle" }; });
   const files = detail.files ?? [];
   const threads = threadsByFile(detail.conversation ?? []);
   // the line each open file's diff is brought to: its first thread, or the one asked for
-  const [marks, setMarks] = useState<ReadonlyMap<string, DiffMark>>(() => new Map());
+  const [marks, setMarks] = useState<ReadonlyMap<string, DiffMark>>(() => kept?.marks ?? new Map());
   const rows = useRef(new Map<string, HTMLLIElement>());
 
   const load = (): void => {
     if (patches.status === "loading" || patches.status === "ready") return;
     setPatches({ status: "loading" });
-    readPatches(pull).then((next) => setPatches({ status: "ready", files: next }), () => setPatches({ status: "failed" }));
+    readPatches(pull, key, detail.head_sha, detail.base).then((next) => setPatches({ status: "ready", files: next }), () => setPatches({ status: "failed" }));
   };
+  useEffect(() => { views.set(pull.url, { open, marks }); }, [pull.url, open, marks]);
+  // files left open whose patches are not read yet (another head commit, or the first read failed)
+  useEffect(() => { if (open.size > 0) load(); }, []);
   const mark = (path: string, next: DiffMark | null): void => setMarks((before) => {
     const after = new Map(before);
     if (next === null) after.delete(path); else after.set(path, next);

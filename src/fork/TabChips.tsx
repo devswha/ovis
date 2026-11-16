@@ -37,6 +37,11 @@ export function forkChipBoundary(group: ReturnType<typeof groupAgentTabs>, row: 
   return null;
 }
 
+/** Scroll the selected child itself into view, falling back to the upstream active tab. */
+export function forkOpenTab(row: HTMLElement): HTMLElement | null {
+  return row.querySelector<HTMLElement>('.fork-tab-chip[aria-selected="true"]') ?? row.querySelector<HTMLElement>(".tab-strip-item.is-active");
+}
+
 /** Sibling controls, never buttons inside the parent's tab/menu button. */
 export function ForkTabChips({ tabs, paneFor, nameOf, selectedTab, onSelect, onMenu, onClose, onRename, onMove, drag, status, sheet = false, onDismiss, panelId, popup = "menu" }: Props) {
   const held = useRef<{ timer: ReturnType<typeof setTimeout>; x: number; y: number; fired: boolean } | null>(null);

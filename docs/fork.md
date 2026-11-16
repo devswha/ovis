@@ -7,7 +7,7 @@ This fork is `ricardofelixb/ovis`; upstream is `devswha/ovis`. This inventory co
 Upstream candidate (A), behind **Agent friends** (off by default). `src/fork/groupAgentTabs.ts`
 folds same-workspace descendants into their visible parent without changing real tabs or order;
 missing parents/cycles remain ordinary tabs. `src/fork/TabChips.tsx` and `src/fork/tab-chips.css`
-provide tiny role controls (Hammer/Check, a neutral Terminal for other roles), without a repeated
+provide tiny role controls (CodeXml/Check/Search, a neutral Terminal when the role is unknown), without a repeated
 friend. Their named controls select the real child pane, keep its menu/rename/close, and highlight
 selection; touch hold opens its menu. Chips stay pinned in their parent group. The desktop row,
 phone header row and phone tabs sheet all share these controls; selecting a child leaves the
@@ -15,7 +15,9 @@ parent highlighted while the existing header/pane title continues to name the se
 Overflow chips retain menuitem semantics for the existing arrow-key navigation; sheet chips remain
 ordinary buttons. Their mouse press preserves the menu on browsers that do not focus clicked buttons.
 `src/components/TabStrip.tsx` hooks the grouping, chip mount and presentation-only selected/root
-mapping; original tabs still drive commands. `src/components/RowMenu.tsx` adds a generic optional
+mapping; original tabs still drive commands. Its scroll-to-selection hook uses `forkOpenTab` in
+`src/fork/TabChips.tsx` to measure the selected child chip rather than its parent, falling back to
+the upstream active tab when no child is selected. `src/components/RowMenu.tsx` adds a generic optional
 `trailing` sibling-control slot (one type field and two render sites), needed for attached chips
 in a sheet without invalid nested buttons. TabStrip's missing grouped-tab presentation extension
 point is an upstream PR candidate. This differs from Warp's collapsible tab groups: job roles stay
@@ -132,7 +134,7 @@ Hooks added/changed by this task (upstream files only):
 - `src/components/InboxList.tsx`: one import, one `forkInboxRows(..., settings.agentFriends)`
   wrapper before the hold, one `forkInboxNesting` call after it, one carried nesting flag and one
   row-class suffix. Fork diff **+2/-1 → +8/-6** (first review **+7/-5**).
-- `src/App.tsx`: one import plus one `ForkInboxBack` mount in the existing inbox-only branch.
+- `src/App.tsx`: one import plus one `ForkInboxBack` mount in the existing inbox-only branch, and `ForkGithubFoot` wrapping the sidebar foot's `InboxFootEntry`: with Pull requests on, the agent inbox and Pull requests become icons at the end of the gear's row (CSS in `src/fork/GithubInbox.css`).
   Fork diff **+43/-62 → +45/-63**.
 - `src/components/InboxRail.tsx`: one import plus a two-line `ForkInboxBack` wrapper around
   upstream's exit button (its fallback). Fork diff **0 → +3/-0**. Upstream now hides App's header in

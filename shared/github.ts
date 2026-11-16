@@ -6,6 +6,8 @@ export interface GithubPull extends PullRequestEntry {
   /** the gh account that listed it: its page is read with that account's token */
   account?: string;
   workspace_id?: string;
+  /** reviewed by that account, then changed: commits came after its latest review */
+  updated_since_review?: boolean;
 }
 export interface GithubPulls {
   /** every gh account on github.com that was read */
@@ -14,6 +16,8 @@ export interface GithubPulls {
   failed?: string[];
   review: GithubPull[];
   yours: GithubPull[];
+  /** others' open pull requests in the repositories open as workspaces, not in the other two */
+  team: GithubPull[];
 }
 
 /** One pull request's page (GET /api/fork/github/pull), read with the account that listed it. */

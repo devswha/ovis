@@ -44,7 +44,7 @@ import { indicatorGlyph, paneStatus, rollupStatus, STATUS_WORD, type KnownStatus
 import { useSettings } from "../lib/settings.ts";
 import { TabFriends } from "../fork/TabFriends.tsx";
 import { groupAgentTabs } from "../fork/groupAgentTabs.ts";
-import { ForkTabChips, forkChipBoundary } from "../fork/TabChips.tsx";
+import { ForkTabChips, forkChipBoundary, forkOpenTab } from "../fork/TabChips.tsx";
 import { forkTabGroupStyle, forkTabsInRow } from "../fork/tabGroupLayout.ts";
 import { AgentMark } from "./AgentMark.tsx";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
@@ -331,7 +331,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   const bringOpenTab = (): void => {
     const row = strip.current;
     if (!row) { scroll.current = STRIP_AT_REST; return; }
-    const open = row.querySelector<HTMLElement>(".tab-strip-item.is-active");
+    const open = forkOpenTab(row);
     if (!open) return;
     const view = row.getBoundingClientRect();
     const item = open.getBoundingClientRect();

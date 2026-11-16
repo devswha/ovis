@@ -9,86 +9,176 @@ import { ghAccounts, originRepository, parsePullRequests, PullRequestError, runG
 const FIELDS = `number title url headRefName isDraft isCrossRepository updatedAt author { login }
   repository { nameWithOwner } reviewDecision
   commits(last:1) { nodes { commit { statusCheckRollup { state } } } }`;
-const QUERY = `query {
+const REVIEWED = `headRefOid viewerLatestReview { commit { oid } }`;
+const REPOSITORY = /^[\w.-]+\/[\w.-]+$/;
+const TEAM_PREFIX = "is:pr is:open -author:@me sort:updated-desc";
+const REVIEW_SEARCH = "is:pr is:open reviewed-by:@me -author:@me -review-requested:@me sort:updated-desc";
+
+/** GitHub bounds search query length; keep each alias below that bound. */
+function teamBatches(repositories: readonly string[]): string[][] {
+  const batches: string[][] = [];
+  for (const repository of new Set(repositories.filter((value) => REPOSITORY.test(value)))) {
+    let batch = batches.at(-1);
+    if (!batch || `${TEAM_PREFIX} ${[...batch, repository].map((value) => `repo:${value}`).join(" ")}`.length > 256) { batch = []; batches.push(batch); }
+    batch.push(repository);
+  }
+  return batches;
+}
+const teamSearch = (repositories: readonly string[]) => `${TEAM_PREFIX} ${repositories.map((repository) => `repo:${repository}`).join(" ")}`;
+/**
+ * One account's read: what asks for its review, what it wrote, what it reviewed (kept when commits came
+ * after its review), and the open pull requests of the repositories open as workspaces (`t0`, `t1`…),
+ * split into bounded search aliases so an inaccessible repository does not hide readable ones.
+ */
+export function githubQuery(repositories: readonly string[]): string {
+  const team = teamBatches(repositories).map((batch, index) => `  t${index}: search(query:${JSON.stringify(teamSearch(batch))},type:ISSUE,first:100) { nodes { ... on PullRequest { ${FIELDS} } } }`);
+  return `query {
   viewer { login }
   review: search(query:"is:pr is:open review-requested:@me sort:updated-desc",type:ISSUE,first:50) { nodes { ... on PullRequest { ${FIELDS} } } }
   yours: search(query:"is:pr is:open author:@me sort:updated-desc",type:ISSUE,first:50) { nodes { ... on PullRequest { ${FIELDS} } } }
+  reviewed: search(query:${JSON.stringify(REVIEW_SEARCH)},type:ISSUE,first:100) { pageInfo { hasNextPage endCursor } nodes { ... on PullRequest { ${FIELDS} ${REVIEWED} } } }
+${team.join("\n")}
 }`;
+}
 const unreadable = () => new PullRequestError("gh_unreadable", "GitHub's answer could not be read");
 
-/** Translate the GraphQL envelope to the existing PR contract, preserving both search memberships. */
+/** Translate the GraphQL envelope to the existing PR contract, preserving each search's memberships. */
 export function parseGithubPulls(output: string): GithubPulls {
   try {
     const { data, errors } = JSON.parse(output);
-    if (errors?.length || typeof data?.viewer?.login !== "string") throw unreadable();
-    const group = (search: { nodes?: unknown[] }): GithubPull[] => {
-      if (!Array.isArray(search?.nodes)) throw unreadable();
+    // a repository of the Team section this account cannot see fails alone; any other error fails the read
+    const teamOnly = (errors ?? []).every((error: { path?: unknown[] }) => typeof error?.path?.[0] === "string" && /^t\d+$/.test(error.path[0] as string));
+    if (!teamOnly || typeof data?.viewer?.login !== "string") throw unreadable();
+    const viewer: string = data.viewer.login;
+    const rowOf = (value: unknown): GithubPull => {
+      const row = value as { number: number; url: string; repository?: { nameWithOwner?: unknown }; commits?: { nodes?: { commit?: { statusCheckRollup?: { state?: string } | null } }[] } };
+      const repository = row?.repository?.nameWithOwner;
+      if (typeof repository !== "string" || !REPOSITORY.test(repository) || !Number.isSafeInteger(row.number) || row.number < 1 || row.url !== `https://github.com/${repository}/pull/${row.number}`) throw unreadable();
+      // The aggregate covers every check, including contexts beyond GitHub's first page.
+      const rollup = row.commits?.nodes?.[0]?.commit?.statusCheckRollup;
+      const [entry] = parsePullRequests(JSON.stringify([{ ...row, statusCheckRollup: rollup ? [{ state: rollup.state }] : [] }]), []);
+      if (!entry) throw unreadable();
+      return { ...entry, repository, account: viewer };
+    };
+    const group = (nodes: unknown, keep: (value: Record<string, unknown>) => boolean = () => true, extra: Partial<GithubPull> = {}): GithubPull[] => {
+      if (!Array.isArray(nodes)) throw unreadable();
       const unique = new Map<string, GithubPull>();
-      for (const value of search.nodes.slice(0, 50)) {
-        const row = value as { number: number; url: string; repository?: { nameWithOwner?: unknown }; commits?: { nodes?: { commit?: { statusCheckRollup?: { state?: string } | null } }[] } };
-        const repository = row?.repository?.nameWithOwner;
-        if (typeof repository !== "string" || !/^[\w.-]+\/[\w.-]+$/.test(repository) || !Number.isSafeInteger(row.number) || row.number < 1 || row.url !== `https://github.com/${repository}/pull/${row.number}`) throw unreadable();
-        // The aggregate covers every check, including contexts beyond GitHub's first page.
-        const rollup = row.commits?.nodes?.[0]?.commit?.statusCheckRollup;
-        const [entry] = parsePullRequests(JSON.stringify([{ ...row, statusCheckRollup: rollup ? [{ state: rollup.state }] : [] }]), []);
-        if (!entry) throw unreadable();
-        unique.set(entry.url, { ...entry, repository, account: data.viewer.login });
-      }
+      for (const value of nodes) if (keep(value as Record<string, unknown>)) { const entry = { ...rowOf(value), ...extra }; unique.set(entry.url, entry); }
       return [...unique.values()].sort((a, b) => b.updated_at.localeCompare(a.updated_at));
     };
-    return { accounts: [data.viewer.login], review: group(data.review), yours: group(data.yours) };
+    const review = group(data.review?.nodes);
+    const yours = group(data.yours?.nodes);
+    // reviewed, then changed: commits came after this account's latest review, and nobody asked it again
+    const changed = group(data.reviewed?.nodes, (value) => {
+      const reviewed = (value.viewerLatestReview as { commit?: { oid?: unknown } } | null)?.commit?.oid;
+      return typeof reviewed === "string" && typeof value.headRefOid === "string" && reviewed !== value.headRefOid;
+    }, { updated_since_review: true });
+    const listed = new Set([...review, ...yours, ...changed].map((pull) => pull.url));
+    const team = group(Object.keys(data).filter((key) => /^t\d+$/.test(key)).flatMap((key) => data[key]?.nodes ?? []),
+      (value) => (value.author as { login?: unknown } | null)?.login !== viewer).filter((pull) => !listed.has(pull.url));
+    return { accounts: [viewer], review: [...review, ...changed].sort((a, b) => b.updated_at.localeCompare(a.updated_at)), yours, team };
   } catch { throw unreadable(); }
 }
 
 /** Rows from several accounts as one list: a PR both accounts see appears once per group, newest first. */
 export function mergeGithubPulls(listings: GithubPulls[], failed: string[] = []): GithubPulls {
+  const mine = new Set(listings.flatMap((listing) => [...listing.review, ...listing.yours]).map((pull) => pull.url));
   const merge = (rows: GithubPull[]): GithubPull[] => [...new Map(rows.map((row) => [row.url, row] as const)).values()].sort((a, b) => b.updated_at.localeCompare(a.updated_at));
   return {
     accounts: listings.flatMap((listing) => listing.accounts),
     ...(failed.length > 0 ? { failed } : {}),
     review: merge(listings.flatMap((listing) => listing.review)),
     yours: merge(listings.flatMap((listing) => listing.yours)),
+    // another account's request or its own pull request is not the team's
+    team: merge(listings.flatMap((listing) => listing.team)).filter((pull) => !mine.has(pull.url)),
   };
 }
 
 type Run = typeof runGithub;
 /** One account's read, with that account's token. */
-async function readAccount(run: Run, account: string): Promise<GithubPulls> {
+async function readAccount(run: Run, account: string, repositories: readonly string[]): Promise<GithubPulls> {
   const token = await run(["auth", "token", "--user", account]);
   if (!token) throw new PullRequestError("gh_missing", "The GitHub CLI (gh) is not installed on this PC");
   if (token.code !== 0 || !token.stdout.trim()) throw new PullRequestError("gh_signed_out", "Sign in on this PC with gh auth login");
-  const result = await run(["api", "graphql", "--hostname", "github.com", "-f", `query=${QUERY}`], { GH_TOKEN: token.stdout.trim() });
+  const result = await run(["api", "graphql", "--hostname", "github.com", "-f", `query=${githubQuery(repositories)}`], { GH_TOKEN: token.stdout.trim() });
   if (!result) throw new PullRequestError("gh_missing", "The GitHub CLI (gh) is not installed on this PC");
   if (result.code !== 0) {
-    const detail = `${result.stderr}\n${result.stdout}`;
-    if (/rate limit|HTTP 429/i.test(detail)) throw new PullRequestError("rate_limited", "GitHub is limiting requests; try again in a few minutes");
-    if (/gh auth login|not logged|authentication|HTTP 401|bad credentials/i.test(detail)) throw new PullRequestError("gh_signed_out", "Sign in on this PC with gh auth login");
-    throw new PullRequestError("gh_failed", "Could not read GitHub pull requests");
+    // gh exits 1 when any part of the answer failed: a Team repository this account cannot see fails alone
+    try { parseGithubPulls(result.stdout); } catch {
+      const detail = `${result.stderr}\n${result.stdout}`;
+      if (/rate limit|HTTP 429/i.test(detail)) throw new PullRequestError("rate_limited", "GitHub is limiting requests; try again in a few minutes");
+      if (/gh auth login|not logged|authentication|HTTP 401|bad credentials/i.test(detail)) throw new PullRequestError("gh_signed_out", "Sign in on this PC with gh auth login");
+      throw new PullRequestError("gh_failed", "Could not read GitHub pull requests");
+    }
   }
-  return parseGithubPulls(result.stdout);
+  let envelope;
+  try { envelope = JSON.parse(result.stdout); } catch { throw unreadable(); }
+  // Validate the primary fields and reject unrelated GraphQL errors before making any retries.
+  parseGithubPulls(result.stdout);
+  // If a whole alias fails, retry its repositories separately so one inaccessible
+  // repository cannot hide its peers.
+  const batches = teamBatches(repositories);
+  for (const error of envelope.errors ?? []) {
+    const alias = error?.path?.[0];
+    const index = typeof alias === "string" && /^t\d+$/.test(alias) ? Number(alias.slice(1)) : -1;
+    if (index < 0 || !batches[index]) continue;
+    const nodes: unknown[] = [];
+    for (const repo of batches[index]!) {
+      const query = `query { t0: search(query:${JSON.stringify(teamSearch([repo]))},type:ISSUE,first:100) { nodes { ... on PullRequest { ${FIELDS} } } } }`;
+      const single = await run(["api", "graphql", "--hostname", "github.com", "-f", `query=${query}`], { GH_TOKEN: token.stdout.trim() });
+      if (!single) throw new PullRequestError("gh_missing", "The GitHub CLI (gh) is not installed on this PC");
+      let answer;
+      try { answer = JSON.parse(single.stdout); } catch { throw unreadable(); }
+      if (answer.errors !== undefined && !Array.isArray(answer.errors)) throw unreadable();
+      if (answer.errors?.length) {
+        if (!answer.errors.every((item: { path?: unknown[]; type?: string }) => item.path?.length === 1 && item.path[0] === "t0" && (item.type === "NOT_FOUND" || item.type === "FORBIDDEN"))) throw unreadable();
+        continue;
+      }
+      if (single.code !== 0 || !Array.isArray(answer.data?.t0?.nodes)) throw unreadable();
+      nodes.push(...answer.data.t0.nodes);
+    }
+    envelope.data[alias] = { nodes };
+  }
+  const reviewed = envelope.data?.reviewed;
+  for (let page = 1; page < 3 && reviewed?.pageInfo?.hasNextPage; page++) {
+    const cursor = reviewed.pageInfo.endCursor;
+    if (typeof cursor !== "string" || !cursor) throw unreadable();
+    const query = `query { reviewed: search(query:${JSON.stringify(REVIEW_SEARCH)},type:ISSUE,first:100,after:${JSON.stringify(cursor)}) { pageInfo { hasNextPage endCursor } nodes { ... on PullRequest { ${FIELDS} ${REVIEWED} } } } }`;
+    const next = await run(["api", "graphql", "--hostname", "github.com", "-f", `query=${query}`], { GH_TOKEN: token.stdout.trim() });
+    if (!next || next.code !== 0) throw new PullRequestError("gh_failed", "Could not read GitHub pull requests");
+    let answer;
+    try { answer = JSON.parse(next.stdout); } catch { throw unreadable(); }
+    if (answer.errors?.length || !Array.isArray(answer.data?.reviewed?.nodes) || typeof answer.data.reviewed.pageInfo?.hasNextPage !== "boolean") throw unreadable();
+    reviewed.nodes.push(...answer.data.reviewed.nodes);
+    reviewed.pageInfo = answer.data.reviewed.pageInfo;
+  }
+  return parseGithubPulls(JSON.stringify(envelope));
 }
 
 /** One in-flight read and a 20-second cache; no timers or background refreshes. I/O is injectable. Every account gh
  * is signed in with on github.com is read side by side; one that fails is named in `failed` and the others still show. */
-export function createGithubReader(run: Run = runGithub, now = Date.now): (() => Promise<GithubPulls>) & { forget(): void } {
-  let cached: { until: number; value: GithubPulls } | undefined;
-  let pending: Promise<GithubPulls> | undefined;
-  return Object.assign(() => {
-    if (cached && now() < cached.until) return Promise.resolve(cached.value);
-    if (pending) return pending;
-    pending = (async () => {
+export function createGithubReader(run: Run = runGithub, now = Date.now): ((repositories?: readonly string[]) => Promise<GithubPulls>) & { forget(): void } {
+  let cached: { until: number; key: string; value: GithubPulls } | undefined;
+  let pending: { key: string; value: Promise<GithubPulls> } | undefined;
+  return Object.assign((repositories: readonly string[] = []) => {
+    // the Team section's repositories are part of what was read: another set is read again
+    const key = [...repositories].sort().join(" ");
+    if (cached && cached.key === key && now() < cached.until) return Promise.resolve(cached.value);
+    if (pending && pending.key === key) return pending.value;
+    const value = (async () => {
       const status = await run(["auth", "status"]);
       if (!status) throw new PullRequestError("gh_missing", "The GitHub CLI (gh) is not installed on this PC");
       const accounts = ghAccounts(`${status.stdout}\n${status.stderr}`);
       if (accounts.length === 0) throw new PullRequestError("gh_signed_out", "Sign in on this PC with gh auth login");
-      const reads = await Promise.allSettled(accounts.map((account) => readAccount(run, account)));
+      const reads = await Promise.allSettled(accounts.map((account) => readAccount(run, account, repositories)));
       const read = reads.flatMap((outcome) => outcome.status === "fulfilled" ? [outcome.value] : []);
       if (read.length === 0) throw (reads[0] as PromiseRejectedResult).reason;
-      const value = mergeGithubPulls(read, accounts.filter((_, index) => reads[index]!.status === "rejected"));
-      cached = { value, until: now() + 20_000 };
-      return value;
-    })().finally(() => { pending = undefined; });
-    return pending;
+      const merged = mergeGithubPulls(read, accounts.filter((_, index) => reads[index]!.status === "rejected"));
+      cached = { key, value: merged, until: now() + 20_000 };
+      return merged;
+    })().finally(() => { if (pending?.value === value) pending = undefined; });
+    pending = { key, value };
+    return value;
   }, { forget: () => { cached = undefined; } });
 }
 const readPulls = createGithubReader();
@@ -315,9 +405,10 @@ export function createGithubPullReader(run: Run = runGithub, now = Date.now) {
 const PATCH_CHANGES = { added: "added", removed: "deleted", renamed: "renamed", copied: "copied", modified: "modified", changed: "modified", unchanged: "modified" } as const;
 /** Each file's patch as GitHub sends it (hunks only; none for a binary or too large file), with the git header the diff view reads put back. */
 export function parseGithubFiles(output: string): GithubFilePatch[] {
-  // `gh api --paginate --slurp` answers one array per page
+  // Compare includes all changed files (up to 300) on its first page, not on later commit pages.
   const pages: unknown = JSON.parse(output);
-  const files = (Array.isArray(pages) ? pages.flat() : []) as { filename?: unknown; previous_filename?: unknown; status?: string; patch?: unknown }[];
+  if (!Array.isArray(pages) || !Array.isArray(pages[0]?.files)) throw unreadable();
+  const files = pages[0].files as { filename?: unknown; previous_filename?: unknown; status?: string; patch?: unknown }[];
   return files.filter((file) => typeof file?.filename === "string").map((file) => {
     const path = file.filename as string;
     const before = typeof file.previous_filename === "string" ? file.previous_filename : path;
@@ -331,8 +422,8 @@ export function parseGithubFiles(output: string): GithubFilePatch[] {
 /** A pull request's changed files with their patches, the first 300 GitHub lists. */
 export function createGithubFilesReader(run: Run = runGithub, now = Date.now) {
   const cache = cached<GithubFilePatch[]>(now);
-  return (repository: string, number: number, account: string): Promise<GithubFilePatch[]> => cache(`${account}\n${repository}#${number}`, async () => {
-    const output = await ghAs(run, account, ["api", "--hostname", "github.com", "--paginate", "--slurp", `repos/${repository}/pulls/${number}/files?per_page=100`], "Could not read this pull request's files");
+  return (repository: string, number: number, account: string, head: string, base: string): Promise<GithubFilePatch[]> => cache(`${account}\n${repository}#${number}@${base}\n${head}`, async () => {
+    const output = await ghAs(run, account, ["api", "--hostname", "github.com", "--paginate", "--slurp", `repos/${repository}/compare/${encodeURIComponent(base)}...${head}?per_page=100`], "Could not read this pull request's files");
     try { return parseGithubFiles(output); } catch { throw unreadable(); }
   });
 }
@@ -368,7 +459,11 @@ export async function handleGithubFiles(request: Request, readOnly: boolean): Pr
   const asked = pullAsked(request, readOnly);
   if (asked instanceof Response) return asked;
   try {
-    return jsonResponse({ files: await readFiles(asked.repository, asked.number, asked.account) });
+    const head = new URL(request.url).searchParams.get("head") ?? "";
+    if (!/^[a-f0-9]{40,64}$/i.test(head)) return jsonResponse({ error: { code: "bad_request", message: "Name the head commit" } }, 400);
+    const base = new URL(request.url).searchParams.get("base") ?? "";
+    if (!base || base.length > 1024 || /[\x00-\x20\x7f]/.test(base)) return jsonResponse({ error: { code: "bad_request", message: "Name the base branch" } }, 400);
+    return jsonResponse({ files: await readFiles(asked.repository, asked.number, asked.account, head, base) });
   } catch (error) {
     return conflictResponse(error instanceof PullRequestError ? error.code : "gh_failed", error instanceof PullRequestError ? error.message : "Could not read this pull request's files");
   }
@@ -378,7 +473,8 @@ export async function handleGithubFiles(request: Request, readOnly: boolean): Pr
 export type GithubPullAction =
   | { action: "comment"; body: string }
   | { action: "approve" | "request_changes"; body: string }
-  | { action: "merge"; method: "squash" | "merge" | "rebase"; sha: string };
+  | { action: "merge"; method: "squash" | "merge" | "rebase"; sha: string }
+  | { action: "close" | "reopen" };
 
 /** The `gh api` call for an action; null when the action is not one we know or misses what it needs. */
 export function githubActionArgs(repository: string, number: number, asked: unknown): string[] | null {
@@ -390,6 +486,7 @@ export function githubActionArgs(repository: string, number: number, asked: unkn
   if (action?.action === "approve") return [...api, "-X", "POST", `repos/${repository}/pulls/${number}/reviews`, "-f", "event=APPROVE", "-f", `body=${body}`];
   // GitHub asks for words with a request for changes
   if (action?.action === "request_changes") return body.trim() ? [...api, "-X", "POST", `repos/${repository}/pulls/${number}/reviews`, "-f", "event=REQUEST_CHANGES", "-f", `body=${body}`] : null;
+  if (action?.action === "close" || action?.action === "reopen") return [...api, "-X", "PATCH", `repos/${repository}/pulls/${number}`, "-f", `state=${action.action === "close" ? "closed" : "open"}`];
   if (action?.action === "merge") {
     // the head the page showed: GitHub refuses the merge when commits came after it
     if (!["squash", "merge", "rebase"].includes(action.method as string) || typeof action.sha !== "string" || !/^[0-9a-f]{40}$/.test(action.sha)) return null;
@@ -425,10 +522,11 @@ export async function handleGithubPulls(request: Request, snapshot: () => Promis
   if (readOnly) return jsonResponse({ error: { code: "read_only", message: "This device only watches" } }, 403);
   if (request.method !== "GET") return jsonResponse({ error: { code: "method_not_allowed", message: "Use GET" } }, 405);
   try {
-    const listing = await readPulls();
-    const known = await githubWorkspaces(await snapshot());
+    const checkouts = await githubCheckouts(await snapshot());
+    const known = new Map(checkouts.map((checkout) => [checkout.repository.toLowerCase(), checkout.workspaceId]));
+    const listing = await readPulls([...new Set(checkouts.map((checkout) => checkout.repository))]);
     const match = (pr: GithubPull): GithubPull => ({ ...pr, workspace_id: known.get(pr.repository.toLowerCase()) });
-    return jsonResponse({ ...listing, review: listing.review.map(match), yours: listing.yours.map(match) });
+    return jsonResponse({ ...listing, review: listing.review.map(match), yours: listing.yours.map(match), team: listing.team.map(match) });
   } catch (error) {
     return conflictResponse(error instanceof PullRequestError ? error.code : "gh_failed", error instanceof PullRequestError ? error.message : "Could not read GitHub pull requests");
   }

@@ -500,6 +500,7 @@
 
 .fork-github-merge-row > .fork-github-merge { margin: 0; }
 .fork-github-merge-do { display: grid; gap: var(--space-1); justify-items: end; }
+.fork-github-merge-actions { display: flex; flex-wrap: wrap; align-items: start; gap: var(--space-2); margin-inline-start: auto; }
 
 /* the merge button and its method arrow, one control */
 .fork-github-split { display: inline-flex; }

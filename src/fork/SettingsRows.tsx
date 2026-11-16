@@ -16,14 +16,16 @@ export function ForkFeatures() {
     ["chatMotion", t("Animated replies")],
     ["piLiveVoice", t("Pi live voice")],
     ["computerView", t("Computer view")],
-    ["pullRequests", t("GitHub|fork")],
     ["readAloud", t("Read aloud")],
   ] as const;
-  return <SettingsGroup title={t("Fork features")} section="fork-features">
-    {choices.map(([key, label]) => <SettingsRow key={key} label={label} reset={[key]}>
-      <Toggle label={label} checked={settings[key]} onChange={(checked) => update({ [key]: checked })} />
-    </SettingsRow>)}
-  </SettingsGroup>;
+  const row = (key: typeof choices[number][0] | "pullRequests", label: string) => <SettingsRow key={key} label={label} reset={[key]}>
+    <Toggle label={label} checked={settings[key]} onChange={(checked) => update({ [key]: checked })} />
+  </SettingsRow>;
+  return <>
+    <SettingsGroup title={t("Fork features")} section="fork-features">{choices.map(([key, label]) => row(key, label))}</SettingsGroup>
+    {/* GitHub's own group, which other GitHub features can join */}
+    <SettingsGroup title={t("GitHub|fork")} section="fork-github">{row("pullRequests", t("Pull requests"))}</SettingsGroup>
+  </>;
 }
 
 /**

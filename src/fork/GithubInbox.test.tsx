@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { act } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import type { WorktreeListing } from "../../shared/protocol.ts";
+import { createGithubFilesReader } from "../../server/fork/github.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { closeGithubPull, ForkGithubPane, ForkGithubRail, GithubInbox, refreshGithubListing, setGithubSection } from "./GithubInbox.tsx";
 
@@ -12,14 +13,15 @@ let calls = 0;
 let payload: unknown;
 let responseCode = 200;
 beforeEach(() => {
-  for (const key of ["window", "document", "navigator", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT", "fetch"]) saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+  for (const key of ["window", "document", "navigator", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT", "fetch", "cancelAnimationFrame"]) saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
   Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
+  Object.defineProperty(globalThis, "cancelAnimationFrame", { configurable: true, value: () => {} });
   Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en"] } });
   Object.defineProperty(globalThis, "document", { configurable: true, value: { documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } }, querySelector: () => null } });
   Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
   const events = new EventTarget(); records.clear(); calls = 0; responseCode = 200;
   payload = { accounts: ["me"], review: [{ repository: "owner/repo", number: 1, title: "Fix this", url: "https://github.com/owner/repo/pull/1", branch: "topic", checks: "failing", review: "review_required", workspace_id: "w1" }], yours: [] };
-  Object.defineProperty(globalThis, "window", { configurable: true, value: { addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events), localStorage: { getItem: (key: string) => records.get(key) ?? null, setItem: (key: string, value: string) => records.set(key, value) } } });
+  Object.defineProperty(globalThis, "window", { configurable: true, value: { history: { state: null, pushState() {} }, addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events), localStorage: { getItem: (key: string) => records.get(key) ?? null, setItem: (key: string, value: string) => records.set(key, value) } } });
   Object.defineProperty(globalThis, "fetch", { configurable: true, value: async (url: string) => {
     if (url.startsWith(DETAIL)) return detailUnread();
     calls++; expect(url).toBe("/api/fork/github/pulls"); return Response.json(payload, { status: responseCode });
@@ -70,6 +72,61 @@ async function openPull(onOpened = (_opened: unknown) => {}, watching = false) {
 }
 async function closeAll() { await act(async () => { renderer?.unmount(); closeGithubPull(); }); renderer = undefined; }
 
+test("restores and records list scroll after returning from a phone PR", async () => {
+  const hosts: (EventTarget & { scrollTop: number })[] = [];
+  await act(async () => { renderer = create(<SettingsProvider><GithubInbox wide={false} watching={false} onOpened={() => {}} /></SettingsProvider>, {
+    createNodeMock: (element) => {
+      if (!element.props || typeof element.props !== "object" || !("className" in element.props) || !String(element.props.className).includes("inbox-scroll")) return null;
+      const host = Object.assign(new EventTarget(), { scrollTop: 0 }); hosts.push(host); return host;
+    },
+  }); });
+  hosts[0]!.scrollTop = 250; hosts[0]!.dispatchEvent(new Event("scroll"));
+  await act(async () => button("Fix this").props.onClick());
+  await act(async () => button("Back").props.onClick());
+  expect(hosts[1]!.scrollTop).toBe(250);
+  hosts[1]!.scrollTop = 320; hosts[1]!.dispatchEvent(new Event("scroll"));
+  await act(async () => button("Fix this").props.onClick());
+  await act(async () => button("Back").props.onClick());
+  expect(hosts[2]!.scrollTop).toBe(320);
+});
+
+test("reloads open file patches when a cached PR receives a new head", async () => {
+  (payload as { review: { url: string }[] }).review[0]!.url = "https://github.com/owner/repo/pull/9876";
+  let detailReads = 0, patchReads = 0;
+  let patch = "old head";
+  const received: string[] = [];
+  const readFiles = createGithubFilesReader(async (args) => {
+    if (args[1] === "token") return { code: 0, stdout: "test-token", stderr: "" };
+    patchReads++;
+    return { code: 0, stdout: JSON.stringify([{ files: [{ filename: "a.txt", patch: `@@ -1 +1 @@\n-original\n+${patch}` }] }]), stderr: "" };
+  }, () => 0);
+  let resolveDetail: (response: Response) => void = () => {};
+  const detail = { repository: "owner/repo", number: 1, url: "https://github.com/owner/repo/pull/9876", title: "Fix this", body: "", state: "open", draft: false, author: "me", created_at: "2026-01-01", updated_at: "2026-01-01", head: "topic", base: "main", fork: false, additions: 1, deletions: 0, changed_files: 1, commits: 1, checks: { passing: 0, failing: 0, pending: 0, skipped: 0 }, check_list: [], merge: "clean", review: "none", reviewers: [], labels: [], head_sha: "a".repeat(40), viewer: "me", can_write: false, merge_methods: [], conversation: [], files: [{ path: "a.txt", additions: 1, deletions: 0, change: "modified" }] };
+  Object.defineProperty(globalThis, "fetch", { configurable: true, value: async (url: string) => {
+    if (url.startsWith("/api/fork/github/pull/files?")) {
+      const params = new URL(url, "http://localhost").searchParams;
+      const files = await readFiles("owner/repo", 1, "me", params.get("head") ?? "", params.get("base") ?? "");
+      received.push(files[0]?.patch ?? "");
+      // Rendering the diff needs browser workers; the assertion above captures the real server patch.
+      return Response.json({ files: files.map((file) => ({ ...file, patch: null })) });
+    }
+    if (url.startsWith(DETAIL)) { detailReads++; return detailReads === 1 ? Response.json(detail) : new Promise<Response>((resolve) => { resolveDetail = resolve; }); }
+    return Response.json(payload);
+  } });
+  await openPull();
+  await act(async () => button("Files 1").props.onClick());
+  await act(async () => button("Expand all").props.onClick());
+  expect(patchReads).toBe(1);
+  await act(async () => { renderer?.unmount(); closeGithubPull(); });
+  await openPull();
+  expect(button("Collapse all")).toBeDefined();
+  patch = "new head";
+  await act(async () => { resolveDetail(Response.json({ ...detail, head_sha: "b".repeat(40) })); });
+  expect(received[1]).toContain("new head");
+  expect(patchReads).toBe(2);
+  expect(button("Collapse all")).toBeDefined();
+});
+
 test("opens an existing same-repository worktree without fetching or creating a branch", async () => {
   const opened = { workspace_id: "fork", pane_id: "p1", path: "/pr", branch: "topic", already_open: true };
   const requests = checkoutApi([checkoutListing()], { "/api/worktree/open": opened });
@@ -117,10 +174,10 @@ test("creates from the main workspace when only a linked checkout is selected", 
 });
 
 test("rail is opt-in, switches current place, and Inbox switches back", async () => {
-  await rail(false); expect(button("GitHub")).toBeUndefined();
+  await rail(false); expect(button("Pull requests")).toBeUndefined();
   await act(async () => renderer?.unmount()); await rail(true);
-  await act(async () => button("GitHub").props.onClick());
-  expect(button("GitHub").props["aria-current"]).toBe("page");
+  await act(async () => button("Pull requests").props.onClick());
+  expect(button("Pull requests").props["aria-current"]).toBe("page");
   expect(button("Inbox").props["aria-current"]).toBeUndefined();
   await act(async () => button("Inbox").props.onClick());
   expect(button("Inbox").props["aria-current"]).toBe("page");
