@@ -971,7 +971,8 @@ public class MainActivity extends BridgeActivity {
 
     /**
      * Told to the page just before it is replaced (reopen): the client then leaves the unsent text it
-     * keeps in memory alone (the panes of a PC that names no herdr lifetime) in storage, where its PC's
+     * keeps in memory alone (the panes of a PC that names no herdr lifetime, or text typed before its
+     * herdr was proven) in storage, where its PC's
      * next page puts it in Recover unsent text (src/lib/paneLifetime.ts, PAGE_LEAVING_EVENT). Any other
      * page has no listener.
      */

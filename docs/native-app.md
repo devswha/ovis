@@ -411,17 +411,19 @@ pieces are the Java twins of the iOS ones, in `app/android/app/src/main/java/sh/
   (`PCStore.sameOrigin`). A sign-in's steps and the redirects of the first load are judged before it.
   Opening or leaving a PC starts the activity again, so the next page is a first load and the
   old WebView goes with the old activity. Just before, the page shown hears `ovis-page-leaving`
-  (waited for up to a second): the client leaves the pane state it keeps in memory alone, for a PC
-  whose server names no herdr lifetime, in storage, and that PC's next page takes it once and puts
+  (waited for up to a second): the client leaves the pane state it keeps in memory alone (for a PC
+  whose server names no herdr lifetime, or typed before that PC's herdr was proven) in storage, and
+  that PC's next page takes it once and puts
   its text in Recover unsent text, never back into a pane: nothing proves the herdr it comes back to
   is the one it was typed under, and a replaced herdr gives the same pane IDs to other programs
   (`src/lib/paneLifetime.ts`, `carry`). Held input older than a day is dropped, as it is from an
   open page. A terminal line that looks like a key and a secret prompt's input are never written
   down (#2532), and unsaved edits in the file editor are not carried, so they still go with the
-  page. Nor is anything kept that a page served directly by a PC on an Ovis release before this one
-  held in memory alone: it has no listener. On 0.4.18 or older (no herdr lifetime) that is all of its
-  panes' unsent text; on later releases only text typed while the PC's herdr was not proven, or for
-  a remote PC that names none.
+  page, as does an edit that storage refused. A page served directly by a PC on an Ovis release
+  before this one has no hand-over listener, so what it held in memory alone is not carried: on any
+  release, an edit its storage refused, and from 0.4.19 also text typed while that PC's herdr was not
+  proven (before its first snapshot, or for a PC, such as a remote one on an older bridge, that names
+  no herdr lifetime); its stored drafts stay in storage, as before.
 - Until the PC's page shows, a native cover over the WebView says which PC is opening and offers
   Change PC, as on iOS. When the PC's page has not answered after 20 seconds (`PCStore.ANSWER_SECONDS`,
   counted from Open on the connect screen when it checked the address first, with at least 5 s left
