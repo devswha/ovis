@@ -51,6 +51,11 @@ export function pcListExit(page: { nativeApp: boolean; relayShell: boolean; path
   return null;
 }
 
+/** Goes back to the list of PCs `exit` names (pcListExit). */
+export function leavePcList(exit: "app" | "shell"): void {
+  if (exit === "app") void changePc(); else window.location.assign("/");
+}
+
 /** The PC header's state word; "connected" is the quiet default and shows as a dot alone, every other state also writes its word under the name. */
 /** The PC waits on a fresh choice of what to connect to: the card's own rule (FoundHerdrChoices), so the dot, the menu
  *  line and the line under the header never call a question an error, nor what was chosen and is gone a question */
@@ -92,7 +97,8 @@ export function MachineSidebar(props: Props) {
   const loneHost = props.machines.length === 1 && props.machines[0]!.kind === "local" ? props.machines[0]!.id : null;
   const unnamed = useMemo(() => new Set(loneHost === null ? [] : [loneHost]), [loneHost]);
   const exitToPcs = useMemo(() => pcListExit({ nativeApp: inNativeApp(), relayShell: shellMode() === "relay", pathname: window.location.pathname }), []);
-  const leaveForPcs = () => { if (exitToPcs === "app") void changePc(); else window.location.assign("/"); };
+  // a phone's drawer keeps its foot to the gear: Change PC is Settings' first row there (SettingsDialog)
+  const drawerWidth = useMediaQuery(DRAWER_QUERY);
   const loneHostName = loneHost === null ? null : props.machines[0]!.name || null;
   const filter = useMemo(() => sidebarFilter(query, props.machines, { machineId: props.selectedMachineId, paneId: props.selectedPaneId }, t, branchLabels, unnamed), [query, props.machines, props.selectedMachineId, props.selectedPaneId, t, branchLabels, unnamed]);
   const filterView = useMemo(() => ({ filter, reportBranches }), [filter, reportBranches]);
@@ -290,8 +296,8 @@ export function MachineSidebar(props: Props) {
       {props.footerStart}
       {/* one PC of the phone's several: which one, and back to the list in one tap, as a team switcher at a
           sidebar's foot does (Slack, Discord); Settings → Phone & devices keeps its Change PC row too */}
-      {exitToPcs !== null && (
-        <button type="button" className="btn btn-ghost sidebar-footer-action sidebar-footer-pc" onClick={leaveForPcs}>
+      {exitToPcs !== null && !drawerWidth && (
+        <button type="button" className="btn btn-ghost sidebar-footer-action sidebar-footer-pc" onClick={() => leavePcList(exitToPcs)}>
           <Monitor aria-hidden="true" />
           <span className="sidebar-footer-pc-name">{loneHostName ?? t("Change PC")}</span>
           {loneHostName !== null && <span className="sidebar-footer-pc-action">{t("Change PC")}</span>}
