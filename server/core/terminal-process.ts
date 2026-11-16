@@ -5,7 +5,7 @@
  */
 import type { HerdrPane, ServerMessage, SessionSnapshot } from "../../shared/protocol.ts";
 import { AttachOutputTail, AttachStartupProbes, isTakeoverExit } from "../attach-output.ts";
-import { checkedHerdrSocket, HerdrError, herdrSocketPath, paneRead, paneSendText, sessionSnapshot } from "../herdr/client.ts";
+import { checkedHerdrSocket, HerdrError, type HerdrFailureView, herdrSocketPath, paneRead, paneSendText, sessionSnapshot } from "../herdr/client.ts";
 import { CoreAttachSession } from "../herdr-core/attach-session.ts";
 import { coreConnection, HC_MOVED, hcBin } from "../herdr-core/runtime.ts";
 import { capabilities } from "../runtime/capabilities.ts";
@@ -237,7 +237,9 @@ export function paneGrid(snapshot: Pick<SessionSnapshot, "layouts">, pane: Pick<
   return rect ? { width: rect.width, height: rect.height } : null;
 }
 
-export function createSpawnAttachment({ attachments, retiringAttachments, terminalAttach, isStopped, closeAttachment, broadcast, sendOutput, reconcileOutput, holdPendingPane, inputReady, holdFor, heldRetry, retryFor, relookupFor }: {
+export function createSpawnAttachment({ attachments, retiringAttachments, terminalAttach, isStopped, closeAttachment, broadcast, sendOutput, reconcileOutput, holdPendingPane, inputReady, holdFor, heldRetry, retryFor, relookupFor, herdrFailure }: {
+  /** how a failed herdr call is worded in an error frame (the machine profile's), unset elsewhere */
+  herdrFailure?: HerdrFailureView;
   attachments: Map<string, PaneAttachment>;
   retiringAttachments: Map<string, Promise<void>>;
   terminalAttach: () => Promise<boolean>;
@@ -363,8 +365,9 @@ export function createSpawnAttachment({ attachments, retiringAttachments, termin
       try {
         attachment.process = start();
       } catch (error) {
-        const message = spawnFailure(paneId, error);
-        broadcast(paneId, { type: "error", code: error instanceof HerdrError ? error.code : "command_failed", message, pane_id: paneId });
+        const worded = herdrFailure !== undefined && error instanceof HerdrError && error.failedCall === true ? herdrFailure(error) : null;
+        const message = worded?.message ?? spawnFailure(paneId, error);
+        broadcast(paneId, { type: "error", code: worded?.code ?? (error instanceof HerdrError ? error.code : "command_failed"), message, pane_id: paneId });
         broadcast(paneId, { type: "pty-exit", pane_id: paneId, code: null });
         closeAttachment(paneId);
       }
@@ -609,8 +612,9 @@ export function createSpawnAttachment({ attachments, retiringAttachments, termin
             try {
               attachment.process = start();
             } catch (error) {
-              const message = spawnFailure(paneId, error);
-              broadcast(paneId, { type: "error", code: error instanceof HerdrError ? error.code : "command_failed", message, pane_id: paneId });
+              const worded = herdrFailure !== undefined && error instanceof HerdrError && error.failedCall === true ? herdrFailure(error) : null;
+              const message = worded?.message ?? spawnFailure(paneId, error);
+              broadcast(paneId, { type: "error", code: worded?.code ?? (error instanceof HerdrError ? error.code : "command_failed"), message, pane_id: paneId });
               finish();
             }
           }, (error: unknown) => {

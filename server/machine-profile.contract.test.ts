@@ -1242,3 +1242,39 @@ it("words a failed herdr call on its own answers only, when a profile and an ord
   expect(of("profile")[0]!.body).not.toBe(of("ordinary")[0]!.body);
   expect([new Set(of("profile").map((answer) => answer.cache)), new Set(of("ordinary").map((answer) => answer.cache))]).toEqual([new Set(["no-store"]), new Set([null])]);
 });
+
+/** The next `error` frame `socket` receives. */
+function nextError(socket: WebSocket): Promise<{ code: string; message: string }> {
+  const frame = deferred<{ code: string; message: string }>();
+  socket.addEventListener("message", (event) => {
+    const message = JSON.parse(String(event.data)) as { type: string; code: string; message: string };
+    if (message.type === "error") frame.resolve(message);
+  });
+  return bounded(frame.promise, 15_000);
+}
+
+it("words a failed herdr call in its WebSocket frames, and an ordinary server's frames keep herdr's pair", async () => {
+  const config = herdrConfig();
+  const socket = join(config, "herdr", "sessions", "a", "herdr.sock");
+  mkdirSync(dirname(socket), { recursive: true, mode: 0o700 });
+  const refusal = { code: `herdr-own-${Math.random().toString(36).slice(2)}`, message: "herdr's own words" };
+  refusingHerdr(socket, refusal);
+  const dir = state();
+  await bounded(launch(dir, { XDG_CONFIG_HOME: config, HERDR_REMOTE_SOCKET: "", HERDR_REMOTE_SESSION: "a" }).ready, 20_000);
+  const ordinary = await bounded(launch(state(), { OVIS_PROFILE: "", OVIS_PREVIEW: undefined, HERDR_SOCKET: socket }).ready, 20_000);
+  const frames = async (url: string, init?: { headers: Record<string, string> }) => {
+    const ws = new WebSocket(url, init as never);
+    cleanup.push(() => ws.close());
+    // the snapshot read as the socket opens, then an attach: each fails at herdr
+    const opened = nextError(ws);
+    const first = await opened;
+    await bounded(new Promise<void>((resolve) => { if (ws.readyState === WebSocket.OPEN) resolve(); else ws.addEventListener("open", () => resolve(), { once: true }); }), 15_000);
+    const attached = nextError(ws);
+    ws.send(JSON.stringify({ type: "attach", pane_id: "w1:p1", cols: 80, rows: 24 }));
+    return [first, await attached];
+  };
+  const mine = await frames(`ws+unix://${join(realpathSync(dir), "serve.sock")}:/ws`);
+  const theirs = await frames(`${ordinary.replace(/^http/, "ws")}/ws`, { headers: { authorization: headers.authorization } });
+  for (const frame of mine) expect([frame.code === refusal.code, frame.message === refusal.message]).toEqual([false, false]);
+  expect(theirs.map((frame) => ({ code: frame.code, message: frame.message }))).toEqual([refusal, refusal]);
+}, 60_000);

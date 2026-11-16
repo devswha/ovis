@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HerdrError } from "../herdr/client.ts";
-import { createSubmitText, pendingText, submitFraming } from "./composer.ts";
+import { createSubmitText, pendingFault, pendingText, submitFraming } from "./composer.ts";
 
 // The real RPC client against a unix socket this test owns; only herdr's answers are synthetic. The pane runs a
 // shell (herdr names no agent), so a chat message falls back from agent.prompt to the payload, as a typed line does.
@@ -156,4 +156,15 @@ it("refuses a message of more than twice its limit, and takes one of up to twice
   expect(pendingText(`${"\r\n".repeat(19_999)}a`)).toBe(`${"\n".repeat(19_999)}a`);
   expect(() => pendingText(`${"\r\n".repeat(20_000)}a`)).toThrow("at most 20000");
   expect(() => pendingText(`${"\n".repeat(40_000)}a`)).toThrow("at most 20000");
+});
+
+describe("a pending row's fault", () => {
+  it("is the view's words for a failed herdr call, and the error's own without one", () => {
+    const view = () => ({ code: "worded", message: "the view's words" });
+    const failed = () => new HerdrError("connect_failed", "herdr's own words", false, true);
+    expect([pendingFault(failed(), view), pendingFault(failed(), undefined)]).toEqual([view(), { code: "connect_failed", message: "herdr's own words" }]);
+    // a refusal the bridge words itself, and any other error, keep their own fault
+    expect(pendingFault(new HerdrError("agent_blocked", "the bridge's words"), view)).toEqual({ code: "agent_blocked", message: "the bridge's words" });
+    expect(pendingFault(new Error("other"), view)).toEqual({ code: "submit_failed", message: "other" });
+  });
 });
