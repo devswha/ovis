@@ -291,6 +291,30 @@ describe("a Claude pane whose turn ended on an API error", () => {
     expect(h.failures).toEqual([]);
   });
 
+  it("tells no failure of a turn that answered after /clear, while herdr still names the session before, which failed at once", async () => {
+    const h = await claudeHub(null, true);
+    // a new session's first turn fails at once, its transcript not found for the pane yet: herdr's word, as on main
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    writeFileSync(h.path, `${prompt("go")}${failedEntry}`);
+    handlers.onStatus(h.pane.pane_id, "idle", "claude");
+    expect(h.last().status).toBe("done");
+    // /clear moments later: the next turn answers in a session of its own, while herdr still names the first
+    handlers.onStatus(h.pane.pane_id, "working", "claude");
+    writeFileSync(join(root, `44444444-4444-4444-8444-${String(++sessions).padStart(12, "0")}.jsonl`), `${prompt("again")}${answer("Done")}`);
+    handlers.onStatus(h.pane.pane_id, "idle", "claude");
+    expect(h.last().status).toBe("done");
+    // the lookup, tried again a while later, finds the first session's transcript: it began before the pane's last rest
+    h.herdrSays({ ...h.pane, agent_status: "done" });
+    setSystemTime(new Date(Date.now() + 6000));
+    try {
+      await h.snapshot();
+      expect((await h.snapshot()).panes[0]!.agent_status).toBe("done");
+    } finally { setSystemTime(); }
+    expect(h.last().status).toBe("done");
+    expect(h.alerts).toEqual(["working", "done", "working", "done"]);
+    expect(h.failures).toEqual([]);
+  });
+
   it("tells nothing of a failure it never saw run: a pane found already at rest, after a restart", async () => {
     const h = await claudeHub(failed);
     handlers.onStatus(h.pane.pane_id, "idle", "claude");

@@ -373,9 +373,10 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   /**
    * where a Claude turn began in its transcript: the file, its size then (`from`) and how far claudeRest has read it since
    * (`read`). Or, for a turn begun with no transcript of its session yet (a new session: Claude Code writes it with its
-   * first message), when it began (`since`) and the transcript claudeRest last found not to be the turn's (`looked`)
+   * first message), when it began (`since`), when the pane last came to rest before it (`rested`, null: no rest seen) and
+   * the transcript claudeRest last found not to be the turn's (`looked`)
    */
-  type ClaudeMark = { path: string; id: string; from: number; read: number } | { path: null; since: number; looked: string | null };
+  type ClaudeMark = { path: string; id: string; from: number; read: number } | { path: null; since: number; rested: number | null; looked: string | null };
   /**
    * each Claude pane this server saw work, and where its turn began (ClaudeMark): only such a turn's failure is told, as
    * only a Codex turn this server saw run is (codexWorking), and only on what that turn wrote
@@ -383,13 +384,15 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   const claudeLooked = new Map<string, ClaudeMark>();
   /** how long before the working event that a turn began the transcript it writes may be: the prompt is written first */
   const CLAUDE_START_SLACK_MS = 5000;
+  /** when each Claude pane last came to rest, as its status event told it: a transcript begun before then is no later turn's */
+  const claudeRested = new Map<string, number>();
   /** Claude panes whose failure alert waits for the end of the background wait their failed rest is held on (claudeFailedAlert) */
   const claudeFailHeld = new Set<string>();
   /** A Claude pane is at work again (`began`), or no Claude pane any more: what its last turn ended on is no longer its rest. */
   const claudeWorking = (paneId: string, began: boolean): void => {
     claudeFailed.delete(paneId);
     claudeFailHeld.delete(paneId);
-    if (began) claudeLooked.set(paneId, claudeMark(paneId)); else claudeLooked.delete(paneId);
+    if (began) claudeLooked.set(paneId, claudeMark(paneId)); else { claudeLooked.delete(paneId); claudeRested.delete(paneId); }
   };
   /**
    * Where a Claude pane's transcript stands as a turn begins there: what follows is what that turn writes. With no
@@ -398,7 +401,9 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   function claudeMark(paneId: string): ClaudeMark {
     const session = claudeAgents.sessionOf(paneId);
     const file = session?.live === true ? plain(session.path) : null;
-    return session === null || file === null ? { path: null, since: statusNow(), looked: null } : { path: session.path, id: file.id, from: file.size, read: file.size };
+    return session === null || file === null
+      ? { path: null, since: statusNow(), rested: claudeRested.get(paneId) ?? null, looked: null }
+      : { path: session.path, id: file.id, from: file.size, read: file.size };
   }
   /**
    * The failure alert of a Claude turn that ended on an API error, after its status was told. A rest held on the turn's
@@ -423,7 +428,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
    * /resume the pane's binding moved to, or still names the old one of) or another file in its place says nothing of
    * this turn, and leaves herdr's word. A turn begun before its session's transcript was written reads the one the pane
    * names from its start, only once that is found to have begun with the turn: an older one is another session's, and
-   * so is one of another session than herdr names for the pane now (a lookup not caught up with a /clear).
+   * so is one of another session than herdr names for the pane now (a lookup not caught up with a /clear), and one
+   * begun before the pane's last rest before the turn (an earlier turn's, which herdr may still name after a /clear).
    */
   function claudeRest(paneId: string): ClaudeTurnEnd {
     let mark = claudeLooked.get(paneId);
@@ -435,7 +441,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       const looked = found === null ? null : `${session.path}\0${found.id}\0${found.size}`;
       if (found === null || looked === mark.looked) return null;
       const began = claudeTranscriptStart(session.path, found);
-      if (began === null || began < mark.since - CLAUDE_START_SLACK_MS) { mark.looked = looked; return null; }
+      if (began === null || began < mark.since - CLAUDE_START_SLACK_MS || (mark.rested !== null && began <= mark.rested)) { mark.looked = looked; return null; }
       mark = { path: session.path, id: found.id, from: 0, read: 0 };
       claudeLooked.set(paneId, mark);
     }
@@ -774,6 +780,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     // so no browser plays a finish for it first. An answer read after such a rest (a retry got through) is a finish
     if (raw === "working" || agent !== "claude") claudeWorking(paneId, raw === "working" && agent === "claude");
     const claudeEnd = agent === "claude" && raw !== "blocked" && raw !== "working" ? claudeRest(paneId) : null;
+    if (agent === "claude" && raw !== "blocked" && raw !== "working") claudeRested.set(paneId, statusNow());
     const claudeFailedNow = claudeEnd === "failed" && !claudeFailed.has(paneId);
     if (claudeFailedNow) claudeFailed.add(paneId);
     const claudeAnswered = claudeEnd === "answered" && claudeFailed.delete(paneId);
@@ -988,6 +995,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       if (claudeLooked.has(from)) { claudeLooked.set(to, claudeLooked.get(from)!); claudeLooked.delete(from); }
       if (claudeFailed.delete(from)) claudeFailed.add(to);
       if (claudeFailHeld.delete(from)) claudeFailHeld.add(to);
+      if (claudeRested.has(from)) { claudeRested.set(to, claudeRested.get(from)!); claudeRested.delete(from); }
       // a read record that cannot be written costs that record, never the rest of the move
       try { options.seenMoved?.(from, to, renumber); }
       catch (error) { console.warn(`seen: could not carry the reads of ${from} to ${to}:`, error); }
