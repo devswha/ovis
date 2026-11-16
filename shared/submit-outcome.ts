@@ -15,6 +15,13 @@ export const NO_AGENT_MESSAGE = "No agent is in front of this pane now; nothing 
  */
 export const GROK_QUEUED_MESSAGE = "The message is in Grok's queue and goes when Grok gets to it: Grok's screen did not show its empty prompt with only this message queued, so nothing more was pressed";
 
+/** The same, when the user had `count` rows queued in Grok before it: Send now never sends those. */
+export const grokQueuedBehindMessage = (count: number): string =>
+  `The message is in Grok's queue behind ${count} queued before it and goes when they do; nothing more was pressed`;
+
+/** The bridge's `submit_changed` message when the Enter that would send a Grok's queued message now may not have gone. */
+export const GROK_SEND_NOW_UNCONFIRMED_MESSAGE = "The message went to Grok's queue, but sending it now was not confirmed. Check the terminal before sending again.";
+
 /**
  * The bridge's `pasted_not_sent` message (#511): a message for an agent alone was pasted, then its Enter was held
  * back as its agent was no longer in front. The text may sit in the terminal's input line; it is never pasted again

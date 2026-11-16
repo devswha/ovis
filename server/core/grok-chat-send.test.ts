@@ -1,15 +1,15 @@
 import { afterEach, expect, it, mock, spyOn } from "bun:test";
 import * as client from "../herdr/client.ts";
-import { GROK_QUEUED_MESSAGE } from "../../shared/submit-outcome.ts";
-import { createSubmitText, GROK_QUEUE_DRAIN_CAP } from "./composer.ts";
+import { GROK_QUEUED_MESSAGE, grokQueuedBehindMessage } from "../../shared/submit-outcome.ts";
+import { createSubmitText } from "./composer.ts";
 
 afterEach(() => mock.restore());
 
 /**
  * Chat's immediate send: the composer's Send, and a saved copy's Send now (`sendNow`, its resend).
  * herdr's agent.prompt pastes and sends one Enter. A working Grok queues that Enter. Only Send now
- * then sends an empty-prompt Enter, and only on Grok's empty prompt with a queued row and nothing
- * over it. A plain Send and the terminal's input line stay one Enter.
+ * then sends one empty-prompt Enter, and only on Grok's empty prompt with the message the one row
+ * queued and nothing over it. A plain Send and the terminal's input line stay one Enter.
  */
 const submitter = () => createSubmitText({
   options: { submitDelayMs: 0 }, lastTyped: new Map(), attachments: new Map(), terminalAttach: async () => true,
@@ -73,20 +73,21 @@ it("keeps a plain chat Send to a working Grok to the one Enter that queues it", 
   expect(state.queue).toEqual(["hello from chat"]);
 });
 
-it("sends an empty-prompt Enter for each row Grok's queue footer still shows", async () => {
+it("leaves Send now queued behind the rows the user queued in Grok before it, and says so", async () => {
   const { state, keys } = grok({ queued: ["row A", "row B"] });
-  await sendNow();
-  expect(keys).toHaveBeenCalledTimes(3);
-  expect(state.sent).toEqual(["row A", "row B", "hello from chat"]);
+  const failed = await failure(sendNow());
+  expect(keys).not.toHaveBeenCalled();
+  expect(state.sent).toEqual([]);
+  expect(state.queue).toEqual(["row A", "row B", "hello from chat"]);
+  expect(failed?.code).toBe("submit_changed");
+  expect(failed?.message).toBe(grokQueuedBehindMessage(2));
 });
 
-it("reports Send now unconfirmed when Grok's queue footer never leaves", async () => {
-  const { keys } = grok({ queued: ["row A"] });
+it("presses one more Enter at most, even when Grok's queue footer does not leave", async () => {
+  const { keys } = grok();
   keys.mockImplementation(async () => {});
-  const failed = await failure(sendNow());
-  expect(failed).toBeInstanceOf(client.HerdrError);
-  expect(failed?.code).toBe("submit_changed");
-  expect(keys).toHaveBeenCalledTimes(GROK_QUEUE_DRAIN_CAP);
+  await sendNow();
+  expect(keys).toHaveBeenCalledTimes(1);
 });
 
 it("sends a working Grok's queued Send now with one empty-prompt Enter", async () => {

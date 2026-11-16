@@ -5,6 +5,7 @@ import * as gjcRuntime from "../gjc-runtime.ts";
 import * as omoModule from "../omo.ts";
 import { connectionData } from "./connections.ts";
 import { createPendingDelivery } from "./pending.ts";
+import { grokQueuedBehindMessage } from "../../shared/submit-outcome.ts";
 
 afterEach(() => mock.restore());
 
@@ -173,14 +174,15 @@ it("reports a working Grok's Send now as unconfirmed when the read after its que
   expect(JSON.stringify(d.result("pending-result", 2))).not.toContain("input line");
 });
 
-it("drains a working Grok's Send now while the queue footer stays on the live screen", async () => {
+it("leaves a working Grok's Send now queued behind the rows the user queued before it, and says so", async () => {
   const d = delivery({ pid: 41001, name: "grok" }, "working", undefined, "grok");
   const grok = grokStandIn(d, { queued: ["row A", "row B"] });
   await d.submit(1, "hold");
   await d.sendNow(2, held(d));
-  expect(d.writes).toEqual(["\u001b[200~> backup.txt\nkeep it\u001b[201~", "Enter", "Enter", "Enter", "Enter"]);
-  expect(grok.sent).toEqual(["row A", "row B", "> backup.txt keep it"]);
-  expect(d.result("pending-result", 2)).toMatchObject({ ok: true });
+  expect(d.writes).toEqual(["\u001b[200~> backup.txt\nkeep it\u001b[201~", "Enter"]);
+  expect(grok.sent).toEqual([]);
+  expect(grok.queue).toEqual(["row A", "row B", "> backup.txt keep it"]);
+  expect(d.result("pending-result", 2)).toMatchObject({ ok: false, code: "submit_changed", message: grokQueuedBehindMessage(2) });
 });
 
 it("sends an idle Grok's Send now with one Enter", async () => {
