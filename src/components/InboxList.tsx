@@ -140,7 +140,7 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
       question: questions.get(key) ?? null, plan: online ? row.entry.pane.plan : undefined, last: lastWords(summaries.get(key), t),
     });
   };
-  const found = inboxSearched(inboxFiltered(all, filter, activity), query, machines, t, wordsOf);
+  const found = forkInboxRows(inboxSearched(inboxFiltered(all, filter, activity), query, machines, t, wordsOf), settings.agentFriends);
 
   // a state change never moves a row under a finger or the keyboard's focus (AgentSidebar.tsx): while either is in
   // the list, rows keep the order last drawn; the reader's own doing (a filter, a query) draws them as they are at
@@ -205,8 +205,8 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
   useLayoutEffect(() => { if (wide && searchAsked) search.current?.focus(); }, [wide, searchAsked]);
 
   const severalPcs = machines.length > 1;
-  const rows = forkInboxRows(shown.map((row) => {
-    const { machine, entry } = row;
+  const rows = shown.map((row) => {
+    const { machine, entry, forkNested } = row;
     const { pane, workspace, tab } = entry;
     const online = machine.state === "connected";
     const status = inboxStatus(row, activity);
@@ -226,10 +226,10 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
     const state = !online ? t("Offline") : failed ? t("Turn failed") : inboxStateWord(group, t);
     const line = inboxRowLine({ online, group, words: wordsOf(row), place, machine: severalPcs ? machine.name : null, failed }, t);
     return {
-      key, machine, pane, online, status, group, title, line, failed, mark: paneMark(entry) ?? "", kind, state,
+      key, machine, pane, online, status, group, title, line, failed, mark: paneMark(entry) ?? "", kind, state, forkNested,
       asks: online && inboxAsks(group), since: online ? inboxSinceAt(group, summary, group === "blocked" ? stateSince(stamps, machine.id, pane.pane_id, pane.terminal_id, "blocked") : null) : null,
     };
-  }), settings.agentFriends);
+  });
   const timed = rows.some((row) => row.since !== null);
   // read again whenever the clock ticks, new words or a new wait land, or the rows that draw a time change (a filter
   // that drew none while the clock stood still brings one back)

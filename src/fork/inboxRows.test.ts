@@ -1,15 +1,15 @@
 import { expect, test } from "bun:test";
 import { forkInboxRows } from "./inboxRows.ts";
 
-const row = (id: string, parent?: string, machine = "local") => ({ machine: { id: machine }, pane: { pane_id: id, parent_pane_id: parent } });
-const ids = (rows: readonly { machine: { id: string }; pane: { pane_id: string } }[]) => rows.map((entry) => `${entry.machine.id}:${entry.pane.pane_id}`);
+const row = (id: string, parent?: string, machine = "local") => ({ machine: { id: machine }, entry: { pane: { pane_id: id, parent_pane_id: parent } } });
+const ids = (rows: readonly ReturnType<typeof row>[]) => rows.map((row) => `${row.machine.id}:${row.entry.pane.pane_id}`);
 
 test("helpers follow their conductor like the sidebar, moving the family to its first member", () => {
   const rows = [row("child", "root"), row("other"), row("root"), row("grandchild", "child"), row("sibling", "root")];
   const result = forkInboxRows(rows, true);
   expect(ids(result)).toEqual(["local:root", "local:child", "local:grandchild", "local:sibling", "local:other"]);
   expect(result.map((entry) => entry.forkNested)).toEqual([false, true, true, true, false]);
-  expect(rows.map((entry) => entry.pane.pane_id)).toEqual(["child", "other", "root", "grandchild", "sibling"]);
+  expect(rows.map((row) => row.entry.pane.pane_id)).toEqual(["child", "other", "root", "grandchild", "sibling"]);
 });
 
 test("a filtered-out conductor leaves a normal row; parents never match across PCs", () => {

@@ -20,8 +20,8 @@ when the last agent exits so a new pane after a restart keeps the same friend. M
 metadata retains the legacy fallback until the next roster observation. No API request/response shape
 or auth/observe guard changes.
 
-`src/fork/inboxRows.ts` applies the sidebar's existing family ordering after inbox filters/search and
-held ordering: a waiting helper brings its conductor with it, siblings keep their input order, and a
+`src/fork/inboxRows.ts` applies the sidebar's existing family ordering after inbox filters/search,
+before held ordering: a waiting helper brings its conductor with it, siblings keep their input order, and a
 filtered-out conductor leaves a normal row. IDs are machine-scoped. Fork CSS draws an indent and
 connector; pictures keep their normal full color. This follows the existing Ovis sidebar rather than
 introducing a competing agent-group interaction.
@@ -44,7 +44,8 @@ Hooks added/changed by this task (upstream files only):
 - `server/core/status.ts`: existing friend type import and option use the fork lookup type so the
   collector can pass metadata; no new runtime hook. Fork diff **+4/-0 → +4/-0** in the review fix.
 - `src/components/InboxList.tsx`: one import, one `forkInboxRows(..., settings.agentFriends)`
-  wrapper, one row-class suffix. Fork diff **+2/-1 → +6/-4**.
+  wrapper before the hold, one carried nesting flag, one row-class suffix. Fork diff
+  **+2/-1 → +7/-5** (review fix: **+6/-4 → +7/-5**).
 - `src/App.tsx`: one import plus one `ForkInboxBack` mount in the existing inbox-only branch.
   Fork diff **+43/-62 → +45/-63**.
 - `src/components/InboxRail.tsx`: one import plus a two-line `ForkInboxBack` wrapper around
@@ -98,6 +99,29 @@ regression exited 1 before implementation, then `TMPDIR="$HOME/.cache/ovis-tmp/i
 bun test server/fork/fork-alert-friends.test.ts server/fork/fork-friends.test.ts server/friends.test.ts
 server/push.test.ts server/conventions.test.ts` exited 0 (109 tests). All tests use disposable state
 and a fake loopback push service, not a real herdr session or device.
+
+Review finding 2 reproduced in a focused InboxList: an orphan helper and another row moved when
+their conductor appeared. Nesting now precedes `heldOrder`, so the new conductor appends while the
+reader holds a place, and the family nests once focus leaves. The fork component regression exited
+1 before implementation; `TMPDIR="$HOME/.cache/ovis-tmp/inbox-agent-clarity-review" bun test
+src/fork/fork-InboxList.test.tsx src/fork/inboxRows.test.ts src/lib/agentRoster.test.ts
+src/components/InboxList.test.tsx src/conventions.test.ts` exited 0 (86 tests).
+
+Finding 3 describes intentional opt-in behavior, not an implementation regression: before code was
+written, the user explicitly chose **With Agent friends** when offered that or a **Separate inbox
+setting**. The selected option said "project friends, nesting and cleaner header turn on together;
+no new setting." Nesting, CSS and Back therefore stay behind that off-by-default setting. Existing
+fork tests cover disabled branding, ordering and styling. Separating these controls would revise
+that approved choice and is not part of the review fixes.
+
+Review verification: the combined touched/fork, push and conventions suites passed (254 tests,
+21 files); scoped TypeScript passed after correcting the new alert test's optional-value assertion
+typing. All three inbox browser regressions passed again in the CI image as `runner`, with no network
+or host credentials. Logs, exact commands/exits and screenshots are under
+`$HOME/.cache/ovis-tmp/inbox-agent-clarity-review/`. Self-audit passed correctness, security, performance,
+types, coverage and hook scope: no new dependency, generated source, wire contract, polling or RPC.
+Whole-project checks/build remain skipped; browser runs built only disposable demo bundles. No push,
+PR, deployment or merge. The Bigpowers churn/RED-isolation scripts are absent and were not recreated.
 
 ## Three piles
 
