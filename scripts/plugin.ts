@@ -201,8 +201,10 @@ const machineProfile = fleetPreview(env) && env["OVIS_PROFILE"] === "machine";
 function ownerDoor(): string | null {
   if (!machineProfile) return null;
   try {
-    const record = JSON.parse(readFileSync(join(APP_STATE_DIR, "serve.lock", "http.json"), "utf8")) as { door?: unknown; socket?: unknown };
-    const own = join(realpathSync(APP_STATE_DIR), "serve.sock");
+    // the folder as the profile takes it (server/machine-profile.ts walkedStateDir): its record and its socket are there
+    const dir = realpathSync(APP_STATE_DIR);
+    const record = JSON.parse(readFileSync(join(dir, "serve.lock", "http.json"), "utf8")) as { door?: unknown; socket?: unknown };
+    const own = join(dir, "serve.sock");
     return record.door === 1 && record.socket === own ? own : null;
   } catch { return null; }
 }
@@ -217,9 +219,8 @@ function ownerFetch(door: string, input: string | URL | Request, init?: RequestI
   request.headers.delete("authorization");
   return fetch(request, { unix: door });
 }
-/** One request to the server at `path`: over TCP to `origin`, or on a machine profile's owner socket (ownerDoor). */
-function serverFetch(path: string, init: RequestInit = {}): Promise<Response> {
-  const door = ownerDoor();
+/** One request to the server at `path`: over TCP to `origin`, or on a machine profile's owner socket (`door`, ownerDoor). */
+function serverFetch(path: string, init: RequestInit = {}, door = ownerDoor()): Promise<Response> {
   return door === null ? fetch(`${origin}${path}`, init) : ownerFetch(door, `http://localhost${path}`, init);
 }
 
@@ -260,17 +261,33 @@ async function pairingParts(): Promise<{ qr: (text: string) => string; decodeOff
   return { qr, decodeOffer };
 }
 
-async function health(): Promise<boolean> {
+/**
+ * The server's health, when the app answers it; null otherwise. On a machine profile's owner socket the answer also
+ * counts without `herdr` when it carries `machine_profile` with `runtime_down` (server/machine-profile.ts machineHealth):
+ * the profile runs, and `engineDown` is its reason while its engine does not answer ("" with none given). Over TCP
+ * `engineDown` is always null.
+ */
+async function appHealth(): Promise<{ readonly engineDown: string | null } | null> {
+  // the door the request goes to and the answer is judged by: decided once
+  const door = ownerDoor();
   try {
-    const response = await serverFetch("/api/health", { signal: AbortSignal.timeout(1500) });
-    if (!response.ok) return false;
+    const response = await serverFetch("/api/health", { signal: AbortSignal.timeout(1500) }, door);
+    if (!response.ok) return null;
     // the port may hold another program's 200 (a kept port that went stale): only the app's answer
     // counts, in the shape every release has sent (server/index.ts)
-    const body = await response.json() as { ok?: unknown; herdr?: unknown; auth?: unknown };
-    return body.ok === true && typeof body.herdr === "object" && body.herdr !== null && appAuth(body.auth);
+    const body = await response.json() as { ok?: unknown; herdr?: unknown; auth?: unknown; machine_profile?: unknown };
+    if (body.ok !== true || !appAuth(body.auth)) return null;
+    const profile = door === null ? null : body.machine_profile as { runtime_down?: unknown; reason?: unknown } | null | undefined;
+    const engine = typeof profile === "object" && profile !== null && typeof profile.runtime_down === "boolean" ? profile : null;
+    if ((typeof body.herdr !== "object" || body.herdr === null) && engine === null) return null;
+    return { engineDown: engine?.runtime_down === true ? (typeof engine.reason === "string" ? engine.reason : "") : null };
   } catch {
-    return false;
+    return null;
   }
+}
+
+async function health(): Promise<boolean> {
+  return (await appHealth()) !== null;
 }
 
 /** Whether the app holds the port: its bridge health answers without asking herdr. */
@@ -1178,8 +1195,10 @@ function runningVersion(): string | null {
 /** Reporting "down" is not an action failure: herdr logs a nonzero exit as failed. */
 async function status(): Promise<number> {
   const pid = recordedPid();
-  const up = await health();
-  process.stdout.write(`${up ? "running" : "down"} ${origin}${pid === null ? "" : ` (pid ${pid})`}\n`);
+  const answer = await appHealth();
+  process.stdout.write(`${answer !== null ? "running" : "down"} ${origin}${pid === null ? "" : ` (pid ${pid})`}\n`);
+  // a machine profile that runs while its engine does not answer (appHealth)
+  if (typeof answer?.engineDown === "string") process.stdout.write(`engine: down${answer.engineDown === "" ? "" : ` (${answer.engineDown})`}\n`);
   const version = runningVersion();
   if (version !== null) process.stdout.write(`version: ${version}\n`);
   process.stdout.write(`config: ${CONFIG_FILES.length === 0 ? `none (settings go in ${join(CONFIG_DIR, "env")})` : CONFIG_FILES.join(", ")}\n`);

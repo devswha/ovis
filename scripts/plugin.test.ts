@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { spawn } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { platform, tmpdir, uptime } from "node:os";
-import { dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 
 import { COMMAND_ALIASES } from "./plugin-runtime.ts";
 import { herdrStateDir } from "./plugin-state.ts";
@@ -879,10 +879,11 @@ describe.skipIf(platform() === "win32")("a machine profile, under the fleet prev
    * A stand-in profile. `record`: what its lock records beside its port and socket (a string: the record's whole text);
    * `owner`: its socket's answer to a path instead of the stand-in's own; `at`: where its socket listens instead of
    * `serve.sock` in the state folder's real path, as a profile names it; `named`: the socket its record names, when not
-   * that one; `tcp`: its TCP port answers health as an ordinary server does. `settings` writes more lines into the
-   * plugin's settings file. `bearers` lists, for each call, its door and whether it carried an `authorization` header.
+   * that one; `tcp`: its TCP port answers health as an ordinary server does, or with this body. `settings` writes more
+   * lines into the plugin's settings file. `bearers` lists, for each call, its door and whether it carried an
+   * `authorization` header.
    */
-  function profilePc(record: Record<string, unknown> | string = { door: 1 }, more: { owner?: (path: string) => Response | undefined; at?: string; named?: string; tcp?: true } = {}) {
+  function profilePc(record: Record<string, unknown> | string = { door: 1 }, more: { owner?: (path: string) => Response | undefined; at?: string; named?: string; tcp?: true | Record<string, unknown> } = {}) {
     const calls: Call[] = [];
     const bearers: string[] = [];
     const state = join(scratch, "app-state");
@@ -906,7 +907,7 @@ describe.skipIf(platform() === "win32")("a machine profile, under the fleet prev
       return new Response(null, { status: 404 });
     } });
     const tcp = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
-      if (seen("tcp", request) === "/api/health") return Response.json(more.tcp ? APP_HEALTH : { ok: true });
+      if (seen("tcp", request) === "/api/health") return Response.json(more.tcp === undefined ? { ok: true } : more.tcp === true ? APP_HEALTH : more.tcp);
       return Response.json({ error: { code: "unauthorized", message: "Unauthorized" } }, { status: 401 });
     } });
     writeFileSync(join(state, "serve.lock", "http.json"), typeof record === "string" ? record : JSON.stringify({ port: tcp.port, hostname: "127.0.0.1", socket: more.named ?? socket, ...record }));
@@ -1027,6 +1028,45 @@ describe.skipIf(platform() === "win32")("a machine profile, under the fleet prev
     expect(pc.calls.map((call) => `${call.door} ${call.call}`)).toEqual(["socket GET /api/health"]);
   }, 30_000);
 
+  /** A profile's health while its engine does not answer (server/machine-profile.ts machineHealth): no `herdr` */
+  const ENGINE_DOWN = { ok: true, auth: { required: false, authenticated: true, via: "local", role: "drive" }, machine_profile: { engine: "herdr", runtime_down: true, reason: "herdr is not running for the selected session" } };
+
+  it("takes a profile whose engine does not answer as running on its owner socket: status says the engine is down, add goes on", async () => {
+    const pc = profilePc({ door: 1 }, { owner: (path) => path === "/api/health" ? Response.json(ENGINE_DOWN) : undefined });
+    try {
+      const status = await run("status", pc.env);
+      expect(status.out.split("\n").slice(0, 2), status.err).toEqual([`running http://127.0.0.1:${pc.port}`, "engine: down (herdr is not running for the selected session)"]);
+      const add = await run("add", pc.env);
+      expect([add.out, add.exitCode], add.err).toEqual(["This PC is already in an Ovis account (acct_1).\n", 0]);
+      printed(pc, status, add);
+    } finally { await pc.stop(); }
+    expect(pc.calls.map((call) => `${call.door} ${call.call}`)).toEqual(["socket GET /api/health", "socket GET /api/health", "socket GET /api/account/status"]);
+  }, 30_000);
+
+  it("does not take that health answer from a TCP port as the app's, with the preview off", async () => {
+    const pc = profilePc({ door: 1 }, { tcp: ENGINE_DOWN });
+    try {
+      const env = { ...pc.env, OVIS_PREVIEW: undefined };
+      const status = await run("status", env);
+      const add = await run("add", env);
+      expect([status.out.split("\n")[0], status.out.includes("engine:"), add.err, add.exitCode]).toEqual([`down http://127.0.0.1:${pc.port}`, false, `Ovis is not running at http://127.0.0.1:${pc.port}; start it first\n`, 1]);
+    } finally { await pc.stop(); }
+    expect(pc.calls.map((call) => `${call.door} ${call.call}`)).toEqual(["tcp GET /api/health", "tcp GET /api/health"]);
+  }, 30_000);
+
+  it("finds its record and socket where the profile takes a state folder named through a link and `..`", async () => {
+    const pc = profilePc();
+    // `<link>/..` names the folder that holds the link, as the profile resolves its state folder (realpathSync), not
+    // the parent of the link's target
+    mkdirSync(join(scratch, "sub", "deeper"), { recursive: true });
+    symlinkSync(join(scratch, "sub", "deeper"), join(scratch, "via"));
+    try {
+      const status = await run("status", { ...pc.env, OVIS_STATE_DIR: `${join(scratch, "via")}/../${basename(pc.state)}` });
+      expect(status.out.split("\n")[0], status.err).toBe(`running http://127.0.0.1:${pc.port}`);
+    } finally { await pc.stop(); }
+    expect(pc.calls.map((call) => `${call.door} ${call.call}`)).toEqual(["socket GET /api/health"]);
+  }, 30_000);
+
   it("takes its owner socket's refusal as the answer and does not ask the TCP port instead", async () => {
     const pc = profilePc({ door: 1 }, { owner: () => Response.json({ error: { code: "unauthorized", message: "Unauthorized" } }, { status: 401 }) });
     try {
@@ -1038,7 +1078,7 @@ describe.skipIf(platform() === "win32")("a machine profile, under the fleet prev
     expect(pc.calls.map((call) => `${call.door} ${call.call}`)).toEqual(["socket GET /api/health", "socket GET /api/health"]);
   }, 30_000);
 
-  it("reaches a real machine profile on its owner socket: status says it runs and add reads its account status there", async () => {
+  it("reaches a real machine profile on its owner socket: status says it runs and add reads its account status there, and status says when its herdr is down", async () => {
     const { createServer } = await import("../server/index.ts");
     const { RelayService } = await import("../server/relay/service.ts");
     const { FakeAccountService } = await import("../shared/account-service-fake.ts");
@@ -1072,6 +1112,11 @@ describe.skipIf(platform() === "win32")("a machine profile, under the fleet prev
       const add = await run("add", env, { args: ["--print"] });
       expect([add.out, add.exitCode], add.err).toEqual(["Adding this PC needs a terminal: the QR code and the code to type are a key to this PC, so they are never written to a pipe, a file or a log. Run ovis add in a terminal (over ssh, run ssh -t).\n", 1]);
       printed({ socket }, status, add);
+      // its herdr gone: the profile still runs, and says why its engine does not answer
+      herdr.stop(true);
+      rmSync(join(scratch, "herdr.sock"), { force: true });
+      const down = await run("status", env);
+      expect(down.out.split("\n").slice(0, 2), down.err).toEqual([`running http://127.0.0.1:${server.port}`, "engine: down (herdr is not running for the selected session)"]);
       // control: the same profile with no door in its record is asked on TCP, which answers liveness only
       writeFileSync(join(state, "serve.lock", "http.json"), JSON.stringify({ port: server.port, hostname: "127.0.0.1", socket }));
       expect((await run("status", env)).out.split("\n")[0]).toBe(`down http://127.0.0.1:${server.port}`);
