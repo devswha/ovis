@@ -30,10 +30,11 @@ const snapshot: SessionSnapshot = {
   panes: [pane("w1", "w1:t1"), pane("w1", "w1:t2"), pane("w2", "w2:t1")],
 };
 // the test renderer draws no DOM: a node stands in for every element, connected and measurable, so the tab's menu can open
+let dragTargets: HTMLElement[] = [];
 const node = (): HTMLElement => ({
   isConnected: true, offsetWidth: 200, offsetHeight: 100, dataset: {}, scrollLeft: 0, scrollWidth: 0, clientWidth: 0,
-  getBoundingClientRect: () => ({ top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 }),
-  querySelector: () => null, querySelectorAll: () => [], contains: () => false, closest: () => null,
+  getBoundingClientRect: () => ({ top: 0, left: 0, right: 100, bottom: 20, width: 100, height: 20 }),
+  querySelector: () => null, querySelectorAll: (selector: string) => selector === ".fork-tab-chip" ? dragTargets : [], contains: () => false, closest: () => null,
   focus() {}, addEventListener() {}, removeEventListener() {},
 }) as unknown as HTMLElement;
 const noKeys = { altKey: false, shiftKey: false, ctrlKey: false, metaKey: false, repeat: false, preventDefault() {}, stopPropagation() {} };
@@ -50,6 +51,7 @@ describe("the tab strip on a PC the Herdr app lays out", () => {
     for (const key of ["window", "document", "navigator", "getComputedStyle", "localStorage", "HTMLElement", "CSS", "IS_REACT_ACT_ENVIRONMENT", "requestAnimationFrame", "cancelAnimationFrame"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     stored.clear();
     requested = [];
+    dragTargets = [];
     activeTab = { dataset: { tabId: "w1:t1" } };
     const storage = { getItem: (key: string) => stored.get(key) ?? null, setItem: (key: string, value: string) => { stored.set(key, value); }, removeItem: (key: string) => { stored.delete(key); } };
     const events = new EventTarget();
@@ -185,8 +187,12 @@ describe("the tab strip on a PC the Herdr app lays out", () => {
         await act(async () => chip.props.onKeyDown({ ...noKeys, key: "ArrowRight", altKey: true, shiftKey: true }));
       } else {
         await act(async () => {
-          chip.props.onDragStart({ stopPropagation() {}, dataTransfer: { setData() {} } });
-          renderer!.root.findByProps({ "data-tab-id": sibling.tab_id }).props.onDrop({ preventDefault() {}, stopPropagation() {}, clientX: 10, currentTarget: node() });
+          dragTargets = [{ ...node(), dataset: { tabId: sibling.tab_id } }];
+          const event = { ...noKeys, pointerType: "mouse", pointerId: 1, isPrimary: true, button: 0, clientX: 0, clientY: 10,
+            currentTarget: { ...node(), setPointerCapture() {}, hasPointerCapture: () => false } };
+          chip.props.onPointerDown(event);
+          chip.props.onPointerMove({ ...event, clientX: 80 });
+          chip.props.onPointerUp({ ...event, clientX: 80 });
         });
       }
       expect(requested).toEqual(["/api/tab/move"]);

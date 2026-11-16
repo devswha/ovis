@@ -2,6 +2,8 @@ import { useEffect, useRef, type ReactNode } from "react";
 import { Check, Hammer, Terminal } from "lucide-react";
 import type { HerdrPane, HerdrTab, PaneInfo } from "../../shared/protocol.ts";
 import { rowMenuAnchor } from "../components/RowMenu.tsx";
+import type { useTabReorder } from "../lib/useTabReorder.ts";
+import type { groupAgentTabs } from "./groupAgentTabs.ts";
 import "./tab-chips.css";
 
 type Point = { x: number; y: number };
@@ -15,8 +17,7 @@ interface Props {
   onClose?: (tab: HerdrTab) => void;
   onRename?: (tab: HerdrTab) => void;
   onMove?: (tabId: string, direction: -1 | 1) => void;
-  canDrop?: (from: string, to: string) => boolean;
-  onDrop?: (from: string, to: string, after: boolean) => void;
+  drag?: Pick<ReturnType<typeof useTabReorder>, "onPointerDown" | "onPointerMove" | "onPointerUp" | "cancelDrag" | "consumeClick">;
   statusMark: (tab: HerdrTab) => ReactNode;
   sheet?: boolean;
   onDismiss?: () => void;
@@ -24,9 +25,18 @@ interface Props {
   popup?: "menu" | "dialog";
 }
 
+/** Folded drags use sibling geometry; root tabs retain upstream's geometry. */
+export function forkChipBoundary(group: ReturnType<typeof groupAgentTabs>, row: HTMLElement | null, id: string, x: number): number | null | undefined {
+  if (!group.parentOf.has(id)) return undefined;
+  for (const chip of row?.querySelectorAll<HTMLElement>(".fork-tab-chip") ?? []) {
+    const box = chip.getBoundingClientRect();
+    if (x >= box.left && x <= box.right) return group.dropBoundary(id, chip.dataset["tabId"] ?? "", x >= box.left + box.width / 2);
+  }
+  return null;
+}
+
 /** Sibling controls, never buttons inside the parent's tab/menu button. */
-export function ForkTabChips({ tabs, paneFor, nameOf, selectedTab, onSelect, onMenu, onClose, onRename, onMove, canDrop, onDrop, statusMark, sheet = false, onDismiss, panelId, popup = "menu" }: Props) {
-  const dragged = useRef<string | null>(null);
+export function ForkTabChips({ tabs, paneFor, nameOf, selectedTab, onSelect, onMenu, onClose, onRename, onMove, drag, statusMark, sheet = false, onDismiss, panelId, popup = "menu" }: Props) {
   const held = useRef<{ timer: ReturnType<typeof setTimeout>; x: number; y: number; fired: boolean } | null>(null);
   const cancel = (): void => { if (held.current) clearTimeout(held.current.timer); held.current = null; };
   useEffect(() => cancel, []);
@@ -45,22 +55,12 @@ export function ForkTabChips({ tabs, paneFor, nameOf, selectedTab, onSelect, onM
         title={nameOf(tab)} aria-label={nameOf(tab)} aria-selected={sheet ? undefined : active} aria-pressed={sheet && popup === "dialog" ? active : undefined} aria-checked={sheet && popup === "menu" ? active : undefined}
         aria-controls={sheet ? undefined : panelId} tabIndex={sheet || active ? 0 : -1} aria-haspopup={popup}
         aria-keyshortcuts={onMove ? "Shift+F10 Alt+Shift+ArrowLeft Alt+Shift+ArrowRight" : "Shift+F10"}
-        draggable={onDrop !== undefined}
-        onDragStart={(event) => { cancel(); event.stopPropagation(); dragged.current = tab.tab_id; event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", tab.tab_id); }}
-        onDragEnd={() => { dragged.current = null; }}
-        onDragOver={(event) => { if (dragged.current && canDrop?.(dragged.current, tab.tab_id)) { event.preventDefault(); event.dataTransfer.dropEffect = "move"; } }}
-        onDrop={(event) => {
-          const from = dragged.current;
-          dragged.current = null;
-          if (!from || !canDrop?.(from, tab.tab_id)) return;
-          event.preventDefault(); event.stopPropagation();
-          const box = event.currentTarget.getBoundingClientRect();
-          onDrop?.(from, tab.tab_id, event.clientX >= box.left + box.width / 2);
-        }}
+        onDragStart={(event) => event.preventDefault()}
+        onLostPointerCapture={() => drag?.cancelDrag()}
         onMouseDown={sheet ? (event) => event.preventDefault() : undefined}
         onPointerDown={(event) => {
           cancel();
-          if (event.pointerType === "mouse") return;
+          if (event.pointerType === "mouse") { drag?.onPointerDown(event, tab.tab_id); return; }
           const anchor = event.currentTarget;
           const press = { x: event.clientX, y: event.clientY, fired: false, timer: setTimeout(() => {
             press.fired = true;
@@ -69,13 +69,14 @@ export function ForkTabChips({ tabs, paneFor, nameOf, selectedTab, onSelect, onM
           }, 450) };
           held.current = press;
         }}
-        onPointerMove={(event) => { const press = held.current; if (press && Math.hypot(event.clientX - press.x, event.clientY - press.y) > 8) cancel(); }}
-        onPointerUp={() => { if (held.current) clearTimeout(held.current.timer); }} onPointerCancel={cancel}
+        onPointerMove={(event) => { const press = held.current; if (press && Math.hypot(event.clientX - press.x, event.clientY - press.y) > 8) cancel(); drag?.onPointerMove(event); }}
+        onPointerUp={(event) => { if (held.current) clearTimeout(held.current.timer); drag?.onPointerUp(event); }}
+        onPointerCancel={() => { cancel(); drag?.cancelDrag(); }}
         onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); if (!held.current?.fired) menu(tab, event.currentTarget, { x: event.clientX, y: event.clientY }); }}
         onClick={(event) => {
           if (held.current?.fired) { cancel(); return; }
           cancel();
-          if (event.ctrlKey) return;
+          if (drag?.consumeClick(event.detail) || event.ctrlKey) return;
           event.currentTarget.focus({ preventScroll: true });
           if (pane) onSelect(pane.pane_id);
           onDismiss?.();

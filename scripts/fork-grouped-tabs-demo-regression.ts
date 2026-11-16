@@ -154,11 +154,12 @@ try {
                 await page.mouse.move(start.x, start.y);
                 await page.mouse.down();
                 await page.mouse.move(end.x, end.y, { steps: 6 });
-                await guide.waitFor({ timeout: 5_000 });
+                await page.waitForFunction(() => document.querySelector(".split-drop.is-visible")?.getAttribute("data-edge") === "right", null, { timeout: 5_000 });
                 await page.mouse.move(start.x, start.y, { steps: 6 });
-                await guide.waitFor({ state: "hidden" });
+                // Upstream keeps the outline while dragging, but offers no split over the strip.
+                await page.waitForFunction(() => document.querySelector(".split-drop.is-visible")?.getAttribute("data-edge") === null);
                 await page.mouse.move(end.x, end.y, { steps: 6 });
-                await guide.waitFor();
+                await page.waitForFunction(() => document.querySelector(".split-drop.is-visible")?.getAttribute("data-edge") === "right");
                 await page.keyboard.press("Escape");
                 await page.mouse.up();
                 await guide.waitFor({ state: "hidden" });
@@ -166,11 +167,11 @@ try {
                 await page.mouse.move(start.x, start.y);
                 await page.mouse.down();
                 await page.mouse.move(end.x, end.y, { steps: 6 });
-                await guide.waitFor();
+                await page.waitForFunction(() => document.querySelector(".split-drop.is-visible")?.getAttribute("data-edge") === "right");
                 await page.mouse.up();
                 await page.locator(".pane-split.is-split").waitFor();
-                await page.locator(`[data-layout-pane=${JSON.stringify(panes.api)}]`).waitFor({ state: "visible" });
-                await page.locator(`[data-layout-pane=${JSON.stringify(panes.web)}]`).waitFor({ state: "visible" });
+                await page.locator(`.pane-split.is-split [data-layout-pane=${JSON.stringify(panes.api)}]:visible`).waitFor();
+                await page.locator(`.pane-split.is-split [data-layout-pane=${JSON.stringify(panes.web)}]:visible`).waitFor();
                 await guide.waitFor({ state: "hidden" });
               }
             }

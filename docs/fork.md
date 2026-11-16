@@ -36,7 +36,7 @@ Hook footprint (insertions/deletions vs `upstream/main`, merge base, measured wi
 | --- | --- | --- | --- |
 | `src/components/TabStrip.tsx` | +23/-8 | +52/-27 | 3 imports; grouping/layout calls, selection guards, 2 chip mounts; independent child picker |
 | `src/components/RowMenu.tsx` | +10/-3 | +19/-8 | optional trailing slot, 2 generic sibling render sites |
-| `src/lib/useTabReorder.ts` | +1/-2 | +9/-7 | optional adjacent-boundary callback and generic move handle, original fallback preserved |
+| `src/lib/useTabReorder.ts` | +1/-2 | +12/-6 | optional adjacent/drop-boundary callbacks, original geometry fallback preserved |
 | `shared/protocol.ts` | +15/-1 | +17/-2 | type import + intersection |
 | `server/herdr-core/snapshot.ts` | +3/-1 | +4/-1 | existing fork import extended + pane spread |
 
@@ -46,21 +46,27 @@ Regression coverage: `src/fork/fork-group-agent-tabs.test.ts`,
 `scripts/fork-grouped-tabs-demo-regression.ts` uses synthetic demo-only parents and hc roles to
 exercise desktop/phone grouping, child selection/title, rename, phone sheet, touch targets,
 large sibling groups and the setting disabled. No real session or user state is used.
-`src/lib/useTabReorder.ts` needs a generic optional adjacent-boundary callback (another upstream
+`src/lib/useTabReorder.ts` needs generic optional boundary callbacks (another upstream
 extension-point candidate): the fork maps parent moves to the next visible root in native index
 coordinates. Without this, Move right/left can silently step across folded children without moving
 the parent on screen. Children stay pinned to their parent but can reorder among direct siblings by
 menu, Alt+Shift+Arrow keys, or mouse drag. Fork-only sibling/drop boundaries reject other groups and
-cross-generation drops. The generic `moveTo` handle shares upstream's fixed-layout, in-flight and
-acknowledgement guards; root-tab dragging remains upstream. Touch keeps scrolling and long-press menus.
+cross-generation drops. The generic drop-boundary callback shares upstream's fixed-layout, in-flight and
+acknowledgement guards; root-tab geometry remains upstream. Chips use the same pointer-drag
+controller as normal tabs, so dragging outside the strip still offers a split and opens the child
+beside the current pane. Returning to the strip clears the split target; Escape, pointer cancellation
+and lost capture cancel it. The separate HTML drag implementation and unused `moveTo` handle are gone.
+Touch keeps scrolling and long-press menus.
 Child pickers opt out of the selected-tab ellipsis lifecycle, so long presses and keyboard menus
 on inactive chips stay open without selecting them; the existing missing-tab cleanup still applies.
 A chip opened from More or the phone sheet resolves upstream's `rowMenuAnchor` before dismissing
 that surface, so the child menu stays attached to the persistent More/header button, not a removed chip.
 The demo regression covers an overflowed group's child menu and its Rename action, desktop sibling
 shortcuts and drag, and an inactive phone child's long-press menu and sibling move without selection.
+It also checks a child drag's split target, return to the strip, Escape and successful split drop;
+a TabStrip regression covers split callbacks and click suppression. Both failed before the fix.
 
-Validation: scoped fork/TabStrip/RowMenu/hc tests, conventions and changelog tests passed (275
+Validation: scoped fork/TabStrip/RowMenu/hc tests, conventions and changelog tests passed (276
 cases); changed-file TypeScript diagnostics passed for both configs. In `herdr-ci-runner:local`,
 `tab-menu-regression`, `tab-overflow-regression`, `mobile-tabs-regression`,
 `fork-grouped-tabs-demo-regression`, `fork-tab-alignment-demo-regression`,

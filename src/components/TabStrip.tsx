@@ -44,7 +44,7 @@ import { indicatorGlyph, paneStatus, rollupStatus, STATUS_WORD, type KnownStatus
 import { useSettings } from "../lib/settings.ts";
 import { TabFriends } from "../fork/TabFriends.tsx";
 import { groupAgentTabs } from "../fork/groupAgentTabs.ts";
-import { ForkTabChips } from "../fork/TabChips.tsx";
+import { ForkTabChips, forkChipBoundary } from "../fork/TabChips.tsx";
 import { forkTabGroupStyle, forkTabsInRow } from "../fork/tabGroupLayout.ts";
 import { AgentMark } from "./AgentMark.tsx";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
@@ -217,7 +217,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   const stripTabs = forkTabs.tabs;
   // a watching device moves no tab (the server refuses it read_only): the order is fixed for it as for the Herdr app's
   const reorderable = arrange && closable;
-  const reorder = useTabReorder({ owner: `${machineId}:${workspace.workspace_id}`, tabs, strip, moveTab, adjacentBoundary: forkTabs.adjacentBoundary, fixed: !reorderable,
+  const reorder = useTabReorder({ owner: `${machineId}:${workspace.workspace_id}`, tabs, strip, moveTab, adjacentBoundary: forkTabs.adjacentBoundary, dropBoundary: (id, x) => forkChipBoundary(forkTabs, strip.current, id, x), fixed: !reorderable,
     failed: (reason) => setError(t("Move failed: {reason}", { reason: said(reason) })),
     stale: () => setError(t("Tab order did not refresh. Try again.")),
     // dragged down out of the strip, a tab opens its pane in half of the pane area (lib/split.ts)
@@ -611,7 +611,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
       previousFocus: touch ? tabButton : document.activeElement instanceof HTMLElement ? document.activeElement : null, touch });
   };
 
-  const chipsOf = (tab: HerdrTab, sheet = false): ReactNode => !forkTabs.children.has(tab.tab_id) ? null : <ForkTabChips tabs={forkTabs.children.get(tab.tab_id) ?? []} paneFor={paneFor} nameOf={nameOf} selectedTab={selectedPane.tab_id} onSelect={onSelectPane} sheet={sheet} panelId={panePanel} popup={popup} onDismiss={sheet ? () => { setMoreAnchor(null); onSheetClose?.(); } : undefined} onClose={closable ? requestClose : undefined} onRename={closable && renameOffered ? beginRename : undefined} onMove={reorderable ? reorder.moveAdjacent : undefined} canDrop={(from, to) => forkTabs.dropBoundary(from, to, false) !== null} onDrop={!reorderable || reorder.moving ? undefined : (from, to, after) => { const boundary = forkTabs.dropBoundary(from, to, after); if (boundary !== null) reorder.moveTo(from, boundary); }} statusMark={(child) => busyStatus(statusOf(child)) ? statusMark(statusOf(child)) : null} onMenu={(child, anchor, point) => { reorder.cancelDrag(); setPicker({ tab: child, anchor, point, previousFocus: anchor, touch: !point, independent: true }); }} />;
+  const chipsOf = (tab: HerdrTab, sheet = false): ReactNode => !forkTabs.children.has(tab.tab_id) ? null : <ForkTabChips tabs={forkTabs.children.get(tab.tab_id) ?? []} paneFor={paneFor} nameOf={nameOf} selectedTab={selectedPane.tab_id} onSelect={onSelectPane} sheet={sheet} panelId={panePanel} popup={popup} onDismiss={sheet ? () => { setMoreAnchor(null); onSheetClose?.(); } : undefined} onClose={closable ? requestClose : undefined} onRename={closable && renameOffered ? beginRename : undefined} onMove={reorderable ? reorder.moveAdjacent : undefined} drag={reorder} statusMark={(child) => busyStatus(statusOf(child)) ? statusMark(statusOf(child)) : null} onMenu={(child, anchor, point) => { reorder.cancelDrag(); setPicker({ tab: child, anchor, point, previousFocus: anchor, touch: !point, independent: true }); }} />;
 
   // Native tab menu: pane actions live on the pane itself. A split tab drawn one pane at a time
   // has no other way to its panes, so they lead its menu, the open one marked.
