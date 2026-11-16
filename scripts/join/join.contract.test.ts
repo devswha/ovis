@@ -327,13 +327,22 @@ setInterval(() => {}, 1 << 30);
     if (builtSilent.exitCode !== 0) throw new Error(builtSilent.stderr.toString());
     silentKit = makeKit({ server: join(shifty, "silent", "ovis-server"), pty: PTY!, out: join(kits, "kit-silent"), testKit: true, ...ORIGINS, url: ORIGINS.url.replace(/\/kit$/, "/kit-silent") });
     writeFileSync(join(shifty, "fake.ts"), `${STAND_IN_DOOR}
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 const [command, sub] = process.argv.slice(2);
+// /var/tmp/fake-status-fails holds how many account status reads still fail (the server restarting, say)
+function statusFails(): boolean {
+  const left = existsSync("/var/tmp/fake-status-fails") ? Number(readFileSync("/var/tmp/fake-status-fails", "utf8")) : 0;
+  if (!(left > 0)) return false;
+  writeFileSync("/var/tmp/fake-status-fails", String(left - 1));
+  return true;
+}
 if (command === "--version") console.log(${VERSION});
 if (command === "plugin") {
   if (sub !== "add") process.exit(0);
   // a device of some account pairs during the add: the server names that account from then on
   if (existsSync("/var/tmp/fake-add-links")) writeFileSync("/var/tmp/fake-account-listed", "");
+  // the server is back by the time the add has run
+  rmSync("/var/tmp/fake-status-fails", { force: true });
   if (existsSync("/var/tmp/fake-add-fails")) { console.log("stand-in add: failed"); process.exit(1); }
   console.log("stand-in add: done");
   process.exit(0);
@@ -345,7 +354,7 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
   setInterval(() => {}, 1 << 30);
 } else {
   serveAsProfile((request) => new URL(request.url).pathname === "/api/account/status"
-    ? (existsSync("/var/tmp/fake-account-listed") ? Response.json({ account: "acct_standin" })
+    ? (statusFails() ? new Response("restarting", { status: 503 }) : existsSync("/var/tmp/fake-account-listed") ? Response.json({ account: "acct_standin" })
       : existsSync("/var/tmp/fake-account-null") ? Response.json({ account: null }) : new Response("no account here", { status: 503 }))
     : Response.json({ ok: true, machine_profile: { engine: "herdr" }, herdr: { terminal_attach: true },
       // its pairing gate as /var/tmp/fake-gate-open or -closed says; with neither, its health names none
@@ -386,6 +395,9 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
   }, 120_000);
 
   test("1, 5, 7: a fresh machine with a user manager joins as far as the QR code, is listed once, and the undo gives everything back", async () => {
+    // systemd as PID 1 makes cgroups for the user manager and the trial's unit: under docker that takes --privileged,
+    // the host's cgroup namespace and /sys/fs/cgroup mounted writable. systemd keeps to the cgroup docker gives the
+    // container, and no test here writes under /sys/fs/cgroup
     const name = await container("ovis-join-sd", ["--privileged", "--cgroupns=host", "--tmpfs", "/run", "--tmpfs", "/run/lock", "-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
       "-v", `${HERDR}:/opt/eng/herdr:ro`, "-v", `${scratch}/certs/ca.pem:/certs/ca.pem:ro`, SYSTEMD_IMAGE]);
     const root = (script: string) => docker(["exec", "-i", "-u", "root", name, "sh", "-c", script]);
@@ -949,6 +961,34 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
     note("caseSameAccount", `exit ${again.code}\n${again.stdout}${again.stderr}`);
     // regression (before: exit 37, the server, its identity and its state removed)
     expect([again.code, (await m.sh(`test -f ${TRIAL}/receipt`)).code, (await m.processes()).includes("ovis-server serve")]).toEqual([38, 0, true]);
+    expect((await m.sh(`rm /var/tmp/fake-add-fails /var/tmp/fake-account-listed /var/tmp/fake-gate-closed && sh ${TRIAL}/join.sh --uninstall`)).code).toBe(0);
+  }, 300_000);
+
+  test("a run again whose account read before the add fails once and then answers, the add failing: the same account as before, kept (exit 38)", async () => {
+    const m = await runnerMachine();
+    await serveHerdr(m);
+    expect((await m.sh("touch /var/tmp/fake-account-listed /var/tmp/fake-gate-closed")).code).toBe(0);
+    expect((await m.sh(`${fakeKit.line} --yes </dev/null`)).code).toBe(38);
+    // run 2: the first status read fails (the server just restarted), the add fails, the account unchanged
+    expect((await m.sh("echo 1 > /var/tmp/fake-status-fails && touch /var/tmp/fake-add-fails")).code).toBe(0);
+    const again = await m.sh(`${fakeKit.line} --yes </dev/null`);
+    note("caseBeforeUnread", `[one failed read] exit ${again.code}\n${again.stdout}${again.stderr}`);
+    // regression (before: exit 37, the server, its identity and its state removed)
+    expect([again.code, (await m.sh(`test -f ${TRIAL}/receipt`)).code, (await m.processes()).includes("ovis-server serve")]).toEqual([38, 0, true]);
+    expect((await m.sh(`rm /var/tmp/fake-add-fails /var/tmp/fake-account-listed /var/tmp/fake-gate-closed && sh ${TRIAL}/join.sh --uninstall`)).code).toBe(0);
+  }, 300_000);
+
+  test("a run again whose account cannot be read before the add, the add failing and the server naming an account after it: stopped, the install kept (exit 39)", async () => {
+    const m = await runnerMachine();
+    await serveHerdr(m);
+    expect((await m.sh("touch /var/tmp/fake-account-listed /var/tmp/fake-gate-closed")).code).toBe(0);
+    expect((await m.sh(`${fakeKit.line} --yes </dev/null`)).code).toBe(38);
+    // run 2: every status read before the add fails; the add fails; after it the server names the account again
+    expect((await m.sh("echo 99 > /var/tmp/fake-status-fails && touch /var/tmp/fake-add-fails")).code).toBe(0);
+    const again = await m.sh(`${fakeKit.line} --yes </dev/null`);
+    note("caseBeforeUnread", `[no read answered] exit ${again.code}\n${again.stdout}${again.stderr}`);
+    // regression (before: exit 37, the server, its identity and its state removed)
+    expect([again.code, (await m.sh(`test -f ${TRIAL}/receipt`)).code, (await m.processes()).includes("ovis-server serve")]).toEqual([39, 0, false]);
     expect((await m.sh(`rm /var/tmp/fake-add-fails /var/tmp/fake-account-listed /var/tmp/fake-gate-closed && sh ${TRIAL}/join.sh --uninstall`)).code).toBe(0);
   }, 300_000);
 

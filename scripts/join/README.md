@@ -116,7 +116,10 @@ rule: a process of this account whose program is the trial's `bin/ovis-server` a
 `<that program> serve`. `run/server.pid` is not trusted for this, and no other process is ever signalled; a server that
 does not end within 10 s of TERM and then KILL is named, and the undo then removes nothing (exit 14).
 `ovis-machine start` decides by the same rule whether the server already runs. An undo that cannot remove the whole
-trial folder (a folder in it this account cannot write in, say) names what is left and exits 14.
+trial folder (a folder in it this account cannot write in, say) names what is left and exits 14. The interlock's check
+of the kit's server, the one process the join starts and then signals by its pid, is signalled by the same rule: only
+while that pid is still the kit's server in the temporary folder, of this account, with the command line
+`<that program> serve` (a pid freed when it ended may belong to another process by then).
 
 The port: a port another program already listens on is refused (exit 14), on a run again once the previous trial
 server is stopped, and a health answer counts only when the program listening on the port is the trial's own
@@ -144,27 +147,38 @@ The undo removes its own `join.sh` with the folder, so running the same undo lin
 ## Exit codes, and Ctrl+C
 
 `join.sh` exits 0 when the machine is in the account a sign-in of this run put it in: the trial server named no account
-before the add and names one after it. It exits 38 when the add returned and the trial server names an account that no
-sign-in of this run put it in (the machine was in it before, or its account could not be read before the add): the
-join names that account, says "your account" nowhere, and keeps the server only with its pairing gate closed. It exits
-30 when the add did not finish and the trial server answers that it names no account (the server is kept with its
-gate closed, and `ovis-machine add` finishes the add), or when the add returned and the server names none. It exits 37
-when the add did not finish but the trial server names an account it did not name before this run's add, which the
-join cannot confirm is the one signed in to: the server and the install are removed, on a run again too, and that
-account's list may still name the machine. When the account it names is the one it named before this run's add, the
-earlier install is kept as for 38. Accounts are shown shortened, as the add shows them (their first 12 characters).
-It exits 39 when the add did not finish and the trial server's account could not be read: the server is stopped first
-and the install kept for the undo. Any other code from 2 to 36 is a refusal (its list is at the head of `join.sh`). A HOME holding a line break or another control
-character is refused first (exit 2). Ctrl+C at a question ends the join with 130, a HUP with 129, nothing changed.
-Ctrl+C, TERM or HUP (a dropped SSH connection) after the yes, before the add (the download, the check of the kit's
-server, the start, the wait for it to answer), and TERM or HUP during the add, roll back as a refusal does and say what
-is left, with the undo line if anything is (130, 143 or 129); the roll back does not depend on a terminal to print to. Ctrl+C at the QR code ends only the add: the
-join then goes on as after any add that did not finish. When the trial server names an account it rolls back (exit 37),
-and that account's list may still name the machine. Otherwise it keeps the server only when its pairing gate reads
-`closed` (exit 30, `ovis-machine add` finishes the add), and else stops it (exit 34). A real machine profile names no
-account until a device has paired with it, and its gate is closed from its first start, so a Ctrl+C at the QR code
-ends with exit 30 and the server kept. The shell around it may still report 130 for the whole session (`script(1)` did in
-the container tests), so a caller should read `ovis-machine status` and the account, not that code.
+before the add and names one after it. The account is read on the trial server's owner socket, up to five times a second
+apart, before the add and after it; a read that no try answered counts as unknown, never as no account. Accounts are
+shown shortened, as the add shows them (their first 12 characters).
+
+After an add that returned: exit 38 when the trial server names an account that no sign-in of this run put it in (the
+machine was in it before, or its account could not be read before the add): the join names that account, says "your
+account" nowhere, and keeps the server only with its pairing gate closed. Exit 30 when it names none or its account
+cannot be read (the server is kept with its gate closed).
+
+After an add that did not finish (Ctrl+C at its code or QR code, or an add that failed), by what the trial server names
+then:
+
+- no account: exit 30, the server kept only with its pairing gate closed (`ovis-machine add` finishes the add);
+- the account it named before this run's add: exit 38, the earlier install kept as above, only with its gate closed;
+- an account it did not name before (none, or another): exit 37, the server and the install are removed, on a run again
+  too, and that account's list may still name the machine; except on a run again whose read before the add got no
+  answer, where the account may be the one the install was in before: the server is stopped first and the install kept
+  for the undo (exit 39);
+- an account that cannot be read: exit 39, the server stopped first and the install kept for the undo.
+
+Wherever the server would be kept, a pairing gate that does not read `closed` stops it first instead (exit 34). A real
+machine profile names no account until a device has paired with it, and its gate is closed from its first start, so a
+Ctrl+C at the QR code of a fresh join ends with exit 30 and the server kept. The shell around it may still report 130
+for the whole session (`script(1)` did in the container tests), so a caller should read `ovis-machine status` and the
+account, not that code.
+
+Any other code from 2 to 36 is a refusal (its list is at the head of `join.sh`). A HOME holding a line break or another
+control character is refused first (exit 2). Ctrl+C at a question ends the join with 130, a HUP with 129, nothing
+changed. Ctrl+C, TERM or HUP (a dropped SSH connection) after the yes, before the add (the download, the check of the
+kit's server, the start, the wait for it to answer), and TERM or HUP during the add, roll back as a refusal does and say
+what is left, with the undo line if anything is (130, 143 or 129); the roll back does not depend on a terminal to print
+to. Ctrl+C during the add ends only the add, and the join goes on as above.
 
 After the add, finished or not finished with the server kept, the join reads `security.pairing_gate` from the trial
 server's health (on its owner socket) and requires `closed` (the machine profile closes it at its first start, and the

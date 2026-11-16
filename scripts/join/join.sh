@@ -20,9 +20,9 @@
 # pairing gate is not closed after the add (finished, or not finished with the server kept), 35 the kit's server refuses to start here (in its own
 # words, which name the folder or setting), 36 the trial server refuses the chosen session's herdr socket (it names the
 # folder another account could change), 37 the add did not finish while the trial server names an Ovis account it did not name before (removed,
-# on a run again too), 38 the add returned and the trial server names an Ovis account this run did not sign in to (kept,
-# with its pairing gate closed; also after an add that did not finish, in the account it named before), 39 the add did not finish and the trial server's account could not be read (stopped,
-# the install kept for the undo). A HUP ends it as INT and TERM do (129).
+# on a run again too, unless its account before the add could not be read: then 39), 38 the add returned and the trial server names an Ovis account this run did not sign in to (kept,
+# with its pairing gate closed; also after an add that did not finish, in the account it named before), 39 the add did not finish and the trial server's account could not be read, after the add or, on a run again,
+# before it (stopped, the install kept for the undo). A HUP ends it as INT and TERM do (129).
 set -u
 umask 077
 
@@ -239,6 +239,19 @@ j_account_of() {
 # j_short <account>: an account as the plugin's add shows it (scripts/plugin-link.ts shortId): control characters
 # dropped, its first 12 characters
 j_short() { printf '%s' "$1" | tr -d '[:cntrl:]' | cut -c1-12; }
+# j_account_read: the trial server's account as j_account_of gives it, read up to five times a second apart, as the
+# pairing gate is (j_gate_closed): one failed read (the server just restarted, say) is not taken for an answer. Empty
+# only when no try answered
+j_account_read() {
+  j_try=0
+  while [ "$j_try" -lt 5 ]; do
+    j_got=$(j_account_of "$(j_read -f /api/account/status)")
+    [ -z "$j_got" ] || break
+    j_try=$((j_try + 1))
+    [ "$j_try" -ge 5 ] || j_pause 1
+  done
+  printf '%s' "$j_got"
+}
 j_rollback() { [ "$j_fresh" = 1 ] && j_remove; }
 # j_rolled_back [all]: rolls back, and says what is left: "nothing was kept" only when the rollback removed everything.
 # A run again keeps the install of the earlier run (stopped), except with `all`: then it goes too
@@ -765,6 +778,16 @@ j_start_background() {
   echo $! >"$J_HOME/run/server.pid"
 }
 
+# j_probe_is: $probe is still the kit's server this join started for that check, as j_servers tells the trial server:
+# of this account, its program the kit's server in the temporary folder, its command line `<that program> serve`. Its
+# pid comes from $! and is never read again, but once the probe has ended (and the shell has reaped it) the pid may
+# belong to another process: a pid that is not the probe is never signalled
+j_probe_is() {
+  [ -n "${probe:-}" ] || return 1
+  [ "$(stat -c %u "/proc/$probe" 2>/dev/null)" = "$(id -u)" ] || return 1
+  [ "$(readlink "/proc/$probe/exe" 2>/dev/null)" = "$(j_canonical "$j_stage/bin/ovis-server")" ] || return 1
+  [ "$({ tr '\000' '\n' <"/proc/$probe/cmdline"; } 2>/dev/null)" = "$j_stage/bin/ovis-server${J_NL}serve" ]
+}
 # The interlock, before anything is installed: the kit's server runs once from the temporary folder, with a home, a
 # state folder and a herdr socket of that folder (so it writes nothing of this machine's and reaches no herdr), on a
 # free port, and is stopped again. A server whose health names no machine profile is the plain server, which must not
@@ -796,7 +819,7 @@ j_probe_profile() {
     fi
     [ -n "$answer" ] || j_pause 0.3
   done
-  kill -TERM "$probe" 2>/dev/null
+  ! j_probe_is || kill -TERM "$probe" 2>/dev/null
   wait "$probe" 2>/dev/null
   probe=""
   if [ -z "$answer" ]; then
@@ -990,13 +1013,19 @@ j_interrupted() {
   trap '' HUP PIPE
   # the check of the kit's server, if it runs: stopped and waited for, and seen gone, before anything is reported
   if [ -n "${probe:-}" ]; then
-    kill -TERM "$probe" 2>/dev/null
-    # up to 5 s for it to end (it may ignore TERM), then KILL, which it cannot
+    # just started, it may not be the kit's server yet (env execs it): up to 1 s for that while its pid runs
     j_i=0
-    while kill -0 "$probe" 2>/dev/null && [ "$(ps -o stat= -p "$probe" 2>/dev/null | cut -c1)" != Z ] && [ "$j_i" -lt 25 ]; do j_pause 0.2; j_i=$((j_i + 1)); done
-    if kill -0 "$probe" 2>/dev/null && [ "$(ps -o stat= -p "$probe" 2>/dev/null | cut -c1)" != Z ]; then kill -KILL "$probe" 2>/dev/null; fi
+    while ! j_probe_is && kill -0 "$probe" 2>/dev/null && [ "$(ps -o stat= -p "$probe" 2>/dev/null | cut -c1)" != Z ] && [ "$j_i" -lt 5 ]; do j_pause 0.2; j_i=$((j_i + 1)); done
+    # signalled only while it is the probe (j_probe_is): TERM, up to 5 s for it to end (it may ignore TERM), then KILL,
+    # which it cannot
+    if j_probe_is; then
+      kill -TERM "$probe" 2>/dev/null
+      j_i=0
+      while j_probe_is && [ "$j_i" -lt 25 ]; do j_pause 0.2; j_i=$((j_i + 1)); done
+      ! j_probe_is || kill -KILL "$probe" 2>/dev/null
+    fi
     wait "$probe" 2>/dev/null
-    if kill -0 "$probe" 2>/dev/null; then
+    if j_probe_is; then
       printf 'Ovis: interrupted; the check of the kit'"'"'s server (pid %s) could not be stopped: stop it yourself\n' "$probe" >&2
       exit "$1"
     fi
@@ -1114,11 +1143,13 @@ say "Add this machine to your account / 이 머신을 내 계정에 추가"
 j_added=0
 # a test kit only: OVIS_JOIN_TEST_ADD_DONE=1 counts the add as done without a device (the gate check after it is the test)
 # Ctrl+C during the add ends the add only (it ends its code or its QR code itself): the join then goes on as after an
-# add that did not finish (below): removed when the trial server names an account (exit 37), kept only with its account
-# read as none and its pairing gate closed (exit 30), else stopped (exit 34, or 39 when its account could not be read). From the add's return on, Ctrl+C rolls back again
+# add that did not finish (below): removed when the trial server names an account it did not name before (exit 37), kept
+# in the account it named before (38) or read as none (30) only with its pairing gate closed, else stopped (exit 34, or
+# 39 when its account could not be read after the add, or before it on a run again). From the add's return on, Ctrl+C rolls back again
 # the trial server's account before the add: "your account" is said only when it named none before and one after, so a
-# sign-in of this run put it there (an add that finds the machine already in an account returns without a sign-in)
-j_before=$(j_account_of "$(j_read -f /api/account/status)")
+# sign-in of this run put it there (an add that finds the machine already in an account returns without a sign-in).
+# Empty when no try answered: unknown, never taken for none
+j_before=$(j_account_read)
 trap ':' INT
 if [ "$j_add_done" = 1 ]; then j_added=1; else "$J_HOME/bin/ovis-machine" add && j_added=1; fi
 trap 'j_interrupted 130' INT
@@ -1174,7 +1205,7 @@ j_in_account() {
   exit 38
 }
 if [ "$j_added" = 1 ]; then
-  j_after=$(j_account_of "$(j_read -f /api/account/status)")
+  j_after=$(j_account_read)
   j_mine=0
   [ "$j_before" != null ] || [ -z "$j_after" ] || [ "$j_after" = null ] || j_mine=1
   if [ "$j_mine" = 1 ]; then j_gate_closed || j_gate_open done; else j_gate_closed || j_gate_open returned; fi
@@ -1197,15 +1228,18 @@ if [ "$j_added" = 1 ]; then
 fi
 # where the machine stands after an add that did not finish (its return is the path above), from the trial server itself
 # (this machine's own, on its owner socket): an account it names means a device paired with it through an add that did
-# not finish: removed, on a run again too (exit 37), unless it is the account named before this run's add (kept, exit 38). No account (null): "could not tell", with the server kept for
-# `ovis-machine add` while its pairing gate is closed. No answer: stopped first, the install kept for the undo (exit 39)
-j_account=$(j_read -f /api/account/status)
-j_named=$(j_account_of "$j_account")
+# not finish: removed, on a run again too (exit 37), unless it is the account named before this run's add (kept, exit 38)
+# or, on a run again, the account before the add could not be read (stopped and kept, exit 39). No account (null):
+# "could not tell", with the server kept for `ovis-machine add` while its pairing gate is closed. No answer: stopped
+# first, the install kept for the undo (exit 39)
+# j_kept_stopped <what could not be read>: exit 39: the trial server is stopped first, and the install kept for the undo
+j_kept_stopped() {
+  if j_halt; then refuse 39 "$1, so the trial server was stopped; the install stays for the undo: $(j_undo_line)"
+  else refuse 39 "$1; the trial server could not be seen stopped: stop it now: $J_HOME/bin/ovis-machine stop"; fi
+}
+j_named=$(j_account_read)
 case $j_named in
-  '')
-    if j_halt; then refuse 39 "the add did not finish, and the trial server's account could not be read, so the trial server was stopped; the install stays for the undo: $(j_undo_line)"
-    else refuse 39 "the add did not finish, the trial server's account could not be read, and the trial server could not be seen stopped: stop it now: $J_HOME/bin/ovis-machine stop"; fi
-    ;;
+  '') j_kept_stopped "the add did not finish, and the trial server's account could not be read" ;;
   null)
     # kept only with its pairing gate closed: the add may have turned the relay on before it ended
     j_gate_closed || j_gate_open unfinished
@@ -1220,9 +1254,16 @@ case $j_named in
     j_in_account "$j_named" "it was in that account before this run, and this run's add did not finish" "이번 실행 전부터 그 계정에 들어 있었고, 이번 실행의 추가는 끝나지 않았습니다"
     ;;
   *)
+    # a run again whose read before the add got no answer: the account named now may be the one this install was in
+    # before, and nothing says otherwise, so it is stopped and kept, never removed (exit 39). Only a read that answered
+    # null proves that removing loses no account's machine, just an identity in no account
+    if [ "$j_fresh" = 0 ] && [ -z "$j_before" ]; then
+      say "체험용 서버가 지금 Ovis 계정 $(j_short "$j_named") 을 밝히지만, 추가 전에는 계정을 읽지 못해 이 설치가 전부터 그 계정에 들어 있었는지 알 수 없어, 설치를 지우지 않고 체험용 서버를 멈춥니다(되돌리기: $(j_undo_line))."
+      j_kept_stopped "the add did not finish; the trial server names the Ovis account $(j_short "$j_named") now, but its account could not be read before this run's add (5 tries), so the join cannot tell whether this install was in that account before"
+    fi
     # the add failed while a device's pairing put the trial server in an account it did not name before this run's add
-    # (none, or another): which account, the join cannot confirm (the add's own words above say what it saw), so neither
-    # the server nor its install stays
+    # (none, or another, or on a fresh install one that could not be read): which account, the join cannot confirm (the
+    # add's own words above say what it saw), so neither the server nor its install stays
     say "체험용 서버가 Ovis 계정($(j_short "$j_named"))에 들어갔지만 추가가 끝나지 않아, 그 계정이 내 계정인지 확인할 수 없습니다. 체험용 서버를 멈추고 되돌립니다."
     say "That account's list may still name this machine, and nothing on this machine can take it off that list today: the Ovis guide says how such an entry goes (docs/guide.md, section \"Through an account\")."
     say "그 계정의 목록에는 이 머신이 아직 남아 있을 수 있으며, 지금은 이 머신에서 목록에서 뺄 방법이 없습니다. 그런 항목이 어떻게 되는지는 Ovis 안내서에 있습니다(docs/guide.md, \"Through an account\" 절)."
