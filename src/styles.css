@@ -121,6 +121,7 @@
   --fs-lg: calc(16px * var(--ui-scale));
   --fs-xl: calc(18px * var(--ui-scale));
   --fs-display: calc(22px * var(--ui-scale));
+  --fs-title: calc(28px * var(--ui-scale)); /* a dialog's own title over the app: the setup guide's steps */
   /* the pairing code: a size of its own, still on the density scale (compact overrides it) */
   --fs-pairing: calc(32px * var(--ui-scale));
   --fs-input: 16px; /* the one size iOS Safari does not zoom on focus */
@@ -295,6 +296,9 @@
   --fs-reading: var(--fs-chat);
   --fs-dense-row: var(--fs-md);
   --fs-section-title: calc(17px * var(--ui-scale));
+  /* a list row's second line under a --fs-lg name, one step smaller at every pointer (--fs-chat reaches the
+     name's own size under a finger): the inbox mode's row words on a phone (InboxList.css) */
+  --fs-row-sub: calc(15px * var(--ui-scale));
   --fs-h3: calc(19px * var(--ui-scale));
   --fs-h2: calc(24px * var(--ui-scale));
   --fs-h1: calc(30px * var(--ui-scale));
@@ -339,7 +343,6 @@
   --outline-w: 240px;
   --file-panel-min-w: 320px;
   --qr-size: 132px;
-  --guide-w: 552px;
   --voice-wave-h: 20px;
   --kbd-h: 18px;
   --btn-submit-min-w: 88px;
@@ -1641,6 +1644,7 @@
   --fs-chat: calc(14px * var(--ui-scale));
   --fs-lg: calc(15px * var(--ui-scale));
   --fs-section-title: calc(16px * var(--ui-scale));
+  --fs-row-sub: calc(14px * var(--ui-scale));
   --fs-xl: calc(17px * var(--ui-scale));
   --fs-h3: calc(18px * var(--ui-scale));
   --fs-display: calc(21px * var(--ui-scale));
@@ -2461,6 +2465,35 @@ button {
   height: var(--space-5);
 }
 
+/* the wordmark as the way into the inbox mode: a plain button around it, filled as an icon button is under a
+   hovering pointer and a press; a button, so the installed app's title-bar drag region gives it the click */
+.sidebar-brand.is-entry {
+  padding: var(--space-half) var(--space-1);
+  margin-left: calc(-1 * var(--space-1));
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+
+@media (hover: hover) {
+  .sidebar-brand.is-entry:hover {
+    background: var(--bg-hover);
+  }
+}
+
+/* under a finger (a tablet from 769px) as tall as the header's icon buttons there; a mouse keeps the slim one */
+@media (pointer: coarse) {
+  .sidebar-brand.is-entry {
+    min-height: var(--touch-target);
+  }
+}
+
+.sidebar-brand.is-entry:active {
+  background: var(--bg-elevated);
+}
+
 /* the pane's tools at the end of the header's row: Chat/Terminal, Files (and More beside them) as
    compact pills, as a browser keeps its actions apart from its tabs */
 .header-text-button {
@@ -3169,6 +3202,24 @@ button {
   display: none;
 }
 
+/* the open drawer's named way out where the X was (App.tsx markInDrawer): read by a screen reader, drawn as a button
+   only while the keyboard is on it */
+.drawer-close:focus-visible {
+  position: static;
+  display: flex;
+  align-items: center;
+  width: auto;
+  height: var(--control-h);
+  margin: var(--space-2) var(--space-3) 0;
+  padding: 0 var(--space-3);
+  overflow: visible;
+  clip: auto;
+  background: var(--bg-elevated);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text-strong);
+}
+
 /* text buttons: .btn (neutral), .btn-primary, .btn-danger, .btn-ghost */
 .btn {
   display: inline-flex;
@@ -3357,8 +3408,12 @@ button {
   border-style: dashed;
 }
 
-/* segmented control: one selected option, the rest quiet */
+/* segmented control: one selected option, the rest quiet. The chosen option's edge is --segmented-chosen-shadow,
+   which a variant sets here on the track: on a finger's device the option's own box is its hit box, taller than the
+   track, and its ::before draws the pill (below), so a shadow or a fill a variant writes on the option itself is
+   drawn around that hit box, outside the track */
 .segmented {
+  --segmented-chosen-shadow: inset 0 0 0 var(--hairline) var(--border-strong);
   display: inline-flex;
   align-items: center;
   gap: var(--space-half);
@@ -3397,7 +3452,7 @@ button {
   background: var(--bg-hover);
   color: var(--text-strong);
   font-weight: var(--fw-selected);
-  box-shadow: inset 0 0 0 var(--hairline) var(--border-strong);
+  box-shadow: var(--segmented-chosen-shadow);
 }
 
 /* the chosen lens carries the selection color on its glyph, like the rail does in the list */
@@ -3700,6 +3755,13 @@ button {
   color: var(--text-dim);
 }
 
+/* the app's own mark in an item's icon place (OvisMark.tsx: Back to Ovis), in the icon's box */
+.menu-item .ovis-mark {
+  width: var(--icon-size-md);
+  height: var(--icon-size-md);
+  flex: 0 0 auto;
+}
+
 .menu-item[aria-selected="true"] {
   background: var(--bg-hover);
   color: var(--text-strong);
@@ -3831,7 +3893,7 @@ button {
 
   .segmented > button[aria-pressed="true"]::before {
     background: var(--bg-hover);
-    box-shadow: inset 0 0 0 var(--hairline) var(--border-strong);
+    box-shadow: var(--segmented-chosen-shadow);
   }
 }
 

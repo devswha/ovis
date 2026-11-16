@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { GUIDE_STORAGE_KEY, REOPENED, WELCOME, type GuideState } from "./setupGuideFlow.ts";
-import { useSetupGuide } from "./useSetupGuide.ts";
+import { GUIDE_STORAGE_KEY, FIRST_RUN, REOPENED, type GuideState } from "./setupGuideFlow.ts";
+import { SETUP_ROW_KEY } from "./firstHints.ts";
+import { SETTINGS_STORAGE_KEY } from "./themeBoot.ts";
+import { useOtherDevice, useSetupGuide, type SetupGuideFacts } from "./useSetupGuide.ts";
 
 // The real hook over a fake browser: one tab's storage, and the storage events another tab's writes send.
 describe("the setup guide closed in another tab", () => {
@@ -51,6 +53,25 @@ describe("the setup guide closed in another tab", () => {
     Object.defineProperties(event, { key: { value: GUIDE_STORAGE_KEY }, newValue: { value } });
     await act(async () => { events.dispatchEvent(event); });
   }
+
+  it("turns Setup: N left on when the guide closes, so Set up later leaves a way back", async () => {
+    await resumeAt(REOPENED);
+    await act(async () => { hook.close(); });
+    expect(records.get(SETUP_ROW_KEY)).toBe("on");
+    records.clear();
+    await act(async () => { renderer?.unmount(); });
+    await resumeAt(FIRST_RUN);
+    await act(async () => { hook.close(); });
+    expect(records.get(SETUP_ROW_KEY)).toBe("on");
+  });
+
+  it("is settled once another tab closes the guide, though this one never decided", async () => {
+    function Fresh() { hook = useSetupGuide({ enabled: true, workspaces: null, pairingGate: undefined, watching: false }); return null; }
+    await act(async () => { renderer = create(createElement(Fresh)); });
+    expect(hook.settled).toBe(false);
+    await otherTabWrites(JSON.stringify({ status: "closed" }));
+    expect(hook.settled).toBe(true);
+  });
 
   it("opens the first workspace's pane only when the user stayed on the guide", async () => {
     await resumeAt(REOPENED);
@@ -108,16 +129,16 @@ describe("the setup guide closed in another tab", () => {
   });
 
   it("does not reopen it with a step taken here before the close event arrived", async () => {
-    await resumeAt(WELCOME);
+    await resumeAt({ ...REOPENED, at: "theme" });
     // the other tab's close lands in storage, its event not yet delivered here
     records.set(GUIDE_STORAGE_KEY, JSON.stringify({ status: "closed" }));
-    await act(async () => { hook.dispatch({ type: "begin" }); });
+    await act(async () => { hook.dispatch({ type: "moved" }); });
     expect(hook.guide).toBeNull();
     expect(JSON.parse(records.get(GUIDE_STORAGE_KEY)!)).toEqual({ status: "closed" });
   });
 
   it("keeps a reopen made here when an older close event arrives after it", async () => {
-    await resumeAt(WELCOME);
+    await resumeAt({ ...REOPENED, at: "theme" });
     const close = JSON.stringify({ status: "closed" });
     // the other tab's close is in storage, then Settings reopens it here before that close's event comes
     records.set(GUIDE_STORAGE_KEY, close);
@@ -130,12 +151,12 @@ describe("the setup guide closed in another tab", () => {
   });
 
   it("closes here when the other tab closes right after this tab's own write", async () => {
-    await resumeAt(WELCOME);
+    await resumeAt({ ...REOPENED, at: "theme" });
     const close = JSON.stringify({ status: "closed" });
     // the other tab's close lands in storage straight after this tab writes its next step
     const write = window.localStorage.setItem.bind(window.localStorage);
     window.localStorage.setItem = (key: string, value: string) => { write(key, value); records.set(key, close); };
-    await act(async () => { hook.dispatch({ type: "begin" }); });
+    await act(async () => { hook.dispatch({ type: "moved" }); });
     window.localStorage.setItem = write;
     const event = new Event("storage");
     Object.defineProperties(event, { key: { value: GUIDE_STORAGE_KEY }, newValue: { value: close } });
@@ -208,5 +229,88 @@ describe("the setup guide on a watching device", () => {
     expect(hook.guide?.step).toBe("setup");
     await act(async () => { renderer!.update(createElement(Probe, { watching: true })); });
     expect(hook.guide).toBeNull();
+  });
+
+  /** The hook with `facts`, rendered again whenever they change; no server answers (fetch is absent). */
+  async function mountFacts(facts: SetupGuideFacts): Promise<(next: SetupGuideFacts) => Promise<void>> {
+    let current = facts;
+    function Probe() { hook = useSetupGuide(current); return null; }
+    await act(async () => { renderer = create(createElement(Probe)); });
+    return async (next) => { current = next; await act(async () => { renderer!.update(createElement(Probe)); }); };
+  }
+
+  it("is settled at once where the guide cannot open by itself: a record of it, saved settings, a watching device", async () => {
+    records.set(GUIDE_STORAGE_KEY, JSON.stringify({ status: "closed" }));
+    await mountFacts({ enabled: true, workspaces: null, pairingGate: undefined, watching: false });
+    expect(hook.settled).toBe(true);
+    await act(async () => { renderer?.unmount(); });
+    records.clear();
+    records.set(SETTINGS_STORAGE_KEY, "{}");
+    await mountFacts({ enabled: true, workspaces: null, pairingGate: undefined, watching: false });
+    expect(hook.settled).toBe(true);
+    await act(async () => { renderer?.unmount(); });
+    records.clear();
+    await mountFacts({ enabled: true, workspaces: null, pairingGate: undefined, watching: true });
+    expect(hook.settled).toBe(true);
+  });
+
+  it("is not settled on a fresh browser until the first-run decision is made", async () => {
+    const update = await mountFacts({ enabled: true, workspaces: null, pairingGate: undefined, watching: false });
+    expect(hook.settled).toBe(false);
+    // the facts arrive; the shared-settings read fails here (no server), which decides against opening
+    await update({ enabled: true, workspaces: 0, pairingGate: "open", watching: false });
+    await act(async () => { await Promise.resolve(); });
+    expect(hook.settled).toBe(true);
+  });
+});
+
+// The device list the guide reads: again on each step that shows it (`again`), and when Settings closes (`enabled`).
+describe("useOtherDevice", () => {
+  const fetchBefore = Object.getOwnPropertyDescriptor(globalThis, "fetch");
+  const actBefore = Object.getOwnPropertyDescriptor(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+  let reads = 0;
+  let renderer: ReactTestRenderer | undefined;
+  let name: string | null = null;
+  beforeEach(() => {
+    reads = 0;
+    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
+    Object.defineProperty(globalThis, "fetch", { configurable: true, writable: true, value: async (input: RequestInfo | URL) => {
+      if (String(input).includes("/api/devices")) reads += 1;
+      return new Response(JSON.stringify({ devices: [{ id: "phone", label: "Pixel 9", role: "drive", created_at: "2026-11-15T00:00:00Z", last_seen_at: null, current: false }] }), { headers: { "content-type": "application/json" } });
+    } });
+  });
+  afterEach(async () => {
+    await act(async () => { renderer?.unmount(); });
+    renderer = undefined;
+    if (fetchBefore) Object.defineProperty(globalThis, "fetch", fetchBefore); else delete (globalThis as { fetch?: unknown }).fetch;
+    if (actBefore) Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", actBefore); else delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: unknown }).IS_REACT_ACT_ENVIRONMENT;
+  });
+
+  it("with pending, is undefined until the list answers, and null after a failed read", async () => {
+    let seen: (string | null | undefined)[] = [];
+    function Probe() { seen.push(useOtherDevice(true, "x", true)); return null; }
+    await act(async () => { renderer = create(createElement(Probe)); });
+    expect(seen[0]).toBeUndefined();
+    expect(seen.at(-1)).toBe("Pixel 9");
+    await act(async () => { renderer?.unmount(); });
+    Object.defineProperty(globalThis, "fetch", { configurable: true, writable: true, value: async () => { throw new TypeError("Failed to fetch"); } });
+    seen = [];
+    await act(async () => { renderer = create(createElement(Probe)); });
+    expect(seen[0]).toBeUndefined();
+    expect(seen.at(-1)).toBeNull();
+  });
+
+  it("reads the devices again when the step changes, and when it is enabled again", async () => {
+    function Probe({ enabled, again }: { enabled: boolean; again: string }) { name = useOtherDevice(enabled, again); return null; }
+    await act(async () => { renderer = create(createElement(Probe, { enabled: true, again: "phone" })); });
+    expect(reads).toBe(1);
+    expect(name).toBe("Pixel 9");
+    await act(async () => { renderer!.update(createElement(Probe, { enabled: true, again: "done" })); });
+    expect(reads).toBe(2);
+    // Settings open over the guide: no read; closed: read again
+    await act(async () => { renderer!.update(createElement(Probe, { enabled: false, again: "done" })); });
+    expect(reads).toBe(2);
+    await act(async () => { renderer!.update(createElement(Probe, { enabled: true, again: "done" })); });
+    expect(reads).toBe(3);
   });
 });

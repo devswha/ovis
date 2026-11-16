@@ -50,6 +50,8 @@ export interface NewSessionDialogProps {
   /** set, the dialog makes a tab in that workspace instead of a workspace */
   tab?: NewTabTarget | null;
   onClose: () => void;
+  /** whether a create is in flight, as it changes: the shell's own way out (a phone's Back over the list) refuses then, as the dialog's do */
+  onPending?: (pending: boolean) => void;
   /**
    * `agentStarted`: the pane runs the agent asked for, so it opens in an agent's lens; `messageWaits`: the
    * bridge queued the first message for the agent's first ready turn, or its text was kept in the chat's
@@ -149,7 +151,7 @@ export function insertToken(text: string, at: number, token: string): { text: st
   return { text: `${head}${after}`.slice(0, MAX_COMPOSER_CHARS), caret: Math.min(head.length, MAX_COMPOSER_CHARS) };
 }
 
-export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCreated, machineName, prefill = null, onDraft, worktrees = [], onOpenPane, watching = false, groupKept }: NewSessionDialogProps) {
+export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onPending, onCreated, machineName, prefill = null, onDraft, worktrees = [], onOpenPane, watching = false, groupKept }: NewSessionDialogProps) {
   const t = useT();
   const { settings, update: updateSettings } = useSettings();
   const machineId = useMachineId();
@@ -177,6 +179,13 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
   const skillFolder = tab ? tab.cwd : cwd.trim() || null;
   const [skills, setSkills] = useAgentSkills(open, agentKind, skillFolder, fetchAgentCommands, t);
   const [pending, setPending] = useState(false);
+  const onPendingRef = useRef(onPending);
+  onPendingRef.current = onPending;
+  // an unmount in flight (another PC's dialog) leaves nothing reported pending
+  useEffect(() => {
+    onPendingRef.current?.(pending);
+    return () => onPendingRef.current?.(false);
+  }, [pending]);
   const [error, setError] = useState<UserError | null>(null);
   const [cwdError, setCwdError] = useState<string | null>(null);
   const [createdPaneId, setCreatedPaneId] = useState<string | null>(null);
@@ -645,7 +654,8 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
                 <option value="">{t("Agent default")}</option>
                 {can.efforts.map((level) => <option key={level} value={level}>{level}</option>)}
               </select>
-              <span id="new-session-effort-hint" className="field-hint">{t("Levels depend on the model.")}</span>
+              {/* dsh-tui keeps the level in its own file for every later session (server/agent-launch.ts) */}
+              <span id="new-session-effort-hint" className="field-hint">{agentKind === "dsh-tui" ? t("Saved as dsh-tui's default for every later session, outside Ovis too. A default set in dsh-tui's /settings wins over it.") : t("Levels depend on the model.")}</span>
             </div>}
           </div>}
           {/* Claude Code's own term, a setting beside the level rather than one of them, on one line under Model and

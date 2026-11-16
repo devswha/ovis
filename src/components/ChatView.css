@@ -1287,6 +1287,37 @@ ol.markdown-list {
   opacity: 1;
 }
 
+/* a send whose turn never came while the agent rested (SentWaiting.tsx): the user's words as sent, and
+   under them what became of it, with the terminal and a way to let it go */
+.chat-turn-unanswered .chat-bubble {
+  color: var(--text-dim);
+  white-space: pre-wrap;
+}
+
+.chat-unanswered-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin: 0;
+  color: var(--text-dim);
+  font-size: var(--chat-fs-xs);
+}
+
+/* the icon wraps with the words, on a phone too */
+.chat-unanswered-words {
+  text-align: end;
+}
+
+.chat-unanswered-words > svg {
+  width: 1em;
+  height: 1em;
+  margin-inline-end: var(--space-1);
+  vertical-align: -0.125em;
+  color: var(--status-blocked);
+}
+
 .chat-sent-late {
   display: inline-flex;
   color: var(--text-dim);
@@ -1403,8 +1434,11 @@ ol.markdown-list {
 
 .chat-empty p { margin: 0; font-size: var(--fs-sm); }
 
+/* the way back to the end, here and over a terminal (TerminalViewportTools.css): an elevated pill would melt into
+   the surface under it, so its edge is the one a field's is (--border-input), seen at 3:1 on every theme */
 .chat-new-messages {
   position: sticky;
+  border-color: var(--border-input);
   z-index: var(--z-popover);
   bottom: calc(var(--space-2) + var(--composer-over, 0px));
   left: 50%;
@@ -1414,6 +1448,11 @@ ol.markdown-list {
 }
 
 .chat-new-messages svg { width: var(--icon-size); height: var(--icon-size); }
+
+/* a resting pointer fills it as a .btn is filled, and keeps its edge (.btn's hover edge is the faint --border-strong) */
+@media (hover: hover) {
+  .chat-new-messages:hover:not(:disabled) { border-color: var(--border-input); }
+}
 
 /* chat mode is ONE surface: the stack, the transcript and the composer region all sit on
    --bg; the only card is the composer's input box, on the same column as the transcript */

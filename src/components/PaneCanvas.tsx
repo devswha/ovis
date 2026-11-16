@@ -1,3 +1,4 @@
+import { tally, usageCounters } from "../lib/usageCounters.ts";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type DragEvent, type MouseEvent, type MutableRefObject, type PointerEvent, type ReactNode } from "react";
 import { ArchiveRestore, Bot, Columns2, Ellipsis, Eraser, Folder, FolderInput, LockOpen, Maximize2, Minimize2, MoveHorizontal, Pencil, Plus, Rows2, ArrowLeftRight, Terminal, TextSearch, TextWrap, X } from "lucide-react";
 import { createPortal } from "react-dom";
@@ -44,7 +45,8 @@ interface Props {
   onChanged: () => void;
   renderPane: (pane: HerdrPane | null, active: boolean, split: boolean) => ReactNode;
   /** filled with this canvas's pane actions on each render: a phone's tab menu offers them for the open pane (TabStrip) */
-  actionsRef?: MutableRefObject<((target: HerdrPane) => RowMenuItem[]) | null>;
+  /** the pane menu's items; `counted: false` for a caller that counts the action itself (App's Close pane, by shortcut or palette) */
+  actionsRef?: MutableRefObject<((target: HerdrPane, options?: { counted?: boolean }) => RowMenuItem[]) | null>;
   /** where the split view can be drawn: a pane opened in a half of it, from its menu or by dragging its title (lib/split.ts) */
   onOpenInHalf?: (paneId: string, side: SplitSide) => void;
   /** the PC's panes are mirrored (no terminal attach there): their grid can be wider than this screen */
@@ -60,10 +62,14 @@ interface Props {
   onMoveToWorkspace?: (tabId: string, workspaceId: string) => Promise<void>;
   /** the Rename tab shortcut or palette action for the open pane: where the row is left out, its dialog stands in for the row's field (TabStrip clears it) */
   renameRequest?: RenameRequest | null;
+  /** the Close tab shortcut's press (App): taken here only where the open tab has no row and no header lists it; TabStrip takes it otherwise */
+  closeTabRequest?: RenameRequest | null;
   /** a phone's header title lists the tabs (App): no row is drawn, and its sheet holds New terminal and New tab with agent… */
   tabsInHeader?: boolean;
   /** a watching device sends no settings: it sees a locked pane's Unlock and cannot use it, as in the Agents list */
   watching?: boolean;
+  /** one pane at every width (an inbox mode thread, lib/inboxMode.ts), as a phone already shows a split tab: only what this browser draws */
+  solo?: boolean;
 }
 type Menu = { paneId: string; anchor: HTMLElement; point?: { x: number; y: number }; previousFocus: HTMLElement | null };
 interface Drag {
@@ -86,7 +92,7 @@ interface Drag {
 }
 
 /** The active tab, drawn from herdr's rectangles. No browser-owned layout or PTY state. */
-export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged, renderPane, actionsRef, onOpenInHalf, mirrored = false, onRecoverUnsent, onSearchConversation, onNewTab, onNewTerminal, onMoveToWorkspace, renameRequest = null, tabsInHeader = false, watching = false }: Props) {
+export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged, renderPane, actionsRef, onOpenInHalf, mirrored = false, onRecoverUnsent, onSearchConversation, onNewTab, onNewTerminal, onMoveToWorkspace, renameRequest = null, closeTabRequest = null, tabsInHeader = false, watching = false, solo = false }: Props) {
   const t = useT();
   const { settings, update: updateSettings } = useSettings();
   const narrowScreen = useMediaQuery(MIRROR_WRAP_QUERY);
@@ -100,7 +106,7 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
   const coarse = useMediaQuery("(pointer: coarse)");
   // at a phone's width the pane's menu is a bottom sheet, a dialog (RowMenu): its ellipsis says so (G-037)
   const popup = useMediaQuery(SHEET_QUERY) ? "dialog" : "menu";
-  const narrow = useMediaQuery(SOLO_PANE_QUERY);
+  const narrow = useMediaQuery(SOLO_PANE_QUERY) || solo;
   const cramped = useMediaQuery(CRAMPED_QUERY);
   const api = useMachineApi();
   const canvas = useRef<HTMLDivElement>(null);
@@ -178,6 +184,12 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
     const tab = snapshot?.tabs.find((entry) => entry.tab_id === presented.tab_id);
     if (tab) setRenamingTab(tab);
   }, [renameRequest]);
+  // the Close tab shortcut where the open tab has no row and the header lists no tabs (a lone tab on a cramped screen):
+  // the pane menu's own Close tab runs, its confirmation included, and nothing where that menu has none (a locked tab)
+  useLayoutEffect(() => {
+    if (closeTabRequest === null || !loneRowHidden || tabsInHeader || !presented || watching) return;
+    rowItems(presented)?.tab.find((item) => item.id === "close-tab" && !item.disabled)?.run();
+  }, [closeTabRequest]);
   useEffect(() => { if (menu && !snapshot?.panes.some((item) => item.pane_id === menu.paneId)) setMenu(null); }, [snapshot, menu]);
 
   const run = (operation: () => Promise<unknown>): void => {
@@ -238,15 +250,17 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
     if (alive.current && latest.current.tabId === tabId && latest.current.selection === selection) onSelect(target.pane_id);
   });
   const target = menu ? snapshot?.panes.find((item) => item.pane_id === menu.paneId) : null;
-  const layoutItems = (target: HerdrPane): RowMenuItem[] => [
+  /** a pane-menu use, counted when the menu itself was pressed (not when App runs an item for a shortcut or palette row) */
+  type MenuUse = (name: "split_by_menu" | "close_pane_by_menu") => void;
+  const layoutItems = (target: HerdrPane, use: MenuUse): RowMenuItem[] => [
     // herdr-core names no pane, and swaps, zooms and resizes none (lib/machineContext.tsx `arrange`)
     ...(!appLayout.arrange ? [] : [{ id: "rename", label: t("Rename pane"), icon: Pencil, run: () => setRenaming(target) }]),
     ...(appLayout.arrange && target.label ? [{ id: "clear-name", label: t("Clear pane name"), icon: Eraser, run: () => run(() => api.renamePane(target.pane_id, "")) }] : []),
     ...(appLayout.arrange && pane && target.pane_id !== pane.pane_id ? [{ id: "swap-focused", label: t("Swap with focused pane"), icon: ArrowLeftRight,
       run: () => run(() => api.swapPaneWith(pane.pane_id, target.pane_id)) }] : []),
     ...(!appLayout.split || target.own_tab ? [] : [
-      { id: "split-right", label: t("Split right"), icon: Columns2, run: () => run(() => split(target, "right")) },
-      { id: "split-down", label: t("Split down"), icon: Rows2, run: () => run(() => split(target, "down")) },
+      { id: "split-right", label: t("Split right"), icon: Columns2, run: () => { use("split_by_menu"); run(() => split(target, "right")); } },
+      { id: "split-down", label: t("Split down"), icon: Rows2, run: () => { use("split_by_menu"); run(() => split(target, "down")); } },
     ]),
     ...(!appLayout.arrange ? [] : [{ id: "zoom", label: t(layout && zoomMode(layout, target.pane_id) === "off" ? "Unzoom pane" : "Zoom pane"), icon: Maximize2,
       run: () => zoom(target) }]),
@@ -291,20 +305,21 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
       ],
     };
   };
-  const itemsFor = (target: HerdrPane): RowMenuItem[] => {
+  const itemsFor = (target: HerdrPane, { counted = true }: { counted?: boolean } = {}): RowMenuItem[] => {
+    const use: MenuUse = (name) => { if (counted) tally(() => usageCounters.paneUse(name, machineId)); };
     const row = rowItems(target);
-    if (!row) return paneItemsFor(target);
+    if (!row) return paneItemsFor(target, use);
     // as the row's menu does, a canvas showing one pane at a time offers no split or zoom, only unzoom
-    const own = paneItemsFor(target).filter((item) => item.id === "zoom" ? layout?.zoomed : item.id !== "split-right" && item.id !== "split-down");
+    const own = paneItemsFor(target, use).filter((item) => item.id === "zoom" ? layout?.zoomed : item.id !== "split-right" && item.id !== "split-down");
     return [row.panes, own, row.tab].filter((group) => group.length > 0)
       .flatMap((group, at) => at === 0 ? group : group.map((item, index) => index === 0 ? { ...item, divider: true } : item));
   };
-  const paneItemsFor = (target: HerdrPane): RowMenuItem[] => {
+  const paneItemsFor = (target: HerdrPane, use: MenuUse): RowMenuItem[] => {
     const search = onSearchConversation?.(target) ?? null;
     return [
       // the chat's own search: a menu item, so a phone's screen gains no button for it (#2018)
       ...(search ? [{ id: "search-conversation", label: t("Search conversation"), icon: TextSearch, run: search }] : []),
-      ...layoutItems(target),
+      ...layoutItems(target, use),
       // a mirror, or a pane watched at another device's grid, wider than the screen is folded to it
       // (lib/terminalFold.ts); a full-screen program reads better at its own width, panned sideways.
       // This device's choice, for every such pane
@@ -318,11 +333,11 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
           const key = sidebarPinKey(machineId, target.pane_id);
           updateSettings(({ lockedAgents }) => ({ lockedAgents: lockedAgents.filter((held) => held !== key) }));
         } }]
-        : [{ id: "close", label: t("Close pane"), icon: X, danger: true, run: () => requestClose(target) }]),
+        : [{ id: "close", label: t("Close pane"), icon: X, danger: true, run: () => { use("close_pane_by_menu"); requestClose(target); } }]),
     ];
   };
   const items = target ? itemsFor(target) : [];
-  const published = useRef<{ ref: MutableRefObject<((target: HerdrPane) => RowMenuItem[]) | null>; items: typeof itemsFor } | null>(null);
+  const published = useRef<{ ref: MutableRefObject<((target: HerdrPane, options?: { counted?: boolean }) => RowMenuItem[]) | null>; items: typeof itemsFor } | null>(null);
   if (actionsRef) { actionsRef.current = itemsFor; published.current = { ref: actionsRef, items: itemsFor }; }
   // a canvas that goes (the setup guide in its place) leaves no actions behind for the header's menu
   // or the row's; another canvas that took the ref over keeps its own
@@ -477,7 +492,7 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
           {zoomable && !offTab && !paneLocked(item.pane_id) && <button type="button" className="icon-button pane-frame-close" aria-label={t("Close pane")} title={t("Close pane")} disabled={watching}
             // Safari focuses no button a click pressed: focused here, it is the confirmation's opener, which Cancel and Escape hand back to
             // a double click's second press may land on the neighbour that took this corner: only a first press closes
-            onClick={(event) => { if (event.detail > 1) return; event.currentTarget.focus({ preventScroll: true }); requestClose(item); }}><X aria-hidden="true" /></button>}
+            onClick={(event) => { if (event.detail > 1) return; event.currentTarget.focus({ preventScroll: true }); tally(() => usageCounters.paneUse("close_pane_by_button", machineId)); requestClose(item); }}><X aria-hidden="true" /></button>}
         </div>}
         <div className="pane-frame-body"><PaneCachedContext.Provider value={cell.cached && !cell.retained}><PaneWatchedContext.Provider value={cell.cached && !cell.retained && watchedTabs.has(item.tab_id)}><PanePresentedContext.Provider value={!offTab}><PaneShownContext.Provider value={!hidden}>{renderPane(item, active, alone === null && cells.length > 1)}</PaneShownContext.Provider></PanePresentedContext.Provider></PaneWatchedContext.Provider></PaneCachedContext.Provider></div>
       </section>;

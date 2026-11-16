@@ -28,7 +28,7 @@ run_script() {
   if [ -n "${CI:-}${CHECK_DIR:-}" ]; then
     # These evidence branches add viewport changes, assertions or font waits, not just captures.
     case "$1" in
-      scripts/ui-regression.ts|scripts/ui-contexts-regression.ts|scripts/ui-contexts-layout-regression.ts|scripts/key-bar-customization-demo-regression.ts) evidence="";;
+      scripts/ui-regression.ts|scripts/ui-terminal-regression.ts|scripts/ui-ime-regression.ts|scripts/ui-access-regression.ts|scripts/ui-contexts-regression.ts|scripts/ui-contexts-layout-regression.ts|scripts/key-bar-customization-demo-regression.ts) evidence="";;
     esac
   fi
   UI_EVIDENCE_DIR="$evidence" bun "$@" 2>&1 | while IFS= read -r line || [ -n "$line" ]; do
@@ -59,6 +59,9 @@ HERDR_DEMO_BUILD="$(mktemp -d)"
 export HERDR_DEMO_BUILD
 run_script scripts/demo-build.ts "$HERDR_DEMO_BUILD"
 run_script scripts/ui-regression.ts
+run_script scripts/ui-terminal-regression.ts
+run_script scripts/ui-ime-regression.ts
+run_script scripts/ui-access-regression.ts
 run_script scripts/ui-contexts-regression.ts
 run_script scripts/ui-contexts-layout-regression.ts
 run_script scripts/machine-events-browser-regression.ts
@@ -102,9 +105,12 @@ run_script scripts/key-bar-hold-repeat-regression.ts
 run_script scripts/settings-pages-demo-regression.ts
 run_script scripts/settings-palette-search-demo-regression.ts
 run_script scripts/settings-rows-demo-regression.ts
+run_script scripts/settings-segmented-demo-regression.ts
 run_script scripts/ideal-state-idle-regression.ts
 run_script scripts/agent-entry-points-demo-regression.ts
 run_script scripts/agents-sign-in-demo-regression.ts
+run_script scripts/setup-dialog-demo-regression.ts
+run_script scripts/setup-row-demo-regression.ts
 run_script scripts/interface-font-demo-regression.ts
 run_script scripts/file-text-size-demo-regression.ts
 run_script scripts/files-panel-demo-regression.ts
@@ -211,7 +217,10 @@ run_script scripts/command-outcome-demo-regression.ts
 run_script scripts/chat-outcome-note-browser-qa.ts
 run_script scripts/prompt-card-lifetime-browser-qa.ts
 run_script scripts/sidebar-activity-demo-regression.ts
-run_script scripts/phone-inbox-demo-regression.ts
+run_script scripts/inbox-mode-demo-regression.ts
+run_script scripts/inbox-mode-panes-demo-regression.ts
+run_script scripts/inbox-mode-rail-demo-regression.ts
+run_script scripts/sheet-outside-tap-demo-regression.ts
 run_script scripts/sidebar-filter-demo-regression.ts
 run_script scripts/sidebar-declutter-demo-regression.ts
 run_script scripts/drawer-modal-regression.ts
@@ -231,6 +240,7 @@ run_script scripts/sidebar-context-ring-demo-regression.ts
 run_script scripts/sidebar-background-workspaces-demo-regression.ts
 run_script scripts/agent-helpers-fold-demo-regression.ts
 run_script scripts/sidebar-agent-tree-demo-regression.ts
+run_script scripts/sidebar-scrollbar-grip-demo-regression.ts
 run_script scripts/agent-lock-demo-regression.ts
 run_script scripts/agent-groups-demo-regression.ts
 run_script scripts/agent-state-groups-demo-regression.ts

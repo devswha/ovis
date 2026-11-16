@@ -1,4 +1,4 @@
-import { Children, cloneElement, createContext, Fragment, isValidElement, useContext, useEffect, useId, useLayoutEffect, useRef, useState, type ComponentProps, type FocusEvent as ReactFocusEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
+import { Children, cloneElement, createContext, Fragment, isValidElement, useContext, useEffect, useId, useLayoutEffect, useRef, useState, type ComponentProps, type CSSProperties, type FocusEvent as ReactFocusEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { ChevronDown, ChevronRight, Minus, Plus, RotateCcw, type LucideIcon } from "lucide-react";
 
@@ -138,6 +138,21 @@ export function sentenceRoom(tip: ScreenBox, controls: readonly ScreenBox[]): nu
 export function sentenceHoles(tip: ScreenBox, controls: readonly ScreenBox[]): ScreenBox[] {
   return controls.filter((control) => control.left < tip.right && control.right > tip.left && control.top < tip.bottom && control.bottom > tip.top)
     .map((control) => ({ left: Math.max(control.left, tip.left) - tip.left, top: Math.max(control.top, tip.top) - tip.top, right: Math.min(control.right, tip.right) - tip.left, bottom: Math.min(control.bottom, tip.bottom) - tip.top }));
+}
+
+/**
+ * What a row's sentence must not lie on: the other rows' controls, and every other control in its dialog, as the
+ * page's Back above the first row, a fold's toggle (a summary) and a button in another row's condition. The pointer
+ * there is the control's.
+ */
+function sentenceControls(row: HTMLElement): HTMLElement[] {
+  const rowControls = [...(row.closest(".modal-body") ?? document).querySelectorAll<HTMLElement>(".settings-row")].filter((other) => other !== row)
+    .flatMap((other) => [...other.children].filter((child): child is HTMLElement => child instanceof HTMLElement && !child.classList.contains("settings-row-text")));
+  const others = [...(row.closest("[role='dialog']") ?? row.closest(".modal-body") ?? document).querySelectorAll<HTMLElement>("button, a[href], input, select, textarea, summary")]
+    // a control in another row's own controls is counted with them; one in a row's text (its condition) is not
+    .filter((control) => !row.contains(control) && control.closest(".settings-help, .settings-help-copy") === null
+      && (control.closest(".settings-row") === null || control.closest(".settings-row > .settings-row-text") !== null));
+  return [...rowControls, ...others];
 }
 
 /**
@@ -385,7 +400,6 @@ function RowSentence({ row, drawn, children }: { row: HTMLElement; drawn: RefObj
       const tip = box.current;
       if (!tip) return;
       const rowBox = row.getBoundingClientRect();
-      const pageEl = row.closest(".modal-body");
       if (!inPageView(row)) {
         drawn.current = false;
         setAt(null);
@@ -400,9 +414,7 @@ function RowSentence({ row, drawn, children }: { row: HTMLElement; drawn: RefObj
       const clear = Math.min(name.top, line?.top ?? name.top, ...beside.map((side) => side.top));
       const under = Math.max(text?.getBoundingClientRect().bottom ?? rowBox.bottom, ...beside.map((side) => side.bottom));
       const screen = { width: window.innerWidth, height: window.innerHeight };
-      // the other rows' controls: what a sentence over those rows must not lie on
-      const controls = [...(pageEl ?? document).querySelectorAll<HTMLElement>(".settings-row")].filter((other) => other !== row)
-        .flatMap((other) => [...other.children].filter((child) => !child.classList.contains("settings-row-text"))).map((child) => child.getBoundingClientRect()).filter((side) => side.height > 0);
+      const controls = sentenceControls(row).map((child) => child.getBoundingClientRect()).filter((side) => side.height > 0);
       const measure = () => placeSentence(rowBox, name, clear, under, { width: tip.offsetWidth, height: tip.offsetHeight }, screen);
       // at its own width first, then as narrow as the controls under it ask; a narrower sentence is taller and may
       // reach another row's control, so once more; where that leaves no room, back to its own width
@@ -553,13 +565,35 @@ export function SettingsSelect({ className, children, ...props }: ComponentProps
 /** `name`: what a screen reader and a test call the button when its short label is shared with another control nearby */
 export interface SegmentedOption<T extends string> { value: T; label: string; name?: string }
 
-/** One of a few short choices, all in sight. Five or more go in a select instead. */
+/**
+ * One of a few short choices, all in sight. Five or more go in a select instead. The track is told how many options it
+ * holds and how wide its widest label is drawn (`--segmented-count`, `--segmented-widest`): where the control has its
+ * row's whole line (a phone's stacked row, SettingsControls.css) the stylesheet lays the options out from the two, so a
+ * label that does not fit its share of the line is never cut or laid over its neighbour. A label names itself in
+ * `data-label`: there the stylesheet keeps the room its chosen weight takes, so choosing it changes no width.
+ */
 export function Segmented<T extends string>({ label, value, options, onChange, disabled }: { label: string; value: T; options: readonly SegmentedOption<T>[]; onChange: (value: T) => void; disabled?: boolean }) {
   const sentence = useContext(SettingsRowSentence);
+  const track = useRef<HTMLDivElement>(null);
+  const labels = options.map((option) => option.label).join("\n");
+  // each label's own box, as the browser lays it out, before the frame that first shows it and again whenever it
+  // changes (the language, the text size, the faces arriving, the weight of the chosen one). The labels keep their
+  // size whatever the track does with it, so the measuring never feeds itself
+  useLayoutEffect(() => {
+    const node = track.current;
+    if (node === null) return;
+    const widths = new Map<Element, number>();
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) widths.set(entry.target, entry.borderBoxSize[0]?.inlineSize ?? entry.contentRect.width);
+      node.style.setProperty("--segmented-widest", `${Math.max(0, ...widths.values())}px`);
+    });
+    for (const face of node.querySelectorAll(":scope > button > span")) observer.observe(face);
+    return () => observer.disconnect();
+  }, [labels]);
   return (
-    <div className="segmented settings-segmented" role="group" aria-label={label} aria-describedby={sentence}>
+    <div ref={track} className="segmented settings-segmented" role="group" aria-label={label} aria-describedby={sentence} style={{ "--segmented-count": options.length } as CSSProperties}>
       {options.map((option) => (
-        <button key={option.value} type="button" aria-pressed={value === option.value} aria-label={option.name} disabled={disabled} onClick={() => onChange(option.value)}>{option.label}</button>
+        <button key={option.value} type="button" aria-pressed={value === option.value} aria-label={option.name} disabled={disabled} onClick={() => onChange(option.value)}><span data-label={option.label}>{option.label}</span></button>
       ))}
     </div>
   );
@@ -624,8 +658,9 @@ export function Stepper({ label, value, text, min, max, decreaseLabel, increaseL
   pending.current = () => { if (typed !== null && typed !== value) onChange(typed); };
   useEffect(() => () => pending.current(), []);
   const stepper = (
+    // aria-disabled at an end, not disabled: a press keeps the focus on the button instead of dropping it to the page
     <div className="settings-stepper" role="group" aria-label={label} aria-describedby={sentence}>
-      <button type="button" className="icon-button" aria-label={decreaseLabel} title={decreaseLabel} disabled={current <= min} onClick={() => step(-1)}><Minus aria-hidden="true" /></button>
+      <button type="button" className="icon-button" aria-label={decreaseLabel} title={decreaseLabel} aria-disabled={current <= min || undefined} onClick={() => { if (current > min) step(-1); }}><Minus aria-hidden="true" /></button>
       {unit === undefined ? <output aria-live="polite">{text}</output> : <span className="settings-stepper-field">
         <input className="settings-stepper-value" type="text" inputMode="numeric" aria-label={label} title={range} value={shown}
           aria-describedby={range === undefined ? undefined : rangeId}
@@ -640,7 +675,7 @@ export function Stepper({ label, value, text, min, max, decreaseLabel, increaseL
         {/* the field is not announced as it changes: the size the -/+ buttons or a typed number set is */}
         <output className="visually-hidden" aria-live="polite">{text}</output>
       </span>}
-      <button type="button" className="icon-button" aria-label={increaseLabel} title={increaseLabel} disabled={current >= max} onClick={() => step(1)}><Plus aria-hidden="true" /></button>
+      <button type="button" className="icon-button" aria-label={increaseLabel} title={increaseLabel} aria-disabled={current >= max || undefined} onClick={() => { if (current < max) step(1); }}><Plus aria-hidden="true" /></button>
     </div>
   );
   if (unit === undefined || range === undefined) return stepper;

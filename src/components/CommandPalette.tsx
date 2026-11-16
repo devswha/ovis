@@ -1,7 +1,9 @@
+import { tally } from "../lib/usageCounters.ts";
+import type { TelemetryAction } from "../../shared/telemetry.ts";
 import { moveDestinations } from "../lib/layoutTargets.ts";
 import { useAppLayout, MachineContext, useMachineApi, useMachineId } from "../lib/machineContext.tsx";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentType, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
-import { Bell, Columns2, CornerLeftUp, Folder, FolderInput, FolderOpen, FolderSearch, GitBranch, Globe, History, ListFilter, LoaderCircle, Maximize2, MessageSquarePlus, Minimize2, Monitor, PanelLeft, Pencil, Pin, Plus, Puzzle, RefreshCw, Rows2, Settings, SunMoon, SwitchCamera, TextSearch, X } from "lucide-react";
+import { Bell, Columns2, CornerLeftUp, Folder, FolderInput, FolderOpen, FolderSearch, GitBranch, Globe, History, Inbox, ListFilter, LoaderCircle, Maximize2, MessageSquarePlus, Minimize2, Monitor, PanelLeft, Pencil, Pin, Plus, Puzzle, RefreshCw, Rows2, Settings, SunMoon, SwitchCamera, TextSearch, X } from "lucide-react";
 
 import "./CommandPalette.css";
 
@@ -17,6 +19,7 @@ import { Ownership, runPluginActionToEnd } from "../lib/pluginRun.ts";
 import { modalOpenBesides, shortcutDisplayKeys, formatKeys, type ShortcutId } from "../lib/shortcuts.ts";
 import { useSettings } from "../lib/settings.ts";
 import { AgentMark } from "./AgentMark.tsx";
+import { OvisMark } from "./OvisMark.tsx";
 import { displayPaneTitle, StatusBadge } from "./Sidebar.tsx";
 import { PAGES } from "./SettingsDialog.tsx";
 import { folderName, taskRowLines, unsaidLine } from "../lib/paneName.ts";
@@ -58,6 +61,8 @@ interface CommandPaletteProps {
   actions: AppActions;
   /** this device may only watch: the PCs refuse it their checkouts, so no branch is read (#2250) */
   watching?: boolean;
+  /** the inbox mode's shell (lib/inboxMode.ts) has no tab row and no sidebar: nothing is offered that needs one, on its list as in a thread */
+  inboxMode?: boolean;
 }
 
 interface PaletteAction {
@@ -156,7 +161,24 @@ function ShortcutHint({ shortcutId }: { shortcutId?: ShortcutId }) {
   return <span className="palette-shortcut" aria-label={keys.join(" + ")}>{keys.map((key) => <kbd className="kbd" key={key}>{key}</kbd>)}</span>;
 }
 
-export function CommandPalette({ open, initialQuery = "", onClose, machines, onSelect, snapshot, online, selectedPaneId, view, actions, watching = false }: CommandPaletteProps) {
+/** the rows whose action is also a button, a menu item or a shortcut: counted by how it was taken */
+const PALETTE_ACTIONS: Partial<Record<string, TelemetryAction>> = {
+  new: "new_workspace", "new-tab": "new_tab", "split-right": "split", "split-down": "split", "split-right-open": "split", "split-down-open": "split",
+  sidebar: "sidebar", "inbox-mode": "inbox", settings: "settings", files: "files",
+};
+
+/** a palette row's use, told before it runs: a count that fails is logged and the row still runs */
+export function countPaletteRow(actions: Pick<AppActions, "counted" | "inboxMode">, id: string): void {
+  const counted = paletteUse(id, actions.inboxMode?.on === true);
+  if (counted) tally(() => actions.counted?.(counted, "palette"));
+}
+
+/** the action a palette row counts, by its id: the inbox row only on the way in, as every other way in is counted */
+export function paletteUse(id: string, inInbox: boolean): TelemetryAction | undefined {
+  return id === "inbox-mode" && inInbox ? undefined : PALETTE_ACTIONS[id];
+}
+
+export function CommandPalette({ open, initialQuery = "", onClose, machines, onSelect, snapshot, online, selectedPaneId, view, actions, watching = false, inboxMode = false }: CommandPaletteProps) {
   const t = useT();
   const { settings } = useSettings();
   const firstLines = useSyncExternalStore(subscribeTabLabels, shownTabLabels, shownTabLabels);
@@ -333,13 +355,13 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
   const paletteActions = useMemo<PaletteAction[]>(() => [
     { id: "new", label: t("New workspace"), icon: MessageSquarePlus, shortcut: "new-session", run: actions.openNewSession },
     // in the selected pane's workspace: nothing to add a tab to without one
-    ...(selectedPaneId !== null ? [{ id: "new-tab", label: t("New tab"), icon: Plus, shortcut: "new-tab", run: () => actions.openNewTab() }] satisfies PaletteAction[] : []),
+    ...(selectedPaneId !== null && !inboxMode ? [{ id: "new-tab", label: t("New tab"), icon: Plus, shortcut: "new-tab", run: () => actions.openNewTab() }] satisfies PaletteAction[] : []),
     ...(worktreeHere ? [
       { id: "new-worktree", label: t("New worktree"), icon: GitBranch, run: () => actions.openWorktree?.("create") },
       { id: "open-worktree", label: t("Open worktree…"), icon: FolderOpen, run: () => actions.openWorktree?.("open") },
     ] satisfies PaletteAction[] : []),
     ...(historyHere ? [{ id: "session-history", label: t("Earlier sessions…"), icon: History, run: () => actions.openSessionHistory() }] satisfies PaletteAction[] : []),
-    ...(selectedPaneId !== null && tabShown && renameOffered ? [{ id: "rename-tab", label: t("Rename tab"), icon: Pencil, shortcut: "rename-tab", run: actions.renameTab }] satisfies PaletteAction[] : []),
+    ...(selectedPaneId !== null && tabShown && renameOffered && !inboxMode ? [{ id: "rename-tab", label: t("Rename tab"), icon: Pencil, shortcut: "rename-tab", run: actions.renameTab }] satisfies PaletteAction[] : []),
     // herdr's prefix+v and prefix+-: the new pane is opened here only when asked, as herdr's --focus
     ...(splitPane ? [
       { id: "split-right", label: t("Split pane right"), icon: Columns2, shortcut: "split-right", run: () => splitPane("right") },
@@ -349,13 +371,19 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
     ] satisfies PaletteAction[] : []),
     ...(zoomPane && zoom && tabPanes > 1 ? [{ id: "zoom", label: t(zoom === "off" ? "Unzoom pane" : "Zoom pane"), icon: zoom === "off" ? Minimize2 : Maximize2, shortcut: "zoom-pane" as const, run: () => zoomPane(zoom) }] : []),
     // the pane menu's Close, its confirmation included (App, PaneCanvas)
-    ...(actions.closePane && !overDialog ? [{ id: "close-pane", label: t("Close pane"), icon: X, shortcut: "close-pane" as const, run: () => { if (!modalOpenBesides(surface.current)) actions.closePane?.(); } }] : []),
-    { id: "view", label: t(view === "chat" ? "Switch to terminal" : "Switch to chat"), icon: SwitchCamera, shortcut: "toggle-view", run: actions.toggleView },
+    ...(actions.closePane && !overDialog ? [{ id: "close-pane", label: t("Close pane"), icon: X, shortcut: "close-pane" as const, run: () => { if (!modalOpenBesides(surface.current)) { tally(() => actions.counted?.("close_pane", "palette")); actions.closePane?.(); } } }] : []),
+    // the open tab's Close, its confirmation included (App, TabStrip)
+    ...(actions.closeTab && !overDialog ? [{ id: "close-tab", label: t("Close tab"), icon: X, shortcut: "close-tab" as const, run: () => { if (!modalOpenBesides(surface.current)) actions.closeTab?.(); } }] : []),
+    { id: "view", label: t(view === "chat" ? "Switch to terminal" : "Switch to chat"), icon: SwitchCamera, shortcut: "toggle-view", run: () => actions.toggleView("palette") },
     // the selected pane's chat, older pages included (ChatView's ConversationSearch)
     ...(actions.searchConversation ? [{ id: "search-conversation", label: t("Search conversation"), icon: TextSearch, run: actions.searchConversation }] : []),
-    { id: "sidebar", label: t("Toggle sidebar"), icon: PanelLeft, shortcut: "toggle-sidebar", run: actions.toggleSidebar },
-    // the sidebar's Filter field, also where Settings → Appearance → Sidebar filter leaves it out
-    { id: "filter-sidebar", label: t("Filter workspaces and agents"), icon: ListFilter, run: actions.openSidebarFilter },
+    ...(inboxMode ? [] : [
+      { id: "sidebar", label: t("Toggle sidebar"), icon: PanelLeft, shortcut: "toggle-sidebar", run: actions.toggleSidebar },
+      // the sidebar's Filter field, also where Settings → Appearance → Sidebar filter leaves it out
+      { id: "filter-sidebar", label: t("Filter workspaces and agents"), icon: ListFilter, run: actions.openSidebarFilter },
+    ] satisfies PaletteAction[]),
+    // the agent inbox as a mode of its own (lib/inboxMode.ts): the way in, and the way back while in it
+    ...(actions.inboxMode ? [{ id: "inbox-mode", label: t(actions.inboxMode.on ? "Back to Ovis" : "Open agent inbox"), icon: actions.inboxMode.on ? OvisMark : Inbox, run: actions.inboxMode.go }] satisfies PaletteAction[] : []),
     { id: "theme", label: t("Toggle theme"), icon: SunMoon, run: actions.toggleTheme },
     { id: "settings", label: t("Settings"), icon: Settings, shortcut: "settings", run: actions.openSettings },
     { id: "add-pc", label: t("Add PC"), icon: Monitor, run: () => actions.openAddPc() },
@@ -365,7 +393,7 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
     // starts the address a page this PC serves is typed as (below), the port left to type
     ...(actions.openLocalPage ? [{ id: "local-page", label: t("Open a page on this PC…"), icon: Globe, keepOpen: true, run: () => { setQuery("localhost:"); setFilter("all"); setSelection(NO_SELECTION); inputRef.current?.focus(); } }] : []),
     { id: "refresh", label: t("Refresh"), icon: RefreshCw, run: actions.refresh },
-  ], [actions, overDialog, surface, splitPane, zoomPane, tabPanes, zoom, view, t, selectedPaneId, tabShown, renameOffered, worktreeHere, historyHere, online, browseTo, browseStart, home]);
+  ], [actions, overDialog, surface, splitPane, zoomPane, tabPanes, zoom, view, t, selectedPaneId, inboxMode, tabShown, renameOffered, worktreeHere, historyHere, online, browseTo, browseStart, home]);
 
   // Settings pages and groups are found by a query only, and open on the page itself, a group's
   // scrolled to and focused: the dialog reads the request as it mounts
@@ -537,6 +565,7 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
     onClose();
   };
   const runAction = (action: PaletteAction): void => {
+    countPaletteRow(actions, action.id);
     action.run();
     if (!action.keepOpen) onClose();
   };

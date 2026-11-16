@@ -4,6 +4,8 @@ import { bindingChord, formatExactChord, isMacPlatform, parseExactChord, type Ex
 import { physicalKey } from "./keys.ts";
 
 import type { AppActions } from "./actions.ts";
+import type { TelemetryAction } from "../../shared/telemetry.ts";
+import { tally } from "./usageCounters.ts";
 
 export const SHORTCUTS = [
   { id: "palette", label: "Command palette", keys: ["Mod", "Shift", "K"] },
@@ -24,6 +26,7 @@ export const SHORTCUTS = [
   { id: "zoom-pane", label: "Zoom or unzoom pane", keys: [] },
   // no default key: ⌘W and Ctrl+W, a terminal app's close, are the browser's own tab close
   { id: "close-pane", label: "Close pane", keys: [] },
+  { id: "close-tab", label: "Close tab", keys: [] },
   { id: "previous-pane", label: "Previous pane", keys: ["Mod", "Shift", "ArrowUp"] },
   { id: "next-pane", label: "Next pane", keys: ["Mod", "Shift", "ArrowDown"] },
   // no default key either, as New tab: each person picks one in Settings
@@ -233,12 +236,12 @@ export function keepsKeyForText(event: { key: string; target: KeyTargetLike | Ev
 const KEY_OWNERS = "dialog, [role='dialog'], [role='alertdialog'], [role='menu'], [role='listbox']";
 
 /**
- * What a press of the Close pane binding does: "pass" leaves the key to a dialog, sheet or menu that
+ * What a press of the Close pane or Close tab binding does: "pass" leaves the key to a dialog, sheet or menu that
  * has it, or that is open over the page (its own confirmation included), and to a field whose own list
  * is open (the message box's slash and file suggestions: the field keeps the focus, beside its
  * listbox, aria-expanded), and does nothing; "ignore"
  * takes a held key's repeat and closes nothing, so holding it never goes on to the next pane; "run"
- * closes the selected pane once.
+ * closes the selected pane (or its tab) once.
  */
 export function closePaneKeyStep(event: { repeat?: boolean; target: EventTarget | null }, modalOpen: boolean): "run" | "ignore" | "pass" {
   const target = event.target as { closest?: (selector: string) => unknown; getAttribute?: (name: string) => string | null } | null;
@@ -277,6 +280,11 @@ export function isRecordingShortcut(): boolean {
   return recordingShortcut;
 }
 
+/** the shortcuts whose action is also a button, a menu item or a palette row: counted by how it was taken */
+const SHORTCUT_ACTIONS: Partial<Record<ShortcutId, TelemetryAction>> = {
+  "toggle-sidebar": "sidebar", "new-session": "new_workspace", "new-tab": "new_tab", "split-right": "split", "split-down": "split", "close-pane": "close_pane", settings: "settings",
+};
+
 export function useShortcuts(actions: AppActions, enabled: boolean): void {
   const { settings } = useSettings();
   useEffect(() => {
@@ -288,12 +296,14 @@ export function useShortcuts(actions: AppActions, enabled: boolean): void {
       const shortcut = matchShortcut(event, platformIsMac, settings.shortcutOverrides);
       if (shortcut === null) return;
       if (keepsKeyForText(event, shortcut)) return;
-      const closeStep = shortcut === "close-pane" ? closePaneKeyStep(event, modalOpenBesides(null)) : null;
+      const closeStep = shortcut === "close-pane" || shortcut === "close-tab" ? closePaneKeyStep(event, modalOpenBesides(null)) : null;
       if (closeStep === "pass") return;
       event.preventDefault();
       // a held chord repeats: a tab or a split is made once per press, not once per key repeat
       if (event.repeat && (shortcut === "new-tab" || shortcut === "rename-tab" || shortcut === "split-right" || shortcut === "split-down" || shortcut === "zoom-pane")) return;
       if (closeStep === "ignore") return;
+      const counted = SHORTCUT_ACTIONS[shortcut];
+      if (counted) tally(() => actions.counted?.(counted, "shortcut"));
       switch (shortcut) {
         case "palette":
           actions.openPalette();
@@ -302,7 +312,7 @@ export function useShortcuts(actions: AppActions, enabled: boolean): void {
           actions.openFind();
           break;
         case "toggle-view":
-          actions.toggleView();
+          actions.toggleView("shortcut");
           break;
         case "focus-input":
           actions.focusInput();
@@ -336,6 +346,9 @@ export function useShortcuts(actions: AppActions, enabled: boolean): void {
           break;
         case "close-pane":
           actions.closePane?.();
+          break;
+        case "close-tab":
+          actions.closeTab?.();
           break;
         case "previous-pane":
           actions.selectAdjacentPane(-1);

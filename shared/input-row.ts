@@ -364,10 +364,10 @@ export const agyInputRow: InputRowRecognizer = (screen) => {
 // ---- Grok -----------------------------------------------------------------------------------------
 
 /**
- * Grok: the bottom-most `│ ❯ │` row empty, `Ctrl+.:shortcuts` in the last two rows, and no modal on
- * screen (`Esc close`, `F2/Esc close`, `Esc:cancel`, a `┌─ … ─` title). A modal drawn across the row
- * leaves box characters in it. The Agent Dashboard has its own field (`Enter:create` in its footer)
- * and /history's search reads `│ ?`.
+ * Grok: the bottom-most `│ ❯ │` row empty with every row of the box under it (a draft's later lines, Grok 1.0.77),
+ * `Ctrl+.:shortcuts` in the last two rows, and no modal on screen (`Esc close`, `F2/Esc close`, `Esc:cancel`, a
+ * `┌─ … ─` title). A modal drawn across the row leaves box characters in it. The Agent Dashboard has its own
+ * field (`Enter:create` in its footer) and /history's search reads `│ ?`.
  */
 export const grokInputRow: InputRowRecognizer = (screen) => {
   const rows = filled(screen);
@@ -378,7 +378,9 @@ export const grokInputRow: InputRowRecognizer = (screen) => {
   const lastTwo = rows.slice(-2).map(text);
   if (lastTwo.join(" ").includes("Enter:create") || /^\s*│ \?/.test(text(at))) return "gone";
   if (/[│└┘┌┐]/.test(body)) return "covered";
-  if (body !== "") return "draft";
+  const bottom = rows.find((index) => index > at && /^\s*╰/.test(text(index)));
+  const lines = rows.filter((index) => index > at && bottom !== undefined && index < bottom).map((index) => text(index).replace(/^\s*│/, "").replace(/│\s*$/, "").trim());
+  if (body !== "" || lines.some((line) => line !== "")) return "draft";
   const modal = screen.rows.some((row) => row.text.includes("Esc close") || row.text.includes("F2/Esc close")
     || row.text.includes("Esc:cancel") || /┌─ .* ─/.test(row.text));
   return modal || !lastTwo.some((row) => row.includes("Ctrl+.:shortcuts")) ? "covered" : "ready";
@@ -491,14 +493,39 @@ const kiloInputRow: InputRowRecognizer = (screen, typed) => {
   return "draft";
 };
 
+/**
+ * omp 18.14 (recorded 2026-11-14, src/lib/fixtures-input-rows/README.md): its status line `π > … ▶` with no frame,
+ * then the editor right under it, its first row `╰─ ` and the rows a draft runs onto, each indented three columns
+ * (an empty row of the draft is blank). The empty editor holds only its `⇧⇥ to change thinking effort` hint, drawn in
+ * colours no typed text takes, so its cells are reported and typedDraft's colour test tells it from typed words; the
+ * command list draws under the editor. omp 18.8.7's framed editor (ompInputRow) was recorded only empty and reports
+ * no cells.
+ */
+const ompDraftInputRow: InputRowRecognizer = (screen, typed) => {
+  const bar = filled(screen).filter((index) => /^ ?π > .*▶/.test(screen.rows[index]!.text)).at(-1);
+  if (bar === undefined || !screen.rows[bar + 1]?.text.startsWith("╰─")) return ompInputRow(screen);
+  // the draft's rows run on while they are indented three columns or blank; the last indented one ends it
+  let end = bar + 2;
+  for (let index = bar + 2; index < screen.rows.length && index < bar + 2 + BOX_MAX_ROWS; index++) {
+    const text = screen.rows[index]!.text;
+    if (text.trim() === "") continue;
+    if (!text.startsWith("   ")) break;
+    end = index + 1;
+  }
+  const cells = screen.rows.slice(bar + 1, end).flatMap((row) => cellsFrom(row, 3));
+  if (cells.every(blank)) return screen.rows.slice(end).some((row) => row.text.trim() !== "") ? "covered" : "ready";
+  typed?.push(...cells);
+  return "draft";
+};
+
 /** Every box the draft check reads, by herdr's agent name: the peek's and the ones above. */
 const DRAFT_RECOGNIZERS: Readonly<Record<string, InputRowRecognizer>> = {
-  ...RECOGNIZERS, muse: museInputRow, qwen: qwenInputRow, cline: clineInputRow, "dsh-tui": dshTuiInputRow,
+  ...RECOGNIZERS, omp: ompDraftInputRow, muse: museInputRow, qwen: qwenInputRow, cline: clineInputRow, "dsh-tui": dshTuiInputRow,
   letta: lettaInputRow, maki: makiInputRow, kimi: kimiInputRow, gemini: geminiInputRow, kilo: kiloInputRow,
 };
 
 /** The agents whose recognizer reports the cells of its box: only their box can refuse a send (typedDraft). */
-const REPORTS_TYPED: ReadonlySet<string> = new Set(["codex", "pi", "omo", "gjc", "muse", "qwen", "cline", "dsh-tui", "letta", "maki", "kimi", "gemini", "kilo"]);
+const REPORTS_TYPED: ReadonlySet<string> = new Set(["codex", "pi", "omo", "gjc", "omp", "muse", "qwen", "cline", "dsh-tui", "letta", "maki", "kimi", "gemini", "kilo"]);
 
 /**
  * The colours an agent draws typed text in where it does not use the terminal's own (as recorded, default
@@ -506,6 +533,7 @@ const REPORTS_TYPED: ReadonlySet<string> = new Set(["codex", "pi", "omo", "gjc",
  * as no evidence.
  */
 const TYPED_COLOURS: Readonly<Record<string, readonly string[]>> = {
+  omp: ["5;254"],
   muse: ["2;204;211;219"],
   cline: ["2;237;241;242"],
   maki: ["2;191;189;182"],

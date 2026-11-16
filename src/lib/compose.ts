@@ -15,7 +15,7 @@ import { skillSyntax } from "../../shared/skill-syntax.ts";
 import { knownStatus, STATUS_WORD } from "./status.ts";
 import { t, type Vars } from "./i18n.ts";
 import type { ActiveTrigger } from "./mentions.ts";
-import { AGENT_INPUT_DRAFT_MESSAGE, CLAUDE_FOLDED_DRAFT_MESSAGE, NO_AGENT_MESSAGE, submitNotTyped } from "../../shared/submit-outcome.ts";
+import { AGENT_INPUT_DRAFT_MESSAGE, CLAUDE_FOLDED_DRAFT_MESSAGE, GROK_QUEUED_MESSAGE, grokQueuedAhead, NO_AGENT_MESSAGE, submitNotTyped } from "../../shared/submit-outcome.ts";
 export { submitNotTyped } from "../../shared/submit-outcome.ts";
 
 /** This cap keeps one composer message inside a single WS frame. */
@@ -151,6 +151,19 @@ export function openCodeRefusalNote(code: string, message: string, tt: (text: st
   const changed = openCodeAgentChange(message);
   if (changed) return tt("Tab switched OpenCode's agent from {from} to {to}. Nothing more was typed. Check the terminal before sending again.", changed);
   if (message === "OpenCode attached another skill. Your chat text stayed here. Check the terminal before sending again.") return tt("OpenCode attached another skill. Your chat text stayed here. Check the terminal before sending again.");
+  return null;
+}
+
+/**
+ * The note for a Send now a working Grok kept in its queue (server/core/grok-queue.ts sendGrokQueuedNow), on the row it
+ * leaves uncertain: the message is in Grok's queue, not "not sent", and the row offers no Send now that would queue it
+ * twice. null for any other refusal.
+ */
+export function grokQueueNote(code: string, message: string, tt: (text: string, vars?: Vars) => string = t): string | null {
+  if (code !== "submit_changed") return null;
+  const ahead = grokQueuedAhead(message);
+  if (ahead !== null) return tt("In Grok's queue behind {count} queued before it; it goes when they do. Nothing more was pressed. This copy stays here to read and is not sent again.", { count: ahead });
+  if (message === GROK_QUEUED_MESSAGE) return tt("In Grok's queue; it goes when Grok gets to it. Nothing more was pressed. This copy stays here to read and is not sent again.");
   return null;
 }
 
@@ -472,6 +485,29 @@ export function commandGroup(command: SlashCommand): CommandGroup {
   if (terminalCommand(command)) return "terminal";
   if (command.source === "skill" && command.origin !== undefined) return `skill-${command.origin}`;
   return command.source;
+}
+
+/**
+ * OpenCode's TUI built-ins that take no argument, which its own menu runs when picked: v2.2.7's `slash` entries without
+ * `arguments: true` (packages/tui/src: app.tsx, routes/session, component/prompt, feature-plugins) and v1.19.5's
+ * `slashName` entries, which take none. Not here: `cd`, `rename` and `btw`, which v2 types with a space for an argument,
+ * and the server's commands (`init`, `review`, custom, project and plugin ones), which its menu only types.
+ */
+const OPENCODE_BARE_BUILTINS: ReadonlySet<string> = new Set([
+  "agents", "clear", "compact", "connect", "copy", "debug", "diff", "editor", "exit", "export", "fork", "help",
+  "highlights", "mcps", "models", "move", "new", "open", "org", "pair", "plugins", "redo", "reload", "restart",
+  "sessions", "settings", "skills", "stats", "status", "terminal", "themes", "thinking", "timeline", "timestamps",
+  "undo", "update", "usage", "variants", "warp", "workspaces", "worktrees",
+]);
+
+/**
+ * Whether a command picked from the menu and sent unchanged goes without the space the pick put after it. OpenCode runs
+ * a built-in that takes no argument only from its own menu, and sends `/new ` as a prompt (#3813). Its other commands
+ * only type `/name ` from its menu, and that space is what lets Enter send them, so they keep it, as every other
+ * agent's commands do.
+ */
+export function sendsBarePick(command: SlashCommand, agent: string | null): boolean {
+  return agent === "opencode" && command.source === "builtin" && (command.trigger ?? "/") === "/" && OPENCODE_BARE_BUILTINS.has(command.name);
 }
 
 /** Multi-trigger skills use the typed prefix; others use the command's wire trigger. */

@@ -77,8 +77,19 @@ function refuseLiveHerdr(socketPath: string, env: Record<string, string | undefi
  */
 export function socketAddress(socketPath: string): string {
   refuseLiveHerdr(socketPath);
-  return process.platform === "win32" && !socketPath.startsWith("\\\\.\\pipe\\") ? `\\\\.\\pipe\\${socketPath}` : socketPath;
+  const checked = checkedHerdrSocket(socketPath);
+  return process.platform === "win32" && !checked.startsWith("\\\\.\\pipe\\") ? `\\\\.\\pipe\\${checked}` : checked;
 }
+
+/**
+ * The machine profile's check of a herdr socket before each connection to it, set once it pins its session
+ * (server/machine-profile.ts): the address to use instead, where nothing listens, while the socket fails it.
+ * An ordinary server sets none.
+ */
+let socketCheck: ((socketPath: string) => string) | null = null;
+export function checkHerdrSockets(check: (socketPath: string) => string): void { socketCheck = check; }
+/** Where a connection to herdr, or a herdr command it starts, goes: `socketPath`, unless the profile's check refuses it. */
+export function checkedHerdrSocket(socketPath: string): string { return socketCheck?.(socketPath) ?? socketPath; }
 
 /** herdr's `terminal attach` exists on Unix only (herdrdev/herdr#4821); its ping does not say so yet. */
 export function terminalAttachSupported(capabilities?: Record<string, unknown>): boolean {
@@ -88,11 +99,17 @@ export function terminalAttachSupported(capabilities?: Record<string, unknown>):
 
 export class HerdrError extends Error {
   readonly code: string;
+  /**
+   * Whether `code` and the message are herdr's own, out of a reply's `error`, rather than this client's. Not
+   * enumerable, so an error's printed or encoded form keeps its own fields only.
+   */
+  declare readonly fromReply: boolean;
 
-  constructor(code: string, message: string) {
+  constructor(code: string, message: string, fromReply = false) {
     super(message);
     this.name = "HerdrError";
     this.code = code;
+    Object.defineProperty(this, "fromReply", { value: fromReply, enumerable: false });
   }
 }
 
@@ -100,6 +117,41 @@ let requestCounter = 0;
 function nextId(): string {
   requestCounter += 1;
   return `br-${Date.now().toString(36)}-${requestCounter}`;
+}
+
+/** Whether the environment asks for the herdr RPC tally: HERDR_RPC_COUNT set to exactly `1`. */
+export function herdrRpcCountRequested(env: Record<string, string | undefined> = process.env): boolean {
+  return env["HERDR_RPC_COUNT"] === "1";
+}
+
+// Opt-in per-method tally of the requests this module writes to herdr's socket (herdrRpc's and
+// subscribeEvents'), for measuring what a poll actually costs: null
+// (off) unless HERDR_RPC_COUNT=1 when this module loads. Only tests switch it after that
+// (herdrRpcCountingForTests), so a running server cannot flip it mid-run.
+let rpcCounts: Map<string, number> | null = null;
+
+/** Calls made per method so far, as a plain copy the caller cannot use to change the tally. */
+export function herdrRpcCounts(): Readonly<Record<string, number>> {
+  return Object.fromEntries(rpcCounts ?? []);
+}
+
+/** Turns the tally on, empty, or off for a test; module load alone sets it in the server. */
+export function herdrRpcCountingForTests(enabled: boolean): void {
+  rpcCounts = enabled ? new Map() : null;
+}
+
+/**
+ * The tally's one reader: as the process exits (the server's shutdown ends in process.exit), one
+ * JSON line on stderr, the sink herdr.rpc's ConnectionDiagnostics writes to, e.g.
+ * {"time":"…","event":"herdr.rpc.counts","counts":{"pane.read":42}}. Counts and method names
+ * only, which are code-owned literals; nothing else reads them or sends them anywhere. A process
+ * that made no request (the plugin's supervisor imports this module too) writes nothing.
+ */
+if (herdrRpcCountRequested()) {
+  rpcCounts = new Map();
+  process.once("exit", () => {
+    if (rpcCounts?.size) console.warn(JSON.stringify({ time: new Date().toISOString(), event: "herdr.rpc.counts", counts: herdrRpcCounts() }));
+  });
 }
 
 /**
@@ -263,6 +315,9 @@ export async function herdrRpc(
   timeoutMs: number = DEFAULT_TIMEOUT_MS,
   guard?: () => boolean,
 ): Promise<unknown> {
+  // Counted on entry, not on success: a call that times out or is refused by `guard` still
+  // costs the bridge an attempt, and a report that omitted them would understate the load.
+  if (rpcCounts) rpcCounts.set(method, (rpcCounts.get(method) ?? 0) + 1);
   const id = nextId();
   const started = performance.now();
   const key = JSON.stringify([socketPath, method]); // private bookkeeping only; never logged
@@ -316,7 +371,7 @@ export async function herdrRpc(
         }
         const reply = readReply(frame, id);
         if (typeof reply === "string") invalid(reply, bytes);
-        else if ("error" in reply) finish(() => reject(new HerdrError(reply.error.code, reply.error.message)));
+        else if ("error" in reply) finish(() => reject(new HerdrError(reply.error.code, reply.error.message, true)));
         else finish(() => resolve(reply.result));
       };
 
@@ -419,8 +474,8 @@ export async function herdrAcceptsConnection(socketPath: string): Promise<boolea
   } catch { return false; }
 }
 
-export async function ping(socketPath?: string): Promise<HerdrIdentity> {
-  const result = await herdrRpc<{ version: string; protocol: number; capabilities?: Record<string, unknown> }>("ping", {}, socketPath);
+export async function ping(socketPath?: string, timeoutMs?: number): Promise<HerdrIdentity> {
+  const result = await herdrRpc<{ version: string; protocol: number; capabilities?: Record<string, unknown> }>("ping", {}, socketPath, timeoutMs);
   const attach = terminalAttachSupported(result.capabilities);
   // without attach the web server repaints the pane's screen instead (server/mirror.ts)
   return { version: result.version, protocol: result.protocol, terminal_attach: attach, ...(attach ? {} : { terminal_mirror: true }), ...runtimeIdentity(result.capabilities) };
@@ -1026,9 +1081,9 @@ export async function paneMoveBeside(paneId: string, targetPaneId: string, side:
         read = await sessionSnapshot(socket).catch(() => null);
         back = inTab(read, out);
       }
-      if (!back) throw new HerdrError(why.code, `pane ${out} ${read === null ? "may wait" : "waits"} in a tab of its own: ${why.message}`);
+      if (!back) throw new HerdrError(why.code, `pane ${out} ${read === null ? "may wait" : "waits"} in a tab of its own: ${why.message}`, why.fromReply);
       if (left !== null) await restore(out, (at) => at === left);
-      throw new HerdrError(why.code, `pane ${out} went back into its tab: ${why.message}`);
+      throw new HerdrError(why.code, `pane ${out} went back into its tab: ${why.message}`, why.fromReply);
     };
     const failed = (error: unknown) => error instanceof HerdrError ? error : new HerdrError("pane_not_moved", error instanceof Error ? error.message : String(error));
     try {
@@ -1160,6 +1215,8 @@ export function subscribeEvents(
   handlers: SubscribeHandlers,
   socketPath: string = herdrSocketPath(),
 ): Subscription {
+  // counted as herdrRpc counts: on entry, so a reconnect that fails is counted too
+  if (rpcCounts) rpcCounts.set("events.subscribe", (rpcCounts.get("events.subscribe") ?? 0) + 1);
   let closed = false;
   let socket: { end: () => void } | null = null;
   let started = false;
@@ -1201,7 +1258,7 @@ export function subscribeEvents(
     if (!started || (!isEvent && isRecord(frame) && Object.hasOwn(frame, "error"))) {
       const reply = readReply(frame, id);
       if (typeof reply === "string") invalid(reply, bytes);
-      else if ("error" in reply) handlers.onError?.(new HerdrError(reply.error.code, reply.error.message));
+      else if ("error" in reply) handlers.onError?.(new HerdrError(reply.error.code, reply.error.message, true));
       else if (started || !isRecord(reply.result) || reply.result["type"] !== "subscription_started") invalid("unexpected acknowledgement", bytes);
       else {
         started = true;

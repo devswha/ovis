@@ -53,9 +53,11 @@ jobs:
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           REPOSITORY: ${{ github.repository }}
           REQUESTED_LABELS: ${{ inputs.self_hosted_labels }}
-          # CI_LINUX_SELF_HOSTED_LABELS moves only these Linux jobs (pages.yml and release.yml keep
-          # following CI_SELF_HOSTED_LABELS), e.g. to the cloud VM runners: '["self-hosted","ovis-vm"]'
-          CONFIGURED_LABELS: ${{ vars.CI_LINUX_SELF_HOSTED_LABELS || vars.CI_SELF_HOSTED_LABELS }}
+          CONFIGURED_LABELS: ${{ vars.CI_SELF_HOSTED_LABELS }}
+          # moves these Linux jobs of pull requests and pushes only (scripts/ci-runner-route.sh), e.g. to the cloud
+          # VM runners: '["self-hosted","ovis-vm"]'; a workflow that calls ci.yml keeps CI_SELF_HOSTED_LABELS' routing
+          # only in ci.yml's own runs: a workflow that calls ci.yml (relay-deploy on a push to main, say) is named otherwise
+          LINUX_LABELS: ${{ github.workflow == 'CI' && vars.CI_LINUX_SELF_HOSTED_LABELS || '' }}
           MAIN_LABELS: ${{ vars.CI_MAIN_SELF_HOSTED_LABELS }}
           SELF_HOSTED_CAPACITY: ${{ vars.CI_SELF_HOSTED_CAPACITY }}
           FAST_LABELS: ${{ vars.CI_FAST_SELF_HOSTED_LABELS }}
@@ -122,7 +124,7 @@ jobs:
         if: needs.changes.outputs.draft != 'true'
       - run: bun run build
         if: needs.changes.outputs.draft != 'true'
-      - run: bun test ./scripts/windows-plugin.test.ts ./scripts/plugin-runtime.test.ts ./scripts/phone-setup.test.ts ./server/windows-native.test.ts ./server/omp-images.test.ts ./server/claude-command-history.test.ts
+      - run: bun test ./scripts/windows-plugin.test.ts ./scripts/plugin-stop-forms.test.ts ./scripts/plugin-stop-identity.test.ts ./scripts/plugin-runtime.test.ts ./scripts/phone-setup.test.ts ./server/windows-native.test.ts ./server/omp-images.test.ts ./server/claude-command-history.test.ts
         if: needs.changes.outputs.draft != 'true'
   macos-session:
     name: Native macOS session identity
@@ -145,7 +147,7 @@ jobs:
           exit 0
       - run: bun install --frozen-lockfile
         if: needs.changes.outputs.draft != 'true'
-      - run: bun test ./server/claude-store.test.ts ./server/process-start.test.ts ./server/darwin-process.test.ts ./server/grok.test.ts ./server/omp-images.test.ts ./scripts/install-herdr-core.test.ts
+      - run: bun test ./server/claude-store.test.ts ./server/process-start.test.ts ./server/darwin-process.test.ts ./server/herdr-discovery.test.ts ./server/remote-entry.test.ts ./server/grok.test.ts ./server/omp-images.test.ts ./scripts/install-herdr-core.test.ts
         if: needs.changes.outputs.draft != 'true'
   rust-pty-host:
     # The Rust PTY host (crates/pty-sidecar) is the default where it is installed or built, and its
@@ -387,7 +389,7 @@ jobs:
       - name: Browser regression (UI suites)
         if: needs.changes.outputs.draft != 'true'
         env:
-          BROWSER_SCRIPTS: scripts/ui-regression.ts,scripts/ui-contexts-regression.ts,scripts/ui-contexts-layout-regression.ts
+          BROWSER_SCRIPTS: scripts/ui-regression.ts,scripts/ui-terminal-regression.ts,scripts/ui-ime-regression.ts,scripts/ui-access-regression.ts,scripts/ui-contexts-regression.ts,scripts/ui-contexts-layout-regression.ts
           BROWSER_WORKERS: 2
         run: bun run check run -- bun scripts/ci-browser-parallel.ts
       - name: Preserve browser logs and evidence
@@ -468,7 +470,7 @@ jobs:
         if: needs.changes.outputs.draft != 'true'
         env:
           # Every script of scripts/ci-browser.sh except the browser-main runs.
-          BROWSER_EXCLUDE: scripts/ui-regression.ts,scripts/ui-contexts-regression.ts,scripts/ui-contexts-layout-regression.ts
+          BROWSER_EXCLUDE: scripts/ui-regression.ts,scripts/ui-terminal-regression.ts,scripts/ui-ime-regression.ts,scripts/ui-access-regression.ts,scripts/ui-contexts-regression.ts,scripts/ui-contexts-layout-regression.ts
           BROWSER_SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
           BROWSER_WORKERS: ${{ runner.environment == 'self-hosted' && '6' || '3' }}
         run: bun run check run -- bun scripts/ci-browser-parallel.ts

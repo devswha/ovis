@@ -222,7 +222,7 @@ try {
   const workspaceMenu = page.getByRole("menu");
   await workspaceMenu.waitFor();
   const workspaceActions = await workspaceMenu.getByRole("menuitem").allTextContents();
-  assert.deepEqual(workspaceActions, ["Pin workspace", "Rename workspace", "Earlier sessions…", "Close workspace"],
+  assert.deepEqual(workspaceActions, ["Pin workspace", "New tab with agent…", "Rename workspace", "Earlier sessions…", "Close workspace"],
     "a non-Git workspace's keyboard menu contains only native workspace actions");
   assert.equal(await page.locator(paneSelector(split.pane.pane_id)).getAttribute("aria-current"), "true",
     "opening another workspace's keyboard menu keeps the active pane");
@@ -261,7 +261,7 @@ try {
   for (const width of [1280, 768, 375]) {
     await page.setViewportSize({ width, height: 900 });
     if (await page.locator(".drawer-toggle").isVisible()
-      && await page.locator(".drawer-toggle").getAttribute("aria-expanded") !== "true") {
+      && await page.locator("#workspace-drawer.is-open").count() === 0) {
       await changeState(page, [{ selector: "#workspace-drawer.is-open" }],
         () => page.locator(".drawer-toggle").click(), `workspace drawer opens at ${width}`);
     }

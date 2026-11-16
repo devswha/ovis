@@ -7,6 +7,7 @@
 import type { SplitPaneDirection } from "../../shared/protocol.ts";
 import type { ZoomMode } from "./layoutMap.ts";
 import type { Machine } from "../../shared/machines.ts";
+import type { TelemetryAction, TelemetryActionSource, TelemetryViewSource } from "../../shared/telemetry.ts";
 
 /** what Add a connection → SSH fills the Add PC dialog with: the address to connect to and, where known, a name */
 export interface AddPcPreset { destination: string; name?: string }
@@ -29,8 +30,11 @@ export interface AppActions {
   selectTabNumber: (number: number) => void;
   /** the previous/next workspace of the selected PC in sidebar order (pins, worktree groups); wraps around */
   selectAdjacentWorkspace: (direction: -1 | 1) => void;
-  setView: (view: PaneView) => void;
-  toggleView: () => void;
+  /** `source`: where a person asked for it (lib/usageCounters.ts counts it there); null for a switch the app makes itself */
+  setView: (view: PaneView, source: TelemetryViewSource | null) => void;
+  toggleView: (source: TelemetryViewSource) => void;
+  /** an action taken by a person, counted by how (lib/usageCounters.ts): one that acts on a pane only for this PC's own */
+  counted?: (action: TelemetryAction, source: TelemetryActionSource) => void;
   /** Focus the selected pane's mounted input without sending any text or keys. */
   focusInput: () => void;
   scrollPage: (direction: -1 | 1) => void;
@@ -78,6 +82,8 @@ export interface AppActions {
   /** a PC's own setup dialog (Connect on a PC saved in herdr), from Settings → Devices and PCs; Settings closes first */
   connectPc: (machine: Machine) => void;
   toggleSidebar: () => void;
+  /** into the agent inbox (lib/inboxMode.ts) or, while `on`, back out of it; null where the mode is not offered */
+  inboxMode: { on: boolean; go: () => void } | null;
   /** the sidebar's Filter field, focused, with the drawer or the sidebar opened first: drawn even where Settings → Appearance leaves it out */
   openSidebarFilter: () => void;
   /** flips dark/light (a `system` setting becomes the opposite of the resolved theme) */
@@ -115,4 +121,10 @@ export interface AppActions {
    * without a pane and on a watching device
    */
   closePane: (() => void) | null;
+  /**
+   * The Close tab shortcut and palette row: the open tab's own Close, as its row's menu has it (TabStrip), or the
+   * pane's menu where the tab has no row (PaneCanvas), with the same confirmation, and nothing for a tab holding a
+   * locked pane. null without a pane and on a watching device
+   */
+  closeTab: (() => void) | null;
 }

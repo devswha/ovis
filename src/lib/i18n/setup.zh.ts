@@ -35,7 +35,6 @@ export const SETUP_ZH: Record<string, string> = {
   "It took too long. Try again.": "时间太长了。请重试。",
   "{agent} did not install. {reason}": "{agent} 未能完成安装。{reason}",
   "Accounts are read on the PC Ovis runs on: they are under Other accounts.": "账号在运行 Ovis 的电脑上读取，列在“其他账号”下。",
-  "Install another agent ({count})": "安装其他代理（{count}）",
   "Not signed in": "未登录",
   "Sign-in unreadable: {command} is not installed": "无法读取登录信息：未安装 {command}",
   "Ovis reads {agent}'s sign-in from the desktop keyring with {command}, which this PC does not have. Install it (the libsecret-tools package on Debian and Ubuntu, libsecret on Fedora and Arch), then open this page again.": "Ovis 通过 {command} 从桌面密钥环读取 {agent} 的登录信息，但此电脑上没有它。请先安装（Debian 和 Ubuntu 上是 libsecret-tools 软件包，Fedora 和 Arch 上是 libsecret），然后重新打开此页面。",
@@ -85,4 +84,5 @@ export const SETUP_ZH: Record<string, string> = {
   "Opens the first-run guide again, from its first step, to install coding agents on this PC and connect them. What was set up before stays as it is.": "从第一步重新打开首次运行时的设置向导，用于在此 PC 上安装并连接编程 Agent。之前已完成的设置保持不变。",
   "Accounts of providers that none of the agents listed above signs in to, such as Cursor or an agent this PC does not have.": "上方列出的 Agent 都不登录的服务的账号，例如 Cursor，或此 PC 上没有的 Agent 的账号。",
   "Old record": "旧记录",
+  "Install another agent ({count})": "安装其他代理（{count}）",
 };

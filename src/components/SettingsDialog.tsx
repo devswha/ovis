@@ -1,5 +1,5 @@
 import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from "react";
-import { ALargeSmall, AppWindow, ArrowDownUp, ArrowLeft, AudioLines, Bell, Bot, Box, Brain, CheckCheck, ChevronLeft, ChevronRight, CircleDot, ClipboardCopy, ClipboardPaste, Command, CornerDownLeft, ExternalLink, FileClock, FilePen, Filter, FlaskConical, Gauge, Globe, Image as ImageIcon, Inbox, Info, Keyboard, Languages, Layers, ListCollapse, ListTree, Lock, MessageCircleQuestionMark, MessageSquare, MessageSquareReply, MessagesSquare, Mic, Monitor, Mouse, MousePointer2, MoveHorizontal, OctagonX, Palette, PanelLeft, PanelRight, Plus, Puzzle, Rows3, Search, Send, Server, Shapes, ShieldAlert, Smartphone, Sparkles, SquareTerminal, Star, SunMoon, Tag, Tags, TextCursorInput, Timer, Trash2, Type, Volume2, WandSparkles, WrapText, X, type LucideIcon } from "lucide-react";
+import { ALargeSmall, AppWindow, ArrowDownUp, ArrowLeftRight, ArrowLeft, AudioLines, Bell, Bot, Box, Brain, ChevronLeft, ChevronRight, CircleDot, ClipboardCopy, ClipboardPaste, Command, CornerDownLeft, ExternalLink, FileClock, FilePen, Filter, FlaskConical, Gauge, Globe, Image as ImageIcon, Inbox, Info, Keyboard, Languages, Layers, ListCollapse, ListTree, Lock, MessageSquare, MessageSquareReply, MessagesSquare, Mic, Monitor, Mouse, MousePointer2, MoveHorizontal, Palette, PanelLeft, PanelRight, Plus, Puzzle, Rows3, Search, Send, Server, Shapes, Smartphone, Sparkles, SquareTerminal, Star, SunMoon, Tag, Tags, TextCursorInput, Trash2, Type, Volume2, WandSparkles, WrapText, X, type LucideIcon } from "lucide-react";
 
 import "./SettingsDialog.css";
 
@@ -19,7 +19,7 @@ import { HERDR_PREFIX_ACTIONS, type HerdrKeys, type HerdrPrefixAction } from "..
 import { WEB_LINK_TARGETS } from "../lib/webPanel.ts";
 import { FILE_OPEN_TARGETS } from "../lib/filePresentation.ts";
 import { CHAT_FONT_MAX, CHAT_FONT_MIN, CHAT_WIDTHS, chatFontSize, DEFAULT_SETTINGS, QUICK_REPLIES_MAX, QUICK_REPLY_MAX_CHARS, TERMINAL_FONT_MAX, TERMINAL_FONT_MIN, TERMINAL_WHEEL_SPEED_MAX, TERMINAL_WHEEL_SPEED_MIN, DICTATION_LANGUAGES, VOICE_BUTTONS, VOICE_ENGINES, enterSendsOn, phoneInboxOn, useSettings, forgetPaneViews, uiFontSize, type DictationLanguage, type VoiceButton } from "../lib/settings.ts";
-import { isThemeId, pickTheme, rowFor, THEME_IDS, type DrawnTheme, type Mode, type ThemeId } from "../lib/themes.ts";
+import { isThemeId, pickTheme, rowFor, THEME_IDS, type Mode, type ThemeId } from "../lib/themes.ts";
 import { chosenTheme, customRow, customRowId, type CustomTheme } from "../lib/customThemes.ts";
 import { LANGUAGE_NAMES, LANGUAGE_SETTINGS, useLocale, useT, type Translate } from "../lib/i18n.ts";
 import { focusInOtherModal, useFocusTrap } from "../lib/useFocusTrap.ts";
@@ -31,6 +31,7 @@ import { FoldHelpersRow } from "./FoldHelpersRow.tsx";
 import { FilesPanelRow } from "./FilesPanelRow.tsx";
 import { onSettingsHistory, recordSettings, settingsEntry, settingsLevels, type SettingsLevel } from "../lib/settingsHistory.ts";
 import { ThemeFiles, themeLabel } from "./ThemeFiles.tsx";
+import { THEME_NAMES, ThemeCard } from "./ThemeCard.tsx";
 import { ChipToggles, SettingsBare, Segmented, SettingsFold, SettingsGroup, SettingsQuery, SettingsRow, SettingsSelect, Stepper, Toggle, settingsQueryWords, useSettingsRowSentence } from "./SettingsControls.tsx";
 import { PcLoadSetting } from "./MachineStats.tsx";
 import { FONT_FAMILY_MAX_CHARS, sanitizeFontFamily } from "../lib/fontFamily.ts";
@@ -41,6 +42,7 @@ import type { UserError } from "../lib/userError.ts";
 import { LOCAL_MACHINE, pcAlertKey, type HerdrCoreFacts, type HerdrRuntimeFacts, type Machine, type MachineSettings, type RuntimeName } from "../../shared/machines.ts";
 import { canHideMachine, isMachineShown, setHiddenMachines, useHiddenMachines, withMachineHidden } from "../lib/hiddenMachines.ts";
 import { alertFiltersChanged, updateAlertFilters, useAlertFilters } from "../lib/alertFilters.ts";
+import { alertMeWhenChips } from "./AlertChips.tsx";
 import { fetchMachines, fetchRemoteAccess, requestRelayOffer, fetchVoiceStatus, machineRequest, saveVoiceConfig, switchRuntime, fetchBridgeHealth } from "../lib/api.ts";
 import { isLoopbackHost, phonePlan } from "../lib/phone.ts";
 import type { PushActionResult } from "../lib/pushHealth.ts";
@@ -56,7 +58,7 @@ import { SignOutRow } from "./SignOutRow.tsx";
 import { failureText, openOwnOffer, RelayDirectRow, statusText } from "./RelayPanel.tsx";
 import { AccountSection, accountServiceHere, type AccountState } from "./AccountSection.tsx";
 import { AccountPcRows, NoAccountPcHint, removePcFromAccount } from "./AccountPcs.tsx";
-import { STATE_WORD } from "./MachineSidebar.tsx";
+import { DRAWER_QUERY, leavePcList, pcListExit, STATE_WORD } from "./MachineSidebar.tsx";
 import { pcAccountStatus } from "../lib/account/join.ts";
 import { AccountService } from "../lib/account/service.ts";
 import { indexedAccountStore } from "../lib/account/store.ts";
@@ -333,55 +335,6 @@ function shownBy(entry: SettingsLevel | null): { page: SettingsPage | null; keyB
   return page === null && entry.page !== null ? null : { page, keyBar: entry.keyBar && page === "terminal" };
 }
 
-/** What each theme is called: the color words are translated, the brand names stay as their projects write them. */
-const THEME_NAMES: Record<ThemeId, string> = {
-  amber: "Amber",
-  charcoal: "Charcoal",
-  codex: "Codex",
-  catppuccin: "Catppuccin",
-  "catppuccin-latte": "Catppuccin Latte",
-  "tokyo-night": "Tokyo Night",
-  "black": "Black",
-  "tokyo-night-day": "Tokyo Night Day",
-  gruvbox: "Gruvbox",
-  "gruvbox-light": "Gruvbox Light",
-  "one-dark": "One Dark",
-  "one-light": "One Light",
-  solarized: "Solarized",
-  "solarized-light": "Solarized Light",
-  kanagawa: "Kanagawa",
-  "kanagawa-lotus": "Kanagawa Lotus",
-  "rose-pine": "Rosé Pine",
-  "rose-pine-dawn": "Rosé Pine Dawn",
-  dracula: "Dracula",
-  nord: "Nord",
-  vesper: "Vesper",
-};
-
-/**
- * One theme as a small picture of the app in its own colours, a sidebar beside a pane, its name under it (the cards T3 Code
- * and herdr-app show). `row` is what the theme draws on `side`: a built-in theme's row, or an imported theme's (lib/customThemes.ts).
- */
-function ThemeCard({ card, name, row, side, checked, onPick }: { card: string; name: string; row: DrawnTheme; side: Mode; checked: boolean; onPick: () => void }) {
-  const t = useT();
-  const c = row.preview;
-  // a theme of the other kind says so: it draws that way on this side; every card's tooltip carries its
-  // whole name, as the name under the picture may be cut (G-204)
-  const kind = row.mode === side ? undefined : `${name} · ${t(row.mode === "dark" ? "Dark" : "Light")}`;
-  return (
-    <button type="button" role="radio" aria-checked={checked} aria-label={kind} title={kind ?? name} tabIndex={checked ? 0 : -1} className="theme-card" data-theme-card={card} onClick={onPick}>
-      <span className="theme-card-art" aria-hidden="true" style={{ background: row.bg, borderColor: c.border }}>
-        <span className="theme-card-side" style={{ background: row.bgPanel, borderColor: c.border }}>
-          <i style={{ background: c.accent }} /><i style={{ background: c.textDim }} /><i style={{ background: c.textDim }} />
-        </span>
-        <span className="theme-card-pane" style={{ background: c.elevated, borderColor: c.border }}>
-          <i style={{ background: c.text }} /><i style={{ background: c.textDim }} /><b style={{ background: c.primary }} />
-        </span>
-      </span>
-      <span className="theme-card-name">{name}</span>
-    </button>
-  );
-}
 
 /** Sidebar rows, drawn: a workspace on one line, or its agent's line above it */
 function SidebarRowsPreview({ rows }: { rows: "one" | "two" }) {
@@ -594,8 +547,8 @@ function AppearancePage() {
         <SettingsRow icon={MousePointer2} label={t("Show the sidebar on hover")} description={t("On this device, while the sidebar is hidden, resting the mouse on its button shows it over the pane until the mouse leaves. A click on the button keeps it open.")}>
           <Toggle label={t("Show the sidebar on hover")} checked={settings.sidebarPeek} onChange={(sidebarPeek) => update({ sidebarPeek })} />
         </SettingsRow>
-        <SettingsRow icon={Inbox} label={t("Agent inbox on a phone")} description={t("On this device, a phone-width window that opens with no pane in its address shows the list of agents, the ones that need you first; from a pane, the header's Back opens it. A tap opens the agent's chat, and Back returns to the list.")} keywords="inbox phone mobile first screen agents list">
-          <Toggle label={t("Agent inbox on a phone")} checked={phoneInboxOn(settings)} onChange={(phoneInbox) => update({ phoneInbox })} />
+        <SettingsRow icon={Inbox} label={t("Start in the agent inbox on a phone")} description={t("On this device, a phone-width window starts in the agent inbox: the list of agents, or the chat of the pane its address names. More has Back to Ovis.")} keywords="inbox phone mobile first screen agents list start">
+          <Toggle label={t("Start in the agent inbox on a phone")} checked={phoneInboxOn(settings)} onChange={(phoneInbox) => update({ phoneInbox })} />
         </SettingsRow>
         <SettingsRow icon={Layers} label={t("Background workspaces apart")} description={t("On this device, workspaces a tool marked as background (role=background in herdr) move below the others, under a folded heading. The one you have open and any whose agent is asking you something stay in sight.")}>
           <Toggle label={t("Background workspaces apart")} checked={settings.sidebarBackgroundWorkspaces} onChange={(sidebarBackgroundWorkspaces) => update({ sidebarBackgroundWorkspaces })} />
@@ -801,7 +754,6 @@ function AlertsPage({ onEnableNotifications, machines }: { onEnableNotifications
   const filters = useAlertFilters();
   // the Sound switch as last set: the preview waits for the audio, and must not play once it is off
   const alertSoundWanted = useRef(settings.alertSound);
-  const permission = filters.permission ?? settings.alertInput;
   // herdr-app's rows: each a name and its control. Which alerts come is one decision, so one line of chips
   return (
     <SettingsBare.Provider value={true}>
@@ -813,16 +765,7 @@ function AlertsPage({ onEnableNotifications, machines }: { onEnableNotifications
         keywords={[t("Long turn finished"), t("Any turn finished"), t("Needs input"), t("An agent asks you something"), t("Needs permission"), t("An agent asks before it runs a command or changes a file. One that does not say so alerts as Needs input."), t("Finished"), t("Long turns: only work that took a minute or more"), t("Stopped on an error"), t("A turn that ended on an error, as OmO and GJC report it")].join(" ")}
         condition={<span className="settings-condition">{t("Long turns: only work that took a minute or more")} {t("Any turn finished takes in the long ones.")}</span>}
         reset={["alertInput", "alertDone"]}>
-        <ChipToggles label={t("Alert me when")} chips={[
-          { label: t("Needs input"), title: t("An agent asks you something"), icon: MessageCircleQuestionMark, on: settings.alertInput, onChange: (alertInput) => update({ alertInput }) },
-          { label: t("Needs permission"), title: t("An agent asks before it runs a command or changes a file. One that does not say so alerts as Needs input."), icon: ShieldAlert, on: permission, onChange: (on) => updateAlertFilters({ permission: on }) },
-          // the two Finished chips are the one setting's two levels, and every turn takes in the long ones:
-          // Any on lights Long too, Any off keeps Long, Long off turns both off. The minute and the
-          // inclusion are on the chips' tooltips and the row's line (G-096)
-          { label: t("Long turn finished"), title: t("Long turns: only work that took a minute or more"), icon: Timer, on: settings.alertDone !== "off", onChange: (on) => update({ alertDone: on ? "long" : "off" }) },
-          { label: t("Any turn finished"), title: t("Any turn finished takes in the long ones."), icon: CheckCheck, on: settings.alertDone === "always", onChange: (on) => update({ alertDone: on ? "always" : "long" }) },
-          { label: t("Stopped on an error"), title: t("A turn that ended on an error, as OmO and GJC report it"), icon: OctagonX, on: filters.error === true, onChange: (error) => updateAlertFilters({ error }) },
-        ]} />
+        <ChipToggles label={t("Alert me when")} chips={alertMeWhenChips(t, settings, filters, update, true)} />
       </SettingsRow>
       {/* a sighted reader sees where the chime plays, which the hidden sentence alone did not say (G-097) */}
       <SettingsRow label={t("Play sounds")} description={t("On this device, an open tab of the app chimes for the alerts chosen above. Turning this on plays the chime once.")} icon={Volume2} condition={<span className="settings-condition">{t("While a tab of the app is open, it chimes for these alerts, also when a Focus or Do Not Disturb silences notifications.")}</span>} reset={["alertSound"]}>
@@ -1126,7 +1069,8 @@ function ShortcutsPage() {
           const rowText = recording?.id === shortcut.id ? (recording.problem ?? t("Press the new shortcut, or Escape to cancel.")) : confirming ? riskText(confirming.risk, compactKeys(bindingDisplayKeys(confirming.value))) : selectedRisk ? riskText(selectedRisk, compactKeys(displayedKeys)) : undefined;
           // a terminal app's close key is the browser's tab close, which Record refuses (exactChordRefusal); and
           // the two closes differ: the tab's leaves the pane running, the pane's ends it
-          const help = shortcut.id === "close-pane" ? t("{key} closes the browser tab, so it cannot be used here: record another key. Closing a browser tab only disconnects this view; Close pane stops what runs in the pane.", { key: platformIsMac ? "⌘W" : "Ctrl+W" }) : undefined;
+          const help = shortcut.id === "close-pane" ? t("{key} closes the browser tab, so it cannot be used here: record another key. Closing a browser tab only disconnects this view; Close pane stops what runs in the pane.", { key: platformIsMac ? "⌘W" : "Ctrl+W" })
+            : shortcut.id === "close-tab" ? t("{key} closes the browser tab, so it cannot be used here: record another key. Closing a browser tab only disconnects this view; Close tab stops what runs in the tab.", { key: platformIsMac ? "⌘W" : "Ctrl+W" }) : undefined;
           const resetShortcut = (): void => {
             const next = { ...settings.shortcutOverrides };
             delete next[shortcut.id];
@@ -1915,6 +1859,11 @@ function matchedGroups(result: Element | null, words: readonly string[]): string
 function OpenSettingsDialog({ section = null, linkPage = null, linkSection = null, onPage, onClose, onUsageLogin, onOpenPane, actions, updates, auth, herdrVersion, herdrRuntime = null, herdrCore = null, herdrRuntimeFacts = null, picturesByDefault = false, bootId = null, onServerRestarted, security, onEnableNotifications, saveError, savePaused, saveRetrying, onRetrySave, overPreview = false, machines = [] }: SettingsDialogProps) {
   const t = useT();
   const narrow = useNarrow();
+  // one PC of the phone app's list or the relay shell's: a phone's list of pages ends in the way back to them, which
+  // its drawer no longer holds (MachineSidebar.tsx), so it is two taps from the drawer: the gear, then Change PC
+  const pcExit = useMemo(() => pcListExit({ nativeApp: inNativeApp(), relayShell: shellMode() === "relay", pathname: window.location.pathname }), []);
+  // at the drawer's widths, whose foot has no Change PC row, the same as the drawer: not only where the list is a page of its own
+  const drawerWidth = useMediaQuery(DRAWER_QUERY);
   // opened by Forward, the dialog shows what that entry of the history showed
   const [restored] = useState(() => shownBy(settingsEntry(window.history.state)));
   // a phone opens on the list of pages; a wider dialog shows the list beside the first page. A
@@ -2169,6 +2118,12 @@ function OpenSettingsDialog({ section = null, linkPage = null, linkSection = nul
                 </button>
               ))}
             </div>
+            {drawerWidth && pcExit !== null && !searching && (
+              <button type="button" className="settings-tab settings-change-pc" onClick={() => leavePcList(pcExit)}>
+                <ArrowLeftRight aria-hidden="true" />
+                <span>{t("Change PC")}</span>
+              </button>
+            )}
           </nav>
         )}
         {searching ? (

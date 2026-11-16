@@ -63,6 +63,9 @@ try {
             await page.clock.install();
             // the sidebar's Filter field is off until chosen (Settings → Sidebar filter); the focus check below uses it
             await context.addInitScript((value) => { if (localStorage.getItem("ovis:settings") === null) { localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: value })); localStorage.setItem("ovis:sidebar-filter-shown", "true"); } }, theme);
+            // the row opened from the peek is the Claude pane's: its turn stays at work, or on a slow runner
+            // the end the demo times 4.5s in folds that row away first
+            await context.addInitScript(() => Reflect.set(window, "__ovisDemoHoldTurn", true));
 
             // never chosen: resting on the toggle shows nothing
             await page.goto(url("&sidebar=hidden"));
@@ -104,6 +107,8 @@ try {
             assert.equal(box.x, 0, "from the window's left edge");
             assert.ok(Math.abs(box.y - (header.y + header.height)) <= 1, "right under the header");
             assert.ok(box.width >= 240 && box.width <= 640, `at its open width (${box.width}px)`);
+            // a collapsed sidebar draws no Ovis mark: the peek's foot keeps the row into the agent inbox (App.tsx markEnters)
+            assert.equal((await sidebar(page).locator(".inbox-foot-entry").textContent())?.trim(), "Open agent inbox", "the peek's foot holds Open agent inbox");
             if (evidence) await page.screenshot({ path: join(evidence, `sidebar-peek-1280-${theme}.png`) });
 
             // its filter focused by keyboard on a fresh page, before the pointer ever entered it: the focus holds it (#3070)

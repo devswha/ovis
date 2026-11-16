@@ -1,6 +1,6 @@
 # Self-hosted CI runner
 
-An ephemeral Docker GitHub Actions runner for this repository's Linux CI/CD jobs. Each container registers, runs exactly one job and exits; the launcher then starts a fresh one. The image includes Bun, Node 22, checksum-pinned herdr, Playwright Chromium and its system libraries, ffmpeg, git, `gh`, curl, jq, unzip and xz-utils, with no sudo. Jobs detect it with `RUNNER_ENVIRONMENT=self-hosted`.
+An ephemeral Docker GitHub Actions runner for this repository's Linux CI/CD jobs. Each container registers, runs exactly one job and exits; the launcher then starts a fresh one. The image includes Bun, Node 22, checksum-pinned herdr, Playwright Chromium and its system libraries, ffmpeg, git, `gh`, curl, jq, unzip, xz-utils, OpenSSH (client and server) and iproute2 (`ss`), with no sudo. Jobs detect it with `RUNNER_ENVIRONMENT=self-hosted`.
 
 ## Prerequisites
 
@@ -404,8 +404,8 @@ vm-runner.sh supervise                              # forever: one container per
   `gh variable set CI_FAST_SELF_HOSTED_LABELS --body '["self-hosted","self-hosted-ovis"]'`. It applies only while
   the Linux jobs go to `ovis-vm` (never to a fork's run); delete it once #3808 is in to move Fast checks too.
 - Routing: `gh variable set CI_LINUX_SELF_HOSTED_LABELS --body '["self-hosted","ovis-vm"]'` moves ci.yml's Linux jobs
-  of pull requests and branch pushes to them (main keeps `CI_MAIN_SELF_HOSTED_LABELS`; pages.yml and release.yml keep
-  `CI_SELF_HOSTED_LABELS`). With `ovis-vm` the browser scripts run as five jobs. A manual run takes
+  of pull requests and branch pushes to them (main keeps `CI_MAIN_SELF_HOSTED_LABELS`; tag pushes, manual runs and
+  the workflows that call ci.yml, such as release-validate, pages and relay-deploy, keep `CI_SELF_HOSTED_LABELS`). With `ovis-vm` the browser scripts run as five jobs. A manual run takes
   `self_hosted_labels`. `gh variable delete CI_LINUX_SELF_HOSTED_LABELS` moves them back.
 - The VM's per-host caps (`CHECK_HOST_*`, 3 browser workers, 3 test shards) keep a job inside 4 vCPUs. A VM that
   sleeps or drops mid-job loses that job (GitHub fails it once the runner stops answering); keep the VMs awake.

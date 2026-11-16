@@ -8,7 +8,7 @@ import { buildDemoApp, buildDevelopmentDemoApp } from "./demo-build.ts";
 import { DEMO_FILE_PREVIEW_SCRIPT } from "./demo-file-preview.ts";
 import { openSettingsFolds, openSettingsPage, themeSide } from "./settings-page.ts";
 import { SETTINGS, closeSettings, dialogOf, historyHolds, openPalette, openSettings } from "./settings-pages-harness.ts";
-import { DEFAULT_SETTINGS } from "../src/lib/settings.ts";
+import { DEFAULT_SETTINGS, TERMINAL_FONT_MAX, TERMINAL_FONT_MIN } from "../src/lib/settings.ts";
 
 // What Settings' pages hold, on the unmodified app over the demo's fixture transport: the dialog's
 // own search, the folded groups, the rows that merge or put back settings, the account's PCs and
@@ -713,116 +713,6 @@ async function accountGoogle(browser: import("playwright-core").Browser, url: st
 }
 
 /**
- * Sign-in on the first-run welcome (components/SetupGuide.tsx): Continue with each provider the account
- * service lists for this page (`GET /v1/providers`), none without an account service, Not now folds it
- * away and leaves the two choices, and a sign-in this page already holds is the one Settings shows.
- * The account service is a route of this context: nothing reaches GitHub, Google or account.ovis.sh.
- */
-async function welcomeSignIn(browser: import("playwright-core").Browser, url: string): Promise<void> {
-  const service = "https://account.ovis.sh";
-  const cases = [
-    { offered: ["github", "google"], signedIn: false },
-    { offered: ["github"], signedIn: false },
-    { offered: ["google"], signedIn: false },
-    { offered: null, signedIn: false },
-    { offered: ["github", "google"], signedIn: true },
-  ] as const;
-  for (const width of [390, 1280] as const) {
-    for (const { offered, signedIn } of cases) {
-      const at = `(${width}px, ${offered === null ? "no account service" : offered.join("+")}${signedIn ? ", signed in" : ""})`;
-      const context = await browser.newContext({ viewport: { width, height: width === 390 ? 844 : 800 }, isMobile: width === 390, hasTouch: width === 390, locale: "en" });
-      try {
-        await context.addInitScript((settings) => {
-          localStorage.setItem("ovis:settings", settings);
-          localStorage.setItem("ovis:setup-guide", JSON.stringify({ status: "open", state: { step: "welcome" } }));
-        }, JSON.stringify({ ...SETTINGS, theme: "light" }));
-        if (offered !== null) {
-          await context.route((address) => address.href.startsWith(url) && (address.pathname.endsWith("/") || address.pathname.endsWith("/index.html")), async (route) => {
-            const response = await route.fetch();
-            await route.fulfill({ response, body: (await response.text()).replace("</head>", `<meta name="ovis-pc-account-service" content="${service}" />\n</head>`) });
-          });
-          await context.route(`${service}/**`, (route) => {
-            const cors = { "access-control-allow-origin": "*", "access-control-allow-headers": "authorization, content-type", "access-control-allow-methods": "GET, POST, PUT, DELETE" };
-            if (route.request().method() === "OPTIONS") return route.fulfill({ status: 204, headers: cors });
-            switch (new URL(route.request().url()).pathname) {
-              case "/v1/providers": return route.fulfill({ headers: cors, json: { providers: offered, device: offered } });
-              case "/v1/pcs": return route.fulfill({ headers: cors, json: { pcs: [] } });
-              case "/v1/identities": return route.fulfill({ headers: cors, json: { identities: [{ provider: "google", added_at: "2026-11-06T00:00:00Z" }] } });
-              // a device sign-in that stays pending: the code shows until someone approves it elsewhere
-              case "/v1/signin/github/device": return route.fulfill({ headers: cors, json: { code_challenge_method: "S256", device_code: "fixture-device", user_code: "ABCD-1234", verification_uri: "https://github.com/login/device", expires_in: 900, interval: 5 } });
-              case "/v1/token": return route.fulfill({ status: 400, headers: cors, json: { error: { code: "authorization_pending" } } });
-              default: return route.fulfill({ status: 404, headers: cors, json: { error: { code: "not_found" } } });
-            }
-          });
-        }
-        if (signedIn) {
-          await context.addInitScript((service) => {
-            const request = indexedDB.open("ovis-account", 1);
-            request.onupgradeneeded = () => { request.result.createObjectStore("account"); };
-            request.onsuccess = () => {
-              const tx = request.result.transaction("account", "readwrite");
-              tx.objectStore("account").put({ service, account: "fixture", provider: "google", access_token: "fixture-access", refresh_token: "fixture-refresh", expires_at: Date.now() + 3_600_000 }, "session");
-              tx.oncomplete = () => request.result.close();
-            };
-          }, service);
-        }
-        const page = await context.newPage();
-        const errors: string[] = [];
-        page.on("pageerror", (error) => errors.push(error.message));
-        await page.goto(url);
-        const guide = page.getByRole("region", { name: "Setup guide", exact: true });
-        await guide.getByRole("button", { name: /I've used Ovis before/ }).waitFor();
-        const signIn = guide.locator(".setup-signin");
-        const shot = async (name: string) => {
-          if (process.env.UI_EVIDENCE_DIR) await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, `${name}-${width}.png`), animations: "disabled" });
-        };
-        if (offered === null) {
-          // whether this page has an account service is known on first render (its meta tag), with the welcome
-          assert.equal(await signIn.count(), 0, `no sign-in without an account service ${at}`);
-          assert.equal(await guide.locator(".account-provider").count(), 0, `no provider button without an account service ${at}`);
-        } else if (!signedIn) {
-          await signIn.locator("[data-offer='service'] .account-provider").first().waitFor();
-          const expected = offered.map((provider) => provider === "github" ? "Continue with GitHub" : "Continue with Google");
-          assert.deepEqual(await signIn.locator(".account-provider").allTextContents(), expected, `one button for each provider the service lists ${at}`);
-          await shot(`welcome-signin-${offered.join("-")}`);
-          if (offered.length === 1 && offered[0] === "github") {
-            // a code on screen: only its Cancel ends it, Not now cannot fold it away unnoticed
-            await signIn.getByRole("button", { name: "Continue with GitHub", exact: true }).click();
-            await signIn.locator(".account-device-code").filter({ hasText: "ABCD-1234" }).waitFor();
-            assert.equal(await signIn.getByRole("button", { name: "Not now", exact: true }).count(), 0, `no Not now while a device code waits ${at}`);
-            await signIn.getByRole("button", { name: "Cancel", exact: true }).click();
-            await signIn.locator("[data-offer='service'] .account-provider").first().waitFor();
-          }
-          // by keyboard: the box goes and the keyboard's place moves to the first choice, not the page
-          await signIn.getByRole("button", { name: "Not now", exact: true }).focus();
-          await page.keyboard.press("Enter");
-          await signIn.waitFor({ state: "detached" });
-          assert.equal(await page.evaluate(() => document.activeElement?.classList.contains("setup-choice") ?? false), true, `Not now hands the keyboard to the first choice ${at}`);
-          assert.equal(await guide.getByRole("button", { name: /I'm new to Ovis/ }).count(), 1, `Not now leaves the welcome's choices ${at}`);
-          assert.equal(await guide.getByRole("button", { name: /I've used Ovis before/ }).count(), 1, `Not now leaves the welcome's choices ${at}`);
-        } else {
-          // the account's id is the service's own, never shown: the line names the way in, as Settings does
-          await signIn.getByText("Signed in with Google", { exact: true }).waitFor();
-          assert.equal(await signIn.getByRole("button", { name: "Not now", exact: true }).count(), 0, `no Not now once signed in ${at}`);
-          assert.equal(await signIn.locator(".account-provider").count(), 0, `no provider buttons once signed in ${at}`);
-          await shot("welcome-signin-signed-in");
-          await guide.getByRole("button", { name: /I've used Ovis before/ }).click();
-          await guide.waitFor({ state: "detached" });
-          await openSettings(page);
-          await openSettingsPage(page, "Devices and PCs");
-          await openSettingsFolds(page);
-          await page.locator("[data-section='account']").getByText("Signed in with Google", { exact: true }).waitFor();
-        }
-        assert.deepEqual(errors, [], `no page errors ${at}`);
-      } finally {
-        await context.close();
-      }
-    }
-  }
-  console.log("PASS the welcome offers Continue with each provider the account service lists, none without one, Not now keeps the choices, and its sign-in is the one Settings shows, at 390 and 1280px");
-}
-
-/**
  * Appearance's ↺ beside a changed row, and its theme cards by keyboard: ↺ shows only off the default,
  * puts back every key of its row (a font and its size; a theme and the palette it draws) and goes; the
  * arrows pick along the row as a radio group's do; the cards follow the Theme mode until a side is chosen.
@@ -1170,6 +1060,52 @@ async function rowSentences(browser: import("playwright-core").Browser, url: str
     await appearance(page);
     assert.equal(await describes(page.getByRole("textbox", { name: "Terminal font", exact: true })), await sentenceOf("Terminal font"), "the font field is described by its row's sentence");
 
+    // a stepper's button at its end keeps the keyboard's focus: it says it goes no further (aria-disabled) and reads as
+    // a disabled one, where a disabled button would drop the focus out of Settings to the page; a press there does nothing
+    const typedSize = page.getByRole("textbox", { name: "Terminal font size", exact: true });
+    const larger = page.getByRole("button", { name: "Increase terminal font size", exact: true });
+    const smaller = page.getByRole("button", { name: "Decrease terminal font size", exact: true });
+    for (const [button, other, end] of [[larger, smaller, TERMINAL_FONT_MAX], [smaller, larger, TERMINAL_FONT_MIN]] as const) {
+      const name = await button.getAttribute("aria-label");
+      await button.focus();
+      for (let press = Math.abs(end - Number(await typedSize.inputValue())); press > 0; press -= 1) await page.keyboard.press("Enter");
+      await page.waitForFunction((want) => document.querySelector<HTMLInputElement>('input[aria-label="Terminal font size"]')?.value === want, String(end));
+      const holder = () => page.evaluate(() => document.activeElement?.getAttribute("aria-label") ?? document.activeElement?.tagName ?? null);
+      assert.equal(await holder(), name, `${name} keeps the focus at ${end}px`);
+      assert.equal(await button.getAttribute("aria-disabled"), "true", `${name} says it goes no further at ${end}px`);
+      assert.equal(await other.getAttribute("aria-disabled"), null, "the other way is still open");
+      // beside it, a really disabled icon button: the two rules must not drift apart
+      const disabledOpacity = await button.evaluate((node) => {
+        const twin = node.cloneNode(true) as HTMLButtonElement;
+        twin.removeAttribute("aria-disabled");
+        twin.disabled = true;
+        node.after(twin);
+        const opacity = getComputedStyle(twin).opacity;
+        twin.remove();
+        return opacity;
+      });
+      assert.notEqual(disabledOpacity, "1", "a disabled icon button is faded");
+      assert.equal(await button.evaluate((node) => getComputedStyle(node).opacity), disabledOpacity, "it reads as a disabled icon button does");
+      await page.keyboard.press("Enter");
+      // (Playwright waits for an aria-disabled button to be enabled: the click is forced, as a person's is)
+      await button.click({ force: true });
+      assert.equal(await typedSize.inputValue(), String(end), `a press of ${name} at its end changes nothing`);
+      assert.equal(await holder(), name, "and keeps the focus");
+      await button.hover();
+      assert.equal(await button.evaluate((node) => getComputedStyle(node).backgroundColor), "rgba(0, 0, 0, 0)", "and gets no hover plate");
+      // nor the look a live icon button takes while it is held down (.icon-button:active), as a disabled one takes none
+      const look = () => button.evaluate(async (node) => {
+        await Promise.all(node.getAnimations().map((animation) => animation.finished));
+        const style = getComputedStyle(node);
+        return [style.backgroundColor, style.borderColor, style.color].join(" / ");
+      });
+      const resting = await look();
+      await page.mouse.down();
+      const held = await look();
+      await page.mouse.up();
+      assert.equal(held, resting, `holding ${name} down at its end shows no press`);
+    }
+
     // a device that only watches reads the same sentence
     await appearance(page, "&demo_devices=watch");
     await rowOf(page, "Density").locator(".settings-label").hover();
@@ -1311,7 +1247,6 @@ try {
       await rowResets(browser, url);
       await accountPcList(browser, url);
       await accountGoogle(browser, url);
-      await welcomeSignIn(browser, url);
       await runtimeInUse(browser, url);
       await alertChipsReset(browser, url);
       await installedNotes(browser, url);

@@ -14,7 +14,9 @@ import { defaultStateDir, HANDOVER_EXIT, moveLegacyStateDir, updateStateDir } fr
 import { herdrMayListen, herdrSocketPath } from "./herdr/client.ts";
 import { legacyLauncherStateDir, withLegacyNames } from "./legacy-env.ts";
 import { COMPILED, ENTRIES, entryCommand, ROOT } from "./entries.ts";
+import { installedBinaryAt, pluginBinaryOf } from "./updater.ts";
 import { acquireOwnerDirectory } from "./owner-guard.ts";
+import { profileFolderRefusal } from "./profile-marker.ts";
 import { runCommand, updateChannel, Updater, type Release } from "./updater.ts";
 
 /** After a try at the Rust PTY host, the next supervisor start waits this long before another (as the unshallow fetch does, #1252). */
@@ -81,6 +83,13 @@ export async function runSupervisor(root = ROOT) {
   // waits for a launcher of this version
   const legacyStateDir = legacyLauncherStateDir(process.env);
   const supervisor = { root, port, directory: ROOT };
+  // a folder a machine profile marked is its own: nothing of this launch happens there, the legacy move included
+  // (server/profile-marker.ts)
+  const marked = profileFolderRefusal(resolve(legacyStateDir ?? defaultStateDir(process.env, supervisor)));
+  if (marked !== null) {
+    console.error(marked);
+    process.exit(1);
+  }
   if (legacyStateDir === null) moveLegacyStateDir(process.env, supervisor);
   const appStateDir = resolve(legacyStateDir ?? defaultStateDir(process.env, supervisor));
   const socketPath = resolve(herdrSocketPath());
@@ -239,6 +248,9 @@ export async function runSupervisor(root = ROOT) {
   const updater = new Updater({ root, stateDir, autoUpdate: process.env["OVIS_AUTO_UPDATE"] === "1", publish,
     channel: () => updateChannel(process.env, appStateDir),
     pluginCheckout: pluginRoot !== undefined && resolve(pluginRoot) === root,
+    // the herdr plugin's launcher runs this compiled server from its checkout's .ovis/server: herdr updates it
+    pluginBinary: pluginBinaryOf(process.env["OVIS_PLUGIN_CHECKOUT"], COMPILED),
+    installedBinary: installedBinaryAt(root, COMPILED),
     notice: process.env["OVIS_SUPERVISOR_FALLBACK"]
       ? "The updated supervisor failed to start, so the previous one is running this version. The next update tries again."
       : undefined,
