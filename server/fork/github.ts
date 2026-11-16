@@ -70,10 +70,10 @@ async function readAccount(run: Run, account: string): Promise<GithubPulls> {
 
 /** One in-flight read and a 20-second cache; no timers or background refreshes. I/O is injectable. Every account gh
  * is signed in with on github.com is read side by side; one that fails is named in `failed` and the others still show. */
-export function createGithubReader(run: Run = runGithub, now = Date.now): () => Promise<GithubPulls> {
+export function createGithubReader(run: Run = runGithub, now = Date.now): (() => Promise<GithubPulls>) & { forget(): void } {
   let cached: { until: number; value: GithubPulls } | undefined;
   let pending: Promise<GithubPulls> | undefined;
-  return () => {
+  return Object.assign(() => {
     if (cached && now() < cached.until) return Promise.resolve(cached.value);
     if (pending) return pending;
     pending = (async () => {
@@ -89,7 +89,7 @@ export function createGithubReader(run: Run = runGithub, now = Date.now): () => 
       return value;
     })().finally(() => { pending = undefined; });
     return pending;
-  };
+  }, { forget: () => { cached = undefined; } });
 }
 const readPulls = createGithubReader();
 
@@ -116,8 +116,8 @@ export async function githubWorkspaces(snapshot: SessionSnapshot, repositoryOf =
   return new Map(matches.filter((match) => match !== null).map(([repo, id]) => [repo.toLowerCase(), id]));
 }
 
-const PULL_QUERY = `query($owner:String!,$name:String!,$number:Int!) { repository(owner:$owner,name:$name) { pullRequest(number:$number) {
-  number title url body state isDraft createdAt updatedAt author { login } headRefName baseRefName isCrossRepository
+const PULL_QUERY = `query($owner:String!,$name:String!,$number:Int!) { viewer { login } repository(owner:$owner,name:$name) { viewerPermission squashMergeAllowed mergeCommitAllowed rebaseMergeAllowed pullRequest(number:$number) {
+  number title url body state isDraft createdAt updatedAt author { login } headRefName headRefOid baseRefName isCrossRepository
   additions deletions changedFiles commits { totalCount } reviewDecision mergeStateStatus
   labels(first:20) { nodes { name color } }
   latestReviews(first:30) { nodes { author { login } state } }
@@ -225,7 +225,8 @@ const REVIEW_STATES = { APPROVED: "approved", CHANGES_REQUESTED: "changes_reques
 export function parseGithubPull(output: string, repository: string): GithubPullDetail {
   try {
     const { data, errors } = JSON.parse(output);
-    const pr = data?.repository?.pullRequest;
+    const repo = data?.repository;
+    const pr = repo?.pullRequest;
     if (errors?.length || !pr || !Number.isSafeInteger(pr.number) || typeof pr.title !== "string") throw unreadable();
     const reviewers: GithubPullDetail["reviewers"] = [];
     for (const review of pr.latestReviews?.nodes ?? []) {
@@ -247,6 +248,10 @@ export function parseGithubPull(output: string, repository: string): GithubPullD
       checks: countChecks(checkList), check_list: checkList,
       merge: MERGE[pr.mergeStateStatus as keyof typeof MERGE] ?? "unknown",
       review: decision, reviewers,
+      head_sha: typeof pr.headRefOid === "string" ? pr.headRefOid : "",
+      viewer: typeof data?.viewer?.login === "string" ? data.viewer.login : null,
+      can_write: ["ADMIN", "MAINTAIN", "WRITE"].includes(repo?.viewerPermission),
+      merge_methods: (["squash", "merge", "rebase"] as const).filter((method) => repo?.[{ squash: "squashMergeAllowed", merge: "mergeCommitAllowed", rebase: "rebaseMergeAllowed" }[method]] === true),
       files: (pr.files?.nodes ?? []).filter((file: { path?: unknown }) => typeof file?.path === "string").map((file: { path: string; additions?: number; deletions?: number; changeType?: string }) => ({
         path: file.path, additions: file.additions ?? 0, deletions: file.deletions ?? 0,
         change: FILE_CHANGES[file.changeType as keyof typeof FILE_CHANGES] ?? "modified",
@@ -268,32 +273,35 @@ async function ghAs(run: Run, account: string, args: string[], failed: string): 
     const detail = `${result.stderr}\n${result.stdout}`;
     if (/rate limit|HTTP 429/i.test(detail)) throw new PullRequestError("rate_limited", "GitHub is limiting requests; try again in a few minutes");
     if (/gh auth login|not logged|authentication|HTTP 401|bad credentials/i.test(detail)) throw new PullRequestError("gh_signed_out", "Sign in on this PC with gh auth login");
+    // a write GitHub refused (405 not mergeable, 409 head moved, 422 e.g. approving your own) says why in its own words
+    const refused = /^gh: (.+?) \(HTTP (?:403|404|405|409|422)\)/m.exec(result.stderr)?.[1];
+    if (refused) throw new PullRequestError("gh_refused", refused);
     throw new PullRequestError("gh_failed", failed);
   }
   return result.stdout;
 }
 
 /** Answers kept 20 seconds per key; a failed one is forgotten at once. */
-function cached<T>(now: () => number): (key: string, read: () => Promise<T>) => Promise<T> {
+function cached<T>(now: () => number): ((key: string, read: () => Promise<T>) => Promise<T>) & { forget(key: string): void } {
   const cache = new Map<string, { until: number; value: Promise<T> }>();
-  return (key, read) => {
+  return Object.assign((key: string, read: () => Promise<T>) => {
     const hit = cache.get(key);
     if (hit && now() < hit.until) return hit.value;
     const value = read();
     cache.set(key, { until: now() + 20_000, value });
     value.catch(() => cache.delete(key));
     return value;
-  };
+  }, { forget: (key: string) => { cache.delete(key); } });
 }
 
 /** A pull request's page with the given account's token. I/O is injectable. */
 export function createGithubPullReader(run: Run = runGithub, now = Date.now) {
   const cache = cached<GithubPullDetail>(now);
-  return (repository: string, number: number, account: string): Promise<GithubPullDetail> => cache(`${account}\n${repository}#${number}`, async () => {
+  return Object.assign((repository: string, number: number, account: string): Promise<GithubPullDetail> => cache(`${account}\n${repository}#${number}`, async () => {
     const [owner, name] = repository.split("/");
     const output = await ghAs(run, account, ["api", "graphql", "--hostname", "github.com", "-f", `query=${PULL_QUERY}`, "-f", `owner=${owner}`, "-f", `name=${name}`, "-F", `number=${number}`], "Could not read this pull request");
     return parseGithubPull(output, repository);
-  });
+  }), { forget: (repository: string, number: number, account: string) => cache.forget(`${account}\n${repository}#${number}`) });
 }
 
 const PATCH_CHANGES = { added: "added", removed: "deleted", renamed: "renamed", copied: "copied", modified: "modified", changed: "modified", unchanged: "modified" } as const;
@@ -356,6 +364,53 @@ export async function handleGithubFiles(request: Request, readOnly: boolean): Pr
   } catch (error) {
     return conflictResponse(error instanceof PullRequestError ? error.code : "gh_failed", error instanceof PullRequestError ? error.message : "Could not read this pull request's files");
   }
+}
+
+/** What can be done to a pull request from its page. */
+export type GithubPullAction =
+  | { action: "comment"; body: string }
+  | { action: "approve" | "request_changes"; body: string }
+  | { action: "merge"; method: "squash" | "merge" | "rebase"; sha: string };
+
+/** The `gh api` call for an action; null when the action is not one we know or misses what it needs. */
+export function githubActionArgs(repository: string, number: number, asked: unknown): string[] | null {
+  const action = asked as Partial<{ action: string; body: unknown; method: unknown; sha: unknown }> | null;
+  const body = typeof action?.body === "string" ? action.body : "";
+  if (body.length > 65_000) return null;
+  const api = ["api", "--hostname", "github.com", "--silent"];
+  if (action?.action === "comment") return body.trim() ? [...api, "-X", "POST", `repos/${repository}/issues/${number}/comments`, "-f", `body=${body}`] : null;
+  if (action?.action === "approve") return [...api, "-X", "POST", `repos/${repository}/pulls/${number}/reviews`, "-f", "event=APPROVE", "-f", `body=${body}`];
+  // GitHub asks for words with a request for changes
+  if (action?.action === "request_changes") return body.trim() ? [...api, "-X", "POST", `repos/${repository}/pulls/${number}/reviews`, "-f", "event=REQUEST_CHANGES", "-f", `body=${body}`] : null;
+  if (action?.action === "merge") {
+    // the head the page showed: GitHub refuses the merge when commits came after it
+    if (!["squash", "merge", "rebase"].includes(action.method as string) || typeof action.sha !== "string" || !/^[0-9a-f]{40}$/.test(action.sha)) return null;
+    return [...api, "-X", "PUT", `repos/${repository}/pulls/${number}/merge`, "-f", `merge_method=${action.method}`, "-f", `sha=${action.sha}`];
+  }
+  return null;
+}
+
+/** POST /api/fork/github/pull/action: comments, reviews or merges with the account that listed the pull request. */
+export async function handleGithubAction(request: Request, readOnly: boolean, run: Run = runGithub): Promise<Response> {
+  if (readOnly) return jsonResponse({ error: { code: "read_only", message: "This device only watches" } }, 403);
+  if (request.method !== "POST") return jsonResponse({ error: { code: "method_not_allowed", message: "Use POST" } }, 405);
+  let asked: { repo?: unknown; number?: unknown; account?: unknown };
+  try { asked = await request.json(); } catch { asked = {}; }
+  const repository = typeof asked.repo === "string" ? asked.repo : "";
+  const number = Number(asked.number);
+  const account = typeof asked.account === "string" ? asked.account : "";
+  const args = /^[\w.-]+\/[\w.-]+$/.test(repository) && Number.isSafeInteger(number) && number > 0 && /^[\w-]+$/.test(account) ? githubActionArgs(repository, number, asked) : null;
+  if (args === null) return jsonResponse({ error: { code: "bad_request", message: "Name a repository, a pull request, an account and an action with what it needs" } }, 400);
+  try {
+    await ghAs(run, account, args, "GitHub did not take it");
+  } catch (error) {
+    return conflictResponse(error instanceof PullRequestError ? error.code : "gh_failed", error instanceof PullRequestError ? error.message : "GitHub did not take it");
+  } finally {
+    // the next read shows what changed, whatever GitHub answered
+    readPull.forget(repository, number, account);
+    readPulls.forget();
+  }
+  return jsonResponse({ ok: true });
 }
 
 export async function handleGithubPulls(request: Request, snapshot: () => Promise<SessionSnapshot>, readOnly: boolean): Promise<Response> {

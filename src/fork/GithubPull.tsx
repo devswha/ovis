@@ -8,7 +8,8 @@ import type { GithubCheck, GithubPull, GithubPullDetail } from "../../shared/git
 import type { WorktreeOpened } from "../../shared/protocol.ts";
 import { ApiError, createWorktree, fetchPullRequestBranch, getJson, listWorktrees, openWorktree } from "../lib/api.ts";
 import { useT, type Translate } from "../lib/i18n.ts";
-import { closeGithubPull } from "./GithubInbox.tsx";
+import { closeGithubPull, refreshGithubListing } from "./GithubInbox.tsx";
+import { GithubMerge, GithubReply } from "./GithubActions.tsx";
 import { ago, GithubConversation } from "./GithubConversation.tsx";
 import { GithubFiles } from "./GithubFiles.tsx";
 import "./GithubPull.css";
@@ -83,6 +84,9 @@ export function GithubPullPage({ pull, wide, watching, onOpened }: { pull: Githu
   const [busy, setBusy] = useState(false);
   const [tab, setTabState] = useState<Tab>(() => tabs.get(pull.url) ?? "overview");
   const setTab = (next: Tab): void => { tabs.set(pull.url, next); setTabState(next); };
+  // bumped after an action, so the page is read again and shows what GitHub made of it
+  const [reload, setReload] = useState(0);
+  const acted = (): void => { setReload((value) => value + 1); refreshGithubListing(); };
   useEffect(() => {
     let cancelled = false;
     const query = new URLSearchParams({ repo: pull.repository, number: String(pull.number), account: pull.account ?? "" });
@@ -91,7 +95,7 @@ export function GithubPullPage({ pull, wide, watching, onOpened }: { pull: Githu
       (reason: unknown) => { if (!cancelled && !pageCache.has(pull.url)) setError(reason instanceof ApiError ? reason.code ?? "gh_failed" : "gh_failed"); },
     );
     return () => { cancelled = true; };
-  }, [pull.repository, pull.number, pull.account]);
+  }, [pull.repository, pull.number, pull.account, pull.url, reload]);
 
   const checkout = async (): Promise<void> => {
     // Branch names alone cannot establish which fork a local checkout belongs to.
@@ -144,7 +148,10 @@ export function GithubPullPage({ pull, wide, watching, onOpened }: { pull: Githu
           <span>{t("{author} wants to merge into {base} from {head}", { author: detail.author ?? t("Someone"), base: detail.base, head: detail.head })}</span>
           <span className="fork-github-pull-dim">{t("Updated {when}", { when: ago(detail.updated_at) })}</span>
         </div>
-        {detail.state === "open" && <p className={`fork-github-merge is-${detail.merge}`}><MergeIcon merge={detail.merge} />{mergeWords[detail.merge]}</p>}
+        {detail.state === "open" && <div className="fork-github-merge-row">
+          <p className={`fork-github-merge is-${detail.merge}`}><MergeIcon merge={detail.merge} />{mergeWords[detail.merge]}</p>
+          <GithubMerge pull={pull} detail={detail} watching={watching} onDone={acted} />
+        </div>}
         <div className="fork-github-tabs">
           <Segmented<Tab> label={t("Pull request")} value={tab} onChange={setTab} options={[
             { value: "overview", label: t("Overview") },
@@ -171,7 +178,7 @@ export function GithubPullPage({ pull, wide, watching, onOpened }: { pull: Githu
             {detail.body.trim() ? <Markdown html>{detail.body}</Markdown> : <p className="fork-github-pull-dim">{t("No description.")}</p>}
           </section>
         </>}
-        {tab === "conversation" && <section className="fork-github-tab-page" aria-label={t("Conversation")}><GithubConversation entries={detail.conversation ?? []} /></section>}
+        {tab === "conversation" && <section className="fork-github-tab-page" aria-label={t("Conversation")}><GithubConversation entries={detail.conversation ?? []} /><GithubReply key={pull.url} pull={pull} detail={detail} watching={watching} onDone={acted} /></section>}
         {tab === "checks" && <section className="fork-github-tab-page" aria-label={t("Checks")}><ChecksBox checks={detail.check_list} /></section>}
         {tab === "files" && <section className="fork-github-tab-page" aria-label={t("Files")}><GithubFiles pull={pull} detail={detail} /></section>}
       </>}

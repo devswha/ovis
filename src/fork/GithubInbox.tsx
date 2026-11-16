@@ -107,6 +107,10 @@ export function ForkGithubOpen() {
 
 /** The last list read, kept across visits so going back to GitHub draws it at once. */
 let listingCache: { value: GithubPulls; at: number } | null = null;
+/** After an action on a pull request: the list is read again, now if it shows, else when it next does. */
+let listingVersion = 0;
+export function refreshGithubListing(): void { listingCache = null; listingVersion += 1; emit(); }
+const useListingVersion = () => useSyncExternalStore(subscribe, () => listingVersion, () => 0);
 
 export function GithubInbox({ wide, watching, onOpened }: ViewProps) {
   const t = useT();
@@ -114,6 +118,7 @@ export function GithubInbox({ wide, watching, onOpened }: ViewProps) {
   const [listing, setListing] = useState<GithubPulls | null>(() => listingCache?.value ?? null);
   const [repo, setRepo] = useState(loadGithubRepo);
   const [refresh, setRefresh] = useState(0);
+  const version = useListingVersion();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [repoMenu, setRepoMenu] = useState<HTMLElement | null>(null);
@@ -123,7 +128,7 @@ export function GithubInbox({ wide, watching, onOpened }: ViewProps) {
   };
   useEffect(() => {
     // Coming back shows the last list at once; it is read again only when a minute old, or on Refresh.
-    if (refresh === 0 && listingCache && Date.now() - listingCache.at < 60_000) return;
+    if (refresh === 0 && listingCache !== null && Date.now() - listingCache.at < 60_000) return;
     let cancelled = false;
     setLoading(true); setError(null);
     getJson<GithubPulls>("/api/fork/github/pulls", { cache: "no-store" }).then((next) => {
@@ -136,7 +141,7 @@ export function GithubInbox({ wide, watching, onOpened }: ViewProps) {
       setLoading(false); setError(reason instanceof ApiError ? reason.code ?? "gh_failed" : "gh_failed");
     });
     return () => { cancelled = true; };
-  }, [refresh]);
+  }, [refresh, version]);
   const groups = githubGroups(listing ?? { accounts: [], review: [], yours: [] }, repo);
   const statuses = { "Checks failing": t("Checks failing"), "Changes requested": t("Changes requested"), "Review requested": t("Review requested"), Draft: t("Draft"), "Checks running": t("Checks running"), Approved: t("Approved"), Ready: t("Ready") };
 

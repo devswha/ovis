@@ -486,3 +486,45 @@
 .fork-github-file-lines .is-added { color: var(--status-done); }
 .fork-github-file-lines .is-removed { color: var(--status-blocked); }
 .fork-github-pull-meta + .fork-github-merge { margin: var(--space-3) 0 0; }
+
+/* the merge line, and the merge button beside it (under it on a narrow page) */
+.fork-github-merge-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin: var(--space-3) 0 0;
+}
+
+.fork-github-merge-row > .fork-github-merge { margin: 0; }
+.fork-github-merge-do { display: grid; gap: var(--space-1); justify-items: end; }
+
+/* the merge button and its method arrow, one control */
+.fork-github-split { display: inline-flex; }
+.fork-github-split > .btn { display: inline-flex; align-items: center; gap: var(--space-1); }
+.fork-github-split > .btn svg { width: 14px; height: 14px; flex: none; }
+.fork-github-split > .btn:first-child:not(:only-child) { border-start-end-radius: 0; border-end-end-radius: 0; }
+.fork-github-split > .btn + .btn { border-start-start-radius: 0; border-end-start-radius: 0; margin-inline-start: calc(var(--hairline) * -1); padding-inline: var(--space-2); }
+
+/* the reply box under the conversation */
+.fork-github-reply {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
+
+.fork-github-reply-text {
+  width: 100%;
+  min-height: calc(var(--fs-sm) * var(--lh-base) * 3 + var(--space-2) * 2);
+  resize: vertical;
+  font: inherit;
+  font-size: var(--fs-sm);
+}
+
+.fork-github-reply-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}

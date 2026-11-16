@@ -46,6 +46,14 @@ export interface GithubPullDetail {
   /** each reviewer's latest word, then who is still asked */
   reviewers: { login: string; state: "approved" | "changes_requested" | "commented" | "requested" }[];
   labels: { name: string; color: string }[];
+  /** the head commit, which a merge names so that GitHub refuses it when commits came after the page was read */
+  head_sha: string;
+  /** the account the page was read with */
+  viewer: string | null;
+  /** whether that account may merge */
+  can_write: boolean;
+  /** the merge methods the repository allows, GitHub's order */
+  merge_methods: ("squash" | "merge" | "rebase")[];
   /** comments, reviews and state changes, oldest first */
   conversation: GithubEntry[];
   /** the changed files, as GitHub lists them (the first 100) */
