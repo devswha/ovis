@@ -1347,10 +1347,11 @@ it("backs off repeated short-lived opens, even when each receives a snapshot and
   const { client, socket } = liveClient([]);
   try {
     let current = socket;
-    for (const step of [250, 500, 1000, 2000, 4000, 5000, 5000]) {
+    // main's fixed steps up to 2s, then the 4s and 5s steps at the bottom of their jittered window
+    for (const delay of [250, 500, 1000, 2000, 2000, 2500, 2500]) {
       current.disconnect();
       expect(client.state).toBe("waiting");
-      jest.advanceTimersByTime(step / 2 - 1);
+      jest.advanceTimersByTime(delay - 1);
       expect(FakeSocket.last).toBe(current);
       jest.advanceTimersByTime(1);
       const next = FakeSocket.last;
@@ -1371,16 +1372,15 @@ it("backs off repeated short-lived opens, even when each receives a snapshot and
 
 it("starts the retry delay over only after an open connection has stayed up for 10s", () => {
   jest.useFakeTimers();
-  const random = jest.spyOn(Math, "random").mockReturnValue(0);
   const { client, socket } = liveClient([]);
   try {
     socket.disconnect();
-    jest.advanceTimersByTime(125);
+    jest.advanceTimersByTime(250);
     const short = FakeSocket.last;
     short.open();
     jest.advanceTimersByTime(9_999);
     short.disconnect();
-    jest.advanceTimersByTime(249);
+    jest.advanceTimersByTime(499);
     expect(FakeSocket.last).toBe(short);
     jest.advanceTimersByTime(1);
     const stable = FakeSocket.last;
@@ -1388,27 +1388,25 @@ it("starts the retry delay over only after an open connection has stayed up for 
     stable.open();
     jest.advanceTimersByTime(10_000);
     stable.disconnect();
-    jest.advanceTimersByTime(124);
+    jest.advanceTimersByTime(249);
     expect(FakeSocket.last).toBe(stable);
     jest.advanceTimersByTime(1);
     expect(FakeSocket.last).not.toBe(stable);
   } finally {
     client.close();
-    random.mockRestore();
     jest.useRealTimers();
   }
 });
 
 it("ignores a late open from an abandoned attempt instead of replaying on the replacement", () => {
   jest.useFakeTimers();
-  const random = jest.spyOn(Math, "random").mockReturnValue(0);
   const client = new HerdrSocket("ws://test/ws");
   try {
     client.attach("w1:p1", 100, 30);
     client.connect();
     const abandoned = FakeSocket.last;
     jest.advanceTimersByTime(8_000);
-    jest.advanceTimersByTime(125);
+    jest.advanceTimersByTime(250);
     const replacement = FakeSocket.last;
     expect(replacement).not.toBe(abandoned);
     replacement.open();
@@ -1417,24 +1415,22 @@ it("ignores a late open from an abandoned attempt instead of replaying on the re
     expect(replacement.sent).toEqual(sent);
     expect(client.state).toBe("open");
     replacement.disconnect();
-    jest.advanceTimersByTime(249);
+    jest.advanceTimersByTime(499);
     expect(FakeSocket.last).toBe(replacement);
     jest.advanceTimersByTime(1);
     expect(FakeSocket.last).not.toBe(replacement);
   } finally {
     client.close();
-    random.mockRestore();
     jest.useRealTimers();
   }
 });
 
 it("still bypasses a flapping connection's backoff on wake and resets its next retry", () => {
   jest.useFakeTimers();
-  const random = jest.spyOn(Math, "random").mockReturnValue(0);
   const { client, socket } = liveClient([]);
   try {
     socket.disconnect();
-    jest.advanceTimersByTime(125);
+    jest.advanceTimersByTime(250);
     const second = FakeSocket.last;
     second.open();
     second.disconnect();
@@ -1443,27 +1439,32 @@ it("still bypasses a flapping connection's backoff on wake and resets its next r
     expect(woken).not.toBe(second);
     woken.open();
     woken.disconnect();
-    jest.advanceTimersByTime(124);
+    jest.advanceTimersByTime(249);
     expect(FakeSocket.last).toBe(woken);
     jest.advanceTimersByTime(1);
     expect(FakeSocket.last).not.toBe(woken);
   } finally {
     client.close();
-    random.mockRestore();
     jest.useRealTimers();
   }
 });
 
-it("schedules the reconnect at the top of the jittered window", () => {
+it("schedules the first jittered reconnect, at the 4s step, at the top of its window", () => {
   jest.useFakeTimers();
-  const random = jest.spyOn(Math, "random").mockReturnValue(0.999);
+  const random = jest.spyOn(Math, "random").mockReturnValue(1 - 2 ** -53);
   const { client, socket } = liveClient([]);
   try {
     socket.disconnect();
-    jest.advanceTimersByTime(373);
-    expect(FakeSocket.last).toBe(socket);
+    // the fixed steps 0.25, 0.5, 1 and 2s, each attempt failing
+    for (const delay of [250, 500, 1000, 2000]) {
+      jest.advanceTimersByTime(delay);
+      FakeSocket.last.disconnect();
+    }
+    const failed = FakeSocket.last;
+    jest.advanceTimersByTime(5999);
+    expect(FakeSocket.last).toBe(failed);
     jest.advanceTimersByTime(1);
-    expect(FakeSocket.last).not.toBe(socket);
+    expect(FakeSocket.last).not.toBe(failed);
   } finally {
     client.close();
     random.mockRestore();
@@ -1486,7 +1487,6 @@ it("does not wake a connection whose output stopped, nor one that was closed", (
 
 it("gives up a connect attempt stuck in CONNECTING after its deadline and starts a new one", () => {
   jest.useFakeTimers();
-  const random = jest.spyOn(Math, "random").mockReturnValue(0);
   const client = new HerdrSocket("ws://test/ws");
   try {
     let disconnects = 0;
@@ -1499,7 +1499,7 @@ it("gives up a connect attempt stuck in CONNECTING after its deadline and starts
     // closed by the client itself, without waiting for a close event that may never come
     expect(stuck.readyState).toBe(3);
     expect(disconnects).toBe(1);
-    jest.advanceTimersByTime(125);
+    jest.advanceTimersByTime(250);
     const retry = FakeSocket.last;
     expect(retry).not.toBe(stuck);
     // the late close event of the abandoned attempt changes nothing
@@ -1512,7 +1512,6 @@ it("gives up a connect attempt stuck in CONNECTING after its deadline and starts
     expect(retry.readyState).toBe(FakeSocket.OPEN);
   } finally {
     client.close();
-    random.mockRestore();
     jest.useRealTimers();
   }
 });
@@ -1607,14 +1606,13 @@ it("stops output when the late close event of a socket wake() already ended says
 
 it("lets a slow handshake connect: each attempt given up doubles the next deadline", () => {
   jest.useFakeTimers();
-  const random = jest.spyOn(Math, "random").mockReturnValue(0);
   const client = new HerdrSocket("ws://test/ws");
   try {
     client.connect();
     const first = FakeSocket.last;
     jest.advanceTimersByTime(8_000);
     expect(first.readyState).toBe(3);
-    jest.advanceTimersByTime(125);
+    jest.advanceTimersByTime(250);
     const second = FakeSocket.last;
     expect(second).not.toBe(first);
     // a remote PC's upgrade waits up to 15s for its relay: 12s is past the first deadline but inside the second
@@ -1625,14 +1623,13 @@ it("lets a slow handshake connect: each attempt given up doubles the next deadli
     expect(client.connected).toBe(true);
     // Opening starts the connect deadline over at 8s, not the backoff: this open was brief.
     second.disconnect();
-    jest.advanceTimersByTime(250);
+    jest.advanceTimersByTime(500);
     const third = FakeSocket.last;
     expect(third).not.toBe(second);
     jest.advanceTimersByTime(8_000);
     expect(third.readyState).toBe(3);
   } finally {
     client.close();
-    random.mockRestore();
     jest.useRealTimers();
   }
 });
@@ -2139,11 +2136,10 @@ it("pauses a probe when the page is hidden and pings again when it is shown", ()
 
 it("probes a reconnected socket whose snapshot never came, on a bridge that listed ping before", () => {
   jest.useFakeTimers();
-  const random = jest.spyOn(Math, "random").mockReturnValue(0);
   const { client, socket } = liveClient(["ping"]);
   try {
     socket.disconnect();
-    jest.advanceTimersByTime(125);
+    jest.advanceTimersByTime(250);
     const fresh = FakeSocket.last;
     expect(fresh).not.toBe(socket);
     fresh.open();
@@ -2153,7 +2149,6 @@ it("probes a reconnected socket whose snapshot never came, on a bridge that list
     expect(FakeSocket.last).not.toBe(fresh);
   } finally {
     client.close();
-    random.mockRestore();
     jest.useRealTimers();
   }
 });
@@ -2178,11 +2173,10 @@ it("tells its handlers the probe's pong, so a view that read input as refused du
 
 it("ends a probe sent before the snapshot when the reconnected bridge does not list ping, and keeps its connection", async () => {
   jest.useFakeTimers();
-  const random = jest.spyOn(Math, "random").mockReturnValue(0);
   const { client, socket } = liveClient(["submit", "ping"]);
   try {
     socket.disconnect();
-    jest.advanceTimersByTime(125);
+    jest.advanceTimersByTime(250);
     const older = FakeSocket.last;
     expect(older).not.toBe(socket);
     older.open();
@@ -2202,14 +2196,12 @@ it("ends a probe sent before the snapshot when the reconnected bridge does not l
     expect(pings(older)).toHaveLength(1);
   } finally {
     client.close();
-    random.mockRestore();
     jest.useRealTimers();
   }
 });
 
 it("ends a probe the hidden page paused when the reconnected bridge's snapshot does not list ping", async () => {
   jest.useFakeTimers();
-  const random = jest.spyOn(Math, "random").mockReturnValue(0);
   const listeners = new Map<string, () => void>();
   const page = { visibilityState: "visible", addEventListener: (type: string, listener: () => void) => { listeners.set(type, listener); }, removeEventListener: () => {} };
   const globalDocument = globalThis as unknown as { document?: unknown };
@@ -2218,7 +2210,7 @@ it("ends a probe the hidden page paused when the reconnected bridge's snapshot d
   const { client, socket } = liveClient(["submit", "ping"]);
   try {
     socket.disconnect();
-    jest.advanceTimersByTime(125);
+    jest.advanceTimersByTime(250);
     const older = FakeSocket.last;
     older.open();
     client.wake();
@@ -2239,7 +2231,6 @@ it("ends a probe the hidden page paused when the reconnected bridge's snapshot d
     expect(await submit).toEqual({ ok: true });
   } finally {
     client.close();
-    random.mockRestore();
     globalDocument.document = previous;
     jest.useRealTimers();
   }
@@ -2403,15 +2394,14 @@ it("settles a submit waiting on a probe when a CLOSING socket is replaced, and t
 
 it("gives up an attempt with a grown deadline on wake and starts a fresh one with the shortest", () => {
   jest.useFakeTimers();
-  const random = jest.spyOn(Math, "random").mockReturnValue(0);
   const client = new HerdrSocket("ws://test/ws");
   try {
     client.connect();
     const first = FakeSocket.last;
-    jest.advanceTimersByTime(8_000 + 125);
+    jest.advanceTimersByTime(8_000 + 250);
     const second = FakeSocket.last;
     expect(second).not.toBe(first);
-    jest.advanceTimersByTime(16_000 + 250);
+    jest.advanceTimersByTime(16_000 + 500);
     const third = FakeSocket.last;
     expect(third).not.toBe(second);
     // the network comes back 2s into an attempt whose deadline has grown to 30s
@@ -2426,21 +2416,19 @@ it("gives up an attempt with a grown deadline on wake and starts a fresh one wit
     expect(fresh.readyState).toBe(3);
   } finally {
     client.close();
-    random.mockRestore();
     jest.useRealTimers();
   }
 });
 
 it("never reconnects from a backoff retry left pending once the server stopped output", () => {
   jest.useFakeTimers();
-  const random = jest.spyOn(Math, "random").mockReturnValue(0);
   const client = new HerdrSocket("ws://test/ws");
   const errors: string[] = [];
   client.on((message) => { if (message.type === "error") errors.push(message.code); });
   try {
     client.connect();
     // failed attempts back the retry off to 4s
-    for (const delay of [125, 250, 500, 1_000]) {
+    for (const delay of [250, 500, 1_000, 2_000]) {
       FakeSocket.last.disconnect();
       jest.advanceTimersByTime(delay);
     }
@@ -2457,7 +2445,6 @@ it("never reconnects from a backoff retry left pending once the server stopped o
     expect(FakeSocket.last).toBe(replacement);
   } finally {
     client.close();
-    random.mockRestore();
     jest.useRealTimers();
   }
 });
@@ -2918,7 +2905,7 @@ it("forgets machine event capability on disconnect before a replacement subscrib
 it("backoffDelay centres the jitter on the fixed delay", () => {
   const random = jest.spyOn(Math, "random");
   try {
-    for (const retries of [0, 1, 5, 20]) {
+    for (const retries of [4, 5, 20]) {
       const step = Math.min(5000, 250 * 2 ** retries);
       random.mockReturnValue(0);
       expect(backoffDelay(retries)).toBe(step / 2);
@@ -2934,7 +2921,7 @@ it("backoffDelay centres the jitter on the fixed delay", () => {
 });
 
 it("backoffDelay applies real jitter", () => {
-  const samples = Array.from({ length: 1000 }, () => backoffDelay(2));
+  const samples = Array.from({ length: 1000 }, () => backoffDelay(4));
   expect(samples.some((delay) => delay !== samples[0])).toBe(true);
 });
 
