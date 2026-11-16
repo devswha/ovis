@@ -19,6 +19,7 @@ import type { HerdrMethod, HerdrMethods, SingleHerdrMethod, UntypedHerdrMethod }
 import type { HerdrIdentity } from "../../shared/machines.ts";
 import { runtimeIdentity } from "../runtime/capabilities.ts";
 import { makeLineReader } from "./line-reader.ts";
+import type { WorktreeInfo } from "./worktree-info.ts";
 import { liveSessionsRefused, sameSocket } from "./test-session.ts";
 
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -609,17 +610,6 @@ const WORKTREE_GIT_TIMEOUT_MS = 60_000;
 /** `git worktree remove` of the workspace's checkout; herdr closes the workspace with it and keeps the branch. */
 export async function worktreeRemove(workspaceId: string, force: boolean, socketPath?: string): Promise<{ type: "worktree_removed"; workspace_id: string; path: string; forced: boolean }> {
   return queueHerdrFocus(socketPath, (socket) => herdrRpc("worktree.remove", { workspace_id: workspaceId, force }, socket, WORKTREE_GIT_TIMEOUT_MS));
-}
-
-export interface WorktreeInfo {
-  path: string;
-  branch: string | null;
-  label: string;
-  is_linked_worktree: boolean;
-  is_bare: boolean;
-  is_detached: boolean;
-  is_prunable: boolean;
-  open_workspace_id: string | null;
 }
 
 export interface WorktreeSourceInfo {
