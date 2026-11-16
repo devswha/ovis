@@ -22,9 +22,11 @@
  * step returned 0, and only when git read the same answer before and after the build. Without git on PATH the launcher
  * still runs: the release's binary is taken only for sources git can tie to it (scripts/server-manifest.ts
  * sourceTrees), so such a checkout runs from source, saying why, without asking the release (scripts/server-install.ts):
- * nothing it answers could change that, and a release out of reach does not stop it. Its build step builds; any other
- * command runs only a build that finished (packages, client, and no `started` stamp), and that choice is not remembered.
- * This file imports nothing outside scripts/ and shared/.
+ * nothing it answers could change that, and a release out of reach does not stop it. Its build step builds, and that
+ * choice is not remembered. Wherever the sources run without a marker for this version (that case, or a release with no
+ * compiled server for them), `start`, the one command that brings a server up, runs only a build that finished for this
+ * checkout (see `unfinished`), and every other command reaches the sources as they are, so a server that runs from them
+ * is still stopped. This file imports nothing outside scripts/ and shared/.
  */
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -159,6 +161,26 @@ export async function main(args: string[], { home = join(root, ".ovis", "server"
     else writeFileSync(stamp, `${"commit" in builtFrom ? `${version} ${builtFrom.commit}` : version}\n`);
     return code;
   };
+  // What keeps this checkout's own build from being one that finished for it: none when it is. Finished is this version's
+  // build: its packages and client are there, and its stamp is absent (a launcher from before it wrote none) or names this
+  // version and, where git reads the checkout's commit, that commit, as `build` stamps it (the version alone in a folder
+  // with no commit of its own). install.ps1's $sourceBuilt reads the stamp by the same rule, but for one case: where git
+  // fails it takes no stamp at all (it refuses then, whatever the build), while here, where git failing (not on PATH,
+  // a folder it distrusts) is the usual reason the sources run at all, the version decides.
+  const unfinished = async (): Promise<string[]> => {
+    const stamped = existsSync(stamp) ? readFileSync(stamp, "utf8").trim() : null;
+    const [built, builtFrom] = stamped?.split(" ") ?? [];
+    const now = stamped === null || stamped === "started" || built !== version ? null : await commit();
+    return [
+      ...(existsSync(join(root, "node_modules")) ? [] : ["no node_modules"]),
+      ...(existsSync(join(root, "dist", "index.html")) ? [] : ["no dist/index.html"]),
+      ...(stamped === null ? []
+        : stamped === "started" ? ["its last build did not finish"]
+        : built !== version ? [`its last build was of version ${built}`]
+        : now !== null && "commit" in now && builtFrom !== now.commit ? [`its last build was not of commit ${now.commit.slice(0, 12)}`]
+        : []),
+    ];
+  };
   if (command === "install") {
     rmSync(marker, { force: true });
     rmSync(stamp, { force: true });
@@ -181,21 +203,21 @@ export async function main(args: string[], { home = join(root, ".ovis", "server"
         console.error(`Ovis: ${error.message}, so this checkout runs from source`);
         return await build();
       }
+      // `start` alone brings a server up (scripts/plugin.ts: stop, status, pair, link, phone and phone-setup work with
+      // the server that runs, tui with herdr-core, and a command it does not know goes to the release Settings → Updates
+      // installed), so it alone runs only a build that finished. Every other command reaches the sources whatever their
+      // build: a server that runs from them (started before that build was cut off or its client removed) is stopped.
+      const missing = command === "start" ? await unfinished() : [];
+      if (missing.length > 0) {
+        const launcher = shellQuote(join(root, "scripts", "plugin-launch.ts"));
+        const buildIt = process.platform === "win32" ? `$env:OVIS_FROM_SOURCE = '1'; bun ${launcher} install` : `OVIS_FROM_SOURCE=1 bun ${launcher} install`;
+        console.error(`Ovis: ${error.message}, and this checkout has no finished build of its own (${missing.join(", ")}), so nothing was started. To build it, run:\n${buildIt}`);
+        return 1;
+      }
       // Sources git ties to no release (no git, no checkout, changes not committed) are a reason the next start may not
-      // have (git back, a commit made): it is not remembered, and a start for it alone runs only a build that finished.
-      // The release was not asked (scripts/server-install.ts), so this is also what a start out of its reach gets.
+      // have (git back, a commit made): it is not remembered. The release was not asked (scripts/server-install.ts), so
+      // this is also what a start out of its reach gets.
       if ("error" in sources) {
-        const missing = [
-          ...(existsSync(join(root, "node_modules")) ? [] : ["no node_modules"]),
-          ...(existsSync(join(root, "dist", "index.html")) ? [] : ["no dist/index.html"]),
-          ...(existsSync(stamp) && readFileSync(stamp, "utf8").trim() === "started" ? ["its last build did not finish"] : []),
-        ];
-        if (missing.length > 0) {
-          const launcher = shellQuote(join(root, "scripts", "plugin-launch.ts"));
-          const buildIt = process.platform === "win32" ? `$env:OVIS_FROM_SOURCE = '1'; bun ${launcher} install` : `OVIS_FROM_SOURCE=1 bun ${launcher} install`;
-          console.error(`Ovis: ${error.message}, and this checkout's own build is not complete (${missing.join(", ")}), so nothing was started. To build it, run:\n${buildIt}`);
-          return 1;
-        }
         console.error(`Ovis: ${error.message}, so this checkout runs its own build`);
         return await source(command, rest);
       }
