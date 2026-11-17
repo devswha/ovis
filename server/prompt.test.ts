@@ -4456,7 +4456,7 @@ describe("an answer and the menu it was made for", () => {
   interface Pane {
     agent: string; status: string; screen: string; sent: string[]; onSent?: (sent: string) => void;
     /** the pane's folder and its Codex rollout, for a prompt named by the agent's own call */
-    cwd?: string; rollout?: string;
+    cwd?: string; rollout?: string; codexArgv?: string[];
     /** how long herdr takes over each screen read from now on */
     readDelay?: number;
     onRead?: () => void;
@@ -4533,7 +4533,7 @@ describe("an answer and the menu it was made for", () => {
           : pane.agent === "pi" ? [pane.piGone ? { pid: 4100, argv: ["/bin/bash"] } : { pid: 4343, argv: ["node", "/usr/local/bin/pi"] }]
           : pane.agent === "hermes" ? [pane.hermesStopped ? { pid: 4100, argv: ["/bin/zsh"] } : { pid: 4444, argv: ["/usr/local/bin/hermes"] }]
           // a Codex pane runs Codex: its rollout is read only while one does
-          : pane.agent === "codex" ? [{ pid: 2147483647, argv: ["/usr/bin/codex"] }] : [] } });
+          : pane.agent === "codex" ? [{ pid: 2147483647, argv: pane.codexArgv ?? ["/usr/bin/codex"] }] : [] } });
         // a pane whose scroll herdr does not report: a colored read counts when its text is the live screen's
         if (request.method === "pane.get") return answer({ pane: { pane_id: "p_1" } });
         if (request.method === "agent.get" && pane.agentUnanswered) return;
@@ -6846,8 +6846,22 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
       pane.cwd = pane.root;
       // one call asks the same question twice: the card is the first of the two
       writeFileSync(pane.rollout, `${JSON.stringify({ type: "session_meta", payload: { id: "t", source: "cli" } })}\n${item({ type: "message", role: "assistant", content: [{ type: "output_text", text: said }] })}${ask("call_1", 2)}`);
-      const queued = (await card(home))!;
+      let queued = (await card(home))!;
       expect(queued.queued).toBe("collapsed");
+      // A cached rollout cannot bypass a later native local-mode refusal.
+      for (const argv of [["codex", "--remote"], ["codex", "--remote=example"], ["node", "/tmp/not-codex.js"], []]) {
+        pane.codexArgv = argv;
+        expect(await card(home)).toBeNull();
+      }
+      pane.codexArgv = ["codex", "--profile", "e"];
+      const restored = (await card(home))!;
+      // A confirmed absent card ended the old asking; its ID must authorise no keys now.
+      expect(restored.id).not.toBe(queued.id);
+      expect(restored.options).toEqual(queued.options);
+      expect(await answer(queued.id, { option_index: 1 }, { codexHome: home })).toEqual({ status: 409, code: "prompt_changed" });
+      expect(pane.sent).toEqual([]);
+      queued = restored;
+      pane.codexArgv = undefined;
       // another terminal client opens the queue between this answer's first read and its read
       // before alt+↑: the answer is refused, and the queue it did not open is not its to close
       let reads = 0;

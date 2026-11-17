@@ -15,7 +15,7 @@ export interface SessionPlanDeps {
   claudePath: (paneId: string) => string | null;
   /** an OmO pane's native session already resolved by its status tracker */
   omoPath?: (paneId: string) => string | null;
-  /** a Codex pane's rollout: this costs process calls, so it is asked once per session and again every `relocateMs` */
+  /** a Codex pane's rollout: located per session/`relocateMs`, and revalidated before each plan poll */
   codexPath: (pane: HerdrPane) => Promise<string | null>;
   /** a pane's summary changed (null: it has no plan now) */
   onChange: (paneId: string, summary: PlanSummary | null) => void;
@@ -33,6 +33,7 @@ export interface SessionPlanDeps {
 
 interface Tracked {
   key: string;
+  pane?: HerdrPane;
   at: number;
   where: { source: PlanSource; path: string } | null;
   /** the file's size and identity when it was last read: an unchanged file is not read again */
@@ -65,7 +66,7 @@ export class SessionPlans {
 
   start(): void {
     if (this.timer !== null) return;
-    this.timer = setInterval(() => this.poll(), this.deps.pollMs ?? 2000);
+    this.timer = setInterval(() => { void this.poll(); }, this.deps.pollMs ?? 2000);
     this.timer.unref?.();
   }
 
@@ -141,7 +142,7 @@ export class SessionPlans {
       const path = await this.deps.codexPath(pane).catch(() => null);
       // the pane left, or runs another session, while it was looked up: what was found is not its
       if (!asked && this.refreshed && this.wanted.get(pane.pane_id) !== key) return;
-      this.track(pane.pane_id, key, path === null ? null : { source: "codex-transcript", path });
+      this.track(pane.pane_id, key, path === null ? null : { source: "codex-transcript", path }, pane);
     } finally {
       this.looking.delete(pane.pane_id);
     }
@@ -151,16 +152,16 @@ export class SessionPlans {
    * Where a pane's plan is now; what was read of the same file stands. Another session's context
    * is not this one's: it goes at once, before the poll reads the new transcript.
    */
-  private track(paneId: string, key: string, where: { source: PlanSource; path: string } | null): void {
+  private track(paneId: string, key: string, where: { source: PlanSource; path: string } | null, pane?: HerdrPane): void {
     const current = this.panes.get(paneId);
     const same = current !== undefined && current.where?.path === where?.path && current.where?.source === where?.source;
     const sameSession = same && current.key === key;
-    this.panes.set(paneId, { key, at: this.now(), where, sig: sameSession ? current.sig : null, summary: current?.summary ?? null, metadata: sameSession ? current.metadata : null, context: current?.key === key ? current.context : null });
+    this.panes.set(paneId, { key, pane, at: this.now(), where, sig: sameSession ? current.sig : null, summary: current?.summary ?? null, metadata: sameSession ? current.metadata : null, context: current?.key === key ? current.context : null });
     if (current !== undefined && current.key !== key && current.context !== null) this.deps.onContext?.(paneId, null);
   }
 
   /** Reads the transcripts that grew, PLAN_BUDGET bytes in all; a pane whose summary or context changed is told. */
-  poll(): void {
+  async poll(): Promise<void> {
     // ponytail: the budget goes to panes in the order they were first followed, so while a very large
     // transcript catches up the panes after it wait about size / PLAN_BUDGET polls; start each poll
     // where the last one stopped if that ever shows
@@ -170,6 +171,23 @@ export class SessionPlans {
         tracked.metadata = null;
         this.tellSummary(paneId, tracked, null);
       } else {
+        if (tracked.where.source === "codex-transcript") {
+          if (!tracked.pane || this.looking.has(paneId)) continue;
+          this.looking.add(paneId);
+          let path: string | null;
+          try { path = await this.deps.codexPath(tracked.pane).catch(() => null); }
+          finally { this.looking.delete(paneId); }
+          if (this.panes.get(paneId) !== tracked) continue;
+          // The cached path is a location, never fresh process/session ownership.
+          if (path !== tracked.where.path) {
+            tracked.where = null;
+            tracked.sig = null;
+            tracked.metadata = null;
+            this.tellSummary(paneId, tracked, null);
+            this.tellContext(paneId, tracked);
+            continue;
+          }
+        }
         const stat = plain(tracked.where.path);
         const sig = stat === null ? null : `${stat.id}:${stat.size}`;
         if (sig === null || sig !== tracked.sig) {

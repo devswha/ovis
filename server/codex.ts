@@ -1,6 +1,7 @@
 /** Native Codex rollouts contain both display events and model context. Only
  * conversation records belong in chat; developer prompts and terminal chrome do not. */
 import { constants as sqliteConstants, Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
 import { closeSync, existsSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, statSync } from "node:fs";
 import { open, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -18,6 +19,8 @@ import { ConversationReadPending, type FileIdentity, openBound, readBound } from
 import type { AgentInfo } from "../shared/herdr-api.generated.ts";
 import { agentGet, HerdrError, paneGet, paneProcessInfo, paneRead, sessionSnapshot, type ProcessInfo } from "./herdr/client.ts";
 import { kiroCodexProcess, kiroNested, kiroWrapper } from "./kiro-terminal.ts";
+import { codexConversationMode, isCodexExecutable } from "./codex-executable.ts";
+import { type TmuxPane, codexProcessArgv, tmuxCodexProcess, tmuxPaneView, tmuxWrapper } from "./tmux-terminal.ts";
 import { resolveAgent } from "./pane-context.ts";
 import { FOOTER } from "./codex-steering.ts";
 import { codexStartScreenUnused } from "./start-screen.ts";
@@ -2420,8 +2423,10 @@ function titledCandidate(agent: Pick<AgentInfo, "terminal_title" | "terminal_tit
  */
 export async function codexFreshSession(paneId: string, cwds: readonly string[], configured: string | undefined, screen: string): Promise<string | null> {
   if (!codexStartScreenUnused(screen)) return null;
-  const { list, key } = await codexProcessesOf(paneId).catch(() => ({ list: [], key: "" }));
-  if (list.length === 0 || list.some((codex) => (codex.argv ?? []).some((word) => word === "resume" || word === "fork"))) return null;
+  const proof = await localCodexProcessesOf(paneId).catch(() => null);
+  if (proof === null) return null;
+  const { list, key } = proof;
+  if (list.some((codex) => (codex.argv ?? []).some((word) => word === "resume" || word === "fork"))) return null;
   // an explicit store wins, as in paneCodexHome. Else every Codex's home must be placed for
   // certain, and the first decides: one paneCodexHome cannot place (a relative CODEX_HOME) falls
   // back to the default store, where this pane's conversation is not
@@ -2459,7 +2464,9 @@ export async function codexFreshSession(paneId: string, cwds: readonly string[],
     }
   } catch { return null; }
   finally { db?.close(); }
-  return `unwritten:codex:${paneId}:${key}`;
+  // tmux's proof contains socket/TTY/PID metadata; only an opaque binding belongs in a browser's history id.
+  const binding = key.startsWith("tmux:") ? createHash("sha256").update(key).digest("hex") : key;
+  return `unwritten:codex:${paneId}:${binding}`;
 }
 
 /** `codex resume <thread>`: the thread a TUI was started on, straight from its command line. */
@@ -3057,16 +3064,6 @@ function theirs(rollouts: string[], paneId: string, claimed: ReadonlySet<string>
   return rollouts.filter((rollout) => !elsewhere.has(rollout) && !claimed.has(rollout));
 }
 
-/** Interpreter options that run code or load a module: whatever follows is not the script. */
-const CODE_OPTIONS = new Set(["eval", "print", "require", "import", "loader", "experimental-loader", "input-type"]);
-/** Interpreter and shell options that take no value, so the script may follow them directly. */
-const VALUELESS_OPTIONS = new Set([
-  "", "no-warnings", "no-deprecation", "trace-warnings", "trace-deprecation", "pending-deprecation", "throw-deprecation",
-  "enable-source-maps", "preserve-symlinks", "preserve-symlinks-main", "expose-gc", "abort-on-uncaught-exception",
-  "experimental-strip-types", "experimental-transform-types", "experimental-vm-modules", "experimental-require-module",
-  "no-experimental-fetch", "harmony", "bun", "smol", "hot", "watch", "noprofile", "norc", "posix", "login",
-]);
-
 /** A pane's Codex executables (or interpreter scripts), and their pids as one key. */
 /** The pane's first Codex process (the one paneCodexHome decides by), or null when there is none. */
 export async function paneCodexProcess(paneId: string, known?: ProcessInfo | null): Promise<{ pid: number; argv?: string[] } | null> {
@@ -3074,7 +3071,7 @@ export async function paneCodexProcess(paneId: string, known?: ProcessInfo | nul
 }
 
 /** `known`: herdr's `pane.process_info` answer the caller's poll already read for this pane (null: no processes). */
-async function codexProcessesOf(paneId: string, known?: ProcessInfo | null): Promise<{ list: { pid: number; argv?: string[] }[]; key: string }> {
+async function codexProcessesOf(paneId: string, known?: ProcessInfo | null): Promise<{ list: { pid: number; argv?: string[]; argvRead?: boolean }[]; key: string; tmux?: TmuxPane }> {
   const processInfo = known !== undefined ? known ?? undefined : await paneProcessInfo(paneId);
   // herdr's schema allows `argv: null`; this reader has always read argv as absent or a list
   // (the cast is the inline result type herdrRpc was given before the typed seam)
@@ -3087,35 +3084,32 @@ async function codexProcessesOf(paneId: string, known?: ProcessInfo | null): Pro
         return { ...foreground, argv: readFileSync(`/proc/${foreground.pid}/cmdline`, "utf8").split("\0") };
       } catch { return foreground; }
     })
-    .filter((foreground) => {
-      // herdr's `argv: null`, or one this read could not replace, names no executable
-      const argv: string[] = Array.isArray(foreground.argv) ? foreground.argv : [];
-      const executable = argv[0] ?? "";
-      // also a release binary named for its target, and any letter case of Windows' file names
-      const codex = /(?:^|[\\/])codex(?:-(?:x86_64|aarch64)-[a-z0-9_-]+)?(?:\.js|\.exe|\.opencodex-real)?$/i;
-      if (codex.test(executable)) return true;
-      // `node codex.js` and shell shebangs name the script after the interpreter and its
-      // `--flag` options (`node --no-warnings codex.js`). Only options known to take no
-      // value may precede the script, plus `--name=value` forms that do not run code: an
-      // option that takes the next argument (`--title x`, `-e`, `-c`) or one that evaluates
-      // code or loads a module ends the search, since what follows it is not the script.
-      // Later arguments (echo, etc.) are not executables.
-      if (!/(?:^|[\\/])(?:node|bun|sh|bash|dash|zsh)(?:\.exe)?$/.test(executable)) return false;
-      let script = 1;
-      for (; argv[script]?.startsWith("--"); script++) {
-        const option = argv[script] ?? "";
-        const name = option.slice(2, option.includes("=") ? option.indexOf("=") : undefined);
-        if (CODE_OPTIONS.has(name)) return false;
-        if (!option.includes("=") && !VALUELESS_OPTIONS.has(name)) return false;
-      }
-      return codex.test(argv[script] ?? "");
-    });
+    .filter((foreground) => isCodexExecutable(Array.isArray(foreground.argv) ? foreground.argv : []));
   if (list.length === 0) {
     const nested = await kiroCodexProcess(processInfo);
     // A PID can be reused between reads: the verified births identify the whole nested chain.
     if (nested !== null) return { list: [nested], key: `kiro:${nested.identity}` };
+    const attached = await tmuxCodexProcess(processInfo);
+    if (attached !== null) return { list: [attached], key: `tmux:${attached.identity}`, tmux: attached.pane };
   }
   return { list, key: list.map((process) => process.pid).sort((left, right) => left - right).join(",") };
+}
+
+/** The common eligibility boundary for every read of this pane's local Codex history. */
+async function localCodexProcessesOf(paneId: string, known?: ProcessInfo | null): Promise<Awaited<ReturnType<typeof codexProcessesOf>> | null> {
+  const proof = await codexProcessesOf(paneId, known).catch(() => null);
+  if (proof === null || proof.list.length === 0) return null;
+  if (proof.key.startsWith("kiro:")) {
+    // Kiro proves attachment from comm/births; its synthetic argv cannot establish execution mode.
+    const argv = proof.list.map((p) => codexProcessArgv(p.pid));
+    if (argv.some((words) => codexConversationMode(words) !== "local")) return null;
+    const again = await codexProcessesOf(paneId).catch(() => null);
+    if (again === null || again.key !== proof.key || JSON.stringify(argv) !== JSON.stringify(proof.list.map((p) => codexProcessArgv(p.pid)))) return null;
+    return { ...proof, list: proof.list.map((p, i) => ({ ...p, argv: [...argv[i]!] })),
+      key: `${proof.key}:${createHash("sha256").update(JSON.stringify(argv)).digest("hex")}` };
+  }
+  if (proof.list.some((p) => codexConversationMode(proof.tmux !== undefined && p.argvRead !== true ? null : p.argv) !== "local")) return null;
+  return proof;
 }
 
 /** A missing label is expected for Kiro's outer PTY, but only its proven live Codex can use this fallback. */
@@ -3131,7 +3125,7 @@ async function codexAgentInfo(paneId: string): Promise<Pick<AgentInfo, "agent_se
     const info = await paneProcessInfo(paneId).then((answer) => (processRead = { info: answer }).info, () => undefined);
     // herdr's own report that the outer PTY is Kiro's wrapper keeps the guard, whether or not one more
     // process-table probe proves its Codex: a failed or racing probe must not make this a plain pane
-    return { ...agent, ...kiroNested(info, agent.agent === "codex") ? { nestedTerminal: true as const } : {}, ...processRead ? { processRead } : {} };
+    return { ...agent, ...kiroNested(info, agent.agent === "codex") || tmuxWrapper(info) ? { nestedTerminal: true as const } : {}, ...processRead ? { processRead } : {} };
   }
   catch (error) {
     if (!(error instanceof HerdrError) || error.code !== "agent_not_found") throw error;
@@ -3564,8 +3558,10 @@ async function freshReportedThread(
 }
 
 /** The pane's Codex processes, and the rollouts they hold open (lsof on macOS, /proc elsewhere): one alone is the pane's. */
-async function openRollouts(paneId: string, home: string, known?: ProcessInfo | null): Promise<{ codexProcesses: Awaited<ReturnType<typeof codexProcessesOf>>["list"]; processes: string; open: Set<string>; held: Map<string, string> }> {
-  const { list: codexProcesses, key: processes } = await codexProcessesOf(paneId, known);
+async function openRollouts(paneId: string, home: string, known?: ProcessInfo | null): Promise<{ codexProcesses: Awaited<ReturnType<typeof codexProcessesOf>>["list"]; processes: string; open: Set<string>; held: Map<string, string>; tmux?: TmuxPane } | null> {
+  const proof = await localCodexProcessesOf(paneId, known);
+  if (proof === null) return null;
+  const { list: codexProcesses, key: processes, tmux } = proof;
   const open = new Set<string>();
   // the exact dev:ino of the file each held rollout is, as the process holds it: a rename over its path cannot change it (#3402)
   const held = new Map<string, string>();
@@ -3630,7 +3626,10 @@ async function openRollouts(paneId: string, home: string, known?: ProcessInfo | 
       } catch { /* A descriptor may close while enumerating it. */ }
     }
   }
-  return { codexProcesses, processes, open, held };
+  // An attach client may switch its pane while the descriptor lookup awaits lsof or reads /proc. Nothing held proves
+  // nothing to keep: a screen read then is proven again after it (codexTranscriptPath)
+  if (open.size > 0 && (await localCodexProcessesOf(paneId).then((again) => again?.key, () => null)) !== processes) return null;
+  return { codexProcesses, processes, open, held, ...tmux === undefined ? {} : { tmux } };
 }
 
 /**
@@ -3645,8 +3644,11 @@ async function openRollouts(paneId: string, home: string, known?: ProcessInfo | 
  */
 export async function codexOpenRollout(paneId: string, cwd: string | null | undefined, home = defaultCodexHome()): Promise<string | null> {
   const agent = await codexAgentInfo(paneId);
-  const { codexProcesses, processes, open } = await openRollouts(paneId, home);
+  const found = await openRollouts(paneId, home);
+  if (found === null) return null;
+  const { codexProcesses, processes, open } = found;
   if (open.size === 1) return [...open][0]!;
+  if (processes.startsWith("tmux:")) return null;
   const reported = cwd ? reportedRollout(agent.agent_session, home) : null;
   // a nested pane's peers may carry no label either, so freshReportedThread cannot rule them out
   if (reported !== null && !agent.nestedTerminal && !agent.unlabelled && resumedThread(codexProcesses.map((process) => process.argv ?? [])) === null
@@ -3759,8 +3761,8 @@ function answerKept<Found>(kind: string, paneId: string, weighed: string, weigh:
  */
 async function stillAsWeighed(paneId: string, processes: string, screen: string, home: string, known: ReadonlySet<string>): Promise<boolean> {
   try {
-    const [now, running] = await Promise.all([paneRead({ paneId, source: "recent", lines: 400, stripAnsi: true }), codexProcessesOf(paneId)]);
-    if (running.key !== processes || shownScreen(now.text) !== shownScreen(screen)) return false;
+    const [now, running] = await Promise.all([paneRead({ paneId, source: "recent", lines: 400, stripAnsi: true }), localCodexProcessesOf(paneId)]);
+    if (running?.key !== processes || shownScreen(now.text) !== shownScreen(screen)) return false;
     const threads = await loadedRollouts(home);
     return threads !== null && [...threads.keys()].every((path) => known.has(path));
   } catch { return false; }
@@ -3867,13 +3869,14 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
   // binds the rollout to these processes, and one read before a Codex left (or before its pid came back) would
   // bind a conversation to the wrong one
   // (an answer without process facts is asked again, as before: a nested Codex may yet be proven from the next one)
-  const { codexProcesses, processes, open, held } = await openRollouts(paneId, home, agent.processRead?.info);
+  const found = await openRollouts(paneId, home, agent.processRead?.info);
+  if (found === null) return null;
+  const { codexProcesses, processes, open, held, tmux } = found;
   // no Codex process of the pane proven now: what its screen still shows (an earlier occupant's, or
   // a Codex gone since) ties it to no conversation, and the terminal stands in
   if (codexProcesses.length === 0) return null;
   // an unlabelled pane on an app server elsewhere (--remote) shows that server's conversation: nothing this store
   // holds is proof of it, by the id its command line resumed or by an answer both happen to hold
-  if (agent.unlabelled && codexProcesses.some(({ argv = [] }) => argv.some((arg) => arg === "--remote" || arg.startsWith("--remote=")))) return null;
   // `home` was chosen while no Codex process of the pane was seen (paneCodexHomePlaced): one seen now
   // must be known to write there (its environment says so), or what this store holds is not proof
   const first = codexProcesses[0];
@@ -3889,6 +3892,11 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
     proofs?.set(only, held.get(only) ?? "");
     return only;
   }
+  // Behind a proven tmux attachment (a Codex on the shared app-server daemon holds no rollout) only the proven pane's
+  // own screen tells, never what the attach client draws, weighed against the threads of the folder that Codex runs in
+  const view = tmux === undefined ? undefined : await tmuxPaneView(tmux);
+  if (view === null) return null;
+  const folder = view?.cwd ?? cwd;
   const resumed = resumedThread(codexProcesses.map((process) => process.argv ?? []));
 
   let db: Database | undefined;
@@ -3929,7 +3937,7 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
     // the same guard for a match: after /new the process writes a thread begun since
     // (created_at has whole seconds, so one begun in the match's second counts too)
     if (boundHere !== undefined) boundNewer = newerThreads(db, cwd, Math.floor(boundHere.at / 1000), null, paneId, home, firsts);
-    const { where, params } = storedCwdCondition(cwd);
+    const { where, params } = storedCwdCondition(folder);
     const rows = db.query<{ rollout_path: string }, string[]>(
       // a burst of `codex exec` runs must not push the pane's own thread out of the 32
       `SELECT rollout_path FROM threads WHERE ${where} AND archived = 0 AND agent_role IS NULL${interactive(db)} ORDER BY updated_at DESC LIMIT 33`,
@@ -3959,12 +3967,16 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
     boundHere = undefined;
     boundNewer = [];
   }
-  const screen = paths.length ? await paneRead({ paneId, source: "recent", lines: 400, stripAnsi: true }) : null;
+  const screen = paths.length === 0 ? null : view !== undefined ? { text: view.text } : await paneRead({ paneId, source: "recent", lines: 400, stripAnsi: true });
   const candidates = paths.flatMap((path) => {
     try { return [{ path, text: codexHistoryTail(path, 1024 * 1024, home) }]; } catch { return []; }
   });
   const scrutinized = new Set(titledElsewhere === null ? [] : [titledElsewhere]);
   let matched = screen ? matchCodexTranscript(screen.text, candidates, scrutinized, new Map(), false, folderRollouts) : null;
+  // A tmux match holds only while the same proof holds after that screen was read (the client may have moved to
+  // another pane, or another Codex started in it). It is never kept as a binding, and no weaker way stands in for it:
+  // the next read asks the pane's screen again, so the chat follows the client or falls back to the terminal
+  if (tmux !== undefined) return matched !== null && await localCodexProcessesOf(paneId).then((again) => again?.key, () => null) === processes ? matched : null;
   // a second Codex that only started in the folder raises no doubt about the turn a screen shows finished
   // (withoutStartedThreads). Its match came after other reads than the pane's: the pane is held to it once more
   if (matched === null && screen !== null) {
