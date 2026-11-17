@@ -732,10 +732,11 @@ export async function checkInactiveAttachLifecycle(browser: Browser, origin: str
             "a fresh resume must clear the previous attach's held state");
           // typed with the page clock still paused, so before the new attach's first output is drawn: the terminal
           // takes keys from the resume on, not only once that output has cleared what the hold closed
+          const typedFrom = (await framesOf(page)).length;
           await page.locator(".xterm-helper-textarea").focus();
           await page.keyboard.type("z");
-          await page.waitForFunction(() => (window as unknown as { frames_: Frame[] }).frames_
-            .some((f) => f.dir === "out" && f.type === "input"), undefined, { timeout: 10_000 });
+          await page.waitForFunction((from) => (window as unknown as { frames_: Frame[] }).frames_.slice(from)
+            .some((f) => f.dir === "out" && f.type === "input" && f.text === "z"), typedFrom, { timeout: 10_000 });
           await page.clock.resume();
           console.log("PASS inactive attach lifecycle: held");
           continue;

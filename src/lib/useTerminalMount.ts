@@ -2428,10 +2428,11 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         // also a view only held for a hidden page's return
         setWatching(false);
         // A fresh attach says attach_held again if needed; success does not send attach-resumed.
+        const wasHeld = heldRef.current;
         setHeld(false);
-        // and the keyboard is the terminal's again with it: the key that takes the pane back, and those after it, wait
-        // for the new attach (onData) instead of being dropped by a terminal still closed for the other app's hold
-        term.options.disableStdin = observeRef.current || endedRef.current;
+        // and what the hold closed opens with it: the key that takes the pane back, and those typed before the new
+        // attach's screen is drawn, go where typing goes now (onData) instead of being dropped by the terminal
+        if (wasHeld) term.options.disableStdin = observeRef.current || endedRef.current;
         // the pane's screen starts again from the new attach, as on a pane switch
         const generation = ++outputGeneration;
         // A new attach owns a new output lifetime. A recovering attachment sends output-recovering
