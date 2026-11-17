@@ -363,6 +363,8 @@ export function reserveResultEchoes(sent: CommandSend, previous: readonly Comman
     if (!prior) { reservations[reader.id] = 1; continue; }
     const past = (): number | null => printedPastEarlier(sent, same, reader, readers, read, counted) ? 1 : null;
     if (priorOrdinal === null || priorLimit === null) { reservations[reader.id] = past(); continue; }
+    // the history rows outrank the prior screen's text: on a screen of identical blocks its tail also matches the
+    // screen's own bottom and counts none of the echoes printed since, so the debt would never be paid (#1550)
     if (past() === 1) { reservations[reader.id] = 1; continue; }
     const before = withoutChrome(read(prior), sent.agent, readers);
     if (before === null) { reservations[reader.id] = null; continue; }

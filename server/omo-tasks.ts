@@ -3,6 +3,20 @@ import { join } from "node:path";
 import type { OmoRun, OmoRunNode, OmoTask } from "../shared/protocol.ts";
 import { OMO_RUNNING, omoStateDir, type OmoStateOptions } from "./omo-state-dir.ts";
 
+/**
+ * The background tasks one OmO session started, for the status line's list. OmO keeps one record
+ * per `task` child in the resolved senpi-task state's `tasks/st_*.json` and rewrites it as the child runs;
+ * populated legacy project stores win over the agent directory's `projects/<key>` store;
+ * the parent is `parent_session_id`, the session id in the parent's file name. A record left
+ * `running` by a host process that is gone reads as lost, as OmO itself would mark it. The
+ * record also holds the child's prompt (`spawn_spec`) and its answer: neither leaves the server.
+ * The list is asked for every few seconds while it is open, and a folder keeps every task OmO
+ * ever ran (records of tens of KB): a record is parsed again only when its size or time changed,
+ * and only what the list shows is kept. Only plain files are read (not a link, not a pipe). Newest
+ * first by name (`st_` ids grow with time), and at most TASK_PARSE_BUDGET bytes parsed per call:
+ * a folder of thousands is read over a few polls, and after that only what changed, so a task that
+ * still runs under thousands of newer ones is found too.
+ */
 const MAX_RECORD_BYTES = 1024 * 1024;
 const TASK_PARSE_BUDGET = 8 * 1024 * 1024;
 const MAX_TASK_FILES = 50_000;
@@ -87,6 +101,17 @@ export function omoTasks(cwd: string, sessionId: string, alive: (pid: number) =>
   return [...running, ...ended.slice(0, RECENT_LIMIT)];
 }
 
+/**
+ * The workflows (DAG runs) the session started: OmO checkpoints each run to
+ * `dag/runs/dag_*.json` under the same resolved state directory (`parentSessionId`, nodes with `state`, `waves`),
+ * rewriting the whole file at each step. The files carry every node's prompt and output, a
+ * megabyte or more each, and the folder keeps every run of every session there. So: a file
+ * untouched for a day is not opened (OmO left it, or a run it never finished); the newest come
+ * first (`dag_` names are random); a file is parsed only when its size or time changed, and only
+ * when its `parentSessionId`, near its start, is the session asked about; one call parses at most
+ * RUN_PARSE_BUDGET bytes, the rest on the next poll; files over RUN_MAX_BYTES and anything but a
+ * plain file are passed over. Prompts and outputs stay here.
+ */
 const RUN_LIMIT = 5;
 const RUN_MAX_BYTES = 8 * 1024 * 1024;
 const RUN_PARSE_BUDGET = 16 * 1024 * 1024;

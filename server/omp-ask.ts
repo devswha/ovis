@@ -8,6 +8,18 @@ export function ompOpenCall(open: OmoAsks, session: string): string | null {
   return open.length === 1 && session ? JSON.stringify([session, open[0]!.id]) : null;
 }
 
+/**
+ * An omp card read under the pane's one open ask call names that call (`ompCall`): omp asking again with the same
+ * questions draws them alike, and a card read under the first call must not answer the next one, so another call
+ * starts another asking (prompt.ts asked). The id stays the screen's, so a read that proves no call (it was answered,
+ * a lookup failed) and the same call read again keep the card's id. With no call proved, nothing tells such cards
+ * apart but the screen.
+ *
+ * A question omp cut short binds no call: its first rows may be another call's as well.
+ *
+ * Two of the call's questions drawn alike (other headers, the same text and options) are told apart only by the strip:
+ * the id then carries the question the strip proves is shown, and without that proof the read authorizes no key.
+ */
 export function ompCallPrompt(prompt: InteractivePrompt, open: OmoAsks, session: string): { prompt: InteractivePrompt; unverified?: true } {
   const parsed = parsedByPublicPrompt.get(prompt);
   const call = ompOpenCall(open, session);
@@ -24,6 +36,11 @@ export function ompCallPrompt(prompt: InteractivePrompt, open: OmoAsks, session:
   return { prompt: publicPrompt({ ...parsed, id: `${parsed.id}${position}`, ompCall: call }) };
 }
 
+/**
+ * A tab strip proves positions, not a call: only the pane's one matching open call authorizes moves, and only on a
+ * question whose drawn text and options are that call's. The review draws headers and answers alone, which another call
+ * with the same headers draws as well: it offers no move. The card's id stays as read, with or without the binding.
+ */
 export function ompStepPrompt(prompt: InteractivePrompt, open: OmoAsks, session: string): InteractivePrompt {
   const parsed = parsedByPublicPrompt.get(prompt);
   const form = parsed?.nativeSteps;
@@ -45,9 +62,19 @@ export function ompStepPrompt(prompt: InteractivePrompt, open: OmoAsks, session:
 }
 
 /**
- * omp draws an ask call's text through its Markdown renderer (pi-tui `ask-dialog.ts`, omp 18.12.6 to
- * 18.13.2), and the card read off the screen gets only that drawn text: emphasis, code and links are
- * lost, and a question past four rows is cut with `…`.
+ * omp's Ask card in the agent's own Markdown (#1644). The terminal draws the call's text through
+ * its Markdown renderer (pi-tui `ask-dialog.ts`, omp 18.12.6 to 18.13.2), and the card read off the
+ * screen gets only that drawn text: emphasis, code and links are lost, and a question past four
+ * rows is cut with `…`.
+ *
+ * The session's one open `ask` call (ompAsksAfter) gives its text back only when that call
+ * is provably the menu on screen: one of its questions, drawn as omp draws it, is the question
+ * shown, with the same options in the same order, labels and descriptions included. Anything else
+ * leaves the card as drawn: no open call or more than one, no question or more than one that
+ * matches, Markdown omp draws in a way not followed here (a table, a quote, a task list), an option
+ * with a preview (omp draws it into the option's rows), a description omp cut at its two rows. The
+ * terminal's menu stays the authority: the card keeps its id and the keys read for it, so an
+ * answer goes where it did.
  */
 export function ompMarkdownPrompt(prompt: InteractivePrompt, open: OmoAsks): InteractivePrompt {
   const parsed = parsedByPublicPrompt.get(prompt);
@@ -104,6 +131,12 @@ function shows(screen: string, drawn: string | null, cut = false): boolean {
   return cut && start !== shown && asked.length > start.length && asked.startsWith(start);
 }
 
+/**
+ * `markdown` as omp draws it, when the card draws the same characters: the card's Markdown scanner
+ * (shared/markdown.ts, the chat's) is not CommonMark. It takes `*.log and *.tmp` for emphasis and keeps
+ * a backslash before an escaped mark, so the card would show other words than omp, and an option could
+ * read as another one. Where they part, null: the card stays as drawn.
+ */
 function drawn(markdown: string, question: boolean): string | null {
   const omp = ompDrawn(markdown, question);
   const card = cardDrawn(markdown, question);

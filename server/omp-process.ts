@@ -5,7 +5,13 @@ import { BUN_ENV } from "./entries.ts";
 export interface ProcessMemory { argv: string[]; environ: string[] }
 const MAX_OUTPUT = 1024 * 1024;
 const MAX_CACHED = 64;
+/** The most of a process environment the helper reads; Linux allows a few MiB, real ones are KiB. */
 const ENVIRON_MAX = 1024 * 1024;
+/**
+ * The variables the agent store and terminal lookups read (omp.ts, gjcTerminal, dsh.ts, kiro.ts; dsh-tui's resume
+ * handoff is a session id, not a secret): the
+ * rest of the environment may hold secrets, so nothing else leaves the read.
+ */
 const ROUTING = /^(?:HOME|OMP_PROFILE|PI_PROFILE|PI_CONFIG_DIR|PI_CODING_AGENT_DIR|PI_CODING_AGENT_SESSION_DIR|DSH_HOME|DSH_TUI_RESUME_SESSION|KIRO_HOME|XDG_DATA_HOME|XDG_STATE_HOME|TMUX|TMUX_PANE)=/;
 
 /** An environment read empty is a process gone or not ours to read, not one without the variables. */

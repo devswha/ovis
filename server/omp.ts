@@ -404,6 +404,12 @@ export async function ompHeldOpen(route: OmpRoute, core: boolean): Promise<OmpRo
 
 export async function ompPaneRoute(paneId: string, known?: ProcessInfo | null): Promise<OmpRoute | "unproved" | null> {
   const sampleStarts = process.platform === "darwin" && heldFilesOn();
+  // A process that started at or after herdr was asked is not the one its sample named, but a pid reused
+  // since: its start is not taken, so lsof never lists it (ompHeldOpen). `askedAt` is never later than the
+  // real ask: a caller's sample counts with its own ask time (paneProcessInfo keeps it), and one whose ask
+  // time is unknown is asked again. The kernel's start is in microseconds and askedAt a floored millisecond,
+  // so any start in the ask's millisecond is refused too. herdr's sample carries no start, so a pid reused
+  // by a process started before the ask cannot be told, nor a start under a wall clock stepped back since.
   const askedTime = known ? processInfoAskedAt(known) : undefined;
   const reuse = known != null && (!sampleStarts || askedTime !== undefined);
   const askedAt = reuse ? askedTime ?? Date.now() : Date.now();

@@ -1,7 +1,10 @@
 /**
  * OpenCode v2 attaches a skill only when its own TUI autocomplete row is accepted
  * (packages/tui/src/component/prompt/autocomplete.tsx registers `prompt.skills`; core's
- * session/prompt.ts reads `input.skills`, at 843a6c51): a pasted `@id` stays plain text.
+ * session/prompt.ts reads `input.skills`, at 843a6c51): a pasted `@id` stays plain text. So each
+ * `@<id>` skill token is typed, its row read off the screen, and accepted with the recorded key.
+ * The callers keep their own ownership, identity, held-draft and single-delivery checks; every
+ * write here asks `allowed` first, as theirs do.
  */
 import { HerdrError, paneRead, paneSendKeys, paneSendText } from "./herdr/client.ts";
 
@@ -143,6 +146,13 @@ function promptState(screen: string, id: string, inputFg?: string): { agent: str
   return { agent, attached: false, space: false, token: null, prefix: null };
 }
 
+/**
+ * A closed autocomplete, a styled token in the prompt, and the same agent (not necessarily model).
+ * The agents are compared only when both rows name one: a narrow model-only row (before or after a
+ * resize during Tab) shows no agent, so it can neither confirm nor refute one. That means a model-only
+ * row is accepted here even when the row before Tab named an agent; a caller must not take that alone
+ * as "same agent". typeWithSkills holds such a row until its deadline and refuses a switch it saw.
+ */
 export function skillAccepted(screen: string, id: string, agent: string, inputFg?: string): boolean {
   if (autocomplete(screen, id)) return false;
   const state = promptState(screen, id, inputFg);
@@ -181,6 +191,13 @@ const paste = (text: string): string => `\u001b[200~${text}\u001b[201~`;
 
 export type PromptPiece = { typed: string } | { pasted: string };
 
+/**
+ * Types `text` (without its Enter) with each `@id` of `skills` through the autocomplete. A token
+ * whose row is not recognized within OPENCODE_SKILL_ROW_WAIT_MS stays plain text (a space closes
+ * the box), and is reported missed. Throws HerdrError cancelled when `allowed` refuses a write.
+ * `revalidate` re-runs the caller's ownership, session-identity and state checks (they await herdr)
+ * right before every write, so nothing is typed into a session that replaced the one checked.
+ */
 export async function typeWithSkills(text: string, skills: readonly string[], allowed: () => boolean, io: SkillAttachIo, revalidate: () => Promise<void>,
   beforeKey: (screen: string) => Promise<void> = async () => {}): Promise<{ attached: string[]; missed: string[]; prompt: PromptPiece[] }> {
   const attached: string[] = [];

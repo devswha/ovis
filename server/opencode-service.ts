@@ -221,6 +221,10 @@ function serviceFile(stateDir: string): OpenCodeServiceConfig | null {
   return config;
 }
 
+/**
+ * The OpenCode version its service file names (OpenCode 2.0.32 writes one), unverified: enough to pick
+ * the form its skills are typed in before any pane runs it, never to trust the service with.
+ */
 export function openCodeInstalledVersion(stateDir?: string): string | null {
   return readOpenCodeService(stateDir ?? openCodeServiceOptions.stateDir)?.version ?? null;
 }
@@ -228,7 +232,8 @@ export function openCodeInstalledVersion(stateDir?: string): string | null {
 /**
  * "2" when the pane's OpenCode runs with a flag only OpenCode 2 has: `--standalone` (a private server) and
  * `--server <url>` start a TUI without the background service, so no service file names its version
- * (#1551).
+ * (#1551). Read from herdr's process info, nothing spawned; a major alone verifies no pin. Words after
+ * `--` are operands (a directory named `--standalone`), not flags.
  */
 export function openCodeFlagVersion(argv: unknown): string | null {
   if (!Array.isArray(argv)) return null;

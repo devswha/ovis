@@ -102,6 +102,7 @@ interface JobState {
   closing?: boolean;
   cancelling?: Promise<void>;
   update: boolean;
+  /** Explicit consent for the next Windows cold-start attempt only. Never persisted. */
   headlessStart?: boolean;
   timedOut?: boolean;
   installationApproved?: boolean;
@@ -170,6 +171,10 @@ export function actionStep(action: "approve" | "answer"): string {
   return action === "approve" ? "Installing on this PC…" : "Connecting with SSH keys and ssh-agent…";
 }
 
+/**
+ * Why a bridge refused verification, read from its error envelope. Only the code is trusted:
+ * the bridge's own message carries paths of that PC and is never shown.
+ */
 function verificationFailure(status: number, body: unknown): string {
   const error = (body as { error?: { code?: unknown; message?: unknown } } | null)?.error;
   // a bridge older than `socket_missing` answers a missing socket with 500 internal_error and stat's ENOENT
@@ -312,7 +317,13 @@ export class MachineManager {
   private relaySocket?: (url: string) => RelaySocket;
   private relayDirectSocket?: (url: string) => RelaySocket;
   private foundByCode = new Map<string, { offer: RelayOffer; at: number }>();
+  /**
+   * Keys made for other PCs of the account (startAccountPc), one per PC by its `server_id`, held in memory until that PC
+   * admits it (pairAccountPc) or ACCOUNT_PC_MS passes since it was made: a key that is not admitted is never written. An
+   * Add after a cancelled or refused comparison asks with the same key, whose admission that PC may have read already.
+   */
   private accountPcs = new Map<string, HeldAccountPc>();
+  /** the random tickets only the asking window gets, each good for one comparison of the key it names */
   private accountPcTickets = new Map<string, HeldAccountPc>();
   private serverId?: () => string | undefined;
   private readonly tailnet: TailnetPcs;
@@ -417,6 +428,7 @@ export class MachineManager {
       try {
         const id = herdrMachineId(profile.id);
         this.profileState.reconcile(profile.id, profile.target, () => {
+          // Stop old authority before fallible cleanup; no setup or reconnect may reuse its key.
           const runtime = this.machines.get(id);
           if (runtime) {
             runtime.machine.enabled = false; this.disconnect(runtime);
@@ -677,6 +689,14 @@ export class MachineManager {
     this.saveTimer = setTimeout(() => { this.saveTimer = undefined; if (!this.stopped) { try { this.persist(); } catch (e) { console.error("PC state could not be saved:", e instanceof Error ? e.message : "write failed"); } } }, 1000);
     this.saveTimer.unref();
   }
+  /**
+   * The registrations cannot be recomputed, so they are written durably (writePrivateState): a
+   * crash after a plain rename can leave the file its old length in NULs. Every refresh of a remote
+   * PC saves soon, mostly with the same snapshot, so only a document that differs from the one on
+   * disk pays for the write and its fsync. `relayLast` is for the save that adds a relay PC
+   * (addRelay): relay-pcs.json, its registration, goes last instead, so a save that fails before it
+   * leaves the PC off disk, as it leaves no key (#2833).
+   */
   private persist(relayLast = false): void {
     if (!relayLast) this.persistRelayPcs();
     const owned = [...this.machines.values()].filter(({ machine }) => !machine.herdr_profile_id && machine.kind !== "hc").map(({ machine }) => machine);
@@ -716,6 +736,8 @@ export class MachineManager {
     if (runtime.machine.kind === "hc") throw new Error(HC_MACHINE_MANAGED);
     if (runtime.ownJob) throw new PcUpdateRefused("This PC is already updating.");
     if (!this.mayConnect(runtime)) throw new MachineActionRequired("Connect this machine first", "connect");
+    // A saved herdr machine connected without bridge approval reviews the update in its dialog;
+    // an unattended update would also record that approval for later automatic updates.
     if (!this.mayManageBridge(runtime)) throw new MachineActionRequired("Review the bridge update for this machine", "update_bridge");
     if (!scheduled) runtime.updateCancelled = false;
     const past = pastThisApp(runtime.machine.remote_ovis);
@@ -764,6 +786,7 @@ export class MachineManager {
   async resolveFor(body: unknown): Promise<void> {
     const request = (typeof body === "object" && body !== null ? body : {}) as { destination?: unknown; port?: unknown; machine_id?: unknown };
     const targets: SshTarget[] = [];
+    // only an address the setup would take: never anything ssh could read as an option
     if (typeof request.destination === "string") { try { targets.push(validateTarget({ destination: request.destination, ...(typeof request.port === "number" ? { port: request.port } : {}) })); } catch { } }
     const saved = typeof request.machine_id === "string" ? this.machines.get(request.machine_id)?.machine.target : undefined;
     if (saved) targets.push(saved);
@@ -1015,6 +1038,9 @@ export class MachineManager {
         runtime.move = undefined;
         const left = { target: runtime.machine.target, error: runtime.machine.error, herdr: runtime.machine.herdr, snapshot: runtime.machine.snapshot, ownOvisAt: runtime.ownOvisAt, finishes: runtime.finishes.copy() };
         try {
+          // The default session chosen by its socket is saved as herdr to start there when absent, never as that socket:
+          // a PC pinned to the socket would stop at "no longer running" after its reboot, and one saved with no choice
+          // at all would be asked again whenever another session started there before the default one
           let saved = target;
           if (job.defaultSocket) { saved = { ...target, start_new_herdr: true }; delete saved.herdr_socket; }
           runtime.machine.target = saved;
@@ -1217,6 +1243,11 @@ export class MachineManager {
           else { if (listed.length) for (const row of parseFoundHerdrSessions(listed)) sessions.set(row.socket_path, row); named = true; }
         } catch (error) {
           if (runtime.generation !== generation || this.stopped || job?.abort.signal.aborted) throw error;
+          // A stale or inaccessible registration grants no connection and no permission to start anything. A live one of
+          // this account's whose identity could not be established right now (no answer, an HTTP error) stays a choice: it
+          // is neither dropped nor replaced by a new herdr. Only one proven not owned or not live is dropped (above).
+          // Unasked, its runtime is told by its socket: a TUI herdr's ends in /herdr.sock, the core adapter's never does.
+          // Only the core adapter's own name (isCoreAdapterSocket) is one: any other could never be connected to
           if (owned && !validHerdrSocket(candidate.socket_path) && isCoreAdapterSocket(candidate.socket_path)) { found.push({ socket_path: candidate.socket_path, runtime: "herdr-core" }); unlisted = true; }
         }
       }
@@ -1257,6 +1288,9 @@ export class MachineManager {
       learnServer(descriptor);
       if (!(await host.alive(ssh, descriptor.pid))) { stalePid = descriptor.pid; descriptor = undefined; }
     }
+    // a live bridge for a chosen socket is reused only once the PC verifies that socket by the rule its bridge applies
+    // (this account's, a socket and no link, inside its herdr dirs, answering). Otherwise it is never taken: the bridge
+    // started below checks the socket again and says why
     if (descriptor && target.herdr_socket && host.kind !== "windows" && await host.chosenSocketStatus?.(ssh, inspection, target.herdr_socket) !== "usable") {
       stalePid = descriptor.pid;
       descriptor = undefined;
@@ -1326,6 +1360,8 @@ export class MachineManager {
         this.stage(job, "installing", "Registering the app SSH key…");
         const path = join(this.sshDir, runtime.machine.id);
         if (!existsSync(path)) {
+          // Generate privately until the job still owns this destination. A cancelled job
+          // must neither publish a late key nor delete a replacement job's credentials.
           const directory = mkdtempSync(join(this.sshDir, "keygen-"));
           const temporary = join(directory, "key");
           try {
@@ -1381,6 +1417,8 @@ export class MachineManager {
         if (job) job.headlessStart = false;
         await host.start(ssh, { session, herdrPath, inspection, ...(headless ? { headless: true } : {}), ...(target.herdr_socket ? { herdr_socket: target.herdr_socket } : {}), ...(target.start_new_herdr ? { start_new_herdr: true } : {}) });
         notice = null;
+        // Windows allows 30 seconds for the desktop launcher, then 30 for herdr
+        // readiness. Leave a further ten seconds for bridge registration.
         const pollLimit = host.kind === "windows" ? 280 : 40;
         for (let i = 0; i < pollLimit; i++) {
           if (job?.abort.signal.aborted || runtime.generation !== generation || this.stopped) throw new Error("Setup cancelled");
@@ -1437,6 +1475,10 @@ export class MachineManager {
         if (error instanceof MachineActionRequired) throw error;
         throw await coreUnavailable();
       }
+      // right before it is used, on every path here (a fresh try, a live server reused, a retry): the very socket it
+      // reported is this account's own, in its own herdr-core folder. This app starts nothing for a chosen Ovis: that
+      // server reaches its socket by this path itself, and since only the account (or root) can change a folder on it,
+      // the socket checked here (its device and inode, as the server reported them just before) stays the one it uses
       if (!await this.coreSocketConfined(ssh, target.own_ovis, verified.identity.socket_id)) throw new MachineActionRequired(OWN_OVIS_SOCKET_REFUSED, "choose_herdr", false, await localSessions());
       if (runtime.generation !== generation || this.stopped || job?.abort.signal.aborted) throw new Error("Setup cancelled");
     }
@@ -1516,8 +1558,16 @@ export class MachineManager {
       signal?.addEventListener("abort", done, { once: true });
     });
   }
+  /**
+   * What the PC's own Ovis (an independently managed web server older than this app) says of its own
+   * update, asked through the tunnel with the token its descriptor holds. A server of this app's
+   * version takes that token on its update routes (server/index.ts); an older one without OVIS_TOKEN
+   * takes the tunnel's loopback connection as its own PC's. One that wants its OVIS_TOKEN refuses,
+   * and that token is never read from its files: it is updated on that PC.
+   */
   private async ownOffer(ssh: SshConnection, descriptor: BridgeDescriptor, target: SshTarget, signal?: AbortSignal): Promise<RemoteOvis & { revision?: string; fix?: InstallPlan["mode"] }> {
     const endpoint = await this.tunnel(ssh, descriptor);
+    // never followed: a redirect would leave the tunnel for wherever it names, this PC's own loopback included
     const get = (path: string) => fetch(endpoint.url + path, { headers: { authorization: `Bearer ${endpoint.token}` }, redirect: "manual",
       signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(BRIDGE_ANSWER_MS)]) : AbortSignal.timeout(BRIDGE_ANSWER_MS) });
     let port = descriptor.port;
@@ -1588,6 +1638,7 @@ export class MachineManager {
     const updates = (install?: string) => fetch(`${endpoint.url}/api/updates${install ? "/install" : ""}`, {
       ...(install ? { method: "POST", body: JSON.stringify({ expected_revision: install }) } : {}),
       headers: { authorization: `Bearer ${endpoint.token}`, "x-herdr-update": "1", ...(install ? { "content-type": "application/json" } : {}) },
+      // never followed: a redirect would take the install request out of the tunnel, to this PC's own loopback too
       redirect: "manual",
       signal: AbortSignal.any([job.abort.signal, AbortSignal.timeout(BRIDGE_ANSWER_MS)]),
     });
@@ -2025,6 +2076,7 @@ export class MachineManager {
     runtime.machine.enabled = false; this.disconnect(runtime);
     for (const [jobId, job] of this.jobs) if (job.public.machine_id === id) this.cancelJob(jobId);
     this.dropUpdate(runtime);
+    // the key goes first: a registration saved without the PC must not leave its credential behind
     if (runtime.machine.kind === "relay") removeRelayPcKey(this.relayKeyPath(id));
     this.machines.delete(id); this.persist();
     for (const suffix of ["", ".pub"]) try { unlinkSync(join(this.sshDir, id + suffix)); } catch {}
@@ -2068,6 +2120,10 @@ export class MachineManager {
     return this.addRelay(undefined, name, found.ticket);
   }
 
+  /**
+   * Another PC of the account as the page read it from the account's directory: an entry nobody vouches for, so its
+   * `server_id` must be the one its key gives (docs/account.md, rule 7) and its relay a wss: origin.
+   */
   private accountPcOffer(pc: unknown): { offer: RelayOffer; name: string } {
     const fields = typeof pc === "object" && pc !== null && !Array.isArray(pc) ? pc as Record<string, unknown> : {};
     let offer: RelayOffer;
@@ -2208,6 +2264,7 @@ export class MachineManager {
     }
     runtime.tunnel = tunnel; runtime.endpoint = tunnel.endpoint;
     this.machines.set(id, runtime);
+    // the PC is added only once its registration is on disk: a save that fails leaves no PC, connection or key behind
     try { this.persist(true); } catch (error) {
       this.machines.delete(id);
       runtime.machine.enabled = false; this.disconnect(runtime);

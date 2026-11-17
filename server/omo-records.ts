@@ -6,6 +6,12 @@ const CHUNK_BYTES = 256 * 1024;
 const LONG_LINE_BYTES = 64 * 1024;
 const LINE_END_BYTES = 4096;
 
+/**
+ * A JSON projection with bounded string values. Keep complete JSON escapes, including across
+ * chunks, and scan to each closing quote: text that looks like a tool call inside a string is
+ * never interpreted as one. Question arguments fit within this limit; large tool output and
+ * thinking do not need to be retained to reconstruct the question lifecycle.
+ */
 class RecordProjection {
   private parts: string[] = [];
   private quoted = false;

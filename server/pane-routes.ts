@@ -166,6 +166,9 @@ export async function handlePaneRequest(request: Request, url: URL, pathname: st
     const paneId = url.searchParams.get("pane_id");
     if (!paneId) return badRequest("missing_pane_id", "pane_id query parameter is required");
     const linesRaw = url.searchParams.get("lines");
+    // herdr's pane.read takes a uint32: anything else is refused here instead of reaching the RPC.
+    // The raw text is checked, not Number()'s answer: Number() reads "" as 0 and rounds a spelling
+    // such as 0.99999999999999999 to 1, so only plain decimal digits are taken as a count
     if (linesRaw !== null && (!/^[0-9]+$/.test(linesRaw) || Number(linesRaw) > UINT32_MAX)) {
       return badRequest("invalid_lines", "lines must be an integer from 0 to 4294967295 in decimal digits");
     }
@@ -311,6 +314,7 @@ export async function handlePaneRequest(request: Request, url: URL, pathname: st
     const paneIds = [...new Set(url.searchParams.getAll("pane_id").filter((id) => id.trim() !== ""))];
     if (paneIds.length === 0) return badRequest("missing_pane_id", "pane_id query parameter is required");
     if (paneIds.length > PANE_SUMMARY_MAX_IDS) return badRequest("too_many_panes", `at most ${PANE_SUMMARY_MAX_IDS} pane_id values`);
+    // no prototype: a pane id such as `__proto__` is a key like any other
     const summaries: PaneSummaries["summaries"] = Object.create(null);
     const deadline = Date.now() + PANE_SUMMARY_DEADLINE_MS;
     let leave = (): void => {};

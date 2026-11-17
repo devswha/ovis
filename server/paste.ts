@@ -73,6 +73,12 @@ function pasteDirectoryOverride(): string {
   return process.env["OVIS_PASTE_DIR"]?.trim() ?? "";
 }
 
+/**
+ * Creates the attachment directory and returns it. The default one also gets a `.gitignore`
+ * of `*`, created exclusively so an ignore file (or link) already there is never followed or
+ * replaced; a directory the user named in `OVIS_PASTE_DIR` is theirs and gets none. Nor does a `.ovis` that is a
+ * link: the ignore file would land in the link's target, another folder or repository, and hide files it never wrote.
+ */
 export function preparePasteDirectory(cwd: string | null | undefined): string {
   const directory = pasteDirectory(cwd);
   mkdirSync(directory, { recursive: true });
@@ -103,6 +109,17 @@ export class PasteImageError extends Error {
   }
 }
 
+/**
+ * Validates and stores one pasted image for a pane; resolves to the absolute file
+ * path the prompt should reference. Validation failures are PasteImageError (the
+ * route maps them to the error envelope); an unknown pane is the herdr-shaped
+ * `pane_not_found` HerdrError like every other pane route.
+ *
+ * A PNG, JPEG, GIF or WebP claim is named after the signature of its bytes, since the
+ * browser often infers the type from the file name; bytes with none of those signatures
+ * are refused before the pane is looked up or anything is written. This is a signature
+ * check, not a decode: it does not prove the rest of the file is a valid image.
+ */
 export async function savePaneImage(options: {
   paneId: string;
   contentType: string;
@@ -111,6 +128,8 @@ export async function savePaneImage(options: {
 }): Promise<string> {
   const rasterClaim = EXTENSIONS[options.contentType] !== undefined;
   const named = rasterClaim ? null : storedName(options.name);
+  // cheap pre-check: reject the ENCODED length before allocating the decode buffer,
+  // so an oversized body never costs a second copy of itself in memory
   if (options.dataBase64.length > MAX_ENCODED_BYTES) throw tooLarge();
   const data = Buffer.from(options.dataBase64, "base64");
   if (data.byteLength === 0) {

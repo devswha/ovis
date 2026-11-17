@@ -24,6 +24,16 @@ const NOT_REGISTERED_WORDS = (pid: number) => `The process ${pid} on that PC sta
 export const SAVED_SERVER = /^\/[^\n\0]*\/ovis-restore\.[A-Za-z0-9]{8}$/;
 const SAVED_FOR_S = 2 * 60 * 60;
 const COPY_CHECK = "const { readFileSync, readlinkSync } = require(\"node:fs\");\nconst d = process.argv.at(-1);\nconst same = (bytes) => Buffer.from(bytes.toString()).equals(bytes);\nfor (const name of [\"cmdline\", \"environ\"]) if (!same(readFileSync(d + \"/\" + name))) process.exit(1);\nfor (const name of [\"cwd\", \"exe\"]) if (!same(readlinkSync(d + \"/\" + name, { encoding: \"buffer\" }))) process.exit(1);";
+/**
+ * Before a server started by hand is stopped, its exact command line, environment (its OVIS_TOKEN with the rest), folder
+ * and program are copied from Linux's /proc into a folder only this account can read: the folder and program as the
+ * symlinks /proc has (cp -P), so no byte of their paths is lost. It prints that folder; "error" when copying failed this
+ * time (nothing is then stopped: try again); "unfaithful" when no copy of it can be faithful (its environment unreadable,
+ * its program deleted since it started, as after a Bun upgrade, or bytes that would not survive being started again), and
+ * nothing where there is no /proc (macOS): in both, it is stopped without a copy and never started again with a guess. The copy
+ * holds a token, so it removes itself after SAVED_FOR_S whatever happens to this job (systemd-run where it can, so it
+ * outlives the SSH session), and each capture sweeps this account's copies older than that.
+ */
 export const captureServer = (pid: number, identity: string): string =>
   `find "${'${TMPDIR:-/tmp}'}" -maxdepth 1 -name 'ovis-restore.*' -user "$(id -u)" -mmin +${SAVED_FOR_S / 60} -exec rm -rf {} + 2>/dev/null; `
   + `${sameProcess(pid, identity)} || { echo changed; exit 0; }; `
@@ -69,6 +79,16 @@ export const registeredAs = (pid: number, descriptor: { birth?: unknown; socket_
   + `grep -Eq ${shellQuote(`"pid"[[:space:]]*:[[:space:]]*${pid}([^0-9]|$)`)} "$f" && ${registeredIn(pid, descriptor.birth)}; }`;
 export const sameProcess = (pid: number, identity: string): string => `[ -n ${shellQuote(identity)} ] && [ "$(${processIdentity(pid)})" = ${shellQuote(identity)} ]`;
 const RESTORE_LAUNCHER = "const { readFileSync, readlinkSync, rmSync, openSync, fstatSync, fchmodSync, closeSync, mkdirSync, constants } = require(\"node:fs\");\nconst { spawn } = require(\"node:child_process\");\nconst { createServer } = require(\"node:net\");\nconst d = process.argv.at(-1);\nconst parts = (name) => { const b = readFileSync(d + \"/\" + name); const out = []; let at = 0; for (let i = 0; i < b.length; i++) if (b[i] === 0) { out.push(b.subarray(at, i).toString()); at = i + 1; } if (at < b.length) out.push(b.subarray(at).toString()); return out; };\n(async () => {\n  try {\n    const argv = parts(\"cmdline\"); const env = {};\n    for (const entry of parts(\"environ\")) { const eq = entry.indexOf(\"=\"); if (eq > 0) env[entry.slice(0, eq)] = entry.slice(eq + 1); }\n    const exe = readlinkSync(d + \"/exe\"), cwd = readlinkSync(d + \"/cwd\");\n    const host = env.HOST || \"127.0.0.1\", loopback = [\"\", \"127.0.0.1\", \"localhost\"].includes(host), port = (loopback && Number(process.argv.at(-2))) || Number(env.PORT || __DEFAULT_PORT__);\n    const free = await new Promise((resolve) => { const probe = createServer(); probe.once(\"error\", (error) => resolve(error.code === \"EADDRINUSE\" ? false : error)); probe.listen({ host, port, exclusive: true }, () => probe.close(() => resolve(true))); });\n    if (free === false) { console.log(\"taken\"); return; }\n    if (free !== true) throw new Error(\"its address \" + host + \":\" + port + \" cannot be used: \" + (free.code || free.message));\n    const logs = (process.env.XDG_STATE_HOME || process.env.HOME + \"/.local/state\") + \"/ovis\";\n    mkdirSync(logs, { recursive: true, mode: 0o700 });\n    const log = openSync(logs + \"/restored-server.log\", constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o600);\n    const info = fstatSync(log);\n    if (!info.isFile() || info.uid !== process.getuid()) { closeSync(log); throw new Error(\"its log is not this account's own file\"); }\n    fchmodSync(log, 0o600);\n    const child = spawn(exe, argv.slice(1), { argv0: argv[0], cwd, env, detached: true, stdio: [\"ignore\", log, log] });\n    await new Promise((resolve, reject) => { child.once(\"spawn\", resolve); child.once(\"error\", reject); });\n    child.unref();\n    // its pid and its birth (this boot and its start ticks, as server/process-owner.ts records it): another process that takes the pid later is not it\n    let birth = \"\";\n    try { const stat = readFileSync(\"/proc/\" + child.pid + \"/stat\", \"utf8\"); birth = readFileSync(\"/proc/sys/kernel/random/boot_id\", \"utf8\").trim() + \":\" + stat.slice(stat.lastIndexOf(\") \") + 2).split(\" \")[19]; } catch {}\n    console.log(child.pid + \" \" + birth);\n  } catch (error) { console.error(String(error && error.message || error)); process.exitCode = 1; }\n  finally { rmSync(d, { recursive: true, force: true }); }\n})();".replace("__DEFAULT_PORT__", String(DEFAULT_PORT));
+/**
+ * Starts the server captureServer copied again, as it was: its own program, the same arguments, in the same folder, with
+ * exactly its environment, given to the new process directly (never on any command line, where another account could
+ * read the token), in a session of its own so it outlives this SSH connection, its output in a log only this account
+ * reads. Its address (HOST, PORT) is bound first: one already taken means a live server is there, its replacement among
+ * them, and nothing is started ("taken"); any other failure to use the address fails the restore. The address is free only
+ * when it is checked: a replacement starting in the moment before the restored server binds it is caught by that
+ * server's own bind, which fails.
+ * It prints the new process's id. The copy is removed whatever happens.
+ */
 export const restoreServer = (dir: string, port?: number): string =>
   `d=${shellQuote(dir)}; [ -L "$d/exe" ] || { rm -rf "$d"; echo 'the copy of that server is gone' >&2; exit 1; }; "$d/exe" -e ${shellQuote(RESTORE_LAUNCHER)} ${shellQuote(port && Number.isSafeInteger(port) && port > 0 && port < 65536 ? String(port) : "")} "$d"`;
 export const forgetServer = (dir: string): string => `rm -rf ${shellQuote(dir)}`;
@@ -203,6 +223,9 @@ export class PcInstaller {
           await Bun.sleep(this.pollMs);
         }
       }
+      // the servers registered on this herdr socket, managed or not, on any port, that may still serve it: every one whose pid
+      // runs (not a zombie) unless its recorded birth, in its shape, shows another process took that pid since. One whose
+      // identity cannot be told (no birth, or one out of its shape) counts as there: fail closed, never a second server (#3385)
       const serving = async (listed?: Awaited<ReturnType<typeof posixHost.descriptors>>): Promise<{ pid: number; birth: unknown; token: string }[]> => {
         const live: { pid: number; birth: unknown; token: string }[] = [];
         for (const d of listed ?? await posixHost.descriptors(at)) {
@@ -267,6 +290,7 @@ export class PcInstaller {
       if (target.session) throw new InstallFailed("unsupported", `Installing from here sets Ovis up for herdr's default session only, and this PC is added with the session "${target.session}". Add it without a session to install there.`);
       const ssh = new SshConnection(target, this.options.sshDir, request.machine_id ? join(this.options.sshDir, request.machine_id) : undefined);
       state.ssh = ssh;
+      // no challenge: BatchMode, so a PC that wants a password or an unknown host key refuses instead of asking
       try { await ssh.start(); } catch (error) { if (abort.signal.aborted) throw error; throw sshFailure(error); }
       step("checking", "Checking that PC…");
       let facts: Facts;

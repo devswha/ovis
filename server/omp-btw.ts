@@ -22,6 +22,7 @@ const MAX_RESPONSE_BYTES = 1024 * 1024;
 const MAX_FILE_BYTES = 16 * 1024 * 1024;
 const MAX_READ_BYTES = 32 * 1024 * 1024;
 const MAX_JSON_ITEMS = 20_000;
+/** read-only, never through a link, and never waiting on a pipe put where a topic file was */
 const OPEN_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
 const MAX_TEXT_BYTES = 4 * 1024 * 1024;
 const MAX_TITLE_BYTES = 4096;

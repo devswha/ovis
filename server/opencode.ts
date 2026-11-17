@@ -124,6 +124,7 @@ export type OpencodeRecord =
   | { role: "assistant"; ts: string | null; end: string | null; parts: ConversationPart[]; stop: boolean }
   | { role: "idle" };
 
+/** The images a row carries, in the order its refs count them. Only inline data: a path is never followed. */
 function rowImages(type: string, data: Row): { media_type: string; data: string }[] {
   const images: { media_type: string; data: string }[] = [];
   const add = (value: unknown) => {

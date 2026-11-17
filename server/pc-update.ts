@@ -25,6 +25,7 @@ export function offerFromStatus(status: unknown): PcUpdateOffer | null {
   return offer(null);
 }
 
+/** Its update status through its connection, or null when it does not answer readably. Redirects are never followed. */
 export async function readOwnStatus(endpoint: Endpoint, signal?: AbortSignal): Promise<Partial<UpdateStatus> | null> {
   const response = await fetch(`${endpoint.url}/api/updates`, { headers: { authorization: `Bearer ${endpoint.token}` }, redirect: "manual",
     signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(BRIDGE_ANSWER_MS)]) : AbortSignal.timeout(BRIDGE_ANSWER_MS) });

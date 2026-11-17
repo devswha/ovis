@@ -1,6 +1,14 @@
 /**
- * flock on POSIX and a LockFileEx byte lock on Windows both key on the opened file object, not on how its path is
- * spelled, and both kernels release the lock when its holder dies.
+ * Startup ownership (supervisor.lock, the remote bridge's descriptor lock, the bridge descriptor)
+ * changes only under a kernel lock on a permanent sibling file, `<lock>.guard`: flock on POSIX, a
+ * LockFileEx byte lock on Windows. Both key on the opened file object, not on how its path is
+ * spelled, and both kernels release the lock when its holder dies. The guard is held only around
+ * synchronous code, never across an await, and its file is never deleted: a starter may hold it.
+ *
+ * A new owner directory is published whole: written in a private sibling, then renamed into place.
+ * An empty directory is therefore what an older version (or an interrupted one) left, and is
+ * reclaimed. Older versions take no guard, so an old and a new version starting at the same moment
+ * for the same lock is not protected: that mixed-version case is unsupported.
  */
 import { dlopen, FFIType, read } from "bun:ffi";
 import { randomBytes } from "node:crypto";
@@ -89,6 +97,7 @@ function lockGuard(path: string, wait = true, shared = false): () => void {
   const loaded: PosixGuardCalls = { ...(library() as ReturnType<typeof posixLibrary>), close: closeSync };
   const calls = guardLibrary.posix ? guardLibrary.posix(loaded) : loaded;
   let fd: number;
+  // never through a link: a guard planted as one would make this create, and lock, a file elsewhere
   try { fd = openSync(path, constants.O_RDWR | constants.O_CREAT | constants.O_NOFOLLOW, 0o600); }
   catch (error) { throw new OwnerGuardUnavailable(`${path} could not be opened: ${describeError(error)}`); }
   for (;;) {

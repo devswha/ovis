@@ -52,6 +52,7 @@ export interface OmoRuntime {
   ambiguous?: boolean;
 }
 
+/** A session is never selected by mtime: tool activity is not evidence of pane ownership. */
 export function selectOmoTranscript(paneId: string, candidates: OmoCandidate[], runtimes: OmoRuntime[], now = Date.now()): string | null {
   const held = (runtime: OmoRuntime, file: OmoCandidate): boolean => (runtime.claims ?? []).some((claim) =>
     claim.id === file.id && (claim.store === undefined || claim.store === file.store));
@@ -71,6 +72,9 @@ export function selectOmoTranscript(paneId: string, candidates: OmoCandidate[], 
       owned(file) && file.path !== exact[0]!.path && !claimed.has(file.path) && file.createdAt !== null && file.createdAt > target.startedAt! + 1000 && file.createdAt <= now + 1000)) return null;
     return exact[0]!.path;
   }
+  // A held claim whose file is missing or unreadable still binds its id to its own
+  // store: it names that session alone — never another store's same-id file, and no
+  // cwd/time inference.
   if (target.claims !== undefined && target.claims.length > 0) return null;
   if (target.custom) return null;
   if (runtimes.length !== 1 || target.startedAt === null) return null;
@@ -129,11 +133,31 @@ export function processEnviron(pid: number): string[] | null {
   try { return readFileSync(`/proc/${pid}/environ`, "utf8").split("\0"); } catch { return null; }
 }
 
+/**
+ * Where a process actually runs: the cwd herdr reports for the process itself, then
+ * the OS's own answer (Linux), then the caller's (the pane's). "" when no source can
+ * say — a custom identity cannot be verified without it. A pane cwd goes stale the
+ * moment a process moves, so it must never override either process-specific source.
+ */
 function processCwd(process: { pid: number; cwd?: string }, cwd: string): string {
   if (typeof process.cwd === "string" && process.cwd) return process.cwd;
   try { return readlinkSync(`/proc/${process.pid}/cwd`); } catch { return cwd; }
 }
 
+/**
+ * Is this process omo, and which store does its session live in? Two proofs:
+ * - legacy: the program it runs is omo's (isOmoProcess). Its environment still moves
+ *   the store the same way, and its holders still name the session it owns now;
+ * - custom: the argv says nothing (a launcher's own name is not evidence either way),
+ *   so only verified native session ownership counts: an OMO-specific store — an
+ *   explicit `OMO_CODING_AGENT_DIR` entry (an empty one means the default) or the
+ *   resolved store being the default `~/.omo/agent`; a store moved only by SENPI's or
+ *   pi's variable is not an omo identity — plus a live OS start time and at least one
+ *   holder record for this exact pid that names a matching start and the process's
+ *   own cwd. An env marker alone, an argv mention, a stale or reused pid, a wrong cwd
+ *   or an unreadable start never identify a custom omo, and nothing here depends on
+ *   the model it runs.
+ */
 export function omoProcessIdentity(
   process: { pid: number; argv?: string[]; cwd?: string },
   cwd: string,
@@ -147,6 +171,8 @@ export function omoProcessIdentity(
   const startedAt = startOf(process.pid);
   if (isOmoProcess(process.argv ?? [])) {
     const heldIds = heldSessionIds(sessionDir(dir, agentDir), process.pid, startedAt);
+    // a holder counts only while this pid's start is readable: without it (Windows) a crashed omo's
+    // record could name a pid another process reuses
     return { agentDir, heldIds, custom: false, held: heldIds.length > 0 && startedAt !== null };
   }
   if (!dir || startedAt === null) return null;
@@ -158,7 +184,8 @@ export function omoProcessIdentity(
 
 /**
  * omo's engine (senpi, core/session-manager.js) names a cwd's session folder exactly so: the
- * leading slash dropped, then every slash, backslash and colon a dash.
+ * leading slash dropped, then every slash, backslash and colon a dash. A Windows cwd
+ * (`C:\\Users\\me\\app`) is `--C--Users-me-app--`; the slash-only rule this used missed it.
  */
 export function omoSessionFolder(cwd: string): string {
   return `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
@@ -224,6 +251,7 @@ export function heldRuntime(runtime: OmoRuntime, held: readonly (string | { id: 
   return { ...runtime, paths: current, ids, claims, ambiguous };
 }
 
+/** When the process that holds a session here started, by its own record: where the system does not tell (macOS). */
 export function holderStartedAt(dir: string, pid: number): number | null {
   const holders = join(dir, "session-holders");
   let names: string[] = [];
@@ -249,6 +277,7 @@ export function omoCandidates(cwd: string, home: string, exactPaths: string[] = 
     const dir = sessionDir(cwd, agentDir);
     let names: string[] = [];
     try { names = readdirSync(dir); } catch { /* only explicit evidence may remain */ }
+    // Never choose a subset when the directory is too large to inspect safely.
     if (names.length <= 4096) for (const name of names) if (name.endsWith(".jsonl")) paths.add(join(dir, name));
   }
   const found = new Map<string, OmoCandidate>();
@@ -292,6 +321,11 @@ const processInfo = async (paneId: string): Promise<ProcessInfo> => {
   return withOmoDescendants(info, rows);
 };
 
+/**
+ * When each foreground process of `infos` started, read before the checks that compare it, without holding the
+ * event loop: on macOS each read is the kernel's process record (processStartedAtAsync), a few at a time. Every OmO status refresh, and
+ * so every snapshot a pending message is checked against, reads these (#1545).
+ */
 async function processStarts(infos: Iterable<ProcessInfo>): Promise<(pid: number) => number | null> {
   const pids = [...new Set([...infos].flatMap((info) => (info?.process_info?.foreground_processes ?? []).map((entry) => entry.pid)))];
   const starts = new Map<number, number | null>();
@@ -325,6 +359,13 @@ type OmoForeground = { pid: number; argv?: string[]; cwd?: string };
 const paneFallbackCwd = (pane: HerdrPane): string =>
   (typeof pane.foreground_cwd === "string" && pane.foreground_cwd) || pane.cwd || "";
 
+/**
+ * One pane's recognized omo processes — each with the cwd it actually runs in — and the
+ * one folder its runtime binds. The processes' own cwds decide, a pane directory being
+ * able to go stale while a process runs elsewhere: the unique cwd among processes that
+ * hold a session wins, else the unique cwd among the recognized ones, else the pane's
+ * own. Two different holder-owning cwds is ambiguous and must not select a transcript.
+ */
 interface PaneResolution {
   pane: HerdrPane;
   informed: boolean;

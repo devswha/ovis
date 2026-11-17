@@ -5,8 +5,17 @@ export const OUTPUT_STALL_MS = 2000;
 const ALT_SCREEN_MODE = "1049";
 export const OUTPUT_JOIN_BYTES_PER_SECOND = 32 * 1024;
 export const OUTPUT_JOIN_MAX_MS = 15_000;
+/**
+ * The longest one client may hold the shared pty paused, however it acknowledges: a client
+ * that ACKs a byte at a time (or a slow phone) would otherwise cap every peer at its own rate.
+ * Draining 192 KiB from the high to the low watermark takes 6 s at the join rate above.
+ */
 export const OUTPUT_PAUSE_MAX_MS = 10_000;
 
+/**
+ * What a frame carrying `text` costs on the wire: JSON escapes every control byte, so an ESC
+ * becomes six. Flow credit still counts payload bytes; this only sizes time budgets.
+ */
 export function wireBytes(text: string): number {
   return Buffer.byteLength(JSON.stringify(text));
 }
@@ -33,6 +42,16 @@ export class OutputWindow {
     return this.sent;
   }
 
+  /**
+   * A late joiner is about to be sent `bytes` of replay. Its first ACK can only come once the
+   * whole frame has crossed the link and been parsed, which takes a phone on a weak link longer
+   * than the stall deadline (moshi-3): until that ACK, the client gets a budget sized to the
+   * frame as serialized (`wireBytes`) instead, and is never a reason to pause the pty the other
+   * clients share. `ahead` is what the socket already has queued in front of the frame (on a
+   * reconnect every attached pane's replay goes out back to back): it crosses the link first.
+   * `large` is a frame past the transport budget queued in front as well, a large session's
+   * snapshot (#2566): its crossing time is added beyond the cap.
+   */
   join(replay: string, ahead = 0, now = Date.now(), large = 0): void {
     this.joinUntil = now + Math.min(OUTPUT_JOIN_MAX_MS, OUTPUT_STALL_MS + crossingMs(ahead + wireBytes(replay))) + crossingMs(large);
   }
@@ -53,6 +72,16 @@ export class OutputWindow {
     return true;
   }
 
+  /**
+   * Stalls are measured by ACK progress, not by the time since a frame was queued: a client
+   * that is still acknowledging is draining, however much it has in flight. `buffered` is the
+   * client's WebSocket send queue, which blocks it as well, unless this window has next to
+   * nothing outstanding: the queue is shared by every pane on the socket, and a pane with
+   * nothing to acknowledge can make no ACK progress, so another pane's backlog must not pause
+   * or stop it (that pane's own window answers for it). The deadline is OUTPUT_STALL_MS plus
+   * the time the oldest unacknowledged frame needs to cross a slow link: its ACK cannot come
+   * before then.
+   */
   check(buffered: number, now = Date.now(), large = 0): OutputVerdict {
     if (buffered >= OUTPUT_HARD_BYTES) return "stop";
     if (!this.blocked && (buffered < OUTPUT_HIGH_BYTES || this.pending <= OUTPUT_LOW_BYTES)) {
@@ -106,6 +135,7 @@ export class ReplayBuffer {
     const bytes = Buffer.from(this.tail + data);
     let start = Math.max(0, bytes.length - this.limit);
     while (start < bytes.length && (bytes[start]! & 0xc0) === 0x80) start++;
+    // never cut a control sequence in two: its switch would be lost to both halves
     const escape = start > 0 ? bytes.lastIndexOf(0x1b, start - 1) : -1;
     if (escape >= 0 && INCOMPLETE_CSI.test(bytes.subarray(escape, start).toString("latin1"))) start = escape;
     if (start === 0) {

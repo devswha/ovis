@@ -47,7 +47,11 @@ function handOver(track: (paneId: string) => void, handed: Set<string>, paneId: 
 
 /**
  * herdr can change a pane's agent without a status event or a lifecycle frame (0.9.3 on a loaded host: OpenCode
- * gone, the shell idle in front, and nothing said for its pane).
+ * gone, the shell idle in front, and nothing said for its pane), so no snapshot would read it until the collector's
+ * backstop. While panes hold the stream, each one's collectors read it again whenever its verification is due
+ * (PANE_VERIFIED_MS): what that snapshot shows releases it as any other (server/core/status.ts, onReconciled).
+ * Each collector is only asked to read again: tracking a pane anew would make every snapshot already on its
+ * way older than the pane, so on a host where a read outlasts the recheck a pane gone would never be ended.
  */
 let recheck: ReturnType<typeof setInterval> | null = null;
 function scheduleRecheck(): void {

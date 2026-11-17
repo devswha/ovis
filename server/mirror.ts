@@ -1,5 +1,19 @@
 /**
  * A terminal for a herdr that cannot `terminal attach` (Windows, herdrdev/herdr#4821).
+ * There is no byte stream to forward, so the pane's visible screen is read a few times a
+ * second (`pane.read`, ansi) and each changed screen goes out in the same `pty-data` frames a
+ * real attach sends: the rows that changed, each drawn in its place, and the whole screen at
+ * the start, after a resize, every few seconds and once the screen goes quiet. A working agent changes a spinner and a
+ * timer on almost every read (measured with gjc on a 119x40 pane: 12 screens a second, 2.8
+ * rows changed in each), so whole screens were 135 KB a second to every viewer, over SSH from
+ * a remote PC and on to a phone; the changed rows are 9 KB a second (#261). Output that scrolls
+ * changes every row, and then the whole screen is the shorter of the two and goes out instead. It stands where a PtySession stands, so
+ * the attach lifecycle, the replay for late joiners and the output window are the same; it has no
+ * `resize`, as its grid is the pane's own (below).
+ *
+ * What a repaint cannot give: herdr's read carries no cursor position (the cursor is
+ * hidden), output between two reads is not seen, and the grid is the pane's own, never
+ * the browser's. It is a stopgap that ends when herdr reports attach.
  */
 import { HerdrError } from "./herdr/client.ts";
 
@@ -28,11 +42,29 @@ export interface MirrorOptions {
   quietMs?: number;
 }
 
+/**
+ * One screen as bytes for xterm: home, clear, the rows; the last row has no newline, which
+ * would scroll. Line wrap is off while they are drawn, so a row of the read is a row of the
+ * screen whatever xterm makes of its width: a row it counts wider than the grid loses its end
+ * instead of pushing every row below it down, and the rows drawn one by one later
+ * (mirrorRows) land where these did. A read can hold more rows than the grid (seen on a
+ * headless herdr after a split: the layout said 20 rows, the read gave 40); the last
+ * `gridRows` are the screen.
+ */
 export function mirrorFrame(screen: string, gridRows = Number.POSITIVE_INFINITY): string {
   return `\x1b[?25l\x1b[0m\x1b[H\x1b[2J\x1b[?7l${rowsOf(screen).slice(-gridRows).join("\r\n")}\x1b[0m\x1b[?7h`;
 }
 
 const rowsOf = (screen: string): string[] => screen.replace(/(?:\r?\n)+$/, "").split(/\r?\n/);
+/**
+ * The rows of `after` that differ from `before`, each cleared and drawn in its place, as a
+ * whole frame would have drawn them. herdr's read starts every row from plain text (a row's
+ * colours end with it), so a row stands alone.
+ *
+ * The last row is drawn again each time, last: the (hidden) cursor then ends where a whole
+ * frame leaves it. The client pans a grid larger than its screen to the cursor, and one left
+ * on a spinner's row at the top took a phone away from the prompt at the bottom.
+ */
 export function mirrorRows(before: string, after: string, gridRows: number): string {
   const was = rowsOf(before).slice(-gridRows);
   const now = rowsOf(after).slice(-gridRows);
@@ -73,6 +105,12 @@ export class MirrorSession {
     void this.tick();
   }
 
+  /**
+   * One pass: read, send what changed, work out the next delay. Every step after the read
+   * is in the guard too — a throw from `flush()` (a screen that does not parse) or from the
+   * reschedule must not stop the loop with no pty-exit, which on Windows is the only
+   * terminal the pane has.
+   */
   private async tick(): Promise<void> {
     try {
       await this.readOnce();
