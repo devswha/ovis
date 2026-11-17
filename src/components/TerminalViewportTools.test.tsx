@@ -83,11 +83,11 @@ describe("a page held for a scroll read on stale zero-history metrics", () => {
     await act(async () => { resolve!(scroll); for (let turn = 0; turn < 10; turn++) await Promise.resolve(); });
   }
   const advance = (ms: number) => act(async () => { jest.advanceTimersByTime(ms); });
-  /** Lets the poll run on for a few seconds, every read answered with the scrolled view. */
-  async function drain() {
+  /** Lets the poll run on for a few seconds, every read answered with the scrolled view of `max` rows of history. */
+  async function drain(max = 273) {
     for (let step = 0; step < 20; step++) {
       await advance(250);
-      while (reads.length) await answer(metrics(273, scrolledTo.at(-1) ?? 0));
+      while (reads.length) await answer(metrics(max, scrolledTo.at(-1) ?? 0));
     }
   }
 
@@ -102,6 +102,43 @@ describe("a page held for a scroll read on stale zero-history metrics", () => {
     await drain();
     expect(scrolledTo).toEqual([PAGE]);
     expect(applicationPages).toEqual([]);
+  });
+
+  it("does not scroll the history when the read that began in time returns seconds later", async () => {
+    await act(async () => { pageScroll.current!(-1); });
+    await advance(0);
+    expect(reads).toHaveLength(1);
+    await advance(3100);
+    await answer(metrics(273));
+    expect(scrolledTo).toEqual([]);
+    await drain();
+    expect(scrolledTo).toEqual([]);
+    expect(applicationPages).toEqual([]);
+  });
+
+  it("sends the page to the program once when the read began in time but returns after the hold", async () => {
+    await act(async () => { pageScroll.current!(-1); });
+    await advance(0);
+    expect(reads).toHaveLength(1);
+    // still the program's screen: no history, so the page goes to the program as a key
+    await advance(1100);
+    await answer(metrics(0));
+    expect(applicationPages).toEqual([-1]);
+    await drain(0);
+    expect(applicationPages).toEqual([-1]);
+    expect(scrolledTo).toEqual([]);
+  });
+
+  it("sends nothing to the program when the read that began in time returns seconds later", async () => {
+    await act(async () => { pageScroll.current!(-1); });
+    await advance(0);
+    expect(reads).toHaveLength(1);
+    await advance(3100);
+    await answer(metrics(0));
+    expect(applicationPages).toEqual([]);
+    await drain(0);
+    expect(applicationPages).toEqual([]);
+    expect(scrolledTo).toEqual([]);
   });
 
   it("drops the page when the read that answers it began after the hold expired", async () => {

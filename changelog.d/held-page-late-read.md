@@ -1,3 +1,4 @@
 ### Fixed
-- A terminal page key pressed just after a program quits is no longer lost when herdr takes more
-  than a second to report the pane's scroll history; the shell's history scrolls once it answers.
+- A terminal page key pressed while the terminal reads its scroll position is no longer lost when
+  that read is slow, as long as the read answers within about 3 seconds. Over a program's own
+  screen the key goes to the program.
