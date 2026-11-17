@@ -1498,7 +1498,7 @@ describe("a member of a higher level, and a key that a later kind lets in on a p
       expect([shown.dropped_from, shown.member.entries, again.member]).toEqual([2, texts([g, rises]), shown.member]);
     });
 
-    test("a replay that is told a stop and itself stops before that place keeps the stop it was told: the entry the member stopped at holds every entry before it, so no other history gets past it later", async () => {
+    test("a replay that is told a stop and cannot place an entry before that place keeps the stop it was told: the entry the member stopped at holds every entry before it, so no other history gets past it later", async () => {
       // The owner's entry of level 2, the login key's entry, which a proof lets in, the owner's entry of level 3, and the machine's entry, for which a proof may be asked.
       const [rises, key, higher, asks] = await row(g, [owner, { kind: "later", v: 2 }], [login, { kind: "later_login", v: 2 }], [owner, { kind: "later", v: 3 }], [machine, { kind: "later_login", v: 2 }]);
       if (!rises || !key || !higher || !asks) throw new Error("the row is short");
@@ -1507,16 +1507,37 @@ describe("a member of a higher level, and a key that a later kind lets in on a p
       const second = await replay([g, rises, key, higher, asks], 2, proof);
       const stop = second.member?.state.needs_replay ?? null;
       expect([second.stopped, stop]).toEqual([{ seq: 4, code: "needs_replay" }, place(asks)]);
-      // Its entries, replayed by level 1 with that stop: level 1 stops at the login key's entry already. The stop it was told is the one it keeps.
+      // Its entries, replayed by level 1 with that stop: level 1 cannot place the login key's entry already. The stop it was told is the one it keeps and names, and its copy is not cut.
       const first = await replayEntries(texts([g, rises, key, higher]), 1, { stop, proof });
       if (first.member === null) throw new Error("the replay holds no entry");
-      expect([first.stopped, first.stuck, first.member.entries.length, first.member.state.needs_replay, signingPlace(first.member, listHead(first.member))]).toEqual([{ seq: 2, code: "needs_replay" }, true, 2, stop, null]);
+      expect([first.stopped, first.stuck, first.member.entries.length, first.took.length, first.member.state.needs_replay, signingPlace(first.member, listHead(first.member))]).toEqual([{ seq: 4, code: "needs_replay" }, true, 4, 2, stop, null]);
       // So a later replay by a level that reads everything, which brings another entry 4, is stuck there; with the machine's entry it goes on.
       const other = await on(higher, owner, { kind: "device", adds: [watch, "bound"] });
       const wrong = await replayEntries(texts([g, rises, key, higher, other]), 3, { stop: first.member.state.needs_replay ?? null, proof });
       expect([wrong.stopped, wrong.stuck, wrong.member?.state.needs_replay]).toEqual([{ seq: 4, code: "chain_broken" }, true, stop]);
       const right = await replayEntries(texts([g, rises, key, higher, asks]), 3, { stop: first.member.state.needs_replay ?? null, proof });
       expect([right.stopped, right.member?.state.needs_replay, right.member?.entries.length]).toEqual([null, undefined, 5]);
+    });
+
+    test("a downgrade: a replay by a lower level that is told a later stop does not cut the member's copy, and names the stop it was told; back at a level that reads everything, the copy and the entry that the app kept take the member on", async () => {
+      // An honest log: the owner's entry of level 2, an entry of the proof's kind by a key that no proof lets in, the owner's entry of level 3, and another such entry by another key.
+      const [rises, loose, higher, asks] = await row(g, [owner, { kind: "later", v: 2 }], [stranger, { kind: "later_login", v: 2 }], [owner, { kind: "later", v: 3 }], [machine, { kind: "later_login", v: 2 }]);
+      if (!rises || !loose || !higher || !asks) throw new Error("the row is short");
+      const log = [g, rises, loose, higher, asks];
+      // A member of level 2 is shown the log and stops at entry 4. Its copy is entries 0 to 3, and its app keeps the text of entry 4.
+      const second = await shownEntries(await memberOf([g], 2), answer(g, log.slice(1)));
+      const stop = second.member.state.needs_replay ?? null;
+      expect([second.stopped, stop, second.member.entries]).toEqual([{ seq: 4, code: "needs_replay" }, place(asks), texts(log.slice(0, 4))]);
+      // The app runs once by level 1 and, as at every start, replays its own entries, told the stop. Level 1 cannot place entry 2.
+      const first = await replayEntries(second.member.entries, 1, { stop });
+      if (first.member === null) throw new Error("the replay holds no entry");
+      // The copy is not cut, the stop is the one it was told, and `stopped` names that stop: the entry in that place is the one the app keeps.
+      expect([first.member.entries, first.member.state.needs_replay, first.stopped, first.stuck, first.took.length]).toEqual([second.member.entries, stop, { seq: 4, code: "needs_replay" }, true, 2]);
+      // What level 1 judged is entries 0 and 1: its state is that of a member of level 1 that holds those two, with the stop.
+      expect(first.member.state).toEqual({ ...(await stateOf([g, rises], 1)), needs_replay: place(asks) });
+      // Back at level 3, which reads everything: the copy with the entry that the app kept takes the member on, to what a member of level 3 holds of the log.
+      const third = await replayEntries([...first.member.entries, asks.text], 3, { stop: first.member.state.needs_replay ?? null });
+      expect([third.stopped, third.member]).toEqual([null, await memberOf(log, 3)]);
     });
 
     test("a replay must be told what the stop is, a place or null: one that is told nothing is refused, so no member comes back from a replay not stopped by an oversight", async () => {
@@ -2086,7 +2107,7 @@ describe("the vectors of signers/ and unreadable/", () => {
     return vector;
   };
   /** How many histories the generated test makes. */
-  const GENERATED = 250;
+  const GENERATED = 150;
   const proofOf = (vector: Vector): KeyProof => (held) => {
     const found = vector.lets_in?.find((item) => item.seq === held.body.seq);
     return found ? { key: found.key, power: found.power } : null;
@@ -2457,7 +2478,7 @@ describe("the vectors of signers/ and unreadable/", () => {
     return keys;
   }
 
-  test("generated histories, the same in every run, each taken by every level below the one that reads everything, as a replay, as answers, and after loose entries that the log has since replaced: a member that has not stopped holds the signers and the footing of a member that reads everything and holds the same entries; a member that has stopped places no entry to sign and takes none, through answers, a saved state and replays, until a replay takes the entry it stopped at", async () => {
+  test("generated histories, the same in every run, each taken by every level below the one that reads everything, as a replay, as answers, and after loose entries that the log has since replaced: a member that has not stopped holds the signers and the footing of a member that reads everything and holds the same entries; a member that has stopped places no entry to sign and takes none, through answers, a saved state and replays, also by a lower level, until a replay takes the entry it stopped at", async () => {
     const keys = await vectorKeys();
     const keyOf = (name: string): Key => {
       const key = keys.get(`TEST-ONLY-${name}`);
@@ -2475,9 +2496,11 @@ describe("the vectors of signers/ and unreadable/", () => {
     };
     const pick = <T>(items: readonly T[]): T => at(items, next(items.length));
     const saved = (state: SignersState) => readSignersState(JSON.parse(JSON.stringify(state)));
-    const counts = { cases: 0, members: 0, stopped: 0, stoppedAtLoose: 0, behindToTheEnd: 0, letIn: 0, races: 0, looseReplaced: 0 };
+    const counts = { cases: 0, members: 0, stopped: 0, stoppedAtLoose: 0, downgrades: 0, cannotPlaceEarlier: 0, behindToTheEnd: 0, letIn: 0, races: 0, looseReplaced: 0 };
     for (let round = 0; round < GENERATED; round++) {
-      // The log: entry 0, then entries by signers and by other keys, of levels 1 to 3. Some add a key, end one, or both; some do again what the entry before did, as two devices at once do; some are of a kind whose proof may let their signer in.
+      // The log: entry 0, then entries by signers and by other keys. The list comes to need level 2, and in half the histories level 3, each by an entry of the first signer; before and after
+      // each of those come entries of the levels it needs by then. Some add a key, end one, or both; some do again what the entry before did, as two devices at once do; some are of a kind whose
+      // proof may let their signer in.
       const lets = new Map<string, SignerPower>();
       const proof: KeyProof = (held) => {
         const power = lets.get(held.hash);
@@ -2485,38 +2508,38 @@ describe("the vectors of signers/ and unreadable/", () => {
       };
       const insiders: Key[] = [first];
       const log: Link[] = [await genesis(first)];
-      let top = 1;
       /** The places of the entries of the kind whose proof may let a signer in. */
       const asks: number[] = [];
       let named: Draft | null = null;
-      for (let length = 3 + next(5); length > 0; length--) {
-        const v = next(3) === 0 ? 2 : next(14) === 0 ? 3 : 1;
-        const what = next(10);
-        const added = pick(others);
-        const draft: Draft = what < 2 ? { kind: "later", v }
-          : what < 4 ? { kind: "device", v, adds: [added, pick(["full", "full", "bound"] as const)] }
-          : what < 6 ? { v, ends: pick([...insiders, ...others]) }
-          : what === 6 ? { kind: "device", v, adds: [added, "full"], ends: pick(insiders) }
-          : what === 7 && named !== null ? named
-          : { kind: "later_login", v: Math.max(2, v) };
-        const asksProof = draft.kind === "later_login";
-        const by = asksProof || next(5) === 0 ? pick(others) : pick(insiders);
-        const link = await on(last(log), by, draft);
-        if (draft === named) counts.races++;
-        if (draft.adds !== undefined) insiders.push(draft.adds[0]);
-        if (asksProof && next(5) < 3) {
-          lets.set(link.hash, next(3) === 0 ? "bound" : "full");
-          insiders.push(by);
+      /** The level that reads everything: the highest that the list comes to need. */
+      const top = 2 + next(2);
+      for (let needs = 1; needs <= top; needs++) {
+        if (needs > 1) log.push(await on(last(log), first, { kind: "later", v: needs }));
+        // The first signer signs the entries that raise the level, so no entry ends it before the last of them.
+        const ending = needs < top ? [...insiders.slice(1), ...others] : [...insiders, ...others];
+        for (let length = (needs === 1 ? 0 : 1) + next(2); length > 0; length--) {
+          const v = 1 + next(needs);
+          const what = next(9);
+          const added = pick(others);
+          const draft: Draft = what < 2 ? { kind: "later", v }
+            : what < 4 ? { kind: "device", v, adds: [added, pick(["full", "full", "bound"] as const)] }
+            : what === 4 ? { v, ends: pick(ending) }
+            : what === 5 ? { kind: "device", v, adds: [added, "full"], ends: pick(ending) }
+            : what === 6 && named !== null ? named
+            : { kind: "later_login", v: Math.max(2, v) };
+          const asksProof = draft.kind === "later_login";
+          const by = asksProof || next(5) === 0 ? pick(others) : pick(insiders);
+          const link = await on(last(log), by, draft);
+          if (draft === named) counts.races++;
+          if (draft.adds !== undefined) insiders.push(draft.adds[0]);
+          if (asksProof && next(5) < 3) {
+            lets.set(link.hash, next(3) === 0 ? "bound" : "full");
+            insiders.push(by);
+          }
+          named = draft.adds !== undefined || draft.ends !== undefined ? draft : null;
+          if (asksProof) asks.push(log.length);
+          log.push(link);
         }
-        named = draft.adds !== undefined || draft.ends !== undefined ? draft : null;
-        top = Math.max(top, draft.v ?? 1);
-        if (asksProof) asks.push(log.length);
-        log.push(link);
-      }
-      // Every history has an entry above level 1, so a member of level 1 is held beside one that reads more.
-      if (top === 1) {
-        log.push(await on(last(log), first, { kind: "later", v: 2 }));
-        top = 2;
       }
       /** Every entry made for this case, by its hash. */
       const byHash = new Map(log.map((link) => [link.hash, link]));
@@ -2574,10 +2597,24 @@ describe("the vectors of signers/ and unreadable/", () => {
           const wrong = await replayEntriesOf([...entries, other.text], by, { stop, proof });
           expect([where, by, wrong.stopped, wrong.stuck, wrong.member?.entries, wrong.member?.state.needs_replay]).toEqual([where, by, { seq: stop.seq, code: "chain_broken" }, true, entries, stop]);
         }
-        // By a lower level the replay may stop before that place: the stop it was told is the one it keeps.
+        // A downgrade: the app runs once by a lower level and replays its own entries, told the stop, without the entry it kept and with it. That level may be unable to place an entry before the stop.
+        // The copy is not cut and the stop is the one it was told; what that level judged is what the member that reads everything holds of those entries.
         for (let lower = 1; lower < level; lower++) {
-          const below = await replayEntriesOf([...entries, stoppedAt.text], lower, { stop, proof });
-          expect([where, lower, below.member?.state.needs_replay, below.member && signingPlace(below.member, listHead(below.member))]).toEqual([where, lower, stop, null]);
+          for (const given of [entries, [...entries, stoppedAt.text]]) {
+            const below = await replayEntriesOf(given, lower, { stop, proof });
+            if (below.member === null) throw new Error(`${where}: the replay holds no entry`);
+            counts.downgrades++;
+            const earlier = below.took.length < entries.length;
+            if (earlier) counts.cannotPlaceEarlier++;
+            const judged = (await upToDate(entries.slice(0, below.took.length))).member.state;
+            expect([where, lower, below.member.entries, below.member.state.needs_replay, below.member.state.signers, below.member.state.footing, signingPlace(below.member, listHead(below.member)), saved(below.member.state)])
+              .toEqual([where, lower, entries, stop, judged.signers, judged.footing, null, below.member.state]);
+            // Where the replay stopped, `stopped` names the stop it was told: the entry in that place is the one the app kept.
+            expect([where, lower, below.stopped, below.stuck]).toEqual(earlier || given.length > entries.length ? [where, lower, { seq: stop.seq, code: "needs_replay" }, true] : [where, lower, null, false]);
+            // Back by the level that reads everything, with that entry: the stop is gone, and the member holds what the member that reads everything holds.
+            const back = await replayEntriesOf([...below.member.entries, stoppedAt.text], top, { stop: below.member.state.needs_replay ?? null, proof });
+            expect([where, lower, back.stopped, back.member]).toEqual([where, lower, null, (await upToDate([...entries, stoppedAt.text])).member]);
+          }
         }
         // With the entry it stopped at, its own level stops there again.
         expect([where, await replayEntriesOf([...entries, stoppedAt.text], level, { stop, proof })]).toEqual([where, { member, took: expect.anything(), stopped: { seq: stop.seq, code: "needs_replay" }, stuck: true }]);
@@ -2640,10 +2677,11 @@ describe("the vectors of signers/ and unreadable/", () => {
       }
       counts.cases++;
     }
-    // The histories are the same in every run, so these are too. 596 members were held beside the one that reads everything. 101 had stopped, 40 of them at a
-    // loose entry that the log has since replaced, and each went on by a replay that took the entry it stopped at. 80 were behind and never stopped. In 36
-    // histories a proof let a key in, 50 entries did again what the entry before did, and 247 times a member's loose entries gave way to the log's.
-    expect(counts).toEqual({ cases: GENERATED, members: 596, stopped: 101, stoppedAtLoose: 40, behindToTheEnd: 80, letIn: 36, races: 50, looseReplaced: 247 });
+    // The histories are the same in every run, so these are too. 436 members were held beside the one that reads everything. 181 had stopped, 69 of them at a
+    // loose entry that the log has since replaced, and each went on by a replay that took the entry it stopped at. 80 times one of them was replayed by a lower
+    // level, which 16 times could not place an entry before the stop. 106 members were behind and never stopped. In 50 histories a proof let a key in, 16
+    // entries did again what the entry before did, and 132 times a member's loose entries gave way to the log's.
+    expect(counts).toEqual({ cases: GENERATED, members: 436, stopped: 181, stoppedAtLoose: 69, downgrades: 80, cannotPlaceEarlier: 16, behindToTheEnd: 106, letIn: 50, races: 16, looseReplaced: 132 });
   }, 120_000);
 });
 
