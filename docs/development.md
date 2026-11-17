@@ -1305,7 +1305,7 @@ is a bug to fix in the script or the app, not noise: the second run only keeps o
 from waiting on another change's race. A script that fails twice fails the job.
 One run of a script may take `BROWSER_SCRIPT_TIMEOUT_SECONDS` (default 600). A run past it is
 stopped (SIGTERM, then SIGKILL, then SIGKILL again for what the run started meanwhile and still carries its
-mark), says what it saw (`stopped N processes`, `could NOT stop: <pid> (<program name>)` for each one it could not, never an argument,
+mark), says what it saw (`stopped N processes`, `could NOT stop: <pid> (<program name>)` for each one it could not, the name read from its executable and never from its arguments, only a process still running at the last look, at most 20 and then `and N more`,
 and `processes started at the last moment may not be listed` when the last look still found new ones or a
 signal was refused: finding a run's processes always races with their forking; a process without the run's
 mark that outlives the script and ignores SIGTERM is no longer found, and can be counted as stopped), prints `TIMEOUT <script>`

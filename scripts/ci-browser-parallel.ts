@@ -23,7 +23,7 @@
  */
 import { availableParallelism } from "node:os";
 import { basename, join } from "node:path";
-import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 
 const repo = join(import.meta.dir, "..");
@@ -287,17 +287,20 @@ export interface StopIo {
   running(pid: number): boolean;
   /** Whether `pid` still carries this run's mark, read now: a pid found a moment ago may have been freed and reused. */
   marked(pid: number): boolean;
+  /** The program name of `pid` (see processName), or an empty string where it cannot be read. */
   command(pid: number): string;
   /** The clock the grace is measured on, in ms. */
   now(): number;
   graceMs: number;
 }
 
+const SURVIVOR_LIMIT = 20;
+
 /** What stopRun saw, which is all it can know: finding a run's processes always races with their forking. */
 export interface StopOutcome {
   /** how many of the processes it found it ended */
   stopped: number;
-  /** the processes it could not stop, as `<pid> (<program name>)`: no argument is ever printed */
+  /** the processes it could not stop, as `<pid> (<program name>)` or `<pid>` alone: nothing of a command line is ever printed */
   survivors: string[];
   /** the last read still found new processes, or a signal was refused: others may have gone unlisted */
   unsure: boolean;
@@ -311,26 +314,33 @@ export interface StopOutcome {
  * process ends when the kernel next runs it, which on a loaded machine is not at once, so it waits
  * one more grace for them to go, reading the run's processes again and killing any that appeared
  * since (a child forked while SIGKILL was landing), each only if its mark is still there just before
- * the signal; one that is not marked is not signalled and is named as not stopped. A process that
- * refused a signal (permission denied is not a stop) stays named even when a later read no longer
- * finds it. Resolves with what it saw, not with a promise that nothing is left.
+ * the signal; one that is not marked is not signalled, and is named as not stopped only if it still
+ * runs at the last look (a short-lived process ends by itself between the read and the check). A
+ * process that refused a signal (permission denied is not a stop) stays named even when a later read
+ * no longer finds it. At most SURVIVOR_LIMIT are named, then "and N more". Resolves with what it
+ * saw, not with a promise that nothing is left.
  */
 export async function stopRun(io: StopIo, finished: Promise<unknown>): Promise<StopOutcome> {
   const seen = new Set<number>();
-  // refused a signal, or never signalled because its mark was gone: not known to have stopped
-  const unstopped = new Set<number>();
+  // refused a signal: not known to have stopped, named whatever a later look finds
+  const refused = new Set<number>();
+  // found without the run's mark, so never signalled: named if it still runs at the last look
+  const unmarked = new Set<number>();
   const send = (pids: number[], name: NodeJS.Signals): void => {
     for (const pid of pids) seen.add(pid);
-    for (const pid of io.signal(pids, name)) unstopped.add(pid);
+    for (const pid of io.signal(pids, name)) refused.add(pid);
   };
   const outcome = (left: number[], unsure: boolean): StopOutcome => {
-    const survivors = [...new Set([...left.filter(io.running), ...unstopped])].map((pid) => `${pid} (${io.command(pid)})`);
-    return { stopped: seen.size - survivors.length, survivors, unsure: unsure || unstopped.size > 0 };
+    const stillUnmarked = [...unmarked].filter(io.running);
+    const named = [...new Set([...left.filter(io.running), ...refused, ...stillUnmarked])];
+    const listed = named.slice(0, SURVIVOR_LIMIT).map((pid) => { const name = io.command(pid); return name === "" ? `${pid}` : `${pid} (${name})`; });
+    if (named.length > SURVIVOR_LIMIT) listed.push(`and ${named.length - SURVIVOR_LIMIT} more`);
+    return { stopped: Math.max(0, seen.size - named.length), survivors: listed, unsure: unsure || refused.size > 0 || stillUnmarked.length > 0 };
   };
   send(await io.processes(), "SIGTERM");
   await within(finished, io.graceMs);
   const first = await io.processes();
-  if (first.length === 0 && unstopped.size === 0) return outcome([], false);
+  if (first.length === 0 && refused.size === 0) return outcome([], false);
   send(first, "SIGKILL");
   await within(finished, io.graceMs);
   const killed = new Set(first);
@@ -342,7 +352,7 @@ export async function stopRun(io: StopIo, finished: Promise<unknown>): Promise<S
     for (const pid of fresh) { seen.add(pid); killed.add(pid); }
     // the mark is read again right before the signal: a pid freed and reused since the read is not ours to kill
     const ours = fresh.filter((pid) => io.marked(pid));
-    for (const pid of fresh) if (!ours.includes(pid)) unstopped.add(pid);
+    for (const pid of fresh) if (!ours.includes(pid)) unmarked.add(pid);
     send(ours, "SIGKILL");
     const done = outcome(left, fresh.length > 0);
     if (io.now() >= deadline || (fresh.length === 0 && done.survivors.length === 0)) return done;
@@ -356,24 +366,22 @@ function running(pid: number): boolean {
   try { return readFileSync(`/proc/${pid}/stat`, "utf8").replace(/^.*\) /s, "")[0] !== "Z"; } catch { return true; }
 }
 
-const NAME_LIMIT = 32;
+const NAME_LIMIT = 64;
 
 /**
- * What the report says of a process besides its pid: the name of its program and nothing else. An
- * argument value cannot be told safe from a credential (a URL's userinfo, a header, a connection
- * string, a shell command line), and the report goes into a public issue, so no argument is ever
- * printed. The name is argv[0] up to its first blank, without its directory, cut to the characters a
- * program name has and to a short length.
+ * The name of the program a process runs, from the path of its executable: the file's own name,
+ * cut to the characters a program name has and to a short length. Nothing else about a process is
+ * printed, and not argv[0], which a process sets to anything it likes (a credential, a URL): the
+ * report goes into public logs and issues.
  */
-export function describeCommand(argv: readonly string[]): string {
-  const program = (argv[0] ?? "").trim().split(/\s/)[0] ?? "";
-  const name = program.slice(program.lastIndexOf("/") + 1).replace(/[^A-Za-z0-9._+-]/g, "?").slice(0, NAME_LIMIT);
-  return name === "" ? "?" : name;
+export function programName(executable: string): string {
+  const path = executable.replace(/ \(deleted\)$/, "");
+  return path.slice(path.lastIndexOf("/") + 1).replace(/[^A-Za-z0-9._+-]/g, "?").slice(0, NAME_LIMIT);
 }
 
-/** A process's program name, or `?` where its command line cannot be read. */
-function commandOf(pid: number): string {
-  try { return describeCommand(readFileSync(`/proc/${pid}/cmdline`, "latin1").split("\0")); } catch { return "?"; }
+/** A process's program name from /proc/<pid>/exe; empty where the link cannot be read (another user's process, no /proc): the report then names the pid alone. */
+export function processName(pid: number): string {
+  try { return programName(readlinkSync(`/proc/${pid}/exe`)); } catch { return ""; }
 }
 
 /** What the lane says of a run it had to stop: what it saw, never a promise that nothing is left. */
@@ -404,7 +412,7 @@ async function runScript(script: string, env: Record<string, string>, log: strin
   // The run ends when the script has exited and its output is read.
   const drained = Promise.all([timestampLog(child.stdout, log), timestampLog(child.stderr, log)]);
   const finished = Promise.all([child.exited, drained]);
-  const io: StopIo = { processes: () => runProcesses(child, mark), signal, running, marked: (pid) => carriesMark(pid, mark), command: commandOf, now: Date.now, graceMs: STOP_GRACE_MS };
+  const io: StopIo = { processes: () => runProcesses(child, mark), signal, running, marked: (pid) => carriesMark(pid, mark), command: processName, now: Date.now, graceMs: STOP_GRACE_MS };
   const stopped = (code: number, message: string, stop: StopOutcome): ScriptResult => {
     appendFileSync(log, `[${new Date().toISOString()}] ${stopReport(message, stop)}\n`);
     return { script, seconds: (Date.now() - started) / 1000, code, log, message, stopped: true, stop };
