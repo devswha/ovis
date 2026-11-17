@@ -897,4 +897,51 @@ describe("ci.yml", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 30_000);
+
+  it.skipIf(process.platform === "win32")("gives a push to main the latest passed push run of main in its history as the ratchets' base, and no base otherwise", async () => {
+    const ratchet = ci.jobs["changes"]!.steps!.find((step) => step.id === "ratchet")!;
+    const fetchBase = ci.jobs["fast"]!.steps!.find((step) => step.name === "Fetch the base the ratchets compare with")!;
+    const dir = mkdtempSync(join(tmpdir(), "release-ci-reuse-ratchet-"));
+    try {
+      const git = (...args: string[]): string => {
+        const result = Bun.spawnSync(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", ...args], { cwd: dir, env: { PATH: process.env.PATH ?? "", HOME: dir } });
+        if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+        return result.stdout.toString().trim();
+      };
+      const commit = (message: string): string => { git("commit", "-q", "--allow-empty", "-m", message); return git("rev-parse", "HEAD"); };
+      git("init", "-q", "-b", "main");
+      const [a, b, head] = [commit("a"), commit("b"), commit("head")];
+      git("checkout", "-q", "--orphan", "elsewhere");
+      const elsewhere = commit("not in main's history");
+      git("checkout", "-q", "main");
+      // gh answers the step's own query (passed push runs of ci.yml on main) with PASSED, any other query with ANY: a
+      // cancelled run of HEAD itself, which only a query that lost one of its filters would see; sleep returns at once
+      const bin = join(dir, "bin");
+      mkdirSync(bin);
+      writeFileSync(join(bin, "gh"), `#!/bin/sh\necho call >> "$CALLS"\n[ -n "$DOWN" ] && exit 1\ncase "$*" in *"--workflow ci.yml --branch main --event push --status success"*) printf '%s\\n' $PASSED ;; *) printf '%s\\n' $ANY ;; esac\n`, { mode: 0o755 });
+      writeFileSync(join(bin, "sleep"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+      const found = async (env: Record<string, string>): Promise<{ base: string; calls: number }> => {
+        const [output, calls] = [join(dir, "output"), join(dir, "calls")];
+        for (const file of [output, calls]) writeFileSync(file, "");
+        const result = await runScript(ratchet.run!, dir, { PATH: `${bin}:${process.env.PATH ?? ""}`, EVENT_NAME: "push", REF: "refs/heads/main", REPOSITORY: "o/r", GITHUB_OUTPUT: output, CALLS: calls, ANY: head, ...env });
+        expect(result.code).toBe(0);
+        return { base: readFileSync(output, "utf8").trim(), calls: readFileSync(calls, "utf8").split("\n").filter(Boolean).length };
+      };
+      // the latest passed commit by history, whatever the order of the list; never one outside the push's history
+      expect((await found({ PASSED: `${a} ${b}` })).base).toBe(`base=${b}`);
+      expect((await found({ PASSED: `${b} ${a}` })).base).toBe(`base=${b}`);
+      expect((await found({ PASSED: `${elsewhere} ${a}` })).base).toBe(`base=${a}`);
+      expect(await found({ PASSED: elsewhere })).toEqual({ base: "", calls: 1 });
+      expect(await found({ PASSED: "" })).toEqual({ base: "", calls: 1 });
+      // only a push to main asks; an API that does not answer is asked three times, then gives no base
+      const notAPushToMain: Record<string, string>[] = [{ EVENT_NAME: "pull_request" }, { REF: "refs/heads/feature" }];
+      for (const env of notAPushToMain) expect(await found({ PASSED: b, ...env })).toEqual({ base: "", calls: 0 });
+      expect(await found({ PASSED: b, DOWN: "1" })).toEqual({ base: "", calls: 3 });
+      // and a push with no base fails Fast checks' fetch step before it fetches anything
+      const fetched = await runScript(fetchBase.run!, dir, { GITHUB_EVENT_NAME: "push", EVENT_BASE: a, LAST_GREEN: "", GITHUB_ENV: join(dir, "env") });
+      expect([fetched.code, fetched.output.includes("No passed main commit")]).toEqual([1, true]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
 });
