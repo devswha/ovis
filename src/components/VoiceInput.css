@@ -61,6 +61,10 @@
   }
 }
 
+/* a finger gets --touch-target both ways through an invisible expander: the mic keeps its
+   --control-h circle beside the composer's add button (8px apart, so neither takes the other's
+   tap), and the terminal line's mic, already a --touch-target circle, grows by nothing. The
+   percentages are of the button's padding box, so its hairline border is counted */
 @media (pointer: coarse) {
   .voice-mic::before {
     content: "";

@@ -1,3 +1,14 @@
+/**
+ * Signing in from a PC's own page (docs/account.md, "Signing in"): the account service cannot send
+ * a sign-in back to an address it does not know, so the page uses the provider's device flow (RFC
+ * 8628). It shows the provider's code, the person types it at the provider's device page
+ * (github.com/login/device, google.com/device), and the page polls the service until it says yes. The sign-in is bound to a verifier that never leaves this page's
+ * memory, so the device code alone redeems nothing, and a service that does not say it bound the
+ * sign-in is not used.
+ *
+ * With `provider: "ovis"` the code is the service's own, typed at its link page (<service>/link),
+ * where the person picks GitHub or Google; the polls are the same.
+ */
 import { accountLabel, type AccountOs } from "../../../shared/account-asker.ts";
 import { toBase64Url } from "../../../shared/relay-pair-sas.ts";
 import { AccountServiceError, failure, sessionOf, type DeviceProvider } from "./service.ts";
@@ -18,6 +29,7 @@ export type DeviceSignInProvider = DeviceProvider | "ovis";
 export interface DeviceSignIn {
   readonly provider: DeviceSignInProvider;
   readonly userCode: string;
+  /** the provider's device page, or the service's link page, and never another address */
   readonly verificationUri: string;
   readonly verificationUriComplete: string | null;
   readonly expiresAt: number;
@@ -81,6 +93,7 @@ export async function startDeviceSignIn(options: DeviceSignInOptions): Promise<D
   const provider = options.provider ?? "github";
   const verifier = toBase64Url(crypto.getRandomValues(new Uint8Array(32)));
   const challenge = toBase64Url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
+  // redirect "manual": a redirect is a failure here, never a way to carry the challenge, the device code or the verifier to another address
   const start = (extra: object): Promise<Response> => fetchImpl(new URL(`/v1/signin/${provider}/device`, options.service), {
     method: "POST", headers: { "content-type": "application/json" }, redirect: "manual",
     body: JSON.stringify({ code_challenge: challenge, code_challenge_method: "S256", ...extra }),
@@ -146,6 +159,7 @@ export async function startDeviceSignIn(options: DeviceSignInOptions): Promise<D
             return false;
           });
           if (kept) return session;
+          // a sign-in nobody keeps ends at the service too, so its tokens do not outlive the page
           await fetchImpl(new URL("/v1/signout", options.service), { method: "POST", headers: { authorization: `Bearer ${session.access_token}` }, redirect: "manual" })
             .catch((error: unknown) => console.warn("Ovis: a cancelled sign-in was not ended at the account service", error instanceof Error ? error.name : error));
           signal.throwIfAborted();

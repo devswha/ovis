@@ -380,6 +380,8 @@
   }
 }
 
+/* on a phone the four scopes take the bar's whole width, sharing it, and the tools the row under them:
+   side by side they would run past the card (four labels and two 44px targets in 348px) */
 @media (max-width: 480px) {
   .repo-changes-bar {
     flex-wrap: wrap;

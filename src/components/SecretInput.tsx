@@ -5,6 +5,11 @@ import { useT } from "../lib/i18n.ts";
 import type { SubmitResult } from "../lib/ws.ts";
 import "./SecretInput.css";
 
+/**
+ * A DOM-only value: no drafts, queue, React state or retry copy of the secret. `unchecked`: the PC types what is
+ * sent without reading its screen first (a PC not yet updated, at a prompt it does not know: HerdrSocket.typesSecret),
+ * which the field says.
+ */
 export function SecretInput({ prompt, active = true, unchecked = false, onSend, onCancel }: {
   prompt: string;
   active?: boolean;

@@ -78,6 +78,8 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   const paneLocked = usePaneLocked(machineId);
   const pressPane = useContext(PanePressContext);
   const { closeTab, renameTab, moveTab } = useMachineApi();
+  // the Herdr app's window owns this PC's tabs (lib/machineContext.tsx): no rename, no move, no other workspace
+  // what the PC's herdr answers for its tabs (lib/machineContext.tsx): herdr-core never reorders them
   const { rename: renameOffered, move: moveOffered, arrange } = useAppLayout();
   const touchMenu = useMediaQuery("(pointer: coarse), (max-width: 768px)");
   const hoverMenu = useMediaQuery("(hover: hover) and (pointer: fine) and (min-width: 769px)");
@@ -139,11 +141,14 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
     if (previousOwner.current === owner) return;
     previousOwner.current = owner;
     cancelLongPress();
+    // Native IDs can repeat on another PC. A pending dialog never changes its target PC.
     setPicker(null); setEditing(null); setConfirm(null); setSent(null); setError(null);
     refocus.current = null; closed.current = null;
   }, [owner]);
   const panes = rosterPanes(snapshot.panes.filter((pane) => pane.workspace_id === workspace.workspace_id), selectedPane.pane_id);
+  // The snapshot order is authoritative; number identifies a tab and does not change on a move.
   const tabs = snapshot.tabs.filter((tab) => tab.workspace_id === workspace.workspace_id);
+  // a watching device moves no tab (the server refuses it read_only): the order is fixed for it as for the Herdr app's
   const reorderable = arrange && closable;
   const reorder = useTabReorder({ owner: `${machineId}:${workspace.workspace_id}`, tabs, strip, moveTab, fixed: !reorderable,
     failed: (reason) => setError(t("Move failed: {reason}", { reason: said(reason) })),
@@ -159,6 +164,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   });
   const firstLines = useSyncExternalStore(subscribeTabLabels, shownTabLabels, shownTabLabels);
   const placeOf = (tab: HerdrTab): number => tabs.findIndex((candidate) => candidate.tab_id === tab.tab_id) + 1;
+  // a tab herdr still names by its number shows a few words of its first message (#2019); never herdr's own label
   const autoOf = (tab: HerdrTab): string | null => settings.autoTabNames
     ? autoTabLabel(tab, panes.filter((pane) => pane.tab_id === tab.tab_id), machineId, firstLines, placeOf(tab)) : null;
   const givenName = (tab: HerdrTab): string => sent?.tabId === tab.tab_id ? sent.label : tabLabel(tab, t, placeOf(tab));
@@ -259,6 +265,10 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
     if (!scroll.current.moved) bringOpenTab();
   }, [faces]);
   // a mouse wheel turns vertically: over a strip whose tabs do not fit it moves them sideways.
+  // Anything with sideways motion (a trackpad, even a mostly vertical diagonal swipe) is the
+  // browser's: moved by deltaY alone, the strip would go against the swipe's sideways part (#2103).
+  // React's own onWheel is passive, so the listener is the strip's own; `end` coming or going (a
+  // split opened or closed) draws the strip as a new node, which needs it again.
   const tabsHidden = !phoneRow && tabRowHidden(cramped, tabs.length, inHeader);
   const currentTabs = useRef(tabs);
   currentTabs.current = tabs;
@@ -332,6 +342,9 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
     onCloseHandled?.();
   }, [closeRequest]);
 
+  // the More list is long (it holds every tab that does not fit): letters typed over it jump to the next tab whose
+  // name starts with them, as a native menu's typeahead does (G-160). RowMenu's own type-ahead does it; a second
+  // one here would move the focus twice per letter and skip a tab sharing its first letter
   if (!shown) return null;
   const rowShown = !tabsHidden || editing !== null;
   const openIndex = Math.max(0, tabs.findIndex((tab) => tab.tab_id === selectedPane.tab_id));
@@ -371,6 +384,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
     window.requestAnimationFrame(() => strip.current?.querySelector<HTMLElement>(`[role="tab"][data-tab-id="${CSS.escape(tabId)}"]`)?.focus());
   };
 
+  // an empty name is not sent: herdr would keep it, and its own tab row would show nothing
   const saveRename = (tab: HerdrTab): void => {
     const label = editing?.value.trim() ?? "";
     if (label === "") { setError(t("A tab needs a name.")); return; }
@@ -393,6 +407,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
     if (closing.current.has(key)) return;
     closing.current.add(key);
     // Herdr can publish the removal before the HTTP acknowledgement arrives. The removal
+    // commit must already know where the disappearing tab's keyboard focus belongs.
     const focusAfterClose = beside ? { tabId: tab.tab_id, beside: beside.tab_id } : null;
     if (focusAfterClose) closed.current = focusAfterClose;
     try { await closeTab(tab.tab_id); }

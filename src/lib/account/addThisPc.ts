@@ -1,3 +1,9 @@
+/**
+ * Adding the PC this page is on to the account (docs/account.md, "Adding a PC"): signed in on its
+ * own screen, the PC lists itself in the account's directory with its relay key, and opens a
+ * pairing window whose comparisons only this PC approves. A device already in the account then
+ * adds it with one approval: it types the number this PC shows, and the owner approves here.
+ */
 import { importPublicKey } from "../../../shared/relay-e2ee.ts";
 import { decodeOffer } from "../../../shared/relay-offer.ts";
 import { closeRelayLink, fetchHealth, requestRelayLink } from "../api.ts";
@@ -42,6 +48,10 @@ async function openAddWindow(): Promise<{ url: string }> {
 
 const WAITING_KEY = "ovis-add-pc-waiting";
 
+/**
+ * A waiting Add this PC screen, as its tab keeps it for a reload. It is one PC's wait under one account:
+ * a tab that now shows another PC, or is signed in to another account, never resumes it.
+ */
 export interface AddPcWaiting {
   readonly name: string;
   readonly until: number;
@@ -113,9 +123,23 @@ export interface ListedAs {
   readonly reached?: (step: "opened" | "writing") => void;
 }
 
+/**
+ * Lists this PC in the account's directory and opens its approve-here pairing window; the PC as
+ * listed. An entry the card would stop showing before the next relist (`RELIST_MS`) is listed anew,
+ * which shows the card again and rings the account's devices, so the card lasts as long as this screen waits.
+ *
+ * Every directory call is made as the sign-in stored when the listing began (`forSignIn`): one made meanwhile
+ * (another tab signed out and in) is never written to. Listing again `for` a wait writes nothing, and throws
+ * `AddPcWaitOver`, when the PC that answers or the stored account is not the wait's, or the wait no longer runs;
+ * which PC answers is read first from its health (`pcAnswers`), so no window is opened on another PC either.
+ * Listing `as` a sign-in that just finished (no press was made) writes nothing either, and throws the same,
+ * when the account stored at that read is another one or none, or the attempt was given up. A listing whose
+ * wait or attempt ended while its entry was being written does not tell the PC the account either.
+ */
 export async function listThisPc(service: AccountService, options: { relistMs: number; for?: ListedFor; as?: ListedAs }): Promise<ListedPc> {
   const wait = options.for;
   const as = options.as;
+  // asked before the window: one is never opened on another PC than the wait's
   if (wait !== undefined && !await pcAnswers(wait.serverId)) throw new AddPcWaitOver("pc");
   if (wait !== undefined && !wait.running()) throw new AddPcWaitOver("ended");
   const offer = decodeOffer((await openAddWindow()).url);

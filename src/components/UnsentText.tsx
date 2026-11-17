@@ -1,3 +1,11 @@
+/**
+ * Recover unsent text (a pane's menu, only while there is some): the text panes of an earlier herdr
+ * left behind when herdr was replaced and gave their pane IDs out again (lib/paneLifetime.ts). Each
+ * one says its PC, pane and kind, and is plain text: Put in message box adds it to the message box
+ * of the pane the list was opened from, Copy puts it on the clipboard, Discard removes it: for the undo window
+ * (lib/paneLifetime.ts) that button reads Undo in the same place and puts the record back, then the row is gone for
+ * good. Nothing here is ever sent. Slack's Drafts list is the model: unsent text kept apart, opened by the user.
+ */
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 

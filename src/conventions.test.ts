@@ -25,6 +25,9 @@ describe("component CSS", () => {
     fail(offenders, "Use var(--app-height, 100dvh), or 100dvh for a measured-room fallback, so browser chrome and the phone keyboard do not enlarge the visible viewport.");
   });
 
+  // The light theme and the opt-in palettes are only token overrides in src/styles.css: a literal
+  // in a component stylesheet stays the same in every theme, and `!important` beats the order the
+  // primitives rely on (src/AGENTS.md).
   it("uses tokens only: no color literal and no !important outside src/styles.css", () => {
     const offenders = scan("src/**/*.css").filter((file) => file !== "src/styles.css").flatMap((file) => {
       const css = read(file);
@@ -94,10 +97,22 @@ describe("DESIGN.md", () => {
       if (actual !== other) offenders.push(`${where} (${column}): DESIGN.md says ${other}, src/styles.css has ${actual ?? "nothing"}`);
     }
     fail(offenders, "DESIGN.md's token tables and src/styles.css disagree. Change both together: the token's value in src/styles.css (`:root`, `[data-theme=\"light\"]` or `[data-density=\"compact\"]`) and its row in DESIGN.md.");
+    // a reformatted table must not quietly turn this test off
     expect(compared).toBeGreaterThan(150);
   });
 });
 
+/**
+ * The icon files a browser and the service worker cache, their `?v=` query and the CACHE_NAME
+ * they last shipped with. Browsers and public/sw.js keep an icon by its URL, so changed icon bytes
+ * reach an installed app only under a new query and a new cache.
+ *
+ * When icon files change: pick a new query, use it on every icon URL (index.html,
+ * public/manifest.webmanifest, public/sw.js and the src/ files that show an icon: src/App.tsx,
+ * src/components/AccessGate.tsx, src/lib/notifications.ts), give public/sw.js a new CACHE_NAME,
+ * and add an entry here with the new hash and that CACHE_NAME. Keep the old entries: a query or a
+ * cache name is never reused. CACHE_NAME may move on its own (fonts, shell assets) without an entry.
+ */
 const ICON_VERSIONS: Record<string, { sha256: string; cacheName: string }> = {
   ram1: { sha256: "ed82342db3ec3ed2151ddd2d0d77805233e9251758e29972b4f09aa95602041e", cacheName: "herdr-web-ui-v4-ram" },
   sheep1: { sha256: "cda4de69ca5e795f995a0abfb7a52fb3036785f39448aeba002d9171c8bbb2b7", cacheName: "ovis-v4-sheep" },
@@ -139,6 +154,8 @@ describe("icon cache", () => {
     if (hash !== current.sha256) {
       throw new Error(`The icon files (${iconFiles().join(", ")}) changed, but ?v=${CURRENT_ICONS} still names the old ones. Pick a new query, set it on every icon URL (index.html, public/manifest.webmanifest, public/sw.js, src/App.tsx, src/components/AccessGate.tsx, src/lib/notifications.ts), give public/sw.js a new CACHE_NAME, then add { sha256: "${hash}", cacheName: <the new CACHE_NAME> } under the new query to ICON_VERSIONS in src/conventions.test.ts and point CURRENT_ICONS at it. Keep the old entries.`);
     }
+    // CACHE_NAME may move without the icons (fonts, shell assets); it must only never fall back to
+    // the cache of an older icon set, and each icon set names its own cache.
     const older = Object.entries(ICON_VERSIONS).filter(([query]) => query !== CURRENT_ICONS);
     fail([
       ...older.filter(([, entry]) => entry.cacheName === cacheName).map(([query]) => `public/sw.js's CACHE_NAME "${cacheName}" is the cache of the icons under ?v=${query}`),
@@ -159,6 +176,7 @@ describe("UI wording", () => {
 
 describe("regular expressions", () => {
   // Safari before 16.4 cannot parse a lookbehind, and one in any module stops the whole app from
+  // loading there (#2534); the build does not rewrite regular expressions.
   it("use no lookbehind in the client's code", () => {
     const offenders = [...scan("src/**/*.{ts,tsx}"), ...scan("shared/**/*.ts")].filter((name) => !/\.test\./.test(name)).flatMap((file) => {
       const source = read(file);
@@ -169,6 +187,9 @@ describe("regular expressions", () => {
 });
 
 describe("popstate listeners", () => {
+  // lib/useAddressBar.ts reads the entry every Back and Forward lands on, and holds the address back
+  // until it has. The order of the listeners does not matter to that; a listener that stops the
+  // event does, since the read then never comes.
   it("never stop the event for the listeners after them", () => {
     const offenders = scan("src/**/*.{ts,tsx}").filter((name) => !/\.test\./.test(name)).filter((file) => {
       const source = read(file);
@@ -230,6 +251,8 @@ describe("surfaces over the app", () => {
 });
 
 describe("terminal mount", () => {
+  // The attach stream is the only writer of the terminal and herdr owns scrollback (AGENTS.md): xterm
+  // keeps none, or the fit addon reserves a scrollbar column and the last columns go dead.
   it("creates every xterm Terminal with scrollback: 0", () => {
     const options: string[] = [];
     for (const file of scan("src/**/*.{ts,tsx}").filter((name) => !/\.test\./.test(name))) {

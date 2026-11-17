@@ -83,6 +83,7 @@ function Provider({ usage, now, count, onLocalLogin, onFollow, watching }: { usa
       {recorded && <p className="usage-note usage-recorded">{recorded.map((line) => <span key={line}>{line}</span>)}</p>}
       {problem && <p className={`usage-note${isError(usage) ? " is-problem" : ""}`}>{problem}</p>}
       {offered && <UsageSignInAgain usage={usage} onStarted={onLocalLogin} onFollow={onFollow} />}
+      {/* a 403 to a token that has not expired is a refused network, not an expired sign-in: the status line can stand in */}
       {usage.statusline_offer && !watching && <button type="button" className="btn btn-ghost usage-offer" disabled={statusline.busy} onClick={() => void statusline.set(true)}>
         {t("Read from Claude's status line instead")}
       </button>}
@@ -118,7 +119,8 @@ function Provider({ usage, now, count, onLocalLogin, onFollow, watching }: { usa
   );
 }
 
-export function UsageMeters({ onLocalLogin, watching = false }: { readonly onLocalLogin?: (paneId: string) => void; readonly watching?: boolean }) {
+/** `watching`: a watching device is not offered what it cannot turn on or sign in to */
+export function UsageMeters({ onLocalLogin, watching = false }: { /** opens a sign-in tab; a watching device has none */ readonly onLocalLogin?: (paneId: string) => void; readonly watching?: boolean }) {
   const t = useT();
   const { settings } = useSettings();
   const { report, loading, refresh } = useUsage(settings.showUsage);

@@ -13,6 +13,13 @@ import { Address } from "./PhonePanel.tsx";
 import { SettingsGroup, SettingsRow } from "./SettingsControls.tsx";
 
 
+/**
+ * Settings → Phone & devices → Portal: a public HTTPS address for this PC through a relay the
+ * user picks, run by the `portal` installed there, and who may open it. Any device that can type
+ * starts and stops it; the server refuses without a token. Hidden where the server offers none.
+ * `readOnly`: this browser reads it and changes nothing: a device that only watches, or a visitor
+ * Portal's own sign-in let in, which the server refuses every action here.
+ */
 export function PortalPanel({ readOnly = false }: { readOnly?: boolean }) {
   const t = useT();
   const { status, error, pending, busy, request } = usePortal();

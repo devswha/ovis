@@ -53,6 +53,12 @@ export async function openOwnOffer(url: string): Promise<void> {
   window.location.assign(url);
 }
 
+/**
+ * Settings → Devices and PCs → My devices, in sight while the relay is on: whether this PC takes the relay's
+ * channel straight on its home network (docs/relay.md, "Direct on the same network"), on by default. Said
+ * plainly because it is a listener on the network; who can sign in there is said with it. The switch only
+ * where the relay can be changed from (a direct connection by someone who drives this PC).
+ */
 export function RelayDirectRow({ relay, readOnly }: { relay: RelayState; readOnly: boolean }) {
   const t = useT();
   const [failure, setFailure] = useState<string | null>(null);
@@ -82,6 +88,21 @@ function announceFromRelay(code: AnnouncedCode): void {
   try { announcePairingCode(code); } finally { relayAnnouncing = false; }
 }
 
+/**
+ * The QR code of the pending pairing offer, counted down to its expiry. An offer is asked for when
+ * this opens with the relay online, when the Devices group starts a new code (the server keeps one
+ * pending code, so both show the same), when the code ran out, and on New code, which starts a
+ * new code first; never on a timer or a render. The setup guide's and Settings' relay QR codes can be
+ * up at once: a code another one announces is the one this shows already, or this asks for the offer
+ * again without announcing it (the server's offer reuses its pending code), so the two never keep
+ * answering each other.
+ * `qrOnly`: the QR code alone, with New code. No code to type is asked for (`POST /api/relay/code` is never sent), so
+ * nothing on the screen can be read and typed on another device: the relay tab's account QR code, which puts a PC in
+ * the account of whoever redeems it (ConnectPhoneDialog `AccountQr`). Its offer says so to the PC
+ * (`x-ovis-no-account-only`), which makes it only while it is in no account, with a code of its own that no other
+ * place started; New code ends that code and asks again. `onInAccount`: the PC refused the offer because it is in an
+ * account by now.
+ */
 export function RelayPairing({ phone = false, compact = false, qrOnly = false, onInAccount }: { phone?: boolean; compact?: boolean; qrOnly?: boolean; onInAccount?: () => void }) {
   const t = useT();
   const [offer, setOffer] = useState<RelayOffer | null>(null);
@@ -165,6 +186,8 @@ export function RelayPairing({ phone = false, compact = false, qrOnly = false, o
       const ms = Date.parse(offer.expires_at) - Date.now();
       if (ms <= 0) {
         setOffer(null);
+        // a code that ran out while shown is replaced by itself; one that arrived already expired
+        // (the PC's clock and this one apart) is not, or the asking would never end
         if (wasLive) { if (!compact || qrOnly) again(); } else setState("expired");
         return;
       }
@@ -228,6 +251,8 @@ export function RelayPairing({ phone = false, compact = false, qrOnly = false, o
       {state === "minting" && t("Getting a code…")}
     </>
   );
+  // the id a phone shows when a link carries another key: compared here, on the PC itself
+  // the typed code names the PC too, so its ID stays to compare with while the QR offer is being fetched again
   const offerId = offer === null ? undefined : decodeOffer(offer.url)?.server_id;
   const serverId = offerId ?? typedId;
   const pcId = serverId !== null && (
@@ -272,6 +297,15 @@ export function RelayPairing({ phone = false, compact = false, qrOnly = false, o
   );
 }
 
+/**
+ * The relay's two ways in Connect a device: its QR code (`qr`, the pending offer) and a code to type on the
+ * other device, asked for as the dialog opens, again on Refresh, and again when either runs out while shown:
+ * one renewal for both, the code first. Asking for one starts a new six-digit code, so the offer is asked for
+ * only after it (`onMinted`), never beside it. A code is never kept for the next opening: one looked up by a
+ * device is spent even when its person cancels at the ID comparison, and nothing here would know. A six-digit code started anywhere
+ * else ends this one on the PC (`reset`): it goes, and Refresh asks for another, never on its own, or the two
+ * would keep ending each other.
+ */
 function CompactRelay({ qr, qrExpires, failure, reset, onMinted }: { qr: string | null; qrExpires: string | null; failure: string | null; reset: number; onMinted: () => void }) {
   const t = useT();
   const [code, setCode] = useState<RelayCode | null>(null);
@@ -391,6 +425,11 @@ function TypedCode({ reset, onMinted }: { reset: number; onMinted: (code: RelayC
   );
 }
 
+/**
+ * No camera: a link without a code, sent to the phone any way at all. It holds nothing secret, so
+ * the phone that opens it and this PC show six digits to compare, and the owner approves the
+ * phone here (RelayPairingPrompt).
+ */
 function CodelessLink() {
   const t = useT();
   const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);

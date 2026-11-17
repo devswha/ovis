@@ -42,6 +42,13 @@ interface SendAttempt {
   textSend: boolean;
 }
 
+/**
+ * The terminal's input line on a touch screen. A phone's keyboard rewrites what it typed
+ * (dictation revising a phrase, an IME finishing a syllable), and a terminal cannot take back
+ * keys it already sent: every revision arrived as more text. Here the line is written with the
+ * keyboard's own editing and goes to the pane whole, then Enter. Autocorrect and spell-check stay
+ * off, as in the composer: they would swap a flag, path or branch name for a dictionary word.
+ */
 export function TerminalInput({ owner, active = true, connected, onSend, onEnter, onInsert, pasteTarget, onPasting, uploadFile, attach = false, onComposing, onFocus, keyboardHeld = false, keyControls, ref }: TerminalInputProps) {
   const t = useT();
   const text = useSyncExternalStore(subscribeTerminalDraft, () => readTerminalDraft(owner));
@@ -88,6 +95,11 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
   });
 
   // A Send tapped while the keyboard still composes the last word (Gboard composes every word,
+  // CJK IMEs an open syllable) finishes that word and sends once it commits. The button keeps
+  // focus and the selection, so nothing in the tap commits the word: a blur does (Chrome ends the
+  // composition on a focus change and fires compositionend at once), and the refocus inside the
+  // same gesture keeps the keyboard up. A keyboard that still does not commit by the tap's deadline
+  // gets the tap withdrawn with a note, so a later commit never sends on its own.
   const attempt = useRef<SendAttempt | null>(null);
   const clearPendingSend = useCallback(() => {
     const current = attempt.current;
@@ -95,6 +107,7 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
     attempt.current = null;
   }, []);
   useEffect(() => clearPendingSend, [clearPendingSend]);
+  // a drop withdraws the tap: a quick reconnect inside the wait must not send it after all
   useEffect(() => {
     if (connected || attempt.current === null) return;
     clearPendingSend();
@@ -139,6 +152,7 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
         element.blur();
         element.focus({ preventScroll: true });
       }
+      // committed inside the tap (Chrome, Gboard): compositionend already queued the send, no note
       if (composing.current && attempt.current === tapped) awaitCommit(tapped);
       return;
     }
@@ -164,6 +178,11 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
   }, [awaitCommit, clearPendingSend, connected, dictation.forget, onEnter, onSend, owner, t]);
   sendRef.current = send;
 
+  /**
+   * Types the line into the pane without Enter. The line clears only once the bridge says herdr
+   * has the bytes, and then only the text that was sent: what was typed meanwhile stays, as after
+   * Send. A refusal, a drop or no answer keeps the line with a note; nothing is tried again.
+   */
   const insert = useCallback(() => {
     if (!connected || terminalDraftSending(owner)) return;
     if (composing.current) { setNote(t("Finish the word, then insert.")); return; }
@@ -182,6 +201,16 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
     }).catch(() => setNote(t("Not confirmed: the terminal did not confirm the text. Check it before inserting again."))).finally(() => { setTerminalDraftSending(owner, false); });
   }, [clearPendingSend, connected, dictation.forget, onInsert, owner, t]);
 
+  /**
+   * A paste into the line waits on something (the clipboard's answer, an upload), so what it is for
+   * is captured before it waits: the PC, pane, connection, role and input lease; the draft as
+   * written; where the caret is; the compositions so far. An answer that comes after any of them
+   * changed, even and back again (a selection moved, a composition begun and ended with nothing
+   * written, the pane's input lost and given again), or for a line no longer shown, is dropped with
+   * a note. Null, with the note said, when the pane cannot take a paste now. `native`: the keyboard's
+   * own Paste, whose selection the browser collapses to its end after the paste event (Chrome on
+   * Android, even with the paste prevented): that collapse is the paste's own, not a move.
+   */
   const pasting = useRef(false);
   const beginPaste = useCallback((element: HTMLTextAreaElement, waiting: string, native = false) => {
     const target = pasteTarget?.() ?? null;
@@ -193,6 +222,9 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
     const selected = selections.current;
     const atPaste = (from: number, to: number): boolean => (from === start && to === end) || (native && from === end && to === end);
     // a caret moved in the focused line, by touch or by script, while the paste waits; each move
+    // reported counts, so a move and back reported on the way still drops the paste. Chrome on
+    // Android reports a selectionchange just after the keyboard's own Paste with the caret where it
+    // was, or a range collapsed to its end: neither is a move
     let seen = [start, end];
     let first = true;
     const moved = (): void => {
@@ -302,6 +334,15 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
     pasteFiles(element, files, false);
   };
 
+  /**
+   * The key bar's Paste: the clipboard is read from the user's tap and for this line alone, at the
+   * selection the tap found (beginPaste above), since the browser may hold the read for a permission
+   * prompt. Text goes in as written; an image on the clipboard, read where the browser has
+   * clipboard.read(), is uploaded and its path goes in, as the keyboard's own Paste does. A browser
+   * that reads only text says where an image can be pasted instead of calling the clipboard empty.
+   * A refused or missing clipboard says to use the keyboard's own paste; nothing is read in the
+   * background or retried.
+   */
   const paste = useCallback(() => {
     const element = box.current;
     if (pasting.current || element === null) return;
@@ -359,6 +400,7 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
     // Enter sends; Shift+Enter breaks the line; an IME keeps its Enter, including the committing
+    // one WebKit can send after compositionend as key code 229
     if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
     event.preventDefault();
     send();
@@ -406,6 +448,7 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
         aria-label={t("Terminal input line")}
         enterKeyHint="send"
         // the keyboard's word strip too: Chrome on Android hands the keyboard NO_SUGGESTIONS only
+        // for autocomplete="off", never for autocorrect or spellcheck
         autoComplete="off"
         autoCapitalize="off"
         autoCorrect="off"

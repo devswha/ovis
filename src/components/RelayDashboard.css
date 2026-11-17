@@ -167,6 +167,10 @@
 
 .relay-dash-pcs-split .relay-pc-details-title:focus, .relay-dash-pcs-split .relay-pc-details-title:focus-visible { outline: none; }
 
+/* The PC filter's track wraps instead of widening the page: its nowrap CJK options at large text (ja at
+   +40% need 404px) would otherwise overflow sideways, and a phone grows its layout viewport to the content,
+   which puts the fixed tab bar below the screen. Rows stay a finger apart so the coarse-pointer expanders
+   (styles.css .segmented > button::before) never cover a face in the other row. */
 .relay-dash-pcs .segmented { flex-wrap: wrap; row-gap: var(--space-2); }
 
 @media (pointer: coarse) {
@@ -240,6 +244,8 @@ html:lang(ja) .relay-dash { word-break: auto-phrase; }
     }
   }
 
+  /* Below the width where five whole tab labels fit (~280px, including 200% zoom at 390 -> 195 CSS px),
+     the bottom bar shows icons only and keeps each label as a visually-hidden accessible name. */
   @media (max-width: 280px) {
     .relay-dash-tab {
       gap: 0;

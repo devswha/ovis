@@ -324,6 +324,7 @@ describe("RelayOverview", () => {
     const account = renderMarkup({ pcs: f20Pcs(), mode: "account", defaultRelay: GLOBAL, now: NOW, children: createElement("section", { id: "relay-dash-pcs" }) });
     expect(account).toMatch(/<span class="relay-overview-attention-name" title="Backup NAS">Backup NAS<\/span>/);
     const overview = /<div class="relay-overview" data-overview-mode="account">([\s\S]*)<\/div>$/.exec(account)?.[1] ?? "";
+    // the overview's direct children, by class or id: a wrapper around any section would break the spacing rule that keys on them
     const topLevel: string[] = [];
     let depth = 0;
     for (const [, closing, attrs, selfClosing] of overview.matchAll(/<(\/?)[a-zA-Z][\w-]*([^>]*?)(\/?)>/g)) {
@@ -520,6 +521,7 @@ describe("RelayOverview", () => {
     expect(empty.findAll((node) => node.type === "button" && String(node.props.className ?? "").includes("btn-primary")).map(textOf)).toEqual(["Add a PC"]);
 
     const check = () => empty.find((node) => node.type === "button" && node.props["data-action"] === "check-again");
+    // aria-disabled, never disabled: a disabled button drops the keyboard's focus to the page
     const busyState = () => [check().props.disabled, check().props["aria-disabled"], check().props["aria-busy"], textOf(check())];
     expect(busyState()).toEqual([undefined, undefined, undefined, "Check again"]);
     await act(async () => { check().props.onClick(); });
@@ -595,6 +597,7 @@ describe("RelayOverview", () => {
     expect(described).toEqual(["On macOS or Linux:", "On Windows, in PowerShell:"]);
     const css = readFileSync(new URL("./RelayOverview.css", import.meta.url), "utf8");
     const command = /\.relay-overview-empty-command \{([^}]*)\}/.exec(css)?.[1] ?? "";
+    // `flex: 1` is a basis of 0: the row then never wraps and the command is squeezed to a few characters a line
     expect(command).toMatch(/flex: 1 1 \d+rem;/);
     expect(/\.relay-overview-empty-command-row \{([^}]*)\}/.exec(css)?.[1]).toContain("flex-wrap: wrap");
   });

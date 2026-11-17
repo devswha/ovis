@@ -98,6 +98,7 @@ describe("signing in", () => {
     now = session.expires_at;
     await client.listPcs();
     expect((await store.get("session"))?.access_token).not.toBe(session.access_token);
+    // the spent refresh token comes back, as a leaked copy would: the service ends the whole sign-in
     const refreshed = await store.get("session");
     if (refreshed === undefined) throw new Error("the refresh kept no session");
     await store.set("session", { ...refreshed, refresh_token: session.refresh_token, expires_at: 0 });
@@ -130,6 +131,7 @@ describe("a sign-in shared by tabs", () => {
     expect(read?.sign_in_id).toBeDefined();
     expect((await store.get("session"))?.sign_in_id).toBe(read!.sign_in_id);
     expect((await account.session())?.sign_in_id).toBe(read!.sign_in_id);
+    // the access token runs out: any call refreshes it, which changes the refresh token
     now = session.expires_at;
     await account.listPcs();
     expect((await store.get("session"))?.refresh_token).not.toBe(read!.refresh_token);
@@ -180,6 +182,7 @@ describe("a sign-in shared by tabs", () => {
     now = session.expires_at;
     await new AccountService({ store, fetch: service.fetch, now: () => now }).signOut();
     expect(await store.get("session")).toBeUndefined();
+    // a copy of the refresh token kept elsewhere no longer works
     const reuse = await service.fetch(new URL("/v1/token", SERVICE), { method: "POST", body: JSON.stringify({ grant_type: "refresh_token", refresh_token: session.refresh_token }) });
     expect(reuse.status).toBe(400);
   });
@@ -543,6 +546,7 @@ describe("My PCs", () => {
     const id = deriveServerId(real);
     const listed = (key: Uint8Array) => myPcs([{ server_id: id, label: "nuc", added_at: recent, last_seen_at: recent, public_key: hex(key), relay: "wss://relay.example" }], [], { now })[0];
     expect(listed(real)?.join?.relay).toBe("wss://relay.example");
+    // a directory that hands out another key for this id gets no way in
     expect(listed(other)?.join).toBeUndefined();
   });
 

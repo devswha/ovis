@@ -1,3 +1,10 @@
+/**
+ * Signs Claude Code or Codex in from the browser. The server runs the agent's own login on the PC in a
+ * terminal of its own that no herdr pane shows (server/usage-login.ts), and this dialog follows it: it shows the page to open
+ * (and Codex's one-time code), takes the code Claude's page shows and types it into the login, and says
+ * how it ended. The CLI writes its own credentials; the code lives only in the input until it is sent.
+ * Open terminal stops it and starts the same sign-in in a terminal tab instead; closing the dialog stops it.
+ */
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { Check, Copy, ExternalLink, SquareTerminal, X } from "lucide-react";
@@ -121,6 +128,7 @@ export function UsageSignInDialog({ request, onOpenTerminal, onSignedIn, onClose
     const input = codeInput.current;
     if (login === null || input === null || sending) return;
     setSending(true); setCodeError(null);
+    // the code is read from the input once and sent; nothing keeps it after
     void sendUsageLoginCode({ login, code: input.value }).then(() => { input.value = ""; answered.current = false; sentRef.current = true; setSent(true); })
       .catch((cause: unknown) => setCodeError(cause instanceof ApiError ? cause.detail : t("Could not send the code")))
       .finally(() => setSending(false));
@@ -141,10 +149,12 @@ export function UsageSignInDialog({ request, onOpenTerminal, onSignedIn, onClose
     const leaving = (): void => { void stopFollowing().catch(() => undefined); };
     window.addEventListener("pagehide", leaving);
     return () => { window.removeEventListener("pagehide", leaving); leaving(); };
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const close = (): void => { void stopFollowing().catch(() => undefined); onClose(); };
   const closeRef = useRef(close); closeRef.current = close;
   usePhoneSheetBack(() => { closeRef.current(); });
+  // Open terminal: the private sign-in stops and the same one starts in a terminal tab, which any device that
+  // reads this PC's terminals can see; the user chose it
   const toTerminal = (): void => {
     setPhase({ kind: "handing-over" });
     void stopFollowing().then(() => startUsageLogin(replace && "default" in request ? { ...request, replace: true } : request))

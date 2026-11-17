@@ -133,11 +133,15 @@ export default function VirtualSource({ name, text, colored, wrap, theme, marked
     containerRef.current = node;
     if (node.shadowRoot !== null) keepEmptyRows(node.shadowRoot);
     // this fires inside the virtualizer's render pass, which ends by fixing its scroll anchor: a
+    // scroll made here would be undone, and the layout read here is not yet the one shown (a
+    // marked line in the middle of the view can read as off it), so both wait for the pass to finish
     queueMicrotask(() => { readAnchor(); settle(); });
   }, [readAnchor, settle]);
 
   const onVirtualizer = useCallback((instance: VirtualizerInstance | undefined): void => { virtualizerRef.current = instance; }, []);
 
+  // the user's wheel, finger, scrollbar or keys cancel a reveal (the virtualizer's own scroll fixes
+  // must not: they come as scroll events too); every scroll moves the anchor on
   useEffect(() => {
     const root = hostRef.current?.querySelector<HTMLElement>(".virtual-source-scroll") ?? null;
     if (root === null) return;
@@ -205,6 +209,9 @@ export default function VirtualSource({ name, text, colored, wrap, theme, marked
   const metrics = useMemo(() => lineHeight === null ? null : { ...DEFAULT_VIRTUAL_FILE_METRICS, lineHeight }, [lineHeight]);
 
   // plain rows go through the pool too, though they never reach a worker: without one the package
+  // draws a plain file by building rows for every line on the page, again on each render (each
+  // scroll), where the pool's manager builds only the window's rows. 123 500 lines took 0.5-0.7 s
+  // per render at a 5x CPU slowdown that way, past a second on a CI runner.
   return <div ref={hostRef} className="virtual-source" data-colored={colored ? "" : undefined}>
     <DiffWorkerPool>
       <Virtualizer className="virtual-source-scroll" contentClassName="virtual-source-column" config={SCROLL_CONFIG}>

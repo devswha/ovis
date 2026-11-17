@@ -52,6 +52,7 @@ describe("MicButton", () => {
   }
 
   // iOS WebKit lets SpeechRecognition.start() run only from a user activation, and a touch's
+  // pointerdown is none: a take started there ends in "not-allowed" (#2343)
   it("starts the browser engine from a touch tap's click, not its pointerdown", async () => {
     const button = await mic("browser");
     await button.down("touch");
@@ -165,6 +166,8 @@ describe("useDictation", () => {
   }
 
   // HeliBoard, Gboard and the other AOSP keyboards call setComposingRegion on the word at the caret
+  // with nothing typed, and keep it until the next key; Chrome raises compositionstart and
+  // compositionupdate for it, and no input (InputMethodController::SetCompositionFromExistingText)
   it("puts a transcript in while the keyboard only marks the word at the caret as a composition (#2488)", async () => {
     const box = await field();
     box.raise("compositionstart", "compositionupdate");

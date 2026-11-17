@@ -198,6 +198,8 @@ describe("the PC's prompt for a device waiting for approval", () => {
   it("is a named group, not a dialog, in a layer labelled for devices", async () => {
     const root = await show([request()]);
     const [prompt] = prompts(root);
+    // an alertdialog would count as a cover for every "a dialog is open" check on the page: Escape in
+    // Connect a phone and in the phone drawer, the pane's cover, the web popup's trap
     expect(prompt!.props.role).toBe("group");
     expect(prompt!.props["aria-modal"]).toBeUndefined();
     expect(root.findAll((node) => typeof node.type === "string" && (node.props.role === "alertdialog" || node.props.role === "dialog"))).toEqual([]);
@@ -233,6 +235,8 @@ describe("the PC's prompt for a device waiting for approval", () => {
   });
 
   it("keeps the focus it took when development runs its effects twice", async () => {
+    // StrictMode (src/main.tsx) runs each effect's cleanup once right after the first run: the hand-back
+    // meant for a prompt that went must not leave the focus in Settings while the prompt is still there
     const root = await show([request()], (drawn) => createElement(StrictMode, null, drawn));
     const node = nodeOf(prompts(root)[0]!);
     expect(page.activeElement).toBe(node);
@@ -243,6 +247,8 @@ describe("the PC's prompt for a device waiting for approval", () => {
   });
 
   it("leaves the focus in a field the person is typing in, a terminal's included", async () => {
+    // xterm's helper textarea, the chat composer, a field in Settings: the keys on their way (a shell's
+    // Tab, then Enter) must not land on the prompt and walk to Approve
     for (const field of [new HTMLElement("terminal", [], ["textarea"]), new HTMLElement("composer", [], ["contenteditable"]), inSettings("settings field", ["input"]),
       inSettings("web page", ["iframe"]), inSettings("pdf", ["embed"]), inSettings("plugin", ["object"])]) {
       page.activeElement = field;
@@ -264,6 +270,8 @@ describe("the PC's prompt for a device waiting for approval", () => {
     expect(takesFocus(null)).toBe(true);
     expect(takesFocus(page.body as never)).toBe(true);
     expect(takesFocus(inSettings("settings button") as never)).toBe(true);
+    // a dialog that keeps Tab by its own key handler (session history, the worktree dialog, a row's sheet): the
+    // prompt is outside that handler's reach, so Tab from it would go on to the page the dialog covers
     expect(takesFocus(new HTMLElement("history button", [], ["aria-modal"]) as never)).toBe(false);
     expect(takesFocus(new HTMLElement("native dialog button", [], ["dialog[open]"]) as never)).toBe(false);
     for (const frame of ["iframe", "embed", "object"]) expect(takesFocus(inSettings(frame, [frame]) as never)).toBe(false);
@@ -396,6 +404,7 @@ describe("the PC's prompt for a device waiting for approval", () => {
     const root = await show([request(), request({ id: "p2", label: "desk2" }), request({ id: "p3", label: "desk3" })]);
     const [first, second, third] = prompts(root).map(approveOf);
     await act(async () => { jest.advanceTimersByTime(APPROVE_KEY_GUARD_MS); });
+    // an Enter and a click made 600 ms ago, before the prompt's first second and half second were over
     await act(async () => { first!.props.onClick({ ...KEY, timeStamp: ago(600) }); });
     await act(async () => { first!.props.onClick({ ...POINTER, timeStamp: ago(600) }); });
     expect(approved()).toEqual([]);
@@ -425,6 +434,8 @@ describe("the PC's prompt for a device waiting for approval", () => {
     expect(approved()).toEqual(["p1"]);
     page.activeElement = page.body;
     await act(async () => { renderer!.update(element([request({ id: "p2", label: "desk2" }), request({ id: "p3", label: "desk3" })])); });
+    // the second click of a double-click, a key typed by habit and a click aimed at what was there: none
+    // approves the prompt now under them, nor the one that moved up behind it
     for (const prompt of prompts(root)) for (const click of [SECOND_CLICK, KEY, POINTER]) await act(async () => { approveOf(prompt).props.onClick(click); });
     await act(async () => { jest.advanceTimersByTime(APPROVE_POINTER_GUARD_MS - 1); });
     for (const prompt of prompts(root)) await act(async () => { approveOf(prompt).props.onClick(POINTER); });

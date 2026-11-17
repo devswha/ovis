@@ -7,6 +7,11 @@ import { agentName } from "../lib/runtimeMove.ts";
 import { shouldFoldUserMessage } from "../lib/userMessageFold.ts";
 import { clearMachineWaitingSends, currentWaitingSends, dismissWaitingSend, expireWaitingSends, markUnanswered, restingSince, subscribeWaitingSends, WAITING_HINT_MS, WAITING_SEND_MS, WAITING_STUCK_MS, waitingKey, type WaitingSend } from "../lib/sentWaiting.ts";
 
+/**
+ * The sends this browser made to a pane that its transcript does not hold yet. A lost connection
+ * lets the PC's go, before paint: what became of them is the transcript's to say once it is read
+ * again, and nothing is sent again.
+ */
 export function useWaitingSends(machineId: string, paneId: string, connected: boolean): readonly WaitingSend[] {
   const key = waitingKey(machineId, paneId);
   useLayoutEffect(() => {

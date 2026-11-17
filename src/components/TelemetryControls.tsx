@@ -18,6 +18,8 @@ export function TelemetryNotice({ enabled, onOpen, inline = false }: { enabled: 
   const [turningOff, setTurningOff] = useState(false);
   const [offFailed, setOffFailed] = useState(false);
   const turnedOff = useRef(false);
+  // The server keeps this browser's latest safe settings snapshot for its next count. The snapshot
+  // contains no raw user-entered values or account identifiers.
   const { settings } = useSettings();
   const settingsSnapshot = useMemo(() => telemetrySettingsSnapshot(settings), [settings]);
   const settingsSignature = JSON.stringify(settingsSnapshot);

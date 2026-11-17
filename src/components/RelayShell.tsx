@@ -29,8 +29,11 @@ export interface RelayShellProps {
   pcStatus?: ReadonlyMap<string, PcStatus>;
   onCheckPcs?: () => void; onCheckPc?: (serverId: string) => void;
   onRefreshAccount?: () => void | Promise<void>;
+  /** Admission succeeded; only this action hands the scoped page to the PC app. */
   onOpenPc?: () => void;
+  /** Reloaded independently after a scope navigation, never copied into session storage. */
   continuedAccount?: AccountView | null;
+  /** Versions from admitted sessions only; a liveness probe never supplies one. */
   observedVersions?: ReadonlyMap<string, ObservedVersion>;
   scoped: boolean; iosTab: boolean;
   onPair: () => void; onRetry: () => void; onCancel: () => void; onBack: () => void; onForget: () => void;
@@ -49,6 +52,7 @@ export interface RelayShellProps {
   onCodeStart: () => void; onCodeSubmit: (code: string) => void; onCodeMatch: () => void;
 }
 
+/** The field a code is typed in, kept in the input itself (src/AGENTS.md: secret input stays in the DOM). */
 export function CodeEntry({ failure, looking = false, onSubmit, back, titleTag: Title = "h1", titleId, formId, omitHeading = false }: { readonly failure: TypedCodeFailure | null; readonly looking?: boolean | undefined; readonly onSubmit: (code: string) => void; readonly back?: ReactNode; readonly titleTag?: "h1" | "h2" | undefined; readonly titleId?: string | undefined; readonly formId?: string | undefined; readonly omitHeading?: boolean | undefined }) {
   const t = useT(), id = useId(), label = t("Code from the PC");
   const submit = (event: FormEvent<HTMLFormElement>): void => {

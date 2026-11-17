@@ -158,6 +158,8 @@ export function HerdrUpdateControls({ enabled, herdrVersion, showVersion = false
       </div>
     </section> : null;
   }
+  // Windows, an older server, a herdr that does not answer: nothing to offer, and the version
+  // the health check reported is still read here, since the sidebar no longer carries it
   if (!status?.supported) {
     return version ? <section className="settings-section settings-herdr-update">
       <h3>herdr</h3>
@@ -176,6 +178,7 @@ export function HerdrUpdateControls({ enabled, herdrVersion, showVersion = false
     </div>
     {(error || busy) && <p className="settings-hint" role={error ? "alert" : "status"}>{error ?? t("Updating herdr…")}</p>}
     {!busy && status.output && <pre className="update-output" role={status.phase === "error" ? "alert" : undefined} data-failed={status.phase === "error" || undefined}>{status.output}</pre>}
+    {/* a failure herdr printed nothing for still says it failed */}
     {!busy && !status.output && status.phase === "error" && <p className="settings-hint" role="alert">{t("herdr could not be updated, and it printed nothing to say why.")}</p>}
     </div></div>
   </section>;

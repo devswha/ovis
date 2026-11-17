@@ -16,6 +16,7 @@ export interface AccountPcsSource {
   admit(serverId: string, label: string, key: string): Promise<void>;
 }
 
+/** The page's own sign-in (docs/account.md): the directory nobody vouches for, each entry's key checked against its id (myPcs). */
 export function signedInAccount(): AccountPcsSource {
   const service = new AccountService({ store: indexedAccountStore });
   let bound: AccountService | null = null;
@@ -70,6 +71,8 @@ export function RelayAccountPcs({ machines, onConnectMachine, source }: { machin
         if (listed.current === round && checked !== undefined) setStates((current) => new Map(current).set(checked.server_id, checked.state));
       }, (error: unknown) => {
         if (listed.current !== round) return;
+        // an entry this PC cannot use (its relay not a wss: origin, its ID not its key's) leaves only its own row; anything
+        // else (a window this PC will not answer, owner_only) leaves no list rather than rows that say Checking… for good
         if (error instanceof ApiError && error.code === "account_pc_invalid") setPcs((current) => current?.filter((entry) => entry.server_id !== pc.server_id) ?? null);
         else {
           console.warn("Ovis: the account's PCs could not be checked", error instanceof Error ? error.name : error);

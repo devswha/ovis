@@ -14,6 +14,11 @@ export function secondsLeft(at: number, now: number): number {
   return Math.max(0, Math.ceil((at - now) / 1000));
 }
 
+/**
+ * When a request runs out on this window's clock; null when nothing says. The PC's `left_ms` is counted
+ * from when this window first saw the request (each telling is a new object), since a window's clock need
+ * not match the PC's `expires_at`: a tablet two minutes fast would read "0 s left" for its whole life.
+ */
 const heard = new WeakMap<RelayPairingRequest, number>();
 export function deadlineOf(pairing: RelayPairingRequest, now: number): number | null {
   const known = heard.get(pairing);
@@ -25,19 +30,47 @@ export function deadlineOf(pairing: RelayPairingRequest, now: number): number | 
   return at;
 }
 
+/**
+ * The two halves of a sentence that names the digits in its middle, so each language keeps its own word
+ * order. The template is cut at its own `{digits}` before the name goes in: the name is whatever the
+ * asking device sent, and must not be able to move the cut or drop what follows it.
+ */
 export function aroundDigits(template: string, name: string): [string, string] {
   const at = template.indexOf("{digits}");
   const named = (part: string) => part.replaceAll("{name}", () => name);
   return at < 0 ? [`${named(template)} `, ""] : [named(template.slice(0, at)), named(template.slice(at + "{digits}".length))];
 }
 
+/**
+ * Where the person may be typing: a field (a terminal's is a textarea), or a frame, whose page has the keys
+ * while this document only sees the frame focused (the in-app browser's popup, an HTML or PDF preview).
+ * Its keys stay its own.
+ */
 const TEXT_ENTRY = 'input, textarea, select, iframe, embed, object, [contenteditable]:not([contenteditable="false"])';
+/**
+ * Whether a prompt that arrives may take the focus from `active`. Only where it would be far otherwise:
+ * nothing has the focus, or a modal dialog holds Tab inside itself (Settings). Never from a field or a
+ * frame, where the keys already on their way (a shell's Tab, then Enter) would land on Approve; the layer's
+ * live region announces the prompt there, and it is a click or a Tab away: a dialog's Tab round goes on
+ * from its last stop to the prompt (Shift+Tab from its first), on the prompt itself before its buttons
+ * (`overlayStops` in lib/useFocusTrap.ts). That dialog is one whose Tab round `useFocusTrap` holds, not
+ * every `aria-modal` surface: one that keeps Tab by a key handler of its own (session history, the worktree
+ * dialog, a row's sheet) does not hear a Tab pressed on the prompt, which would go on to the page it covers.
+ */
 export function takesFocus(active: Element | null): boolean {
   if (active === null || active === document.body) return true;
   if (!(active instanceof HTMLElement) || active.closest(TEXT_ENTRY) !== null) return false;
   return inFocusTrap(active);
 }
 
+/**
+ * Approving lets a device into this PC, so it must be meant for the prompt it lands on, by someone who had
+ * the time to read it. How long a key cannot press Approve after the prompt arrived, moved to another place
+ * in the stack, was handed the focus or had the focus come into it from outside: keys typed for what was
+ * there before it (a Tab and an Enter by habit, right after the prompt above was approved; Shift+Tab and an
+ * Enter typed for the dialog beneath). Counted to when the key was pressed, not to when the page heard it
+ * (`inputAge`).
+ */
 export const APPROVE_KEY_GUARD_MS = 1000;
 export const APPROVE_POINTER_GUARD_MS = 500;
 
@@ -47,11 +80,25 @@ export const APPROVE_POINTER_GUARD_MS = 500;
  */
 export const INPUT_AGE_MAX_MS = 5000;
 
+/**
+ * How long ago the key or the click of an event was made (its `timeStamp`, on the clock of `performance.now()`):
+ * a page that was busy hears it late, and Approve's guards count to when it was made, so one already on its
+ * way when the prompt arrived or moved approves nothing. 0 for an event that does not say, or says a time
+ * ahead of the page's clock.
+ */
 export function inputAge(timeStamp: unknown, now: number = performance.now()): number {
   if (typeof timeStamp !== "number" || !Number.isFinite(timeStamp) || timeStamp <= 0) return 0;
   return Math.min(INPUT_AGE_MAX_MS, Math.max(0, now - timeStamp));
 }
 
+/**
+ * The devices waiting for this PC's approval (`relay-pairings`), a prompt each. One that arrives over
+ * a modal dialog takes the focus on its own surface, never on Approve, and a dialog's focus trap counts
+ * it and its buttons among its own Tab stops (lib/useFocusTrap.ts), entered on the prompt itself in both
+ * directions. Approve waits for a moment after its prompt arrived, moved, was handed the focus or was walked
+ * into (`approve`). It is a group, not a dialog: it
+ * covers nothing, so the page's "a dialog is open" checks (Escape handlers, pane cover) must not count it.
+ */
 export function RelayPairingPrompt({ pairings }: { pairings: readonly RelayPairingRequest[] }) {
   const t = useT();
   const id = useId();
@@ -79,6 +126,7 @@ export function RelayPairingPrompt({ pairings }: { pairings: readonly RelayPairi
   const layer = useRef<HTMLDivElement>(null);
   const prompts = useRef(new Map<string, HTMLDivElement>());
   const since = useRef(new Map<string, number>());
+  /** when the focus last came into each prompt from outside it: Approve's guard for keys counts from it too */
   const entered = useRef(new Map<string, number>());
   const pressed = useRef<{ id: string; key: boolean; at: number } | null>(null);
   const places = useRef(new Map<string, number>());
@@ -89,6 +137,8 @@ export function RelayPairingPrompt({ pairings }: { pairings: readonly RelayPairi
   useLayoutEffect(() => {
     const arrived = pairings.filter((pairing) => !since.current.has(pairing.id));
     const at = Date.now();
+    // one that moved up when the prompt above it went is new where it is now: a click or a key on its way
+    // to the prompt that was there must not press it
     since.current = new Map(pairings.map((pairing, index) => [pairing.id, places.current.get(pairing.id) === index ? since.current.get(pairing.id) ?? at : at]));
     places.current = new Map(pairings.map((pairing, index) => [pairing.id, index]));
     const active = document.activeElement;
@@ -103,6 +153,7 @@ export function RelayPairingPrompt({ pairings }: { pairings: readonly RelayPairi
     if (document.activeElement !== node) return;
     opener.current = before;
     held.current = true;
+    // handed the focus, not walked to: the next keys may be habit (Tab, Enter), so its guard starts again
     since.current.set(next.id, at);
     const scrolled = layer.current?.scrollTop;
     node.scrollIntoView({ block: "nearest" });
@@ -140,9 +191,13 @@ export function RelayPairingPrompt({ pairings }: { pairings: readonly RelayPairi
   return (
     <div ref={layer} className="relay-pairing-layer" role="region" aria-live="assertive" aria-label={t("Devices waiting for approval")}
       onFocus={(event) => {
+        // walked in by Tab from a modal dialog's round: that stop gets the focus back when the last prompt goes.
+        // Not from the page (a tap on Approve from a terminal must not raise a phone's keyboard again afterwards)
         const from = event.relatedTarget;
         if (!held.current && from instanceof HTMLElement && !event.currentTarget.contains(from) && inFocusTrap(from)) opener.current = from;
         held.current = true;
+        // into a prompt from outside it (Tab or Shift+Tab from a dialog or the page, or from the prompt beside it):
+        // the keys that follow may be typed for where the focus was, so that prompt's guard for keys starts again
         for (const [entering, node] of prompts.current) {
           if (event.target instanceof Node && node.contains(event.target) && !(from instanceof Node && node.contains(from))) entered.current.set(entering, Date.now());
         }

@@ -642,6 +642,7 @@ describe("a key that is not the PC's", () => {
     expect(forged).not.toContain("This PC&#x27;s ID");
     expect(forged).toContain("ID this link names");
     expect(forged).toContain("ID of the key this link carries");
+    // a bad saved key under a genuine link is the saved key's, not the link's
     const changed = render(props({ kind: "failed", failure: "identity-changed", name: "Desk", detail: null, mismatch: { expected: EXPECTED, received: RECEIVED, from: "saved" } }));
     expect(changed).toContain("ID this phone paired with");
     expect(changed).toContain("ID of the key this phone saved");

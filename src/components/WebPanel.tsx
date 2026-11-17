@@ -13,6 +13,11 @@ export interface WebPanelProps {
   covered?: boolean;
 }
 
+/**
+ * A page served by this PC in the file panel's place. A narrow window presents it as a closable
+ * popup. The frame is cross-origin (another port), so its scripts and storage are its own; the
+ * sandbox still keeps it from navigating this window.
+ */
 export function WebPanel({ url, onClose, docked = true, panelStart, covered = false }: WebPanelProps) {
   const t = useT();
   const [loads, setLoads] = useState(0);

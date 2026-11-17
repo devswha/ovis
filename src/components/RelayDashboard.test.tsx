@@ -392,6 +392,7 @@ describe("RelayDashboard frame and routes", () => {
     expect(details()).toHaveLength(1);
     expect(focusedNodes).toEqual([]);
 
+    // between 1100px and 1391px (remaining table < 720px): Details sits beside the two-line narrow list
     await act(async () => { renderer!.unmount(); });
     narrowMatches = false;
     narrowSplitMatches = true;

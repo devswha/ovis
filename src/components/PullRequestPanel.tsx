@@ -26,6 +26,13 @@ type Sent = "sending" | "added" | "added_without_log" | "too_long";
 
 const STATE_ICON: Record<PullRequestCheckState, typeof CircleCheck> = { pass: CircleCheck, fail: CircleX, pending: CircleDot, skipped: CircleMinus, neutral: CircleMinus };
 
+/**
+ * The pull request of the pane's branch, as the PC running it reads it through its own gh sign-in
+ * (the layout follows GitHub's mobile app: the title and state, then checks, then conversations):
+ * read when the tab opens and on Refresh, never polled. Send to agent puts a failing check's log, or
+ * a review comment, into the pane's draft and sends nothing. Merge asks first, and merges only the
+ * head that was shown, with the repository's default method.
+ */
 export function PullRequestPanel({ paneId, directory, machineName }: PullRequestPanelProps) {
   const t = useT();
   const locale = useLocale();

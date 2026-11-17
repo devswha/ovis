@@ -1,3 +1,8 @@
+/* The slot PaneTerminal.tsx keeps above the key bar in the terminal lens: one row of the input
+   line in flow, whatever floats in it. The line grows to four rows (and a note under it) upward
+   over the grid's last rows instead of taking them: the grid's height is the pty's size, and each
+   change of it resizes the pane for every device on it. The masked input (SecretInput.css) takes
+   the line's place the same way. */
 .terminal-input-slot {
   --terminal-input-pad-bottom: var(--space-1);
   position: relative;
@@ -153,6 +158,10 @@
   color: var(--bg);
 }
 
+/* Insert is the quieter of the two: an outline on the elevated surface, so Send alone is the
+   filled one. The outline is the dim text colour, which holds 3:1 against the panel in every
+   theme (the hairline border colour does not); the pressed state is the key bar's. Attach (Settings >
+   Terminal, off by default) stands before it the same way */
 .terminal-input-insert .terminal-input-face,
 .terminal-input-attach .terminal-input-face,
 .terminal-input-keys .terminal-input-face {

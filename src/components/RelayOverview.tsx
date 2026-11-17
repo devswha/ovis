@@ -110,6 +110,7 @@ function rowAction(pc: DashboardPc, fresh: boolean, t: ReturnType<typeof useT>, 
   }
 }
 
+/** The installer for a PC on Windows, as README.md gives it: the `sh` line of `INSTALLER_COMMAND` does not run there. */
 export const WINDOWS_INSTALLER_COMMAND = "irm https://ovis.sh/install.ps1 | iex";
 export const COPIED_MS = 1_600;
 
@@ -255,6 +256,7 @@ export function RelayOverview(props: RelayOverviewProps) {
             </>
           )}
           <div className="relay-overview-empty-actions">
+            {/* aria-disabled, not disabled: a press keeps the focus it had instead of dropping it to the page */}
             {providerName !== null && refreshAccount && <button type="button" className="btn relay-overview-check-again" data-action="check-again" aria-disabled={checking || undefined} aria-busy={checking || undefined} onClick={checkAgain}>{t(checking ? "Checking…" : "Check again")}</button>}
             {onAddPc && <button type="button" className="btn btn-primary" data-action="add-pc" onClick={onAddPc}>{t("Add a PC")}</button>}
             {onPairByQr && <button type="button" className="btn btn-ghost" data-action="pair-qr" onClick={onPairByQr}>{t("Pair with a QR or code")}</button>}

@@ -6,6 +6,7 @@ import { useT } from "../lib/i18n.ts";
 import { PROVIDER_NAME, RECORDER_NAME, usageName } from "../lib/usage.ts";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
 
+/** Forget a list entry, not a CLI credential: Restore under Removed from Ovis, or its next followed sign-in, brings it back. */
 export function UsageRemoveAccount({ usage }: { readonly usage: ProviderUsage }) {
   const t = useT();
   const [confirm, setConfirm] = useState(false);

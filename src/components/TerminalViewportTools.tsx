@@ -26,6 +26,7 @@ interface Props {
   onError(message: string): void;
 }
 
+/** UI over the attach stream. History belongs to herdr; xterm still has zero scrollback. */
 const HELD_PAGE_MS = 1000;
 const HELD_PAGE_RETURN_MS = 3 * HELD_PAGE_MS;
 
@@ -34,6 +35,7 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
   const api = useMachineApi();
   const layer = useRef<HTMLDivElement>(null);
   const [scroll, setScroll] = useState<PaneScrollInfo | null>(null);
+  // read up in the history xterm keeps itself (a herdr-core server's `terminal-history`): herdr's metrics never see it
   const [localBack, setLocalBack] = useState(false);
   const scrollRef = useRef(scroll); scrollRef.current = scroll;
   const [box, setBox] = useState<Box | null>(null);
@@ -58,6 +60,9 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
     let idle = 0;
     let version = 0;
     let outputVersion = 0;
+    // the output the current metrics were read after: a program leaving its alternate screen hands the
+    // history back, and until the next read says so its zero-history metrics must not turn a page into
+    // keys for the shell. A page asked for meanwhile waits for that read, briefly.
     let metricsOutput = -1;
     let metricsAt = 0;
     let outputAt = -Infinity, burstFrom = -Infinity;
@@ -240,12 +245,15 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
       outputAt = now;
       schedule(scrollPollDelay(true, 0, scrollRef.current, following()));
     });
+    // xterm's own scrollback is 0 on a herdr server, so its view sits below history only on a herdr-core one
     const readLocal = () => {
       const buffer = terminal.buffer.active;
       setLocalBack(buffer.viewportY < buffer.baseY);
     };
     const scrolled = terminal.onScroll(readLocal);
     const rendered = terminal.onRender(() => { readLocal(); paintHits(); });
+    // a wheel or swipe that xterm sends to herdr as mouse reports comes back only as output, from a view
+    // that left the bottom: read at the busy cadence, not the follow pace
     const gesture = () => { gestureUntil = Date.now() + SCROLL_POLL_SETTLE_MS; wake(); };
     terminal.element?.addEventListener("wheel", gesture, { passive: true, capture: true });
     terminal.element?.addEventListener("touchmove", gesture, { passive: true, capture: true });
@@ -283,6 +291,7 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
     {enabled && interactive && box && (localBack || (validScroll(scroll) && scroll.offset_from_bottom > 0)) && <button type="button" className="btn terminal-jump-bottom"
       aria-label={t("Jump to bottom")} title={t("Jump to bottom")} style={{ left: box.anchorX, top: box.anchorY }}
       onPointerDown={(event) => event.preventDefault()} onClick={() => {
+        // the browser's own history scrolls here; herdr's viewport (shared with its other clients) only when it is scrolled
         if (localBack) terminal?.scrollToBottom();
         if (validScroll(scroll) && scroll.offset_from_bottom > 0) writeRef.current(0);
       }}><ArrowDown aria-hidden="true" /></button>}

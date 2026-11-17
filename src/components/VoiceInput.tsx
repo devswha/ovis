@@ -79,6 +79,7 @@ function registerTarget(target: VoiceTarget): () => void {
 }
 
 export interface DictationOptions {
+  /** A mounted sibling must not own the global shortcut or retain a recording after selection leaves. */
   active?: boolean;
   mode: VoiceMode;
   connected: boolean;
@@ -123,6 +124,10 @@ export function useDictation(options: DictationOptions): Dictation {
   }, [t]);
 
   // An answer that lands while an IME is composing (a Hangul syllable half typed) would rewrite the
+  // box under the composition and break it: it waits for compositionend, in arrival order. Only
+  // a composition something was typed into holds it: Android keyboards (HeliBoard, Gboard) also
+  // open one on the word at the caret with nothing typed, until the next key (#2488), and Chrome
+  // raises compositionstart and compositionupdate for that but no input.
   const open = useRef(false);
   const composing = useRef(false);
   const held = useRef<VoiceText[]>([]);
@@ -217,9 +222,12 @@ export function MicButton({ dictation, className = "", disabled = false }: { dic
   const reason = voice.unavailableReason ? errorNote(t, voice.unavailableReason) : null;
   const label = recording ? t("Insert dictation") : voice.engine === "browser" ? t("Dictate") : t("Dictate (hold)");
   // a pointer already acted on pointerdown, so the click that follows its release is skipped;
+  // a touch tap's click has detail 0 like a keyboard's, so detail cannot tell them apart
   const pointerUpAt = useRef(-Infinity);
   const holding = useRef<number | null>(null);
   // iOS lets browser speech start only from a user activation, which a touch's pointerdown is not
+  // (#2343): there the tap's click starts or finishes the take, as the take stood at its pointerdown,
+  // so a take that ended on its own meanwhile is not started again; a touch hold is not push-to-talk
   const tap = useRef<"start" | "finish" | null>(null);
   const tapUpAt = useRef(-Infinity);
   return (

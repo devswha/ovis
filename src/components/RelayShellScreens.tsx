@@ -21,6 +21,10 @@ export interface TypedDigitsProps {
   readonly formId?: string | undefined;
 }
 
+/**
+ * Adding a PC listed in the account: the six digits come from that PC's own screen, typed here, so a
+ * PC someone else listed under a familiar name cannot be added with a tap. Kept in the input itself.
+ */
 export function TypedDigits({ pc, onSubmit, cancel, challenge, compact = false, formId }: TypedDigitsProps) {
   const t = useT();
   const id = useId();
