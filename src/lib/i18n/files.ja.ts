@@ -1,3 +1,12 @@
+/**
+ * Japanese for the keys only the files files use:
+ * components/Visualization.tsx, components/FileViewer.tsx, components/FilesDialog.tsx, components/FileReader.tsx,
+ * components/TextFileView.tsx, components/TextFileEditor.tsx, components/FilePathLink.tsx, components/FilePanelResizer.tsx,
+ * components/HighlightedCode.tsx, components/RepoDiffViewer.tsx, components/RepoChanges.tsx,
+ * components/RepoDiff.tsx, lib/repoDiff.ts, lib/diffLineNotes.ts, components/WebPanel.tsx,
+ * components/PullRequestPanel.tsx, lib/pullRequest.ts, components/MarkdownOutline.tsx.
+ * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
+ */
 export const FILES_JA: Record<string, string> = {
   "Pair this browser again to open the file.": "ファイルを開くには、このブラウザーを再ペアリングしてください。",
   "The PC denied access to this file.": "PC がこのファイルへのアクセスを拒否しました。",

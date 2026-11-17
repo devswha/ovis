@@ -1,3 +1,10 @@
+/**
+ * Korean for the keys only the terminal files use:
+ * components/PaneTerminal.tsx, components/PaneCanvas.tsx, components/KeyBar.tsx (with ARROWS and
+ * KEY_SPOKEN_NAMES), components/FindBar.tsx, components/TerminalViewportTools.tsx,
+ * components/SplitDropPreview.tsx, components/TabStrip.tsx, lib/terminalLabel.ts, lib/tabName.ts.
+ * Register and fixed terms follow ../i18n.ko.ts; a key another feature also uses goes there.
+ */
 export const TERMINAL_KO: Record<string, string> = {
   "Searching…": "검색 중…",
   "Pane changed. Search again.": "패널 내용이 변경되었습니다. 다시 검색하세요.",

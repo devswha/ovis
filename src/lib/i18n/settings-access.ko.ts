@@ -1,3 +1,8 @@
+/**
+ * Korean for the settings keys of Settings → Phone & devices → Access: the rest of the settings part
+ * (./settings.ko.ts), kept apart so each file stays short. Both files are the one settings part,
+ * so a key lives in only one of them; its header lists the settings files and the register.
+ */
 export const SETTINGS_ACCESS_KO: Record<string, string> = {
   "Access": "접근",
   "Connected to this PC": "이 PC에 연결된 것",

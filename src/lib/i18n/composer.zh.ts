@@ -1,3 +1,11 @@
+/**
+ * Simplified Chinese for the keys only the composer files use:
+ * components/Composer.tsx (with SOURCE_LABEL), components/ComposerNotices.tsx,
+ * components/VoiceInput.tsx, components/SecretInput.tsx, components/TerminalInput.tsx,
+ * components/PendingMessages.tsx, lib/compose.ts, components/PromptCard.tsx, lib/promptAnswer.ts,
+ * and ../../../shared/card-text.ts (CARD_TEXT, the card text the bridge writes itself).
+ * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
+ */
 export const COMPOSER_ZH: Record<string, string> = {
   "Next question": "下一个问题",
   "Edit queued message": "编辑排队消息",

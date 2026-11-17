@@ -1,3 +1,11 @@
+/**
+ * Japanese for the keys only the composer files use:
+ * components/Composer.tsx (with SOURCE_LABEL), components/ComposerNotices.tsx,
+ * components/VoiceInput.tsx, components/SecretInput.tsx, components/TerminalInput.tsx,
+ * components/PendingMessages.tsx, lib/compose.ts, components/PromptCard.tsx, lib/promptAnswer.ts,
+ * and ../../../shared/card-text.ts (CARD_TEXT, the card text the bridge writes itself).
+ * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
+ */
 export const COMPOSER_JA: Record<string, string> = {
   "Next question": "次の質問",
   "Edit queued message": "キュー内のメッセージを編集",

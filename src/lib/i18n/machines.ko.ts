@@ -1,3 +1,9 @@
+/**
+ * Korean for the keys only the machines files use:
+ * components/MachineSidebar.tsx (with STATE_WORD), components/MachineDialog.tsx,
+ * lib/bridgeProgress.ts (with STAGES), components/MachineStats.tsx, lib/systemReport.ts.
+ * Register and fixed terms follow ../i18n.ko.ts; a key another feature also uses goes there.
+ */
 export const MACHINES_KO: Record<string, string> = {
   "1 agent": "에이전트 1개",
   "{n} agents": "에이전트 {n}개",

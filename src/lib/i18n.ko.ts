@@ -21,6 +21,15 @@ import { RELAY_KO } from "./i18n/relay.ko.ts";
 import { DASHBOARD_KO } from "./i18n/dashboard.ko.ts";
 import { RUNTIME_MOVE_KO } from "./i18n/runtime-move.ko.ts";
 
+/**
+ * Korean for every `t("…")` in src/ that no part in lib/i18n/ holds: keys more than one feature
+ * uses, and the app shell's. KO at the end is this and the parts together. The English string is
+ * the key. Grouped by where the text
+ * shows; within a group, roughly in the order it appears. Register: labels and buttons as nouns
+ * or ~하기, sentences in 합니다체. Fixed terms: 패널, 워크스페이스, 에이전트, 터미널, 채팅, 페어링,
+ * 기기; product names (herdr, Tailscale, Codex, Claude Code) stay as they are. Placeholders in
+ * braces keep their English names.
+ */
 const BASE: Record<string, string> = {
   "A key may not have reached the terminal: the connection ended before it was confirmed.": "키가 터미널에 닿지 않았을 수 있습니다: 확인되기 전에 연결이 끊겼습니다.",
   "Open PC": "PC 열기",

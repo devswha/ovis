@@ -1,3 +1,12 @@
+/**
+ * Korean for the keys only the chat files use:
+ * components/ChatView.tsx, components/Markdown.tsx, components/MermaidLightbox.tsx,
+ * components/ChatMinimap.tsx, components/ImageLightbox.tsx, components/BackgroundTasks.tsx,
+ * components/BackgroundAgentDetail.tsx, components/Artifacts.tsx, components/OmpBtw.tsx, components/MarkdownLinkMenu.tsx,
+ * lib/workBlocks.ts (with CATEGORY_LABEL), lib/toolVerbs.ts (with VERB_LABEL), lib/outcomeChip.ts,
+ * lib/chatTimestamp.ts, lib/chatReadDeadline.ts, components/ConversationSearch.tsx.
+ * Register and fixed terms follow ../i18n.ko.ts; a key another feature also uses goes there.
+ */
 export const CHAT_KO: Record<string, string> = {
   "Antigravity chat is unavailable. Open Terminal to see activity and tool calls.": "Antigravity 채팅을 사용할 수 없습니다. 터미널을 열어 작업 상태와 도구 호출을 확인하세요.",
   "Not in the conversation. If the agent showed an error, it is in the terminal.": "대화에 기록되지 않았습니다. 에이전트가 오류를 보였다면 터미널에 있습니다.",

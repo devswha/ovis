@@ -1,3 +1,7 @@
+/**
+ * Japanese for what each Settings row does (SettingsRow's description, #3275): the sentence a page without sentences
+ * shows on demand. Register and fixed terms follow ../i18n.ja.ts; "this device" is このデバイス.
+ */
 export const SETTINGS_HELP_JA: Record<string, string> = {
   "Posts each alert to one more place: ntfy, Slack, Discord, Telegram, or any address that takes JSON. The address is saved on this PC, never shown in full again, and used whichever device set it.": "通知を、ntfy、Slack、Discord、Telegram、または JSON を受け取るアドレスのうち 1 か所にも送ります。アドレスはこの PC に保存され、保存後は全体が表示されることはなく、どのデバイスで設定しても同じように使われます。",
   "Also sends there when an agent asks you something. Chosen apart from this device's own alerts.": "エージェントが質問してきたときに、そちらにも送ります。このデバイスの通知の選択とは別に決めます。",

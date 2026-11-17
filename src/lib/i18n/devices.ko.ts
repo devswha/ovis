@@ -1,3 +1,11 @@
+/**
+ * Korean for the keys only the devices files use:
+ * components/DevicesPanel.tsx (with VIA), components/ConnectPhoneDialog.tsx, components/RelaySignIn.tsx, components/PhonePanel.tsx, components/PortalPanel.tsx,
+ * components/PortalAuth.tsx, components/PortalInvite.tsx, components/RelayPanel.tsx,
+ * components/PushTestControls.tsx, components/AccessGate.tsx, components/LanExposureNotice.tsx,
+ * components/InstallHint.tsx, lib/install.ts, lib/installHint.ts, lib/portalAuth.ts, and shared/portal.ts (PORTAL_AUTH_PROBLEMS).
+ * Register and fixed terms follow ../i18n.ko.ts; a key another feature also uses goes there.
+ */
 export const DEVICES_KO: Record<string, string> = {
   "Anyone who can reach {host} on your network can type into every pane: no access token is set and no device is paired yet.": "같은 네트워크에서 {host}에 닿을 수 있는 사람은 누구나 모든 패널에 입력할 수 있습니다. 접속 토큰이 설정되지 않았고, 아직 페어링된 기기도 없습니다.",
   "Tap the Share button, then Add to Home Screen.": "공유 버튼을 누른 뒤 홈 화면에 추가를 선택하세요.",

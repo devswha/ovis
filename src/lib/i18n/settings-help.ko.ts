@@ -1,3 +1,7 @@
+/**
+ * Korean for what each Settings row does (SettingsRow's description, #3275): the sentence a page without sentences
+ * shows on demand. Register and fixed terms follow ../i18n.ko.ts; "this device" is 이 기기, "every device" 모든 기기.
+ */
 export const SETTINGS_HELP_KO: Record<string, string> = {
   "Posts each alert to one more place: ntfy, Slack, Discord, Telegram, or any address that takes JSON. The address is saved on this PC, never shown in full again, and used whichever device set it.": "알림을 ntfy, Slack, Discord, Telegram, 또는 JSON을 받는 주소 중 한 곳으로도 보냅니다. 주소는 이 PC에 저장되어 다시는 전체가 보이지 않으며, 어느 기기에서 정했든 똑같이 쓰입니다.",
   "Also sends there when an agent asks you something. Chosen apart from this device's own alerts.": "에이전트가 나에게 물을 때 그 앱으로도 보냅니다. 이 기기의 알림 선택과는 따로 정합니다.",

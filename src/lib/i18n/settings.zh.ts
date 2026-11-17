@@ -1,3 +1,9 @@
+/**
+ * Simplified Chinese for the keys only the settings files use:
+ * components/SettingsDialog.tsx (with THEME_NAMES), components/SignOutRow.tsx, components/KeyBarSettings.tsx,
+ * components/SettingsControls.tsx, components/TelemetryControls.tsx, lib/paletteSettings.ts.
+ * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
+ */
 export const SETTINGS_ZH: Record<string, string> = {
   "Finished": "完成",
   "Direct typing": "直接输入",

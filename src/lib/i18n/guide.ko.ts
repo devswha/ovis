@@ -1,3 +1,7 @@
+/**
+ * Korean for the keys only components/SetupGuide.tsx (the first-run setup guide) uses.
+ * Register and fixed terms follow ../i18n.ko.ts; a key another feature also uses goes there.
+ */
 export const GUIDE_KO: Record<string, string> = {
   "Look again": "다시 확인",
   "Use Tailscale or Wi-Fi instead": "대신 Tailscale이나 Wi-Fi 쓰기",

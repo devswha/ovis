@@ -1,3 +1,8 @@
+/**
+ * Korean for the keys only the agent setup files use: components/AgentSetupCard.tsx,
+ * components/AddAgentPanel.tsx, components/AgentTile.tsx, components/AgentsSettings.tsx.
+ * Register and fixed terms follow ../i18n.ko.ts; a key another feature also uses goes there.
+ */
 export const SETUP_KO: Record<string, string> = {
   "Set up {agent}": "{agent} 설정",
   "Uses the official installer, on this PC.": "이 PC에 공식 설치 프로그램으로 설치합니다.",

@@ -1,3 +1,11 @@
+/**
+ * Korean for the keys only the composer files use:
+ * components/Composer.tsx (with SOURCE_LABEL), components/ComposerNotices.tsx,
+ * components/VoiceInput.tsx, components/SecretInput.tsx, components/TerminalInput.tsx,
+ * components/PendingMessages.tsx, lib/compose.ts, components/PromptCard.tsx, lib/promptAnswer.ts,
+ * and ../../../shared/card-text.ts (CARD_TEXT, the card text the bridge writes itself).
+ * Register and fixed terms follow ../i18n.ko.ts; a key another feature also uses goes there.
+ */
 export const COMPOSER_KO: Record<string, string> = {
   "Next question": "다음 질문",
   "Edit queued message": "대기 중인 메시지 편집",

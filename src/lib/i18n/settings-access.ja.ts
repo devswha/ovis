@@ -1,3 +1,8 @@
+/**
+ * Japanese for the settings keys of Settings → Phone & devices → Access: the rest of the settings part
+ * (./settings.ja.ts), kept apart so each file stays short. Both files are the one settings part,
+ * so a key lives in only one of them; its header lists the settings files and the register.
+ */
 export const SETTINGS_ACCESS_JA: Record<string, string> = {
   "Access": "アクセス",
   "Connected to this PC": "このPCにつながっているもの",

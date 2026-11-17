@@ -125,27 +125,11 @@ the context does not make it clear. The dialog that makes a workspace is
   the same placeholders. A string that only one feature's files use goes in that feature's files in
   `src/lib/i18n/` when it has them (`settings.ko.ts`, `settings.ja.ts` and `settings.zh.ts` for the
   Settings dialog, with its Access rows in `settings-access.*.ts` and the composer's optional
-  buttons and chips in `settings-composer.*.ts`; `PART_FILES` in `src/lib/i18n.test.ts` lists each
+  buttons and chips in `settings-composer.*.ts`; each file's header lists its
   feature's files). Any other string goes in
   `src/lib/i18n.ko.ts`, `i18n.ja.ts` and `i18n.zh.ts`, and so does a feature's string once another
   feature uses it too. `bun run test:unit` fails on a missing, unused or untranslated entry, and on one
   kept in the wrong file or in different files across the three languages.
-- **Translation style:** placeholders in braces keep their English names in every language, and so
-  do product names (herdr, Tailscale, Codex, Claude Code, GitHub). A part file follows its language's
-  base file.
-  - Korean: labels and buttons are nouns or ~하기, sentences use 합니다체. Fixed terms: 패널,
-    워크스페이스, 에이전트, 터미널, 채팅, 페어링, 기기 ("this device" is 이 기기, "every device" is
-    모든 기기).
-  - Japanese: labels are short nouns or verbs, sentences use です・ます調. Fixed terms: ペイン,
-    ワークスペース, エージェント, ターミナル, チャット, ペアリング, デバイス, セッション, 入力欄, キー
-    (SSH key; 秘密鍵 for a private key), デフォルト (not 既定); "this device" is このデバイス. GitHub
-    labels (Star, Issue), acronyms (SSH, CLI, HTTPS, QR) and names like Markdown, Enter and Skill
-    ツール stay in English.
-  - Simplified Chinese: zh-CN software UI (like VS Code 简体中文): concise labels and buttons, plain
-    declarative sentences, full-width punctuation in Chinese sentences, a half-width space between
-    Chinese and Latin words. Fixed terms: 窗格 (pane; 面板 only in 命令面板), 工作区, 终端, 聊天, 配对,
-    设备 ("this device" is 此设备), 会话, 输入框 (composer). Agent, Token, Skill, Star, bridge, Issue,
-    CLI, SSH, Markdown, Shell and key caps stay in English.
 - **UI languages:** the app keeps English, Korean, Japanese and Simplified Chinese and does not take
   new ones. Every language has to translate each later string, so a PR that adds a language is
   closed.

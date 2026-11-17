@@ -1,3 +1,12 @@
+/**
+ * Japanese for the keys only the chat files use:
+ * components/ChatView.tsx, components/Markdown.tsx, components/MermaidLightbox.tsx,
+ * components/ChatMinimap.tsx, components/ImageLightbox.tsx, components/BackgroundTasks.tsx,
+ * components/BackgroundAgentDetail.tsx, components/Artifacts.tsx, components/OmpBtw.tsx, components/MarkdownLinkMenu.tsx,
+ * lib/workBlocks.ts (with CATEGORY_LABEL), lib/toolVerbs.ts (with VERB_LABEL), lib/outcomeChip.ts,
+ * lib/chatTimestamp.ts, lib/chatReadDeadline.ts, components/ConversationSearch.tsx.
+ * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
+ */
 export const CHAT_JA: Record<string, string> = {
   "Antigravity chat is unavailable. Open Terminal to see activity and tool calls.": "Antigravityのチャットを利用できません。ターミナルを開いて動作状況とツール呼び出しを確認してください。",
   "Not in the conversation. If the agent showed an error, it is in the terminal.": "会話に記録されていません。エージェントがエラーを出した場合はターミナルにあります。",

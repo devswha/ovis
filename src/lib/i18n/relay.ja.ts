@@ -1,3 +1,7 @@
+/**
+ * Japanese for the keys only the hosted relay shell uses: components/RelayShell.tsx.
+ * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
+ */
 export const RELAY_JA: Record<string, string> = {
   "Your PCs": "あなたのPC",
   "Unnamed PC": "名前のないPC",

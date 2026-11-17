@@ -1,3 +1,8 @@
+/**
+ * Simplified Chinese for the keys only the move to herdr-core uses:
+ * components/RuntimeMove.tsx, components/RuntimeMoveViews.tsx, lib/runtimeMove.ts.
+ * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
+ */
 export const RUNTIME_MOVE_ZH: Record<string, string> = {
   "Move everything to herdr-core": "全部迁移到 herdr-core",
   "Install herdr-core and move everything": "安装 herdr-core 并全部迁移",

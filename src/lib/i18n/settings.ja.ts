@@ -1,3 +1,9 @@
+/**
+ * Japanese for the keys only the settings files use:
+ * components/SettingsDialog.tsx (with THEME_NAMES), components/SignOutRow.tsx, components/KeyBarSettings.tsx,
+ * components/SettingsControls.tsx, components/TelemetryControls.tsx, lib/paletteSettings.ts.
+ * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
+ */
 export const SETTINGS_JA: Record<string, string> = {
   "Finished": "完了",
   "Direct typing": "直接入力",

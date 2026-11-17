@@ -1,3 +1,9 @@
+/**
+ * Japanese for the keys only the machines files use:
+ * components/MachineSidebar.tsx (with STATE_WORD), components/MachineDialog.tsx,
+ * lib/bridgeProgress.ts (with STAGES), components/MachineStats.tsx, lib/systemReport.ts.
+ * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
+ */
 export const MACHINES_JA: Record<string, string> = {
   "1 agent": "エージェント: 1 件",
   "{n} agents": "エージェント: {n} 件",

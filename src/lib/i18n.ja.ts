@@ -21,6 +21,17 @@ import { RELAY_JA } from "./i18n/relay.ja.ts";
 import { DASHBOARD_JA } from "./i18n/dashboard.ja.ts";
 import { RUNTIME_MOVE_JA } from "./i18n/runtime-move.ja.ts";
 
+/**
+ * Japanese for every `t("…")` in src/ that no part in lib/i18n/ holds: keys more than one feature
+ * uses, and the app shell's. JA at the end is this and the parts together. The English string is
+ * the key. Grouped by where the text
+ * shows; within a group, roughly in the order it appears. Register: labels and buttons as concise
+ * nouns or verbs, sentences in です・ます調. Fixed terms: ペイン, ワークスペース, エージェント,
+ * ターミナル, チャット, ペアリング, デバイス, セッション, 入力欄, キー (SSH key; 秘密鍵 for private
+ * key), デフォルト (not 既定). Product names (herdr, Tailscale, Codex, Claude Code, GitHub), GitHub
+ * labels (Star, Issue), acronyms (SSH, CLI, HTTPS, QR) and names like Markdown, Enter, Skill ツール stay
+ * in English. Placeholders in braces keep their English names.
+ */
 const BASE: Record<string, string> = {
   "A key may not have reached the terminal: the connection ended before it was confirmed.": "キーがターミナルに届いていない可能性があります: 確認される前に接続が切れました。",
   "Open PC": "PC を開く",

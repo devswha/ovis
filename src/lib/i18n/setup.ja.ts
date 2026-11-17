@@ -1,3 +1,8 @@
+/**
+ * Japanese for the keys only the agent setup files use: components/AgentSetupCard.tsx,
+ * components/AddAgentPanel.tsx, components/AgentTile.tsx, components/AgentsSettings.tsx.
+ * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
+ */
 export const SETUP_JA: Record<string, string> = {
   "Set up {agent}": "{agent} をセットアップ",
   "Uses the official installer, on this PC.": "公式インストーラーで、この PC にインストールします。",

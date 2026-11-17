@@ -1,3 +1,7 @@
+/**
+ * Chinese for what each Settings row does (SettingsRow's description, #3275): the sentence a page without sentences
+ * shows on demand. Register and fixed terms follow ../i18n.zh.ts; "this device" is 此设备.
+ */
 export const SETTINGS_HELP_ZH: Record<string, string> = {
   "Posts each alert to one more place: ntfy, Slack, Discord, Telegram, or any address that takes JSON. The address is saved on this PC, never shown in full again, and used whichever device set it.": "把每条提醒再发送到一个地方：ntfy、Slack、Discord、Telegram，或任何接收 JSON 的地址。地址保存在此 PC 上，之后不会再完整显示，无论在哪台设备上设置都同样生效。",
   "Also sends there when an agent asks you something. Chosen apart from this device's own alerts.": "Agent 向你提问时，也发送到那里。与此设备自己的提醒选择分开设置。",
