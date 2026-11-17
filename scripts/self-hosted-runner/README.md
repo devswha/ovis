@@ -477,9 +477,13 @@ case; the test resolves matrix axes the same way and refuses the rest itself. A 
 `read`, `none` or `read-all` counts as write. A Pages run is found by the `pages` write permission, by the
 deploy and upload actions (recognised by owner/repo whatever path follows, with `.` and empty pieces
 dropped, in any case), by the `github-pages` environment, and by a job that holds `id-token: write` together
-with a secret. The limit: a deployment made with a credential from a secret by a job that shows none of
-these is not found as a Pages run; the first rule still keeps that job on a hosted runner, and the second
-pull request applies the whole-run rule to every run that publishes or signs. It reads runner labels, actions and
+with a secret. The limit: a Pages run is missed when no job of its workflow, or of
+a workflow it calls, shows any of these signs (a job without them in a workflow where another job shows one
+is covered). The first rule applies to a job that references a secret; a credential that reaches a job
+another way (through an artifact, say) is not seen by it. A credential from `vars.*`, or one fetched at run
+time by a job without `id-token: write`, is not found either, and the first rule does not cover such a job: it
+counts write scopes, environments and secret references only. The second pull request applies the whole-run
+rule to every run that publishes or signs. It reads runner labels, actions and
 their inputs; it does not inspect shell commands or scripts for cache access.
 The hosted labels on the list are the ones the covered jobs use: `ubuntu-24.04`, `ubuntu-24.04-arm`,
 `windows-latest`, `windows-2025`, `macos-15`, `macos-15-intel` and `macos-latest`. For `ubuntu-24.04` the

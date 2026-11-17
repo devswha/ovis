@@ -13,7 +13,7 @@ import { GITHUB_HOSTED_LABELS, parseWorkflow, root, topLevelTerms, unreadWorkflo
 //   context but the automatic GITHUB_TOKEN: `secrets.X`, `secrets[...]`, `secrets.*`, `toJSON(secrets)`, in the job or its
 //   workflow's env) names one of GITHUB_HOSTED_LABELS literally, or a matrix of them; the jobs in PENDING are the only
 //   exception, each named exactly;
-// - in a run that contains actions/deploy-pages (which takes the run's artifact by name), every job of the workflow and of
+// - in a Pages run (found by the signs described below; deploy-pages takes the run's artifact by name), every job of the workflow and of
 //   every workflow called in that run names a listed label literally (or a matrix of them), or uses exactly
 //   `${{ inputs.hosted_only && '<listed label>' || ... }}` in a workflow whose call passes `hosted_only: true` literally;
 //   every cache-capable step is off in exactly a reviewed form (setup-ci `cache: none`, or
@@ -27,10 +27,13 @@ import { GITHUB_HOSTED_LABELS, parseWorkflow, root, topLevelTerms, unreadWorkflo
 // read, none or read-all counts as write; an action is recognised by its path split on / and \\ with empty and . pieces
 // dropped, in any case (the Pages actions by owner/repo, whatever path follows), but a runner label and an action
 // reference pass only as the exact listed string. A Pages run is found by a job that can write Pages, a job in the
-// github-pages environment, a job holding id-token write with a secret, or the Pages actions. THE LIMIT: a deployment
-// made with a credential from a secret by a job that shows none of these is not found as a Pages run; the first rule still
-// keeps that job on a hosted runner, and the second pull request applies the whole-run rule to every run that publishes
-// or signs.
+// github-pages environment, a job holding id-token write with a secret, or the Pages actions. THE LIMIT: a Pages run is
+// missed when no job of its workflow, or of a workflow it calls, shows any of these signs (a job without them in a workflow
+// where another job shows one is covered). The first rule applies to a job that references a secret; a credential that
+// reaches a job another way (through an artifact, say) is not seen by it. A credential from vars.*, or one fetched at run
+// time by a job without id-token write, is not found either, and the first rule does not cover such a job: it counts
+// write scopes, environments and secret references only. The second pull request applies the whole-run rule to every
+// run that publishes or signs.
 // It reads runner labels, actions and their inputs only: it does not inspect shell commands or scripts for cache access.
 // That GitHub gives a job asking only for `ubuntu-24.04` or `ubuntu-latest` to its own runners, even when a self-registered
 // runner carries that label, was observed by a trial on 2026-11-17 (14 of 14 jobs); it is not documented by GitHub. The
@@ -69,7 +72,7 @@ const events = (on: unknown): Record<string, { inputs?: Record<string, { type?: 
   (typeof on === "string" ? { [on]: null } : Array.isArray(on) ? Object.fromEntries(on.map((event: string) => [event, null])) : (on as Record<string, null>));
 const calledFile = (job: AnyJob): string | undefined => /^\.\/\.github\/workflows\/(.+\.yml)$/.exec(job.uses ?? "")?.[1];
 /**
- * An action's identity as GitHub resolves it: the path before `@` split on `/` and `\\`, empty and `.` pieces dropped,
+ * An action's identity as GitHub splits it: the path before `@` split on `/` and `\\`, empty and `.` pieces dropped,
  * without regard to case (actions/runner's WorkflowTemplateConverter). The reviewed lists stay the exact strings, so any
  * other spelling is still refused in a covered run once the run is found.
  */
@@ -349,7 +352,7 @@ const writesPages = (scopes: string[]): boolean =>
  * and a job that uses deploy-pages or upload-pages-artifact (recognised by owner/repo, whatever path follows).
  */
 function pagesRoots(workflows: Workflows): string[] {
-  const environment = (job: AnyJob): unknown => (typeof job.environment === "object" && job.environment !== null ? (job.environment as { name?: unknown }).name : job.environment);
+  const environment = (job: AnyJob): string | undefined => (typeof job.environment === "object" ? job.environment.name : job.environment);
   const deploys = (file: string, job: AnyJob): boolean => {
     const scopes = writeScopes(workflows, file, job);
     const secret = secretReferences(workflows[file]!.env ?? {}).length + secretReferences(job).length > 0;
@@ -560,8 +563,8 @@ describe("jobs that hold a write permission, an environment or a secret", () => 
     ["counts a permission value in another case as write", one({ "runs-on": LIGHT, permissions: { contents: "Write" } }), [`x.yml job: runs-on ${JSON.stringify(LIGHT)} with contents: "Write" (counted as write)`]],
     ["counts a permission value from an expression as write", one({ "runs-on": LIGHT, permissions: { contents: "${{ inputs.access }}" } }), [`x.yml job: runs-on ${JSON.stringify(LIGHT)} with contents: "\${{ inputs.access }}" (counted as write)`]],
     ["counts WRITE-ALL, or any permissions scalar but read-all, as write", one({ "runs-on": LIGHT, permissions: "WRITE-ALL" as Permissions }), [`x.yml job: runs-on ${JSON.stringify(LIGHT)} with permissions "WRITE-ALL" (counted as write)`]],
-    ["refuses a runs-on given as a group mapping", one({ "runs-on": { group: "g", labels: ["ubuntu-24.04"] } as unknown as string, permissions: WRITE }), ['x.yml job: runs-on {"group":"g","labels":["ubuntu-24.04"]} with contents: write']],
-    ["refuses a runs-on that YAML reads as a number", one({ "runs-on": 22.04 as unknown as string, permissions: WRITE }), ["x.yml job: runs-on 22.04 with contents: write"]],
+    ["refuses a runs-on given as a group mapping", one({ "runs-on": { group: "g", labels: ["ubuntu-24.04"] }, permissions: WRITE }), ['x.yml job: runs-on {"group":"g","labels":["ubuntu-24.04"]} with contents: write']],
+    ["refuses a runs-on that YAML reads as a number", one({ "runs-on": 22.04, permissions: WRITE }), ["x.yml job: runs-on 22.04 with contents: write"]],
     ["reads a runner and permissions a YAML merge key supplies, and refuses them", { "x.yml": Bun.YAML.parse("on: push\npermissions: { contents: read }\nx-base: &base\n  runs-on: [self-hosted]\n  permissions: { contents: write }\njobs:\n  job:\n    <<: *base\n    steps: [{ run: 'true' }]\n") as AnyWorkflow }, ['x.yml job: runs-on ["self-hosted"] with contents: write']],
     ["refuses a call to another repository's workflow", one({ uses: "owner/repo/.github/workflows/deploy.yml@main", secrets: "inherit", permissions: WRITE }), ["x.yml job: calls owner/repo/.github/workflows/deploy.yml@main, which this test cannot read: only a workflow in ./.github/workflows/<name>.yml of this repository"]],
     ["refuses a full-path call to a workflow of this repository", one({ uses: "devswha/ovis/.github/workflows/ci.yml@main", permissions: WRITE }), ["x.yml job: calls devswha/ovis/.github/workflows/ci.yml@main, which this test cannot read: only a workflow in ./.github/workflows/<name>.yml of this repository"]],
@@ -703,9 +706,9 @@ describe("a run that deploys Pages is GitHub-hosted and cacheless as a whole", (
       const uses = `${spelling}@368f82528645a54fb793d4d04e342629a3f51346`;
       return [`finds a separate workflow that deploys through ${JSON.stringify(spelling)}, without the pages permission, and refuses its self-hosted sibling and that reference`, { "other.yml": { on: { push: {} }, permissions: { contents: "read" }, jobs: { other: { "runs-on": "self-hosted" }, deploy: { "runs-on": "ubuntu-24.04", steps: [{ uses }] } } } }, [`other.yml: other.yml other: runs-on "self-hosted" ${RUNS_ON}`, `other.yml: other.yml deploy: uses ${uses}, which is not a reviewed action reference`]];
     }),
-    ["finds a workflow that deploys through a local action wrapping deploy-pages, by its pages permission", { "other.yml": { on: { push: {} }, permissions: { contents: "read" }, jobs: { other: { "runs-on": "self-hosted" }, deploy: { ...DEPLOY, steps: [{ uses: "./.github/actions/deploy-site" }] } } } }, [`other.yml: other.yml other: runs-on "self-hosted" ${RUNS_ON}`, "other.yml: other.yml deploy: uses ./.github/actions/deploy-site, which is not a reviewed action reference"]],
-    ["finds a workflow that deploys with no action at all, by its pages permission", { "other.yml": { on: { push: {} }, permissions: { contents: "read" }, jobs: { other: { "runs-on": "self-hosted" }, deploy: { ...DEPLOY, steps: [{ run: "curl -X POST https://api.github.com/repos/o/r/pages/deployments" }] } } } }, [`other.yml: other.yml other: runs-on "self-hosted" ${RUNS_ON}`]],
-    ["finds a workflow that deploys through a wrapper with a secret token in the github-pages environment", { "other.yml": { on: { push: {} }, permissions: { contents: "read" }, jobs: { other: { "runs-on": "self-hosted" }, deploy: { "runs-on": "ubuntu-24.04", environment: { name: "GitHub-Pages" } as unknown as string, steps: [{ uses: "./.github/actions/deploy-site", with: { token: "${{ secrets.PAGES_TOKEN }}" } }] } } } }, [`other.yml: other.yml other: runs-on "self-hosted" ${RUNS_ON}`, "other.yml: other.yml deploy: uses ./.github/actions/deploy-site, which is not a reviewed action reference"]],
+    ["finds a workflow that deploys through a local action wrapping deploy-pages, by its pages permission alone", { "other.yml": { on: { push: {} }, permissions: { contents: "read" }, jobs: { other: { "runs-on": "self-hosted" }, deploy: { "runs-on": "ubuntu-24.04", permissions: { pages: "write" }, steps: [{ uses: "./.github/actions/deploy-site" }] } } } }, [`other.yml: other.yml other: runs-on "self-hosted" ${RUNS_ON}`, "other.yml: other.yml deploy: uses ./.github/actions/deploy-site, which is not a reviewed action reference"]],
+    ["finds a workflow that deploys with no action at all, by its pages permission alone", { "other.yml": { on: { push: {} }, permissions: { contents: "read" }, jobs: { other: { "runs-on": "self-hosted" }, deploy: { "runs-on": "ubuntu-24.04", permissions: { pages: "write" }, steps: [{ run: "curl -X POST https://api.github.com/repos/o/r/pages/deployments" }] } } } }, [`other.yml: other.yml other: runs-on "self-hosted" ${RUNS_ON}`]],
+    ["finds a workflow that deploys through a wrapper with a secret token in the github-pages environment", { "other.yml": { on: { push: {} }, permissions: { contents: "read" }, jobs: { other: { "runs-on": "self-hosted" }, deploy: { "runs-on": "ubuntu-24.04", environment: { name: "GitHub-Pages" }, steps: [{ uses: "./.github/actions/deploy-site", with: { token: "${{ secrets.PAGES_TOKEN }}" } }] } } } }, [`other.yml: other.yml other: runs-on "self-hosted" ${RUNS_ON}`, "other.yml: other.yml deploy: uses ./.github/actions/deploy-site, which is not a reviewed action reference"]],
     ["finds a workflow that calls the Pages API with id-token write and a secret", { "other.yml": { on: { push: {} }, permissions: { contents: "read" }, jobs: { other: { "runs-on": "self-hosted" }, deploy: { "runs-on": "ubuntu-24.04", permissions: { contents: "read", "id-token": "write" }, steps: [{ run: "curl -H 'Authorization: Bearer ${{ secrets.T }}' https://api.github.com/repos/o/r/pages/deployments" }] } } } }, [`other.yml: other.yml other: runs-on "self-hosted" ${RUNS_ON}`]],
     ...["actions/deploy-pages/x/..@368f82528645a54fb793d4d04e342629a3f51346", "actions/upload-pages-artifact/x/..@fc324d3547104276b827a68afc52ff2a11cc49c9", " actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 "].map((uses): [string, Workflows, string[]] => {
       return [`finds a Pages action by its owner/repo: ${JSON.stringify(uses)}`, { "other.yml": { on: { push: {} }, permissions: { contents: "read" }, jobs: { other: { "runs-on": "self-hosted" }, deploy: { "runs-on": "ubuntu-24.04", steps: [{ uses }] } } } }, [`other.yml: other.yml other: runs-on "self-hosted" ${RUNS_ON}`, `other.yml: other.yml deploy: uses ${uses}, which is not a reviewed action reference`]];
@@ -740,16 +743,22 @@ describe("a run that deploys Pages is GitHub-hosted and cacheless as a whole", (
     });
   }
 
-  const root = (deploy: AnyJob, permissions: Permissions | null = { contents: "read" }): Workflows => ({ "x.yml": { on: { push: {} }, ...(permissions && { permissions }), jobs: { other: { "runs-on": "self-hosted" }, deploy } } });
+  // the sibling is read-only, so the job under test alone decides whether the workflow is a Pages run
+  const withDeploy = (deploy: AnyJob, permissions: Permissions | null = { contents: "read" }): Workflows => ({ "x.yml": { on: { push: {} }, ...(permissions && { permissions }), jobs: { other: { "runs-on": "self-hosted", permissions: { contents: "read" } }, deploy } } });
   test("takes write-all, no permissions at all, or a permissions scalar other than read-all for a job that can write Pages", () => {
-    expect(pagesRoots(root({ "runs-on": "ubuntu-24.04", permissions: "write-all" }))).toEqual(["x.yml"]);
-    expect(pagesRoots(root({ "runs-on": "ubuntu-24.04" }, null))).toEqual(["x.yml"]);
-    expect(pagesRoots(root({ "runs-on": "ubuntu-24.04", permissions: "Read-All" as Permissions }))).toEqual(["x.yml"]);
+    expect(pagesRoots(withDeploy({ "runs-on": "ubuntu-24.04", permissions: "write-all" }))).toEqual(["x.yml"]);
+    expect(pagesRoots(withDeploy({ "runs-on": "ubuntu-24.04" }, null))).toEqual(["x.yml"]);
+    expect(pagesRoots(withDeploy({ "runs-on": "ubuntu-24.04", permissions: "Read-All" as Permissions }))).toEqual(["x.yml"]);
+  });
+
+  test("takes a job in the github-pages environment written as a plain string, in any case, by that sign alone", () => {
+    expect(pagesRoots(withDeploy({ "runs-on": "ubuntu-24.04", environment: "github-pages" }))).toEqual(["x.yml"]);
+    expect(pagesRoots(withDeploy({ "runs-on": "ubuntu-24.04", environment: "GitHub-Pages" }))).toEqual(["x.yml"]);
   });
 
   test("does not take an attestation job (id-token write, no secret) or a job with a secret and no id-token for a Pages run", () => {
-    expect(pagesRoots(root({ "runs-on": "ubuntu-24.04", permissions: { "id-token": "write", attestations: "write" }, steps: [{ uses: "actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8" }] }))).toEqual([]);
-    const secretOnly = root({ "runs-on": LIGHT, env: { T: "${{ secrets.T }}" } });
+    expect(pagesRoots(withDeploy({ "runs-on": "ubuntu-24.04", permissions: { "id-token": "write", attestations: "write" }, steps: [{ uses: "actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8" }] }))).toEqual([]);
+    const secretOnly = withDeploy({ "runs-on": LIGHT, env: { T: "${{ secrets.T }}" } });
     expect(pagesRoots(secretOnly)).toEqual([]);
     expect(privilegeProblems(secretOnly)).toEqual([`x.yml deploy: runs-on ${JSON.stringify(LIGHT)} with secrets.T`]);
   });
