@@ -213,6 +213,9 @@ MIRROR=""
 BUN_CACHES=""
 REPO_CACHE=""
 CACHE_CONTAINER="${PREFIX}cache"
+# a --jit-slot launcher is one of several on its host, each its own process: its Bun cache build is its own too (the
+# directory each fills is a temporary one, renamed into place, so two builds of one lockfile take the first's)
+if [ -n "$JIT_SLOT" ]; then CACHE_CONTAINER="${PREFIX}${JIT_SLOT}-cache"; fi
 # Each repository has its own caches: a launcher moved to another --repo never hands its runners the
 # old one's packages. GitHub's names never hold a slash or start with a dot.
 case "$REPO" in
@@ -580,6 +583,8 @@ slot_loop() {
 
 PIDS=()
 WATCHER=""
+# --jit-slot: set once this launcher starts its slot's runner; a container of that name it waited on is another's
+JIT_STARTED=""
 CACHE_PID=""
 PROMOTE_PID=""
 cleaned=0
@@ -598,6 +603,7 @@ cleanup() {
   done
   if [ -n "$WATCHER" ]; then kill "$WATCHER" 2>/dev/null || true; fi
   for slot in $SLOT_NUMBERS; do
+    [ -z "$JIT_SLOT" ] || [ -n "$JIT_STARTED" ] || continue
     docker stop -t 30 "${PREFIX}${slot}" >/dev/null 2>&1 || true
   done
   # the runners, and the cache loop with every git and docker client it started
@@ -608,7 +614,8 @@ cleanup() {
   for slot in $SLOT_NUMBERS; do
     docker network rm "${PREFIX}${slot}-net" >/dev/null 2>&1 || true
   done
-  docker stop -t 5 "$SLOTS" >/dev/null 2>&1 || true
+  # the keeper of the check slots the other --jit-slot launchers of this host still use: it stays, idle
+  if [ -z "$JIT_SLOT" ]; then docker stop -t 5 "$SLOTS" >/dev/null 2>&1 || true; fi
   # what a launcher from before the slots had networks of their own left when it was killed rather
   # than stopped: the container whose network namespace all its runners shared
   docker stop -t 5 "${PREFIX}net" >/dev/null 2>&1 || true
@@ -670,6 +677,7 @@ if [ -n "$JIT_SLOT" ]; then
   # this launcher, and the runner with it. This shell started both processes it waits on.
   cat <&3 >/dev/null 2>&1 &
   WATCHER="$!"
+  JIT_STARTED=1
   slot_loop "$JIT_SLOT" &
   PIDS+=("$!")
   ended="" status=0

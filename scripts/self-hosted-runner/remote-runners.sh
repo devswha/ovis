@@ -14,7 +14,7 @@
 # runner starts there. With --heartbeat it also writes runner-heartbeat.sh's heartbeat once a minute.
 #
 # Usage: remote-runners.sh --host SSH_HOST --repo OWNER/NAME --name-prefix PREFIX --labels LABEL[,LABEL...]
-#          [--count N] [--heartbeat VARIABLE] [--ready-wait SECONDS] [--once] -- REMOTE_COMMAND...
+#          [--count N] [--heartbeat VARIABLE] [--ready-wait SECONDS] [--gh-timeout SECONDS] [--once] -- REMOTE_COMMAND...
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,6 +26,8 @@ COUNT=1
 HEARTBEAT=""
 # the host's set-up before READY: its first cache refresh may take run.sh's --cache-wait (120 s by default)
 READY_WAIT=300
+# every GitHub call ends by then: a stop waits for the call in flight, and systemd's own stop deadline is 90 s
+GH_TIMEOUT=30
 ONCE=0
 
 usage() {
@@ -41,6 +43,7 @@ while [ $# -gt 0 ]; do
     --count) COUNT="${2:?--count needs a value}"; shift 2 ;;
     --heartbeat) HEARTBEAT="${2:?--heartbeat needs a value}"; shift 2 ;;
     --ready-wait) READY_WAIT="${2:?--ready-wait needs a value}"; shift 2 ;;
+    --gh-timeout) GH_TIMEOUT="${2:?--gh-timeout needs a value}"; shift 2 ;;
     --once) ONCE=1; shift ;;
     --) shift; break ;;
     -h|--help) usage; exit 0 ;;
@@ -57,6 +60,7 @@ fail_usage() { echo "$1" >&2; exit 2; }
 [[ "$LABELS" =~ ^[A-Za-z0-9._-]+(,[A-Za-z0-9._-]+)*$ ]] || fail_usage "--labels must be a comma-separated list of labels"
 [[ "$COUNT" =~ ^[1-9][0-9]?$ ]] || fail_usage "--count must be a whole number from 1 to 99"
 [[ "$READY_WAIT" =~ ^[1-9][0-9]{0,3}$ ]] || fail_usage "--ready-wait must be a whole number of seconds"
+[[ "$GH_TIMEOUT" =~ ^[1-9][0-9]?$ ]] || fail_usage "--gh-timeout must be a whole number of seconds below 100"
 [[ -z "$HEARTBEAT" || "$HEARTBEAT" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || fail_usage "--heartbeat must be a variable name"
 [ "${#REMOTE_COMMAND[@]}" -gt 0 ] || fail_usage "the command to run on the host comes after --"
 IFS=, read -r -a LABEL_LIST <<<"$LABELS"
@@ -68,22 +72,26 @@ printf -v REMOTE '%q ' "${REMOTE_COMMAND[@]}"
 LABEL_ARGS=(-f "labels[]=self-hosted")
 for label in "${LABEL_LIST[@]}"; do LABEL_ARGS+=(-f "labels[]=$label"); done
 
+gh_call() {
+  timeout -k 5 "$GH_TIMEOUT" gh "$@"
+}
+
 # Deletes the runner registered under exactly $1 while it is offline: one an earlier start of this slot left (this PC
 # went off before it could delete it), which keeps GitHub from making another of that name. An online one is left alone.
 clear_stale() {
   local listing id
-  listing="$(gh api --paginate "repos/$REPO/actions/runners?per_page=100")" || return 0
+  listing="$(gh_call api --paginate "repos/$REPO/actions/runners?per_page=100")" || return 0
   for id in $(jq -r --arg name "$1" '.runners[]? | select(.name == $name and .status == "offline") | .id' <<<"$listing" 2>/dev/null); do
     [[ "$id" =~ ^[0-9]+$ ]] || continue
     echo "[$1] deleting runner $id of this slot's name, left offline by an earlier start" >&2
-    gh api -X DELETE "repos/$REPO/actions/runners/$id" >/dev/null 2>&1 || true
+    gh_call api -X DELETE "repos/$REPO/actions/runners/$id" >/dev/null 2>&1 || true
   done
 }
 
 # The runner GitHub made for a start, by its id: gone already (404) once it ran its job.
 delete_runner() {
   [ -n "$1" ] || return 0
-  gh api -X DELETE "repos/$REPO/actions/runners/$1" >/dev/null 2>&1 || true
+  gh_call api -X DELETE "repos/$REPO/actions/runners/$1" >/dev/null 2>&1 || true
 }
 
 # A pause a stop signal ends at once: bash runs a trap only between commands, and a foreground sleep is one.
@@ -113,7 +121,7 @@ slot_loop() {
       printf '[%s] %s\n' "$name" "$line" >&2
     done
     if [ "$ready" = 1 ]; then
-      if json="$(gh api -X POST "repos/$REPO/actions/runners/generate-jitconfig" -f "name=$name" -F runner_group_id=1 "${LABEL_ARGS[@]}" -f work_folder=/w)" &&
+      if json="$(gh_call api -X POST "repos/$REPO/actions/runners/generate-jitconfig" -f "name=$name" -F runner_group_id=1 "${LABEL_ARGS[@]}" -f work_folder=/w)" &&
         RUNNER_ID="$(jq -er '.runner.id | select(type == "number")' <<<"$json")" &&
         config="$(jq -er '.encoded_jit_config | select(type == "string" and test("^[A-Za-z0-9+/]+=*$"))' <<<"$json")"; then
         json=""
@@ -155,7 +163,11 @@ heartbeat_loop() {
   NAPPER=""
   trap 'if [ -n "$NAPPER" ]; then kill "$NAPPER" 2>/dev/null || true; fi; exit 143' TERM
   while true; do
-    bash "$SCRIPT_DIR/runner-heartbeat.sh" "$NAME_PREFIX" "${LABEL_LIST[0]}" "$HEARTBEAT" "$COUNT" || true
+    # in the background, so a stop ends it at once (timeout passes the TERM on)
+    timeout -k 5 $((GH_TIMEOUT * 2)) bash "$SCRIPT_DIR/runner-heartbeat.sh" "$NAME_PREFIX" "${LABEL_LIST[0]}" "$HEARTBEAT" "$COUNT" &
+    NAPPER="$!"
+    wait "$NAPPER" || true
+    NAPPER=""
     pause 60
   done
 }

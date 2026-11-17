@@ -35,6 +35,7 @@ writeFileSync(join(bin, "gh"), `#!/bin/bash
 printf '%s\\n' "$*" >> "$FAKE/gh-calls"
 case "$*" in
   "api -X POST "*generate-jitconfig*)
+    [ "\${FAKE_GENERATE:-}" = hang ] && exec sleep 600
     [ "\${FAKE_GENERATE:-}" = fail ] && { echo "gh: Already exists (HTTP 409)" >&2; exit 1; }
     # slots ask at the same moment: one id each
     exec 9> "$FAKE/next-id.lock"; flock 9
@@ -162,6 +163,14 @@ describe.skipIf(process.platform === "win32")("remote-runners.sh", () => {
     expect(lines(fake, "gh-calls").filter((call) => call.startsWith("api -X DELETE"))).toEqual(["api -X DELETE repos/devswha/ovis/actions/runners/7"]);
   });
 
+  it("gives up on a GitHub call after --gh-timeout, sends the host nothing, and goes on", () => {
+    const { result, fake, gh } = launch([...ARGS, "--once", "--gh-timeout", "1", "--", ...REMOTE], { FAKE_GENERATE: "hang" });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("GitHub made no just-in-time configuration");
+    expect(read(fake, "config-1")).toBe("\n");
+    expect(gh.filter((call) => call.includes("generate-jitconfig"))).toHaveLength(1);
+  });
+
   it("leaves an online runner of the slot's name alone", () => {
     const fake = tempDir();
     writeFileSync(join(fake, "runners.json"), JSON.stringify({ total_count: 1, runners: [{ id: 7, name: "herdr-ci-ovis-parts-1", status: "online" }] }));
@@ -229,6 +238,7 @@ describe.skipIf(process.platform === "win32")("remote-runners.sh", () => {
       [...ARGS.slice(0, 5), "herdr ci", ...ARGS.slice(6), "--", ...REMOTE],
       [...ARGS, "--count", "0", "--", ...REMOTE],
       [...ARGS, "--heartbeat", "A-B", "--", ...REMOTE],
+      [...ARGS, "--gh-timeout", "0", "--", ...REMOTE],
       [...ARGS],
     ]) {
       const { result, gh, ssh } = launch(args);

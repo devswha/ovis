@@ -777,6 +777,32 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
       expect(calls).not.toContain(config);
       // at its stop, its own slot's container and network, and no other
       expect(lines.filter((call) => /^docker stop -t 30 /.test(call)).map((call) => call.replace(/herdr-ci-\S+-/, "<prefix>"))).toEqual(["docker stop -t 30 <prefix>2"]);
+      // the host's other slots are launchers of their own: its Bun cache build has its own name, and the check slots'
+      // keeper they share keeps running
+      expect(lines.some((call) => /^docker run --rm --init --name herdr-ci-\S+-2-cache /.test(call))).toBe(true);
+      expect(lines.filter((call) => /^docker stop -t 5 herdr-ci-\S+-check-slots$/.test(call))).toEqual([]);
+    }, HUNG_RUN_MS);
+
+    it("stops no container of its slot that it waited on and did not start, as another launcher's", async () => {
+      const { tempDir, args, env, logPath } = prepareRunner({ args: ["--jit-slot", "1"] });
+      const held = join(tempDir, "slot-held");
+      writeFileSync(held, "true\n");
+      const child = Bun.spawn(["bash", ...args], { env: { ...env, RUNNER_TEST_SLOT_HELD: held }, stdin: "pipe", stdout: "pipe", stderr: "ignore" });
+      try {
+        const calls = () => (existsSync(logPath) ? readFileSync(logPath, "utf8") : "");
+        const deadline = Date.now() + LOADED_BOUND_MS;
+        while (!/^docker container inspect .*herdr-ci-\S+-1$/m.test(calls()) && Date.now() < deadline) await Bun.sleep(25);
+        expect(calls()).toMatch(/^docker container inspect .*herdr-ci-\S+-1$/m);
+        child.kill("SIGTERM");
+        expect(await Promise.race([child.exited, Bun.sleep(LOADED_BOUND_MS).then(() => "still running")])).toBe(143);
+        expect(await new Response(child.stdout).text()).toBe("");
+        expect(calls()).not.toMatch(/^docker stop -t 30 herdr-ci-\S+-1$/m);
+        expect(calls().split("\n").filter((call) => runnerRun.test(call))).toEqual([]);
+      } finally {
+        child.kill("SIGKILL");
+        await child.exited;
+        rmSync(tempDir, { recursive: true, force: true });
+      }
     }, HUNG_RUN_MS);
 
     it("starts no runner without a configuration on stdin", () => {

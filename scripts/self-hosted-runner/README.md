@@ -458,6 +458,11 @@ For each start of each slot N:
    job), and starts the slot again. GitHub refuses a second runner of a name: an offline one of exactly that name, left
    by a start this PC could not finish, is deleted first; an online one is left alone.
 
+Every GitHub call of the launcher ends within `--gh-timeout` (30 s), so a stop never waits on a hung request. Each
+`--jit-slot` launcher on the host is a process of its own: it stops only a runner container it started (not one of
+its slot's name that it found running and waited for), builds the Bun cache under a name of its own, and leaves the
+check slots' keeper, which the host's slots share, running.
+
 What such a configuration is (trial of 2026-11-17): one runner, its name and labels fixed by GitHub when the
 configuration is made (they are not in it, and edits are ignored), one session and one job. It cannot register
 another runner or reach the REST API. After its job, the registration is deleted and the configuration is dead. An
