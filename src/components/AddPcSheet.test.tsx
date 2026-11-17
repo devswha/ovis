@@ -188,7 +188,10 @@ describe("the Add-a-PC sheet", () => {
     const stateWithPcs: RelayShellState = { kind: "list", devices: [], account: { kind: "signed-in", provider: "github", error: null, pcs: [unrelated, pc] } };
     await mount(props("join", pc, stateWithPcs));
     expect(all()).toContain("Add this device to desk2");
-    expect(text(renderer!.root.findByProps({ className: "add-pc-sub" }))).toBe("A device of your account that is connected to desk2 approves this one.");
+    // the approver it names is one connected to desk2, never the unrelated paired PC
+    const sub = text(renderer!.root.findByProps({ className: "add-pc-sub" }));
+    expect(sub).toContain("desk2");
+    expect(sub).not.toContain("Work MacBook");
     // the start says what must be open before the press: only a device with the PC open hears the request
     expect(all()).toContain("First open desk2 in Ovis on a device that already uses it (your phone, for example) and keep it open. Then choose Ask to join.");
     expect(all()).not.toContain("Add window closed");
@@ -382,6 +385,15 @@ describe("the Add-a-PC sheet", () => {
     expect(calls.qr).toBe(1);
     await click("Close");
     expect(calls).toMatchObject({ closes: 1, cancels: 0 });
+  });
+
+  it("keeps a second way on a new PC's sheet for one that shows no number: Ask to join takes the join sheet", async () => {
+    let asked = 0;
+    await mount({ ...props("new", pcOf(), LIST), onAskToJoin: () => { asked += 1; } });
+    expect(renderer!.root.findByType("footer").findAll((n) => n.type === "button").map(text)).toEqual(["Cancel", "Ask to join", "Add this PC"]);
+    await click("Ask to join");
+    expect(asked).toBe(1);
+    expect(calls.joins).toEqual([]);
   });
 
   it("places the primary action first in DOM order on phone sheets and second on desktop across sheet phases", async () => {

@@ -341,11 +341,11 @@ describe("RelayOverview", () => {
     // every row can be joined: one without a route reads "Needs approval" and the reason is no longer shared
     const html = renderMarkup({ pcs: f4Pcs().map((pc) => pc.server_id === "id_old" ? { ...pc, join: { server_public_key: "k3", relay: AP } } : pc), mode: "account", defaultRelay: GLOBAL, now: NOW });
     const section = /<section class="relay-overview-attention-section"[\s\S]*?<\/section>/.exec(html)?.[0] ?? "";
-    const reason = "Join · a device of your account connected to it approves";
-    expect(section.match(new RegExp(reason, "g"))).toHaveLength(1);
-    expect(section).toContain(`<p class="relay-overview-attention-caption">${reason}</p>`);
+    // the Join reason is drawn once, as the caption, and no row repeats it
+    expect(section.match(/data-reason="join"/g)).toHaveLength(1);
+    expect(section).toContain('<p class="relay-overview-attention-caption" data-reason="join">');
     // PF-1: the shared reason and View all share one head row above the list, so the head costs the table no second line
-    expect(section).toMatch(/<div class="relay-overview-attention-head"><p class="relay-overview-attention-caption">[^<]+<\/p><button[^>]*data-action="view-all-attention"[^>]*>[^<]+<\/button><\/div><ol class="relay-overview-attention">/);
+    expect(section).toMatch(/<div class="relay-overview-attention-head"><p class="relay-overview-attention-caption"[^>]*>[^<]+<\/p><button[^>]*data-action="view-all-attention"[^>]*>[^<]+<\/button><\/div><ol class="relay-overview-attention">/);
     const rows = [...section.matchAll(/<span class="relay-overview-attention-name"[^>]*>([^<]+)<\/span><span class="relay-overview-attention-why">([^<]+)<\/span>/g)].map(([, name, why]) => [name, why]);
     expect(rows).toEqual([["Old MacBook", "relay-ap.ovis.sh"], ["Studio desktop", "relay.ovis.sh"], ["Work laptop", "relay-ap.ovis.sh"]]);
     // rows with different reasons keep each reason on its row, with no caption
@@ -359,6 +359,19 @@ describe("RelayOverview", () => {
       ["relay-overview-attention-row", "needs-approval", "needs-you"],
       ["relay-overview-attention-row", "offline", "offline"],
     ]);
+  });
+
+  it("offers Join at once on the attention card of a PC new in the account that already came by the account service", async () => {
+    const inAccount = makePc("id_m1", "m1-box", "needs-approval", {
+      added_at: new Date(NOW - 2 * 60_000).toISOString(), last_seen_at: new Date(NOW - 30_000).toISOString(),
+      join: { server_public_key: "k_m1", relay: GLOBAL },
+    });
+    const opened: [string, "new" | "join"][] = [];
+    const root = await mount({ pcs: [inAccount], mode: "account", defaultRelay: GLOBAL, now: NOW, onOpenSheet: (pc, mode) => { opened.push([pc.server_id, mode]); } });
+    const actions = root.findAll((node) => node.type === "button" && typeof node.props["data-attention-action"] === "string");
+    expect(actions.map((b) => b.props["data-attention-action"])).toEqual(["join"]);
+    await act(async () => { actions[0]?.props.onClick(); });
+    expect(opened).toEqual([["id_m1", "join"]]);
   });
 
   it("explains fresh Add countdowns, closed Add windows, available updates, and offline durations across locales without duplicated suffixes, and triggers Details without opening a connection", async () => {
@@ -395,14 +408,14 @@ describe("RelayOverview", () => {
       targetVersion: "1.9",
     });
     expect(html).toContain("new · 8 min left");
-    expect(html).toContain("Join · a device of your account connected to it approves");
+    expect(html).toContain('<span class="relay-overview-attention-why" data-reason="join">');
     expect(html).toContain("update to 1.9");
 
     // a listed PC whose directory row gives no route to join by has no Join button, so its reason names none
     const { join: _join, ...noRoute } = expiredPc;
     const routeless = renderMarkup({ pcs: [noRoute], mode: "account", defaultRelay: GLOBAL, now: NOW });
     expect(routeless).toContain("Needs approval");
-    expect(routeless).not.toContain("a device of your account connected to it approves");
+    expect(routeless).not.toContain('data-reason="join"');
     expect(routeless).not.toContain('data-attention-action="join"');
 
     const offlineReasons = (lang: "en" | "ko" | "ja" | "zh"): string[] => [
