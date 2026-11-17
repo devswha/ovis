@@ -4368,6 +4368,11 @@ it("finds the Claude below a Windows pane's shell and its session by the PID rec
   }
 });
 
+/**
+ * Real stand-ins for Claude under one shell (#3009): `count` processes whose argv[0] is `claude`, each
+ * printing its pid once it runs under that name, and waiting on the test's stdin. Linux only: Claude's
+ * PID record is checked against the process's start in /proc.
+ */
 async function claudeStandIns(count: number): Promise<{ leader: number; pids: number[]; start: (pid: number) => string; stop: () => void }> {
   // a background job's stdin would be /dev/null: each stand-in reads the test's pipe through fd 3
   const one = "(exec -a claude bash -c 'echo $$; read -r line' <&3)";

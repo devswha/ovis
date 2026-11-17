@@ -116,6 +116,7 @@ export class ConversationMonitor {
         const pending = error instanceof ConversationNotStarted ? `:${error.sessionId}` : "";
         this.publish(paneId, state, `unavailable:${error.message}${pending}`);
       } else {
+        // A transient herdr failure must not replace a known native file with scrollback.
         present = state.transcript !== null;
       }
     } finally {

@@ -194,6 +194,11 @@ class RevisionUnchecked extends ConversationReadPending {}
 
 interface RevisionTarget { path: string; checkWindow: boolean; live?: () => boolean }
 
+/**
+ * The file `path` names as its caller authorized it, taken in the same turn of the event loop, before
+ * anything awaits. The page readers follow a link, and so does this; `link` says the settle refuses it,
+ * as its open does wherever an open can (O_NOFOLLOW; not Windows).
+ */
 function authorizedFile(path: string): { dev: number; ino: number; link: boolean } | null {
   try {
     const own = lstatSync(path);
@@ -236,6 +241,16 @@ const PAGE_FLAGS = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0);
 
 const REVISION_SETTLES = 3;
 
+/**
+ * `read`, a synchronous read of `target.path`, with the digests its revision check needs read through
+ * the thread pool first (settleTranscriptRevision), from the file authorized as this is called. A change
+ * the read meets after that is settled again, REVISION_SETTLES times at most, and the last read reads
+ * nothing for its revision. Null when, after a settle, the reader no longer wants it (`live`). The read
+ * answers only while the path names the authorized file before and after it. Any other file there (one
+ * renamed over it, even from its own folder, or a folder on the way swapped since) may be another
+ * session's, and is never read: that read is pending, for the next poll to authorize afresh. A path that
+ * named no file to authorize is transcript_missing.
+ */
 async function readSettled<T>(target: RevisionTarget, read: () => T): Promise<{ value: T } | null> {
   const authorized = authorizedFile(target.path);
   const refuse = () => authorized === null ? new ConversationUnavailable("transcript_missing") : new ConversationReadPending();
@@ -246,6 +261,8 @@ async function readSettled<T>(target: RevisionTarget, read: () => T): Promise<{ 
     revisionReads = reads;
     try {
       if (authorized === null || !stillAuthorized(target.path, authorized)) throw refuse();
+      // the page's bytes come through one handle, the authorized file's: an open of the path itself could
+      // meet a folder swapped in around that open alone, which the checks around the read never see
       let fd: number;
       try { fd = openSync(target.path, PAGE_FLAGS); } catch { throw refuse(); }
       let value: T;
@@ -1271,6 +1288,17 @@ export function agentProcesses<T extends { argv?: readonly string[] | null; argv
 const JOB_DEPTH = 6;
 const JOB_PROCESSES = 256;
 
+/**
+ * Whether the shell `shellPid` holds `agent` as a stopped job (Ctrl+Z): a process below the shell in state T. herdr
+ * names only the foreground process group, the shell's own while a job is stopped, as after the agent's exit
+ * (live-checked, herdr 0.9.5), so this reads Linux's /proc: the children of each thread of the shell and of each
+ * process below it (JOB_DEPTH levels, JOB_PROCESSES processes, each once), and each one's state and command line.
+ * Ctrl+Z stops the job's whole process group, so the agent itself is stopped even when a launcher (`npx opencode`,
+ * `sh -c 'opencode; …'`) is the shell's child. `pid`, when known, is the agent process the pane was verified with:
+ * only it counts, not another stopped copy of the agent, and it is followed up its parents to the shell instead, so
+ * a shell with more processes than the walk reads still finds it. Without /proc (macOS), or a process gone
+ * meanwhile, nothing is found.
+ */
 export async function stoppedAgentJob(shellPid: number, agent: string, { pid = null, proc = "/proc" }: { pid?: number | null; proc?: string } = {}): Promise<boolean> {
   /** `pid (comm) state ppid …`: the command name may itself hold ") ", the fields follow its last one */
   const stat = async (process: string): Promise<{ name: string; state: string; parent: string } | null> => {
@@ -1502,6 +1530,12 @@ export async function claudePaneSession(pane: HerdrPane): Promise<{ path: string
   }
 }
 
+/**
+ * The store holding the omp session herdr reports, or null unless the path is a transcript
+ * inside one of the user's own stores: ~/.omp/agent/sessions, or the one `omp --profile <name>`
+ * keeps at ~/.omp/profiles/<name>/agent/sessions. A Windows PC reports it in its own form
+ * (drive letter, backslashes).
+ */
 export function ompSessionStore(value: unknown, home: string, paths: PlatformPath = nodePath): string | null {
   if (typeof value !== "string" || !value.endsWith(".jsonl") || !paths.isAbsolute(value) || !paths.isAbsolute(home)) return null;
   const store = paths.join(home, ".omp", "agent", "sessions");
@@ -1512,12 +1546,30 @@ export function ompSessionStore(value: unknown, home: string, paths: PlatformPat
   return paths.join(profiles, parts[0]!, "agent", "sessions");
 }
 
+/**
+ * omp's transcript: herdr hands over the absolute path, accepted only inside the store the pane's
+ * omp processes write to (omp.ts ompPaneRoute, from their own argv and environment), as a session
+ * of the pane's directory; else the pane's omp process names it. Only where herdr shows no omp
+ * process, and on Windows, which shows no process's environment, is herdr's path held to the
+ * user's own default and profile stores instead.
+ */
 let betweenAuthorization: ((stage: "before" | "after") => void) | null = null;
 
 export function betweenAuthorizationForTests(between: ((stage: "before" | "after") => void) | null): void {
   betweenAuthorization = between;
 }
 
+/**
+ * An omp transcript as it was authorized (authorizedTranscript: the store's real root and the identity
+ * of the very file opened there), with the identity of its blob store taken from those same objects,
+ * never from its path walked again: the store root is opened as a directory without following a link
+ * and held to be the root named; the path down to the transcript is opened component by component
+ * through descriptors, no link followed, and must reach the file authorized; the blob store is then
+ * opened beside the held root, by the root's own parent. So nothing swapped above the store, before or
+ * after this, can lend another store's identity. Only where a directory can be held and opened through
+ * (held-open.ts: Linux, macOS, Windows); elsewhere, and for a layout with no blob store, `blobs` is null
+ * and no blob is read.
+ */
 export function ompAuthorizedTranscript(authorized: { path: string; root: string; identity: string }): { path: string; blobs: string | null } {
   return { path: authorized.path, blobs: heldOpenPlatform(process.platform) ? ompBlobIdentity(authorized) : null };
 }
@@ -1528,6 +1580,11 @@ function ompBlobIdentity({ path, root, identity }: { path: string; root: string;
   const held: Held[] = [];
   const keep = (entry: Held) => { held.push(entry); return entry; };
   try {
+    // one descriptor of the agent data directory, opened once and held: the transcript and the blob store
+    // are both reached from it, so a directory renamed or moved after this open moves neither
+    // the trust boundary: the directory at the data directory's path when it is opened here is the one
+    // trusted, as the user's own arrangement then (a process that can rename inside it runs as the user);
+    // from this open on, nothing is reached by path again
     betweenAuthorization?.("before");
     const data = keep(openHeldDirectory(dirname(root)));
     if (!data.isAt(dirname(root))) return null;
@@ -1572,6 +1629,7 @@ async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[
       const info = cached ? peerInfo!.get(peer.pane_id) : await paneProcessInfo(peer.pane_id).catch(() => null);
       peerInfo?.set(peer.pane_id, info ?? null);
       const processes = agentProcesses(info?.foreground_processes ?? [], "copilot");
+      // A cached peer process that has exited may have been replaced by one we never asked about.
       if (cached && processes.some((entry) => typeof entry.pid === "number" && !processAlive(entry.pid))) throw new ConversationUnavailable("no_session_path", undefined, "copilot_peer_process_replaced");
       if (processes.length === 1 && typeof processes[0]?.pid === "number") {
         const api = await readCopilotForeground(processes[0].pid);
@@ -1593,6 +1651,11 @@ async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[
   if (pane.agent !== "copilot") {
     throw new ConversationUnavailable("no_session_id", undefined, "copilot_report_invalid");
   }
+  // A failed RPC does not prove an ownership change. Retry that read once; an answered
+  // empty/conflicting process set still fails closed, as does a failed retry.
+  // Nor does a process herdr lists without its argv: herdr (0.9.3) leaves that out while the process is
+  // in uninterruptible sleep or exiting, so the set is asked for once more. A set still unread cannot
+  // say which processes are Copilot or which store their arguments name, so it fails closed.
   const ask = () => paneProcessInfo(pane.pane_id).catch(() => paneProcessInfo(pane.pane_id)).catch(() => null);
   const unread = (answer: Awaited<ReturnType<typeof ask>>) => answer?.foreground_processes?.some((entry) => !entry.argv?.length) === true;
   const first = await ask();
@@ -1865,6 +1928,16 @@ export async function paneTranscript(paneId: string, codexHome?: string, snapsho
 
 const AGY_WRITE_RACE_MS = 5000;
 
+/**
+ * The pane's live screen, or "" when nothing proves it: herdr's viewport, read while herdr reports
+ * it at the bottom with the same history before and after the read. Scrolled up, on this device or
+ * another, the viewport is history; and herdr's detection read is no stand-in, since on a short
+ * screen it reaches up into the history above (herdr 0.9.5: a cleared 7-row screen read as 34 rows).
+ * Whatever the agent drew there before (another model, a conversation) is not what it shows now.
+ * A scroll herdr does not report, or a lookup that fails, proves nothing either: pane.get then gives
+ * no geometry, and a viewport scrolled up into the blank rows under a short screen reads the same
+ * as the live one, so no screen is read rather than guessed (unlike viewportShowsLive's text check).
+ */
 async function bottomViewport(paneId: string): Promise<string> {
   const scroll = () => paneScrollInfo(paneId).catch(() => null);
   const before = await scroll();
@@ -1879,6 +1952,11 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
   const snapshot = await sessionSnapshot();
   let resolved: NativeTranscript;
 
+  // no transcript states the model yet: the agent's own screen does (start-screen.ts). A screen
+  // that cannot be read leaves it unknown. omp follows its transcript only: catalog discovery
+  // can refresh the CLI's OAuth credentials and is never initiated by the bridge. Only the live
+  // screen counts (bottomViewport): history can show an older frame of the agent, with a model it
+  // no longer runs.
   const screenMetadata = async (source: RecognizedConversation["source"]): Promise<ConversationMetadata> =>
     startScreenMetadata(source, await bottomViewport(paneId));
   const notBegun = async (source: RecognizedConversation["source"], id: string, read?: ConversationMetadata, fromScreen = false): Promise<RecognizedConversation> => {
@@ -2166,6 +2244,9 @@ export async function readCommandTranscript(paneId: string, codexHome?: string, 
   const { source, path } = resolved;
   if (source !== "claude-transcript" && source !== "codex-transcript" && source !== "pi-transcript"
     && source !== "omp-transcript" && source !== "omo-transcript" && source !== "gjc-transcript") return null;
+  // one exact stat: a file the resolver itself authorized (omp, pi, gjc, omo) is the only one read, compared whole as
+  // Windows' file indexes need; omp's answer for a file it could not authorize names none, and is not read.
+  // The read below is held to this stat's exact file (#3398)
   const exact = statSync(path, { bigint: true });
   const authorized = resolved.source === "omp-transcript" ? resolved.ompFile : resolved.source === "pi-transcript" ? resolved.piFile
     : resolved.source === "gjc-transcript" ? resolved.gjcFile : resolved.source === "omo-transcript" ? resolved.omoFile
@@ -2178,6 +2259,9 @@ export async function readCommandTranscript(paneId: string, codexHome?: string, 
   const cached = commandTranscripts.get(path);
   rememberPaneRead(paneId, path);
   if (cached?.signature === signature) return cached.answer;
+  // Do not call transcriptStream here: building a cold pi index can read the entire file.
+  // The same read supplies validation bytes AND new bytes, so their total stays in budget.
+  // Every byte is read over (a short read gives up), so it need not be zeroed first.
   const start = windowStart(stat.size);
   const bytes = Buffer.allocUnsafe(stat.size - start);
   try {

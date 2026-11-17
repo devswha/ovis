@@ -99,6 +99,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     now: options.statusNow,
     loopbackHttp: options.pushLoopbackHttp === true,
     canDeliver,
+    // a device paired to watch gets the alert, never its answer buttons
     canAnswer: (id) => id === null || (id === undefined ? !devices.gated : devices.canDrive(id)),
     lookupPrompt: (paneId, signal) => currentPrompt(paneId, { codexHome: options.codexHome, openCodeStateDir: options.openCodeStateDir, openCodeState: options.openCodeState, signal }),
     inUse: () => present.size > 0,
@@ -395,6 +396,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       return { ...raw, panes: raw.panes.map((pane) => ({ ...pane, agent_status: restingClaude(pane.pane_id, pane.agent, pane.agent_status) })) };
     });
     if (epoch !== finishes.epoch) return clientSnapshot();
+    // the same herdr before and after the read: its panes are that herdr's. Without that proof the
+    // snapshot names none, rather than give one herdr's pane IDs to another's drafts
     const lifetime = identity !== null && identity === finishes.herdrIdentity() ? herdrLifetime(identity) : undefined;
     const settled = finishes.snapshot({
       ...snapshot,
@@ -437,6 +440,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     machines?.localMessage(message);
     for (const client of clients) send(client, message);
   }
+  /** A broken state file must cost the alert, never the server (an unhandled rejection would). */
   const logPushError = (error: unknown): void => {
     console.error(`web push: ${error instanceof Error ? error.message : String(error)}`);
   };

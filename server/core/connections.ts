@@ -11,9 +11,12 @@ import { PaneWatch, type PaneWatchOptions } from "../watch.ts";
 import type { TelemetryIngress, TelemetrySurface } from "../../shared/telemetry.ts";
 
 export interface SocketData {
+  /** Only the connection server grants this document; remote terminal relays do not. */
   machineEvents?: MachineEventDocument;
   deviceId?: string;
   readOnly?: boolean;
+  /** let in by the open LAN alone, while nothing was paired (access.ts `via: "open"`): no device, token, sign-in or
+   * bridge token stands behind it, so it ends when the pairing gate closes (admit) */
   open?: boolean;
   relay?: MachineRelay;
   bridge?: boolean;
@@ -34,6 +37,7 @@ interface ConnectionState {
   compactMachineAgents?: boolean;
   revoked: boolean;
   gated?: boolean;
+  /** the connection's authority: observe connections cannot type or resize */
   mode: ClientRole;
   roles: number;
   watches: Map<string, PaneView>;
@@ -152,6 +156,8 @@ function sendEncoded(client: Client, encoded: string, overflow?: () => void): nu
     const queued = client.getBufferedAmount() - held;
     if (overflow && queued + bytes > OUTPUT_LOW_BYTES) { overflow(); return 0; }
     const oversized = bytes > OUTPUT_HARD_BYTES && queued <= OUTPUT_HARD_BYTES && held + bytes <= LARGE_REPLY_BYTES;
+    // Include JSON escaping in the transport budget, before Bun could drop a
+    // frame at its own cap. An overload close is explicit and never auto-replayed.
     if (queued + (oversized ? 0 : bytes) > OUTPUT_HARD_BYTES) {
       client.close(OUTPUT_STALLED_CLOSE_CODE, "terminal output transport stalled");
       return 0;
@@ -175,6 +181,11 @@ function sendEncoded(client: Client, encoded: string, overflow?: () => void): nu
   }
 }
 
+/**
+ * A frame past the budget that has not drained by the time it would take on the slowest link allowed for
+ * (OUTPUT_JOIN_BYTES_PER_SECOND) is a stall: nothing else counts it, so a client that stops reading would
+ * otherwise hold it until TCP gives up.
+ */
 function expire(client: Client, frame: ExcusedFrame): void {
   const state = stateOf(client);
   if (state.closing) return;

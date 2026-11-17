@@ -277,6 +277,7 @@ it("refuses an agent-only message on Windows, even with Codex running under the 
     }
     expect(d.writes).toEqual([]);
     expect(d.submitted).toEqual([]);
+    // Codex as the pane's own process is no proof either: Windows says nothing of what takes the input
     mock.restore();
     const own = delivery({ pid: 41000, name: "codex.exe" }, "idle");
     await own.submit(3, "hold");

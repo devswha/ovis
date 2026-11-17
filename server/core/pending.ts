@@ -76,6 +76,7 @@ function runsAgentProgram(entry: { name?: string | null; argv0?: string | null; 
   if (agent === null) return false;
   if (agentProcesses([entry], agent).length > 0) return true;
   if (isShellAgentKind(agent) && SHELL_AGENTS[agent]!(entry.argv ?? [])) return true;
+  // Claude's native build titles itself `Claude`, or by its version on macOS (claude-store.ts)
   if (agent === "claude") return isClaudeProcess({ name: entry.name ?? undefined, argv0: entry.argv0 ?? undefined, argv: entry.argv ?? undefined });
   return agent === "pi" && isPiProcess(entry.argv ?? []);
 }
@@ -148,6 +149,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
   const draftConfirmations = new WeakMap<Client, Map<string, { draft: string | null; identity: PendingIdentity; box?: string | null }>>();
 
   const piTyped = new Map<string, PiTypedReceipt[]>();
+  // Presentation only, bound to both the authenticated device and an opaque browser
+  // correlator. Retaining a receipt never retains permission to send input.
   const PI_RESUME_MS = 10 * 60 * 1000, PI_RESUME_LIMIT = 1024;
   const livePiOwner = (owner: Client): boolean => clients.has(owner) && !connectionOf(owner).closing;
   const piCompleted: Array<{ paneId: string; key: string; id: string; at: number }> = [];
@@ -328,6 +331,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     authorizePending(owner, paneId, lease);
     return lease;
   }
+  // Losing authority cancels already-running checks too. Rejoining the same shared
+  // attachment or returning to interact must never revive a captured lease.
   function holdPending(owner: Client, paneId?: string): void {
     if (paneId === undefined) pendingAuthorities.delete(owner);
     else pendingAuthorities.get(owner)?.delete(paneId);
@@ -495,6 +500,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       identity.omoSession ??= current.omoSession;
       identity.claudeSession ??= current.claudeSession;
     }
+    // the live screen, not the viewport: a pane scrolled into its history still draws its next
+    // menu or password prompt at the bottom (server/prompt.ts liveScreen)
     const screen = (await paneRead({ paneId, source: "detection", format: "text" })).text;
     if (secretPrompt(screen, lease.sighting.facts().cols) !== null) {
       throw new HerdrError("agent_blocked", "The terminal is waiting for masked input; answer it with the secret-input form first");
@@ -654,6 +661,9 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       let refused = false;
       await paneSendKeys(paneId, [steering && beforeEnter.identity.agent === "claude" ? "ctrl+enter" : "Enter"], undefined, () => allowed() && !(refused = resumed()))
         .catch((error: unknown) => { if (refused) refuseResumed(); throw error; });
+      // the screen after its Enter says whether Grok queued the message, also from a Grok read at rest: another client
+      // can start a turn before the Enter, and in minimal mode herdr does not tell a running turn. Compared with the
+      // queue as read right before that Enter, with this delivery's paste in the prompt
       if (interruptWorkingCodex && beforeEnter.identity.agent === "grok") {
         await sendGrokQueuedNow({
           message: closeMention(sent),
@@ -925,6 +935,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
         && Math.abs(identity.processBirth - item.identity.processBirth) > (process.platform === "darwin" ? 1000 : 0));
   }
   function closeConnection(client: Client): void {
+    // Keep bounded presentation-only receipts across transient loss, not input authority.
+    // Revocation/read-only transitions do not retain a resumable presentation.
     let resumable = true;
     try { authorizeSocket(client); } catch { resumable = false; }
     if (!resumable) {
@@ -943,6 +955,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       const retained = items.filter((item) => !drop(item));
       if (retained.length > 0) piTyped.set(paneId, retained); else piTyped.delete(paneId);
       if (!retained.some((item) => item.message.error?.code === "pi_transcript_pending")) piConsumed.delete(paneId);
+      // Reload can attach its successor before the old socket's close reaches us.
+      // Rebind presentation only; never call drainPending or recover an input lease.
       for (const successor of clients) if (successor !== client && livePiOwner(successor) && successor.data.attached.has(paneId)) {
         if (resumePi(successor, paneId, client)) {
           publishPi(paneId);

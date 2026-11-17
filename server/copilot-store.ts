@@ -271,6 +271,7 @@ function scanForegroundLog(pid: number, logDirectories: readonly string[], store
         const code = (error as NodeJS.ErrnoException).code;
         if (code === "ENOENT") continue;
         if (code === "EINTR" || code === "EAGAIN" || code === "EBUSY" || code === "EIO" || code === "ESTALE") {
+          // Keep only the prefix to revalidate, never permission to serve a failed scan.
           const cached = owner.checkpoint;
           if (cached) cached.readConflict = true;
           return LOG_READ_CHANGED;
@@ -419,6 +420,7 @@ function scanForegroundLog(pid: number, logDirectories: readonly string[], store
       } catch (error) {
         const code = (error as NodeJS.ErrnoException).code;
         if (code === "ENOENT" || code === "EINTR" || code === "EAGAIN" || code === "EBUSY" || code === "EIO" || code === "ESTALE") {
+          // Retain revalidation context, not permission to serve the old binding.
           const cached = owner.checkpoint;
           if (cached) cached.readConflict = true;
           return LOG_READ_CHANGED;
@@ -564,6 +566,7 @@ export function copilotProcessSession(environment: readonly string[] | null, arg
 
 type ProcessResolution = { session: ProcessSession; diagnostic?: never } | { session: null; diagnostic: StoreDiagnostic };
 
+/** Failure reasons describe evidence only; never carry session IDs, paths or OS exception text to logs. */
 export function readCopilotProcessSession(environment: readonly string[] | null, argv: readonly string[], pid: number, mode: "current" | "unregistered" = "current"): ProcessResolution {
   const fail = (diagnostic: StoreDiagnostic): ProcessResolution => ({ session: null, diagnostic });
   if (!Number.isSafeInteger(pid) || pid < 1) return fail("copilot_process_unproved");
@@ -669,6 +672,7 @@ export function copilotTranscriptFile(session: unknown, held: ProcessSession | n
   } catch { return null; }
 }
 
+/** A process-held session with no transcript yet, never permission to read unreported history. */
 export function copilotUnwrittenSession(held: ProcessSession | null, argv: readonly string[]): { sessionId: string; path: string } | null {
   if (held === null) return null;
   if (!held.logged && copilotExplicitResume(argv)) return null;

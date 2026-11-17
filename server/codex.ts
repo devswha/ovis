@@ -111,6 +111,7 @@ function withoutMemoryCitations(text: string): string {
   }
   const closes = new Map<number, number>();
   const pairs: number[] = [];
+  // Index matching runs once: unmatched delimiters must not repeatedly scan the tail.
   for (let i = tokens.length - 1; i >= 0; i--) {
     const token = tokens[i]!;
     if (token.kind !== "ticks") {
@@ -359,6 +360,8 @@ export class CodexStoreChanged extends Error {}
  */
 export function openCodexStore(home: string): { db: Database; immutable: boolean; settled: () => void } {
   const named = join(home, "state_5.sqlite");
+  // the store itself, links resolved: its side files lie beside it, not beside a link to it, and it is
+  // opened by that path. One that will not resolve is opened read-only by its name, as before (never immutable)
   let store: string;
   try { store = realpathSync(named); } catch { return { db: new Database(named, { readonly: true, create: false }), immutable: false, settled: () => {} }; }
   const before = statSync(store, { bigint: true });
@@ -396,6 +399,13 @@ const storeUnchanged = (opened: ReturnType<typeof openCodexStore> | undefined): 
 export const defaultCodexHome = (): string => process.env["CODEX_HOME"] || join(homedir(), ".codex");
 
 const processHomes = new Map<string, { home: string | null; at: number }>();
+/**
+ * A visible chat reads its conversation up to every 2 s while the transcript changes, the
+ * conversation monitor re-resolves its file every 5 s, and macOS reads the environment with
+ * a `ps` spawn: a process's environment does not change, so its answer is kept. A pid
+ * reused by another process carries other arguments or comes after this; ponytail: a
+ * reused pid with the same argv inside it reads the old store until it runs out.
+ */
 const PROCESS_HOME_TTL_MS = 30_000;
 
 export async function processCodexHome(pid: number, argv: readonly string[] = []): Promise<string | null> {
@@ -469,12 +479,17 @@ async function readProcessCodexHome(pid: number): Promise<string | null> {
     if (process.platform === "linux") {
       home = (await readFile(`/proc/${pid}/environ`, "utf8")).split("\0").find((entry) => entry.startsWith("CODEX_HOME="))?.slice(11) || null;
     } else if (process.platform === "darwin") {
+      // the environment follows the arguments, space-separated: the last match is the
+      // environment's, and its value runs to the next `NAME=` (a path may hold spaces).
+      // ponytail: a value holding ` NAME=` is cut there, and with none in the environment an
+      // argument spelled CODEX_HOME=/path would be taken. /proc on Linux has neither problem
       home = codexHomeInPsLine((await psEnvironmentLine(pid)) ?? "");
     }
   } catch { home = null; }
   return home !== null && (await isCodexHomeDir(home)) ? home : null;
 }
 
+/** A process's `ps -E` line on macOS: its arguments, then its environment when it is this user's. Null when ps fails. */
 async function psEnvironmentLine(pid: number): Promise<string | null> {
   const child = Bun.spawn(["/bin/ps", "-E", "-ww", "-p", String(pid), "-o", "command="], { stdout: "pipe", stderr: "ignore" });
   const timer = setTimeout(() => child.kill(), 3000);
@@ -484,6 +499,15 @@ async function psEnvironmentLine(pid: number): Promise<string | null> {
   } finally { clearTimeout(timer); }
 }
 
+/**
+ * The store a process's Codex writes to, only as far as its environment tells it for certain
+ * (#1191): the CODEX_HOME directory it names, else .codex in the HOME it names, or null. Null
+ * covers an environment that cannot be read (another user's process, a gone one, Windows), a
+ * CODEX_HOME that is relative or no directory (Codex places one itself, while paneCodexHome falls
+ * back to the default store for it), no HOME or a relative one, and on macOS a command line that
+ * spells CODEX_HOME= or HOME= itself, which `ps -E` cannot tell from the environment. Never this
+ * server's own home: the pane's Codex may run with another HOME.
+ */
 async function certainProcessCodexHome(pid: number, argv: readonly string[]): Promise<string | null> {
   let named: string | null = null;
   let home: string | null = null;
@@ -600,6 +624,7 @@ export function withoutVerbatimPrefix(path: string): string {
   return /^[A-Za-z]:\\/.test(rest) ? rest : path;
 }
 
+/** The `cwd` values Codex may have stored for a directory: as given, and on Windows also with `\\?\`. */
 export function storedCwds(cwd: string): [string, string] {
   const plain = withoutVerbatimPrefix(cwd);
   if (/^[A-Za-z]:\\/.test(plain)) return [plain, `\\\\?\\${plain}`];
@@ -654,6 +679,12 @@ export function storedCwdCondition(cwd: string): { where: string; params: string
   return { where: `cwd IN (${params.map(() => "?").join(", ")})`, params };
 }
 
+/**
+ * Whether the canonical `file` lies inside the canonical store `root`. Either may carry the
+ * Windows `\\?\` prefix without the other (a prefixed CODEX_HOME, #587), or its drive letter in
+ * another case: it is not another root. Past the drive letter the comparison is exact, as
+ * `directoryKey` has it: a case-sensitive directory's `Sessions` is not `sessions`.
+ */
 export function rolloutInsideStore(root: string, file: string, paths: PlatformPath = nodePath): boolean {
   const key = (path: string) => directoryKey(paths.normalize(withoutVerbatimPrefix(path)));
   const base = key(root);
@@ -1559,6 +1590,16 @@ function footedTurnOwner(footed: { text: string; prompts: readonly string[] }, c
   return { path: owner.path, asked: ownerLast.asked, answer: ownerLast.answer, askedElsewhere };
 }
 
+/** Shared app-server TUIs do not hold rollout descriptors. For read-only display,
+ * require a unique substantial assistant-message match in this pane's output.
+ * Directory recency alone is never evidence: multiple panes can share a cwd.
+ * A `scrutinized` candidate (one only a title offered, from another folder) counts only on an
+ * answer no other candidate ever gave, however long ago: one the others gave too is no proof the
+ * pane shows it, and leaves the choice open rather than letting another win by elimination.
+ * `said`: what candidates ever said, for those of which every word counts against the others
+ * (loadedConversation), in place of their answers. `blocks`: the screen is shownAnswers', and an
+ * answer counts only inside one of its blocks: Codex shows one answer as one block, so text that
+ * runs across blocks is answers side by side, another conversation's. */
 export function matchCodexTranscript(screen: string, candidates: { path: string; text: string }[], scrutinized: ReadonlySet<string> = new Set(), said: ReadonlyMap<string, Said> = new Map(), blocks = false, footerOwners: ReadonlySet<string> | null = null): string | null {
   const partsOf = (text: string) => {
     const lastHeader = text.lastIndexOf("OpenAI Codex (v");
@@ -1952,6 +1993,24 @@ function titledCandidate(agent: Pick<AgentInfo, "terminal_title" | "terminal_tit
   return rows.length === 1 ? codexRolloutPath(rows[0]!.rollout_path, home) : null;
 }
 
+/**
+ * The history id of the conversation a Codex started in a terminal has not begun, or null unless
+ * every fact says it has begun none (#1191). This server did not start it (launched-agents.ts),
+ * herdr reports no session for it, and nothing was matched to it; what tells instead:
+ *
+ * - its screen is its start screen with nothing said yet (codexStartScreenUnused);
+ * - its processes were started on no conversation: no `resume` or `fork` on their command lines,
+ *   since the picker either opens shows a conversation that exists;
+ * - its store holds no interactive thread of its folder with a first message, begun or written
+ *   since it started (no later than its start: processStartLowerBound), so no first message of
+ *   its own and no conversation it resumed and wrote to. One another pane began there since
+ *   counts too: which pane's it is cannot be told here. A thread with no message yet holds no
+ *   conversation, whoever made it. That store is an explicit one (`configured`), else the one
+ *   its own environment names for certain (certainProcessCodexHome), on every platform.
+ *
+ * A start time, a home or a store that cannot be read says nothing, and then neither does this. The id
+ * names the pane and its processes, never a time: a start read on macOS moves between reads.
+ */
 export async function codexFreshSession(paneId: string, cwds: readonly string[], configured: string | undefined, screen: string): Promise<string | null> {
   if (!codexStartScreenUnused(screen)) return null;
   const { list, key } = await codexProcessesOf(paneId).catch(() => ({ list: [], key: "" }));
@@ -2499,6 +2558,7 @@ async function codexProcessesOf(paneId: string, known?: ProcessInfo | null): Pro
     .filter((foreground) => {
       const argv: string[] = Array.isArray(foreground.argv) ? foreground.argv : [];
       const executable = argv[0] ?? "";
+      // also a release binary named for its target, and any letter case of Windows' file names
       const codex = /(?:^|[\\/])codex(?:-(?:x86_64|aarch64)-[a-z0-9_-]+)?(?:\.js|\.exe|\.opencodex-real)?$/i;
       if (codex.test(executable)) return true;
       if (!/(?:^|[\\/])(?:node|bun|sh|bash|dash|zsh)(?:\.exe)?$/.test(executable)) return false;
@@ -2531,6 +2591,7 @@ async function codexAgentInfo(paneId: string): Promise<Pick<AgentInfo, "agent_se
     const info = await paneProcessInfo(paneId).then((answer) => (processRead = { info: answer }).info, () => undefined);
     if (kiroWrapper(info)) {
       const pane = await paneGet(paneId);
+      // Never revive an earlier occupant's session report through a shell wrapper.
       return { ...pane, agent_session: undefined, nestedTerminal: true };
     }
     const pane = await paneGet(paneId);
@@ -2875,6 +2936,12 @@ async function openRollouts(paneId: string, home: string, known?: ProcessInfo | 
   const held = new Map<string, string>();
   const conflicted = new Set<string>();
   if (globalThis.process.platform === "darwin" && codexProcesses.length > 0) {
+    // lsof is available on macOS, where /proc does not exist. Keep the same
+    // canonical-store and unambiguous-open-file checks as the Linux path. One run
+    // for every Codex process of the pane (a wrapper and the binary are two), and
+    // -b keeps lsof off the stat calls it does not need for a name: a chat reads this up
+    // to every 2 s while its transcript changes, the conversation monitor every 5 s, and
+    // each run costs about 20 ms of process start and kernel walk
     // D and i (device and inode of each file) come from the open file itself, as with -b lsof makes no stat call (#3402)
     const child = Bun.spawn(["/usr/sbin/lsof", "-nPbw", "-a", "-p", codexProcesses.map((process) => process.pid).join(","), "-FfnDi"], { stdout: "pipe", stderr: "ignore" });
     const timer = setTimeout(() => child.kill(), 3000);
@@ -2982,6 +3049,15 @@ const onlyStarted = (candidate: { path: string; text: string }): boolean => turn
 
 const lookupAnswers = new Map<string, { weighed: string; found: unknown }>();
 
+/**
+ * The conversations of other folders a pane may be running, beside its folder's candidates: the thread its command
+ * line resumed, and every one a Codex process of the store has loaded (loadedRollouts), the one a resume through
+ * the picker opened among them (#896). They only keep this folder's from winning by elimination. With the question
+ * a lookup then asks (`weighed`: what it asks (`asked`), the screen, the processes, the owners and every read as
+ * told above) and every rollout it weighs (`known`), for the pane's last read to be held to (stillAsWeighed). Null
+ * where the loaded threads cannot be read (Windows, more than 32 loaded, one of them with no rollout or an earlier
+ * one missing): the conversation shown may then be none of the candidates.
+ */
 async function conversationsBeside(asked: string, processes: string, screen: string, candidates: { path: string; text: string }[], resumed: string | null, owners: ReadonlySet<string>, home: string):
   Promise<{ beside: string[]; weighed: string; known: ReadonlySet<string> } | null> {
   const threads = await loadedRollouts(home);
@@ -3113,6 +3189,11 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
     db = opened.db;
     if (resumed !== null) {
       const row = db.query<{ rollout_path: string }, [string]>("SELECT rollout_path FROM threads WHERE id = ?").get(resumed);
+      // After /new the command line still names the resumed thread. Trust it only while
+      // no other interactive thread in this cwd began after this Codex did (newerThreads;
+      // one no other pane shows counts too: then the chat says it cannot tell, rather
+      // than show the wrong conversation). Without a start time, since the resumed
+      // thread was last updated.
       const startedAt = Math.min(...codexProcesses.map((process) => processStartedAt(process.pid) ?? Infinity));
       const since = Number.isFinite(startedAt)
         ? Math.floor(startedAt / 1000)
@@ -3123,6 +3204,7 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
     if (boundHere !== undefined) boundNewer = newerThreads(db, cwd, Math.floor(boundHere.at / 1000), null, paneId, home, firsts);
     const { where, params } = storedCwdCondition(cwd);
     const rows = db.query<{ rollout_path: string }, string[]>(
+      // a burst of `codex exec` runs must not push the pane's own thread out of the 32
       `SELECT rollout_path FROM threads WHERE ${where} AND archived = 0 AND agent_role IS NULL${interactive(db)} ORDER BY updated_at DESC LIMIT 33`,
     ).all(...params);
     const rollouts = rows.slice(0, 32).map((row) => codexRolloutPath(row.rollout_path, home));

@@ -134,6 +134,7 @@ export class CompletionTracker {
     this.pending.set(order, newer);
     try {
       const raw = await read();
+      // Display labels such as omo must not replace the herdr identity used to match a finish.
       return this.project(raw, newer, order, label ? await label(raw) : raw);
     }
     finally { this.pending.delete(order); }
@@ -193,6 +194,7 @@ export class CompletionTracker {
     return JSON.stringify({ herdr, finished, finishedAgents });
   }
 
+  /** Written whole, and only on a change: a crash mid-write must not leave half a file. */
   private save(): void {
     if (this.file === null) return;
     const herdr = this.herdr();
@@ -200,6 +202,7 @@ export class CompletionTracker {
     const state = this.serialize(herdr);
     if (state === this.saved) return;
     try {
+      // flushed before the rename, and the rename recorded after it: a power cut never leaves it empty
       writeStateDocument(this.file, state, false);
       this.saved = state;
     } catch (error) {

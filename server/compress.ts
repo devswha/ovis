@@ -1,3 +1,13 @@
+/**
+ * gzip for the text this server answers with, when the browser takes it. A conversation page is
+ * JSON of up to a few megabytes, polled every 2 s while it changes; over a Tailscale relay or a
+ * phone's link those bytes were most of a session switch (2026-10-08: 2.1 MB → about a fifth).
+ *
+ * Only finished bodies of a text type: the event stream (SSE) and a WebSocket upgrade pass
+ * untouched, and so do files a user downloads, a range answer and anything already encoded.
+ * Every answer whose form depends on Accept-Encoding says so in `Vary`, the plain one and a 304
+ * too, so a cache never hands one form to a client that asked for the other.
+ */
 import { errorResponse } from "./http.ts";
 
 const COMPRESSIBLE = /^(?:application\/(?:json|javascript|manifest\+json)|text\/(?:html|css|javascript|plain)|image\/svg\+xml)\b/i;

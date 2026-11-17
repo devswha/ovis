@@ -15,6 +15,12 @@ const roots: string[] = [];
 afterEach(() => { mock.restore(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 type Foreground = { pid: number; name: string; argv: string[] };
+/**
+ * The pids the fake herdr reports are above any pid_max (Linux allows none over 2 ** 22), so no
+ * process or thread of this host is at one. herdr gives these processes no cwd of their own, and
+ * the server then reads /proc/<pid>/cwd: a live one there would place the OmO in its own folder,
+ * not in the pane's, and its holder would not be its.
+ */
 const PID = 2 ** 22 + 41000;
 
 // An argv-silent custom OmO is known by its session holder alone; the bundled Claude SDK child it runs a turn in
@@ -22,6 +28,7 @@ const PID = 2 ** 22 + 41000;
 const parent: Foreground = { pid: PID + 1, name: "run", argv: ["/opt/team-ai/bin/run"] };
 const sdk: Foreground = { pid: PID + 2, name: "claude", argv: ["/opt/node_modules/omo-ai/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude"] };
 
+/** A working OmO pane whose session holders are `holderPids`, all started at 1 000, with herdr giving no per-process cwd (macOS). */
 function omoPane(holderPids: number[], foreground: Foreground[]) {
   const root = mkdtempSync(join(tmpdir(), "ovis-pending-omo-holder-")); roots.push(root);
   const cwd = join(root, "project");

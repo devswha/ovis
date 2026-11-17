@@ -187,6 +187,8 @@ export function createSpawnAttachment({ attachments, retiringAttachments, termin
     if (pane.restore_error) throw new HerdrError("pane_not_restored", pane.restore_error, false, true);
     const terminalId = (pane as HerdrPane & { terminal_id?: string }).terminal_id;
     if (!terminalId) throw new HerdrError("no_terminal", `pane ${paneId} has no terminal`);
+    // the pane's grid as the operator's layout holds it: an observe connection must
+    // create the pty at THIS size, never at the observer's own viewport
     return { terminalId, rect: paneGrid(snapshot, pane as HerdrPane) };
   }
 
@@ -196,6 +198,9 @@ export function createSpawnAttachment({ attachments, retiringAttachments, termin
     const { terminalId, rect } = await terminalInfoFor(paneId);
     await retiringAttachments.get(paneId);
     if (isStopped()) throw new HerdrError("server_stopped", "the web bridge stopped during attachment creation");
+    // an observer-first attachment spawns at the pane's own grid (fallback 80x24 when
+    // the layout has no rect for it): the attach must not seed the shared pty with a
+    // watching phone's viewport
     const spawnCols = forObserver || mirrored ? (rect?.width ?? 80) : cols;
     const spawnRows = forObserver || mirrored ? (rect?.height ?? 24) : rows;
     const state = {
@@ -243,6 +248,14 @@ export function createSpawnAttachment({ attachments, retiringAttachments, termin
     const attachment: PtyAttachment = { kind: "pty", ready: false, process: undefined as unknown as PtySession, ...state };
     attachments.set(paneId, attachment);
 
+    // No --takeover unless asked: another web bridge may own the exclusive attach slot.
+    // Report that conflict without displacing it or the user's own TUI; a client here may
+    // still take it on purpose (`take-over`), and the other bridge then waits in turn.
+    // herdr also refuses an attach while a read of the same terminal is in progress ("has a
+    // read in progress; retry"), and this server reads panes all the time (prompt polls,
+    // transcript matches): an attach that races one, typically a phone reconnecting just as
+    // Codex finished an answer, is started again for the same clients, for as long as such
+    // a read can last, instead of ending their terminal.
     const forward = (data: string): void => {
       if (attachments.get(paneId) !== attachment) return;
       attachment.replay.append(data);
@@ -411,6 +424,8 @@ export function createSpawnAttachment({ attachments, retiringAttachments, termin
             const delay = Math.min(ATTACH_RETRY_MS * 2 ** (retries - 1), ATTACH_RETRY_MAX_MS, retryDeadline - now);
             attachment.retry = setTimeout(() => {
               attachment.retry = undefined;
+              // The timer can run after its deadline. Do not start one more attach then wait for
+              // that process to exit before applying the recovery limit.
               if (recoveryDeadline !== null && Date.now() >= recoveryDeadline) return finish();
               again();
             }, delay);
@@ -422,6 +437,9 @@ export function createSpawnAttachment({ attachments, retiringAttachments, termin
           held = null;
           refusedSince = null;
           retries = 0;
+          // Another web bridge holds herdr's one attach slot (two bridges on one herdr, e.g. a
+          // second install beside the first). Its attach is left alone; this pane waits for it
+          // to let go, trying again while anyone here still has it open, instead of ending.
           if (!attachment.held) broadcast(paneId, { type: "error", code: "attach_held", message: ATTACH_HELD_MESSAGE, pane_id: paneId });
           attachment.held = true;
           if (!displaced && mayTakeOver(takeoverWanted)) {
@@ -454,6 +472,8 @@ export function createSpawnAttachment({ attachments, retiringAttachments, termin
             return;
           }
           if (Date.now() >= deadline) return finish();
+          // a herdr that takes the request and never answers must not hold the terminal past the
+          // deadline: the lookup gets what is left of it, not the RPC's own 10 s
           terminalInfoFor(paneId, Math.max(1, deadline - Date.now())).then(({ terminalId: now }) => {
             if (attachments.get(paneId) !== attachment) return;
             if (Date.now() >= deadline) return finish();

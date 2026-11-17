@@ -1,3 +1,4 @@
+/** Read-only identity for opted-in Linux TUIs. This never enables a listener or configures its authentication. */
 import { closeSync, openSync, readSync, readdirSync, readlinkSync, statSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
 import { randomUUID } from "node:crypto";
@@ -263,6 +264,7 @@ export function forgetCopilotForeground(): void {
   for (const client of clients.values()) client.close();
 }
 
+/** Attach only to an already-enabled, process-owned endpoint; never launch a server or send control methods. */
 export async function readCopilotForeground(pid: number): Promise<CopilotForeground> {
   if (process.platform !== "linux") return { state: "unavailable", diagnostic: "unsupported_platform" };
   let client = clients.get(pid);

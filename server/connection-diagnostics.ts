@@ -11,6 +11,7 @@ export function transportFailureCode(code: string): TransportCode | null {
 }
 
 interface Fields {
+  /** A code-owned operation name, never a URL, pane ID, target, or error message. */
   operation: string;
   request_id?: string;
   machine_id?: string;
@@ -84,6 +85,7 @@ export class ConnectionDiagnostics {
   }
 
   private emit(event: "failed" | "recovered", failure: Failure, fields: Fields, now: number): boolean {
+    // Pick fields explicitly. Never spread an exception, request, response, or caller's object.
     const record: Record<string, string | number> = {
       time: new Date(this.wallNow()).toISOString(), event: `${this.component}.${event}`, episode_id: failure.id,
       operation: /^[a-z][a-z0-9_.]{0,95}$/.test(fields.operation) ? fields.operation : "unknown",

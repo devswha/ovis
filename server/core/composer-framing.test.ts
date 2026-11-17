@@ -125,6 +125,9 @@ describe("an immediate submit's paste framing", () => {
 });
 
 it("reads a message of line breaks that do not end it in one pass, before it refuses it", () => {
+  // `/[\r\n]+$/` starts over at every line break of a run that does not end the text: 40,000 took 1.4 s and twice as
+  // many four times that, on the server's only thread, for a frame any connection that may type can send. With the
+  // pattern these take seconds each and the test times out; in one pass they take under a millisecond
   const breaks = `${"\n".repeat(60_000)}a`;
   for (const typed of [false, true]) expect(() => submitFraming(breaks, breaks.replace(/\n/g, "\r"), typed)).toThrow("at most");
   expect(() => pendingText(breaks)).toThrow("at most");

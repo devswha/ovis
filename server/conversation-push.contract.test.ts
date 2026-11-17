@@ -50,6 +50,7 @@ class TranscriptSocket {
 
 describe("native conversation invalidation", () => {
   const root = mkdtempSync(join(tmpdir(), "herdr-conversation-push-"));
+  // the omp store sits under a temporary HOME (as in omp.contract.test.ts), never the user's own
   const originalHome = process.env["HOME"];
   const sessionStore = join(root, ".omp", "agent", "sessions");
   mkdirSync(sessionStore, { recursive: true, mode: 0o700 });

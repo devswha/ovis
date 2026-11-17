@@ -146,6 +146,10 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
     attachment.process.kill();
   }
 
+  /**
+   * herdr moved the pane under a new ID: the attach made as `from` ends for its clients (`pty-exit`), and the
+   * first attach as `to` waits for that process to exit, as it holds herdr's one attach slot until then (#1503).
+   */
   function paneMoved(from: string, to: string): void {
     if (from === to) return;
     const retire = (): Promise<void> | undefined => {
@@ -293,6 +297,7 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
       }
       const claim = client.data.attached.get(message.pane_id) ?? { keepSize: false };
       claim.keepSize = message.keep_size === true;
+      // An opaque, bounded presentation correlator only: never used by input guards.
       if (typeof message.receipt_resume_id === "string" && RECEIPT_RESUME_ID.test(message.receipt_resume_id)) claim.receiptResumeId = message.receipt_resume_id;
       if (!client.data.attached.has(message.pane_id)) client.data.attached.set(message.pane_id, claim);
       let attachment: PaneAttachment;
@@ -401,6 +406,7 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
       return;
     },
     "pty-ack"(client: Client, message: Frame<"pty-ack">): void {
+      // Observers may acknowledge output, but never input or resize it.
       const window = client.data.output.get(message.pane_id);
       if (window && window.id === message.stream_id && !window.acknowledge(message.stream_id, message.offset)) {
         send(client, { type: "error", code: "invalid_ack", message: "offset must acknowledge bytes already sent" });

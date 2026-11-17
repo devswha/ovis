@@ -2,6 +2,11 @@ import type { ConversationSearchResponse } from "../shared/conversation-search.t
 import { searchTurns } from "../shared/conversation-search.ts";
 import { ConversationUnavailable, HistoryChanged, MAX_PAGE_PROMPTS, type ConversationPage, type RecognizedConversation } from "./conversation.ts";
 
+/**
+ * What one search answer may read before it says where to go on: a 1000-prompt Claude session of
+ * 25 MB parses as 20 pages of 50 prompts in about 0.8 s on a desktop (2000 prompts, 2.3 s), so a
+ * long session takes the browser a few answers, each one a little over a second at most.
+ */
 export const SEARCH_PAGES = 20;
 export const SEARCH_MS = 1000;
 export const SEARCH_MATCHES = 50;

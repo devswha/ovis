@@ -221,6 +221,9 @@ describe("native OpenCode ownership without a status event", () => {
       expect(await openCodePaneService(pane)).not.toBeNull();
       await reconciled.promise;
       expect(openCodeNativeState()).toEqual({ stream: true, panes: [pane.pane_id] });
+      // When OpenCode leaves and herdr's snapshot says so (the shell idle in front), but no status event
+      // or lifecycle frame tells the collector (seen from herdr 0.9.3 on a loaded host).
+      // herdr 0.9.3 can also keep the label, while its own process read finds the shell alone in front.
       h.herdrSays({ ...pane, ...left, ...(left.agent === null ? { agent_session: null } : {}) });
       info = spyOn(herdr, "paneProcessInfo").mockResolvedValue({
         pane_id: pane.pane_id, shell_pid: 41000, foreground_processes: [{ pid: 41000, name: "bash", argv: ["/bin/bash", "--noprofile", "--norc"] }],

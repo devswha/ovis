@@ -147,6 +147,7 @@ export async function blockedOnlyByCodexQueue(paneId: string): Promise<boolean> 
     throw error;
   }), "codex");
   if (!(await codex())) return false;
+  // A collapsed queue in scrollback must not bypass an approval on the live screen.
   if (!codexQuestionsCollapsed((await paneRead({ paneId, source: "detection", format: "text" })).text)) return false;
   return await codex();
 }
@@ -206,6 +207,19 @@ export async function freeHermesInput(paneId: string, identity?: PendingIdentity
   return live;
 }
 
+/**
+ * Any other agent's input box whose recorded shape reports typed text (shared/input-row.ts typedDraft), refused
+ * with input_draft only when it shows text a person typed: the paste would join it and the Enter send both
+ * (#3627). Unlike Claude's and Hermes' checks, a box this read cannot make out is sent to as before, so a
+ * misreading never refuses every send to an agent. Claude and Hermes keep their own checks.
+ *
+ * herdr gives colours for the viewport alone, which any client may have scrolled into the history, so the
+ * viewport is read first and the live screen last: the colours count only when their text is the live
+ * screen's, and a read without any colour (NO_COLOR, a plain herdr-core read) proves nothing either.
+ * `codexScreens`: the live read is also the one Codex's own screens are refused on (freeCodexInput), so a
+ * dialog that opens between two checks is not pasted into. Text typed after the live read joins the
+ * message: herdr cannot compare and write in one step.
+ */
 export async function freeAgentInput(paneId: string, agent: string | null, identity?: PendingIdentity, codexScreens = false): Promise<void> {
   if (!readsTypedDraft(agent)) return;
   for (let round = 0; round < AGENT_BOX_READS; round++) {
@@ -223,6 +237,10 @@ export async function freeAgentInput(paneId: string, agent: string | null, ident
 
 const AGENT_BOX_READS = 3;
 
+/**
+ * Whether the viewport's read shows the live screen: its rows are the live screen's last ones. herdr's live read can
+ * hold a row more at its top than the viewport (measured with Gemini CLI 0.68.0), never other rows at the bottom.
+ */
 function showsLive(colors: string, live: string): boolean {
   const shown = screenText(colors).split("\n"), current = screenText(live).split("\n");
   return shown.length <= current.length && shown.length >= current.length - 2 && current.slice(current.length - shown.length).join("\n") === shown.join("\n");
@@ -309,6 +327,11 @@ export async function freeClaudeBox(paneId: string, working: boolean, authorize:
   if (claudeInputDraft(...await claudeBoxReads(paneId))) throw new HerdrError("input_draft", CLAUDE_INPUT_DRAFT_MESSAGE);
 }
 
+/**
+ * A masked prompt on `screen` at any width it could be wrapped at. A send need not be attached, and an attachment's width
+ * can change during the read, so the widths tried are every one at which the row above the last reaches the right edge
+ * (secretPrompt joins only such a row): fail closed rather than trust a width the screen was not drawn at.
+ */
 function maskedPromptAtAnyWidth(screen: string): boolean {
   const rows = screen.split(/\r?\n/u);
   while (rows.length > 0 && !rows.at(-1)!.trim()) rows.pop();
@@ -327,6 +350,24 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
   DRAFT_CLEAR_POLL_MS: number;
   SUBMIT_DELAY_MS: number;
 }) {
+  /**
+   * Types a composer message and submits it, with its own Enter after the text: arriving
+   * in the same chunk as the paste, a TUI still busy with it (turning an image path into
+   * an attachment, redrawing after the phone keyboard closed) could take it for a newline
+   * and leave the message unsent in its input box. Done here rather than in the browser,
+   * the gap survives a jittery connection and the Enter still goes when the phone locks.
+   *
+   * An agent gets it through herdr's agent.prompt (the paste, then Enter 300ms later),
+   * which refuses while the agent waits for an answer: the message is not typed into its
+   * menu. A pane without an agent in front gets `payload`, shaped for its own paste mode,
+   * through send_text, then Enter SUBMIT_DELAY_MS later; both return once the pane has
+   * the bytes, so the pane sees the whole gap. So does a Codex "blocked" only by questions
+   * waiting collapsed in its queue: its main prompt still takes the message.
+   *
+   * A working Grok queues that Enter. Only a Send now (`sendNow`: a saved copy's resend) then
+   * sends one more Enter, and only while the message is the one row queued (sendGrokQueuedNow).
+   * A plain Send, an idle Grok, and the terminal's own input line keep the single Enter.
+   */
   async function submitText(paneId: string, text: string, payload: string, arrivedAt: number, fromTerminal = false, authorize: () => void = () => {},
     clearDraft?: string, confirmation?: { draft: string | null; identity: PendingIdentity; box?: string | null }, sendAnyway = false, agentOnly = false,
     sendNow = false): Promise<void> {
@@ -459,6 +500,10 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
             inTime(reserve);
             const currentDraft = claudeClearableDraft(...reads);
             if (currentDraft !== clearDraft) throw new InputDraftError(currentDraft, identity ?? undefined);
+            // The final draft comparison and clearing keys are not atomic (herdr has no compare-and-clear),
+            // so terminal text another client types moments after the user's explicit "Clear it and send"
+            // click can also be cleared.
+            // Connecting to herdr also yields: check the budget and authority again at the write.
             const allowed = (): boolean => {
               try { inTime(reserve); clearedDraft = true; return true; } catch { return false; }
             };
@@ -527,6 +572,7 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
         if (pane && command && skills.length > 0 && !agentOnly) {
           const expected = pendingIdentity(pane);
           let current = pane;
+          // as the queued path does (pending.ts): no key goes into a masked prompt that came up on the live screen
           const noMaskedPrompt = async (screen?: string): Promise<void> => {
             if ((screen !== undefined && maskedPromptAtAnyWidth(stripVTControlCharacters(screen)))
               || maskedPromptAtAnyWidth((await paneRead({ paneId, source: "detection", format: "text" })).text)) {
@@ -602,6 +648,8 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
           const delivery = agentPrompt(paneId, closeMention(sent), undefined, mayType);
           bindCommandProcess(paneId, command, seen, pane);
           await delivery;
+          // herdr's prompt already sent the Enter that queues a working Grok's follow-up. A failure
+          // here must not fall through to another paste: the message is already in Grok's queue.
           await confirmGrokQueue(closeMention(sent));
           noteSubmitted(paneId, sent, recorded(command), sentAt);
           if (command) watch?.commit(command, [{ pasted: closeMention(sent) }], []);

@@ -11,6 +11,12 @@ import { paneCommands } from "../commands.ts";
 import { registry } from "../dialogs/registry.ts";
 import { findLastIndex } from "../dialogs/shared.ts";
 
+// Hermes 0.21.5 in a 120x40 herdr 0.9.5 pane (isolated HERMES_HOME, fake key), /status sent six times in a row with
+// agent.prompt. Each send keeps the detection read taken right before it (with the visible ANSI read the composer takes to
+// tell Hermes's dimmed placeholder from a draft) and the one taken after its block printed, each with the viewport's top
+// row in the pane's history (max_offset_from_bottom - offset_from_bottom), the same before and after the read. From the
+// third send on the earlier blocks fill the screen; from the fourth, a send's two reads, and the next send's, differ only
+// in the status bar's clock: only the history moved.
 type Read = { top: number; screen: string; colors?: string };
 type Recorded = { sends: { sent: Read; after: Read }[] };
 const load = (name: string): Recorded =>

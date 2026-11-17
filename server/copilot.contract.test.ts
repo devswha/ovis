@@ -382,6 +382,8 @@ it.skipIf(process.platform !== "linux")("reads the live API without a report, fo
     expect(await read()).toEqual({ source: "scrollback", turns: [] });
     await command(current, pid, ":api-stable");
     expect((await read()).source).toBe("copilot-transcript");
+    // herdr 0.9.3 leaves out the argv of a process it finds in uninterruptible sleep (D) or exiting:
+    // one such answer for a Copilot still in front is not that Copilot gone
     const realProcessInfo = herdrClient.paneProcessInfo;
     const answers: ("read" | "unread")[] = [];
     let unreadLeft = 1;
@@ -527,10 +529,16 @@ it.skipIf(process.platform !== "linux")("binds only the reported UUID to the for
     await Bun.sleep(50);
   }
   await report(other, 3);
+  // Herdr 0.9.3 ignores a replacement Copilot ID. Its stale old ID must not
+  // show that old session as if it belonged to the now-switched pane.
   expect((await sessionSnapshot()).panes.find((p) => p.pane_id === pane)?.agent_session?.value).toBe(id);
   expect((await read()).source).toBe("scrollback");
   expect((await fetch(`${url}&from=${encodeURIComponent(first.cursor!)}`)).status).toBe(409);
   expect((await fetch(toolUrl(completedRef))).status).toBe(404);
+  // the stand-in quits. Its process leaving the pane is the exit; herdr must also forget the Copilot
+  // session reported for it, or herdr 0.9.3 ignores the next stand-in's report. The release is what
+  // Copilot's own hook sends at its exit; in the runs read, herdr answered it ok, the label and that
+  // session stayed while the stand-in ran, and both left together after its exit
   const quitting = await fixtureInFront(pane, id);
   if (quitting === undefined) throw new Error(`the stand-in for ${id} is not in front of ${pane}: ${JSON.stringify((await paneProcessInfo(pane))?.foreground_processes)}`);
   const quitAt = performance.now();

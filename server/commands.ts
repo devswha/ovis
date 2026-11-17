@@ -99,6 +99,20 @@ export async function commandScansSettled(): Promise<void> {
   await Promise.allSettled([...scans.values()].map((scan) => scan.result));
 }
 
+/**
+ * `paneCommands` run on a file thread (`file-pool.ts`), never on the server's: the scan reads every
+ * skill and command folder the agent would, synchronously, and a folder on a slow mount (9p, a
+ * network share) took 10-27 s there, stalling every terminal and request with it (#2254).
+ *
+ * A request waits for its scan until `COMMANDS_WAIT_MS` after it `began`, or until `signal` aborts,
+ * and is then refused with `FileBusyError` (503). A scan a thread runs goes on: a request for the
+ * same scan made meanwhile (the menu asks again after a failed read) waits for it rather than
+ * starting another, and if it finishes after everyone waiting gave up, the next request for it
+ * takes that answer (within `UNCLAIMED_SCAN_MS`), so a scan slower than one request's wait still
+ * answers. A scan still waiting for a thread when its last request leaves is dropped, so it holds
+ * no waiting place. An answer a request received is not kept: the next request scans again, and
+ * sees a skill added since. An agent with no scan answers at once, without a thread.
+ */
 export function scanPaneCommands(agent: string | null | undefined, cwd: string | null | undefined, process: ProcessRoots = {}, version?: string | null, signal?: AbortSignal, began = performance.now()): Promise<SlashCommand[]> {
   if (!agent || !Object.hasOwn(AGENT_SOURCES, agent)) return Promise.resolve([]);
   if (signal?.aborted) return Promise.reject(new FileBusyError("the request was cancelled"));

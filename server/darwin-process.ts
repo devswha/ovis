@@ -1,3 +1,8 @@
+/**
+ * What macOS's kernel keeps about a process, read in the server's own thread through libSystem:
+ * `ps` asked the same kernel, but as a child the event loop had to wait for, and that wait stalled
+ * every connection (#1404). Each read takes microseconds and never starts a process.
+ */
 import { dlopen, FFIType, ptr } from "bun:ffi";
 
 let libSystem: ReturnType<typeof openLibSystem> | undefined;

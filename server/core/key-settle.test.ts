@@ -6,9 +6,18 @@ import { KEY_SETTLE_MS, TYPED_SETTLE_MS } from "../index.ts";
 
 afterEach(() => mock.restore());
 
+/**
+ * What the settle must outlast, measured on herdr 0.9.3 (#634): a letter crosses the sidecar and the
+ * attach in about 2 ms, so a key waits several times that; herdr holds a lone ESC ~150 ms.
+ */
 const PTY_PIPELINE_MARGIN_MS = 20;
 const HERDR_ESC_HOLD_MS = 150;
 
+/**
+ * One connection attached and ready on pane w:p1, its pty writes and herdr's RPCs written down with
+ * the time they were made. A key goes through herdr around the pty, so the lane is what keeps it
+ * from overtaking the typing before it: herdr offers no barrier for bytes in the attach pty (#634).
+ */
 function lane() {
   const events: Array<{ what: string; at: number }> = [];
   const socket: Client = { data: connectionData({ deviceId: undefined, readOnly: false }), readyState: WebSocket.OPEN, send: () => 1, getBufferedAmount: () => 0, close: () => {} };

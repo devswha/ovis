@@ -18,6 +18,23 @@ import { focusFromMove, HerdrError, sessionSnapshot, subscribeEvents, type Event
  *   that never arrives when the socket's buffer is full (seen on 0.9.3): every connection
  *   here reopens itself on the close alone, and whatever it missed is read back from a
  *   snapshot taken once the new subscription has started (herdr's documented order).
+ *
+ * - A status that changed while no subscription was listening for the pane is never sent
+ *   again: the pane set changed (a pane opened or closed elsewhere) and the status connection
+ *   was being reopened with the new set, herdr refused a batch for a pane that had gone, or
+ *   the server had only just started. A finish in that gap cost its done alert (#245: with
+ *   panes opening and closing beside it, a pane's one status change was lost in 5 of 10
+ *   runs). Such a gap is short and known, so the first snapshot after the new subscription
+ *   started is measured against each pane's status as last told (by an event, or by an
+ *   earlier replay), and a difference is told as that event (`replay`). Nothing else is,
+ *   and no other snapshot moves what a pane was last told as: a snapshot at any other time
+ *   may differ from the last event for reasons that are no change (herdr reads a finish
+ *   nobody saw as `done` here and `idle` there), or be ahead of an event still on its way,
+ *   and what was missed over an outage of unknown length (`events_lost`, a herdr that could
+ *   not be reached) is corrected without alerts (`onResync`).
+ *   The snapshot that shows the pane set changed is such evidence too: the connection is
+ *   closed on its account, and an event herdr had sent but this side had not read yet goes
+ *   with it (traced: the snapshot already showed `unknown`, the event for it never came).
  */
 
 const RECONNECT_MIN_MS = 250;
@@ -215,6 +232,10 @@ export function startStatusCollector(handlers: StatusCollectorHandlers, override
   let gap = false;
   let replayFor: number | null = null;
   let statusStarted = false;
+  /**
+   * each pane's `display_agent` as last heard. A plugin's new line for an agent comes only as a
+   * status event, of the same status (live, herdr 0.9.3), and no lifecycle event says it
+   */
   const displayAgents = new Map<string, string | null>();
 
   const STRUCTURE_SUBSCRIPTIONS = [
@@ -280,6 +301,13 @@ export function startStatusCollector(handlers: StatusCollectorHandlers, override
           refused = code !== "connect_failed" && code !== "socket_error" && code !== "timeout" && code !== "error";
           logSubscriptionError(error);
         },
+        // herdr answers a bad batch (e.g. a pane that vanished between snapshot and
+        // subscribe) with an error frame and closes the socket, and closes a subscriber
+        // that fell behind (`events_lost`): the whole set is re-subscribed from a fresh
+        // snapshot, now rather than after the debounce, and what was missed is resynced.
+        // One herdr refused before it started lost no events of its own: the gap it leaves
+        // is the short one between two subscriptions. One that could not connect says
+        // nothing of how long nobody listened, and recovers like a lost one
         onClose: () => {
           if (statusSubscription !== subscription || stopped) return;
           closeStatusSubscription();
@@ -447,6 +475,7 @@ export function startStatusCollector(handlers: StatusCollectorHandlers, override
     handlers.herdrLive,
   );
 
+  // Its own connection: a focus type an older herdr refuses must not cost pane exits.
   const onFocus = handlers.onFocus;
   if (onFocus !== undefined) {
     focusSubscription = resilientSubscription(

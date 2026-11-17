@@ -35,6 +35,7 @@ export function createInputLane({ TYPED_SETTLE_MS, KEY_SETTLE_MS, clients, sight
     typedInto.set(paneId, count);
     if (typedInto.size > 256) typedInto.delete(typedInto.keys().next().value!);
   };
+  /** panes whose last pty keystroke ended in an ESC, which herdr holds ~150ms: a key waits TYPED_SETTLE_MS there */
   const typedEscape = new Set<string>();
   const waitingKeys = new Map<string, { keys: string[]; client: unknown; origin: unknown; pty: unknown; claim: unknown; roles: number; run: Promise<unknown> | null; sent: boolean }>();
 
@@ -69,6 +70,10 @@ export function createInputLane({ TYPED_SETTLE_MS, KEY_SETTLE_MS, clients, sight
         if (clients.has(client)) send(client, { type: "error", code: "input_failed", message: "Terminal input could not be confirmed. Check the terminal before typing again.", pane_id: message.pane_id });
         receipt(false, "input_failed");
       };
+      // without a pty (Windows: no terminal, or a mirrored one) typing, the key bar's Enter,
+      // Stop and arrows go through herdr itself, each in its turn behind a message in flight.
+      // The turn is taken before herdr is asked what it can do: a message sent while
+      // that answer is on its way must not overtake the typing.
       if (terminalAttachKnown() === false || (!seen.attached && terminalAttachKnown() === null)) {
         if (seen.attached && !seen.member) {
           send(client, { type: "error", code: "input_not_ready", message: "Terminal input is not ready. Nothing was sent.", pane_id: message.pane_id });
@@ -165,6 +170,9 @@ export function createInputLane({ TYPED_SETTLE_MS, KEY_SETTLE_MS, clients, sight
       }
       const batch = { keys: [...message.keys], client: client as unknown, origin: sighting.origin, pty: sighting.pty, claim: sighting.claim, roles, run: null as Promise<unknown> | null, sent: false };
       const run = serialize(message.pane_id, async () => { try {
+        // A key goes through herdr's RPC, around the attach pty that typing just went into: it
+        // waits for that typing as a composer message does, or it overtakes it (a lone ESC is
+        // held there ~150ms). The checks below run after the wait.
         if (seen.origin && !seen.mirror) await settleAfterTyping(message.pane_id);
         const facts = sighting.facts();
         if (facts.origin && (!facts.sameAttachment || !facts.samePty || !facts.sameClaim || !facts.member)) {
@@ -202,6 +210,7 @@ export function createInputLane({ TYPED_SETTLE_MS, KEY_SETTLE_MS, clients, sight
       return;
     },
     async secret(client: Client, message: Frame<"secret">): Promise<void> {
+      // Refuse busy panes instead of retaining the secret behind another send.
       const result = (ok: boolean, code?: string) => send(client, {
         type: "secret-result", id: message.id, pane_id: message.pane_id, ok, ...(code ? { code } : {}),
       });
@@ -211,6 +220,8 @@ export function createInputLane({ TYPED_SETTLE_MS, KEY_SETTLE_MS, clients, sight
           result(false, "invalid_secret"); return;
         }
         if (connectionOf(client).mode === "observe") { result(false, "read_only"); return; }
+        // the attach this secret was sent from: leaving it (even joining again) takes the secret back,
+        // and so do a new pty or role: a live handoff or a switch away and back during the screen read (#589)
         const sighting = sight(client, message.pane_id);
         const seen = sighting.facts();
         if (!seen.member) { result(false, "not_attached"); return; }
@@ -220,6 +231,8 @@ export function createInputLane({ TYPED_SETTLE_MS, KEY_SETTLE_MS, clients, sight
         if (paneQueues.has(message.pane_id)) { result(false, "pane_busy"); return; }
         const roles = connectionOf(client).roles;
         await serialize(message.pane_id, async () => {
+          // A viewport scrolled into history can still show an old password prompt.
+          // Validate the live screen before typing a secret into the current program.
           const screen = await paneRead({ paneId: message.pane_id, source: "detection", format: "text" });
           if (connectionOf(client).closing || connectionOf(client).mode === "observe" || connectionOf(client).roles !== roles) { result(false, "read_only"); return; }
           authorizeSocket(client);
@@ -237,9 +250,12 @@ export function createInputLane({ TYPED_SETTLE_MS, KEY_SETTLE_MS, clients, sight
               throw error;
             }
             try {
+              // Typing finished; recheck authority after the Enter RPC connects (#900).
               await paneSendKeys(message.pane_id, ["Enter"], undefined, allowed);
             } catch (error) {
               if (!(error instanceof HerdrError && error.code === "cancelled")) throw error;
+              // Cleanup is deliberately unguarded: do not leave the secret for another Enter.
+              // Raw-mode readers may receive these bytes without erasing their own buffer.
               await paneSendKeys(message.pane_id, Array(message.secret.length).fill("Backspace"));
               result(false, connectionOf(client).closing || connectionOf(client).roles !== roles
                 ? "read_only" : "not_attached");
@@ -252,6 +268,7 @@ export function createInputLane({ TYPED_SETTLE_MS, KEY_SETTLE_MS, clients, sight
           result(true);
         });
       } catch {
+        // Never forward an exception that might include submitted bytes.
         result(false, "secret_failed");
       } finally { message.secret = ""; }
       return;
@@ -291,6 +308,7 @@ export function createInputLane({ TYPED_SETTLE_MS, KEY_SETTLE_MS, clients, sight
           if (!seen.mirror) await settleAfterTyping(message.pane_id);
           let lost = standing();
           if (lost) { refuse(lost); return; }
+          // the live screen, not a scrolled-up one: a password prompt takes no pasted text
           const screen = await paneRead({ paneId: message.pane_id, source: "detection", format: "text" }).catch(() => null);
           if (screen === null) { result(false, "pane_read_failed", "The pane's screen could not be read; nothing was typed"); return; }
           lost = standing();

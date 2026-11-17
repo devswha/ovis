@@ -3,6 +3,12 @@ import { closeSync, constants, fstatSync, openSync } from "node:fs";
 
 import type { ConversationMetadata, ConversationResponse, ConversationTurn } from "../shared/protocol.ts";
 
+/**
+ * A transcript is read a page at a time, the newest page re-read on every append
+ * while an agent works: Codex rollouts reach hundreds of MB (a 400MB one took 1.1s
+ * and 1.7GB of memory to parse whole). 16MB still holds dozens of turns of a
+ * tool-heavy session; the chat asks for the pages before it as the reader scrolls up.
+ */
 export const TRANSCRIPT_WINDOW_BYTES = 16 * 1024 * 1024;
 
 export const COPILOT_STORE_DIAGNOSTICS = [
@@ -66,6 +72,11 @@ function sameFile(identity: FileIdentity, opened: FileIdentity): boolean {
   return same(identity.dev, opened.dev) && same(identity.ino, opened.ino);
 }
 
+/**
+ * The files the synchronous read in progress is bound to, by path, each as it was authorized. An open of
+ * one that finds another file there (a folder swapped in around that open alone) is refused, so no bytes
+ * behind an answer come from a file nobody authorized (#3382). Null outside readBound.
+ */
 let boundFiles: Map<string, FileIdentity> | null = null;
 
 export function readBound<T>(files: readonly (readonly [string, FileIdentity])[], read: () => T): T {
