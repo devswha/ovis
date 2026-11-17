@@ -1546,13 +1546,6 @@ export function ompSessionStore(value: unknown, home: string, paths: PlatformPat
   return paths.join(profiles, parts[0]!, "agent", "sessions");
 }
 
-/**
- * omp's transcript: herdr hands over the absolute path, accepted only inside the store the pane's
- * omp processes write to (omp.ts ompPaneRoute, from their own argv and environment), as a session
- * of the pane's directory; else the pane's omp process names it. Only where herdr shows no omp
- * process, and on Windows, which shows no process's environment, is herdr's path held to the
- * user's own default and profile stores instead.
- */
 let betweenAuthorization: ((stage: "before" | "after") => void) | null = null;
 
 export function betweenAuthorizationForTests(between: ((stage: "before" | "after") => void) | null): void {
@@ -1596,6 +1589,13 @@ function ompBlobIdentity({ path, root, identity }: { path: string; root: string;
   } catch { return null; } finally { for (const entry of held) entry.close(); }
 }
 
+/**
+ * omp's transcript: herdr hands over the absolute path, accepted only inside the store the pane's
+ * omp processes write to (omp.ts ompPaneRoute, from their own argv and environment), as a session
+ * of the pane's directory; else the pane's omp process names it. Only where herdr shows no omp
+ * process, and on Windows, which shows no process's environment, is herdr's path held to the
+ * user's own default and profile stores instead.
+ */
 export async function ompTranscriptPath(paneId: string, cwd: string, known?: KnownProcesses): Promise<{ path: string; blobs: string | null; identity?: string }> {
   const info = await herdrRpc<{ agent: { agent_session?: { kind?: unknown; value?: unknown } } }>("agent.get", { target: paneId });
   const session = info.agent.agent_session;

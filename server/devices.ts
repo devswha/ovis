@@ -711,6 +711,11 @@ export class DeviceStore {
     return true;
   }
 
+  onRevokeAll(listener: () => void): () => void {
+    this.revokeAllListeners.add(listener);
+    return () => { this.revokeAllListeners.delete(listener); };
+  }
+
   /**
    * Every paired device loses its access in one durable write, the caller's own included; the
    * ids it returns are for the cleanup that follows (push subscriptions, page media). The write
@@ -720,11 +725,6 @@ export class DeviceStore {
    * The gate stays closed, with a timestamp even when nothing was ever confirmed (only first-pair
    * candidates existed): revoking must never reopen the LAN, not even after a restart.
    */
-  onRevokeAll(listener: () => void): () => void {
-    this.revokeAllListeners.add(listener);
-    return () => { this.revokeAllListeners.delete(listener); };
-  }
-
   revokeAll(): string[] {
     this.assertWritable();
     this.tombstone(this.devices, Date.now());
@@ -901,13 +901,6 @@ export class DeviceStore {
   }
 }
 
-/**
- * /api/devices*. Pairing itself is public, like /api/auth: it is how a device gets in. The
- * rest reaches here only through the gate in index.ts, and anything that changes the list
- * needs the app's own mutation guard (same origin + X-Herdr-Machine), like the other mutations.
- * `onRevoked` is told the id of every device a request revoked, once the registry says so: the
- * cleanup that follows (push subscriptions, page media) works from those ids, never from the path.
- */
 export interface DeviceConnections {
   list(): Map<string, DeviceConnection>;
   check(timeoutMs: number): Promise<void>;
@@ -915,6 +908,13 @@ export interface DeviceConnections {
 
 const CHECK_MS = 3_000;
 
+/**
+ * /api/devices*. Pairing itself is public, like /api/auth: it is how a device gets in. The
+ * rest reaches here only through the gate in index.ts, and anything that changes the list
+ * needs the app's own mutation guard (same origin + X-Herdr-Machine), like the other mutations.
+ * `onRevoked` is told the id of every device a request revoked, once the registry says so: the
+ * cleanup that follows (push subscriptions, page media) works from those ids, never from the path.
+ */
 export async function handleDeviceRequest(request: Request, pathname: string, store: DeviceStore, access: Access, relayKey: string | null, onRevoked?: (ids: string[]) => void, lanHttps = false, connections?: DeviceConnections): Promise<Response> {
   if (store.error !== null) return jsonResponse({ error: { code: "device_store_unavailable", message: access.level === "full" ? store.error : "Device pairing is unavailable; ask the owner to check Settings → Devices on the host." } }, 503);
   const json = async (): Promise<Record<string, unknown> | Response> => {
