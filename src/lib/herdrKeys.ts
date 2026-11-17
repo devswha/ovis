@@ -1,3 +1,8 @@
+/**
+ * herdr's prefix keys in the app (Settings → Shortcuts → Use herdr's prefix keys, off by default):
+ * herdr's prefix (Ctrl+B unless its config.toml says otherwise), then a key herdr binds to one of
+ * the actions in shared/herdr-keys.ts runs the app's own action for it.
+ */
 import { tally } from "./usageCounters.ts";
 import type { TelemetryAction } from "../../shared/telemetry.ts";
 import { useEffect, useState } from "react";

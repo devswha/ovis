@@ -55,6 +55,7 @@ describe("AgentSidebar plugin tokens", () => {
       pane("w1:p2"),
     ])]);
     expect(texts(html, "agent-tokens")).toEqual(["5h 95% · Wk 67% · <b>reviewing</b> auth"]);
+    // escaped, never markup
     expect(html).not.toContain("<b>reviewing</b>");
     expect(html.match(/class="agent-tokens"/g)?.length).toBe(1);
   });

@@ -1,4 +1,7 @@
 // allow: SIZE_OK - the overlay's drawing and cleanup share its terminal and renderer state.
+/**
+ * libghostty answers nothing: a reply it made to a replayed stream would reach the program as typing.
+ */
 import type { IDisposable, Terminal } from "@xterm/xterm";
 import { terminalDrawsPictures } from "../terminalImages.ts";
 import { followLateFaces, glyphFit, iconScale, oversizedIcon } from "../terminalGlyphs.ts";
@@ -28,6 +31,7 @@ const PRIVATE_USE = /[\ue000-\uf8ff\u{f0000}-\u{ffffd}\u{100000}-\u{10fffd}]/u;
 const POWERLINE = /^[\ue0b0-\ue0d7]$/u;
 /** Powerline glyphs xterm draws in their own colour whatever the contrast (its isPowerlineGlyph) */
 const POWERLINE_GLYPH = /^[\ue0a4-\ue0d6]$/u;
+/** distinct glyphs measured before the measures start over: a long session of ever new graphemes must not grow without end */
 const MEASURED_MAX = 4096;
 
 const latin1 = new TextDecoder("latin1");
@@ -45,6 +49,7 @@ export function xtermPictureScanner(): (data: string | Uint8Array) => boolean {
   };
 }
 
+/** how long after a wheel or a swipe a frame is taken for herdr's repaint of the scrolled screen, not for output */
 const VIEW_REPAINT_MS = 1000;
 const VIEW_GESTURES = ["wheel", "touchmove", VIEW_MOVED_EVENT];
 
@@ -162,6 +167,9 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
     Object.assign(layer.style, { fontFamily: font, fontSize: `${size}px`, width: `${box.width}px`, height: `${box.height}px` });
     layer.style.setProperty("--ghostty-cw", `${cellW}px`);
     layer.style.setProperty("--ghostty-ch", `${cellH}px`);
+    // each cell is xterm's width: a font whose advance differs is spaced to it. The probe measures the font's own
+    // advance, not the spacing the last fit gave the layer: inherited, a wrong spacing flipped sign at every fit and
+    // never healed, and Latin was drawn squashed over itself or spread apart
     const probe = document.createElement("span");
     probe.textContent = "W".repeat(50);
     probe.style.cssText = "position:absolute;visibility:hidden;white-space:pre;letter-spacing:0";
@@ -422,6 +430,7 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
       const screenText = rowText.slice(0, term.rows);
       const before = Array.from({ length: term.rows }, (_, y) => bottomText[bottomText.length - term.rows + y] ?? "");
       if (primed && written && performance.now() >= viewMovedUntil) announce(newLines(before, screenText));
+      // the screen a pane opens on is the first one written: herdr's own server paints it only after the attach
       if (written) primed = true;
       written = false;
       bottomText = screenText;

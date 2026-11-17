@@ -147,6 +147,7 @@ export function listedPcStateText(pc: MyPc, t: ReturnType<typeof useT>): string 
 
 export const HOSTED_APP_URL = `${GLOBAL_APP}/`;
 
+/** How long the account must not have heard from a PC before its row offers Remove: the life of a relay pass (docs/relay.md, "Relay pass"). */
 export const UNUSED_AFTER_MS = 48 * 60 * 60_000;
 
 export function unusedPc(pc: Pick<MyPc, "last_seen_at" | "added_at">, now: number): boolean {

@@ -19,11 +19,19 @@ export interface AccessGateProps {
   onUnlocked: () => void;
 }
 
+/**
+ * Sign-in screen rendered instead of the shell while the server does not know this
+ * browser. Pairing is the usual way in: a six-digit code the owner started on the PC
+ * (Settings → Devices), typed once, or carried by the QR code's address. The shared
+ * token stays as the other way. Nothing is stored here: the server answers with an
+ * HttpOnly cookie either way.
+ */
 export function AccessGate({ reason, initialCode, consumePairCode, pairingUnconfirmed, onPaired, onUnlocked }: AccessGateProps) {
   const t = useT();
   const codeRef = useRef<HTMLInputElement | null>(null);
   const tokenRef = useRef<HTMLInputElement | null>(null);
   const [code, setCode] = useState(initialCode);
+  // the token lives in its field alone, read at submit and cleared once it unlocked (src/AGENTS.md, G-108)
   const [submitting, setSubmitting] = useState<"code" | "token" | null>(null);
   const [error, setError] = useState<UserError | null>(null);
   const [codeShort, setCodeShort] = useState(false);
@@ -50,7 +58,7 @@ export function AccessGate({ reason, initialCode, consumePairCode, pairingUnconf
     setCode("");
     const value = consumePairCode();
     if (value) void pair(value);
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const submitCode = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault();

@@ -364,6 +364,9 @@ export function App() {
     void load();
   }, [load, loadHealth]);
 
+  // pasting the auth link into an already-open tab is a fragment-only navigation:
+  // no reload happens, so the boot consumer never re-runs. Watch for the arrival
+  // of the fragment instead; a wrong token just leaves the gate as it is.
   useEffect(() => {
     const onHashChange = (): void => {
       const linkToken = takeAuthTokenFromUrl();
@@ -378,6 +381,8 @@ export function App() {
 
   const lock = useCallback(async () => {
     setDrawerOpen(false);
+    // before signOut: the unsubscribe call needs the cookie, and a locked device must stop
+    // receiving pane titles
     await removePushSubscription().catch(() => undefined);
     setPushOn(false);
     resetPushHealth();
@@ -1081,6 +1086,7 @@ export function App() {
         <TelemetryNotice enabled={locked === false && setupGuide.settled && !guideShown} onOpen={() => { setSettingsLinkPage("about"); setSettingsLinkSection("telemetry"); setSettingsOpen(true); }} />
         <MachineActionBanner machines={machines} onSetup={(machine, update = false) => { setDrawerOpen(false); setUpdateRemote(update); setMachineDialog(machine); }} />
         {layoutNotice && <p className="pane-notice" role="alert">{layoutNotice}</p>}
+        {/* the last answer that got through: a listener does not stop because herdr's ping failed */}
         {exposure && !(exposureDirect && directNotice.dismissed) && <LanExposureNotice host={exposure.host} direct={exposureDirect} onOpen={() => { setSettingsLinkPage("devices"); setSettingsOpen(true); }} onDismiss={directNotice.dismiss} />}
         {relayNoticeInfo && !relayNotice.dismissed && <RelayNotice notice={relayNoticeInfo} onOpen={() => { setSettingsLinkPage("devices"); setSettingsLinkSection("account"); setSettingsOpen(true); }} onDismiss={relayNotice.dismiss} />}
         <PushHealthNotice onRepair={repairNotifications} onOpen={() => { setSettingsLinkPage("alerts"); setSettingsOpen(true); }} />
@@ -1206,6 +1212,8 @@ export function App() {
                         finishEpoch={machine?.snapshot?.finish_epoch}
                         finishId={item?.finish_id}
                         title={item ? displayPaneTitle(item) : active ? selectedTitle : null}
+                        // Wait for the roster before attaching: the loading placeholder is replaced
+                        // by the keyed tile, and must never claim the pane on a throwaway connection.
                         paneId={item?.restore_error ? null : item?.pane_id ?? null}
                         terminalId={item?.terminal_id ?? null}
                         mirrored={herdr ? herdr.terminal_attach === false || herdr.terminal_mirror === true : null}

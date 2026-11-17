@@ -1,3 +1,10 @@
+/**
+ * A new device asks to join the account through a PC this device is connected to
+ * (`remote-pairings`, docs/account.md "Who may admit a device"). The approver picks the number the
+ * new device shows out of three, as Microsoft Authenticator's number matching does: a tap without
+ * looking is right one time in three, and a wrong pick ends the request. Approve stays off until
+ * a number is picked; Deny and Escape end it.
+ */
 import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { MapPin, MonitorSmartphone } from "lucide-react";

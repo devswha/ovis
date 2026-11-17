@@ -127,6 +127,10 @@ export interface SignedInHere { readonly account: string; readonly adds: boolean
 
 let relistOnItsWay: { readonly until: number; readonly listed: Promise<ListedPc> } | null = null;
 
+/**
+ * The relay is never turned on without a press. Nothing else is listed or opened without one. A device that only
+ * watches this PC can list nothing, and is shown nothing.
+ */
 export function AddThisPc({ relayAbove = true, service, signedInHere, onListed }: {
   relayAbove?: boolean;
   onListed?: () => void;
@@ -442,6 +446,16 @@ export function AddThisPc({ relayAbove = true, service, signedInHere, onListed }
       warned("Ovis: this PC's access facts could not be read"));
     return () => { live = false; };
   }, [relayOff]);
+  /**
+   * The one press that turns the relay on and lists this PC, under the sign-in the button was offered to
+   * (`account`): with another one stored, or none, nothing is started and the plain offer comes back. A relay
+   * that may not start says why and nothing is listed; a start that does not answer within `ADDING_MS` gives
+   * the button back. Turning the relay on closes a device gate still open, which would shut out a browser in
+   * only because nothing is paired yet (auth via "open"). The PC refuses such a browser its account
+   * (server/dispatch.ts, owner_only), so this button is never offered to one; should how this browser is in
+   * have changed since, it pairs itself first, as the setup guide's relay button does (SetupGuide), and the relay
+   * is not started when that, or reading how this browser is in, fails.
+   */
   const startRelayAndAdd = (account: string): void => {
     const mine = ++attempt.current;
     starts.current++;
@@ -567,6 +581,7 @@ export interface AccountState {
   reachable: boolean;
 }
 
+/** the phone and Mac apps sign in their own way, never with a code from a PC's page */
 const pcServiceHere = (): string | null => desktopAccount() === null && !inNativeApp() && !inMacApp() ? pcAccountServiceOf(document, window.isSecureContext) : null;
 
 export const accountServiceHere = (): string | null => desktopAccount()?.service ?? pcServiceHere();
@@ -583,10 +598,12 @@ export function AccountSection({ onAccount, recheck = 0 }: {
   const fallback: AccountProvider[] = bridge ? desktopProviders(bridge) : ["github"];
   const [offer, setOffer] = useState<OfferedProviders | null>(null);
   const [unreachable, setUnreachable] = useState(false);
+  /** a change to the ways in that waits for a fresh sign-in (403 reauth_required) */
   const [reauth, setReauth] = useState<{ action: "add" | "remove"; provider: AccountProvider } | { action: "delete"; provider: AccountProvider; deletion: Deletion } | null>(null);
   const [deleteAsked, setDeleteAsked] = useState<AccountSession | null>(null);
   const deletion = useRef<Deletion | null>(null);
   const [deleteOut, setDeleteOut] = useState<Deletion | null>(null);
+  /** the sign-in-again prompt, while it is for the account shown: a delete's prompt never carries over to another account */
   const reauthShown = reauth !== null && (reauth.action !== "delete" || (view.kind === "signed-in" && reauth.deletion.session.account === view.account)) ? reauth : null;
   const deviceSignIn = useRef<AbortController | null>(null);
   const signedInHere = useRef<(SignedInHere & { readonly at: number }) | null>(null);
@@ -659,7 +676,13 @@ export function AccountSection({ onAccount, recheck = 0 }: {
     onAccount?.({ signedIn: signedIn !== null, account: signedIn?.account ?? null, pcs: signedIn?.pcs ?? null, provider: signedIn?.provider ?? null,
       noPcs: signedIn !== null && signedIn.pcs !== null && signedIn.pcs.length === 0 && signedIn.error === null, reachable: !unreachable });
   }, [onAccount, view, unreachable]);
+  // closing Settings ends a device sign-in still waiting: its session is then never kept
   useEffect(() => () => { deviceSignIn.current?.abort(); loads.current++; }, []);
+  // the link page's one button says what it leads to, only where the sign-in does add the PC: one in no account,
+  // with its relay on (the sign-in never turns it on), to a browser that drives it (a watching one lists nothing).
+  // What the button says at the press is what the sign-in does (`signIn`), so words read a moment ago never add
+  // the PC behind a plain "Sign in"; they follow the relay, which its switch in the same fold turns on and off:
+  // read again every few seconds while the page shows, and when Settings asks (`recheck`).
   const signedOut = view.kind === "signed-out";
   const [addsPc, setAddsPc] = useState(false);
   useEffect(() => {
@@ -756,6 +779,10 @@ export function AccountSection({ onAccount, recheck = 0 }: {
 
   const needsReauth = (error: unknown): boolean => error instanceof AccountServiceError && error.code === "reauth_required";
 
+  /**
+   * Adds `provider` to the signed-in account on purpose, from the desktop app only: a link goes
+   * through a redirect sign-in, never a device code someone else could have typed.
+   */
   const addMethod = (provider: AccountProvider): void => {
     if (bridge === null) return;
     setView({ kind: "signing-in" });
@@ -816,11 +843,18 @@ export function AccountSection({ onAccount, recheck = 0 }: {
     if (deleteOut !== null) return;
     setReauth(null);
     void new AccountService({ store: indexedAccountStore }).session().then((session) => {
+      // another tab signed out, or in as someone else: the section reads what is stored now instead of asking
       if (session === undefined || view.kind !== "signed-in" || session.account !== view.account) { void load(); return; }
       setDeleteAsked(session);
     }, (error: unknown) => console.warn("Ovis: the sign-in could not be read", error instanceof Error ? error.name : error));
   };
 
+  /**
+   * Deletes the account of `session`, the sign-in the question was asked for or a sign-in again to its account
+   * (lib/account/deleteAccount.ts): one stored meanwhile (another tab) is never touched, and the section then reads
+   * it. The service wants a sign-in from the last ten minutes, as for a change to the ways in.
+   */
+  /** The confirming press: one delete, for the sign-in the question was asked for. */
   const confirmDelete = (asked: AccountSession): void => {
     if (deleteOut !== null) return;
     const mine: Deletion = { session: asked };
@@ -961,6 +995,7 @@ export function AccountSection({ onAccount, recheck = 0 }: {
               {reauthShown !== null && reauthShown.action !== "delete" && (
                 <div className="account-reauth" role="alert">
                   <p className="settings-description">{bridge === null
+                      // a sign-in again stays with this account's provider, at its own device page, never the link page's choice
                       ? t("To change how you sign in, sign in again with {provider} on its own sign-in page first.", { provider: PROVIDER_NAMES[view.provider] })
                       : t("To change how you sign in, sign in again with {provider} first.", { provider: PROVIDER_NAMES[view.provider] })}</p>
                   {(bridge !== null || isDeviceProvider(view.provider)) && <button type="button" className="btn btn-primary" onClick={signInAgain}>{t("Sign in again")}</button>}
@@ -980,6 +1015,8 @@ export function AccountSection({ onAccount, recheck = 0 }: {
           )}
           <AddThisPc signedInHere={takeSignedInHere} onListed={() => { void load(); }} />
           {view.pcs !== null && onAccount === undefined && <div className="settings-item"><AccountPcList pcs={view.pcs} /></div>}
+          {/* A PC's own page in a browser signs in with a device code or the link page, whose sign-in the service never lets
+              delete the account (web_sign_in_required): it says where to delete instead. */}
           {bridge === null
             ? <SettingsRow label={t("Delete account")} description={t("To delete your account, use the Ovis phone app, the desktop app or app.ovis.sh.")}>{null}</SettingsRow>
             : <SettingsRow label={t("Delete account")}

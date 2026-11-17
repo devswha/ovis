@@ -1,3 +1,9 @@
+/**
+ * herdr's `[ui] copy_on_select` on the PC serving this page (GET /api/herdr-ui), which a drag in the
+ * terminal follows as herdr's own TUI does (#1559), for local and remote panes alike. Until a read
+ * answers, letting go of a drag copies nothing: copying that was turned off must not happen once.
+ * Only an older server, which has no such route (404 not_found), stands for herdr's default (on).
+ */
 import { HERDR_PREFIX_ACTIONS, type HerdrKeys } from "../../shared/herdr-keys.ts";
 import { apiFetch } from "./api-request-id.ts";
 

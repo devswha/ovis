@@ -2,6 +2,11 @@ import { useEffect, useMemo, useRef, useSyncExternalStore, type RefObject } from
 
 interface HasId { id: string }
 
+/**
+ * Kept in a key of its own, as the PC fold state is (`ovis:pc-collapsed:<id>`), never in
+ * ovis:settings: a tab still on an older version rewrites that record whole and would erase a field
+ * it does not know (docs/development.md, Stored-format changes).
+ */
 export const HIDDEN_MACHINES_KEY = "ovis:hidden-pcs";
 export const HIDDEN_MACHINES_MAX = 64;
 

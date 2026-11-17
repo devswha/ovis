@@ -1,3 +1,12 @@
+/**
+ * A health read that fails is no proof that herdr stopped: the web server may be restarting, the
+ * phone may have dropped a request, herdr may be busy for one poll. So one failed read in a row
+ * makes the status unknown (the last answer's details stay named), and a second makes it
+ * unavailable. Neither changes the PC's capabilities: those are the last answer the PC gave, and
+ * only another answer replaces them, so a Windows herdr's `terminal_attach: false` is never
+ * forgotten into the attach-capable default by a failed read.
+ */
+
 export type HealthFreshness = "pending" | "fresh" | "unknown" | "unavailable";
 export type HealthAnswer<T> = { ok: true; value: T } | { ok: false };
 

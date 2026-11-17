@@ -19,6 +19,8 @@ export function AccountApprovals({ pairings }: { pairings: readonly RemotePairin
   const request = pairings[0];
   const serverId = serverIdOfPath(window.location.pathname);
   const [where, setWhere] = useState<{ pcName: string; pcCount: number }>({ pcName: "", pcCount: 1 });
+  // who is asking, as the account service saw the device ring at this PC (never as the PC says);
+  // until it is known an account join cannot be approved (AccountApprovalPrompt `asker` undefined)
   const [asker, setAsker] = useState<{ id: string; asker: AccountAsker; admission: Admission | null } | null>(null);
   const [reads, setReads] = useState(0);
   const checked = restsOnAdmission(request);
@@ -64,6 +66,8 @@ export function AccountApprovals({ pairings }: { pairings: readonly RemotePairin
     if (decision === "decline" || digits === undefined) { await decideRelayPairing(request.id, "decline"); return; }
     const service = new AccountService({ store: indexedAccountStore });
     const session = await service.session();
+    // signed out here, an account join is answered on this PC only, never added to the account. A PC vouched for is
+    // never approved unchecked: approveJoin cannot read the admission without a sign-in, and approves nothing
     if (!checked || (session === undefined && request.intent === "account")) { await decideRelayPairing(request.id, "approve", digits); return; }
     const transport = getTransport();
     try {

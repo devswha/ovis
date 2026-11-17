@@ -6,6 +6,7 @@
   padding: var(--space-2) var(--side-gutter) 0;
 }
 
+/* positioned: a row's visually hidden label is absolute, and must not size the page instead */
 .agent-list-contents {
   position: relative;
   flex: 1 1 auto;

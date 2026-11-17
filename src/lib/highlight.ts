@@ -57,11 +57,18 @@ export interface Runs {
 export const CHAT_HIGHLIGHT_LIMIT = 100 * 1024;
 
 /**
- * TanStack Highlight is linear on ordinary code but quadratic on some shapes (a long run of `"\"`
- * in JSON, `--` in YAML).
+ * Up to this many characters, code is highlighted at once, while the page draws. TanStack Highlight
+ * is linear on ordinary code but quadratic on some shapes (a long run of `"\"` in JSON, `--` in
+ * YAML): at 2 KB the worst of those measured stays under 5 ms. Anything longer is highlighted in a
+ * worker (`highlightOffThread`), so no text can hold the page.
  */
 export const SYNC_HIGHLIGHT_LIMIT = 2 * 1024;
 
+/**
+ * Past this many lines, code is drawn as one text, without colors: every line is an element of its
+ * own, and in Chromium 20 000 of them take about 0.3 s to draw, while 256 KB of line breaks (262 144
+ * lines) held the page for 4 s. Bytes do not bound that, so the lines are counted.
+ */
 export const LINE_ELEMENT_LIMIT = 20_000;
 
 export function countLines(source: string): number {

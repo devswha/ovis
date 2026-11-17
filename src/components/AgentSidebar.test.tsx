@@ -102,6 +102,7 @@ describe("AgentSidebar phone sheet live row", () => {
       ...machine.snapshot, panes: machine.snapshot.panes.map((pane) => pane.pane_id === paneId ? { ...pane, agent_status: status } : pane),
     } }));
     const since = () => renderer!.root.findByProps({ "data-machine": "local", "data-pane": paneId }).findAll((node) => node.props.className === "agent-since").map((node) => node.children.join(""));
+    // already waiting when the page opened: herdr says nothing of when it began, so the row says no time
     await act(async () => { renderer = create(view(at("blocked"))); });
     expect(since()).toEqual([]);
     await act(async () => { renderer!.update(view(at("working"))); });
@@ -551,6 +552,7 @@ describe("AgentSidebar fold memory", () => {
 
   it("counts an agent's time in its state from the change this device saw, through a read finish and a reload (#3505)", async () => {
     const start = 1_800_000_000_000;
+    // the roster as the server sends it: herdr's counter moves with each state of its own, and the server counts the finish
     const at = (status: AgentStatus, seq: number, finishes: number) => roster().map((machine) => ({ ...machine, snapshot: machine.snapshot && {
       ...machine.snapshot, finish_epoch: "server-1",
       panes: machine.snapshot.panes.map((pane) => pane.pane_id === paneId ? { ...pane, agent_status: status, finish_id: finishes } : pane),
@@ -749,6 +751,7 @@ describe("AgentSidebar fold memory", () => {
     const at = (status: AgentStatus, id = paneId) => roster().map((machine) => {
       if (machine.snapshot === null) return machine;
       const snapshot = { ...machine.snapshot, panes: machine.snapshot.panes.map((pane) => pane.pane_id === paneId ? { ...pane, agent_status: status } : pane) };
+      // herdr names the moved pane anew wherever it names it (the panes, the agents, the layouts) and leaves it its terminal
       return { ...machine, snapshot: JSON.parse(JSON.stringify(snapshot).replaceAll(JSON.stringify(paneId), JSON.stringify(id))) as typeof snapshot };
     });
     const since = (id: string) => renderer!.root.findByProps({ "data-machine": "local", "data-pane": id }).findAll((node) => node.props.className === "agent-since").map((node) => node.children.join(""));

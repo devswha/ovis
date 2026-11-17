@@ -156,6 +156,7 @@ test("on herdr's own server, the screen herdr repaints for a wheel is not announ
     flush();
     term.write("\r\nNEWLINE");
     expect(frame()).toBe("NEWLINE");
+    // a wheel goes to herdr, which paints the screen scrolled up and later back at the bottom
     host.listeners.get("wheel")!();
     term.write(screenOf(90));
     expect(frame()).toBe("NEWLINE");

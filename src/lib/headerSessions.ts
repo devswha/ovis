@@ -150,6 +150,7 @@ export function useDrawerDialog(open: boolean, setOpen: (open: boolean) => void,
   const ref = useCallback((node: HTMLElement | null) => {
     surface.current = node;
     for (const other of surfaceRefs) other.current = node;
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- the refs are stable objects
   }, [surface, ...surfaceRefs]);
   return { ref };
 }

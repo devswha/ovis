@@ -1,6 +1,23 @@
+// Symbols Nerd Font Mono is the app's own (PaneTerminal.css) and covers only the private use
+// area, so it never sizes a cell: it draws the Nerd Font icons a prompt or `ls` replacement
+// prints, which no system font has and Safari will not take from a font the user installed.
+// It stays first, ahead of a chosen font too, so the icons draw even when that font has none.
+// The chrome's code stack (--font-mono, lib/typography.ts) opens with it for the same reason
 export const SYMBOLS_FONT = '"Symbols Nerd Font Mono"';
+// Ovis Hangul Mono is the app's own too (PaneTerminal.css): D2Coding's Hangul under a name of its
+// own, with no Latin in its range, so it never sizes a cell (xterm measures `W`). It stands after
+// the Korean coding fonts a device may have and before the generic monospace: Hangul that Menlo,
+// Consolas or a phone's monospace lacks is drawn in a coding face beside the Latin, the same on
+// every device, instead of the system's proportional Apple SD Gothic Neo or Malgun Gothic. In Ovis
+// for Mac's window it is the Hangul left when measurableFontStack drops an installed D2Coding.
 export const HANGUL_FAMILY = "Ovis Hangul Mono";
 const HANGUL_FONT = `"${HANGUL_FAMILY}"`;
+// JetBrains Mono Web is the app's own Latin (fonts/fonts.css, regular and bold), first among the
+// text fonts: every device draws the terminal in the same face, so Chrome, Safari, Ovis for Mac,
+// Windows, Linux and a phone show the same cell, row and grid. The installed fonts after it stood
+// first before and differed by device (Menlo, Consolas, Noto Sans Mono CJK KR, or a JetBrains Mono
+// that Chrome draws and Safari and Ovis for Mac's canvas cannot see); they draw only if the face
+// does not load. A font typed in Settings still goes ahead of it.
 export const MONO_FAMILY = "JetBrains Mono Web";
 const MONO_FONT = `"${MONO_FAMILY}"`;
 // xterm sizes every cell from the first matching font, so a proportional one (Malgun Gothic)
@@ -15,6 +32,7 @@ export const FONT_FAMILY_MAX_CHARS = 200;
 
 export const FONT_LOAD_TIMEOUT_MS = 3000;
 
+// what could close the declaration or the style element, escape, or hide in the value
 const UNSAFE_CHARS = /[;{}<>\\\u0000-\u001f\u007f]/g;
 const QUOTES = /["']/g;
 const IDENTIFIER = /^-?[A-Za-z_\u0080-￿][\w\u0080-￿-]*$/;
@@ -30,6 +48,12 @@ function normalizeName(raw: string): string {
   return quoted || !IDENTIFIER.test(name) || RESERVED.has(name.toLowerCase()) ? `"${name}"` : name;
 }
 
+/**
+ * A typed family list as a CSS `font-family` value: composed (NFC), unsafe characters dropped,
+ * each name trimmed, empty ones removed, names CSS cannot read bare quoted. Names past the length
+ * limit are dropped whole, so a cut never leaves an open quote. Anything that is not a string is
+ * no list at all.
+ */
 export function sanitizeFontFamily(value: unknown): string {
   if (typeof value !== "string") return "";
   // composed: a name copied from a macOS file name can arrive decomposed (NFD), and the browser

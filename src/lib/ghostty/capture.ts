@@ -2,6 +2,7 @@ import type { Terminal } from "@xterm/xterm";
 import type { HerdrSocket } from "../ws.ts";
 import type { GhosttyOverlay } from "./overlay.ts";
 
+/** bytes held for libghostty while its module loads: a herdr-core history replay fits many times over */
 const HELD_BYTES_MAX = 32 * 1024 * 1024;
 
 export function captureForGhostty(term: Terminal, socket: HerdrSocket, host: HTMLElement): () => void {

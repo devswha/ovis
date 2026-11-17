@@ -73,6 +73,10 @@ export function showsGreeting(state: GreetingState): boolean {
     && state.queued === 0 && state.folder !== "";
 }
 
+/**
+ * A backslash separates only in a Windows path (a drive letter or UNC): elsewhere it is a
+ * character of the name.
+ */
 export function greetingFolder(cwd: string | null | undefined): string {
   if (!cwd) return "";
   const separator = /^(?:[A-Za-z]:[\\/]|\\\\)/u.test(cwd) ? /[\\/]+/u : /\/+/u;
