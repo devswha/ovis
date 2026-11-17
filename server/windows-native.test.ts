@@ -184,19 +184,21 @@ renameSync(${JSON.stringify(`${resultPath}.tmp`)}, ${JSON.stringify(resultPath)}
 `);
   process.env["OVIS_START_TEST_SECRET"] = sentinel;
   const failures: unknown[] = [];
-  let running = false;
+  // none: the launcher started no child; running: its result came; unknown: a child may still start or run
+  let child: "none" | "running" | "unknown" = "unknown";
   try {
     const started = await startInteractiveWindowsHerdr(process.execPath, [script, "argument with spaces & 한글"], join(legacy, "herdr.log"));
     if (started === "waiting_login") {
+      child = "none";
       expect(existsSync(resultPath)).toBe(false);
     } else {
       // The launcher already exited, but this child's watch still runs in the desktop session.
-      const child = await waiting.result;
-      running = true;
-      expect(child.session).toBeGreaterThan(0);
-      expect(child.secret).toBe(sentinel);
-      expect(child.args).toEqual(["argument with spaces & 한글"]);
-      expect(() => process.kill(child.pid, 0)).not.toThrow();
+      const result = await waiting.result;
+      child = "running";
+      expect(result.session).toBeGreaterThan(0);
+      expect(result.secret).toBe(sentinel);
+      expect(result.args).toEqual(["argument with spaces & 한글"]);
+      expect(() => process.kill(result.pid, 0)).not.toThrow();
     }
     expect(readdirSync(registry).filter((name) => name.startsWith("herdr-start-"))).toEqual([]);
   } catch (error) { failures.push(error); }
@@ -204,13 +206,15 @@ renameSync(${JSON.stringify(`${resultPath}.tmp`)}, ${JSON.stringify(resultPath)}
     await waiting.close();
     if (previous === undefined) delete process.env["OVIS_START_TEST_SECRET"]; else process.env["OVIS_START_TEST_SECRET"] = previous;
     // The child ends itself on its stop file: nothing is signalled by the pid it wrote, which by now may be another
-    // process's. The file stays until a running child has said it saw it; a child that starts later finds it at once,
-    // or, once the fixture is gone, cannot start. Its watch keeps root busy until it exits, which the removal waits out.
-    const acknowledged = running ? watchJson<Record<string, never>>(root, stoppedPath, 5_000) : undefined;
+    // process's. The fixture is removed only once no child can still need the file: none was started, or the running
+    // one said it saw it. Otherwise the file and the fixture stay, so a child that runs or starts later still finds it
+    // (at once, right after its watch is in place). Its watch keeps root busy until it exits, which the removal waits out.
+    const acknowledged = child === "running" ? watchJson<Record<string, never>>(root, stoppedPath, 5_000) : undefined;
     writeFileSync(stopPath, "");
     if (acknowledged) {
-      try { await acknowledged.result; } catch (error) { failures.push(error); } finally { await acknowledged.close(); }
+      try { await acknowledged.result; child = "none"; } finally { await acknowledged.close(); }
     }
+    if (child !== "none") throw new Error(`${root} is kept with its stop file: a child that did not say it stopped may still run or start`);
     // Remove the junction itself before recursively cleaning its target fixture.
     await rm(legacy, { force: true, recursive: true });
     const cleanupBy = Date.now() + 5000;
