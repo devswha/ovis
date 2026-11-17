@@ -1,5 +1,5 @@
 /** No live user's terminal is attached or written. */
-import "./test-herdr.ts"; // a herdr session of its own: nothing shows in the user's
+import "./test-herdr.ts"; // a herdr session of its own unless HERDR_TEST_LIVE=1: nothing shows in the user's
 import assert from "node:assert/strict";
 import { Database } from "bun:sqlite";
 import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";

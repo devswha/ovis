@@ -279,14 +279,15 @@ function attachRunning(terminalId: string): boolean {
 }
 
 /**
- * A tab the user is not in leaves the shared terminal's size alone, and lets go of the pane. A
- * desktop window left open behind another app (herdr's own TUI in a terminal) turned visible when
- * the screen woke, or reconnected, reloaded or moved on to the next pane in the background, and
- * fitted the pane to itself. And for as long as the bridge's attach stayed, herdr held the pane at
- * that window's size: its TUI drew the pane cut off at its split's edge, the bottom rows out of
- * reach. Out of use, the window detaches, the attach ends with the pane's last client, and herdr
- * gives the pane back to its TUI. The window attaches again, at its own size, when it takes the
- * focus.
+ * With "Use alongside herdr's own window" (`releasePaneAway`), a tab the user is not in leaves the
+ * shared terminal's size alone, and lets go of the pane; by default a desktop window out of use
+ * keeps its pane and its output, and a phone put away lets go at once either way. A desktop window
+ * left open behind another app (herdr's own TUI in a terminal) turned visible when the screen woke,
+ * or reconnected, reloaded or moved on to the next pane in the background, and fitted the pane to
+ * itself. And for as long as the bridge's attach stayed, herdr held the pane at that window's size:
+ * its TUI drew the pane cut off at its split's edge, the bottom rows out of reach. Out of use, such a
+ * window detaches, the attach ends with the pane's last client, and herdr gives the pane back to its
+ * TUI. The window attaches again, at its own size, when it takes the focus.
  */
 export async function checkBackgroundTabKeepsTerminalSize(browser: Browser, origin: string): Promise<void> {
   await checkInactiveAttachLifecycle(browser, origin);
