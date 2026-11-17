@@ -1,15 +1,14 @@
 /**
- * Arrows on herdr-core: browser → WS → hc's attach → a raw-mode PTY that logs its stdin. hc's attach
- * carries the program's modes to xterm (`terminal-modes`), so a plain arrow is typed as xterm encodes
- * it, beside the letters around it, instead of going through hc's terminal.keys, which waits until
- * nobody has typed for ~3 s. Runs where OVIS_TEST_HC_BIN names an hc.
+ * Arrows on herdr-core: browser → WS → hc's attach → a raw-mode PTY that logs its stdin. A current
+ * pty parse of `CSI ? 1 h/l` witnesses DECCKM; only then is a physical arrow typed as xterm encodes it.
+ * Earlier or logical type-ahead arrows use named keys. The ordinary fast path avoids hc's `terminal.keys` quiet wait of about 3 s.
  */
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { chromium, type Browser, type Page } from "playwright-core";
+import { chromium, type Browser, type Page, type Route } from "playwright-core";
 import { createServer } from "../server/index.ts";
-import { paneRead, paneSendKeys, paneSendText, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
+import { paneRead, paneSendKeys, paneSendText, sessionSnapshot, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
 import { setRuntime, startRuntime } from "../server/herdr-core/runtime.ts";
 import { chromePath } from "./chrome-path.ts";
 import { isolatedHcEnv, stopIsolatedCore } from "./test-hc.ts";
@@ -44,13 +43,27 @@ async function until(check: () => boolean | Promise<boolean>, label: string | ((
 interface Session {
   page: Page;
   pane: string;
-  frames: Array<{ type: string; text?: string; keys?: string[] }>;
+  workspaceId: string;
+  frames: Array<{ pane_id: string; type: string; text?: string; keys?: string[]; automatic?: boolean }>;
+  framesHeard: () => number;
+  sentByPage: () => Promise<number>;
+  isReady: (pane: string) => boolean;
   /** what the program in the pane has read since the last call */
   received: () => string;
 }
 
+const readProbe = (log: string): (() => string) => {
+  let read = 0;
+  return () => {
+    const all = existsSync(log) ? readFileSync(log, "utf8") : "";
+    const fresh = all.slice(read);
+    read = all.length;
+    return Buffer.from(fresh, "hex").toString("latin1");
+  };
+};
+
 /** A pane of its own that runs `before` and then the stdin logger, shown in a desktop browser. */
-async function open(name: string, before: string): Promise<Session> {
+async function open(name: string, before: string, probeBeforeAttach = false, holdOutput = false): Promise<Session> {
   const cwd = join(root, name);
   mkdirSync(cwd);
   const made = await workspaceCreate({ cwd, label: `ovis-test-core-arrows-${name}` });
@@ -59,42 +72,118 @@ async function open(name: string, before: string): Promise<Session> {
   const log = join(root, `${name}.hex`);
   await paneSendText(pane, `clear; ${before} python3 -u '${probe}' '${log}' plain`);
   await paneSendKeys(pane, ["Enter"]);
+  // The pre-attach case proves the mode change happened before this browser creates its terminal.
+  if (probeBeforeAttach) await probeReady(pane);
   const context = await browser!.newContext({ viewport: { width: 1280, height: 800 } });
-  await context.addInitScript(({ pane }) => {
-    localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" }));
+  await context.addInitScript(({ pane, holdOutput }) => {
+    localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "terminal", alertsOn: false }));
     localStorage.setItem(`ovis:view:${pane}`, "terminal");
-  }, { pane });
+    localStorage.setItem("ovis:sidebar-filter-shown", "true");
+    const qa = window as unknown as {
+      terminalArrowSentByPage: number;
+      delayedTerminalOutput?: { pending: () => number; queryDelivered: () => number; release: () => void };
+    };
+    qa.terminalArrowSentByPage = 0;
+    const send = WebSocket.prototype.send;
+    WebSocket.prototype.send = function (this: WebSocket, data: string | ArrayBufferLike | Blob | ArrayBufferView) {
+      const open = this.readyState === WebSocket.OPEN;
+      const result = send.call(this, data);
+      if (open && typeof data === "string") {
+        try {
+          const type = (JSON.parse(data) as { type?: string }).type;
+          if (type === "input" || type === "keys") qa.terminalArrowSentByPage += 1;
+        } catch { /* not JSON */ }
+      }
+      return result;
+    };
+    if (holdOutput) {
+      let holding = true;
+      let queryDelivered = 0;
+      const queued: Array<() => void> = [];
+      qa.delayedTerminalOutput = {
+        pending: () => queued.length,
+        queryDelivered: () => queryDelivered,
+        release: () => { holding = false; for (const deliver of queued.splice(0)) deliver(); },
+      };
+      const prototype = WebSocket.prototype as unknown as {
+        addEventListener: (type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | AddEventListenerOptions) => void;
+      };
+      const add = prototype.addEventListener;
+      prototype.addEventListener = function (this: WebSocket, type, listener, options) {
+        if (type !== "message" || listener === null) { add.call(this, type, listener, options); return; }
+        const socket = this as WebSocket;
+        const deliver: EventListener = (event) => {
+          const messageEvent = event as MessageEvent;
+          let message: { type?: string; pane_id?: string; data?: string };
+          try { message = JSON.parse(String(messageEvent.data)); }
+          catch {
+            if (typeof listener === "function") listener.call(socket, event);
+            else listener.handleEvent(event);
+            return;
+          }
+          const invoke = () => {
+            if (typeof listener === "function") listener.call(socket, event);
+            else listener.handleEvent(event);
+          };
+          const queryOnly = /^(?:\x1b\[\?1004h)?\x1b\]10;\?\x1b\\\x1b\]11;\?\x1b\\\x1b\]12;\?\x1b\\\x1b\[16t\x1b\[c$/.test(message.data ?? "");
+          if (holding && message.type === "pty-data" && message.pane_id === pane && !queryOnly) queued.push(invoke);
+          else {
+            if (holding && message.type === "pty-data" && message.pane_id === pane && queryOnly) queryDelivered++;
+            invoke();
+          }
+        };
+        add.call(socket, type, deliver, options);
+      };
+    }
+  }, { pane, holdOutput });
   const page = await context.newPage();
   page.on("pageerror", (error) => errors.push(`${name}: ${error.message}`));
   const frames: Session["frames"] = [];
-  let ready = false;
+  let framesHeard = 0;
+  const ready = new Set<string>();
   page.on("websocket", (socket) => {
     socket.on("framesent", ({ payload }) => {
       const { id: _receipt, ...message } = JSON.parse(String(payload));
-      if (message.pane_id === pane && (message.type === "input" || message.type === "keys")) frames.push(message);
+      if (message.type === "input" || message.type === "keys") { frames.push(message); framesHeard += 1; }
     });
     socket.on("framereceived", ({ payload }) => {
       const message = JSON.parse(String(payload));
       if (message.type === "error") console.log(`${name}: terminal error`, message);
-      if (message.type === "input-ready" && message.pane_id === pane) ready = message.ready !== false;
+      if (message.type === "input-ready" && typeof message.pane_id === "string") {
+        if (message.ready === false) ready.delete(message.pane_id);
+        else ready.add(message.pane_id);
+      }
     });
   });
   await page.goto(`http://127.0.0.1:${server!.port}/?pane=${encodeURIComponent(pane)}`);
-  await until(() => ready, `${name}: terminal accepts input`);
+  await until(() => ready.has(pane), `${name}: terminal accepts input`);
   await page.locator(".xterm-screen").waitFor();
-  let read = 0;
+  const received = readProbe(log);
   return {
-    page, pane, frames,
-    received: () => {
-      const all = existsSync(log) ? readFileSync(log, "utf8") : "";
-      const fresh = all.slice(read);
-      read = all.length;
-      return Buffer.from(fresh, "hex").toString("latin1");
-    },
+    page, pane, workspaceId: made.workspace.workspace_id, frames,
+    framesHeard: () => framesHeard,
+    sentByPage: () => page.evaluate(() => (window as unknown as { terminalArrowSentByPage: number }).terminalArrowSentByPage),
+    isReady: (current) => ready.has(current),
+    received,
   };
 }
 
 const probeReady = (pane: string) => until(async () => (await paneRead({ paneId: pane, source: "visible" })).text.includes("PROBE READY plain"), `${pane}: raw probe ready`);
+const browserProbeReady = (s: Session, label: string) => until(async () => s.page.locator(".xterm-screen").evaluate((screen) => screen.textContent?.includes("PROBE READY plain") === true), `${label}: browser parsed the probe's first paint`);
+
+async function frameFence(s: Session, label: string): Promise<void> {
+  const sent = await s.sentByPage();
+  assert.equal(typeof sent, "number", `${label}: browser frame counter is installed`);
+  await until(async () => s.framesHeard() === await s.sentByPage(), `${label}: all frames sent so far reached Playwright`);
+}
+
+const typeAheadState = (page: Page) => page.evaluate(() => {
+  const describe = (element: Element) => ({ tag: element.tagName, className: (element as HTMLElement).className, placeholder: element.getAttribute("placeholder") });
+  return {
+    active: document.activeElement ? describe(document.activeElement) : null,
+    catches: [...document.querySelectorAll(".type-ahead")].map((element) => ({ ...describe(element), focused: element === document.activeElement })),
+  };
+});
 
 /** The arrows' frames are typed text, never named keys, and the program reads each in `final`'s form. */
 async function arrowsAs(s: Session, label: string, form: (final: string) => string): Promise<void> {
@@ -105,7 +194,128 @@ async function arrowsAs(s: Session, label: string, form: (final: string) => stri
     await until(() => (got += s.received()).length >= 3, `${label}: ${key} received`);
     assert.equal(got, form(final), `${label}: ${key}`);
   }
-  assert.deepEqual(s.frames.slice(before).map((frame) => frame.type), ["input", "input", "input", "input"], `${label}: each arrow is typed, not a named key`);
+  await frameFence(s, label);
+  assert.deepEqual(s.frames.slice(before).filter((frame) => frame.pane_id === s.pane).map((frame) => frame.type), ["input", "input", "input", "input"], `${label}: each arrow is typed, not a named key`);
+}
+
+/** A held new-tab request lets the real type-ahead field catch a logical arrow before the terminal exists. */
+async function typeAheadArrow(name: string, mode: string, expected: string): Promise<void> {
+  const s = await open(name, "printf '\\033[?1049h';", true);
+  const log = join(root, `${name}-ahead.hex`);
+  const received = readProbe(log);
+  const catchStartedAt = Date.now();
+  let create: Route | null = null;
+  await s.page.route("**/api/**tab/create", (route) => { create = route; });
+  await s.page.locator(".tab-strip-add").click();
+  await until(() => create !== null, `${name}: new-tab request is held`);
+  const routeHeldAt = Date.now();
+  assert.equal(await s.page.evaluate(() => document.activeElement?.className), "type-ahead", `${name}: the new-tab catch owns the keyboard`);
+  await s.page.keyboard.press("ArrowUp");
+  // Create the server tab while keeping its response from the browser. Start and verify the probe
+  // first, so the only caught item is the logical arrow for an already-modeled destination.
+  const fetchStartedAt = Date.now();
+  const response = await create!.fetch();
+  const fetchDoneAt = Date.now();
+
+  let pane: string | undefined;
+  await until(async () => {
+    pane = (await sessionSnapshot()).panes.find((candidate) => candidate.workspace_id === s.workspaceId && candidate.pane_id !== s.pane)?.pane_id;
+    return pane !== undefined;
+  }, `${name}: herdr created the new pane`);
+  const paneFoundAt = Date.now();
+  await paneSendText(pane!, `clear; printf '${mode}'; python3 -u '${probe}' '${log}' plain`);
+  await paneSendKeys(pane!, ["Enter"]);
+  await probeReady(pane!);
+  const probeReadyAt = Date.now();
+  const stateBeforeFulfill = await typeAheadState(s.page);
+  await create!.fulfill({ response });
+  const fulfilledAt = Date.now();
+  await until(() => s.isReady(pane!), `${name}: new pane accepts input`);
+  const inputReadyAt = Date.now();
+  await probeReady(pane!);
+  let got = "";
+  try {
+    await until(() => (got += received()).includes(expected), `${name}: the probe received the mode-correct type-ahead arrow`);
+  } catch (error) {
+    const evidence = {
+      pane: pane!,
+      expected,
+      got,
+      gotHex: Buffer.from(got, "latin1").toString("hex"),
+      pageFrames: s.frames,
+      targetFrames: s.frames.filter((frame) => frame.pane_id === pane),
+      pageSentCount: await s.sentByPage(),
+      playwrightFramesHeard: s.framesHeard(),
+      stateBeforeFulfill,
+      stateAfterFailure: await typeAheadState(s.page),
+      timingsMs: {
+        catchToRouteHeld: routeHeldAt - catchStartedAt,
+        routeFetch: fetchDoneAt - fetchStartedAt,
+        fetchToPaneFound: paneFoundAt - fetchDoneAt,
+        probeSetup: probeReadyAt - paneFoundAt,
+        catchToFulfill: fulfilledAt - catchStartedAt,
+        fulfillToInputReady: inputReadyAt - fulfilledAt,
+        catchToInputReady: inputReadyAt - catchStartedAt,
+      },
+    };
+    throw new Error(`${name}: ${error instanceof Error ? error.message : String(error)}; diagnostics=${JSON.stringify(evidence)}`);
+  }
+  assert.equal(got, expected, `${name}: type-ahead arrow bytes`);
+  await frameFence(s, name);
+  const target = s.frames.filter((frame) => frame.pane_id === pane);
+  assert.deepEqual(target.filter((frame) => frame.type === "keys").map((frame) => frame.keys), [["up"]], `${name}: logical arrow stays a named key`);
+  assert.equal(target.some((frame) => frame.type === "input" && frame.text === "\x1b[A"), false, `${name}: no hard-coded CSI arrow is sent`);
+}
+
+/** Leaving a catch before its pane is made must not send the logical arrow later. */
+async function abandonedTypeAheadArrow(): Promise<void> {
+  const s = await open("ahead-abandoned", "printf '\\033[?1049h';", true);
+  let create: Route | null = null;
+  await s.page.route("**/api/**tab/create", (route) => { create = route; });
+  await s.page.locator(".tab-strip-add").click();
+  await until(() => create !== null, "abandoned arrow: new-tab request is held");
+  await s.page.keyboard.press("ArrowUp");
+  await s.page.getByPlaceholder("Filter workspaces and agents").click();
+  await create!.continue();
+
+  let pane: string | undefined;
+  await until(async () => {
+    pane = (await sessionSnapshot()).panes.find((candidate) => candidate.workspace_id === s.workspaceId && candidate.pane_id !== s.pane)?.pane_id;
+    return pane !== undefined;
+  }, "abandoned arrow: herdr created the new pane");
+  await until(() => s.isReady(pane!), "abandoned arrow: new pane accepts input");
+  await frameFence(s, "abandoned type-ahead arrow");
+  assert.deepEqual(s.frames.filter((frame) => frame.pane_id === pane && !frame.automatic), [], "an abandoned type-ahead arrow is never sent to its new pane");
+}
+
+/** Input-ready alone is not the parser fence: delay first-paint output while a real key reaches DECCKM. */
+async function delayedFirstPaint(): Promise<void> {
+  const s = await open("delayed-first-paint", "printf '\\033[?1049h\\033[?1h';", true, true);
+  const pendingOutput = () => s.page.evaluate(() => (window as unknown as { delayedTerminalOutput: { pending: () => number } }).delayedTerminalOutput.pending());
+  const queryDelivered = () => s.page.evaluate(() => (window as unknown as { delayedTerminalOutput: { queryDelivered: () => number } }).delayedTerminalOutput.queryDelivered());
+  await until(async () => (await pendingOutput()) > 0 && (await queryDelivered()) > 0, "query-only attach preamble is parsed while the mode-bearing first paint is withheld");
+  await frameFence(s, "query-only attach preamble");
+  const screenHasProbe = await s.page.locator(".xterm-screen").evaluate((screen) => screen.textContent?.includes("PROBE READY plain") === true);
+  assert.equal(screenHasProbe, false, "input-ready preceded parsing the held first paint");
+
+  await s.page.locator(".xterm-helper-textarea").focus();
+  const before = s.frames.length;
+  await s.page.keyboard.press("ArrowUp");
+  let got = "";
+  await until(() => (got += s.received()).length >= 3, "pre-parse ArrowUp reaches the probe");
+  assert.equal(got, "\x1bOA", "the unsynchronized xterm's CSI is not sent; hc encodes the key in DECCKM");
+  await frameFence(s, "pre-parse ArrowUp");
+  assert.deepEqual(s.frames.slice(before).filter((frame) => frame.pane_id === s.pane && !frame.automatic).map((frame) => frame.type), ["keys"], "pre-parse arrow stays named");
+
+  await s.page.evaluate(() => (window as unknown as { delayedTerminalOutput: { release: () => void } }).delayedTerminalOutput.release());
+  await browserProbeReady(s, "released first paint");
+  const after = s.frames.length;
+  await s.page.keyboard.press("ArrowDown");
+  got = "";
+  await until(() => (got += s.received()).length >= 3, "post-parse ArrowDown reaches the probe");
+  assert.equal(got, "\x1bOB", "after parsing DECCKM, xterm's encoded arrow is correct");
+  await frameFence(s, "post-parse ArrowDown");
+  assert.deepEqual(s.frames.slice(after).filter((frame) => frame.pane_id === s.pane && !frame.automatic).map((frame) => frame.type), ["input"], "synchronized arrow returns to the fast text path");
 }
 
 try {
@@ -123,8 +333,8 @@ try {
   // 1. Application cursor keys set before the browser attached: hc's first paint tells xterm, and
   // less, git log and vim read SS3 (ESC O A)
   {
-    const s = await open("decckm", "printf '\\033[?1049h\\033[?1h';");
-    await probeReady(s.pane);
+    const s = await open("decckm", "printf '\\033[?1049h\\033[?1h';", true);
+    await browserProbeReady(s, "application cursor keys before attach");
     await s.page.locator(".xterm-helper-textarea").focus();
     await arrowsAs(s, "application cursor keys", (final) => `\x1bO${final}`);
   }
@@ -135,14 +345,15 @@ try {
     await s.page.locator(".xterm-helper-textarea").focus();
     await s.page.keyboard.press("Enter");
     await probeReady(s.pane);
+    await browserProbeReady(s, "application cursor keys set while attached");
     await arrowsAs(s, "application cursor keys set while attached", (final) => `\x1bO${final}`);
   }
 
   // 3. Normal cursor mode (a shell's line editor): CSI, in order with the letters typed around it,
-  // and an arrow right after a letter is not held for hc's quiet rule
+  // and an arrow right after a letter stays within the end-to-end latency budget
   {
-    const s = await open("normal", "printf '\\033[?1049h';");
-    await probeReady(s.pane);
+    const s = await open("normal", "printf '\\033[?1049h\\033[?1l';", true);
+    await browserProbeReady(s, "normal cursor keys");
     await s.page.locator(".xterm-helper-textarea").focus();
     await arrowsAs(s, "normal cursor keys", (final) => `\x1b[${final}`);
     let together = "";
@@ -153,7 +364,7 @@ try {
       await s.page.keyboard.press("b");
       await until(() => (together += s.received()).length >= (round + 1) * 5, () => `a, ArrowLeft and b received (read ${JSON.stringify(together)})`);
       const took = performance.now() - pressed;
-      assert(took < NO_QUIET_WAIT_MS, `a, ArrowLeft and b took ${took.toFixed(0)} ms: the arrow waited for hc's quiet rule`);
+      assert(took < NO_QUIET_WAIT_MS, `a, ArrowLeft and b took ${took.toFixed(0)} ms: exceeded the end-to-end latency budget`);
     }
     assert.equal(together, "a\x1b[Db".repeat(5), "an arrow pressed between two letters arrives between them");
     let got = "";
@@ -161,7 +372,16 @@ try {
     await s.page.keyboard.press("ArrowUp");
     await until(() => (got += s.received()).length >= 4, "Escape and ArrowUp received");
     assert.equal(got, "\x1b\x1b[A", "an arrow right after an Escape arrives after it");
+    await frameFence(s, "normal mode ordering");
   }
+
+  // 4. Logical arrows caught before a new tab exists stay named: xterm did not encode these bytes.
+  await typeAheadArrow("ahead-decckm", "\\033[?1049h\\033[?1h", "\x1bOA");
+  await typeAheadArrow("ahead-normal", "\\033[?1049h\\033[?1l", "\x1b[A");
+  await abandonedTypeAheadArrow();
+
+  // 5. input-ready is not the xterm parse fence: hold first-paint output, send before parse, then prove fast path returns.
+  await delayedFirstPaint();
 
   assert.deepEqual(errors, [], "no page errors");
   console.log("terminal arrows on herdr-core: PASS");
