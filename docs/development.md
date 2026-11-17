@@ -1223,8 +1223,8 @@ The [CI workflow](../.github/workflows/ci.yml) runs on every PR and `main` push:
   a new file is checked without being named), build, and
   `bun run test:unit`. This suite does not start herdr. Its ratchets (fixed sleeps, that exclude
   list) compare with main's head for a pull request (its merge commit's first parent) or, for a
-  push to main, the last main commit whose CI run passed, so a waiting run a newer push replaced
-  leaves no gap; the job fetches it first (`RATCHET_BASE`); one that cannot read
+  push to main, the newest main commit in its history whose CI run passed (none found fails the
+  job), so a waiting run a newer push replaced leaves no gap; the job fetches it first (`RATCHET_BASE`); one that cannot read
   its base fails, and a Release or manual run compares with nothing.
 - **Integration and browser**: a summary job that fails when any of three jobs fails, each with
   checksum-pinned herdr 0.9.3, Node 22 and the lockfile's Chromium:
