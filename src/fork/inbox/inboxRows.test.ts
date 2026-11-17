@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { forkInboxNesting, forkInboxRows } from "./inboxRows.ts";
+import { forkInboxFolded, forkInboxNesting, forkInboxRows } from "./inboxRows.ts";
 
 const row = (id: string, parent?: string, machine = "local") => ({ machine: { id: machine }, entry: { pane: { pane_id: id, parent_pane_id: parent } } });
 const ids = (rows: readonly ReturnType<typeof row>[]) => rows.map((row) => `${row.machine.id}:${row.entry.pane.pane_id}`);
@@ -45,4 +45,24 @@ test("the tree lines are the sidebar's: a line runs on to a later sibling and pa
   expect(forkInboxNesting(family, true).map((entry) => entry.forkTree)).toEqual([
     {}, { "data-depth": 1, "data-more": "" }, { "data-depth": 2, "data-through": "" }, { "data-depth": 1 },
   ]);
+});
+
+test("a folded agent hides its helpers in its row, except the one that asks and the open one", () => {
+  const family = [row("root"), row("child", "root"), row("grandchild", "child"), row("asking", "root"), row("other")];
+  const folds = (open: string[], shown = "") => ({
+    on: true, open,
+    stateOf: (entry: ReturnType<typeof row>) => entry.entry.pane.pane_id === "asking" ? "blocked" as const : "idle" as const,
+    shown: (entry: ReturnType<typeof row>) => entry.entry.pane.pane_id === shown,
+  });
+  const folded = forkInboxFolded(family, true, folds([]));
+  expect(ids(folded)).toEqual(["local:root", "local:asking", "local:other"]);
+  expect(folded[0]!.forkFold).toEqual({ key: "local:root", open: false, hidden: 2 });
+  expect(folded[1]!.forkTree).toEqual({ "data-depth": 1 });
+  const held = forkInboxFolded(family, true, folds([], "grandchild"));
+  expect(ids(held)).toEqual(["local:root", "local:grandchild", "local:asking", "local:other"]);
+  expect(held.map((entry) => entry.forkTree["data-depth"] ?? 0)).toEqual([0, 2, 1, 0]);
+  const open = forkInboxFolded(family, true, folds(["local:root"]));
+  expect(ids(open)).toEqual(ids(family));
+  expect(open[0]!.forkFold?.open).toBe(true);
+  expect(forkInboxFolded(family, true, { ...folds([]), on: false }).every((entry) => !("forkFold" in entry))).toBe(true);
 });

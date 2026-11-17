@@ -1,7 +1,7 @@
 import { tally, usageCounters } from "../lib/usageCounters.ts";
 import { useContext, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type Ref, type RefObject } from "react";
 import { Ellipsis, ListFilter, Monitor, Plus, Search, Terminal, TriangleAlert, X } from "lucide-react";
-import { ForkGithubOpen } from "../fork/github/GithubInbox.tsx";
+import { ForkPlaceOpen } from "../fork/inbox/Places.tsx";
 
 import type { Machine } from "../../shared/machines.ts";
 import type { AgentStatus } from "../../shared/protocol.ts";
@@ -26,7 +26,9 @@ import { summaryTargets, useInboxSummaries, type RowSummary, type SummaryReads }
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { AgentMark } from "./AgentMark.tsx";
 import { ForkInboxAvatar } from "../fork/inbox/InboxAvatar.tsx";
-import { forkInboxNesting, forkInboxRows } from "../fork/inbox/inboxRows.ts";
+import { forkInboxFolded, forkInboxRows } from "../fork/inbox/inboxRows.ts";
+import { useForkOpenHelpers } from "../fork/inbox/HelpersFold.tsx";
+import { ForkFoldCount, ForkHelpersFace } from "../fork/inbox/HelpersFace.tsx";
 import { agentRowTitle, blockedNote, stateAge } from "./AgentSidebar.tsx";
 import { RowMenu } from "./RowMenu.tsx";
 import { compactWorktreeName, StatusBadge } from "./Sidebar.tsx";
@@ -206,8 +208,13 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
   useLayoutEffect(() => { if (wide && searchAsked) search.current?.focus(); }, [wide, searchAsked]);
 
   const severalPcs = machines.length > 1;
-  const rows = forkInboxNesting(shown, settings.agentFriends).map((row) => {
-    const { machine, entry, forkTree } = row;
+  // Settings → Fold helpers under their agent, as the sidebar folds them; a query shows what it found, folding nothing
+  const helperFolds = useForkOpenHelpers();
+  const rows = forkInboxFolded(shown, settings.agentFriends, {
+    on: settings.foldHelpers && query === "", open: helperFolds.open,
+    stateOf: (row) => agentGroup(inboxStatus(row, activity)), shown: (row) => wide && inboxKey(row) === current,
+  }).map((row) => {
+    const { machine, entry, forkTree, forkFold } = row;
     const { pane, workspace, tab } = entry;
     const online = machine.state === "connected";
     const status = inboxStatus(row, activity);
@@ -227,7 +234,7 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
     const state = !online ? t("Offline") : failed ? t("Turn failed") : inboxStateWord(group, t);
     const line = inboxRowLine({ online, group, words: wordsOf(row), place, machine: severalPcs ? machine.name : null, failed }, t);
     return {
-      key, machine, pane, online, status, group, title, line, failed, mark: paneMark(entry) ?? "", kind, state, forkTree,
+      key, machine, pane, online, status, group, title, line, failed, mark: paneMark(entry) ?? "", kind, state, forkTree, forkFold,
       asks: online && inboxAsks(group), since: online ? inboxSinceAt(group, summary, group === "blocked" ? stateSince(stamps, machine.id, pane.pane_id, pane.terminal_id, "blocked") : null) : null,
     };
   });
@@ -363,7 +370,7 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
           {moreButton}
           {note}
           {connectionLine}
-          <ForkGithubOpen />
+          <ForkPlaceOpen />
           {newButton}
         </>}
       </div>
@@ -406,6 +413,7 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
               const spoken = [row.kind ? agentName(row.kind) : null, row.title, row.state, row.line === row.state ? null : row.line, age].filter((part) => part !== null).join(", ");
               return (
                 <li key={row.key} className={`inbox-item${row.online ? "" : " is-offline"}${row.asks ? " is-asking" : ""}${open ? " is-current" : ""}`} {...row.forkTree} data-machine={row.machine.id} data-pane={row.pane.pane_id} data-state={row.group}>
+                  {row.forkFold && <ForkHelpersFace open={row.forkFold.open} agentTitle={row.title} onToggle={() => helperFolds.toggle(row.forkFold!.key)} />}
                   <button type="button" className="inbox-row" disabled={!row.online} aria-label={spoken} aria-current={open ? "true" : undefined}
                     ref={(node) => { if (node) rowNodes.current.set(row.key, node); else rowNodes.current.delete(row.key); }}
                     title={wide ? [row.title, row.line, at === null ? null : `${age} · ${at.toLocaleString(resolvedLanguage)}`].filter((part) => part !== null).join("\n") : undefined}
@@ -415,6 +423,7 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
                     <span className="inbox-body">
                       <span className="inbox-line">
                         <span className="inbox-name">{row.title}</span>
+                        <ForkFoldCount count={row.forkFold?.hidden ?? 0} />
                         {!wide && at !== null && <time className="inbox-time" dateTime={at.toISOString()} title={at.toLocaleString(resolvedLanguage)}>{age}</time>}
                       </span>
                       {wide ? words : <span className="inbox-sub">{words}{stateMark(row.status, row.failed, row.state)}</span>}

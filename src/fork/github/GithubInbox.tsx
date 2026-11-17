@@ -1,4 +1,4 @@
-import { cloneElement, useEffect, useRef, useState, useSyncExternalStore, type MouseEventHandler, type ReactElement, type ReactNode } from "react";
+import { cloneElement, useEffect, useRef, useState, useSyncExternalStore, type MouseEventHandler, type ReactElement } from "react";
 import { ArrowLeft, Check, ChevronRight, CircleAlert, CircleCheck, CircleDot, CircleX, Eye, FolderGit2, GitPullRequest, GitPullRequestDraft, ListFilter, RefreshCw, Search, X } from "lucide-react";
 
 import { RowMenu } from "../../components/RowMenu.tsx";
@@ -12,27 +12,12 @@ import { githubGroups, githubSearched, githubStatus, loadGithubRepo, saveGithubR
 import { ago } from "./GithubConversation.tsx";
 import { GithubPullPage, keepGithubPage } from "./GithubPull.tsx";
 import { setPullLinkOpener } from "./pullLinks.ts";
+import { closePlace, onPlaceLeft, setPlace, usePlace } from "../inbox/place.ts";
 import "./GithubInbox.css";
 
-type Section = "inbox" | "github";
-let section: Section = "inbox";
 const listeners = new Set<() => void>();
-export function setGithubSection(next: Section): void { section = next; for (const listener of listeners) listener(); }
 const subscribe = (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; };
 
-/* A phone opens GitHub on a history entry of its own, so the phone's Back leaves it like the arrow does. The entry
-   copies the state it stands on (the app's own keys stay), adding one key; the listener only reads. */
-const GITHUB_KEY = "ovis:fork-github";
-let onEntry = false;
-const githubEntry = (): boolean => typeof window !== "undefined" && (window.history.state as Record<string, unknown> | null)?.[GITHUB_KEY] === true;
-function openGithub(phone: boolean): void {
-  if (phone && !githubEntry()) { window.history.pushState({ ...(window.history.state ?? {}), [GITHUB_KEY]: true }, ""); onEntry = true; }
-  setGithubSection("github");
-}
-function closeGithub(): void {
-  if (onEntry && githubEntry()) window.history.back();
-  else setGithubSection("inbox");
-}
 /* The open pull request: the wide pane's page, or the phone's screen over the list on an entry of its own. */
 const PULL_KEY = "ovis:fork-github-pull";
 let pull: GithubPull | null = null;
@@ -51,12 +36,9 @@ export function closeGithubPull(): void {
 }
 if (typeof window !== "undefined") window.addEventListener("popstate", () => {
   if (!pullEntry() && onPullEntry) { onPullEntry = false; pull = null; linked = false; emit(); }
-  if (githubEntry()) { onEntry = true; setGithubSection("github"); }
-  else if (onEntry) { onEntry = false; pull = null; setGithubSection("inbox"); }
 });
-const useSection = () => useSyncExternalStore(subscribe, () => section, () => "inbox" as Section);
-/** Which list the agent inbox shows: its agents, or Pull requests. */
-export const useGithubSection = useSection;
+// the phone's Back out of Pull requests closes the pull request it had open
+onPlaceLeft((from) => { if (from === "github" && pull !== null) { pull = null; emit(); } });
 const useOpenPull = () => useSyncExternalStore(subscribe, () => pull, () => null);
 const useLinked = () => useSyncExternalStore(subscribe, () => linked, () => false);
 
@@ -88,7 +70,7 @@ async function linkedPull(repository: string, number: number, url: string): Prom
 function openLinked(enter: () => void, inMode: boolean) {
   return (repository: string, number: number, url: string): void => {
     const phone = window.matchMedia?.("(min-width: 769px)").matches !== true;
-    if (!phone) { if (!inMode) enter(); setGithubSection("github"); }
+    if (!phone) { if (!inMode) enter(); setPlace("github"); }
     void linkedPull(repository, number, url).then((row) => {
       if (phone) linked = true;
       openPull(row, phone);
@@ -99,30 +81,21 @@ function openLinked(enter: () => void, inMode: boolean) {
 /** Wrap the existing Inbox button: its original action and focus behavior still run on return. */
 export function ForkGithubRail({ children }: { children: ReactElement<{ "aria-current"?: "page"; onClick?: MouseEventHandler<HTMLButtonElement> }> }) {
   const { settings } = useSettings();
-  const current = useSection();
+  const current = usePlace();
   const t = useT();
   if (!settings.pullRequests) return children;
   return <>
-    {cloneElement(children, { "aria-current": current === "inbox" ? "page" : undefined, onClick: (event) => { setGithubSection("inbox"); children.props.onClick?.(event); } })}
-    <button type="button" className="icon-button inbox-rail-item" aria-label={t("Pull requests")} title={t("Pull requests")} aria-current={current === "github" ? "page" : undefined} onClick={() => setGithubSection("github")}><GitPullRequest aria-hidden="true" /></button>
+    {cloneElement(children, { "aria-current": current === "inbox" ? "page" : undefined, onClick: (event) => { setPlace("inbox"); children.props.onClick?.(event); } })}
+    <button type="button" className="icon-button inbox-rail-item" aria-label={t("Pull requests")} title={t("Pull requests")} aria-current={current === "github" ? "page" : undefined} onClick={() => setPlace("github")}><GitPullRequest aria-hidden="true" /></button>
   </>;
 }
 
-interface ViewProps { wide: boolean; watching: boolean; onOpened(opened: WorktreeOpened): void }
-/** One line in App: same list slot on desktop and phone, no changes to thread selection. */
-export function ForkGithubSection({ children, ...props }: ViewProps & { children: ReactNode }) {
-  const { settings } = useSettings();
-  const current = useSection();
-  if (!settings.pullRequests) return children;
-  return <div className="fork-github-slot">
-    {current === "github" ? <GithubInbox {...props} /> : children}
-  </div>;
-}
+export interface ViewProps { wide: boolean; watching: boolean; onOpened(opened: WorktreeOpened): void }
 
 /** One line in App's pane area: while GitHub is the wide column's section, its page (or a placeholder) covers the chat. */
 export function ForkGithubPane({ wide, watching, onOpened, inMode = false, enter }: ViewProps & { inMode?: boolean; enter?(): void }) {
   const { settings } = useSettings();
-  const current = useSection();
+  const current = usePlace();
   const open = useOpenPull();
   const fromLink = useLinked();
   const t = useT();
@@ -137,17 +110,8 @@ export function ForkGithubPane({ wide, watching, onOpened, inMode = false, enter
   if (!settings.pullRequests || !wide || current !== "github") return null;
   return <div className="fork-github-pane">
     {open === null ? <p className="inbox-unchosen" role="status">{t("Choose a pull request to open it here.")}</p>
-      : <GithubPullPage key={open.url} pull={open} wide watching={watching} onOpened={(opened) => { setGithubSection("inbox"); onOpened(opened); }} />}
+      : <GithubPullPage key={open.url} pull={open} wide watching={watching} onOpened={(opened) => { setPlace("inbox"); onOpened(opened); }} />}
   </div>;
-}
-
-/** The phone's way in: a round button in the agent inbox's top row, beside New workspace. */
-export function ForkGithubOpen() {
-  const { settings } = useSettings();
-  const t = useT();
-  if (!settings.pullRequests) return null;
-  return <button type="button" className="icon-button inbox-round fork-github-open" aria-label={t("Pull requests")} title={t("Pull requests")}
-    onClick={() => openGithub(true)}><GitPullRequest aria-hidden="true" /></button>;
 }
 
 /** The last list read, kept across visits so going back to GitHub draws it at once. */
@@ -235,7 +199,7 @@ export function GithubInbox({ wide, watching, onOpened }: ViewProps) {
       </li>;
     })}</ul>}
   </section>;
-  if (!wide && open !== null) return <GithubPullPage key={open.url} pull={open} wide={false} watching={watching} onOpened={(opened) => { setGithubSection("inbox"); onOpened(opened); }} />;
+  if (!wide && open !== null) return <GithubPullPage key={open.url} pull={open} wide={false} watching={watching} onOpened={(opened) => { setPlace("inbox"); onOpened(opened); }} />;
 
   // the agent inbox's own search: a field in the wide column's head (folded into its button when narrow), in the phone's foot
   const searchLabel = t("Search pull requests");
@@ -266,7 +230,7 @@ export function GithubInbox({ wide, watching, onOpened }: ViewProps) {
         {filterButton}
         {refreshButton}
       </> : <>
-        <button type="button" className="icon-button inbox-round" aria-label={t("Back|fork inbox")} title={t("Back|fork inbox")} onClick={closeGithub}><ArrowLeft aria-hidden="true" /></button>
+        <button type="button" className="icon-button inbox-round" aria-label={t("Back|fork inbox")} title={t("Back|fork inbox")} onClick={closePlace}><ArrowLeft aria-hidden="true" /></button>
         {refreshButton}
       </>}
     </header>

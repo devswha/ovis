@@ -1,0 +1,95 @@
+/* Notes (NotesInbox.tsx): its list is the Pull requests list's (GithubInbox.css), its page a note over the pane. */
+
+/* the phone's two ways in sit together at the top row's end */
+.mode-inbox .inbox-top > .fork-github-open + .fork-github-open { margin-inline-start: 0; }
+
+.fork-note {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.fork-github-slot > .fork-note {
+  position: absolute;
+  inset: 0;
+}
+
+.fork-note-top {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: var(--hairline) solid var(--border);
+}
+
+/* the note's name is its file's: edited in place, as plain as a heading */
+.fork-note-title {
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-1) var(--space-2);
+  background: transparent;
+  border: var(--hairline) solid transparent;
+  border-radius: var(--radius-md);
+  color: var(--text-strong);
+  font: inherit;
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  text-overflow: ellipsis;
+}
+
+.fork-note-title:hover:not(:read-only) { border-color: var(--border); }
+.fork-note-title:focus-visible { border-color: var(--accent); outline: none; }
+
+.fork-note-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* the text keeps to the chat's lane and size, as a Markdown file does in the file viewer */
+.fork-note-editor {
+  max-width: var(--chat-w);
+  min-height: 100%;
+  margin-inline: auto;
+  padding: var(--space-3) var(--space-4) var(--space-6);
+}
+
+.fork-note-text {
+  min-height: 60vh;
+  outline: none;
+  white-space: pre-wrap;
+}
+
+/* the chat's Markdown keys its sizes off level classes (ChatView.css): an editor's headings are plain tags */
+.fork-note-text h1 { font-size: var(--fs-h1); }
+.fork-note-text h2 { font-size: var(--fs-h2); }
+.fork-note-text h3 { font-size: var(--fs-h3); }
+.fork-note-text :is(h1, h2, h3, h4, h5, h6) {
+  margin: 1.5em 0 0.5em;
+  color: inherit;
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-heading);
+}
+.fork-note-text :is(ul, ol) { margin: 0.5em 0; padding-inline-start: var(--space-5); }
+.fork-note-text li > p { margin: 0; }
+.fork-note-text pre {
+  padding: var(--space-3);
+  overflow-x: auto;
+  background: var(--bg-elevated);
+  border-radius: var(--radius-md);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  white-space: pre;
+}
+
+/* a task: its box in the bullet's place, a done one dimmed */
+.fork-note-text ul[data-type="taskList"] { padding-inline-start: var(--space-1); list-style: none; }
+.fork-note-text ul[data-type="taskList"] > li { display: flex; align-items: flex-start; gap: var(--space-2); }
+.fork-note-text ul[data-type="taskList"] > li > label { flex: none; padding-top: 0.2em; }
+.fork-note-text ul[data-type="taskList"] > li > label input { width: 1em; height: 1em; margin: 0; accent-color: var(--accent); }
+.fork-note-text ul[data-type="taskList"] > li > div { flex: 1; min-width: 0; }
+.fork-note-text ul[data-type="taskList"] > li[data-checked="true"] > div { color: var(--text-dim); text-decoration: line-through; }

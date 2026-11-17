@@ -15,6 +15,49 @@
   border-radius: var(--radius-circle);
 }
 
+/* An agent folds its helpers as a workspace folds its worktrees (fork HelpersFace.tsx): its picture is the fold, a
+   button over it that shows the caret under a pointer or the keyboard, and its title says +N. No line under it. */
+[data-fork-agent-friends="true"] .agent-helpers { display: none; }
+.fork-helpers-face {
+  position: absolute;
+  z-index: 1;
+  inset-block: 0;
+  inset-inline-start: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--fork-face, var(--side-box));
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.fork-helpers-face > svg { display: none; width: var(--icon-size); height: var(--icon-size); }
+.fork-helpers-face:focus-visible > svg { display: block; }
+:is(.agent-item, .inbox-item):has(> .fork-helpers-face:focus-visible) :is(.agent-row > .sidebar-mark, .inbox-avatar) { visibility: hidden; }
+@media (hover: hover) {
+  .fork-helpers-face:hover > svg { display: block; }
+  :is(.agent-item, .inbox-item):has(> .fork-helpers-face:hover) :is(.agent-row > .sidebar-mark, .inbox-avatar) { visibility: hidden; }
+}
+.mode-inbox .inbox-item:has(> .fork-helpers-face) {
+  position: relative;
+  --fork-face: calc(2 * var(--inbox-inset) + var(--inbox-avatar));
+}
+.mode-inbox.is-wide .inbox-item:has(> .fork-helpers-face) { --fork-face: calc(2 * var(--space-2) + var(--inbox-avatar)); }
+/* the +N follows the title, as in the sidebar; the time keeps the end */
+.mode-inbox .inbox-name:has(+ .workspace-fold-count) { flex: 0 1 auto; }
+.mode-inbox .inbox-line > .workspace-fold-count { margin-inline-end: auto; }
+
+/* a helper under its agent is its title alone, after the tree's elbow: no picture (its tab chip keeps one), and a
+   level steps in to where the title above it starts, as in the agent inbox */
+.agent-item[data-depth] { --tree-step: calc(var(--space-3) + var(--space-2)); }
+.agent-item[data-depth] .agent-row > .sidebar-mark { display: none; }
+.agent-item[data-depth] .agent-title { font-size: var(--fs-sm); }
+.agent-item[data-depth="1"] .agent-row { padding-inline-start: calc(var(--side-box) / 2 + var(--tree-step)); }
+.agent-item[data-depth="2"] .agent-row { padding-inline-start: calc(var(--side-box) / 2 + 2 * var(--tree-step)); }
+
 /* src/components/AgentsSettings.css */
 [data-fork-square-corners="true"] .agents-state.is-ok::before,
 [data-fork-square-corners="true"] .agents-state.is-warn::before,
@@ -58,8 +101,11 @@
    where the mark's size is the agent row's. */
 .mode-inbox .inbox-rows {
   --tree-x: calc(var(--inbox-inset) + var(--inbox-avatar) / 2);
-  --tree-step: calc(var(--space-3) + var(--space-2) + var(--mark-size) / 2);
+  --tree-step: calc(var(--space-3) + var(--space-2));
 }
+
+/* as in the sidebar, a helper shows no picture: its title starts after the elbow */
+.mode-inbox .inbox-item[data-depth] .inbox-avatar { display: none; }
 
 .mode-inbox .inbox-item[data-depth] {
   position: relative;
@@ -68,7 +114,11 @@
 
 /* A wide list spaces its rows with a gap (InboxList.css), which broke the tree line between them: there the space
    is each row's own, half above and half below, so the rows meet and the line runs on through them. */
-.mode-inbox.is-wide .inbox-rows { gap: 0; }
+.mode-inbox.is-wide .inbox-rows {
+  gap: 0;
+  /* a wide row's mark stands --space-2 in (InboxList.css), not the phone's inset: the line stands under its middle */
+  --tree-x: calc(var(--space-2) + var(--inbox-avatar) / 2);
+}
 .mode-inbox.is-wide .inbox-item { padding-block: calc(var(--space-1) / 2); }
 
 /* the agent's row has room under its mark: the line starts right under the mark, as the sidebar's does */
@@ -109,6 +159,10 @@
 .mode-inbox .inbox-item[data-depth] .inbox-words {
   display: none;
 }
+
+/* a helper's title is a step smaller than its agent's, here as in the sidebar */
+.mode-inbox .inbox-item[data-depth] .inbox-name { font-size: var(--fs-md); }
+.mode-inbox.is-wide .inbox-item[data-depth] .inbox-name { font-size: var(--fs-sm); }
 
 .mode-inbox .inbox-item[data-depth]:not(.is-current) .inbox-name {
   font-weight: var(--fw-regular);

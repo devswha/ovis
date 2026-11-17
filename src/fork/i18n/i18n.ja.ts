@@ -5,10 +5,12 @@
 import { FORK_I18N } from "./i18n.ts";
 import { FORK_FEATURE_I18N } from "./featureI18n.ts";
 import { GITHUB_I18N } from "../github/githubI18n.ts";
+import { NOTES_I18N } from "../notes/notesI18n.ts";
 
 export const FORK_JA: Record<string, string> = {
   ...FORK_FEATURE_I18N.ja,
   ...GITHUB_I18N.ja,
+  ...NOTES_I18N.ja,
   ...FORK_I18N.ja,
   "Follow Omarchy": "Omarchy に追従",
   "This device has not sent its Omarchy theme. Its theme-set hook (scripts/omarchy-theme-hook.sh) sends it whenever the theme changes.": "このデバイスはまだ Omarchy のテーマを送っていません。theme-set フック (scripts/omarchy-theme-hook.sh) がテーマを変えるたびに送ります。",

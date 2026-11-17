@@ -154,7 +154,7 @@ import { inboxOrder } from "./lib/agentInbox.ts";
 import { layoutCells } from "./lib/layoutMap.ts";
 import { pageStartsInInbox, useInboxMode } from "./lib/inboxMode.ts";
 import { InboxList } from "./components/InboxList.tsx";
-import { ForkGithubPane, ForkGithubSection } from "./fork/github/GithubInbox.tsx";
+import { ForkPlacePane, ForkPlaceSection } from "./fork/inbox/Places.tsx";
 import { ForkInboxFoot, ForkSidebarFoot, useForkInboxStatusBar } from "./fork/inbox/SidebarFoot.tsx";
 import { InboxConnecting, InboxFootEntry, InboxUnchosen, ThreadTitle, ThreadTop } from "./components/InboxMode.tsx";
 import { InboxRail } from "./components/InboxRail.tsx";
@@ -1064,12 +1064,12 @@ export function App() {
   // active one first, so the pick never moves that pane into the other half
   const openThread = (machineId: string, paneId: string): void => { activateSlotOf({ machineId, paneId }); selectTarget(machineId, paneId, "chat"); };
   const modeList = (column: boolean): ReactNode => (
-    <ForkGithubSection wide={column} watching={auth?.role === "watch"} onOpened={(opened) => selectTarget("local", opened.pane_id)}><InboxList ref={inbox.list} machines={sidebarMachines} activity={activity} watching={auth?.role === "watch"} wide={column} filter={inbox.filter} onFilter={inbox.setFilter} query={inbox.query} onQuery={inbox.setQuery} scroll={inbox.scroll} focus={{ ...inbox.focus, row: returnTo }}
+    <ForkPlaceSection wide={column} watching={auth?.role === "watch"} onOpened={(opened) => selectTarget("local", opened.pane_id)}><InboxList ref={inbox.list} machines={sidebarMachines} activity={activity} watching={auth?.role === "watch"} wide={column} filter={inbox.filter} onFilter={inbox.setFilter} query={inbox.query} onQuery={inbox.setQuery} scroll={inbox.scroll} focus={{ ...inbox.focus, row: returnTo }}
       current={column && !inbox.shown && selectedPaneId !== null ? sidebarPinKey(selectedMachineId, selectedPaneId) : null}
       onOpen={openThread}
       onNew={openNewOn} questionReads={inbox.questionReads} summaryReads={inbox.summaryReads}
       more={column ? undefined : { label: moreBase, expanded: more !== null && moreOnList, popup: isSheetWidth ? "dialog" : "menu", onPress: (anchor) => setMore((open) => (open ? null : { anchor })) }}
-      note={column ? undefined : <HeaderNote note={listNote} />} connection={!column && listNote === null ? rosterConnection : null} failure={error === null ? null : { error, retry: load }} /></ForkGithubSection>
+      note={column ? undefined : <HeaderNote note={listNote} />} connection={!column && listNote === null ? rosterConnection : null} failure={error === null ? null : { error, retry: load }} /></ForkPlaceSection>
   );
   // The rail's count (from 769px) is of the agents its press can open, and the press opens the next of them as its
   // row would: both from one starting pane, the open thread's, or none while the list is alone (every waiting agent
@@ -1561,7 +1561,7 @@ export function App() {
           {/* the mode's list is the screen on a phone; from 769px it is the column, and a pane with no thread says so */}
           {listScreen && modeList(false)}
           {inboxWide && inbox.shown && <InboxUnchosen />}
-          <ForkGithubPane wide={inboxWide} watching={auth?.role === "watch"} onOpened={(opened) => selectTarget("local", opened.pane_id)} inMode={inMode} enter={enterInbox} />
+          <ForkPlacePane wide={inboxWide} watching={auth?.role === "watch"} onOpened={(opened) => selectTarget("local", opened.pane_id)} inMode={inMode} enter={enterInbox} />
           {dividers.length > 0 && !inMode && <SplitDividers dividers={dividers} areaRef={paneAreaRef} onResize={resizeDivider} />}
           <SplitDropPreview visible={!inMode && splitDragOn && (paneDragging || tabDrag !== null)} grid={gridPreview} />
         </div>}

@@ -38,6 +38,7 @@ import { closeLayoutPane, moveLayoutPane, resizeLayout, setLayoutSplitRatio, spl
 import { deviceLabel } from "../../src/lib/phone.ts";
 import { rollupStatus } from "../../src/lib/status.ts";
 import { demoGithubFiles, demoGithubPull, demoGithubPulls } from "../../src/fork/github/githubDemo.ts";
+import { demoNotes } from "../../src/fork/notes/notesDemo.ts";
 import { movedTabOrder } from "../../src/lib/tabOrder.ts";
 import { agentSkillRows, CHATS, DEMO_AGENT_CATALOG, DEMO_PUSH, PROMPT, resumedSession, SESSION_HISTORY_AGENTS, sessionHistoryRows, SPECS, type DemoSpec } from "./fixtures.ts";
 import { DemoHistory } from "./history.ts";
@@ -1587,6 +1588,7 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
     return json({ action: "created", ...(await created.json() as { workspace_id: string; pane_id: string; agent_started: boolean }) } satisfies SessionResumeResponse);
   }
 
+  if (path === "/api/fork/notes" || path === "/api/fork/notes/file") return demoNotes(method, url, init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : undefined);
   if (path === "/api/fork/github/pulls") return method === "GET" ? json(demoGithubPulls(snapshot().workspaces)) : error("method_not_allowed", "use GET", 400);
   if (path === "/api/fork/github/pull") {
     const pull = demoGithubPull(snapshot().workspaces, url.searchParams.get("repo") ?? "", Number(url.searchParams.get("number")));

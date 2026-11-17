@@ -4,7 +4,8 @@ import { create, type ReactTestRenderer } from "react-test-renderer";
 import type { WorktreeListing } from "../../../shared/protocol.ts";
 import { createGithubFilesReader } from "../../../server/fork/github.ts";
 import { SettingsProvider } from "../../lib/settings.ts";
-import { closeGithubPull, ForkGithubPane, ForkGithubRail, GithubInbox, refreshGithubListing, setGithubSection } from "./GithubInbox.tsx";
+import { closeGithubPull, ForkGithubPane, ForkGithubRail, GithubInbox, refreshGithubListing } from "./GithubInbox.tsx";
+import { setPlace } from "../inbox/place.ts";
 
 let renderer: ReactTestRenderer | undefined;
 const saved = new Map<string, PropertyDescriptor | undefined>();
@@ -28,7 +29,7 @@ beforeEach(() => {
   } });
   records.set("ovis:settings", JSON.stringify({ pullRequests: true }));
   refreshGithubListing();
-  setGithubSection("inbox");
+  setPlace("inbox");
 });
 afterEach(async () => {
   await act(async () => renderer?.unmount()); renderer = undefined;
@@ -63,7 +64,7 @@ function checkoutApi(listings: WorktreeListing[], replies: Record<string, unknow
 }
 /** The wide layout: the list, and the page it opens beside it. */
 async function wideGithub(watching = false, onOpened = (_opened: unknown) => {}) {
-  setGithubSection("github");
+  setPlace("github");
   await act(async () => { renderer = create(<SettingsProvider><GithubInbox wide watching={watching} onOpened={onOpened} /><ForkGithubPane wide watching={watching} onOpened={onOpened} /></SettingsProvider>); });
 }
 async function openPull(onOpened = (_opened: unknown) => {}, watching = false) {
@@ -204,7 +205,7 @@ test("offers a clone for unknown repos, nothing to observers, and shows empty an
     expect(button("Clone and checkout") !== undefined).toBe(!watching);
     await closeAll(); refreshGithubListing();
   }
-  setGithubSection("inbox");
+  setPlace("inbox");
   payload = { accounts: ["me"], review: [], yours: [] };
   await act(async () => { renderer = create(<SettingsProvider><GithubInbox wide watching={false} onOpened={() => {}} /></SettingsProvider>); });
   expect(JSON.stringify(renderer!.toJSON())).toContain("Nothing needs you");
