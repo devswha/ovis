@@ -115,7 +115,7 @@ describe.skipIf(process.platform === "win32")("CI runner route", () => {
         ...running(2),
       ];
       expect(routed({ ...pr, FAKE_GH: actions({ in_progress: { 1: others } }) })).toEqual(ovis);
-      for (const labels of [["Self-Hosted", "self-hosted-ovis"], ["self-hosted"], ["self-hosted", "linux", "x64"]]) {
+      for (const labels of [["Self-Hosted", "self-hosted-ovis"], ["self-hosted-ovis"], ["self-hosted"], ["self-hosted", "linux", "x64"]]) {
         expect(routed({ ...pr, FAKE_GH: actions({ in_progress: { 1: [...others, ...waiting(1, 300, labels)] } }) })).toBe("ubuntu-24.04");
       }
     });
@@ -136,6 +136,7 @@ describe.skipIf(process.platform === "win32")("CI runner route", () => {
       expect(result.stderr).toContain("no runner looks online");
       expect(routed({ ...pr, FAKE_GH: actions({ queued: { 1: waiting(1, 30) } }) })).toEqual(ovis);
       expect(routed({ ...pr, FAKE_GH: actions({ in_progress: { 1: running(1) }, queued: { 2: waiting(1, 90) } }) })).toEqual(ovis);
+      expect(routed({ ...pr, FAKE_GH: actions({ in_progress: { 1: running(1, ["self-hosted-ovis"]) }, queued: { 2: waiting(1, 90) } }) })).toEqual(ovis);
       const stale = running(3, ovis, 2 * 86_400);
       expect(routed({ ...pr, FAKE_GH: actions({ in_progress: { 1: stale }, queued: { 2: waiting(1, 90) } }) })).toBe("ubuntu-24.04");
       const anywhere = [...running(1, ["self-hosted"]), ...running(1, ["self-hosted", "linux", "x64"])];
@@ -357,9 +358,10 @@ describe.skipIf(process.platform === "win32")("CI runner route", () => {
     it("changes nothing when it is unset or false", () => {
       for (const env of scenarios()) {
         const before = route(env);
+        const withoutWaitTimes = (stderr: string) => stderr.replace(/\d+s\b/g, "<n>s");
         for (const value of ["", "false"]) {
           const after = route({ ...env, HOSTED_ONLY: value });
-          expect({ env, value, status: after.status, stdout: after.stdout, stderr: after.stderr }).toEqual({ env, value, status: before.status, stdout: before.stdout, stderr: before.stderr });
+          expect({ env, value, status: after.status, stdout: after.stdout, stderr: withoutWaitTimes(after.stderr) }).toEqual({ env, value, status: before.status, stdout: before.stdout, stderr: withoutWaitTimes(before.stderr) });
         }
       }
     });

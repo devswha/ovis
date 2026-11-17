@@ -66,7 +66,7 @@ pool_jobs() {
   for id in $ids; do
     jobs=$(api "repos/$REPOSITORY/actions/runs/$id/jobs?filter=latest&per_page=100") || return 1
     counts=$(jq -s -r -e --argjson pool "$pool_labels" --argjson live "$live_job" '[.[].jobs[]
-      | select([.labels[] | ascii_downcase] | index("self-hosted") != null and all(.[]; . as $x | $pool | index($x) != null))] as $ours
+      | select([.labels[] | ascii_downcase] | length > 0 and all(.[]; . as $x | $pool | index($x) != null))] as $ours
       | ([$ours[] | select(.status == "queued") | now - (.created_at | fromdateiso8601) | select(. < 86400)] | max // 0 | floor) as $wait
       | ([$ours[] | select(.status == "in_progress" and ([.labels[] | ascii_downcase] | index("self-hosted-ovis") != null)
           and now - (.started_at | fromdateiso8601) < $live)] | length) as $running

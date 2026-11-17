@@ -306,7 +306,7 @@ waited more than four minutes for that label, or more than a minute while none o
 runner looks online). There is no runner count to keep up to date: a host that takes no more work
 simply leaves jobs queued, and the next run overflows. Detect changes, which makes that choice, runs on
 the same label unless `CI_LIGHT_LABELS` names others, so with every runner gone a run waits there:
-then set `CI_SELF_HOSTED_LABELS` to `"ubuntu-24.04"`. The repository variable overrides the choice:
+then set `CI_SELF_HOSTED_LABELS` to `"ubuntu-24.04"`, and `CI_LIGHT_LABELS` too when it holds labels. The repository variable overrides the choice:
 
 ```sh
 gh variable set CI_SELF_HOSTED_LABELS --body '"ubuntu-24.04"'   # PC offline: everything GitHub-hosted
