@@ -1406,6 +1406,16 @@ describe("a member of a higher level, and a key that a later kind lets in on a p
       expect(await stateOf(loginLog, 2, letsIn("full", stranger))).toEqual(plain);
     });
 
+    test("a key that a proof made a signer and an ends ended does not come back by an adds either, as a key that an adds made does not: out is out", async () => {
+      const out = await on(enters, owner, { ends: login });
+      const again = await on(out, owner, { kind: "device", adds: [login, "full"] });
+      const byIt = await on(again, login, { ends: owner });
+      const links = [...root, turnsOn, enters, out, again, byIt];
+      expect((await outcomesOf(links, 2, letsIn("full"))).slice(4)).toEqual([reads(), passedOver("key_reused"), passedOver("signer_unknown")]);
+      const state = await stateOf(links, 2, letsIn("full"));
+      expect([who(state), state.signers[login.key], state.footing]).toEqual([{ owner: "full", phone: "full" }, rowBy("full", enters, null, out), place(again)]);
+    });
+
     test("a key that a proof made a signer and an ends ended does not come back by a second proof: out is out", async () => {
       const out = await on(enters, owner, { ends: login });
       const again = await on(out, login, { kind: "later_login", v: 2 });
@@ -1506,7 +1516,7 @@ describe("a member of a higher level, and a key that a later kind lets in on a p
     expect([handed.length, entryToText(held.entry), [...(at(held.body.own, 0).value)]]).toEqual([5, first.text, [...token]]);
   });
 
-  test("the proof is asked only above level 1, for an entry the member reads, also while it is behind, whose signer has no row and that carries no adds and no ends", async () => {
+  test("the proof is asked only above level 1 and not while the member is behind, for an entry it reads whose signer has no row and that carries no adds and no ends", async () => {
     const asked: string[] = [];
     const never: KeyProof = (held) => {
       asked.push(held.hash);
@@ -1518,9 +1528,10 @@ describe("a member of a higher level, and a key that a later kind lets in on a p
       [login, { kind: "later_login", v: 2, ends: owner }], [owner, { kind: "later_login", v: 2 }], [phone, { kind: "later_login", v: 2 }], [stranger, { kind: "later_login", v: 1 }],
       [owner, { kind: "later", v: 3 }], [machine, { kind: "later_login", v: 2 }]);
     const links = [...root, turnsOn, out, ...entries];
-    // The last but one is by a signer and above level 2: from there the member is behind, and it is asked for the last all the same.
+    // The last but one is by a signer and above level 2: from there the member is behind. It lets nobody new in then, so it is not asked for the last, and a proof that would let its key in is not heard.
     const higher = await stateOf(links, 2, never);
-    expect([asked, higher.behind]).toEqual([[at(entries, 0).hash, at(entries, 6).hash, at(entries, 8).hash], at(entries, 7).seq]);
+    expect([asked, higher.behind]).toEqual([[at(entries, 0).hash, at(entries, 6).hash], at(entries, 7).seq]);
+    expect(await outcomeOf(links, 2, letsIn("full", machine, at(entries, 8)))).toEqual(passedOver("signer_unknown"));
     asked.length = 0;
     // Level 1 defines no kind that lets a key in: a member of level 1 is asked for none, also for an entry it reads.
     const lower = await stateOf(links, 1, never);
@@ -1610,6 +1621,16 @@ describe("a saved state", () => {
       const read: unknown = readSignersState(value);
       expect([ended, read]).toEqual([ended, value]);
     }
+  });
+});
+
+describe("one entry judged", () => {
+  test("an entry of another list is the caller's mistake: judgeEntry refuses it, and no footing moves onto it", async () => {
+    const elsewhere = await genesis(phone);
+    const { held } = at((await replay([elsewhere, await on(elsewhere, phone, {})])).took, 1);
+    const state = await stateOf(base);
+    expect([held.list === state.list, signerPower(state, phone.key)]).toEqual([false, "full"]);
+    expect(() => judgeEntry(state, held)).toThrow(RangeError);
   });
 });
 
@@ -1819,7 +1840,7 @@ describe("the vectors of signers/ and unreadable/", () => {
   const SIGNERS_SECOND = [
     "seq-wrong-after-footing", "other-list-after-footing", "prev-other-after-footing", "footing-replaced", "head-before-footing-no-entry", "head-before-past-footing",
     "same-entry-other-signature", "forged-in-place-of-loose",
-    "proof-entry-not-loose", "proof-cannot-change-made-key", "adds-and-ends-one-key", "proof-names-another-key", "proof-key-ended-stays-out", "proof-for-ended-adds-key",
+    "proof-entry-not-loose", "proof-cannot-change-made-key", "adds-and-ends-one-key", "proof-names-another-key", "proof-key-ended-stays-out", "proof-for-ended-adds-key", "adds-for-ended-proof-key",
     "device-out-of-form-signs", "took-every-name",
   ];
   const UNREADABLE = [
