@@ -22,6 +22,9 @@ export function usePaneCommands(paneId: string | null, agent?: string | null): r
     let live = true;
     void cachedPaneCommands(paneId, machineId, agent, fetchPaneCommands).then(
       (commands) => { if (live) setLoaded({ key, commands, failures: 0 }); },
+      // a failed read (a dropped connection, a bridge restarting) keeps the list it had and asks again below:
+      // the terminal-command handoff and the menu read this list, so it must not stay empty for good.
+      // A device that may only watch is refused the list (#2132): that answer stays, so it is not asked again
       (error: unknown) => {
         if (!live) return;
         if (error instanceof ApiError && error.code === "read_only") { setLoaded({ key, commands: EMPTY_COMMANDS, failures: 0 }); return; }

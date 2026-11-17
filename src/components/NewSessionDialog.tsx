@@ -73,6 +73,8 @@ interface NewSessionDraft {
 
 const newSessionDrafts = new Map<string, NewSessionDraft>();
 
+// the hosted shell keeps every server under one origin (/s/<server_id>/), so one tab's sessionStorage spans them:
+// a draft is the server's it was typed for, never offered to the next one opened in that tab
 function newSessionDraftKey(machineId: string, tab: NewTabTarget | null): string {
   const server = serverIdOfPath(window.location?.pathname ?? "") ?? "";
   return `${server}\n${machineId}\n${tab ? `tab:${tab.workspaceId}` : "workspace"}`;
@@ -374,6 +376,9 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onPend
     setPending(true);
     setError(null);
     setCwdError(null);
+    // a tab keeps the workspace's folder, which the dialog shows and does not ask for. The first message of an
+    // agent whose command line does not take it rides on this request: the bridge queues it for the agent's first
+    // ready turn and types it through this page's connection, so this page never types it itself
     const request = createRequest({ tab, directory, name }, launch, machineSessions?.peek(machineId)?.connection ?? null);
     const started = startNewSession(guard.current, request, async (body) => {
       rememberAgent(agentKind);

@@ -115,6 +115,10 @@ export function useTerminalRefits(deps: TerminalRefitsDeps): void {
       if (shared && hidden && !observeRef.current && (hidden.cols !== shared.cols || hidden.rows !== shared.rows)) hidden.resize(shared.cols, shared.rows);
       return;
     }
+    // Into the terminal from the chat: the history this browser keeps (a herdr-core server's terminal-history) shows
+    // its newest rows, once per switch, unless a selection is being made in it. herdr's own view is shared with its
+    // other clients (its TUI, other browsers): a lens switch here is no reason to move theirs, so that view stays
+    // where it is and the way to the bottom shows over it (components/TerminalViewportTools.tsx)
     const landAtBottom = (): void => {
       const shown = termRef.current;
       if (shown && !shown.hasSelection()) shown.scrollToBottom();

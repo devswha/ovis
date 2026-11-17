@@ -1,3 +1,7 @@
+/**
+ * Lines herdr scrolls a pane per wheel report: its `ui.mouse_scroll_lines` default. The browser
+ * cannot read the PC's herdr config, so a changed value only changes how far one report goes.
+ */
 export const HERDR_MOUSE_SCROLL_LINES = 3;
 
 export function wheelSteps(pixels: number, stepPixels: number): { steps: number; rest: number } {

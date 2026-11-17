@@ -31,6 +31,7 @@ export function MachineDialog({ machine, preset, updateRemote = false, onClose, 
   const closeRef = useRef(onClose); closeRef.current = onClose;
   usePhoneSheetBack(() => { closeRef.current(); });
   const identityRef = useRef(""); identityRef.current = [destination.trim(), port, session].join("\0");
+  // the password lives in its field alone (src/AGENTS.md): read once on submit, then cleared, never in state
   const secretField = useRef<HTMLInputElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);

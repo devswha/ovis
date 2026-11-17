@@ -233,6 +233,7 @@ describe("the pane canvas on a PC the Herdr app lays out", () => {
       const busy: SessionSnapshot = { ...snapshot, panes: [snapshot.panes[0]!, { ...snapshot.panes[1]!, agent_status }] };
       expect(await pressClose(busy, "p2")).toEqual([]);
       expect(asking()).toHaveLength(1);
+      // the pressed Close holds the focus before the confirmation opens, so Cancel hands it back there (Safari focuses no clicked button)
       expect(pressedFocus).toBe(1);
       await act(async () => renderer?.unmount());
     }

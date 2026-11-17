@@ -219,6 +219,7 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
   const target = menu ? snapshot?.panes.find((item) => item.pane_id === menu.paneId) : null;
   type MenuUse = (name: "split_by_menu" | "close_pane_by_menu") => void;
   const layoutItems = (target: HerdrPane, use: MenuUse): RowMenuItem[] => [
+    // herdr-core names no pane, and swaps, zooms and resizes none (lib/machineContext.tsx `arrange`)
     ...(!appLayout.arrange ? [] : [{ id: "rename", label: t("Rename pane"), icon: Pencil, run: () => setRenaming(target) }]),
     ...(appLayout.arrange && target.label ? [{ id: "clear-name", label: t("Clear pane name"), icon: Eraser, run: () => run(() => api.renamePane(target.pane_id, "")) }] : []),
     ...(appLayout.arrange && pane && target.pane_id !== pane.pane_id ? [{ id: "swap-focused", label: t("Swap with focused pane"), icon: ArrowLeftRight,
@@ -249,6 +250,9 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
             if (alive.current && latest.current.tabId === tabId) setError({ message: t("New terminal failed: {reason}", { reason: userErrorMessage(reason).message }), detail: null });
           });
         } }] : []),
+        // herdr moves a tab to another workspace only as its one pane, a DAG viewer the roster hides
+        // counted too; the workspaces are picked in a second menu at the header's More, which this
+        // menu opened from, as the row's menu lists them in place (TabStrip)
         ...(onMoveToWorkspace && appLayout.move && tab && (snapshot?.panes.filter((item) => item.tab_id === target.tab_id).length ?? 0) === 1
           && moveDestinations(snapshot?.workspaces ?? [], target, target.workspace_id).length > 0
           ? [{ id: "move-workspace", label: t("Move to workspace…"), icon: FolderInput, disabled: watching, run: () => {

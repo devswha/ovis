@@ -178,6 +178,7 @@
   }
 }
 
+/* a thing the person must not miss: the secret not set, a link that is a bearer secret, an entry that is wrong */
 .portal-warning {
   padding: var(--space-2) var(--space-3);
   border: var(--hairline) solid var(--status-blocked);

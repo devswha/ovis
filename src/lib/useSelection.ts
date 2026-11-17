@@ -89,6 +89,9 @@ export function useSelectionMark({ selectedMachineId, selectedPaneId }: { select
   useLayoutEffect(() => {
     selectionRef.current = markSelection(selectionRef.current, selectedMachineId, selectedPaneId);
   }, [selectedMachineId, selectedPaneId]);
+  // panes a tab move has on its way to another workspace (paneStorageId): herdr can drop the old ID
+  // from a roster before the move answers with the new one, and until it does neither the selection
+  // nor the split's other half falls back from it
   const movingPanes = useRef(new Set<string>());
   return { selectionRef, movingPanes };
 }
@@ -127,6 +130,9 @@ export function useSelectTarget({ selectedMachineId, setConnected, setConnectedB
   const selectTarget = useCallback((machineId: string, paneId: string | null, view?: PaneView) => {
     picks.current += 1;
     onPickRef.current?.(paneId);
+    // Only another PC mounts a new terminal (and socket), which reports its own state. A pane
+    // on the same PC keeps the connected socket, which never reports again: resetting here
+    // left the header on "reconnecting" after every pane switch.
     if (machineId !== selectedMachineRef.current) { setConnected(false); setConnectedBefore(false); }
     setSelectedMachineId(machineId); setSelectedPaneId(paneId); setAutoSelected(false); setDrawerOpen(false);
     setOutputStopped(false);
@@ -314,6 +320,7 @@ export function useSelectedLayout({ selectedPane, snapshot, drawerOpen, selected
       setSelectedPaneId(selectedLayout.focused_pane_id);
       setAutoSelected(true);
     }
+    // a pick of another pane of a zoomed tab lands on herdr's zoomed one too: herdr shows only it
   }, [selectedMachineId, selectedPaneId, selectedLayout?.zoomed, selectedLayout?.focused_pane_id]);
   return { selectedWorkspace, selectedLayout, presentedPaneId };
 }

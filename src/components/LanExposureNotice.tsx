@@ -5,6 +5,19 @@ import { useT } from "../lib/i18n.ts";
 
 import "./LanExposureNotice.css";
 
+/**
+ * The server is answering on an address beyond this PC with no access token set and no device
+ * paired, so anything that can reach that address is let in. It says so and does nothing about
+ * it: pairing or a token is the owner's decision, and the default stays what it is
+ * (`server/access.ts`, `lanExposed`).
+ *
+ * Not dismissible. This is the server's state rather than an event, so it leaves when the
+ * state does — and a dismissed warning would not come back when the state returned.
+ *
+ * `direct`: the line says instead that the relay's same-Wi-Fi direct connection listens here, for
+ * relay-paired devices only. That is news, not a warning, so it can be dismissed
+ * (lib/directNotice.ts); Settings, Devices and PCs keeps saying it.
+ */
 export function LanExposureNotice({ host, direct = false, onOpen, onDismiss }: { host: string; direct?: boolean; onOpen: () => void; onDismiss: () => void }) {
   const t = useT();
   return (

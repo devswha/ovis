@@ -6,6 +6,11 @@ export function keyIdGroups(id: string): string[] {
   return id.match(/.{1,4}/g) ?? [];
 }
 
+/**
+ * A PC's relay id (a SHA-256 of its relay key) as groups to compare by eye. With `against`, each
+ * group that differs from the same group of the other id is marked, by weight and an underline as
+ * well as colour, and named for a screen reader.
+ */
 export function KeyId({ id, against, label }: { id: string; against?: string; label: string }) {
   const t = useT();
   const others = against === undefined ? null : keyIdGroups(against);

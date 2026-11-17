@@ -345,6 +345,7 @@ export function KeyBar({ onKey, onKeyHoldEnd, modifiers, lockedModifiers, onTogg
             <Keyboard aria-hidden="true" />
           </Key>
         )}
+        {/* beside the mode toggle it belongs with: a tap, never a hold (a repeat would read the clipboard again) */}
         {onPaste && (
           <Key disabled={disabled || pasteDisabled} command describedBy={note ? noteId : undefined} dataKey="paste" label={t("Paste into the input line")} onPress={onPaste}>
             <ClipboardPaste aria-hidden="true" />

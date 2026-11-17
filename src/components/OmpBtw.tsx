@@ -63,6 +63,7 @@ function OmpBtwChip({ paneId }: { paneId: string }) {
       if (event.target instanceof Element && event.target.closest('[aria-modal="true"]')) return;
       if (!root.current?.contains(event.target as Node)) setOpen(false);
     };
+    // Escape closes the list and goes no further: in the message box it would also stop the agent's turn
     const escape = (event: KeyboardEvent): void => {
       if (event.key !== "Escape" || overDialog()) return;
       event.stopPropagation();

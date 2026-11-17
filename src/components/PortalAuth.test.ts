@@ -72,6 +72,7 @@ describe("the Portal panel's choice of who may open the address", () => {
     expect(idle).toContain("The secret is not set on this PC.");
     expect(idle).toContain("It shows here once Portal has started.");
     expect(idle).not.toContain("_portal/auth/callback");
+    // the secret itself is never a field here
     expect(idle).not.toMatch(/type="password"|client.secret"/i);
   });
 

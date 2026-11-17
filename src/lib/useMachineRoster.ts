@@ -70,6 +70,10 @@ export function useRosterState() {
   return { machineSessions, machines, setMachines, machineRosterLoaded, setMachineRosterLoaded };
 }
 
+/**
+ * Signing out closes every socket, as unmounting the sessions provider did: one kept open would
+ * carry its old authority behind the sign-in gate and be reused by the next sign-in.
+ */
 export function useCloseSessionsWhenLocked(machineSessions: Pick<MachineSessionRegistry, "closeAll">, locked: boolean | null): void {
   useEffect(() => { if (locked) machineSessions.closeAll(); }, [machineSessions, locked]);
 }
@@ -200,6 +204,7 @@ export function useRosterLoader({ locked, healthFailing, rosterIn, setMachines, 
     const tick = (): void => {
       if (document.visibilityState === "hidden") return;
       void loadHealth();
+      // a locked tab only watches health, so a token entered in another tab still unlocks it
       if (lockedRef.current !== true) void load();
     };
     let timer = 0;
@@ -211,6 +216,9 @@ export function useRosterLoader({ locked, healthFailing, rosterIn, setMachines, 
       timer = window.setInterval(tick, slow ? STREAM_BACKSTOP_MS : POLL_MS);
     };
     void (async (): Promise<void> => {
+      // a bookmarked `#auth=<token>` link unlocks without typing; the fragment is
+      // stripped before anything renders, and a stale token falls through to the
+      // gate the first health check mounts
       const linkToken = takeAuthTokenFromUrl();
       if (linkToken !== null) await authenticate(linkToken).catch(() => undefined);
       if (disposed) return;
@@ -263,6 +271,7 @@ export function useRosterEvents({ onPaneMoved, machineSessions, locked, onRoster
   machinesRef: RefObject<Machine[]>;
   onPaneStatus: ReturnType<typeof useAlertSignals>["onPaneStatus"];
   onPaneExited: ReturnType<typeof useAlertSignals>["onPaneExited"];
+  /** herdr moved a pane of a PC under a new ID (the server's pane-moved, #1503) */
   onPaneMoved: (machineId: string, from: string, to: string) => void;
   followFocusRef: RefObject<boolean>;
   selectionRef: RefObject<SelectionMark>;

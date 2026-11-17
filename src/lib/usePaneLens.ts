@@ -11,12 +11,25 @@ import { HISTORY_PROMPTS, type Settings } from "./settings.ts";
 import type { TelemetryViewSource } from "../../shared/telemetry.ts";
 import { tally, usageCounters, type UsageCounters } from "./usageCounters.ts";
 
+/**
+ * The lens a pane opens in: the one picked for it by hand, remembered per pane, else its default
+ * (lib/paneLens.ts), kept for the page once the pane is known so an agent starting or exiting in
+ * it does not switch the lens under the user. A PC whose herdr has no terminal attach and no
+ * mirror either (an older Windows bridge) always opens its chat: its terminal lens is only a
+ * notice, so a remembered choice there is not worth keeping. A mirrored PC counts as having a
+ * terminal.
+ */
+/**
+ * Whose a lens is in this page: the pane under the herdr its PC is drawn under (lib/paneLifetime.ts),
+ * so a pane ID a new herdr gave out again keeps no lens picked or settled for the last one's pane.
+ */
 export function lensOwner(machineId: string, paneId: string): string {
   const lifetime = paneLifetimes.generation(machineId);
   const pane = paneStorageId(machineId, paneId);
   return typeof lifetime === "string" ? `${lifetime}\u0000${pane}` : pane;
 }
 
+/** `hasAgent`: herdr leaves `agent` out for a shell, so callers compare with `!= null`; `keep` false only asks (a press, not a pick) */
 export function storedView(lenses: PaneLenses, picks: ReadonlyMap<string, PaneView>, paneId: string, machineId: string, hasAgent: boolean | null, terminalAttach: boolean, keep = true): PaneView {
   if (!terminalAttach) return "chat";
   const key = lensOwner(machineId, paneId);
@@ -56,6 +69,8 @@ export function usePaneLens({ settings, selectedPaneId, selectedMachineId, selec
   const lenses = useMemo(() => new PaneLenses(settings.defaultView), [settings.defaultView]);
   const lifetime = useSyncExternalStore(paneLifetimes.subscribe, () => paneLifetimes.generation(selectedMachineId));
   const lensKey = JSON.stringify([selectedPaneId, selectedMachineId, lifetime ?? null, selectedPane !== null, selectedAgent !== null, terminalAttach, settings.defaultView]);
+  // a link's or an alert's lens was for the pane it named under the herdr then: a pane ID another
+  // herdr gave out again is not that pane, so the lens it named goes with that herdr
   const drawnUnder = useRef({ machineId: selectedMachineId, lifetime });
   const replaced = drawnUnder.current.machineId === selectedMachineId && typeof drawnUnder.current.lifetime === "string"
     && typeof lifetime === "string" && drawnUnder.current.lifetime !== lifetime;

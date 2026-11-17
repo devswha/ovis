@@ -1,3 +1,12 @@
+/**
+ * Dictation for the composer and the terminal input line. With a key on the server the
+ * browser records a clip (MediaRecorder) and POSTs it to /api/voice/transcribe, which streams
+ * NDJSON VoiceEvents back; without one it falls back to the browser's own SpeechRecognition.
+ * Text is only ever handed to `onText` for the caller to insert, never sent.
+ *
+ * The level meter paints straight onto DOM nodes from one requestAnimationFrame loop, so the
+ * waveform moves at frame rate without a React render per frame.
+ */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { fetchVoiceStatus } from "./api.ts";
 import { getTransport } from "./transport.ts";
@@ -37,6 +46,7 @@ const RECORDER_TYPES = [
   ["audio/ogg;codecs=opus", "ogg"],
 ] as const;
 
+/** The first container the browser records, best first; Safari only has mp4. */
 export function pickRecorderMime(isTypeSupported: (type: string) => boolean): { mimeType: string; extension: string } | null {
   for (const [mimeType, extension] of RECORDER_TYPES) if (isTypeSupported(mimeType)) return { mimeType, extension };
   return null;
@@ -46,12 +56,14 @@ export function classifyRelease(heldMs: number): "finish" | "keep" {
   return heldMs >= HOLD_MS ? "finish" : "keep";
 }
 
+/** One-pole smoothing: rises in ~60 ms so syllables show, falls over ~250 ms so it does not flicker. */
 export function smoothLevel(previous: number, target: number, dtMs: number): number {
   const tau = target > previous ? 60 : 250;
   return previous + (target - previous) * (1 - Math.exp(-Math.max(0, dtMs) / tau));
 }
 
 export const SPEECH_PREROLL_MS = 350;
+/** quiet this long closes the gate; with the pre-roll ~350 ms of quiet stays after the last word */
 export const SPEECH_HANG_MS = 700;
 const SPEECH_MIN_RMS = 0.006;
 const SPEECH_OVER_FLOOR = 3;
@@ -735,6 +747,8 @@ export function createVoiceEngine(io: EngineIO) {
     finish: () => finishTake(false),
     cancel,
     onHidden,
+    // the browser's first AudioContext starts its audio stack (~100 ms, blocking): done while
+    // idle and left suspended, the press only resumes it, so the pill paints on that frame
     prewarm: createAudioContext,
     bindBars: bind((el) => { bars = el; }),
     bindRing: bind((el) => { ring = el; }),

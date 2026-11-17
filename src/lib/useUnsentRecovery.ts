@@ -6,6 +6,12 @@ import { composerDrafts } from "./composerDraft.ts";
 import { paneLifetimes } from "./paneLifetime.ts";
 import { holdsQuoteLine } from "./replyComments.ts";
 
+/**
+ * Recover unsent text (components/UnsentText.tsx), opened from a pane's menu for that pane. Put in
+ * message box adds the text after what the pane's box holds, never over it and never sent, and
+ * shows the pane's chat; false when the box could not save it, or keeps it in this page alone (a PC
+ * whose herdr is not proven, lib/paneLifetime.ts), so the record stays until the text is kept.
+ */
 export function useUnsentRecovery({ selectedMachineId, selectedPaneId, setView, pickView }: {
   selectedMachineId: string;
   selectedPaneId: string | null;

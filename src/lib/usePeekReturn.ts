@@ -116,6 +116,7 @@ export function usePeekReturn(deps: PeekReturnDeps) {
     const seen = rowSeenRef.current;
     const known = seen !== null && seen.pane === paneRef.current && seen.agent === agentRef.current;
     if (!watching && (agentStatusRef.current === "working" || (known && !chatMountedRef.current && !screenHeldRef.current))) return;
+    // herdr's first frame for the pane's new size may be its old screen reflowed: no screen opened or closed
     if (frameGateRef.current.reflowing) return;
     const state = inputRowNow();
     if (state === null || state === "unknown") return;
@@ -162,6 +163,11 @@ export function usePeekReturn(deps: PeekReturnDeps) {
     if (show === undefined || heldRef.current || unsupportedRef.current || open.command === "") { onOpenTerminal?.(); return; }
     show({ command: open.command, text: null, knownOutcomeIds: null, auto: false, watch: null, inputRowSeen: true });
   }, [onOpenTerminal]);
+  // Every end of a peek back to the chat: the hidden grid lets go of the keyboard (it has no Chat
+  // guard of its own, and keys typed after the return would reach the pane), and a desktop's typing
+  // goes back to the message box of the same pane (another pane's composer focuses itself, or not,
+  // as a pane switch decides). A phone's keyboard stays down. Keep Terminal (or the header's
+  // Terminal) keeps the grid, and gives it the keyboard its button took.
   const shownPeekRef = useRef<TerminalPeek | null>(null);
   useLayoutEffect(() => {
     const was = shownPeekRef.current;
@@ -191,6 +197,6 @@ export function usePeekReturn(deps: PeekReturnDeps) {
     if (activeRef.current && was.paneId === paneRef.current && !coarseRef.current && !modalOpen()) {
       stackRef.current?.querySelector<HTMLTextAreaElement>(".composer-text")?.focus({ preventScroll: true });
     }
-  }, [peek, chatMounted]);
+  }, [peek, chatMounted]); // eslint-disable-line react-hooks/exhaustive-deps -- read at the end only
   return { autoPeek, onCommandScreenClosed, stillOpen, stillOpenRef, setStillOpen, pendingOpenRef, undecidedOpenRef, chatHistoryRef, stillOpenNotedRef, onInputRowFrameRef, stillOpenNote, showStillOpen };
 }

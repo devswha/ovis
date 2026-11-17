@@ -11,6 +11,10 @@ import type { SidebarActivity } from "./sidebarActivity.tsx";
 export const QUESTION_RETRY_MS = 1500;
 export const QUESTION_READS_AT_ONCE = 2;
 
+/**
+ * A waiting row whose question is read: `seq` is its state counter, a new wait reads it again; `lifetime` is its PC's
+ * herdr lifetime, as a replaced herdr can reuse a pane id and counter.
+ */
 export interface QuestionTarget { key: string; machineId: string; paneId: string; seq: number; lifetime: string }
 
 export function questionTargets(rows: readonly AgentRow[], activity: SidebarActivity): QuestionTarget[] {

@@ -35,6 +35,7 @@ export function pendingStatus(message: Pick<PendingMessageView, "state" | "error
   return t("Held message — review and send");
 }
 
+/** Pending text is separate from the transcript; Send now acts on its ID, never on its text. */
 export function PendingMessages({ messages, active = true, connected, agent, blocked, inert = false, unsaved, isBusy, onSendNow, onEdit, onDiscard }: Props) {
   const t = useT();
   const activeRef = useRef(active);

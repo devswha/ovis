@@ -12,6 +12,7 @@ export interface TypedKeysDeps {
   agentStatus: AgentStatus | undefined;
   barKeyRef: RefObject<{ key: string; chord: string | null } | null>;
   coarseRef: RefObject<boolean>;
+  /** sends a pending Safari syllable or dictation phrase as an IME commit, ahead of the key */
   commitPendingText: () => void;
   compositionCommitPendingRef: RefObject<boolean>;
   composingRef: RefObject<boolean>;
@@ -56,7 +57,12 @@ export function useTypedKeys(deps: TypedKeysDeps) {
   }, []);
 
 
+  // the composer's stop button: Escape interrupts the agent's current turn in every
+  // supported TUI (Claude Code, omp, codex) without killing the process the way ^C would
+  // Hermes' Stop is one Ctrl+C per turn (hermesStop.ts): a second one would quit it
   const hermesStopSentRef = useRef(false);
+  // when this pane last sent Hermes a Ctrl+C: status flicker or a quick new turn resets the
+  // guard above, so a second Ctrl+C inside Hermes' 2 s force-quit window is refused by time
   const hermesCtrlCAtRef = useRef<number | null>(null);
   useEffect(() => { if (agentStatus !== "working" && agentStatus !== "blocked") hermesStopSentRef.current = false; }, [agentStatus]);
   useEffect(() => { hermesStopSentRef.current = false; hermesCtrlCAtRef.current = null; }, [paneId, agent]);
@@ -65,6 +71,7 @@ export function useTypedKeys(deps: TypedKeysDeps) {
     if (secondEscapeRef.current !== null) clearTimeout(secondEscapeRef.current);
     secondEscapeRef.current = null;
   }, []);
+  // one terminal serves the pane it is switched to: a pending Escape must not follow it there
   useEffect(() => dropSecondEscape, [paneId, agent, dropSecondEscape]);
   const abortTurn = useCallback(() => {
     const term = termRef.current;
@@ -98,6 +105,8 @@ export function useTypedKeys(deps: TypedKeysDeps) {
     if (key !== "\u001b\u001b") return press(key);
     // two Escapes as two key presses: written together they read as one Alt+Escape
     press("\u001b");
+    // nothing typed is sent after a disconnect: the second Escape goes out only on the connection, role and
+    // pane readiness the first one had (the socket object itself survives a reconnect)
     const lease = paneId === null ? null : socket.inputLease(paneId);
     dropSecondEscape();
     secondEscapeRef.current = setTimeout(() => {

@@ -8,6 +8,13 @@ import { installHintKind, readHintDismissed, writeHintDismissed } from "../lib/i
 import { useT } from "../lib/i18n.ts";
 import { inNativeApp } from "../lib/nativeApp.ts";
 
+/**
+ * One line on a phone's browser tab: add Ovis to the home screen, where alerts reach it (rules in
+ * lib/installHint.ts). iPhone has no install prompt, so it names the steps with Safari's share
+ * glyph; Android installs in one tap when Chrome offers its prompt, and names the menu item when
+ * not. Like the Claude and ChatGPT web apps' install banners it is a single dismissible line,
+ * not a dialog, and it never comes back once closed or installed.
+ */
 export function InstallHint() {
   const t = useT();
   const prompt = useInstallPrompt();

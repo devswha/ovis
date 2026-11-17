@@ -68,6 +68,8 @@ export function useTerminalSends(deps: TerminalSendsDeps) {
     const socket = socketRef.current;
     const pane = paneRef.current;
     if (!socket || !pane || draft.text.length === 0 || !socket.connected || secretRef.current !== null || heldRef.current) return;
+    // a frame the socket refuses (input not ready yet) keeps the draft, on screen and on disk, for
+    // another try or Discard; it is never queued
     cancelTouchRef.current();
     if (socket.sendInput(pane, draft.text)) setDraft(EMPTY_DRAFT);
   }, [draft]);
@@ -76,6 +78,10 @@ export function useTerminalSends(deps: TerminalSendsDeps) {
     setDraft(EMPTY_DRAFT);
   }, []);
 
+  // the composer goes straight to the socket, not through onData: an armed key-bar Ctrl
+  // must not turn a one-letter message into a control key. Offline it sends nothing and
+  // keeps its text (never-queue); a message the server could not deliver keeps it too,
+  // with the reason. Bracketed-paste wrapping follows the pane program's mode.
   const submitComposerMessage = useCallback((text: string, delivery: SubmitDelivery = "immediate", clearDraft?: string, sendAnyway = false, resendId?: string, generation?: number, agentOnly = false, holdOnly = false): Promise<SubmitResult> | null => {
     const term = termRef.current;
     const socket = socketRef.current;

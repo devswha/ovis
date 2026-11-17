@@ -125,7 +125,7 @@ export function useSignedInUsage(ready: readonly string[], read: (refresh: boole
       if (agents.length > 0 && !shown.current) { shown.current = true; turnOn(); }
     },
     (run, ms) => { const timer = window.setTimeout(run, ms); return () => window.clearTimeout(timer); },
-  ), [readyKey, enabled]);
+  ), [readyKey, enabled]); // eslint-disable-line react-hooks/exhaustive-deps
   return signedIn;
 }
 

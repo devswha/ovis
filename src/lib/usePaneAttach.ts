@@ -73,6 +73,8 @@ export interface PaneAttachDeps {
 export function usePaneAttach(deps: PaneAttachDeps): void {
   const { activeRef, autoSelected, cached, watched, coarseRef, coveredRef, deferAttachRef, fontSettledRef, draftPaneRef, findOpenRef, fitRef, fittedRef, fixedGridRef, frameGateRef, hyperlinksRef, hostRef, machineId, mirrored, modifyOtherKeysRef, observeRef, paneId, pending, presented, presentationRef, releaseRef, releasedRef, retireOutputRef, secretRef, setDraft, setComposing, setEnded, setHeld, setInputError, setInputReady, setOutputError, setOutputReady, setReleased, setSecret, setUnsupported, setWatching, sharedGridRef, socketRef, stalledRef, terminalId, termRef, chatViewRef, cancelLeaveRef, cachedRef, watchingRef, keyboardHoldsRef, followRef, followCursorRef, leaveRef, shownRef, typeAheadRef } = deps;
 
+  // Reset on a pane or terminal replacement: a herdr restart can keep the pane ID.
+  // Old composition timers must never see the new terminal.
   useLayoutEffect(() => {
     const socket = socketRef.current;
     const term = termRef.current;
@@ -98,6 +100,7 @@ export function usePaneAttach(deps: PaneAttachDeps): void {
       saved = paneId ? restoreDraft(paneLifetimes.paneStorage.getItem(`ovis:terminal-draft:${paneStorageId(machineId, paneId)}`), Date.now()) : EMPTY_DRAFT;
     } catch {}
     setDraft(holdBefore(paneId ? socket.takeUnconfirmedInput(paneId) : [], saved));
+    // and a key sent to it as a password that such a connection never confirmed: said, as nothing of it is kept
     if (paneId && socket.takeUnconfirmedSecrets(paneId) > 0) setInputError(t("A key may not have reached the terminal: the connection ended before it was confirmed."));
     draftPaneRef.current = paneId;
     term.reset();
@@ -121,6 +124,7 @@ export function usePaneAttach(deps: PaneAttachDeps): void {
       return leavePane;
     }
     if (deferAttachRef.current(paneId)) return leavePane;
+    // the hidden tabs' views start or stop once this pane drew: herdr serves its attach first (paneTerminalShared.ts)
     if (presented) holdViews();
     const attach = (): void => {
       const held = keyboardHoldsRef.current(true);
@@ -135,6 +139,8 @@ export function usePaneAttach(deps: PaneAttachDeps): void {
       typeAheadRef.current(paneId);
       socket.attach(paneId, term.cols, term.rows, chatViewRef.current || away || !shownRef.current || followRef.current || coveredRef.current || held);
       if (away) leaveRef.current();
+      // the chat lens covers the grid and its composer takes the keyboard: focusing the hidden
+      // grid sent the keys straight to the pane, and showed a phone's IME text mid-screen
       if (activeRef.current && !chatViewRef.current && !autoSelected && !coarseRef.current && !modalOpen() && !findOpenRef.current && !typeAheadFocused()) term.focus();
     };
     const font = fontSettledRef.current;

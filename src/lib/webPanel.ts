@@ -40,6 +40,11 @@ export function panelUrl(uri: string, app: AppLocation): string | null {
 
 const LOCAL_PAGE = /^(?:(https?):\/\/)?(localhost|127(?:\.\d{1,3}){3}|\[::1\])?:(\d{1,5})([/?#]\S*)?$/i;
 
+/**
+ * The page a palette query names on this PC, or null for any other query. Only a loopback name
+ * with a port is read, so a search is never taken for an address. Without a scheme it takes the
+ * app's own: an https app frames only https pages, such as a port `tailscale serve` fronts.
+ */
 export function localPageAddress(query: string, app: Pick<AppLocation, "protocol">): string | null {
   const match = LOCAL_PAGE.exec(query.trim());
   if (match === null) return null;

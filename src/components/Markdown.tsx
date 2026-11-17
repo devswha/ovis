@@ -114,6 +114,11 @@ function useThemeRevision(): number {
   return revision;
 }
 
+/**
+ * A ```svg fence drawn as the figure it is (lib/svgFigure.ts), as an image so its markup never
+ * joins the page. Until it is a whole figure (a reply still streaming) or when it does not draw,
+ * it shows as the code block it is.
+ */
 function SvgFigure({ value }: { value: string }) {
   const t = useT();
   const revision = useThemeRevision();

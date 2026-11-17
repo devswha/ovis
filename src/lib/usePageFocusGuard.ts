@@ -4,6 +4,16 @@
  * it (`inert`, `tabindex`, a permissions policy), the page around a frame of another origin sees neither a hover
  * nor a press inside it, and it cannot take the focus back while the frame is there. Only taking the frame away
  * gives the keys back.
+ *
+ * So the person puts the focus in the page, and nothing else does:
+ * - by asking for its scripts (the press that started them), until the focus is in the app again;
+ * - by a press on the page. A press inside the frame would not be seen here, so while `shield` is set the
+ *   viewer lets the frame take no pointer and takes the press itself (`enter`). That press only puts the
+ *   focus in the page; the next one is the page's;
+ * - by Tab from the control before it. Only a Tab the app left to the browser counts (one the terminal took for
+ *   itself moves no focus), only until the focus lands in the app, and only once.
+ * A frame that has the focus otherwise took it: `onGrab` must take its scripts away at once (the viewer draws the
+ * page without them again), and the focus goes back to where it was.
  */
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 

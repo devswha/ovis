@@ -78,6 +78,7 @@ import { useTerminalImages } from "../lib/terminalImages.ts";
 import { mountRole, paneObserving } from "../lib/paneObserving.ts";
 import { typeAheadFocused } from "../lib/typeAhead.ts";
 
+/** How long the key bar says where Paste goes while the input line is put away: two lines to read. */
 const PASTE_GUIDANCE_MS = 6000;
 
 export interface PaneTerminalProps {
@@ -85,8 +86,13 @@ export interface PaneTerminalProps {
   finishEpoch?: string;
   finishId?: number;
   paneId: string | null;
+  /** A restored pane keeps its ID but gets a new terminal after herdr restarts. */
   terminalId?: string | null;
   mirrored?: boolean | null;
+  /**
+   * herdr's reason it could not restore the selected pane (0.9.3+): the pane has no
+   * terminal to attach, so App passes a null paneId and the placeholder says why.
+   */
   restoreError?: string | null;
   title?: string | null;
   agent?: string | null;
@@ -118,6 +124,7 @@ export interface PaneTerminalProps {
   colors: TerminalColors;
   role?: ClientRole;
   onRoleAck?: (mode: ClientRole) => void;
+  /** this device's pairing may only watch (App's auth): the prompt card answers nothing. Not the connection's role, which the user toggles */
   deviceWatching?: boolean;
   onConnectionChange?: (connected: boolean, connectedBefore: boolean) => void;
   onServerMessage?: (message: ServerMessage) => void;
@@ -284,6 +291,8 @@ export function PaneTerminal({
   const composingRef = useRef(false);
   const [composing, setComposingState] = useState(false);
   const setComposing = useCallback((active: boolean) => { composingRef.current = active; setComposingState(active); }, []);
+  // a composition in the input line keeps the key bar live but blocks the switch to direct typing:
+  // unmounting the line mid-composition could drop the word or replay it into the pane
   const lineComposingRef = useRef(false);
   const [lineComposing, setLineComposingState] = useState(false);
   const setLineComposing = useCallback((active: boolean) => { lineComposingRef.current = active; setLineComposingState(active); }, []);
@@ -327,6 +336,8 @@ export function PaneTerminal({
   const releasedRef = useRef(false);
   const [released, setReleasedState] = useState(false);
   const setReleased = useCallback((next: boolean) => { cancelTouchRef.current(); releasedRef.current = next; setReleasedState(next); }, []);
+  // released, the tab still shows the pane read-only (the server's "watch", herdr's observer), which
+  // leaves the pane at the size herdr's own window gives it; false on a server without it: paused
   const watchingRef = useRef(false);
   const [watching, setWatchingState] = useState(false);
   const setWatching = useCallback((next: boolean) => { watchingRef.current = next; setWatchingState(next); }, []);
@@ -355,6 +366,7 @@ export function PaneTerminal({
     return () => { live = false; };
   }, [role]);
   const viewOnly = observing || role === "observe" || authWatching;
+  // `unchecked`: the PC types the answer without reading its screen first (useTerminalMount showSecret)
   const [secret, setSecret] = useState<{ pane: string; prompt: string; unchecked: boolean } | null>(null);
   const secretRef = useRef<string | null>(null);
   const secretActive = secret !== null && secret.pane === paneId;
@@ -441,6 +453,8 @@ export function PaneTerminal({
     const lines = readScreenLines(term.buffer.active, term.rows);
     return lines !== null && claudeMainAtRest(inputRowNow(), lines);
   }, [inputRowNow]);
+  // The row as the send's receipt came, before the peek's own resize: the watch starts from it, since
+  // the first frame for a new grid may be herdr's reflow of the old screen (FrameGate reflowing)
   const receiptRowRef = useRef<{ pane: string; text: string; state: InputRowState } | null>(null);
   const showSentCommand = useCallback((pane: string, text: string, known: readonly string[] | null, seen: boolean) => {
     const command = typedTerminalCommand(paneCommandsNow(pane, machineIdRef.current, agentRef.current) ?? commandsRef.current, text);
@@ -464,6 +478,9 @@ export function PaneTerminal({
     setDraftState((previous) => ({ owner, value: typeof value === "function" ? value(previous.owner === owner ? previous.value : EMPTY_DRAFT) : value }));
   }, [machineId]);
   const draftPaneRef = useRef<string | null>(null);
+  // The pane whose held draft takes all later typing until Send or Discard: keys sent beside it would
+  // reach the pty without the start the draft holds (`echo ` held, `rm -rf build` and Enter typed).
+  // Set here on each render, and at once by onData when it holds a key, before that render comes.
   const draftHeldForRef = useRef<string | null>(null);
   draftHeldForRef.current = paneId !== null && draftState.owner === paneStorageId(machineId, paneId) && !draftIsEmpty(draft) ? paneId : null;
   // Set only while the key bar's own moves take the focus: the keyboard control's show/hide and the
@@ -517,8 +534,11 @@ export function PaneTerminal({
   useEffect(() => {
     if (!paneId || draftState.owner !== paneStorageId(machineId, paneId)) return;
     const key = `ovis:terminal-draft:${draftState.owner}`;
+    // held text that looks like a key stays on screen only: never written down, as the input line's (#2523)
     try { if (draftIsEmpty(draft) || looksLikeKey(draft.text)) paneLifetimes.paneStorage.removeItem(key); else paneLifetimes.paneStorage.setItem(key, JSON.stringify({ ...draft, at: Date.now() })); } catch {}
   }, [draftState, paneId, machineId, draft]);
+  // Another herdr took the PC's pane IDs (lib/paneLifetime.ts): the input held for the last one's
+  // pane is not this one's. Read again before paint, without the reattach a pane change brings.
   const lifetime = useSyncExternalStore(paneLifetimes.subscribe, () => paneLifetimes.generation(machineId));
   const lifetimeRef = useRef(lifetime);
   useLayoutEffect(() => {
@@ -559,6 +579,8 @@ export function PaneTerminal({
   }, [paneId, queueOwner, submitRetention]);
   const sendingRef = useRef(false);
   const [queueSending, setQueueSending] = useState<string | null>(null);
+  // a refused Send now's note outlives this mount: a pane left for another workspace unmounts, and
+  // the note must still be there when the user comes back (it is never a retry, only the words)
   const [queueError, setQueueErrorState] = useState<{ owner: string; id: string; text: string } | null>(() => (queueOwner === null ? null : heldRowNotes.get(queueOwner) ?? null));
   const setQueueError = useCallback((note: { owner: string; id: string; text: string } | null): void => {
     if (note) heldRowNotes.set(note.owner, note);
@@ -842,6 +864,8 @@ export function PaneTerminal({
     if (!pane || !socket?.connected || !activeRef.current || !presentedRef.current || chatViewRef.current || modalOpen()
         || observeRef.current || heldRef.current || endedRef.current || releasedRef.current || secretRef.current !== null
         || composingRef.current || compositionCommitPendingRef.current) return;
+    // An explicit page action follows the program's own history when herdr has none.
+    // The live input lease refuses an unready pane and never queues this key for later.
     cancelTouchRef.current();
     socket.sendInput(pane, direction < 0 ? "\x1b[5~" : "\x1b[6~");
   }, []);
@@ -1111,6 +1135,8 @@ export function PaneTerminal({
           </RenderBoundary>
         )}
       </div>
+      {/* the queue is the composer's, so it shows under the chat lens only: there alone is an open
+          Codex question known (heldByOpenQueue), and Send now must not type into one */}
       {presented && paneId !== null && chatMounted && !viewOnly && !ended && queueOwner !== null && queued.length > 0 && (
         <section className={`composer-queue${readyForQueue ? " is-ready" : ""}${heldHidden ? " is-folded" : ""}`} aria-label={t("Queued messages")} inert={peek !== null || undefined}>
           {(() => {
@@ -1229,6 +1255,12 @@ export function PaneTerminal({
           onUploadImage={uploadImage}
         />
       )}
+      {/* In the terminal lens the input line and the masked input float over the grid's last rows
+          from a slot that keeps one row's height in flow: a line that grows while it is typed, a
+          note under it or the masked input taking its place would otherwise take rows from the
+          grid, and each change of its height resizes the shared pty. The masked input sits in this
+          slot in the chat lens too (a box-less slot there, TerminalInput.css), so switching lenses
+          keeps it mounted: a remount would drop what was typed and a send still on its way */}
       {((!chatView && lineSlot) || secretInput) && <div ref={setInputSlot} className={`terminal-input-slot${!chatView && lineSlot ? "" : " is-empty"}${lineLast && lineAtScreenBottom ? " is-at-screen-bottom" : ""}`}>
         {secretInput ?? (!chatView && lineSlot && !secretActive && <TerminalInput key={paneId} ref={lineRef} active={active} owner={paneStorageId(machineId, paneId)} onComposing={setLineComposing} connected={connected && !held} onSend={sendTerminalLine} onEnter={pressEnter} onInsert={insertTerminalText} pasteTarget={pasteTarget} onPasting={setLinePasting} uploadFile={uploadImage} attach={settings.terminalAttachButton} onFocus={reassertGrid} keyboardHeld={keyboardHeld}
           {...(foldKeys ? { keyControls: <LineKeysButton open={keysOpen} onToggle={() => setKeysOpen((open) => !open)} /> } : {})} />)}

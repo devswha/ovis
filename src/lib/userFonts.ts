@@ -4,6 +4,7 @@ import { faceArrived } from "./fontFaces.ts";
 import { sanitizeFontFamily } from "./fontFamily.ts";
 import { serverIdOfPath, serverScopePath } from "./shellMode.ts";
 
+// public/sw.js's FILES, the one cache its keepShell never retires: a cache of another name is deleted on the next open
 const CACHE = "ovis-files-v1";
 const LIST_TIMEOUT_MS = 10_000;
 const FILE_TIMEOUT_MS = 120_000;

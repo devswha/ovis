@@ -43,6 +43,9 @@
   min-height: 0;
   width: 100%;
   overflow: hidden;
+  /* a drag here is ours (PaneTerminal turns it into wheel events for herdr): without
+     this the browser takes the gesture after its first move and scrolls the page or
+     the composer instead, or starts pull-to-refresh */
   touch-action: none;
   overscroll-behavior: contain;
 }

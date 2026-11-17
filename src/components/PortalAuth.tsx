@@ -11,6 +11,11 @@ import { useT } from "../lib/i18n.ts";
 import { GOOGLE_ISSUER, methodName, redirectAddress, withEntry, type AuthDraft } from "../lib/portalAuth.ts";
 import { Segmented } from "./SettingsControls.tsx";
 
+/**
+ * Who may open the address, chosen before Start: the app's own token or a paired device as always,
+ * or Portal's own sign-in in front of everything. A choice is offered only when the `portal` on this
+ * PC lists its flags, and says plainly when it does not.
+ */
 export function PortalAuthChoice({ status, draft, disabled, onChange }: { status: PortalStatus; draft: AuthDraft; disabled: boolean; onChange: (draft: AuthDraft) => void }) {
   const t = useT();
   const group = useId();

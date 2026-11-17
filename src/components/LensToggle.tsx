@@ -16,6 +16,7 @@ export function LensToggle({ view, peek, terminalAttach, title, onToggle, thread
   const toTerminal = shown === "chat";
   const label = thread ? t(toTerminal ? "Show the terminal" : "Show the chat") : t(toTerminal ? "Switch to terminal" : "Switch to chat");
   const TerminalGlyph = thread ? Monitor : SquareTerminal;
+  // a Windows PC's live terminal is not there yet: the button says so, as the wide switch's pill does
   const soon = toTerminal && !terminalAttach;
   return (
     <button type="button" className={`icon-button${round ? " inbox-round" : thread ? "" : " is-outlined"} lens-toggle`} data-view={shown}

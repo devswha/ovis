@@ -130,7 +130,9 @@ export function useSplitLayout({ machines, split, wideScreen, selectedPaneId, se
   markMove: (frame: HTMLElement | null, side?: PaneDirection | null) => void;
   swapPanes: (dragged: SplitTarget, targetPaneId: string) => void;
   movePanes: (dragged: SplitTarget, targetPaneId: string, side: PaneDirection) => void;
+  /** a PC whose panes cannot be arranged (herdr-core: the Herdr app owns its splits): its pane docks in a slot instead */
   arrangeRefused: (machineId: string) => boolean;
+  /** herdr moved a pane under a new ID: what is kept under the old one, and every view of it, goes to the new one (App's followPaneMove) */
   followPaneMove: (machineId: string, from: string, to: string) => void;
   threadDrawn: boolean;
 }) {
@@ -189,6 +191,8 @@ export function useSplitLayout({ machines, split, wideScreen, selectedPaneId, se
       const panes = machine.snapshot.panes;
       if (panes.some((pane) => pane.pane_id === target.paneId) || moving(target)) continue;
       const seen = slotTabsRef.current.get(paneStorageId(target.machineId, target.paneId));
+      // herdr moved the pane under a new ID (pane.move keeps its terminal): a roster read after the move can come
+      // before the server's pane-moved, which then finds no slot showing the old ID. The slot follows it here
       const movedTo = seen?.terminal_id ? panes.find((pane) => pane.terminal_id === seen.terminal_id) : undefined;
       if (movedTo) { moved.push([target, movedTo.pane_id]); continue; }
       const tabId = seen?.tab_id ?? null;
@@ -303,6 +307,7 @@ export function useSplitLayout({ machines, split, wideScreen, selectedPaneId, se
     const slot = head?.closest<HTMLElement>(".pane-slot");
     const paneId = head?.parentElement?.getAttribute("data-layout-pane");
     if (!dragged || !head || !slot || !paneId || paneId === dragged.paneId || slot.dataset.machine !== dragged.machineId) return null;
+    // the dragged pane drawn in the same canvas is in the same tab, the only place herdr swaps in
     return slot.querySelector(`.pane-frame:not(.is-hidden)[data-layout-pane="${CSS.escape(dragged.paneId)}"]`) ? head : null;
   };
   const besideAt = (target: EventTarget | null, x: number, y: number): { frame: HTMLElement; paneId: string; side: PaneDirection } | "none" | null => {

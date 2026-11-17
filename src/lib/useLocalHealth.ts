@@ -23,6 +23,8 @@ export function useLocalHealth() {
     setLocalHealth((previous) => sameData(previous, { confirmed, failures }) ? previous : { confirmed, failures });
   }, []);
 
+  // a runtime switch, from this page or any other device: snapshots of a runtime this page left may come back
+  // (herdr's TUI names no runtime in its health: it is herdr's)
   const localRuntime = health?.herdr ? health.herdr.runtime ?? "herdr" : null;
   const seenRuntime = useRef<string | null>(null);
   useEffect(() => {

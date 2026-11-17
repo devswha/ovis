@@ -9,6 +9,11 @@ import { copyText } from "../lib/clipboard.ts";
 import { useT } from "../lib/i18n.ts";
 import { Segmented, SettingsSelect } from "./SettingsControls.tsx";
 
+/**
+ * Settings → Phone & devices → Portal → Invite someone: a private link for a person, while Portal
+ * runs with the private-link sign-in. The link is a bearer secret the server keeps nowhere: it is
+ * shown here once, and gone when this is dismissed or Settings closes.
+ */
 export function PortalInvite({ auth }: { auth: PortalAuth }) {
   const t = useT();
   const id = useId();

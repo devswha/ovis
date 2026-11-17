@@ -104,6 +104,7 @@
   height: var(--icon-size);
 }
 
+/* Paste reads the clipboard: a stray tap on a neighbour is not one, so it keeps 8px clear of them */
 .key[data-key="paste"] {
   margin-inline: var(--space-1);
 }
