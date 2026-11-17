@@ -1039,9 +1039,9 @@ describe("going back", () => {
   });
 
   test("a proof is handed the rows that the member is taking entries into: a later entry of the same answer, or of the same replay, writes its row into them, so a proof must not keep that state", async () => {
-    // Two entries by a key that nobody added, each of which a kind's rule is asked for, and before each of them an entry that adds a key.
+    // Two entries by a key that nobody added, each of which a kind's rule is asked for, and before each of them an entry that adds a key. The first of all is of level 2, so the list needs that level, and the two carry v 2.
     const entries = await row(addPhone,
-      [owner, { kind: "device", adds: [watch, "bound"] }], [stranger, { kind: "later_login" }], [owner, { kind: "device", adds: [late, "bound"] }], [stranger, { kind: "later_login" }]);
+      [owner, { kind: "device", v: 2, adds: [watch, "bound"] }], [stranger, { kind: "later_login", v: 2 }], [owner, { kind: "device", adds: [late, "bound"] }], [stranger, { kind: "later_login", v: 2 }]);
     for (const through of ["an answer", "a replay"] as const) {
       const handed: SignersState[] = [];
       const keeps: KeyProof = (_held, state) => {
@@ -1234,15 +1234,19 @@ describe("what a caller hands in is taken once, when it is handed over", () => {
     const shownA = answer(addInvite, more);
     const shownB = answer(at(others, 4), others.slice(5));
     // A member of level 2, and a key that a later kind lets in on a proof: the proof reads what it is handed, and what it answers is handed over too.
-    const above = await memberOf(base, 2);
-    const enters = await on(addInvite, login, { kind: "later_login" });
-    const byLogin = await on(enters, login, { kind: "device", adds: [late, "bound"] });
-    const entersHeld = at((await replay([...base, enters], 2)).took, 4).held;
-    const lets = (handed: Handed): KeyProof => (held, state) =>
-      held.hash === enters.hash && held.body.signer === login.key && state.level === 2 && state.footing.seq === addInvite.seq
-        ? handed<NonNullable<ReturnType<KeyProof>>>({ key: login.key, power: "full" }, { key: stranger.key, power: "bound" }) : null;
-    // A member that is behind, before and after it holds a key out: an entry that adds that key is read on the one state and passed over on the other.
+    // The owner's entry of level 2 stands before the key's entry, which carries v 2: the list needs that level, so the proof is asked.
     const rises = await on(addInvite, owner, { kind: "later", v: 2 });
+    const above = await memberOf([...base, rises], 2);
+    const enters = await on(rises, login, { kind: "later_login", v: 2 });
+    const byLogin = await on(enters, login, { kind: "device", adds: [late, "bound"] });
+    const entersHeld = at((await replay([...base, rises, enters], 2)).took, 5).held;
+    let heard = 0;
+    const lets = (handed: Handed): KeyProof => (held, state) => {
+      if (!(held.hash === enters.hash && held.body.signer === login.key && state.level === 2 && state.footing.seq === rises.seq)) return null;
+      heard++;
+      return handed<NonNullable<ReturnType<KeyProof>>>({ key: login.key, power: "full" }, { key: stranger.key, power: "bound" });
+    };
+    // A member that is behind, before and after it holds a key out: an entry that adds that key is read on the one state and passed over on the other.
     const goes = await on(rises, owner, { ends: late });
     const comes = await on(goes, owner, { kind: "device", adds: [late, "full"] });
     const behindYet = await stateOf([...base, rises]);
@@ -1265,10 +1269,10 @@ describe("what a caller hands in is taken once, when it is handed over", () => {
       ["signingPlace", false, (handed) => signingPlace(handed(a, b), handed(place(addInvite), place(at(others, 4))))],
       ["readSignersState", false, (handed) => readSignersState(handed(saved(a.state), saved(b.state)))],
       ["shownEntries", true, (handed) => shownEntries(handed(a, b), handed(shownA, shownB))],
-      ["shownEntries, with a proof", true, (handed) => shownEntries(handed(above, b), handed(answer(addInvite, [enters, byLogin]), shownB), lets(handed))],
+      ["shownEntries, with a proof", true, (handed) => shownEntries(handed(above, b), handed(answer(rises, [enters, byLogin]), shownB), lets(handed))],
       ["shownEntries, shown its own entry again", false, (handed) => shownEntries(handed(a, b), handed(answer(addWatch, [addInvite]), shownB))],
       ["replayEntries", true, (handed) => replayEntries(handed(texts([...base, ...more]), texts(others)), 1, handed({ given: g.hash }, { given: otherZero.hash }))],
-      ["replayEntries, with a proof", true, (handed) => replayEntries(handed(texts([...base, enters, byLogin]), texts(others)), 2, handed({ proof: lets(handed) }, { proof: () => null }))],
+      ["replayEntries, with a proof", true, (handed) => replayEntries(handed(texts([...base, rises, enters, byLogin]), texts(others)), 2, handed({ proof: lets(handed) }, { proof: () => null }))],
       ["replayEntries, of what is no entry", false, (handed) => replayEntries(handed(["not an entry"], texts(others)), 1, handed({}, { given: otherZero.hash }))],
       ["entryHolds", true, (handed) => entryHolds(handed(entry(addPhone), entry(at(others, 2))), handed(at(tookA, 0).held, at(tookB, 1).held))],
       ["entryHolds, of an entry out of its place", false, (handed) => entryHolds(handed(entry(addWatch), entry(at(others, 2))), handed(at(tookA, 0).held, at(tookB, 1).held))],
@@ -1295,6 +1299,8 @@ describe("what a caller hands in is taken once, when it is handed over", () => {
       if (!isDeepStrictEqual(pending, plain)) differs.push(`${name}, while a signature is checked`);
     }
     expect({ blind, differs }).toEqual({ blind: [], differs: [] });
+    // Each of the three calls that hand over a proof heard it in every run on what is read first: twice in the call that checks no signature, three times in each of the two that do. None of them passes without asking it.
+    expect(heard).toBe(8);
   });
 });
 
@@ -1378,6 +1384,24 @@ describe("a member of a higher level, and a key that a later kind lets in on a p
     const never = await row(addInvite, [owner, { ends: late }], [owner, { kind: "device", adds: [late, "full"] }]);
     const plain = await stateOf([...base, ...never]);
     expect([(await outcomesOf([...base, ...never])).slice(4), signerPower(plain, late.key), Object.keys(plain)]).toEqual([[passedOver("already_out"), reads()], "full", ["level", "list", "footing", "needs", "behind", "signers"]]);
+  });
+
+  test("a proof is asked only for an entry of a level above 1 that the list already needs: where no signer signed an entry of that level before it, or it carries v 1, no member hears a proof, so the older member, which is not behind there, takes nothing that the other passes over", async () => {
+    // The login key's entry stands before any entry of level 2 that a signer signed, or it carries v 1. The owner then ends the key and adds it, and the key signs.
+    for (const v of [2, 1]) {
+      const early = await on(addPhone, login, { kind: "later_login", v });
+      const tail = await row(early, [owner, { ends: login }], [owner, { kind: "device", adds: [login, "full"] }], [login, { ends: owner }]);
+      const links = [...root, early, ...tail];
+      const proof = letsIn("full", login, early);
+      expect([v, isBehind(await stateOf(links, 1, proof))]).toEqual([v, false]);
+      // No member hears the proof: the key's entry is loose for both, the ends names no signer, and the adds makes the key a signer for both.
+      for (const level of [1, 2]) {
+        expect([v, level, (await outcomesOf(links, level, proof)).slice(2)]).toEqual([v, level, [passedOver("signer_unknown"), passedOver("already_out"), reads(), reads()]]);
+        expect([v, level, who(await stateOf(links, level, proof))]).toEqual([v, level, { phone: "full", login: "full" }]);
+      }
+    }
+    // Once a signer has signed an entry of level 2, the list needs that level and the key's entry is heard: the older member is behind before the key appears.
+    expect([(await stateOf([...root, turnsOn], 1)).behind, (await outcomesOf([...root, turnsOn, enters], 2, letsIn("full")))[3]]).toEqual([turnsOn.seq, reads(null)]);
   });
 
   test("what a login key signed is not loose for it, and it never drops it; the older member drops it, and takes it again when it is shown it", async () => {
@@ -1520,8 +1544,10 @@ describe("a member of a higher level, and a key that a later kind lets in on a p
 
   test("a proof is handed bytes of its own: what it does to them, when it is asked or later, changes no entry that comes back and no entry it was judged from", async () => {
     const token = Uint8Array.from([7, 1, 7, 2, 7, 3]);
-    const first = await on(addInvite, login, { kind: "later_login", change: { own: [{ name: "token", value: token }] } });
-    const second = await on(first, stranger, { kind: "later_login", change: { own: [{ name: "token", value: token }] } });
+    // The list needs level 2 before the two entries, and they carry v 2: a proof is asked for both.
+    const rises = await on(addInvite, owner, { kind: "later", v: 2 });
+    const first = await on(rises, login, { kind: "later_login", v: 2, change: { own: [{ name: "token", value: token }] } });
+    const second = await on(first, stranger, { kind: "later_login", v: 2, change: { own: [{ name: "token", value: token }] } });
     /** A proof that lets the login key in, and that writes over every list of bytes of every entry it was ever handed, each time it is asked. */
     const handed: HeldEntry[] = [];
     const spoils: KeyProof = (held) => {
@@ -1529,21 +1555,21 @@ describe("a member of a higher level, and a key that a later kind lets in on a p
       for (const { entry, body } of handed) for (const bytes of [entry.body, entry.signature, ...body.own.map((field) => field.value)]) bytes.fill(0);
       return held.hash === first.hash ? { key: login.key, power: "full" } : null;
     };
-    const above = await memberOf(base, 2);
-    const shown = await shownEntries(above, answer(addInvite, [first, second]), spoils);
-    const replayed = await replayEntries(texts([...base, first, second]), 2, { proof: spoils });
-    for (const took of [shown.took, replayed.took.slice(base.length)]) {
+    const above = await memberOf([...base, rises], 2);
+    const shown = await shownEntries(above, answer(rises, [first, second]), spoils);
+    const replayed = await replayEntries(texts([...base, rises, first, second]), 2, { proof: spoils });
+    for (const took of [shown.took, replayed.took.slice(base.length + 1)]) {
       expect(took.map(({ held, outcome }) => [outcome.outcome, entryToText(held.entry), entryHash(held.entry.body) === held.hash, held.body.own.map((field) => [field.name, [...field.value]])]))
         .toEqual([["reads", first.text, true, [["token", [...token]]]], ["passed_over", second.text, true, [["token", [...token]]]]]);
     }
     expect(handed.length).toBe(4);
     // One entry judged: the entry that the caller handed in is as it was.
-    const { held } = at((await replay([...base, first], 2)).took, base.length);
+    const { held } = at((await replay([...base, rises, first], 2)).took, base.length + 1);
     judgeEntry(above.state, held, spoils);
     expect([handed.length, entryToText(held.entry), [...(at(held.body.own, 0).value)]]).toEqual([5, first.text, [...token]]);
   });
 
-  test("the proof is asked only above level 1 and not while the member is behind, for an entry it reads whose signer has no row and that carries no adds and no ends", async () => {
+  test("the proof is asked only for an entry of a level above 1 that the list already needs, and not while the member is behind: for one it reads, whose signer has no row and that carries no adds and no ends", async () => {
     const asked: string[] = [];
     const never: KeyProof = (held) => {
       asked.push(held.hash);
@@ -1553,12 +1579,17 @@ describe("a member of a higher level, and a key that a later kind lets in on a p
     const entries = await row(out,
       [login, { kind: "later_login", v: 2 }], [login, { kind: "later_login", v: 3 }], [login, { kind: "later_login", v: 2, adds: [late, "full"] }],
       [login, { kind: "later_login", v: 2, ends: owner }], [owner, { kind: "later_login", v: 2 }], [phone, { kind: "later_login", v: 2 }], [stranger, { kind: "later_login", v: 1 }],
-      [owner, { kind: "later", v: 3 }], [machine, { kind: "later_login", v: 2 }]);
+      [stranger, { kind: "later_login", v: 2 }], [owner, { kind: "later", v: 3 }], [machine, { kind: "later_login", v: 2 }]);
     const links = [...root, turnsOn, out, ...entries];
+    // The stranger's first entry carries v 1, which no kind that lets a key in carries: not asked. Its second carries v 2: asked.
     // The last but one is by a signer and above level 2: from there the member is behind. It lets nobody new in then, so it is not asked for the last, and a proof that would let its key in is not heard.
     const higher = await stateOf(links, 2, never);
-    expect([asked, higher.behind]).toEqual([[at(entries, 0).hash, at(entries, 6).hash], at(entries, 7).seq]);
-    expect(await outcomeOf(links, 2, letsIn("full", machine, at(entries, 8)))).toEqual(passedOver("signer_unknown"));
+    expect([asked, higher.behind]).toEqual([[at(entries, 0).hash, at(entries, 7).hash], at(entries, 8).seq]);
+    expect(await outcomeOf(links, 2, letsIn("full", machine, at(entries, 9)))).toEqual(passedOver("signer_unknown"));
+    asked.length = 0;
+    // A member of level 3 reads the login key's entry of level 3, but the list needs only level 2 there: not asked. After the owner's entry of level 3 it is not behind, and it is asked for the last.
+    const highest = await stateOf(links, 3, never);
+    expect([asked, highest.behind]).toEqual([[at(entries, 0).hash, at(entries, 7).hash, at(entries, 9).hash], null]);
     asked.length = 0;
     // Level 1 defines no kind that lets a key in: a member of level 1 is asked for none, also for an entry it reads.
     const lower = await stateOf(links, 1, never);
@@ -1726,15 +1757,15 @@ describe("replaying from entry 0", () => {
   });
 
   test("a replay's proof is read once: another put in its place while a signature is checked decides nothing", async () => {
-    const byLogin = await on(addPhone, login, { kind: "later_login" });
-    const list = texts([...root, byLogin]);
+    // The owner's entry of level 2, then the login key's entry of v 2: a proof is asked for it.
+    const list = texts([...root, turnsOn, enters]);
     const never: KeyProof = () => null;
     const unchanged = await replayEntries(list, 2, { proof: never });
     expect(last(unchanged.took).outcome).toEqual(passedOver("signer_unknown"));
-    expect(last((await replayEntries(list, 2, { proof: letsIn("full", login, byLogin) })).took).outcome).toEqual(reads(null));
+    expect(last((await replayEntries(list, 2, { proof: letsIn("full") })).took).outcome).toEqual(reads(null));
     // The runtime verifies entry 0, and the caller's options name a proof that lets the login key in before the runtime answers.
     const options = { proof: never };
-    const result = await whileVerifying(() => { options.proof = letsIn("full", login, byLogin); }, () => replayEntries(list, 2, options));
+    const result = await whileVerifying(() => { options.proof = letsIn("full"); }, () => replayEntries(list, 2, options));
     expect(result).toEqual(unchanged);
   });
 

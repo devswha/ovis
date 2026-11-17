@@ -64,7 +64,7 @@ export interface SignersState {
   readonly list: string;
   /** The last entry it holds that is not loose, entry 0 at the least: every entry up to it is part of the list for good. */
   readonly footing: ListPlace;
-  /** What the list needs: the highest `v` among its entries that are not passed over and that a `full` signer signed. */
+  /** What the list needs: the highest `v` among its entries that are not passed over and that a `full` signer signed. A kind lets a key in on a proof only at a level that the list already needs (KeyProof). */
   readonly needs: number;
   /** The place of the entry from which the member is behind, or null: it is behind exactly when its level is below `needs`. */
   readonly behind: number | null;
@@ -79,9 +79,11 @@ export interface SignersState {
    * the key it ends has no row, applied for a member that reads everything: if it did, that key
    * was ended there, and the key the entry adds was made a signer. The member holds out each of
    * the two that has no row: no `adds` gives it one after that (`key_reused`), and what it signs
-   * is loose. This is caution, not knowledge: what a signer that the member does not know did, it
-   * cannot know. When it catches up, after an update, it replays every entry it kept by its new
-   * level, and that replay says who may sign.
+   * is loose. The cost is a key that never was a signer and that a signer of power `full` ended all
+   * the same: the member holds it out too, and takes no `adds` of it until it replays. This is
+   * caution, not knowledge: what a signer that the member does not know did, it cannot know. When it
+   * catches up, after an update, it replays every entry it kept by its new level, and that replay
+   * says who may sign.
    */
   readonly out?: { readonly [key: string]: number };
 }
@@ -95,11 +97,14 @@ export interface ListMember {
 /**
  * For a member of a higher level: what the kind of an entry it reads lets in on a proof of its own,
  * as the key and the power that kind names, or null. Level 1 defines no such kind, so a member of
- * level 1 passes none, and is asked for none: a proof is asked only above level 1. A proof lets in
- * the signer of its own entry only, and only a key that was never made a signer in any way. So it
- * is asked, while the member is not behind (behind, it lets nobody new in), for an entry it reads
- * that carries no `adds` and no `ends` and whose signer has no row; it gets a copy of that entry
- * of its own, bytes and all, and the state the entry is judged on, to read while it is asked.
+ * level 1 passes none. A proof is asked only for an entry of a level above 1 that the list already
+ * needs: one whose `v` is above 1 and at most `needs`, so a signer of power `full` has signed an
+ * entry of that level before it. A member that cannot read the entry is then behind before the key
+ * appears: whoever does not hear a proof is behind. A proof lets in the signer of its own entry
+ * only, and only a key that was never made a signer in any way. So it is asked, while the member
+ * is not behind (behind, it lets nobody new in), for such an entry that the member reads, that
+ * carries no `adds` and no `ends` and whose signer has no row; it gets a copy of that entry of
+ * its own, bytes and all, and the state the entry is judged on, to read while it is asked.
  * Whatever it does to that copy, then or later, changes no entry that comes back. It must not keep
  * that state: inside one answer, or one replay, the rows are copied when an entry first writes one
  * and are written from then on, so the rows of the entries after this one may be written into the
@@ -324,8 +329,9 @@ interface Judged {
  * state and the entry are this file's own copies. It turns on no row but those the entry names
  * (its signer's, that of the key it adds, that of the key it ends), which it looks up before a
  * proof is asked, and on whether the member holds those two keys out; it writes nothing. A proof
- * is asked only above level 1 and not while the member is behind, is handed a copy of the entry
- * of its own (plainHeld), and what it answers is read once.
+ * is asked only for an entry of a level above 1 that the list already needs, and not while the
+ * member is behind; it is handed a copy of the entry of its own (plainHeld), and what it answers
+ * is read once.
  */
 function judge(state: SignersState, held: HeldEntry, proof: KeyProof | undefined): Judged {
   const { adds, ends, seq, signer, v } = held.body;
@@ -337,8 +343,8 @@ function judge(state: SignersState, held: HeldEntry, proof: KeyProof | undefined
   const reads = v <= level;
   if (power === null) {
     const passedOver: Judged = { outcome: { outcome: "passed_over", code: "signer_unknown", loose: true }, loose: true, needs, behind, rows: [], holds: [] };
-    // Nobody the member knows has vouched for it, unless a kind it reads lets this entry's own signer in on a proof, and only a key that has no row.
-    const asked = reads && level > 1 && behind === null && adds === undefined && ends === undefined && proof !== undefined && own === null ? proof(plainHeld(held), state) : null;
+    // Nobody the member knows has vouched for it, unless a kind it reads, of a level above 1 that the list already needs, lets this entry's own signer in on a proof, and only a key that has no row.
+    const asked = reads && v > 1 && v <= needs && behind === null && adds === undefined && ends === undefined && proof !== undefined && own === null ? proof(plainHeld(held), state) : null;
     if (asked === null) return passedOver;
     const { key, power: lets } = asked;
     if (key !== signer) return passedOver;
