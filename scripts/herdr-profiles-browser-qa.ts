@@ -14,7 +14,6 @@ const stateDir = mkdtempSync(join(tmpdir(), "herdr-profile-browser-"));
 const evidence = process.env.EVIDENCE_DIR;
 if (evidence) mkdirSync(evidence, { recursive: true });
 const workspace = await workspaceCreate({ label: "ovis-test-profile-inheritance", cwd: stateDir, focus: false });
-// Discovery must not connect. Explicit setup uses a closed loopback port, never a user’s machine.
 const profile: HerdrMachineProfile = { id: "browser-fixture", label: "Build machine", enabled: true, target: { destination: "127.0.0.1", port: 1, session: "project-agents" } };
 let profiles = [profile];
 const server = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", tailscaleOwner: null, herdrProfiles: async () => profiles });
@@ -32,7 +31,6 @@ try {
       let delaySetup = false;
       let releaseSetup: (() => void) | undefined;
       let cancelled = 0;
-      // The browser test stops at the installation approval: SSH behavior is tested separately.
       const job = () => ({ id: "qa-job", machine_id: submitted.at(-1)?.machine_id, phase: "approval", step: "Review the changes on this PC", challenge: null, installations: ["Install a web bridge"], error: null, ssh_output: null, target: submitted.at(-1) });
       await page.route("**/api/machines/setup", async (route) => {
         submitted.push(route.request().postDataJSON() as SetupRequest);
@@ -51,8 +49,6 @@ try {
         if (await toggle.getAttribute("aria-expanded") !== "true") await toggle.click();
       }
       await group.waitFor({ state: "attached" });
-      // Manage PC's menu (a popover, a sheet on a phone) keeps herdr's limits: it says where the rest is done, with
-      // no Rename… or Remove PC…
       if (!phone) await group.locator(".machine-header").hover();
       await group.getByRole("button", { name: "Manage Build machine" }).click();
       const menu = page.locator(".row-menu, .row-sheet");
@@ -68,7 +64,6 @@ try {
       await dialog.getByRole("button", { name: "Install and connect", exact: true }).waitFor();
       assert.equal(await dialog.getByLabel("SSH alias or user@address").count(), 0, "inherited setup requires no repeated address entry");
       assert.equal(submitted.length, 1);
-      // the catalog names an inherited PC: the dialog sends no name (a label longer than a PC name may be still connects)
       assert.deepEqual({ ...submitted[0], machine_id: "stable" }, { destination: "127.0.0.1", port: 1, session: "project-agents", machine_id: "stable" });
       assert.ok(submitted[0]?.machine_id);
       assert.equal(await dialog.evaluate((el) => el.scrollWidth <= el.clientWidth), true);
@@ -89,7 +84,6 @@ try {
       profiles = [{ ...profile, label: "Renamed machine", enabled: false }];
       const renamed = page.getByRole("region", { name: "PC Renamed machine", exact: true });
       await renamed.waitFor({ state: "attached", timeout: 12_000 });
-      // herdr's rename reaches the header, and its disable holds the menu's setup
       if (!phone) await renamed.locator(".machine-header").hover();
       await renamed.getByRole("button", { name: "Manage Renamed machine" }).click();
       const setup = menu.locator(".menu-item, .row-sheet-item").filter({ hasText: "Reconnect / setup" });

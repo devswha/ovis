@@ -7,28 +7,22 @@
  *   bun run scripts/generate-case-folding.ts                   # download the pinned CaseFolding.txt, write the table
  *   bun run scripts/generate-case-folding.ts --source <file>   # read a local copy of that file instead
  *   bun run scripts/generate-case-folding.ts --check           # fail if the committed table is stale; never writes
- *
- * Raise UNICODE_VERSION to move to a newer Unicode, set SOURCE_SHA256 to the digest of that version's
- * CaseFolding.txt once its contents are reviewed, then run the script and commit both files.
  */
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 export const UNICODE_VERSION = "17.0.0";
-/** SHA-256 of the reviewed CaseFolding.txt of UNICODE_VERSION: a download or `--source` file with other bytes is refused (#2233) */
 const SOURCE_SHA256 = "ff8d8fefbf123574205085d6714c36149eb946d717a0c585c27f0f4ef58c4183";
 const SOURCE_URL = `https://www.unicode.org/Public/${UNICODE_VERSION}/ucd/CaseFolding.txt`;
 const OUTPUT = join(import.meta.dir, "..", "src", "lib", "caseFolding.generated.ts");
 
-/** The bytes of `name` as text, after checking they are the reviewed file's (`sha256`); throws on any other bytes, before reading them */
 export function pinnedText(bytes: Uint8Array, sha256: string, name: string): string {
   const digest = createHash("sha256").update(bytes).digest("hex");
   if (digest !== sha256) throw new Error(`${name} has SHA-256 ${digest}, not the pinned ${sha256}`);
   return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
 }
 
-/** `<code point>=<its folding>` entries, hex, from the C and F lines of the pinned CaseFolding.txt; throws on any other file */
 export function caseFoldingEntries(bytes: Uint8Array): string[] {
   const text = pinnedText(bytes, SOURCE_SHA256, "CaseFolding.txt");
   const version = /^# CaseFolding-(\d+\.\d+\.\d+)\.txt/m.exec(text)?.[1];
@@ -60,7 +54,6 @@ ${lines.join("\n")}
 `;
 }
 
-/** The source's bytes: the `--source` file, else the download from `url` */
 export async function sourceBytes(args: string[], url: string): Promise<Uint8Array> {
   const sourceAt = args.indexOf("--source");
   if (sourceAt >= 0) return readFileSync(args[sourceAt + 1]!);
@@ -69,7 +62,6 @@ export async function sourceBytes(args: string[], url: string): Promise<Uint8Arr
   return new Uint8Array(await response.arrayBuffer());
 }
 
-/** Writes `module` to `output`, or with `--check` fails when the committed file differs */
 export function writeOrCheck(args: string[], output: string, module: string, command: string): void {
   if (!args.includes("--check")) {
     writeFileSync(output, module);

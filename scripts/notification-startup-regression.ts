@@ -5,15 +5,12 @@ import type { Browser } from "playwright-core";
 
 type ProbeWindow = Window & { ready: boolean; messages: Array<{ type?: string; pane?: string; url?: string }>; selections: unknown[] };
 
-/** Real worker-to-App messages during startup; window creation/focus are controlled, not native notification activation. */
 export async function checkNotificationStartup(browser: Browser, upstream: string, olderPane: string, newerPane: string): Promise<void> {
   let releaseJS!: () => void;
   const jsGate = new Promise<void>((resolve) => { releaseJS = resolve; });
   let requestedJS!: () => void;
   const jsRequested = new Promise<void>((resolve) => { requestedJS = resolve; });
   const context = await browser.newContext({ locale: "en-US" });
-  // The shipped click handler uses a real WindowClient returned by the driver.
-  // Controlling open/focus avoids OS notification and transient-activation policy.
   const worker = `
     const nativeAdd = self.addEventListener.bind(self);
     let notificationClick;
@@ -69,7 +66,6 @@ export async function checkNotificationStartup(browser: Browser, upstream: strin
     if (url.pathname === "/sw.js") return new Response(worker, { headers: { "content-type": "application/javascript", "cache-control": "no-store" } });
     if (url.pathname === "/probe-controller") return new Response(controller, { headers: { "content-type": "text/html" } });
     if (url.pathname.startsWith("/assets/") && url.pathname.endsWith(".js")) { requestedJS(); await jsGate; }
-    // REST lists only the caller's owned panes; never attach to or input into PTYs.
     if (url.pathname === "/ws") return new Response("startup probe does not attach terminals", { status: 503 });
     const headers = new Headers(request.headers);
     headers.delete("host");
