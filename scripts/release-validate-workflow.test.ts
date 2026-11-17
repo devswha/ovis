@@ -125,11 +125,12 @@ describe("release-validate.yml", () => {
     const theirs = job(ciYml, "fast");
     const UPDATE = "release-validate.yml's `fast` job is ci.yml's Fast checks, which a release that takes main's run runs again on GitHub's runner: make the same change to both, so such a release still checks what every other does";
     const uploads = (candidate: Step): boolean => candidate.uses?.startsWith("actions/upload-artifact@") === true;
-    // ci.yml's setup-ci restores no cache only when pages.yml calls it with hosted_only; otherwise, as here, setup-ci's default
+    // the Release run restores no cache: this copy says `none`, ci.yml's says it under hosted_only, which the Release passes
     const HOSTED_ONLY_CACHE = "${{ inputs.hosted_only && 'none' || 'save' }}";
     expect(theirs.steps!.find((candidate) => candidate.uses === "./.github/actions/setup-ci")!.with!["cache"]).toBe(HOSTED_ONLY_CACHE);
+    expect(fast.steps!.find((candidate) => candidate.uses === "./.github/actions/setup-ci")!.with!["cache"]).toBe("none");
     const withoutCache = (candidate: Step): Step => {
-      if (candidate.uses !== "./.github/actions/setup-ci" || candidate.with?.["cache"] !== HOSTED_ONLY_CACHE) return candidate;
+      if (candidate.uses !== "./.github/actions/setup-ci" || (candidate.with?.["cache"] !== HOSTED_ONLY_CACHE && candidate.with?.["cache"] !== "none")) return candidate;
       const { cache: _cache, ...inputs } = candidate.with;
       return { ...candidate, with: inputs };
     };
@@ -154,7 +155,8 @@ describe("release-validate.yml", () => {
     expect(ci.needs).toBe("reuse");
     expect(ci.if).toBe("${{ !cancelled() && (inputs.revalidate || needs.reuse.result != 'success' || needs.reuse.outputs.green != 'true') }}");
     expect(ci.uses).toBe("./.github/workflows/ci.yml");
-    expect(ci.with).toBeUndefined();
+    // the Release run is GitHub-hosted and cacheless as a whole (scripts/privileged-jobs-workflow.test.ts)
+    expect(ci.with?.["hosted_only"]).toBe(true);
   });
 
   test("ends in a verdict that runs whatever happened before it", () => {

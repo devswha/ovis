@@ -14,7 +14,7 @@ inputs:
     required: false
     default: 'false'
   cache:
-    description: "'save' restores and saves the Bun dependency cache; 'restore' only restores it, for a job that runs unpinned third-party code and must not write a cache other workflows trust; 'none' restores and saves no Actions cache, Bun's executable included, for every job of a run that publishes something (pages.yml, and ci.yml when it is called with hosted_only): any job of a main run can write a cache under any key that later runs restore (scripts/privileged-jobs-workflow.test.ts)."
+    description: "'save' restores and saves the Bun dependency cache; 'restore' only restores it, for a job that runs unpinned third-party code and must not write a cache other workflows trust; 'none' restores and saves no Actions cache, Bun's executable included, for every job of a run that publishes or signs (pages.yml, the Release and the other publishing workflows, and ci.yml when it is called with hosted_only): any job of a main run can write a cache under any key that later runs restore (scripts/privileged-jobs-workflow.test.ts)."
     required: false
     default: 'save'
 runs:
