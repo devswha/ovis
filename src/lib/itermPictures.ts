@@ -1,16 +1,23 @@
 /**
- * iTerm2 inline pictures that xterm's image addon (0.9.0) does not take on its own:
+ * iTerm2 inline pictures that xterm's image addon (0.9.0) does not take on its own, put into a form it
+ * does before it sees them (lib/terminalImages.ts):
  *
  * - the multipart form iTerm2's own `imgcat` sends: `MultipartFile=<args>`, then `FilePart=<base64>`
- *   pieces, then `FileEnd`;
- * - a picture without `size=` (`chafa -f iterm`), which the addon drops;
- * - a TIFF picture (`chafa -f iterm` sends uncompressed RGBA TIFF), which a browser cannot decode.
+ *   pieces, then `FileEnd`, joined into one `File=<args>:<base64>`;
+ * - a picture without `size=` (`chafa -f iterm`), which the addon drops: the size is taken from the data;
+ * - a TIFF picture (`chafa -f iterm` sends uncompressed RGBA TIFF), which a browser cannot decode: the
+ *   baseline uncompressed 8-bit kind is turned into a PNG, any other kind into a hatched placeholder of
+ *   its size, so the picture is not lost without a trace and the text after it lands where it would.
+ *
+ * Every other picture goes to the addon as it came. The addon's own caps still apply to what it is given.
  */
 
+/** the addon's caps a picture is held to here too: decoded file bytes, and pixels */
 export interface PictureLimits { sizeLimit: number; pixelLimit: number }
 
 export type PictureFeed = (payload: string) => boolean | Promise<boolean>;
 
+/** an OSC handler of xterm's own parser, fed a payload piece by piece, as the addon's decoders are */
 export interface OscStreamHandler {
   start(): void;
   put(data: Uint32Array, start: number, end: number): void;
@@ -45,7 +52,8 @@ const fromBase64 = (base64: string): Uint8Array => Uint8Array.from(atob(base64),
 
 function toBase64(bytes: Uint8Array): string {
   let out = "";
-  // btoa takes a string of bytes; one call per slice keeps the argument list of fromCharCode short
+  // btoa takes a string of bytes; one call per slice keeps the argument list of fromCharCode short, and a
+  // slice of a multiple of three bytes ends without padding, so the slices join into one base64 text
   const slice = 3 * 0x2aaa;
   for (let i = 0; i < bytes.length; i += slice) out += btoa(String.fromCharCode(...bytes.subarray(i, i + slice)));
   return out;
@@ -65,6 +73,10 @@ const MAX_STRIPS = 65536;
 
 export interface DecodedTiff { width: number; height: number; rgba: Uint8Array | null }
 
+/**
+ * Decodes a baseline TIFF's first image when it is uncompressed, 8 bits a sample, chunky, grey (with
+ * or without alpha) or RGB (with or without alpha): what chafa writes.
+ */
 export function decodeTiff(bytes: Uint8Array, pixelLimit: number): DecodedTiff | null {
   if (!isTiff(bytes) || bytes.length < 8) return null;
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -81,6 +93,7 @@ export function decodeTiff(bytes: Uint8Array, pixelLimit: number): DecodedTiff |
     const tag = u16(entry);
     const type = u16(entry + 2);
     const n = u32(entry + 4);
+    // only the tags read below, each read once: a directory of many tags pointing at the same bytes reads nothing more
     const most = STRIP_TAGS.has(tag) ? MAX_STRIPS : READ_TAGS.has(tag) && !tags.has(tag) ? 4 : 0;
     // BYTE, SHORT and LONG are all a baseline image needs; other types are skipped
     const width = type === 1 ? 1 : type === 3 ? 2 : type === 4 ? 4 : 0;
@@ -173,6 +186,7 @@ export async function encodePng(width: number, height: number, rgba: Uint8Array)
   return png;
 }
 
+/** the side of the most pixels a placeholder holds: the addon scales it to the picture's place anyway */
 const PLACEHOLDER_SIDE = 256;
 
 export function placeholderPng(width: number, height: number): Promise<Uint8Array> {
@@ -201,6 +215,11 @@ async function fromTiff(args: string, base64: string, limits: PictureLimits): Pr
 
 const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
 
+/**
+ * An OSC 1337 handler, registered after the addon so it reads each payload first: true where it took
+ * the payload (a multipart piece, or a picture it handed on in a form the addon takes), false where the
+ * addon reads it as it came.
+ */
 export function itermPictures(feed: PictureFeed, limits: () => PictureLimits): { handle(data: string): boolean | Promise<boolean>; stream: OscStreamHandler; reset(): void } {
   let multipart: { args: string; parts: string[]; length: number } | null = null;
 
@@ -222,6 +241,7 @@ export function itermPictures(feed: PictureFeed, limits: () => PictureLimits): {
       if (multipart) {
         const part = data.slice("FilePart=".length);
         multipart.length += part.length;
+        // past the addon's cap the picture is dropped now, not once all of it is held
         if (multipart.length > base64Length(limits().sizeLimit)) multipart = null;
         else multipart.parts.push(part);
       }
@@ -254,6 +274,7 @@ export function itermPictures(feed: PictureFeed, limits: () => PictureLimits): {
   // xterm's string handlers hold a payload up to 10,000,000 characters and are not called for a longer
   // one, which then went to the addon as it came: a picture of 7.5 MB or more without a size, or a TIFF,
   // was not drawn. Fed piece by piece, a payload is held here up to the addon's own cap.
+  // pieces as the parser hands them, joined a thousand at a time: one string each costs more than its text
   let held: string[] = [];
   let recent: string[] = [];
   let heldLength = 0;
@@ -269,6 +290,7 @@ export function itermPictures(feed: PictureFeed, limits: () => PictureLimits): {
       const room = colon >= 0 ? colon + 16 : ARGS_ROOM;
       if (head.length < room) head += text.slice(0, room - head.length);
       heldLength += text.length;
+      // the cap is on the base64 after the arguments, as the addon's is on the file
       const argsLength = head.indexOf(":") >= 0 ? head.indexOf(":") + 1 : ARGS_ROOM;
       if (heldLength - argsLength > base64Length(limits().sizeLimit)) { release(); state = "over"; return; }
       if (leftToAddon(head)) { release(); state = "addon"; return; }
@@ -283,6 +305,7 @@ export function itermPictures(feed: PictureFeed, limits: () => PictureLimits): {
         release();
         return handle(data);
       }
+      // past the addon's cap: a picture, or a piece of one, is dropped as the addon would drop it
       if (state === "over" && !head.startsWith("File=")) multipart = null;
       return true;
     },

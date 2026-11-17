@@ -1,10 +1,18 @@
 import { trimUrl } from "../../shared/markdown.ts";
 
+/**
+ * Tailscale SSH's browser check prints a URL and waits until it is visited, so an address has to
+ * be clickable. Only https addresses link: the text comes from a remote host, and nothing else it
+ * prints should become a control.
+ */
 export type SshOutputPart = { type: "text"; value: string } | { type: "link"; href: string; value: string };
 
 export function sshOutputParts(text: string): SshOutputPart[] {
   const parts: SshOutputPart[] = [];
   let offset = 0;
+  // an address starts the text, a word or a bracket/quote: `https://` inside another URL
+  // (ftp://host/https://…) is part of that URL, and linking it would point somewhere else
+  // (the character before it is matched, not looked behind at: shared/lookbehind.ts)
   for (const match of text.matchAll(/(?:^|[\s(<["'])(https:\/\/[^\s<>"']+)/gi)) {
     const index = match.index! + match[0].length - match[1]!.length;
     const url = trimUrl(match[1]!);

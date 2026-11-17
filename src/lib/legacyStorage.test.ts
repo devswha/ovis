@@ -36,6 +36,7 @@ describe("browser storage from before the rename", () => {
     storage.setItem("ovis:settings", "new");
     adoptLegacyStorage(storage);
     expect(storage.getItem("ovis:settings")).toBe("new");
+    // gone, so a draft cleared under the new name never comes back from the old one
     expect(storage.getItem("herdr-web-ui:settings")).toBeNull();
   });
 

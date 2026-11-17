@@ -1,3 +1,8 @@
+/**
+ * Keys include the PC so an id reused on another PC never receives the old PC's pin; a workspace's
+ * key marks itself as one, after the PC.
+ */
+
 import { placeBlock } from "./workspaceOrder.ts";
 
 const STORAGE_KEY = "ovis:sidebar-agent-pins";
@@ -64,6 +69,13 @@ export function loadSidebarPins(): string[] {
 
 const SHARED_KEY = "ovis:sidebar-pins-shared";
 
+/**
+ * The pins this browser last knew the server to hold (lib/preferencesSync.ts), with the revision of
+ * the document that held them; null while it has known none. Kept with the pins, so a page opened
+ * again tells its own pins from ones removed elsewhere meanwhile, instead of sending them back as new.
+ * `stateId` is the server's state folder (absent from a server too old to name it): a folder that
+ * started over is another server, whatever revision it has reached.
+ */
 export interface SharedPins { pins: string[]; revision: number; stateId?: string }
 
 export function loadSharedPins(): SharedPins | null {
@@ -122,6 +134,7 @@ function pinMachineId(key: string): string | null {
 
 export function pruneSidebarPins(keys: readonly string[], liveKeys: ReadonlySet<string>, machines: readonly { id: string; snapshot: object | null }[], hiddenMachineIds: readonly string[] = []): string[] {
   if (machines.length === 0) return [...keys];
+  // a PC still loading, or one this device hides (lib/hiddenMachines.ts), cannot say its panes are gone
   const unjudged = new Set([...machines.filter((machine) => machine.snapshot === null).map((machine) => machine.id), ...hiddenMachineIds]);
   return keys.filter((key) => isWorkspacePinKey(key) || liveKeys.has(key) || (pinMachineId(key) !== null && unjudged.has(pinMachineId(key)!)));
 }

@@ -401,6 +401,8 @@ const BASE: Record<string, string> = {
   "Copy details": "复制详细信息",
   "This pane can't be shown.": "无法显示此窗格。",
   "The sidebar can't be shown.": "无法显示侧边栏。",
+  // t3code ports (a)
+  // t3code ports (d)
   "Change PC": "切换电脑",
   "Forget this PC": "忘记这台电脑",
   "Selected": "已选择",

@@ -8,6 +8,7 @@ export function fullestDisk(disks: readonly SystemDisk[]): SystemDisk | null {
 }
 
 const UNITS = ["B", "KB", "MB", "GB", "TB", "PB"];
+/** 1536 -> "1.5 KB"; one decimal below 10, none above; powers of 1024, as `df -h` writes them. */
 export function formatBytes(bytes: number): string {
   let value = Math.max(0, bytes);
   let unit = 0;

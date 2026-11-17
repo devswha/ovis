@@ -5,8 +5,11 @@
  * context line says. A shell has no row of its own, so its title is not searched. Nothing hidden
  * is searched: no working directory, no transcript, no
  * environment, no token value, no id.
+ *
+ * The idea, a row that survives when it, a header over it or a row under it matches, is adapted
+ * from agent-of-empires' sidebar filter (THIRD_PARTY_NOTICES.md); its substring matcher, facets
+ * and sunk/trash semantics are not.
  */
-// The idea, a row that survives when it, a header over it or a row under it matches, is adapted from agent-of-empires' sidebar filter (THIRD_PARTY_NOTICES.md).
 import type { Machine } from "../../shared/machines.ts";
 import { paneTitle } from "../../shared/notify-policy.ts";
 import type { HerdrPane, SessionSnapshot, TabInfo, WorkspaceInfo } from "../../shared/protocol.ts";
@@ -151,6 +154,10 @@ export function sidebarFilter(query: string, machines: readonly FilterMachine[],
   return { query, active: true, machines: byMachine, matches: count.matches };
 }
 
+/**
+ * PC names, workspace names and the branches their rows say, and the title each agent row shows;
+ * never a path, a transcript or an id.
+ */
 export function filterSuggestions(machines: readonly FilterMachine[], branches: SidebarBranchLabels = new Map(), unnamed: ReadonlySet<string> = new Set()): string[] {
   const labels = new Set<string>();
   for (const machine of machines) {

@@ -2,6 +2,7 @@ import type { FileInfo } from "../../shared/protocol.ts";
 import { fileUriPath } from "../../shared/fileUri.ts";
 import { serverResourceUrl } from "./transport.ts";
 
+/** Bigger images are offered as a download: a phone decodes an image whole. */
 export const MAX_INLINE_IMAGE_BYTES = 20 * 1024 * 1024;
 
 export type MarkdownImagePreview = { kind: "inline"; url: string; name: string }
@@ -16,6 +17,7 @@ function localImageTarget(src: string): string | null {
     if (local === null) return null;
     path = local;
   } else {
+    // The destination is URL-encoded, including literal # and ? in a filename. Decode once.
     try { path = decodeURIComponent(target); } catch { return null; }
   }
   if (path.startsWith("//") || /^~|^[A-Za-z]:|\\|[\u0000-\u001f\u007f]/.test(path)) return null;

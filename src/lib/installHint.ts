@@ -1,3 +1,10 @@
+/**
+ * Whether a phone's browser tab shows the line that says how to add Ovis to the home screen
+ * (components/InstallHint.tsx): installed, the page gets alerts and keeps its storage. Desktop
+ * browsers, the desktop app and the phone apps never see it, nor does a page served over plain
+ * http, which gets no alerts installed either.
+ */
+
 export type InstallHintKind = "ios" | "android";
 
 export interface InstallHintEnvironment {

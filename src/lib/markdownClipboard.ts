@@ -1,4 +1,6 @@
-/** HTML sanitization adapted from t3code's markdown-clipboard.ts (MIT). */
+/** Rendered selection -> native plain text and resource-free rich HTML.
+ * HTML sanitization adapted from t3code's markdown-clipboard.ts (MIT).
+ */
 export interface ClipboardNode {
   readonly tag: string;
   readonly text?: string;
@@ -19,6 +21,7 @@ const children = (node: ClipboardNode): readonly ClipboardNode[] => node.childre
 const visible = (node: ClipboardNode): boolean => (!OMIT.has(node.tag) || (node.tag === "BUTTON" && (attr(node, "class") ?? "").split(/\s+/).includes("markdown-file"))) && attr(node, "aria-hidden") !== "true" && !(attr(node, "class") ?? "").split(/\s+/).some((name) => OMIT_CLASSES.has(name));
 const escapeHtml = (value: string): string => value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
 
+/** Rebuild, rather than scrub arbitrary HTML: attributes cannot smuggle resources or handlers. */
 function richHtml(node: ClipboardNode): string {
   if (!visible(node)) return "";
   if (node.text !== undefined) return escapeHtml(node.text);
@@ -68,11 +71,20 @@ function withRawToolPaths<T>(selection: Selection, scope: ParentNode, read: (gre
   }
 }
 
+/**
+ * Claim ranges wholly in this chat. A selection reaching past it (Select All, a drag out of the
+ * chat) is claimed only when it takes a shown, shortened tool-file label whole, so the copy carries
+ * the path as written; any other keeps native copy, as composer fields and the terminal do. That
+ * claim is the browser's plain text alone: rebuilding HTML from the whole page would carry what
+ * the plain text leaves out (a composer's unsent draft, a hidden chat).
+ */
 export function chatSelectionClipboardPayload(selection: Selection, root: Element): ClipboardPayload | null {
   if (selection.isCollapsed || selection.rangeCount === 0) return null;
   for (let index = 0; index < selection.rangeCount; index++) {
     const range = selection.getRangeAt(index);
     if (!root.contains(range.startContainer) || !root.contains(range.endContainer)) {
+      // a selection with no part in this chat is another chat's (which copies it with its HTML),
+      // or the page's: whichever chat's listener runs first must not take it over
       if (![...Array(selection.rangeCount).keys()].some((other) => selection.getRangeAt(other).intersectsNode(root))) return null;
       return withRawToolPaths(selection, document, (grew) => grew ? { text: selection.toString(), html: null } : null);
     }
@@ -103,5 +115,7 @@ function selectionPayload(selection: Selection): ClipboardPayload | null {
     nodes.push(...[...wrapped.childNodes].map(fromDom));
   }
   const text = selection.toString();
+  // An image-only range can have no plain text; still intercept it so native copy cannot
+  // bypass the resource-free HTML representation.
   return renderedClipboardPayload(nodes, text);
 }

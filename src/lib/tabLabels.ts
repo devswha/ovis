@@ -87,6 +87,10 @@ const ATTACHMENT = /(^|\s)@(?:\/|~[\\/]|[A-Za-z]:[\\/])(?:(?:(?!\s(?:@\S|[\\/]|~
 
 const uploadsUnder = new Map<string, RegExp>();
 
+/**
+ * The folder is matched as its server wrote it, case and all: ATTACHMENT's `i` would let a different
+ * folder in.
+ */
 function uploadPattern(folder: string): RegExp {
   let pattern = uploadsUnder.get(folder);
   if (pattern === undefined) {
@@ -120,6 +124,7 @@ export function shortTabLabel(text: string, uploadFolder?: string): string | nul
   return line;
 }
 
+/** The setting, and whether this device may learn (a watching device takes the labels and learns none). */
 export function setTabLabelLearning(setting: boolean, watching: boolean): void {
   learning = setting && !watching;
   if (!learning) pending.clear();

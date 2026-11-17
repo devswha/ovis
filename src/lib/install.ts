@@ -47,7 +47,8 @@ export interface InstalledStateInput {
   previous: boolean;
 }
 
-/** Fullscreen (F11, the macOS green button) reports no window mode of its own. */
+/** Fullscreen (F11, the macOS green button) reports no window mode of its own, so it keeps the
+ * previous verdict instead of guessing from the display mode. */
 export function installedState(input: InstalledStateInput): boolean {
   const signalled = input.iosStandalone || input.installedByEvent || input.relatedInstalled;
   if (input.matches(FULLSCREEN_DISPLAY)) return input.previous || signalled;
@@ -67,6 +68,11 @@ function isStandalone(): boolean {
   return lastInstalled;
 }
 
+/**
+ * Whether this window itself is the installed app's, not a tab of a browser that has the app
+ * installed. A link that opens a new tab of this origin (`target="_blank"`) lands in another app
+ * window there, since the app's scope is the whole origin and no page can send it to the browser.
+ */
 export function isAppWindow(): boolean {
   if (typeof window === "undefined" || typeof navigator === "undefined") return false;
   const iosNavigator = navigator as Navigator & { standalone?: boolean };

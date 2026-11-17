@@ -303,7 +303,7 @@ describe("keyboardControlStore", () => {
     expect(store.view(PANE)).toBe(second);
     store.measure(true);
     expect(store.view(PANE)).toBe(second);
-    expect(notifications).toBe(1);
+    expect(notifications).toBe(1); // no change, no notice: useSyncExternalStore would loop
     stop();
     store.measure(false);
     expect(store.view(PANE)).toEqual({ direction: "show", pending: false });

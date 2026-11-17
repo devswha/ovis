@@ -105,6 +105,7 @@ describe("key bar hold repeat", () => {
     repeat.press(0, 0);
     clock.advance(KEY_REPEAT_DELAY_MS);
     repeat.release();
+    // A browser need not deliver a click after the first hold.
     repeat.press(0, 0);
     clock.advance(KEY_REPEAT_DELAY_MS - 1);
     repeat.release();

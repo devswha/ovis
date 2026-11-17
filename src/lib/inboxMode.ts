@@ -19,10 +19,15 @@ export function withInboxAddress(search: string, inbox: boolean): string {
   return text ? `?${text}` : "";
 }
 
+/**
+ * The state stays with its entry over a reload and when the browser restores the tab or loads it
+ * again after discarding it, which a browser may report as a navigation.
+ */
 export function freshNavigation(type: string | undefined, state: unknown): boolean {
   return type !== "reload" && type !== "back_forward" && state === null;
 }
 
+/** How the browser says this page was loaded: navigate, reload, back_forward or prerender; undefined where it does not say. */
 export function pageNavigation(): string | undefined {
   const [entry] = window.performance?.getEntriesByType?.("navigation") ?? [];
   return (entry as { type?: string } | undefined)?.type;

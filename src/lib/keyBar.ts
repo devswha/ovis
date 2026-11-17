@@ -105,6 +105,7 @@ function sanitizeItem(raw: unknown): KeyBarItem | null {
   return { type: "key", key, modifiers: { ctrl: modifiers["ctrl"] === true, alt: modifiers["alt"] === true, shift: modifiers["shift"] === true } };
 }
 
+/** Keep explicit removals/order; malformed entries cannot inject text blocks or terminal sequences. */
 export function sanitizeKeyBarItems(raw: unknown, fallback: readonly KeyBarItem[] = DEFAULT_KEY_BAR_ITEMS): KeyBarItem[] {
   const items = Array.isArray(raw) ? raw : fallback;
   const result: KeyBarItem[] = [];

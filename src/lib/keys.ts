@@ -36,6 +36,7 @@ export function releaseLatched(latch: ModifierLatch): ModifierLatch {
   return { held: { ctrl: held.ctrl && locked.ctrl, alt: held.alt && locked.alt, shift: held.shift && locked.shift }, locked };
 }
 
+/** Ctrl+C/V remain native clipboard shortcuts on non-Latin layouts; Latin layouts keep their typed letter. */
 export function clipboardKey(key: string, code: string): string {
   const typed = key.toLowerCase();
   return /^[a-z]$/.test(typed) ? typed : /^Key([A-Z])$/.exec(code)?.[1]?.toLowerCase() ?? typed;
@@ -87,6 +88,7 @@ export function navigationSequence(key: string, modifiers: StickyModifiers): str
   }
 }
 
+/** Soft keyboards often emit input events without a DOM keydown. */
 export function keyFromData(data: string): string | null {
   const fixed: Record<string, string> = { "\r": "Enter", "\t": "Tab", "\x7f": "Backspace", "\x1b": "Escape" };
   if (Object.hasOwn(fixed, data)) return fixed[data]!;
@@ -106,6 +108,10 @@ export function controlCode(ch: string): string | null {
   return String.fromCharCode(ch.toUpperCase().charCodeAt(0) & 0x1f);
 }
 
+/**
+ * Arrows follow DECCKM like a real keyboard: SS3 while a full-screen program has application
+ * cursor keys on, CSI otherwise.
+ */
 export function keySequence(key: KeyBarKey, applicationCursorKeys: boolean): string {
   const cursor = (final: "A" | "B" | "C" | "D" | "H" | "F"): string => (applicationCursorKeys ? "\u001bO" : "\u001b[") + final;
   switch (key) {
@@ -176,21 +182,24 @@ export function altSequence(data: string): string | null {
  */
 export function modifyOtherKeysLevel(level: number, final: "m" | "n", params: ReadonlyArray<number | number[]>): number {
   // a bare CSI > m or CSI > n resets every key-modifier resource (xterm). xterm.js hands it over
-  // as [0], the same as an explicit resource 0
+  // as [0], the same as an explicit resource 0 (modifyKeyboard, which this does not track): off
+  // is the safe reading, since a level left on would type CSI 27;5;13~ into a shell
   if (params.length === 0 || (params.length === 1 && params[0] === 0)) return 0;
   if (params[0] !== 4) return level;
   const value = params[1];
   return final === "m" && typeof value === "number" ? value : 0;
 }
 
-/** Ctrl+Enter under modifyOtherKeys, as xterm encodes it. */
+/** Ctrl+Enter under modifyOtherKeys, as xterm encodes it; null keeps xterm.js's own CR. */
 export function ctrlEnterSequence(modifyOtherKeys: number): string | null {
   return modifyOtherKeys > 0 ? "\u001b[27;5;13~" : null;
 }
 
 /**
- * Ctrl+Enter on a mirrored pane, as a herdr key (#924): herdr holds the pty and encodes `ctrl+enter`
- * in the program's own mode: CSI 27;5;13~ after `CSI > 4;2 m`, CR otherwise (herdr 0.9.3).
+ * Ctrl+Enter on a mirrored pane, as a herdr key (#924). A mirror's repaint carries no terminal
+ * modes (server/mirror.ts), so the browser never learns that the program asked for
+ * modifyOtherKeys; herdr holds the pty and encodes `ctrl+enter` in the program's own mode:
+ * CSI 27;5;13~ after `CSI > 4;2 m` (Claude Code's "send now"), CR otherwise (herdr 0.9.3).
  */
 export function mirroredCtrlEnterKey(mirrored: boolean, modifyOtherKeys: number): string | null {
   return mirrored && modifyOtherKeys === 0 ? "ctrl+enter" : null;

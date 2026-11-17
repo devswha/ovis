@@ -12,6 +12,7 @@ function handler(limits = LIMITS) {
   return { fed, handle: pictures.handle, stream: pictures.stream, reset: pictures.reset };
 }
 
+/** an uncompressed RGBA TIFF laid out as chafa writes it for `chafa -f iterm`: pixels first, then the directory */
 function chafaTiff(width: number, height: number, rgba: Uint8Array, { compression = 1, orientation = 1, samples = 4 } = {}): Uint8Array {
   const tags: Array<[number, number, number, number]> = [
     [256, 4, 1, width], [257, 4, 1, height], [258, 3, samples, samples === 1 ? 8 : 8 + rgba.length + 2 + 12 * 12 + 4], [259, 3, 1, compression],
@@ -140,6 +141,7 @@ test("drops a picture past the addon's size cap, multipart ones before all of it
 
 test("gives a placeholder where the PNG a TIFF turns into is past the addon's file cap", async () => {
   const { fed, handle } = handler({ sizeLimit: 6000, pixelLimit: LIMITS.pixelLimit });
+  // noise does not compress: its RGBA PNG is about four times the grey TIFF
   let seed = 1;
   const grey = Uint8Array.from({ length: 64 * 64 }, () => (seed = (seed * 1103515245 + 12345) >>> 0) >>> 24);
   const tiff = chafaTiff(64, 64, grey, { samples: 1 });
@@ -154,11 +156,13 @@ test("gives a placeholder where the PNG a TIFF turns into is past the addon's fi
 test("reads a picture past the 10,000,000 characters xterm holds for a string handler, from xterm's own parser", async () => {
   const { fed, stream } = handler();
   const term = new Terminal({ cols: 80, rows: 24, scrollback: 0, allowProposedApi: true });
+  // the handler before it: reached only where the pictures handler leaves a payload to the addon
   const left: boolean[] = [];
   const addon: OscStreamHandler = { start() {}, put() {}, end: (success) => { left.push(success); return true; } };
   expect(registerOscStream(term, 1337, addon)).not.toBeNull();
   expect(registerOscStream(term, 1337, stream)).not.toBeNull();
   const write = (data: string) => new Promise<void>((resolve) => term.write(data, resolve));
+  // 2048 x 1280 RGBA: 10,485,760 bytes, about 14 million base64 characters
   const pixels = Uint8Array.from({ length: 2048 * 1280 * 4 }, (_, i) => (i % 4 === 3 ? 255 : (i >> 13) % 256));
   const base64 = Buffer.from(chafaTiff(2048, 1280, pixels)).toString("base64");
   expect(base64.length).toBeGreaterThan(10_000_000);
@@ -196,6 +200,7 @@ test("holds the cap to the base64 alone: long arguments do not push a picture at
   };
   const args = `inline=1;size=30${";width=1".repeat(1000)}`;
   expect(feed(`File=${args}:iVBORw0KGgo${"A".repeat(29)}`)).toBe(false);
+  // one past the cap: dropped here, as the addon drops it
   expect(feed(`File=inline=1${";width=1".repeat(1000)}:${"A".repeat(44)}`)).toBe(true);
   expect(fed).toEqual([]);
 });

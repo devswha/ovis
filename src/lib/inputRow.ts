@@ -50,9 +50,13 @@ const SYNC = /\u001b\[\?2026([hl])/g;
 
 /**
  * herdr wraps each frame it draws in a synchronized-update block (`CSI ? 2026 h` … `l`). xterm 6 holds its drawing until a
- * block closes, but what it has parsed can still end inside one. When the pane's grid itself changes size, herdr may first
- * draw the old screen again, reflowed for the new size (an idle box cut at its borders reads as gone), before the agent's
- * own redraw, or both may come as one frame.
+ * block closes, but what it has parsed can still end inside one: a frame is read only once its block has closed. When the
+ * pane's grid itself changes size, herdr may first draw the old screen again, reflowed for the new size (an idle box cut at
+ * its borders reads as gone), before the agent's own redraw, or both may come as one frame: the first frame after it is
+ * `reflowing`, read when asked but never taken as a change of screen.
+ *
+ * `enqueue` is called as a chunk is written (xterm parses later, in order), `settle` in its write callback, `resized` on
+ * every resize of the grid, `reflowed` when the pane's grid changes size and `reset` where the stream starts over.
  */
 export class FrameGate {
   private open = false;

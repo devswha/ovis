@@ -22,6 +22,7 @@ export function createSkillMatcher(commands: readonly SlashCommand[], syntax: Sk
   for (const command of commands) {
     if (command.source !== "skill" || command.name === "") continue;
     const trigger = command.trigger ?? "/";
+    // an OpenCode v2 skill is sent as `@name` (compose.ts atSkillReplacement)
     names.set(trigger + command.name, command.name);
     if (command.name.startsWith("skill:") && command.name.length > "skill:".length) {
       for (const form of syntax.chipForms) {
@@ -31,6 +32,7 @@ export function createSkillMatcher(commands: readonly SlashCommand[], syntax: Sk
     }
   }
   if (names.size === 0) return null;
+  // longest first, so `/review-pr` is not cut at a skill named `review`
   const alternatives = [...names.keys()].sort((a, b) => b.length - a.length).map(escapeRegExp).join("|");
   const bracketAlternatives = [...bracketed.keys()].map(escapeRegExp).join("|");
   const source = `(?:${alternatives})(?![\\w:/-]|\\.\\w)`;

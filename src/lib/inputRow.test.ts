@@ -94,6 +94,7 @@ const EXPECTED: Record<string, Record<string, InputRowState>> = {
     "permissions-idle-120": "ready", "permissions-idle-40": "ready", "permissions-open-120": "gone", "permissions-open-40": "gone",
     "permissions-closed-120": "ready", "permissions-closed-40": "ready",
     "theme-open-120": "gone", "theme-open-40": "gone", "statusline-open-120": "gone", "statusline-open-40": "gone",
+    // /rename's field has the empty composer's very cells: its footer tells it apart
     "rename-open-120": "gone", "rename-open-40": "gone", "rename-closed-40": "ready",
     // the /diff pager: Escape does nothing, q closes it
     "diff-open-120": "gone", "diff-open-40": "gone", "diff-closed-120": "gone", "diff-closed-q-120": "ready", "diff-closed-q-40": "ready",
@@ -134,6 +135,7 @@ const EXPECTED: Record<string, Record<string, InputRowState>> = {
     "draft-empty-119": "ready", "draft-typed-119": "draft", "draft-slash-119": "gone",
     "settings-idle-119": "ready", "settings-idle-40": "ready", "settings-open-119": "gone", "settings-open-40": "gone",
     "settings-closed-119": "ready", "settings-closed-40": "ready",
+    // dialogs draw a bare `>` under one rule
     "rename-open-119": "gone", "rename-open-40": "gone", "trust-open-119": "gone", "trust-open-40": "gone", "share-open-119": "gone",
     "btw-open-119": "ready", "btw-typed-autocomplete-119": "draft",
   },
@@ -149,6 +151,7 @@ const EXPECTED: Record<string, Record<string, InputRowState>> = {
   devin: {
     "model-idle-119": "ready", "model-idle-40": "ready", "model-open-119": "gone", "model-open-40": "gone",
     "model-closed-119": "ready", "model-closed-40": "ready",
+    // /btw's own field: a labelled top rule, `❭ Ask a /btw…`, `esc back to chat`
     "btw-open-119": "gone", "btw-open-40": "gone", "btw-closed-119": "ready",
     "config-open-119": "gone", "config-open-40": "gone",
   },
@@ -215,6 +218,7 @@ describe("inputRowState on recorded screens", () => {
     // NO_COLOR: the tip as the box's one row, on a screen without any colour, is Claude's own
     expect(inputRowState("claude", await box('❯ \u001b[7mT\u001b[27mry "refactor this function"'))).toBe("ready");
     expect(inputRowState("claude", await box("❯ Try this instead"))).toBe("draft");
+    // a named session labels its rule
     expect(inputRowState("claude", await screenOf([`── my-session ${"─".repeat(40)}`, "❯ ", rule, "  ? for shortcuts"].join("\n"), 60))).toBe("ready");
     expect(inputRowState("claude", await box("❯ 1. Yes"))).toBe("draft");
     expect(inputRowState("claude", await screenOf("  Side question\n\n  Press Space, Enter, or Escape to dismiss", 60))).toBe("gone");
@@ -355,6 +359,7 @@ describe("recorded frame streams", () => {
     ];
     expect(sequence).toEqual(["ready", "draft", "gone", "ready", "covered", "ready"]);
     expect(watch("hermes", sequence)).toEqual({ armed: true, returnedAt: 5, manualAt: null });
+    // /prompt's $EDITOR hides the row and never covers it: manual
     expect(watch("hermes", sequence.slice(0, 4))).toEqual({ armed: false, returnedAt: null, manualAt: null });
   });
 
@@ -515,6 +520,7 @@ describe("the chat send's read of the same screens (shared/input-row.ts)", () =>
     expect(typed("omp", "omp/draft-lines-119.ansi")).toBeTrue();
     expect(typed("omp", "omp/draft-slash-119.ansi")).toBeTrue();
     expect(typed("omp", "omp/draft-empty-119.ansi")).toBeFalse();
+    // 18.8.7's framed editor reports no cells: never refused
     expect(typed("omp", "omp/settings-idle-119.ansi")).toBeFalse();
     const themed = readFileSync(join(FIXTURES, "omp/draft-typed-119.ansi"), "utf8").replace("\u001b[38;5;254mleftover", "\u001b[38;5;250mleftover");
     expect(typedDraft("omp", screenFromAnsi(themed))).toBeFalse();

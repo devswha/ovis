@@ -112,6 +112,7 @@ describe("readAgainUntil", () => {
     let clock = 0;
     const timers: { at: number; run: () => void; cancelled: boolean }[] = [];
     const later = (run: () => void, ms: number) => { const timer = { at: clock + ms, run, cancelled: false }; timers.push(timer); return () => { timer.cancelled = true; }; };
+    // set in apply, which TypeScript cannot see run
     let ended = null as number | null;
     readAgainUntil(() => new Promise<string>(() => undefined), { every: READ_AGAIN_MS, times: READ_AGAIN_TIMES, later, now: () => clock, apply: (_outcome, last) => { if (last) ended = clock; return false; } });
     while (ended === null) {
@@ -131,6 +132,7 @@ describe("readAgainUntil", () => {
     const schedule = (run: () => void, ms: number, answer: boolean) => { const timer = { at: clock + ms, run, cancelled: false, answer }; timers.push(timer); return () => { timer.cancelled = true; }; };
     let ended = null as number | null;
     let accepted = Promise.withResolvers<void>();
+    // each read answers a miss 9 s after it starts, just inside its deadline
     readAgainUntil(() => new Promise<string>((resolve) => { schedule(() => resolve("missing"), 9_000, true); }), {
       every: READ_AGAIN_MS, times: READ_AGAIN_TIMES, now: () => clock, later: (run, ms) => schedule(run, ms, false),
       apply: (_outcome, last) => { if (last) ended = clock; accepted.resolve(); return false; },

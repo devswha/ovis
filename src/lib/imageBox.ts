@@ -1,6 +1,12 @@
 import type { InlineNode } from "../../shared/markdown.ts";
 
-/** Adapted from t3code's ChatMarkdown. */
+/**
+ * A bare <img> is zero height until its bytes arrive, so the row around it moves when the picture
+ * lands and again if it fails and its alt text takes its place.
+ * Adapted from t3code's ChatMarkdown.
+ */
+
+/** A picture in prose: as wide as the lane, up to this (t3code's bound), unless the author said narrower. */
 const SLOT_MAX_REM = 30;
 
 export function standaloneImage(nodes: InlineNode[]): boolean {

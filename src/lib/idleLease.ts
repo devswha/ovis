@@ -1,3 +1,8 @@
+/**
+ * A `get` nobody follows with a `hold` (a render React threw away) arms the same idle disposal, so
+ * it cannot leak.
+ */
+
 export interface IdleLeaseTimers {
   set: (run: () => void, ms: number) => unknown;
   clear: (handle: unknown) => void;

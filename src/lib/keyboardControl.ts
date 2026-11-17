@@ -4,6 +4,9 @@
  * a tap from the measurement alone put the tap on whichever side of the animation the last event
  * landed: Hide ran as Show, the open control stayed armed over a keyboard visibly up, and Show
  * after Android's back gesture focused a field that was already focused, which raises nothing.
+ *
+ * A hide confirmed locally (its blur left no typing field focused) is evidence the measurement
+ * cannot give, for a browser it is blind in: a zoomed page, a floating keyboard.
  */
 
 export type KeyboardDirection = "show" | "hide";
@@ -135,7 +138,9 @@ export class KeyboardControlStore {
 
   /**
    * A blur that leaves no typing field focused anywhere is the keyboard going — every phone
-   * dismisses it on the blur. A focus is never evidence the other way.
+   * dismisses it on the blur, evidence a blind measurement cannot give. The tap's word then stands
+   * through the animation the measurement still reports: only a still-quiet measure or the settle
+   * window clears it. A focus is never evidence the other way, which is why only "hide" confirms here.
    */
   settled = (action: KeyboardDirection, noFieldFocused: boolean): void => {
     if (action !== "hide" || !noFieldFocused) return;

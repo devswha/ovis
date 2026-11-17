@@ -186,6 +186,7 @@ describe("modifyOtherKeysLevel", () => {
     expect(modifyOtherKeysLevel(2, "m", [4, 0])).toBe(0);
     expect(modifyOtherKeysLevel(2, "m", [4])).toBe(0);
     expect(modifyOtherKeysLevel(2, "n", [4])).toBe(0);
+    // a bare CSI > m or CSI > n resets every resource; xterm.js reports it as [0] or []
     expect(modifyOtherKeysLevel(2, "m", [0])).toBe(0);
     expect(modifyOtherKeysLevel(2, "n", [0])).toBe(0);
     expect(modifyOtherKeysLevel(2, "m", [])).toBe(0);

@@ -31,6 +31,11 @@ export function withViewedPane(current: ReadonlyMap<string, string>, key: string
 
 type ViewedStorage = Pick<Storage, "getItem" | "setItem">;
 
+/**
+ * Another app tab writes the same key, so a write re-reads storage and applies just its one entry,
+ * and `forget` drops the cache when another tab changed it: neither tab overwrites what the other
+ * remembered.
+ */
 export function viewedPanes(storage: () => ViewedStorage) {
   let entries: Map<string, string> | null = null;
   let memoryOnly = false;

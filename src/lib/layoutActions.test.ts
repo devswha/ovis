@@ -11,6 +11,7 @@ import { useShortcuts } from "./shortcuts.ts";
 import { SETTINGS_STORAGE_KEY } from "./themeBoot.ts";
 
 const selection = { current: { machineId: "local", paneId: "p1", generation: 0 } satisfies SelectionMark };
+/** herdr's TUI server, and a herdr-core PC, which splits and zooms no pane (lib/machineContext.tsx) */
 const OFFERS = { tui: { split: true, arrange: true }, core: { split: false, arrange: false } };
 const tabLayout = (tab: string, panes: string[], zoomed = false) => ({ tab_id: tab, workspace_id: "w1", focused_pane_id: panes[0]!, zoomed }) as PaneLayoutSnapshot;
 const rosterOf = (zoomed = false) => ({ current: {

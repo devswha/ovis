@@ -16,6 +16,7 @@ export function adoptLegacyStorage(storage: Storage): void {
   }
   for (const key of legacy) {
     const value = storage.getItem(key);
+    // removed first: the copy then fits even in a store near its quota
     storage.removeItem(key);
     const next = PREFIX + key.slice(LEGACY_PREFIX.length);
     if (value !== null && storage.getItem(next) === null) storage.setItem(next, value);

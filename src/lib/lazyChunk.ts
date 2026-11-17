@@ -1,7 +1,10 @@
 /**
- * A failed load is not tried again: Chrome keeps a failed import's answer for the page's life
- * without fetching again, and Vite's loader skips a stylesheet it tried before, so a second try
- * could only fail again or draw without its styles.
+ * A part of the app fetched the first time it is needed (KaTeX, Mermaid). Its file is named after
+ * the build, so a tab still running the build before a server update asks for one the server no
+ * longer has, and a phone offline at that moment cannot reach it either. A failed load is not
+ * tried again: Chrome keeps a failed import's answer for the page's life without fetching again,
+ * and Vite's loader skips a stylesheet it tried before, so a second try could only fail again or
+ * draw without its styles.
  */
 type Listener = () => void;
 const listeners = new Set<Listener>();
@@ -24,8 +27,11 @@ export function reportLazyChunkFailure(): void {
 }
 
 /**
- * Vite's loader: every dynamic import of the bundle goes through it, and it tells
- * `vite:preloadError` of each one that fails, its stylesheets too. The event is not cancelled, so the import still rejects as it would.
+ * Hears Vite's loader on `target` (the window): every dynamic import of the bundle goes through it,
+ * and it tells `vite:preloadError` of each one that fails, its stylesheets too. That reaches the
+ * chunks a lazy part loads on its own, Mermaid's one per diagram type among them, which no
+ * `lazyChunk` wraps: Mermaid turns their failure into a failed render, as a diagram that does not
+ * parse is. The event is not cancelled, so the import still rejects as it would.
  */
 export function watchPreloadErrors(target: EventTarget): () => void {
   const heard = (): void => reportLazyChunkFailure();

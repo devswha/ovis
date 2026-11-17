@@ -98,6 +98,7 @@ export interface AgentContextParts {
   agentLabel: string | null;
   title: string;
   markAgent: string | null;
+  /** null with a single PC: herdr does not name a lone machine either */
   machineName: string | null;
   workspaceLabel: string;
   tabName: string | null;

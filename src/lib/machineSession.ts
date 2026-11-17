@@ -17,6 +17,8 @@ export interface MachineSessionOptions {
 }
 let nextSession = 1;
 
+/** A PC's connection outlives its pane views. Detaching a view releases its input lease,
+ * while this connection still receives the bridge's held state and delivery receipts. */
 export class MachineSession {
   readonly socket: HerdrSocket;
   private readonly store: PendingMessageStore;
@@ -81,6 +83,9 @@ export class MachineSession {
         const key = waitingKey(this.machineId, message.pane_id);
         for (const item of message.messages) {
           if (item.state === "sending" && !this.going.has(item.id)) {
+            // that frame can come after the row's Enter (replayed after a reconnect, or handled late): the
+            // PC's clock now would bound it too tightly, but the PC stamped the row before typing it, which
+            // bounds it though the chat never read the pane. An older bridge does not: only the turns' times do then
             const after = waitingBaseline(key);
             this.going.set(item.id, { at: Date.now(), after: stampedBaseline(after !== null ? { ...after, pcFloor: null } : null, item.sending_at) });
           }

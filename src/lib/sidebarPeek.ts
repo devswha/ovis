@@ -54,6 +54,7 @@ export function createSidebarPeek(onChange: (shown: boolean) => void, held: () =
 }
 
 const POPUP_IN = '[role="menu"], [role="dialog"], [aria-haspopup][aria-expanded="true"]';
+/** a field taking typing (the filter, a workspace or PC being renamed): hiding it would drop the focus and the words */
 const EDITING = 'input:not([type="checkbox"]):not([type="radio"]):not([type="button"]), textarea, select, [contenteditable="true"]';
 
 function editingIn(sidebar: Element): Element | null {
@@ -114,6 +115,8 @@ export function useSidebarPeek(enabled: boolean) {
         ...zone("sidebar"),
         onDragStart: () => {
           dragging.current = true;
+          // the row may be redrawn elsewhere during the drag, its dragend then never reaching the sidebar: the drop or
+          // dragend reaches the window either way
           const done = (): void => { dragging.current = false; window.removeEventListener("drop", done, true); window.removeEventListener("dragend", done, true); };
           window.addEventListener("drop", done, true);
           window.addEventListener("dragend", done, true);

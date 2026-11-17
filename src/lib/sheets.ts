@@ -1,3 +1,11 @@
+/*
+ * React removes a closed sheet at once, so the drop is drawn by its last frame: the removed
+ * scrim is put back, inert and hidden from assistive tech, inside a closed shadow root at the
+ * end of <body>, and goes once it has slid out (`.is-leaving`). There no query of the page (the
+ * app's, a browser script's) finds it, so a sheet opened again at once is the only one of its
+ * kind; the root adopts the page's own rules, under the <html> element's data attributes, so it
+ * looks as it did.
+ */
 import { useEffect, useRef, type MutableRefObject, type RefObject } from "react";
 
 export const SHEET_QUERY = "(max-width: 640px)";
@@ -57,6 +65,8 @@ export function useSheetSwipe(surface: RefObject<HTMLElement | null>, onDismiss:
     const onStart = (event: TouchEvent): void => {
       const node = surface.current;
       const touch = event.touches[0];
+      // a second finger makes it a pinch, the page's zoom: a sheet being dragged springs back, and
+      // no later move of this gesture is held from the browser
       if (drag !== null && stroke !== null) settle(stroke.node, drag.scrim);
       stroke = null;
       drag = null;
@@ -158,6 +168,7 @@ function pageStyles(): CSSStyleSheet | null {
 
 function leave(scrim: HTMLElement, scrolled: WeakMap<Element, number>): void {
   const rules = pageStyles();
+  // a browser with no adoptable sheets has no way to draw it apart from the page: it goes at once
   if (rules === null) return;
   for (const node of scrim.querySelectorAll("iframe, embed, object, video, audio")) node.remove();
   scrim.classList.add("is-leaving");

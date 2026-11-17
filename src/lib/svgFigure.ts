@@ -135,6 +135,7 @@ function unsafe(svg: string): boolean {
   return UNSAFE.some((pattern) => pattern.test(read)) || (styled && read.includes("\\"));
 }
 
+/** An XML declaration the root may follow; nothing else (a comment, whitespace aside) may come first. */
 const DECLARATION = /^<\?xml\s[^?]{0,200}\?>\s*/;
 const ROOT_START = /^<(?:[\w.-]+:)?svg(?=[\s/>])/;
 const CLOSE_TAG = /<\/(?:[\w.-]+:)?svg\s*>$/;
@@ -153,6 +154,10 @@ function tagEnd(text: string): number {
 const MAX_FALLBACK = 200;
 const SPACE = /\s/;
 
+/**
+ * One pass: spaces are stepped over, and each reference is read for at most MAX_FALLBACK other
+ * characters, so no input makes it slow.
+ */
 function resolveTokens(text: string, value: (name: string, fallback: string) => string): string {
   const skip = (index: number): number => { while (index < text.length && SPACE.test(text[index]!)) index += 1; return index; };
   let out = "";

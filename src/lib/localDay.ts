@@ -5,6 +5,7 @@ export function localDayKey(nowMs: number): number {
   return new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
 }
 
+/** ms from `nowMs` to the next local midnight (by calendar, so a 23 or 25 hour DST day is right). */
 export function msUntilNextLocalMidnight(nowMs: number): number {
   const now = new Date(nowMs);
   return new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).getTime() - nowMs;

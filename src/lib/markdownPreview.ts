@@ -1,6 +1,10 @@
 import type { MarkdownBlock } from "../../shared/markdown.ts";
 import { createOffThreadQueue, type OffThreadJob, type WorkerLike } from "./offThread.ts";
 
+/**
+ * How long a worker may take to parse a file for its Preview. Ordinary Markdown of a quarter
+ * megabyte parses in a few milliseconds; past this the file opens as its source and says why.
+ */
 export const PREVIEW_BUDGET_MS = 2_000;
 
 const queue = createOffThreadQueue<string, MarkdownBlock[]>(

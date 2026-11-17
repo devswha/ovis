@@ -164,6 +164,12 @@ export function isVoiceShortcut(event: ShortcutEventLike, platformIsMac: boolean
 
 const STEP_SHORTCUTS: ReadonlySet<ShortcutId> = new Set(["previous-pane", "next-pane", "previous-tab", "next-tab", "previous-workspace", "next-workspace"]);
 
+/**
+ * Mod+Shift+ArrowUp/ArrowDown move the selection in a text field (on a Mac Cmd+Shift+↑ selects to
+ * the start of the text): in the message box or any other field with text they stay the field's, and
+ * switch panes everywhere else: an empty field, which has nothing to select, and the terminal (its
+ * own input element is xterm's, not a field to edit).
+ */
 export interface KeyTargetLike {
   tagName?: string;
   type?: string;
@@ -201,6 +207,7 @@ export function keepsKeyForText(event: { key: string; target: KeyTargetLike | Ev
   if (!(event.key.startsWith("Arrow") || event.key === "Home" || event.key === "End") || !keepsArrowsForText(event.target)) return false;
   const field = event.target as KeyTargetLike;
   if (!STEP_SHORTCUTS.has(shortcut)) return true;
+  // a field without a text selection (email, number, contenteditable) keeps the key while it has text
   if (typeof field.selectionStart !== "number" || typeof field.selectionEnd !== "number") return true;
   const moving = field.selectionDirection === "backward" ? field.selectionStart : field.selectionEnd;
   const back = event.key === "ArrowUp" || event.key === "ArrowLeft" || event.key === "Home";

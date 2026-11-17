@@ -11,6 +11,7 @@ export const RECENT_KEY = "ovis:recent-targets";
 const LEGACY_RECENT_KEY = "ovis:recent-panes";
 const RECENT_LIMIT = 8;
 
+/** A tuple is unambiguous even when remote IDs contain separators or match a local pane ID. */
 export function targetKey({ machineId, paneId }: RecentPane): string { return JSON.stringify([machineId, paneId]); }
 export function workspaceKey(machineId: string, workspaceId: string): string { return JSON.stringify([machineId, workspaceId]); }
 

@@ -1,4 +1,7 @@
 /**
+ * The demo's authoritative binary split tree. Every subsequent split, resize, swap and close edits that
+ * same tree; reconstructing a grid after each operation would lose its creation hierarchy.
+ *
  * Measured on herdr 0.9.3 (src/layout.rs resize_focused, src/app/api/panes.rs
  * handle_pane_resize): the split resized is the nearest one in the direction named, else the
  * nearest in the opposite direction; right and down add the amount to the ratio, left and up
@@ -67,6 +70,7 @@ function pathTo(node: Node, paneId: string): { split: Split; side: "first" | "se
   return null;
 }
 
+/** the split whose cut the pane stands against on that side: herdr's nearest split in that direction */
 function splitBeside(path: { split: Split; side: "first" | "second" }[], pane: LayoutPane, nav: PaneDirection): Split | null {
   const direction: SplitDirection = nav === "left" || nav === "right" ? "right" : "down";
   const side = nav === "right" || nav === "down" ? "first" : "second";

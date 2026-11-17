@@ -12,6 +12,10 @@ export const READ_AGAIN_TIMES = 7;
 
 export type ReadOutcome<T> = { kind: "answer"; value: T } | { kind: "failed"; reason: unknown } | { kind: "timeout" };
 
+/**
+ * Reads at once, then again `every` ms after each read started, up to `times` reads (a PC may list an agent only once
+ * its installer has finished with the shell profile).
+ */
 export function readAgainUntil<T>(read: () => Promise<T>, options: { every: number; times: number; later: (run: () => void, ms: number) => () => void; apply: (outcome: ReadOutcome<T>, last: boolean) => boolean; now?: () => number }): () => void {
   let left = options.times;
   let stopped = false;

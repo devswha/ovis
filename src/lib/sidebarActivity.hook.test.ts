@@ -18,6 +18,7 @@ function roster(finishes: Record<string, number>, statuses: Record<string, Agent
   if (!pane || !agent) throw new Error("fixture has no agent pane");
   machine.snapshot.finish_epoch = epoch;
   machine.snapshot.panes = Object.entries(finishes).map(([id, finish_id]) => ({ ...pane, pane_id: id, agent_status: statuses[id] ?? "done", finish_id }));
+  // Deliberately unchanged: native overrides finish without any herdr counter change.
   machine.snapshot.agents = Object.keys(finishes).map((id) => ({ ...agent, pane_id: id, agent_status: statuses[id] ?? "done", state_change_seq: 5 }));
   return [machine];
 }
