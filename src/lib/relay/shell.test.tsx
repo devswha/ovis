@@ -22,8 +22,11 @@ async function until(holds: () => boolean, what: string): Promise<void> {
   for (let turn = 0; turn < 10_000; turn++) { if (holds()) return; await Promise.resolve(); }
   throw new Error(`gave up waiting for ${what}`);
 }
+const UNTIL_SIGNED_MIN_NS = 3_000_000_000n;
+
 async function untilSigned(holds: () => boolean, what: string): Promise<void> {
-  for (let turn = 0; turn < 2_000; turn++) { if (holds()) return; await crypto.subtle.digest("SHA-256", new Uint8Array(1)); }
+  const deadline = process.hrtime.bigint() + UNTIL_SIGNED_MIN_NS;
+  for (let turn = 0; turn < 2_000 || process.hrtime.bigint() < deadline; turn++) { if (holds()) return; await crypto.subtle.digest("SHA-256", new Uint8Array(1)); }
   throw new Error(`gave up waiting for ${what}`);
 }
 const drain = async (): Promise<void> => { for (let turn = 0; turn < 500; turn++) await Promise.resolve(); };
