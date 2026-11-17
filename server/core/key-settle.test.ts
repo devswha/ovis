@@ -6,18 +6,9 @@ import { KEY_SETTLE_MS, TYPED_SETTLE_MS } from "../index.ts";
 
 afterEach(() => mock.restore());
 
-/**
- * What the settle must outlast, measured on herdr 0.9.3 (#634): a letter crosses the sidecar and the
- * attach in about 2 ms, so a key waits several times that; herdr holds a lone ESC ~150 ms.
- */
 const PTY_PIPELINE_MARGIN_MS = 20;
 const HERDR_ESC_HOLD_MS = 150;
 
-/**
- * One connection attached and ready on pane w:p1, its pty writes and herdr's RPCs written down with
- * the time they were made. A key goes through herdr around the pty, so the lane is what keeps it
- * from overtaking the typing before it: herdr offers no barrier for bytes in the attach pty (#634).
- */
 function lane() {
   const events: Array<{ what: string; at: number }> = [];
   const socket: Client = { data: connectionData({ deviceId: undefined, readOnly: false }), readyState: WebSocket.OPEN, send: () => 1, getBufferedAmount: () => 0, close: () => {} };
@@ -49,7 +40,6 @@ it("sends a key KEY_SETTLE_MS after the letter typed into the pty before it", as
   type("a");
   await keys(["left"]);
   expect(events.map((e) => e.what)).toEqual(["pty \"a\"", "keys left"]);
-  // timers count whole milliseconds: one may fire up to a millisecond before Date.now() says it is due
   expect(gap("pty \"a\"", "keys left")).toBeGreaterThanOrEqual(Math.max(KEY_SETTLE_MS, PTY_PIPELINE_MARGIN_MS) - 1);
 });
 
@@ -67,7 +57,6 @@ it("types a letter that comes while a key waits after the key, through herdr, no
   const sent = keys(["left"]);
   type("b");
   await sent;
-  // the letter's turn comes right after the key's: wait for that turn to be taken
   await keys(["right"]);
   expect(events.map((e) => e.what)).toEqual(["pty \"a\"", "keys left", "text \"b\"", "keys right"]);
 });
@@ -75,7 +64,6 @@ it("types a letter that comes while a key waits after the key, through herdr, no
 it("writes the terminal's own reply that comes while a key waits into the attach it answers, never typed through herdr", async () => {
   const { events, keys, reply } = lane();
   const sent = keys(["left"]);
-  // a herdr-core attach takes these out of what reaches the program; typed through herdr, the program reads them
   reply("\x1b[I");
   reply("\x1b]10;rgb:d8d8/d0d0/c3c3\x1b\\");
   await sent;
@@ -86,7 +74,6 @@ it("keeps text a client tags automatic but that is no terminal reply in the pane
   const { events, keys, reply } = lane();
   const sent = keys(["left"]);
   reply("ls\r");
-  // escape sequences around text: a paste, not one answer
   reply("\x1b[200~ls\x1b[201~");
   await sent;
   await keys(["right"]);
