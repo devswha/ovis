@@ -216,6 +216,9 @@ describe("the tools typecheck", () => {
   // had, and the untracked scripts/*.tmp.ts probes .gitignore allows. A new file is checked without being named
   // anywhere, and the list may only shrink.
   const ROOTS = ["scripts", "integrations", "site", "app/scripts"];
+  /** The tracked .ts/.tsx files under the roots of the checkout at `cwd` that are hidden or in a hidden folder; `-z`, since git quotes a name with non-ASCII bytes. */
+  const hiddenSources = (cwd: string): string[] =>
+    gitIn(cwd, "ls-files", "-z", ...ROOTS).stdout.split("\0").filter((file) => /\.tsx?$/.test(file) && /(^|\/)\./.test(file));
   const config = JSON.parse(read("tsconfig.tools.json")) as { extends?: unknown; include?: unknown; exclude?: unknown; files?: unknown; compilerOptions?: unknown };
   const excluded = (json: string): string[] | null => {
     const list = (JSON.parse(json) as { exclude?: unknown }).exclude;
@@ -274,13 +277,27 @@ describe("the tools typecheck", () => {
     // one glob per root: Bun.Glob reads no slash inside braces; the untracked probes are not checked
     const sources = ROOTS.flatMap((root) => files(`${root}/**/*.{ts,tsx}`)).filter((file) => !/^scripts\/[^/]+\.tmp\.ts$/.test(file));
     expect(sources.length).toBeGreaterThan(400);
-    fail(gitIn(repo, "ls-files", ...ROOTS).stdout.split("\n").filter((file) => /\.tsx?$/.test(file) && /(^|\/)\./.test(file)),
+    fail(hiddenSources(repo),
       "Rename these: tsc's folder include skips a hidden file or folder, so this file would never be typechecked.");
     fail(sources.filter((file) => file.endsWith(".tsx") && sources.includes(file.replace(/\.tsx$/, ".ts"))),
       "Rename one of each pair: beside a .ts of the same name, tsc's folder include leaves the .tsx unchecked.");
     // the directive in a line comment of any number of slashes, or a block comment
     fail(sources.filter((file) => /^\s*(?:\/\/+|\/\*+)\s*@ts-nocheck\b/m.test(read(file))),
       "Fix the type errors in these files instead of `// @ts-nocheck`: a file under the tools typecheck's roots is checked, or listed in its exclude list until it is fixed.");
+  });
+
+  it("finds a hidden file whatever its name", () => {
+    const root = mkdtempSync(join(tmpdir(), "ovis-hidden-sources-"));
+    try {
+      mkdirSync(join(root, "scripts"));
+      for (const name of [".x.ts", ".숨김.ts", "plain.ts"]) writeFileSync(join(root, "scripts", name), "");
+      gitIn(root, "init", "-q");
+      gitIn(root, "config", "core.quotePath", "true");
+      gitIn(root, "add", "scripts");
+      expect(hiddenSources(root)).toEqual(["scripts/.x.ts", "scripts/.숨김.ts"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("excludes only files that exist", () => {
