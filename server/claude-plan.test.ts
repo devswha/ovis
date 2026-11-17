@@ -32,6 +32,7 @@ describe("claudePlanFile", () => {
   });
 
   it("finds the slug behind the large lines that carry none", async () => {
+    // recent Claude Code versions write request lines of 70 to 145 KB, without the slug
     const { transcript } = store(["mellow-purring-pike"], { "plans/mellow-purring-pike.md": "# Plan\n" });
     const request = JSON.stringify({ type: "api-request", sessionId: SESSION, body: "x".repeat(100 * 1024) });
     appendFileSync(transcript, `${request}\n${request}\n${request}\n`);

@@ -322,6 +322,7 @@ function agyStartedOnNoSession(owner: { pid: number; argv?: string[] | null }): 
 }
 
 export async function agyFreshSession(pane: HerdrPane, screen: string): Promise<string | null> {
+  // Windows names held locks from a shared, cached scan: an empty answer there proves no absence
   if (process.platform === "win32" || pane.agent !== "agy" || !agyStartScreenUnused(screen)) return null;
   try {
     const owner = await agyPaneProcess(pane.pane_id);

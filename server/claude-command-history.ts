@@ -234,6 +234,10 @@ function due(entry: Entry, now: number): "scan" | "check" | number | null {
   if (entry.offset < entry.limit) return entry.cutAt !== null && entry.version.size <= entry.cutAt ? null : "scan";
   if (entry.checked !== null && entry.checkedThrough >= entry.offset && sameVersion(entry.checked, entry.version)) {
     if (checkedNow(entry)) return null;
+    // checked within the version's tick: checked once more when the tick is past, for every waiter and
+    // watcher alike (until then each answer reads its ends' lines again, evidence), a watcher's not
+    // sooner than the interval; never later than the interval: an mtime far ahead of the clock would
+    // otherwise hold it back for good
     const waited = entry.waiters > 0 && entry.checks < entry.wanted;
     const tickPast = entry.checked.mtimeMs + RACY_MS;
     const at = Math.min(waited ? tickPast : Math.max(entry.checkedAt + CHECK_INTERVAL_MS, tickPast), Math.max(entry.checkedAt, entry.checkedFrom) + CHECK_INTERVAL_MS);

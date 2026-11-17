@@ -18,6 +18,7 @@ import { badRequest, jsonResponse, setRequestRoute } from "./http.ts";
 const LINE_BUDGET = 8 * 1024 * 1024;
 const MAX_FILES = 64;
 const MAX_ARTIFACTS = 100;
+/** a page's address: the only links the list gives, so a transcript can never make it link anywhere else */
 const PAGE = /https:\/\/claude\.ai\/(?:code\/)?artifact\/[A-Za-z0-9_-]+/;
 
 type Row = Record<string, unknown>;

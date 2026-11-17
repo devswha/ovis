@@ -2,6 +2,31 @@ import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { StringDecoder } from "node:string_decoder";
 import type { HerdrPane } from "../shared/protocol.ts";
 
+/**
+ * The background tasks an agy or grok session runs, for the pane's count and its turn's hold
+ * (server/background-wait.ts), as Claude Code's are read from its transcript
+ * (server/claude-subagents.ts). Both start a turn by themselves when a task ends, with no prompt,
+ * and herdr reads the pane at rest meanwhile: it read DONE and alerted while a deploy, a CI watch
+ * or a timer the turn started still ran.
+ *
+ * - agy (`brain/<session>/.system_generated/logs/transcript_full.jsonl`): a `GENERIC` step at
+ *   `RUNNING` saying "Tool is running as a background task with task id: <id>" starts one (a
+ *   command past its `WaitMsBeforeAsync`, or a `schedule` timer: "Task Description: Timer: 1h 30m").
+ *   A `SYSTEM_MESSAGE` from `sender=<id>` (its result, or the timer's prompt) ends it, as does a
+ *   status check answering "Task: <id>" with a `Status:` other than RUNNING. A `USER_INPUT` step is
+ *   the person's prompt.
+ * - grok (`updates.jsonl`): each `background_tasks` update lists every task with its status, so the
+ *   newest one is the truth; a `user_message_chunk` that is no `<system-reminder>` notice is the
+ *   person's prompt.
+ *
+ * What the turn started is what started since the prompt. A task started before the pane's process
+ * is a gone process's (START_SLACK_MS as in claude-subagents.ts). A timer due within TIMER_LIMIT_MS
+ * is held until it is due, past the hold's limit: it surely resumes the turn, and a command may be a
+ * server. Only its process fires it, so while one is held its pane is looked up again each RESOLVE_MS,
+ * and a pane whose session can no longer be looked up holds nothing: not on one lookup that failed,
+ * which herdr being busy or a process read timing out gives too, but on the next, which the poll asks
+ * RETRY_MS later whatever the pane holds. Each file is read on from where the last read stopped.
+ */
 const POLL_MS = 2000;
 const RESOLVE_MS = 30_000;
 const RETRY_MS = 10_000;
@@ -165,6 +190,8 @@ export class AgentTaskStatus {
     const agent = reported.agent;
     if (!isTaskAgent(agent)) return;
     const known = this.panes.get(reported.pane_id);
+    // herdr naming no session for a grok pane names no other one: the session known for it stands, and
+    // the pane is asked for by that one (as herdr reports it, with no id, it is never found)
     const pane = agent === "grok" && reported.agent_session == null && known?.agent === agent ? { ...reported, agent_session: known.pane.agent_session } : reported;
     const session = sessionOf(pane);
     const recent = known === undefined ? spaced && this.failedLately(pane.pane_id, agent, session) : known.agent === agent && sessionOf(known.pane) === session && !this.stale(pane.pane_id);

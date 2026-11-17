@@ -68,6 +68,9 @@ describe("bridge registration", () => {
       writeFileSync(path, descriptor({ pid: reused.pid, generation: "crashed", birth: earlierBirth }));
       expect(registerBridge(4242, "new-token", { path }).registered).toBe(true);
       expect(read()).toMatchObject({ port: 4242, pid: process.pid });
+      // a bridge runs as this user, which may always signal it: outside Windows, a refused probe
+      // names someone else's process even under its recorded birth or an older version's PID-only
+      // descriptor. On Windows another logon session of this user refuses it too, so the birth decides.
       const windows = process.platform === "win32";
       for (const fields of [{ birth: reading.birth }, {}]) {
         writeFileSync(path, descriptor({ pid: reused.pid, generation: "refused", ...fields }));

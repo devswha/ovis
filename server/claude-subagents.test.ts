@@ -523,6 +523,7 @@ describe("backgroundAgentDetail", () => {
   it.skipIf(process.platform === "win32")("reads no transcript swapped for a FIFO before its open, and does not wait on it (#3363)", () => {
     const s = session();
     const file = s.agent("a1");
+    // in a process of its own, with a deadline: a read that waits on the FIFO never returns, and would hold this one
     const script = `
       const fs = require("node:fs");
       const open = fs.openSync;
@@ -2023,6 +2024,9 @@ describe("ClaudeSubagentStatus", () => {
           expect(status.loopHoldsNow("p1")).toBe(false);
           rest(s, 4);
           expect(status.loopHoldsNow("p1")).toBe(false);
+          // the notice's turn begins at that rest, and holds from its own prompt on. A known bound: nothing holds
+          // between that rest and this line, which Claude dates 24 to 97 ms after it in the transcripts of this PC
+          // and writes later still (read once as it reached the file: 133 ms after its own date)
           taken(s, 4);
           prompt(s, 4);
           expect(status.loopHoldsNow("p1")).toBe(true);

@@ -19,6 +19,7 @@ export function agentFault(agent: AgentPayload | undefined): string | null {
     || (agent.args !== undefined && (!Array.isArray(agent.args) || !agent.args.every((arg) => typeof arg === "string")))) {
     return "agent.name must be a string and agent.args must be an array of strings";
   }
+  // the dialog's model, effort and Codex prompt, checked as the dialog checks them: a client is not trusted to
   return agent.args === undefined ? null : launchArgsFault(agent.kind, agent.args as string[]);
 }
 

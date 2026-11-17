@@ -1,5 +1,6 @@
 import type { AgentStatus } from "../shared/protocol.ts";
 
+/** How long a turn's end is still held once its work ended: Claude goes on with the notice in about 2 s. */
 export const WAIT_GRACE_MS = 60_000;
 /**
  * The longest one rest is held. ponytail: nothing in a transcript tells a turn that waits on

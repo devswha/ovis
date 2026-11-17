@@ -694,6 +694,8 @@ describe("CLIProxyAPI v8", () => {
       const started = performance.now();
       for (let at = 0; at < 2; at++) { service.invalidate(); await service.report(false, hidden); }
       expect(reads().slice(2)).toEqual(["b", "b"]);
+      // time is what is tested (the work is synchronous, so no test timeout can fire): widening each row against the whole
+      // account took about 14 s here, linear takes well under 1 s
       expect(performance.now() - started).toBeLessThan(5000);
     });
 

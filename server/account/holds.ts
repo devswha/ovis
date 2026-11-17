@@ -53,6 +53,7 @@ export class AccountHolds {
     this.confirmed = true;
   }
 
+  /** A file that cannot be read is never written over: what it held would be lost. */
   private assertReadable(): void {
     if (this.error !== null) throw new Error(this.error);
   }

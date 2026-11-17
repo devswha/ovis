@@ -362,6 +362,24 @@ function acknowledgement(entry: Row, block: Row): boolean {
  */
 const SELF_RESUMED_RE = /"turnOrigin":"(?:scheduled|task_notification)"|"wakeupSource":"/;
 
+/**
+ * A self-resumed turn's prompt (SELF_RESUMED_RE), which no person typed and no chat sent: it holds
+ * the queue as a scheduled task's fire does (Parent.loopAt). After a fire of its own it only holds
+ * on; with no fire between the rest before it and itself, it is what tells of the turn. So for the
+ * second of two loops due in one tick, whose prompt runs right after the first loop turn's rest. And
+ * for a task that came due while another turn worked, where Claude wrote its fire during that turn:
+ * that turn's rest ended the fire's hold, as a rest ends whatever was told before it (scanParentLine),
+ * and the task's own turn begins at once. Either turn is told by this line and not by its fire, so it
+ * holds nothing from that rest until Claude has written this line, some tens of milliseconds into it.
+ *
+ * A notice's turn has no fire: this line alone tells of it. The notice Claude queues as the task ends
+ * (a `queue-operation`) begins no turn by itself: with a turn at work it waits for that turn's rest,
+ * or is taken into that turn (a `queued_command`), and neither holds. So that turn too holds nothing
+ * until Claude has written this line, which it dates some tens of milliseconds after the task's end,
+ * or after the rest of the turn the notice waited behind, and writes later than it dates it: 50 to
+ * 190 ms later in the lines read as they reached their files, so up to a few tenths of a second
+ * after the task's end or that rest.
+ */
 function selfResumed(parent: Parent, line: string, end: number): void {
   try {
     const entry = row(JSON.parse(line));
@@ -729,6 +747,39 @@ export function subagentDetails(parentPath: string, ids: Iterable<string>): Map<
   } finally { if (folder.fd !== null) closeSync(folder.fd); }
 }
 
+/**
+ * GET /api/pane/background-agent: what one subagent's own transcript holds, for a reader who opens
+ * it while it runs (shared/protocol.ts PaneBackgroundAgentDetail). A read of its own, apart from
+ * the scanner above: the scanner keeps counts and status for every agent of every Claude pane and
+ * carries no prompt or tool argument; this reads one agent's two files once, on request, and
+ * keeps nothing. Bounded: the meta file at MAX_META_BYTES, the transcript at
+ * DETAIL_LIMITS.max_read_bytes in all, in two reads that never overlap (its first
+ * DETAIL_HEAD_BYTES, where the dispatch prompt is, and its last DETAIL_TAIL_BYTES, the recent
+ * activity, the byte before which says whether the window starts a record), a record at
+ * DETAIL_RECORD_BYTES, the answer at DETAIL_LIMITS.max_events events and max_output_bytes of text.
+ * A record a window cuts, one over its size and a line that is no record are skipped and said
+ * (`incomplete`), never guessed at: a dispatch that cannot be read is no prompt, and a later
+ * instruction is not taken for it. What the windows left out, the events dropped for the cap and
+ * the text left out for its budget are said (`truncated`). Only the prompt the agent was
+ * dispatched with, its prose and its tool calls (name and arguments) are read: no tool result,
+ * no thinking, no image, nothing from a screen.
+ *
+ * The files are `<store>/<session>/subagents/agent-<id>.meta.json` and `agent-<id>.jsonl`, the
+ * store being the real folder of the session's own transcript. The id is a plain word of at most
+ * DETAIL_ID_LENGTH, so it names nothing outside that folder. Each folder on the way is a folder
+ * and no link, looked at before the files are opened and again after they are read, and must be
+ * the same folder both times. Where the kernel names an open descriptor's file (Linux's
+ * /proc/self/fd), the subagents folder is opened itself and the files are opened inside that open
+ * folder, and each descriptor's own path must be the one expected: a folder on the way swapped for
+ * a link, or moved away, between the look and the read, is refused, whatever was opened. Elsewhere
+ * the looks before and after stand for it. A file is opened only as a plain file that is no link,
+ * and the descriptor read is checked to be the file that was looked at.
+ *
+ * A file there is the agent's only when it says so: its meta file names an agent type, and every
+ * record of its transcript is a sidechain's of this session and of this agent (Claude Code writes
+ * `isSidechain`, `sessionId` and `agentId` on each). A file that says otherwise is no agent of the
+ * session's; nothing of it is answered.
+ */
 export const DETAIL_LIMITS: PaneBackgroundAgentDetail["limits"] = Object.freeze({ max_read_bytes: 256 * 1024, max_output_bytes: 128 * 1024, max_events: 128 });
 const DETAIL_HEAD_BYTES = 64 * 1024;
 const DETAIL_TAIL_BYTES = DETAIL_LIMITS.max_read_bytes - DETAIL_HEAD_BYTES;
@@ -783,6 +834,8 @@ function openFolder(store: string, sessionId: string): Folder | DetailRefusal {
   const chain: Folder["chain"] = [];
   for (const step of [store, join(store, sessionId), path]) {
     const seen = look(step);
+    // a folder that is not there has no agent; one that is a link or no folder leads out of the store, and one that
+    // cannot be looked at (no permission, an I/O error) is a store not readable now, never an agent gone
     if (seen === "missing") return "not_found";
     if (typeof seen === "string" || seen.kind !== "folder") return "unavailable";
     chain.push({ path: step, id: seen.id });
@@ -814,6 +867,11 @@ function intact(folder: Folder): boolean {
   return folder.chain.every((step) => folderId(step.path) === step.id) && (folder.fd === null || fdPath(folder.fd) === folder.path);
 }
 
+/**
+ * `name` in `folder`, opened as the plain file it was looked at as: no link, not replaced since the look, at most `max` bytes.
+ * `not_found` when there is no such plain file; `unavailable` when one is there but cannot be opened as looked at (no
+ * permission, or replaced meanwhile), so a read that fails is never taken for an agent gone from the session.
+ */
 function openIn(folder: Folder, name: string, max = Infinity): Opened | DetailRefusal {
   const path = join(folder.path, name);
   const where = folder.fd === null ? path : `${FD_DIR}/${folder.fd}/${name}`;
@@ -1191,6 +1249,14 @@ const BUSY_HOLD_MS = 5000;
 
 interface Claim { turn: number; barriers: Barrier[]; held: Barrier[] }
 
+/**
+ * How long a turn Claude resumed by itself (a `/loop` wakeup's, another scheduled task's, one on a
+ * background task's notice) holds the pane's queue while no rest is written after it (#3494). Claude
+ * resumes it as the task fires or ends, with no prompt of the person's nor a send of the chat's, and
+ * herdr reads that turn a moment later: queued input sent in between would land in the turn at work.
+ * A turn that writes no rest (interrupted, on a Claude Code that writes none for it; in a session
+ * that writes none; its process killed) is waited on no longer than this.
+ */
 export const LOOP_HOLD_MS = 60_000;
 
 interface Loop { fire: number; since: number | null }
@@ -1245,6 +1311,16 @@ export class ClaudeSubagentStatus {
     return turns !== undefined && turns.herdr.held.length + turns.chat.held.length > 0;
   }
 
+  /**
+   * Claude resumed a turn by itself (a `/loop` wakeup, a scheduled task, a background task's notice) and
+   * no rest was written since: the pane's queue holds. Until that turn's rest is written, or LOOP_HOLD_MS
+   * after the last entry that told of it was read (a later fire or prompt holds anew). No word of herdr's
+   * ends it: herdr reads the pane at rest until it reads the turn, and its working may be a late one for
+   * the turn before, or heard while a delivery is at its last checks. So a resumed turn that is interrupted
+   * and writes no rest holds the queue until that time is up, though herdr reads the pane at rest again.
+   * That time is this PC's clock's: a hold a poll found over holds no more, wherever the clock is set later;
+   * one that stands as the clock is set back ends LOOP_HOLD_MS past the next poll at the latest (poll).
+   */
   loopHolds(paneId: string): boolean {
     const since = this.panes.get(paneId)?.turns?.loop.since ?? null;
     return since !== null && this.now() - since < LOOP_HOLD_MS;

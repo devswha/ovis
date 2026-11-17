@@ -1,3 +1,8 @@
+/**
+ * Applying account records to this PC's devices.json (docs/account.md, "Account members" and
+ * "Records"). The device list stays the only authority: a record changes it only when its signer is
+ * a drive member of this PC's account, and never lets a removed key back in.
+ */
 import { accountDeviceId, AccountRecordError, ACCOUNT_RECORDS_MAX, parseAccountRecord, verifyAccountRecord, type AccountRecord, type LinkRecord } from "../../shared/account-records.ts";
 import type { DeviceStore } from "../devices.ts";
 import type { PairedDevice } from "../../shared/protocol.ts";
@@ -21,6 +26,7 @@ async function read(value: unknown): Promise<AccountRecord | { refused: RecordRe
   return await verifyAccountRecord(record) ? record : { refused: "signature_invalid", id: record.id };
 }
 
+/** One `add` or `remove`, after its signature held. A `link` never applies here: only its own row's session sends it. */
 function apply(store: DeviceStore, record: AccountRecord, serverId: string | null, now: number, gates?: AddGates): RecordOutcome {
   const refused = (code: RecordRefusal): RecordOutcome => ({ id: record.id, outcome: "refused", code });
   if (record.kind === "link") return refused("link_not_owner");
@@ -31,6 +37,7 @@ function apply(store: DeviceStore, record: AccountRecord, serverId: string | nul
   const signer = store.accountSigner(record.signer, record.account, leaving);
   if (!signer) return refused("signer_not_member");
   if (record.kind === "remove") return { id: record.id, outcome: store.removeAccountKey(record.key, record.account, { id: record.id, issuedAt: record.issued_at, by: { device_id: signer.id, label: signer.label }, signed: record }, now) ? "applied" : "unchanged" };
+  // the signature covers the signer only: a key off the curve would leave a devices.json no store can read
   if (!store.acceptsRelayKey(record.key)) return refused("record_invalid");
   if (store.isTombstoned(record.key)) return refused("tombstoned");
   if (store.hasKey(record.key)) {
@@ -119,11 +126,13 @@ export async function applyLink(store: DeviceStore, value: unknown, session: { d
   if ("refused" in record) return { refused: record.refused };
   if (record.kind !== "link") return { refused: "record_invalid" };
   const link: LinkRecord = record;
+  // a session signed in with an older key of the row cannot move it on: only the key it proved may be replaced
   if (link.server_id !== serverId || link.device_id !== deviceId || link.old_key !== sessionKey) return { refused: "link_not_owner" };
   if (store.accountError !== null) return { refused: "account_unavailable" };
   const account = store.account();
   if (account !== null && account !== link.account) return { refused: "account_mismatch" };
   if (store.isTombstoned(link.key)) return { refused: "tombstoned" };
+  // a row moving to a key this PC holds back would let that key in without anyone approving it here
   if (link.key !== link.old_key && gates?.held(link.key)) return { refused: "removal_pending" };
   if (store.keyHeldByOther(link.key, deviceId)) return { refused: "key_in_use" };
   const device = store.linkAccountKey(deviceId, link.old_key, link.key, link.account, sessionId);

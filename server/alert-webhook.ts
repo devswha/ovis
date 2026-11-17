@@ -1,3 +1,19 @@
+/**
+ * Settings → Alerts → Also send to (shared/alert-webhook.ts): the pane alerts web push sends
+ * (server/push.ts, which decides what and when) also go to one destination outside the app, in its
+ * preset's format: an ntfy topic, a Slack or Discord webhook, a Telegram bot, or plain JSON.
+ *
+ * alert-webhook.json in the state dir holds the destination, owner-only like the push keys: its URL
+ * or token is what posts into someone's chat. It is never answered back, only masked.
+ *
+ * A message names the PC, the pane and what happened, with a link to open the pane; never what the
+ * agent asked or answered, which would leave the PC for a third party.
+ *
+ * One post at a time, and at most one waiting: an alert that comes while another is being sent or
+ * retried replaces the one waiting, so a destination that is down is never flooded. A post that fails
+ * on the network, a 429 or a 5xx is tried again after `retryDelays`; any other answer (a wrong URL,
+ * a revoked token) is not, and is kept as the last error.
+ */
 import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
@@ -90,6 +106,7 @@ function checkUrl(preset: AlertWebhookPreset, value: unknown, loopbackHttp = fal
   return url.href;
 }
 
+/** Which service it is, and nothing of the path or token, which is the secret (an ntfy topic is all of it). */
 export function maskSecret(preset: AlertWebhookPreset, secret: string): string {
   if (preset === "telegram") return "…";
   try { return `${new URL(secret).host}/…`; } catch { return "…"; }
@@ -170,6 +187,7 @@ export function createAlertWebhook(options: AlertWebhookOptions): AlertWebhook {
   async function post(target: StoredWebhook, alert: WebhookAlert | null): Promise<WebhookResult> {
     const { url, init } = buildPost(target, alert, options.telegramApi);
     try {
+      // a webhook answers, it never redirects: following one would post the alert somewhere else
       const response = await fetch(url, { ...init, redirect: "error", signal: AbortSignal.timeout(TIMEOUT_MS) });
       await response.body?.cancel().catch(() => {});
       if (response.ok) return { ok: true };

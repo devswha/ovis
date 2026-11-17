@@ -90,6 +90,14 @@ export function ompBlobDigest(declared: unknown, data: unknown): string | null {
   return OMP_BLOB_REF.exec(data)?.[1] ?? null;
 }
 
+/**
+ * The picture an omp blob ref names in the store `blobs`, read and checked as inlineImageType checks
+ * an inline one (a raster declared as one, by its leading bytes, at most MAX_IMAGE_BYTES), and only
+ * when its bytes hash to the name the transcript gave them: omp names a blob by its digest, so these
+ * are exactly the bytes it recorded. The ref is held to omp's own 64 lowercase hex digits, so it
+ * never names a path outside the store, and neither the blob nor the store is followed through a link
+ * (ompBlobSteps). Null for anything else.
+ */
 export function ompBlobPicture(blobs: string, declared: unknown, data: unknown): { mediaType: string; bytes: Buffer } | null {
   return finish(ompBlobPictureSteps(blobs, declared, data));
 }
@@ -157,6 +165,15 @@ export function aroundBlobOpenForTests(around: ((opening: BlobOpening, open: () 
   aroundBlobOpen = around;
 }
 
+/**
+ * Opens the blob `digest` in the store `blobs` without following a link to either, from the very
+ * directory `checked` names (its identity: blobStoreIdentity, or ompBlobAnchor's). The store is opened
+ * first, as a directory and not through a link, and held (held-open.ts) to be that directory and the one
+ * `blobs` names (the held directory's own path); the blob is then opened through the held directory,
+ * so nothing put in the store's place, or above it, a link or another directory, can stand in for it.
+ * Linux needs /proc for that, macOS and Windows a native open relative to the held directory: a
+ * platform without one, or a Linux without /proc, serves no omp blob. The blob held, or null.
+ */
 function openBlob(blobs: string, digest: string, checked: string): Held | null {
   const opened = (opening: BlobOpening, open: () => Held) => aroundBlobOpen ? aroundBlobOpen(opening, open) : open();
   if (!heldOpenPlatform(blobPlatform)) return null;
@@ -242,6 +259,7 @@ export function codexOutputPictures(output: unknown): { mediaType: string; data:
 }
 export const CODEX_IMAGE_REF = /^codex-[a-f0-9]{64}$/;
 
+/** Only native user records name attachments; tool output and remote URLs never do. */
 function imageValues(entry: RecordValue): string[] {
   const payload = record(entry.payload);
   if (entry.type === "event_msg" && payload.type === "user_message" && (!payload.kind || payload.kind === "plain")) {
@@ -271,6 +289,7 @@ export function codexImageParts(entry: RecordValue): ImagePart[] {
   });
 }
 
+/** Whether `bytes` holds exactly `signature` at `offset`; bytes, not text, so no high bit is dropped. */
 function hasBytes(bytes: Buffer, offset: number, signature: string): boolean {
   return bytes.subarray(offset, offset + signature.length).equals(Buffer.from(signature, "latin1"));
 }

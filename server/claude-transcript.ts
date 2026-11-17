@@ -756,6 +756,12 @@ export function claudeTurnEnd(text: string): ClaudeTurnEnd {
   return end;
 }
 
+/**
+ * How the turn that wrote a Claude transcript's bytes from `from` to the end `plain` found (`file`) stands: what
+ * claudeTurnEnd reads in them (their last `tailBytes`). Read at once and as the subagent tracker reads the same file
+ * (claude-subagents.ts readBytes): only the plain file looked at, never a FIFO or a link put in its place. A record
+ * still being written, or a file not read, leaves the turn's end unknown: it is read whole once the file grows.
+ */
 export function claudeLastTurnEnd(path: string, file: { size: number; exact: string }, from: number, tailBytes = 256 * 1024): ClaudeTurnEnd {
   const start = Math.max(from, file.size - tailBytes);
   const text = readBytes(path, file.exact, start, file.size - start)?.toString("utf8");

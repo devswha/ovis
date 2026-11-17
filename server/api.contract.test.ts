@@ -45,6 +45,14 @@ import { ClaudeSubagentStatus } from "./claude-subagents.ts";
 import { setFilePoolOptions } from "./file-pool.ts";
 import { SLEEP } from "../scripts/fixtures/sleep.ts";
 
+/**
+ * Contract test for Ovis's HTTP + WS surface.
+ * Runs against the REAL herdr server on the developer's machine: these are the
+ * integration seams the browser UI depends on, so a mock here would prove nothing.
+ * Tests never mutate a user's pane; mutation cases create labeled workspaces and close them in afterAll.
+ * Every server here keeps its push state (VAPID key, subscriptions) in a temp dir: the
+ * user's ~/.config/herdr-web-ui holds their real devices, which a test must never page.
+ */
 let server: { port: number; stop: () => void };
 const stateDir = mkdtempSync(join(tmpdir(), "ovis-contract-"));
 

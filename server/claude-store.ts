@@ -55,6 +55,16 @@ function nearestOf<T extends { pid: number }>(rows: readonly ProcessRow[], claud
   return claude.filter((entry) => entry === first || !below.has(entry.pid));
 }
 
+/**
+ * The Claude that runs the session `entry` started: `entry` itself, unless it has no PID record file
+ * in any store and a Claude below it has one: then the nearest such Claude and any other that one
+ * did not start, whatever their records say (the callers check them, and refuse a store that cannot
+ * be told). Only a file's presence counts: a torn or leftover record still marks the Claude that
+ * runs the session, so a Claude that one started (`claude -p`) never takes its place, and a Claude
+ * beside it with no record is still told apart from none. A `claude attach` client writes no record
+ * and names its session by its job: it counts as one that has a record, so it never hands over and
+ * is never passed over.
+ */
 async function windowsLaunchedClaude(entry: { pid: number; argv: string[] }, rows: readonly ProcessRow[], home: string): Promise<{ pid: number; argv: string[] }[]> {
   const inner = descendantProcesses(rows, entry.pid).filter(isClaudeProcess);
   const named = (claude: { pid: number; argv: string[] }) => claudeAttachArgs(claude.argv) !== null || hasRecordFile(home, claude.pid);
@@ -290,7 +300,8 @@ async function processRead(pid: number, argv: readonly string[], home: string, p
   if (known && Date.now() - known.at < (missed(known.read) ? PROCESS_MISS_TTL_MS : PROCESS_DIR_TTL_MS)) return known.read;
   const read = await readClaudeSource(pid, home, platform, table);
   processDirs.delete(key);
-  // Claude writes its PID record as it starts
+  // Claude writes its PID record as it starts: on Windows a miss is asked again on the next read,
+  // and two stores holding it are remembered no more than a miss
   if (platform === "win32" && missed(read)) return read;
   processDirs.set(key, { read, at: Date.now() });
   if (processDirs.size > 256) processDirs.delete(processDirs.keys().next().value!);
@@ -432,6 +443,7 @@ const CONTINUED_TAIL_BYTES = 64 * 1024;
 
 async function transcriptTail(path: string): Promise<{ text: string; identity: string } | null> {
   try {
+    // no links and no blocking: a FIFO in its place must not hold the lookup (as branchedFrom)
     const file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
     try {
       const info = await file.stat({ bigint: true });
@@ -539,6 +551,7 @@ async function branchedFrom(path: string): Promise<string | null> {
     let end = 0;
     for (let next = bytes.indexOf(10, 0); next !== -1 && next < length; end = next + 1, next = bytes.indexOf(10, end)) {
       const line = bytes.subarray(end, next).toString("utf8");
+      // every record is read as JSON reads it: a key written with escapes (`"\u0074ype"`) is the same key (#2130)
       if (line.trim() === "") continue;
       let entry: { type?: unknown; sessionId?: unknown; forkedFrom?: { sessionId?: unknown } | null };
       try { entry = JSON.parse(line); } catch { return null; }
@@ -635,6 +648,11 @@ export async function claudeProcessSession(
   }
 }
 
+/**
+ * A small file Claude Code keeps (a PID record, a job's state), or null when it is no regular file or
+ * holds more than `max` bytes. Non-blocking and no symlinks: a FIFO or a link in its place must not
+ * hang the read. The cap holds on the read itself, which a file growing after its stat cannot pass.
+ */
 async function readSmallFile(path: string, max: number): Promise<string | null> {
   const file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
   try {

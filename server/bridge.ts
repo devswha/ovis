@@ -37,6 +37,8 @@ export async function bridgeIdentity(sidecar = sidecarAvailable()): Promise<Brid
   const socket = socketPath();
   let stat;
   try { stat = statSync(socket); } catch (error) {
+    // A herdr that is not running leaves no socket (on Windows, no marker). Said by code and
+    // without the path: the server that asked shows this to whoever is adding the PC.
     if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new HerdrError("socket_missing", "herdr's socket is missing; herdr is not running for this session");
     throw error;
   }
@@ -88,6 +90,8 @@ export function registerBridge(port: number, token = randomBytes(32).toString("h
     });
     if (!registered) return unregistered;
   } catch (error) {
+    // a guard that could not be released (OwnerGuardReleaseFailed) fails the start: this process
+    // must not keep serving on a guard it may still hold
     if (!(error instanceof OwnerGuardUnavailable)) throw error;
     console.error(`This bridge was not registered (descriptor ${path}): ${error.message}`);
     return unregistered;
@@ -110,6 +114,12 @@ export function registerBridge(port: number, token = randomBytes(32).toString("h
   };
 }
 
+/**
+ * The address a loopback relay passes connections to for a server bound to `hostname`, or null when
+ * it needs none (127.0.0.1 or a wildcard already answers on 127.0.0.1; 127.0.0.2 does not) or gets
+ * none: a host name is not relayed, since by the next connection it may resolve to another machine
+ * and take the bridge token there. Such a server gets the app's message to set HOST=127.0.0.1.
+ */
 export function relayTarget(hostname: string): string | null {
   const name = hostname.trim().toLowerCase().replace(/^\[(.*)\]$/, "$1");
   if (name === "127.0.0.1" || name === "0.0.0.0" || name === "::" || isIP(name) === 0) return null;

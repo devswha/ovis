@@ -1,3 +1,17 @@
+/**
+ * Optional shared-token gate for Ovis.
+ *
+ * There is no user database here: the token is the whole authorization decision,
+ * and whoever holds it can type into live terminals. Hence constant-time compares
+ * (a length-leaking `===` is enough to guess a token over a LAN), an HttpOnly +
+ * SameSite=Strict cookie so page JavaScript can never read it back, and a `Secure`
+ * flag whenever the request arrived over TLS or through a TLS-terminating proxy.
+ *
+ * An empty token disables this gate; server/access.ts then decides by where a request comes
+ * from, what Tailscale says about it, and whether it holds a paired device's cookie (the
+ * helpers for that cookie live here too), and index.ts warns when a public bind address is
+ * combined with neither.
+ */
 import { timingSafeEqual } from "node:crypto";
 
 import { isLoopbackAddress } from "./access.ts";
@@ -25,6 +39,18 @@ export const CLEAR_LEGACY_TOKEN_COOKIE = clearCookie(LEGACY_TOKEN_COOKIE);
 export const CLEAR_LEGACY_DEVICE_COOKIE = clearCookie(LEGACY_DEVICE_COOKIE);
 export const COOKIE_MAX_AGE_SECONDS = 31536000;
 
+/**
+ * Guessing budgets, per client address. A token is meant to be a long random string, but an
+ * owner who picked a short one would otherwise be guessable without bound, so a run of wrong
+ * tokens costs the address a wait that doubles with every further failure. The comparison
+ * itself stays constant-time; this only makes it expensive to keep asking.
+ *
+ * There are two budgets per address: one for POST /api/auth (the sign-in form) and one for a
+ * token presented with any other request (`Authorization: Bearer` or the token cookie). Every
+ * page load and poll of a browser holding a stale cookie spends the second; keeping them apart
+ * means that never stops its owner from signing in with the right token, and a right sign-in
+ * spends both waits.
+ */
 const AUTH_FAILURE_BUDGET = 5;
 const AUTH_BACKOFF_MS = 1_000;
 const AUTH_BACKOFF_MAX_MS = 60_000;
@@ -34,6 +60,7 @@ const BEARER_PREFIX = "bearer ";
 const DEVICE_PREFIX = "device ";
 const encoder = new TextEncoder();
 
+/** Malformed pairs are skipped: a junk cookie from another app must not deny the user. */
 export function parseCookies(header: string | null): Map<string, string> {
   const cookies = new Map<string, string>();
   if (!header) return cookies;
@@ -86,6 +113,8 @@ export function bearerMatches(request: Request, token: string): boolean {
 export function requiresAuth(pathname: string): boolean {
   if (pathname === "/ws") return true;
   if (!pathname.startsWith("/api/")) return false;
+  // a rendered page's media address is its own credential, kept to the client that rendered it for a fixed time
+  // (file-view.ts): the page has no origin and sends no cookie
   if (PAGE_MEDIA_ROUTE.test(pathname)) return false;
   return pathname !== "/api/health" && pathname !== "/api/auth" && pathname !== "/api/devices/pair";
 }
@@ -139,6 +168,14 @@ export function authClient(peer: string | null, headers: Headers): string | null
 
 type Channel = "sign-in" | "presented";
 
+/**
+ * What every visitor through one proxy shares: at most SHARED_FAILURES wrong tokens in any
+ * SHARED_WINDOW_MS, so a client that writes its own X-Forwarded-For (a direct local connection,
+ * a plain TCP tunnel) gets a fresh own budget per guess but no fresh share. It is a window, not
+ * a run: a browser left polling with an old cookie (one failure a minute once its own wait is at
+ * its cap) never fills it, and it empties on its own. Full, it holds back only addresses that
+ * have not got in lately (`admitted`), so the owner's devices keep working through an attack.
+ */
 const SHARED_FAILURES = AUTH_FAILURE_BUDGET * 10;
 const SHARED_WINDOW_MS = 10 * 60_000;
 const sharedFailures = new Map<string, number[]>();
@@ -148,6 +185,11 @@ export function sharedFailuresSize(): number {
 const ADMITTED_FOR_MS = 30 * 24 * 60 * 60_000;
 const admitted = new Map<string, number>();
 
+/**
+ * The proxy a forwarded address came through. The forwarded part is whatever the client wrote,
+ * ` via ` included, so the peer is read from the end: it is this socket's address, which never
+ * holds a space.
+ */
 function sharedKey(channel: Channel, client: string | null): string | null {
   const via = client?.lastIndexOf(" via ") ?? -1;
   return client === null || via < 0 ? null : `${channel} via ${client.slice(via + " via ".length)}`;
@@ -175,6 +217,7 @@ function recordFailure(channel: Channel, client: string | null): void {
   if (key === null) return;
   const recent = (sharedFailures.get(key) ?? []).filter((time) => Date.now() - time < SHARED_WINDOW_MS);
   recent.push(Date.now());
+  // re-inserted, so a full map evicts the proxy that failed longest ago, never one failing now
   sharedFailures.delete(key);
   sharedFailures.set(key, recent.slice(-SHARED_FAILURES));
   trimSharedFailures();
@@ -196,6 +239,11 @@ function admit(client: string | null): void {
   if (admitted.size > AUTH_CLIENTS_MAX) admitted.delete(admitted.keys().next().value!);
 }
 
+/**
+ * What the token presented with a request (Bearer or cookie) says: nothing presented, the
+ * right token, a wrong one, or `held` while the address is inside its wait, when it is not
+ * compared at all, so a guess made during the wait learns nothing.
+ */
 export function presentedToken(request: Request, token: string, client: string | null): "none" | "match" | "wrong" | "held" {
   if (token === "") return "none";
   const authorization = request.headers.get("authorization") ?? "";
@@ -207,6 +255,10 @@ export function presentedToken(request: Request, token: string, client: string |
   return "match";
 }
 
+/**
+ * Counts a wrong token presented with a request. Call it in the same synchronous step as
+ * `presentedToken`: an await between them lets concurrent guesses all pass the check.
+ */
 export function recordPresentedTokenFailure(client: string | null): void {
   recordFailure("presented", client);
 }
@@ -258,6 +310,7 @@ export async function handleAuthRequest(request: Request, token: string, client:
   }
   const offered = payload.token;
   if (typeof offered !== "string") return badRequest("missing_token", "token is required");
+  // read again after the await: concurrent guesses all passed the check above before any failed
   const waitNow = waitLeft("sign-in", client);
   if (waitNow > 0) return tooManyAttempts(waitNow);
   if (!matches(offered, token)) {

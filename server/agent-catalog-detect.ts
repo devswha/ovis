@@ -44,6 +44,8 @@ export function catalogLocator(options: { probe: LoginPathProbe | null; serviceP
     reading = run;
     return run;
   };
+  // a plain GET runs what it finds: only absolute PATH entries count, never `.`, an empty or a relative
+  // one, which would make whatever is in the server's working folder an agent
   const find = (binary: string, path: string): string | null => {
     const absolute = path.split(delimiter).filter((entry) => entry !== "" && isAbsolute(entry)).join(delimiter);
     if (absolute === "") return null;
@@ -100,6 +102,7 @@ async function readBounded(stream: ReadableStream<Uint8Array>, stop: Promise<voi
       size += value.byteLength;
     }
   } finally {
+    // the rest is not wanted: a process that keeps printing must not hold this read open
     await reader.cancel().catch(() => undefined);
   }
   return new TextDecoder().decode(Buffer.concat(chunks).subarray(0, VERSION_OUTPUT_BYTES));

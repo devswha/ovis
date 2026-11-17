@@ -1,3 +1,9 @@
+/**
+ * The PC's mailbox at the account service (docs/account.md, "Account service API"): records left for
+ * this PC while it was off. The PC signs in with nothing but its relay key, answering a server proof
+ * for the `account` role, which the relay itself never accepts. The service can hold records back,
+ * never forge one: each is checked and applied like a record a client hands over directly.
+ */
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { readFileSync } from "node:fs";
 import { writePrivateState } from "../private-state.ts";

@@ -67,6 +67,7 @@ let cmdCatalogCache: { path: string; mtimeMs: number; windows: Map<string, numbe
 
 const MAX_CATALOG_BYTES = 8 * 1024 * 1024;
 
+/** The catalog's text, read only as a regular file of bounded size: a FIFO there must not block the server. */
 function readCatalog(path: string): string | null {
   let fd: number | undefined;
   try {

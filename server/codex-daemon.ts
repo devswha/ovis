@@ -10,8 +10,12 @@ import { defaultCodexHome, paneCodexProcess } from "./codex.ts";
 import { processEnviron } from "./omo.ts";
 
 /**
- * Every Codex TUI shares one app-server daemon since 0.157. Its control socket is
- * $CODEX_HOME/app-server-control/app-server-control.sock, a WebSocket over the unix socket.
+ * Skills from the Codex app-server daemon every Codex TUI shares since 0.157, read-only.
+ *
+ * It only connects to a control socket that already exists, at $CODEX_HOME/app-server-control/
+ * app-server-control.sock (a WebSocket over the unix socket), and never starts a daemon. It sends
+ * `initialize` (experimentalApi false), the `initialized` notification and `skills/list`, nothing
+ * else: no thread, turn or approval method. Whatever goes wrong leaves the scanned rows.
  * codex-rs at 83086188ae0614bd882818ff1aa23f3194962012: app-server-transport/src/transport/
  * unix_socket.rs, app-server/src/request_processors/catalog_processor.rs.
  */
@@ -68,7 +72,7 @@ const CONTROL_SOCKET = "app-server-control.sock";
  * Where the control socket may be, as the pinned Codex makes it (unix_socket.rs, daemon_directory.rs):
  * the advertised path in $CODEX_HOME/app-server-control/ is either the socket itself, or a link to
  * <real /tmp>/codex-daemon-<euid>/<sha256 of the canonical advertised path>, in a directory that is
- * a user-owned 0700 directory.
+ * a user-owned 0700 directory. Anything else is not the daemon's and is never connected to.
  */
 async function controlSocketTarget(home: string, daemonRoot: () => Promise<string>): Promise<string> {
   const euid = process.geteuid?.();

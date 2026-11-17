@@ -46,6 +46,16 @@ function scriptOf(argv: readonly string[]): string | null {
   return null;
 }
 
+/**
+ * The catalog agent a foreground process is: one of its detect binaries run directly, or the
+ * extensionless script by that name an interpreter runs (npm's bin, a Python entry point), never
+ * any `pi.js` that shares a name. A binary whose name proves nothing on `platform` (Windows' own
+ * cmd) names none there. `platform` is the one the pane's terminal runs on, not this server's: a
+ * Windows terminal started directly as `letta.cmd` (npm's shim) is Letta, as Windows runs
+ * `letta` from that shim, while `letta.cmd` on Linux or macOS is a file named so and names none.
+ * Where the platform is not known for sure, a name counts only when every platform it may be
+ * reads it alike: neither `cmd` nor a shim names anyone there.
+ */
 export function processAgent(argv: readonly string[], platform: ProgramPlatform): string | null {
   const named = new Set(candidatesOf(platform).map((candidate) => agentOn(argv, candidate)));
   return named.size === 1 ? [...named][0]! : null;
@@ -98,6 +108,15 @@ export function paneSession(agent: string | null, facts: SessionFacts): AgentSes
   return titled.length === 1 && (facts.named ?? []).includes(titled[0]!) ? { agent: "opencode", source: "herdr:opencode", kind: "id", value: titled[0]! } : null;
 }
 
+/**
+ * The agent a pane runs: the program's own report first, else the process in front of it on
+ * `platform`, its terminal's. Only when the runtime names no program in front, the command the
+ * terminal was started with, which names an agent only when it runs one directly (a shell's `-c letta` or `cmd /c letta.cmd`
+ * names none) and only while the process it started is still the one in front: a terminal started
+ * as `claude` whose pane now runs `codex` names Codex, never Claude. No runtime tells a process's
+ * start time (hc names a terminal's own pid and the pid in front, herdr's process rows pids), so
+ * the same pid is what proves it. Null for none.
+ */
 export function paneAgent(facts: PaneFacts, platform: ProgramPlatform): string | null {
   const reported = reportedAgent(facts.reported);
   if (reported) return reported;

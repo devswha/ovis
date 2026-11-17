@@ -148,8 +148,11 @@ export function settingsFile(json: string, dir: string = claudeSettingsDir()): s
 }
 
 /**
- * When the file cannot be written the JSON goes as it is: a claude.exe (the native installer's) or a
- * claude.cmd takes it intact, and only an npm install's PowerShell shim would lose it.
+ * `args` as herdr's agent.start should get them for a `kind` agent on `platform`: on Windows, a
+ * Claude Code's inline JSON `--settings` goes as a file's path (see the top of this file). When the
+ * file cannot be written the JSON goes as it is: a claude.exe (the native installer's) or a
+ * claude.cmd takes it intact, and only an npm install's PowerShell shim would lose it, so a full
+ * disk or a folder that cannot be made must not fail every launch.
  */
 export function agentStartArgs(kind: string, args: string[], options: { platform?: string; dir?: string } = {}): string[] {
   if ((options.platform ?? process.platform) !== "win32" || kind !== "claude") return args;

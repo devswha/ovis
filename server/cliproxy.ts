@@ -10,11 +10,21 @@ export class CLIProxyError extends Error {
   constructor(readonly code: string, readonly status: number, message: string) { super(message); }
 }
 export const proxyInvalid = () => new CLIProxyError("invalid_cliproxy_request", 400, "Invalid Hub request");
+/**
+ * Which account a Hub file is, whatever its file name: its provider and the account it names (email, ChatGPT
+ * workspace: `holder`), its email alone (whatever its workspace) and its auth index, any of which tells it (#3428: an
+ * email may change while the index stays). Never reported.
+ */
 const accountIdentities = (provider: string, holder: string | null, email: string | null, index: string): readonly string[] =>
   [...(holder === null ? [] : [JSON.stringify([provider, holder])]), ...(email === null ? [] : [`email:${provider}:${email}`]), `index:${provider}:${index}`];
 const isIndexed = (identity: string) => identity.startsWith("index:");
 const isEmail = (identity: string) => identity.startsWith("email:");
 const sameAccount = (known: readonly string[], identities: readonly string[]) => known.some((identity) => identities.includes(identity));
+/**
+ * Whether a remembered account (`known`) is the one now read as `identities`: one known by its email is so only under
+ * that email (another account, with another email or none, may take its old auth index, #3444, #3449); otherwise any
+ * identity tells it.
+ */
 const knownAs = (known: readonly string[], identities: readonly string[]): boolean => {
   const emails = known.filter(isEmail);
   return emails.length > 0 ? sameAccount(emails, identities) : sameAccount(known, identities);
@@ -69,7 +79,9 @@ export class CLIProxyService {
   private skipped: ReadonlySet<string> = new Set();
   private hidden: () => ReadonlySet<string> = () => this.skipped;
   private readonly shownAt = new Map<string, number>();
+  /** the account (email, ChatGPT workspace) each row's file named when it was read; never reported */
   private readonly holders = new WeakMap<ProviderUsage, string>();
+  /** the account each row is (accountIdentities); never reported */
   private readonly identities = new WeakMap<ProviderUsage, readonly string[]>();
   private readonly shownRows = new WeakSet<ProviderUsage>();
   private readonly shownIdentities = new Map<string, readonly string[]>();
@@ -78,6 +90,15 @@ export class CLIProxyService {
   private savedHidden: string | null = null;
   private covered: Set<string> | null = null;
   private checkedCovered = false;
+  /**
+   * Fail closed (#3428): set when the saved list cannot be trusted (unreadable, not the list, a link, not this user's,
+   * too large) or does not cover a key hidden before this start (its save never landed). A hidden Hub key with no
+   * known account may then be any account under any file name, so while one is hidden, or while the hidden list is
+   * read only in part (a key left out may be one), no Hub account is read at all. Ways out, each saved: the whole
+   * hidden list holds no such key, because each was shown again or names a file the Hub lists (that file's account is
+   * then taken as the one hidden, as a fresh server takes it by file name); or the user saves the Hub again, told why
+   * by status().problem, which keeps the hidden keys unread by file name alone.
+   */
   private blind = false;
   private hiddenSaveFailed = false;
   private hiddenWhole: () => boolean = () => true;
@@ -162,6 +183,7 @@ export class CLIProxyService {
   }
 
   private persist(config: Config | null): void {
+    // an exclusive temporary file of a name no one can guess: nothing left in its place receives the key (#3428)
     writePrivateState(this.path, config ?? {});
     const moved = config?.url !== this.config?.url || config?.management_key !== this.config?.management_key;
     this.config = config;
@@ -180,6 +202,7 @@ export class CLIProxyService {
     }
   }
 
+  /** The Hub a saved hiddenAccounts belongs to: its address and management key, digested, so the key is never written there. */
   private hub(): string | null {
     return this.config === null ? null : createHash("sha256").update(`${this.config.url}\0${this.config.management_key}`).digest("hex");
   }
@@ -337,6 +360,7 @@ export class CLIProxyService {
   }
 
   call(path: string, init: RequestInit = {}): Promise<Record<string, unknown>> {
+    // A revoked key must cause one refusal, not one per account (the proxy bans after five).
     const request = this.requests.then(() => this.request(path, init));
     this.requests = request.then(() => undefined, () => undefined);
     return request;

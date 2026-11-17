@@ -223,6 +223,8 @@ export function claudeRestoredDraft(live: string, colors: string | null, sent: s
   if (box === null || box === "clipped" || !box.plain[0]?.startsWith("❯")) return null;
   if (foldedPlaceholder(box.plain.join("\n"))) return null;
   const rows = box.plain.map((row, index) => (index === 0 ? withoutIdePill(row.slice(1)) : row).replace(/\u00a0/g, " ").trim());
+  // walked row by row over the set of places the sent text can be at, never a regex: one built from
+  // the rows backtracks exponentially over a box of blank rows
   const text = sent.replace(/\u00a0/g, " ").trim();
   let at = new Set([0]);
   rows.forEach((row, index) => {

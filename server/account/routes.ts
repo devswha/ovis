@@ -58,6 +58,7 @@ export async function handleAccountRequest(request: Request, pathname: string, c
     }
     case "/api/account/link": {
       setRequestRoute(pathname);
+      // a link proves the key of the row whose session sends it, and only the relay carries a row's key
       if (peer.kind !== "relay") return fail("link_not_owner", "Link a device from its own connection through the relay", 403);
       if (context.services.accountHolds.error !== null) return fail("account_unavailable", context.services.accountHolds.error, 503);
       const first = devices.account() === null;

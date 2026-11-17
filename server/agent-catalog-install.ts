@@ -1,3 +1,11 @@
+/**
+ * POST /api/agent-catalog/install and /api/agent-catalog/sign-in: an agent's official install
+ * command, or its sign-in, run where the user sees it. The server picks the command from the catalog
+ * by the agent's id and this PC's platform; a request never carries a command. It opens a terminal
+ * tab and types the command into its shell, so every line shows and Ctrl+C stops it; nothing is run
+ * in the background. What was installed is read again through GET /api/agent-catalog.
+ * The dispatcher in index.ts runs the access gate first: a watching device cannot reach these.
+ */
 import { homedir } from "node:os";
 import { AGENT_CATALOG, catalogPlatform, commandProblems, type AgentCatalogEntry, type AgentTabStarted, type CatalogPlatform } from "../shared/agent-catalog.ts";
 import type { AgentDetector } from "./agent-catalog-detect.ts";
@@ -41,6 +49,11 @@ async function within<T>(work: Promise<T>, ms: number, clock: InstallClock): Pro
   }
 }
 
+/**
+ * The shell running in a new pane: POSIX off Windows; on Windows the one herdr reports in front once
+ * it starts, or null when herdr names neither PowerShell nor cmd.exe within `waitMs` in all, slow
+ * answers included. Nothing is typed into a shell that is not known.
+ */
 async function shellOf(paneId: string, platform: CatalogPlatform, waitMs: number, clock: InstallClock): Promise<PaneShell | null> {
   if (platform !== "windows") return "posix";
   const deadline = clock.now() + waitMs;
@@ -142,6 +155,13 @@ export class AgentInstaller {
     return front.length === 0 ? null : front.some((process) => process.pid !== shellPid);
   }
 
+  /**
+   * Whether an earlier install still runs. It does while its own request starts it, and while its
+   * installer runs in its tab. It ends when its tab closes, when the tab is back at its shell after
+   * the installer was seen running (success or failure alike), when no installer was seen running
+   * within INSTALL_START_MS of the command being typed, or at INSTALL_CAP_MS whatever the tab shows.
+   * Finding the agent installed never ends it: an installer may put its binary in place first.
+   */
   async #stillRunning(running: Running, platform: CatalogPlatform): Promise<boolean> {
     if (running.paneId === null || running.typedAt === null) return true;
     const paneId = running.paneId;
@@ -164,6 +184,7 @@ export class AgentInstaller {
       return badRequest("invalid_alternative", "alternative is the index of one of the platform's alternatives");
     }
     const method = index === undefined ? install.primary : install.alternatives[index as number]!;
+    // the catalog's own check again, right before the text is typed: a command that fails it never runs
     if (commandProblems(entry).length > 0) return conflictResponse("command_refused", "This install command is not one of the vendor's own; it was not run");
     const held = this.#running.get(entry.id);
     if (held !== undefined && (await this.#stillRunning(held, platform) || this.#running.get(entry.id) !== held)) {

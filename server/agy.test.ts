@@ -135,6 +135,7 @@ it("reads a long session's live WAL catalog past 32 MiB and copies it again only
     const transcript = join(dir, "brain", "session", ".system_generated", "logs", "transcript_full.jsonl");
     const dbPath = agyDatabasePath(transcript);
     mkdirSync(dirname(dbPath), { recursive: true });
+    // 24 MiB checkpointed plus about 10 MiB of WAL, the shape of a long turn (#2618).
     const rows = (from: number, to: number) => Array.from({ length: to - from }, (_, at) => `INSERT INTO steps VALUES (${from + at}, randomblob(1048576));`).join("");
     await abandonedWal(dbPath, `PRAGMA journal_mode=WAL; CREATE TABLE steps(idx INTEGER PRIMARY KEY, payload BLOB); ${rows(0, 24)} PRAGMA wal_checkpoint(TRUNCATE); ${rows(24, 34)}`);
     expect(fs.statSync(dbPath).size + fs.statSync(`${dbPath}-wal`).size).toBeGreaterThan(32 * 1024 * 1024);

@@ -12,6 +12,8 @@ export async function agentCatalogFor(platform: CatalogPlatform | null, detector
   return problem === null ? { platform, agents } : { platform, agents, path_problem: problem };
 }
 
+/** The answer for the catalog route, or null when the path is not it. */
+/** `readOnly`: a watching device's request, which reads the catalog as kept and never has the shells run again */
 export async function handleAgentCatalogRequest(request: Request, pathname: string, detector: AgentDetector, platform = catalogPlatform(process.platform), readOnly = false): Promise<Response | null> {
   if (pathname !== "/api/agent-catalog") return null;
   setRequestRoute(pathname);
