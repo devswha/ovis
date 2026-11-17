@@ -7,7 +7,7 @@
  * same list in an issue (.github/workflows/ci-flakes.yml).
  */
 import { parseArgs } from "node:util";
-import { failureSite } from "./ci-browser-parallel.ts";
+import { failureSite, TIMEOUT_EXIT_CODE } from "./ci-browser-parallel.ts";
 
 export interface LaneFailure {
   readonly script: string;
@@ -16,15 +16,24 @@ export interface LaneFailure {
   readonly message: string | null;
 }
 
+/** The lane's words for a script it stopped at its time limit, from the script's FAILED line; null when it ended by itself. */
+function timedOut(header: string): string | null {
+  const said = header.match(/Timed out after \d+s/)?.[0];
+  if (said !== undefined) return said;
+  return new RegExp(`\\(exit ${TIMEOUT_EXIT_CODE}\\b`).test(header) ? "Timed out" : null;
+}
+
 export function parseLaneLog(log: string): LaneFailure[] {
   const clean = Bun.stripANSI(log).replace(/^\d{4}-\d\d-\d\dT[\d:.]+Z /gm, "");
   const headers = [...clean.matchAll(/^(FAILED|FLAKY) (scripts\/[\w.-]+\.ts)(?=[:\s]).*$/gm)];
   return headers.map((header, index) => {
     const body = clean.slice((header.index ?? 0) + header[0].length, headers[index + 1]?.index ?? clean.length);
+    const limit = timedOut(header[0]);
     return {
       script: header[2] ?? "",
       outcome: header[1] === "FLAKY" ? "flaky" : "failed",
-      ...failureSite(body),
+      // a stopped script's log ends with its shutdown's errors, which are not why it was slow
+      ...(limit === null ? failureSite(body) : { site: null, message: `${limit} (the lane's limit)` }),
     };
   });
 }
@@ -43,7 +52,7 @@ export interface RankedFailure {
   readonly message: string | null;
   failed: number;
   flaky: number;
-  /** How many of the failed and flaky were in runs of the default branch itself. */
+  /** How many of the failed and flaky job attempts were in runs of the default branch itself. */
   main: number;
   runId: number;
   branch: string;
@@ -103,6 +112,10 @@ async function pooled<T, R>(items: readonly T[], visit: (item: T) => Promise<R>)
   }));
   return results;
 }
+
+/** A run of the default branch itself: a fork's pull request from a branch of that name is not one. */
+export const isMainRun = (run: { readonly event: string; readonly head_branch: string }, defaultBranch: string): boolean =>
+  run.event !== "pull_request" && run.head_branch === defaultBranch;
 
 interface Run {
   readonly id: number;
@@ -270,7 +283,7 @@ export async function scan(hours: number, repoName?: string): Promise<Scan> {
     }
     stats.logsRead++;
     return parseLaneLog(log).map((failure) => ({
-      ...failure, main: run.event !== "pull_request" && run.head_branch === defaultBranch, runId: run.id, branch: run.head_branch, createdAt: run.created_at,
+      ...failure, main: isMainRun(run, defaultBranch), runId: run.id, branch: run.head_branch, createdAt: run.created_at,
     }));
   });
   return { repo, hours, since, until: until.toISOString(), stats, rows: aggregateFailures(observations.flat()) };

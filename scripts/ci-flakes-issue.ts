@@ -30,7 +30,7 @@ export function issueBody(result: Scan): string {
     "<!-- Written by .github/workflows/ci-flakes.yml (scripts/ci-flakes-issue.ts) once a day: edits here are replaced. -->",
     `Browser scripts in \`ci.yml\` runs from ${since} to ${until} (${hours} hours) that failed, or failed and then passed on their automatic second run (flaky). \`bun scripts/ci-flakes.ts --hours ${hours}\` gives the same list locally.`,
     "",
-    "\"On main\" is how many of a row's failed and flaky runs were runs of the default branch itself; the others were in pull requests, where the change under review may have broken the script. A job that failed outside a script (an upload, a cancellation, the job's own time limit) and a run still going have no row.",
+    "The counts are job attempts, not runs: two attempts of one run count twice. \"Of those on main\" is how many were in runs of the default branch itself; the others were on other branches, where a change under review may have broken the script. A script the lane stopped at its time limit has no failure site: a loaded runner stops several at once. A job that failed outside a script (an upload, a cancellation, the job's own time limit) and a run still going have no row.",
     "",
     "| CI runs | Browser jobs | Passed with no second run | Logs read | Skipped | Job lists not read | Logs not read |",
     "|---:|---:|---:|---:|---:|---:|---:|",
@@ -41,7 +41,7 @@ export function issueBody(result: Scan): string {
   if (rows.length === 0) {
     return [...lines, `No browser script failed or needed a second run${unread > 0 ? " in what could be read" : ""}.`].join("\n");
   }
-  lines.push("| Failed | Flaky | On main | Script | Failure site | Message | Most recent run |", "|---:|---:|---:|---|---|---|---|");
+  lines.push("| Failed job attempts | Flaky job attempts | Of those on main | Script | Failure site | Message | Most recent run |", "|---:|---:|---:|---|---|---|---|");
   for (const row of rows.slice(0, MAX_ROWS)) {
     const run = `[${row.runId}](https://github.com/${repo}/actions/runs/${row.runId}) on ${code(row.branch)}`;
     lines.push(`| ${row.failed} | ${row.flaky} | ${row.main} | ${code(row.script)} | ${code(row.site)} | ${code(row.message)} | ${run} |`);

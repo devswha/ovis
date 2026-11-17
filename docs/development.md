@@ -1314,7 +1314,8 @@ The console, GitHub annotations, job summary and `summary.json` name the failing
 its first script file and line when the log contains them.
 `bun scripts/ci-flakes.ts` ranks, across the last 24 hours of `ci.yml` runs and every attempt of
 each, which script failed or passed only on a second run, at which assertion and site, and how many
-of those runs were of the default branch itself (the others were pull requests'). It reads
+of those job attempts were in runs of the default branch itself (the others were on other
+branches). A script the lane stopped at its time limit is listed with that limit and no site. It reads
 through `gh` and changes nothing: a failed job's log, and a passed job's only when the job carries
 the flaky warning.
 Use `--hours 30` for a different window, `--repo owner/name` to select a repository instead of
