@@ -11,6 +11,7 @@ export interface ProcessRow {
   started?: number;
 }
 
+/** A Windows command line as argv: double quotes group, nothing else is special here. */
 export function windowsArgv(commandLine: string): string[] {
   const words: string[] = [];
   for (const match of commandLine.matchAll(/"([^"]*)"|(\S+)/g)) words.push(match[1] ?? match[2]!);

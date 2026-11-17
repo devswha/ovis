@@ -10,6 +10,10 @@ import { readProcessBirth } from "./process-owner.ts";
 import * as usage from "./usage.ts";
 import { UsageLoginService } from "./usage-login.ts";
 
+/**
+ * A sign-in the browser follows runs through the server's private PTY host, never in a
+ * herdr pane, so no other device can read its sign-in address or the code typed into it.
+ */
 const root = mkdtempSync(join(tmpdir(), "usage-login-private-"));
 const bin = join(root, "bin");
 const fixtures = join(import.meta.dir, "fixtures/usage-login");
@@ -19,6 +23,7 @@ const services = new Set<UsageLoginService>();
 let names = 0;
 
 // The server PC's own sign-ins stay out of these tests: a Mac signed in to Claude Code keeps one in its
+// keychain, which no test home shows, and a default-home sign-in would then ask to replace it.
 let keychain: { mockRestore(): void } | null = null;
 
 beforeAll(() => {
@@ -93,6 +98,7 @@ async function promptWhen(service: UsageLoginService, login: string, until: (pro
     const changed = service.changed(login);
     const response = await read(service, login);
     const prompt = (await response.json()) as Record<string, unknown>;
+    // a refused read answers at once and never changes: waiting on it again would spin without yielding to a timer
     if (!response.ok) throw new Error(`reading sign-in ${login} answered ${response.status}: ${JSON.stringify(prompt)}`);
     if (until(prompt)) return prompt;
     if (prompt["ended"]) throw new Error("login ended before the expected prompt");
@@ -371,6 +377,7 @@ exec sleep 600
     expect(set).toMatch(/SameSite=Strict/);
     expect(set).toMatch(/Path=\/api\/usage\/login/);
     const { login_id: login } = (await started.json()) as { login_id: string };
+    // another browser signed in the same way (the server's token: the same owner) that knows the id
     expect((await read(service, login, false, "device:a", null)).status).toBe(404);
     expect((await read(service, login, false, "device:a", `${jar.get(login)!.split("=")[0]}=forged`)).status).toBe(404);
     expect((await post(service, "code", { login, code: "abc" }, "device:a", null)).status).toBe(404);

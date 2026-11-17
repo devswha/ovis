@@ -813,7 +813,8 @@ describe("managed source updates with real Git repositories and builds", () => {
     expect(older.urls).toEqual(["?scope=bridge", ""]);
     expect(older.sent.filter((message) => message.type === "bridge-accepted")).toHaveLength(1);
     for (const runtime of ["herdr-core", "alt-runtime"]) expect((await asked(false, undefined, runtime)).urls).toEqual(["?scope=bridge", ""]);
-    if (process.platform === "win32") return;
+    if (process.platform === "win32") return; // herdr's socket is a named pipe there: no unix socket file is left behind
+    // a socket file a killed herdr left behind refuses the connect: herdr is stopped, as with no socket (#2670)
     const stale = join(mkdtempSync(join(directory, "stale-")), "herdr.sock");
     const holder = Bun.spawn([process.execPath, "-e", `Bun.listen({ unix: ${JSON.stringify(stale)}, socket: { data() {} } }); console.log("listening");`], { stdout: "pipe" });
     await holder.stdout.getReader().read();
@@ -1188,6 +1189,7 @@ describe("managed source updates with real Git repositories and builds", () => {
 
   // $HOME as /home/<user> -> /data00/home/<user>: the launcher names the state dir through the link,
   // and Bun runs the installed release's supervisor from the real path (#2029)
+  // only with a socket named for the test: falling back to the default one would reach the user's own herdr
   it.skipIf(!liveHerdr || !process.env["HERDR_SOCKET"])("keeps an update installed when $HOME is a symlink", async () => {
     const volume = join(directory, "volume", "home");
     mkdirSync(volume, { recursive: true });
@@ -1438,6 +1440,7 @@ it("cancels an install while it builds: nothing is installed, its offer stays, a
     expect(watched.cancel("11111111-2222-4333-8444-555555555555")).toBe(false);
     const install = watched.request("install", true, undefined, "11111111-2222-4333-8444-555555555555");
     await building.promise;
+    // another's id (another device's install, or this PC's own Settings') never stops it
     expect(watched.cancel("99999999-2222-4333-8444-555555555555")).toBe(false);
     expect(watched.cancel("11111111-2222-4333-8444-555555555555")).toBe(true);
     await install;

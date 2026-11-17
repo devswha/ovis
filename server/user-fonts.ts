@@ -16,6 +16,7 @@ export const USER_FONT_MAX_BYTES = 32 * 1024 * 1024;
 const USER_FONTS_MAX = 64;
 
 const FONT_TYPES: Readonly<Record<string, string>> = { ".woff2": "font/woff2", ".woff": "font/woff", ".ttf": "font/ttf", ".otf": "font/otf" };
+// letters and digits of any script, then spaces, _ + . - too: never a quote, comma or slash a family or a path would trip on
 const PLAIN_NAME = /^[\p{L}\p{N}][\p{L}\p{N} _+.-]*$/u;
 const FACE_SUFFIX: Readonly<Record<string, Pick<UserFont, "weight" | "style">>> = {
   regular: { weight: 400, style: "normal" },
@@ -30,6 +31,7 @@ function fontOf(file: string, bytes: number, modified: number): UserFont | null 
   if (!Object.hasOwn(FONT_TYPES, type.toLowerCase()) || !PLAIN_NAME.test(stem) || bytes > USER_FONT_MAX_BYTES) return null;
   const dash = stem.lastIndexOf("-");
   const suffix = dash > 0 ? stem.slice(dash + 1).toLowerCase() : "";
+  // own keys only: "-constructor" is no face
   const face = Object.hasOwn(FACE_SUFFIX, suffix) ? FACE_SUFFIX[suffix] : undefined;
   const family = face ? stem.slice(0, dash).trim() : stem;
   return { file, family, ...(face ?? { weight: 400, style: "normal" }), bytes, version: `${bytes}-${Math.trunc(modified)}` };

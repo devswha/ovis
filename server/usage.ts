@@ -5,6 +5,10 @@
  * Read only, on purpose: an OAuth token is never refreshed here. Claude, Codex, Cursor and Grok
  * rotate refresh tokens, so a refresh the CLI did not make logs the CLI out. An expired token is
  * reported as `expired` instead; the CLI refreshes its own file the next time it runs.
+ * Antigravity uses its official CLI only when HTTP omits Gemini quotas; the CLI owns its authentication.
+ *
+ * A sign-in another tool on this PC holds is never read at all. Where that tool keeps its own record of the limits
+ * it read, the record is listed instead, named as that tool's (usage-recorded.ts).
  */
 
 import { Database } from "bun:sqlite";
@@ -79,6 +83,10 @@ export interface UsageProvider {
   readLocal?(ctx: UsageContext, signIn: SignIn): Reading | null;
   read(ctx: UsageContext, signIn: SignIn): Promise<Reading | null>;
   missingCommand?(ctx: UsageContext): string | null;
+  /**
+   * The tools on this PC that keep a record of this provider's limits for a sign-in of their own (usage-recorded.ts):
+   * read for what they recorded, never for that sign-in.
+   */
   recorded?: readonly RecordedSource[];
 }
 
@@ -241,6 +249,8 @@ async function fromKeychain(ctx: UsageContext, service: string, accounts: Array<
   return null;
 }
 
+// ---- Claude Code: keychain `Claude Code-credentials` on macOS, else ~/.claude/.credentials.json ----
+
 function claudeAccount(path: string): Account | null {
   const oauth = record(record(parseJson(readText(path)))["oauthAccount"]);
   const id = text(oauth["accountUuid"]);
@@ -388,6 +398,11 @@ function codexCredits(value: unknown): UsageCredits | null {
   return { kind: "balance", balance: balance !== null && balance > 0 ? balance : null, unlimited: false };
 }
 
+/**
+ * The resets Codex counts in its usage answer; when one is left, when the soonest expires, from the
+ * list Codex itself reads, waited on no longer than Codex waits (5 s). That list is extra: when it
+ * cannot be read the count stands alone, and the windows read with it are kept.
+ */
 async function codexResets(ctx: UsageContext, signIn: SignIn, summary: unknown): Promise<UsageResets | null> {
   const available = number(record(summary)["available_count"]) ?? 0;
   if (available <= 0) return null;
@@ -630,6 +645,9 @@ const grok: UsageProvider = {
   },
 };
 
+// ---- Antigravity (Google's Gemini and third-party model quota): keychain `gemini` / `antigravity`,
+// or the CLI's `antigravity-oauth-token` file where there is no keychain (Linux) ----
+
 function antigravitySignIn(value: string | null): SignIn | null {
   if (value === null) return null;
   const encoded = value.startsWith("go-keyring-base64:") ? Buffer.from(value.slice("go-keyring-base64:".length), "base64").toString("utf8") : value;
@@ -803,6 +821,7 @@ const opencode: UsageProvider = {
 
 export const USAGE_PROVIDERS: readonly UsageProvider[] = [claude, codex, cursor, copilot, grok, antigravity, opencode];
 
+/** Keychain services whose read hung (an access prompt nobody answered): not asked again. */
 const promptedServices = new Set<string>();
 
 async function readKeychain(service: string, account?: string): Promise<KeychainRead> {
@@ -866,6 +885,7 @@ async function readKeychainInLoginSession(service: string, account?: string): Pr
   const plist = join(dir, "job.plist");
   let pipe: FileHandle | undefined;
   try {
+    // awaited, not waited for: a stalled mkfifo must not hold every other request (#1404)
     const mkfifo = Bun.spawn(["mkfifo", "-m", "600", fifo], { stdin: "ignore", stdout: "ignore", stderr: "ignore", timeout: COMMAND_TIMEOUT_MS, killSignal: "SIGKILL" });
     if (await mkfifo.exited !== 0) return null;
     writeFileSync(plist, `<?xml version="1.0" encoding="UTF-8"?>
@@ -949,6 +969,11 @@ interface Search {
 }
 
 export class UsageService {
+  /**
+   * A local CLI login of `provider` ended: look its sign-ins up again and read them anew, preserving account
+   * rate-limit backoffs. Only that provider, and not its hidden accounts while their place still holds them:
+   * their credentials stay unread (#3333).
+   */
   invalidate(provider: UsageProviderId): void {
     this.searches.delete(provider);
     const skipped = this.skipped();
@@ -987,6 +1012,12 @@ export class UsageService {
   private readonly records = new Map<RecordedSource, { readAt: number; readings: RecordedReading[] }>();
   private skipped: () => ReadonlySet<string> = () => new Set();
   private lastSkipped: ReadonlySet<string> = new Set();
+  /**
+   * The hidden accounts whose kept reading was evicted (#3391), by key: their provider, whose sign-in held them
+   * (holderOf) and their name. Only the reading goes: a sign-in that names no account is known as hidden again by its
+   * holder, so it is never read to learn whose it is. Kept only while the hidden list names the key, so it is bounded
+   * by that list and holds no numbers.
+   */
   private dropped = new Map<string, { provider: UsageProviderId; holder: string; account: string | null }>();
 
   constructor(private readonly ctx: UsageContext = systemUsageContext(), private readonly providers: readonly UsageProvider[] = USAGE_PROVIDERS,
@@ -1002,6 +1033,12 @@ export class UsageService {
     return pass;
   }
 
+  /**
+   * A provider whose every listed account is among `keys` is not searched again: hiding or removing an
+   * account must stop reading its credentials, not only showing them (#3333). Its last numbers stay, so it
+   * can be shown or restored. An account without the plan is never listed, so it cannot hold a provider
+   * back; a provider not searched yet is searched once, whatever `keys` names, so a new account is still found.
+   */
   skipAccounts(keys: () => ReadonlySet<string>): void { this.skipped = keys; }
 
   private async collect(refresh: boolean): Promise<UsageReport> {
@@ -1012,6 +1049,8 @@ export class UsageService {
     for (const [source, entry] of this.entries) {
       if (entry.usage && shownAgain.has(entry.usage.key)) { this.searches.delete(entry.usage.id); this.entries.delete(source); }
     }
+    // one whose kept reading was dropped (#3391) is known by its key alone, never by a prefix: a Hub account's key
+    // starts with its provider's id too, and must not send a fully hidden provider to its credentials
     for (const [key, { provider }] of this.dropped) {
       if (shownAgain.has(key)) this.searches.delete(provider);
       if (!skipped.has(key)) this.dropped.delete(key);
@@ -1061,6 +1100,7 @@ export class UsageService {
     try { found = await provider.signIns(this.ctx); } catch { found = []; searched = false; }
     const tokens = new Set<string>();
     found = found.filter((signIn) => "locked" in signIn || (!tokens.has(signIn.token) && Boolean(tokens.add(signIn.token))));
+    // a hidden account its sign-in names keeps its last reading wherever it is found now, so its credentials are not used (#3333)
     const keptFor = (signIn: Found): Entry | undefined => {
       const ours = (source: string) => source.startsWith(`${provider.id}|`);
       if (!signIn.account) {
@@ -1087,12 +1127,14 @@ export class UsageService {
       const kept = keptFor(signIn);
       if (kept) return [source, { usage: kept.usage, readAt: kept.readAt, nextAt: kept.nextAt, holder: kept.holder }];
       const entry = this.entries.get(source);
+      // a hidden or removed account keeps its last reading: its credentials are not used (#3333)
       const key = entry?.usage?.key;
       const hidden = key !== undefined && this.lastSkipped.has(key);
       const held = hidden && entry?.holder === holderOf(signIn);
       const current = entry !== undefined && (held || (!hidden && now < entry.nextAt && !(forced && entry.usage?.problem !== "rate_limited")));
       if (current) return [source, { usage: entry.usage, readAt: entry.readAt, nextAt: entry.nextAt, holder: entry.holder }];
       if (hidden && entry?.usage) this.dropped.set(entry.usage.key, { provider: provider.id, holder: entry.holder, account: entry.usage.account });
+      // a hidden account with no reading kept (evicted, or never read by this server) is listed unread, never read
       const as = hiddenAs(signIn);
       if (as !== undefined) {
         return [source, { usage: { id: provider.id, key: as.key, account: as.account, plan: "locked" in signIn ? null : signIn.plan ?? null, windows: [], problem: null, checked_at: null }, readAt: now, nextAt: now, holder: holderOf(signIn) }];
@@ -1123,6 +1165,8 @@ export class UsageService {
 
   private async read(provider: UsageProvider, found: Found, previous: ProviderUsage | null, now: number): Promise<Entry> {
     const settle = (usage: ProviderUsage | null, wait: number): Entry => ({ usage, readAt: now, nextAt: now + wait, holder: holderOf(found) });
+    // an account is known by its id; one the sign-in does not name, by where it was found (hashed:
+    // the key reaches the browser, the credential's path must not)
     const identity = (account: Account | null | undefined) => {
       const known = account ?? found.account ?? null;
       return { key: accountKey(provider.id, known, found.source), account: known?.label ?? null };
@@ -1186,15 +1230,25 @@ function standingIn(own: ProviderUsage, record: RecordedUsage): ProviderUsage {
   };
 }
 
+/** Whose sign-in a place holds: the account it names, else its token, hashed (kept in memory only, never reported). */
 function holderOf(found: Found): string {
   if (found.account) return `account:${found.account.id}`;
   return "locked" in found ? "locked" : `token:${createHash("sha256").update(found.token).digest("hex")}`;
 }
 
+/** The key an account is listed by: its id, or, for a sign-in that names none, where it was found, hashed. */
 function accountKey(id: UsageProviderId, account: Account | null | undefined, source: string): string {
   return account ? `${id}:${account.id}` : `${id}@${createHash("sha256").update(source).digest("hex").slice(0, 12)}`;
 }
 
+/**
+ * Where the Claude or Codex account listed as `key` keeps its sign-in now (its CredentialHome),
+ * read from its files without asking any provider: a key is all the browser names,
+ * never a place. Their reading names no account, so the key the list showed is the one its files
+ * give. Null when no sign-in here has that key now: a hub's, another provider's, or one whose home
+ * holds another account since. One account signed in in several homes (each its own token) is
+ * `ambiguous`: the list shows it once, so which home the user meant cannot be told.
+ */
 export async function localSignInPlace(ctx: UsageContext, key: string): Promise<{ provider: "claude" | "codex"; home: CredentialHome } | { provider: "claude" | "codex"; ambiguous: true } | null> {
   for (const provider of [claude, codex]) {
     const id = provider.id === "claude" ? "claude" : "codex";
@@ -1236,6 +1290,7 @@ async function keychainState(ctx: UsageContext, service: string, accounts: Array
 
 const tokenDigest = (token: string): string => createHash("sha256").update(token).digest("hex");
 
+/** A followed sign-in's home as its CLI left it: the account as the list keys and names it, never a token or a path. */
 export interface HomeSignIn {
   readonly key: string;
   readonly label: string | null;
@@ -1294,6 +1349,8 @@ export async function handleStatuslineRequest(request: Request, service: UsageSe
   try {
     return jsonResponse(service.setStatusline((body as { enabled: boolean }).enabled), 200, { "cache-control": "no-store" });
   } catch (error) {
+    // only the installer's own refusals are told: anything else (a settings.json that will not parse, a
+    // filesystem error) could quote the user's settings, and a saved command can carry a secret
     if (error instanceof StatuslineInstallError) return jsonResponse({ error: { code: "statusline_failed", message: error.message } }, 409);
     console.warn(`usage: Claude's status line could not be changed: ${error instanceof Error ? error.message : String(error)}`);
     return jsonResponse({ error: { code: "statusline_failed", message: "Claude's status line could not be changed; the server's log says why" } }, 500);

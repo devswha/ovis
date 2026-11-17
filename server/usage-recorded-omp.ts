@@ -11,6 +11,9 @@
  *   label          "Claude 7 Day (Fable)"
  *   used_fraction  0 to 1; null when the provider stated none
  *   resets_at      epoch ms; null when the provider stated none
+ *
+ * That table is all this reads. The same file holds Oh My Pi's sign-ins (`auth_credentials`): nothing here names
+ * that table, and the file is only read.
  */
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -19,7 +22,13 @@ import { RECORDED_STALE_AFTER_MS } from "../shared/usage.ts";
 import { AHEAD_MS, byLength, claudeLimit, readStore, resetOf } from "./usage-recorded-pi.ts";
 
 const DAY_MS = 86_400_000;
+/** A week is the longest window read here: a row older than that, with a day to spare, records none that still runs. */
 const SINCE_MS = 7 * DAY_MS + DAY_MS;
+/**
+ * The newest rows looked through for each sign-in's latest report. Oh My Pi keeps a row an hour for each limit of each
+ * sign-in, about a thousand in the eight days read: this is twenty sign-ins' worth, and what a stopped sign-in last
+ * recorded is not pushed out by the rows of the others.
+ */
 const MAX_ROWS = 20_000;
 
 /** `+provider` keeps each search on the index by time. */

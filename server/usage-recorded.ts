@@ -1,3 +1,9 @@
+/**
+ * An account's plan limits as another tool on this PC recorded them for its own sign-in. This server reads that
+ * record and never that sign-in: no token of the tool is read, nothing is asked of a provider in its name, and its
+ * store is only read. A tool that keeps no record of the limits gives no account here: an account only it is signed
+ * in to is then one this server cannot show.
+ */
 import type { ProviderUsage, UsageProviderId, UsageRecorded, UsageRecorder, UsageWindow } from "../shared/protocol.ts";
 import type { UsageContext } from "./usage.ts";
 

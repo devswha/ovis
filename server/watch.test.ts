@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { PaneWatch, WatchStreamParser } from "./watch.ts";
 
 function frame(bytes: string | Uint8Array): string {
+  // as herdr 0.9.3 writes it: `encoding` names what the bytes are, and `bytes` is base64 of them
   return JSON.stringify({ type: "terminal.frame", seq: 1, width: 80, height: 24, full: true, encoding: "ansi", bytes: Buffer.from(bytes).toString("base64") });
 }
 

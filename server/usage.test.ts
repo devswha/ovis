@@ -374,6 +374,7 @@ describe("providers", () => {
     const service = new UsageService(context(), only("claude"));
     const post = () => handleStatuslineRequest(new Request("http://x/api/usage/statusline", { method: "POST", body: JSON.stringify({ enabled: true }) }), service);
     expect((await post()).status).toBe(200);
+    // a command that runs the installed wrapper behind a secret of its own is refused, not wrapped
     const wrapper = join(home, ".claude", "herdr-statusline", "statusline-tee.sh");
     write(join(home, ".claude", "settings.json"), { statusLine: { type: "command", command: `API_KEY=FAKE_SECRET_FOR_TEST sh ${wrapper}` } });
     const refused = await post();
@@ -1195,6 +1196,7 @@ describe("the service", () => {
     await service.report();
     service.invalidate("copilot");
     const report = await service.report();
+    // a hidden account is listed but never read, not even by the first report (#3423)
     expect(reads).toEqual(["token-b", "token-b"]);
     expect(report.providers.map((usage) => usage.key)).toEqual(["copilot:a", "copilot:b"]);
   });

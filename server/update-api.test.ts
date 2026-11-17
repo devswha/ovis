@@ -88,6 +88,7 @@ describe("a cancel", () => {
     updates.requests.splice(0);
     status = offer({ phase: "building", install_cancellable: true });
     const cancel = (id: string | null = issued) => answer(handleUpdateRequest(install(id === null ? "{}" : JSON.stringify({ install_id: id })), "/api/updates/cancel", updates));
+    // only by naming the install it stops (its 202's install_id): never another's
     for (const id of [null, "not-an-id", "ABCDEF11-2222-4333-8444-555555555555"]) expect(await cancel(id)).toEqual({ status: 400, code: "invalid_update_cancel" });
     expect(updates.requests).toEqual([]);
     expect(await cancel()).toEqual({ status: 202, code: null });

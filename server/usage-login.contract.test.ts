@@ -187,6 +187,7 @@ it("follows a sign-in in the server's own terminal: no herdr pane, on any device
   }
   const state = /state=([\w-]+)/.exec(String(shown["url"]))?.[1];
   expect(state).toBeString();
+  // every pane herdr has, read as any device's GET /api/pane/read would: none shows the sign-in's address
   const panes = (await herdr.sessionSnapshot()).panes;
   const screens = await Promise.all(panes.map((pane) => herdr.paneRead({ paneId: pane.pane_id, source: "recent_unwrapped", lines: 500 }).then((read) => read.text, () => "")));
   expect(screens.filter((text) => text.includes(state!))).toEqual([]);
@@ -252,6 +253,7 @@ it("lets no other browser signed in with the server's token reach a sign-in, eve
   const app = createServer({ port: 0, stateDir, token: "fixture-only", machines: false, registerBridge: false,
     sidecar: false, terminalAttach: false, usageLogin: service });
   const base = `http://127.0.0.1:${app.port}`;
+  // two browsers, each with the server's token: to the server they are the same owner
   const headers = (extra: Record<string, string> = {}) => ({ authorization: "Bearer fixture-only", origin: base, "content-type": "application/json", ...extra });
   try {
     const response = await fetch(`${base}/api/usage/login`, { method: "POST", headers: headers(), body: JSON.stringify({ provider: "claude", name: "token-private", follow: true }) });
@@ -662,6 +664,7 @@ it("frees a home after a restart when its sign-in ended while no server ran, eve
     await launched(0);
     before.stop();
     await paneClose((await first.json() as UsageLoginStarted).pane_id);
+    // a herdr started again hands the same pane IDs out again: here the saved one names another live tab
     const other = (await plainTab({ cwd: root, label: "usage-login-other", workspaceId })).root_pane.pane_id;
     openedPanes.push(other);
     const saved = join(stateDir, "usage-logins.json");

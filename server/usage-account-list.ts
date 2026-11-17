@@ -5,6 +5,11 @@ import { withOwnerGuard } from "./owner-guard.ts";
 import { readStateDocument, setAsideDamaged, writeStateDocument } from "./state-document.ts";
 import type { UsageService } from "./usage.ts";
 
+/**
+ * Accounts removed from Ovis, not signed out of their CLIs. Only public account keys are saved;
+ * no credential home, keychain item or token is changed. Restore (POST) or a successful followed
+ * sign-in of that account brings it back; token refreshes and server restarts do not.
+ */
 export class UsageAccountList {
   private readonly path: string;
 

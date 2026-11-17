@@ -1,10 +1,15 @@
 import { constants, closeSync, fstatSync, lstatSync, openSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 
+/** A canonical regular JSONL file inside the canonical session store, never a link out or FIFO. */
 export function transcriptInStore(path: string, sessionDir: string): string | null {
   return authorizedTranscript(path, sessionDir)?.path ?? null;
 }
 
+/**
+ * transcriptInStore, with what it authorized: the store's real path (`root`) and the identity of the
+ * very file it opened there (`identity`, dev:ino), so a caller can hold later reads to that file.
+ */
 export function authorizedTranscript(path: string, sessionDir: string): { path: string; root: string; identity: string } | null {
   let canonical: string;
   let root: string;
@@ -27,6 +32,10 @@ export function authorizedTranscript(path: string, sessionDir: string): { path: 
 
 const absent = (error: unknown): boolean => error !== null && typeof error === "object" && "code" in error && error.code === "ENOENT";
 
+/**
+ * Only an absent JSONL file whose
+ * nearest existing ancestor is a directory inside the resolved store counts; dangling links never do.
+ */
 export function unwrittenSession(path: string, sessionDir: string): { id: string; path: string } | null {
   if (!isAbsolute(path) || !path.endsWith(".jsonl")) return null;
   let root: string;

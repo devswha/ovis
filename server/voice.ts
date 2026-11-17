@@ -1,3 +1,9 @@
+/**
+ * Voice input (shared/voice.ts): the browser's clip goes to the user's own OpenAI key and the
+ * transcript streams back as NDJSON. The key is read here and sent upstream only: no answer,
+ * log line or error message carries it.
+ */
+
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
@@ -69,6 +75,7 @@ export interface VoiceServiceOptions {
   fetch(url: string, init: RequestInit): Promise<Response>;
 }
 
+/** Owner-only, and written whole: a crash mid-write must not leave half a key file. */
 function writeJsonPrivate(path: string, value: unknown): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = `${path}.${process.pid}.tmp`;
@@ -103,6 +110,7 @@ async function readLimited(request: Request, limit: number): Promise<Uint8Array<
   return body;
 }
 
+/** a provider's words for a failure, without the key it may quote back */
 function scrub(message: string, key: string): string {
   return message.split(key).join("***").slice(0, MESSAGE_MAX_CHARS);
 }
@@ -210,6 +218,7 @@ export class VoiceService {
       throw error;
     }
     let parsed: unknown;
+    // the parser's message may quote the file, and the file holds the key
     try { parsed = JSON.parse(raw); } catch { throw new Error(`${this.path} is not valid JSON`); }
     const value = record(parsed);
     const file: VoiceFile = {};
@@ -223,6 +232,7 @@ export class VoiceService {
   private settings(file: VoiceFile) {
     const envBase = text(this.env[ENV_BASE_URL]);
     const envKey = text(this.env[ENV_KEY]);
+    // an env key goes only where the env (or the default) says: a stored base_url never receives it
     const storedBase = envKey ? undefined : file.base_url;
     return {
       key: envKey ?? file.api_key ?? null,
@@ -249,6 +259,8 @@ export class VoiceService {
     const extra = Object.keys(change).find((field) => !(FIELDS as readonly string[]).includes(field));
     if (extra !== undefined) throw invalid(`Unknown field ${extra}`);
     const next = this.read();
+    // A saved key is only ever sent where it was saved for: moving it to another server takes the
+    // key again, so a client that can write settings cannot send someone's key elsewhere.
     if (change["base_url"] !== undefined) {
       if (text(this.env[ENV_KEY])) throw new VoiceError("key_from_env", 409, `${ENV_KEY} sets the key; its server is set by ${ENV_BASE_URL}`);
       if (next.api_key && typeof change["api_key"] !== "string") throw invalid("Send api_key with base_url: a saved key is not sent to another server");
@@ -276,6 +288,8 @@ export class VoiceService {
     form.append("model", transcribeModel);
     form.append("stream", "true");
     for (const language of clip.languages) form.append("languages[]", language);
+    // hints only fill the room the required fields leave, first ones first: a pane with many
+    // slash commands would otherwise make the provider refuse the whole recording
     const room = Math.max(0, PROVIDER_FORM_FIELDS_MAX - ([...form.keys()].length + 1));
     for (const keyword of clip.keywords.slice(0, room)) form.append("keywords[]", keyword);
     form.append("prompt", PROMPTS[clip.mode]);

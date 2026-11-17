@@ -29,6 +29,12 @@ export interface TranscriptIO {
   statNow?(path: string, follow?: boolean): Stats;
 }
 const FLAGS = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0);
+/**
+ * Linux filesystems on a local block device or in memory (statfs f_type): ext2/3/4, btrfs, xfs,
+ * tmpfs, zfs, f2fs, bcachefs. Not FUSE (sshfs, virtiofs), NFS, SMB, 9p (WSL's Windows drives) or
+ * any other: a read there may wait on the network, so it is never made on the event loop. Other
+ * platforms' statfs types mean other things: there every read is async.
+ */
 const LOCAL = new Set([0xef53, 0x9123683e, 0x58465342, 0x01021994, 0x2fc12fc1, 0xf2f52010, 0xca451a4e]);
 const nativeIO: TranscriptIO = {
   open: async (path) => {
@@ -83,6 +89,16 @@ interface Request {
   cancel(): void;
 }
 
+/**
+ * Known limits:
+ * - A local disk that stops answering inside a call on the event loop blocks the loop, as a
+ *   synchronous read would. The fallback notices a slow call only once it returns.
+ * - A native operation that never settles (a read ahead or any other) keeps its lease, so two of
+ *   them on two paths keep every lease, and every later read waits out its deadline (one with a
+ *   budget alone waits until its signal aborts).
+ * - A cancelled lease keeps its path too, until its operations settle: a new read of that
+ *   transcript waits behind it.
+ */
 export class TranscriptReader {
   private readonly queue: Request[] = [];
   private readonly active = new Set<Request>();

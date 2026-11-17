@@ -12,6 +12,11 @@ export interface Release {
 }
 export const NOTES_FILE_LIMIT = 2_000_000;
 
+/**
+ * A release's own CHANGELOG.md or release-summaries.json, read from one descriptor: a regular
+ * file within NOTES_FILE_LIMIT, or nothing. A file that grows between a look and the read, a
+ * symlink, a FIFO or a device would otherwise make the supervisor's synchronous read unbounded.
+ */
 export function readNotesFile(path: string): string {
   const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
@@ -35,6 +40,7 @@ export function pluginBinaryOf(checkout: string | undefined, compiled: boolean):
   try { return { checkout, version: String((JSON.parse(readFileSync(join(checkout, "package.json"), "utf8")) as { version?: unknown }).version) }; }
   catch { return { checkout, version: "" }; }
 }
+/** herdr updates a plugin's compiled server, not this app */
 export const PLUGIN_BINARY_REASON = "Ovis runs here as the herdr plugin's compiled server: update it with herdr (herdr plugin update devswha.ovis), then restart Ovis.";
 export function installedBinaryAt(root: string, compiled: boolean): boolean {
   return compiled && /[\\/]ovis[\\/](?:releases[\\/][^\\/]+|bin)[\\/]?$/i.test(root);
@@ -131,6 +137,8 @@ export function runCommand(cwd: string, argv: string[], signal?: AbortSignal, ti
   });
 }
 
+/** The unshallow fetch downloads the whole missing history in one go: a slow link needs minutes,
+ * not the 30 s bound of an ordinary command (#1252). */
 const UNSHALLOW_TIMEOUT_MS = 10 * 60_000;
 const UNSHALLOW_RETRY_MS = 6 * 60 * 60_000;
 
@@ -149,6 +157,10 @@ function cleanTmpPacks(packDir: string | null, before: Set<string>): void {
   }
 }
 
+/** Removes every `tmp_pack_*` file older than STALE_TMP_PACK_MS, whoever left it: the packs a
+ * fetch leaked before this cleanup existed (#1252), or that a failed fetch's own cleanup never
+ * reached (the process exited first, a crash, a delete Windows refused while the file was
+ * open). Best effort and never recursive: a failure or a directory is left alone. */
 function sweepStaleTmpPacks(packDir: string | null, now = Date.now()): void {
   if (packDir === null) return;
   for (const name of tmpPacks(packDir)) {
@@ -187,6 +199,8 @@ export class Updater {
     /** herdr's `plugin install` checks out a shallow, detached commit it owns; that HEAD is
      * accepted when it is an ancestor of origin/main (a user's own detached checkout is not). */
     pluginCheckout?: boolean;
+    /** The herdr plugin checkout whose launcher runs this compiled server, and its version: its updates come from
+     * `herdr plugin update`, so the app offers none and says so (the binary's own updates are todo 7's). */
     pluginBinary?: { checkout: string; version: string };
     installedBinary?: boolean;
     afterInstall?: (release: Release) => void | Promise<void>;
@@ -389,6 +403,10 @@ export class Updater {
     return run(this.options.root, ["git", "fetch", "--no-tags", "--unshallow", "origin"], this.controller.signal, timeout);
   }
 
+  /**
+   * Stops the install running now, only when `installId` names it (the id its install request carried): true when it did.
+   * Another's install (another device's, or this PC's own Settings') is never stopped. Once it restarts, false.
+   */
   cancel(installId: string): boolean {
     if (!this.runId || installId !== this.runId) return false;
     if (this.installing && this.status.phase === "building") { this.installing.abort(new Error("Update cancelled")); return true; }

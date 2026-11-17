@@ -1,3 +1,8 @@
+/**
+ * The workspace routes: a folder's listing and a new folder, a repository's changes, and the
+ * workspaces, tabs and worktrees herdr makes, renames, moves and closes. They answer from herdr
+ * and the disk; the dispatcher in index.ts runs the access gate first.
+ */
 import type { ServerContext } from "./dispatch.ts";
 import { isAbsolute, resolve } from "node:path";
 import { MAX_LABEL_CHARS } from "../shared/labels.ts";
@@ -35,8 +40,17 @@ async function routeFolder(paneId: string | null, directory: string): Promise<st
 export const MAX_ENV_VARS = 64;
 export const MAX_ENV_BYTES = 32 * 1024;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+/**
+ * How long one inventory read keeps asking herdr: a workspace still unread then is answered as a timed-out
+ * read, so a stalled herdr (10 s per call) cannot hold the answer past the request's 60 s idle limit.
+ */
 export const INVENTORY_BUDGET_MS = 30_000;
 
+/**
+ * What is wrong with a create request's `env`, in the API's words; null when herdr can set it (or there
+ * is none). Values are text without control characters, a tab or line break included; the answer
+ * never repeats a value, which may be a key.
+ */
 function envFault(env: unknown): string | null {
   if (env === undefined) return null;
   if (!isJsonObject(env)) return "env must be an object of names to string values";
@@ -102,6 +116,7 @@ export async function handleWorkspaceRequest(request: Request, url: URL, pathnam
   if (pathname === "/api/workspace/git/log" || pathname === "/api/workspace/git/branches" || pathname === "/api/workspace/git/show") {
     setRequestRoute(pathname);
     if (request.method !== "GET") return badRequest("method_not_allowed", "use GET");
+    // commit messages and branch names are the repository's contents, read like its changes
     if (request.headers.get("sec-fetch-site") === "cross-site") return jsonResponse({ error: { code: "cross_site", message: "A repository's history is read from this app" } }, 403);
     const cwd = await routeFolder(url.searchParams.get("pane_id"), (url.searchParams.get("directory") ?? "").trim());
     if (cwd instanceof Response) return cwd;
@@ -186,6 +201,9 @@ export async function handleWorkspaceRequest(request: Request, url: URL, pathnam
         ? await tabCreate({ ...options, workspaceId: payload.workspace_id as string })
         : await workspaceCreate(options);
       const workspaceId = created.tab.workspace_id;
+      // the page selects the pane on this answer but draws it only once the roster lists it: the roster is read as
+      // the answer goes, not after the collector's debounced pane.created (500 ms). Not before the launch either:
+      // herdr answers calls made at once up to 250 ms late, and the launch makes its own.
       if (!payload.agent) {
         broadcastAll({ type: "session-changed" });
         return jsonResponse({ workspace_id: workspaceId, pane_id: created.root_pane.pane_id, agent_started: false });
@@ -208,6 +226,8 @@ export async function handleWorkspaceRequest(request: Request, url: URL, pathnam
     }
   }
 
+  // A worktree is a git checkout herdr opens as a workspace grouped with its repository's.
+  // The workspace names the repository; herdr finds the checkout root from its folder.
   if (pathname === "/api/worktree/list") {
     setRequestRoute(pathname);
     if (request.method !== "GET") return badRequest("method_not_allowed", "use GET");
@@ -221,6 +241,9 @@ export async function handleWorkspaceRequest(request: Request, url: URL, pathnam
     }
   }
 
+  // The sidebar's branch labels: every repository and unmarked git workspace of this PC in one request
+  // instead of one each (#2661). herdr is still asked once per workspace, one after another: four at once
+  // left about one read in four waiting ~100 ms longer, where one at a time took ~22 ms for eight.
   if (pathname === "/api/worktree/inventory") {
     setRequestRoute(pathname);
     if (request.method !== "GET") return badRequest("method_not_allowed", "use GET");
@@ -401,6 +424,7 @@ export async function handleWorkspaceRequest(request: Request, url: URL, pathnam
     }
   }
 
+  // herdr's prefix+shift+t and prefix+shift+x: a tab's name, and a tab closed with every pane in it
   if (pathname === "/api/tab/rename" || pathname === "/api/tab/close" || pathname === "/api/tab/move") {
     setRequestRoute(pathname);
     if (request.method !== "POST") return badRequest("method_not_allowed", "use POST");

@@ -27,6 +27,11 @@ const LOGIN = {
   opencode: { cli: "opencode", binaries: ["opencode"], args: ["auth", "login"] },
 } as const;
 
+/**
+ * What the sign-in line sets first in `shell`: the credential home `name` names (`home`), or none
+ * (null: the default home). The pane's shell may have inherited another account's home, so the
+ * default one is reached by removing the variable, not by leaving it out of the tab's environment.
+ */
 function credentialHomePrefix(shell: PaneShell, name: string, home: string | null): string {
   if (shell === "posix") return `${shellCommandLine("posix", "env", home === null ? ["-u", name] : [`${name}=${home}`])} `;
   if (shell === "powershell") return home === null ? `Remove-Item Env:${name} -ErrorAction SilentlyContinue; ` : `$env:${name} = ${psQuote(home)}; `;
@@ -44,11 +49,22 @@ function canonicalPath(path: string): string {
   }
 }
 
+/**
+ * The login holding a credential home: the pane its tab opened as, and that tab's terminal. herdr names
+ * each terminal once and keeps the name when the tab moves to another workspace (its pane ID changes), so
+ * the terminal is there exactly as long as the login runs in it: the CLI replaces the tab's shell (exec),
+ * or the shell exits after it. A pane ID alone is no proof: a restarted herdr hands the same IDs out again.
+ */
 interface LoginHolder { readonly pane: string; readonly terminal: string }
 interface Launch { readonly launch: string; readonly pid: number; readonly at: number }
+/**
+ * `launch` is a lock id of its own: the file can be read by any device that reads files, and the id that
+ * reaches the login's prompt is never written there.
+ */
 interface PrivateHolder { readonly launch: string; readonly pid: number; readonly at: number; readonly private: true; readonly birth?: ProcessBirth }
 type Holder = LoginHolder | Launch | PrivateHolder;
 
+/** A sign-in the browser follows: the CLI in the server's own PTY, never a herdr pane another device could read. */
 interface PrivateLogin {
   readonly provider: PromptProvider;
   readonly target: LoginTarget;
@@ -56,6 +72,10 @@ interface PrivateLogin {
   exitCode: number | null;
   signedIn: LoginAccount | null;
   readonly owner: string;
+  /**
+   * The secret of the browser that started it, sent back only in its HttpOnly cookie: two browsers can share an
+   * owner (every browser signed in with the server's token is one), and an id alone reaches nothing.
+   */
   readonly secret: string;
   cancelled: boolean;
   expired: boolean;
@@ -69,6 +89,7 @@ interface PrivateLogin {
   ended: boolean;
 }
 
+/** A launch opens its tab within the request's 30 s, the CLI's help taking up to 10 of them: one older has failed. */
 const LAUNCH_MS = 60_000;
 
 const PRIVATE_LOGINS_MAX = 32;
@@ -102,6 +123,11 @@ function processAlive(pid: number): boolean {
 
 export class UsageLoginService {
   private readonly panes = new Map<string, UsageProviderId>();
+  /**
+   * The sign-ins the browser follows, by the random id only the browser that started one is given: each
+   * runs in this server's own PTY, so no herdr pane (read, attached, streamed or listed by any device) ever
+   * holds its sign-in address or the code typed into it. Kept a while after the CLI exits, as ended.
+   */
   private readonly privates = new Map<string, PrivateLogin>();
   private readonly handedOff = new Set<string>();
 
@@ -203,10 +229,12 @@ export class UsageLoginService {
       try {
         if (login.exitCode === 0 && !login.cancelled && !login.expired) account = await loginAccount(this.context, login.target, login.before);
       } catch {
+        // Credential readers may fail; never put their contents in an error or leave the login held.
         console.warn("Could not identify the account after its sign-in");
       }
       login.signedIn = login.cancelled || login.expired ? null : account;
       liveLocks.delete(login.lock);
+      // a CLI may have written credentials there: only an empty home goes, as for a tab that never ran its login
       if (login.madeHome !== null) {
         try { rmdirSync(login.madeHome); }
         catch (error) {
@@ -336,8 +364,10 @@ export class UsageLoginService {
     if (!provider || !isJsonObject(body)) return badRequest("invalid_provider", "Unknown usage provider");
     const id = provider.id;
     const separate = id === "claude" || id === "codex";
+    // Signing in again names a listed account by its key; its credential home is the server's to find.
     const again = body["account"] !== undefined;
     const asDefault = body["default"] !== undefined;
+    // followed in the browser: the CLI runs in this server's own PTY, not a herdr tab (Claude Code and Codex)
     const follow = body["follow"] !== undefined;
     if (follow && (body["follow"] !== true || !separate)) return badRequest("invalid_provider", "Only Claude Code and Codex sign in from the browser");
     if (follow && owner === null) return jsonResponse({ error: { code: "forbidden", message: "Sign in from an authenticated device" } }, 403);
@@ -356,6 +386,7 @@ export class UsageLoginService {
     }
     const login = LOGIN[id];
     if (login.args === null) return conflictResponse("login_not_supported", "Sign in interactively in Antigravity on the server PC");
+    // POSIX exec lets herdr's pane-ended event identify completion, without a second watcher.
     const executable = executableFor(id);
     if (!executable) return conflictResponse("cli_unavailable", "Install the official CLI on this PC before signing in");
     let unusedCredentialHome: string | null = null;
@@ -370,6 +401,9 @@ export class UsageLoginService {
         return conflictResponse("account_ambiguous", "This account is signed in in more than one credential folder on this PC, so Ovis cannot tell which one to renew. Sign in again from a terminal in the folder you want.");
       }
       const place = found;
+      // a default home holding the CLI's credential file has a sign-in, even one this server cannot read; and
+      // any sign-in found asks too: discovery can stop at another account's home before the default one's
+      // keychain item (Codex on macOS), so a found one never proves the default home empty
       const defaultDir = resolve(this.home, id === "claude" ? ".claude" : ".codex");
       const replacesDefault = asDefault && (existsSync(join(defaultDir, id === "claude" ? ".credentials.json" : "auth.json"))
         || (await provider.signIns(this.context)).length > 0);
@@ -430,6 +464,7 @@ export class UsageLoginService {
       if (id === "opencode") env["XDG_DATA_HOME"] = this.env["XDG_DATA_HOME"] || join(this.home, ".local", "share");
       if (follow && owner !== null) {
         if (manual || (id === "codex" && !device)) return conflictResponse("follow_unsupported", "This version signs in only in a terminal.");
+        // Only CLI runtime settings, never the bridge's tokens, agent hooks or provider API keys.
         const procEnv: Record<string, string> = { ...cliEnv, ...env, BROWSER: "true" };
         if (againHome !== null) procEnv[homeVariable] = resolve(againHome);
         if ((place || asDefault) && againHome === null) delete procEnv[homeVariable];
@@ -550,6 +585,7 @@ export class UsageLoginService {
       if (unusedCredentialHome) {
         try { rmdirSync(unusedCredentialHome); }
         catch (cleanupError) {
+          // A CLI may already have written credentials; never remove a nonempty home.
           if (!(cleanupError instanceof Error && "code" in cleanupError
             && ["ENOTEMPTY", "EEXIST", "ENOENT"].includes(String(cleanupError.code)))) {
             console.warn("Could not remove unused sign-in credential home", cleanupError);

@@ -1,3 +1,9 @@
+/**
+ * What only a real Windows PC can show: its process table as PowerShell answers it, and a
+ * session store on its own file system with its own path rules. Everything else about the
+ * Windows branches is tested with rows and paths handed in (gjc-runtime.test.ts); these run
+ * on the Windows runners of reusable CI and the remote-bundle workflow (#271).
+ */
 import { expect, it, spyOn } from "bun:test";
 import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, watch, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -192,6 +198,7 @@ renameSync(${JSON.stringify(`${resultPath}.tmp`)}, ${JSON.stringify(resultPath)}
     }
     if (child !== "none") throw new Error(`${root} is kept with its stop file: a child that did not say it stopped may still run or start`);
     await rm(legacy, { force: true, recursive: true });
+    // the child exits by itself now, in the desktop session: a slow hosted runner gets more than the 5 s a kill needed
     const cleanupBy = Date.now() + 20_000;
     for (;;) {
       try { await rm(root, { recursive: true, force: true }); break; }
@@ -357,10 +364,13 @@ renameSync(${JSON.stringify(`${startedPath}.tmp`)}, ${JSON.stringify(startedPath
     } catch (error) { failures.push(error); }
     try {
       if (migrated && existsSync(legacy)) await runPowerShell(`[IO.Directory]::Delete(${psQuote(legacy)})`);
+      // The launcher and the stand-in may still be exiting once started.json is there, holding the log or the
+      // executable: 20 s, no less than the 15 s the old test waited for the launcher before removing the folder.
       await removeFixture(home, 20_000);
     } catch (error) { failures.push(error); }
     if (failures.length === 1) throw failures[0];
     if (failures.length > 1) throw new AggregateError(failures, "Bridge start test and cleanup failed");
+    // the steps before the wait for started.json on a busy runner, its 30 s, and the 20 s removal
   }, 90_000);
 }
 
@@ -377,6 +387,7 @@ it.skipIf(!onWindows)("installs with native tar when PATH shadows tar, and prese
     writeFileSync(standIn, `process.exit(process.argv[2] === "remote" && process.argv[3] === "--help" && process.argv.length === 4 ? 0 : 2);`);
     expect(Bun.spawnSync([process.execPath, "build", "--compile", standIn, "--outfile", join(home, "input", "ovis-server.exe")], { stdout: "ignore", stderr: "inherit" }).exitCode).toBe(0);
     mkdirSync(join(home, "shadow"));
+    // An invalid executable first on PATH must never handle this archive.
     writeFileSync(join(home, "shadow", "tar.exe"), "not a Windows executable");
     await runPowerShell(`& "$env:SystemRoot\\System32\\tar.exe" -czf ${psQuote(join(home, "bundle.tgz"))} -C ${psQuote(join(home, "input"))} .; if ($LASTEXITCODE -ne 0) { throw 'fixture archive failed' }`);
     const manifest = join(home, "manifest.json");

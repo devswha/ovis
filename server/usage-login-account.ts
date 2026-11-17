@@ -5,6 +5,7 @@ export interface LoginTarget {
   readonly home: CredentialHome;
 }
 
+/** The account a followed sign-in signed in, as the list keys and names it; never a token or a path. */
 export interface LoginAccount {
   readonly key: string;
   readonly label: string | null;
@@ -15,6 +16,7 @@ export async function homeBefore(ctx: UsageContext, target: LoginTarget): Promis
     const found = await homeSignIn(ctx, target.provider, target.home);
     return found === "unknown" ? undefined : found?.digests ?? [];
   } catch {
+    // never put a credential reader's contents in an error
     console.warn("Could not read a credential home before its sign-in");
     return undefined;
   }

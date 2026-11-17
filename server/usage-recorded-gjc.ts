@@ -10,6 +10,8 @@
  * A report (packages/ai/src/usage.ts) holds provider "anthropic", fetchedAt (epoch ms), limits of { id, label,
  * window: { resetsAt }, amount: { usedFraction } } under the ids Oh My Pi records too, and metadata. The account id
  * in that metadata is the organization's wherever the provider names one, so the account is taken from the key alone.
+ *
+ * The same file holds Gajae Code's sign-ins (`auth_credentials`): nothing here names that table, and the file is only read.
  */
 import { existsSync } from "node:fs";
 import { join, normalize, resolve } from "node:path";

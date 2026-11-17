@@ -153,6 +153,7 @@ export function handleUpdateRequest(request: Request, pathname: string, service?
     service.request({ command: "check" });
     return reply({ accepted: true }, 202);
   }
+  // an install is consent to one release: the one the person was shown, named by its commit
   return expectedRevision(request).then((expected) => {
     if (expected === null) return fail("invalid_update_install", "Name the expected_revision of the update on offer.", 400);
     const now = service.status();

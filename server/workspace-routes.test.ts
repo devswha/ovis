@@ -132,6 +132,8 @@ describe("a create answers after the roster is told", () => {
 
 describe("a folder a workspace route is given", () => {
   it("is taken as chosen for a create request, and read with its pane's own folder for a repository route", async () => {
+    // the share rule (directories.ts expandedPath) refuses another host's share on a Windows PC unless the folder was
+    // chosen, or is on the share its pane works on
     const expanded = spyOn(directories, "expandedDirectory").mockImplementation((value, own) => own === "chosen" ? value : null);
     for (const path of ["/api/workspace/create", "/api/tab/create"]) {
       await post(path, { ...(path === "/api/tab/create" ? { workspace_id: "w1" } : {}), cwd: "//nas/work/proj", label: "x", agent: null });

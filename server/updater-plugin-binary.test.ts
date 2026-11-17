@@ -7,6 +7,10 @@ import { layout } from "../app/electron/src/children.ts";
 import { BUNDLE_DIR, WINDOWS_BUNDLE_BASE } from "./remote-host.ts";
 import { INSTALLED_BINARY_REASON, installedBinaryAt, PLUGIN_BINARY_REASON, pluginBinaryOf, Updater } from "./updater.ts";
 
+// A herdr plugin checkout that scripts/plugin-launch.ts runs as the release's binary: the server's root is the release
+// folder inside the checkout's .ovis/server, where git still finds the checkout. Settings must say the update runs
+// through herdr, never that the source checkout should switch to main (following that builds a release the binary
+// never runs), and nothing may be installed from the app.
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
@@ -69,6 +73,7 @@ it("takes an installed server's version only from a small regular ovis-server.js
     return updater.status.current_version;
   };
   expect(await versionOf("huge", (manifest) => writeFileSync(manifest, `{"schema":1,"version":"0.5.4","pad":"${"x".repeat(3_000_000)}"}`))).toBeNull();
+  // whatever string the file holds would otherwise be reported as the version
   expect(await versionOf("garbage", (manifest) => writeFileSync(manifest, '{"schema":1,"version":"<img src=x onerror=alert(1)>"}'))).toBeNull();
   // a FIFO holds a synchronous read until a writer comes: this one has a writer, so a read that waits takes its version
   const writers: ReturnType<typeof Bun.spawn>[] = [];

@@ -114,6 +114,9 @@ export function linkLegacyRegistry(legacy: string, next: string): void {
   catch (error) {
     removeLink(link);
     if (["EEXIST", "ENOTEMPTY", "EISDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) return;
+    // The old name must not be left free: a bridge would make it again with its registry alone, where
+    // a launcher from before 0.4.16 starts ungated. Empty, those launchers pass it by, and the merge
+    // leaves its closed copy of the devices in it (state-merge.ts).
     try { mkdirSync(legacy, { mode: 0o700 }); } catch { }
     console.error(`moved the bridge registry into ${next} but cannot link ${legacy} to it, so it stays a dir of its own, with a closed copy of the paired devices: ${(error as Error).message}`);
   }
@@ -131,6 +134,8 @@ function finishInterruptedLink(legacy: string, next: string): void {
     if (pointsAtNext && !existsSync(legacy)) {
       try { renameSync(link, legacy); continue; }
       catch (error) {
+        // the name must not stay free (as in linkLegacyRegistry): empty, older launchers pass it by,
+        // and the merge leaves its closed copy of the devices in it
         try { mkdirSync(legacy, { mode: 0o700 }); }
         catch {
           console.error(`cannot finish linking ${legacy} to ${next}, and cannot make it again: ${(error as Error).message}`);
@@ -178,6 +183,7 @@ function moveInto(from: string, to: string): void {
   rmdirSync(from);
 }
 
+/** Removes a link this code made, where it is; a junction on Windows is removed as a dir. */
 function removeLink(path: string): void {
   try { unlinkSync(path); }
   catch (error) {
