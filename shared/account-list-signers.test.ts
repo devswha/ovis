@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -111,6 +111,24 @@ const reads = (power: SignerPower | null = "full", behind = false): TakenOutcome
 const answer = (after: Link, shown: readonly Link[], head: ListPlace = place(shown.length > 0 ? last(shown) : after)): ShownAnswer => ({ after: after.seq, entries: texts(shown), head });
 /** A result in which nothing happened. */
 const quiet = { dropped_from: null, took: [], stopped: null, stuck: false, asks_after: null };
+/** Runs `work` on a runtime that calls `meanwhile` once, before it answers the first signature it is asked to verify, and restores the runtime. */
+async function whileVerifying<T>(meanwhile: () => void, work: () => Promise<T>): Promise<T> {
+  const verify = crypto.subtle.verify.bind(crypto.subtle);
+  let called = false;
+  const changing = spyOn(crypto.subtle, "verify").mockImplementation(async (...args) => {
+    const verified = await verify(...args);
+    if (!called) meanwhile();
+    called = true;
+    return verified;
+  });
+  try {
+    const result = await work();
+    if (!called) throw new Error("no signature was verified");
+    return result;
+  } finally {
+    changing.mockRestore();
+  }
+}
 
 const g = await genesis();
 const addPhone = await on(g, owner, { kind: "device", adds: [phone, "full"] });
@@ -1010,6 +1028,37 @@ describe("going back", () => {
     expect(JSON.stringify(result.member)).toBe(kept);
   });
 
+  test("an answer is taken as the member and the answer were handed over: changed while a signature is checked, they change nothing that comes back", async () => {
+    const shown = await row(addPhone, [phone, {}], [owner, {}]);
+    const elsewhere = "f".repeat(64);
+    /** A member that holds entries 0 and 1 and an answer that shows it entries 2 and 3, each a copy that can be changed; the member's rows are not frozen. */
+    const handed = async () => {
+      const { entries, state } = await memberOf(root);
+      const signers = Object.fromEntries(Object.entries(state.signers).map(([key, row]) => [key, { ...row }]));
+      return {
+        member: { entries: [...entries], state: { ...state, footing: { ...state.footing }, signers } },
+        answer: { after: addPhone.seq, entries: texts(shown), head: { ...place(last(shown)) } },
+      };
+    };
+    const plain = await handed();
+    const unchanged = await shownEntries(plain.member, plain.answer);
+    expect(unchanged.took.map((taken) => taken.held.hash)).toEqual(shown.map((link) => link.hash));
+    const changes: readonly (readonly [string, (given: Awaited<ReturnType<typeof handed>>) => void])[] = [
+      ["the state's list id", ({ member }) => { member.state.list = elsewhere; }],
+      ["the state's footing", ({ member }) => { member.state.footing.seq = 5; }],
+      ["a row taken out of the state", ({ member }) => { delete member.state.signers[phone.key]; }],
+      ["each row written", ({ member }) => { for (const row of Object.values(member.state.signers)) row.ended = 1; }],
+      ["the answer's entries", ({ answer }) => { answer.entries.length = 1; }],
+      ["the answer's head", ({ answer }) => { answer.head.hash = elsewhere; }],
+    ];
+    for (const [what, change] of changes) {
+      const given = await handed();
+      // The runtime verifies entry 2, and what the caller handed over changes before the runtime answers.
+      const result = await whileVerifying(() => change(given), () => shownEntries(given.member, given.answer));
+      expect([what, result]).toEqual([what, unchanged]);
+    }
+  });
+
   test("an answer that follows a place the member does not hold is the caller's mistake", async () => {
     const member = await memberOf(root);
     for (const after of [2, -1, 0.5, Number.NaN]) await expect(shownEntries(member, { after, entries: [], head: place(addPhone) })).rejects.toBeInstanceOf(RangeError);
@@ -1314,6 +1363,18 @@ describe("replaying from entry 0", () => {
     // The same entries as an answer of the log to a member that holds entries 0 and 1: there the first makes it go back, and the second is another history.
     expect(await shownEntries(await memberOf(root), answer(addPhone, [loose2, on3]))).toMatchObject({ stopped: null, stuck: false, asks_after: 1 });
     expect(await shownEntries(await memberOf(root), answer(addPhone, [signed2, on3]))).toMatchObject({ stopped: { seq: 3, code: "chain_broken" }, stuck: true, asks_after: null });
+  });
+
+  test("a replay's proof is read once: another put in its place while a signature is checked decides nothing", async () => {
+    const byLogin = await on(addPhone, login, { kind: "later_login" });
+    const list = texts([...root, byLogin]);
+    const never: KeyProof = () => null;
+    const unchanged = await replayEntries(list, 1, { proof: never });
+    expect(last(unchanged.took).outcome).toEqual(passedOver("signer_unknown"));
+    // The runtime verifies entry 0, and the caller's options name a proof that lets the login key in before the runtime answers.
+    const options = { proof: never };
+    const result = await whileVerifying(() => { options.proof = letsIn("full", login, byLogin); }, () => replayEntries(list, 1, options));
+    expect(result).toEqual(unchanged);
   });
 
   test("over random lists, a replay either takes every entry it was given or names where it stopped: exactly where the envelope says that an entry does not hold on the one before it", async () => {

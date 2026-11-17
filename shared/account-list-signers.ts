@@ -243,13 +243,13 @@ export function judgeEntry(state: SignersState, held: HeldEntry, proof?: KeyProo
   return { outcome: judged.outcome, state: stateAfter(state, held, judged, signers) };
 }
 
-/** A member's rows while it takes entries: the state's own until an entry writes one, then one copy that every later entry of the same run writes into. */
+/** A member's rows while it takes entries: one copy that every entry of the same run writes into. An answer makes it when it arrives; a replay when an entry first writes a row, and until then its rows are the state's own. */
 type Rows = { [key: string]: SignerRow };
 
 /**
- * One entry that holds, taken: the state after it and what the member did with it. `rows` is null
- * until an entry of this answer, or of this replay, writes a row: the member's rows are copied
- * then, once, and not once for every entry.
+ * One entry that holds, taken: the state after it and what the member did with it. `rows` is the
+ * copy that this answer, or this replay, writes its rows into. While a replay has none it is null:
+ * the member's rows are copied when an entry writes a row, once, and not once for every entry.
  */
 function takeEntry(state: SignersState, rows: Rows | null, held: HeldEntry, proof: KeyProof | undefined): { readonly state: SignersState; readonly rows: Rows | null; readonly outcome: TakenOutcome } {
   const judged = judge(state, held, proof);
@@ -342,18 +342,26 @@ async function fits(entry: Entry, before: HeldEntry): Promise<Fit> {
  *
  * A place the member does not hold for the answer to follow, or a state whose footing is not the
  * member's own entry at that place, is the caller's mistake: a RangeError, and nothing is judged.
+ *
+ * The member and the answer are read once, before a signature is awaited: the member's entries,
+ * its state and its rows, and the answer's entries and its head are copied (a frozen row is kept
+ * as it is). What comes back is built from those copies alone, so it is of the member and of the
+ * answer as they were handed over, whatever the caller does to either meanwhile or later.
  */
 export async function shownEntries(member: ListMember, answer: ShownAnswer, proof?: KeyProof): Promise<ShownResult> {
-  const { after, head } = answer;
-  const { list } = member.state;
-  const top = member.entries.length - 1;
-  if (!Number.isInteger(after) || after < 0 || after > top) throw new RangeError(`The member holds no entry ${after} for the answer to follow`);
-  if (ownEntry(member.entries, member.state.footing.seq, list).hash !== member.state.footing.hash) throw new RangeError(`The member's entry ${member.state.footing.seq} is not its footing: this state is not that of these entries`);
+  const { after } = answer;
+  const head: ListPlace = { ...answer.head };
+  const shown = [...answer.entries];
   const entries = [...member.entries];
-  const took: TakenEntry[] = [];
+  const handed = { ...member.state };
+  let rows: Rows | null = Object.fromEntries(Object.entries(handed.signers).map(([key, row]) => [key, Object.isFrozen(row) ? row : Object.freeze({ ...row })]));
   /** The footing is read from here wherever it is asked for: it moves with each entry that the member takes and that is not loose, also inside this answer. */
-  let state = member.state;
-  let rows: Rows | null = null;
+  let state: SignersState = { ...handed, footing: { ...handed.footing }, signers: rows };
+  const { list } = state;
+  const top = entries.length - 1;
+  if (!Number.isInteger(after) || after < 0 || after > top) throw new RangeError(`The member holds no entry ${after} for the answer to follow`);
+  if (ownEntry(entries, state.footing.seq, list).hash !== state.footing.hash) throw new RangeError(`The member's entry ${state.footing.seq} is not its footing: this state is not that of these entries`);
+  const took: TakenEntry[] = [];
   let dropped: number | null = null;
   const done = (rest: Partial<Pick<ShownResult, "stopped" | "stuck" | "asks_after">> = {}): ShownResult =>
     ({ member: { entries, state }, dropped_from: dropped, took, stopped: null, stuck: false, asks_after: null, ...rest });
@@ -382,7 +390,7 @@ export async function shownEntries(member: ListMember, answer: ShownAnswer, proo
   let before = ownEntry(entries, after, list);
   /** What the head says of the member as it stands before the next entry: null, or where the answer ends for it. */
   let caught = byHead(after);
-  for (const [index, text] of answer.entries.entries()) {
+  for (const [index, text] of shown.entries()) {
     if (caught !== null) return caught;
     const seq = after + 1 + index;
     let entry: Entry;
@@ -426,14 +434,16 @@ export async function shownEntries(member: ListMember, answer: ShownAnswer, proo
  * A replay is given every entry it has and has nobody to ask, so it never goes back and no service
  * showed it anything to be stuck on: each entry holds on the one before it (docs/account-list.md,
  * "When an entry holds"), or the replay stops there, with that entry's refusal. Its result either
- * took every entry it was given, or names where it stopped.
+ * took every entry it was given, or names where it stopped. The entries, the list id and the
+ * proof are read once, before a signature is awaited.
  */
 export async function replayEntries(entries: readonly string[], level: number, options: { readonly given?: string; readonly proof?: KeyProof } = {}): Promise<ReplayResult> {
   const [text, ...rest] = entries;
+  const { given, proof } = options;
   if (text === undefined) return { member: null, took: [], stopped: null };
   let before: HeldEntry;
   try {
-    before = (await firstState(entryFromText(text), options.given)).first;
+    before = (await firstState(entryFromText(text), given)).first;
   } catch (error) {
     return { member: null, took: [], stopped: { seq: 0, code: refusalOf(error) } };
   }
@@ -448,7 +458,7 @@ export async function replayEntries(entries: readonly string[], level: number, o
     } catch (error) {
       return { member: { entries: kept, state }, took, stopped: { seq: index + 1, code: refusalOf(error) } };
     }
-    const taken = takeEntry(state, rows, held, options.proof);
+    const taken = takeEntry(state, rows, held, proof);
     state = taken.state;
     rows = taken.rows;
     kept.push(next);
