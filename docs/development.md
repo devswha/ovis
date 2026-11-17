@@ -1304,8 +1304,11 @@ does not fail the job, and is not counted as a plain pass either: its first log 
 is a bug to fix in the script or the app, not noise: the second run only keeps one PR's merge
 from waiting on another change's race. A script that fails twice fails the job.
 One run of a script may take `BROWSER_SCRIPT_TIMEOUT_SECONDS` (default 600). A run past it is
-stopped with every process it started, prints `TIMEOUT <script>` and its last 40 log lines at
-once, is not run again and fails the lane (the summary and `summary.json` give it exit 124), so a
+stopped (SIGTERM, then SIGKILL, then SIGKILL again for what the run started meanwhile and still carries its
+mark), says what it saw (`stopped N processes`, `could NOT stop: <pid> <command>` for each one it could not,
+and `processes started at the last moment may not be listed` when the last look still found new ones or a
+signal was refused: finding a run's processes always races with their forking), prints `TIMEOUT <script>`
+and its last 40 log lines at once, is not run again and fails the lane (the summary and `summary.json` give it exit 124), so a
 hang names itself instead of running into the job's `timeout-minutes`. A script that exits while
 a process it started still holds its output open is stopped the same way, as `STOPPED`; on
 Linux such a process is found through `/proc` even after its parent has exited. A job cancelled at its `timeout-minutes` with scripts still logging
