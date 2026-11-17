@@ -137,8 +137,8 @@ interface ScriptResult {
   message?: string;
   /** the run was stopped at its deadline */
   stopped?: boolean;
-  /** what the run started and SIGKILL did not end within the grace, as `<pid> <command>`: still running */
-  survivors?: string[];
+  /** what stopping the run saw: how many processes it ended, which it could not, and whether more may have gone unseen */
+  stop?: StopOutcome;
 }
 
 /**
@@ -160,7 +160,7 @@ export function failureSite(log: string): { site: string | null; message: string
 }
 
 const failureDetail = (result: ScriptResult): string =>
-  [result.site, result.message, result.survivors?.length ? `NOT stopped, still running: ${result.survivors.join("; ")}` : null].filter(Boolean).join(": ");
+  [result.site, result.stop ? stopReport(result.message!, result.stop) : result.message].filter(Boolean).join(": ");
 
 const workflowData = (message: string): string =>
   message.replaceAll("%", "%25").replaceAll("\r", "%0D").replaceAll("\n", "%0A");
@@ -288,6 +288,16 @@ export interface StopIo {
   graceMs: number;
 }
 
+/** What stopRun saw, which is all it can know: finding a run's processes always races with their forking. */
+export interface StopOutcome {
+  /** how many of the processes it found it ended */
+  stopped: number;
+  /** the processes it could not stop, as `<pid> <command>` */
+  survivors: string[];
+  /** the last read still found new processes, or a signal was refused: others may have gone unlisted */
+  unsure: boolean;
+}
+
 /**
  * Stops what is left of a run: SIGTERM, which lets Playwright close its browser, then, once the
  * run has ended or the grace is over, SIGKILL for whatever is still there, such as a child that
@@ -295,16 +305,26 @@ export interface StopIo {
  * freed since is not signalled (on Linux the mark is checked on the process itself). A killed
  * process ends when the kernel next runs it, which on a loaded machine is not at once, so it waits
  * one more grace for them to go, reading the run's processes again and killing any that appeared
- * since (a child forked while SIGKILL was landing). Resolves with what the last read found still
- * running, or refused a signal (permission denied is not a stop), as `<pid> <command>`: none when
- * the run was stopped.
+ * since (a child forked while SIGKILL was landing). A process that refused a signal (permission
+ * denied is not a stop) stays named even when a later read no longer finds it. Resolves with what
+ * it saw, not with a promise that nothing is left.
  */
-export async function stopRun(io: StopIo, finished: Promise<unknown>): Promise<string[]> {
-  const refused = new Set(io.signal(await io.processes(), "SIGTERM"));
+export async function stopRun(io: StopIo, finished: Promise<unknown>): Promise<StopOutcome> {
+  const seen = new Set<number>();
+  const refused = new Set<number>();
+  const send = (pids: number[], name: NodeJS.Signals): void => {
+    for (const pid of pids) seen.add(pid);
+    for (const pid of io.signal(pids, name)) refused.add(pid);
+  };
+  const outcome = (left: number[], unsure: boolean): StopOutcome => {
+    const survivors = [...new Set([...left.filter(io.running), ...refused])].map((pid) => `${pid} ${io.command(pid)}`);
+    return { stopped: seen.size - survivors.length, survivors, unsure: unsure || refused.size > 0 };
+  };
+  send(await io.processes(), "SIGTERM");
   await within(finished, io.graceMs);
   const first = await io.processes();
-  if (first.length === 0) return [];
-  for (const pid of io.signal(first, "SIGKILL")) refused.add(pid);
+  if (first.length === 0 && refused.size === 0) return outcome([], false);
+  send(first, "SIGKILL");
   await within(finished, io.graceMs);
   const killed = new Set(first);
   const deadline = Date.now() + io.graceMs;
@@ -313,10 +333,10 @@ export async function stopRun(io: StopIo, finished: Promise<unknown>): Promise<s
     // pid freed and reused is not named
     const left = await io.processes();
     const fresh = left.filter((pid) => !killed.has(pid));
-    for (const pid of io.signal(fresh, "SIGKILL")) refused.add(pid);
+    send(fresh, "SIGKILL");
     for (const pid of fresh) killed.add(pid);
-    const alive = left.filter((pid) => io.running(pid) || refused.has(pid));
-    if (Date.now() >= deadline || (fresh.length === 0 && alive.length === 0)) return alive.map((pid) => `${pid} ${io.command(pid)}`);
+    const done = outcome(left, fresh.length > 0);
+    if (Date.now() >= deadline || (fresh.length === 0 && done.survivors.length === 0)) return done;
     if (fresh.length === 0) await Bun.sleep(25);
   }
 }
@@ -332,10 +352,14 @@ function commandOf(pid: number): string {
   try { return readFileSync(`/proc/${pid}/cmdline`, "latin1").replaceAll("\0", " ").trim() || "?"; } catch { return "?"; }
 }
 
-/** What the lane says of a run it had to stop: that what it started was stopped, or which processes were NOT. */
-export function stopReport(message: string, survivors: readonly string[]): string {
-  if (survivors.length === 0) return `${message}; what it started was stopped.`;
-  return `${message}; ${survivors.length} process${survivors.length === 1 ? "" : "es"} it started could NOT be stopped and still run${survivors.length === 1 ? "s" : ""}: ${survivors.join("; ")}.`;
+/** What the lane says of a run it had to stop: what it saw, never a promise that nothing is left. */
+export function stopReport(message: string, { stopped, survivors, unsure }: StopOutcome): string {
+  return [
+    `${message}; stopped ${stopped} process${stopped === 1 ? "" : "es"}`,
+    survivors.length ? `; could NOT stop: ${survivors.join("; ")}` : "",
+    unsure ? "; processes started at the last moment may not be listed" : "",
+    ".",
+  ].join("");
 }
 
 async function runScript(script: string, env: Record<string, string>, log: string, timeoutSeconds: number): Promise<ScriptResult> {
@@ -357,10 +381,9 @@ async function runScript(script: string, env: Record<string, string>, log: strin
   const drained = Promise.all([timestampLog(child.stdout, log), timestampLog(child.stderr, log)]);
   const finished = Promise.all([child.exited, drained]);
   const io: StopIo = { processes: () => runProcesses(child, mark), signal, running, command: commandOf, graceMs: STOP_GRACE_MS };
-  const stopped = (code: number, message: string, survivors: string[]): ScriptResult => {
-    const said = survivors.length ? `${message}: NOT stopped by scripts/ci-browser-parallel.ts, still running: ${survivors.join("; ")}` : `${message}: stopped by scripts/ci-browser-parallel.ts`;
-    appendFileSync(log, `[${new Date().toISOString()}] ${said}\n`);
-    return { script, seconds: (Date.now() - started) / 1000, code, log, message, stopped: true, ...(survivors.length ? { survivors } : {}) };
+  const stopped = (code: number, message: string, stop: StopOutcome): ScriptResult => {
+    appendFileSync(log, `[${new Date().toISOString()}] ${stopReport(message, stop)}\n`);
+    return { script, seconds: (Date.now() - started) / 1000, code, log, message, stopped: true, stop };
   };
   try {
     if (!(await within(child.exited, timeoutSeconds * 1000))) {
@@ -451,7 +474,7 @@ async function main(): Promise<void> {
         // Said now, not only in the summary: a hang is what the job's own timeout would otherwise end.
         const lines = readFileSync(log, "utf8").trimEnd().split("\n");
         const kind = result.code === TIMEOUT_EXIT_CODE ? "TIMEOUT" : "STOPPED";
-        console.log(`[worker-${workerId}] ${kind} ${script}: ${stopReport(result.message!, result.survivors ?? [])} Last ${Math.min(lines.length, TIMEOUT_TAIL_LINES)} lines of ${log}:`);
+        console.log(`[worker-${workerId}] ${kind} ${script}: ${stopReport(result.message!, result.stop!)} Last ${Math.min(lines.length, TIMEOUT_TAIL_LINES)} lines of ${log}:`);
         console.log(lines.slice(-TIMEOUT_TAIL_LINES).join("\n"));
       }
       const outcome = scriptOutcome(result.code, result.firstLog !== undefined);
@@ -498,9 +521,9 @@ async function main(): Promise<void> {
     passed,
     total: results.length,
     flaky: flaky.map((r) => r.script),
-    scripts: ordered.map(({ script, seconds, code, log, firstLog, site, message, survivors }) => ({
+    scripts: ordered.map(({ script, seconds, code, log, firstLog, site, message, stop }) => ({
       script, seconds, code, log, ...(firstLog ? { firstLog } : {}),
-      ...(site ? { site } : {}), ...(message ? { message } : {}), ...(survivors ? { survivors } : {}),
+      ...(site ? { site } : {}), ...(message ? { message } : {}), ...(stop ? { stop } : {}),
     })),
   }, null, 2) + "\n");
 

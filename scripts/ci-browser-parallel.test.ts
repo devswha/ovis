@@ -60,7 +60,7 @@ describe("parallel browser script deadline", () => {
     const run = await runStub("exec sleep 1000", "1");
     expect(run.signal).toBeNull();
     expect(run.code).toBe(1);
-    expect(run.text).toContain("[worker-0] TIMEOUT scripts/ui-regression.ts: Timed out after 1s; what it started was stopped.");
+    expect(run.text).toMatch(/\[worker-0\] TIMEOUT scripts\/ui-regression\.ts: Timed out after 1s; stopped \d+ processes\. Last/);
     expect(run.text).toMatch(/^\[[^\]]+\] the last line it wrote$/m);
     expect(run.text.match(/START scripts\/ui-regression\.ts/g)).toHaveLength(1);
     expect(run.retried).toBe(false);
@@ -74,7 +74,7 @@ describe("parallel browser script deadline", () => {
     const run = await runStub("exit 0", "60");
     expect(run.signal).toBeNull();
     expect(run.code).toBe(1);
-    expect(run.text).toContain("[worker-0] STOPPED scripts/ui-regression.ts: Exited 0, but a process it started still held its output; what it started was stopped.");
+    expect(run.text).toMatch(/\[worker-0\] STOPPED scripts\/ui-regression\.ts: Exited 0, but a process it started still held its output; stopped \d+ processes\. Last/);
     expect(run.text).toMatch(/^\[[^\]]+\] the last line it wrote$/m);
     expect(run.retried).toBe(false);
     expect(run.summary.scripts).toEqual([expect.objectContaining({ code: 1, message: "Exited 0, but a process it started still held its output" })]);
@@ -99,11 +99,10 @@ describe("parallel browser script deadline", () => {
       graceMs: 50,
     };
     // the run never finishes: its output stays held
-    const survivors = await stopRun(io, new Promise(() => {}));
+    const stop = await stopRun(io, new Promise(() => {}));
     expect(sent).toEqual(["SIGTERM 11", "SIGTERM 12", "SIGTERM 13", "SIGKILL 12", "SIGKILL 13"]);
-    expect(survivors).toEqual(["13 stub-13"]);
-    expect(stopReport("Timed out after 5s", survivors)).toBe("Timed out after 5s; 1 process it started could NOT be stopped and still runs: 13 stub-13.");
-    expect(stopReport("Timed out after 5s", survivors)).not.toContain("what it started was stopped");
+    expect(stop).toEqual({ stopped: 2, survivors: ["13 stub-13"], unsure: false });
+    expect(stopReport("Timed out after 5s", stop)).toBe("Timed out after 5s; stopped 2 processes; could NOT stop: 13 stub-13.");
     // one that ends on SIGKILL only once the kernel runs it again: waited for, and not named
     const late = new Set([21]);
     let killed = false;
@@ -115,8 +114,9 @@ describe("parallel browser script deadline", () => {
       command: () => "slow",
       graceMs: 50,
     };
-    expect(await stopRun(lateIo, new Promise(() => {}))).toEqual([]);
-    expect(stopReport("Timed out after 5s", [])).toBe("Timed out after 5s; what it started was stopped.");
+    const lateStop = await stopRun(lateIo, new Promise(() => {}));
+    expect(lateStop).toEqual({ stopped: 1, survivors: [], unsure: false });
+    expect(stopReport("Timed out after 5s", lateStop)).toBe("Timed out after 5s; stopped 1 process.");
   });
 
   it("kills and names a process the run forks after the first look, and not a pid that was reused", async () => {
@@ -139,9 +139,9 @@ describe("parallel browser script deadline", () => {
       command: (pid) => `stub-${pid}`,
       graceMs: 50,
     };
-    const survivors = await stopRun(io, new Promise(() => {}));
+    const stop = await stopRun(io, new Promise(() => {}));
     expect(sent).toEqual(["SIGTERM 12", "SIGKILL 12", "SIGKILL 14", "SIGKILL 15"]);
-    expect(survivors).toEqual(["15 stub-15"]);
+    expect(stop).toEqual({ stopped: 2, survivors: ["15 stub-15"], unsure: false });
     // 31 ends on SIGKILL and its pid is taken by an unrelated process, which is not the run's (no mark)
     let ended = false;
     const reuseIo: StopIo = {
@@ -151,7 +151,7 @@ describe("parallel browser script deadline", () => {
       command: () => "unrelated-daemon",
       graceMs: 50,
     };
-    expect(await stopRun(reuseIo, new Promise(() => {}))).toEqual([]);
+    expect(await stopRun(reuseIo, new Promise(() => {}))).toEqual({ stopped: 1, survivors: [], unsure: false });
   });
 
   it("does not take a signal the system refused (EPERM) for a stop", async () => {
@@ -167,7 +167,49 @@ describe("parallel browser script deadline", () => {
       command: (pid) => `stub-${pid}`,
       graceMs: 50,
     };
-    expect(await stopRun(io, new Promise(() => {}))).toEqual(["41 stub-41"]);
+    expect(await stopRun(io, new Promise(() => {}))).toEqual({ stopped: 1, survivors: ["41 stub-41"], unsure: true });
+  });
+
+  it("keeps naming a process that refused a signal after a later scan no longer finds it", async () => {
+    // 61 is another user's and refuses SIGTERM; 62 ends on it. The script then ends, and no scan finds 61's tree again
+    let found = [61, 62];
+    const io: StopIo = {
+      processes: async () => found,
+      signal: (pids, name) => {
+        if (name === "SIGTERM") found = [];
+        return pids.filter((pid) => pid === 61);
+      },
+      running: () => false,
+      command: (pid) => `stub-${pid}`,
+      graceMs: 50,
+    };
+    const stop = await stopRun(io, new Promise(() => {}));
+    expect(stop).toEqual({ stopped: 1, survivors: ["61 stub-61"], unsure: true });
+    expect(stopReport("Timed out after 5s", stop)).toBe("Timed out after 5s; stopped 1 process; could NOT stop: 61 stub-61; processes started at the last moment may not be listed.");
+  });
+
+  it("does not say a run was stopped cleanly when a process was forked as the last kill landed", async () => {
+    // 12 forks 14 on SIGKILL and 14 forks 15 on it; the grace is over by the last read, so 15 is never read
+    const alive = new Set([12]);
+    const marked = new Set([12]);
+    const io: StopIo = {
+      processes: async () => [...marked].filter((pid) => alive.has(pid)),
+      signal: (pids, name) => {
+        for (const pid of pids) {
+          if (name !== "SIGKILL") continue;
+          alive.delete(pid);
+          if (pid === 12 || pid === 14) { alive.add(pid + (pid === 12 ? 2 : 1)); marked.add(pid + (pid === 12 ? 2 : 1)); }
+        }
+        return [];
+      },
+      running: (pid) => alive.has(pid),
+      command: (pid) => `stub-${pid}`,
+      graceMs: 0,
+    };
+    const stop = await stopRun(io, new Promise(() => {}));
+    expect(alive.has(15)).toBe(true);
+    expect(stop).toEqual({ stopped: 2, survivors: [], unsure: true });
+    expect(stopReport("Timed out after 5s", stop)).toBe("Timed out after 5s; stopped 2 processes; processes started at the last moment may not be listed.");
   });
 
   it("reads its bound as positive seconds and refuses anything else", () => {
