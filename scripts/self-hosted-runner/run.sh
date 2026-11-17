@@ -5,7 +5,7 @@
 #          [--reserved N] [--reserved-labels self-hosted-ovis-main] [--env-file FILE] [--build] [--once]
 #          [--cache-dir DIR [--cache-wait SECONDS] | --no-cache] [--build-cache DIR [--build-cache-mb N] [--build-cache-writer LOGIN]]
 #          [--cpuset-cpus LIST]
-#          [--work-tmpfs SIZE]
+#          [--work-tmpfs SIZE] [--jit-slot N]
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -28,6 +28,7 @@ BUILD_CACHE_WRITER=""
 # docker run's --cpuset-cpus for every container this launcher starts (README "Per-host limits")
 CPUSET_ARGS=()
 WORK_TMPFS=""
+JIT_SLOT=""
 
 usage() {
   sed -n '2,8p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -51,12 +52,33 @@ while [ $# -gt 0 ]; do
     --build-cache-writer) BUILD_CACHE_WRITER="${2:?--build-cache-writer needs a value}"; shift 2 ;;
     --cpuset-cpus) CPUSET_ARGS=(--cpuset-cpus "${2:?--cpuset-cpus needs a value}"); shift 2 ;;
     --work-tmpfs) WORK_TMPFS="${2:?--work-tmpfs needs a value}"; shift 2 ;;
+    --jit-slot) JIT_SLOT="${2:?--jit-slot needs a value}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
 
 case "$COUNT" in ''|*[!0-9]*|0) echo "--count must be a positive integer" >&2; exit 2 ;; esac
+# --jit-slot N (README "Just-in-time runners on another host"): slot N alone, once, for a host that holds no GitHub
+# credential. Once the slot is set up, this prints READY on stdout and reads one line from stdin: a just-in-time runner
+# configuration that remote-runners.sh, on the maintainer's PC, had GitHub make for this one start. It goes to the
+# runner container on its stdin as a registration token does, and GitHub fixed the runner's name and labels in it. So
+# this mode calls no gh at all: no token, no repository lookup, no deletion of runners at its stop. remote-runners.sh
+# keeps that stdin open while the runner may run; its end stops this launcher, and the runner with it.
+SLOT_NUMBERS="$(seq 1 "$COUNT")"
+if [ -n "$JIT_SLOT" ]; then
+  case "$JIT_SLOT" in ''|*[!0-9]*|0*|????*) echo "--jit-slot must be a slot number from 1 to 999" >&2; exit 2 ;; esac
+  if [ -z "$REPO" ]; then echo "--jit-slot needs --repo: it asks gh nothing" >&2; exit 2; fi
+  # the promoter asks GitHub which runs are trusted, and the reserved slots are --count's
+  if [ -n "$BUILD_CACHE" ] || [ "$RESERVED" != 0 ] || [ "$COUNT" != 1 ]; then
+    echo "--jit-slot runs one slot without --build-cache, --reserved or --count" >&2
+    exit 2
+  fi
+  ONCE=1
+  SLOT_NUMBERS="$JIT_SLOT"
+  # the configuration comes on this launcher's stdin; what runs in the background reads /dev/null there
+  exec 3<&0
+fi
 # The first --reserved slots of --count register with --reserved-labels instead of --labels, so jobs
 # that ask for those labels (ci.yml's pushes to main, CI_MAIN_SELF_HOSTED_LABELS) find a runner that
 # pull request jobs never take. They mount the check slots of every other runner: same check.ts slots.
@@ -278,7 +300,7 @@ clean_taken() {
 promote_loop() {
   trap 'exit 143' TERM
   local names=() slot
-  for slot in $(seq 1 "$COUNT"); do names+=("${PREFIX}${slot}"); done
+  for slot in $SLOT_NUMBERS; do names+=("${PREFIX}${slot}"); done
   while true; do
     bash "$SCRIPT_DIR/build-cache-promote.sh" "$REPO" "$BUILD_CACHE_ROOT" "$BUILD_CACHE_OUTBOXES" "$BUILD_CACHE_WRITER" "$((10#$BUILD_CACHE_MB))" "${names[@]}" || true
     clean_taken
@@ -476,21 +498,26 @@ slot_network() {
   docker network inspect "$1" >/dev/null 2>&1 || docker network create --driver bridge "$1" >/dev/null 2>&1
 }
 
+# A container of slot $1 that an earlier launcher started may still run its job: a new one would register the same
+# runner name (--replace) and take that job's registration, so this waits for it to end. One that is not running
+# (created, or stopped without --rm's removal) would hold the name forever: it is removed.
+wait_slot_free() {
+  local running
+  while running="$(docker container inspect -f '{{.State.Running}}' "$1" 2>/dev/null)"; do
+    [ "$running" = true ] && { sleep 5; continue; }
+    echo "[$1] removing a container left in this slot's name that is not running" >&2
+    docker rm -f "$1" >/dev/null 2>&1 || true
+    break
+  done
+}
+
 slot_loop() {
-  local slot="$1" name token container_status running problem labels="$LABELS"
+  local slot="$1" name token container_status problem labels="$LABELS"
   name="${PREFIX}${slot}"
   if [ "$slot" -le "$((10#$RESERVED))" ]; then labels="$RESERVED_LABELS"; fi
   delay=30
   while true; do
-    # A container of this slot that an earlier launcher started may still run its job: a new one would
-    # register the same runner name (--replace) and take that job's registration, so wait for it to end.
-    # One that is not running (created, or stopped without --rm's removal) would hold the name forever.
-    while running="$(docker container inspect -f '{{.State.Running}}' "$name" 2>/dev/null)"; do
-      [ "$running" = true ] && { sleep 5; continue; }
-      echo "[$name] removing a container left in this slot's name that is not running" >&2
-      docker rm -f "$name" >/dev/null 2>&1 || true
-      break
-    done
+    wait_slot_free "$name"
     # Two seconds before every container of the slot, the first one after this launcher started
     # included. The promoter (build-cache-promote.sh) tells a container's own job from a job of an
     # earlier container of the slot by when it started, to the second, and the container before may
@@ -502,6 +529,8 @@ slot_loop() {
     problem=""
     if ! start_slots; then problem="could not make the check slots in $SLOTS"
     elif ! slot_network "$name-net"; then problem="could not make the docker network $name-net"
+    # --jit-slot: the configuration this launcher read once the slot was set up (below)
+    elif [ -n "$JIT_SLOT" ]; then token="$JIT_CONFIG"
     elif ! token="$(gh api -X POST "repos/$REPO/actions/runners/registration-token" --jq .token)"; then problem="could not fetch a registration token"
     fi
     if [ -n "$problem" ]; then
@@ -532,6 +561,7 @@ slot_loop() {
       -e RUNNER_URL="https://github.com/$REPO" \
       -e RUNNER_NAME="$name" \
       -e RUNNER_LABELS="$labels" \
+      ${JIT_SLOT:+-e RUNNER_JIT=1} \
       ${CACHE_ARGS[@]+"${CACHE_ARGS[@]}"} \
       ${BUILD_CACHE_ARGS[@]+"${BUILD_CACHE_ARGS[@]}"} \
       ${WORK_TMPFS_ARGS[@]+"${WORK_TMPFS_ARGS[@]}"} \
@@ -549,6 +579,7 @@ slot_loop() {
 }
 
 PIDS=()
+WATCHER=""
 CACHE_PID=""
 PROMOTE_PID=""
 cleaned=0
@@ -565,7 +596,8 @@ cleanup() {
   for pid in "${PIDS[@]:-}"; do
     [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
   done
-  for slot in $(seq 1 "$COUNT"); do
+  if [ -n "$WATCHER" ]; then kill "$WATCHER" 2>/dev/null || true; fi
+  for slot in $SLOT_NUMBERS; do
     docker stop -t 30 "${PREFIX}${slot}" >/dev/null 2>&1 || true
   done
   # the runners, and the cache loop with every git and docker client it started
@@ -573,15 +605,16 @@ cleanup() {
   # a build client killed while its container still ran left the container behind
   docker rm -f "$CACHE_CONTAINER" >/dev/null 2>&1 || true
   # the slots' networks, with no container left on them, and the check slots' keeper last
-  for slot in $(seq 1 "$COUNT"); do
+  for slot in $SLOT_NUMBERS; do
     docker network rm "${PREFIX}${slot}-net" >/dev/null 2>&1 || true
   done
   docker stop -t 5 "$SLOTS" >/dev/null 2>&1 || true
   # what a launcher from before the slots had networks of their own left when it was killed rather
   # than stopped: the container whose network namespace all its runners shared
   docker stop -t 5 "${PREFIX}net" >/dev/null 2>&1 || true
-  # Remove any runner of this host that is still registered.
-  ids="$(gh api "repos/$REPO/actions/runners" --paginate \
+  # Remove any runner of this host that is still registered (a just-in-time slot's: remote-runners.sh, by its id).
+  ids=""
+  [ -n "$JIT_SLOT" ] || ids="$(gh api "repos/$REPO/actions/runners" --paginate \
     --jq ".runners[] | select(.name | startswith(\"$PREFIX\")) | .id" 2>/dev/null || true)"
   for id in $ids; do
     gh api -X DELETE "repos/$REPO/actions/runners/$id" >/dev/null 2>&1 || true
@@ -619,7 +652,36 @@ if [ -n "$BUILD_CACHE_ROOT" ]; then
   set +m
 fi
 
-for slot in $(seq 1 "$COUNT"); do
+if [ -n "$JIT_SLOT" ]; then
+  # The slot set up first; then READY, and only then the configuration, which the PC makes for this start.
+  name="${PREFIX}${JIT_SLOT}"
+  wait_slot_free "$name"
+  if ! start_slots || ! slot_network "$name-net"; then
+    echo "[$name] could not set up the check slots in $SLOTS or the docker network $name-net" >&2
+    exit 1
+  fi
+  echo READY
+  JIT_CONFIG=""
+  if ! IFS= read -r -t 120 JIT_CONFIG <&3 || ! [[ "$JIT_CONFIG" =~ ^[A-Za-z0-9+/]+=*$ ]]; then
+    echo "[$name] no just-in-time runner configuration came on stdin within 120 s" >&2
+    exit 1
+  fi
+  # The PC keeps stdin open while the runner may run: its end (remote-runners.sh stopped, the session lost) stops
+  # this launcher, and the runner with it. This shell started both processes it waits on.
+  cat <&3 >/dev/null 2>&1 &
+  WATCHER="$!"
+  slot_loop "$JIT_SLOT" &
+  PIDS+=("$!")
+  ended="" status=0
+  wait -n -p ended "${PIDS[0]}" "$WATCHER" || status=$?
+  if [ "$ended" = "$WATCHER" ]; then
+    echo "[$name] stdin ended: stopping its runner" >&2
+    exit 143
+  fi
+  exit "$status"
+fi
+
+for slot in $SLOT_NUMBERS; do
   slot_loop "$slot" &
   PIDS+=("$!")
 done

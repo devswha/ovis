@@ -205,13 +205,15 @@ function runRunner(options: {
   slots?: "no-volume" | "fail" | "fail-later" | "started-elsewhere";
   /** the slots' docker networks: "present" has them there already, "fail" fails their creation */
   networks?: "present" | "fail";
+  /** the launcher's stdin (--jit-slot reads its configuration there) */
+  input?: string;
 } = {}) {
   const { tempDir, args, env, logPath, envFile } = prepareRunner(options);
   try {
-    const result = spawnSync("bash", args, { encoding: "utf8", timeout: 10_000, env });
+    const result = spawnSync("bash", args, { encoding: "utf8", timeout: 10_000, env, input: options.input ?? "" });
     expect(result.error).toBeUndefined();
-    // a launcher that refused its arguments ran no gh or docker command, so wrote no log
-    return { result, calls: existsSync(logPath) ? readFileSync(logPath, "utf8") : "", envFile };
+    // a launcher that refused its arguments ran no gh or docker command, so wrote no log; stdin: what each runner container read
+    return { result, calls: existsSync(logPath) ? readFileSync(logPath, "utf8") : "", stdin: existsSync(`${logPath}.stdin`) ? readFileSync(`${logPath}.stdin`, "utf8") : "", envFile };
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
@@ -326,6 +328,10 @@ case "$1" in
     # a slot's container an earlier launcher left running, while this file exists
     # (its State.Running is the file's content: true while it runs its job, false once it stopped)
     [ -n "\${RUNNER_TEST_SLOT_HELD:-}" ] && [ -e "$RUNNER_TEST_SLOT_HELD" ] && { cat "$RUNNER_TEST_SLOT_HELD"; exit 0; }; exit 1 ;;
+  # stopping a slot's container ends a job held running (the write gives up if no job is held)
+  stop) case "$last" in *-[0-9]|*-[0-9][0-9]|*-[0-9][0-9][0-9])
+      [ -n "\${RUNNER_TEST_HOLD_JOB:-}" ] && timeout 5 sh -c 'echo go > "$0"' "$RUNNER_TEST_HOLD_JOB/release" ;;
+    esac; exit 0 ;;
   # removing slot 1's own container (the launcher's other docker rm calls name the Bun cache build's)
   rm) case "$last" in *-1) [ -n "\${RUNNER_TEST_SLOT_HELD:-}" ] && rm -f "$RUNNER_TEST_SLOT_HELD" ;; esac; exit 0 ;;
   run)
@@ -359,6 +365,9 @@ case "$1" in
       exit "\${DOCKER_CACHE_EXIT:-0}" ;;
     esac
     IFS= read -r token || exit 1
+    printf '%s\\n' "$token" >> "$RUNNER_TEST_LOG.stdin"
+    # a job that runs until docker stop names its container: it says so on the FIFO held, and waits on release
+    if [ -n "\${RUNNER_TEST_HOLD_JOB:-}" ]; then printf x > "$RUNNER_TEST_HOLD_JOB/held"; read -r go < "$RUNNER_TEST_HOLD_JOB/release"; exit 143; fi
     if [ "\${name##*-}" = "\${DOCKER_FAIL_SLOT:-}" ]; then
       exit "\${DOCKER_EXIT_CODE:-42}"
     fi
@@ -731,6 +740,86 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
     const { result, calls } = runRunner({ ghTokenExitCode: 1 });
     expect(result.status).toBe(1);
     expect(calls.split("\n").filter((call) => runnerRun.test(call))).toEqual([]);
+  });
+
+  describe("--jit-slot (a host with no GitHub credential, fed by remote-runners.sh)", () => {
+    const config = "Y29uZmln+/AA==";
+
+    it("says READY once its slot is set up, hands the configuration on stdin to that slot's runner alone, and asks gh nothing", async () => {
+      const { tempDir, args, env, logPath } = prepareRunner({ args: ["--jit-slot", "2"] });
+      // stdin stays open while the runner may run, as remote-runners.sh keeps it
+      const child = Bun.spawn(["bash", ...args], { env, stdin: "pipe", stdout: "pipe", stderr: "ignore" });
+      let calls = "";
+      let stdin = "";
+      try {
+        const said = await child.stdout.getReader().read();
+        expect(new TextDecoder().decode(said.value)).toBe("READY\n");
+        // the slot was set up before it said so
+        expect(readFileSync(logPath, "utf8")).toMatch(/^docker network create --driver bridge herdr-ci-\S+-2-net$/m);
+        child.stdin.write(`${config}\n`);
+        await child.stdin.flush();
+        expect(await Promise.race([child.exited, Bun.sleep(LOADED_BOUND_MS).then(() => "still running")])).toBe(0);
+        calls = readFileSync(logPath, "utf8");
+        stdin = readFileSync(`${logPath}.stdin`, "utf8");
+      } finally {
+        child.kill("SIGKILL");
+        await child.exited;
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+      expect(calls).not.toMatch(/^gh /m);
+      const lines = calls.split("\n");
+      const runners = lines.filter((call) => runnerRun.test(call));
+      expect(runners).toHaveLength(1);
+      expect(runners[0]).toMatch(/ --name herdr-ci-\S+-2 --network herdr-ci-\S+-2-net /);
+      expect(runners[0]).toContain(" -e RUNNER_JIT=1 ");
+      // the runner container read it on stdin; it is on no command line
+      expect(stdin).toBe(`${config}\n`);
+      expect(calls).not.toContain(config);
+      // at its stop, its own slot's container and network, and no other
+      expect(lines.filter((call) => /^docker stop -t 30 /.test(call)).map((call) => call.replace(/herdr-ci-\S+-/, "<prefix>"))).toEqual(["docker stop -t 30 <prefix>2"]);
+    }, HUNG_RUN_MS);
+
+    it("starts no runner without a configuration on stdin", () => {
+      for (const input of ["", "\n", "not a configuration\n", "Y29u Zmln\n"]) {
+        const { result, calls } = runRunner({ args: ["--jit-slot", "1"], input });
+        expect([input, result.status]).toEqual([input, 1]);
+        expect(calls).not.toMatch(/^gh /m);
+        expect(result.stderr).toContain("no just-in-time runner configuration came on stdin");
+        expect(calls.split("\n").filter((call) => runnerRun.test(call))).toEqual([]);
+      }
+    });
+
+    it("refuses a slot, a second slot, the build cache or reserved slots before it starts anything", () => {
+      for (const options of [
+        { args: ["--jit-slot", "0"] }, { args: ["--jit-slot", "01"] }, { args: ["--jit-slot", "1000"] }, { args: ["--jit-slot", "x"] },
+        { count: 2, args: ["--jit-slot", "1"] },
+        { args: ["--jit-slot", "1", "--reserved", "1"] },
+        { args: ["--jit-slot", "1", "--build-cache", join(tmpdir(), "no-build-cache")] },
+      ]) {
+        const { result, calls } = runRunner({ ...options, input: `${config}\n` });
+        expect([options.args.join(" "), result.status]).toEqual([options.args.join(" "), 2]);
+        expect(calls).toBe("");
+      }
+    });
+
+    it("stops its runner when its stdin ends, as when remote-runners.sh stops or its session is lost", async () => {
+      const { tempDir, args, env, logPath } = prepareRunner({ args: ["--jit-slot", "1"] });
+      spawnSync("mkfifo", [join(tempDir, "held"), join(tempDir, "release")]);
+      const child = Bun.spawn(["bash", ...args], { env: { ...env, RUNNER_TEST_HOLD_JOB: tempDir }, stdin: "pipe", stdout: "ignore", stderr: "ignore" });
+      try {
+        child.stdin.write(`${config}\n`);
+        await child.stdin.flush();
+        // the runner runs its job
+        expect(await endsWithin(["head", "-c", "1", join(tempDir, "held")], LOADED_BOUND_MS)).toBe(true);
+        child.stdin.end();
+        expect(await Promise.race([child.exited, Bun.sleep(LOADED_BOUND_MS).then(() => "still running")])).toBe(143);
+        expect(readFileSync(logPath, "utf8")).toMatch(/^docker stop -t 30 herdr-ci-\S+-1$/m);
+      } finally {
+        child.kill("SIGKILL");
+        await child.exited;
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    }, HUNG_RUN_MS);
   });
 
   it("gives every slot a docker network of its own, never the host's or another container's, and removes them at its stop", () => {

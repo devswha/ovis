@@ -321,20 +321,22 @@ always did, and a value that is not one such label list, a failed read or an unr
 That check is a snapshot, not a reservation: a job those runners can take may be queued after it and before the parts
 start, and the parts then wait behind it.
 
-The heartbeat comes from the maintainer's machine, with the repository admin's `gh`, once a minute from the loop
-that hands the host its registration tokens, so it stops when that loop or the host stops.
+The heartbeat comes from the maintainer's machine, with the repository admin's `gh`, once a minute from
+`remote-runners.sh --heartbeat` ([Just-in-time runners on another host](#just-in-time-runners-on-another-host)), so it
+stops when that launcher, this PC or the host stops.
 `runner-heartbeat.sh <runner-name-prefix> <label> <variable> [min-online]` lists the repository's runners and, while
 at least `min-online` (default 2) of those whose name starts with the prefix and that carry the label are online,
 writes `<epoch seconds> <labels> <their own labels>` to the variable: those runners' labels, and those of them no
 other runner of the repository carries (online or offline), each lower-case as one JSON array. The host's runners must
 carry identical labels: while they differ, the heartbeat is not written, since a job asking for a label only some of
 them carry could take one unseen. Nor is it written while every one of their labels is carried by some other runner
-too. Too few runners, differing labels or no label of their own write nothing; a failed listing
-writes nothing and exits 1, so a loop that runs under `set -e` calls it with `|| true`. The parts check also needs
+too. Too few runners, differing labels, no label of their own or a listing that took over 180 s write nothing; the time
+written is when the listing started. A failed listing writes nothing and exits 1, so a loop that runs under `set -e`
+calls it with `|| true`. The parts check also needs
 `timeout` or `gtimeout` on the runner of Detect changes to bound its reads, and reads nothing without one.
 
 ```sh
-runner-heartbeat.sh <runner-name-prefix> <label> CI_BROWSER_PARTS_RUNNERS_SEEN || true   # every minute, in the token loop
+remote-runners.sh ... --heartbeat CI_BROWSER_PARTS_RUNNERS_SEEN -- ...                     # the host's runners and the heartbeat
 gh variable set CI_MAIN_BROWSER_PARTS_LABELS --body '["self-hosted","<label>"]'              # on, once the heartbeat runs
 gh variable delete CI_MAIN_BROWSER_PARTS_LABELS                                              # off: every part where it was
 ```
@@ -424,6 +426,55 @@ second host, so two runs' spikes at once fit on either.
 
 A manual run can override the variable with the `self_hosted_labels` workflow_dispatch input. Fork PRs always use `ubuntu-24.04`; Windows/macOS jobs, `remote-bundles.yml` and `windows-install.yml` stay GitHub-hosted, except `ci.yml`'s Native macOS session identity job, which follows the repository variable `CI_MAC_LABELS` to the self-hosted Mac when it is set ([docs](../../docs/development.md)).
 
+## Just-in-time runners on another host
+
+A host that should hold no GitHub credential at all (the rented server `hosthatch`, label `self-hosted-ovis-parts`)
+gets its runners from this PC, one just-in-time configuration per runner start. `remote-runners.sh` runs here, as the
+user unit `ovis-ci-parts.service`, with the maintainer's `gh`:
+
+```sh
+remote-runners.sh --host hosthatch --repo devswha/ovis --count 2 --name-prefix herdr-ci-ovis-parts- \
+  --labels self-hosted-ovis-parts --heartbeat CI_BROWSER_PARTS_RUNNERS_SEEN -- \
+  systemd-run --quiet --pipe --wait --collect --uid=ci --gid=ci --slice=ovis-ci.slice \
+    --setenv=HOME=/srv/ovis-ci/home --setenv=TMPDIR=/srv/ovis-ci/work --working-directory=/srv/ovis-ci/launcher \
+    /usr/bin/bash /srv/ovis-ci/launcher/run.sh --repo devswha/ovis --env-file /srv/ovis-ci/config/host.env \
+    --cpuset-cpus 0-11 --cache-dir /srv/ovis-ci/cache --work-tmpfs 4g
+```
+
+(`/usr/bin/bash` in front: SELinux keeps systemd from executing a script under `/srv` itself.)
+
+For each start of each slot N:
+1. It opens an ssh session that runs that command with `--jit-slot N`. There, `run.sh` sets up the slot (the check
+   slots, the slot's network, warm caches) and prints `READY`. That mode calls no `gh`.
+2. Only then this PC calls `POST repos/devswha/ovis/actions/runners/generate-jitconfig` (name `herdr-ci-ovis-parts-N`,
+   labels `self-hosted` and `self-hosted-ovis-parts`, runner group 1, work folder `/w`). It writes the
+   `encoded_jit_config` as one line to the session's stdin. `run.sh` hands that line to the runner container on its
+   stdin, as it does a registration token, and `entrypoint.sh` (with `RUNNER_JIT=1`) starts the runner with
+   `--jitconfig`. The configuration never reaches the host's disk, environment or a command line outside the
+   container.
+3. While the runner may run, this PC keeps that stdin open. Its end stops `run.sh`, and the runner with it. That end
+   comes when this launcher stops (it ends its own ssh sessions, by their pids) or when the session is lost.
+4. When the session ends, this PC deletes the runner GitHub made for that start, by its id (gone already after its
+   job), and starts the slot again. GitHub refuses a second runner of a name: an offline one of exactly that name, left
+   by a start this PC could not finish, is deleted first; an online one is left alone.
+
+What such a configuration is (trial of 2026-11-17): one runner, its name and labels fixed by GitHub when the
+configuration is made (they are not in it, and edits are ignored), one session and one job. It cannot register
+another runner or reach the REST API. After its job, the registration is deleted and the configuration is dead. An
+unused one stays valid for at least 20 minutes, so none is made before `READY`. Inside the container, the runner
+writes it to its own directory, as `config.sh` writes a registered runner's credentials, so the job can read it, as
+any job on these runners can read its runner's credential.
+
+The host runs nothing else of ours: no unit of its own starts runners, and when this PC is off or the unit is stopped,
+no runner starts there. The routing then goes back to this PC's runners once the heartbeat is three minutes old. The
+host runs the same image as this PC's runners, built from this directory (`docker build -t herdr-ci-runner:local`
+from a copy in `/srv/ovis-ci/launcher`), so it has the same `job-started.sh`, which refuses fork jobs. Its label
+`self-hosted-ovis-parts` is its alone. A watch that alarms on unknown runner names must know
+`^herdr-ci-ovis-parts-[0-9]+$` before the first start. No run that publishes or signs can take that label. Every job of
+the Release's and Pages' calls of `ci.yml` is held to `${{ inputs.hosted_only && '<hosted label>' || ... }}`
+(`scripts/privileged-jobs-workflow.test.ts`), and `CI_MAIN_BROWSER_PARTS_LABELS` reaches the route only in
+`ci.yml`'s own runs.
+
 ## Cloud VM runners
 
 `vm-runner.sh` turns a 4-vCPU cloud VM without systemd (a Cursor cloud agent's VM, say) into a runner of this
@@ -486,8 +537,9 @@ restore it: a trusted run's build never reaches another run, main's included. A 
 own outbox (on disk, as its workspace is) and the 16 MiB locks volume, so at worst it makes the jobs
 waiting on a key wait up to five minutes and build themselves.
 
-Anyone who holds a runner registration token can register a runner under any label, and that runner
-then takes the jobs that ask for the label, with the run's token: every job of a run can write the run's
+Anyone who holds a runner registration token can register a runner under any label (a just-in-time configuration
+cannot: [above](#just-in-time-runners-on-another-host)), and that runner then takes the jobs that ask for the label,
+with the run's token: every job of a run can write the run's
 artifacts, and any job of a main run can write an Actions cache that later runs restore. So
 `scripts/privileged-jobs-workflow.test.ts` holds the workflows to one rule set:
 
