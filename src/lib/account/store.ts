@@ -1,16 +1,8 @@
-/**
- * This client's account state (docs/account.md, rule 2): its one account key, made by WebCrypto as
- * non-extractable, its sign-in with the account service, and a sign-in on its way through the
- * provider's pages. In an IndexedDB database of its own, `ovis-account`: the shell's `ovis-relay`
- * (relay/device.ts) is shared with the service worker at a fixed version, and the worker never
- * opens this one.
- */
 import { exportAccountKey } from "../../../shared/account-records.ts";
 import type { AddRecord, RemoveRecord } from "../../../shared/account-records.ts";
 
 export interface AccountKey {
   readonly private_key: CryptoKey;
-  /** P-256 SPKI, base64url: the device's `relay_public_key` on every PC of the account */
   readonly public_spki: string;
 }
 
@@ -18,19 +10,15 @@ export const ACCOUNT_PROVIDERS = ["github", "google", "apple"] as const;
 export type AccountProvider = (typeof ACCOUNT_PROVIDERS)[number];
 
 export interface AccountSession {
-  /** the account service's origin this sign-in is with */
   readonly service: string;
   readonly account: string;
   readonly provider: AccountProvider;
   readonly access_token: string;
   readonly refresh_token: string;
-  /** when the access token runs out, in ms since the epoch */
   readonly expires_at: number;
-  /** which sign-in this is, kept by every refresh: random for one made by this build (sessionOf), a digest of the saved refresh token for one saved before sign-ins had an id (service.ts, session) */
   readonly sign_in_id?: string;
 }
 
-/** A sign-in sent to the provider's pages: what its return must match (OAuth `state`) and prove (PKCE verifier). */
 export interface PendingSignIn {
   readonly service: string;
   readonly provider: AccountProvider;
@@ -43,69 +31,36 @@ export interface PendingSignIn {
 interface Records {
   key: AccountKey;
   session: AccountSession;
-  /** by `state`, so a return consumes only its own sign-in and two tabs can each have one */
   pending: Readonly<Record<string, PendingSignIn>>;
-  /** by record id: an `add` this device signed that some PCs' mailboxes have not taken yet (account/join.ts) */
   adds: Readonly<Record<string, QueuedAdd>>;
-  /**
-   * By key: the latest record this device signed for a device of the account, an `add` for one it
-   * approved itself (docs/account.md, rule 6) or a `remove` for one it removed: what it hands a PC it
-   * brings into the account (account/join.ts, enrollPc)
-   */
   devices: Readonly<Record<string, AddRecord | RemoveRecord>>;
-  /**
-   * By record id: other members' signed `remove`s that a PC of the account listed and this device
-   * checked (account/join.ts, keepRemovals), kept verbatim to relay to a PC it brings into the account
-   */
   removals: Readonly<Record<string, RemoveRecord>>;
-  /** by server_id: a PC this device brought into the account, and the records whose outcome it read there */
   enrolls: Readonly<Record<string, PlannedEnroll>>;
-  /**
-   * By leave id: the account key a leave of this device started for (account/leave.ts). It outlives
-   * the leave, so a link that read that key earlier never goes out; a leave that failed takes its own back.
-   */
   leaving: Readonly<Record<string, string>>;
-  /** by link id: the PC a link of this device's account key may be on its way to, read by a leave's snapshot */
   linking: Readonly<Record<string, string>>;
 }
 
 export interface PlannedEnroll {
   readonly account: string;
-  /** ids of the records the PC answered with a final outcome */
   readonly done: readonly string[];
-  /** keys an earlier, unfinished attempt let in, to be introduced once the enrollment ends */
   readonly admitted?: readonly string[];
-  /**
-   * Once enrolled: the devices it let in, the new PC as this device checked it, and the other PCs
-   * (by server_id) still to tell those devices about it (account/join.ts, introductions)
-   */
   readonly introduce?: { readonly keys: readonly string[]; readonly pc: { readonly server_id: string; readonly server_public_key: string; readonly relay: string; readonly name: string }; readonly to: readonly string[] };
 }
 
 export interface QueuedAdd {
   readonly account: string;
   readonly record: AddRecord;
-  /** the PCs whose mailbox it has not reached */
   readonly to: readonly string[];
 }
 type Name = keyof Records;
 type Many<N extends Exclude<Name, "key">> = { [K in N]?: Records[K] };
 
-/** Each read and write is one transaction; `key` is made at most once, between tabs too. */
 export interface AccountStore {
   key(): Promise<AccountKey>;
   get<N extends Exclude<Name, "key">>(name: N): Promise<Records[N] | undefined>;
   set<N extends Exclude<Name, "key">>(name: N, value: Records[N] | undefined): Promise<void>;
-  /** Reads and writes `name` in one transaction; `change` runs synchronously inside it. */
   update<N extends Exclude<Name, "key">>(name: N, change: (current: Records[N] | undefined) => Records[N] | undefined): Promise<void>;
-  /** Reads and writes several `names` in one transaction; a name `change` leaves out, or sets undefined, is deleted. */
   updateMany<N extends Exclude<Name, "key">>(names: readonly N[], change: (current: Many<N>) => Many<N>): Promise<void>;
-  /**
-   * Forgets the key, the sign-in and every record but `leaving`, in one transaction: a new key is made
-   * on next use, which no PC knows. A sign-in `keep` accepts stays (one made after a leave began). With `only`,
-   * nothing is cleared unless it accepts the sign-in stored then (read in the same transaction); the records
-   * `spare` names stay as `leaving` does.
-   */
   clear(keep?: (session: AccountSession) => boolean, options?: { readonly only?: (session: AccountSession | undefined) => boolean; readonly spare?: readonly Exclude<Name, "key" | "session">[] }): Promise<void>;
 }
 
@@ -147,7 +102,6 @@ export function memoryAccountStore(): AccountStore {
   };
 }
 
-/** Runs `work` alone among this origin's tabs (Web Locks), where the browser has them. */
 export type AccountLock = <T>(work: () => Promise<T>) => Promise<T>;
 
 export const accountLock: AccountLock = (work) => {
@@ -155,7 +109,6 @@ export const accountLock: AccountLock = (work) => {
   return locks ? locks.request("ovis-account-session", work) : work();
 };
 
-/** One lock for every AccountService that shares a memory store, as tabs share the browser's. */
 export function memoryLock(): AccountLock {
   let tail: Promise<unknown> = Promise.resolve();
   return (work) => {

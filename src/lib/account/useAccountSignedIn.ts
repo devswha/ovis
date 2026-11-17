@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { indexedAccountStore } from "./store.ts";
 
-/** The account this browser is signed in to, or null: the account's actions show only for its own rows. */
 export function useAccountSignedIn(): string | null {
   const [signedIn, setSignedIn] = useState<string | null>(null);
   useEffect(() => {

@@ -1,10 +1,3 @@
-/**
- * Signing in from the phone app (app/ios/App/App/OvisAuthPlugin.swift, app/android/.../OvisAuthPlugin.java).
- * GitHub, and Apple on Android, open in the system's sign-in sheet or browser and come back to
- * ovis://account/callback; the page finishes with the PKCE verifier it kept, as in a browser. On
- * iOS, Sign in with Apple runs natively: Apple signs the SHA-256 of a random nonce into its
- * identity token, and the account service checks the nonce itself against it (`apple_id_token`).
- */
 import { toBase64Url } from "../../../shared/relay-pair-sas.ts";
 import { callNative, hasNativePlugin, inAndroidApp } from "../nativeApp.ts";
 import { requestToken } from "./service.ts";

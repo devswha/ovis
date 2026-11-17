@@ -77,7 +77,6 @@ describe("sign-in methods", () => {
     expect(after).toMatchObject({ account: "acct_1", provider: "google" });
     expect((await service.identities()).map((identity) => identity.provider).sort()).toEqual(["github", "google"]);
     expect(fake.requests).toContain("POST /v1/signout");
-    // the replaced sign-in's tokens are over
     expect((await fake.fetch(new Request(`${SERVICE}/v1/pcs`, { headers: { authorization: `Bearer ${before.access_token}` } }))).status).toBe(401);
   });
 
@@ -112,13 +111,11 @@ describe("sign-in methods", () => {
     const attacker = memoryAccountStore();
     const session = await redirectSignIn(fake, "github", attacker);
     const token = await linkToken(fake, session.access_token, "google");
-    // the victim opens the attacker's link URL: their own Google identity, their own client, no attacker token
     fake.signInAs("google", "acct_victim");
     const victim = memoryAccountStore();
     await expect(redirectSignIn(fake, "google", victim, { linkToken: token })).rejects.toMatchObject({ code: "invalid_grant" });
     const service = new AccountService({ store: attacker, fetch: fake.fetch, lock: memoryLock() });
     expect((await service.identities()).map((identity) => identity.provider)).toEqual(["github"]);
-    // the victim's own Google sign-in still lands in their own account
     expect((await redirectSignIn(fake, "google", memoryAccountStore())).account).toBe("acct_victim");
   });
 
@@ -156,7 +153,6 @@ describe("sign-in methods", () => {
       start: async () => "http://127.0.0.1:4567/callback",
       open: async (url: string) => new URL((await fake.fetch(url)).headers.get("location") ?? "").search.slice(1),
     };
-    // the page redeems with the browser's fetch, as the desktop app's page does
     const real = globalThis.fetch;
     globalThis.fetch = Object.assign(fake.fetch, { preconnect: real.preconnect });
     try {
@@ -206,7 +202,6 @@ describe("sign-in methods", () => {
     let linked: Awaited<ReturnType<typeof redirectSignIn>> | undefined;
     await expect(service.addMethod("google", async (token, bearer) => {
       linked = await redirectSignIn(fake, "google", store, { linkToken: token, bearer });
-      // another tab signs out while the token answer is still on its way
       await new AccountService({ store, fetch: fake.fetch, lock }).signOut();
       return linked;
     })).rejects.toBeInstanceOf(SignedOutError);

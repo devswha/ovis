@@ -21,7 +21,6 @@ function roster(workspaces: WorkspaceInfo[], tabs: TabInfo[], panes: HerdrPane[]
 const nothingViewed = () => undefined;
 
 describe("adjacentTabPane", () => {
-  // herdr's order (the tab strip's) is the snapshot's, not the tab numbers
   const tabs = [tab("w1:t2", "w1"), tab("w1:t1", "w1"), tab("w2:t1", "w2"), tab("w1:t3", "w1")];
   const panes = [pane("p1", "w1:t1"), pane("p2", "w1:t2"), pane("p3a", "w1:t3"), pane("p3b", "w1:t3"), pane("q1", "w2:t1")];
   const snapshot = roster([workspace("w1"), workspace("w2")], tabs, panes);
@@ -39,7 +38,6 @@ describe("adjacentTabPane", () => {
     expect(adjacentTabPane(withLayout, "p1", 1, nothingViewed)).toBe("p3b");
     const viewed = (scope: "tab" | "workspace", id: string) => scope === "tab" && id === "w1:t3" ? "p3a" : undefined;
     expect(adjacentTabPane(withLayout, "p1", 1, viewed)).toBe("p3a");
-    // a remembered pane that has since closed is passed over
     expect(adjacentTabPane(withLayout, "p1", 1, () => "gone")).toBe("p3b");
   });
 
@@ -84,7 +82,6 @@ describe("sidebarWorkspaceSteps", () => {
     expect(sidebarWorkspaceSteps(tagged, [], () => false, null)).toEqual(["x", "a", "y", "d"]);
     expect(sidebarWorkspaceSteps(tagged, [], () => false, null, false)).toEqual(["a", "d", "x", "y"]);
     expect(sidebarWorkspaceSteps(tagged, [], () => false, "y", true)).toEqual(["a", "d", "y"]);
-    // one whose agent asks a question stays in a folded part, as the sidebar draws it
     expect(sidebarWorkspaceSteps(tagged, [], () => false, "a", true, new Set(["x"]))).toEqual(["a", "d", "x"]);
   });
 });

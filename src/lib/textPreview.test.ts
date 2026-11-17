@@ -36,8 +36,6 @@ describe("previewChunks", () => {
 });
 
 describe("previewElements", () => {
-  // what the Preview draws, counted on its markup: the estimate the worker refuses a file by must
-  // never be below it, or a file under the limit could still hold the page
   const drawn = (source: string): { estimate: number; actual: number } => {
     const blocks = parseMarkdown(source, 0, true);
     const html = renderToStaticMarkup(createElement(SettingsProvider, { children: createElement(OpenFileContext.Provider, {
@@ -71,7 +69,6 @@ describe("previewElements", () => {
 
   it("puts a file of the load limit's short list items past what a Preview draws", () => {
     expect(previewElements(parseMarkdown("- a\n".repeat(TEXT_PREVIEW_BYTES / 4)))).toBeGreaterThan(PREVIEW_ELEMENT_LIMIT);
-    // a long real document of the same size stays well under it: this repository's changelog
     const changelog = readFileSync(new URL("../../CHANGELOG.md", import.meta.url), "utf8").slice(0, TEXT_PREVIEW_BYTES);
     expect(previewElements(parseMarkdown(changelog, 0, true))).toBeLessThan(PREVIEW_ELEMENT_LIMIT * 0.75);
   });

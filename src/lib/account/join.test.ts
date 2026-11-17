@@ -26,14 +26,12 @@ type Link = Awaited<ReturnType<typeof relayConnection>>;
 const fixtures: Fixture[] = [];
 afterEach(() => { for (const fixture of fixtures.splice(0)) fixture.close(); });
 
-/** A PC with a relay identity of its own, as the relay would route to it. */
 function pc(options: Parameters<typeof relayFixture>[1] = {}): { f: Fixture; identity: RelayIdentity } {
   const f = relayFixture(false, options);
   fixtures.push(f);
   return { f, identity: rotateRelayIdentity(f.stateDir) };
 }
 
-/** This client's requests to the PC, through its own signed-in relay session. */
 const pcFetch = (link: Link) => async (path: string, init?: RequestInit): Promise<Response> => {
   if ((init?.method ?? "GET") === "GET") return link.open(path).response;
   const request = link.open(path, { method: "POST", headers: guard, body: "stream" });
@@ -46,7 +44,6 @@ async function accountKey(): Promise<AccountKey> {
   return { private_key: pair.privateKey, public_spki: await exportAccountKey(pair.publicKey) };
 }
 
-/** A phone paired with the PC by QR code before the account: a key of its own for that PC. */
 async function qrPairing(at: ReturnType<typeof pc>, store: MemoryDeviceStore, name: string): Promise<RelayDevice> {
   const device = await relayDevice(at.f);
   return store.update(at.identity.server_id, () => ({
@@ -55,7 +52,6 @@ async function qrPairing(at: ReturnType<typeof pc>, store: MemoryDeviceStore, na
   }));
 }
 
-/** Signs in to the PC through the relay with whatever key the saved pairing holds now. */
 async function connect(at: ReturnType<typeof pc>, saved: RelayDevice): Promise<Link> {
   const link = await relayConnection(at.f, { serverId: at.identity.server_id });
   if (saved.device_id === null) throw new Error("not admitted");
@@ -74,7 +70,6 @@ it("moves QR pairings into the account one PC at a time, and calls a PC it has n
   const linked = await linkThisDevice({ fetch: pcFetch(link), device: onA, key, account: ACCOUNT, store });
   expect(linked.public_spki).toBe(key.public_spki);
   expect(await pcAccountStatus(pcFetch(link))).toEqual({ account: ACCOUNT, unlinked: [], removals: [], adds: [], blocked: [], enrolling: true });
-  // the linked pairing signs in with the account key from now on
   await connect(a, linked);
   const listed = [a, b].map((at) => ({ server_id: at.identity.server_id, label: "pc", added_at: new Date().toISOString(), last_seen_at: null, public_key: null, relay: null }));
   const rows = myPcs(listed, await store.list(), { now: Date.now(), accountKey: key.public_spki });
@@ -91,7 +86,6 @@ it("brings an approved device into every PC of the account: the add waits in an 
   const [x, y] = [pc(), pc()];
   const approverKey = await accountKey();
   const phone = new MemoryDeviceStore();
-  // the approving phone: already a member of both PCs
   const onX = await linkThisDevice({ fetch: pcFetch(await connect(x, await qrPairing(x, phone, "p620"))), device: (await phone.get(x.identity.server_id))!, key: approverKey, account: ACCOUNT, store: phone });
   await linkThisDevice({ fetch: pcFetch(await connect(y, await qrPairing(y, phone, "nuc"))), device: (await phone.get(y.identity.server_id))!, key: approverKey, account: ACCOUNT, store: phone });
   const service = new FakeAccountService();
@@ -99,18 +93,15 @@ it("brings an approved device into every PC of the account: the add waits in an 
   await accountStore.set("session", { service: SERVICE, account: ACCOUNT, provider: "github", access_token: service.issueToken(ACCOUNT), refresh_token: "r", expires_at: Date.now() + 3600_000 });
   const account = new AccountService({ store: accountStore, fetch: service.fetch });
   for (const [at, label] of [[x, "p620"], [y, "nuc"]] as const) await account.putPc(at.identity.server_id, { label, public_key: Array.from(importPublicKey(at.identity.public_key), (byte) => byte.toString(16).padStart(2, "0")).join(""), relay: "wss://relay.example" });
-  // PC X let the Mac in on this phone's remote approval
   const mac = await accountKey();
   const admitted = x.f.app.context.services.devices.addAccountDevice({ id: accountDeviceId(x.identity.server_id, mac.public_spki), key: mac.public_spki, label: "Mac app", role: "drive", account: ACCOUNT, addedBy: onX.device_id! });
   await admitToAccount({
     fetch: pcFetch(await connect(x, onX)), service: account, key: approverKey, account: ACCOUNT, joining: { key: mac.public_spki, label: "Mac app" },
     through: x.identity.server_id, paired: await phone.list(), directory: (await account.listPcs()).map((entry) => entry.server_id),
   });
-  // PC Y was off: it finds the add in its mailbox when it comes back
   expect(y.f.app.context.services.devices.hasKey(mac.public_spki)).toBe(false);
   await new AccountMailbox({ devices: y.f.app.context.services.devices, identity: () => y.identity, service: SERVICE, fetch: service.fetch }).pull();
   expect(y.f.app.context.services.devices.hasKey(mac.public_spki)).toBe(true);
-  // the Mac learns PC Y from X and signs in there with the account key alone
   const macStore = new MemoryDeviceStore();
   const onXForMac = await macStore.update(x.identity.server_id, () => ({ server_id: x.identity.server_id, server_public_key: x.identity.public_key, relay: "wss://relay.example", device_id: admitted.id, private_key: mac.private_key, public_spki: mac.public_spki, label: "Mac app" }));
   const introduced = await takeIntroduction({ fetch: pcFetch(await connect(x, onXForMac)), key: mac, label: "Mac app", store: macStore, relay: onXForMac.relay });
@@ -136,14 +127,12 @@ it("keeps an add the account service refused and sends it on the next try, so a 
   for (const [at, label] of [[x, "p620"], [y, "nuc"]] as const) await account.putPc(at.identity.server_id, { label, public_key: Array.from(importPublicKey(at.identity.public_key), (byte) => byte.toString(16).padStart(2, "0")).join(""), relay: "wss://relay.example" });
   const mac = await accountKey();
   x.f.app.context.services.devices.addAccountDevice({ id: accountDeviceId(x.identity.server_id, mac.public_spki), key: mac.public_spki, label: "Mac app", role: "drive", account: ACCOUNT, addedBy: onX.device_id! });
-  // X let the Mac in; the service refuses the add for Y, so nothing reaches Y yet
   await admitToAccount({
     fetch: pcFetch(await connect(x, onX)), service: account, key: approverKey, account: ACCOUNT, joining: { key: mac.public_spki, label: "Mac app" },
     through: x.identity.server_id, paired: await phone.list(), directory: (await account.listPcs()).map((entry) => entry.server_id), store: accountStore,
   });
   await new AccountMailbox({ devices: y.f.app.context.services.devices, identity: () => y.identity, service: SERVICE, fetch: service.fetch }).pull();
   expect(y.f.app.context.services.devices.hasKey(mac.public_spki)).toBe(false);
-  // the next time this device reads the account, the kept add goes out, once
   refuse = false;
   await sendQueuedAdds({ service: account, store: accountStore, account: ACCOUNT });
   await sendQueuedAdds({ service: account, store: accountStore, account: ACCOUNT });
@@ -153,23 +142,18 @@ it("keeps an add the account service refused and sends it on the next try, so a 
 });
 
 describe("enrolling a PC this device brings into the account", () => {
-  /** A phone that is a member of PC X, which already belongs to the account, and has a QR pairing with PC Y, which does not. */
   async function setUp() {
     const service = new FakeAccountService();
-    // Y collects its mailbox from the same service, which is when it retries records waiting on their signer
-    // both PCs collect their mailboxes from the fake service, never the real one
     const [x, y] = [pc({ accountService: { url: SERVICE, fetch: service.fetch } }), pc({ accountService: { url: SERVICE, fetch: service.fetch } })];
     const phone = new MemoryDeviceStore();
     const accountStore = memoryAccountStore();
     const key = await accountStore.key();
     const onX = await linkThisDevice({ fetch: pcFetch(await connect(x, await qrPairing(x, phone, "p620"))), device: (await phone.get(x.identity.server_id))!, key, account: ACCOUNT, store: phone });
-    // X's first link: the app enrolls it at once, which ends X's wait for the account's devices
     expect((await pcFetch(await connect(x, onX))("/api/account/enroll", { method: "POST", body: JSON.stringify({ account: ACCOUNT, records: [] }) })).ok).toBe(true);
     await qrPairing(y, phone, "nuc");
     await accountStore.set("session", { service: SERVICE, account: ACCOUNT, provider: "github", access_token: service.issueToken(ACCOUNT), refresh_token: "r", expires_at: Date.now() + 3600_000 });
     const account = new AccountService({ store: accountStore, fetch: service.fetch });
     await account.putPc(x.identity.server_id, { label: "p620", public_key: Array.from(importPublicKey(x.identity.public_key), (byte) => byte.toString(16).padStart(2, "0")).join(""), relay: "wss://relay.example" });
-    /** this phone approves `label` on X, as a remote approval does */
     const approve = async (label: string): Promise<AccountKey> => {
       const joining = await accountKey();
       x.f.app.context.services.devices.addAccountDevice({ id: accountDeviceId(x.identity.server_id, joining.public_spki), key: joining.public_spki, label, role: "drive", account: ACCOUNT, addedBy: onX.device_id! });
@@ -177,9 +161,7 @@ describe("enrolling a PC this device brings into the account", () => {
         through: x.identity.server_id, paired: await phone.list(), directory: [x.identity.server_id], store: accountStore });
       return joining;
     };
-    /** this phone disconnects `device` from the account, from X */
     const disconnect = async (device: AccountKey) => removeFromAccount({ service: account, accountStore, relayStore: phone, key: device.public_spki, account: ACCOUNT, hereId: x.identity.server_id, here: pcFetch(await connect(x, onX)) });
-    /** links this phone on Y, which had no account: Y's enrollment is planned then */
     const linkY = async (): Promise<RelayDevice> => {
       const status = await pcAccountStatus(pcFetch(await connect(y, (await phone.get(y.identity.server_id))!)));
       expect(status.account).toBeNull();
@@ -194,14 +176,12 @@ describe("enrolling a PC this device brings into the account", () => {
     const mac = await approve("Mac app");
     const lost = await approve("Lost phone");
     await disconnect(lost);
-    // X lists a device this phone never approved
     const stranger = await accountKey();
     x.f.app.context.services.devices.addAccountDevice({ id: accountDeviceId(x.identity.server_id, stranger.public_spki), key: stranger.public_spki, label: "Stranger", role: "drive", account: ACCOUNT, addedBy: onX.device_id! });
 
     const onY = await linkY();
     expect((await enrollPc({ fetch: pcFetch(await connect(y, onY)), store: accountStore, account: ACCOUNT, serverId: y.identity.server_id })).finished).toBe(true);
     const devices = y.f.app.context.services.devices;
-    // this phone's own row (the fixture's label) and the Mac it approved are members there; the stranger has no signed add
     expect(devices.list(null, true).filter((row) => row.account_key !== undefined).map((row) => row.label)).toEqual(["Relay test", "Mac app"]);
     expect([devices.hasKey(mac.public_spki), devices.hasKey(stranger.public_spki), devices.hasKey(lost.public_spki)]).toEqual([true, false, false]);
     expect(devices.isTombstoned(lost.public_spki)).toBe(true);
@@ -211,19 +191,16 @@ describe("enrolling a PC this device brings into the account", () => {
   it("does not let back on the new PC a device another member removed, which this phone approved before", async () => {
     const { x, y, accountStore, onX, approve, linkY } = await setUp();
     const mac = await approve("Mac app");
-    // another phone of the account removes the Mac on X; its remove never reaches Y
     const other = await accountKey();
     x.f.app.context.services.devices.addAccountDevice({ id: accountDeviceId(x.identity.server_id, other.public_spki), key: other.public_spki, label: "Other phone", role: "drive", account: ACCOUNT, addedBy: onX.device_id! });
     const remove = await signAccountRecord({ v: 1, kind: "remove", account: ACCOUNT, key: mac.public_spki, issued_at: new Date().toISOString(), id: newRecordId(), signer: other.public_spki }, other.private_key);
     expect((await pcFetch(await connect(x, onX))("/api/account/records", { method: "POST", body: JSON.stringify({ records: [remove] }) })).ok).toBe(true);
     expect(x.f.app.context.services.devices.hasKey(mac.public_spki)).toBe(false);
     const onY = await linkY();
-    // the phone reads X first: X keeps the Mac out, so its add stays home and Y holds the key
     const others = [{ serverId: x.identity.server_id, fetch: pcFetch(await connect(x, onX)) }];
     const enrolled = await enrollPc({ fetch: pcFetch(await connect(y, onY)), store: accountStore, account: ACCOUNT, serverId: y.identity.server_id, others });
     expect([enrolled.finished, enrolled.checked]).toEqual([true, 1]);
     expect(y.f.app.context.services.devices.hasKey(mac.public_spki)).toBe(false);
-    // a copy of its add waiting in Y's mailbox is held back too
     const mailed = await signAccountRecord({ v: 1, kind: "add", account: ACCOUNT, key: mac.public_spki, label: "Mac app", role: "drive", issued_at: new Date().toISOString(), id: newRecordId(), signer: (await accountStore.key()).public_spki }, (await accountStore.key()).private_key);
     const [outcome] = await (await pcFetch(await connect(y, onY))("/api/account/records", { method: "POST", body: JSON.stringify({ records: [mailed] }) })).json().then((body) => (body as { results: unknown[] }).results);
     expect(outcome).toMatchObject({ outcome: "refused", code: "removal_pending" });
@@ -252,7 +229,6 @@ describe("enrolling a PC this device brings into the account", () => {
     const enrolled = await enrollPc({ fetch: pcFetch(await connect(y, onY)), store: accountStore, account: ACCOUNT, serverId: y.identity.server_id, others: [{ serverId: x.identity.server_id, fetch: stale }] });
     expect([enrolled.finished, enrolled.checked, enrolled.admitted]).toEqual([false, 0, []]);
     expect(y.f.app.context.services.accountHolds.enrolling()).toBe(true);
-    // a passing failure leaves no permanent hold behind
     expect(y.f.app.context.services.accountHolds.full()).toBe(false);
   });
 
@@ -360,7 +336,6 @@ describe("enrolling a PC this device brings into the account", () => {
     const pcY = { server_id: y.identity.server_id, server_public_key: y.identity.public_key, relay: "wss://relay.example", name: "nuc" };
     const link = await connect(y, onY);
     let removed = false;
-    // another tab removes a device while the enrollment is on its way to Y
     const racing = async (path: string, init?: RequestInit) => {
       const answer = await pcFetch(link)(path, init);
       if (path === "/api/account/enroll" && !removed) { removed = true; await disconnect(lost); }
@@ -394,7 +369,6 @@ describe("enrolling a PC this device brings into the account", () => {
   it("brings the devices another PC lists into the new PC, and introduces the new PC to them there", async () => {
     const { x, y, accountStore, onX, approve, linkY } = await setUp();
     const mac = await approve("Mac app");
-    // a tablet another member let in on X, with that member's signed add kept there
     const other = await approve("Other phone");
     const tablet = await accountKey();
     const tabletAdd = await signAccountRecord({ v: 1, kind: "add", account: ACCOUNT, key: tablet.public_spki, label: "Tablet", role: "drive", issued_at: new Date().toISOString(), id: newRecordId(), signer: other.public_spki }, other.private_key);
@@ -407,7 +381,6 @@ describe("enrolling a PC this device brings into the account", () => {
     expect(enrolled.finished).toBe(true);
     const devices = y.f.app.context.services.devices;
     for (const device of [mac, other, tablet]) expect(devices.hasKey(device.public_spki)).toBe(true);
-    // the tablet learns Y from X and signs in there with the account key alone
     const tabletStore = new MemoryDeviceStore();
     const onXForTablet = await tabletStore.update(x.identity.server_id, () => ({ server_id: x.identity.server_id, server_public_key: x.identity.public_key, relay: "wss://relay.example", device_id: accountDeviceId(x.identity.server_id, tablet.public_spki), private_key: tablet.private_key, public_spki: tablet.public_spki, label: "Tablet" }));
     const introduced = await takeIntroduction({ fetch: pcFetch(await connect(x, onXForTablet)), key: tablet, label: "Tablet", store: tabletStore, relay: "wss://relay.example" });
@@ -415,20 +388,17 @@ describe("enrolling a PC this device brings into the account", () => {
     await connect(y, introduced[0]!);
   });
 
-  /** Another phone this phone approved, which then removes the Mac on X; this phone reads X afterwards. */
   async function removedByAnother(setup: Awaited<ReturnType<typeof setUp>>) {
     const { x, onX, accountStore, approve } = setup;
     const mac = await approve("Mac app");
     const other = await approve("Other phone");
     const remove = await signAccountRecord({ v: 1, kind: "remove", account: ACCOUNT, key: mac.public_spki, issued_at: new Date().toISOString(), id: newRecordId(), signer: other.public_spki }, other.private_key);
-    // the other phone removes the Mac on X, over its own session there
     const otherOnX: RelayDevice = { server_id: x.identity.server_id, server_public_key: x.identity.public_key, relay: "wss://relay.example", device_id: accountDeviceId(x.identity.server_id, other.public_spki), private_key: other.private_key, public_spki: other.public_spki, label: "Other phone" };
     expect((await pcFetch(await connect(x, otherOnX))("/api/account/records", { method: "POST", body: JSON.stringify({ records: [remove] }) })).ok).toBe(true);
     await keepRemovals({ store: accountStore, account: ACCOUNT, removals: (await pcAccountStatus(pcFetch(await connect(x, onX)))).removals });
     return { mac, other, remove };
   }
 
-  /** The other phone becomes a member of Y, as a remote approval by this phone makes it. */
   const joinsY = (setup: Awaited<ReturnType<typeof setUp>>, onY: RelayDevice, other: AccountKey) => {
     const devices = setup.y.f.app.context.services.devices;
     if (!devices.hasKey(other.public_spki)) devices.addAccountDevice({ id: accountDeviceId(setup.y.identity.server_id, other.public_spki), key: other.public_spki, label: "Other phone", role: "drive", account: ACCOUNT, addedBy: onY.device_id! });
@@ -441,10 +411,8 @@ describe("enrolling a PC this device brings into the account", () => {
     const onY = await linkY();
     expect((await enrollPc({ fetch: pcFetch(await connect(y, onY)), store: accountStore, account: ACCOUNT, serverId: y.identity.server_id })).finished).toBe(true);
     const devices = y.f.app.context.services.devices;
-    // the removal waited for its signer, whose add came in the same enrollment
     expect(devices.hasKey(other.public_spki)).toBe(true);
     expect(devices.isTombstoned(mac.public_spki)).toBe(true);
-    // with its own signature and issued_at: Y lists the very record the other phone signed
     expect(devices.accountRemovals()).toEqual([remove]);
     expect(devices.hasKey(mac.public_spki)).toBe(false);
   });
@@ -453,7 +421,6 @@ describe("enrolling a PC this device brings into the account", () => {
     const setup = await setUp();
     const { y, accountStore, disconnect, linkY } = setup;
     const { other, remove } = await removedByAnother(setup);
-    // this phone then removes the other phone itself
     const { remove: removal } = await disconnect(other);
     const onY = await linkY();
     const sent: string[] = [];
@@ -522,7 +489,6 @@ describe("enrolling a PC this device brings into the account", () => {
     const onY = await linkY();
     await account.putPc(y.identity.server_id, { label: "nuc", public_key: Array.from(importPublicKey(y.identity.public_key), (byte) => byte.toString(16).padStart(2, "0")).join(""), relay: "wss://relay.example" });
     const before = await accountStore.get("devices");
-    // Y's status, tampered, says the account removed the Mac and this phone's own key
     const link = await connect(y, onY);
     const tampered = async (path: string, init?: RequestInit) => {
       const answer = await pcFetch(link)(path, init);
@@ -530,7 +496,6 @@ describe("enrolling a PC this device brings into the account", () => {
       return Response.json({ ...await answer.json() as object, removed: [{ key: mac.public_spki, removed_at: new Date().toISOString() }, { key: key.public_spki, removed_at: new Date().toISOString() }] });
     };
     expect((await enrollOnPc({ fetch: tampered, store: accountStore, account: ACCOUNT, serverId: y.identity.server_id }))?.finished).toBe(true);
-    // no remove was signed, kept or mailed anywhere, and the Mac is still in on X
     expect(await accountStore.get("devices")).toEqual(before);
     expect(await accountStore.get("adds")).toBeUndefined();
     for (const at of [x, y]) expect(service.mailbox(at.identity.server_id, ACCOUNT)).toEqual([]);
@@ -548,7 +513,6 @@ describe("enrolling a PC this device brings into the account", () => {
     await rememberDevice(store, removal);
     await rememberDevice(store, await sign("add", "2026-11-05T10:00:00.000Z"));
     expect((await store.get("devices"))?.[mac.public_spki]).toEqual(removal);
-    // approved again after the removal: no removal of it is enrolled any more
     const again = await sign("add", "2026-11-05T10:00:02.000Z");
     await rememberDevice(store, again);
     expect((await store.get("devices"))?.[mac.public_spki]).toEqual(again);
@@ -561,7 +525,6 @@ describe("enrolling a PC this device brings into the account", () => {
     const onY = await linkY();
     const link = await connect(y, onY);
     let removed = false;
-    // another tab disconnects the Mac while the first removal is on its way to Y
     const racing = async (path: string, init?: RequestInit) => {
       const answer = await pcFetch(link)(path, init);
       if (!removed) { removed = true; await disconnect(mac); }
@@ -579,14 +542,12 @@ describe("enrolling a PC this device brings into the account", () => {
     await disconnect(lost);
     const onY = await linkY();
     const link = await connect(y, onY);
-    // the PC applies the enrollment but its answer never arrives
     const gone = async (path: string, init?: RequestInit) => { await pcFetch(link)(path, init); throw new TypeError("connection lost"); };
     await expect(enrollPc({ fetch: gone, store: accountStore, account: ACCOUNT, serverId: y.identity.server_id })).rejects.toBeInstanceOf(TypeError);
     expect(await accountStore.get("enrolls")).toEqual({ [y.identity.server_id]: { account: ACCOUNT, done: [] } });
     expect((await enrollPc({ fetch: pcFetch(await connect(y, onY)), store: accountStore, account: ACCOUNT, serverId: y.identity.server_id })).finished).toBe(true);
     expect(y.f.app.context.services.devices.isTombstoned(lost.public_spki)).toBe(true);
     expect(await accountStore.get("enrolls")).toBeUndefined();
-    // nothing planned for a PC: nothing is sent
     expect((await enrollPc({ fetch: async () => { throw new Error("no request expected"); }, store: accountStore, account: ACCOUNT, serverId: y.identity.server_id })).finished).toBe(true);
   });
 
@@ -604,7 +565,6 @@ describe("enrolling a PC this device brings into the account", () => {
 });
 
 describe("approving a device that asks to join the account", () => {
-  // the service's clock: a test moves it on so a second admission is really the newer one
   let clock = Date.now();
   async function setUp() {
     clock = Date.now();
@@ -615,7 +575,6 @@ describe("approving a device that asks to join the account", () => {
     const pcKey = generateKeyPair().publicKey;
     const X = deriveServerId(pcKey);
     await service.putPc(X, { label: "p620", public_key: Array.from(pcKey, (byte) => byte.toString(16).padStart(2, "0")).join(""), relay: "wss://relay.example" });
-    // the new device, signed in to the same account, rang from PC X with its own key
     const mac = await accountKey();
     await service.postAdmission(X, "Mac app", mac.public_spki);
     return { fake, service, mac, X };
@@ -737,7 +696,6 @@ describe("approving a device that asks to join the account", () => {
     expect(vouchedAdmission(listed, "pc-x", "k", now)?.label).toBe("newest");
     expect(vouchedAdmission([...listed].reverse(), "pc-x", "k", now)?.label).toBe("newest");
     expect(vouchedAdmission([admission("stale", 11)], "pc-x", "k", now)).toBeUndefined();
-    // the same millisecond: one pick whatever order the service lists them in
     const tied = [admission("first", 2), admission("second", 2)];
     expect(vouchedAdmission(tied, "pc-x", "k", now)?.label).toBe(vouchedAdmission([...tied].reverse(), "pc-x", "k", now)?.label);
   });
@@ -792,9 +750,7 @@ it("links a device that just paired over a connection of its own, as the session
     server_id: x.identity.server_id, server_public_key: x.identity.public_key, relay: "wss://relay.example",
     device_id: admitted.device_id, private_key: key.private_key, public_spki: key.public_spki, label: "Phone",
   }));
-  // the session that paired has not proved the key: the PC refuses the link there
   await expect(linkThisDevice({ fetch: pcFetch(pairing), device, key, account: ACCOUNT, store })).rejects.toMatchObject({ code: "link_not_owner" });
-  // a connection that signs in with the saved key links it
   await linkThisDevice({ fetch: pcFetch(await connect(x, device)), device, key, account: ACCOUNT, store });
   expect(await pcAccountStatus(pcFetch(await connect(x, device)))).toEqual({ account: ACCOUNT, unlinked: [], removals: [], adds: [], blocked: [], enrolling: true });
 });
@@ -836,13 +792,11 @@ it("disconnects a lost device from every PC: at once on the PC this window is in
   const account = new AccountService({ store: accountStore, fetch: service.fetch });
   for (const at of [x, y]) await account.putPc(at.identity.server_id, { label: "pc", public_key: Array.from(importPublicKey(at.identity.public_key), (byte) => byte.toString(16).padStart(2, "0")).join(""), relay: "wss://relay.example" });
   const result = await removeFromAccount({ service: account, accountStore, relayStore: phone, key: lost.public_spki, account: ACCOUNT, hereId: x.identity.server_id, here: pcFetch(await connect(x, onX)) });
-  // applied here; only sent to Y's mailbox, which may refuse it (this device revoked there): named, not claimed
   expect(result.queued).toEqual([y.identity.server_id]);
   expect(x.f.app.context.services.devices.hasKey(lost.public_spki)).toBe(false);
   expect(y.f.app.context.services.devices.hasKey(lost.public_spki)).toBe(true);
   await new AccountMailbox({ devices: y.f.app.context.services.devices, identity: () => y.identity, service: SERVICE, fetch: service.fetch }).pull();
   expect(y.f.app.context.services.devices.hasKey(lost.public_spki)).toBe(false);
-  // the phone that disconnected it is still in on both
   expect(x.f.app.context.services.devices.hasKey(key.public_spki)).toBe(true);
 });
 
@@ -862,7 +816,6 @@ it("names a PC this device is linked on that the account does not list, instead 
   const account = new AccountService({ store: accountStore, fetch: service.fetch });
   for (const at of [x]) await account.putPc(at.identity.server_id, { label: "pc", public_key: Array.from(importPublicKey(at.identity.public_key), (byte) => byte.toString(16).padStart(2, "0")).join(""), relay: "wss://relay.example" });
   const result = await removeFromAccount({ service: account, accountStore, relayStore: phone, key: lost.public_spki, account: ACCOUNT, hereId: x.identity.server_id, here: pcFetch(await connect(x, onX)) });
-  // applied here; only sent to Y's mailbox, which may refuse it (this device revoked there): named, not claimed
   expect(result.unconfirmed).toEqual([y.identity.server_id]);
   expect(x.f.app.context.services.devices.hasKey(lost.public_spki)).toBe(false);
 });
@@ -883,7 +836,6 @@ it("still disconnects it on the PC in view when the account service refuses the 
   const account = new AccountService({ store: accountStore, fetch: (async (input: RequestInfo | URL, init?: RequestInit) => new URL(input instanceof Request ? input.url : String(input)).pathname === "/v1/records" ? Response.json({ error: "mailbox_full" }, { status: 429 }) : service.fetch(input, init)) as typeof fetch });
   for (const at of [x, y]) await account.putPc(at.identity.server_id, { label: "pc", public_key: Array.from(importPublicKey(at.identity.public_key), (byte) => byte.toString(16).padStart(2, "0")).join(""), relay: "wss://relay.example" });
   const result = await removeFromAccount({ service: account, accountStore, relayStore: phone, key: lost.public_spki, account: ACCOUNT, hereId: x.identity.server_id, here: pcFetch(await connect(x, onX)) });
-  // applied here; only sent to Y's mailbox, which may refuse it (this device revoked there): named, not claimed
   expect(result.unconfirmed).toEqual([y.identity.server_id]);
   expect(x.f.app.context.services.devices.hasKey(lost.public_spki)).toBe(false);
 });
@@ -899,12 +851,10 @@ it("keeps a pairing the account does not list when this device leaves, and says 
   const service = new FakeAccountService();
   await accountStore.set("session", { service: SERVICE, account: ACCOUNT, provider: "github", access_token: service.issueToken(ACCOUNT), refresh_token: "r", expires_at: Date.now() + 3600_000 });
   const account = new AccountService({ store: accountStore, fetch: service.fetch });
-  // only one PC is in the directory: the other never reached it (or the service hides it)
   await account.putPc(a.identity.server_id, { label: "pc", public_key: Array.from(importPublicKey(a.identity.public_key), (byte) => byte.toString(16).padStart(2, "0")).join(""), relay: "wss://relay.example" });
   const { unconfirmed } = await leaveAccount({ service: account, accountStore, relayStore: phone, session: (await account.session())! });
   expect(unconfirmed).toEqual([hidden.identity.server_id]);
   expect((await phone.list()).map((device) => device.server_id)).toEqual([hidden.identity.server_id]);
-  // the listed PCs tombstone that key: the next sign-in makes a new one, and the kept pairing still connects with its own
   expect((await accountStore.key()).public_spki).not.toBe(key.public_spki);
   expect((await phone.get(hidden.identity.server_id))!.public_spki).toBe(key.public_spki);
 });
@@ -938,7 +888,6 @@ it("keeps the account key it linked to when the PC's answer is lost, so the next
   const after = await store.get(x.identity.server_id);
   expect(after?.public_spki).toBe(saved.public_spki);
   expect(after?.pending_key?.public_spki).toBe(key.public_spki);
-  // the PC holds the account key now: the kept one signs in
   await connect(x, { ...after!, private_key: after!.pending_key!.private_key, public_spki: after!.pending_key!.public_spki });
 });
 
@@ -969,7 +918,6 @@ it("does not count a PC as reached when this device holds the account key there 
   const accountStore = memoryAccountStore();
   const key = await accountStore.key();
   const onX = await linkThisDevice({ fetch: pcFetch(await connect(x, await qrPairing(x, phone, "p620"))), device: (await phone.get(x.identity.server_id))!, key, account: ACCOUNT, store: phone });
-  // paired with the account key, but the link never went through: not a member there
   await phone.update(y.identity.server_id, () => ({ server_id: y.identity.server_id, server_public_key: y.identity.public_key, relay: "wss://relay.example", device_id: "ab".repeat(8), private_key: key.private_key, public_spki: key.public_spki, label: "Phone" }));
   const lost = await accountKey();
   x.f.app.context.services.devices.addAccountDevice({ id: accountDeviceId(x.identity.server_id, lost.public_spki), key: lost.public_spki, label: "Lost phone", role: "drive", account: ACCOUNT, addedBy: onX.device_id! });

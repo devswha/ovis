@@ -1,6 +1,5 @@
 import { getTransport } from "./transport.ts";
 
-/** Whether a picture can go on the clipboard here: only the clipboard API takes one, and only in a secure context. */
 export function canCopyImage(): boolean {
   return typeof ClipboardItem !== "undefined" && typeof navigator.clipboard?.write === "function";
 }
@@ -27,12 +26,10 @@ async function pngOf(image: HTMLImageElement): Promise<Blob> {
     const blob = await response.blob();
     if (response.ok && blob.type.split(";", 1)[0] === "image/png") return blob;
   } catch {
-    /* the bytes could not be read again: the decoded picture is drawn instead */
   }
   return drawnPng(image);
 }
 
-/** A decoded picture drawn on a canvas and encoded as PNG. */
 export async function drawnPng(image: HTMLImageElement): Promise<Blob> {
   if (image.naturalWidth === 0 || image.naturalHeight === 0) throw new Error("image not decoded");
   const canvas = document.createElement("canvas");
@@ -46,7 +43,6 @@ export async function drawnPng(image: HTMLImageElement): Promise<Blob> {
   });
 }
 
-/** Selects everything inside `node`, so the user can long-press or Ctrl+C it. */
 export function selectContents(node: HTMLElement): void {
   const range = document.createRange();
   range.selectNodeContents(node);
@@ -69,10 +65,7 @@ export async function copyText(text: string, fallback?: HTMLElement | null): Pro
       return true;
     }
   } catch {
-    /* no clipboard API here, or the browser refused */
   }
-  // A refusal can come late. If focus has moved on by then, the user is elsewhere (the message box,
-  // a terminal, perhaps mid-IME): taking focus to copy would cut into what they are typing.
   if (document.activeElement !== initiator) return false;
   const active = document.activeElement;
   const selection = window.getSelection();
@@ -91,7 +84,6 @@ export async function copyText(text: string, fallback?: HTMLElement | null): Pro
     input.select();
     copied = document.execCommand("copy");
   } catch {
-    /* the legacy copy command can be refused too */
   } finally {
     input.remove();
     if (active instanceof HTMLElement) active.focus({ preventScroll: true });

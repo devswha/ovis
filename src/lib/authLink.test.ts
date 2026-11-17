@@ -15,8 +15,8 @@ describe("authTokenFromHash", () => {
     expect(authTokenFromHash("")).toBeNull();
     expect(authTokenFromHash("#")).toBeNull();
     expect(authTokenFromHash("#pane=wS1:p1")).toBeNull();
-    expect(authTokenFromHash("#auth=")).toBeNull(); // empty link: nothing to offer
-    expect(authTokenFromHash("#auth=a&t=other")).toBe("a&t=other"); // token chars, not params
+    expect(authTokenFromHash("#auth=")).toBeNull();
+    expect(authTokenFromHash("#auth=a&t=other")).toBe("a&t=other");
   });
 
   it("returns null on a truncated percent-escape instead of throwing", () => {

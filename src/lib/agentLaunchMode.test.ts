@@ -31,29 +31,21 @@ it("leaves other agents and a plain shell alone", () => {
 });
 
 it("names a model and an effort for the agents whose CLI documents them, and a positional prompt only where the separator makes it safe", () => {
-  // Claude Code's parser runs a subcommand named by the first operand even after `--` (claude -- update ran the updater)
   expect(launchCapabilities("claude")).toEqual({ model: true, efforts: CLAUDE_EFFORTS, ultracode: true, positionalPrompt: false });
-  // clap takes everything after `--` as the PROMPT positional (codex -- logout started the TUI)
   expect(launchCapabilities("codex")).toEqual({ model: true, efforts: CODEX_EFFORTS, ultracode: false, positionalPrompt: true });
-  // Letta Code takes a prompt only with `-p`, its headless mode (letta-code 0.34.23, src/cli/args.ts)
   for (const kind of ["omp", "pi", "gemini", "opencode", "letta", ""]) expect(launchCapabilities(kind)).toEqual({ model: false, efforts: [], ultracode: false, positionalPrompt: false });
   expect(modelSuggestions("claude")).toEqual(["sonnet", "opus", "haiku"]);
   expect(modelSuggestions("codex")).toEqual([]);
 });
 
 it("puts the model, the effort and then the prompt after the mode, each in the agent's own syntax", () => {
-  // Claude Code's prompt is never on its command line: the mode, model and effort go, the message waits for the bridge
   expect(launchArgs("claude", { ...plain, claudeLaunchMode: "plan" }, { model: "opus", effort: "high", prompt: "Fix the flaky test" }))
     .toEqual(["--permission-mode", "plan", "--model", "opus", "--effort", "high"]);
-  // Codex's prompt comes last, after the end-of-options separator
   expect(launchArgs("codex", plain, { model: "gpt-5-codex", effort: "xhigh", prompt: " Review the branch " }))
     .toEqual(["--model", "gpt-5-codex", "-c", "model_reasoning_effort=xhigh", "--", "Review the branch"]);
   expect(launchAgent("codex", plain, { prompt: "$review-pr" })).toEqual({ kind: "codex", args: ["--", "$review-pr"] });
-  // a message that names a subcommand or a flag is still the prompt behind the separator
   for (const prompt of ["logout", "update", "--help", "-p x"]) expect(launchArgs("codex", plain, { prompt })).toEqual(["--", prompt]);
-  // nothing chosen adds nothing
   expect(launchArgs("codex", plain, { model: "  ", effort: "", prompt: "" })).toBeUndefined();
-  // DeepSeek Harness: an effort only (the bridge saves it for dsh-tui, which has no such flag), never a model
   expect(launchArgs("dsh-tui", plain, { model: "dsh-deepseek-flash", effort: "off", prompt: "hi" })).toEqual(["--effort", "off"]);
   expect(launchChoiceFault("dsh-tui", { effort: "medium" })).toBe("effort");
 });
@@ -71,7 +63,6 @@ it("turns Ultracode on with one inline --settings object after the effort it kee
   expect(launchArgs("claude", { ...plain, claudeLaunchMode: "plan" }, { model: "opus", effort: "medium", ultracode: true, prompt: "Fix it" }))
     .toEqual(["--permission-mode", "plan", "--model", "opus", "--effort", "medium", ...on]);
   expect(launchAgent("claude", plain, { ultracode: true })).toEqual({ kind: "claude", args: on });
-  // off is Claude Code's own setting, as an empty effort is its own level
   expect(launchArgs("claude", plain, { effort: "high", ultracode: false })).toEqual(["--effort", "high"]);
   expect(launchArgs("claude", plain, { ultracode: false })).toBeUndefined();
   expect(launchChoiceFault("claude", { model: "opus", effort: "max", ultracode: true })).toBeNull();
@@ -95,7 +86,6 @@ it("refuses a choice the launch does not take, and a model that would read as a 
   expect(launchChoiceFault("claude", { model: "--dangerously-skip-permissions" })).toBe("model");
   expect(launchChoiceFault("claude", { model: "two words" })).toBe("model");
   expect(launchChoiceFault("", { prompt: "a shell takes none" })).toBe("prompt");
-  // what the fault refuses, the launch never passes
   expect(launchArgs("omp", plain, { model: "gpt-5", effort: "high" })).toBeUndefined();
   expect(launchArgs("claude", plain, { model: "--dangerously-skip-permissions" })).toBeUndefined();
 });
@@ -118,18 +108,13 @@ it("starts a new agent on the model and effort Settings > Agents sets for it, an
   expect(launchAgent("claude", plain, launchDefaults("claude", none))).toEqual({ kind: "claude" });
   expect(launchDefaults("claude", set)).toEqual({ model: "opus[1m]", effort: "high" });
   expect(launchAgent("codex", plain, launchDefaults("codex", set))).toEqual({ kind: "codex", args: ["--model", "gpt-5-codex", "-c", "model_reasoning_effort=xhigh"] });
-  // each agent's own: Claude Code's never start Codex, and an agent whose command line takes neither gets none
   expect(launchDefaults("codex", { ...none, claudeLaunchModel: "opus", claudeLaunchEffort: "max" })).toEqual({ model: "", effort: "" });
   for (const kind of ["omp", "copilot", "gemini", ""]) expect(launchDefaults(kind, set)).toEqual({ model: "", effort: "" });
-  // what the launch would refuse is no default: a level the agent does not name, a model that is no one name
   expect(launchDefaults("claude", { ...none, claudeLaunchModel: "opus --dangerously-skip-permissions", claudeLaunchEffort: "ultra" })).toEqual({ model: "", effort: "" });
 });
 
 it("keeps a model being typed that --model would refuse when another device changes the setting, and shows a kept one's change", () => {
-  // the field held the kept name: another device's change shows
   expect(modelDraftAfterSync("claude", "opus", "sonnet")).toBe("sonnet");
-  // the kept name with spaces around it, as typed, stays as typed
   expect(modelDraftAfterSync("claude", " sonnet ", "sonnet")).toBe(" sonnet ");
-  // text the reader is still fixing is theirs: it is not replaced under them
   expect(modelDraftAfterSync("claude", "opus --verbose", "sonnet")).toBe("opus --verbose");
 });

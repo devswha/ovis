@@ -1,8 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { copyText } from "./clipboard.ts";
 
-// bun:test has no DOM: the few pieces copyText touches are stood in for, and the copy command
-// "copies" whatever text field is focused and selected when it runs
 class FakeElement { focused = 0; focus(): void { this.focused += 1; dom.active = this; } }
 class FakeInput extends FakeElement {
   selectionStart = 0; selectionEnd = 0; selectionDirection = "none";
