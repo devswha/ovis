@@ -1903,6 +1903,17 @@ describe("a saved state", () => {
       expect([ended, read]).toEqual([ended, value]);
     }
   });
+
+  test("a stop at its footing is that very entry: one that names another hash in that place does not read", async () => {
+    // A state of level 2, read back by a build of level 1, is stopped at its footing; saved so, it reads again so, at every level.
+    const lower = readSignersState(JSON.parse(JSON.stringify(await stateOf(base, 2))), 1);
+    if (lower === null) throw new Error("the saved state does not read");
+    expect([lower.needs_replay, lower.footing]).toEqual([place(addInvite), place(addInvite)]);
+    for (const level of [1, 2, 3]) {
+      expect([level, readSignersState(JSON.parse(JSON.stringify(lower)), level)]).toEqual([level, lower]);
+      expect([level, readSignersState({ ...lower, needs_replay: { seq: addInvite.seq, hash: addPhone.hash } }, level)]).toEqual([level, null]);
+    }
+  });
 });
 
 describe("one entry judged", () => {
@@ -1956,6 +1967,32 @@ describe("replaying from entry 0", () => {
     expect(await replayEntries([addPhone.text], 1, { saved: null })).toEqual({ member: null, took: [], stopped: { seq: 0, code: "chain_broken" }, stuck: false });
     expect(await replayEntries(texts(root), 1, { saved: null, given: "ab".repeat(32) })).toEqual({ member: null, took: [], stopped: { seq: 0, code: "list_mismatch" }, stuck: false });
     expect((await replayEntries(texts(root), 1, { saved: null, given: g.hash })).member).toEqual(await memberOf(root));
+  });
+
+  test("told the saved state, a replay that begins with another entry 0 than the saved member's is of another list: it makes no member, and names list_mismatch", async () => {
+    // The saved member holds entry 0 alone: its footing is entry 0, so no later place of its history tells the two lists apart.
+    const saved = await memberOf([g]);
+    expect(saved.state.footing).toEqual(place(g));
+    expect(await replayEntries(texts([await genesis(phone)]), 1, { saved: saved.state })).toEqual({ member: null, took: [], stopped: { seq: 0, code: "list_mismatch" }, stuck: true });
+    // Its own entry 0 gives the member it holds.
+    expect((await replayEntries(texts([g]), 1, { saved: saved.state })).member).toEqual(saved);
+  });
+
+  test("told the saved state, a replay in which an entry under the saved footing does not hold makes no member: those are not the member's entries, and what comes before that entry is a shorter history than its own", async () => {
+    const saved = await memberOf(base);
+    expect(saved.state.footing).toEqual(place(addInvite));
+    // Entry 2 with one bit of its signature changed: it does not verify.
+    expect(await replayEntries([g.text, addPhone.text, badlySigned(addWatch), addInvite.text], 1, { saved: saved.state })).toEqual({ member: null, took: [], stopped: { seq: 2, code: "signature_invalid" }, stuck: true });
+    // Past the saved footing such an entry ends the replay as it ends a first one: the member keeps what it holds.
+    const past = await replayEntries([...texts(base), badlySigned(await on(addInvite, owner, {}))], 1, { saved: saved.state });
+    expect([past.member, past.stopped, past.stuck]).toEqual([saved, { seq: 4, code: "signature_invalid" }, false]);
+  });
+
+  test("told the saved state, a replay that brings another entry at the saved footing, one that holds, is another history under it: it makes no member, and names chain_broken", async () => {
+    const saved = await memberOf(base);
+    // Another entry 3, which the owner signed and which holds on entry 2.
+    const other = await on(addWatch, owner, { kind: "device", adds: [late, "bound"] });
+    expect(await replayEntries(texts([g, addPhone, addWatch, other]), 1, { saved: saved.state })).toEqual({ member: null, took: [], stopped: { seq: 3, code: "chain_broken" }, stuck: true });
   });
 
   test("it stops at the first entry that does not hold and keeps the ones before it", async () => {

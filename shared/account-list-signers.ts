@@ -56,6 +56,7 @@ export interface SignerRow {
  * rules begins with these members. A state that a function of this file gives back is frozen, with
  * its footing and its rows, and has these six, `needs_replay` when it stopped for a replay, and no
  * other: what else the state it was given carries is left out, as readSignersState leaves it out.
+ * From the member's store it comes only through readSignersState(value, level), never JSON.parse.
  */
 export interface SignersState {
   /** The level it was made by: a whole number from 1. After an update the member replays every entry it kept by its new level. */
@@ -144,8 +145,11 @@ export interface TakenEntry {
 }
 
 /**
- * The entry a member stopped at: it takes neither that entry nor any after it. Where the entry
- * does not hold, the member keeps its head and its state, and asks again. `needs_replay` is the
+ * The entry a member stopped at: it takes neither that entry nor any after it. Only a stop at the
+ * footing lies inside the copy: a lower build reads a state that a higher level wrote stopped there
+ * (readSignersState), and a replay of the copy clears it, by the level that wrote it or by one that
+ * reaches the footing; until then the member takes no entry after it. Where the entry does not
+ * hold, the member keeps its head and its state, and asks again. `needs_replay` is the
  * code of an entry that holds and that the member, behind, cannot place (SignersState.behind):
  * its state keeps that stop, and it does not ask again, it replays after an update. In a replay,
  * `chain_broken` is also the code of an entry that holds and is another than the saved member's
@@ -469,7 +473,7 @@ function ownEntry(entries: readonly string[], seq: number, list: string): HeldEn
   return { entry, body: readBody(entry.body), hash: entryHash(entry.body), list };
 }
 
-/** The member's head: the last entry it took. For a stopped member that is the last entry of its copy, which ends before the entry it stopped at. */
+/** The member's head: the last entry it took. For a stopped member that is the last entry of its copy, which ends before the entry it stopped at; a stop at the footing (a state that a higher level wrote, read by a lower build: readSignersState) lies inside the copy instead, and the head is that entry or a loose one past it. */
 export function listHead(member: ListMember): ListPlace {
   const { entries, state } = plainMember(member);
   const seq = entries.length - 1;
