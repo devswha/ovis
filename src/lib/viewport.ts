@@ -12,11 +12,6 @@ import { keyboardControl } from "./keyboardControl.ts";
  * Chrome resizes the layout viewport itself (interactive-widget=resizes-content
  * in index.html), so there the same value changes nothing.
  *
- * Only the shell (.app) is pinned. The token gate sizes itself to the same height
- * and is otherwise a plain page: pinning it fought iOS scrolling the focused field
- * into view, and a second tap on the field (to paste) landed after the page jumped,
- * off the field, which dismissed the keyboard.
- *
  * The visual height is published only while the soft keyboard is up. An iPhone home
  * screen app (standalone, black-translucent status bar) reports a visual viewport
  * shorter than the screen with no keyboard at all, which left a band as tall as the
@@ -33,19 +28,6 @@ const ios = /iP(hone|ad|od)/.test(navigator.platform) || (navigator.platform ===
 const ipad = (/iPad/.test(navigator.platform) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1))
   && Math.min(window.screen.width, window.screen.height) >= 744;
 
-/**
- * Focus starts it, and is not sufficient: dismissal and hardware keyboards leave the
- * field focused. Accept keyboard geometry where available, or detect a
- * substantial viewport occlusion relative to the large CSS viewport or a remembered
- * unobstructed height. Comparing visualViewport with innerHeight alone misses browsers
- * that resize both. The relative cutoff excludes ordinary browser/status-bar insets;
- * Safari has no exact keyboard-visibility API, so small floating keyboards cannot be
- * inferred this way. xterm's automatically focused helper only counts in direct typing.
- * Once up, the keyboard counts as up until its occlusion ends, whatever holds the focus: a
- * field unmounted under it (the chat's composer as the lens switches) or a tap that moves the
- * focus to a button leaves the keyboard on screen for its own hide animation, and the shell,
- * the sheets and the terminal's grid (#1045) follow the keyboard, not the focus.
- */
 const touch = window.matchMedia("(pointer: coarse)");
 const keyboard = (navigator as Navigator & {
   virtualKeyboard?: EventTarget & { boundingRect: DOMRectReadOnly };
@@ -58,24 +40,12 @@ const topInset = document.createElement("div");
 topInset.style.cssText = "position:fixed;top:0;left:0;width:0;height:env(safe-area-inset-top, 0px);visibility:hidden;pointer-events:none;contain:strict";
 topInset.setAttribute("aria-hidden", "true");
 root.append(topInset);
-// Width separates portrait and landscape. Retain the baseline when a keyboard
-// shrinks all three viewports, but not when a split view shrinks the large
-// viewport while leaving only its ordinary visual inset.
 const unobstructedHeights = new Map<number, { large: number; height: number }>();
 const typing = keyboardTypingField;
 // An iPad home-screen app with a hardware keyboard (iPadOS 26, Magic Keyboard) reports a visual viewport
 // shrunk for a single frame on every keystroke and whole again on the next. Applied at once, that frame
 // collapsed the shell to a keyboard-sized height and the page flashed on each key. Such a dip is read
 // again a moment later and applied only where it lasted.
-// Only that dip waits: on an iPad, with no keyboard counted yet, a visual viewport shorter than the one
-// applied last while the window is as it was (the same width and the same large viewport). Everything
-// else is applied in its own event, as it always was: a phone's keyboard (an iPhone's, and Android's,
-// where Chrome shrinks the layout too), a keyboard that is up and grows, a viewport growing back (a
-// keyboard going away never waits), a rotation, a window made smaller, and the first sync of a page.
-// The wait starts at the first event of a dip and the ones after it leave it running, so a keyboard that
-// opens under a stream of viewport events counts 40 ms after its first event, not after its last. A field
-// that had the focus when the dip began still counts when the wait ends: by then a tap may have moved
-// the focus to a button, or the field may be unmounted, with the keyboard still on screen.
 const SHRINK_SETTLE_MS = 40;
 let shrinkTimer: number | undefined;
 let shrinkFocused = false;
@@ -122,13 +92,9 @@ const applyKeyboard = (held: boolean): void => {
     || !!viewport && Math.abs(viewport.width - document.documentElement.clientWidth) < 2 && reference - height > reference * 0.2);
   if (!visible) unobstructedHeights.set(width, { large, height: Math.max(reference, height) });
   root.toggleAttribute("data-keyboard", visible);
-  // the key bar's keyboard control reads this value with its tap word (lib/keyboardControl.ts):
-  // label and tap hold the user's word while the value is mid-animation
   keyboardControl.measure(visible);
   if (visible && viewport) root.style.setProperty("--app-height", `${Math.round(height)}px`);
   else {
-    // Only correct the standalone status region when the screen-to-CSS gap
-    // agrees with the measured top safe area.
     const inset = topInset.getBoundingClientRect().height;
     const missing = window.screen.height - largeViewport.getBoundingClientRect().height;
     const standalone = window.matchMedia("(display-mode: standalone)").matches;
@@ -162,9 +128,6 @@ const applyKeyboard = (held: boolean): void => {
 // Only a control Safari zooms into is armed: a text field, a textarea or a native select that can take the
 // focus. A button drawn as a select (the agent picker) opens a menu, never zooms and may not even take the
 // focus, so a press must not resize its label; a disabled field is not focused by its label either.
-// Nothing stays armed without the focus: a press the browser cancels (a scroll), one that ends in a click
-// a handler kept from focusing, one that never ends in a click (the next press clears it), and a field
-// that lost the focus by being disabled or hidden, with a blur or, where the browser sends none, without.
 if (ios) {
   const field = (target: EventTarget | null): HTMLElement | null => {
     if (!(target instanceof Element)) return null;
@@ -196,7 +159,6 @@ if (ios) {
     disarm(pressed);
     field(event.target)?.setAttribute("data-armed", "");
   }, true);
-  // unfiltered: a field disabled while it had the focus is no longer one `field` accepts
   document.addEventListener("focusout", (event) => {
     if (event.target instanceof Element) event.target.removeAttribute("data-armed");
   }, true);
@@ -226,7 +188,6 @@ const syncWindowControls = (): void => {
   const slack = Math.max(1, viewport?.scale ?? 1) + 1;
   root.toggleAttribute("data-window-controls", standaloneApp.matches && width < screenWidth - slack);
 };
-// every way in or out of a window changes its width, so a resize is the only event to follow
 if (drawsWindowControls) {
   viewport?.addEventListener("resize", syncWindowControls);
   window.addEventListener("resize", syncWindowControls);
@@ -247,6 +208,5 @@ window.addEventListener("pageshow", () => {
 });
 // focus moving from one field to the next blurs first: read where it landed
 document.addEventListener("focusout", () => window.setTimeout(syncKeyboard, 0));
-// Switching xterm direct typing leaves its helper focused; observe the mode change.
 new MutationObserver(syncKeyboard).observe(root, { attributes: true, subtree: true, attributeFilter: ["data-direct-typing"] });
 syncKeyboard();

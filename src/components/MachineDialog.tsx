@@ -13,7 +13,7 @@ import "./Machines.css";
 import { useT } from "../lib/i18n.ts";
 import { asksChoice, FoundHerdrChoices, type HerdrChoice } from "./FoundHerdrChoices.tsx";
 
-export function MachineDialog({ machine, preset, updateRemote = false, onClose, onConnected }: { machine?: Machine; /** a new PC's address and name, picked under Add a connection → SSH */ preset?: AddPcPreset; updateRemote?: boolean; onClose(): void; onConnected(id: string): void }) {
+export function MachineDialog({ machine, preset, updateRemote = false, onClose, onConnected }: { machine?: Machine; preset?: AddPcPreset; updateRemote?: boolean; onClose(): void; onConnected(id: string): void }) {
   const t = useT();
   const dialog = useRef<HTMLDialogElement>(null);
   const destinationField = useRef<HTMLInputElement>(null);
@@ -28,12 +28,9 @@ export function MachineDialog({ machine, preset, updateRemote = false, onClose, 
   const [job, setJob] = useState<SetupJob | null>(null);
   const mounted = useRef(true);
   const jobRef = useRef(job); jobRef.current = job;
-  // Back closes the dialog as its Escape does (the dialog's cancel), where the browser does not send it one
   const closeRef = useRef(onClose); closeRef.current = onClose;
   usePhoneSheetBack(() => { closeRef.current(); });
-  // the identity the form shows now: an answer sent for another one never offers its choices here
   const identityRef = useRef(""); identityRef.current = [destination.trim(), port, session].join("\0");
-  // the password lives in its field alone (src/AGENTS.md): read once on submit, then cleared, never in state
   const secretField = useRef<HTMLInputElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
@@ -42,17 +39,12 @@ export function MachineDialog({ machine, preset, updateRemote = false, onClose, 
   const needsBridgeUpdate = job?.phase === "failed" && job.action_required === "update_bridge";
   const startupFailed = job?.phase === "starting" && job.action_required === "windows_start_failed";
   const waitingForLogin = job?.phase === "starting" && (job.action_required === "windows_login" || startupFailed);
-  // the setup stopped on a fresh choice only the user can make: it asks it, it is not told as a failed connection. A
-  // choice offered because what was chosen failed stays a failure, its card saying why
   const choosing = job?.action_required === "choose_herdr" && asksChoice(job.error, job.found_herdr_sessions ?? [], job.found_ovis ?? []);
   const choiceAfterFailure = job?.action_required === "choose_herdr" && !choosing;
   const keepOpen = job?.windows_startup === true;
-  // the PC's own Ovis, older than this app: the update asks it to update itself, or it cannot be from here
   const own = job?.remote_ovis ?? (job || !machine ? null : ownOvisAction(machine));
   const ownUpdate = own?.updatable === true;
 
-  // closing cancels a job that still waits on this dialog (a question, an approval); an
-  // approved install keeps going on the server and shows in the sidebar
   // React's autoFocus runs at mount, while the dialog is still closed; showModal() then moves focus
   // to the first focusable element (Close), so the field is focused again once the dialog is open
   useEffect(() => { mounted.current = true; dialog.current?.showModal(); destinationField.current?.focus(); return () => { mounted.current = false; const current = jobRef.current; if (current && !["connected", "failed", "cancelled"].includes(current.phase) && (current.windows_startup || !["installing", "starting"].includes(current.phase))) void answerMachineSetup(current.id, { action: "cancel" }).catch(() => {}); }; }, []);
@@ -77,7 +69,6 @@ export function MachineDialog({ machine, preset, updateRemote = false, onClose, 
   useEffect(clearSecret, [job?.challenge?.id]);
   const editIdentity = (field: "destination" | "port" | "session", value: string) => {
     setHerdrSocket(""); setStartNewHerdr(false); setOwnOvis("");
-    // A result from the old address must not offer its choices for the edited address.
     setJob((current) => current?.action_required === "choose_herdr" ? { ...current, action_required: null, found_herdr_sessions: undefined } : current);
     if (field === "destination") setDestination(value);
     else if (field === "port") setPort(value);
@@ -88,11 +79,9 @@ export function MachineDialog({ machine, preset, updateRemote = false, onClose, 
     if (pending) return;
     setError(null); setPending(true);
     if (choice && machine?.herdr_profile_id) choice = { ...choice, session: machine.target?.session };
-    // a PC saved in herdr keeps its catalog name, which the server does not read from here
     if (choice) { if ("session" in choice) setSession(choice.session ?? ""); setHerdrSocket(choice.herdr_socket ?? ""); setStartNewHerdr(choice.start_new_herdr === true); setOwnOvis(choice.own_ovis ?? ""); }
     const sentFor = [destination.trim(), port, choice && "session" in choice ? choice.session ?? "" : session].join("\0");
     try { const next = await startMachineSetup({ destination: destination.trim(), ...(name.trim() && !machine?.herdr_profile_id ? { name: name.trim() } : {}), ...(port ? { port: Number(port) } : {}), ...(key.trim() ? { identity_file: key.trim() } : {}), ...(session.trim() ? { session: session.trim() } : {}), ...(herdrSocket ? { herdr_socket: herdrSocket } : {}), ...(startNewHerdr ? { start_new_herdr: true } : {}), ...(ownOvis ? { own_ovis: ownOvis } : {}), ...choice, ...(machine ? { machine_id: machine.id } : {}), ...(needsBridgeUpdate || updateRemote ? { update_remote: true } : {}) });
-      // the address, port or session edited while it was in flight: that PC's sessions are never offered for this one
       if (mounted.current) setJob(next.action_required === "choose_herdr" && sentFor !== identityRef.current ? { ...next, action_required: null, found_herdr_sessions: undefined } : next);
       else if (!["connected", "failed", "cancelled"].includes(next.phase) && (next.windows_startup || !["installing", "starting"].includes(next.phase))) await answerMachineSetup(next.id, { action: "cancel" });
     }
@@ -164,11 +153,6 @@ function SshOutput({ text }: { text: string }) {
   return <pre className="machine-ssh-output" aria-label={t("SSH output")}>{sshOutputParts(text).map((part, i) => part.type === "link" ? <a key={i} href={part.href} target="_blank" rel="noopener noreferrer">{part.value}</a> : part.value)}</pre>;
 }
 
-/**
- * The host-key decision: the fingerprint to compare and one sentence; ssh's own words wait behind
- * a fold. No status box above it: the question is the state. The sentence is the announcement of
- * that state, so its words land a frame after the box (lib/useAnnouncedText.ts).
- */
 function HostKeyQuestion({ prompt, host, sshOutput }: { prompt: string; host: string; sshOutput: string | null }) {
   const t = useT();
   const fingerprints = hostKeyFingerprints(prompt);

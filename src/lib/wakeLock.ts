@@ -1,7 +1,6 @@
 import { useEffect } from "react";
 import { usePageVisible } from "./visibility.ts";
 
-/** A request may finish after the pane closes or the tab hides; release that late lock too. */
 export function holdScreenWakeLock(wakeLock: Pick<WakeLock, "request">): () => void {
   let cancelled = false;
   let sentinel: WakeLockSentinel | null = null;

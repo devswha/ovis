@@ -11,7 +11,6 @@ export interface AppLocation {
 
 export type WebPanelOpener = (uri: string, shiftKey: boolean, machineId: string) => boolean;
 
-/** Whether a link click asks the app to take over, keeping the browser's modifier-click meanings. */
 export function shouldOpenWebPage(
   event: Pick<MouseEvent, "button" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey">,
   uri: string,
@@ -22,17 +21,8 @@ export function shouldOpenWebPage(
     && (openWebPage?.(uri, event.shiftKey, machineId) ?? false);
 }
 
-/** Names a pane prints for the PC it runs on: a dev server's own "Local: http://localhost:5173/". */
 const LOOPBACK = /^(?:localhost|[^.]+(?:\.[^.]+)*\.localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|\[::1?\])$/i;
 
-/**
- * The address the panel frames for `uri`, or null when it opens in a tab. Only a page served
- * by the PC this app runs on is framed, on another port than the app's: the app's policy
- * (server/static.ts) frames that host alone, and most other sites refuse to be framed anyway.
- * A loopback name means that PC, so it is reached under the host the browser used for the app:
- * from another computer, `localhost:5173` would be that computer's own. An https app cannot
- * frame an http page (mixed content), so that one opens in a tab too.
- */
 export function panelUrl(uri: string, app: AppLocation): string | null {
   if (!/^https?:\/\//i.test(uri)) return null;
   let url: URL;
@@ -48,21 +38,14 @@ export function panelUrl(uri: string, app: AppLocation): string | null {
   return url.href;
 }
 
-/** A loopback name and a port, a path after it: `localhost:8448`, `:8448`, `127.0.0.1:3000/docs`. */
 const LOCAL_PAGE = /^(?:(https?):\/\/)?(localhost|127(?:\.\d{1,3}){3}|\[::1\])?:(\d{1,5})([/?#]\S*)?$/i;
 
-/**
- * The page a palette query names on this PC, or null for any other query. Only a loopback name
- * with a port is read, so a search is never taken for an address. Without a scheme it takes the
- * app's own: an https app frames only https pages, such as a port `tailscale serve` fronts.
- */
 export function localPageAddress(query: string, app: Pick<AppLocation, "protocol">): string | null {
   const match = LOCAL_PAGE.exec(query.trim());
   if (match === null) return null;
   const [, scheme = app.protocol.slice(0, -1), host = "localhost", port = "", rest = "/"] = match;
   const number = Number(port);
   if (number < 1 || number > 65535) return null;
-  // the pattern lets an octet past 255 through (`127.999.0.1`), which no URL holds
   try {
     return new URL(`${scheme.toLowerCase()}://${host}:${port}${rest}`).href;
   } catch {
@@ -74,9 +57,4 @@ export function wantsPanel(target: WebLinkTarget, shiftKey: boolean): boolean {
   return (target === "panel") !== shiftKey;
 }
 
-/**
- * Opens a web address in the docked panel or narrow-screen popup when the setting (or Shift) asks
- * for it and the address can be framed; false leaves the caller's new-tab behavior in place.
- * `machineId` is the PC whose pane named the address.
- */
 export const WebPanelContext = createContext<WebPanelOpener | null>(null);
