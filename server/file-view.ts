@@ -17,9 +17,9 @@ export { pagePolicy };
  * A file is served with Range answered (`byteRange`) and its content-length: a body of at most
  * one read (`STREAM_CHUNK_BYTES`) is read whole before its headers are sent; a larger one is sent
  * as a file, which Bun reads from disk as the client takes it, so a video plays and seeks without
- * the server holding more than its socket buffers. A rendered page's own files and the videos it plays are read
- * only from a descriptor whose opened file was shown to lie where the page may reach
- * (`openAuthorized`).
+ * the server holding more than its socket buffers. A rendered page's own files and the videos it
+ * plays are read only from a descriptor `openAuthorized` let through: its opened file lies where the
+ * page may reach as far as the platform can show it (on Windows, only by samples of its path).
  *
  * It opens what this server's user can read, which is no more than the terminal the same
  * browser can already type into.
@@ -597,7 +597,11 @@ export function openAuthorized(requested: string, roots: readonly string[], hidd
   }
 }
 
-/** This platform's proof that the file open at `fd` (found at `file`, under `root`) lies in `roots` (`openAuthorized`). */
+/**
+ * The last check `openAuthorized` makes of the file open at `fd` (found at `file`, under `root`):
+ * the descriptor's own path on Linux, the folders on the way on macOS (`ownedFolders`). Windows
+ * checks nothing here and passes on `openAuthorized`'s path samples alone; any other platform fails.
+ */
 function openedWithin(fd: number, file: string, root: string, roots: readonly string[], hidden = false): boolean {
   const platform = pageFileHooks.platform ?? process.platform;
   if (platform === "linux") {

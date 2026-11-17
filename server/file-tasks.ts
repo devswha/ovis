@@ -16,14 +16,16 @@ import { readEditableText, TextEditRefused } from "./file-edit.ts";
 import type { EditableText } from "../shared/files.ts";
 
 /**
- * How long a Claude task list reads on before it answers with what it read so far: well inside the
- * long-task deadline (`FILE_LONG_TASK_DEADLINE_MS`, 15 s), so its one scan thread is free by then.
+ * How long a Claude task list reads on, from when a thread takes it, before it answers with what it
+ * read so far. The long-task deadline (`FILE_LONG_TASK_DEADLINE_MS`, 15 s) counts from the request,
+ * its wait for a thread included, so a scan that waited may keep its thread after its request is
+ * refused.
  */
 const CLAUDE_TASKS_READ_MS = 10_000;
 /**
- * How long a Letta transcript is scanned for one call's output: under the pool's long deadline, so a
- * scan on a slow disk gives its thread back about when its request is refused, not at the end of
- * the file.
+ * How long a Letta transcript is scanned for one call's output, from when a thread takes it, so a
+ * scan on a slow disk stops then, not at the end of the file. Like the Claude budget, it may run on
+ * after its request's deadline, which counts the wait for a thread too.
  */
 const LETTA_OUTPUT_READ_MS = 10_000;
 

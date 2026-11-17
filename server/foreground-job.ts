@@ -11,7 +11,10 @@ import { darwinArgv, darwinProcessGroup } from "./darwin-process.ts";
 
 export interface JobProcess { pid: number; name: string; argv: string[] }
 
-/** the most processes one lookup follows: a terminal's foreground job, not a whole PC */
+/**
+ * past this many processes found, the Linux lookup goes no level deeper, but it ends the level it is
+ * on, however wide: a terminal's foreground job, not a whole PC
+ */
 const JOB_MAX = 256;
 
 /** A Linux process's parent, group and command name from /proc/<pid>/stat; the name may hold spaces and parentheses. */

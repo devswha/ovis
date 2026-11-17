@@ -70,8 +70,9 @@ function piDialogRows(lines: string[], hintIndex: number): { rows: { line: strin
     rows.unshift({ line: [line, ...rest].join(" "), cursor: /^[\u2192\u276f\u279c]\s*\S/.test(line) });
     rest = [];
   }
-  // lines one column in with no row over them are not a wrapped option: they stand as they are,
-  // for the caller to refuse (the slash palette's own first line, for one)
+  // lines one column in with no row over them are not a wrapped option (the slash palette's own
+  // first line, for one): they stand as rows without the cursor, which a first read refuses; a
+  // `moved` read keeps them as options, and the answer route then finds the card's id changed
   rows.unshift(...rest.map((line) => ({ line, cursor: false })));
   const title: string[] = [];
   for (; index >= 0 && title.length < 8; index -= 1) {

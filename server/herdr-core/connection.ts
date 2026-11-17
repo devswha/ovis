@@ -124,7 +124,10 @@ export interface Channel {
   focus: (focused: boolean) => void;
   /** what the viewer's own terminal looks like (hc's `Display`: `fg`, `bg`, `cursor` as `#rrggbb`, `cell` in pixels) */
   facts: (display: Record<string, unknown>) => void;
-  /** Detaches; settles once hc answered with its own CLOSE (what was written before has gone in) or the line ended. */
+  /**
+   * Detaches; settles once hc answered with its own CLOSE (what was written before has gone in), the
+   * line ended, or `DEFAULT_TIMEOUT_MS` passed with no answer, which says nothing of hc's side.
+   */
   close: () => Promise<void>;
 }
 

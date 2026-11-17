@@ -201,7 +201,10 @@ export class CoreAttachSession {
     this.settle();
   }
 
-  /** Detaches; `exited` settles once hc answered the detach, so a next attach never overlaps this one. */
+  /**
+   * Detaches; `exited` settles when `Channel.close` does. When hc answered, a next attach cannot
+   * overlap this one; when the close gave up after 10 s with no answer, it may.
+   */
   kill(): void {
     if (this.closed) return;
     this.closed = true;
