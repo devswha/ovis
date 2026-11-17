@@ -46,3 +46,11 @@
 .sidebar:not(.inbox-column):has(> .inbox-rail) .sidebar-footer:not(:has(> :not(.sidebar-footer-row:not(:has(> :not(.sidebar-footer-settings)))))) {
   display: none;
 }
+
+/* The current place is marked by its heavier glyph alone (InboxRail.css keeps the stroke and the strong colour), with
+   no fill under it: the rail reads as a column of glyphs, the same in every place. A press still shows. */
+.inbox-rail .icon-button.inbox-rail-item[aria-current="page"],
+.inbox-rail .icon-button.inbox-rail-item[aria-current="page"]:hover:not(:disabled) {
+  --rail-item-bg: transparent;
+  background: var(--rail-item-bg);
+}
