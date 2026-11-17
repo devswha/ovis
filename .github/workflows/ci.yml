@@ -283,6 +283,10 @@ jobs:
     env:
       CHECK_DIR: ${{ github.workspace }}/.ci
       UNIT_TEST_WORKERS: 4
+      # The commit the ratchets of scripts/conventions.test.ts (fixed sleeps, the tools typecheck's
+      # exclude list) compare with: the pull request's base, or the commit before a push to main;
+      # none in a Release run, which then compares with nothing.
+      RATCHET_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -293,6 +297,9 @@ jobs:
           node: 'true'
           cache: ${{ inputs.hosted_only && 'none' || 'save' }}
       - run: bun install --frozen-lockfile
+      # The checkout is shallow: a ratchet whose base is not in it fails, never passes.
+      - name: Fetch the base the ratchets compare with
+        run: if [ -n "$RATCHET_BASE" ]; then git fetch --no-tags --depth=1 origin "$RATCHET_BASE"; fi
       - run: bun run check fast
       # A release (package.json's version not tagged yet) must raise REMOTE_BUNDLE_VERSION when the
       # bundle's inputs changed, record the telemetry Worker deploy and carry its patch notes. Only the

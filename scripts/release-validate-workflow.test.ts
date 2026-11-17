@@ -140,7 +140,7 @@ describe("release-validate.yml", () => {
     expect(checks(fast), UPDATE).toEqual(checks(theirs));
     expect(fast["timeout-minutes"], UPDATE).toBe(theirs["timeout-minutes"]!);
     expect(fast.env, UPDATE).toEqual(theirs.env!);
-    expect(stepList(fast)).toEqual(["actions/checkout", "./.github/actions/setup-ci", "bun install --frozen-lockfile", "bun run check fast", "Release guards", "Say that Fast checks passed", "Preserve check report and verification logs"]);
+    expect(stepList(fast)).toEqual(["actions/checkout", "./.github/actions/setup-ci", "bun install --frozen-lockfile", "Fetch the base the ratchets compare with", "bun run check fast", "Release guards", "Say that Fast checks passed", "Preserve check report and verification logs"]);
     // what a copy cannot follow: a step that reads the jobs ci.yml's own needs, or an environment set for all of ci.yml
     expect(JSON.stringify(checks(theirs)), UPDATE).not.toMatch(/\b(?:needs|matrix|strategy)\./);
     expect([ciYml.env, (ciYml as { defaults?: unknown }).defaults], UPDATE).toEqual([wrapper.env, (wrapper as { defaults?: unknown }).defaults]);

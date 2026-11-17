@@ -82,23 +82,61 @@ describe("what the browser loads", () => {
   });
 });
 
+const gitIn = (cwd: string, ...args: string[]) => spawnSync("git", args, { cwd, encoding: "utf8" });
+
+/**
+ * The commit the ratchets below compare with: the one CI names in RATCHET_BASE (ci.yml's Fast checks fetches it into
+ * its shallow checkout), else where this branch left origin/main, so a stale branch is compared with its own base, else
+ * null (no git or no origin/main here, or a Release run). A named commit that is not in the checkout fails: a ratchet
+ * that cannot see its base must not pass.
+ */
+function ratchetBase(env: Record<string, string | undefined> = process.env, cwd: string = repo): string | null {
+  const named = env["RATCHET_BASE"];
+  if (named) {
+    if (gitIn(cwd, "cat-file", "-e", `${named}^{commit}`).status !== 0) throw new Error(`RATCHET_BASE ${named} is not in this checkout: fetch it first, as ci.yml's Fast checks does.`);
+    return named;
+  }
+  const base = gitIn(cwd, "merge-base", "HEAD", "origin/main");
+  return base.status === 0 ? base.stdout.trim() : null;
+}
+
+/** `file` as it was at `base`, or null when it was not there. */
+const atBase = (base: string, file: string): string | null => {
+  const shown = gitIn(repo, "show", `${base}:${file}`);
+  return shown.status === 0 ? shown.stdout : null;
+};
+
+describe("the ratchets' base", () => {
+  it("is the commit CI names, fails when that commit is not in the checkout, and is else where the branch left origin/main", () => {
+    const root = mkdtempSync(join(tmpdir(), "ovis-ratchet-base-"));
+    try {
+      const git = (...args: string[]) => gitIn(root, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", ...args);
+      git("init", "-q", "-b", "work");
+      git("commit", "-q", "--allow-empty", "-m", "base");
+      const first = git("rev-parse", "HEAD").stdout.trim();
+      expect(ratchetBase({}, root)).toBeNull();
+      git("update-ref", "refs/remotes/origin/main", first);
+      git("commit", "-q", "--allow-empty", "-m", "change");
+      expect(ratchetBase({}, root)).toBe(first);
+      expect(ratchetBase({ RATCHET_BASE: first }, root)).toBe(first);
+      expect(() => ratchetBase({ RATCHET_BASE: `${"0".repeat(39)}1` }, root)).toThrow("is not in this checkout");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("fixed sleeps", () => {
   // A ratchet: scripts/fixed-sleeps.json is every file's count of fixed sleeps when this test was
   // added (see scripts/fixed-sleeps.ts for what counts). A file may lose sleeps, never gain one,
   // and a file that is not listed has none.
   const baseline = JSON.parse(read("scripts/fixed-sleeps.json")) as Record<string, number>;
 
-  /**
-   * scripts/fixed-sleeps.json where this branch left origin/main, or null when git or that ref is
-   * not there (CI's shallow checkout); a stale branch is compared with its own base, not a main
-   * that has moved on.
-   */
+  /** scripts/fixed-sleeps.json at the ratchets' base, or null with no base. */
   const committed = (): Record<string, number> | null => {
-    const git = (...args: string[]) => spawnSync("git", args, { cwd: repo, encoding: "utf8" });
-    const base = git("merge-base", "HEAD", "origin/main");
-    if (base.status !== 0) return null;
-    const json = git("show", `${base.stdout.trim()}:scripts/fixed-sleeps.json`);
-    return json.status === 0 ? JSON.parse(json.stdout) as Record<string, number> : null;
+    const base = ratchetBase();
+    const json = base === null ? null : atBase(base, "scripts/fixed-sleeps.json");
+    return json === null ? null : JSON.parse(json) as Record<string, number>;
   };
 
   it("never raises scripts/fixed-sleeps.json above the one on origin/main", () => {
@@ -175,14 +213,12 @@ describe("the tools typecheck", () => {
     now.filter((file) => !before.includes(file) && !before.includes(renames.get(file) ?? ""));
   const now = excluded(read("tsconfig.tools.json")) ?? [];
 
-  it("excludes no more files than on origin/main", () => {
-    const git = (...args: string[]) => spawnSync("git", args, { cwd: repo, encoding: "utf8" });
-    const base = git("merge-base", "HEAD", "origin/main");
-    if (base.status !== 0) return;
-    const json = git("show", `${base.stdout.trim()}:tsconfig.tools.json`);
-    const before = json.status === 0 ? excluded(json.stdout) : null;
-    if (before === null) return;
-    const renamed = git("diff", "--name-status", "-M", "--diff-filter=R", base.stdout.trim());
+  it("excludes no more files than at the ratchets' base", () => {
+    const base = ratchetBase();
+    const json = base === null ? null : atBase(base, "tsconfig.tools.json");
+    const before = json === null ? null : excluded(json);
+    if (base === null || before === null) return;
+    const renamed = gitIn(repo, "diff", "--name-status", "-M", "--diff-filter=R", base);
     const renames = new Map(renamed.stdout.split("\n").map((line) => line.split("\t")).filter((parts) => parts.length === 3).map(([, from, to]) => [to!, from!]));
     fail(added(now, before, renames), "The exclude list of tsconfig.tools.json may only shrink: fix the type errors `bun run typecheck` reports in these files instead of excluding them. A renamed file takes its entry along under the new path.");
   });

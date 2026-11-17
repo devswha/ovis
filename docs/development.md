@@ -1220,7 +1220,9 @@ The [CI workflow](../.github/workflows/ci.yml) runs on every PR and `main` push:
   (`tsconfig.tools.json`: every file under `scripts/`, `integrations/`, `site/` and `app/scripts/`
   but the ones its `exclude` lists, which still have type errors; that list may only shrink, and a
   new file is checked without being named), build, and
-  `bun run test:unit`. This suite does not start herdr.
+  `bun run test:unit`. This suite does not start herdr. Its ratchets (fixed sleeps, that exclude
+  list) compare with the pull request's base or the commit before a push, which the job fetches
+  first (`RATCHET_BASE`); one that cannot read its base fails.
 - **Integration and browser**: a summary job that fails when any of three jobs fails, each with
   checksum-pinned herdr 0.9.3, Node 22 and the lockfile's Chromium:
   - **Integration tests** runs `bun run check integration`: a build and
