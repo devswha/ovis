@@ -1613,8 +1613,9 @@ try {
   assert.deepEqual(errors, []);
 
   // a rendered page's recording too large to put into it plays and seeks from the address its render
-  // gave out, read from the descriptor that render checked; a lapsed or revoked address plays no more,
-  // and closing the viewer lets go of every descriptor, each once (server/file-view.ts)
+  // gave out, each request opening the file again and checking it is still the one that render saw; a
+  // lapsed or revoked address plays no more, and closing the viewer lets go of every descriptor, each
+  // once (server/file-view.ts)
   const live = new Set<number>();
   let closedTwice = 0;
   let allClosed: (() => void) | null = null;

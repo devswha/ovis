@@ -3,7 +3,8 @@
  * server checks it by (its SHA-256 and the server's version), join.sh, and SHA256SUMS listing exactly those four files.
  * `line` prints the line again for a kit folder that exists, from the folder's own files, after checking them against
  * its SHA256SUMS: the same line `make` printed for the same address and origins. The line carries the SHA-256 of join.sh
- * and of SHA256SUMS, so nothing fetched from the address runs or is installed before it matches. It holds no secret.
+ * and of SHA256SUMS, so nothing fetched from the address runs or is installed before it matches. It adds no secret, but
+ * holds the addresses as given: one with a password in it (`user:password@`) prints that password too.
  */
 /// <reference path="../sh-text.d.ts" />
 import { createHash } from "node:crypto";

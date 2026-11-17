@@ -7,8 +7,8 @@
  * endpoints need push access to the repository; GitHub keeps them for 14 days only, which is why
  * they are saved every week.
  *
- * Who starred is never kept: only the day of each star. Nothing about the traffic (referrers,
- * paths) goes to the output either, so a workflow log shows only totals.
+ * Who starred is never kept: only the day of each star. The traffic's referrers and paths go to
+ * the snapshot JSON alone: the line printed, which a workflow log shows, has only totals.
  *
  * Exit codes: 0 when counts and star dates were read (a traffic endpoint that failed is recorded as
  * {"error": "<status>"}), 2 when every traffic endpoint failed (a token without access, which
