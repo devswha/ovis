@@ -54,7 +54,6 @@ function notificationCentre(platform: "ios" | "tagged", options: { getNotificati
   };
 }
 
-/** Execute the shipped worker, including its asynchronous notificationclick listener. */
 function notifications(
   windows: WindowClient[],
   matchAll = async () => windows,
@@ -132,7 +131,6 @@ describe("notification clicks", () => {
       return requests.map((request) => [request.url, request.init.method ?? "GET", request.init.body ?? null, (request.init.headers as Record<string, string> | undefined)?.["x-herdr-update"] ?? null]);
     };
     const asked = ["/api/telemetry", "GET", null, null];
-    // signed out, off, blocked by the environment or before the notice: asked, never told
     expect(await tap("w1:p1")).toEqual([asked]);
     for (const counts of [{ enabled: false, blocked_by_env: false, notice_seen: true }, { enabled: true, blocked_by_env: true, notice_seen: true }, { enabled: true, blocked_by_env: false, notice_seen: false }]) {
       status = Response.json(counts);
@@ -140,7 +138,6 @@ describe("notification clicks", () => {
     }
     status = Response.json({ enabled: true, blocked_by_env: false, notice_seen: true });
     expect(await tap("w1:p1")).toEqual([asked, ["/api/telemetry", "POST", JSON.stringify({ alert_opened: true }), "1"]]);
-    // a generic notification is not a pane alert
     expect(await tap(null)).toEqual([]);
   });
 
@@ -149,16 +146,13 @@ describe("notification clicks", () => {
     expect(isAppWindow(APP)).toBe(true);
     expect(isAppWindow(`${APP}?machine=pc2&pane=w1%3Ap1&view=chat`)).toBe(true);
     expect(isAppWindow(`${APP}?settings=general`)).toBe(true);
-    // the shell answers any other path too
     expect(isAppWindow(`${APP}index.html`)).toBe(true);
     expect(isAppWindow(`${APP}?read=docs%2Fguide.md&machine=local`)).toBe(false);
-    // an empty `read` is no reader (lib/fileReader.ts readerFromSearch): App runs there
     expect(isAppWindow(`${APP}?read=%20`)).toBe(true);
     expect(isAppWindow(`${APP}api/fs/file?path=notes.md&pane=w1%3Ap1`)).toBe(false);
     expect(isAppWindow(`${APP}api/machines/pc2/fs/file?path=index.html&render=1`)).toBe(false);
     expect(isAppWindow(`${APP}icons/icon-192.png`)).toBe(false);
     expect(isAppWindow(`${APP}assets/index-abc.js`)).toBe(false);
-    // any shipped file is no app window, listed in the worker's cache rules or not
     expect(isAppWindow(`${APP}social-preview.png`)).toBe(false);
     expect(isAppWindow(`${APP}THIRD_PARTY_NOTICES.md`)).toBe(false);
     expect(isAppWindow(`${APP}manifest.webmanifest`)).toBe(false);
@@ -340,7 +334,6 @@ describe("notification clicks", () => {
     const first = worker.click("pane-a", "local");
     await Promise.resolve();
     const selection = { type: "select-pane", pane_id: "latest pane/?", machine_id: "remote&pc" };
-    // The newer focus must finish even while the older window's focus is hung.
     await worker.click(selection.pane_id, selection.machine_id);
     expect(foreground).toBe("newer");
     pending.resolve();
@@ -348,7 +341,7 @@ describe("notification clicks", () => {
     expect(foreground).toBe("older");
     expect(older.selected.at(-1)).toEqual(selection);
     expect(newer.selected.at(-1)).toEqual(selection);
-    expect(focuses).toBe(2); // one focus per tap, no repair focus loop
+    expect(focuses).toBe(2);
     expect(worker.opened).toEqual([]);
   });
 
@@ -420,7 +413,6 @@ describe("notification clicks", () => {
       const first = worker.click("older pane/?", "first&pc");
       await opening.promise;
       const selection = { type: "select-pane", pane_id: "latest pane/?", machine_id: "remote&pc" };
-      // A frozen open must not hold up a later click on an existing window.
       await worker.click(selection.pane_id, selection.machine_id);
       expect(foreground).toBe("newer");
       ready.resolve();
@@ -496,7 +488,6 @@ describe("one alert per pane", () => {
     for (const platform of ["ios", "tagged"] as const) {
       const centre = notificationCentre(platform);
       centre.add("old", "herdr-pane-w1:p1", { pane_id: "w1:p1", machine_id: "local", workspace_id: "w1", alert_id: "old" });
-      // hold the earlier alert's clean-up from the moment it is shown until the newer alert is done
       const held = deferred();
       const holding = deferred();
       let earlierShown = false;
@@ -589,11 +580,9 @@ describe("answer buttons (#2916)", () => {
     const local = worker();
     await local.push(alert);
     expect(local.shown[0]!.options.actions).toEqual([{ action: "answer-0", title: "Allow once" }, { action: "answer-1", title: "Deny" }]);
-    // the hosted shell's worker cannot reach its PC (only a window holds the relay channel): no buttons there
     const hosted = worker(undefined, `https://app.ovis.test/s/${"a".repeat(32)}/`);
     await hosted.push(alert);
     expect(hosted.shown[0]!.options.actions).toBeUndefined();
-    // an alert without them, as before
     const plain = worker();
     await plain.push({ ...alert, prompt_id: undefined, actions: undefined });
     expect(plain.shown[0]!.options.actions).toBeUndefined();
@@ -621,7 +610,6 @@ describe("answer buttons (#2916)", () => {
       expect(w.opened).toEqual([]);
       expect(w.shown).toHaveLength(2);
       const followUp = w.shown[1]!;
-      // no buttons: its tap opens the pane as any alert's does
       expect(followUp.options.actions).toBeUndefined();
       expect(followUp.options.tag).toBe(alert.tag);
       expect(followUp.options.data).toMatchObject({ pane_id: "w1:p1", machine_id: "local", workspace_id: "w1" });
@@ -685,7 +673,6 @@ describe("answer buttons (#2916)", () => {
     const first = centre.shown()[0]!;
     holdListing = true;
     const tapped = run("notificationclick", { action: "answer-0", notification: { data: first, close: () => centre.getNotifications().then((all) => all[0]?.close()) } });
-    // the listing found nothing under the tag; the newer push lands before it returns
     await listing.promise;
     await push({ ...alert, title: "newer", prompt_id: "prompt-2" });
     listed.resolve();

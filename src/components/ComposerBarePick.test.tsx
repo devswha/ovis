@@ -10,7 +10,6 @@ import { composerDrafts } from "../lib/composerDraft.ts";
 import { paneLifetimes } from "../lib/paneLifetime.ts";
 import type { SlashCommand } from "../../shared/protocol.ts";
 
-// #3813: a command picked from the `/` menu and sent unchanged goes bare only where OpenCode runs it bare
 const pane = "bare-pick-pane", draftKey = `ovis:composer-draft:${pane}`;
 const globals = ["window", "document", "navigator", "requestAnimationFrame", "cancelAnimationFrame", "IS_REACT_ACT_ENVIRONMENT"];
 const saved = new Map<string, PropertyDescriptor | undefined>();
@@ -18,7 +17,6 @@ const COMMANDS: SlashCommand[] = [
   { name: "new", description: "a built-in without an argument", source: "builtin" },
   { name: "rename", description: "a built-in with an argument", source: "builtin" },
   { name: "hello", description: "a project command", source: "project" },
-  // a server command OpenCode's catalog marks builtin, which its own menu only types
   { name: "review", description: "a server command", source: "builtin" },
 ];
 let renderer: ReactTestRenderer | undefined;
@@ -69,7 +67,6 @@ async function enter(): Promise<void> {
   });
 }
 
-/** What goes when `typed` opens the menu, Enter picks its row, `then` is typed (if any), and Enter sends. */
 async function pickAndSend(agent: string, typed: string, then?: string): Promise<unknown[]> {
   const sent: unknown[][] = [];
   const props: ComposerProps = { paneId: pane, agent, agentStatus: "idle", connected: true, autoFocus: false, onSend: (...args) => { sent.push(args); return true; }, onAbort() {}, onUploadImage: async () => "" };
@@ -86,11 +83,9 @@ it("sends a picked OpenCode built-in that takes no argument without the pick's s
 });
 
 it.each([
-  // OpenCode's own menu only types these with their space, which lets Enter send them
   ["an OpenCode project command", "opencode", "/hel", "/hello "],
   ["an OpenCode built-in that takes an argument", "opencode", "/ren", "/rename "],
   ["an OpenCode server command marked builtin", "opencode", "/rev", "/review "],
-  // any other agent's pick goes as it always did
   ["another agent's built-in", "claude", "/ne", "/new "],
 ])("keeps the space of %s", async (_name, agent, typed, expected) => {
   expect(await pickAndSend(agent, typed)).toEqual([expected]);
@@ -99,7 +94,6 @@ it.each([
 it("sends a pick the user changed afterwards as typed, trailing space and all", async () => {
   expect(await pickAndSend("opencode", "/ne", "/new  ")).toEqual(["/new  "]);
   act(() => { renderer?.unmount(); });
-  // a hand-typed `/new ` is the user's text, not a pick
   const sent: unknown[][] = [];
   await act(async () => { renderer = create(<Composer paneId={pane} agent="opencode" agentStatus="idle" connected autoFocus={false} onSend={(...args) => { sent.push(args); return true; }} onAbort={() => {}} onUploadImage={async () => ""} />); });
   await type("/new ");
