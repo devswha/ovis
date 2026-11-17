@@ -468,10 +468,13 @@ artifacts, and any job of a main run can write an Actions cache that later runs 
 
 The test fails closed on any other form: a listed label written literally, the `hosted_only` prefix under a
 call that passes `hosted_only: true`, setup-ci's `cache: none` (or its `hosted_only` form), cache steps whose
-condition is one expression with `!inputs.hosted_only` as a top-level `&&` term (a condition that mixes an
-expression with text is a string for GitHub, always true), setup-bun's `no-cache: true`, setup-node's
-`package-manager-cache: false`, and reviewed actions at their exact references; a download by artifact id or
-from another run is refused. It also fails on a workflow or action file GitHub loads that does not end in
+condition has `!inputs.hosted_only` as a top-level `&&` term, setup-bun's `no-cache: true`, setup-node's
+`package-manager-cache: false`, and reviewed actions at their exact references. Every job-level and step-level
+`if` of a covered job, and every `if` of every workflow and of setup-ci, is refused when it still holds `${{` or
+`}}` after one whole-value wrapper is stripped: GitHub reads such a condition as a string, always true. The
+inputs of reviewed actions are read without regard to case, as the runner reads them, and inputs that differ
+only in case are refused; a download with a token, from another repository, by run id or by artifact ids is
+refused. It also fails on a workflow or action file GitHub loads that does not end in
 `.yml`, on a symlink in `.github/workflows` or `.github/actions`, on a job that calls a workflow it cannot read
 (another repository's), on a key it reads written in another case, two keys (or two workflow files) that
 differ only in case, a key with a character outside ASCII, and on a runner label or action reference other

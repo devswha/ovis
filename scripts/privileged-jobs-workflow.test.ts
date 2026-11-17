@@ -25,8 +25,11 @@ import { GITHUB_HOSTED_LABELS, parseWorkflow, root, topLevelTerms, unreadWorkflo
 //    - every Pages run, found by any of four signs: a job that can write Pages, a job in the github-pages environment, a
 //      job holding id-token write with a secret, or the Pages actions (by owner/repo).
 //    Every other privileged job is held to rule 2 only: it is hosted and cacheless, but its siblings are not.
-// It fails closed on any other form, whatever that form would evaluate to, and a download by id or from another run (a
-// form these runs do not use) is refused. GitHub reads keys and contexts without regard to case where this test reads
+// It fails closed on any other form, whatever that form would evaluate to. Every job-level and step-level `if` of a
+// covered job, and repository-wide every `if` of every workflow and of setup-ci, is refused when it still holds `${{` or
+// `}}` after one whole-value wrapper is stripped: GitHub reads such a condition as a string, always true. The inputs of
+// reviewed actions are read without regard to case, as the runner reads them, and inputs that differ only in case are
+// refused; a download with a token, from another repository, by run id or by artifact ids is refused. GitHub reads keys and contexts without regard to case where this test reads
 // them exactly, so: a matrix axis is resolved case-insensitively over the matrix and its include entries; a key the tests
 // read written in another case, sibling keys that differ only in case, and a key with a character outside ASCII fail;
 // such a character inside an expression counts as a secret reference; a permission value other than read, none or
@@ -323,7 +326,10 @@ function conditionProblems(job: AnyJob): string[] {
   ];
 }
 
-/** How `step` could restore an Actions cache: anything but a reviewed off form (under a call that passes hosted_only: true, its forms too). */
+/**
+ * How `step` could restore an Actions cache: anything but a reviewed off form (under a call that passes hosted_only: true,
+ * its forms too). It does not refuse a mixed condition itself: both callers run conditionProblems on every job and step.
+ */
 function cacheStepProblems(step: AnyStep, hostedOnly: boolean): string[] {
   const name = action(step.uses!);
   const inputs = stepInputs(step);
@@ -341,7 +347,12 @@ function cacheStepProblems(step: AnyStep, hostedOnly: boolean): string[] {
   return cache === undefined ? [] : [`${name} has a cache input`];
 }
 
-/** Why a privileged job's steps break rule 2: an action that is not reviewed at its exact reference, or one that can restore a cache. */
+/**
+ * Why a privileged job's steps break rule 2: a mixed condition, an action that is not reviewed at its exact reference, or
+ * one that can restore a cache. A job that calls another workflow has no steps and is not passed to conditionProblems
+ * here or in runJobs: its own `if` is held by the repository-wide test "no if in any workflow or in setup-ci mixes an
+ * expression with text".
+ */
 function privilegedJobProblems(workflows: Workflows): string[] {
   return Object.entries(workflows).flatMap(([file, workflow]) =>
     Object.entries(workflow.jobs)
@@ -850,7 +861,8 @@ describe("a whole-run run (a Pages run, or one whose privileged job takes an art
     ["refuses a publishing job whose own if mixes an expression with text", release(HOSTED_JOB, { ...PUBLISH, if: "${{ github.ref == 'refs/heads/main' }} && always()" }), [`rel.yml: rel.yml publish: job if "\${{ github.ref == 'refs/heads/main' }} && always()" ${MIXED}`]],
     ["reads a download's inputs without regard to case: Run-Id and Github-Token are refused", release(HOSTED_JOB, { ...PUBLISH, steps: [{ uses: DOWNLOAD, with: { "Run-Id": "1", "Github-Token": "${{ secrets.T }}" } }] }), ["rel.yml: rel.yml publish: actions/download-artifact with run-id, a form these runs do not use", "rel.yml: rel.yml publish: actions/download-artifact with github-token, a form these runs do not use"]],
     ["refuses a download with a token or from another repository", release(HOSTED_JOB, { ...PUBLISH, steps: [{ uses: DOWNLOAD, with: { name: "x", "github-token": "${{ secrets.T }}", repository: "o/r" } }] }), ["rel.yml: rel.yml publish: actions/download-artifact with github-token, a form these runs do not use", "rel.yml: rel.yml publish: actions/download-artifact with repository, a form these runs do not use"]],
-    ["reads setup-bun's No-Cache: false as the cache on", release({ ...HOSTED_JOB, steps: [{ uses: "oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6", with: { "bun-version": "1.4.2", "No-Cache": false } }] }), ["rel.yml: rel.yml build: oven-sh/setup-bun without no-cache: true"]],
+    ["reads setup-bun's No-Cache: true as the cache off, as the runner does (an exact lookup would refuse it)", release({ ...HOSTED_JOB, steps: [{ uses: "oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6", with: { "bun-version": "1.4.2", "No-Cache": true } }] }), []],
+    ["reads setup-node's Cache: npm as a cache input, and refuses it", release({ ...HOSTED_JOB, steps: [{ uses: "actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1", with: { "node-version": "22", "package-manager-cache": false, Cache: "npm" } }] }), ["rel.yml: rel.yml build: actions/setup-node without package-manager-cache: false, or with a cache input"]],
     ["refuses an action's inputs that differ only in case", release({ ...HOSTED_JOB, steps: [{ uses: "oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6", with: { "no-cache": true, "No-Cache": false } }] }), ["rel.yml: rel.yml build: oven-sh/setup-bun has inputs that differ only in case"]],
   ];
   for (const [name, workflows, problems] of consumers) {
