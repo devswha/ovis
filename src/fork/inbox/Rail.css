@@ -11,14 +11,14 @@
   .app:has(.sidebar:not(.inbox-column) > .inbox-rail) { --fork-rail-control: var(--touch-target); }
 }
 
-.sidebar:has(> .inbox-rail) {
+.sidebar:not(.inbox-column):has(> .inbox-rail) {
   --inbox-control: var(--fork-rail-control);
   --inbox-rail-w: calc(var(--inbox-control) + var(--space-3) * 2);
   flex-direction: row;
   padding-left: 0;
 }
 
-.sidebar:has(> .inbox-rail) > .sidebar-shell {
+.sidebar:not(.inbox-column):has(> .inbox-rail) > .sidebar-shell {
   flex: 1 1 0;
   min-width: 0;
 }
@@ -41,8 +41,8 @@
 }
 
 /* The rail has the gear, so the sidebar's foot drops its own, and the gear's row when the plan meters leave it empty */
-.sidebar:has(> .inbox-rail) .sidebar-footer-settings,
-.sidebar:has(> .inbox-rail) .sidebar-footer-row:not(:has(> :not(.sidebar-footer-settings))),
-.sidebar:has(> .inbox-rail) .sidebar-footer:not(:has(> :not(.sidebar-footer-row:not(:has(> :not(.sidebar-footer-settings)))))) {
+.sidebar:not(.inbox-column):has(> .inbox-rail) .sidebar-footer-settings,
+.sidebar:not(.inbox-column):has(> .inbox-rail) .sidebar-footer-row:not(:has(> :not(.sidebar-footer-settings))),
+.sidebar:not(.inbox-column):has(> .inbox-rail) .sidebar-footer:not(:has(> :not(.sidebar-footer-row:not(:has(> :not(.sidebar-footer-settings)))))) {
   display: none;
 }
