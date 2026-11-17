@@ -1216,8 +1216,10 @@ user authorization.
 The [CI workflow](../.github/workflows/ci.yml) runs on every PR and `main` push:
 
 - **Fast checks**: frozen dependency install, then `bun run check fast`: workflow syntax
-  (checksum-pinned actionlint), generated type freshness, application and critical-tools typechecks
-  (`tsconfig.tools.json`), build, and
+  (checksum-pinned actionlint), generated type freshness, application and tools typechecks
+  (`tsconfig.tools.json`: every file under `scripts/`, `integrations/`, `site/` and `app/scripts/`
+  but the ones its `exclude` lists, which still have type errors; that list may only shrink, and a
+  new file is checked without being named), build, and
   `bun run test:unit`. This suite does not start herdr.
 - **Integration and browser**: a summary job that fails when any of three jobs fails, each with
   checksum-pinned herdr 0.9.3, Node 22 and the lockfile's Chromium:

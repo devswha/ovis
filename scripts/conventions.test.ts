@@ -162,6 +162,41 @@ describe("fixed sleeps", () => {
   });
 });
 
+describe("the tools typecheck", () => {
+  // A ratchet: tsconfig.tools.json checks every file under scripts/, integrations/, site/ and app/scripts/ but the ones
+  // its "exclude" lists, which had type errors when the list was made, or import or lean on a declaration of one that
+  // had. A new file is checked without being named anywhere, and the list may only shrink.
+  const excluded = (json: string): string[] | null => {
+    const list = (JSON.parse(json) as { exclude?: unknown }).exclude;
+    return Array.isArray(list) ? list as string[] : null;
+  };
+  /** The entries `now` has and `before` lacks, when `now` is the longer list: a renamed file may take its entry along. */
+  const added = (now: readonly string[], before: readonly string[]): string[] =>
+    now.length > before.length ? now.filter((file) => !before.includes(file)) : [];
+  const now = excluded(read("tsconfig.tools.json")) ?? [];
+
+  it("excludes no more files than on origin/main", () => {
+    const git = (...args: string[]) => spawnSync("git", args, { cwd: repo, encoding: "utf8" });
+    const base = git("merge-base", "HEAD", "origin/main");
+    if (base.status !== 0) return;
+    const json = git("show", `${base.stdout.trim()}:tsconfig.tools.json`);
+    const before = json.status === 0 ? excluded(json.stdout) : null;
+    if (before === null) return;
+    fail(added(now, before), "The exclude list of tsconfig.tools.json may only shrink: fix the type errors `bun run typecheck` reports in these files instead of excluding them. A renamed file takes its entry along under the new path.");
+  });
+
+  it("tells a longer exclude list from a renamed entry", () => {
+    expect(added(["scripts/a.ts", "scripts/new.ts"], ["scripts/a.ts"])).toEqual(["scripts/new.ts"]);
+    expect(added(["scripts/a.ts", "scripts/renamed.ts"], ["scripts/a.ts", "scripts/b.ts"])).toEqual([]);
+    expect(added(["scripts/a.ts"], ["scripts/a.ts", "scripts/b.ts"])).toEqual([]);
+  });
+
+  it("excludes only files that exist", () => {
+    fail(now.filter((file) => !existsSync(join(repo, file))),
+      "Remove these entries from the exclude list of tsconfig.tools.json: the files are gone. A renamed file that still has type errors keeps its entry under the new path.");
+  });
+});
+
 describe("demo transport", () => {
   // Every push to main redeploys the browser demo, whose server is site/demo/transport.ts: an
   // endpoint or WS frame it does not answer is a 404 or a dropped frame there (AGENTS.md,
