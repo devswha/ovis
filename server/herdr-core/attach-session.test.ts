@@ -229,6 +229,34 @@ describe("CoreAttachSession", () => {
     await next.hit.promise;
   });
 
+  it("types a lone cursor key in the cursor mode hc's stream last set, not the one the viewer's terminal still believed in", async () => {
+    const seen: string[] = [];
+    const next = { want: "", hit: Promise.withResolvers<void>() };
+    const { core, session } = attach((data) => { seen.push(data); if (next.want && seen.join("").includes(next.want)) next.hit.resolve(); });
+    await core.attached;
+    const program = async (...chunks: string[]) => {
+      next.want = chunks.join("");
+      next.hit = Promise.withResolvers<void>();
+      for (const chunk of chunks) core.output(chunk);
+      await next.hit.promise;
+    };
+    // application cursor keys, its sequence split across two of hc's frames: an arrow and Home typed as CSI reach it as SS3
+    await program("less\x1b[?", "1h");
+    session.write("\x1b[A");
+    session.write("\x1b[H");
+    // a subparameter 1 is mode 1004's, no DECCKM; a chord and a typed line are no lone cursor key
+    await program("\x1b[?1004:1l");
+    session.write("\x1b[B");
+    session.write("\x1b[1;5A");
+    session.write("\x1b[A\r");
+    // back to normal mode: an arrow the viewer encoded as SS3 just before it heard reaches the program as CSI
+    await program("\x1b[?1l$ ");
+    session.write("\x1bOA");
+    await core.until(FRAME_DATA, 6);
+    expect(core.of(FRAME_DATA).map((frame) => new TextDecoder().decode(frame.payload))).toEqual(["\x1bOA", "\x1bOH", "\x1bOB", "\x1b[1;5A", "\x1b[A\r", "\x1b[A"]);
+    session.kill();
+  });
+
   it("does not keep asking viewers whose terminal answers every focus-reports switch with a focus-in (#2815)", async () => {
     // two focused xterm.js tabs on the pane: each answers `ESC[?1004h` with ESC [ I
     const answers: string[] = [];

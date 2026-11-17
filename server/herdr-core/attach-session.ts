@@ -18,6 +18,10 @@ export const CLEAR_HISTORY = "\x1b[?1049l\x1b[3J\x1b[H\x1b[2J";
  * tail of in-place updates cannot draw it again (hc has no repaint), and the tail's lines land once.
  */
 export const CLEAR_JOINER_HISTORY = "\x1b[?1049l\x1b[3J";
+/** A DEC private mode set or reset; DECCKM when 1 is a top-level parameter (`?1004:1h` is mode 1004's). */
+const PRIVATE_MODE = /\x1b\[\?([\d;:]*)([hl])/g;
+/** One unmodified cursor or Home/End key, in either cursor mode's form. */
+const CURSOR_KEY = /^\x1b[[O]([ABCDHF])$/;
 
 type Display = { fg?: string; bg?: string; cursor?: string; cell?: [number, number] };
 
@@ -102,6 +106,12 @@ export class CoreAttachSession {
   private cols: number;
   private rows: number;
   private readonly end: (code: number | null) => void;
+  /**
+   * The program's cursor mode (DECCKM) as hc's stream last said, and the stream's tail a split sequence may start in.
+   * The viewer's terminal learns it a link's round trip later: a key typed in between was encoded in the old mode.
+   */
+  private applicationCursor = false;
+  private modeTail = "";
 
   constructor(options: CoreAttachOptions) {
     this.cols = options.cols;
@@ -127,6 +137,7 @@ export class CoreAttachSession {
         this.owed += payload.length;
         this.settle();
         let text = decoder.decode(payload, { stream: true });
+        this.trackCursorMode(text);
         if (text && first) {
           first = false;
           text = CLEAR_HISTORY + text;
@@ -170,9 +181,20 @@ export class CoreAttachSession {
       if (focused) this.ask();
     }
     if (!rest) return true;
-    if (this.channel) this.send(rest, automatic);
-    else this.typed.push({ data: rest, automatic });
+    // a lone cursor key goes in the form the program reads now, whichever the viewer's terminal still believed in
+    const key = automatic ? null : CURSOR_KEY.exec(rest);
+    const typed = key ? `${this.applicationCursor ? "\x1bO" : "\x1b["}${key[1]}` : rest;
+    if (this.channel) this.send(typed, automatic);
+    else this.typed.push({ data: typed, automatic });
     return true;
+  }
+
+  private trackCursorMode(text: string): void {
+    const scan = this.modeTail + text;
+    for (const [, params, final] of scan.matchAll(PRIVATE_MODE)) {
+      if (params!.split(";").includes("1")) this.applicationCursor = final === "h";
+    }
+    this.modeTail = scan.slice(-16);
   }
 
   private send(data: string, automatic: boolean): void {
