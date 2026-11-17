@@ -29,7 +29,6 @@ export async function checkNotificationView(browser: Browser, origin: string): P
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     const saved = () => page.evaluate((pane) => localStorage.getItem(`ovis:view:${pane}`), agent);
-    /** the selected row and the lens drawn with it, both from the page: the stored selection is written before the render */
     const shows = (pane: string, lens: "Chat transcript" | "Live terminal") => page.waitForFunction(([id, title]) =>
       document.querySelector(".pane-select[aria-current='true']")?.getAttribute("title")?.startsWith(`${id} —`) === true
       && document.querySelector(".view-switch button[aria-pressed='true']")?.getAttribute("title")?.startsWith(title!) === true, [pane, lens]);
@@ -69,7 +68,6 @@ export async function checkNotificationView(browser: Browser, origin: string): P
     try {
       const ended = `${agent}-ended`;
       await tapAlert(ended, workspaces[0]);
-      // a tap that no longer reads the session fails here instead of holding the lane
       let unasked: ReturnType<typeof setTimeout> | undefined;
       await Promise.race([lookup, new Promise<never>((_, reject) => { unasked = setTimeout(() => reject(new Error("ended-pane tap never read /api/session")), 4000); })])
         .finally(() => clearTimeout(unasked));

@@ -104,12 +104,10 @@ export async function checkFolderFilter(page: Page, dialog: Locator, createReque
   const picked = await directory.inputValue();
   await directory.fill(typo);
   await dialog.getByRole("button", { name: "Browse", exact: true }).click();
-  // until the listing comes, the path bar shows the typed path itself: wait for home in its place
   await until(async () => !["", typo].includes((await dialog.locator(".dir-browser-path").textContent()) ?? ""), "Browse shows home for a path that does not open");
   await dialog.getByRole("button", { name: "Browse", exact: true }).click();
   await filter.waitFor({ state: "detached" });
   assert.equal(await directory.inputValue(), typo, "Browse's home in place of a typo does not replace the typed Directory");
-  // the checks after this one browse the owned fixture folder again
   await directory.fill(picked);
   console.log("PASS folder filtering preserves IME keys, blocks form submission and clears on navigation");
 }

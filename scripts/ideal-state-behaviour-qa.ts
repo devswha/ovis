@@ -5,10 +5,6 @@
  * fails. NA names what the demo cannot stage without a product change. A check the owner decided to leave
  * as it is (OWNER_ROWS) is still measured and prints `OWNER IS-0xx <measured value> (<decision file>)`,
  * which fails nothing unless its probe itself breaks.
- *
- * Nothing waits a set time to synchronise: each step waits for the state it needs, with a deadline.
- * Time itself is the behaviour in two probes: IS-016 moves a fake page clock on 30 minutes, and
- * IS-092 watches a hidden tab for 10 seconds.
  */
 import type { Page } from "playwright-core";
 import { KO } from "../src/lib/i18n.ko.ts";
@@ -139,7 +135,6 @@ const PROBES: Record<string, (demo: Demo) => Promise<Verdict>> = {
     } finally { await context.close(); }
   },
   "IS-076": async (demo) => {
-    // a malformed turn is dropped by the client, never thrown: the build's crash hook (src/lib/crashProbe.ts) throws in the pane instead
     const { context, page } = await demo.open({ pane: panes.api, query: "&crash=pane", ready: ".error-state" });
     try {
       const message = page.locator(".error-state").filter({ hasText: label("This pane can't be shown.") }).first();

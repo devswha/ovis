@@ -14,8 +14,6 @@ let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 let server: ReturnType<typeof Bun.serve> | undefined;
 const fixture = (name: string) => readFileSync(new URL(`../server/fixtures/${name}`, import.meta.url));
 
-// omp 18.8.7's session as recorded, laid out in an agent directory as omp keeps it, with one more
-// prompt that is only a picture (a paste: `@file` adds the file's name as text)
 const blob = fixture("omp-pictures-18.8.7-blob.webp");
 const agent = join(root, "omp", "agent");
 mkdirSync(join(agent, "sessions", "-tmp-omp-pictures-"), { recursive: true });

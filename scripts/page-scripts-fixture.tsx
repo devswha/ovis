@@ -9,7 +9,6 @@ declare global { interface Window { pageScriptsQa: { open: (path: string, docked
 function Fixture() {
   const [shown, setShown] = useState<Shown | null>(null);
   const [messages] = useState<Array<Record<string, unknown>>>([]);
-  // `at`: every open is a viewer of its own, as closing and opening a file is in the app
   window.pageScriptsQa = { open: (path, docked) => setShown({ path, docked, at: Date.now() }), close: () => setShown(null), messages };
   return <SettingsProvider>
     <div style={{ display: "flex", height: "100vh" }}>

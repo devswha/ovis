@@ -76,8 +76,6 @@ try {
   await page.getByRole("button", { name: "Send message", exact: true }).click();
   assert.deepEqual(inputs.at(-1), { machine: b, pane: paneId });
   await select("QA remote");
-  // SSH_TEST_KEEP creates a loopback fixture with a private remoteHome. Give its
-  // owned pane a foreground agent/byte recorder so queue acceptance is server-side.
   assert.match(fixture.root, /\/herdr-ssh-qa-[^/]+$/);
   assert.equal(fixture.remoteHome, join(fixture.root, "remote"));
   const program = join(fixture.remoteHome, "claude"); copyFileSync(process.execPath, program); chmodSync(program, 0o755);
@@ -130,7 +128,6 @@ try {
   assert.equal(await page.locator(".composer-queue-text").count(), 0);
   await select("QA remote");
   assert.equal(await page.locator(".composer-queue-text").inputValue(), "HELD_A_MUST_NOT_SEND");
-  // with the prompt dock open the held rows are folded behind their caption (#466): open it first
   const heldToggle = page.locator(".composer-queue-toggle");
   if (await heldToggle.count() && await heldToggle.getAttribute("aria-expanded") !== "true") await heldToggle.click();
   await page.getByRole("button", { name: "Discard", exact: true }).click();
@@ -164,7 +161,6 @@ try {
   await page.screenshot({ path: join(evidence, "mobile-add-pc-light.png") });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth), false);
   await page.getByRole("button", { name: "Close PC setup" }).click();
-  // Settings closed the drawer when it opened, and Add PC closed Settings: open the drawer again
   await page.getByRole("button", { name: "Open workspace list", exact: true }).click();
   await page.locator(".sidebar-footer").getByRole("button", { name: "Settings", exact: true }).click();
   const settings = page.getByRole("dialog", { name: "Settings", exact: true });

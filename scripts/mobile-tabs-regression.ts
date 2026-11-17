@@ -184,7 +184,6 @@ export async function checkMobileTabs(browser: Browser, origin: string): Promise
     const created = await workspaceCreate({ cwd: root, label: "ovis-test-mobile-tabs" });
     workspaceId = created.workspace.workspace_id;
     const first = created.root_pane.pane_id;
-    // herdr keeps the first pane in front: the split one is seen only where the browser opens it
     const second = (await paneSplit(first, "right", false)).pane_id;
     const other = await workspaceCreate({ cwd: root, label: "ovis-test-mobile-tabs-other" });
     otherWorkspaceId = other.workspace.workspace_id;
@@ -302,7 +301,6 @@ export async function checkMobileTabs(browser: Browser, origin: string): Promise
     await screenshot("narrow");
 
     await page.setViewportSize(TABLET);
-    // the row under the header: the phone's row in the header is a .tab-strip too, found before the new width is drawn
     await page.locator(".pane-slot .tab-strip").waitFor();
     assert.equal(await page.locator(".app-header .header-tabs-sheet").count(), 0, "no chevron lists the tabs where the row is drawn");
     assert.equal(await page.locator(".tab-strip-close, .tab-strip-panes").count(), 0, "tabs have no close buttons or chevrons");
@@ -315,13 +313,6 @@ export async function checkMobileTabs(browser: Browser, origin: string): Promise
     await activeTabInView(page, "a tablet's strip");
     assert.deepEqual(errors, []);
 
-    // The app's faces come after the first paint (src/fonts/fonts.css, font-display: swap) and
-    // every tab's name is redrawn with them, wider or narrower: the strip that brought the open
-    // tab into view in the fallback brings it into view again. The font files are held here until
-    // the fallback drawing is seen; no service worker, so that nothing answers them from a cache.
-    // A strip the user scrolled themselves, to look at other tabs, is left where they put it by a
-    // face that comes after: the scroll below is not the strip's own, which is all the app can
-    // know of a wheel or a drag. Opening a tab ends that.
     for (const scrolled of [false, true]) {
       const slow = await browser.newContext({ viewport: TABLET, isMobile: true, hasTouch: true, locale: "en-US", serviceWorkers: "block" });
       try {

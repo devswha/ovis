@@ -1,8 +1,3 @@
-/**
- * - `__probe.finishTurn()` runs the demo's held 4500 ms timer, which lands the Claude pane's last tool
- *   row and answer and ends its turn (site/demo/transport.ts): an output event the probe triggers when
- *   it is ready to measure, not when the demo's clock says.
- */
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

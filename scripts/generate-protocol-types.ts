@@ -8,8 +8,6 @@
  *                                                           (OVIS_HC_BIN picks the hc binary; use the
  *                                                           version ci.yml's herdr-core-live job pins)
  *
- * - Only the types Ovis actually consumes are emitted, plus their transitive
- *   closure. Generating all 170+ definitions would bury the ones under review.
  * - String enums become unions widened with `(string & {})`. herdr gives no
  *   stability guarantee, so a value from a future version must still flow through
  *   instead of failing to typecheck.
@@ -220,7 +218,6 @@ function generate(schema: Json): string {
 
 async function loadSchema(refresh: boolean): Promise<Json> {
   if (refresh) {
-    // the same binary the tests and the server use, so a schema can come from a herdr that is not installed
     const herdr = process.env["OVIS_HERDR_BIN"] || "herdr";
     const proc = Bun.spawn([herdr, "api", "schema", "--json"], { stdout: "pipe", stderr: "pipe" });
     const text = await new Response(proc.stdout).text();
@@ -232,7 +229,6 @@ async function loadSchema(refresh: boolean): Promise<Json> {
   return JSON.parse(readFileSync(SCHEMA_PATH, "utf8")) as Json;
 }
 
-/** hc's schema as `hc schema` prints it, kept indented so a refresh reads as a diff. */
 async function loadHcSchema(refresh: boolean): Promise<Json> {
   if (refresh) {
     const hc = process.env["OVIS_HC_BIN"] || "hc";

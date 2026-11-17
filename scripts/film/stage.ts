@@ -1,8 +1,4 @@
 /**
- * The compositor page: a 1920x1080 DOM stage that draws one frame of the film from a plain
- * description (FrameDesc). Everything that moves is a function of the frame's time computed here
- * or in timeline.ts: no CSS transitions or animations, so a frame is the same every time.
- *
  * The frame is resampled once in a canvas at the size it takes on screen (Skia's high
  * quality downscale), and only then moved by the object's matrix3d (perspective, rotation,
  * translation, near unit scale), so UI text stays crisp and never shimmers under a slow push.

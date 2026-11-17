@@ -78,7 +78,6 @@ try {
   await page.getByRole("alertdialog").getByRole("button", { name: "Remove PC", exact: true }).click();
   await page.locator(`section.machine-group.is-current[aria-label="PC ${local.name}"]`).waitFor();
   await page.waitForFunction(() => document.querySelector(`section.machine-group[aria-label="PC QA remote"]`) === null);
-  // the roster without the PC came in while the request was held: a note it raised is still up
   const deadline = Date.now() + 5_000;
   while (removed === 0) { if (Date.now() > deadline) throw new Error("Remove PC never sent DELETE"); await Bun.sleep(25); }
   assert.equal(await page.locator(".header-note", { hasText: "That link's PC is not set up here" }).count(), 0, "removing the selected PC here is not a link to a missing PC");

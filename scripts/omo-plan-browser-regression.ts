@@ -120,7 +120,6 @@ try {
   workspaceId = created.workspace.workspace_id;
   const paneId = created.root_pane.pane_id;
   paneIdOf = () => paneId;
-  // Subscribe before starting the fixture: the holder's publication is the readiness signal.
   const watcher = watch(readyDir);
   try {
     const ready = once(watcher, "change", { signal: AbortSignal.timeout(20_000) });
@@ -129,7 +128,6 @@ try {
   } finally { watcher.close(); }
   server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: join(root, "state"), tailscaleOwner: null, usage: new UsageService(undefined, []) });
   const origin = `http://127.0.0.1:${server.port}`;
-  // Plan polling pushes its exact changed state, so readiness needs no timing loop.
   await new Promise<void>((resolve, reject) => {
     const signal = AbortSignal.timeout(30_000);
     signal.addEventListener("abort", () => reject(signal.reason), { once: true });

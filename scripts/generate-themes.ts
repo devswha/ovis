@@ -3,9 +3,6 @@
  *   bun run scripts/generate-themes.ts                # write the generated outputs
  *   bun run scripts/generate-themes.ts --check        # fail if a committed output is stale; never writes
  *   bun run scripts/generate-themes.ts --root <dir>   # work on a copy of the repo (tests)
- *
- * - src/lib/themes.generated.ts is written whole: the supported (theme, mode) entries, each with its
- *   declared roles, xterm colors and panel color, so runtime code never parses CSS.
  */
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -123,9 +120,7 @@ export function renderModule(css: string, blocks = parseThemeBlocks(css), amber 
       `    roles: [${roles.map((role) => JSON.stringify(role)).join(", ")}],`,
       `    terminal: { background: ${color("term-bg")}, foreground: ${color("term-fg")}, cursor: ${color("term-cursor")}, selectionBackground: ${color("term-selection")}${ansi} },`,
       `    bgPanel: ${color("bg-panel")},`,
-      // the page's own surface, which the boot script paints before the stylesheet arrives (src/theme-bootstrap.ts)
       `    bg: ${color("bg")},`,
-      // the few colours Settings' theme cards draw a theme with (SettingsDialog.tsx, ThemeCards)
       `    preview: { elevated: ${color("bg-elevated")}, border: ${color("border")}, text: ${color("text")}, textDim: ${color("text-dim")}, accent: ${color("accent")}, primary: ${color("primary")} },`,
       "  },",
     ].join("\n");

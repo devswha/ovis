@@ -14,12 +14,6 @@ import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 import { contextMenuKey } from "./context-menu-key.ts";
 
-/**
- * this script's loopback server, so two tabs are two browsers of one server. Status events are
- * injected into the app's event stream, the tab's Notification and AudioContext are spies, and a
- * control pane's visible status change is the barrier that says an event was handled before a
- * "nothing happened" assertion. No herdr session is opened; every file stays in a temp directory.
- */
 interface RosterPatch { secondPc?: "connected" | "disconnected" | null; longLabel?: { paneId: string; label: string } | null; empty?: boolean; loading?: boolean }
 declare global {
   interface Window {
@@ -109,7 +103,6 @@ function installMuteFixture(): void {
     state = "running";
     destination = {};
     private readonly started = performance.now();
-    // a clock that runs: a chime that sounds (lib/alertSound.ts) tells the alerts that come while it does
     get currentTime(): number { return (performance.now() - this.started) / 1000; }
     async resume(): Promise<void> {}
     async close(): Promise<void> {}
@@ -170,9 +163,6 @@ async function capture(page: Page, theme: string, language: string, state: strin
   const viewport = page.viewportSize()!;
   const file = `pane-mute-${viewport.width}-${theme}${language === "ko" ? "-ko" : ""}-${state}.png`;
   const path = join(evidence, file);
-  // a sheet that just closed or a drawer that just opened is drawn before the shot: two frames, then any finite animation
-  // but an alert's, whose countdown is its life and would outlast it; a closed sheet slides out as a copy in an inert
-  // host at the end of <body> (lib/sheets.ts `leave`), gone once it has slid out
   await page.waitForFunction(() => ![...document.body.children].some((node) => node instanceof HTMLDivElement && node.inert && node.getAttribute("aria-hidden") === "true" && node.childElementCount === 0));
   await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
   await page.evaluate(() => Promise.all(document.getAnimations().filter((animation) => {
@@ -187,8 +177,6 @@ const row = (page: Page, machineId: string, paneId: string) => page.locator(`.ag
 const status = (page: Page, machineId: string, paneId: string, value: string) => row(page, machineId, paneId).locator(`.sidebar-status[data-status="${value}"]`);
 const muteItem = (page: Page) => page.locator('.row-menu [role="menuitemcheckbox"], .row-sheet-item[aria-pressed]');
 const droplet = (page: Page) => page.locator(".droplet-card");
-// an alert leaves by itself after its hold (DROPLET_HOLD_MS): a Dismiss pressed after a slow capture can find it
-// already leaving, so each step that needs it gone waits for it to go
 let url = "";
 
 async function newContext(browser: Browser, phone: boolean, settings: Record<string, unknown>): Promise<BrowserContext> {
@@ -209,8 +197,6 @@ async function openTab(context: BrowserContext, query = ""): Promise<Page> {
   await page.locator(".conn-live").waitFor({ state: "attached" });
   await row(page, "local", P).waitFor({ state: "attached" });
   await page.waitForFunction(() => window.muteFixture.documents.length > 0);
-  // the demo's own turn on the open pane ends 4.5 s after load (site/demo/transport.ts): every count and
-  // every capture comes after it, so none races that finish
   await page.locator(`.pane-item:has(.pane-select[title^="${OPENED} —"]) [data-status="idle"]`).first().waitFor({ state: "attached", timeout: 10_000 });
   return page;
 }
@@ -273,14 +259,7 @@ async function quiet(page: Page, label: string): Promise<void> {
   assert.deepEqual(seen, { notifications: [], chimes: 0 }, `${label}: no notification and no chime`);
 }
 
-/**
- * Runs one part of this check. Each part is a browser script of its own, so that the browser lane's
- * workers share the check instead of one of them running all of it: the five behaviour sections
- * (pane-mute-demo-regression.ts), and the captures of every state
- * (pane-mute-captures-demo-regression.ts).
- */
 export async function runPaneMute(part: "behaviour" | "captures"): Promise<void> { try {
-  // the captures part makes nothing but its screenshots: with no folder to write them into, it has nothing to run
   if (part === "captures" && !evidence) { console.log("SKIP the captures of Mute alerts: UI_EVIDENCE_DIR is not set, and this part only writes its captures there"); return; }
   await buildDemoApp(app);
   const index = join(app, "index.html");
@@ -289,7 +268,6 @@ export async function runPaneMute(part: "behaviour" | "captures"): Promise<void>
   writeFileSync(join(app, "mute-fixture.js"), `(${installMuteFixture.toString()})();`);
   writeFileSync(index, html.replace(/<script type="module"/, '<script src="./demo-transport.js"></script>\n    <script src="./mute-fixture.js"></script>\n    <script type="module"'));
 
-  // the preferences stream stays open across the whole run: a heartbeat every 15 s, as the server's stream has, keeps it inside the idle limit
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, idleTimeout: 60, async fetch(request) {
     const path = new URL(request.url).pathname;
     if (path === "/fixture/preferences") {
@@ -321,8 +299,6 @@ export async function runPaneMute(part: "behaviour" | "captures"): Promise<void>
       });
       return new Response(stream, { headers: { "content-type": "text/event-stream", "cache-control": "no-store" } });
     }
-    // the brand mark is root-absolute (<img src="/icons/..."> in src/App.tsx); the published demo rewrites it
-    // (scripts/build-site.ts), this server serves it from the build as the web ui server does
     if (!path.startsWith("/herdr-web-ui/demo/app/") && !path.startsWith("/icons/")) return new Response("not found", { status: 404 });
     let file: string;
     try { file = decodeURIComponent(path.startsWith("/icons/") ? path.slice(1) : path.slice("/herdr-web-ui/demo/app/".length)); }
@@ -340,7 +316,6 @@ export async function runPaneMute(part: "behaviour" | "captures"): Promise<void>
       const key = paneStorageId("local", P);
       const checks: string[] = [];
 
-      // the behaviour sections stay together and in this order: the finish and barrier counters run on from one to the next
       if (part === "behaviour") {
         openStore("pre-feature");
         {
@@ -379,7 +354,6 @@ export async function runPaneMute(part: "behaviour" | "captures"): Promise<void>
         const context = await newContext(browser, false, {});
         const a = await openTab(context);
         const b = await openTab(context);
-        // a key was pressed on the page: its chimes may play from here (lib/alertSound.ts unlocks on a gesture)
         await a.keyboard.press("Shift");
         await toggleMute(a, false, "local", P);
         const muted = await storeHolds("tab A's mute", (document) => document.muted_panes?.includes(key) === true);
@@ -599,7 +573,6 @@ export async function runPaneMute(part: "behaviour" | "captures"): Promise<void>
             await page.keyboard.press("ControlOrMeta+Shift+Comma");
             await page.locator(".settings-dialog").waitFor();
             const alerts = page.locator(".settings-dialog").getByRole("tab", { name: "Alerts", exact: true });
-            // tapped on a phone, as a finger does: a mouse click would rest on the row the page draws under it
             if (await alerts.count() > 0) await (phone ? alerts.tap() : alerts.click());
             await page.locator(".settings-save-error").waitFor({ timeout: 10_000 });
             await capture(page, theme, language, "save-error");
@@ -624,8 +597,6 @@ export async function runPaneMute(part: "behaviour" | "captures"): Promise<void>
           assert.deepEqual(errorsOf(page), []);
           await context.close();
         }
-        // each part lists the captures it made, in a file of its own (the serial lane gives both parts one
-        // folder): the behaviour sections made one, of the other PC's alert
         writeFileSync(join(evidence, part === "captures" ? "manifest.json" : `manifest-${part}.json`), `${JSON.stringify(manifest, null, 2)}\n`);
         checks.push(`${manifest.length} captures written to ${evidence}`);
       }

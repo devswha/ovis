@@ -42,7 +42,6 @@ async function open(browser: Browser, origin: string, screen: Screen, run: (page
         if (location.protocol !== "about:") void (window as unknown as { entryAdded: (entry: Entry) => Promise<void> }).entryAdded({ taps, keys: state !== null && typeof state === "object" ? Object.keys(state).join(",") : String(state) });
         return push(...args);
       };
-      // a step the page takes by itself lands as a popstate too, and is none of the user's
       let own = false;
       for (const name of ["back", "forward", "go"] as const) {
         const step = (history[name] as (by?: number) => void).bind(history);
@@ -100,7 +99,6 @@ try {
     return (await body.exists()) ? new Response(body) : new Response("not found", { status: 404 });
   } });
   const origin = `http://127.0.0.1:${server.port}`;
-  // a page on another port of this PC, for the panel beside the pane: it frames none of the app's own port
   const pages = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("<!doctype html><title>Report</title><h1>Report</h1>", { headers: { "content-type": "text/html; charset=utf-8" } }) });
   let browser: Browser | undefined;
   try {
@@ -184,8 +182,6 @@ try {
       await stillHere(page, origin, shown, "the header's More sheet");
 
       await page.locator(".header-more-button").tap();
-      // More folds the find items into Find… only where it also carries the pane's search (Tabs on a phone, In the header);
-      // with the row under the header (the default) Find in terminal is More's own item
       const findGroup = sheet.getByRole("button", { name: "Find…" });
       const findItem = sheet.getByRole("button", { name: "Find in terminal" });
       await findGroup.or(findItem).first().waitFor();
@@ -246,8 +242,6 @@ try {
       await viewer.waitFor({ state: "detached" });
       assert.equal(await files.count(), 1, "a file closed by Back leaves Files up under it");
       await entryHeld(page);
-      // the entry Files took still named the file when it was gone onto: the file is not shown again,
-      // read once whatever that traversal set off has been drawn
       await page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
       assert.equal(await viewer.count(), 0, "the entry Files takes after Back does not bring its file back");
       await keep(page, "files-after-file-back");
@@ -309,10 +303,6 @@ try {
       await page.waitForURL("about:blank");
     });
 
-    // a busy tab's close asks first, even among other tabs: Back closes the question, and the tab is still there. On
-    // the web pane, whose agent waits on its question for good, beside a new terminal, so the question comes from the
-    // busy agent, not from a last tab: the api pane's turn ends 4.5 s after load (site/demo/transport.ts), and an idle
-    // tab among others closes without asking
     await open(browser, origin, TABLET, async (page) => {
       const busyTab = await page.locator(".tab-strip-close").first().getAttribute("aria-label");
       assert.ok(busyTab, "the web pane's tab has a close button");
@@ -422,7 +412,6 @@ try {
       await stillHere(page, origin, shown, "with no Navigation API, Files after Back closed a file opened from it");
     }, {}, false);
   } finally {
-    // the servers go whatever else failed, a browser that did not start included: left up, they keep this script from ending
     try { await browser?.close(); }
     finally {
       try { await server.stop(true); }

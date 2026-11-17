@@ -93,7 +93,6 @@ const longPress = (page: Page, selector: string, text: string, pointerType = "to
   return !under.dispatchEvent(new PointerEvent("contextmenu", { bubbles: true, cancelable: true, composed: true, pointerType: type, isPrimary: true, clientX: x, clientY: y }));
 }, [selector, text, pointerType] as const);
 
-/** The sheet as it rests: its slide-in (sheet-in, styles.css) has ended, so a capture shows all of it. */
 const sheetAtRest = (page: Page): Promise<void> => page.locator(".row-sheet").evaluate((node) => Promise.all(node.getAnimations().map((animation) => animation.finished)).then(() => undefined));
 
 const sheetItems = (page: Page): Promise<string[]> => page.locator(".row-sheet .row-sheet-item .row-sheet-label").allTextContents();

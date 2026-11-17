@@ -46,8 +46,6 @@ function definition(file: string, start: RegExp): { file: string; line: number; 
 
 const CWD = "/work/project";
 const OTHER_CWD = "/elsewhere";
-// The rows, oldest first. Each is made by the call Hermes's own code makes for that kind of row
-// (cited per kind below); the probe then pins their times so the fixture is the same every run.
 const PYTHON = String.raw`
 import json, sqlite3, sys
 from pathlib import Path

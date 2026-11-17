@@ -1,7 +1,3 @@
-/**
- * the list, or enter it before the row the keyboard is on. Imported by ui-regression.ts, with the
- * palette closed.
- */
 import assert from "node:assert/strict";
 import type { Page } from "playwright-core";
 import { herdrRpc, tabClose, tabCreate } from "../server/herdr/client.ts";
@@ -10,10 +6,6 @@ export interface PaletteKeysFixture {
   workspaceId: string;
 }
 
-/**
- * Reports a status only for the panes it opens, so the suite's fixture panes keep theirs, and ends
- * on the pane that was selected when it began.
- */
 export async function checkPaletteKeys(page: Page, fixture: PaletteKeysFixture): Promise<void> {
   const until = async (check: () => Promise<boolean>, label: string): Promise<void> => {
     const deadline = Date.now() + 10_000;
@@ -102,7 +94,6 @@ export async function checkPaletteKeys(page: Page, fixture: PaletteKeysFixture):
     await page.keyboard.press("Enter");
     await palette.waitFor({ state: "hidden" });
     await until(async () => await selectedPaneId() === paneD, "Enter runs the row the keyboard was on");
-    // back to the pane selected before: the suite's next steps read its sidebar row
     await page.locator(`.pane-select[title^="${selectedBefore} —"]`).click();
     await until(async () => await selectedPaneId() === selectedBefore, "the selection returns to the pane selected before the check");
     console.log("PASS palette keys: a repeated filter letter refocuses the first row, the pick survives panes leaving and entering the filter, and Enter runs the focused row");

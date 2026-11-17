@@ -260,8 +260,6 @@ try {
   const index = join(app, "index.html");
   const html = readFileSync(index, "utf8");
   assert.match(html, /<script type="module"/);
-  // The demo replaces WebSocket itself, so install the recorder after it and before the app.
-  // Record input only: output ACKs and resize frames must not race the input assertions.
   const record = `<script>(() => {
     const Demo = window.WebSocket;
     window.keyBarFrames = [];
@@ -297,7 +295,6 @@ try {
       const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, locale: "en-US" });
       try {
         await context.addInitScript(({ pane, key }) => {
-          // Seed once. Reload must read the layout the user just edited.
           if (localStorage.getItem(key) === null) localStorage.setItem(key, JSON.stringify({
             language: "en", terminalInputMode: "direct",
             keyBarExtras: ["alt", "shift-tab", "home-end", "page-up-down", "ctrl-d", "ctrl-z", "pipe", "tilde", "slash"],
@@ -480,7 +477,6 @@ try {
         assert.deepEqual(await barBox().then(({ paddingBottom, paddingLeft }) => ({ paddingBottom, paddingLeft })), { paddingBottom: "26px", paddingLeft: "8px" }, "the bar at the bottom of the screen keeps room for the home indicator, less its own padding");
         await inset.evaluate(() => { document.querySelector(".key-bar")!.parentElement!.style.height = "700px"; });
         await inset.waitForFunction(() => document.querySelector(".key-bar")!.getBoundingClientRect().bottom < innerHeight - 1);
-        // the bar re-places itself from a ResizeObserver, a frame after the layout moved
         await inset.waitForFunction(() => getComputedStyle(document.querySelector(".key-bar")!).paddingBottom === "0px", undefined, { timeout: 5_000 });
         assert.deepEqual(await barBox().then(({ paddingBottom, paddingLeft }) => ({ paddingBottom, paddingLeft })), { paddingBottom: "0px", paddingLeft: "8px" }, "a bar above the bottom of the screen has no home-indicator room");
         await inset.close();
@@ -500,7 +496,6 @@ try {
         const closePalette = async (): Promise<void> => {
           await page.keyboard.press("Escape");
           await palette.waitFor({ state: "hidden", timeout: 5_000 });
-          // a screen worked by touch: the palette held a history entry, and a reload asked for before the history is off it is dropped
           await sheetEntryLeft(page);
         };
         const modifierLabel = await page.evaluate(() => /Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent) ? "⌘" : "Ctrl");
@@ -606,8 +601,6 @@ try {
         assert.deepEqual(errors, []);
         console.log("PASS restoring defaults keeps Ctrl+C visible; shortcut hints update, disable and reset; physical non-Latin Mod+Shift+K opens the palette without terminal input, but composition does not");
 
-        // The frames above go to an agent pane, which the demo never types into. Its shell must
-        // answer a chord as a terminal would: the demo has no herdr to turn the names into keys.
         const shell = await context.newPage();
         shell.on("pageerror", (error) => errors.push(error.message));
         await shell.goto(`http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/?pane=${encodeURIComponent(panes.shell)}`);
@@ -621,8 +614,6 @@ try {
             await Bun.sleep(50);
           }
         };
-        // the shell first replays a recorded session, with the gaps between its frames capped at
-        // half a second: typing before it ends is drawn over by the frames that follow
         let replayed = "";
         let replayedSince = Date.now();
         const replayDeadline = Date.now() + 15_000;

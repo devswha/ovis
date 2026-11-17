@@ -111,8 +111,6 @@ async function run(browser: Browser, origin: string, port: number, width: number
     await page.setViewportSize({ width: 1280, height: 900 });
     await page.waitForFunction(() => window.history.state?.["ovis:web-panel-docked"] === true);
     await page.locator(".header-files-button").click();
-    // the demo's folder lists nothing and serves no file: its Documents tab names README.md, served here
-    // as Markdown so it stays docked (files-documents-demo-regression.ts serves its documents the same way)
     await page.evaluate(() => {
       const demoFetch = window.fetch;
       window.fetch = async (input, init) => {

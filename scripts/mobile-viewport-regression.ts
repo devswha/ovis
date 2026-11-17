@@ -34,8 +34,6 @@ export async function checkMobileViewport(browser: Browser, origin: string, pane
     await openLens(page, "chat");
     const composer = page.getByRole("textbox", { name: "Message", exact: true });
     await composer.waitFor();
-    // read in one step: the transcript's first node is replaced as the conversation loads, and a node
-    // found before that and read after it is out of the document, with no style at all
     assert.equal(await page.evaluate(() => { const view = document.querySelector(".chat-view"); return view ? getComputedStyle(view).overscrollBehaviorY : "no .chat-view"; }), "contain",
       "a drag past the transcript's top stays in the transcript, or Android Chrome reloads the app");
     assert.deepEqual(await page.evaluate(() => [document.documentElement, document.body].map((node) => getComputedStyle(node).overscrollBehaviorY)),
@@ -43,7 +41,6 @@ export async function checkMobileViewport(browser: Browser, origin: string, pane
     const blur = () => page.evaluate(() => new Promise<void>((resolve) => {
       const active = document.activeElement;
       if (!(active instanceof HTMLElement) || active === document.body) { resolve(); return; }
-      // Registered after viewport.ts's handler: resolve after its deferred focusout sync.
       document.addEventListener("focusout", () => window.setTimeout(resolve, 0), { once: true });
       active.blur();
     }));
@@ -169,7 +166,6 @@ export async function checkMobileViewport(browser: Browser, origin: string, pane
     await height(500);
     await shell(true, "500px", 500);
     const sheet = async () => {
-      // where the palette comes to rest, not where it is while it rises
       await sheetsSettled(page);
       return page.evaluate(() => {
         const edges = (selector: string) => { const r = document.querySelector(selector)!.getBoundingClientRect(); return { top: Math.round(r.top), bottom: Math.round(r.bottom) }; };

@@ -1,11 +1,3 @@
-/**
- * Same Recording shape as scripts/readme-media/record.ts (which stays the README's own), with what
- * the film takes need on top of it:
- * - `scale`: the browser's device scale factor (the screencast's px per CSS px), not a fixed 2;
- * - a clock-driven glide: a slow mouse.move on a busy page cannot stretch it past `ms`;
- * - `place` (the pointer set down at once, e.g. parked outside the viewport before `begin`) and
- *   `press` (a click where the pointer already is, so a take can glide first and click on its beat).
- */
 import type { CDPSession, Page } from "playwright-core";
 
 export interface Frame { t: number; jpeg: Buffer }

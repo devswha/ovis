@@ -33,7 +33,6 @@ import { runMoreItem } from "./header-more.ts";
 import type { Machine } from "../shared/protocol.ts";
 import { chromePath } from "./chrome-path.ts";
 import { routeDrained } from "./drained-route.ts";
-// machine events stay on SSE here: these checks hold or watch /api/machines/events (the socket transport has its own checks)
 process.env["OVIS_MACHINE_EVENTS_WS"] = "0";
 
 const openFiles = async (page: import("playwright-core").Page) => {
@@ -42,16 +41,7 @@ const openFiles = async (page: import("playwright-core").Page) => {
   else await runMoreItem(page, "Browse files");
 };
 
-// A loaded or reloaded chat scrolls to its end once its conversation is measured; the chat frame
-// names its content only once it is presented there. Even then a link far above the end is no
-// steady target for a pointer: a follow to the end still on its way moves it between pointer down
-// and up, or takes its row and the focus away before a key, and nothing opens. Not even a wheel
-// read back first holds still: the follow undid one in looped runs. Steps that check history and
-// presentation, not pointer targeting, wait for the chat and activate the link where it is.
 const transcriptSettled = (page: Page) => page.locator(".chat-frame[data-pane-content]").waitFor({ state: "attached" });
-// A reload opens the chat where the reader left it (chatScrollMemory): one who clicked a link above the
-// end comes back there, and the chat presents nothing away from the end. The reloads before a step that
-// waits for the chat are a following reader's: the end, once the chat remembers it.
 const reloadFollowingEnd = async (page: Page): Promise<void> => {
   await page.evaluate(() => { for (const node of document.querySelectorAll(".chat-view")) node.scrollTop = node.scrollHeight; });
   await page.waitForFunction(() => (JSON.parse(sessionStorage.getItem("ovis:chat-positions") ?? "[]") as [string, { atEnd: boolean }][]).every(([, place]) => place.atEnd));
@@ -87,7 +77,6 @@ writeFileSync(transcript, [
   { type: "session_meta", payload: { id: thread, cwd: root } },
   { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "Show me the demo video." }] } },
   { type: "response_item", payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: `Open [demo video](./preview.webm) or [notes](./notes.txt) or [guide](./docs/guide.md) or [big](./big.txt) or [big code](./big.ts) or [mid code](./mid.ts) or [deep quotes](./deep.md) or [empty](./empty.txt) or [slow preview](./slow.md) or [long notes](./long.md) or [many lines](./lines.txt) or [long list](./list.md) or [contents page](./toc.html) or [file URI notes](${new URL(`file://${join(root, "notes.txt")}`).href}) or [folder](${new URL(`file://${root}`).href}) or [web report](${reportUrl}).\n\n${new URL(`file://${join(root, "notes.txt")}`).href}\n\n\`\`\`ts\nconst answer = 42;\n\nexport { answer };\n\`\`\`\n\n${chatImages}` }] } },
-  // a block the highlighter is quadratic on (a line of dashes in YAML): seconds on the page
   { type: "response_item", payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "References: [source column](./target.ts:60:8), [source range](./target.ts#L60-L65), [Markdown line](./docs/guide.md#L6), [past end](./notes.txt:999), [past preview](./big.txt:999999), [capped line](./lines.txt:5)." }] } },
   { type: "response_item", payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: `Dashes:\n\n\`\`\`yaml\n${"-".repeat(90_000)}\n\`\`\`` }] } },
   { type: "response_item", payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: `Lines:\n\n\`\`\`\n${"x\n".repeat(30_000)}\`\`\`` }] } },
@@ -101,7 +90,6 @@ writeFileSync(transcript, [
 const db = new Database(join(codexHome, "state_5.sqlite"));
 db.exec("CREATE TABLE threads (id TEXT, rollout_path TEXT, cwd TEXT, archived INTEGER, agent_role TEXT, created_at INTEGER, updated_at INTEGER, source TEXT, first_user_message TEXT)");
 db.query("INSERT INTO threads VALUES (?, ?, ?, 0, NULL, 1, 1, 'cli', ?)").run(thread, transcript, root, "Show me the demo video.");
-// a second folder with a notes.txt of its own: its pane's ./notes.txt is a file of the same path as the first pane's
 const side = join(root, "side");
 mkdirSync(side);
 writeFileSync(join(side, "notes.txt"), "Side pane notes\n");
@@ -215,9 +203,6 @@ try {
   browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
   const page = await context.newPage();
-  // seeded once: a later step changes a setting and reloads. The chat's own font size and
-  // family are set, so a Markdown preview can be shown to take them over. Long tasks are recorded
-  // from the first paint: nothing an agent writes may hold the page for a second
   await page.addInitScript(() => {
     // the app's own document only: a sandboxed HTML page the viewer frames has no storage to seed
     if (window.top !== window) return;
@@ -241,14 +226,12 @@ try {
   await page.locator(".markdown-code").first().locator(".hl-keyword", { hasText: "const" }).waitFor();
   await page.locator(".markdown-code .hl-number", { hasText: "42" }).waitFor();
   console.log("PASS Chat fenced code block is syntax highlighted");
-  // A reader's wheel stops follow before lazy images above the newest turn are brought into view.
   await page.mouse.move(195, 300);
   await page.mouse.wheel(0, -10_000);
   for (const alt of ["Chat relative", "Chat absolute", "Chat URI", "Chat encoded"]) {
     const image = page.locator(`.chat-transcript img.markdown-image[alt="${alt}"]`);
     await page.waitForFunction((alt) => {
       const image = document.querySelector<HTMLImageElement>(`.chat-transcript img.markdown-image[alt="${alt}"]`);
-      // A late skill render can replace this node too; start loading on the current incarnation.
       if (image) image.loading = "eager";
       return image?.complete && image.naturalWidth > 0;
     }, alt, { timeout: 10_000 });
@@ -271,9 +254,6 @@ try {
     for (const [index, source] of fidelitySources.entries()) {
       const block = page.locator(".markdown-code").nth(3 + index);
       assert.equal(await block.locator("code").textContent(), source, `${mode}: source whitespace`);
-      // found and selected in one task: an answer's Markdown is drawn again once the pane's skill
-      // list arrives (Markdown.tsx), which can fall between a locator's element handle and a later
-      // call on it and leave that handle on a detached <pre>
       const selections = await page.evaluate(({ nth, source }) => {
         const pre = document.querySelectorAll(".markdown-code")[nth]!.querySelector("pre")!;
         const selection = window.getSelection()!;
@@ -294,7 +274,6 @@ try {
     }
     if (process.env.UI_EVIDENCE_DIR) {
       mkdirSync(process.env.UI_EVIDENCE_DIR, { recursive: true });
-      // the block's box read in one task too, for the same redraw; the page is shot within it
       const clip = await page.evaluate(() => {
         const block = document.querySelectorAll(".markdown-code")[3]!;
         block.scrollIntoView({ block: "nearest" });
@@ -358,9 +337,6 @@ try {
   await preview.waitFor({ state: "hidden" });
   await videoLink.click();
   await preview.waitFor();
-  // A press on the backdrop itself closes the viewer. On a touch device the viewer fills the
-  // scrim edge to edge, so the press is sent to the scrim rather than aimed at an exposed pixel.
-  // (From 980px the file is a panel beside the pane, with no scrim: see the docked block below.)
   await page.locator(".file-viewer-scrim").evaluate((scrim) => scrim.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })));
   await preview.waitFor({ state: "hidden" });
   console.log("PASS Forward restores the viewer; X, Escape and scrim close consume its entry");
@@ -388,15 +364,12 @@ try {
   assert.equal(await narrowGuide.count(), 1, "Escape closes the More menu, not the file");
   assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("aria-label")), "More", "and gives the focus back to More");
   if (process.env.UI_EVIDENCE_DIR) await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, "mobile-markdown-320.png") });
-  // the menu's own entry goes first: a Back pressed before that would leave it, with the file still up
   await sheetEntryLeft(page);
   await page.goBack();
   await narrowGuide.waitFor({ state: "hidden" });
   await page.setViewportSize({ width: 390, height: 844 });
   console.log("PASS a phone's Markdown header stays one row at 320px and keeps new tab, raw and download in More");
 
-  // The Settings shortcut must open a visible dialog above the preview. Its history entries
-  // retain the file beneath it, so only Settings may handle Escape until those entries land.
   for (const width of [390, 1280]) {
     await page.setViewportSize({ width, height: 844 });
     await videoLink.click();
@@ -406,7 +379,6 @@ try {
     const settings = page.getByRole("dialog", { name: "Settings", exact: true });
     await settings.waitFor();
     await page.waitForFunction(() => history.state?.["ovis:settings"] !== undefined);
-    // a phone's Settings rises over the preview (styles.css): look where it comes to rest
     await sheetsSettled(page);
     const settingsClose = settings.getByRole("button", { name: "Close settings", exact: true });
     assert.equal(await settingsClose.evaluate((button) => {
@@ -424,9 +396,6 @@ try {
     }
     assert.ok(focused.every((entry) => !entry.startsWith("outside")), `Tab stays inside Settings at ${width}px: ${focused.join(" | ")}`);
     assert.ok(new Set(focused).size >= 2 && focused[0] !== focused[1], `Tab moves through Settings at ${width}px: ${focused.join(" | ")}`);
-    // a desktop's walk ends on the open page's first setting, and the keyboard on a setting shows its row's
-    // sentence (#3275): Escape closes that sentence alone, then the next one closes Settings. A phone's walk stays
-    // on the list of pages, where no sentence shows
     const sentence = page.locator(".settings-help");
     assert.equal(await sentence.count(), width === 390 ? 0 : 1, `a setting's sentence shows only where the walk reached a setting, at ${width}px`);
     if (width !== 390) {
@@ -527,7 +496,6 @@ try {
     const rect = input.getBoundingClientRect();
     return { above: document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2) === input, focused: document.activeElement === input };
   };
-  // the palette takes focus once it has mounted: wait for that, then say which part is missing
   await page.waitForFunction((input) => {
     const rect = input!.getBoundingClientRect();
     return document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2) === input && document.activeElement === input;
@@ -555,7 +523,6 @@ try {
     }, fileOpen);
     await reloadFollowingEnd(page);
   };
-  // with Open files at its default, even text opens in the popup; Beside the pane is a choice
   await setFileOpen(null);
   await activateInTranscript(page, notesLink);
   await textPopup.getByText("File preview history regression", { exact: true }).waitFor();
@@ -565,7 +532,6 @@ try {
   await setFileOpen("panel");
   console.log("PASS by default a text file opens in the popup on a wide window");
   const beforePlacement = await page.evaluate(() => history.state);
-  // setFileOpen reloaded the page: its follow to the end can take the link from under a pointer
   await activateInTranscript(page, videoLink);
   await page.locator(".modal.file-viewer video").waitFor();
   assert.equal(await panel.count(), 0, "video starts in the popup at 1280px");
@@ -616,8 +582,6 @@ try {
   await page.keyboard.press("Escape");
   await panel.waitFor({ state: "detached" });
   assert.equal(await page.evaluate(() => history.state?.["ovis:file-preview"]), undefined, "Escape in the panel consumes the preview entry");
-  // A history traversal removes the panel and restores focus: detachment alone is not the
-  // focus signal. Keep the focus assertion, but wait for the state it actually checks.
   await page.waitForFunction((link) => document.activeElement === link, await notesLink.elementHandle());
   assert.equal(await notesLink.evaluate((link) => document.activeElement === link), true, "Escape in the panel returns the focus to the link that opened the file");
   await notesLink.press("Enter");
@@ -635,8 +599,6 @@ try {
   await reloadFollowingEnd(page);
   await panel.getByText("File preview history regression", { exact: true }).waitFor();
   assert.ok(Math.abs(await panelWidth() - stored) <= 1, `a reload keeps the dragged width: ${await panelWidth()} vs ${stored}`);
-  // a double-click on the edge puts the default width back and forgets the stored one, so the
-  // steps after this one see the panel as a fresh device does
   await panel.locator(".file-panel-resizer").dblclick();
   await page.waitForFunction(() => localStorage.getItem("ovis:file-panel-width") === null);
   await page.waitForFunction((want) => Math.abs((document.querySelector("aside.file-panel")?.getBoundingClientRect().width ?? 0) - want) <= 1, before);
@@ -651,8 +613,6 @@ try {
     await panel.getByRole("button", { name: "Run scripts", exact: true }).click();
     await framed.getByText("contents ran", { exact: true }).waitFor();
     const opened = await page.evaluate(() => history.length);
-    // the frame's own navigation is under test, not where the panel lays the frame out: a pointer
-    // aimed at the link while the panel settles can miss it, and no entry is made
     await framed.locator("#toc").dispatchEvent("click");
     await page.waitForFunction((length) => history.length === length + 1, opened);
     if (close === "Escape") { await panel.locator(".file-panel-resizer").focus(); await page.keyboard.press("Escape"); }
@@ -679,8 +639,6 @@ try {
 
   for (const [label, content] of [["extensionless", "Extensionless text"], ["unknown text", "Unknown extension text"]] as const) {
     const link = page.getByRole("button", { name: label, exact: true });
-    // the panel just closed: the chat takes its width back and its rows move under a pointer. The
-    // link that opens the file holds the focus, as a click leaves it, for the return checked below
     await transcriptSettled(page);
     await link.focus();
     await link.dispatchEvent("click");
@@ -763,7 +721,6 @@ try {
   const openLength = await page.evaluate(() => history.length);
   await rowOf(otherPane).click();
   await page.waitForFunction((paneId) => new URLSearchParams(location.search).get("pane") === paneId, otherPane);
-  // the panel unmounts on the render after the address moves: wait for that, bounded, then judge
   await panel.waitFor({ state: "detached", timeout: 5_000 }).catch(() => {});
   assert.equal(await panel.count(), 0, "selecting another pane closes the file open beside the first");
   assert.equal(await page.evaluate(() => history.length), openLength, "the move takes the file's entry over: no entry is pushed");
@@ -775,7 +732,6 @@ try {
   assert.equal(await page.evaluate(() => history.state?.["ovis:file-preview"]), undefined, "Back lands on no file entry");
   assert.equal(new URL(page.url()).searchParams.has("file"), false, "the first pane's address names no file either");
   console.log("PASS selecting another pane closes the panel and takes its entry over; Back returns to the pane without the file");
-  // two moves (there and back) leave entries behind the pane: the handoff below then has room for a stray second step to show
   await rowOf(otherPane).click();
   await page.waitForFunction((paneId) => new URLSearchParams(location.search).get("pane") === paneId, otherPane);
   await rowOf(pane).click();
@@ -809,7 +765,6 @@ try {
   await mediaDiff.waitFor();
   await mediaDiff.getByRole("button", { name: "Open file", exact: true }).click();
   await page.locator(".modal.file-viewer video").waitFor();
-  // both clicks in one task, before the traversal the first asks for can land
   await preview.getByRole("button", { name: "Show beside the pane", exact: true }).evaluate((button: HTMLElement) => { button.click(); button.click(); });
   await panel.locator("video").waitFor();
   await mediaDiff.waitFor({ state: "detached" });
@@ -825,8 +780,6 @@ try {
   await filesDialog.getByRole("button", { name: "Close files", exact: true }).click();
   await filesDialog.waitFor({ state: "detached" });
   console.log("PASS a wide video handoff stacks above the diff and Close file returns to the diff, also after two clicks");
-  // back over the two pane moves, so the steps after this one start from the pane's own entry,
-  // once Files, closed by its button, is off its own
   await sheetEntryLeft(page);
   await page.goBack();
   await page.waitForFunction((paneId) => new URLSearchParams(location.search).get("pane") === paneId, otherPane);
@@ -847,7 +800,6 @@ try {
   const onPane = (paneId: string) => page.waitForFunction((paneId) => new URLSearchParams(location.search).get("pane") === paneId, paneId);
   const fileEntry = () => page.evaluate(() => (history.state?.["ovis:file-preview"] as { paneId?: string } | undefined)?.paneId ?? null);
   await setReopen(true);
-  // the pane's own entry: the moves below go back to it, so the steps after them start from it again
   const entryIndex = () => page.evaluate(() => (window as unknown as { navigation: { currentEntry: { index: number } } }).navigation.currentEntry.index);
   const startIndex = await entryIndex();
   await notesLink.press("Enter");
@@ -957,7 +909,6 @@ try {
   await page.waitForFunction(() => history.state?.["ovis:file-preview"] === undefined, undefined, { timeout: 5_000 }).catch(() => {});
   assert.equal(await fileEntry(), null, "the closed pane's file is released from the entry Forward landed on");
   assert.equal(await panel.count(), 0, "the closed pane's file is not shown over another pane");
-  // back to the pane's own entry, so the steps after this one start from it again
   await goTo(paneIndex);
   await onPane(pane);
   console.log("PASS Forward onto a closed pane's file entry leaves the file behind");
@@ -1025,7 +976,6 @@ try {
   await page.goBack();
   await notes.waitFor({ state: "hidden" });
   await videoLink.waitFor();
-  // reloaded and gone back: the chat's follow to its end can take the link from under a pointer
   await videoLink.dispatchEvent("click");
   await preview.waitFor();
   await preview.getByRole("button", { name: "Close file", exact: true }).click();
@@ -1080,9 +1030,6 @@ try {
   assert.equal(previewText.fontFamily, chatText.fontFamily, "the preview's text has the chat's font");
   assert.ok(Math.abs(Number.parseFloat(previewText.headingSize ?? "") - 30 * 17 / 14) < 0.05, `its headings scale with it: ${previewText.headingSize}`);
   assert.equal(await page.locator(".file-viewer-markdown").evaluate((element) => getComputedStyle(element).maxWidth), "820px", "Default is the chat's Default lane");
-  // on a wide screen the Default lane follows the pane (71.43% of it, up to 60rem): the preview
-  // follows with it, as wide as the chat beside it, not the 820px floor. The file is a panel beside
-  // the pane at this width, so the window is wide enough for the pane to reach the 60rem cap beside it
   await page.setViewportSize({ width: 2560, height: 1080 });
   const maxWidth = await page.waitForFunction(() => {
     const preview = document.querySelector(".file-viewer-markdown");
@@ -1183,7 +1130,6 @@ try {
   });
   await reloadFollowingEnd(page);
   await page.locator(".conn-live").waitFor();
-  // the reloaded chat's follow to its end can take the link from under a pointer
   await activateInTranscript(page, page.getByRole("button", { name: "big code", exact: true }));
   const bigCode = page.getByRole("dialog", { name: "big.ts", exact: true });
   await page.waitForFunction(() => (document.querySelector("diffs-container")?.shadowRoot?.querySelectorAll("[data-line]").length ?? 0) > 0);
@@ -1264,9 +1210,6 @@ try {
 
   await page.getByRole("button", { name: "deep quotes", exact: true }).click();
   const deep = page.getByRole("dialog", { name: "deep.md", exact: true });
-  // one paragraph, in the innermost quote: the markers past the limit, then the text. At 390px the
-  // quotes' padding and rails leave it no width, as the same quote does in the chat, so the step
-  // checks that it is there and how deep, not that it can be read.
   const deepest = deep.locator(".file-viewer-markdown blockquote p", { hasText: "> deepest" });
   await deepest.waitFor({ state: "attached" });
   const quoteDepth = await deepest.evaluate((element) => {
@@ -1379,8 +1322,6 @@ try {
       await readerPage.goto(`${origin}/?read=${encodeURIComponent(join(root, "long.md"))}`);
       const readerBody = readerPage.locator(".file-reader-body");
       await readerBody.locator(".file-viewer-markdown p").first().waitFor();
-      // the whole loaded prefix drawn, not just its first progressive chunk: the keys and the wheel
-      // then act on a settled document, not one still growing by a chunk of blocks per task
       await readerBody.locator(".file-viewer-markdown .markdown-h1").nth(longPreviewHeadings - 1).waitFor();
       const geometry = await readerBody.evaluate((element) => ({ height: element.clientHeight, scrollHeight: element.scrollHeight, viewport: innerHeight }));
       assert.ok(geometry.height < geometry.viewport, `${width}px: standalone reader body is bounded by the viewport`);
@@ -1439,8 +1380,6 @@ try {
       if (request.pathname === "/api/machines") { await route.fulfill({ json: { machines: [...roster.machines, remote] } }); return; }
       if (request.pathname === "/api/machines/remote-fixture/session") { await route.fulfill({ json: { snapshot: remote.snapshot } }); return; }
       if (request.pathname.includes("/fs/")) {
-        // the sidebar asks each workspace folder for its project icon on its own PC; only the
-        // document's reads are the link's
         if (!request.pathname.endsWith("/fs/favicon")) fileRequests.push(request.pathname);
         if (request.pathname.startsWith("/api/machines/remote-fixture/")) {
           request.pathname = request.pathname.replace("/api/machines/remote-fixture/", "/api/");
@@ -1525,7 +1464,6 @@ try {
   const long = page.getByRole("dialog", { name: "long.md", exact: true });
   await long.locator(".file-viewer-markdown .markdown-h1").first().waitFor();
   assert.match(await long.locator(".file-viewer-meta .file-viewer-notice").getAttribute("title") ?? "", /^Showing the first 256 KB of /);
-  // Let the whole loaded prefix render, not just its first progressive chunk, before closing it.
   await long.locator(".file-viewer-markdown .markdown-h1").nth(longPreviewHeadings - 1).waitFor();
   // The preview can contain thousands of file-link buttons. Query its toolbar, not every
   // accessible name in the document: the check itself must not monopolize the page.
@@ -1611,7 +1549,6 @@ try {
     await contentsLink.tap();
     await contents.getByRole("button", { name: "Run scripts", exact: true }).click();
     await frame.getByText("contents ran", { exact: true }).waitFor();
-    // the sheet is still rising when the page shows: a click aimed into the frame meanwhile lands beside the anchor
     await sheetsSettled(page);
     const opened = await page.evaluate(() => history.length);
     await frame.locator("#toc").click();
@@ -1675,7 +1612,6 @@ try {
     }), query);
     const openPage = async () => {
       await mediaLink.tap();
-      // the recording is read from inside the frame, which takes the page's scripts being on
       await mediaPage.getByRole("button", { name: "Run scripts", exact: true }).click();
       const address = await recording.getAttribute("src") ?? "";
       assert.match(address, new RegExp(`^${origin}/api/fs/page-media/[A-Za-z0-9_-]{32}$`), "the recording plays from its address");
@@ -1725,14 +1661,10 @@ try {
     delete pageFileHooks.opened;
     delete pageFileHooks.closed;
   }
-  // Own document: a closed image sheet leaves forward entries, while the file-history checks
-  // above deliberately begin with no forward entry.
   const imagePage = await context.newPage();
   imagePage.setDefaultTimeout(10_000);
   const imageErrors: string[] = [];
   imagePage.on("pageerror", (error) => imageErrors.push(error.message));
-  // This case tests decode failure, not lazy loading. A late transcript/skill render can remount
-  // the image, so activate every incarnation without acting on its transient viewer button.
   await imagePage.addInitScript(() => {
     new MutationObserver(() => {
       for (const image of document.querySelectorAll<HTMLImageElement>('img.markdown-image[alt="Chat broken inline"]')) image.loading = "eager";
@@ -1778,8 +1710,6 @@ try {
   await imagePage.close();
   console.log("PASS Chat Markdown image opens by touch, Enter and Space with its filename; Back, Close and Escape restore the thumbnail");
 
-  // Own document: report closes leave forward entries, while the file checks start without them.
-  // The real App must provide and render the web panel even when no docked column fits.
   const reportPage = await context.newPage();
   reportPage.setDefaultTimeout(10_000);
   const reportErrors: string[] = [];
@@ -1871,11 +1801,6 @@ try {
   await reportPage.getByRole("button", { name: "Close page", exact: true }).click();
   await reportPage.locator(".web-panel-popup").waitFor({ state: "detached" });
   await reportPage.close();
-  // The report and a docked file share one place and one history entry. Each row records the open
-  // panel and the screen each Back reaches, beside what 6c78047f (before mobile reports) did; a row
-  // that differs says why. "previous" is the page before the app. Rows with fileOpen "popup" open
-  // the file as a popup ("file popup" when it is the only panel) and "dock" moves it beside the pane with Show beside the pane. "forward" is
-  // the screen after a Forward right on the open panel, "forwards" the screens of Forwards after the Backs.
   type Screen = "none" | "web" | "file" | "file popup" | "web+file" | "previous";
   type Moves = { open: Screen; forward?: Screen; backs: Screen[]; forwards?: Screen[] };
   const transitions: Array<Moves & { name: string; fileOpen?: "popup"; steps: Array<"web" | "file" | "dock" | "diff" | "narrow" | "wide">; base: Moves | null; why?: string }> = [

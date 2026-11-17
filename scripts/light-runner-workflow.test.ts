@@ -78,8 +78,6 @@ describe("self-hosted runners and fork pull requests", () => {
     expect(changes.steps?.find((step) => step.id === "route")?.run).toBe('bash scripts/ci-runner-route.sh >> "$GITHUB_OUTPUT"');
   });
 
-  // remote-bundles.yml's bundle-windows now runs GitHub-hosted, but a pull request on an older revision still runs it on
-  // the self-hosted pool, so the route keeps leaving it out of the busy count
   const FORMER_LIGHT = ["bundle-windows"];
   test("ci-runner-route.sh leaves out of its busy count exactly the light jobs a pull request runs, and the former ones", () => {
     const names = workflows
@@ -118,9 +116,6 @@ describe("ci.yml's hosted_only input", () => {
   const PREFIX = /^inputs\.hosted_only && '([^']+)' \|\| /;
   const labelSets = ['["self-hosted","self-hosted-ovis"]', '["self-hosted","self-hosted-ovis-main"]', '"ubuntu-24.04"'];
   const variables = (value: string | null): Value => (value === null ? {} : Object.fromEntries(["CI_MAIN_SELF_HOSTED_LABELS", "CI_LIGHT_LABELS", "CI_SELF_HOSTED_LABELS", "CI_MAC_LABELS"].map((name) => [name, value])));
-  // a grid of ci.yml's own runs and of the calls that pass no hosted_only. The prefixed expression equals the old one there by
-  // construction (`false && x || y` is `y`): this guards the prefix's precedence and the evaluator; the textual pins of the old
-  // expressions, conditions and modes are what tie each job to main
   const ownRuns: Contexts[] = [];
   for (const [workflow, event, ref, pullRequest] of [
     ["CI", "push", "refs/heads/main", null], ["CI", "push", "refs/heads/topic", null], ["CI", "workflow_dispatch", "refs/heads/main", null], ["CI", "workflow_dispatch", "refs/heads/topic", null],

@@ -1,9 +1,3 @@
-/**
- * An object's camera: `k` output px per CSS px of the recorded viewport, the content point
- * (fx, fy) in CSS px that lands on the frame point (ax, ay), and a rotation about that point
- * (rotateX then rotateY, perspective d px). Zooming about a fixed content point with `at`
- * moving is what makes pushes and pull-backs feel like one move.
- */
 export interface Cam { k: number; fx: number; fy: number; ax: number; ay: number; rx: number; ry: number; d: number }
 
 export function ease(x: number): number {

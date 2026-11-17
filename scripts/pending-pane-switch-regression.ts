@@ -39,8 +39,6 @@ try {
   await herdrRpc("pane.send_text", { pane_id: pane, text: `exec '${program}' '${script}' '${log}'\n` });
   await until(() => existsSync(log), "the owned foreground agent records input");
   const bytes = () => readFileSync(log, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line) as string).join("");
-  // An explicit observation interval, bounded and checked throughout, proves a negative:
-  // no automatic delivery is permitted after the pane's native status becomes ready.
   const noBytes = async (expected: string, label: string): Promise<void> => {
     const deadline = Date.now() + 500;
     while (Date.now() < deadline) { assert.equal(bytes(), expected, label); await Bun.sleep(25); }
@@ -362,8 +360,6 @@ try {
   await reload();
   await unproven(provenThenMoved.text, "proven on another page");
 
-  // (b) past the ten minutes the bridge keeps a held receipt. A witness tab with this browser's resume
-  // ID but storage of its own is told the receipt once the bridge kept it: only then does the clock move.
   const expired = await queue("unproven after the receipt expired");
   const resumeId = await page.evaluate(() => localStorage.getItem("ovis:pi-receipt-resume"));
   assert.ok(resumeId, "this browser has a resume ID");
@@ -385,8 +381,6 @@ try {
   await page.locator(".conn-live").waitFor({ state: "hidden" });
   await until(() => witnessTold, "the bridge kept the held receipt as the connection closed");
   await witness.close();
-  // the bridge times its receipts by the time that passed (a clock that only moves forward), not by the PC's clock:
-  // both move here, as when ten minutes really pass
   const ambient = Date.now, running = performance.now.bind(performance);
   try {
     Date.now = () => ambient() + 10 * 60 * 1000 + 1000;
