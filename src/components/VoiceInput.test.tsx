@@ -47,13 +47,11 @@ describe("MicButton", () => {
       down: (pointerType: string, pointerId?: number, mouseButton?: number) => act(() => { button().props.onPointerDown(pointer(pointerType, pointerId, mouseButton)); }),
       up: (pointerType: string, pointerId?: number, mouseButton?: number) => act(() => { button().props.onPointerUp(pointer(pointerType, pointerId, mouseButton)); }),
       click: () => act(() => { button().props.onClick({ detail: 1 }); }),
-      /** the take moved on by itself (recognition ended) between the tap's pointerdown and its click */
       becomes: (next: VoiceState) => act(() => { voice.state = next; renderer!.update(view()); }),
     };
   }
 
   // iOS WebKit lets SpeechRecognition.start() run only from a user activation, and a touch's
-  // pointerdown is none: a take started there ends in "not-allowed" (#2343)
   it("starts the browser engine from a touch tap's click, not its pointerdown", async () => {
     const button = await mic("browser");
     await button.down("touch");
@@ -145,7 +143,6 @@ describe("useDictation", () => {
     descriptors.clear();
   });
 
-  /** the composer's box after an earlier dictation, the caret right after its last word */
   async function field() {
     globals();
     const element = Object.assign(new EventTarget(), { value: "first dictation", selectionStart: 15, selectionEnd: 15 });
@@ -161,7 +158,6 @@ describe("useDictation", () => {
     await act(async () => { renderer = create(<SettingsProvider><Field /></SettingsProvider>); });
     return {
       text: () => element.value,
-      /** what the browser raises: one keystroke of an IME is compositionupdate and input together */
       raise: (...types: Array<"compositionstart" | "compositionupdate" | "input" | "compositionend">) => { for (const type of types) element.dispatchEvent(new Event(type)); },
       say: (text: string, phase: VoiceText["phase"] = "raw") => { say({ text, phase, take: 1 }); },
       wait: (ms: number) => { jest.advanceTimersByTime(ms); },
@@ -169,8 +165,6 @@ describe("useDictation", () => {
   }
 
   // HeliBoard, Gboard and the other AOSP keyboards call setComposingRegion on the word at the caret
-  // with nothing typed, and keep it until the next key; Chrome raises compositionstart and
-  // compositionupdate for it, and no input (InputMethodController::SetCompositionFromExistingText)
   it("puts a transcript in while the keyboard only marks the word at the caret as a composition (#2488)", async () => {
     const box = await field();
     box.raise("compositionstart", "compositionupdate");

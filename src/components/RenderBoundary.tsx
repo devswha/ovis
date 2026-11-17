@@ -1,15 +1,7 @@
 import { Component, type ReactNode } from "react";
 
-/**
- * Keeps a render error inside the part of the page that threw it. React unmounts the whole
- * tree on an uncaught render error, so one transcript entry the chat cannot draw would
- * otherwise leave the app blank. A change of `resetKey` (new data, another pane) tries again,
- * in the same render: a fallback committed first would let the chat keep its scroll for the
- * short fallback, not for what replaced it.
- */
 interface Props {
   resetKey: unknown;
-  /** what to draw instead; `error` is what was thrown, for a fallback that offers to copy it */
   fallback: (retry: () => void, error: unknown) => ReactNode;
   children: ReactNode;
 }

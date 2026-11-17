@@ -32,7 +32,6 @@ export interface RelayPcDetailsProps {
   readonly onOpenPc?: (pc: MyPc) => void;
   readonly onOpenSheet?: (pc: MyPc, mode: "new" | "join") => void;
   readonly onForget?: (serverId: string) => Promise<void> | void;
-  /** Check now: this PC alone, never the fleet's rotating sweep */
   readonly onCheckPc?: (serverId: string) => void;
 }
 
@@ -60,8 +59,6 @@ export function RelayPcDetails({
   const [confirmForget, setConfirmForget] = useState(false);
   const panel = useRef<HTMLElement>(null);
 
-  // The confirmation is portalled to <body>, so its trap alone leaves the dashboard behind it reachable: the dashboard
-  // goes inert while it is up, as RelayShell's sheets make it. Cancel's focus hand-back waits for this to lift.
   useLayoutEffect(() => {
     const behind = confirmForget ? panel.current?.closest<HTMLElement>(".relay-dash") ?? panel.current : null;
     if (!behind) return;

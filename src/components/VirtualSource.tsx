@@ -9,15 +9,11 @@ import { useSettings } from "../lib/settings.ts";
 import "./VirtualSource.css";
 
 export interface VirtualSourceProps {
-  /** the file's name or path: the virtualizer infers the language from it */
   name: string;
-  /** the source, normalized to "\n" line ends */
   text: string;
-  /** colored in the virtualizer's worker; false draws plain rows (the setting off, or too long, which the host says) */
   colored: boolean;
   wrap: boolean;
   theme: "dark" | "light";
-  /** a requested line, within the source: marked, and brought to the middle of the view */
   markedLine: number | null;
 }
 
@@ -25,9 +21,6 @@ type FileOptionsOf = FileOptions<undefined, undefined>;
 type Align = "center" | "start";
 interface Reveal { line: number; align: Align; passes: number }
 
-// a reveal re-reads the line's position after each render it causes: wrapped rows are estimated
-// until they mount, so the first scroll can land short, and the virtualizer's own anchor fix after
-// a re-measure can move an aligned row again. Six passes settle every measured case with room.
 const MAX_REVEAL_PASSES = 6;
 
 function VirtualizerProbe({ onInstance }: { onInstance: (instance: VirtualizerInstance | undefined) => void }) {
@@ -36,31 +29,16 @@ function VirtualizerProbe({ onInstance }: { onInstance: (instance: VirtualizerIn
   return null;
 }
 
-/**
- * A source too long for an element per line, as a window of rows from the package's virtualizer:
- * the DOM holds a few hundred rows whatever the file's length. The file object keeps its identity
- * while name and contents are unchanged, as the virtualizer renders by identity; its host fills the
- * scroll root, so it has a box before the first anchor pass; a requested line is revealed against
- * its mounted row, since positions past the measured rows are estimates; and a wrap toggle or a
- * width change, which re-measure the rows, keeps the marked line in view when it was, else the
- * top line in place.
- */
 export default function VirtualSource({ name, text, colored, wrap, theme, markedLine }: VirtualSourceProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<VirtualizedFile | null>(null);
   const containerRef = useRef<HTMLElement | null>(null);
   const virtualizerRef = useRef<VirtualizerInstance | undefined>(undefined);
   const reveal = useRef<Reveal | null>(null);
-  // the reader's wheel, finger, scrollbar and key presses so far: a size change's anchor taken before one is stale
   const readerInputs = useRef(0);
-  // what a wrap toggle or a width change keeps in place: the marked line if it was in view, else the
-  // line at the top of the view; read after each render and scroll, before the rows re-measure
   const anchor = useRef<{ width: number | null; top: number | null; markedInView: boolean }>({ width: null, top: null, markedInView: false });
   const markedRef = useRef(markedLine);
   markedRef.current = markedLine;
-  // the row estimate is the host's line-height, measured when the file mounts and again when Settings → File text size
-  // changes it: the metrics are read when the file mounts, so a new height mounts the file again (keyed on it below)
-  // the source's size follows the chosen size over the chat's, and the interface's through --fs-xs
   const { fileFontSize, chatFontSize, uiFontSize, density } = useSettings().settings;
   const [lineHeight, setLineHeight] = useState<number | null>(null);
   const lineHeightRef = useRef<number | null>(null);
@@ -81,7 +59,6 @@ export default function VirtualSource({ name, text, colored, wrap, theme, marked
     return root instanceof HTMLElement ? root : null;
   }, []);
 
-  /** Scrolls the virtualizer's root; false when the scroll was clamped and nothing moved. */
   const scrollTo = useCallback((top: number): boolean => {
     const virtualizer = virtualizerRef.current;
     const root = virtualizer?.getRoot();
@@ -98,12 +75,6 @@ export default function VirtualSource({ name, text, colored, wrap, theme, marked
     return marked === null ? null : containerRef.current?.shadowRoot?.querySelector<HTMLElement>(`[data-line="${marked}"]`) ?? null;
   }, []);
 
-  /**
-   * Reads the anchor from the virtualizer's layout of the mounted rows; a stale range (a scroll not
-   * yet rendered) keeps the last top line. A width change re-measures the rows, and the virtualizer
-   * renders and scrolls for it before our observer sees it: a reading at another width than the
-   * anchor's is the layout after the change, so the anchor from before it stands until re-anchored.
-   */
   const readAnchor = useCallback((): void => {
     const file = fileRef.current;
     const root = scrollRoot();
@@ -126,20 +97,12 @@ export default function VirtualSource({ name, text, colored, wrap, theme, marked
     return top === null ? null : { line: top, align: "start", passes: 0 };
   }, []);
 
-  /**
-   * One pass of the pending reveal: a mounted row within a pixel of its place ends it; one further
-   * off is scrolled into place, and an unmounted one to its estimated position (or, already there,
-   * waits for the render that draws its window). The render a scroll
-   * causes settles the next pass, which also catches the virtualizer moving the row again as it
-   * re-measures; a scroll that changes nothing renders nothing, so a frame later looks once more.
-   */
   const settle = useCallback((): void => {
     const pending = reveal.current;
     const file = fileRef.current;
     const root = scrollRoot();
     const shadow = containerRef.current?.shadowRoot ?? null;
     if (pending === null || file === null || root === null || shadow === null) return;
-    // the file's height arrives with its first rows: until then there is nothing to scroll, and the next render settles
     if (root.scrollHeight <= root.clientHeight + 1) return;
     const view = root.getBoundingClientRect();
     const row = shadow.querySelector<HTMLElement>(`[data-line="${pending.line}"]`);
@@ -155,14 +118,10 @@ export default function VirtualSource({ name, text, colored, wrap, theme, marked
       if (position === undefined) { reveal.current = null; return; }
       const offset = pending.align === "center" ? (view.height - position.height) / 2 : 0;
       target = (file.top ?? 0) + position.top - offset;
-      // already there with the row still unmounted: the virtualizer has not yet drawn the window
-      // for the last scroll (wrapped rows re-measuring after a remount take a few frames), and the
-      // render that draws it settles the next pass; ending here would leave the line off screen
       if (Math.abs(root.scrollTop - Math.max(0, target)) <= 1) return;
     }
     if (pending.passes >= MAX_REVEAL_PASSES) { reveal.current = null; return; }
     pending.passes += 1;
-    // a clamped scroll (the line is too near an end to sit where asked) is as settled as it gets
     if (!scrollTo(target)) { reveal.current = null; return; }
     requestAnimationFrame(() => requestAnimationFrame(settle));
   }, [scrollRoot, scrollTo]);
@@ -174,15 +133,11 @@ export default function VirtualSource({ name, text, colored, wrap, theme, marked
     containerRef.current = node;
     if (node.shadowRoot !== null) keepEmptyRows(node.shadowRoot);
     // this fires inside the virtualizer's render pass, which ends by fixing its scroll anchor: a
-    // scroll made here would be undone, and the layout read here is not yet the one shown (a
-    // marked line in the middle of the view can read as off it), so both wait for the pass to finish
     queueMicrotask(() => { readAnchor(); settle(); });
   }, [readAnchor, settle]);
 
   const onVirtualizer = useCallback((instance: VirtualizerInstance | undefined): void => { virtualizerRef.current = instance; }, []);
 
-  // the user's wheel, finger, scrollbar or keys cancel a reveal (the virtualizer's own scroll fixes
-  // must not: they come as scroll events too); every scroll moves the anchor on
   useEffect(() => {
     const root = hostRef.current?.querySelector<HTMLElement>(".virtual-source-scroll") ?? null;
     if (root === null) return;
@@ -205,10 +160,6 @@ export default function VirtualSource({ name, text, colored, wrap, theme, marked
     };
   }, [settle, readAnchor, anchoredReveal]);
 
-  // SettingsProvider writes a new --file-source-scale in a passive effect, after this component's: the height is read
-  // a frame later, and the file mounted again at it reveals the line the view showed, as a wrap toggle does. The line
-  // is taken now, before the new scale resizes the old rows (a smaller size clamps the scroll to their new end), unless
-  // the reader scrolls before the frame: then the line their scroll left at the top
   const sizedOnce = useRef(false);
   useEffect(() => {
     if (!sizedOnce.current) { sizedOnce.current = true; return; }
@@ -224,7 +175,6 @@ export default function VirtualSource({ name, text, colored, wrap, theme, marked
     return () => cancelAnimationFrame(frame);
   }, [fileFontSize, chatFontSize, uiFontSize, density, measureLine, anchoredReveal]);
 
-  // the wrap toggle re-measures the rows: the anchor is taken before the new option renders
   const lastWrap = useRef(wrap);
   if (lastWrap.current !== wrap) {
     lastWrap.current = wrap;
@@ -245,7 +195,6 @@ export default function VirtualSource({ name, text, colored, wrap, theme, marked
     overflow: wrap ? "wrap" : "scroll",
     theme: SOURCE_THEME,
     themeType: theme,
-    // plain rows never queue a highlight: the virtualizer treats a file past this as massive
     tokenizeMaxLength: colored ? VIRTUAL_HIGHLIGHT_LINES : 0,
     lineHoverHighlight: "disabled",
     enableLineSelection: false,
@@ -256,9 +205,6 @@ export default function VirtualSource({ name, text, colored, wrap, theme, marked
   const metrics = useMemo(() => lineHeight === null ? null : { ...DEFAULT_VIRTUAL_FILE_METRICS, lineHeight }, [lineHeight]);
 
   // plain rows go through the pool too, though they never reach a worker: without one the package
-  // draws a plain file by building rows for every line on the page, again on each render (each
-  // scroll), where the pool's manager builds only the window's rows. 123 500 lines took 0.5-0.7 s
-  // per render at a 5x CPU slowdown that way, past a second on a CI runner.
   return <div ref={hostRef} className="virtual-source" data-colored={colored ? "" : undefined}>
     <DiffWorkerPool>
       <Virtualizer className="virtual-source-scroll" contentClassName="virtual-source-column" config={SCROLL_CONFIG}>

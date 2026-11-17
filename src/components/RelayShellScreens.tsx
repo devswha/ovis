@@ -21,10 +21,6 @@ export interface TypedDigitsProps {
   readonly formId?: string | undefined;
 }
 
-/**
- * Adding a PC listed in the account: the six digits come from that PC's own screen, typed here, so a
- * PC someone else listed under a familiar name cannot be added with a tap. Kept in the input itself.
- */
 export function TypedDigits({ pc, onSubmit, cancel, challenge, compact = false, formId }: TypedDigitsProps) {
   const t = useT();
   const id = useId();
@@ -53,10 +49,6 @@ export function TypedDigits({ pc, onSubmit, cancel, challenge, compact = false, 
   );
 }
 
-/**
- * The id named and the id of the key that is not it, groups that differ marked, each labelled by
- * where it came from.
- */
 export function KeyIds({ mismatch, named }: { readonly mismatch: KeyMismatch; readonly named: "link" | "paired" }) {
   const t = useT();
   const expected = named === "link" ? t("ID this link names") : t("ID this phone paired with");
@@ -74,7 +66,6 @@ export function KeyIds({ mismatch, named }: { readonly mismatch: KeyMismatch; re
   );
 }
 
-/** How a PC whose Ovis does not update itself is brought up to date: the installer, or herdr's plugin. */
 export const INSTALLER_COMMAND = "curl -fsSL https://ovis.sh/install.sh | sh";
 export const PLUGIN_COMMANDS = "herdr plugin install devswha/ovis\nherdr plugin action invoke devswha.ovis.stop\nherdr plugin action invoke devswha.ovis.start";
 
@@ -103,10 +94,6 @@ export interface RelayShellCardContentProps {
   readonly setSignedOutView: (view: "sign-in" | "pair" | "saved") => void; readonly setAddingPc: (adding: boolean) => void;
 }
 
-/**
- * Asks before pairing with the PC a link names. While the sign-in is read nothing is claimed and the button is held;
- * while a press is checked, the wording it was made on stays up (`pressed`), so the question does not change under it.
- */
 function PairConfirm({ state, pc, onPair, onCancel }: { state: Extract<RelayShellProps["state"], { kind: "confirm" }>; pc: string; onPair: () => void; onCancel: () => void }) {
   const t = useT();
   const checking = state.account === "checking";
@@ -118,7 +105,6 @@ function PairConfirm({ state, pc, onPair, onCancel }: { state: Extract<RelayShel
       {said === "listed" && <p className="relay-shell-copy">{t("This device joins {name} with your account's key. The PC lists it under Settings → Devices and PCs, where it can be removed.", { name: pc })}</p>}
       {said === "own" && <p className="relay-shell-copy">{t("This device gets a key of its own for {name}. The PC lists it under Settings → Devices and PCs, where it can be removed.", { name: pc })}</p>}
       {said === "unlisted" && <p className="relay-shell-code-id"><KeyId id={state.offer.server_id} label={t("ID of the PC this link names")} /></p>}
-      {/* a device whose confirm spoke of no account is told of none */}
       {checking && said !== "own" && <p className="relay-shell-detail" role="status">{t("Checking your account…")}</p>}
       <div className="relay-shell-actions">
         <button type="button" className="btn btn-primary" disabled={checking} aria-busy={checking || undefined} onClick={onPair}>{said === "unlisted" ? t("Add and pair") : t("Pair")}</button>

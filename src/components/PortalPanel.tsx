@@ -13,17 +13,9 @@ import { Address } from "./PhonePanel.tsx";
 import { SettingsGroup, SettingsRow } from "./SettingsControls.tsx";
 
 
-/**
- * Settings → Phone & devices → Portal: a public HTTPS address for this PC through a relay the
- * user picks, run by the `portal` installed there, and who may open it. Any device that can type
- * starts and stops it; the server refuses without a token. Hidden where the server offers none.
- * `readOnly`: this browser reads it and changes nothing: a device that only watches, or a visitor
- * Portal's own sign-in let in, which the server refuses every action here.
- */
 export function PortalPanel({ readOnly = false }: { readOnly?: boolean }) {
   const t = useT();
   const { status, error, pending, busy, request } = usePortal();
-  // what was typed; until then, the relay and the sign-in this PC used last
   const [typed, setTyped] = useState<string | null>(null);
   const [edited, setEdited] = useState<AuthDraft | null>(null);
   if (!status?.supported) return null;
@@ -32,7 +24,6 @@ export function PortalPanel({ readOnly = false }: { readOnly?: boolean }) {
   const problem = draft.method === "none" ? null : authProblem(draft);
   const offered = draft.method === "none" || status.auth_methods.includes(draft.method);
   const on = status.phase !== "idle";
-  // a Portal that ended on its own is started again once by the server; Stop still ends it
   const progress = status.phase === "starting" ? t("Starting…") : status.phase === "recovering" ? t("Recovering…") : status.phase === "stopping" ? t("Stopping…") : null;
   let control;
   if (on) {
@@ -46,7 +37,6 @@ export function PortalPanel({ readOnly = false }: { readOnly?: boolean }) {
       </>
     );
   } else {
-    // Add a connection shows an idle Portal only where it can start (usable, nothing blocking it)
     control = (
       <>
         <PortalAuthChoice status={status} draft={draft} disabled={readOnly || busy} onChange={setEdited} />
@@ -71,7 +61,6 @@ export function PortalPanel({ readOnly = false }: { readOnly?: boolean }) {
       {control}
       {progress !== null && <p className="settings-item settings-hint portal-progress" role="status">{progress}</p>}
       {error !== null && <p className="settings-item settings-hint portal-error" role="alert">{error}</p>}
-      {/* the server's account of the last failure, then Portal's own words */}
       {status.phase === "error" && status.error !== null && (
         <div className="settings-item">
           <p className="settings-hint portal-error" role="alert">{status.error}</p>

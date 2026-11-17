@@ -6,7 +6,6 @@ import { useT } from "../lib/i18n.ts";
 import { PROVIDER_NAME, RECORDER_NAME, usageName } from "../lib/usage.ts";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
 
-/** Forget a list entry, not a CLI credential: Restore under Removed from Ovis, or its next followed sign-in, brings it back. */
 export function UsageRemoveAccount({ usage }: { readonly usage: ProviderUsage }) {
   const t = useT();
   const [confirm, setConfirm] = useState(false);
@@ -16,7 +15,6 @@ export function UsageRemoveAccount({ usage }: { readonly usage: ProviderUsage })
     <button ref={trigger} type="button" className="icon-button" aria-label={t("Remove {name}", { name })} title={t("Remove {name}", { name })} onClick={() => setConfirm(true)}>
       <Trash2 aria-hidden="true" />
     </button>
-    {/* an account known from another tool's record alone has no sign-in of this PC's to speak of: the record is what stays */}
     {confirm && <ConfirmDialog title={t("Remove {name}?", { name })}
       body={usage.recorded?.signed_in === false
         ? t("Remove this account from Ovis? {tool} keeps its record of it, and Restore under Removed from Ovis brings it back.", { tool: RECORDER_NAME[usage.recorded.by] })
@@ -31,7 +29,6 @@ export function UsageRemoveAccount({ usage }: { readonly usage: ProviderUsage })
   </>;
 }
 
-/** One provider's accounts removed from Ovis that this PC still lists, each with Restore. */
 export function UsageRemovedAccounts({ removed }: { readonly removed: readonly ProviderUsage[] }) {
   const t = useT();
   const [busy, setBusy] = useState(false);
@@ -41,7 +38,6 @@ export function UsageRemovedAccounts({ removed }: { readonly removed: readonly P
   const restore = async (usage: ProviderUsage): Promise<void> => {
     setBusy(true);
     setError(null);
-    // the row goes once the list is read again: the provider's section keeps the focus
     const parent = list.current?.closest<HTMLElement>("[data-section]");
     try {
       await restoreUsageAccount(usage.key);

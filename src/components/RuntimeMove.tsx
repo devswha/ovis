@@ -1,13 +1,3 @@
-/**
- * Settings → About → Terminals: the move of this PC's whole herdr session to herdr-core, all of it
- * or nothing (shared/runtime-move.ts). One row with a button, only where the server offers the move
- * (read once as About opens). Its dialog previews what every pane becomes and starts the move, then
- * follows it, reading the server every two seconds only while it is open: the wait for busy panes
- * (Cancel ends it; a shell's command can be ended there, all at once after a confirm, and an agent's
- * pane opened), the steps, and the end. A finished move switches the runtime, which the page
- * follows as Settings' own switch does; a rolled-back one names what was not put back, and Try
- * again shows the plan as it stands now.
- */
 import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
@@ -32,12 +22,9 @@ const POLL_MS = 2000;
 const said = (reason: unknown): string => reason instanceof ApiError ? reason.detail : reason instanceof Error ? reason.message : String(reason);
 
 interface Props {
-  /** the boot id of the server the page reads now (any other one after a move is the restarted server) */
   bootId: string | null;
-  /** the row stays away while the page waits for a restarted server; an open dialog stays */
   hidden: boolean;
   onServerRestarted?: () => void;
-  /** opens a pane of this PC in the app (Settings closes); absent where the dialog has no app around it */
   onOpenPane?: (machineId: string, paneId: string) => void;
 }
 
@@ -52,7 +39,6 @@ export function RuntimeMove({ bootId, hidden, onServerRestarted, onOpenPane }: P
 
   useEffect(() => {
     let live = true;
-    // an older server (404) or a refused read offers no move; read again for a restarted server
     void fetchMovePlan().then((next) => { if (live) setAnswer(next); }, () => { if (live) setAnswer(null); });
     return () => { live = false; };
   }, [bootId]);
@@ -60,11 +46,9 @@ export function RuntimeMove({ bootId, hidden, onServerRestarted, onOpenPane }: P
   if (answer === null) return null;
   const { state } = answer.status;
   const openDialog = (): void => {
-    // the bridge answering now (its boot id needs no herdr): the move's own switch restarts it
     void fetchBridgeHealth().then((health) => { from.current = health.web_ui?.boot_id ?? bootId; }, () => { from.current = bootId; });
     setOpen(true);
   };
-  // no herdr-core yet: one press installs it, then the move's plan opens as it would have
   if (!answer.available && answer.install && !open) {
     const install = async (): Promise<void> => {
       setInstalling(true);
@@ -76,7 +60,6 @@ export function RuntimeMove({ bootId, hidden, onServerRestarted, onOpenPane }: P
         if (next.available) openDialog();
       } catch (reason: unknown) {
         setInstallError(said(reason));
-        // an install that went in while its answer was lost: the row follows what the server offers now
         void fetchMovePlan().then(setAnswer, () => {});
       } finally {
         setInstalling(false);
@@ -91,7 +74,6 @@ export function RuntimeMove({ bootId, hidden, onServerRestarted, onOpenPane }: P
       </SettingsRow>
     );
   }
-  // a move that just finished is answered by a server no longer offering one: its dialog stays to follow the restart
   if (!answer.available && !open) return null;
   return (
     <>
@@ -125,9 +107,7 @@ function RuntimeMoveDialog({ answer, onAnswer, onClose, onOpenPane, follow, onSt
   const surface = useFocusTrap<HTMLDivElement>(true, { initialFocus: first });
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // a rollback the person has read: Try again shows the plan as it stands now
   const [acknowledged, setAcknowledged] = useState(false);
-  // End all and move now was pressed: the list the server offered to end, asked once more before anything is ended
   const [confirming, setConfirming] = useState<MoveStopAllOffer | null>(null);
   useSheetSwipe(surface, pending ? null : onClose);
   usePhoneSheetBack(() => { if (pending) return false; onClose(); });
@@ -146,7 +126,6 @@ function RuntimeMoveDialog({ answer, onAnswer, onClose, onOpenPane, follow, onSt
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, [onClose, pending]);
-  // read again all the while the dialog is open: another browser may start or cancel the move
   useEffect(() => {
     let live = true;
     const timer = setInterval(() => {
@@ -167,7 +146,6 @@ function RuntimeMoveDialog({ answer, onAnswer, onClose, onOpenPane, follow, onSt
   };
   const start = (revision: string) => act(async () => {
     try { await startMove(revision); }
-    // a refused start (the plan moved on): what the server shows now, under the refusal's words
     catch (reason: unknown) { onAnswer(await fetchMovePlan()); throw reason; }
     setAcknowledged(false);
     onStarted();
@@ -176,7 +154,6 @@ function RuntimeMoveDialog({ answer, onAnswer, onClose, onOpenPane, follow, onSt
   const cancel = () => act(async () => { await cancelMove(); onAnswer(await fetchMovePlan()); });
   const again = () => act(async () => { onAnswer(await fetchMovePlan()); setAcknowledged(true); });
   const stopping = status.state === "waiting" ? status.stopping ?? [] : [];
-  // the command each row shows: the server ends none that runs in its place
   const shown = (pane: MovePane): string | null => pane.verdict.kind === "busy" ? pane.verdict.command : null;
   const stop = (pane: MovePane, force: boolean) => act(async () => { await stopMovePane(pane.pane_id, shown(pane), force); onAnswer(await fetchMovePlan()); });
   const askStopAll = () => act(async () => {
@@ -184,7 +161,6 @@ function RuntimeMoveDialog({ answer, onAnswer, onClose, onOpenPane, follow, onSt
     if (offer.panes.length > 0) setConfirming(offer);
     else onAnswer(await fetchMovePlan());
   });
-  // the server ends exactly the list it offered, or refuses when the panes changed: then the person asks again
   const stopAll = (offer: MoveStopAllOffer) => act(async () => {
     setConfirming(null);
     try { await confirmStopAll(offer.token); } finally { onAnswer(await fetchMovePlan()); }

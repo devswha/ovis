@@ -7,7 +7,6 @@ import { LOCAL_MACHINE } from "../../shared/machines.ts";
 import type { MovePane, MovePlanResponse, MoveStatus } from "../../shared/runtime-move.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 
-// the test renderer has no DOM to portal into: the dialog renders in place
 await mock.module("react-dom", () => ({ ...ReactDom, createPortal: (node: ReactNode) => node }));
 const { RuntimeMove } = await import("./RuntimeMove.tsx");
 
@@ -64,7 +63,6 @@ const button = (label: string) => { const found = buttons(label); expect(found).
 const press = async (node: ReactTestInstance) => { await act(async () => { node.props.onClick(); }); };
 const posts = () => requests.filter((request) => request.method === "POST");
 
-// Settings → About on a herdr PC without herdr-core: the move is offered with an install of it.
 describe("the move to herdr-core where herdr-core is missing", () => {
   beforeEach(() => {
     const plan: MovePlanResponse = { available: false, reason: "no_herdr_core", install: { version: "0.1.17" }, status: { state: "idle" } };
@@ -85,8 +83,6 @@ describe("the move to herdr-core where herdr-core is missing", () => {
   });
 });
 
-// The dialog while the move waits for busy panes: each shell running a command can be ended there,
-// an agent only opened.
 describe("ending busy panes from the move's wait", () => {
   const panes: MovePane[] = [
     { pane_id: "p1", cwd: "/demo", name: null, verdict: { kind: "busy", reason: "command_running", agent: null, command: "top" } },
@@ -126,7 +122,6 @@ describe("ending busy panes from the move's wait", () => {
     expect(posts()).toHaveLength(1);
   });
 
-  /** the server's offers for End all: a new token each time, and how it answers a confirm */
   const offerStopAll = (confirm: () => Response) => {
     let offers = 0;
     answers["/api/runtime/move/stop-all"] = (body) => (body as { token?: string }).token === undefined
@@ -140,7 +135,6 @@ describe("ending busy panes from the move's wait", () => {
     await press(button("End all and move now"));
     expect(posts()).toEqual([{ method: "POST", path: "/api/runtime/move/stop-all", body: {} }]);
     expect(text(renderer!.root)).toContain("Ends 2 running commands. Unsaved work may be lost.");
-    // the confirm names each pane the token covers (its command and folder), not what the last poll showed
     const covered = renderer!.root.find((node) => node.props.className === "runtime-move-confirm-list").findAll((node) => node.type === "li").map(text);
     expect(covered).toEqual(["top · /demo", "python3 · /demo/site"]);
 

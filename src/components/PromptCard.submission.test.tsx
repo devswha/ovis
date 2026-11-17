@@ -58,7 +58,6 @@ describe("a pending answer sends once, keeps its place, and offers Retry on fail
       expect(status().props.className).toBe("prompt-card-status is-empty");
       expect(options().map((opt) => opt.props.disabled)).toEqual([false, false, false]);
 
-      // 10 rapid clicks in the same turn send 1 request and disable every option in place
       const first = options()[0]!;
       await act(async () => {
         for (let i = 0; i < 10; i++) first.props.onClick({ nativeEvent: {}, currentTarget: {} });
@@ -68,7 +67,6 @@ describe("a pending answer sends once, keeps its place, and offers Retry on fail
       expect(status().props.className).toBe("prompt-card-status");
       expect(status().children).toContain("Sending your answer…");
 
-      // A forced 500 shows a failure state with Retry in place, and clicking Retry sends the same choice again
       await act(async () => { settle!(new ApiError("herdr said no", 500, "internal_error", "internal_error")); });
       expect(options().map((opt) => opt.props.disabled)).toEqual([false, false, false]);
       const retry = renderer!.root.find((node) => node.type === "button" && typeof node.props.className === "string" && node.props.className.includes("prompt-card-retry"));
@@ -156,7 +154,6 @@ describe("a pending answer sends once, keeps its place, and offers Retry on fail
   });
 });
 
-/** A card for `prompt` whose answers fail with a 500 until `settle` is called with nothing. */
 async function withFailingCard(prompt: InteractivePrompt, run: (card: { sent: PromptAnswer[]; root: () => ReactTestRenderer["root"]; settle: (error?: unknown) => Promise<void>; update: (next: Partial<PromptCardProps>) => Promise<void> }) => Promise<void>, props: Partial<PromptCardProps> = {}): Promise<void> {
   const sent: PromptAnswer[] = [];
   let pending: ((error?: unknown) => void) | null = null;
@@ -262,15 +259,12 @@ describe("a device that may only watch sees the card's answers as unavailable an
       const controls = root().findAll((node) => (node.type === "button" || node.type === "input") && node.props.className !== "prompt-card-fold");
       expect(controls.length).toBeGreaterThan(1);
       expect(controls.filter((node) => node.props.disabled !== true).map((node) => node.props.className)).toEqual([]);
-      // the reason: on hover, and read with each answer (aria-describedby names the card's own line that says it)
       const reason = root().find((node) => node.type === "p" && node.children.includes(REASON));
       expect(reason.props.id).toBeTruthy();
       const answers = controls.filter((node) => node.type === "button");
       expect(answers.map((node) => node.props.title)).toEqual(answers.map(() => REASON));
       expect(answers.filter((node) => !String(node.props["aria-describedby"]).split(" ").includes(reason.props.id))).toEqual([]);
-      // folding the card is the device's own and stays
       expect(root().find((node) => node.props.className === "prompt-card-fold").props.disabled).toBe(false);
-      // a press that reaches a button anyway sends nothing
       for (const button of answers) await act(async () => { button.props.onClick(click); });
       expect(sent).toEqual([]);
     }, { watching: true });

@@ -15,7 +15,6 @@ describe("the alerts notice", () => {
   const render = () => renderToStaticMarkup(createElement(SettingsProvider, { children: createElement(PushHealthNotice, { onRepair: () => undefined, onOpen: () => undefined }) }));
 
   beforeEach(async () => {
-    // alerts wanted and allowed, and the browser holds no subscription
     const pushManager = { getSubscription: async () => null };
     Object.defineProperty(globalThis.navigator, "serviceWorker", { configurable: true, value: { getRegistration: async () => ({ pushManager }) } });
     Object.defineProperty(navigator, "languages", { configurable: true, value: ["en"] });
@@ -38,12 +37,10 @@ describe("the alerts notice", () => {
     expect(render()).toContain("aria-label=\"Dismiss\"");
     await runPushAction("repair", async () => ({ result: "refused" }), () => true);
     expect(render()).toContain("This device would not make a push subscription.");
-    // in Brave, the setting that turns its push service on
     Object.defineProperty(globalThis.navigator, "brave", { configurable: true, value: {} });
     expect(render()).toContain("Turn on Use Google services for push messaging in Brave&#x27;s privacy settings");
     await runPushAction("repair", async () => ({ result: "no-worker" }), () => true);
     expect(render()).toContain("Reload the page, then try again.");
-    // the repair stays on offer: a reload or a changed setting may let it through
     expect(render()).toContain("Turn alerts on again");
     dismissPushNotice();
     expect(render()).toBe("");
@@ -64,7 +61,6 @@ describe("the alerts notice", () => {
     Object.defineProperty(navigator, "serviceWorker", { configurable: true, value: {
       ready: new Promise(() => undefined), getRegistration: async () => undefined,
     } });
-    // Fire the actual worker-ready deadline as an event, without elapsed-time waits.
     const timeout = globalThis.setTimeout;
     const timer = spyOn(globalThis, "setTimeout").mockImplementation(Object.assign((callback: (...args: unknown[]) => void, milliseconds?: number, ...args: unknown[]) => {
       if (milliseconds === 10_000) {

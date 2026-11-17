@@ -55,7 +55,6 @@ describe("signing in", () => {
     const start = await beginSignIn("github", { store, service: SERVICE, redirectUri: REDIRECT });
     const forged = await finishSignIn({ code: "x", state: "someone-else" }, { store, fetch: service.fetch }).catch((error: unknown) => error);
     expect(forged).toBeInstanceOf(SignInError);
-    // the real return still finishes after the forged one
     const real = signInReturn(new URL((await service.fetch(start)).headers.get("location") ?? "").hash);
     expect((await finishSignIn(real ?? { error: "x", state: "" }, { store, fetch: service.fetch })).account).toBe("acct_1");
   });
@@ -99,7 +98,6 @@ describe("signing in", () => {
     now = session.expires_at;
     await client.listPcs();
     expect((await store.get("session"))?.access_token).not.toBe(session.access_token);
-    // the spent refresh token comes back, as a leaked copy would: the service ends the whole sign-in
     const refreshed = await store.get("session");
     if (refreshed === undefined) throw new Error("the refresh kept no session");
     await store.set("session", { ...refreshed, refresh_token: session.refresh_token, expires_at: 0 });
@@ -125,20 +123,16 @@ describe("a sign-in shared by tabs", () => {
     const service = serviceWithSignIn();
     let now = Date.now();
     const { store, session } = await signIn(service, memoryAccountStore(), () => now);
-    // as a build from before sign-ins had an id stored it
     const { sign_in_id: _later, ...old } = session;
     await store.set("session", old);
     const account = new AccountService({ store, fetch: service.fetch, now: () => now, lock: memoryLock() });
     const read = await account.session();
     expect(read?.sign_in_id).toBeDefined();
     expect((await store.get("session"))?.sign_in_id).toBe(read!.sign_in_id);
-    // two readers agree on the id
     expect((await account.session())?.sign_in_id).toBe(read!.sign_in_id);
-    // the access token runs out: any call refreshes it, which changes the refresh token
     now = session.expires_at;
     await account.listPcs();
     expect((await store.get("session"))?.refresh_token).not.toBe(read!.refresh_token);
-    // a call bound to the copy read before the refresh still acts: it is the same sign-in
     expect(await account.forSignIn(read!).listPcs()).toEqual([]);
   });
 
@@ -151,7 +145,6 @@ describe("a sign-in shared by tabs", () => {
     now = session.expires_at;
     const lock = memoryLock();
     const other = new AccountService({ store: inner, fetch: service.fetch, now: () => now, lock });
-    // a store that would let another tab name and refresh the session after any plain read of it
     let reads = 0;
     const store: typeof inner = { ...inner, get: (async (name: Parameters<typeof inner.get>[0]) => {
       const value = await inner.get(name);
@@ -160,11 +153,9 @@ describe("a sign-in shared by tabs", () => {
     }) as typeof inner.get };
     const tab = new AccountService({ store, fetch: service.fetch, now: () => now, lock });
     const read = await tab.session();
-    // no plain read came first, and what this tab holds is the session as the store has it, id and all
     expect(reads).toBe(0);
     expect(read!.sign_in_id).toBeDefined();
     expect(read).toEqual((await inner.get("session"))!);
-    // after the other tab's refresh, this tab's copy is still that sign-in: its sign-out ends the refreshed one
     await other.listPcs();
     expect((await inner.get("session"))?.refresh_token).not.toBe(read!.refresh_token);
     await tab.forSignIn(read!).signOut();
@@ -189,7 +180,6 @@ describe("a sign-in shared by tabs", () => {
     now = session.expires_at;
     await new AccountService({ store, fetch: service.fetch, now: () => now }).signOut();
     expect(await store.get("session")).toBeUndefined();
-    // a copy of the refresh token kept elsewhere no longer works
     const reuse = await service.fetch(new URL("/v1/token", SERVICE), { method: "POST", body: JSON.stringify({ grant_type: "refresh_token", refresh_token: session.refresh_token }) });
     expect(reuse.status).toBe(400);
   });
@@ -370,7 +360,6 @@ describe("signing in on a PC's own page, with the Ovis link page", () => {
     const { fake, options } = setup();
     const started = await startDeviceSignIn({ ...options, requester: { label: "Desk", os: "linux" } });
     expect(fake.linkRequester(started.userCode)).toEqual({ label: "Desk", os: "linux" });
-    // GitHub's device start takes only the challenge: a name sent there would be refused
     expect((await startDeviceSignIn({ ...options, provider: "github", requester: { label: "Desk", os: "linux" } })).userCode).not.toBe("");
   });
 
@@ -471,7 +460,6 @@ describe("which account service a page signs in with", () => {
     expect(pcAccountServiceOf(pc("https://account.example"), false)).toBeNull();
     expect(pcAccountServiceOf(pc("http://account.example"), true)).toBeNull();
     expect(pcAccountServiceOf(pc(null), true)).toBeNull();
-    // the hosted shell's meta is not the PC's: that page signs in with its own redirect
     expect(pcAccountServiceOf(named("ovis-account-service")("https://account.example"), true)).toBeNull();
   });
 
@@ -507,7 +495,6 @@ describe("which account service a page signs in with", () => {
     expect(desktopProviders(bridge())).toEqual(["github"]);
     expect(desktopProviders(bridge(["apple", "github"]))).toEqual(["github", "apple"]);
   });
-
 
 });
 
@@ -556,7 +543,6 @@ describe("My PCs", () => {
     const id = deriveServerId(real);
     const listed = (key: Uint8Array) => myPcs([{ server_id: id, label: "nuc", added_at: recent, last_seen_at: recent, public_key: hex(key), relay: "wss://relay.example" }], [], { now })[0];
     expect(listed(real)?.join?.relay).toBe("wss://relay.example");
-    // a directory that hands out another key for this id gets no way in
     expect(listed(other)?.join).toBeUndefined();
   });
 
