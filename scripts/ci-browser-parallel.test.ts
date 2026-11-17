@@ -35,7 +35,8 @@ function standIn(record: string): number | null {
   const match = /^(\d+) (.+)\n$/.exec(record);
   if (!match) throw new Error(`not a stand-in record: ${JSON.stringify(record)}`);
   const pid = Number(match[1]);
-  return processStart(pid) === match[2] && alive(pid) && commandLine(pid)?.join(" ") === STAND_IN.join(" ") ? pid : null;
+  // the start last: it is what tells this process from a later one, so it is read nearest the signal
+  return alive(pid) && commandLine(pid)?.join(" ") === STAND_IN.join(" ") && processStart(pid) === match[2] ? pid : null;
 }
 
 /** Ends the stand-in a record names, only when standIn proves it is still that process. */
@@ -98,7 +99,7 @@ async function runStub(end: string, timeoutSeconds: string) {
     try {
       for (const file of [leftover, stubborn]) {
         // a record that cannot be read proves nothing: it is left alone, and the error the run raised for it stands
-        try { if (existsSync(file)) stopStandIn(readFileSync(file, "utf8")); } catch { continue; }
+        try { if (existsSync(file)) stopStandIn(readFileSync(file, "utf8")); } catch { /* unproven: left alone */ }
       }
     } finally {
       rmSync(dir, { recursive: true, force: true });
