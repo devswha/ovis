@@ -259,6 +259,8 @@ describe("the tools typecheck", () => {
     // one glob per root: Bun.Glob reads no slash inside braces; the untracked probes are not checked
     const sources = ROOTS.flatMap((root) => files(`${root}/**/*.{ts,tsx}`)).filter((file) => !/^scripts\/[^/]+\.tmp\.ts$/.test(file));
     expect(sources.length).toBeGreaterThan(400);
+    fail(sources.filter((file) => file.endsWith(".tsx") && sources.includes(file.replace(/\.tsx$/, ".ts"))),
+      "Rename one of each pair: beside a .ts of the same name, tsc's folder include leaves the .tsx unchecked.");
     // the directive in a line comment of any number of slashes, or a block comment
     fail(sources.filter((file) => /^\s*(?:\/\/+|\/\*+)\s*@ts-nocheck\b/m.test(read(file))),
       "Fix the type errors in these files instead of `// @ts-nocheck`: a file under the tools typecheck's roots is checked, or listed in its exclude list until it is fixed.");

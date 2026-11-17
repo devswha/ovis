@@ -297,14 +297,14 @@ jobs:
           node: 'true'
           cache: ${{ inputs.hosted_only && 'none' || 'save' }}
       - run: bun install --frozen-lockfile
-      # The base is the first parent of the commit checked out: for a pull request its merge commit's,
-      # which is main's head now (the event's base.sha stays where the pull request was opened); for a
-      # push to main, the commit before it. The shallow checkout names that parent but does not hold
-      # it, so it is fetched, and a fetch that fails fails the job: a ratchet never passes without it.
+      # The base: for a push to main the commit before the whole push (EVENT_BASE); for a pull request
+      # its merge commit's first parent, which is main's head now (the event's base.sha stays where the
+      # pull request was opened). The shallow checkout does not hold it, so it is fetched, and a fetch
+      # that fails fails the job: a ratchet never passes without its base.
       - name: Fetch the base the ratchets compare with
         run: |
           if [ -z "$EVENT_BASE" ]; then echo "No base in this run: the ratchets compare with nothing."; exit 0; fi
-          base=$(git cat-file -p HEAD | awk '/^parent /{print $2; exit}')
+          if [ "$GITHUB_EVENT_NAME" = push ]; then base=$EVENT_BASE; else base=$(git cat-file -p HEAD | awk '/^parent /{print $2; exit}'); fi
           git fetch --no-tags --depth=1 origin "$base"
           echo "RATCHET_BASE=$base" >> "$GITHUB_ENV"
       - run: bun run check fast
