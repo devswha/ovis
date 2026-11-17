@@ -9,8 +9,6 @@ import { handleMachineRequest } from "./machine-api.ts";
 import { MachineManager } from "./machines.ts";
 import type { PushService } from "./push.ts";
 
-// GET /api/machines/ssh-candidates on a live server: the owner's window gets the list, an open LAN window and a
-// watching device do not (server/dispatch.ts, server/machine-api.ts)
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0)) close(); });
 
@@ -21,7 +19,6 @@ function sshDir(files: Record<string, string>): string {
   return dir;
 }
 
-/** `tailscale status --json` with this PC as user 1 and the named peers online, of the same login */
 const status = (peers: string[]): string => JSON.stringify({
   BackendState: "Running",
   Self: { DNSName: "self.tail.ts.net.", UserID: 1 },

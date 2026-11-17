@@ -6,27 +6,17 @@ import type { SessionHistoryAgent } from "../shared/session-history.ts";
 import { isSessionHistoryAgent, listSessions, type SessionHistoryOptions } from "./session-history.ts";
 
 export const RUNTIME_MOVE_PATH = "/api/runtime/move";
-/** the move's four routes: the plan and its start or cancel, a pane's stop, stop all, and the herdr-core install */
 export const RUNTIME_MOVE_ROUTE = /^\/api\/runtime\/move(?:\/(?:stop|stop-all|install))?$/;
 
-/**
- * The command each agent ends itself with, as its own built-in command list names it
- * (server/skills/<agent>.ts). An agent not listed is ended by the person (`needs_you`).
- */
 export const EXIT_COMMANDS: Readonly<Record<string, string>> = {
   claude: "/exit", codex: "/quit", opencode: "/exit", pi: "/quit", omo: "/quit", omp: "/exit",
   gjc: "/exit", cmd: "/quit", hermes: "/quit", grok: "/exit", agy: "/exit",
 };
 
-/** What the plan reads of this PC beside herdr's snapshot; each is answered fresh. */
 export interface MoveFacts {
-  /** the session's resume argv when this PC's stores list it in the folder, else null */
   findResume: (agent: SessionHistoryAgent, sessionId: string, cwd: string) => Promise<string[] | null>;
-  /** what runs in the pane's terminal; undefined when herdr could not tell */
   processInfo: (paneId: string) => Promise<PaneProcessInfo | undefined>;
-  /** true: the agent's input line reads empty; false: something is typed there; null: Ovis cannot read it for this agent */
   inputEmpty: (paneId: string, agent: string) => Promise<boolean | null>;
-  /** a message sent through Ovis still waits for the pane */
   holdsPending: (paneId: string) => boolean;
 }
 
@@ -56,7 +46,6 @@ function build(panes: readonly LayoutPane[], rect: LayoutPane["rect"], splits: R
   return first && second ? { split: direction, ratio: split.ratio, first, second } : null;
 }
 
-/** The tab's split tree; panes side by side, in herdr's order, when its splits do not describe one. */
 export function tabTree(layout: PaneLayoutSnapshot | undefined, paneIds: readonly string[]): MoveNode {
   const splits = new Map<string, Split>();
   for (const split of layout?.splits ?? []) {
@@ -70,16 +59,11 @@ export function tabTree(layout: PaneLayoutSnapshot | undefined, paneIds: readonl
   return rest.reduce<MoveNode>((tree, pane, index) => ({ split: "right", ratio: (index + 1) / (index + 2), first: tree, second: { pane } }), { pane: first! });
 }
 
-/**
- * The pane's folder, or null when it cannot be entered any more (herdr names a deleted one
- * "<path> (deleted)"): a shell started there fails, and with it the whole move; null starts it home.
- */
 function enterable(cwd: string | null | undefined): string | null {
   if (!cwd) return null;
   try { return statSync(cwd).isDirectory() ? cwd : null; } catch { return null; }
 }
 
-/** The command a shell runs in front, or null when the shell itself is in front; unknown counts as running. */
 function commandInFront(info: PaneProcessInfo | undefined): string | null {
   if (!info || info.shell_pid == null || info.foreground_process_group_id == null) return "?";
   if (info.foreground_process_group_id === info.shell_pid) return null;
@@ -92,7 +76,6 @@ async function verdictOf(pane: PaneInfo, facts: MoveFacts, claimed: Set<string>,
   if (!agent) {
     const command = commandInFront(await facts.processInfo(pane.pane_id));
     if (command !== null) return { kind: "busy", reason: "command_running", agent: null, command };
-    // an agent the person ended here still names its conversation: it reopens, and nothing is typed
     const ended = pane.agent_session;
     if (ended && ended.kind === "id" && isSessionHistoryAgent(ended.agent) && pane.cwd) {
       const key = `${ended.agent}\0${ended.value}`;
@@ -104,31 +87,23 @@ async function verdictOf(pane: PaneInfo, facts: MoveFacts, claimed: Set<string>,
     return { kind: "shell" };
   }
   if (pane.agent_status === "blocked") return { kind: "busy", reason: "agent_waiting", agent, command: null };
-  // unknown is not idle: only an agent herdr says is done with its turn is ended
   if (pane.agent_status !== "idle" && pane.agent_status !== "done") return { kind: "busy", reason: "agent_working", agent, command: null };
   if (facts.holdsPending(pane.pane_id)) return { kind: "busy", reason: "agent_working", agent, command: null };
   if (!Object.hasOwn(EXIT_COMMANDS, agent)) return { kind: "needs_you", agent };
-  // the exit is sent as a message: only into an input line read empty, or text typed there would go with it
   if (await facts.inputEmpty(pane.pane_id, agent) !== true) return { kind: "needs_you", agent };
   const session = pane.agent_session;
   if (session && session.kind === "id" && session.agent === agent && isSessionHistoryAgent(agent) && pane.cwd) {
     const key = `${agent}\0${session.value}`;
     const argv = claimed.has(key) ? null : await facts.findResume(agent, session.value, pane.cwd);
-    // one conversation reopens in one pane: a second pane naming it starts new
     if (argv) { claimed.add(key); return { kind: "resume", agent, session_id: session.value, argv, ended: false }; }
   }
   return { kind: "fresh", agent };
 }
 
-/**
- * What a move of herdr's whole session to herdr-core does with each pane, read from one snapshot.
- * Nothing here stops or starts anything; a plan with any `busy` or `needs_you` pane is not `ready`.
- */
 export async function planMove(snapshot: SessionSnapshot, facts: MoveFacts): Promise<MovePlan> {
   const claimed = new Set<string>();
   const running = new Set(snapshot.panes.filter((pane) => pane.agent && pane.agent_session).map((pane) => `${pane.agent_session!.agent}\0${pane.agent_session!.value}`));
   const panes: MovePane[] = [];
-  // one at a time: a conversation is claimed by the first pane, in herdr's order
   for (const pane of snapshot.panes) panes.push({ pane_id: pane.pane_id, cwd: enterable(pane.cwd), name: pane.label ?? null, verdict: await verdictOf(pane, facts, claimed, running) });
   const workspaces: MoveWorkspace[] = snapshot.workspaces.map((workspace) => ({
     workspace_id: workspace.workspace_id,
@@ -147,19 +122,14 @@ export async function planMove(snapshot: SessionSnapshot, facts: MoveFacts): Pro
   return { ...shown, revision: Bun.hash(JSON.stringify(shown)).toString(36) };
 }
 
-/** Why this server offers no move to herdr-core, or null when it does. */
 export function moveUnavailable(serving: RuntimeName, facts: HerdrRuntimeFacts | undefined, platform: NodeJS.Platform = process.platform): MoveUnavailable | null {
   if (serving !== "herdr") return "not_herdr";
-  // Windows switches to herdr-core in Settings, but the move ends panes through Unix process groups
-  // and its lock refuses Windows (runtime-move-lock.ts): as locked there as before Settings switched
   if (!facts || facts.locked !== null || platform === "win32") return "runtime_locked";
   if (facts.switch_to !== "herdr-core") return "no_herdr_core";
-  // the Herdr app arranges a core it runs in a document of its own, which Ovis never writes
   if (facts.app_installed) return "herdr_app";
   return null;
 }
 
-/** The session's resume argv when this PC's stores list it in the folder, as Earlier sessions lists it. */
 export function storeResume(stores: SessionHistoryOptions): MoveFacts["findResume"] {
   return async (agent, sessionId, cwd) => {
     try {
