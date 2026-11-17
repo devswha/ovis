@@ -83,7 +83,8 @@ export interface SignersState {
   readonly signers: { readonly [key: string]: SignerRow };
   /**
    * Only on a member that stopped for a replay (`behind`): the entry at which it stopped, by its
-   * place and its hash. While it is set the member takes no entry, judges none and places none to
+   * place and its hash; or, on a state that a higher level wrote and a lower build read, its footing
+   * (readSignersState). While it is set the member takes no entry, judges none and places none to
    * sign, and its readers answer for nobody (signerPower is null, isBehind is true): an answer ends
    * for it with `needs_replay` again, whatever it shows. The stop is saved and read again with the
    * state, and every replay is told the saved state (replayEntries): a stopped member stays stopped
@@ -115,8 +116,9 @@ export interface ListMember {
  * that is behind cannot hear the proof, so it cannot tell which of the two the entry is: it stops
  * there (`needs_replay`). So no member goes on past an entry at which another may have let a key
  * in. A proof is that of the member's level, of the kinds its build reads: so a build acts for a
- * member only with a state of a level it reads. A saved state of a higher level it hands to a
- * replay, which gives the state of the build's level, or no member.
+ * member only with a state of a level it reads. readSignersState reads a saved state of a higher
+ * level stopped at its footing, so that no build acts on it with its own proofs; a replay by the
+ * build's level, told that state, gives a state of that level, or no member.
  */
 export type KeyProof = (entry: HeldEntry, state: SignersState) => { readonly key: string; readonly power: SignerPower } | null;
 
@@ -660,7 +662,9 @@ export async function shownEntries(member: ListMember, answer: ShownAnswer, proo
  * for a member that is behind, at an entry it cannot place (`needs_replay`).
  *
  * Every replay is told the member's saved state, as `saved`: the state its store holds, read by
- * readSignersState, or null for a first replay of a member that has none. It is not optional, so
+ * readSignersState at the replay's level, or null for a first replay of a member that has none. A
+ * saved state that a higher level wrote is so stopped at its footing, and a replay by this level
+ * takes the member on only where it reaches that footing. It is not optional, so
  * that no caller forgets it. The replay never gives a shorter history than the saved member's, at
  * any level, stopped or not: it reaches the saved footing, taking the very entry there, and for a
  * stopped member the place before its stop. Where it would end before that, at an entry that
@@ -694,7 +698,7 @@ export async function replayEntries(entries: readonly string[], level: number, o
   const [text, ...rest] = texts;
   const { given, proof, saved: told } = options;
   mustBeLevel(level);
-  const saved = toldSaved(told);
+  const saved = toldSaved(told, level);
   /** The saved member's stop: it stays unless the replay takes that very entry. */
   const stop = saved?.needs_replay ?? null;
   /** The saved member's history, which the replay reaches or makes no member: the place of its footing, and for a stopped member the place before its stop. */
@@ -775,17 +779,17 @@ export function signingPlace(member: ListMember, shown: ListPlace): { readonly l
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** A stop as a saved state holds it, or as a replay is told it: the place and the hash of an entry past entry 0, each read once. Null for what is none. */
+/** A stop as a saved state holds it: the place and the hash of an entry, each read once. Null for what is none. */
 function readStop(value: unknown): ListPlace | null {
   if (!isRecord(value)) return null;
   const { seq, hash } = value;
-  return isCount(seq) && seq > 0 && typeof hash === "string" && isListHash(hash) ? Object.freeze({ seq, hash }) : null;
+  return isCount(seq) && typeof hash === "string" && isListHash(hash) ? Object.freeze({ seq, hash }) : null;
 }
 
-/** What a replay is told of the saved member: null for a first replay of a member that has none, or the saved state, read as readSignersState reads one. Anything else, also nothing at all, is the caller's mistake. */
-function toldSaved(told: SignersState | null): SignersState | null {
+/** What a replay is told of the saved member: null for a first replay of a member that has none, or the saved state, read as readSignersState reads one at the replay's level. Anything else, also nothing at all, is the caller's mistake. */
+function toldSaved(told: SignersState | null, level: number): SignersState | null {
   if (told === null) return null;
-  const saved = readSignersState(told);
+  const saved = readSignersState(told, level);
   if (saved === null) throw new RangeError("A replay is told the member's saved state, or null for a first replay of a member that has none");
   return saved;
 }
@@ -822,25 +826,34 @@ function madeByItsSigner(rows: SignersState["signers"], row: SignerRow, level: n
 }
 
 /**
- * A saved state, read again: the state when the value has its form and agrees with itself, null
- * for anything else. The value must come from the member's own store and is as trusted as its
- * private key: a caller that loads it from anywhere else must replay the entries instead. It is
- * the reader of a value of no known type: each field is read once, and the state it gives is
- * frozen. It takes every state that a function of this file gives from entries, or from a state
- * that it takes and an entry that holds on that state's list; and a level that it takes, those
- * functions take.
+ * A saved state, read again by a build of this level: the state when the value has its form and
+ * agrees with itself, null for anything else. The value must come from the member's own store and
+ * is as trusted as its private key: a caller that loads it from anywhere else must replay the
+ * entries instead. It is the reader of a value of no known type: each field is read once, and the
+ * state it gives is frozen. It takes every state that a function of this file gives from entries,
+ * or from a state that it takes and an entry that holds on that state's list; and a level that it
+ * takes, those functions take.
+ *
+ * A state that a higher level wrote is read back stopped: this build cannot judge by that level's
+ * rules, nor run its proofs. Its stop is at its footing (`needs_replay` is the footing's place and
+ * hash), unless it is stopped already, and then it keeps its stop. So this build takes nothing,
+ * judges nothing, places nothing to sign and answers for no key through it, until a replay told
+ * this state takes the entry at that place: by this build's level where it can reach it, which
+ * gives a state of this level, or by the level that wrote it. A level that is no level is the
+ * caller's mistake: a RangeError.
  */
-export function readSignersState(value: unknown): SignersState | null {
+export function readSignersState(value: unknown, level: number): SignersState | null {
+  mustBeLevel(level);
   if (!isRecord(value)) return null;
-  const { level, list, footing, needs, behind, signers, needs_replay } = value;
-  if (!isLevel(level) || !isCount(needs) || needs < 1) return null;
+  const { level: made, list, footing, needs, behind, signers, needs_replay } = value;
+  if (!isLevel(made) || !isCount(needs) || needs < 1) return null;
   if (typeof list !== "string" || !isListHash(list)) return null;
   if (!isRecord(footing)) return null;
   const { seq, hash } = footing;
   if (!isCount(seq) || typeof hash !== "string" || !isListHash(hash)) return null;
   if (seq === 0 && hash !== list) return null;
   if (behind !== null && !(isCount(behind) && behind <= seq)) return null;
-  if ((behind !== null) !== (needs > level)) return null;
+  if ((behind !== null) !== (needs > made)) return null;
   if (!isRecord(signers)) return null;
   const rows: { [key: string]: SignerRow } = {};
   for (const key of Object.getOwnPropertyNames(signers)) {
@@ -851,10 +864,15 @@ export function readSignersState(value: unknown): SignersState | null {
   const all = Object.values(rows);
   if (all.filter((row) => row.seq === 0).length !== 1) return null;
   // Each row's `by` is what SignerRow says it is (madeByItsSigner). So it is null or the key of a row: a key in form, and no name that every object answers to.
-  if (!all.every((row) => madeByItsSigner(rows, row, level))) return null;
-  const read = { level, list, footing: Object.freeze({ seq, hash }), needs, behind, signers: Object.freeze(rows) };
-  if (needs_replay === undefined) return Object.freeze(read);
-  // A member stops for a replay at an entry past its footing. It may be behind no more and stopped still: a replay by a higher level that did not take that entry keeps the stop.
-  const stop = readStop(needs_replay);
-  return stop !== null && stop.seq > seq ? stoppedAt(read, stop) : null;
+  if (!all.every((row) => madeByItsSigner(rows, row, made))) return null;
+  const read = { level: made, list, footing: Object.freeze({ seq, hash }), needs, behind, signers: Object.freeze(rows) };
+  let state: SignersState = Object.freeze(read);
+  if (needs_replay !== undefined) {
+    // A member stops for a replay at an entry past its footing, or, read by a lower build than the one that wrote it, at its footing itself. It may be behind no more and stopped still: a replay by a higher level that did not take that entry keeps the stop.
+    const stop = readStop(needs_replay);
+    if (stop === null || stop.seq < seq || (stop.seq === seq && stop.hash !== hash)) return null;
+    state = stoppedAt(read, stop);
+  }
+  // A state that a higher level wrote: this build reads it stopped at its footing, unless it is stopped already.
+  return made > level && state.needs_replay === undefined ? stoppedAt(state, state.footing) : state;
 }
