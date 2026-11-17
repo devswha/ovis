@@ -1021,8 +1021,8 @@ published version with a new patch release. If publishing fails after a tag was 
 verify that tag's commit and repair its GitHub release rather than moving the tag.
 
 The hosted shell is then built and deployed in three jobs, so the Cloudflare token never shares a
-job with the build's dependencies. `shell-build` (no environment, no secrets, the dependency cache
-restored read-only) checks out the release tag, fails unless the tag points at the commit this
+job with the build's dependencies. `shell-build` (no environment, no secrets, no Actions cache
+restored) checks out the release tag, fails unless the tag points at the commit this
 release published, builds the shell (`bun run build:shell`), fails if `dist-shell/` lacks
 `index.html` or `build.json`, and uploads `dist-shell.tar.gz` and `dist-shell.tar.gz.sha256`,
 passing the tarball's SHA-256 on as a job output. `shell-deploy`, on a GitHub-hosted runner with
@@ -1316,12 +1316,17 @@ was usually short of time, not hung: check how long `check: took a slot after` s
 The console, GitHub annotations, job summary and `summary.json` name the failing assertion and
 its first script file and line when the log contains them.
 `bun scripts/ci-flakes.ts` ranks, across the last 24 hours of `ci.yml` runs and every attempt of
-each, which script failed or passed only on a second run, and at which assertion and site. It reads
+each, which script failed or passed only on a second run, at which assertion and site, and how many
+of those job attempts were in runs of the default branch itself (the others were on other
+branches). A script the lane stopped at its time limit is listed with that limit and no site. It reads
 through `gh` and changes nothing: a failed job's log, and a passed job's only when the job carries
 the flaky warning.
 Use `--hours 30` for a different window, `--repo owner/name` to select a repository instead of
 the current one, or `--json` for counts and rows as JSON; running jobs and unavailable logs are
 counted as skipped.
+`.github/workflows/ci-flakes.yml` runs it every day through `scripts/ci-flakes-issue.ts`, which keeps
+the list in the one open issue titled "CI flakes: browser scripts that failed or needed a second
+run", rewritten each time (`--dry-run` prints the body and writes nothing).
 
 Under `CI` or with `CHECK_DIR` set, both runners create `UI_EVIDENCE_DIR` at
 `${CHECK_DIR:-.ci}/browser-evidence`. Only the existing sticky-modifier and file-viewer captures
@@ -1352,13 +1357,11 @@ pull request stays hosted. Other events stay on `ubuntu-24.04`. The repository v
 `CI_SELF_HOSTED_LABELS` overrides that (labels send every same-repository pull request to the
 self-hosted runners) with another JSON array of runner labels that contains `"self-hosted"`, or with the
 JSON string `"ubuntu-24.04"` to keep every job GitHub-hosted while that PC is offline (unless
-`CI_LIGHT_LABELS`, below, holds labels: it wins for the light jobs). `release.yml`
-stays on `ubuntu-24.04` unless the variable holds labels. The variable routes:
+`CI_LIGHT_LABELS`, below, holds labels: it wins for the light jobs). The variable routes:
 
 - in `ci.yml`: Fast checks, Integration tests and both Browser regression jobs;
-- in `release.yml`: the preflight, server-binary, publish and shell-attach jobs, and the gate and
-  attach of the `windows-app.yml` and the gate of the `mac-dmg.yml` it calls. The ones among them that
-  hold a write token or a secret move to GitHub's runners in a second pull request
+- in `release.yml`: none: the Release run is GitHub-hosted and cacheless as a whole, the `ci.yml` it
+  runs through `release-validate.yml` (`hosted_only: true`) included
   ([Security model](../scripts/self-hosted-runner/README.md#security-model)).
 
 `pages.yml` reads none of them: its run is GitHub-hosted and cacheless as a whole, the `ci.yml` its
@@ -1371,8 +1374,7 @@ verdict runs for seconds.
 
 Light jobs, which wait longest in GitHub's hosted queue for the few seconds they run, take the
 self-hosted runners for every same-repository run: Detect changes, the herdr-core live contract and
-the Integration and browser summary in `ci.yml`, `pr-title.yml` and `remote-bundles.yml`'s Windows
-bundle. Their `runs-on` sends a fork pull request to
+the Integration and browser summary in `ci.yml` and `pr-title.yml`. Their `runs-on` sends a fork pull request to
 `ubuntu-24.04` before it reads any variable; a push to main then takes `CI_MAIN_SELF_HOSTED_LABELS`
 when it is set (on a push or a run started from main), so main's Detect changes never waits behind pull requests; otherwise the job takes the repository variable `CI_LIGHT_LABELS`,
 else `CI_SELF_HOSTED_LABELS`, else `["self-hosted","self-hosted-ovis"]`; `"ubuntu-24.04"` in
@@ -1413,8 +1415,8 @@ job's worker before any step, `if: always()` ones included, can run
 (`scripts/self-hosted-runner/job-started.sh`). Otherwise the `self_hosted_labels`
 workflow_dispatch input, when not empty, overrides the variable for that one manual run. A value
 that is not a non-empty array of strings containing `"self-hosted"` fails the job instead of
-falling back. `release.yml` reads the variable directly. A call with `hosted_only: true`
-(`pages.yml`'s validation) gets `ubuntu-24.04` before the route reads anything else.
+falling back. A call with `hosted_only: true` (`pages.yml`'s and the Release's validation) gets
+`ubuntu-24.04` before the route reads anything else.
 
 Only a `pull_request` may skip the heavy jobs as docs-only, and only when every changed file is
 under `docs/`, ends in `.md` or `.txt`, is the root `LICENSE` or sits under
@@ -1440,11 +1442,13 @@ fails on a stale image instead of downloading replacements. Rebuild the image af
 its pins; its Bun pin must match `.github/actions/setup-ci/action.yml`, and its Playwright pin
 must match `bun.lock`.
 
-The composite setup action used by `ci.yml`, `pages.yml` and `release.yml` keeps Bun's dependency
+The composite setup action (`.github/actions/setup-ci`) keeps Bun's dependency
 cache in `.ci-cache/bun`. Only GitHub-hosted jobs restore/save that cache remotely: on the measured
 self-hosted connection, downloading the archive took longer than a fresh dependency install.
 Self-hosted jobs install directly from the lockfile without transferring a remote dependency cache.
-`cache: none` restores and saves none, for the jobs of the Pages run.
+`cache: none` restores and saves none: for every job of a run in which a job that publishes or signs takes an
+artifact, and for a job that publishes, signs or holds a secret itself (the relay deploy job, say, while the
+`ci.yml` its workflow calls keeps its caches).
 Hosted browsers use
 `.ci-cache/playwright`; self-hosted browsers come from the image. Neither cache restores a
 home-directory archive across different workspace depths. Tool/browser preparation no longer
