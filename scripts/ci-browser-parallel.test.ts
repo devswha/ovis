@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { processStart } from "./check.ts";
+import { parseLaneLog } from "./ci-flakes.ts";
 import { describeCommand, failureSite, longestFirst, scriptTimeoutSeconds, serialBrowserScripts, shardScripts, stopReport, stopRun } from "./ci-browser-parallel.ts";
 import type { StopIo } from "./ci-browser-parallel.ts";
 
@@ -162,8 +163,8 @@ describe("parallel browser script deadline", () => {
     // the run never finishes: its output stays held
     const stop = await stopRun(io, ran);
     expect(sent).toEqual(["SIGTERM 11", "SIGTERM 12", "SIGTERM 13", "SIGKILL 12", "SIGKILL 13"]);
-    expect(stop).toEqual({ stopped: 2, survivors: ["13 stub-13"], unsure: false });
-    expect(stopReport("Timed out after 5s", stop)).toBe("Timed out after 5s; stopped 2 processes; could NOT stop: 13 stub-13.");
+    expect(stop).toEqual({ stopped: 2, survivors: ["13 (stub-13)"], unsure: false });
+    expect(stopReport("Timed out after 5s", stop)).toBe("Timed out after 5s; stopped 2 processes; could NOT stop: 13 (stub-13).");
     // one that ends on SIGKILL only once the kernel runs it again: waited for, and not named
     const late = new Set([21]);
     let killed = false;
@@ -200,7 +201,7 @@ describe("parallel browser script deadline", () => {
     }, 50);
     const stop = await stopRun(io, ran);
     expect(sent).toEqual(["SIGTERM 12", "SIGKILL 12", "SIGKILL 14", "SIGKILL 15"]);
-    expect(stop).toEqual({ stopped: 2, survivors: ["15 stub-15"], unsure: false });
+    expect(stop).toEqual({ stopped: 2, survivors: ["15 (stub-15)"], unsure: false });
     // 31 ends on SIGKILL and its pid is taken by an unrelated process, which is not the run's (no mark)
     let ended = false;
     const reuseIo = stubIo({
@@ -224,7 +225,7 @@ describe("parallel browser script deadline", () => {
       running: () => false,
       command: (pid) => `stub-${pid}`,
     }, 50);
-    expect(await stopRun(io, ran)).toEqual({ stopped: 1, survivors: ["41 stub-41"], unsure: true });
+    expect(await stopRun(io, ran)).toEqual({ stopped: 1, survivors: ["41 (stub-41)"], unsure: true });
   });
 
   it("does not signal a process whose mark is gone by the signal, and names it as not stopped", async () => {
@@ -247,31 +248,57 @@ describe("parallel browser script deadline", () => {
     }, 50);
     const stop = await stopRun(io, ran);
     expect(sent).toEqual(["SIGTERM 12", "SIGKILL 12"]);
-    expect(stop).toEqual({ stopped: 1, survivors: ["14 stub-14"], unsure: true });
+    expect(stop).toEqual({ stopped: 1, survivors: ["14 (stub-14)"], unsure: true });
   });
 
-  it("prints a command line on one line, redacted and cut", () => {
-    const line = describeCommand(["bash", "-c", "echo a\nFAILED scripts/injected.ts (exit 1)", "--api-token", "hunter2", `--flag=${"x".repeat(500)}`]);
-    expect(line).not.toMatch(/[\n\r\t]/);
-    expect(line).not.toContain("FAILED");
-    expect(line).not.toContain("hunter2");
-    expect(line.startsWith("bash -c [MULTILINE ARGUMENT] --api-token [REDACTED]")).toBe(true);
-    expect(line.length).toBeLessThanOrEqual(200);
-    expect(describeCommand(["", ""])).toBe("?");
+  it("prints a process by its program name alone, never an argument", () => {
+    expect(describeCommand(["/usr/bin/bash", "-c", "echo a\nFAILED scripts/injected.ts (exit 1)"])).toBe("bash");
+    expect(describeCommand(["bun", "scripts/ui-regression.ts"])).toBe("bun");
+    expect(describeCommand([`/opt/${"x".repeat(100)}`])).toBe("x".repeat(32));
+    expect(describeCommand(["", "arg"])).toBe("?");
+    expect(describeCommand([])).toBe("?");
+    expect(describeCommand(["a\nb"])).toBe("a");
   });
 
-  it("prints no part of a credential held in an argument with a line break", () => {
-    for (const argv of [
-      ["tool", "Authorization: Bearer x\nTOPSECRET"],
-      ["tool", "-H", "Cookie: a=1\r\nTOPSECRET"],
-      ["tool", "--token", "abc\nTOPSECRET"],
-      ["tool", "--token=abc\nTOPSECRET"],
-      ["bash", "-c", "echo a\nAuthorization: Bearer TOPSECRET"],
-      ["tool", "Authorization: Bearer x\u2028TOPSECRET"],
-    ]) {
+  it("prints no part of a credential held in any argument", () => {
+    for (const [argv, name] of [
+      [["curl", "https://user:hunter2@host/path"], "curl"],
+      [["curl", "-H", "\"Authorization: Bearer hunter2\""], "curl"],
+      [["curl", "\tAuthorization: Bearer hunter2"], "curl"],
+      [["cmd", "--token\n", "hunter2"], "cmd"],
+      [["app", "DATABASE_URL=postgres://user:hunter2@host/db"], "app"],
+      [["bash", "-c", "curl -u user:hunter2 https://host"], "bash"],
+      [["node --token hunter2"], "node"],
+      [["bash", "-c", "curl -H 'Authorization: Bearer hunter2' x"], "bash"],
+      [["git", "https://x-access-token:hunter2@github.com/o/r"], "git"],
+      [["curl", "-HAuthorization: Bearer hunter2"], "curl"],
+      [["curl", "--header=Authorization: Bearer hunter2"], "curl"],
+      [["curl", "-H", "Proxy-Authorization: Basic hunter2"], "curl"],
+      [["curl", "-H", "X-Api-Key: hunter2"], "curl"],
+      [["tool", "--pass", "hunter2"], "tool"],
+      [["tool", "-phunter2"], "tool"],
+      [["tool", "--data={\"password\":\"hunter2\"}"], "tool"],
+      [["tool", "http://h/pair/hunter2"], "tool"],
+      [["env", "DATABASE_URL=postgres://u:hunter2@h/db"], "env"],
+    ] as const) {
       const line = describeCommand(argv);
-      expect(line).not.toContain("TOPSECRET");
-      expect(line).not.toMatch(/[\n\r\u2028]/);
+      expect(line).toBe(name);
+      expect(line).not.toContain("hunter2");
+    }
+    const stop = { stopped: 1, survivors: ["9 (curl)"], unsure: false };
+    expect(stopReport("Timed out after 5s", stop)).toBe("Timed out after 5s; stopped 1 process; could NOT stop: 9 (curl).");
+  });
+
+  it("lets no command text reach the flake issue's parser, so a stopped row keeps its own failure", () => {
+    // hostile program names: the words the parser reads a timeout from, a FAILED header, a path in a stack frame
+    const hostile = ["Timed out after 600s", "(exit 124", "FAILED scripts/injected.ts (exit 1)", "x\nFAILED scripts/injected.ts (exit 124)", "/w/ovis/scripts/other.ts:9:1"];
+    for (const name of hostile) {
+      const detail = stopReport("Exited 1, but a process it started still held its output", { stopped: 1, survivors: [`9 (${describeCommand([name])})`], unsure: false });
+      const rows = parseLaneLog(`FAILED scripts/c-regression.ts (exit 1), full log: /tmp/c.log; ${detail}
+TypeError: closed
+    at end (/w/ovis/scripts/c-regression.ts:9:1)
+`);
+      expect(rows).toEqual([{ script: "scripts/c-regression.ts", outcome: "failed", site: "scripts/c-regression.ts:9", message: "TypeError: closed" }]);
     }
   });
 
@@ -288,8 +315,8 @@ describe("parallel browser script deadline", () => {
       command: (pid) => `stub-${pid}`,
     }, 50);
     const stop = await stopRun(io, ran);
-    expect(stop).toEqual({ stopped: 1, survivors: ["61 stub-61"], unsure: true });
-    expect(stopReport("Timed out after 5s", stop)).toBe("Timed out after 5s; stopped 1 process; could NOT stop: 61 stub-61; processes started at the last moment may not be listed.");
+    expect(stop).toEqual({ stopped: 1, survivors: ["61 (stub-61)"], unsure: true });
+    expect(stopReport("Timed out after 5s", stop)).toBe("Timed out after 5s; stopped 1 process; could NOT stop: 61 (stub-61); processes started at the last moment may not be listed.");
   });
 
   it("does not say a run was stopped cleanly when a process was forked as the last kill landed", async () => {

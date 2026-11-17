@@ -25,7 +25,6 @@ import { availableParallelism } from "node:os";
 import { basename, join } from "node:path";
 import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { sanitizeCommand } from "./check.ts";
 
 const repo = join(import.meta.dir, "..");
 const FAILURE_TAIL_LINES = 400;
@@ -298,7 +297,7 @@ export interface StopIo {
 export interface StopOutcome {
   /** how many of the processes it found it ended */
   stopped: number;
-  /** the processes it could not stop, as `<pid> <command>` */
+  /** the processes it could not stop, as `<pid> (<program name>)`: no argument is ever printed */
   survivors: string[];
   /** the last read still found new processes, or a signal was refused: others may have gone unlisted */
   unsure: boolean;
@@ -325,7 +324,7 @@ export async function stopRun(io: StopIo, finished: Promise<unknown>): Promise<S
     for (const pid of io.signal(pids, name)) unstopped.add(pid);
   };
   const outcome = (left: number[], unsure: boolean): StopOutcome => {
-    const survivors = [...new Set([...left.filter(io.running), ...unstopped])].map((pid) => `${pid} ${io.command(pid)}`);
+    const survivors = [...new Set([...left.filter(io.running), ...unstopped])].map((pid) => `${pid} (${io.command(pid)})`);
     return { stopped: seen.size - survivors.length, survivors, unsure: unsure || unstopped.size > 0 };
   };
   send(await io.processes(), "SIGTERM");
@@ -357,23 +356,22 @@ function running(pid: number): boolean {
   try { return readFileSync(`/proc/${pid}/stat`, "utf8").replace(/^.*\) /s, "")[0] !== "Z"; } catch { return true; }
 }
 
-const COMMAND_LIMIT = 200;
+const NAME_LIMIT = 32;
 
 /**
- * A command line as the report prints it: credentials redacted as everywhere else, other control
- * characters replaced, and cut at a length a Chromium command line does not exceed by kilobytes. An
- * argument that holds a line break is not printed at all: a newline would split the FAILED line, and
- * sanitizeCommand reads an argument as one line, so it could leave the rest of a multi-line
- * Authorization or Cookie value in a report that goes into a public issue.
+ * What the report says of a process besides its pid: the name of its program and nothing else. An
+ * argument value cannot be told safe from a credential (a URL's userinfo, a header, a connection
+ * string, a shell command line), and the report goes into a public issue, so no argument is ever
+ * printed. The name is argv[0] up to its first blank, without its directory, cut to the characters a
+ * program name has and to a short length.
  */
 export function describeCommand(argv: readonly string[]): string {
-  const oneLine = argv.map((argument) => (/[\r\n\v\f\u0085\u2028\u2029]/.test(argument) ? "[MULTILINE ARGUMENT]" : argument));
-  const line = sanitizeCommand(oneLine).join(" ").replace(/[\u0000-\u001f\u007f]+/g, " ").trim();
-  if (line === "") return "?";
-  return line.length > COMMAND_LIMIT ? `${line.slice(0, COMMAND_LIMIT - 3)}...` : line;
+  const program = (argv[0] ?? "").trim().split(/\s/)[0] ?? "";
+  const name = program.slice(program.lastIndexOf("/") + 1).replace(/[^A-Za-z0-9._+-]/g, "?").slice(0, NAME_LIMIT);
+  return name === "" ? "?" : name;
 }
 
-/** A process's command line, or `?` where it cannot be read. */
+/** A process's program name, or `?` where its command line cannot be read. */
 function commandOf(pid: number): string {
   try { return describeCommand(readFileSync(`/proc/${pid}/cmdline`, "latin1").split("\0")); } catch { return "?"; }
 }
