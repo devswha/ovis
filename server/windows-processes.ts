@@ -11,7 +11,6 @@ export interface ProcessRow {
   started?: number;
 }
 
-/** A Windows command line as argv: double quotes group, nothing else is special here. */
 export function windowsArgv(commandLine: string): string[] {
   const words: string[] = [];
   for (const match of commandLine.matchAll(/"([^"]*)"|(\S+)/g)) words.push(match[1] ?? match[2]!);
@@ -19,8 +18,7 @@ export function windowsArgv(commandLine: string): string[] {
 }
 
 /**
- * Every process below `pid`, nearest first, by its number and its argv; the executable's full path
- * stands for argv[0]. Windows keeps a process's parent number after that parent exits, and hands
+ * Windows keeps a process's parent number after that parent exits, and hands
  * the number on: a process that started before the one now holding its parent's number is not its
  * child (when both starts are known), and neither is anything below it.
  */
@@ -45,7 +43,6 @@ export function descendantProcesses(rows: readonly ProcessRow[], pid: number): {
   return found;
 }
 
-/** argv of every process below `pid`, nearest first. */
 export function descendantArgv(rows: readonly ProcessRow[], pid: number): string[][] {
   return descendantProcesses(rows, pid).map((entry) => entry.argv);
 }
@@ -69,10 +66,6 @@ export function parseProcessTable(json: string): ProcessRow[] {
 
 const TABLE_SCRIPT = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId, ExecutablePath, CommandLine, @{n='Started';e={([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds()}} | ConvertTo-Json -Compress";
 
-/**
- * The process table of this PC, or nothing when it cannot be read. A query that stalls is
- * killed at `timeoutMs`, so a caller with a deadline keeps it.
- */
 export async function windowsProcessTable(timeoutMs = 10_000, command: string[] = ["powershell", "-NoProfile", "-NonInteractive", "-Command", TABLE_SCRIPT]): Promise<ProcessRow[]> {
   try {
     const probe = Bun.spawn(command, { windowsHide: true, stdin: "ignore", stdout: "pipe", stderr: "ignore", timeout: timeoutMs, killSignal: "SIGKILL" });

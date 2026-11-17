@@ -7,10 +7,6 @@ import { layout } from "../app/electron/src/children.ts";
 import { BUNDLE_DIR, WINDOWS_BUNDLE_BASE } from "./remote-host.ts";
 import { INSTALLED_BINARY_REASON, installedBinaryAt, PLUGIN_BINARY_REASON, pluginBinaryOf, Updater } from "./updater.ts";
 
-// A herdr plugin checkout that scripts/plugin-launch.ts runs as the release's binary: the server's root is the release
-// folder inside the checkout's .ovis/server, where git still finds the checkout. Settings must say the update runs
-// through herdr, never that the source checkout should switch to main (following that builds a release the binary
-// never runs), and nothing may be installed from the app.
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
@@ -50,7 +46,6 @@ it("tells a compiled server the installers put in place to run the installer aga
   dirs.push(scratch);
   const root = join(scratch, ".local", "share", "ovis", "releases", "0.5.4-abcd");
   mkdirSync(root, { recursive: true });
-  // the signed manifest the installer checked the binary against stays beside it, and names the version
   writeFileSync(join(root, "ovis-server.json"), '{\n  "schema": 1,\n  "version": "0.5.4"\n}\n');
   const updater = new Updater({ root, stateDir: join(scratch, "state"), autoUpdate: false, installedBinary: installedBinaryAt(root, true), publish() {}, activate: async () => {} });
   await updater.initialize();
@@ -73,9 +68,7 @@ it("takes an installed server's version only from a small regular ovis-server.js
     await updater.initialize();
     return updater.status.current_version;
   };
-  // larger than any manifest: read whole, it would bloat the server at every start
   expect(await versionOf("huge", (manifest) => writeFileSync(manifest, `{"schema":1,"version":"0.5.4","pad":"${"x".repeat(3_000_000)}"}`))).toBeNull();
-  // whatever string the file holds would otherwise be reported as the version
   expect(await versionOf("garbage", (manifest) => writeFileSync(manifest, '{"schema":1,"version":"<img src=x onerror=alert(1)>"}'))).toBeNull();
   // a FIFO holds a synchronous read until a writer comes: this one has a writer, so a read that waits takes its version
   const writers: ReturnType<typeof Bun.spawn>[] = [];
@@ -94,11 +87,9 @@ it("knows where the installers put a compiled server, and nothing else for one",
   expect(installedBinaryAt("/home/me/.local/share/ovis/releases/0.5.4-abcd", false)).toBe(false);
   expect(installedBinaryAt("/home/me/plugins/checkout/.ovis/server/releases/0.5.4-abcd", true)).toBe(false);
   expect(installedBinaryAt("/Applications/Ovis.app/Contents/Resources/server", true)).toBe(false);
-  // the desktop app runs <resources>/server/ovis-server (app/electron/src/children.ts layout), on every platform
   for (const resources of ["/opt/Ovis/resources", "C:\\Users\\me\\AppData\\Local\\Programs\\Ovis\\resources", "/tmp/.mount_OvisAb12/resources"]) {
     expect(installedBinaryAt(layout(resources).server, true)).toBe(false);
   }
-  // a remote bundle runs from ~/<BUNDLE_DIR>, or %LOCALAPPDATA%\herdr-web-ui\remote-v<N> on Windows (server/remote-host.ts)
   expect(installedBinaryAt(join("/home/me", BUNDLE_DIR), true)).toBe(false);
   expect(installedBinaryAt(`${WINDOWS_BUNDLE_BASE.replace("$env:LOCALAPPDATA", "C:\\Users\\me\\AppData\\Local")}\\remote-v47`, true)).toBe(false);
 });

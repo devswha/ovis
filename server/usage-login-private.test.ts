@@ -10,11 +10,6 @@ import { readProcessBirth } from "./process-owner.ts";
 import * as usage from "./usage.ts";
 import { UsageLoginService } from "./usage-login.ts";
 
-/**
- * A sign-in the browser follows runs through the server's private PTY host, never in a
- * herdr pane, so no other device can read its sign-in address or the code typed into it. The stand-in CLIs
- * print what the real ones printed (server/fixtures/usage-login/*.pty) and read a pasted code like Claude's.
- */
 const root = mkdtempSync(join(tmpdir(), "usage-login-private-"));
 const bin = join(root, "bin");
 const fixtures = join(import.meta.dir, "fixtures/usage-login");
@@ -24,14 +19,12 @@ const services = new Set<UsageLoginService>();
 let names = 0;
 
 // The server PC's own sign-ins stay out of these tests: a Mac signed in to Claude Code keeps one in its
-// keychain, which no test home shows, and a default-home sign-in would then ask to replace it.
 let keychain: { mockRestore(): void } | null = null;
 
 beforeAll(() => {
   const system = usage.systemUsageContext();
   keychain = spyOn(usage, "systemUsageContext").mockReturnValue({ ...system, keychain: async () => ({ status: "missing" }) });
   mkdirSync(bin);
-  // --help answers what the real ones list; a login prints its recorded screen, then waits as the real one does
   writeFileSync(join(bin, "claude"), `#!/bin/sh
 case "$*" in *--help*) echo "login"; exit 0;; esac
 echo "\${CLAUDE_CONFIG_DIR:-default}" > "${receipt("claude-home")}"
@@ -57,7 +50,6 @@ afterEach(async () => {
   for (const spy of spies.splice(0)) spy.mockRestore();
 });
 
-/** herdr is never asked for a tab, a workspace or a key: each call fails the test that made it. */
 function noHerdr(): string[] {
   const asked: string[] = [];
   for (const name of ["tabCreate", "workspaceCreate", "paneSendText", "paneSendKeys", "paneRead", "sessionSnapshot"] as const) {
@@ -66,7 +58,6 @@ function noHerdr(): string[] {
   return asked;
 }
 
-/** the cookie each started login set, sent back as the browser that started it does (undefined: that cookie; null: none) */
 const jar = new Map<string, string>();
 const cookieOf = (login: unknown, cookie: string | null | undefined): Record<string, string> => {
   const sent = cookie === undefined ? jar.get(String(login)) : cookie;
@@ -97,13 +88,11 @@ async function within<T>(promise: Promise<T>): Promise<T> {
   } finally { clearTimeout(timer); }
 }
 
-/** Subscribe before reading so output between the read and the wait cannot be lost. */
 async function promptWhen(service: UsageLoginService, login: string, until: (prompt: Record<string, unknown>) => boolean): Promise<Record<string, unknown>> {
   for (;;) {
     const changed = service.changed(login);
     const response = await read(service, login);
     const prompt = (await response.json()) as Record<string, unknown>;
-    // a refused read answers at once and never changes: waiting on it again would spin without yielding to a timer
     if (!response.ok) throw new Error(`reading sign-in ${login} answered ${response.status}: ${JSON.stringify(prompt)}`);
     if (until(prompt)) return prompt;
     if (prompt["ended"]) throw new Error("login ended before the expected prompt");
@@ -339,7 +328,7 @@ wait
       expect((await within(post(service, "cancel", { login }))).status).toBe(204);
       await within(closed.promise);
     } finally {
-      if (existsSync(childPid)) { try { process.kill(Number(readFileSync(childPid, "utf8")), "SIGKILL"); } catch { /* already stopped */ } }
+      if (existsSync(childPid)) { try { process.kill(Number(readFileSync(childPid, "utf8")), "SIGKILL"); } catch { } }
       listener.stop(true);
     }
   }, 15_000);
@@ -382,7 +371,6 @@ exec sleep 600
     expect(set).toMatch(/SameSite=Strict/);
     expect(set).toMatch(/Path=\/api\/usage\/login/);
     const { login_id: login } = (await started.json()) as { login_id: string };
-    // another browser signed in the same way (the server's token: the same owner) that knows the id
     expect((await read(service, login, false, "device:a", null)).status).toBe(404);
     expect((await read(service, login, false, "device:a", `${jar.get(login)!.split("=")[0]}=forged`)).status).toBe(404);
     expect((await post(service, "code", { login, code: "abc" }, "device:a", null)).status).toBe(404);
@@ -395,7 +383,6 @@ exec sleep 600
     noHerdr();
     const claudeBin = join(root, "claude-init-bin");
     mkdirSync(claudeBin, { recursive: true });
-    // Claude writes its config into the new home as soon as it starts, before any sign-in
     writeFileSync(join(claudeBin, "claude"), `#!/bin/sh\ncase "$*" in *--help*) echo "auth login"; exit 0;; esac\necho '{}' > "$CLAUDE_CONFIG_DIR/.claude.json"\ncat "${join(fixtures, "claude.pty")}"\nexec sleep 600\n`, { mode: 0o755 });
     const service = new UsageLoginService(root, { PATH: `${claudeBin}:/usr/bin:/bin` });
     const name = `init-${++names}`;

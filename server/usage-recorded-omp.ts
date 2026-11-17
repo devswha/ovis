@@ -11,9 +11,6 @@
  *   label          "Claude 7 Day (Fable)"
  *   used_fraction  0 to 1; null when the provider stated none
  *   resets_at      epoch ms; null when the provider stated none
- *
- * That table is all this reads. The same file holds Oh My Pi's sign-ins (`auth_credentials`): nothing here names
- * that table, and the file is only read.
  */
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -21,20 +18,11 @@ import type { RecordedContext, RecordedReading, RecordedSource, RecordedWindow }
 import { RECORDED_STALE_AFTER_MS } from "../shared/usage.ts";
 import { AHEAD_MS, byLength, claudeLimit, readStore, resetOf } from "./usage-recorded-pi.ts";
 
-/** A week is the longest window read here: a row older than that, with a day to spare, records none that still runs. */
-const SINCE_MS = 8 * 86_400_000;
-/**
- * The newest rows looked through for each sign-in's latest report. Oh My Pi keeps a row an hour for each limit of each
- * sign-in, about a thousand in the eight days read: this is twenty sign-ins' worth, and what a stopped sign-in last
- * recorded is not pushed out by the rows of the others.
- */
+const DAY_MS = 86_400_000;
+const SINCE_MS = 7 * DAY_MS + DAY_MS;
 const MAX_ROWS = 20_000;
 
-/**
- * A row shaped as Oh My Pi writes one: a value of another type, or a name longer than any real one, leaves its row
- * out, so what comes back needs no second look. A limit recorded without a number is kept, for the time of its
- * report. `+provider` keeps each search on the index by time.
- */
+/** `+provider` keeps each search on the index by time. */
 const shaped = (row: string): string => `
   +${row}.provider = 'anthropic'
   AND typeof(${row}.recorded_at) = 'integer' AND (${row}.used_fraction IS NULL OR typeof(${row}.used_fraction) IN ('real', 'integer'))
@@ -45,10 +33,6 @@ const shaped = (row: string): string => `
   AND (${row}.email IS NULL OR (typeof(${row}.email) = 'text' AND length(${row}.email) <= 320))
   AND (${row}.resets_at IS NULL OR typeof(${row}.resets_at) = 'integer')`;
 
-/**
- * The rows of each sign-in's latest report, newest first: the time of that report is found among the newest rows of
- * the days read, of which only the sign-in and the time are taken, and then the rows recorded at it are read.
- */
 const ROWS = `
   WITH latest AS (
     SELECT account_key AS series, max(recorded_at) AS at
@@ -85,12 +69,6 @@ function storePath(ctx: RecordedContext): string {
   return join(ctx.home, ctx.env["PI_CONFIG_DIR"] || ".omp", "agent", "agent.db");
 }
 
-/**
- * Each account's latest report, from the rows of each sign-in's latest report (ROWS), newest first. Oh My Pi keeps a
- * series per sign-in (`account_key`), and may hold one account under two of them: the account is then given once, by
- * the series read last whose latest report holds a limit shown here, never as a mix of two. A limit the latest
- * report lacks, or records without a number, is not taken from an older one.
- */
 function latestReports(rows: readonly HistoryRow[]): RecordedReading[] {
   const series = new Map<string, { accountId: string; label: string | null; readAt: number; windows: RecordedWindow[] }>();
   for (const row of rows) {
@@ -102,7 +80,6 @@ function latestReports(rows: readonly HistoryRow[]): RecordedReading[] {
   }
   const accounts = new Map<string, RecordedReading>();
   for (const { accountId, label, readAt, windows } of series.values()) {
-    // a series whose latest report holds no limit shown here (extra usage only) stands for nothing: another one may
     if (windows.length > 0 && !accounts.has(accountId)) accounts.set(accountId, { accountId, label, readAt, windows: windows.sort(byLength) });
   }
   return [...accounts.values()];
