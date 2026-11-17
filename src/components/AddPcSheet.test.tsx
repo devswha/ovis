@@ -216,9 +216,9 @@ describe("the Add-a-PC sheet", () => {
     await update(props("join", pc, { kind: "failed", failure: "pair-declined", name: "desk2", detail: null }));
     expect(steps()).toEqual(["done", "done", "failed", "todo"]);
     expect(all()).not.toContain("Work MacBook");
-    // a join has no link to open again: the refusal names the device that approves
-    expect(text(renderer!.root.findByProps({ className: "add-pc-problem" }))).toBe("No device of your account approved this one");
-    expect(all()).toContain("Nobody picked the number within 90 seconds, or it was denied. Open desk2 in Ovis on a device that already uses it, keep it open, then try again. If it keeps failing, pair this device with a QR or code from desk2.");
+    // a join has no link to open again: the refusal names both that may approve it, the PC itself among them when its own Add screen waits
+    expect(text(renderer!.root.findByProps({ className: "add-pc-problem" }))).toBe("Nobody approved this device for desk2");
+    expect(all()).toContain("Nobody approved it within 90 seconds, or it was denied. Try again, and approve it on a device of your account that is connected to desk2 (keep desk2 open in Ovis there), or on desk2 itself if it shows this request. If it keeps failing, pair this device with a QR or code from desk2.");
     expect(all()).not.toContain("Open the link again");
     expect(renderer!.root.findAll((instance) => instance.type === "button").map(text)).toEqual(["Close", "Try again"]);
     await click("Try again");
@@ -256,7 +256,7 @@ describe("the Add-a-PC sheet", () => {
     expect(buttons()).toEqual(["Close", "Try again"]);
     // a refused join differs from a refused new PC
     await update(props("join", expired, { kind: "failed", failure: "pair-declined", name: "desk2", detail: null, server_id: SERVER_ID }));
-    expect(problem()).toBe("No device of your account approved this one");
+    expect(problem()).toBe("Nobody approved this device for desk2");
     expect(buttons()).toEqual(["Close", "Try again"]);
     // without a way to retry, the sheet only closes
     const { onRetry: _onRetry, ...noRetry } = props("new", pcOf(), { kind: "failed", failure: "pair-unavailable", name: "desk2", detail: null, server_id: SERVER_ID });
