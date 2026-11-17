@@ -168,13 +168,12 @@ it.skipIf(!onWindows)("starts a desktop child outside the launcher, preserving q
   const script = join(root, "child with spaces.ts");
   const sentinel = "private-launch-sentinel-\"&%!\n한글";
   const previous = process.env["OVIS_START_TEST_SECRET"];
-  let pid: number | undefined;
   const waiting = watchJson<{ pid: number; secret: string; args: string[]; session: number }>(root, resultPath, 15_000);
   writeFileSync(script, `import { watch, existsSync, renameSync, writeFileSync } from 'node:fs';
 import { dlopen, FFIType } from 'bun:ffi';
 const { symbols } = dlopen('kernel32.dll', { ProcessIdToSessionId: { args: [FFIType.u32, FFIType.ptr], returns: FFIType.i32 } });
 const session = new Uint32Array(1); if (!symbols.ProcessIdToSessionId(process.pid, session)) throw new Error('no session');
-watch(${JSON.stringify(root)}, () => { if (existsSync(${JSON.stringify(stopPath)})) process.exit(0); });
+watch(${JSON.stringify(root)}, (_, name) => { if (name === 'stop' || existsSync(${JSON.stringify(stopPath)})) process.exit(0); });
 // written whole under another name first: the result's name only appears with all of it (#2165)
 writeFileSync(${JSON.stringify(`${resultPath}.tmp`)}, JSON.stringify({pid:process.pid, secret:process.env.OVIS_START_TEST_SECRET, args:process.argv.slice(2), session:session[0]}));
 renameSync(${JSON.stringify(`${resultPath}.tmp`)}, ${JSON.stringify(resultPath)});
@@ -188,7 +187,6 @@ renameSync(${JSON.stringify(`${resultPath}.tmp`)}, ${JSON.stringify(resultPath)}
     } else {
       // The launcher already exited, but this child's watch still runs in the desktop session.
       const child = await waiting.result;
-      pid = child.pid;
       expect(child.session).toBeGreaterThan(0);
       expect(child.secret).toBe(sentinel);
       expect(child.args).toEqual(["argument with spaces & 한글"]);
@@ -199,8 +197,10 @@ renameSync(${JSON.stringify(`${resultPath}.tmp`)}, ${JSON.stringify(resultPath)}
   try {
     await waiting.close();
     if (previous === undefined) delete process.env["OVIS_START_TEST_SECRET"]; else process.env["OVIS_START_TEST_SECRET"] = previous;
-    // Only this fixture's child is stopped, never a herdr daemon or another test's task.
-    if (pid !== undefined) try { process.kill(pid); } catch {}
+    // The child ends itself when its stop file appears: nothing is signalled by a pid it wrote, which by now
+    // may be another process's. Its watch also takes the event that names the file, should the removal below
+    // delete it first; while the child runs, that watch keeps root busy, which the removal waits out.
+    writeFileSync(stopPath, "");
     // Remove the junction itself before recursively cleaning its target fixture.
     await rm(legacy, { force: true, recursive: true });
     const cleanupBy = Date.now() + 5000;
