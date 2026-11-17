@@ -121,15 +121,19 @@ async function open(name: string, before: string, probeBeforeAttach = false, hol
             else listener.handleEvent(event);
             return;
           }
-          const invoke = () => {
-            if (typeof listener === "function") listener.call(socket, event);
-            else listener.handleEvent(event);
+          const invoke = (delivered: Event = event) => {
+            if (typeof listener === "function") listener.call(socket, delivered);
+            else listener.handleEvent(delivered);
           };
           const queryOnly = /^(?:\x1b\[\?1004h)?\x1b\]10;\?\x1b\\\x1b\]11;\?\x1b\\\x1b\]12;\?\x1b\\\x1b\[16t\x1b\[c$/.test(message.data ?? "");
           if (holding && message.type === "pty-data" && message.pane_id === pane && !queryOnly) queued.push(invoke);
           else {
-            if (holding && message.type === "pty-data" && message.pane_id === pane && queryOnly) queryDelivered++;
-            invoke();
+            if (holding && message.type === "pty-data" && message.pane_id === pane && queryOnly) {
+              queryDelivered++;
+              // A subparameter 1 belongs to mode 1004, not DECCKM. Feed it through the real parser
+              // before the held first paint: neither this nor the display queries proves cursor mode.
+              invoke(new MessageEvent("message", { data: JSON.stringify({ ...message, data: `\x1b[?1004:1h\x1b[?1004:1l${message.data}` }) }));
+            } else invoke();
           }
         };
         add.call(socket, type, deliver, options);

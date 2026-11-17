@@ -1164,7 +1164,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // xterm's public mode flags start at defaults, which are not proof of the attached program's
       // current state. Witness only explicit DECCKM set/reset sequences in this current pty parse.
       const arrowModeWitnesses = (["h", "l"] as const).map((final) => term.parser.registerCsiHandler({ prefix: "?", final }, (params) => {
-        const setsCursorMode = params.some((param) => param === 1 || Array.isArray(param) && param.includes(1));
+        const setsCursorMode = params.some((param) => param === 1);
         if (setsCursorMode && parsingCurrentPtyOutput && parsingOwner === outputOwner && parsingModeEpoch === arrowModeEpoch
           && parsingModePane === paneRef.current && parsingModeGeneration === outputGeneration && parsingModeLifetime === outputLifetime
           && recoveringPane !== parsingModePane) {
