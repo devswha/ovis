@@ -1,6 +1,6 @@
 name: Desktop app
 # With a release tag (Release calls it after publishing, or run it by hand from main for an existing
-# release), it builds that tag to update itself from the feed below and attaches the installers,
+# published release that is not GitHub's latest: the attach job refuses the latest), it builds that tag to update itself from the feed below and attaches the installers,
 # their blockmaps and the feed files (latest-linux.yml, latest-linux-arm64.yml, latest-mac.yml,
 # latest.yml for Windows) to
 # that release. The feed is the latest release's assets, so an installed app sees a version once it

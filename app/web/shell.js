@@ -20,7 +20,9 @@ export function shell(method, options = {}) {
 
 /**
  * Whether opening url sends a pairing code and everything typed over the internet unencrypted:
- * plain http to an address outside a tailnet, a home network and this phone. The apps allow
+ * plain http to an address that does not look like a tailnet's, a home network's or this phone's.
+ * homeHost judges by the name or address alone: a dotless or .local name counts as home even if DNS
+ * sends it to a public server, so this is a heuristic, not proof. The apps allow
  * cleartext to any host, as Android cannot limit it to address ranges.
  */
 export function publicHttp(url) {
