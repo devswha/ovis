@@ -843,7 +843,7 @@ describe("ci.yml", () => {
       // cancelled run of HEAD itself, which only a query that lost one of its filters would see; sleep returns at once
       const bin = join(dir, "bin");
       mkdirSync(bin);
-      writeFileSync(join(bin, "gh"), `#!/bin/sh\necho call >> "$CALLS"\n[ -n "$DOWN" ] && exit 1\ncase "$*" in *"--workflow ci.yml --branch main --event push --status success"*) printf '%s\\n' $PASSED ;; *) printf '%s\\n' $ANY ;; esac\n`, { mode: 0o755 });
+      writeFileSync(join(bin, "gh"), `#!/bin/sh\necho call >> "$CALLS"\n[ -n "$DOWN" ] && exit 1\ncase "$*" in "run list --repo o/r --workflow ci.yml --branch main --event push --status success --limit 100 --json headSha --jq .[].headSha") printf '%s\\n' $PASSED ;; *) printf '%s\\n' $ANY ;; esac\n`, { mode: 0o755 });
       writeFileSync(join(bin, "sleep"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
       const found = async (env: Record<string, string>): Promise<{ base: string; calls: number }> => {
         const [output, calls] = [join(dir, "output"), join(dir, "calls")];
@@ -865,6 +865,21 @@ describe("ci.yml", () => {
       // and a push with no base fails Fast checks' fetch step before it fetches anything
       const fetched = await runScript(fetchBase.run!, dir, { GITHUB_EVENT_NAME: "push", EVENT_BASE: a, LAST_GREEN: "", GITHUB_ENV: join(dir, "env") });
       expect([fetched.code, fetched.output.includes("No passed main commit")]).toEqual([1, true]);
+      // a base it has is fetched into a depth-1 checkout of HEAD and handed on: for a push the passed commit, not the one
+      // before the push; for a pull request its merge commit's first parent, not the event's base
+      git("config", "uploadpack.allowAnySHA1InWant", "true");
+      const shallow = join(dir, "shallow");
+      expect(Bun.spawnSync(["git", "clone", "-q", "--depth", "1", `file://${dir}`, shallow], { env: { PATH: process.env.PATH ?? "", HOME: dir } }).exitCode).toBe(0);
+      const handed = async (env: Record<string, string>): Promise<string> => {
+        const file = join(dir, "env");
+        writeFileSync(file, "");
+        const result = await runScript(fetchBase.run!, shallow, { GITHUB_ENV: file, ...env });
+        expect(result.code).toBe(0);
+        return readFileSync(file, "utf8").trim();
+      };
+      expect(await handed({ GITHUB_EVENT_NAME: "push", EVENT_BASE: b, LAST_GREEN: a })).toBe(`RATCHET_BASE=${a}`);
+      expect(Bun.spawnSync(["git", "cat-file", "-e", `${a}^{commit}`], { cwd: shallow }).exitCode).toBe(0);
+      expect(await handed({ GITHUB_EVENT_NAME: "pull_request", EVENT_BASE: a, LAST_GREEN: "" })).toBe(`RATCHET_BASE=${b}`);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
