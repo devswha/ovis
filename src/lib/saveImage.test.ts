@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 
-import { downloadLeavesApp, imageFile, SAVE_MAX_BYTES, SAVE_PLUGIN, saveInApp, saveRoute, shareFile } from "./saveImage.ts";
+import { downloadLeavesApp, fileSaveRoute, imageFile, pcFile, SAVE_MAX_BYTES, SAVE_PLUGIN, saveInApp, saveRoute, shareFile } from "./saveImage.ts";
 import { nativeTransport, setTransport, type Transport } from "./transport.ts";
 
 const saved = new Map(["navigator", "Capacitor"].map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
@@ -15,11 +15,14 @@ afterEach(() => {
 
 type NativeCall = (plugin: string, method: string, options?: Record<string, unknown>) => Promise<unknown>;
 
-function environment(navigator: Record<string, unknown>, platform?: string, plugins: string[] = [], nativePromise?: NativeCall): void {
+/** A plugin by name, or by name and the methods the app announces for it. */
+type Plugin = string | { name: string; methods: string[] };
+
+function environment(navigator: Record<string, unknown>, platform?: string, plugins: Plugin[] = [], nativePromise?: NativeCall): void {
   Object.defineProperty(globalThis, "navigator", { value: navigator, configurable: true, writable: true });
   if (platform === undefined) Reflect.deleteProperty(globalThis, "Capacitor");
   else Object.defineProperty(globalThis, "Capacitor", {
-    value: { isNativePlatform: () => true, getPlatform: () => platform, PluginHeaders: plugins.map((name) => ({ name })), nativePromise },
+    value: { isNativePlatform: () => true, getPlatform: () => platform, PluginHeaders: plugins.map((plugin) => typeof plugin === "string" ? { name: plugin } : { name: plugin.name, methods: plugin.methods.map((name) => ({ name })) }), nativePromise },
     configurable: true,
     writable: true,
   });
@@ -47,7 +50,62 @@ describe("saveRoute", () => {
   });
 });
 
+describe("fileSaveRoute", () => {
+  test("is the Android app when its save plugin can save any file", () => {
+    environment({}, "android", [{ name: SAVE_PLUGIN, methods: ["saveImage", "saveFile"] }]);
+    expect(fileSaveRoute()).toBe("app");
+  });
+
+  test("asks for a newer Android app where the app saves only pictures, or nothing", () => {
+    // its WebView drops a download link without a word, and it has no share sheet
+    environment({}, "android", [{ name: SAVE_PLUGIN, methods: ["saveImage"] }]);
+    expect(fileSaveRoute()).toBe("update");
+    environment({}, "android");
+    expect(fileSaveRoute()).toBe("update");
+  });
+
+  test("is the share sheet where a link would load the file over the app", () => {
+    environment({ standalone: true });
+    expect(fileSaveRoute()).toBe("share");
+    environment({}, "ios", [SAVE_PLUGIN]);
+    expect(fileSaveRoute()).toBe("share");
+  });
+
+  test("is the download link in a browser tab", () => {
+    environment({ standalone: false });
+    expect(fileSaveRoute()).toBe("link");
+  });
+});
+
+describe("pcFile", () => {
+  test("reads any PC file through the transport, under its name and the type the PC gave it", async () => {
+    const asked: string[] = [];
+    setTransport({ ...nativeTransport, kind: "relay", fetch: async (input) => {
+      asked.push(String(input));
+      return new Response("# notes", { headers: { "content-type": "application/octet-stream" } });
+    } });
+    const file = await pcFile("/api/fs/file?path=%2Fprivate%2Ftmp%2Fnotes.md", "notes.md", "text/markdown");
+    expect(asked).toEqual(["/api/fs/file?path=%2Fprivate%2Ftmp%2Fnotes.md"]);
+    expect([file.name, file.type, await file.text()]).toEqual(["notes.md", "text/markdown", "# notes"]);
+  });
+
+  test("fails on a refused read", async () => {
+    setTransport({ ...nativeTransport, fetch: async () => new Response("no", { status: 403 }) });
+    await expect(pcFile("/api/fs/file?path=%2Fx", "x", "text/plain")).rejects.toThrow("HTTP 403");
+  });
+});
+
 describe("saveInApp", () => {
+  test("hands any file to the app's saveFile", async () => {
+    const calls: [string, string, unknown][] = [];
+    environment({}, "android", [{ name: SAVE_PLUGIN, methods: ["saveFile"] }], async (plugin, method, options) => {
+      calls.push([plugin, method, options?.type]);
+      return { saved: "downloads" };
+    });
+    expect(await saveInApp(new File(["%PDF"], "report.pdf", { type: "application/pdf" }), "saveFile")).toBe("saved");
+    expect(calls).toEqual([[SAVE_PLUGIN, "saveFile", "application/pdf"]]);
+  });
+
   test("hands the app the file's name, type and exact bytes", async () => {
     const calls: [string, string, Record<string, unknown> | undefined][] = [];
     environment({}, "android", [SAVE_PLUGIN], async (plugin, method, options) => {

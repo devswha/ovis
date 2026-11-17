@@ -30,6 +30,7 @@ import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { MAX_INLINE_IMAGE_BYTES, markdownImagePreview } from "../lib/markdownImages.ts";
 import { nativeModalOver, useFocusTrap } from "../lib/useFocusTrap.ts";
 import { useAppWindow } from "../lib/install.ts";
+import { fileSaveRoute, pcFile, SAVE_MAX_BYTES, saveInApp, shareFile } from "../lib/saveImage.ts";
 import type { MarkdownBlock } from "../../shared/markdown.ts";
 import { knownPreview, parsePreviewOffThread } from "../lib/markdownPreview.ts";
 import { outlineOf } from "../lib/markdownOutline.ts";
@@ -382,6 +383,61 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
   const mediaDownload = relay && (info?.kind === "video" || info?.kind === "audio" || info?.kind === "pdf");
   const download = useResourceUrlState(info === null || mediaDownload ? null : fileUrl(info.path, paneId, true));
   const downloadHref = mediaDownload ? resource.url : download.url;
+  // Where a download link saves nothing (the Android app's WebView drops it) or would load the file
+  // over the app (the iOS app, a home-screen app), Download is a button: the file is read through
+  // the transport, then saved by the Android app to Downloads or handed to the share sheet, as the
+  // image viewer's Download does (lib/saveImage.ts). Its bytes cross the app's bridge at once, so a
+  // file past SAVE_MAX_BYTES is not offered there: the viewer says to download it on the PC.
+  const [saveRoute] = useState(fileSaveRoute);
+  const savedHere = saveRoute !== "link";
+  const savePath = info?.path ?? null;
+  const saveSrc = info === null ? null : fileUrl(info.path, paneId, false);
+  const saveType = info?.mime.split(";")[0]?.trim() ?? "";
+  const saveFits = info !== null && info.size > 0 && info.size <= SAVE_MAX_BYTES;
+  // which file, in which version: a file read for the share sheet serves only the version it is of
+  const saveVersion = info === null ? null : `${info.path}\n${info.modified}\n${info.size}`;
+  const [saveNote, setSaveNote] = useState<{ path: string; state: "saved" | "failed" | "too-large" | "update" } | null>(null);
+  // a note is about the tap that made it: another file, or this one opened again, starts without it
+  useEffect(() => setSaveNote(null), [savePath]);
+  // the share sheet opens only within the tap, so there the file is read as soon as it is known,
+  // and Download waits for it, as the image viewer's does
+  const [prepared, setPrepared] = useState<{ version: string; file: File | null } | null>(null);
+  const saving = useRef(false);
+  useEffect(() => {
+    if (saveRoute !== "share" || saveVersion === null || saveSrc === null || !saveFits) return;
+    const abort = new AbortController();
+    pcFile(saveSrc, info?.name ?? "file", saveType, abort.signal).then(
+      (file) => setPrepared({ version: saveVersion, file }),
+      () => { if (!abort.signal.aborted) setPrepared({ version: saveVersion, file: null }); },
+    );
+    return () => abort.abort();
+  }, [saveRoute, saveVersion, saveSrc, saveFits]); // eslint-disable-line react-hooks/exhaustive-deps
+  const shareReady = prepared !== null && prepared.version === saveVersion ? prepared : null;
+  // on the share route Download waits for the read; a file it never reads (too large, empty) says why at once
+  const saveWaits = saveRoute === "share" && saveFits && shareReady === null;
+  const saveHere = (): void => {
+    if (savePath === null || saveSrc === null || saving.current) return;
+    const note = (state: "saved" | "failed" | "too-large" | "update" | null) => setSaveNote(state === null ? null : { path: savePath, state });
+    if (saveRoute === "update") { note("update"); return; }
+    if (!saveFits) { note(info !== null && info.size > SAVE_MAX_BYTES ? "too-large" : "failed"); return; }
+    let file: Promise<File>;
+    if (saveRoute === "share") {
+      if (shareReady === null) return;
+      if (shareReady.file === null) { note("failed"); return; }
+      file = Promise.resolve(shareReady.file);
+    } else file = pcFile(saveSrc, info?.name ?? "file", saveType);
+    saving.current = true;
+    note(null);
+    void file.then((read) => saveRoute === "app" ? saveInApp(read, "saveFile") : shareFile(read), () => "failed" as const).then((result) => {
+      saving.current = false;
+      if (result === "saved" || result === "failed") note(result);
+    });
+  };
+  const shownSaveNote = saveNote !== null && saveNote.path === savePath ? saveNote.state : null;
+  const saveNoteLine = shownSaveNote === null ? null : shownSaveNote === "saved"
+    ? <p className="file-viewer-note is-done" role="status">{t("Saved to Downloads.")}</p>
+    : <p className="file-viewer-note" role="alert">{shownSaveNote === "update" ? t("Update the Ovis app to download files.")
+      : shownSaveNote === "too-large" ? t("Too large to save on the phone - download on the PC") : t("Couldn't save the file.")}</p>;
   // Page | Source: over the HTML file in a dialog, in the docked panel's toolbar
   const modes = <div className="segmented file-viewer-modes" role="group" aria-label={t("Show the HTML file as")}>
     <button type="button" aria-pressed={!source} onClick={() => setSource(false)}>{t("Page")}</button>
@@ -584,7 +640,9 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
     {!page && !appWindow && <a className="icon-button file-viewer-action file-viewer-wide" href={newTabSrc ?? undefined} target="_blank" rel="noopener" aria-label={t("Open in a new tab")} title={t("Open in a new tab")}><ExternalLink aria-hidden="true" /></a>}
     {(page || markdown) && !appWindow && <a className="icon-button file-viewer-action file-viewer-wide" href={rawSrc ?? undefined} target="_blank" rel="noopener" aria-label={t("Open raw file")} title={t("Open raw file")}><Code aria-hidden="true" /></a>}
     {!page && appWindow && <CopyLinkButton href={newTabHref} />}
-    <a className="icon-button file-viewer-action file-viewer-wide" href={downloadHref ?? undefined} download={info?.name ?? true} aria-label={t("Download")} title={t("Download")}><Download aria-hidden="true" /></a>
+    {savedHere
+      ? <button type="button" className="icon-button file-viewer-action file-viewer-wide" onClick={saveHere} disabled={info === null || saveWaits} aria-label={t("Download")} title={t("Download")}><Download aria-hidden="true" /></button>
+      : <a className="icon-button file-viewer-action file-viewer-wide" href={downloadHref ?? undefined} download={info?.name ?? true} aria-label={t("Download")} title={t("Download")}><Download aria-hidden="true" /></a>}
     {canEdit && !editing && <button type="button" className="icon-button file-viewer-action" aria-label={t("Edit file")} title={t("Edit file")} onClick={() => setEditing(true)}><Pencil aria-hidden="true" /></button>}
     {copyable && !editing && <CopyFileButton text={loaded.text} sourceRef={sourceRef} onShowSource={showSourceToSelect} />}
     {!docked && <div className="file-viewer-more" ref={moreRef}>
@@ -594,7 +652,9 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
         {!page && !appWindow && <a role="menuitem" className="file-viewer-more-item" href={newTabSrc ?? undefined} target="_blank" rel="noopener" onClick={() => closeMore(true)}><ExternalLink aria-hidden="true" />{t("Open in a new tab")}</a>}
         {(page || markdown) && !appWindow && <a role="menuitem" className="file-viewer-more-item" href={rawSrc ?? undefined} target="_blank" rel="noopener" onClick={() => closeMore(true)}><Code aria-hidden="true" />{t("Open raw file")}</a>}
         {!page && appWindow && <CopyLinkButton href={newTabHref} menuItem onDone={() => closeMore(true)} />}
-        <a role="menuitem" className="file-viewer-more-item" href={downloadHref ?? undefined} download={info?.name ?? true} onClick={() => closeMore(true)}><Download aria-hidden="true" />{t("Download")}</a>
+        {savedHere
+          ? <button type="button" role="menuitem" className="file-viewer-more-item" disabled={info === null || saveWaits} onClick={() => { saveHere(); closeMore(true); }}><Download aria-hidden="true" />{t("Download")}</button>
+          : <a role="menuitem" className="file-viewer-more-item" href={downloadHref ?? undefined} download={info?.name ?? true} onClick={() => closeMore(true)}><Download aria-hidden="true" />{t("Download")}</a>}
       </div>}
     </div>}
   </>;
@@ -644,6 +704,7 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
   if (page) return (
     <main ref={surface} className="file-reader">
       {header}
+      {saveNoteLine}
       {/* the focus starts here, as in the popup: a scroll box takes Space and the arrows */}
       {withOutline(<div ref={bodyRef} className={`${bodyClass} file-reader-body`} tabIndex={-1}>{body}{openingNote}</div>)}
     </main>
@@ -655,6 +716,7 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
       <section className="file-viewer file-viewer-docked">
         {header}
         {toolbar}
+        {saveNoteLine}
         {withOutline(<div ref={bodyRef} className={bodyClass}>{body}</div>)}
       </section>
     </aside>
@@ -664,6 +726,7 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
     <div className="modal-scrim file-viewer-scrim" onMouseDown={(event) => event.target === event.currentTarget && !editChanged && onClose()}>
       <section className={virtual !== null && view === "code" ? "modal file-viewer file-viewer-virtual" : "modal file-viewer"} role="dialog" aria-modal="true" aria-label={info?.name ?? path} ref={surface} tabIndex={-1}>
         {header}
+        {saveNoteLine}
         {/* the focus starts here (a scroll box takes Space and the arrows), and moves on to a player */}
         {withOutline(<div ref={bodyRef} className={bodyClass} tabIndex={-1}>{body}{openingNote}</div>)}
       </section>
