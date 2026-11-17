@@ -91,17 +91,17 @@ const CODEX_UPDATE_MENU_TITLE = "Codex";
  *   and under, Codex 0.167 under herdr 0.9.5). Where herdr is known not to report it (`herdr` is "rest"), nothing
  *   tells its end either, and it is refused as a screen the user opened; a caller that has not read the pane's
  *   status ("unknown") leaves it to the waiting-menu refusal.
- * - The update menu is held as the folder question is: "Update now" leaves Codex's screen for npm run under Codex's
- *   own process, so a status event during the install would otherwise drain the message into the terminal, where the
- *   shell reads it once Codex exits.
+ * - The update menu is held as a screen the user opened, whatever herdr reports (rest, blocked, or not read): "Update
+ *   now" leaves Codex's screen for npm run under Codex's own process, so a status event during the install would
+ *   otherwise drain a message queued again into the terminal, where the shell reads it once Codex exits.
  */
 function codexScreenRefusal(screen: string, card: { title: string | null } | null, herdr: "blocked" | "rest" | "unknown"): HerdrError | null {
-  const updateMenu = card?.title === CODEX_UPDATE_MENU_TITLE;
-  if (!codexOwnScreenOpen(screen) && !updateMenu) return null;
+  if (card?.title === CODEX_UPDATE_MENU_TITLE) return new CodexOwnScreenRefusal();
+  if (!codexOwnScreenOpen(screen)) return null;
   const waiting = (): HerdrError => new HerdrError("agent_blocked", "The agent is waiting for an answer in the terminal");
   if (herdr === "blocked") return waiting();
   if (card === null || registry.waits("codex", screen)) return new CodexOwnScreenRefusal();
-  return herdr === "rest" && (CODEX_FOLDER_QUESTION_RE.test(card.title ?? "") || updateMenu) ? new CodexOwnScreenRefusal() : waiting();
+  return herdr === "rest" && (CODEX_FOLDER_QUESTION_RE.test(card.title ?? "")) ? new CodexOwnScreenRefusal() : waiting();
 }
 type PiTypedReceipt = { owner: Client; resumeKey?: string; message: PendingMessage; match: string; template: boolean; identity: PendingIdentity; anchor: PiDeliveryAnchor | null };
 /** a first message refused before anything was typed because its connection could not type it yet stays queued for its next attach or turn */
