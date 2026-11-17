@@ -115,6 +115,8 @@ const EXPECTED: Record<string, Record<string, InputRowState>> = {
   },
   pi: {
     "draft-empty-119": "ready", "draft-typed-119": "draft", "draft-slash-119": "gone",
+    // pi 1.5.2 with pi-powerline-footer 0.22.0, its status bar above the editor
+    "powerline-draft-empty-200": "ready", "powerline-draft-typed-200": "draft", "powerline-draft-multiline-200": "draft",
     "settings-idle-119": "ready", "settings-idle-40": "ready", "settings-open-119": "gone", "settings-open-40": "gone",
     "settings-closed-119": "ready", "settings-closed-40": "ready",
     "tree-open-119": "gone", "tree-open-40": "gone", "resume-open-119": "gone", "resume-open-40": "gone",
@@ -438,6 +440,16 @@ describe("the chat send's read of the same screens (shared/input-row.ts)", () =>
     // their autocomplete moves the box out of its recorded place: not made out, so not refused
     expect(typed("pi", "pi/draft-slash-119.ansi")).toBeFalse();
     expect(typed("omo", "omo/draft-slash-119.ansi")).toBeFalse();
+  });
+
+  test("pi's editor drawn by pi-powerline-footer, its status bar above it, is read as pi's own", () => {
+    const screen = (name: string): ScreenSnapshot => screenFromAnsi(readFileSync(join(FIXTURES, `pi/powerline-${name}-200.ansi`), "utf8"));
+    // a chat message pasted over a typed `2` was sent and recorded as `2…`, so its receipt never matched
+    expect(inputRowState("pi", screen("draft-typed"))).toBe("draft");
+    expect(typedDraft("pi", screen("draft-typed"))).toBeTrue();
+    expect(typedDraft("pi", screen("draft-multiline"))).toBeTrue();
+    expect(inputRowState("pi", screen("draft-empty"))).toBe("ready");
+    expect(typedDraft("pi", screen("draft-empty"))).toBeFalse();
   });
 
   test("pi's editor holding a line typed with leading spaces is a draft to the send, still a dialog's row to the peek", () => {
