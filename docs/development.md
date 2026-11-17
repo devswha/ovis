@@ -1434,11 +1434,13 @@ fails on a stale image instead of downloading replacements. Rebuild the image af
 its pins; its Bun pin must match `.github/actions/setup-ci/action.yml`, and its Playwright pin
 must match `bun.lock`.
 
-The composite setup action used by `ci.yml`, `pages.yml` and `release.yml` keeps Bun's dependency
+The composite setup action (`.github/actions/setup-ci`) keeps Bun's dependency
 cache in `.ci-cache/bun`. Only GitHub-hosted jobs restore/save that cache remotely: on the measured
 self-hosted connection, downloading the archive took longer than a fresh dependency install.
 Self-hosted jobs install directly from the lockfile without transferring a remote dependency cache.
-`cache: none` restores and saves none, for every job of a run that publishes or signs.
+`cache: none` restores and saves none: for every job of a run in which a job that publishes or signs takes an
+artifact, and for a job that publishes, signs or holds a secret itself (the relay deploy job, say, while the
+`ci.yml` its workflow calls keeps its caches).
 Hosted browsers use
 `.ci-cache/playwright`; self-hosted browsers come from the image. Neither cache restores a
 home-directory archive across different workspace depths. Tool/browser preparation no longer

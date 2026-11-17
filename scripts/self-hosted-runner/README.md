@@ -505,8 +505,8 @@ Every job of `.github/workflows` as of this change (2026-11-17). LIGHT is the li
 fork's pull request gets `ubuntu-24.04`; otherwise main takes `CI_MAIN_SELF_HOSTED_LABELS`, then
 `CI_LIGHT_LABELS`, `CI_SELF_HOSTED_LABELS`, `["self-hosted","self-hosted-ovis"]`); ROUTE is
 `scripts/ci-runner-route.sh`'s output; MAC is the macOS job's expression (`CI_MAC_LABELS` in ci.yml's own
-runs off main, else `macos-15`); VAR is `CI_SELF_HOSTED_LABELS`, else `ubuntu-24.04`; HO is the
-`hosted_only` prefix, taken only in `pages.yml`'s call. Write permissions without "(workflow)" are the
+runs off main, else `macos-15`); HO is the `hosted_only` prefix, taken in `pages.yml`'s and
+`release-validate.yml`'s calls. Write permissions without "(workflow)" are the
 job's own; a call's jobs are listed under its workflow. No test reads this table; the test above holds
 the rules.
 

@@ -228,7 +228,7 @@ const READ_KEYS = [
 ];
 
 /** The inputs of an action or a call that these tests read; any other input name is the action's own. */
-const READ_INPUTS = ["cache", "no-cache", "package-manager-cache", "hosted_only"];
+const READ_INPUTS = ["cache", "no-cache", "package-manager-cache", "hosted_only", "artifact-ids", "run-id", "github-token", "repository"];
 
 /**
  * Which keys of the mapping at `path` must be written as these tests read them. A map of the user's own names (a job
@@ -307,19 +307,37 @@ function runJobs(workflows: Workflows, root: string): { file: string; id: string
  */
 const mixedCondition = (condition: string): boolean => /\$\{\{|\}\}/.test(condition.trim().replace(/^\$\{\{([\s\S]*)\}\}$/, "$1"));
 
+const MIXED = "mixes an expression with text, which GitHub reads as a string, always true";
+
+/** A step's inputs by name as the runner reads them, without regard to case; null when two of them differ only in case. */
+function stepInputs(step: AnyStep): Record<string, unknown> | null {
+  const entries = Object.entries(step.with ?? {}).map(([key, value]): [string, unknown] => [key.toLowerCase(), value]);
+  return new Set(entries.map(([key]) => key)).size === entries.length ? Object.fromEntries(entries) : null;
+}
+
+/** Why the conditions of `job` and its steps are not each one expression or plain text: a mixed `if` is always true. */
+function conditionProblems(job: AnyJob): string[] {
+  return [
+    ...(job.if !== undefined && mixedCondition(job.if) ? [`job if ${JSON.stringify(job.if)} ${MIXED}`] : []),
+    ...(job.steps ?? []).flatMap((step, index) => (step.if !== undefined && mixedCondition(step.if) ? [`step ${step.name ?? step.id ?? step.uses ?? index} if ${JSON.stringify(step.if)} ${MIXED}`] : [])),
+  ];
+}
+
 /** How `step` could restore an Actions cache: anything but a reviewed off form (under a call that passes hosted_only: true, its forms too). */
 function cacheStepProblems(step: AnyStep, hostedOnly: boolean): string[] {
   const name = action(step.uses!);
-  const cache = step.with?.["cache"];
+  const inputs = stepInputs(step);
+  if (inputs === null) return [`${name} has inputs that differ only in case`];
+  const cache = inputs["cache"];
   if (name === "./.github/actions/setup-ci") {
     return cache === "none" || (hostedOnly && typeof cache === "string" && NO_CACHE_FORM.test(cache)) ? [] : [`setup-ci cache ${JSON.stringify(cache ?? "save (default)")} is neither none nor the hosted_only form under a call that passes hosted_only: true`];
   }
   if (name === "actions/cache" || name === "actions/cache/restore") {
-    if (mixedCondition(step.if ?? "")) return [`${name} if ${JSON.stringify(step.if)} mixes an expression with text, which GitHub reads as a string, always true`];
+    if (mixedCondition(step.if ?? "")) return []; // conditionProblems names it
     return hostedOnly && topLevelTerms(step.if ?? "").includes("!inputs.hosted_only") ? [] : [`${name} if ${JSON.stringify(step.if ?? null)} has no top-level && !inputs.hosted_only term under a call that passes hosted_only: true`];
   }
-  if (name === "oven-sh/setup-bun") return step.with?.["no-cache"] === true ? [] : ["oven-sh/setup-bun without no-cache: true"];
-  if (name === "actions/setup-node") return step.with?.["package-manager-cache"] === false && cache === undefined ? [] : ["actions/setup-node without package-manager-cache: false, or with a cache input"];
+  if (name === "oven-sh/setup-bun") return inputs["no-cache"] === true ? [] : ["oven-sh/setup-bun without no-cache: true"];
+  if (name === "actions/setup-node") return inputs["package-manager-cache"] === false && cache === undefined ? [] : ["actions/setup-node without package-manager-cache: false, or with a cache input"];
   return cache === undefined ? [] : [`${name} has a cache input`];
 }
 
@@ -328,12 +346,13 @@ function privilegedJobProblems(workflows: Workflows): string[] {
   return Object.entries(workflows).flatMap(([file, workflow]) =>
     Object.entries(workflow.jobs)
       .filter(([, job]) => job.uses === undefined && privileges(workflows, file, job).length > 0)
-      .flatMap(([id, job]) =>
-        (job.steps ?? []).filter((step) => step.uses !== undefined).flatMap((step) => [
+      .flatMap(([id, job]) => [
+        ...conditionProblems(job).map((problem) => `${file} ${id}: ${problem}`),
+        ...(job.steps ?? []).filter((step) => step.uses !== undefined).flatMap((step) => [
           ...(reviewed(step.uses!) ? [] : [`${file} ${id}: uses ${step.uses}, which is not a reviewed action reference`]),
           ...cacheStepProblems(step, false).map((problem) => `${file} ${id}: ${problem}`),
         ]),
-      ),
+      ]),
   );
 }
 
@@ -347,14 +366,15 @@ function runProblems(workflows: Workflows, root: string): string[] {
     if (!hostedLiteral(job) && !(hostedOnly && prefixed !== null && GITHUB_HOSTED_LABELS.includes(prefixed[1]!))) {
       problems.add(`${where}: runs-on ${JSON.stringify(runsOn)} is neither a listed hosted label nor the hosted_only form under a call that passes hosted_only: true`);
     }
+    for (const problem of conditionProblems(job)) problems.add(`${where}: ${problem}`);
     for (const step of job.steps ?? []) {
       if (step.uses === undefined) continue;
       if (!reviewed(step.uses)) problems.add(`${where}: uses ${step.uses}, which is not a reviewed action reference`);
       for (const problem of cacheStepProblems(step, hostedOnly)) problems.add(`${where}: ${problem}`);
-      // rule A only: a download by id or from another run or repository is a form these runs do not use
+      // a whole-run run takes its own artifacts: a download by id, or from another run or repository, is a form it does not use
       if (action(step.uses) === "actions/download-artifact") {
         for (const input of ["artifact-ids", "run-id", "github-token", "repository"]) {
-          if (step.with?.[input] !== undefined) problems.add(`${where}: actions/download-artifact with ${input}, a form these runs do not use`);
+          if (stepInputs(step)?.[input] !== undefined) problems.add(`${where}: actions/download-artifact with ${input}, a form these runs do not use`);
         }
       }
     }
@@ -367,7 +387,11 @@ function setupCiCacheProblems(steps: AnyStep[]): string[] {
   return steps
     .filter((step) => step.uses !== undefined && action(step.uses).startsWith("actions/cache"))
     .filter((step) => mixedCondition(step.if ?? "") || !topLevelTerms(step.if ?? "").some((term) => term === "inputs.cache == 'save'" || term === "inputs.cache == 'restore'"))
-    .map((step) => `setup-ci ${step.name ?? step.uses}: if ${JSON.stringify(step.if ?? null)} has no top-level && inputs.cache == 'save' or 'restore' term, so it can run under cache: none`);
+    .map((step) =>
+      mixedCondition(step.if ?? "")
+        ? `setup-ci ${step.name ?? step.uses}: if ${JSON.stringify(step.if)} ${MIXED}`
+        : `setup-ci ${step.name ?? step.uses}: if ${JSON.stringify(step.if ?? null)} has no top-level && inputs.cache == 'save' or 'restore' term, so it can run under cache: none`,
+    );
 }
 
 /** Whether a job may write Pages: a `pages` write scope, `write-all`, or anything the test counts as write for every scope. */
@@ -507,6 +531,12 @@ describe("jobs that hold a write permission, an environment or a secret", () => 
     expect(privilegeProblems(repository)).toEqual([]);
   });
 
+  test("no if in any workflow or in setup-ci mixes an expression with text", () => {
+    const conditions = [...Object.values(repository).flatMap((workflow) => Object.values(workflow.jobs).flatMap((job) => [job.if, ...(job.steps ?? []).map((step) => step.if)])), ...setupCi.runs.steps.map((step) => step.if)].filter((condition): condition is string => typeof condition === "string");
+    expect(conditions.length).toBeGreaterThan(100);
+    expect(conditions.filter(mixedCondition)).toEqual([]);
+  });
+
   test("every one uses only reviewed actions at their exact references, and restores no Actions cache", () => {
     expect(privilegedJobProblems(repository)).toEqual([]);
   });
@@ -625,6 +655,9 @@ describe("jobs that hold a write permission, an environment or a secret", () => 
 
 
   const ruleTwo: [string, Workflows, string[]][] = [
+    ["refuses a mixed if on a signing step", one({ "runs-on": "ubuntu-24.04", environment: "release-signing", steps: [{ name: "Sign", run: "sign", if: "${{ success() }} && true" }] }), [`x.yml job: step Sign if "\${{ success() }} && true" ${MIXED}`]],
+    ["refuses a mixed if on a privileged job", one({ "runs-on": "ubuntu-24.04", permissions: WRITE, if: "always() && ${{ github.ref == 'refs/heads/main' }}" }), [`x.yml job: job if "always() && \${{ github.ref == 'refs/heads/main' }}" ${MIXED}`]],
+    ["allows a whole-value expression and a brace-free condition", one({ "runs-on": "ubuntu-24.04", permissions: WRITE, if: "${{ github.ref == 'refs/heads/main' }}", steps: [{ name: "Sign", run: "x", if: "success() && github.ref == 'refs/heads/main'" }] }), []],
     ["refuses an action in a privileged job at a tag instead of its reviewed reference", one({ "runs-on": "ubuntu-24.04", permissions: WRITE, steps: [{ uses: "actions/download-artifact@v4" }] }), ["x.yml job: uses actions/download-artifact@v4, which is not a reviewed action reference"]],
     ["refuses an action in a privileged job that is not reviewed at all", one({ "runs-on": "ubuntu-24.04", permissions: WRITE, steps: [{ uses: "someone/fetch-artifact@0123456789012345678901234567890123456789" }] }), ["x.yml job: uses someone/fetch-artifact@0123456789012345678901234567890123456789, which is not a reviewed action reference"]],
     ["refuses setup-ci's default cache in a privileged job", one({ "runs-on": "ubuntu-24.04", permissions: WRITE, steps: [{ uses: "./.github/actions/setup-ci" }] }), ['x.yml job: setup-ci cache "save (default)" is neither none nor the hosted_only form under a call that passes hosted_only: true']],
@@ -810,10 +843,15 @@ describe("a whole-run run (a Pages run, or one whose privileged job takes an art
     ["allows a pattern download in a run that is hosted and cacheless as a whole", release(HOSTED_JOB), []],
     ["refuses setup-bun's cache in that run", release({ ...HOSTED_JOB, steps: [{ uses: "oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6", with: { "bun-version": "1.4.2" } }] }), ["rel.yml: rel.yml build: oven-sh/setup-bun without no-cache: true"]],
     ["refuses setup-node's automatic package cache in that run", release({ ...HOSTED_JOB, steps: [{ uses: "actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1", with: { "node-version": "22" } }] }), ["rel.yml: rel.yml build: actions/setup-node without package-manager-cache: false, or with a cache input"]],
-    ["refuses a download by id or from another run (rule B is not built)", release(HOSTED_JOB, { ...PUBLISH, steps: [{ uses: DOWNLOAD, with: { "artifact-ids": "${{ needs.build.outputs.id }}", "run-id": "1" } }] }), ["rel.yml: rel.yml publish: actions/download-artifact with artifact-ids, a form these runs do not use", "rel.yml: rel.yml publish: actions/download-artifact with run-id, a form these runs do not use"]],
+    ["refuses a download by artifact id or from another run, a form no whole-run run uses", release(HOSTED_JOB, { ...PUBLISH, steps: [{ uses: DOWNLOAD, with: { "artifact-ids": "${{ needs.build.outputs.id }}", "run-id": "1" } }] }), ["rel.yml: rel.yml publish: actions/download-artifact with artifact-ids, a form these runs do not use", "rel.yml: rel.yml publish: actions/download-artifact with run-id, a form these runs do not use"]],
     ["finds a download written in another spelling, and refuses it and the self-hosted sibling", release({ "runs-on": "self-hosted" }, { ...PUBLISH, steps: [{ uses: "actions//download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333" }] }), [`rel.yml: rel.yml build: runs-on "self-hosted" ${RUNS_ON}`, "rel.yml: rel.yml publish: uses actions//download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333, which is not a reviewed action reference"]],
     ["holds a push to gh-pages that takes an artifact as a whole run, though it shows none of the Pages signs", release({ "runs-on": "self-hosted" }, GH_PAGES), [`rel.yml: rel.yml build: runs-on "self-hosted" ${RUNS_ON}`]],
-    ["refuses a cache condition that mixes an expression with text: GitHub reads it as a string, always true", pages(HOSTED_JOB, { hosted_only: true }, cacheIf("${{ github.ref == 'refs/heads/main' }} && !inputs.hosted_only")), [`${CHECK}: actions/cache if "\${{ github.ref == 'refs/heads/main' }} && !inputs.hosted_only" mixes an expression with text, which GitHub reads as a string, always true`]],
+    ["refuses a cache condition that mixes an expression with text: GitHub reads it as a string, always true", pages(HOSTED_JOB, { hosted_only: true }, cacheIf("${{ github.ref == 'refs/heads/main' }} && !inputs.hosted_only")), [`${CHECK}: step ${CACHE} if "\${{ github.ref == 'refs/heads/main' }} && !inputs.hosted_only" ${MIXED}`]],
+    ["refuses a publishing job whose own if mixes an expression with text", release(HOSTED_JOB, { ...PUBLISH, if: "${{ github.ref == 'refs/heads/main' }} && always()" }), [`rel.yml: rel.yml publish: job if "\${{ github.ref == 'refs/heads/main' }} && always()" ${MIXED}`]],
+    ["reads a download's inputs without regard to case: Run-Id and Github-Token are refused", release(HOSTED_JOB, { ...PUBLISH, steps: [{ uses: DOWNLOAD, with: { "Run-Id": "1", "Github-Token": "${{ secrets.T }}" } }] }), ["rel.yml: rel.yml publish: actions/download-artifact with run-id, a form these runs do not use", "rel.yml: rel.yml publish: actions/download-artifact with github-token, a form these runs do not use"]],
+    ["refuses a download with a token or from another repository", release(HOSTED_JOB, { ...PUBLISH, steps: [{ uses: DOWNLOAD, with: { name: "x", "github-token": "${{ secrets.T }}", repository: "o/r" } }] }), ["rel.yml: rel.yml publish: actions/download-artifact with github-token, a form these runs do not use", "rel.yml: rel.yml publish: actions/download-artifact with repository, a form these runs do not use"]],
+    ["reads setup-bun's No-Cache: false as the cache on", release({ ...HOSTED_JOB, steps: [{ uses: "oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6", with: { "bun-version": "1.4.2", "No-Cache": false } }] }), ["rel.yml: rel.yml build: oven-sh/setup-bun without no-cache: true"]],
+    ["refuses an action's inputs that differ only in case", release({ ...HOSTED_JOB, steps: [{ uses: "oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6", with: { "no-cache": true, "No-Cache": false } }] }), ["rel.yml: rel.yml build: oven-sh/setup-bun has inputs that differ only in case"]],
   ];
   for (const [name, workflows, problems] of consumers) {
     test(name, () => {
@@ -827,6 +865,6 @@ describe("a whole-run run (a Pages run, or one whose privileged job takes an art
   });
 
   test("refuses a setup-ci cache condition that mixes an expression with text", () => {
-    expect(setupCiCacheProblems([{ name: "Cache Bun dependencies", uses: CACHE, if: "${{ always() }} && inputs.cache == 'save'" }])).toEqual([`setup-ci Cache Bun dependencies: if "\${{ always() }} && inputs.cache == 'save'" has no top-level && inputs.cache == 'save' or 'restore' term, so it can run under cache: none`]);
+    expect(setupCiCacheProblems([{ name: "Cache Bun dependencies", uses: CACHE, if: "${{ always() }} && inputs.cache == 'save'" }])).toEqual([`setup-ci Cache Bun dependencies: if "\${{ always() }} && inputs.cache == 'save'" ${MIXED}`]);
   });
 });
