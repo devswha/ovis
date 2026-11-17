@@ -92,6 +92,7 @@ describe("parallel browser script deadline", () => {
           sent.push(`${name} ${pid}`);
           if (pid === 11 || (pid === 12 && name === "SIGKILL")) alive.delete(pid);
         }
+        return [];
       },
       running: (pid) => alive.has(pid),
       command: (pid) => `stub-${pid}`,
@@ -108,7 +109,7 @@ describe("parallel browser script deadline", () => {
     let killed = false;
     const lateIo: StopIo = {
       processes: async () => [...late],
-      signal: (_pids, name) => { if (name === "SIGKILL") killed = true; },
+      signal: (_pids, name) => { if (name === "SIGKILL") killed = true; return []; },
       // gone at the second look after SIGKILL
       running: (() => { let looks = 0; return (pid: number) => !(killed && ++looks > 1) && late.has(pid); })(),
       command: () => "slow",
@@ -116,6 +117,57 @@ describe("parallel browser script deadline", () => {
     };
     expect(await stopRun(lateIo, new Promise(() => {}))).toEqual([]);
     expect(stopReport("Timed out after 5s", [])).toBe("Timed out after 5s; what it started was stopped.");
+  });
+
+  it("kills and names a process the run forks after the first look, and not a pid that was reused", async () => {
+    // 12 ignores SIGTERM and forks 14 when SIGKILL lands; 14 ends on SIGKILL, and it forks 15, which no signal ends
+    const alive = new Set([12]);
+    const marked = new Set([12]);
+    const sent: string[] = [];
+    const io: StopIo = {
+      processes: async () => [...marked].filter((pid) => alive.has(pid)),
+      signal: (pids, name) => {
+        for (const pid of pids) {
+          sent.push(`${name} ${pid}`);
+          if (name !== "SIGKILL") continue;
+          if (pid === 12) { alive.delete(12); alive.add(14); marked.add(14); }
+          if (pid === 14) { alive.delete(14); alive.add(15); marked.add(15); }
+        }
+        return [];
+      },
+      running: (pid) => alive.has(pid),
+      command: (pid) => `stub-${pid}`,
+      graceMs: 50,
+    };
+    const survivors = await stopRun(io, new Promise(() => {}));
+    expect(sent).toEqual(["SIGTERM 12", "SIGKILL 12", "SIGKILL 14", "SIGKILL 15"]);
+    expect(survivors).toEqual(["15 stub-15"]);
+    // 31 ends on SIGKILL and its pid is taken by an unrelated process, which is not the run's (no mark)
+    let ended = false;
+    const reuseIo: StopIo = {
+      processes: async () => (ended ? [] : [31]),
+      signal: (_pids, name) => { if (name === "SIGKILL") ended = true; return []; },
+      running: (pid) => pid === 31,
+      command: () => "unrelated-daemon",
+      graceMs: 50,
+    };
+    expect(await stopRun(reuseIo, new Promise(() => {}))).toEqual([]);
+  });
+
+  it("does not take a signal the system refused (EPERM) for a stop", async () => {
+    // 41 is refused every signal and its liveness check is refused too, so it reads as not running; 42 ends on SIGTERM
+    const alive = new Set([41, 42]);
+    const io: StopIo = {
+      processes: async () => [...alive],
+      signal: (pids, name) => {
+        if (name === "SIGTERM" && pids.includes(42)) alive.delete(42);
+        return pids.filter((pid) => pid === 41);
+      },
+      running: () => false,
+      command: (pid) => `stub-${pid}`,
+      graceMs: 50,
+    };
+    expect(await stopRun(io, new Promise(() => {}))).toEqual(["41 stub-41"]);
   });
 
   it("reads its bound as positive seconds and refuses anything else", () => {

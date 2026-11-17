@@ -258,10 +258,15 @@ async function descendants(root: number): Promise<number[]> {
   return found;
 }
 
-const signal = (pids: number[], name: NodeJS.Signals): void => {
+/** Signals `pids`; resolves with those the system refused (EPERM), which are not known to have stopped. */
+const signal = (pids: number[], name: NodeJS.Signals): number[] => {
+  const refused: number[] = [];
   for (const pid of pids) {
-    try { process.kill(pid, name); } catch { /* already gone */ }
+    try { process.kill(pid, name); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EPERM") refused.push(pid);
+    }
   }
+  return refused;
 };
 
 /** Resolves true when `done` settles within `ms`, false at the bound. */
@@ -276,7 +281,8 @@ function within(done: Promise<unknown>, ms: number): Promise<boolean> {
 /** What stopRun reads and signals: the real process table, or a test's stand-in. */
 export interface StopIo {
   processes(): Promise<number[]>;
-  signal(pids: number[], name: NodeJS.Signals): void;
+  /** Sends `name` to `pids`; returns the ones the system refused (EPERM), which are not known to have stopped. */
+  signal(pids: number[], name: NodeJS.Signals): number[];
   running(pid: number): boolean;
   command(pid: number): string;
   graceMs: number;
@@ -288,24 +294,36 @@ export interface StopIo {
  * ignores SIGTERM and writes elsewhere. The processes are read again before each signal, so a pid
  * freed since is not signalled (on Linux the mark is checked on the process itself). A killed
  * process ends when the kernel next runs it, which on a loaded machine is not at once, so it waits
- * one more grace for them to go. Resolves with what still runs then, as `<pid> <command>`: none
- * when the run was stopped.
+ * one more grace for them to go, reading the run's processes again and killing any that appeared
+ * since (a child forked while SIGKILL was landing). Resolves with what the last read found still
+ * running, or refused a signal (permission denied is not a stop), as `<pid> <command>`: none when
+ * the run was stopped.
  */
 export async function stopRun(io: StopIo, finished: Promise<unknown>): Promise<string[]> {
-  io.signal(await io.processes(), "SIGTERM");
+  const refused = new Set(io.signal(await io.processes(), "SIGTERM"));
   await within(finished, io.graceMs);
-  const left = await io.processes();
-  if (left.length === 0) return [];
-  io.signal(left, "SIGKILL");
+  const first = await io.processes();
+  if (first.length === 0) return [];
+  for (const pid of io.signal(first, "SIGKILL")) refused.add(pid);
   await within(finished, io.graceMs);
+  const killed = new Set(first);
   const deadline = Date.now() + io.graceMs;
-  while (left.some(io.running) && Date.now() < deadline) await Bun.sleep(25);
-  return left.filter(io.running).map((pid) => `${pid} ${io.command(pid)}`);
+  for (;;) {
+    // each read is of the run's own processes, so one forked since the last read is killed too and a
+    // pid freed and reused is not named
+    const left = await io.processes();
+    const fresh = left.filter((pid) => !killed.has(pid));
+    for (const pid of io.signal(fresh, "SIGKILL")) refused.add(pid);
+    for (const pid of fresh) killed.add(pid);
+    const alive = left.filter((pid) => io.running(pid) || refused.has(pid));
+    if (Date.now() >= deadline || (fresh.length === 0 && alive.length === 0)) return alive.map((pid) => `${pid} ${io.command(pid)}`);
+    if (fresh.length === 0) await Bun.sleep(25);
+  }
 }
 
-/** Whether `pid` still runs; a zombie, ended but not yet reaped by its parent, does not. */
+/** Whether `pid` still runs; a zombie, ended but not yet reaped by its parent, does not, and a refused check (EPERM) is no proof of a stop. */
 function running(pid: number): boolean {
-  try { process.kill(pid, 0); } catch { return false; }
+  try { process.kill(pid, 0); } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
   try { return readFileSync(`/proc/${pid}/stat`, "utf8").replace(/^.*\) /s, "")[0] !== "Z"; } catch { return true; }
 }
 
