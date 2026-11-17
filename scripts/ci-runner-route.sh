@@ -55,19 +55,21 @@ api() {
 }
 
 # Prints "<longest wait> <live>": the seconds the longest-waiting queued job of the pool has waited for a
-# runner (a day at most: GitHub drops it then), and how many of its jobs started within the last hour
-# are running. A job "in progress" for longer is a stale record (some stay so for days), not a runner.
+# runner (a day at most: GitHub drops it then), and how many jobs that can only run on the pool's
+# label and started within the last hour are running. A job "in progress" for longer is a stale record
+# (some stay so for days), not a runner; so is a run nothing has updated for a day, which is not read.
 pool_jobs() {
   local ids id jobs counts wait live longest=0 running=0
   ids=$(for status in in_progress queued; do
-    api "repos/$REPOSITORY/actions/runs?status=$status&per_page=100" | jq '.workflow_runs[].id' || exit 1
+    api "repos/$REPOSITORY/actions/runs?status=$status&per_page=100" | jq '.workflow_runs[] | select(now - (.updated_at | fromdateiso8601) < 86400) | .id' || exit 1
   done) || return 1
   for id in $ids; do
     jobs=$(api "repos/$REPOSITORY/actions/runs/$id/jobs?filter=latest&per_page=100") || return 1
     counts=$(jq -s -r -e --argjson pool "$pool_labels" --argjson live "$live_job" '[.[].jobs[]
       | select([.labels[] | ascii_downcase] | index("self-hosted") != null and all(.[]; . as $x | $pool | index($x) != null))] as $ours
       | ([$ours[] | select(.status == "queued") | now - (.created_at | fromdateiso8601) | select(. < 86400)] | max // 0 | floor) as $wait
-      | ([$ours[] | select(.status == "in_progress" and now - (.started_at | fromdateiso8601) < $live)] | length) as $running
+      | ([$ours[] | select(.status == "in_progress" and ([.labels[] | ascii_downcase] | index("self-hosted-ovis") != null)
+          and now - (.started_at | fromdateiso8601) < $live)] | length) as $running
       | "\($wait) \($running)"' <<<"$jobs") || return 1
     read -r wait live <<<"$counts"
     if (( wait > longest )); then longest=$wait; fi

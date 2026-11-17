@@ -304,7 +304,9 @@ old; one it cannot even move is emptied where it is, and logged once a day while
 default label. A same-repository pull request goes there too, and GitHub-hosted only when a job has
 waited more than four minutes for that label, or more than a minute while none of its jobs runs (no
 runner looks online). There is no runner count to keep up to date: a host that takes no more work
-simply leaves jobs queued, and the next run overflows. The repository variable overrides the choice:
+simply leaves jobs queued, and the next run overflows. Detect changes, which makes that choice, runs on
+the same label unless `CI_LIGHT_LABELS` names others, so with every runner gone a run waits there:
+then set `CI_SELF_HOSTED_LABELS` to `"ubuntu-24.04"`. The repository variable overrides the choice:
 
 ```sh
 gh variable set CI_SELF_HOSTED_LABELS --body '"ubuntu-24.04"'   # PC offline: everything GitHub-hosted

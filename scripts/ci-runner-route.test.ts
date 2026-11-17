@@ -43,11 +43,11 @@ const running = (count: number, labels = ovis, startedAgo = 120): Job[] =>
 const waiting = (count: number, seconds: number, labels = ovis): Job[] =>
   Array.from({ length: count }, () => ({ status: "queued", labels, created_at: ago(seconds), started_at: ago(seconds) }));
 
-function actions(state: { in_progress?: Record<number, Job[]>; queued?: Record<number, Job[]> }): string {
+function actions(state: { in_progress?: Record<number, Job[]>; queued?: Record<number, Job[]> }, updatedAgo = 30): string {
   const dir = tempDir();
   for (const status of ["in_progress", "queued"] as const) {
     const runs = state[status] ?? {};
-    writeFileSync(join(dir, `${status}.json`), JSON.stringify({ workflow_runs: Object.keys(runs).map((id) => ({ id: Number(id) })) }));
+    writeFileSync(join(dir, `${status}.json`), JSON.stringify({ workflow_runs: Object.keys(runs).map((id) => ({ id: Number(id), updated_at: ago(updatedAgo) })) }));
     for (const [id, jobs] of Object.entries(runs)) writeFileSync(join(dir, `jobs-${id}.json`), JSON.stringify({ jobs }));
   }
   return dir;
@@ -124,6 +124,12 @@ describe.skipIf(process.platform === "win32")("CI runner route", () => {
       expect(routed({ ...pr, FAKE_GH: actions({ in_progress: { 1: running(1) }, queued: { 2: waiting(1, 90_000) } }) })).toEqual(ovis);
     });
 
+    it("does not read the jobs of a run nothing has updated for a day", () => {
+      const stale = actions({ queued: { 7: waiting(1, 300) } }, 90_000);
+      expect(routed({ ...pr, FAKE_GH: stale })).toEqual(ovis);
+      expect(readFileSync(join(stale, "calls"), "utf8")).not.toContain("/runs/7/jobs");
+    });
+
     it("goes hosted after a minute when no job of theirs is running: no runner looks online", () => {
       const result = route({ ...pr, FAKE_GH: actions({ queued: { 1: waiting(1, 90) } }) });
       expect(result.stdout).toBe('linux="ubuntu-24.04"\nfast="ubuntu-24.04"\n');
@@ -132,13 +138,15 @@ describe.skipIf(process.platform === "win32")("CI runner route", () => {
       expect(routed({ ...pr, FAKE_GH: actions({ in_progress: { 1: running(1) }, queued: { 2: waiting(1, 90) } }) })).toEqual(ovis);
       const stale = running(3, ovis, 2 * 86_400);
       expect(routed({ ...pr, FAKE_GH: actions({ in_progress: { 1: stale }, queued: { 2: waiting(1, 90) } }) })).toBe("ubuntu-24.04");
+      const anywhere = [...running(1, ["self-hosted"]), ...running(1, ["self-hosted", "linux", "x64"])];
+      expect(routed({ ...pr, FAKE_GH: actions({ in_progress: { 1: anywhere }, queued: { 2: waiting(1, 90) } }) })).toBe("ubuntu-24.04");
     });
 
     it("reads the jobs on every page", () => {
       const state = actions({ in_progress: { 1: running(1) } });
       const page = (jobs: Job[]) => JSON.stringify({ jobs });
       writeFileSync(join(state, "jobs-1.json"), `${page(running(4))}\n${page(waiting(1, 300))}\n`);
-      writeFileSync(join(state, "in_progress.json"), `{"workflow_runs":[]}\n{"workflow_runs":[{"id":1}]}\n`);
+      writeFileSync(join(state, "in_progress.json"), `{"workflow_runs":[]}\n{"workflow_runs":[{"id":1,"updated_at":"${ago(30)}"}]}\n`);
       const result = route({ ...pr, FAKE_GH: state });
       expect(result.stdout).toBe('linux="ubuntu-24.04"\nfast="ubuntu-24.04"\n');
       expect(result.stderr).toMatch(/has waited 30\ds/);

@@ -1360,9 +1360,10 @@ and to `ubuntu-24.04` (with the browser checks sharded) only when jobs already w
 runners. The workflow token cannot list runners, so Detect changes reads the queued and running
 jobs of every workflow that target those labels from the Actions API: one queued for more than
 four minutes (a browser part takes about 8 minutes there and 12.5 hosted, so a wait that long
-still wins), or one queued for more than a minute while none of theirs started within the last
-hour is running (no runner looks online), sends the run hosted. When the jobs cannot be read, the
-pull request stays hosted. Other events stay on `ubuntu-24.04`. The repository variable
+still wins), or one queued for more than a minute while no job that only those runners can take,
+started within the last hour, is running (no runner looks online), sends the run hosted. When the
+jobs cannot be read, the pull request stays hosted. Detect changes itself runs on those runners
+unless `CI_LIGHT_LABELS` says otherwise, so with every runner gone a run waits there instead. Other events stay on `ubuntu-24.04`. The repository variable
 `CI_SELF_HOSTED_LABELS` overrides that (labels send every same-repository pull request to the
 self-hosted runners) with another JSON array of runner labels that contains `"self-hosted"`, or with the
 JSON string `"ubuntu-24.04"` to keep every job GitHub-hosted while that PC is offline (unless
