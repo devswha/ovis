@@ -1,4 +1,10 @@
 #!/bin/sh
+#   OVIS_SIGN_IDENTITY   "Developer ID Application: …" to sign for distribution; ad hoc without it
+#   OVIS_KEYCHAIN        the keychain holding that identity, when it is not the default one
+#   OVIS_NOTARY_KEY      an App Store Connect API key (.p8) to notarize and staple the DMG, with
+#   OVIS_NOTARY_KEY_ID   its key ID and
+#   OVIS_NOTARY_ISSUER   its issuer ID
+#   OVIS_MAC_VERSION     the version shown (1.0.0), OVIS_MAC_BUILD the build number (1)
 set -eu
 cd "$(dirname "$0")"
 

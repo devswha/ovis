@@ -1,4 +1,5 @@
 name: Beta
+# The beta tags are made here only: never push a v* or beta/* tag by hand.
 on:
   workflow_run:
     workflows: [CI]
@@ -7,6 +8,7 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+# one beta at a time: a newer run waits instead of cancelling the one building (and then takes the newest green commit)
 concurrency:
   group: beta
   cancel-in-progress: false

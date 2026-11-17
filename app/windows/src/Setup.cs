@@ -42,6 +42,7 @@ namespace Ovis
         public bool NotOurs;
     }
 
+    /// <summary>What the window shows for what is on this PC; no process runs here, so tests read it all.</summary>
     internal static class Setup
     {
         public static readonly Version InstallerMinHerdr = new Version(0, 9, 0);

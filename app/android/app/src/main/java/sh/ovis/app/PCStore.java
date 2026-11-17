@@ -30,6 +30,10 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+/**
+ * The PCs this app knows, kept in SharedPreferences, as PCStore in the iOS app keeps them in
+ * UserDefaults. The WebView's cookies (a paired device's sign-in) live in its own store.
+ */
 final class PCStore {
     private static final String PREFS = "herdr";
     private static final String JS_TRIM_WHITESPACE = "[\\s\\p{Z}\\uFEFF]";

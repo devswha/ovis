@@ -1,4 +1,10 @@
 name: Desktop app
+# With a release tag (Release calls it after publishing, or run it by hand from main for an existing
+# release), it builds that tag to update itself from the feed below and attaches the installers,
+# their blockmaps and the feed files (latest-linux.yml, latest-linux-arm64.yml, latest-mac.yml,
+# latest.yml for Windows) to
+# that release. The feed is the latest release's assets, so an installed app sees a version once it
+# is GitHub's latest (docs/development.md#releasing).
 on:
   pull_request:
     paths:
@@ -53,6 +59,7 @@ jobs:
           - { target: win32-x64, os: windows-2025 }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 75
+    # the steps are bash on every runner (Git Bash on Windows)
     defaults:
       run:
         shell: bash
@@ -88,6 +95,8 @@ jobs:
       - name: Install the app's packages
         working-directory: app/electron
         run: bun install --frozen-lockfile
+      # pull requests run the app's tests; a release build of a tag main already tested only builds,
+      # so a flaky test cannot hold back the release (and Ovis.dmg and Ovis.exe, which wait for it)
       - name: Unit tests
         if: inputs.tag == ''
         working-directory: app/electron

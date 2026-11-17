@@ -55,7 +55,16 @@ jobs:
           else
             printf 'green=false\nrun=\n' >> "$GITHUB_OUTPUT"
           fi
-  # a job that may fail reports success either way: the verdict reads the answer its `passed` step writes
+  # ci.yml's Fast checks once more, for a release that main's run stands in for. That run's own Fast
+  # checks ran where a push to main runs it, the self-hosted PC, whose container has no pwsh, no
+  # setfacl and no process of another user: the unit tests that need one skip themselves there. Here
+  # they run on GitHub's image whatever the runner variables say. The steps are ci.yml's `fast` job,
+  # the artifact's name and the last step's answer aside: scripts/release-validate-workflow.test.ts
+  # fails when the two differ.
+  # It starts with the question, not after it: main's run may still be going, and these minutes
+  # would come on top of that wait. When the answer is no, ci.yml runs Fast checks of its own and
+  # this job's is not read, so it may fail without failing the run; the verdict then reads the
+  # answer its `passed` step writes, since a job that may fail reports success either way.
   fast:
     name: Fast checks (GitHub-hosted)
     if: ${{ !inputs.revalidate }}

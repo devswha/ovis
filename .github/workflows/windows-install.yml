@@ -1,4 +1,8 @@
 name: Windows install
+# A pull request that touches what an install runs installs its own commit. Once a week the README's
+# command installs the latest release, and the release before it updates to it: herdr's and Bun's
+# installers change without a commit here. Everything comes from the network, so this is not a
+# required check.
 on:
   pull_request:
     paths:
