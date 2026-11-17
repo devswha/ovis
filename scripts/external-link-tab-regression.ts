@@ -3,10 +3,6 @@ import { join } from "node:path";
 import { chromium, type BrowserContext, type Page } from "playwright-core";
 import { chromePath } from "./chrome-path.ts";
 
-// The app's own link opener (src/lib/terminalFileLinks.ts) in a real Chromium: with "Reuse tab for
-// external links" on, a second link replaces the first one's tab; off, every link gets a tab of its
-// own with no opener. The page that clicks is served on 127.0.0.1 with Ovis's Referrer-Policy and
-// the links on localhost, so the tab is another site's, as an agent's link is. Loopback only.
 const built = await Bun.build({ entrypoints: [join(import.meta.dir, "../src/lib/terminalFileLinks.ts")], format: "esm", target: "browser" });
 assert.ok(built.success, built.logs.join("\n"));
 const opener = await built.outputs[0]!.text();
@@ -27,14 +23,12 @@ const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
   return new Response("not found", { status: 404 });
 } });
 
-/** Clicks `button` and resolves with the page that then shows `path`, the tab it opened or the one it steered. */
 async function follow(context: BrowserContext, page: Page, button: string, path: string): Promise<Page> {
   const shows = (url: URL): boolean => url.pathname === path;
   const waits = [
     context.waitForEvent("page").then(async (tab) => { await tab.waitForURL(shows); return tab; }),
     ...context.pages().filter((tab) => tab !== page).map(async (tab) => { await tab.waitForURL(shows); return tab; }),
   ];
-  // the waits that lose, or a click that fails, still settle quietly once the context closes
   for (const wait of waits) wait.catch(() => undefined);
   await page.click(button);
   const tab = await Promise.any(waits).catch(() => { throw new Error(`no tab showed ${path} after ${button}`); });

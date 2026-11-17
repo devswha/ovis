@@ -1,10 +1,3 @@
-/** Native Windows/PowerShell regression in the isolated test session. Not in the browser lane:
- * .github/workflows/windows-terminal-qa.yml runs it on a Windows runner.
- * Requires Bun, herdr on PATH and Chromium (`bun node_modules/playwright-core/cli.js install chromium`).
- * Run after `bun install --frozen-lockfile` and `bun run build`:
- *   bun scripts/windows-terminal-browser-qa.ts
- * CHROME_PATH selects an installed browser; otherwise uses Playwright's Chromium.
- * Never run with HERDR_TEST_LIVE=1. */
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -35,7 +28,6 @@ try {
   workspace = created.workspace.workspace_id;
   const pane = created.root_pane.pane_id;
   server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: join(root, "state") });
-  // The long native prompt places the mirror's hidden cursor outside a phone's viewport.
   await paneSendText(pane, 'function prompt { ("P" * 100) + "> " }; 1..120 | ForEach-Object { Write-Output ("WIN-HISTORY-{0:D3}" -f $_) }');
   await paneSendKeys(pane, ["Enter"]);
   await until(async () => (await paneRead({ paneId: pane, source: "visible", format: "text" })).text.includes("WIN-HISTORY-120"), "PowerShell output");
@@ -43,7 +35,6 @@ try {
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, hasTouch: true });
   await context.addInitScript(() => {
     localStorage.setItem("ovis:settings", JSON.stringify({ terminalWheelSpeed: 1 }));
-    // the pane menu's Original width: unchosen, a touch or narrow screen folds the wide grid and nothing pans
     localStorage.setItem("ovis:mirror-wrap", JSON.stringify(false));
   });
   const page = await context.newPage();
@@ -57,7 +48,6 @@ try {
   });
   await page.goto(`http://127.0.0.1:${server.port}/?pane=${encodeURIComponent(pane)}`);
   const host = page.locator(".pane-terminal");
-  // the rows the user sees, one line each: libghostty's while it draws, else xterm's (shown-rows.ts)
   const text = () => page.locator(shownRow()).evaluateAll((rows) => rows.map((row) => row.textContent ?? "").join("\n"));
   await until(async () => (await text()).includes("WIN-HISTORY-120"), "mirrored output");
   await host.hover();
@@ -68,9 +58,6 @@ try {
 
   await paneScroll(pane, 0);
   await until(async () => (await text()).includes("P".repeat(100)), "native prompt returns before resizing");
-  // The desktop viewport holds the whole grid, so the mount rests at its top: only the follow after
-  // the short mount settles can bring the prompt's rows into view. A position written once
-  // setViewportSize returns raced that follow, which may already have run (a slow resize on a VM).
   assert.equal(await host.evaluate((element) => element.scrollTop), 0, "the whole grid fits before resizing");
   await page.setViewportSize({ width: 390, height: 500 });
   await until(async () => await host.evaluate((element) => element.scrollWidth > element.clientWidth), "the native grid at its original width overflows a phone");
@@ -93,13 +80,9 @@ try {
   const writesBeforeTap = scrollWrites;
   await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
   await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-  // A real wheel request is the positive control: the same history writer must run before
-  // checking the tap's absence of writes, rather than passing after an arbitrary frame count.
   await host.hover();
   const scrollUrl = new URL("/api/pane/scroll", page.url()).href;
   const beforeWheelRequest = requestStarts.size;
-  // Speed 1 moves three native history lines. A tap's earlier request cannot be the control,
-  // even when its response arrives after the wheel; the pane and changed target must also match.
   const wheelWritten = page.waitForEvent("requestfinished", {
     predicate: (request) => (requestStarts.get(request) ?? 0) > beforeWheelRequest
       && request.method() === "POST" && request.url() === scrollUrl
@@ -109,8 +92,6 @@ try {
   await page.mouse.wheel(0, -1);
   const wheelRequest = await wheelWritten;
   assert.ok((await wheelRequest.response())?.ok(), "the positive-control wheel writes native history");
-  // Only a reader started after the control's entire response completed can fence the writer.
-  // requestfinished bounds body completion too; an old in-flight GET cannot satisfy this wait.
   const afterWheelRequest = requestStarts.size;
   const metricsRead = await page.waitForEvent("requestfinished", {
     predicate: (request) => (requestStarts.get(request) ?? 0) > afterWheelRequest
@@ -126,7 +107,6 @@ try {
   await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
   await until(async () => ((await paneScrollInfo(pane))?.offset_from_bottom ?? 0) > 0, "touch scrolls native history");
   console.log("PASS native Windows PowerShell touch scrolls history");
-  // a quick swipe glides on after the lift (lib/touchFling.ts): history goes back to the prompt once it has stopped
   await page.waitForFunction(() => document.querySelector("[data-touch-fling]") === null, undefined, { polling: 50, timeout: 15_000 });
   await paneScroll(pane, 0);
   await until(async () => (await text()).includes("P".repeat(100)), "return to prompt");
@@ -134,7 +114,6 @@ try {
   const pan = async (left: number) => {
     await host.evaluate((element, value) => new Promise<void>((resolve, reject) => {
       if (element.scrollLeft === value) { resolve(); return; }
-      // Registered after the app's scroll listener: resolving proves bounds were published.
       const onScroll = () => { clearTimeout(timer); resolve(); };
       const timer = setTimeout(() => {
         element.removeEventListener("scroll", onScroll);
@@ -157,12 +136,7 @@ try {
   }
   await cdp.send("Input.imeSetComposition", { text: "", selectionStart: 0, selectionEnd: 0 });
   await paneSendKeys(pane, ["Escape"]);
-  // The caret's whole cell must lie inside the phone's visible box (a cell the edge cuts counts as off
-  // screen and moves the anchor), one column short of the edge, wherever this PC's font puts the columns:
-  // the cell width is read from the long prompt's run of P's.
   await pan(0);
-  // the mirrored rows are redrawn from herdr's read, so the prompt's run of P's can be between draws at any
-  // instant: it is found and measured in the same callback, at once and again after each redraw, until it is drawn
   const { cellWidth, visibleWidth } = await host.evaluate((element, drawn) => new Promise<{ cellWidth: number; visibleWidth: number }>((resolve, reject) => {
     const measure = () => {
       const walker = document.createTreeWalker(element.querySelector(drawn)!, NodeFilter.SHOW_TEXT);
@@ -186,7 +160,6 @@ try {
     const timer = setTimeout(() => { observer.disconnect(); reject(new Error("no rendered run of the long prompt's P's to measure a cell by, within 15 s")); }, 15_000);
     observer.observe(element, { childList: true, subtree: true, characterData: true });
   }), shownRows());
-  // the cursor sits after the V's and "> ", in column count + 2
   const vs = Math.floor(visibleWidth / cellWidth) - 4;
   await paneSendText(pane, `function prompt { ("V" * ${vs}) + "> " }`);
   await paneSendKeys(pane, ["Enter"]);

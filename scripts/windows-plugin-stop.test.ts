@@ -3,12 +3,6 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-/**
- * The Windows stop path with a process table it is handed, run in a process of its own:
- * scripts/plugin.ts reads its state directory once, when first imported, and a test file beside
- * it in one `bun test` process (as on Windows, which runs the files serially in one) may have
- * imported it already with another one.
- */
 it("waits only for the stopped tree: not for a process whose parent number was reused, nor on the process table once the tree is gone (#1833)", async () => {
   const root = join(import.meta.dir, "..");
   const scratch = mkdtempSync(join(tmpdir(), "herdr windows stop stray "));

@@ -1,4 +1,3 @@
-/** A phone's New worktree sheet, on a herdr of the run's own. Run after `bun run build`. */
 import "./test-herdr.ts";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, realpathSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
@@ -11,10 +10,6 @@ import { UsageService } from "../server/usage.ts";
 import { chromePath } from "./chrome-path.ts";
 import { shownRows } from "./shown-rows.ts";
 
-// The sheet's open agent list floats over it: a stroke down on the list at its top is the list's,
-// and the sheet stays where it is. A checkout made with Shell opens its terminal: the sheet steps
-// off its history entry before the roster lists the new pane, and that step is not a Back to the
-// pane before (an agent's checkout returns only once it runs, by when the roster has it).
 const root = realpathSync(mkdtempSync(join(tmpdir(), "ovis-phone-worktree-")));
 // herdr keeps a checkout under ~/.herdr/worktrees/<repo name>: a name of the run's own shares it with no real repository
 const repo = join(root, `ovis-test-phone-worktree-${process.pid.toString(36)}`);
@@ -44,7 +39,6 @@ try {
     await page.locator(".row-sheet").getByRole("button", { name: "New worktree", exact: true }).click();
     const sheet = page.getByRole("dialog", { name: /^New worktree/ });
     await sheet.waitFor();
-    // the sheet has risen: a drag moves it from where it rests
     await page.waitForFunction(() => document.querySelector(".modal-scrim")?.getAnimations({ subtree: true }).length === 0);
 
     const agent = sheet.getByRole("combobox", { name: "Agent" });
@@ -82,9 +76,6 @@ try {
     await browser.close();
   }
 } finally {
-  // the checkout the run made goes with it: herdr removes the checkout, then its workspace. The
-  // roster says what was made, so a create whose answer never arrived is removed too.
-  // A checkout left behind fails the run after the rest is cleaned up, without hiding an earlier error.
   const leftovers: unknown[] = [];
   const snapshot = await sessionSnapshot().catch((error: unknown) => { leftovers.push(error); return null; });
   for (const workspace of snapshot?.workspaces ?? []) {
@@ -98,7 +89,7 @@ try {
     await workspaceClose(workspace.workspace_id).catch(() => undefined);
   }
   // herdr keeps the repository's folder under its worktree directory once the checkout is gone: only an empty one is ours to drop
-  try { rmdirSync(join(homedir(), ".herdr", "worktrees", basename(repo))); } catch { /* not there, or not empty: not ours */ }
+  try { rmdirSync(join(homedir(), ".herdr", "worktrees", basename(repo))); } catch {}
   for (const id of owned.reverse()) await workspaceClose(id).catch(() => {});
   server.stop();
   rmSync(root, { recursive: true, force: true });

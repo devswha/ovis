@@ -1,4 +1,3 @@
-/** Synthetic Devin SQLite -> real parser -> conversation HTTP -> real ChatView (not live pane discovery). */
 import assert from "node:assert/strict";
 import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -18,7 +17,6 @@ const output = "Synthetic inspection output: green";
 try {
   const db = new Database(dbPath);
   try {
-    // Minimal native schema and records, following server/devin.test.ts; never open a real Devin database.
     db.exec("PRAGMA journal_mode=WAL; CREATE TABLE sessions(id TEXT, working_directory TEXT, main_chain_id INTEGER, hidden INTEGER, model TEXT); CREATE TABLE message_nodes(session_id TEXT, node_id INTEGER, parent_node_id INTEGER, chat_message TEXT, created_at INTEGER); CREATE TABLE tool_call_state(session_id TEXT, tool_call_id TEXT, tool_call_json TEXT, tool_call_update_json TEXT)");
     db.query("INSERT INTO sessions VALUES (?, ?, ?, 0, NULL)").run(session, cwd, 4);
     const insert = db.query("INSERT INTO message_nodes VALUES (?, ?, ?, ?, ?)");

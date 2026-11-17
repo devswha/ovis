@@ -1,4 +1,3 @@
-/** The actual same-host web panel in a mobile popup and on desktop, without a live herdr session. */
 import assert from "node:assert/strict";
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -110,9 +109,7 @@ try {
     page.setDefaultTimeout(10_000);
     await page.goto(appUrl);
     const reportLink = page.getByRole("link", { name: "same-host report" });
-    // armed before the tap: the popup's frame is attached before its report commits, later on a busy machine
     const popupReport = page.waitForEvent("framenavigated", { predicate: (navigated) => navigated !== page.mainFrame() && navigated.url() === reportUrl });
-    // a step failing before the await leaves this wait to end with the page: its error is that step's, not this one
     popupReport.catch(() => undefined);
     await reportLink.tap();
     const dialog = page.getByRole("dialog");
@@ -205,7 +202,6 @@ try {
     await page.getByRole("dialog").waitFor({ state: "detached" });
     assert.equal(page.url(), conversationUrl, "a second shrink adds a working modal entry");
     await page.setViewportSize({ width: 1280, height: 800 });
-    // armed before the click: the panel's frame is attached before its report commits, later on a busy machine
     const docked = page.waitForEvent("framenavigated", { predicate: (navigated) => navigated !== page.mainFrame() && navigated.url() === reportUrl });
     docked.catch(() => undefined);
     await page.getByRole("link", { name: "same-host report" }).click();

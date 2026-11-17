@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, jest } from "bun:test";
 import { join } from "node:path";
 import { buildXtermSource, xtermSourcePlugin } from "./build-xterm.ts";
 
-// Exercise the patched source Vite ships, without a browser, server or herdr session.
 const source = buildXtermSource(join(import.meta.dir, ".."));
 const bundle = await Bun.build({
   entrypoints: [join(source, "browser/input/CompositionHelper.js"), join(source, "browser/CoreBrowserTerminal.js")],
@@ -19,7 +18,6 @@ const { CoreBrowserTerminal } = await load("CoreBrowserTerminal");
 beforeEach(() => { jest.useFakeTimers(); });
 afterEach(() => { jest.useRealTimers(); });
 
-/** With a terminal (never opened), keys and input go through its own handling, as on the page. */
 function editor(term?: any) {
   const sent: string[] = [];
   const textarea = Object.assign(new EventTarget(), { value: "", selectionStart: 0, selectionEnd: 0 });
@@ -29,7 +27,6 @@ function editor(term?: any) {
     { rawOptions: { screenReaderMode: false } },
     term?.coreService ?? { triggerDataEvent: (text: string) => sent.push(text) }, {});
   if (term) {
-    // what open() attaches: the textarea, its helper, and the element a key restyles
     Object.assign(term, { textarea, _compositionHelper: helper, element: { classList: { add() {}, remove() {} } } });
     term.onData((text: string) => sent.push(text));
   }
@@ -203,7 +200,6 @@ describe("xterm mobile composition input", () => {
     e.event("compositionupdate", { data: "abc" });
     e.event("compositionend", { data: "abc" });
     term.input("\x1b[D");
-    // the embedder's input is the first data its label meets (the key bar's, the Stop's)
     expect(e.sent).toEqual(["\x1b[D"]);
     jest.runAllTimers();
     expect(e.sent).toEqual(["\x1b[D", "abc"]);
@@ -221,7 +217,6 @@ describe("xterm composition placement in Firefox", async () => {
   const { CompositionHelper: FirefoxHelper } = await import(`data:text/javascript;base64,${Buffer.from(await firefox.outputs[0]!.text()).toString("base64")}`);
 
   it("keeps the text typed before a preedit from scrolling the helper textarea", () => {
-    // a 9 px terminal cell; the textarea's own font draws 8 px a character on one unwrapped line
     const style: Record<string, string> = {};
     const textarea = Object.defineProperties(Object.assign(new EventTarget(), { value: "", selectionStart: 0, selectionEnd: 0, style }), {
       clientWidth: { get: () => Math.round(parseFloat(style.width ?? "0")) },

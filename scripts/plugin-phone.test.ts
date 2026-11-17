@@ -7,11 +7,6 @@ import { quietPort } from "./quiet-port.ts";
 
 const ROOT = join(import.meta.dir, "..");
 const DNS = "pc.example.ts.net";
-/**
- * A `tailscale` that answers from files and records every call. PATH holds only its directory, so
- * the real Tailscale on the machine running the tests is never found, let alone changed; the tools
- * it runs are named by their full paths for the same reason.
- */
 const FAKE = `#!/bin/sh
 echo "$*" >> "$FAKE_TS/calls"
 case "$1 $2" in
@@ -32,13 +27,11 @@ beforeEach(() => {
   writeFileSync(join(fake, "bin", "tailscale"), FAKE);
   chmodSync(join(fake, "bin", "tailscale"), 0o755);
   writeFileSync(join(fake, "status.json"), JSON.stringify({ BackendState: "Running", Self: { DNSName: `${DNS}.`, UserID: 1 }, User: { "1": { LoginName: "me@example.com" } } }));
-  // a port nothing listens on: the app is "not running yet", which the phone step allows
   port = quietPort();
   mkdirSync(join(scratch, "config"));
 });
 afterEach(() => rmSync(scratch, { recursive: true, force: true }));
 
-/** `tailscale serve status --json` with the given HTTPS listeners, each proxying "/" to its target */
 const serving = (sites: Record<string, string>) => JSON.stringify({
   TCP: Object.fromEntries(Object.keys(sites).map((https) => [https, { HTTPS: true }])),
   Web: Object.fromEntries(Object.entries(sites).map(([https, proxy]) => [`${DNS}:${https}`, { Handlers: { "/": { Proxy: proxy } } }])),
