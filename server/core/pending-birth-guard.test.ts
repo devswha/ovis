@@ -260,6 +260,14 @@ it("holds a message when herdr reports the update menu as blocked", async () => 
   expect(listed()).toEqual(HELD_FOR_SCREEN);
 });
 
+it("holds a message when the older \"Press enter to continue\" menu is up while herdr reports Codex at rest", async () => {
+  // its Enter would pick an option, and nothing tells when it is answered
+  const older = "  Update available \u00b7 0.162.0 \u2192 0.163.0\n\n\u203a 1. Update now (runs `npm install -g @openai/codex`)\n  2. Skip\n  3. Skip until next version\n\n  Press enter to continue\n";
+  expect(await drain({ mode: "codex-queued", screen: CODEX_COMPOSER, beforeDrain: (pane) => { pane.screen = older; },
+    afterDrain: async (pane, turn) => { pane.screen = CODEX_COMPOSER; await turn(); } })).toEqual([]);
+  expect(listed()).toEqual(HELD_FOR_SCREEN);
+});
+
 it("types none of the queued messages when the screen closes between two of them: all are held in one step, in their order", async () => {
   // the first try reads the theme list; the user closes it as that read is answered, so the next try would find the composer
   expect(await drain({ mode: "codex-queued", screen: CODEX_COMPOSER, behind: 2,
