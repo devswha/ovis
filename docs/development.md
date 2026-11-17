@@ -1353,8 +1353,9 @@ JSON string `"ubuntu-24.04"` to keep every job GitHub-hosted while that PC is of
 stays on `ubuntu-24.04` unless the variable holds labels. The variable routes:
 
 - in `ci.yml`: Fast checks, Integration tests and both Browser regression jobs;
-- in `release.yml`: the preflight and server-binary jobs, and the gate of the `windows-app.yml` it
-  calls. Its jobs that hold a write token, an environment or a secret are always GitHub-hosted
+- in `release.yml`: the preflight, server-binary, publish and shell-attach jobs, and the gate and
+  attach of the `windows-app.yml` and the gate of the `mac-dmg.yml` it calls. The ones among them that
+  hold a write token or a secret move to GitHub's runners in a second pull request
   ([Security model](../scripts/self-hosted-runner/README.md#security-model)).
 
 `pages.yml` reads none of them: its run is GitHub-hosted and cacheless as a whole, the `ci.yml` its

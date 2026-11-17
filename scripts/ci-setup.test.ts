@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { topLevelTerms } from "./shell-workflow-rules.ts";
+import { topLevelTerms, unreadWorkflowFiles, workflowAndActionFiles } from "./shell-workflow-rules.ts";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const action = Bun.YAML.parse(readFileSync(join(root, ".github/actions/setup-ci/action.yml"), "utf8")) as {
@@ -17,10 +17,8 @@ type Workflow = { jobs?: Record<string, { uses?: string; steps?: Step[] }>; runs
 
 const FULL_SHA = /^[0-9a-f]{40}$/;
 const actionName = (uses: string) => uses.slice(0, uses.lastIndexOf("@"));
-const actionFiles = [
-  ...readdirSync(join(root, ".github/workflows")).filter((name) => name.endsWith(".yml")).map((name) => `.github/workflows/${name}`),
-  ".github/actions/setup-ci/action.yml",
-];
+// every workflow and action GitHub loads; a `.yaml` file or another spelling fails the test below instead of being skipped
+const actionFiles = workflowAndActionFiles().filter((path) => (path.startsWith(".github/workflows/") && path.endsWith(".yml")) || path.endsWith("/action.yml"));
 
 /** What is wrong with the action references of one workflow or composite action, step by step. */
 function auditActions(file: string, text: string) {
@@ -270,6 +268,9 @@ describe("action pins and checkout credentials", () => {
   });
 
   it("pins every external action to a full commit SHA and keeps local actions and workflows relative", () => {
+    // a workflow or action GitHub loads under another spelling (`.yaml`) would escape this audit: it fails instead
+    expect(unreadWorkflowFiles(workflowAndActionFiles())).toEqual([]);
+    expect(actionFiles).toContain(".github/actions/setup-ci/action.yml");
     const names = new Set<string>();
     for (const file of actionFiles) {
       const text = readFileSync(join(root, file), "utf8");

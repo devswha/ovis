@@ -1,8 +1,8 @@
 // Rules shared by release.yml's and shell-preview.yml's hosted-shell jobs and their tests
 // (scripts/shell-deploy-workflow.test.ts, scripts/shell-preview-workflow.test.ts).
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, linkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, linkSync, writeFileSync, type Dirent } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 
 export interface Step { name?: string; id?: string; if?: string; run?: string; uses?: string; "working-directory"?: string; env?: Record<string, string>; with?: Record<string, string> }
 export interface Job { needs?: string | string[]; if?: string; env?: Record<string, string>; "runs-on"?: unknown; environment?: string | { name: string; url?: string }; permissions?: Record<string, string>; outputs?: Record<string, string>; "timeout-minutes"?: number; uses?: string; steps?: Step[] }
@@ -30,6 +30,29 @@ export function topLevelTerms(condition: string): string[] {
     }
   }
   return [...terms, text.slice(start).trim()];
+}
+
+/**
+ * Workflow and action files GitHub loads that the workflow tests would not read: GitHub runs every `.yml` and `.yaml` file
+ * at the top of .github/workflows, and an action's metadata named `action.yml` or `action.yaml`; the tests read `.yml`
+ * and `action.yml` only, so any other spelling (`.yaml`, `.YML`) is refused instead of skipped.
+ */
+export function unreadWorkflowFiles(paths: string[]): string[] {
+  return paths.filter((path) => {
+    const name = path.slice(path.lastIndexOf("/") + 1);
+    if (/^\.github\/workflows\/[^/]+$/.test(path)) return /\.ya?ml$/i.test(name) && !name.endsWith(".yml");
+    if (path.startsWith(".github/actions/")) return /^action\.ya?ml$/i.test(name) && name !== "action.yml";
+    return false;
+  });
+}
+
+/** Every file at the top of .github/workflows and under .github/actions, as paths from the repository's root. */
+export function workflowAndActionFiles(): string[] {
+  const top = readdirSync(join(root, ".github/workflows"), { withFileTypes: true }).filter((entry) => entry.isFile()).map((entry) => `.github/workflows/${entry.name}`);
+  const actions = (readdirSync(join(root, ".github/actions"), { recursive: true, withFileTypes: true }) as Dirent[])
+    .filter((entry) => entry.isFile())
+    .map((entry) => relative(root, join(entry.parentPath, entry.name)).split("\\").join("/"));
+  return [...top, ...actions].sort();
 }
 
 /** The GitHub-hosted runner labels the workflows may name for a job that must never reach a self-hosted runner. */

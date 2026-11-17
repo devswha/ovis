@@ -67,6 +67,8 @@ runs:
       uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
       with:
         node-version: '22'
+        # setup-node caches by itself when package.json's packageManager names npm: never here
+        package-manager-cache: false
     - name: Cache Bun dependencies
       # On the measured self-hosted connection this archive costs 37–43s to restore,
       # versus 7–20s for a fresh install. Do not pay for restore/save on disposable runners.

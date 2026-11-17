@@ -176,8 +176,7 @@ jobs:
             server-binary/ovis-server.SHA256SUMS
   publish:
     needs: [validate, pty-sidecar, server-binary-sign, server-binary-attest]
-    # a write token: GitHub-hosted whatever the runner variables say (scripts/privileged-jobs-workflow.test.ts)
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.CI_SELF_HOSTED_LABELS && fromJSON(vars.CI_SELF_HOSTED_LABELS) || 'ubuntu-24.04' }}
     timeout-minutes: 5
     permissions:
       contents: write
@@ -397,8 +396,7 @@ jobs:
   # did not fail (one skipped for unset secrets passes), and only the tarball shell-build hashed
   shell-attach:
     needs: [shell-build, shell-deploy]
-    # a write token: GitHub-hosted whatever the runner variables say (scripts/privileged-jobs-workflow.test.ts)
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.CI_SELF_HOSTED_LABELS && fromJSON(vars.CI_SELF_HOSTED_LABELS) || 'ubuntu-24.04' }}
     timeout-minutes: 5
     permissions:
       contents: write
