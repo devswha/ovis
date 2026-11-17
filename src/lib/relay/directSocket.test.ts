@@ -124,6 +124,7 @@ describe("directSocketFactory", () => {
     expect(events).toEqual(["error", "close:1001:going away:true"]);
     expect(live.readyState).toBe(3);
 
+    // two already open, or not the app's page: the plugin refuses, and the socket fails as WebSocket does
     const refused = open(CARRIER);
     const failed: string[] = [];
     refused.onerror = () => failed.push("error");
@@ -170,6 +171,7 @@ describe("directSocketFactory", () => {
     socket.onclose = (event) => seen.push(`close:${event.code}`);
     plugin.opens[0]!.answer("s1");
     await settle();
+    // the plugin gives up on a page that does not keep up: past 4 MiB or 16,384 unacknowledged messages
     plugin.emit({ type: "close", id: "s1", code: 1009, reason: "receive queue full" });
     plugin.emit({ type: "message", id: "s1", kind: "text", data: "after" });
     await settle();

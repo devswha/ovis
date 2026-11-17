@@ -27,6 +27,12 @@ function writeDismissed(dismissed: readonly string[]): void {
   } catch {}
 }
 
+/**
+ * The limit on new devices is an exception too: the PC says itself whether the relay enforces passes now
+ * (`enforced`), which a relay in `enforce` does with no date or with one far ahead. While it does and the
+ * pass says `new_sessions: false`, the PC refuses every new device, so the notice shows whatever the date;
+ * while it says it does not, nothing is refused and no such notice shows.
+ */
 export function relayNoticeFromStatus(relay: RelayStatus | null | undefined, signedIn = false, now = Date.now()): RelayNoticeInfo | null | undefined {
   if (relay === undefined) return undefined;
   if (relay === null || relay.phase === "off" || relay.blocked !== null) return null;

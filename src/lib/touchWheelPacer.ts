@@ -6,6 +6,11 @@ export interface FrameClock {
   cancel(handle: number): void;
 }
 
+/**
+ * Where one gesture's reports go: `allowed` is asked immediately before each report, and a no
+ * (another pane, an observer, a lost attach) cancels everything still waiting rather than sending
+ * it later.
+ */
 export interface TouchWheelTarget {
   emit(sign: -1 | 1): void;
   allowed(): boolean;
@@ -26,7 +31,8 @@ const browserFrames: FrameClock = {
 };
 
 /**
- * The browser runs a frame's touch handlers before its animation-frame callbacks, so a report sent
+ * Reports go out only from the frame callback:
+ * the browser runs a frame's touch handlers before its animation-frame callbacks, so a report sent
  * from the handler would land in the same frame as the callback's.
  */
 export function createTouchWheelPacer(frames: FrameClock = browserFrames): TouchWheelPacer {

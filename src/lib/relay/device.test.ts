@@ -33,6 +33,7 @@ it("keeps the private key non-extractable and reuses the stored identity", async
   const offer = testOffer();
   const first = await admit(store, await getDevice(offer, store));
   const second = await getDevice(offer, store);
+  // Then the same signing key survives, without a private export.
   expect(second.private_key).toBe(first.private_key);
   expect(first.private_key.extractable).toBe(false);
   await expect(crypto.subtle.exportKey("pkcs8", first.private_key)).rejects.toThrow();
@@ -48,6 +49,7 @@ it("signs the exact message accepted by DeviceStore.matchRelay", async () => {
     if (!paired) throw new Error("Fixture pairing failed");
     const nonce = new Uint8Array(32).fill(7);
     const signature = await sign(device, nonce, device.server_id);
+    // Then the actual server verifier admits it and refuses altered context.
     expect(await server.matchRelay(paired.device.id, nonce, signature, device.server_id)).toEqual(paired.device);
     expect(await server.matchRelay(paired.device.id, nonce, signature, "34".repeat(16))).toBeNull();
     expect(await server.matchRelay(paired.device.id, new Uint8Array(32), signature, device.server_id)).toBeNull();
@@ -60,6 +62,7 @@ it("refuses a changed server key without replacing the stored identity", async (
   const offer = testOffer();
   const device = await admit(store, await getDevice(offer, store));
   const changed = { ...offer, server_public_key: testOffer().server_public_key };
+  // Then a typed error leaves the old identity intact.
   await expect(getDevice(changed, store)).rejects.toBeInstanceOf(ServerIdentityChangedError);
   expect(await store.get(offer.server_id)).toBe(device);
 });
@@ -67,12 +70,15 @@ it("refuses a changed server key without replacing the stored identity", async (
 it("saves no key for a PC before the PC admits the device", async () => {
   const store = new MemoryDeviceStore();
   const device = await getDevice(testOffer(), store);
+  // Then the key is not kept: a link whose PC never admits it takes no PC's slot.
   expect(device.device_id).toBeNull();
   expect(await store.list()).toEqual([]);
 });
 
 it("rejects malformed challenges before signing", async () => {
   const device = await getDevice(testOffer(), new MemoryDeviceStore());
+  // When a nonce or server context is invalid.
+  // Then it cannot produce an authentication signature.
   await expect(sign(device, new Uint8Array(31), device.server_id)).rejects.toThrow(TypeError);
   await expect(sign(device, new Uint8Array(32), "34".repeat(16))).rejects.toThrow(TypeError);
 });

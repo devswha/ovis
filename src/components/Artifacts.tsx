@@ -10,6 +10,12 @@ import { useSettings } from "../lib/settings.ts";
 import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import type { AgentStatus, ClaudeArtifact } from "../../shared/protocol.ts";
 
+/**
+ * The status line's chip for the pages a Claude Code session published with its Artifact tool
+ * (GET /api/pane/artifacts), beside the background tasks chip, whose look it takes
+ * (BackgroundTasks.css). A page is published during a turn, so the list is read when the pane is
+ * shown, when its status changes and when the list opens; the chip shows only once there is a page.
+ */
 export function Artifacts(props: { paneId: string; status: AgentStatus | undefined }) {
   const { settings } = useSettings();
   return settings.composerArtifacts ? <ArtifactsChip {...props} /> : null;
@@ -30,6 +36,8 @@ function ArtifactsChip({ paneId, status }: { paneId: string; status: AgentStatus
   useEffect(() => {
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    // Session discovery may outlast the route's one-second budget even for an idle pane.
+    // Keep asking while empty: there is no chip to reopen and no later status edge is promised.
     const load = (): void => {
       fetchPaneArtifacts(paneId).then((found) => {
         if (!alive) return;

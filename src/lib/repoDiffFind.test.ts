@@ -90,6 +90,7 @@ describe("find in a diff", () => {
     expect(matches.map((match) => `${match.kind} ${match.side}:${match.line}`)).toEqual(["context new:3", "deletion old:4", "addition new:4", "context new:5"]);
     expect(new Set(matches.map(matchKey)).size).toBe(4);
     expect(matchKey(matches[1]!)).not.toBe(matchKey(matches[2]!));
+    // a line starting with `--` inside a hunk is a deletion, not a header
     expect(where(["@@ -1 +0,0 @@", "--- not a header", ""].join("\n"), "not")).toEqual(["deletion old:1 3-6"]);
   });
 

@@ -6,9 +6,15 @@ import { ChatRowMemoryContext, chatRowMemory, type ChatRowMemory } from "../lib/
 import { dropPendingListScroll, listEndPadded } from "../lib/followScroll.ts";
 import { chatSelectionClipboardPayload } from "../lib/markdownClipboard.ts";
 import { usePageVisible } from "../lib/visibility.ts";
+// ChatTimeline.css is imported by ChatView: the frame and the loading state need it before this chunk
 
 const FOOTER_KEY = "\u0000footer";
 
+/**
+ * A point in the held words: a live range, which moves with them as the transcript changes, and
+ * the node and offset it was made at. Text rewritten around it (an answer streaming into the same
+ * paragraph) or the node taken away moves a live range elsewhere, and the point is then lost.
+ */
 interface Mark { readonly range: Range; readonly node: Node; readonly offset: number }
 
 function markAt(node: Node, offset: number): Mark {
@@ -179,8 +185,13 @@ export function ChatTimeline<Row extends ChatTimelineRow>(given: ChatTimelinePro
     };
   }, [scroller, listRef, positions, rowKeys, onOpen, following, manualLayout]);
 
-  // @legendapp/list 3.3.5 measures rows in a ResizeObserver callback, and its own scroll to the end
-  // lands a frame later or more: on a slow device the next change comes first (#2624, #2647).
+  // The list measures inside a ResizeObserver callback and draws its new total in the microtask React
+  // queues for it; this follow runs in a microtask queued after that one, once per batch of measurements,
+  // and puts the view at the end: the scroller's, or the list's measured one while the list pads
+  // the transcript to hold rows in place (listEndPadded). The list's own scroll to the end lands a frame later or more: on a slow device the
+  // next change comes first, and the reader never catches up (#2624, #2647). A scroll the chat has
+  // not heard yet (its event comes later in the frame) is read first, as that event would read it:
+  // a reader who left the end is not pulled back.
   const followQueued = useRef(false);
   const scrolled = useRef(onScroll);
   scrolled.current = onScroll;
@@ -218,6 +229,8 @@ export function ChatTimeline<Row extends ChatTimelineRow>(given: ChatTimelinePro
   // a block folding above the held words inside their own row is heard only by watching that row.
   const observer = useRef<ResizeObserver | null>(null);
   const heldRow = useRef<Element | null>(null);
+  // the list moved the view to hold its rows in place (maintainVisibleContentPosition) since the hold
+  // last looked: its own measurement of a fold the hold has already put back, a frame late
   const listAdjusted = useRef(false);
   const watchHeld = useCallback(() => {
     const node = anchor.current?.mark.node;
@@ -235,6 +248,8 @@ export function ChatTimeline<Row extends ChatTimelineRow>(given: ChatTimelinePro
     const node = scroller.current, held = anchor.current;
     const adjusted = listAdjusted.current;
     listAdjusted.current = false;
+    // A reader away from the end has nothing followed under them: the list holds the rows they
+    // read in place itself (maintainVisibleContentPosition), and a second move would undo it.
     if (node === null || held === null || !following.current) return;
     let y = markTop(held.mark);
     if (y === null) {
@@ -245,8 +260,12 @@ export function ChatTimeline<Row extends ChatTimelineRow>(given: ChatTimelinePro
       watchHeld();
       return;
     }
+    // Two scrolls are the layout's own: the browser keeping the view inside a transcript that got shorter
+    // below the words (the view was past its new end and is at it now), and the list's, in the frame
+    // it pads its end to hold rows in place (listEndPadded).
     const max = node.scrollHeight - node.clientHeight;
     const moved = y - held.y, scrolled = node.scrollTop - held.top;
+    // less than a pixel either way: kept until it adds up, the view scrolls in whole pixels
     if (Math.abs(moved) < 1 && Math.abs(scrolled) < 1) return;
     if (Math.abs(moved) < 1) { held.top = node.scrollTop; return; }
     const clamped = held.top > max + 1 && Math.abs(node.scrollTop - max) <= 1;
@@ -258,6 +277,7 @@ export function ChatTimeline<Row extends ChatTimelineRow>(given: ChatTimelinePro
     const short = target - max;
     const content = node.querySelector<HTMLElement>(".chat-transcript-virtual");
     if (short > 0 && content !== null) {
+      // the list sets its own min-height inline: it is given back when the hold ends
       room.current ??= content.style.minHeight;
       content.style.minHeight = `${content.offsetHeight + Math.ceil(short)}px`;
     }
@@ -313,6 +333,7 @@ export function ChatTimeline<Row extends ChatTimelineRow>(given: ChatTimelinePro
     if (content !== null) resized.observe(content);
     observer.current = resized;
     node.addEventListener("scroll", scrolled, { passive: true });
+    // the list's adjust scrolls in its own frame callback; the hold looks once it has
     const unlisten = listRef.current?.getState().listen("scrollAdjust", () => {
       if (anchor.current === null) return;
       listAdjusted.current = true;
@@ -329,6 +350,9 @@ export function ChatTimeline<Row extends ChatTimelineRow>(given: ChatTimelinePro
     };
   }, [scroller, listRef, keep, keepMeasured, markTop, selecting]);
 
+  // The footer (a sent message's bubble, the Working line) is no row: no item size change reports
+  // its growth, and a scroll to the end asked for before the list measured it stops short of it,
+  // under the composer.
   const footerRef = useCallback((box: HTMLDivElement) => {
     let height = box.offsetHeight;
     const observer = new ResizeObserver(() => {

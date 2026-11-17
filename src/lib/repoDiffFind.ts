@@ -21,6 +21,10 @@ export function matchKey(match: Pick<DiffFindMatch, "side" | "line" | "start">):
   return `${match.side}:${match.line}:${match.start}`;
 }
 
+/**
+ * File headers, hunk headers, the lines between hunks and git's
+ * `\ No newline at end of file` marker are left out; a hunk ends when its counts are used up.
+ */
 export function diffFindLines(patch: string | null): DiffFindLine[] {
   if (patch === null) return [];
   const lines: DiffFindLine[] = [];

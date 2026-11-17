@@ -33,6 +33,11 @@ export function uiFontPreset(family: string): UiFontPreset | "custom" {
   return UI_FONT_PRESETS.find((preset) => UI_FONT_PRESET_FAMILY[preset] === chosen) ?? "custom";
 }
 
+/**
+ * A preset is a whole stack with no Pretendard behind it: a browser takes each character from the
+ * first family in the list that has it, so with Pretendard there the kana would still be
+ * Pretendard's and the kanji another font's.
+ */
 export function uiFontStack(family: string, language: Language = "en"): string | null {
   const chosen = sanitizeFontFamily(family);
   if (chosen === "") return null;

@@ -24,6 +24,7 @@ describe("waitingText", () => {
   const send = { pane: "p1", text: "还有发消息提示：未确认。重新发送前请检查终端。", at: 1 };
 
   it("keeps a sent message in view until the transcript has it", () => {
+    // Claude writes the user turn only when its next turn starts: until then the chat shows nothing
     expect(waitingText(send, [assistant("earlier")])).toBe(send.text);
     expect(waitingText(send, [assistant("earlier"), user(send.text)])).toBeNull();
   });
@@ -666,6 +667,7 @@ describe("waitingText", () => {
     const earlier = user("earlier", second - 60_000);
     try {
       settleWaitingSends(key, [earlier], second, true);
+      // stamped at 02.400, written at 02.600 and answered from 02.800: Grok keeps both as 02
       rememberWaitingSend(key, "next", second + 400, stampedBaseline(waitingBaseline(key), new Date(second + 400).toISOString(), second + 400));
       settleWaitingSends(key, [earlier, user("next", second), { ...assistant("ok"), ts: new Date(second).toISOString() }], second + 900, true);
       expect(currentWaitingSends(key)).toEqual([]);
@@ -694,6 +696,7 @@ describe("waitingText", () => {
       clearMachineWaitingSends("cleanup-PC");
       expect(keys.map((key) => currentWaitingSends(key).length)).toEqual([0, 0, 1]);
       for (const [index, key] of keys.entries()) expect(waitingBaseline(key)).toEqual(baselines[index]!);
+      // A replaced Herdr must still forget those baselines before its pane IDs are reused.
       forgetMachineWaitingSends("cleanup-PC");
       expect(keys.map((key) => waitingBaseline(key) === null)).toEqual([true, true, false]);
     } finally { for (const key of keys) forgetWaitingSends(key); }

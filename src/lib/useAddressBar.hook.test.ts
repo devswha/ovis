@@ -316,6 +316,7 @@ it("holds nothing once the dispatch is over, though the handler never heard the 
   await mount([P1, P2]);
   waiting = () => { place.snapshot = roster(); };
   window.addEventListener("popstate", (event) => { event.stopImmediatePropagation(); });
+  // the listeners run in the order they were added: that one goes before the hook's
   listeners.splice(1, 0, listeners.pop()!);
 
   await back();

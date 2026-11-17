@@ -147,6 +147,7 @@ it.each([
   const message = { id: `held-${kind}`, request_id: 1, text: "held follow-up", state: "held" as const, created_at: "2026-10-28T00:00:00Z" };
   try {
     new PendingMessageStore(() => saved.storage).accept(owner, message, "earlier");
+    // the bridge's held receipt proves it untyped for this page: only then is a saved held copy sent again
     pendingMessages.publish(owner, [], [{ id: message.id, outcome: "held", resumed: true, until: Date.now() + 60_000 }], "receipt");
     expect(pendingMessages.read(owner)).toMatchObject([{ id: message.id, state: "held", serverOwned: false }]);
     await sends(pane, answer, shown, { pendingScopeRef: { current: "now" } }).actOnPending(message.id, "steer");
@@ -269,6 +270,8 @@ it("Send it sends the named draft over itself, only at once and never as an answ
   expect(calls).toEqual([["fix the tests", "immediate", "fix the tests"], ["my new message", "hold", undefined]]);
 });
 
+// Alt+Enter: held in the queued list for its row's Send now, whatever automatic sending says and also at rest;
+// the socket refuses it on a PC that cannot hold one, never queuing it to go on its own
 it.each([
   ["working, automatic sending on", { agentStatus: "working", inputAtRest: (): boolean => false, settings: { autoSendQueued: true } }, "queue"],
   ["working, automatic sending off", { agentStatus: "working", inputAtRest: (): boolean => false, settings: { autoSendQueued: false } }, "hold"],
@@ -333,6 +336,7 @@ it.each([[true, ["steer"]], [false, []]] as const)("a queued send with now=%p st
   }
 });
 
+// Alt+Enter's row stays held as its receipt left it: nothing steers it, with automatic sending on; only its Send now does
 it("a hold leaves its held row waiting for Send now, then Send now sends it", async () => {
   const saved = savedStorage();
   const pane = "hold-row", owner = paneStorageId("local", pane), actions: string[] = [], deliveries: unknown[] = [];
@@ -366,6 +370,7 @@ it("sends a held copy of an agent-only message again as agent-only", async () =>
   const submitComposerMessage = ((...args: unknown[]) => { calls.push(args); return Promise.resolve({ ok: true } as const); }) as ComposerSendsDeps["submitComposerMessage"];
   try {
     new PendingMessageStore(() => saved.storage).accept(owner, message, "earlier");
+    // the bridge's held receipt proves it untyped for this page: only then is a saved held copy sent again
     pendingMessages.publish(owner, [], [{ id: message.id, outcome: "held", resumed: true, until: Date.now() + 60_000 }], "receipt");
     await sends(pane, { ok: true }, [], { pendingScopeRef: { current: "now" }, submitComposerMessage }).actOnPending(message.id, "steer");
     expect(calls.map((call) => call[6])).toEqual([true]);

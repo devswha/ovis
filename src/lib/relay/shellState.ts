@@ -36,6 +36,7 @@ export function keyIdOf(publicKey: string): string | null {
   try { return deriveServerId(importPublicKey(publicKey)); } catch { return null; }
 }
 
+/** The first of `keys` that is not the key `serverId` names; null when every one is. */
 export function keyMismatch(serverId: string, keys: readonly { key: string; from: KeySource }[]): KeyMismatch | null {
   for (const { key, from } of keys) {
     const received = keyIdOf(key);
@@ -45,6 +46,7 @@ export function keyMismatch(serverId: string, keys: readonly { key: string; from
 }
 
 export type RelayFailure = "pc-offline" | "pc-unresponsive" | "relay-unreachable" | "needs-update" | "revoked" | "identity-changed" | "code-expired" | "pair-declined" | "pair-unavailable" | "bad-offer"
+  /** the relay closed a pairing device 4403: the PC's relay pass allows no new device sessions (account limits) */
   | "new-devices-refused"
   | "not-added-yet";
 
@@ -67,17 +69,27 @@ export type RelayShellState =
   | { kind: "list"; devices: RelayDevice[]; account?: AccountView | null }
   | { kind: "outdated"; name: string | null; serverVersion: string; minVersion: string; update: PcUpdate }
   | { kind: "empty"; account?: AccountView | null }
+  /**
+   * Asks before pairing with the PC a link names. `account` is absent on a device that is signed out: the pairing
+   * makes a key of its own. Signed in, the pairing uses the account's key and lists the PC in the account, unless
+   * its directory lists it already; "checking" until the sign-in is read, when nothing can be confirmed yet.
+   * `pressed`: the button was pressed and the press is being checked; what the confirm said then ("own": a key of
+   * the device's own) stays on screen meanwhile.
+   */
   | { kind: "confirm"; offer: RelayOffer; account?: "checking" | "unlisted" | "listed"; pressed?: "unlisted" | "listed" | "own" }
   | { kind: "connecting"; name: string | null }
   | { kind: "ready"; name: string | null; server_id: string; enrollment?: EnrollmentState | "local" | EnrollmentCompletion }
   | { kind: "code-entry"; failure: TypedCodeFailure | null }
   | { kind: "code-looking" }
+  /** a typed code found a PC: its full ID to compare with the PC's screen before anything is paired */
   | { kind: "code-compare"; offer: RelayOffer }
-  | { kind: "compare"; name: string | null; digits: string; confirmed: boolean; /** the digits are typed from the PC's screen, never shown here */ typed?: boolean; wrong?: boolean; challenge?: number }
+  /** pairing without a code: the digits to compare with the PC's screen; `confirmed` once this phone said they match */
+  | { kind: "compare"; name: string | null; digits: string; confirmed: boolean; /** the digits are typed from the PC's screen, never shown here */ typed?: boolean; /** the typed digits were not the PC's: the comparison ended */ wrong?: boolean; challenge?: number }
   /** the phone's key for a PC whose identity changed is gone; only a new QR code from the PC pairs it again */
   | { kind: "forgotten"; name: string | null }
   /** a link with another key under a PC's id (forgedOffer): refused every time, and no saved key is touched */
   | { kind: "forged"; name: string | null; mismatch: KeyMismatch | null }
+  /** `mismatch`: on identity-changed, the key that is not the PC's, when the phone can name it; `server_id`: the PC a connection attempt failed for */
   | { kind: "failed"; failure: RelayFailure; name: string | null; detail: string | null; mismatch?: KeyMismatch | null; server_id?: string };
 
 export interface ShellEntry {
@@ -105,15 +117,21 @@ export function forgedOffer(offer: RelayOffer): boolean {
   return keyIdOf(offer.server_public_key) !== offer.server_id;
 }
 
+/** The offer a saved PC connects with again: what the pairing offer said, less its one-time code. */
 export function offerOf(device: RelayDevice): RelayOffer {
   return { v: 1, server_id: device.server_id, server_public_key: device.server_public_key, relay: device.relay, ...(device.name === undefined ? {} : { name: device.name }) };
 }
 
+/** `code`: the attempt carried a pairing code; `paired`: it signed with a key the PC had admitted before. */
 export function failureOf(error: unknown, attempt: { code: boolean; paired: boolean; compared?: boolean; codeless?: boolean }): RelayFailure {
   if (error instanceof UnsafeRelayDestinationError) return "bad-offer";
+  // the relay's own word, whatever the attempt was: the code held or the digits were approved, and the PC's account is past its limits
   if (error instanceof RelayNewSessionsRefusedError) return "new-devices-refused";
+  // a link without a code that the PC refused before any digits: no code to blame, and the wire does not say why
+  // (pairing paused after failures, three phones already waiting, a serve-only PC)
   if (attempt.codeless && !attempt.code && !attempt.paired && !attempt.compared
     && error instanceof MuxProtocolError && error.code === "auth_failed") return "pair-unavailable";
+  // once digits were shown, the PC answered: a refusal or a deadline there means it was not approved in time
   if (attempt.compared && (error instanceof RelayAdmissionTimeoutError
     || error instanceof MuxProtocolError && (error.code === "auth_failed" || error.code === "timeout"))) return "pair-declined";
   if (error instanceof ServerIdentityChangedError) return "identity-changed";
@@ -129,15 +147,23 @@ export function failureOf(error: unknown, attempt: { code: boolean; paired: bool
   }
 }
 
+/**
+ * A link without a code that this phone opened while it still held a key for that PC, refused at
+ * sign-in: the PC no longer knows the key (it removed this phone). The link is there to pair again
+ * by comparing digits, so the old key goes and the attempt runs once more without it. A code
+ * attempt, one already compared, or one that already did this never does.
+ */
 export function pairsAgainWithoutKey(error: unknown, attempt: { code: boolean; paired: boolean; compared?: boolean; refreshed?: boolean; codeless: boolean }): boolean {
   return attempt.codeless && !attempt.code && !attempt.compared && !attempt.refreshed
     && error instanceof MuxProtocolError && error.code === "auth_failed";
 }
 
+/** The failures after which the saved key is no good: the PC removed this phone, or never admitted it. */
 export function forgetsDevice(failure: RelayFailure): boolean {
   return failure === "revoked";
 }
 
+/** An iPhone or iPad browser tab, where the page's storage may be cleared after a week unvisited; the installed app's is kept. */
 export function iosBrowserTab(env: { userAgent: string; maxTouchPoints: number; standalone: boolean | undefined }): boolean {
   const ios = /iPhone|iPad|iPod/.test(env.userAgent) || (/Macintosh/.test(env.userAgent) && env.maxTouchPoints > 1);
   return ios && env.standalone !== true && !inNativeApp();
@@ -156,7 +182,9 @@ export interface RelayShellMount {
   shellVersion?: string;
   reload?: () => Promise<void>;
   findByCode?: typeof offerFromCode;
+  /** this client's account key and sign-in; the `ovis-account` database by default */
   accountStore?: AccountStore;
+  /** the account service's origin; the page's `ovis-account-service` meta by default (shellAccountServiceOf), and no sign-in without one */
   accountService?: string | null;
   accountProviders?: readonly AccountProvider[];
   accountFetch?: (input: Request | string | URL, init?: RequestInit) => Promise<Response>;
@@ -173,7 +201,9 @@ export interface Attempt {
   compared?: boolean;
   codeless?: boolean;
   refreshed?: boolean;
+  /** this attempt paired just now: the PC has not seen the key prove itself on this session yet */
   fresh?: boolean;
+  /** this attempt paired just now without a code: a member may have approved it, and only then does an introduction follow */
   introducible?: boolean;
   accountEnrollment?: boolean;
   /** the confirm before this pairing said the device gets a key of its own: it uses no account key and joins no account, whoever signed in since */
@@ -237,7 +267,7 @@ export function takeConfirmedPc(): string | null {
  */
 export function keepDeviceOnlyPc(serverId: string | null): void {
   try { if (serverId === null) sessionStorage.removeItem("ovis-device-only-pc"); else sessionStorage.setItem("ovis-device-only-pc", serverId); }
-  catch {}
+  catch { /* the choice cannot cross the load: the reloaded page opens the PC as a saved one */ }
 }
 export function deviceOnlyPc(): string | null {
   try { return sessionStorage.getItem("ovis-device-only-pc"); } catch { return null; }
@@ -255,7 +285,7 @@ export function keepConfirmedSignIn(confirmed: ConfirmedSignIn | null): void {
   try {
     if (confirmed === null) sessionStorage.removeItem("ovis-confirmed-sign-in");
     else sessionStorage.setItem("ovis-confirmed-sign-in", JSON.stringify({ server_id: confirmed.server_id, sign_in_id: confirmed.sign_in_id }));
-  } catch {}
+  } catch { /* the confirm cannot cross the load: the reloaded page opens the PC as a saved one */ }
 }
 export function confirmedSignIn(): ConfirmedSignIn | null {
   try {
@@ -263,6 +293,7 @@ export function confirmedSignIn(): ConfirmedSignIn | null {
     if (kept === null || typeof kept !== "object") return null;
     const { server_id, sign_in_id } = kept as Record<string, unknown>;
     if (typeof server_id !== "string") return null;
+    // an id that cannot be read names no sign-in: the pairing then joins no account, as for a sign-in without one
     return { server_id, sign_in_id: typeof sign_in_id === "string" && sign_in_id !== "" ? sign_in_id : null };
   } catch { return null; }
 }

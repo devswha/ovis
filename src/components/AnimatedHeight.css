@@ -6,6 +6,7 @@
   transition: none;
 }
 
+/* a block formatting context: a child's margin does not escape what is measured */
 .animated-height-content {
   display: flow-root;
 }

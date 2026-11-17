@@ -34,6 +34,9 @@ export function useAgentStateStamping(machines: readonly Machine[], activity: Si
   const carried = useRef<{ own: StateStamps; last: LastLook; kept: boolean; round: number; shown: StateStamps } | null>(null);
   useLayoutEffect(() => {
     const page = carried.current ??= { own: loadStateStamps() ?? NONE, last: new Map(), kept: true, round: unseen.round, shown: NONE };
+    // a roster of no PC is the loader's before the first one has come (a roster always has this PC): there is nothing
+    // to look at yet, and a look at no PC would mark every kept stamp as its PC's having left the roster, for the
+    // device's other tabs to read
     if (latest.current.length === 0) return;
     const told = page.round !== unseen.round ? unseen.look : null;
     page.round = unseen.round;

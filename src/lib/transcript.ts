@@ -15,8 +15,13 @@ export interface TranscriptMessage {
   text: string;
 }
 
+/** Full-width rules agent TUIs draw between turns (Claude Code separators). */
 const RULE_LINE = /^[─━═]{6,}$/;
 const USER_LINE = /^❯\s?/;
+/**
+ * Chrome the TUI repaints every turn — model/cwd line, context meters, mode
+ * footers, turn metadata (✳ Brewed for…, ※ recap).
+ */
 const STATUS_LINE =
   /^(?:\[[^\]]*\]\s*│|⏵|⣾|█|Context\s|Usage\s|[·•]\s*\d+\s*shell|✳|※)/;
 
@@ -26,6 +31,9 @@ export function toTranscriptMessages(text: string): TranscriptMessage[] {
 
   const flush = (): void => {
     if (pending === null) return;
+    // agent output is split on blank lines: a conversation tail without ❯
+    // separators would otherwise render as one giant log panel instead of
+    // chat-sized bubbles (chrome stays grouped — it has no blank lines)
     if (pending.role === "agent") {
       let chunk: string[] = [];
       const emit = (): void => {

@@ -11,6 +11,7 @@ describe("a dialog's Tab round and a device waiting for approval over it", () =>
     isConnected = true;
     tabIndex = 0;
     disabled = false;
+    /** under an inert column: the browser refuses it the focus */
     inert = false;
     hidden = false;
     role: string | null = null;
@@ -110,6 +111,7 @@ describe("a dialog's Tab round and a device waiting for approval over it", () =>
     page.prompts = [prompt("p1")];
     const walked: string[] = [];
     for (let step = 0; step < 6; step += 1) { expect(tab()).toBe(true); walked.push(focused()); }
+    // never straight from the dialog onto Approve: a Tab and an Enter typed for the field press nothing
     expect(walked).toEqual(["close", "p1", "p1 Approve", "p1 Decline", "back", "field"]);
   });
 
@@ -120,6 +122,7 @@ describe("a dialog's Tab round and a device waiting for approval over it", () =>
     page.prompts = [prompt("p1"), prompt("p2")];
     const walked: string[] = [];
     for (let step = 0; step < 7; step += 1) { expect(tab(true)).toBe(true); walked.push(focused()); }
+    // never from outside a prompt onto one of its buttons: Shift+Tab twice and an Enter typed for the dialog press nothing
     expect(walked).toEqual(["p2", "p1", "close", "field", "back", "p2", "p1"]);
   });
 

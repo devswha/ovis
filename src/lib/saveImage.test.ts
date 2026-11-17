@@ -95,6 +95,7 @@ describe("downloadLeavesApp", () => {
 
 describe("imageFile", () => {
   test("reads a PC's picture through the transport, keeping its image type", async () => {
+    // Given a relay PC, whose pictures the page shows from blob: URLs its CSP lets no fetch read
     const asked: string[] = [];
     const relay: Transport = { ...nativeTransport, kind: "relay", fetch: async (input) => {
       asked.push(String(input));

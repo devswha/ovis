@@ -84,6 +84,8 @@ describe("usage counters", () => {
   });
 
   test("no counting while the server is off, blocked or its notice is unseen, and a no in an answer drops the batch", async () => {
+    // an older PC says nothing of a counting generation: its notice_seen is for a notice that said nothing of counts
+    // (the hosted app reaching it), so nothing is counted there and nothing is posted to it
     for (const no of [status({ enabled: false }), status({ blocked_by_env: true }), status({ notice_seen: false }), status({ counts_generation: undefined }), null]) {
       const { counters, sent, fire, armed } = setup(no);
       counters.heard(no);
@@ -263,6 +265,7 @@ describe("usage counters", () => {
       usageCounters.flush(true);
       await settle();
     } finally { globalThis.fetch = original; }
+    // 6 is the notice whose wording says buttons are counted: below it, not one request
     expect(calls.length > 0).toBe(NOTICE_VERSION >= 6);
   });
 

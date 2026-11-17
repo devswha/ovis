@@ -38,6 +38,7 @@ describe("the shell's entry", () => {
   it("calls an offer forged when its key is not the one its PC's id is derived from", () => {
     const own = generateKeyPair().publicKey;
     const genuine = { ...testOffer(), server_id: deriveServerId(own), server_public_key: exportPublicKey(own) };
+    // Then only the PC's own key passes; another key under its id, or no key at all, is forged.
     expect(forgedOffer(genuine)).toBe(false);
     expect(forgedOffer({ ...genuine, server_public_key: exportPublicKey(generateKeyPair().publicKey) })).toBe(true);
     expect(forgedOffer({ ...genuine, server_public_key: "not-a-key" })).toBe(true);
@@ -233,6 +234,7 @@ describe("the offer fragment", () => {
       expect(loaded.replaced.at(-1)).toBe(`/s/${"12".repeat(16)}/#file=%2Fa.md`);
     } finally {
       Object.assign(globalThis, saved);
+      // Bun has no window of its own: leave none behind
       if (saved.window === undefined) delete (globalThis as { window?: unknown }).window;
     }
   });

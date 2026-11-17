@@ -35,6 +35,7 @@ function tabMemory(): ReloadMemory | null {
 }
 
 
+/** Where older shells kept the observed versions; web storage holds no relay data now (scripts/relay-e2e-regression.ts). */
 const LEGACY_VERSION_KEY = "ovis-relay-versions";
 
 let observed: ReadonlyMap<string, ObservedVersion> = new Map();
@@ -179,6 +180,7 @@ export function createUpdateFlow(shellVersion: string, view: {
       if (now.phase === "error") throw new Error(now.error ?? "The update failed");
       showUpdate(on, now.phase === "restarting" ? { phase: "restarting" } : { phase: "installing", step: now.step ?? null });
     }
+    // the pairing code, if the attempt had one, was spent on the admission before the update
     if (outdated === on) await admit(on.opened, { ...on.attempt, code: false, paired: true });
   };
 

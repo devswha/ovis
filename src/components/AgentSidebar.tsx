@@ -58,6 +58,7 @@ interface AgentRowBodyProps {
   since?: string | null;
 }
 
+/** How long a row has been in its state, as herdr-app's agent rows say it: under a minute, minutes, hours, days. */
 export function stateAge(ms: number): string {
   const minutes = Math.floor(ms / 60_000);
   if (minutes < 1) return "<1m";
@@ -92,6 +93,8 @@ function AgentRowBody({ mark, markKind, title, name, context, tokens, background
           <span className="agent-title">{title}</span>
           {status === "blocked" && blockedShort && <span className="agent-blocked" aria-hidden={blocked !== null && blocked !== blockedShort ? "true" : undefined}>{blockedShort}</span>}
           {status === "blocked" && blocked !== null && blocked !== blockedShort && <span className="visually-hidden">{blocked}</span>}
+          {/* how far the agent says it is, while it works or waits: its percent after the title, and in words for a
+              screen reader (a role inside the row's button would not be read) */}
           {showProgress && <>
             <span className="agent-progress" aria-hidden="true">{progress}%</span>
             <span className="visually-hidden">{t("Progress {percent}%", { percent: progress })}</span>
@@ -103,6 +106,7 @@ function AgentRowBody({ mark, markKind, title, name, context, tokens, background
           {context}
         </span>}
       </span>
+      {/* text as the plugin wrote it, never markup; its own line in either row height, cut where it is too long */}
       {!helper && tokens.length > 0 && <span className="agent-tokens">{tokens.join(" · ")}</span>}
     </span>
     <span className="agent-row-status">
@@ -120,6 +124,7 @@ export interface AgentSidebarProps {
   selectedMachineId: string;
   selectedPaneId: string | null;
   stateWord(machine: Machine): string;
+  /** this device only watches: it sees the shared mutes and cannot change them */
   watching?: boolean;
   foldRequest?: { folded: boolean; seq: number } | null;
   listId?: string;
@@ -311,6 +316,8 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   const [groupFolds, setGroupFolds] = useState(loadFoldedAgentGroups);
   const [filterFold, setFilterFold] = useState<boolean | null>(null);
   const [backgroundFilterFold, setBackgroundFilterFold] = useState<boolean | null>(null);
+  // and the one-line list's resting fold: a resting agent the filter matched is seen, not only kept (a filter
+  // that hid its own matches would say "no match" with the match a fold away)
   const [restingFilterOpen, setRestingFilterOpen] = useState<boolean | null>(null);
   useEffect(() => {
     if (filter.active) return;
@@ -321,6 +328,9 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   const folded = filter.active ? filterFold ?? (collapsed && rows.length === 0) : collapsed;
   const backgroundFolded = filter.active ? backgroundFilterFold ?? false : backgroundCollapsed;
   const restingShown = filter.active ? restingFilterOpen ?? true : restingOpen;
+  // the times tick only while the list is open and a row has one to draw. The clock stands still meanwhile, so it is
+  // set as its updates start again, before the list is painted: an opened list says its times as of now, where the
+  // first tick would come half a minute later
   const shouldTick = !folded && Object.values(stamps).some((pc) => Object.keys(pc.rows).length > 0);
   const ticked = useRef(shouldTick);
   useLayoutEffect(() => {
@@ -348,6 +358,7 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     setCollapsed(foldRequest.folded);
     try { window.localStorage.setItem(FOLD_KEY, foldRequest.folded ? "1" : "0"); } catch {}
   }, [foldRequest?.seq]);
+  // the PCs this device hides are not in `machines`: their pins are kept, not taken for gone panes
   const hidden = useHiddenMachines();
   const togglePin = (key: string): void => {
     // pins of panes gone from this server leave with a change of the user's, never by themselves: the
@@ -355,6 +366,8 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     const live = new Set(allRows.map(({ machine, entry }) => sidebarPinKey(machine.id, entry.pane.pane_id)));
     const next = toggleSidebarPin(pruneSidebarPins(pinned, live, machines, hidden), key);
     setSidebarPins(next);
+    // a lock leaves with its pin, so a pane that later takes the same id is not locked by it; a fresh pin starts unlocked,
+    // also of a lock only another tab of this browser saved (lib/settings.ts: a change made from the stored settings)
     updateSettings(({ lockedAgents }) => ({ lockedAgents: locksAfterPinToggle(lockedAgents, next, key) }));
   };
   const toggleMute = (machineId: string, paneId: string): void => {
@@ -380,6 +393,7 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   useEffect(() => {
     if (menu && (menuRow === undefined || !menu.anchor.isConnected)) setMenu(null);
   }, [menu, menuRow]);
+  // herdr names a PC only beside another: the rows' line does the same
   const machineName = (machine: Machine): string | null => machines.length > 1 && !(settings.sidebarRows === "one" && machine.kind === "local") ? machine.name : null;
   const wholePlace = (machine: Machine, parts: readonly (string | null)[]): string => [...new Set([machines.length > 1 ? machine.name : null, ...parts])].filter((part): part is string => part !== null && part !== "").join(" · ");
   const sheet = useMediaQuery(SHEET_QUERY);
@@ -561,6 +575,7 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   const menuPinned = menu !== null && pinned.includes(menu.key);
   const menuLocked = menu !== null && locked.has(menu.key);
   const menuShown = menuRow === undefined ? null : describe(menuRow);
+  // a phone has no tooltip: its sheet says a blocked agent's whole reason, as the row's tooltip does
   const menuBlocked = menuRow !== undefined && menuShown?.online && activity.status(menuRow.machine.id, menuRow.entry.pane) === "blocked" ? blockedNote(menuRow.entry.pane, t) : null;
   const menuMuted = menuRow !== undefined && muted !== null && muted.includes(paneMuteKey(menuRow.machine.id, menuRow.entry.pane.pane_id));
   const menuGroup = menuRow === undefined || groupNames.length === 0 ? null : rowAgentGroup(menuRow, settings.agentGroupOf, groupNames, allRows);

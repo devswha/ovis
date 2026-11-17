@@ -27,7 +27,8 @@ export function AnimatedHeight({ children, open = true, holdHeight = false, anim
     return () => observer.disconnect();
   }, [open, holdHeight, animateContent]);
 
-  // a transition that never runs (no duration) fires no transitionend
+  // the transition reports the end of the move; one that never runs (reduced motion, Panel
+  // motion off) or never reports is given its own span, then the box rests
   useEffect(() => {
     if (!state.moving) return;
     const element = box.current;

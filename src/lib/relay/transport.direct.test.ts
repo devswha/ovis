@@ -223,6 +223,8 @@ describe("racing the relay at the start", () => {
   });
 
   it("keeps a native socket for the PC's Tailscale carrier behind two silent LAN addresses", async () => {
+    // Given a phone away from home whose plugin opens two sockets at most (OvisDirectPlugin MAX_SOCKETS), and a PC
+    // that names two LAN addresses, silent from here, before its Tailscale one
     const silent = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (request, server) => server.upgrade(request) ? undefined : new Response(null, { status: 426 }),
       websocket: { open: (socket) => { socket.send(JSON.stringify({ type: "assigned", connection_id: "ab".repeat(16) })); }, message() {} } });
     cleanup.push(() => silent.stop(true));

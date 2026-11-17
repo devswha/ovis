@@ -67,6 +67,8 @@ export function useAddressBar({ inbox, mode, newSessionOpen, newSessionMachineId
   setHeaderNote: Dispatch<SetStateAction<LinkNote | "copied" | null>>;
   selectionRef: RefObject<SelectionMark>;
 }): void {
+  // Nothing is written while locked or before the roster is in, so a
+  // link survives the access gate and a slow first read.
   const writtenLink = useRef<AppLink | null>(null);
   const poppedTo = useRef(false);
   const newSessionOpenRef = useRef(newSessionOpen); newSessionOpenRef.current = newSessionOpen;
@@ -138,6 +140,7 @@ export function useAddressBar({ inbox, mode, newSessionOpen, newSessionMachineId
     const search = linkSearch(link, pageSearch());
     const popped = poppedTo.current;
     poppedTo.current = false;
+    // a kept file is this run's alone, written or not: left set, a later replace would take the file off another entry
     const kept = fileKept.current;
     fileKept.current = false;
     if (search === pageSearch()) return;
@@ -158,6 +161,8 @@ export function useAddressBar({ inbox, mode, newSessionOpen, newSessionMachineId
 
   useEffect(() => {
     const path = pendingFile.current;
+    // a viewer already up (a reload restores it from its history entry) is the file the address names:
+    // the link has nothing left to open, and a Back that closes the viewer must not bring it back
     if (viewing) { pendingFile.current = null; return; }
     if (path === null || !linkLanded || locked !== false || selectedMachine?.state !== "connected" || snapshot === null) return;
     pendingFile.current = null;

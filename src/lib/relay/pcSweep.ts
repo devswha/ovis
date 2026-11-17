@@ -1,3 +1,4 @@
+/** Probe results never imply account or version state. */
 import { checkPc, sweepOf } from "./pcStatus.ts";
 import type { PcStatus } from "./pcStatus.ts";
 import type { RelayDevice, RelayDeviceStore } from "./device.ts";
@@ -6,6 +7,7 @@ import { OFFLINE_AFTER_MS } from "../account/myPcs.ts";
 
 const CHECK_PCS = 8;
 const CHECK_AT_ONCE = 2;
+/** a minute: one sweep's CHECK_PCS connections (up to two each, with the global relay's fallback) stay well under the relay's 30 a minute */
 const CHECK_GAP_MS = 60_000;
 const CHECK_KEY = "ovis-pc-check-at";
 const CHECK_CURSOR_KEY = "ovis-pc-check-cursor";

@@ -10,6 +10,7 @@ export type EnrollmentState = "pending" | "complete" | "failed";
 export type SavedDevice = RelayDevice & { readonly observed_version?: ObservedVersion; readonly account_enrollment?: { readonly account: string; readonly state: EnrollmentState } };
 
 export interface RelayDeviceStore extends SharedRelayDeviceStore {
+  /** Reads and checks `source` in the target's write transaction before applying `change`. */
   update(serverId: string, change: (current: RelayDevice | undefined) => RelayDevice, source?: { readonly serverId: string; readonly assert: (current: RelayDevice | undefined) => void }): Promise<RelayDevice>;
 }
 
@@ -132,6 +133,7 @@ function openDatabase(): Promise<IDBDatabase> {
   });
 }
 
+/** The saved key for the offer's PC in this browser (IndexedDB unless another store is given), or a new unsaved one. */
 export function getDevice(offer: RelayOffer, store: RelayDeviceStore = indexedDeviceStore, label?: string): Promise<RelayDevice> {
   return getSharedDevice(offer, store, label);
 }

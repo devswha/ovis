@@ -34,6 +34,8 @@ export function BackgroundAgentDetail({ paneId, task, onClose }: { paneId: strin
   const [loading, setLoading] = useState(supported);
   const [failure, setFailure] = useState<Failure | null>(supported ? null : task.detail_kind === undefined ? "update" : "unsupported");
   const generation = useRef(0);
+  // the agent's session the sheet shows, as its first answer named it: an answer of another session is
+  // the pane's next session, whose agent of the same id is another agent, and is never shown here
   const session = useRef<string | null>(null);
   const load = useCallback((): void => {
     const mine = ++generation.current;

@@ -21,6 +21,10 @@ export interface AgentTileProps {
   onError?: (agent: string, message: string | null) => void;
 }
 
+/**
+ * Missing: its Install is the one tap (the user's consent): the official installer runs in a terminal tab (a tap on
+ * the turning ring shows it) until the catalog lists the agent, then the tile is an installed one.
+ */
 export function AgentTile({ agent, has, picked = false, locked = false, machineId, onPick, onOpenTerminal, onRunning, onInstalled, onError }: AgentTileProps) {
   const t = useT();
   const started = useRef(false);
@@ -54,6 +58,7 @@ export function AgentTile({ agent, has, picked = false, locked = false, machineI
     if (focused.current && (document.activeElement === null || document.activeElement === document.body)) tile.current?.querySelector<HTMLElement>("button")?.focus();
   }, [state]); // eslint-disable-line react-hooks/exhaustive-deps
   const tap = (): void => {
+    // the first request still unanswered: it may have started the installer, so no second one yet
     if (pending) return;
     started.current = true;
     setAttempt((count) => count + 1);

@@ -7,6 +7,7 @@ import { currentLocale, t } from "./i18n.ts";
 import { lastSeen } from "./lastSeen.ts";
 import { usePageVisible } from "./visibility.ts";
 
+/** The server asks a provider at most every 5 minutes; a minute here only picks that up sooner. */
 const POLL_MS = 60_000;
 export const HIGH_PERCENT = 80;
 
@@ -77,6 +78,7 @@ export function usageName(usage: ProviderUsage): string {
   return usage.account ? `${PROVIDER_NAME[usage.id]} · ${usage.account}` : PROVIDER_NAME[usage.id];
 }
 
+/** An account read through the hub: its sign-in lives in the hub, not on this PC. */
 export function isHubAccount(usage: ProviderUsage): boolean {
   return usage.key.startsWith(`${usage.id}:cliproxy:`);
 }
@@ -139,6 +141,10 @@ export function recordedNote(usage: ProviderUsage, now: number): readonly string
   return usage.recorded.stale ? [by, t("It may have changed since.")] : [by];
 }
 
+/**
+ * Whether the server's PC holds a sign-in of this account. Not so for one known only from another tool's record of
+ * it: that is the tool's sign-in, and the agent itself is still to be signed in.
+ */
 export function isSignIn(usage: ProviderUsage): boolean {
   return usage.recorded?.signed_in !== false;
 }
@@ -147,6 +153,12 @@ export function isCurrent(usage: ProviderUsage): boolean {
   return usage.recorded ? !usage.recorded.stale : usage.problem === null;
 }
 
+/**
+ * An expired sign-in this PC's own CLI can renew in a terminal tab, in the account's own home:
+ * Claude's and Codex's, whose CLIs sign in to the home they are given. The other CLIs may keep a
+ * sign-in apart from the one read here (Cursor's app, Copilot's editor), and a hub's account signs
+ * in in the hub.
+ */
 export function canSignInAgain(usage: ProviderUsage): boolean {
   return usage.problem === "expired" && (usage.id === "claude" || usage.id === "codex") && !isHubAccount(usage);
 }

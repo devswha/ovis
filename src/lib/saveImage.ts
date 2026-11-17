@@ -33,6 +33,7 @@ export async function imageFile(src: string, name: string, shown: HTMLImageEleme
 
 export const SAVE_PLUGIN = "OvisSave";
 
+/** The app's limit (SavedImage.MAX_BYTES), checked here before the bytes are copied into base64. */
 export const SAVE_MAX_BYTES = 20 * 1024 * 1024;
 
 /**

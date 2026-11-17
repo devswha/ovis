@@ -12,8 +12,10 @@ import { isDirectCarrier } from "../../../shared/relay-mux.ts";
 import { hasNativePlugin } from "../nativeApp.ts";
 
 export const DIRECT_PLUGIN = "OvisDirect";
+/** The hosted shell's origin: the plugin answers only a main-frame page of it. */
 export const APP_ORIGIN = "https://app.ovis.sh";
 
+/** Whether `url` is the one address the plugin opens: a direct carrier's `/v1/ws?v=1`, nothing more. */
 export function isDirectSocketUrl(url: string): boolean {
   const match = /^(ws:\/\/[^/?#]+)\/v1\/ws\?v=1$/.exec(url);
   return match !== null && isDirectCarrier(match[1]!);
@@ -52,6 +54,7 @@ function parseEvent(type: DirectEvent["type"], data: unknown): DirectEvent | nul
   }
 }
 
+/** The app's bridge to OvisDirect, through `window.Capacitor` as the app injects it. */
 export function capacitorDirectBridge(): DirectBridge | undefined {
   const cap = (globalThis as { Capacitor?: CapacitorEvents }).Capacitor;
   const call = cap?.nativePromise;
@@ -78,6 +81,7 @@ const CONNECTING = 0;
 const OPEN = 1;
 const CLOSING = 2;
 const CLOSED = 3;
+/** At most this much waits here for the plugin to name a socket, as the plugin's own queues: beyond it the socket closes with 1009. */
 export const EARLY_SEND_BYTES = 4 * 1024 * 1024;
 export const EARLY_SEND_MESSAGES = 16_384;
 const encoder = new TextEncoder();
@@ -104,6 +108,7 @@ class DirectSocket implements RelaySocket {
     if (this.closeAsked) this.closeNative(this.closeAsked.code, this.closeAsked.reason);
   }
 
+  /** The plugin refused to open it (not the app's page, not a direct carrier, two already open): it fails as a socket that never connected. */
   refused(): void {
     if (this.readyState === CLOSED) return;
     this.readyState = CLOSED;
@@ -171,6 +176,10 @@ class DirectSocket implements RelaySocket {
   }
 }
 
+/**
+ * A RelaySocket factory over `bridge`: it throws for an address that is not a direct carrier's, before
+ * the plugin hears of it.
+ */
 export function directSocketFactory(bridge: DirectBridge): (url: string) => RelaySocket {
   const sockets = new Map<string, DirectSocket>();
   const waiting = new Map<string, DirectEvent[]>();
@@ -211,6 +220,11 @@ export function directSocketFactory(bridge: DirectBridge): (url: string) => Rela
 let shared: ((url: string) => RelaySocket) | undefined;
 let tailnet: (() => boolean) | undefined;
 
+/**
+ * Whether the plugin behind `call` also opens a carrier on the PC's Tailscale address (100.64.0.0/10): false
+ * until its `features` answers `tailnet: true`, so nobody waits on it. Asked once; an app built before that
+ * has no `features` and may never answer, which leaves it false.
+ */
 export function directTailnetSupport(call: (plugin: string, method: string) => Promise<unknown>): () => boolean {
   let supported = false;
   call(DIRECT_PLUGIN, "features").then(
@@ -227,6 +241,11 @@ export function nativeDirectTailnet(): () => boolean {
   return tailnet;
 }
 
+/**
+ * The direct socket factory for the relay transport, or undefined where the PC is reached through
+ * the relay only: a browser, an app built before the plugin, or a page that is not the hosted
+ * shell's (the plugin refuses those).
+ */
 export function nativeDirectSocket(): ((url: string) => RelaySocket) | undefined {
   if (typeof window === "undefined" || window.location.origin !== APP_ORIGIN || !hasNativePlugin(DIRECT_PLUGIN)) return undefined;
   if (shared) return shared;

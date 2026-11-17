@@ -20,6 +20,10 @@ type Preview = Parameters<ReturnType<typeof useFileViewer>["openFile"]>[0];
 const LEFT_FILES_KEPT = 10;
 const paneKey = (machineId: string, paneId: string): string => `${machineId}\n${paneId}`;
 
+/**
+ * The viewer's React key: a path is read from its pane's folder, so two panes' files of the same path
+ * are two files, and a switch from one to the other must not keep the first one's loaded content.
+ */
 export const fileViewerKey = (preview: { machineId: string; paneId: string | null; path: string }): string =>
   `${preview.machineId}\n${preview.paneId ?? ""}\n${preview.path}`;
 
@@ -52,12 +56,16 @@ export function useFilePanels({ settings, filePanelAvailable, selectedPaneId, se
     else if (webPage !== null) closeWebPage();
   }, [filesDocked, viewing, fileDocked, closeFile, webPage, closeWebPage]);
   useFocusReturn(filesOpen && filesDocked);
+  // Files closes with the dock it lived in when the window narrows: a dialog mounted then would come up
+  // under a popup file or web page already open and take their focus and Escape
   const wasDocked = useRef(filesDocked);
   useEffect(() => {
     if (wasDocked.current && !filesDocked) setFilesOpen(false);
     wasDocked.current = filesDocked;
   }, [filesDocked]);
   useFocusReturn(viewing !== null && fileDocked);
+  // a collapse (below) whose two steps back have not landed: a second click on Show beside the
+  // pane, or the kind correction in the same moment, must not queue two steps more and the file twice
   const collapsing = useRef(false);
   useEffect(() => { if (viewing === null && diffViewing === null) collapsing.current = false; }, [viewing, diffViewing]);
   const presentFile = useCallback((next: FilePresentation) => {
@@ -124,6 +132,7 @@ export function useFilePanels({ settings, filePanelAvailable, selectedPaneId, se
     const left = leftFiles.current;
     forgetLeftFiles(paneLive);
     const key = paneKey(viewing.machineId, viewing.paneId);
+    // the oldest left beyond the cap is forgotten (a Map keeps insertion order)
     left.delete(key);
     left.set(key, viewing);
     for (const oldest of left.keys()) if (left.size > LEFT_FILES_KEPT) left.delete(oldest);

@@ -53,6 +53,8 @@ export function useFileViewer() {
     const current = outsideSettings(window.history.state);
     const state = { ...withoutWebPanel(current), [HISTORY_KEY]: preview };
     if (replace || previewFromState(window.history.state)) {
+      // a docked file taking over the entry of a page stacked on the web panel's other entries keeps
+      // their count: closing it goes back past them too, or the page under it would show again (#3058)
       const below = webPagesBelow(current);
       window.history.replaceState(below > 0 ? { ...state, [WEB_PANEL_BELOW_KEY]: below } : state, "");
     } else window.history.pushState(state, "");

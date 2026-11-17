@@ -13,6 +13,9 @@ export function useUpdates(enabled: boolean) {
   const [errorCode, setErrorCode] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [refresh, setRefresh] = useState(0);
+  // the component's own lifetime, not the poll's: a page hidden while the request is on its way
+  // (a phone app sent to the background) stops the poll, and the answer must still land, or
+  // the buttons stay disabled until the next sign-in
   const mounted = useRef(false);
   useEffect(() => {
     mounted.current = true;
@@ -92,6 +95,10 @@ export function useUpdates(enabled: boolean) {
       };
       fetchInstalledNotes().then((next) => {
         if (!live) return;
+        // an answer for another commit, or for none, is not this release's: a bridge that
+        // restarted between the two requests, or one still run by the supervisor that installed
+        // it, which hands over to the release's own within seconds. A supervisor older than the
+        // question never names a commit, so the asking ends, after about a minute.
         if (next.revision !== running) { again(notesUnboundDelay(attempt)); return; }
         answered.current = running;
         setBrought(next);

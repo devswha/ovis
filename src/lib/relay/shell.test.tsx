@@ -182,6 +182,7 @@ describe("the hosted shell's front page", () => {
       await until(() => attempts === 1, "the pairing");
     });
 
+  // the confirm is the consent: what it said is what the pairing does to the account, whatever changed since it was drawn
   it("asks again, and pairs nothing, when a Pair press finds a sign-in stored after the confirm was drawn", async () => {
     browser.setVisibility("hidden");
     const offer = { v: 1 as const, ...keyFor(), relay: AP, name: "Desk PC" };
@@ -518,6 +519,11 @@ describe("the hosted shell's front page", () => {
       expect(prepared[0]?.accountKey).toBeDefined();
     });
 
+    /**
+     * The new row has no account (server/devices.ts, enrollRelay), so the status lists it as unlinked until its
+     * `link` (accountRows), and the link ends the row's other sessions, the app's among them (linkAccountKey,
+     * onLinked: `auth_changed`).
+     */
     const accountPc = (account: string, deviceId: string, linked: () => void) => {
       let member = false;
       return (path: string): Response | undefined => {
@@ -648,6 +654,7 @@ describe("the hosted shell's front page", () => {
         await until(() => reloads === 1, "the reload for the newer shell");
         expect(apps).toBe(0);
         expect(prepared[0]?.accountKey).toBeDefined();
+        // what crosses the reload names the sign-in, and holds none of its tokens
         expect([...browser.sessionStore.values()].join()).toContain("sign-in-a");
         expect([...browser.sessionStore.values()].join()).not.toMatch(/refresh-a|"a"/);
         const before = { written: written.length, asked };
@@ -659,6 +666,7 @@ describe("the hosted shell's front page", () => {
           expect(prepared[1]?.accountKey).toBeDefined();
           expect(asked).toBeGreaterThan(before.asked);
         } else {
+          // the confirm was drawn for the first sign-in: the one stored now gets nothing of this pairing
           expect(prepared[1]?.accountKey).toBeUndefined();
           expect(asked).toBe(before.asked);
           expect(written.slice(before.written)).toEqual([]);

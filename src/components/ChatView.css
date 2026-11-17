@@ -484,6 +484,7 @@
 .markdown-mermaid {
   display: flex;
   justify-content: center;
+  /* clip, not hidden: no scroll container to end a sheet's swipe (#3475), as for .image-slot */
   overflow: hidden;
   overflow: clip;
   cursor: zoom-in;
@@ -1075,6 +1076,8 @@ ol.markdown-list {
 .chat-tool-io p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .chat-tool-io > :not(:first-child):not(.markdown-file) { margin-top: var(--space-2); }
 
+/* a tool's own pictures in its opened row (pi reads a file into the result): left-aligned, unlike
+   a user's attachments; the folded line shows them small (.work-images) */
 .chat-tool-images {
   display: flex;
   flex-wrap: wrap;
@@ -1603,7 +1606,9 @@ ol.markdown-list {
   letter-spacing: var(--tracking-caps);
 }
 
-/* a button's label is not text a touch screen can select: a phone's selection of it copied nothing */
+/* a file a tool call names opens in the viewer: a link in look, a button underneath. Its name stays
+   text a touch screen can select, as a link's is: a button's label is not, so a phone's selection of
+   it copied nothing. A tap still opens the file. */
 .chat-tool-file-link {
   padding: 0;
   border: 0;
@@ -2203,6 +2208,8 @@ ol.markdown-list {
   .chat-turn-user .chat-user-row + .chat-outcome { margin-top: calc((var(--touch-target) - var(--chip-h)) / 2); }
 }
 
+/* pi moved its leaf and wrote nothing: the turns above are not all the file holds, and this is
+   the only place that can say so. */
 .chat-abandoned { margin: var(--space-2) 0; }
 .chat-abandoned > summary { font-style: italic; }
 .chat-abandoned-note { margin: var(--space-2) 0 0; color: var(--text-dim); }

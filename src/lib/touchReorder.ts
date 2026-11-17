@@ -1,6 +1,10 @@
 /*
  * On iOS a long press lifts the system's drag preview, but the drop never reaches the page, so a
  * touch screen reorders through these touch listeners and the row's `draggable` is off there.
+ *
+ * Once a row is up the stroke is the row's: its moves scroll nothing and never reach the drawer's
+ * swipe (lib/edgeSwipe.ts, on the document's capture phase, which this listener on the window's
+ * capture phase runs before).
  */
 
 export const HOLD_MS = 400;

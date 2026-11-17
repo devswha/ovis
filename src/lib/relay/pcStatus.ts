@@ -9,9 +9,11 @@ import { keyIdOf } from "./shellState.ts";
 
 export type PcStatus =
   | { readonly kind: "checking" }
+  /** the PC finished the encrypted handshake on `route`; the check stops before signing in, so this device's own admission is not known */
   | { readonly kind: "answered"; readonly route: DeviceRoute; readonly relay?: string; readonly rttMs: number }
   | { readonly kind: "offline"; readonly reason: "pc" | "relay" };
 
+/** Every direct carrier together gets this long, as a connection gives them (transport.ts DIRECT_BUDGET_MS). */
 export const DIRECT_PROBE_MS = 1_500;
 export const RELAY_PROBE_MS = 8_000;
 

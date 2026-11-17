@@ -2,6 +2,11 @@ import type { ConversationTurn } from "../../shared/protocol.ts";
 
 const revisions = new WeakMap<ConversationTurn, string>();
 
+/**
+ * Each poll parses the page anew, so a turn that did not change is still a new object: keyed on the
+ * object, a message the chat could not draw was drawn (and failed, and logged) again on every poll
+ * that changed some other turn.
+ */
 export function turnRevision(turn: ConversationTurn, immutable = false): string {
   const known = immutable ? revisions.get(turn) : undefined;
   if (known !== undefined) return known;

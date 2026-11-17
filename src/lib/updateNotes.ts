@@ -16,6 +16,10 @@ export function reloadReason(
   return chunkFailed ? "incomplete" : null;
 }
 
+/**
+ * A check reports nothing available while it runs, so `available` is not asked: the notes must not
+ * leave every five minutes under someone reading them.
+ */
 export function offeredNotes(
   status: Pick<UpdateStatus, "current_revision" | "latest_revision"> | null,
   notes: UpdateNotes | null,
@@ -35,6 +39,11 @@ export function notesOffer(
 const retryDelay = (attempt: number): number => Math.min(30_000, 2000 * 2 ** Math.min(attempt, 4));
 const UNBOUND_RETRIES = 5;
 
+/**
+ * A bridge that just restarted has not heard from its supervisor yet, and a check may be between two
+ * releases: both pass within seconds. A supervisor older than the notes never names a commit, so the
+ * asking ends, after about a minute.
+ */
 export function notesUnboundDelay(attempt: number): number | null {
   return attempt < UNBOUND_RETRIES ? retryDelay(attempt) : null;
 }
@@ -67,6 +76,8 @@ export function announcesUpdate(
   if (!installed?.version || installed.version === dismissed || installed.installed_at === null) return false;
   if (status?.latest_revision && status.latest_revision !== status.current_revision) return false;
   const at = Date.parse(installed.installed_at);
+  // an install time in the future is a clock that was set back since: with a day's allowance for
+  // skew, such a line is not shown, or it would stay as long as the clock had been ahead
   return Number.isFinite(at) && now - at >= -SKEW_ALLOWANCE_MS && now - at < ANNOUNCED_FOR_MS;
 }
 

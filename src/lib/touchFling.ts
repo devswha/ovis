@@ -12,6 +12,7 @@ export const FLING_MAX_VELOCITY = 8;
 export const FLING_STOP_VELOCITY = 0.02;
 /** The speed a fling keeps per millisecond (UIScrollView's normal deceleration rate). */
 export const FLING_DECELERATION = 0.998;
+/** The longest frame a fling advances by: a frame after the tab was hidden does not jump the whole glide. */
 const FLING_MAX_FRAME_MS = 50;
 
 export interface VelocityTracker {
@@ -36,6 +37,7 @@ export function createVelocityTracker(): VelocityTracker {
       if (!last || !Number.isFinite(time) || time - last.time > FLING_STOPPED_MS || reach < FLING_SLOP_PX) return 0;
       const first = samples.find((sample) => last.time - sample.time <= FLING_HORIZON_MS && sample !== last) ?? samples.at(-2);
       if (!first) return 0;
+      // events that share a timestamp still moved the finger: count them over one millisecond
       const elapsed = Math.max(1, last.time - first.time);
       const velocity = (last.position - first.position) / elapsed;
       if (Math.abs(velocity) < FLING_MIN_VELOCITY) return 0;

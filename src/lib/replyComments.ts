@@ -38,6 +38,7 @@ export class ReplyCommentStore {
   private reservations = 0;
   constructor(
     private storage: () => CommentStorage = () => paneLifetimes.paneStorage,
+    // random, not a count of this tab's: another tab saving in the same millisecond must not share it, as a send removes by id
     private newId: () => string = () => `${Date.now().toString(36)}-${Array.from(crypto.getRandomValues(new Uint32Array(2)), (part) => part.toString(36)).join("")}`,
   ) {}
   subscribe = (listener: () => void): (() => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
@@ -171,6 +172,11 @@ export function storedCommentsText(raw: string | null): string {
   return list.length > 0 ? messageWithComments(list, "") : "";
 }
 
+/**
+ * Whether a send leaves the waiting comments for the next message: a slash command or a `!` shell line
+ * (the agent runs them, and a quote before one would turn it into prose), or the answer to the agent's
+ * open question.
+ */
 export function commentsWait(text: string, answering: boolean): boolean {
   return answering || /^[/!]/.test(text.trimStart());
 }

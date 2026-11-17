@@ -1,3 +1,6 @@
+/**
+ * Each ask is bounded too, so one request that never settles cannot hold the deadline off.
+ */
 import type { RuntimeName } from "../../shared/machines.ts";
 
 export interface FollowRestartOptions {

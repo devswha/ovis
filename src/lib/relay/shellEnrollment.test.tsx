@@ -145,6 +145,8 @@ describe("account pairing completion", () => {
     expect(run.apps()).toBe(2);
   });
 
+  // how the shell tells the account side whether an introduction can come: only a member's approval of a pairing made
+  // without a code hands one over, so only that pairing is kept looking for it
   it.each([
     ["a sheet join without a code keeps looking for a minute", {}, 21],
     ["a link with a code looks once", { code: "123456" }, 1],

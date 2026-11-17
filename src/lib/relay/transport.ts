@@ -14,12 +14,17 @@ export interface RelayTransportOptions extends RelayChannelOptions {
   readonly openChannel?: typeof openRelayChannel;
   readonly clock?: MuxClock;
   readonly onFatal?: (error: Error) => void;
+  /**
+   * Opens a socket to one of the PC's direct carriers (`ws://<private IPv4>:<port>`, docs/relay.md "Direct on the
+   * same network"): the native apps' plugin, as a page on https cannot.
+   */
   readonly directSocket?: (url: string) => RelaySocket;
   readonly directTailnet?: () => boolean;
 }
 
 export const DIRECT_BUDGET_MS = 1_500;
 export const DIRECT_HEAD_START_MS = 300;
+/** Direct carriers tried at once: the apps' plugins open at most two sockets (OvisDirectPlugin MAX_SOCKETS). */
 export const DIRECT_SOCKETS = 2;
 const DIRECT_PROBE_EVERY_MS = 5 * 60_000;
 const DIRECT_IDLE_CHECK_MS = 5_000;
@@ -46,8 +51,10 @@ function untilClosed(inner: RelaySocket, closed: () => void): RelaySocket {
   };
 }
 
+/** Whether another attempt could only fail the same way: the device was revoked or never paired, the PC's identity or protocol changed, or the offer is unsafe. */
 export function isFatalRelayError(error: unknown): error is Error {
   if (error instanceof ServerIdentityChangedError || error instanceof UnsafeRelayDestinationError) return true;
+  // the relay takes no new device for this PC while its account is past its limits: only a later try can differ
   if (error instanceof RelayNewSessionsRefusedError) return true;
   return error instanceof MuxProtocolError && (error.code === "auth_revoked" || error.code === "auth_failed"
     || error.code === "unsupported_version" || error.code === "unsupported_extension" || error.code === "unsupported_transport");
@@ -63,6 +70,7 @@ const clock: MuxClock = {
 
 const HTTP_QUEUE_LIMIT = 64;
 const HTTP_QUEUE_TIMEOUT_MS = 30_000;
+/** The mux queues at most 4 MiB of outgoing payload across streams: a socket holds no more than that waiting to reach it. */
 const WS_SEND_QUEUE_LIMIT = 4 * 1024 * 1024;
 
 const WS_SEND_QUEUE_MESSAGES = 16_384;
@@ -232,6 +240,7 @@ export class RelayTransport implements Transport {
     for (const waiting of this.renewing) {
       if (generation > waiting.after) { this.renewing.delete(waiting); waiting.up(); }
     }
+    // a renew asked while this attempt was on its way: it may have signed with the old key, so the next one signs again
     if (this.renewing.size > 0) { channel.close(); return; }
     if (this.options.directSocket) {
       this.directCarriers = channel.directCarriers ?? [];
@@ -243,6 +252,7 @@ export class RelayTransport implements Transport {
     const viaRelay = (signal: AbortSignal, onClose = options.onClose) => openRelayChannelWithFallback(offer,
       { ...options, signal, onClose, offerDirect: this.options.directSocket !== undefined, offerTailnet: this.options.directTailnet?.() === true }, this.options.openChannel ?? openRelayChannel, this.relay);
     if (!this.options.directSocket || (generation === 1 && this.offer.code !== undefined)) return viaRelay(this.abort.signal);
+    // a race the relay won by a hair would bring a switch the probe just earned back onto the relay, time after time
     const proven = this.switchingDirect;
     const headStartMs = proven ? undefined : DIRECT_HEAD_START_MS;
     this.switchingDirect = false;
@@ -290,6 +300,7 @@ export class RelayTransport implements Transport {
     });
   }
 
+  /** Only a refusal by the PC itself, after Noise proved it is the PC, is final there as it is through the relay. */
   private async openDirect(offer: RelayOffer, options: RelayChannelOptions, ended: AbortSignal, proven = false): Promise<RelayChannel | undefined> {
     const socket = this.options.directSocket;
     if (!socket) return undefined;
@@ -299,6 +310,9 @@ export class RelayTransport implements Transport {
     }
     const carriers = [...new Set(this.directCarriers)];
     if (ended.aborted || carriers.length === 0) return undefined;
+    // at most DIRECT_SOCKETS at once (the apps' plugins open no more), in two lanes: the PC's Tailscale carriers and
+    // its LAN ones. With both, each lane has one socket, so a silent LAN address never keeps the Tailscale one out of
+    // the race, and the Tailscale one keeps its whole budget (away from home it is the slow one); a lane alone has both.
     const lanes = [carriers.filter((carrier) => isTailnetCarrier(carrier)), carriers.filter((carrier) => !isTailnetCarrier(carrier))]
       .map((queue) => ({ queue, running: 0 }));
     const ends = performance.now() + DIRECT_BUDGET_MS;
@@ -335,6 +349,8 @@ export class RelayTransport implements Transport {
             endOthers(direct);
             resolve(channel);
           }, (error: unknown) => {
+            // only a refusal by the PC itself, after Noise proved it is the PC, is final: the relay's own refusal of a
+            // new device is no word of a direct carrier's
             if (!settled && (this.stopped || (isFatalRelayError(error) && !(error instanceof DirectCarrierUnusableError) && !(error instanceof RelayNewSessionsRefusedError)))) { settled = true; endOthers(); reject(error); }
           }).finally(async () => {
             clearTimeout(timer);
@@ -441,6 +457,9 @@ export class RelayTransport implements Transport {
   private failed(error: unknown): void {
     if (this.stopped) return;
     if (!isFatalRelayError(error)) {
+      // an attempt the relay held for an absent PC was a wait, not a hammering: no growing pause
+      // between such waits, so a PC back from a restart is reached within a second
+      // (a hidden page keeps the growing pause: showing it again reconnects at once, through wake)
       if (error instanceof RelayPcOfflineError && globalThis.document?.visibilityState !== "hidden") this.delay = 1000;
       this.retry();
       return;
@@ -458,6 +477,10 @@ export class RelayTransport implements Transport {
     this.delay = Math.min(30_000, this.delay * 2);
   }
 
+  /**
+   * One found closing with no close event yet (closed under the page while the relay has not answered) is ended now:
+   * its streams fail and a new one connects, rather than the app reading itself live until the browser gives up on the close.
+   */
   private carrierUp(channel: RelayChannel | undefined): boolean {
     if (!channel) return true;
     if (this.channel === channel && channel.carrierOpen) return true;
@@ -515,6 +538,7 @@ export class RelayTransport implements Transport {
     // so one over the PC's request limit is refused before Request copies it, when its size is known
     const buffered = new Request("https://relay.ovis.invalid/").body === undefined;
     if (buffered && (knownSize(init?.body) ?? 0) > LIMITS_V1.max_request_body_bytes) throw tooLarge();
+    // These are browser networking policies, not properties of an encrypted mux request.
     const request = new Request(address, { ...init, credentials: "omit", mode: "cors" });
     request.signal.throwIfAborted();
     let upload: ReadableStream<Uint8Array> | null;
@@ -685,6 +709,7 @@ export class RelayWebSocket extends EventTarget implements WebSocketLike {
   private finish(code: number, reason: string, clean: boolean): void {
     if (this.state === this.CLOSED) return;
     this.state = this.CLOSED;
+    // Discarded sends still count after close, even though their payloads are never queued.
     if (code === 1006) this.emit(new Event("error"));
     this.emit(new CloseEvent("close", { code, reason, wasClean: clean }));
   }
@@ -698,6 +723,8 @@ export class RelayWebSocket extends EventTarget implements WebSocketLike {
     if (!stream) return;
     this.pendingBytes += size;
     if (this.pendingBytes > WS_SEND_QUEUE_LIMIT || this.waiting >= WS_SEND_QUEUE_MESSAGES) {
+      // As a browser's socket whose send buffer is full: it fails, nothing still waiting is sent,
+      // and what the mux had not sent yet stays counted once the reset discards it.
       this.state = this.CLOSING;
       this.pendingBytes += stream.getBufferedAmount();
       this.stream = undefined;
@@ -706,6 +733,7 @@ export class RelayWebSocket extends EventTarget implements WebSocketLike {
       return;
     }
     this.waiting++;
+    // Capture the stream now. Neither Blob conversion nor backpressure can replay on a new mux.
     const message = typeof data === "string" || data instanceof Blob ? data : ArrayBuffer.isView(data)
       ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength).slice() : new Uint8Array(data).slice();
     this.outgoing = this.outgoing.then(async () => {

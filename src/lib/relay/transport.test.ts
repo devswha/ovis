@@ -370,6 +370,7 @@ for (const initial of ["connecting", "open"]) {
     if (initial === "open") await opened(socket);
     const atClose = deferred<number>();
     socket.addEventListener("close", () => atClose.resolve(socket.bufferedAmount), { once: true });
+    // When close is followed immediately by a discarded send, as in Chromium.
     socket.close(1000);
     socket.send("abc");
     expect(socket.readyState).toBe(socket.CLOSING);
@@ -419,6 +420,7 @@ it("fails a websocket whose unsent messages pass the send queue bound, keeping e
   const held = socket.bufferedAmount;
   expect(held).toBeGreaterThanOrEqual(chunk.length);
   for (let index = 0; index < 5; index++) socket.send(chunk);
+  // Then the socket fails at once, as a browser's does when its send buffer is full, and nothing unsent is forgotten
   expect(socket.readyState).toBe(socket.CLOSING);
   expect(socket.bufferedAmount).toBe(held + 5 * chunk.length);
   expect(await end).toMatchObject({ code: 1006, wasClean: false });
@@ -801,12 +803,15 @@ it("exposes resource failures as hook state without an unhandled promise rejecti
   let renderer: ReturnType<typeof create> | undefined;
   await act(async () => { renderer = create(createElement(Probe)); });
   await act(async () => { await bounded(result.promise); });
+  // Then the caller can render the failure; Bun's test runner also fails unhandled rejections.
   expect(await result.promise).toMatchObject({ url: null, error: expect.any(TypeError) });
   await act(async () => renderer?.unmount());
 });
 
 it("throws on send while connecting and validates close arguments synchronously", () => {
   const socket = new RelayWebSocket(() => { throw new TypeError("Offline"); });
+  // When callers violate the browser socket contract.
+  // Then errors are synchronous, not swallowed by an asynchronous send queue.
   expect(() => socket.send("early")).toThrow(DOMException);
   expect(() => socket.close(1006)).toThrow(DOMException);
   expect(() => socket.close(1000, "x".repeat(124))).toThrow(DOMException);
@@ -814,6 +819,7 @@ it("throws on send while connecting and validates close arguments synchronously"
 });
 
 it("keeps a StrictMode resource usable and revokes each owned blob on cleanup", async () => {
+  // Given a resource hook whose effects will be replayed by React StrictMode.
   const f = await fixture({ dispatch: async () => new Response("image") });
   setTransport(f.transport);
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, "IS_REACT_ACT_ENVIRONMENT");

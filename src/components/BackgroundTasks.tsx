@@ -22,6 +22,11 @@ const NODE_ICONS: Record<OmoRunNode["state"], ComponentType<LucideProps>> = {
   pending: Circle, scheduled: Circle, running: CircleDot, blocked: CircleAlert, completed: CircleCheck, failed: CircleX, skipped: CircleSlash, cancelled: CircleSlash,
 };
 
+/**
+ * The status line's one chip for what the agent works through besides its answer: the plan it
+ * keeps (Claude Code's task list, Codex's checklist: `plan`, read again while open) and its
+ * background tasks. A Claude Code or OpenCode pane's tasks are its subagents (`subagents`).
+ */
 export function BackgroundTasks({ paneId, count, omo, subagents = false, plan = null }: { paneId: string; count: number; omo: boolean; subagents?: boolean; plan?: PlanSummary | null }) {
   const t = useT();
   const { fetchPaneOmoActivity, fetchPanePlan } = useMachineApi();
@@ -40,6 +45,9 @@ export function BackgroundTasks({ paneId, count, omo, subagents = false, plan = 
     if (!subagents || count > 0) return;
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    // The server answers within a second with what it knows, so a pane whose session it is still
+    // looking for reads as having none: an empty answer is asked again a few times. Agents that
+    // ended before that are told by nothing else, as the count changes only for running ones.
     const ask = (left: number): void => {
       const again = (): void => { if (alive && left > 0) timer = setTimeout(() => ask(left - 1), POLL_MS); };
       fetchPaneOmoActivity(paneId).then((found) => { if (!alive) return; if (found.tasks.length > 0) setSeen(true); else again(); }, again);

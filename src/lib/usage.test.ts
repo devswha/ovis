@@ -36,6 +36,7 @@ describe("usage meters", () => {
       expect(composerUsage(accounts, agent, [], [], "anthropic-subscription")?.account).toBe("c@x");
       expect(composerUsage(accounts, agent, ["codex:b@x"], [], "openai-codex")?.account).toBe("b@x");
       expect(composerUsage(accounts, agent, ["codex:b@x"], ["codex:b@x"], "openai-codex")?.account).toBe("a@x");
+      // a plain `anthropic` may be an API key, as `openai` is: no plan, and none is guessed without one
       for (const other of ["anthropic", "openai", "zai", "__proto__", null, undefined]) {
         expect(planForPane(agent, other)).toBeNull();
         expect(composerUsage(accounts, agent, [], [], other)).toBeUndefined();

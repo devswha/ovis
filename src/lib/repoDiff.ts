@@ -33,6 +33,7 @@ export function sameComparison(left: RepoBranchComparison | null, right: RepoBra
   return left.repository_root === right.repository_root && left.head_oid === right.head_oid && left.base_oid === right.base_oid && left.merge_base_oid === right.merge_base_oid;
 }
 
+/** git's own letter for a status, as `git status --short` prints it. */
 export const STATUS_MARK: Record<RepoDiffStatus, string> = {
   added: "A", deleted: "D", modified: "M", renamed: "R", copied: "C", type_changed: "T", unmerged: "U", untracked: "?",
 };
@@ -72,6 +73,7 @@ export function nothingChangedWord(t: Translate, scope: RepoDiffScope): string {
   }
 }
 
+/** A refusal of the diff routes, in the user's words: never git's stderr, which the server keeps. */
 export function diffErrorMessage(t: Translate, error: unknown): string {
   if (!(error instanceof ApiError)) return t("Changes could not be loaded.");
   if (routeMissing(error)) return t("This PC's bridge cannot show changes yet.");

@@ -9,6 +9,7 @@ const terminal = (cols: number, rows = 10): Terminal => {
   matchHerdrWidths(term);
   return term;
 };
+/** What herdr's attach sends before its first screen: the alternate screen, where a resize joins no rows, and no wrap. */
 const SETUP = "\x1b[?1049h\x1b[?7l";
 const attached = async (cols: number, rows = 10): Promise<Terminal> => {
   const term = terminal(cols, rows);
@@ -16,6 +17,10 @@ const attached = async (cols: number, rows = 10): Promise<Terminal> => {
   return term;
 };
 
+/**
+ * One screen as herdr's attach stream draws it: inside a synchronized update, every row at its own place with
+ * every cell written, and the cursor last. No row is a wrapped continuation of the one above.
+ */
 const frame = (cols: number, rows: string[], [row, column]: [number, number]): string =>
   `\x1b[?2026h\x1b[?25l${rows.map((text, index) => `\x1b[${index + 1};1H${text.padEnd(cols)}`).join("")}\x1b[${row + 1};${column + 1}H\x1b[?25h\x1b[?2026l`;
 
@@ -31,6 +36,7 @@ test("a prompt asks while the cursor is on its line, and is answered once the cu
     expect(screen.read("a")).toBeNull();
     await parse(term, frame(80, ["$ git push", `${GIT} `, `${GIT} `, ""], [2, 41]));
     expect(screen.read("a")).toBe(GIT);
+    // at the screen's last row the answer's line break scrolls the prompt up, which herdr redraws a row higher
     await parse(term, frame(80, ["a", "b", "c", "d", "e", "f", "g", "h", "$ git push", `${GIT} `], [9, 41]));
     expect(screen.read("a")).toBe(GIT);
     await parse(term, frame(80, ["b", "c", "d", "e", "f", "g", "h", "$ git push", `${GIT} `, ""], [9, 0]));
@@ -227,6 +233,7 @@ test("on a stream of the program's own bytes, a long line cut by the screen's to
 });
 
 test("on a stream of the program's own bytes, a prompt xterm wrapped is answered by a line feed alone", async () => {
+  // a herdr-core pane: xterm wraps the 40-column prompt at 30 columns itself and joins its rows
   const term = terminal(30);
   const screen = createSecretScreen(term, () => true);
   try {

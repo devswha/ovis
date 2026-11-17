@@ -65,6 +65,7 @@ const EDITING = new Set(["Enter", "Tab", "Backspace", "Escape", "Delete", "Home"
 export function typeAheadKey(event: Pick<KeyboardEvent, "key" | "ctrlKey" | "metaKey" | "altKey" | "shiftKey">): TypeAheadItem | "hold" | null {
   const { key, ctrlKey: ctrl, metaKey: meta, altKey: alt, shiftKey: shift } = event;
   if (key === "Backspace") {
+    // Cmd+Backspace erases the line as the terminal's own does (useTerminalMount); Alt and Ctrl as xterm sends them
     if (meta) return ctrl || alt ? "hold" : { input: "\x15" };
     return { input: `${alt ? "\x1b" : ""}${ctrl ? "\b" : "\x7f"}` };
   }
@@ -79,6 +80,7 @@ export function typeAheadKey(event: Pick<KeyboardEvent, "key" | "ctrlKey" | "met
   }
   if (!modified && key === "Enter") return { input: "\x1b\r" };
   if (!modified && key === "Tab") return { input: "\x1b[Z" };
+  // Cmd+Left and Cmd+Right go to the line's ends, as the terminal's own do on a Mac
   if (meta && !ctrl && !alt && !shift && (key === "ArrowLeft" || key === "ArrowRight")) return { input: key === "ArrowLeft" ? "\x01" : "\x05" };
   return "hold";
 }
@@ -92,6 +94,7 @@ export function catchTypeAhead(): TypeAheadCatch | null {
   field.setAttribute("aria-label", t("New terminal"));
   field.setAttribute("autocapitalize", "off");
   field.setAttribute("autocomplete", "off");
+  // a touch screen's keyboard does not come up for it: only a keyboard already there types into it
   if (window.matchMedia?.("(pointer: coarse)").matches === true) field.inputMode = "none";
   field.spellcheck = false;
   field.tabIndex = -1;

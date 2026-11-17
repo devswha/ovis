@@ -60,6 +60,7 @@ export function AlertWebhookGroup() {
     setLine({ text: t("Saved"), error: false });
   });
   const choose = (patch: Partial<AlertPrefs>) => {
+    // one save at a time: a quicker second one could land first and the older choice win
     if (busy) return;
     const next = { ...alerts, ...patch };
     setAlerts(next);

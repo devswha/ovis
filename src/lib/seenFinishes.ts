@@ -195,6 +195,8 @@ function handleStorage(event: StorageEvent): void {
     for (const entry of records.values()) changes.push({ pc: entry.pc, epoch: entry.epoch });
     records.clear();
     scopeRecords.clear();
+    // The clear event can arrive after this page persisted another finish. Read what
+    // storage contains now instead of discarding a newer acknowledgement with the old one.
     hydrated = false;
     refreshSnapshot = false;
     hydrate();
@@ -216,7 +218,7 @@ function handleStorage(event: StorageEvent): void {
       scopeRecords.delete(recordScope(held.pc, held.epoch));
       notify([{ pc: held.pc, epoch: held.epoch }]);
     }
-    return;
+    return; // A queued write event must not resurrect a deleted key.
   }
   const current = parse(currentRaw);
   if (!current) return;

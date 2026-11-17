@@ -58,6 +58,7 @@ function canTransferStreams(): boolean {
   return transferableStreams;
 }
 
+/** Older shell workers control pages too: require the resource protocol before giving out its URL. */
 const capabilities = new WeakMap<ServiceWorker, Promise<boolean>>();
 export function resourceWorker(serverId: string): Promise<boolean> {
   const worker = typeof navigator === "undefined" ? null : navigator.serviceWorker?.controller;
@@ -91,6 +92,7 @@ export async function relayResourceUrl(transport: Transport, serverId: string, p
     ? new Blob([blob], { type: "application/octet-stream" }) : blob);
 }
 
+/** Only our controlling worker can ask this window to use its channel. */
 export function serveRelayResources(transport: Transport, serverId: string, connected: () => boolean): () => void {
   const workers = typeof navigator === "undefined" ? undefined : navigator.serviceWorker;
   if (!workers) return () => {};

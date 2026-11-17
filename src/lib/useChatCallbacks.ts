@@ -78,8 +78,13 @@ export function useChatCallbacks(deps: ChatCallbacksDeps) {
   }, []);
   const onChatPrompt = useCallback((pane: string, value: InteractivePrompt | null, answered = false) => {
     setChatPrompt((current) => value !== null ? { pane, value, answered } : current?.pane === pane ? null : current);
+    // a typed pick belongs to the prompt it was typed for: once that prompt changes or goes
+    // away (a tap in the card, an answer in the terminal), the same question asked again
+    // later opens clean, not with the old pick waiting one tap from Confirm
     setPendingAnswer((current) => current?.pane === pane && current.promptId !== value?.id ? null : current);
   }, []);
+  // back at work, the agent has had its answer, maybe from the terminal: the same prompt asked
+  // again before the chat's next read must not bring the pick back either
   useEffect(() => {
     if (agentStatus === "working") setPendingAnswer(null);
   }, [agentStatus]);

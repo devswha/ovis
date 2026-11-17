@@ -62,6 +62,7 @@ function tabStops(surface: HTMLElement, options: FocusTrapOptions): HTMLElement[
 export function overlayStops(): HTMLElement[] {
   const stops: HTMLElement[] = [];
   for (const prompt of document.querySelectorAll<HTMLElement>(".relay-pairing-prompt")) {
+    // refused the focus under an inert column, or not drawn: no stop
     if (prompt.closest("[inert]") !== null || prompt.getClientRects().length === 0) continue;
     stops.push(prompt, ...[...prompt.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(reachable));
   }
@@ -119,6 +120,8 @@ export function useFocusTrap<T extends HTMLElement>(open: boolean, options: Focu
   const surface = useRef<T | null>(null);
   const latest = useRef(options);
   latest.current = options;
+  // Own the keyboard in the opening commit: a menu can just have restored the terminal,
+  // whose Escape handler would consume a key arriving before the first animation frame.
   useLayoutEffect(() => {
     if (!open) return;
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -170,6 +173,8 @@ export function useFocusTrap<T extends HTMLElement>(open: boolean, options: Focu
       const next = stop && overlayEntry(stop, document.activeElement);
       event.preventDefault();
       next?.focus({ preventScroll: true });
+      // several waiting prompts in a short window scroll: the one Tab lands in is brought into view, its
+      // words and number first and then the button on it, so nothing is approved unread
       const overlay = next && overlayOf(next);
       if (!overlay) return;
       overlay.scrollIntoView({ block: "nearest" });

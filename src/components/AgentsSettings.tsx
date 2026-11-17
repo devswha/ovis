@@ -160,6 +160,8 @@ function ProviderAccounts({ id, providers, removed, onLocalLogin, onFollow }: { 
     {ordered.map((usage, index) => {
       const name = usageName(usage);
       const hidden = settings.usageHidden.includes(usage.key);
+      // another tool's record is no sign-in Ovis holds: its row names that tool, and its status says how long ago it
+      // read, as an old record once the tool stopped.
       const recordOnly = !isSignIn(usage);
       const age = usage.recorded ? [...(usage.recorded.stale ? [t("Old record")] : []), lastSeen(usage.checked_at)] : [];
       const status = recordOnly ? age.join(" · ") : usage.problem === null ? t("Signed in") : {
@@ -228,6 +230,7 @@ function AgentItem({ entry, open, onToggle, allProviders, removed, read, limitsO
   const { agent, provider, accounts } = entry;
   const line = stateLine(entry, read, t);
   const again = read && !watching ? accounts.filter(canSignInAgain) : [];
+  // an account another tool recorded is listed here, but the agent itself is still to be signed in
   const signedIn = accounts.filter(isSignIn);
   const detailsId = `agents-details-${agent.id}`;
   const action = open || watching || !read || provider === null || (entry.missing !== null && signedIn.length === 0) ? null
@@ -274,6 +277,7 @@ function AgentItem({ entry, open, onToggle, allProviders, removed, read, limitsO
   );
 }
 
+/** The status-line switch is Claude's, for networks that refuse its usage API. */
 function PlanLimits({ watching }: { watching: boolean }) {
   const { settings, update } = useSettings();
   const t = useT();
@@ -345,6 +349,7 @@ export function AgentsSettings({ watching, onLocalLogin, onOpenPane, onOpenGuide
   }, [api, machineId]);
   const integrationOutcome = outcomeFor(integrations, machineId);
 
+  // the existing switch still decides whether sign-ins are sent to usage endpoints
   const usage = useUsage(settings.showUsage);
   const [hub, setHub] = useState<CLIProxyStatus | null>(null);
   const [hubError, setHubError] = useState<string | null>(null);
