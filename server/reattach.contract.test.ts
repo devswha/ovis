@@ -7,6 +7,19 @@ import { herdrRpc, sessionSnapshot } from "./herdr/client.ts";
 import type { ClientMessage, ServerMessage } from "../shared/protocol.ts";
 import { testShellEnv } from "../scripts/test-shell.ts";
 
+/**
+ * A live handoff (`herdr update --handoff`, `herdr server live-handoff`) moves every pane to a
+ * new herdr server under a new terminal id and ends each `terminal attach` the way a pane that
+ * exited ends it. A pane that lives on is attached again for the same clients; a pane that is
+ * gone, or a server that does not come back, still ends the terminal.
+ *
+ * The handoff runs on a herdr of its own: replacing the shared test server would cut every
+ * other suite's attach, and a failed one would leave them no herdr. That herdr keeps its
+ * sessions in a config directory under /tmp, made for this run: a session directory holds
+ * herdr's sockets, the longest of them `herdr-handoff-<pid>.sock`, and a Unix socket path
+ * ends at 107 bytes (103 on macOS). Under CI's own config directory a second session name
+ * was already too long for it, and the server died as it started.
+ */
 const SESSION = "handoff";
 // herdr's longest socket, `herdr-handoff-<pid>.sock`, must fit a Unix socket path: 107 bytes (103 on macOS)
 const config = mkdtempSync(process.platform === "win32" ? join(tmpdir(), "hwu-") : "/tmp/hwu-");

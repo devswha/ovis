@@ -24,6 +24,7 @@ if (!command) {
 const cols = Number.parseInt(colsRaw ?? "", 10);
 const rows = Number.parseInt(rowsRaw ?? "", 10);
 
+// The bridge's bearer token never reaches the attach, however this host was launched.
 const env = { ...process.env, TERM: "xterm-256color" };
 delete env.OVIS_TOKEN;
 delete env.HERDR_WEB_TOKEN;
@@ -193,6 +194,7 @@ const stop = () => {
       term.resume();
     } catch {
     }
+    // A child can ignore SIGHUP, and a blocked pipe must not pin the sidecar.
     setTimeout(() => {
       if (!exited) { try { endGroup("SIGKILL"); } catch {} }
       process.exit(0);

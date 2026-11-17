@@ -25,6 +25,7 @@ export const relayClock: MuxClock = {
   },
 };
 
+/** Shared by HTTP and the WebSocket adapter; client identity headers never become Request headers. */
 export function relayHeaders(list: HeaderList): Headers {
   const headers = new Headers();
   const allowed: readonly string[] = REQUEST_HEADERS;
@@ -77,6 +78,7 @@ export class RelaySession {
   } | undefined;
   private device: DeviceMatch | undefined;
   private key = "";
+  /** Whether the device signed in with AUTH, the only admission that proves it holds its key. */
   private keyProven = false;
   private hinting = false;
   private directing = false;
@@ -152,6 +154,10 @@ export class RelaySession {
       },
     });
     options.channel.onClose(() => this.mux.carrierLost());
+    // A WELCOME with no feature rides right behind the protected handshake's answer, so a phone signing in
+    // gets its nonce one round trip sooner. It is provisional: HELLO is still required, and checked, before
+    // AUTH or PAIR, and a HELLO that offers pairing by comparing digits gets the final WELCOME. Only while no
+    // comparison can be under way: a phone from before `provisional` reads the first WELCOME as the answer.
     if (!options.services.relay.approvals.windowOpen()) this.welcome([], true);
   }
 
@@ -319,6 +325,8 @@ export class RelaySession {
     if (Date.now() > sas.expiresAt) { this.close("timeout"); return; }
     if (!sas.membersOnly && this.options.services.relay.approvals.closes !== sas.closes) { this.close("auth_failed"); return; }
     this.state = "verifying";
+    // a member's remote approval never lets in a key this PC holds back (removed elsewhere, or a remove for it waits here);
+    // only a pairing approved on this PC itself does
     if (sas.approvedBy !== undefined && this.options.services.accountMailbox.gates().held(sas.publicKey)) { this.close("auth_failed"); return; }
     let device: DeviceMatch | undefined;
     try { device = this.options.services.devices.pairRelayApproved(sas.label, sas.publicKey, { path: this.path, id: accountDeviceId(this.options.serverId, sas.publicKey), ...(sas.approvedBy === undefined ? {} : { addedBy: sas.approvedBy }) }, undefined, this.admitNewDevice)?.device; }
@@ -351,6 +359,14 @@ export class RelaySession {
     return relay.approvals.takeAccountJoin();
   }
 
+  /**
+   * A sign-in a PC in an account would refuse: a member may have added the device on another PC a
+   * moment ago, so the PC reads its mailbox first (at most once a minute and for at most 5 seconds,
+   * server/account/mailbox.ts); the caller then checks the sign-in as ever. Whatever fails, an id with
+   * no row here or a signature that does not hold, takes this same way, so how long the refusal takes
+   * does not tell which ids have a row. A sign-in that holds calls nothing. False when the session
+   * ended meanwhile.
+   */
   private async pullForRefusedSignIn(deviceId: string, signature: string): Promise<boolean> {
     const { devices, accountMailbox } = this.options.services;
     if (devices.account() === null) return true;
@@ -375,6 +391,7 @@ export class RelaySession {
       return;
     }
     this.device = Object.freeze(device);
+    // a key sent with a code or a comparison was never signed with: nothing account-side may rest on it
     this.key = this.keyProven ? devices.relayKeyOf(device.id) ?? "" : "";
     this.mux.enqueueControl({
       type: FrameType.AUTH_OK, flags: 0, stream_id: 0,

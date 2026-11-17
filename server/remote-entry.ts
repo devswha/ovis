@@ -96,11 +96,15 @@ try {
   try { existing = descriptorLive(JSON.parse(readFileSync(descriptor, "utf8"))); } catch {}
   if (!existing) {
   try { await bridgeIdentity(); } catch (error) {
+    // A socket that exists but cannot answer is an operator problem, not permission
+    // to replace the daemon. Only absent sockets permit starting a new server.
     // on Windows the socket is a marker file `pid:start` that a killed herdr leaves behind;
     // its pid says whether a daemon is really there. Elsewhere a killed herdr (or a reboot)
     // leaves the socket file, and a refused connection says nobody listens on it
     const socket = process.env["HERDR_SOCKET"]!;
     if (existsSync(socket) && !(windows ? staleWindowsMarker(socket) : await refusedSocket(socket))) throw error;
+    // A selected socket is an existing daemon's identity, never permission to create its replacement: the owner
+    // chooses again, among the sessions running now
     if (chosenSocket) return report("herdr_session_gone", (await discoverHerdrSessions()).filter((found) => found.socket_path !== chosenSocket));
     if (!windows && process.env["HERDR_REMOTE_START_NEW"] !== "1") {
       const sessions = await discoverHerdrSessions();

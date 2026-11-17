@@ -1,3 +1,8 @@
+/**
+ * The pull request of a workspace's branch, read and merged through the `gh` this PC already has
+ * signed in: nothing new to sign in to, and no token passes through this server. gh runs in the
+ * workspace's folder, so it finds the branch's pull request and the repository itself.
+ */
 import { PULL_REQUEST_LOG_CHARS, PULL_REQUEST_LOG_LINES, PULL_REQUEST_MAX_COMMENT_CHARS, PULL_REQUEST_MAX_THREADS,
   type PullRequestCheck, type PullRequestCheckLog, type PullRequestCheckState, type PullRequestMergeMethod, type PullRequestThread, type PullRequestView } from "../shared/pull-request.ts";
 

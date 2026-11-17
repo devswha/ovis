@@ -71,6 +71,7 @@ export class RequestLog {
         response = errorResponse(error);
       }
       if (response !== undefined) {
+        // Only correlation is authoritative. Route-authored security and cache headers win.
         response.headers.set("x-request-id", requestId);
         for (const name of ["x-content-type-options", "referrer-policy"]) {
           const value = headers.get(name);

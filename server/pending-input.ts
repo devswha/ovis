@@ -12,6 +12,8 @@ export interface PendingIdentity {
   claudeSession?: string | null;
 }
 
+/** Whether two reads of a process's start name the same process. macOS allows a second: its birth was once read from
+ * `ps`'s whole elapsed seconds, now from the kernel exactly. */
 export function sameProcessBirth(before: number, after: number, platform: NodeJS.Platform = process.platform): boolean {
   return platform === "darwin" ? Math.abs(before - after) <= 1000 : before === after;
 }
@@ -71,6 +73,9 @@ export class PendingInputs<Owner, Lease> {
     private readonly perPane: (owner: Owner) => boolean = () => false,
     elapsed?: () => number,
   ) {
+    // How long a record is kept (a resend's, a withdrawal's, a closed owner's) runs on a clock that only moves
+    // forward: the PC's clock set forward must not end a guard early, and set back must not stretch it. A caller
+    // that gives a clock of its own (a test) times both by it.
     this.elapsed = elapsed ?? (now === Date.now ? () => performance.now() : now);
   }
   private readonly elapsed: () => number;

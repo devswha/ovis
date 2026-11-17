@@ -81,6 +81,11 @@ function piProcessPaths(environ: readonly string[], home: string, cwd: string) {
   return { value, absolute, agentDir: absolute(value("PI_CODING_AGENT_DIR") || join(processHome, ".pi", "agent")) };
 }
 
+/**
+ * Only a socket this user owns, in a directory only this user can enter, speaks for a pi: a
+ * PI_CODING_AGENT_DIR another user can write to must not let them show a card, read its answer
+ * or name a session.
+ */
 export function ownSocket(socket: string): boolean {
   try { return ownedSocket(lstatSync(dirname(socket)), lstatSync(socket)); } catch { return false; }
 }
@@ -199,6 +204,12 @@ function piSessionDirForProcess(
   return { kind: "store", path, agentDir };
 }
 
+/**
+ * The pane's foreground pids and the agent directories its pi may use, whatever its session: the
+ * directory each identified pi process names, and the bridge's own for processes whose environment
+ * says nothing (or that are not identified as pi). Nothing here is a card's authority; it says only
+ * where the pane's pi would answer if it runs the web UI's extension.
+ */
 export async function piPaneAgentDirs(
   paneId: string,
   options: Omit<PiTranscriptOptions, "agent"> = {},
@@ -224,6 +235,20 @@ export async function piPaneAgentDirs(
   return { pids: [...new Set(pids)], agentDirs: [...agentDirs] };
 }
 
+/**
+ * pi's transcript for a pane, or the session it has not written yet. The agent report names
+ * the active session, else (no report at all, as on herdr-core) the pane's one pi process through
+ * the web UI's extension; Linux process metadata ties a custom store to the Pi process in this pane.
+ * Where the OS cannot expose that process environment, only the bridge's default store is used.
+ *
+ * A written session comes with the agent directory of the same process, where pi keeps the
+ * catalogs its context window is read from (`piContextWindow`), or null when that is not known:
+ * the pane's Pi processes name different ones, or none of them could be read (no Pi process
+ * identified, or its environment unreadable, as on macOS). In that last case the session was
+ * found in the bridge's own store, so the bridge's agent directory stands only when that store
+ * is the one inside it: a store shared through PI_CODING_AGENT_SESSION_DIR says nothing of the
+ * profile a pane writes to it from.
+ */
 export async function piTranscriptPath(
   paneId: string,
   sessionDir = defaultPiSessionDir(),
@@ -283,6 +308,9 @@ export async function piTranscriptPath(
   for (const store of candidateStores) {
     try { canonicalStores.add(realpathSync(store)); } catch { }
   }
+  // Preserve default-store behavior on platforms where process_info names only the shell or
+  // process environments cannot be read. A custom store is never guessed in those cases.
+  // each store's proof is taken once: the file it opened is the one returned, with its exact dev:ino (`identity`)
   const proofs = new Map([...canonicalStores].map((store) => [store, authorizedTranscript(reported, store)]));
   const matches = [...canonicalStores].filter((store) => proofs.get(store) !== null || unwrittenSession(reported, store) !== null);
   if (matches.length !== 1) return null;

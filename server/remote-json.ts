@@ -11,6 +11,7 @@ export const REMOTE_LIMITS = {
   watchedPrompt: MiB,
 } as const;
 
+/** Fixed messages: neither carries the URL, the token or any of the answer. */
 export class RemoteResponseTooLarge extends Error {
   constructor() { super("The other PC's answer was larger than this app accepts"); this.name = "RemoteResponseTooLarge"; }
 }

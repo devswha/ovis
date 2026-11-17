@@ -1,3 +1,25 @@
+/**
+ * What changed in the repository a pane (or a named folder) sits in, read with git and never
+ * written: the list of changed files, and one file's patch at a time. The two are separate reads
+ * so a repository with one enormous change does not cost every other file its diff.
+ *
+ * The `branch` scope is what Codex's review pane calls Branch: the working tree, untracked files
+ * included, against the merge base of a chosen base and HEAD, so what the base went on to change
+ * is left out. It is never guessed: a base that names no commit, a HEAD with no commit and a base
+ * sharing no history with HEAD are each refused by name, with nothing compared in their place.
+ * The list pins that comparison's identity (repository, HEAD, base, merge base), and a patch is
+ * read from the pinned merge base once the repository and HEAD are checked against it.
+ *
+ * Every git call is an argv array (no shell), with external diff drivers, textconv filters, the
+ * fsmonitor hook, optional locks and pathspec magic switched off, a byte cap on what is read and
+ * a deadline after which the process is killed. A patch is sent whole or not at all: one that
+ * passes its cap is reported as unavailable, never cut in the middle of a hunk. Nothing here
+ * fetches, checks out or writes to the repository.
+ *
+ * It reads what this server's user can read in that repository, which is no more than the
+ * terminal the same browser can already type `git diff` into.
+ */
+
 import { closeSync, lstatSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
 

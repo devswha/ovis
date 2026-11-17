@@ -1,3 +1,17 @@
+/**
+ * The PC's side of pairing with a typed code (shared/relay-pair-code.ts, docs/relay.md "Pairing
+ * with a typed code"). Minting a code starts a fresh six-digit pairing code, holds the code's
+ * nameplate on the relay (relay/pair-room.ts) and answers each device that joins with one CPace
+ * exchange. A device that knew the code gets the pairing offer the QR code shows, with that
+ * six-digit code in it, and pairs with it as a scanned QR code does (DeviceStore.pairRelay): the
+ * typed code only delivers the offer, it admits nobody.
+ *
+ * The tries are counted here, never by the relay: one is taken before M1 goes out and only a
+ * correct confirmation ends the code (spent: single use); a wrong one, a malformed answer, a device
+ * that leaves after M1 or one that runs out of time keeps the try spent, and the third ends the
+ * code. A host socket that drops reopens on the same nameplate with the same tries left. M1 for the
+ * next device is worked out ahead of time, so the relay cannot time it against a device's arrival.
+ */
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { importPublicKey, importSecretKey } from "../../shared/relay-e2ee.ts";
 import { PairCodeHost, PairCodeProtocolError, PAIR_ATTEMPT_BYTES as ATTEMPT_BYTES, PAIR_CLOSE, PAIR_CODE_TRIES, formatPairCode, randomPairCode, splitPairCode } from "../../shared/relay-pair-code.ts";
@@ -10,6 +24,7 @@ import type { RelayIdentity } from "./identity.ts";
 export const PAIR_CODE_ATTEMPT_MS = 20_000;
 const NAMEPLATE_TRIES = 5;
 const REOPEN_MS = 1000;
+/** under the relay's 120 s idle close (relay/core.ts IDLE_MS), so a code nobody tries keeps its nameplate */
 const KEEPALIVE_MS = 30_000;
 const PAIR_CODE_HOLD_MS = 60_000;
 const KEEPALIVE_PING = '{"type":"ping"}';

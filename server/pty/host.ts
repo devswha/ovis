@@ -11,6 +11,7 @@ export const RUST_SIDECAR_INSTALLED = join(ROOT, "bin", "ovis-pty-sidecar");
 
 const digests = new Map<string, { state: string; sha256: string }>();
 
+/** the binary's SHA-256, hashed again only when its mtime, size or inode moved (the installers replace it by rename, never in place) */
 function binaryDigest(installed: string): string {
   const stat = statSync(installed);
   const state = `${stat.mtimeMs}:${stat.size}:${stat.ino}`;

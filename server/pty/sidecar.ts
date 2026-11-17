@@ -5,6 +5,11 @@ import { COMPILED, ROOT } from "../entries.ts";
 import { capabilities } from "../runtime/capabilities.ts";
 import { rustSidecar } from "./host.ts";
 
+/**
+ * A terminal attach runs on a PTY host: the Rust one (server/pty/host.ts) where it passes its check,
+ * else `node pty-host.mjs`, which imports @lydell/node-pty. A runtime with neither (Windows, whose
+ * remote bundle ships Bun alone) cannot start one, whatever herdr itself can do, so its panes stay mirrored.
+ */
 export interface SidecarRuntime {
   rust?: () => boolean;
   node: () => boolean;
@@ -36,6 +41,13 @@ const probed = new Map<string, boolean>();
 
 const APP_NODE_DIRS = [".local/share/ovis/node", ".local/share/herdr-web-ui/node"];
 
+/**
+ * The Node a PTY sidecar spawned with `env` runs, as an absolute path, when it is real Node: the
+ * app's own Node, else the `node` on that spawn's own PATH, so the check and the spawn can never
+ * find two different `node`s. The PATH is the one the spawn inherits (PtySession passes
+ * process.env), not the one this process was launched with: a remote bundle adds its own bin/ at
+ * runtime (server/remote-entry.ts), and a bare Bun.which() would not see the Node shipped there.
+ */
 export function realNode(env: Record<string, string | undefined>): string | null {
   const home = env["HOME"];
   const installed = home ? APP_NODE_DIRS.map((dir) => join(home, dir, "bin", "node")).filter((path) => existsSync(path)) : [];
@@ -71,6 +83,10 @@ const here: SidecarRuntime = {
 let node: boolean | null = null;
 let known: boolean | null = null;
 
+/**
+ * Whether the Node sidecar can run here, taken once: a real Node and node-pty. PtySession asks before
+ * it falls back to Node, so a `node` that is Bun never loads node-pty (AGENTS.md).
+ */
 export function nodeSidecarAvailable(): boolean {
   node ??= here.pty() && here.node();
   return node;

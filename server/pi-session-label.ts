@@ -3,6 +3,12 @@
  * Label semantics follow Pi 1.4.0's buildSessionInfo/getSessionName (MIT, earendil-works/pi);
  * this parser is independently implemented. In particular, only `text` blocks count, joined by
  * spaces, and a session_info with no usable name clears the old name. No `title` extension entry.
+ *
+ * Strings (including image data) are validated without buffering them. Selected strings retain
+ * only their first 2001 non-leading-whitespace characters (201 for names); header fields retain
+ * at most 16 KiB; overflowing cwd/id fields are refused, never used as truncated identities.
+ * Keys, numbers and nesting are bounded too. Malformed records, including records
+ * deeper than 64 levels, are discarded through the next newline, never hiding later records.
  */
 type Json = Record<string, unknown>;
 const object = (value: unknown): Json => value !== null && typeof value === "object" ? value as Json : {};

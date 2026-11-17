@@ -756,6 +756,9 @@ describe("Pi stat-keyed streaming reader", () => {
   });
 
   it("lists the newest 50 long sessions whole and reads zero bytes on repeat", async () => {
+    // what is read and returned is the claim, not how fast this runner reads 200 MiB: busy CI runners
+    // took 6.6 s and 9 s and hit the two-second deadline, so the listing's deadline is set past the test's
+    // own timeout. The shared two-second deadline is covered with a fake clock below.
     const f = fixture({ deadlineMs: 120_000 });
     const system = filler(1024 * 1024);
     const extension = line({ type: "custom", data: { snapshot: "e".repeat(1024 * 1024) } });

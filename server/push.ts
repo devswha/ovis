@@ -1,3 +1,59 @@
+/**
+ * Web Push: pane alerts that reach a device even when Ovis is closed there.
+ *
+ * The browser hands us a subscription (an endpoint on its vendor's push service plus
+ * the keys to encrypt for it); we POST encrypted payloads there, signed with our VAPID
+ * key. Both halves persist in the state dir (default ~/.config/ovis):
+ * - vapid.json: every subscription is bound to this key pair. Regenerating it silently
+ *   orphans every subscribed device, so a malformed file is an error, never a rotation.
+ * - push-subscriptions.json: survives restarts, so a reboot does not unsubscribe phones.
+ *   A 404/410 from a push service means the device dropped it; the record is deleted.
+ * - push-retired.json: the endpoint is also remembered, as a hash with the owner it was retired for
+ *   (`RETIRED_LIMIT`), so a restart does not forget it and a revocation finds it: a browser can keep handing over a subscription its push
+ *   service retired, and registering it again would only fail the next push, so it is refused as
+ *   `subscription_gone` and the device subscribes anew (#1038). A mark has no time limit: one that
+ *   expired would let any device that knows the endpoint register it as its own (#2012). Only its
+ *   owner's revocation removes it, or a thousand later retirements.
+ * - push-keys.json (PUSH_EXTRA_KEYS): key pairs other than vapid.json's, each with the endpoints
+ *   made for it. Only state-merge.ts writes it, for subscriptions taken over from the other state
+ *   dir of an install that had two: each is signed with the key it was made for until its device
+ *   subscribes again with this server's key (src/lib/push.ts does when it next opens).
+ * - push-delivery.json: how the last push to each subscription went (`last_success_at`,
+ *   `last_failure_at`, `last_failure`), by endpoint hash, with the owner and a hash of the keys it
+ *   was recorded for. A device reads its own record through POST /api/push/status once it proves
+ *   both, so a subscription its push service retired can still say why alerts stopped (#1039).
+ *   Bounded like the retired list, and expired (`DELIVERY_TTL_MS`) on every read and write; an explicit unsubscribe or
+ *   the device's revocation removes it together with the endpoint's retired mark.
+ *
+ * Requests are built by web-push's generateRequestDetails (RFC 8291 aes128gcm + RFC
+ * 8292 VAPID) and sent with fetch; its sendNotification path goes through node:https
+ * and https-proxy-agent, which Bun does not need.
+ *
+ * An alert waits before it goes out, and a change of the pane's status meanwhile calls it
+ * off: a question answered at the desk, or a finish followed by the next prompt, never
+ * reaches the phone. herdr says nothing of whether anyone is at the PC, so a change that
+ * quick is taken for someone being there (as Claude Code waits ~6 s on a permission
+ * prompt and ~60 s after a reply before it notifies). A question waits `short`; a finish
+ * waits `long`, and only one after a turn that worked `longTurn` or more is worth it,
+ * unless the device asked for every finish (which then waits `short`).
+ *
+ * No device gets an alert while a window of the app is in use somewhere (`inUse`: a
+ * connected page that is visible and has focus, which says so over its WebSocket): the
+ * person is at a screen that already shows the change (#751). It is asked when an alert
+ * would go out, so a window brought forward while the alert waits still holds it back.
+ *
+ * A pane on the shared mute list (`muted`, shared/preferences.ts `muted_panes`) gets no alert
+ * on any device: none is scheduled for it, one already waiting is called off when the list
+ * changes (`mutesChanged`), and the list is asked again right before a waiting one goes out.
+ * Its status is tracked all the same, so an unmute tells only what changes after it.
+ *
+ * Each device also says which kinds of alert it wants (shared/notify-policy.ts AlertPrefs: a
+ * question, a permission, a finish, an error) and which PCs it hears nothing of (`pcs_off`, by the
+ * PC's name, which every server that device subscribes to knows its own PC by). The choice is made
+ * here, not on the device: a web push the device received has to be shown (iOS takes the
+ * subscription away from a page that shows none), and the phone app's relay forwards what it gets.
+ * Every alert names its `kind`.
+ */
 
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -146,6 +202,15 @@ function decodedLength(value: unknown): number {
   return Buffer.from(value, "base64url").length;
 }
 
+/**
+ * The form an endpoint is retired in: the URL as WHATWG serializes it (host in lowercase, no default
+ * port, no dot segments), without its fragment, which never reaches the push service. Those spellings
+ * of a retired endpoint are then that same endpoint (#2012); a query string, percent-encoding and a
+ * trailing slash are kept as they are, since a push service may tell them apart (WNS keeps its token in
+ * the query). What does not parse is returned as it is. Only the retired check uses it: a subscription,
+ * its key pair (push-keys.json), its history and state-merge.ts's records stay under the spelling the
+ * browser handed over, so nothing stored before has to be found under another one.
+ */
 export function normalizeEndpoint(endpoint: string): string {
   try {
     const url = new URL(endpoint);
@@ -162,6 +227,13 @@ export function parseSubscription(value: unknown, options: { loopbackHttp?: bool
   if (typeof endpoint !== "string") return null;
   try {
     const url = new URL(endpoint);
+    // https only. A browser never hands over an http: endpoint (push is https by
+    // definition), so one is never a subscription: it is only the shape that turns this
+    // server into a POST from inside the user's network at a host no browser page could
+    // reach — a link-local metadata address, a router admin page, another VLAN.
+    // Loopback is no exception: a watch device would make every agent alert a POST to a
+    // local service. Only a push service made for the tests' fake (push.fake.ts, which runs
+    // on loopback http) passes `loopbackHttp`, through createServer's `pushLoopbackHttp`.
     const loopbackHttp = options.loopbackHttp === true && url.protocol === "http:" && isLoopbackHost(url.hostname);
     if (url.protocol !== "https:" && !loopbackHttp) return null;
   } catch {
@@ -199,6 +271,10 @@ export function shownWhole(prompt: InteractivePrompt, screen: string): boolean {
   return over === prompt.title.trim() || isDivider(over);
 }
 
+/**
+ * What an alert with buttons says: the prompt's title, its question and what it shows (the command, the file).
+ * Null when that does not fit an alert whole: a button must not approve what the alert cut off.
+ */
 export function promptSummary(prompt: InteractivePrompt): string | null {
   const body = (prompt.body ?? "").split("\n");
   if (body.length > PROMPT_SUMMARY_LINES) return null;
@@ -272,6 +348,7 @@ export function createPushService(options: PushServiceOptions): PushService {
     if (vapid) return vapid;
     const stored = readJson(vapidPath) as { publicKey?: unknown; privateKey?: unknown } | undefined;
     if (stored === undefined) {
+      // cached only once on disk: a key no restart would find must never sign a subscription
       const created = webpush.generateVAPIDKeys();
       writePrivateState(vapidPath, created);
       vapid = created;
@@ -465,6 +542,8 @@ export function createPushService(options: PushServiceOptions): PushService {
         method: details.method,
         headers,
         body: new Uint8Array(details.body),
+        // a push service answers, it never redirects: following one would send the alert to
+        // wherever the endpoint points, past the https-only check (a local service, over http)
         redirect: "error",
         signal: AbortSignal.timeout(PUSH_TIMEOUT_MS),
       });
@@ -665,6 +744,9 @@ export function createPushService(options: PushServiceOptions): PushService {
       if (next) persist(next);
       else if (stale) persist(new Map(store()));
       const hash = endpointHash(endpoint);
+      // an explicit goodbye takes the endpoint's history with it, but never its retired mark: this route proves
+      // neither owner nor keys, and a mark it cleared would let anyone register a retired endpoint again with
+      // keys of their own (#1038). The mark goes only with its owner's revocation
       forgetDeliveries((record) => record.hash !== hash);
     },
 

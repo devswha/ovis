@@ -4,6 +4,12 @@
  * reader follows, and its only supported answer channel is its `pi.events` submit event: the card
  * is read from the extension and answered through it, never with keys.
  *
+ * A card is shown only when every fact agrees: the pane's one foreground process with a bridge
+ * socket answers for its own pid, writes the session file herdr reports for the pane, has exactly
+ * one form open, and that form's ask_user call is still open in that session file (pi-ask's own
+ * rule, src/pending-ask.ts). Anything else, and pi without the extension, keeps the terminal.
+ * Windows has no socket: the terminal there too.
+ *
  * pi-ask takes every answer at once, so the card asks one question per step and keeps the earlier
  * steps' answers here until the last one is given, as OpenCode's form does (prompt.ts).
  */
@@ -23,6 +29,7 @@ import { paneProcessInfo } from "./herdr/client.ts";
 import { badRequest, jsonResponse } from "./http.ts";
 import { bridgeState, ownSocket, piPaneAgentDirs, piTranscriptPath } from "./pi.ts";
 
+/** The extension gives pi-ask 3 s to confirm; this covers that and the socket round trip. */
 const SUBMIT_MS = 4_000;
 const MAX_QUESTIONS = 20;
 const MAX_OPTIONS = 50;

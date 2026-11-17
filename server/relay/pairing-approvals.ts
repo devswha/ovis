@@ -19,6 +19,7 @@ interface Waiting {
   key: string;
   deviceId: string;
   membersOnly: boolean;
+  /** asked while this PC's own screen waited to be added to an account: decided on this PC only, never by a member */
   localOnly: boolean;
   vouched: boolean;
   choices: [string, string, string];
@@ -61,6 +62,10 @@ export class RelayPairingApprovals {
 
   get closes(): number { return this.closeCount; }
 
+  /**
+   * Writes the window closed once it has run out, so the file never holds a deadline a later start
+   * could land inside (a clock that went back). Nothing waits on it: the timer does not keep the server up.
+   */
   private watchExpiry(): void {
     this.cancelExpiry?.();
     this.cancelExpiry = undefined;
@@ -77,6 +82,14 @@ export class RelayPairingApprovals {
     }, Math.min(PAIRING_WINDOW_MS, Math.max(0, until - this.now())));
   }
 
+  /**
+   * The saved window, when the file holds both deadlines: one without the other reads as closed, since
+   * a window that came back without its local-only half would show what it takes to account members.
+   * A deadline further ahead than a window opened now is not a window this clock opened (the clock ran
+   * ahead when it was saved, or went back since): it reads as closed, never as a fresh ten minutes at
+   * every start. Whatever is not open now is written back as closed, so a clock that later goes back
+   * cannot reopen it.
+   */
   private load(): void {
     if (!this.path) return;
     let saved: unknown;
@@ -112,6 +125,8 @@ export class RelayPairingApprovals {
   openWindow(now = this.now(), options: { localOnly?: boolean } = {}): void {
     this.windowUntil = now + PAIRING_WINDOW_MS;
     if (options.localOnly) this.localOnlyUntil = now + PAIRING_WINDOW_MS;
+    // a window that could not be saved still works until this process ends, but the file it could not
+    // replace must not stand in for it at the next start (an older window without its local-only half)
     if (!this.save()) this.forget();
     this.watchExpiry();
   }
@@ -126,6 +141,13 @@ export class RelayPairingApprovals {
     }
   }
 
+  /**
+   * Ends the window now: the owner stopped waiting, revoked every device, reset the relay identity or
+   * turned the relay off. A comparison this PC's own windows were shown under that window ends
+   * unapproved with it, so nothing asked before the close can be approved after it; a join shown to
+   * account members only never depended on the window and stays. False when the saved window could
+   * neither be rewritten nor taken away: it is closed for this process, but a restart could bring it back.
+   */
   closeWindow(): boolean {
     const open = this.windowUntil !== 0 || this.localOnlyUntil !== 0;
     this.windowUntil = 0;
@@ -135,6 +157,7 @@ export class RelayPairingApprovals {
     this.cancelExpiry = undefined;
     for (const entry of [...this.waiting.values()]) if (!entry.membersOnly) entry.finish({ approved: false });
     if (!this.path || (!open && this.savedClosed())) return true;
+    // a file that cannot be rewritten must not bring the window back at the next start: absent reads as closed
     return this.save() || this.forget();
   }
 

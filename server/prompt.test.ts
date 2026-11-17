@@ -6042,6 +6042,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
       pane.readDelay = 100;
       const started = performance.now();
       expect(await answer(before.id, { option_index: 0 })).toEqual({ status: 200, code: undefined });
+      // 20 reads of 100 ms and more took over 3 s; the wait's own deadline is 1 s, plus the read in flight
       expect(performance.now() - started).toBeLessThan(2_000);
     });
   });

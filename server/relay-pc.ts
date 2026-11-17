@@ -31,6 +31,13 @@ export class RelayPcOutdated extends Error {
 
 const DIRECT_LISTENER_PORT = 7319;
 
+/**
+ * Whether this server dials a carrier another PC named (docs/remote-pcs.md): an address on a private network (RFC
+ * 1918) or Tailscale's, on the port a direct listener asks for (7319). Never link-local, where a cloud's metadata
+ * service answers, and never another port: no other port can be told apart from some other service's, so a PC whose
+ * listener had to take another one is reached through the relay. The protocol takes more (shared/relay-mux.ts
+ * isDirectCarrier), so an AUTH_OK that names more is still read; only the dialing is narrower.
+ */
 export function serverDialable(carrier: string): boolean {
   if (!isDirectCarrier(carrier)) return false;
   const { hostname, port } = new URL(carrier);

@@ -1,3 +1,16 @@
+/**
+ * The relay's channel without the relay (docs/relay.md, "Direct on the same network"): a plain
+ * WebSocket listener on this PC's private IPv4 addresses, and on its Tailscale one for a phone that
+ * can open that (DIRECT_TAILNET), that a phone, told them in AUTH_OK
+ * (DIRECT_CARRIER), opens instead of relay.ovis.sh. It speaks what the relay speaks to a client
+ * (`/v1/ws`, an `assigned` frame, then the client's Noise records) and hands the socket to the same
+ * RelaySession a relay data socket gets. No TLS: Noise against the PC key the phone pinned at pairing
+ * proves this PC and protects the records, so an address is only ever a hint where to try.
+ *
+ * Narrower than the relay: devices sign in here, nothing pairs (RelaySession signInOnly). Clients
+ * that have not signed in are bounded per source address and in total, apart from the relay's, so
+ * nobody on the network can crowd out relay service; signed-in sessions keep the relay's limits.
+ */
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { TCPSocketListener } from "bun";
 import { GATE_HEADER, openGate, PEER_HEADER } from "./direct-gate.ts";
@@ -58,6 +71,12 @@ export function tailnetPeer(address: string | null | undefined): boolean {
   return /^\d+\.\d+\.\d+\.\d+$/.test(plain) && inTailnet(plain);
 }
 
+/**
+ * This PC's Tailscale IPv4 address to listen on: an address in Tailscale's range on Tailscale's own adapter,
+ * or on a macOS utun only when it is the one `tailscale status` names (`named`); with a named address on an
+ * adapter, only that one. Never one on a real adapter (an ISP's shared address space) or another VPN's tunnel, whatever a
+ * stale status says. At most one.
+ */
 export function tailnetAddresses(interfaces: NodeJS.Dict<NetworkInterfaceInfo[]>, named: string | null): string[] {
   const known = Object.values(interfaces).some((list) => list?.some((entry) => entry.address === named)) ? named : null;
   const found = Object.entries(interfaces).flatMap(([name, list]) => (list ?? [])

@@ -1,3 +1,16 @@
+/**
+ * What setup does on a PC, in that PC's own shell. A Linux or macOS host runs sh; a
+ * Windows host runs PowerShell (OpenSSH there defaults to cmd, which cannot even find
+ * `sh`). Both keep the same contract: the bridge registry under ~/.config/herdr-web-ui,
+ * one runtime directory per bundle version, and a descriptor per herdr socket.
+ *
+ * Windows differs in three places that are easy to get wrong:
+ * - herdr's socket is a marker file plus a named pipe of the same path (herdr/client.ts).
+ * - A process started inside the SSH session dies with it. The bridge is created through
+ *   WMI (Win32_Process.Create), whose parent is the WMI host, so the bridge survives logout.
+ * - An administrator's authorized keys live in %ProgramData%\ssh\administrators_authorized_keys
+ *   with a fixed ACL; everyone else's in ~\.ssh\authorized_keys.
+ */
 import { createHash, randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { win32 } from "node:path";
@@ -22,6 +35,24 @@ const INSTALL_LOCK_MAX_AGE_MINUTES = Math.ceil((INSTALL_UPLOAD_TIMEOUT_S * 1000 
 export const POSIX_INSTALL_LOCK = `lock="$base/install.lock"; if ! mkdir "$lock" 2>/dev/null; then mkdir "$lock.reclaim" 2>/dev/null || { test -z "$(find "$lock.reclaim" -maxdepth 0 -mmin +2 2>/dev/null)" || rmdir "$lock.reclaim" 2>/dev/null; printf 'Another installation is in progress; retry shortly\\n' >&2; exit 1; }; owner=$(cat "$lock/pid" 2>/dev/null || true); if { test -n "$owner" && ! kill -0 "$owner" 2>/dev/null; } || test -n "$(find "$lock" -maxdepth 0 -mmin +${INSTALL_LOCK_MAX_AGE_MINUTES} 2>/dev/null)"; then rm -rf "$lock"; mkdir "$lock" 2>/dev/null || { rmdir "$lock.reclaim"; printf 'Another installation is in progress; retry shortly\\n' >&2; exit 1; }; printf '%s' "$$" > "$lock/pid"; rmdir "$lock.reclaim"; else rmdir "$lock.reclaim"; printf 'Another installation is in progress; retry shortly\\n' >&2; exit 1; fi; fi; printf '%s' "$$" > "$lock/pid";`;
 export const POSIX_INSTALL_RELEASE = `test "$(cat "$lock/pid" 2>/dev/null)" != "$$" || rm -rf "$lock"`;
 
+/**
+ * Windows' mirror of {@link POSIX_INSTALL_LOCK}: the same directory mutex around the upload.
+ *
+ * The owner cannot be probed the way a POSIX shell's can. The PowerShell that stages the upload
+ * exits before the upload runs, so a PID written here would look dead while the install is alive,
+ * and every peer would reclaim a lock that is still in use. The lock therefore holds a unique
+ * `$owner` attempt beneath this server and target's stable `$reclaim` prefix. This process admits
+ * only one live attempt for that prefix, so a matching lock is its stopped predecessor; cleanup
+ * still compares the whole unique owner and can never remove a successor's lock. A peer's lock is
+ * reclaimed only after the bounded upload and extraction, plus a margin for the other SSH calls.
+ *
+ * Reclaiming happens under `install.lock.reclaim`, a second mutex, with the owner and age read
+ * again inside it: two installers that both judged the lock stale cannot then delete each other's
+ * fresh lock. A mutex left by a reclaimer that died is dropped after two minutes, and that run
+ * reports "in progress"; the retry takes over. Paths go through `Join-Path` so the scripts also run
+ * under `pwsh` off Windows, where the tests exercise them.
+ * Expects `$base`, `$reclaim` and `$owner`; sets `$lock`.
+ */
 export const WINDOWS_INSTALL_LOCK = `$lock = Join-Path $base 'install.lock'; $mutex = "$lock.reclaim"; $created = $false; try { New-Item -ItemType Directory $lock -ErrorAction Stop | Out-Null; $created = $true } catch {}; if (-not $created) { try { New-Item -ItemType Directory $mutex -ErrorAction Stop | Out-Null } catch { $stale = Get-Item -LiteralPath $mutex -ErrorAction SilentlyContinue; if ($stale -and ((Get-Date).ToUniversalTime() - $stale.LastWriteTimeUtc).TotalMinutes -gt 2) { Remove-Item -Recurse -Force $mutex -ErrorAction SilentlyContinue }; throw 'Another installation is in progress; retry shortly' }; try { if (Test-Path -LiteralPath $lock) { $held = ([string](Get-Content -LiteralPath (Join-Path $lock 'owner') -Raw -ErrorAction SilentlyContinue)).Trim(); $age = ((Get-Date).ToUniversalTime() - (Get-Item -LiteralPath $lock).LastWriteTimeUtc).TotalMinutes; if ($held.StartsWith($reclaim + ':') -or ($age -gt ${INSTALL_LOCK_MAX_AGE_MINUTES})) { Remove-Item -Recurse -Force $lock -ErrorAction SilentlyContinue } }; New-Item -ItemType Directory $lock -ErrorAction Stop | Out-Null; $created = $true } catch { throw 'Another installation is in progress; retry shortly' } finally { Remove-Item -Recurse -Force $mutex -ErrorAction SilentlyContinue } }; if (-not $created) { throw 'Another installation is in progress; retry shortly' }; Set-Content -LiteralPath (Join-Path $lock 'owner') -Value $owner -NoNewline -Encoding ascii`;
 
 export const WINDOWS_INSTALL_RELEASE = `$target = Join-Path $base 'install.lock'; if ((Test-Path -LiteralPath $target) -and (([string](Get-Content -LiteralPath (Join-Path $target 'owner') -Raw -ErrorAction SilentlyContinue)).Trim() -eq $owner)) { Remove-Item -Recurse -Force $target -ErrorAction SilentlyContinue }`;

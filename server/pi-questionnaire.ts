@@ -27,6 +27,8 @@ export function pendingPiQuestionnaires(path: string): readonly PiQuestionnaireC
   const seen = new Set<string>();
   for (const item of piBranchRecordRanges(path, before.size)) {
     const entry = JSON.parse(item.line);
+    // Unlike display history, prompt authorization cannot accept a truncated chain,
+    // duplicate identity or an entry whose ancestry could not be verified to its root.
     if (!entry || typeof entry.id !== "string" || !entry.id || seen.has(entry.id)
       || entry.parentId !== parent) return null;
     seen.add(entry.id);

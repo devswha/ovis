@@ -34,6 +34,10 @@ export interface RelayServiceOptions {
   readonly clock?: RelayLinkOptions["clock"];
   readonly random?: RelayLinkOptions["random"];
   readonly serverVersion?: RelayLinkOptions["serverVersion"];
+  /**
+   * Regional relays to measure against `relay`. Ovis's own (shared/relay-regions.ts) when neither
+   * `relay` nor OVIS_RELAY_URL names a relay; none otherwise, so a self-hosted relay stays the only one.
+   */
   readonly regionalRelays?: readonly string[];
   readonly probe?: (relay: string, signal: AbortSignal) => Promise<number | null>;
   readonly pairCodeRelay?: string;
@@ -253,6 +257,7 @@ export class RelayService {
   }
 
   private passOptions(relay: string, global: boolean): Pick<RelayLinkOptions, "pass" | "honoredPass" | "onPassNotice" | "onPassRefused"> {
+    // a relay that is not Ovis's (a regional one named otherwise) never gets the pass
     if (!this.isOvisRelay(relay)) return {};
     return {
       pass: () => this.passFor(relay),
@@ -269,6 +274,7 @@ export class RelayService {
 
   private directEnabled(): boolean {
     if (this.directOn === undefined) {
+      // on unless turned off; a choice that cannot be read is taken as off, so a damaged file never opens the network
       let text: string | undefined;
       try { text = readFileSync(this.directPath(), "utf8"); }
       catch (error) { if (!(isJsonObject(error) && error.code === "ENOENT")) text = ""; }
@@ -351,6 +357,7 @@ export class RelayService {
     });
   }
 
+  /** Boot never enables a missing or damaged state file and never replaces a damaged identity. */
   resume(services: RequestServices, port: number): void {
     this.services = services;
     this.port = port;
@@ -384,6 +391,7 @@ export class RelayService {
     if (this.link) return this.status();
     try {
       this.identity = loadRelayIdentity(this.options.stateDir);
+      // Authorization reaches disk before the first outbound socket.
       if (services.token === "" && !services.devices.gated) services.devices.closeGate();
       writePrivateState(join(this.options.stateDir, "relay", "state.json"), { enabled: true });
       this.enabled = true;

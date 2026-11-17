@@ -14,6 +14,8 @@ export async function bundleManifestSource(platform: string, options: BundleSour
   if (!/^((linux|darwin)-(x64|arm64)|win32-x64)$/.test(platform)) throw new Error(`Unsupported bundle platform: ${platform}`);
   const configured = options.manifest ?? process.env["OVIS_BUNDLE_MANIFEST"];
   if (configured) return configured;
+  // Development installs can distribute locally built runtimes without publishing
+  // a release. Resolve beside this server, never against its launch directory.
   const local = join(options.directory ?? join(ROOT, "remote-bundles"), `manifest-${platform}.json`);
   try { await access(local); return local; }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }

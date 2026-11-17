@@ -1,6 +1,10 @@
 import { readFileSync } from "node:fs";
 import { darwinStartTime } from "./darwin-process.ts";
 
+/**
+ * The kernel's own start on macOS, to the millisecond, read fresh on every call (a live PID may belong
+ * to a replacement process) and without a child process: a `ps` here held the event loop (#1404).
+ */
 function darwinStart(pid: number): number | null {
   try {
     const micros = darwinStartTime(pid);

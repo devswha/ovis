@@ -1,3 +1,11 @@
+/**
+ * This server's identity on the relay: the X25519 key pair phones pin, and the server_id derived
+ * from its public key, so the relay can make the PC prove it holds the key (shared/relay-server-proof.ts).
+ * It lives in `stateDir/relay/identity.json` (0600, written through private-state.ts) and nowhere
+ * else; the secret key is never logged. A file that will not parse is never replaced: the relay
+ * refuses to start with `identity_unreadable`, since a silent new identity would orphan every
+ * paired phone. Only rotateRelayIdentity replaces it, on the user's explicit reset.
+ */
 import { chmodSync, linkSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import nacl from "tweetnacl";

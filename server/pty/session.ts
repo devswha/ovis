@@ -16,6 +16,8 @@ export interface PtySessionOptions {
   inheritEnv?: boolean;
 }
 
+/** Writes a line to a child's stdin. On Windows a pipe write settles later, so a child that already
+ * closed its end (EPIPE) rejects the returned promise instead of throwing; swallow both, never crash. */
 export function writeLine(sink: import("bun").FileSink, line: string): boolean {
   const quiet = (pending: unknown) => { if (pending instanceof Promise) pending.catch(() => {}); };
   try {
@@ -34,6 +36,7 @@ export class PtySession {
   private paused = false;
 
   constructor(private readonly options: PtySessionOptions) {
+    // The bridge's bearer token is for browsers; neither the sidecar nor the attach needs it.
     const env = { ...(options.inheritEnv === false ? {} : process.env), ...options.env };
     delete env["OVIS_TOKEN"];
     delete env["HERDR_WEB_TOKEN"];

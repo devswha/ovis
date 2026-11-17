@@ -47,6 +47,8 @@ export class VirtualSocket implements SocketLike {
   }
 
   send(text: string): number {
+    // A reply to such a message: the peer, which closed, would read it before the close, and
+    // our close went out already. Never 0, which the core takes for a stalled socket and closes.
     if (this.peerDraining) return Buffer.byteLength(text);
     if (this.readyState !== WebSocket.OPEN) return 0;
     const bytes = Buffer.byteLength(text);

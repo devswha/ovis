@@ -57,6 +57,7 @@ describe("PtySession", () => {
     expect(Object.prototype.hasOwnProperty.call(run.sidecarEnv, "OVIS_TOKEN")).toBe(false);
     expect(run.output).toContain("TOKEN_PRESENT=false");
     expect(run.parentKept).toBe(true);
+    // compared as booleans so a failure never prints a token
     expect(run.output.includes(run.parentToken) || run.output.includes(overrideToken)).toBe(false);
   }, 10000);
 

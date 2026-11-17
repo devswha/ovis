@@ -1,3 +1,10 @@
+/**
+ * Who owns a startup lock or a bridge descriptor, proved by the owner's birth rather than its PID:
+ * a crashed owner's PID can belong to an unrelated process later, and that process must neither
+ * block a restart nor be signalled (only signal 0 ever probes it). A birth is the kernel's own
+ * start record, read the same way every time; elapsed-time estimates are never compared.
+ * Everything here is synchronous, so it can run inside the owner guard (server/owner-guard.ts).
+ */
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 
@@ -98,6 +105,14 @@ export function parseOwnerRecord(text: string): OwnerRecord | null {
   return parsed ? { pid, generation, birth: parsed } : null;
 }
 
+/**
+ * Whether the recorded owner is proved gone: its PID is free, or a process of another birth runs
+ * there. A matching birth, an unreadable one, a record without a birth (written by an older
+ * version) and a malformed or foreign recorded birth all leave the owner live. A refused probe
+ * (EPERM: another user's, a protected or another logon session's process) proves nothing by
+ * itself, so the births decide then too: after a reboot or a forced shutdown such a process often
+ * holds the old PID. `birth` is whatever was persisted: it is validated here, never trusted.
+ */
 export function ownerGone(owner: { pid: number; birth?: unknown }): boolean {
   if (probeProcess(owner.pid) === "absent" || exitedUnreaped(owner.pid)) return true;
   const recorded = parseBirth(owner.birth);

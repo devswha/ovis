@@ -44,6 +44,7 @@ export function retryAfterMs(value: string | null, now = Date.now()): number {
   return Number.isFinite(seconds) && seconds > 0 ? Math.min(seconds, RETRY_AFTER_CAP_MS) : 0;
 }
 
+/** A pass as kept, with the account service it came from: one from another service (a staging one) is never sent. */
 interface Saved { pass: string; server_id: string; service: string; expires_at: number; refresh_at: number }
 
 function readSaved(path: string): Saved | null {
@@ -78,6 +79,12 @@ export class RelayPassKeeper {
 
   current(): string | null { return this.kept(0); }
 
+  /**
+   * The pass a relay that took it may still hold this PC to: `current`, and after that the same pass until the relay
+   * stops honoring it, RELAY_PASS_SKEW_S past its expiry (`current` stops that long before it, so twice that after).
+   * Never sent: read only for what it says of new client sessions (server/relay/link.ts), so a renewal that fails
+   * leaves no last minutes in which the PC forgets a limit the relay still holds. Timed from receipt, as `current` is.
+   */
   honored(): string | null { return this.kept(2 * RELAY_PASS_SKEW_S * 1000); }
 
   private kept(past: number): string | null {
@@ -170,6 +177,7 @@ export class RelayPassKeeper {
     this.inflight = inflight;
     const signal = AbortSignal.any([inflight.signal, AbortSignal.timeout(REQUEST_MS)]);
     const post = (path: string, body: unknown) => fetcher(new Request(`${service}${path}`, {
+      // never followed: a redirect would carry the proof and the account to another origin
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal, redirect: "manual",
     }));
     try {

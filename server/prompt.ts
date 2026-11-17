@@ -61,6 +61,11 @@ type PaneCommandSend = CommandSend & {
     discovering: boolean;
     identity: string;
     process?: { readonly pid: number; readonly started: number | null; readonly held?: true } | null;
+    /**
+     * No foreground process matched the agent when binding (native Windows lists only the shell; an executable
+     * named otherwise than its kind), or the read failed: nothing can show a replacement, so the session the same
+     * agent reports in this terminal is adopted.
+     */
     unmatched?: true;
     /**
      * The agent herdr named for the pane when the send was made: herdr names an OmO pane `pi`, and a session it
@@ -78,6 +83,15 @@ const chatSent = new Map<string, { text: string; commands: PaneCommandSend[]; re
 
 const outcomeIdentity = (pane: HerdrPane): string => JSON.stringify([pane.terminal_id, pane.agent_session]);
 
+/**
+ * The agent process in front (agentProcessInFront, as a pending send is bound), keyed by its pid and, on Linux, its
+ * start time; never the process-group id. `held`: the OmO process holding a session (heldOmoProcess), which an
+ * argv-silent custom OmO is known by alone, so a send is not bound to its bundled SDK child; a process bound so is
+ * marked `held` and keyed by its start on macOS too (the kernel's record, no `ps`). With `bound`, that process only,
+ * while herdr still lists it as one of the agent's, or it is the OmO it was bound as: a holder counts only while its
+ * start is readable (never on Windows, which hands a finished agent's pid to the next process at once), and a later
+ * start under that pid is another process (checkBoundProcess).
+ */
 function outcomeProcess(info: ProcessInfo | undefined, agent: string, bound?: number, held?: number | null):
   { pid: number; started: number | null; held?: true } | null {
   const running = agentProcessInFront(info, agent, bound, held);
@@ -110,6 +124,19 @@ const STALE_SESSION_LAG_MS = 60_000;
 const sameProcess = (a: { pid: number; started: number | null }, b: { pid: number; started: number | null }): boolean =>
   a.pid === b.pid && (a.started === null || b.started === null || a.started === b.started);
 
+/**
+ * Records which agent process a send went to, so its row follows that process (commandOutcomes), also when no browser
+ * polls until after a replacement. Every send is bound, not only one made before the session is known: herdr can keep
+ * reporting a restarted Claude Code's old session id until its first turn, so the session alone would keep the old
+ * process's rows. Recording never holds delivery: nothing here is awaited.
+ * `seen`: herdr's foreground answer read before this send, which is the process it went to. Without one, the read
+ * starts alongside delivery and can answer after a replacement: a process that started at or after the send never
+ * received it, so the send is left unidentified rather than bound to it. Outside Linux and macOS no start time is
+ * known and the answer is taken as the send-time one. `pane`: the pane the send went to, which places an OmO's
+ * session holder (heldOmoProcess). `held`: that holder as the caller already checked it (a queued send's pending
+ * context), or null when its process is no holder: then no holder is read again, so two holders listed in another
+ * order meanwhile cannot move the send to the other one (#2190).
+ */
 export function bindCommandProcess(paneId: string, command: PaneCommandSend | undefined, seen?: ProcessInfo, pane?: HerdrPane | null,
   held?: { pid: number; started: number | null } | null): void {
   const visibility = command?.visibility;
@@ -281,6 +308,10 @@ async function commandOutcomes(paneId: string, pane: HerdrPane, prompt: Interact
       visibility.discovering = false;
     }
     const current = processes && watched.includes(sent) ? checkBoundProcess(visibility, sent.agent, processes) : null;
+    // A send's own session is adopted while its bound process runs. With no process bound (native Windows
+    // lists only the shell; an executable named otherwise than its kind), nothing can show a replacement,
+    // so the session that appears in the same terminal is taken as its own, when it is the same agent's:
+    // reported under its kind, or under the label herdr gave the pane at the send (an OmO pane's `pi`).
     if (visibility.discovering && !visibility.replaced && pane.agent_session && identity !== visibility.stale
       && visibility.terminalId === pane.terminal_id
       && (current || visibility.unmatched && [sent.agent, visibility.label].includes(pane.agent_session.agent))) {
@@ -618,6 +649,13 @@ async function fallbackCard(paneId: string, agent: string, status: string | unde
 
 const piAskReader = new OmoAskReader(); // Pi and OmO share the message/toolCall JSONL envelope.
 
+/**
+ * Whether no key may go into the pi pane: the web UI's pi-ask extension serves the pane's pi (its
+ * socket answers, or cannot be read), so a pi-ask form can open there at any moment, between any
+ * check and the key that follows it. pi-ask takes no typed keys (its docs/remote-events.md): such a
+ * pane gets no key-driven card at all, pi's own dialogs included, and the terminal answers them.
+ * The pi-ask card answers through the extension instead. A pi without the extension is as on main.
+ */
 async function piAskRefusesKeys(paneId: string, signal?: AbortSignal): Promise<boolean> {
   return await piAskActivity(paneId, signal) !== "absent";
 }
@@ -682,6 +720,11 @@ async function hermesOwnsInput(paneId: string): Promise<boolean> {
   return (info?.foreground_processes ?? []).some(isHermesForeground);
 }
 
+/**
+ * The foreground process is Hermes itself: its own executable, or Python running Hermes's entry script as the
+ * script (the first argument that is not an option). isHermesProcess also takes a Python with "hermes" anywhere in its
+ * arguments (`python3 -c '…' /tmp/hermes`), which may label a pane but must not let it take an approval's keys.
+ */
 export function isHermesForeground(entry: { name?: string | null; argv0?: string | null; argv?: readonly string[] | null }): boolean {
   const named = (value: string) => {
     const lower = value.toLowerCase();
@@ -789,6 +832,7 @@ async function readKnownPrompt(
     const sessionID = opencodeSessionId(pane);
     if (!sessionID) break native;
     const state = openCodeState.begin(paneId, sessionID);
+    // only the process service.json names, as /api/info proves it; never a service started here
     const config = (await openCodeService(openCodeStateDir, signal, { onWindows: true }))?.config ?? null;
     const revision = state.revision;
     const issued = ++state.issued;
@@ -1145,6 +1189,7 @@ export interface PromptRequestOptions {
   serialize?: <T>(paneId: string, task: () => Promise<T>) => Promise<T>;
   codexHome?: string;
   claudeTranscript?: (paneId: string) => string | null;
+  /** the requester can only watch: it gets the screen's card, never the plan file's text or path */
   readOnly?: boolean;
   openCodeStateDir?: string;
   openCodeState?: OpenCodePromptState;
@@ -1901,6 +1946,9 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
   }
 }
 
+/** One line per answer that got as far as the pane: the pane, whether the card's prompt still stood, and the
+ * refusal's own code (prompt_changed, invalid_answer, agent_blocked, a herdr error...). Never the answer. The pane
+ * id is the client's until the snapshot has checked it, so it is logged as a JSON string: one field, whatever it holds. */
 async function logAnswer(log: { paneId: string; matched: boolean }, response: Response): Promise<void> {
   const outcome = response.ok ? "ok" : ((await response.clone().json().catch(() => null)) as { error?: { code?: string } } | null)?.error?.code ?? `status_${response.status}`;
   const pane = JSON.stringify(log.paneId.slice(0, 80));

@@ -1,3 +1,35 @@
+/**
+ * Portal (github.com/gosuda/portal-tunnel): an optional public HTTPS address for this server,
+ * started and stopped from Settings → Phone & devices with the `portal` already on this PC; the
+ * app never installs it. Tailscale stays the private route and is only ever read (tailscale.ts).
+ * Whatever a request asks, the guide's rules for a public proxy hold (docs/guide.md, Behind a
+ * reverse proxy):
+ *
+ * - no address without a token, and none while OVIS_TAILSCALE_SERVE_ONLY says tailscale serve
+ *   is the only way in, not even one an earlier server left running;
+ * - routed mode, which keeps the browser's Host and sends X-Forwarded-For and
+ *   X-Forwarded-Proto: https, and drops a visitor's Tailscale-User-Login;
+ * - one relay the user picked, discovery off, hidden from the relay's list; the identity file kept
+ *   here holds the name, and with it the address, across restarts;
+ * - only the relay's origin comes from the request, and Portal gets none of this server's
+ *   environment beyond what running and reaching the relay need: the token stays here.
+ *
+ * Who may open the address is the user's choice (shared/portal.ts PortalAuth): only the app's own
+ * token or a paired device, as before, or Portal's own sign-in in front of everything, a private
+ * link, an Ethereum wallet or an OIDC account (Google or a company's). The choice is saved with the
+ * rest of the state and a relaunch goes ahead only while it is unchanged. Two secrets reach the
+ * Portal's environment and nothing else: the OIDC client secret, OVIS_PORTAL_OIDC_CLIENT_SECRET,
+ * read at each start, and a proof made at each launch of a Portal with a sign-in, which Portal sends
+ * with the identity it vouches for (`vouches`, server/access.ts). Neither is in an argument (`ps`
+ * shows those), a saved file, a log or an answer.
+ *
+ * Portal keeps retrying a relay it cannot use and never exits for it (v2.6.1), so the relay's
+ * version is asked first and readiness has a deadline of its own.
+ *
+ * A Portal that was serving and then ends on its own is started again once, on the same relay,
+ * port and identity, after this server's own guards and the saved state say it still may; a
+ * second exit, or one before it was ever ready, is an error the user acts on.
+ */
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -54,6 +86,7 @@ interface SavedState {
   port: number | null;
   pid: number | null;
   auth: PortalAuth;
+  /** Names and roles only, never the bearer links. Older state has none and defaults to watch. */
   invites?: readonly { readonly name: string; readonly role: DeviceRole }[];
 }
 
@@ -140,6 +173,11 @@ function portalEnv(secrets: { oidcSecret?: string | null; proof?: string | null 
   return env;
 }
 
+/**
+ * Whether `given`, a request's X-Portal-Proof, is the proof of the running Portal. Compared in
+ * constant time, and a length that differs is no match rather than a throw: the proof is always as
+ * long as the one made here, so its length is nothing to keep secret.
+ */
 export function proofMatches(proof: string | null, given: string | null): boolean {
   if (proof === null || given === null) return false;
   const expected = Buffer.from(proof);
@@ -349,6 +387,7 @@ export class PortalService {
   private invites: NonNullable<SavedState["invites"]> = [];
   private shortUrl: string | null = null;
   private serverPort: number | null = null;
+  /** this server's own token and serve-only answer, bound by createServer; a relaunch asks it, never a request */
   private guards: (() => Guards) | null = null;
   private proof: string | null = null;
   private readyChild: Child | null = null;

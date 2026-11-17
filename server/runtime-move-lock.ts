@@ -16,6 +16,12 @@ export interface MoveLockHandle {
   release(): void;
 }
 
+/**
+ * The socket where it really is: in the real folder behind any symlinks (a dotfiles `~/.config`, a symlinked `/home`,
+ * macOS's `/tmp`), so every server of the session finds the same one whichever path it names. That folder must be a
+ * directory of this user's own that not everybody may write in (lstat; a private group's write, from a umask of 002, is
+ * fine).
+ */
 function realLockPath(path: string): string {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const folder = realpathSync(dirname(path));
@@ -52,6 +58,7 @@ interface KernelLock { held(): boolean; release(): void }
 function takeKernelLock(path: string): KernelLock | null {
   const calls = flockBinding();
   if (!calls) throw new MoveLockUnsafe("This PC's C library cannot be loaded to lock a move, so Ovis cannot move this herdr session here.");
+  // only this user's own regular file, never through a link: anything else there is refused, not an internal error
   let fd: number;
   try { fd = openSync(join(dirname(path), "runtime-move.lock"), constants.O_RDWR | constants.O_CREAT | constants.O_NOFOLLOW | CLOEXEC, 0o600); }
   catch (error) { if (["ELOOP", "EISDIR", "ENOTDIR", "EACCES", "EPERM", "ENXIO"].includes((error as NodeJS.ErrnoException).code ?? "")) throw new MoveLockUnsafe(MOVE_LOCK_UNSAFE); throw error; }
@@ -104,6 +111,7 @@ async function takeSocketLock(path: string, onStep: ((step: MoveLockStep) => Pro
   if (server === "in_use") {
     if (await ask(path) !== "none") return null;
     await onStep?.("stale");
+    // nobody listens: its holder died. Only a socket of this user's is removed, never another kind of file
     let info;
     try { info = lstatSync(path); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
     if (info && (!info.isSocket() || (process.getuid?.() !== undefined && info.uid !== process.getuid!()))) throw new MoveLockUnsafe(MOVE_LOCK_UNSAFE);

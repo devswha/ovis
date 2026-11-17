@@ -33,6 +33,8 @@ export class SignedInSessions {
     const entry = { deviceId, order: ++this.order, chosen: false, close, ...(line ? { line } : {}) };
     this.entries.add(entry);
     const release = (): void => { this.entries.delete(entry); };
+    // past its device's racing carriers, the oldest of them gives way: one that never opened a stream was dropped,
+    // or lost on its way (a newest-gives-way rule would keep such a dead one and shut the device out)
     const waiting = [...this.entries].filter((other) => other.deviceId === deviceId && !other.chosen).sort((left, right) => left.order - right.order);
     for (const oldest of waiting.slice(0, Math.max(0, waiting.length - this.perDeviceCandidates))) {
       this.entries.delete(oldest);

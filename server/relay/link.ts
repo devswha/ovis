@@ -21,6 +21,11 @@ const CONTROL_MESSAGE_BYTES = 4096;
 const SIGN_IN_GRACE_MS = 5_000;
 const PASS_REFUSED_RETRY_MS = 30 * 60_000;
 const NEW_SESSION_CLOSE_MS = 2_000;
+/**
+ * The least time between two pass renewals on one control socket. The relay checks one a minute per socket and drops
+ * any sooner without a word (relay/core.ts RENEWAL_GAP_MS), counted from when each reached it: 5 s more covers a first
+ * one that travelled longer than the second.
+ */
 const RENEWAL_GAP_MS = 65_000;
 
 export interface RelayLinkOptions {
@@ -207,6 +212,7 @@ export class RelayLink {
       this.cancelRenewal = undefined;
       this.cancelKeepalive?.();
       this.endWarm();
+      // The relay also uses 4401 for late answers. Only an explicit key mismatch is permanent.
       if (event.code === SERVER_PROOF_CLOSE && PERMANENT_SERVER_PROOF_REFUSALS.includes(event.reason)) {
         console.error(JSON.stringify({ event: "relay.server_proof.failed", code: event.code, reason: event.reason }));
         this.options.onState("error", `Relay refused the server proof (${event.code}): ${event.reason}`, "server_key_refused");
@@ -324,6 +330,9 @@ export class RelayLink {
     };
     const entry: DataConnection = { socket, sockets: new Set(), cancelTimeout: this.clock.setTimeout(deadline, 15_000) };
     this.data.set(id, entry);
+    // The relay refuses a client outright once 8 are answered, before this PC hears of it, so a room full
+    // of clients that never sign in would turn everyone away. Keep a place free: the oldest client not
+    // signed in gives way to a new one. A signed-in session is never evicted.
     if (this.data.size >= MAX_SESSIONS) {
       const waiting = [...this.data].filter(([other, candidate]) => other !== id && !candidate.deviceId);
       const oldest = waiting.find(([, candidate]) => !candidate.session?.pairing) ?? waiting[0];
