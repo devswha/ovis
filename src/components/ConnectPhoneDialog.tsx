@@ -511,6 +511,11 @@ const names = (strays: readonly AccountQrStray[]): string => strays.map((stray) 
  * PC is in and that a device is added by signing in to that account on it. The PC refuses the code too (409
  * `in_account`), and takes back one that is out when it joins an account, so a page that read the PC a moment too
  * early shows none either.
+ *
+ * On a PC that no account was named for there is no QR code yet either, and no button for one: the PC takes the
+ * device that scans it into the account named for it alone, and makes no code before one is named (409
+ * `no_account_named`). It says so in its relay state (`account_named`), and in the button's place the part says what
+ * names one: a sign-in above for a browser that is signed out, adding the PC to the account for one that is signed in.
  */
 export function AccountQr({ relay, phone, active, signedIn, accountId = null, pcAccount, onPcAccount, first = false, relayControls, onPairingHeld, onRevokedAll }: {
   relay: RelayState; phone: boolean; active: boolean; signedIn: boolean;
@@ -859,6 +864,9 @@ export function AccountQr({ relay, phone, active, signedIn, accountId = null, pc
   const pass = relay.status?.pass;
   // Ovis's relay refused this PC for its pass: it gets one through an account (docs/relay.md, "Relay pass")
   const needsAccount = !signedIn && relay.status?.phase === "error" && pass?.refused === true && pass.state !== "ok";
+  // no account was named for this PC, as it says itself (an older PC says nothing, and is offered the button as
+  // before): it makes no code for this QR code until one is named, by adding the PC to an account here or by `ovis add`
+  const unnamed = relay.status?.account_named === false;
   // the switch says Connecting… itself
   const connecting = relay.status !== null && relay.status.blocked === null && relay.status.phase === "connecting";
   /** whose account it is, as far as this browser can tell: its own, another one, or it cannot tell (it is not signed in) */
@@ -936,7 +944,9 @@ export function AccountQr({ relay, phone, active, signedIn, accountId = null, pc
           {relayControls}
           {needsAccount ? <p className="settings-hint">{t("Sign in above first; then this PC can show its QR code.")}</p> : relayState}
         </>
-      ) : shown ? <RelayRoute relay={relay} readOnly={false} phone={phone} compact qrOnly onInAccount={refusedForAccount} /> : (
+      ) : shown ? <RelayRoute relay={relay} readOnly={false} phone={phone} compact qrOnly onInAccount={refusedForAccount} /> : unnamed ? (
+        <p className="settings-hint">{signedIn ? t("Add this PC to your account first; then it can show its QR code.") : t("Sign in above first; then this PC can show its QR code.")}</p>
+      ) : (
         <div className="phone-actions">
           <button ref={showButton} type="button" className="btn" disabled={view.kind === "starting"} aria-busy={view.kind === "starting" || undefined} onClick={() => void show()}>{again ? t("Show a new code") : t("Show the QR code")}</button>
         </div>

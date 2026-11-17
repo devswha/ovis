@@ -209,6 +209,7 @@ export const DEVICES_JA: Record<string, string> = {
   "Show the QR code": "QR コードを表示する",
   "Show a new code": "新しいコードを表示",
   "Sign in above first; then this PC can show its QR code.": "先に上でサインインしてください。その後、この PC は QR コードを表示できます。",
+  "Add this PC to your account first; then it can show its QR code.": "先にこの PC をアカウントに追加してください。その後、この PC は QR コードを表示できます。",
   "This PC joined an Ovis account ({id}).": "この PC は Ovis アカウント ({id}) に入りました。",
   "Added by {device}.": "追加したデバイス: {device}。",
   "Not me: revoke every device": "自分ではない: すべてのデバイスを取り消す",

@@ -4,9 +4,10 @@
  * identity. The Add a connection sheet has one tab per way (SSH, Phones and devices, Ovis relay), SSH first on
  * an owner's PC window, and none of the old sheet's folds or its relay pairing QR code. Signed out, the Ovis
  * relay tab opens the Ovis link page in a new tab while the sheet stays open; signed in, it carries
- * the relay's switch (with the gate note while off). Its QR code waits for a press, tells the PC what it is for, and
- * is for a PC in no account only: once the PC joins one the PC takes its code back, the QR code leaves, and the tab
- * says to sign in to that account on the device instead. Phones and devices starts a six-digit code at once and
+ * the relay's switch (with the gate note while off). Its QR code is for a PC that an account was named for: before
+ * one is, the tab says to add the PC to the account first and the PC makes no code. It waits for a press, tells the
+ * PC what it is for, and is for a PC in no account only: once the PC joins one the PC takes its code back, the QR
+ * code leaves, and the tab says to sign in to that account on the device instead. Phones and devices starts a six-digit code at once and
  * keeps it while another tab is open; a phone pairing with it closes the sheet. Reset relay identity asks first
  * (Escape closes only the confirmation) and gives the PC a new ID. A Portal visitor gets no SSH tab, no switch,
  * no sign-in, no reset, no code and no relay group; a serve-only install shows Blocked with no switch and no
@@ -308,9 +309,31 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     await gateNote.waitFor({ state: "detached" });
     assert.equal(await sheet.getByRole("img", { name: "QR code that pairs a phone through the relay", exact: true }).count(), 0, "online, the sheet still offers no relay pairing QR code");
 
-    // the QR code waits for its press, and comes down with its code when another tab opens
+    // no account was named for this PC yet: signed in, the tab says to add the PC to the account first and offers no
+    // QR code, and the PC makes no code for one. Naming the account, as adding the PC or `ovis add` does, brings
+    // the button
     const relayQr = sheet.getByRole("img", { name: "QR code that pairs a phone through the relay", exact: true });
     const showQr = accountQr.getByRole("button", { name: "Show the QR code", exact: true });
+    await accountQr.getByText("Add this PC to your account first; then it can show its QR code.", { exact: true }).waitFor();
+    assert.equal(await showQr.count(), 0, "a PC that no account was named for offers no QR code");
+    const unnamed = await page.evaluate(async () => {
+      const response = await fetch("/api/relay/offer", { method: "POST", headers: { "x-herdr-update": "1", "x-ovis-no-account-only": "1" } });
+      return [response.status, ((await response.json()) as { error: { code: string } }).error.code];
+    });
+    assert.deepEqual(unnamed, [409, "no_account_named"], "and the PC makes no code for it");
+    assert.equal(fixture.pendingCode(), null, "no code is pending on the PC");
+    const named = await fetch(`${fixture.origin}/api/account/relay-account`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-herdr-machine": "1", origin: fixture.origin },
+      body: JSON.stringify({ account: "fixture" }),
+    });
+    assert.equal(named.status, 204, "the account is named for the PC");
+    // the page reads the relay's state as Settings opens
+    await openPhoneSettings(page, fixture.origin);
+    await connect.click();
+    await ui.openTab("relay");
+
+    // the QR code waits for its press, and comes down with its code when another tab opens
     await showQr.waitFor();
     assert.equal(await accountQr.getByRole("switch").count(), 0, "signed in, the QR code's part repeats no switch");
     const offered = answered(page, "/api/relay/offer");

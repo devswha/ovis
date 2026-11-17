@@ -903,6 +903,34 @@ describe("the relay tab's QR code behind a press", () => {
     expect(buttons()).not.toContain("Show the QR code");
   });
 
+  it("signed out on a PC that no account was named for, says to sign in first and asks the PC for no code; once one is named, the press draws the QR code", async () => {
+    // while the relay is off the part says so, as on any PC
+    await mount({ signedIn: false, relay: relayState({ ...ONLINE, phase: "off", account_named: false }) });
+    expect(text(section())).toContain("Off. Nothing goes through the relay.");
+    expect(text(section())).not.toContain("this PC can show its QR code");
+    await update({ signedIn: false, relay: relayState({ ...ONLINE, account_named: false }) });
+    expect(text(section())).toContain("Sign in above first; then this PC can show its QR code.");
+    expect(buttons()).toEqual([]);
+    await advance(ACCOUNT_QR_POLL_MS * 4);
+    expect(minted()).toEqual([]);
+    // the PC says an account was named for it: its owner added it to an account, or ran `ovis add`
+    await update({ signedIn: false, relay: relayState({ ...ONLINE, account_named: true }) });
+    expect(text(section())).not.toContain("this PC can show its QR code");
+    expect(buttons()).toEqual(["Show the QR code"]);
+    await press("Show the QR code");
+    expect(offerMarks).toEqual(["1"]);
+    expect(qrCodes()).toHaveLength(1);
+  });
+
+  it("signed in on a PC that no account was named for, says to add the PC to the account first, with no button and no code asked of the PC", async () => {
+    await mount({ signedIn: true, relay: relayState({ ...ONLINE, account_named: false }) });
+    expect(text(section())).toContain("Add this PC to your account first; then it can show its QR code.");
+    expect(text(section())).not.toContain("Sign in above first");
+    expect(buttons()).toEqual([]);
+    await advance(ACCOUNT_QR_POLL_MS * 4);
+    expect(minted()).toEqual([]);
+  });
+
   it("takes the QR code down 30 minutes after the press and ends its code, leaving Show a new code", async () => {
     await mount();
     await press("Show the QR code");

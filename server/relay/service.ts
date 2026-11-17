@@ -27,6 +27,18 @@ import type { RelayPassNotice } from "./link.ts";
 /** An account id as the account service gives it (docs/account.md, Records). */
 const ACCOUNT_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
+/**
+ * No account was named for this PC (RelayService.setRelayAccount), so no code is made for the relay tab's QR code
+ * (RelayService.offer `noAccountOnly`): a device that pairs with that code is taken into the named account alone
+ * (server/account/records.ts applyLink).
+ */
+export class NoAccountNamedError extends Error {
+  readonly code = "no_account_named";
+  constructor() {
+    super("This PC is not set up for an Ovis account yet. Sign in on this PC and add it to your account, or run `ovis add` on it; then it can show its QR code.");
+  }
+}
+
 export interface RelayServiceOptions {
   readonly stateDir: string;
   readonly relay?: string;
@@ -224,7 +236,7 @@ export class RelayService {
   status(): RelayStatus {
     return { phase: this.phase, relay: this.advertised, app: this.app,
       sessions: (this.link?.sessions ?? 0) + (this.regionalLink?.sessions ?? 0) + (this.directCarrier?.sessions ?? 0),
-      blocked: this.blocked, error: this.error, error_code: this.exactErrorCode(),
+      blocked: this.blocked, error: this.error, error_code: this.exactErrorCode(), account_named: this.savedRelayAccount() !== null,
       ...(this.options.direct ? { direct: { on: this.directEnabled(), carriers: this.directCarrier?.advertised(true) ?? [] } } : {}),
       ...(this.passKeeper ? { pass: { state: this.passState(this.passKeeper), relay: this.passNotice?.state ?? null, enforce_at: this.passNotice?.enforce_at ?? null, refused: this.passRefused,
         // a relay that refuses this PC for its pass enforces them, whatever it last said in a `sync`
@@ -273,7 +285,8 @@ export class RelayService {
 
   /**
    * The account this PC's signed-in owner named for it (setRelayAccount), or null for none. While the PC has no
-   * member it is also the account its first member comes from (server/account/records.ts applyLink).
+   * member it is also the account its first member comes from (server/account/records.ts applyLink), and the relay
+   * tab's QR code is made only once one is named (offer).
    */
   savedRelayAccount(): string | null {
     try {
@@ -578,11 +591,15 @@ export class RelayService {
    * `by`: the paired device that asked, null for this PC itself. It holds the code the offer carries, started here or pending already.
    * `noAccountOnly`: the offer is to put this PC in an account (the relay tab's QR code): none is made for a PC that is
    * in one (PcInAccountError), and its code ends when the PC joins one (DeviceStore.pairingForNoAccount). No other
-   * offer carries that code (DeviceStore.pairingForOffer).
+   * offer carries that code (DeviceStore.pairingForOffer). A device that pairs with it is taken into the account
+   * named for this PC and into no other, so none is made while no account is named either (NoAccountNamedError):
+   * no code is started, and the one pending stays as it was.
    */
   offer(by: string | null = null, options: { noAccountOnly?: boolean } = {}): { url: string; expires_at: string } {
     if (!this.enabled || !this.identity || !this.services || this.blocked) throw new Error("Start the relay before pairing.");
     const devices = this.services.devices;
+    // a PC that is in an account says so itself (pairingForNoAccount)
+    if (options.noAccountOnly && devices.account() === null && this.savedRelayAccount() === null) throw new NoAccountNamedError();
     const pairing = options.noAccountOnly ? devices.pairingForNoAccount(by) : devices.pairingForOffer(by);
     // before the code leaves this PC: a device revoked by now is handed none (DeviceGoneError)
     if (by !== null) devices.holdPairing(by);

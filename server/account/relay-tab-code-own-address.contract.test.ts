@@ -3,7 +3,7 @@
  * admit a device"): it is redeemed through the relay only.
  */
 import { afterEach, expect, test } from "bun:test";
-import { linkRecord, pairingPc, sendLink, signedInWith, type Answer, type Pc } from "./pairing.test-helpers.ts";
+import { linkRecord, pairingPc, sendLink, setUpFor, signedInWith, type Answer, type Pc } from "./pairing.test-helpers.ts";
 
 const pcs: Pc[] = [];
 afterEach(async () => { for (const pc of pcs.splice(0)) await pc.close(); });
@@ -21,6 +21,7 @@ test("the relay tab's code pairs nobody at this PC's own address and no try ther
   const owner = await redeem(f, started.body.code ?? "", { accept: "application/json" });
   expect([owner.status, typeof owner.body.token, f.stored().map((device) => device.label)]).toEqual([200, "string", ["Browser"]]);
 
+  await setUpFor(f, "acct_1");
   const code = await f.tabCode();
   const refused = await redeem(f, code);
   expect([refused.status, refused.body.error?.code, refused.headers.get("set-cookie")]).toEqual([401, "invalid_code", null]);
@@ -42,6 +43,7 @@ test("the relay tab's code pairs nobody at this PC's own address and no try ther
 test("the code of an offer asked for without the header pairs at this PC's own address as it did, also when it replaced the relay tab's code", async () => {
   const f = await pairingPc();
   pcs.push(f);
+  await setUpFor(f, "acct_1");
   await f.tabCode();
   const paired = await redeem(f, await f.offerCode());
   expect([paired.status, f.stored().map((device) => device.label)]).toEqual([204, ["Browser"]]);

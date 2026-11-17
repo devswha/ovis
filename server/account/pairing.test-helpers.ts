@@ -92,7 +92,7 @@ export async function pairingPc(options: { rows?: readonly { created_at: string 
   return {
     stateDir, app, closes, local,
     devices: app.context.services.devices,
-    /** The code of the relay tab's QR code: POST /api/relay/offer with `x-ovis-no-account-only`. */
+    /** The code of the relay tab's QR code: POST /api/relay/offer with `x-ovis-no-account-only`, on a PC an account was named for (setUpFor). */
     tabCode: () => offered({ "x-ovis-no-account-only": "1" }),
     /** The code of an offer asked for with no header and with no pairing started first: the first-run guide's QR code, a phone's Connect another device. */
     offerCode: () => offered(),
@@ -115,6 +115,15 @@ export async function pairingPc(options: { rows?: readonly { created_at: string 
       rmSync(stateDir, { recursive: true, force: true });
     },
   };
+}
+
+/**
+ * The call a command or page of this PC makes once its owner has signed in: it names the account the PC is for
+ * (POST /api/account/relay-account). The relay tab's code is made only once one is named.
+ */
+export async function setUpFor(pc: Pc, account: string): Promise<void> {
+  const named = await pc.local("/api/account/relay-account", { method: "POST", headers: { "x-herdr-machine": "1" }, body: { account } });
+  if (named.status !== 204) throw new Error(`The account was not named: ${named.status} ${JSON.stringify(named.body)}`);
 }
 
 /**

@@ -177,7 +177,8 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *  POST   /api/relay/offer               -> { url, expires_at }; an offer carrying the active one-time pairing code
  *         (the one Devices shows, else a new one, which replaces the code of the header that follows: no other
  *         offer carries that one); with x-ovis-no-account-only: 1, a code of its own made only
- *         while the PC is in no account (409 in_account otherwise), ended when the PC joins one; a device that
+ *         while the PC is in no account (409 in_account otherwise) and an account is named for it (409
+ *         no_account_named otherwise: RelayStatus.account_named), ended when the PC joins one; a device that
  *         pairs with that code through the relay waits to link (docs/account.md, "Who may admit a device"):
  *         403 link_required for all but its account status and its link, gone after 30 s; 409 relay_off
  *         while off, relay_offline in error
@@ -603,6 +604,12 @@ export interface RelayStatus {
   readonly error: string | null;
   /** why, as a fixed code, whenever `error` says something (null otherwise); absent from an older server */
   readonly error_code?: RelayErrorCode | null;
+  /**
+   * Whether an account was named for this PC (`POST /api/account/relay-account`: its signed-in owner added it on
+   * its own page, or ran `ovis add`). The relay tab's QR code is made only once one is (`POST /api/relay/offer`
+   * with `x-ovis-no-account-only`). Absent from an older server.
+   */
+  readonly account_named?: boolean;
   /**
    * Direct connections on this PC's networks (docs/relay.md): whether they are on, and the carriers
    * listened on now (none while the relay is off). Absent from a server without them.

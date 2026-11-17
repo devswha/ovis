@@ -271,8 +271,9 @@ The hosted shell hides the group because mutations
 over the relay answer 403 `local_required`. While the relay is off an offer answers 409
 `relay_off`; while it is in error it answers 409 `relay_offline`, so wait for **Online** before pairing.
 An offer asked for with the header `x-ovis-no-account-only: 1` (the QR code of Add a connection's
-relay tab, which puts the PC in the account of whoever scans it) is made only while the PC is in no
-account: a PC in one answers 409 `in_account`, and the code of such an offer ends when the PC joins
+relay tab, which puts the PC in the account named for it) is made only while the PC is in no
+account and an account is named for it: a PC in an account answers 409 `in_account`, one that no
+account was named for 409 `no_account_named`, and the code of such an offer ends when the PC joins
 an account ([account.md](account.md#who-may-admit-a-device)). That code pairs through the relay
 only: `POST /api/devices/pair` at the PC's own address answers it 401 `invalid_code`. A device that
 pairs with that code through the relay is no device of the PC until it has linked itself into an

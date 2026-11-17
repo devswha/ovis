@@ -209,6 +209,7 @@ export const DEVICES_ZH: Record<string, string> = {
   "Show the QR code": "显示这个二维码",
   "Show a new code": "显示新代码",
   "Sign in above first; then this PC can show its QR code.": "请先在上方登录，然后这台电脑才能显示二维码。",
+  "Add this PC to your account first; then it can show its QR code.": "请先把这台电脑添加到你的账户，然后它才能显示二维码。",
   "This PC joined an Ovis account ({id}).": "这台电脑已加入 Ovis 账户（{id}）。",
   "Added by {device}.": "添加它的设备：{device}。",
   "Not me: revoke every device": "不是我：撤销所有设备",

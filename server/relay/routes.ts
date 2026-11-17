@@ -2,6 +2,7 @@ import { DeviceGoneError, PcInAccountError } from "../devices.ts";
 import { errorResponse, jsonResponse, readJsonObject, setRequestRoute } from "../http.ts";
 import type { ServerContext } from "../dispatch.ts";
 import { updateRequestAllowed } from "../update-api.ts";
+import { NoAccountNamedError } from "./service.ts";
 
 /**
  * Drive authority and the outer origin gate are shared with Portal in dispatch.ts. `caller`: the paired device
@@ -62,7 +63,8 @@ export async function handleRelayRequest(request: Request, pathname: string, con
         // While connecting, a client the offer reaches waits at the relay for this PC; in error nothing may answer it.
         if (service.status().phase === "error") return fail("relay_offline", "The relay is not reachable; wait until it is online before pairing.", 409);
         // the relay tab's QR code says what it is for (a header, as x-ovis-local-only below): it puts a PC in no
-        // account into the account of whoever scans it, so a PC that is in one makes none (409 in_account)
+        // account into the account named for it, so a PC that is in one makes none (409 in_account), and neither
+        // does one that no account was named for (409 no_account_named)
         return reply(service.offer(caller, { noAccountOnly: request.headers.get("x-ovis-no-account-only") === "1" }));
       case "/api/relay/code": {
         setRequestRoute("/api/relay/code");
@@ -120,6 +122,8 @@ export async function handleRelayRequest(request: Request, pathname: string, con
     if (error instanceof DeviceGoneError) return fail(error.code, error.message, 401);
     // the PC joined an account since the page read it: the page asks nothing more and says how a device is added there
     if (error instanceof PcInAccountError) return fail(error.code, error.message, 409);
+    // no account was named for this PC: its page asks for the sign-in first, and for this code only once one is named
+    if (error instanceof NoAccountNamedError) return fail(error.code, error.message, 409);
     return errorResponse(error);
   }
 }

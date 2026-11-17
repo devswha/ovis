@@ -357,10 +357,41 @@ it("ends the relay offer's code, and a typed code, with the paired device that a
   }
 });
 
+it("makes the relay tab's QR code only once an account was named for the PC, and says in its state whether one is", async () => {
+  const f = await fixture();
+  await f.start();
+  const devices = f.app.context.services.devices;
+  const ask = (noAccountOnly: boolean) => fetch(`${f.base}/api/relay/offer`, { method: "POST",
+    headers: { origin: f.base, "x-herdr-update": "1", ...(noAccountOnly ? { "x-ovis-no-account-only": "1" } : {}) } });
+  const named = async () => (await (await f.request()).json() as RelayStatus).account_named;
+  // a code another place shows as digits is pending
+  const pending = devices.startPairing().code;
+  let started = 0;
+  devices.onPairingStarted(() => { started++; });
+  expect(await named()).toBe(false);
+  const refused = await ask(true);
+  expect([refused.status, (await refused.json() as { error: { code: string } }).error.code]).toEqual([409, "no_account_named"]);
+  // no code was started for it, and the one pending is as it was: an offer asked for without the header carries it
+  expect([started, devices.activePairing()?.code]).toEqual([0, pending]);
+  const plain = await ask(false);
+  expect([plain.status, decodeOffer((await plain.json() as { url: string }).url)?.code, started]).toEqual([200, pending, 0]);
+  // the owner names the account, as adding the PC on its own page or `ovis add` does
+  const naming = await fetch(`${f.base}/api/account/relay-account`, { method: "POST",
+    headers: { origin: f.base, "x-herdr-machine": "1", "content-type": "application/json" }, body: JSON.stringify({ account: "acct_1" }) });
+  expect(naming.status).toBe(204);
+  expect(await named()).toBe(true);
+  const offered = await ask(true);
+  expect(offered.status).toBe(200);
+  // the QR code gets a code of its own, started for it
+  expect([started, devices.activePairing()?.code]).toEqual([1, decodeOffer((await offered.json() as { url: string }).url)?.code]);
+});
+
 it("makes the relay tab's QR code only for a PC in no account, and takes it back when the PC joins one", async () => {
   const f = await fixture();
   await f.start();
   const devices = f.app.context.services.devices;
+  // an account was named for the PC, as that QR code needs (the test above)
+  expect(f.service.setRelayAccount("acct_1")).toBe(true);
   // the relay tab's QR code says so (x-ovis-no-account-only); every other offer is what it was
   const ask = (noAccountOnly: boolean) => fetch(`${f.base}/api/relay/offer`, { method: "POST",
     headers: { origin: f.base, "x-herdr-update": "1", ...(noAccountOnly ? { "x-ovis-no-account-only": "1" } : {}) } });

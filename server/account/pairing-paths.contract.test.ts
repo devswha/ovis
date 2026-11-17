@@ -7,7 +7,7 @@ import { afterEach, expect, test } from "bun:test";
 import type { RelayDevice, RelayDeviceStore } from "../../shared/relay-device.ts";
 import { linkThisDevice, needsLink, pcAccountStatus } from "../../src/lib/account/join.ts";
 import { handleRequest } from "../dispatch.ts";
-import { ask, ended, linkRecord, memberRow, pair, pairingPc, phone, sendLink, SERVER_ID, signedInWith, type Link, type Pc } from "./pairing.test-helpers.ts";
+import { ask, ended, linkRecord, memberRow, pair, pairingPc, phone, sendLink, SERVER_ID, setUpFor, signedInWith, type Link, type Pc } from "./pairing.test-helpers.ts";
 
 const pcs: Pc[] = [];
 afterEach(async () => { for (const pc of pcs.splice(0)) await pc.close(); });
@@ -57,8 +57,9 @@ for (const [where, account] of [["in an account", "acct_1"], ["in no account", u
   });
 }
 
-test("a signed-in app joins through the relay tab's code: it pairs with its account key, signs in, reads its status and links, and is then a member that drives", async () => {
+test("a signed-in app joins a PC set up for its account through the relay tab's code: it pairs with its account key, signs in, reads its status and links, and is then a member that drives", async () => {
   const f = await pc();
+  await setUpFor(f, "acct_1");
   const reached: string[] = [];
   const dispatch: typeof handleRequest = (request, context) => {
     reached.push(`${request.method} ${new URL(request.url).pathname}`);

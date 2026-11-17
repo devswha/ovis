@@ -16,7 +16,7 @@ import { handleRequest } from "../dispatch.ts";
 import { privateStateFs } from "../private-state.ts";
 import { LEAVING_MS } from "../relay/session.ts";
 import { bounded, deferred, TestClock } from "../relay/test-helpers.ts";
-import { ask, ended, linkRecord, pair, pairingPc, phone, sendLink, signedInWith, signIn, type Answer, type Pc, type Phone } from "./pairing.test-helpers.ts";
+import { ask, ended, linkRecord, pair, pairingPc, phone, sendLink, setUpFor, signedInWith, signIn, type Answer, type Pc, type Phone } from "./pairing.test-helpers.ts";
 
 const pcs: Pc[] = [];
 afterEach(async () => {
@@ -24,10 +24,14 @@ afterEach(async () => {
   for (const pc of pcs.splice(0)) await pc.close();
 });
 
-/** A PC in no account, with the clock its waiting devices are bounded on in the test's hand. */
+/**
+ * A PC in no account that its owner set up for `acct_1`, as the relay tab's code is made only for a PC an account
+ * was named for, with the clock its waiting devices are bounded on in the test's hand.
+ */
 async function pc() {
   const made = await pairingPc();
   pcs.push(made);
+  await setUpFor(made, "acct_1");
   const clock = new TestClock();
   made.devices.useClock(clock);
   return Object.assign(made, { clock });

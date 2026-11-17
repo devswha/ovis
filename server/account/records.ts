@@ -153,7 +153,10 @@ export interface LinkRules {
    * that back, should the row not be written.
    */
   barrier?: () => () => void;
-  /** the account this PC's signed-in owner named for it, read when the link is judged; null for none */
+  /**
+   * the account this PC's signed-in owner named for it, read when the link is judged; null for none. A row that
+   * waits to link is taken into that account alone, so with none named it is taken into none
+   */
   setUpFor?: () => string | null;
 }
 
@@ -162,6 +165,9 @@ export interface LinkRefused { refused: LinkRefusal; message?: string }
 
 /** What a device reads when its link names another account than the one this PC was set up for: the way out is on the PC. */
 const SET_UP_FOR_ANOTHER_ACCOUNT = "This PC was set up for another Ovis account than the one this device is signed in to. To add it to this device's account instead, run `ovis add` on the PC again and sign in there with that account.";
+
+/** What a device that waited to link reads when no account was named for this PC: the way on is on the PC too. */
+const SET_UP_FOR_NO_ACCOUNT = "This PC is not set up for an Ovis account yet. Sign in on the PC and add it to your account, or run `ovis add` there; then scan its QR code again.";
 
 /**
  * A `link` from the device `deviceId` over its own session to the PC `serverId`. It needs no
@@ -193,6 +199,12 @@ export async function applyLink(store: DeviceStore, value: unknown, session: { d
   if (expected !== null && expected !== link.account) {
     if (waits) store.turnAway(deviceId);
     return { refused: "account_mismatch", message: SET_UP_FOR_ANOTHER_ACCOUNT };
+  }
+  // A row that waits to link is taken into the account this PC was set up for and into no other: with none named it
+  // is refused the same way, and goes at once
+  if (waits && expected === null) {
+    store.turnAway(deviceId);
+    return { refused: "account_mismatch", message: SET_UP_FOR_NO_ACCOUNT };
   }
   // A removed key stays out. One comes back: a key this PC removed itself (Revoke, Revoke all), with a row that
   // waits to link and keeps the key it paired with. The link's write clears that tombstone, which stood when the row

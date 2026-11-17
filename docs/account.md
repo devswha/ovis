@@ -174,6 +174,14 @@ One rule for every way in: a pairing code, comparing digits, and joining through
   such a code on a PC in no account links itself the same way. It never carries the code of an
   offer asked for with the header: with that code pending it starts a code of its own, which
   replaces it as every new code does.
+- **And only for a PC that an account was named for.** The device that scans that QR code is taken
+  into the account named for the PC ([`relay-account`](#pc-api): its signed-in owner added it on
+  its own page, or ran `ovis add`), and into no other. So a PC with none named makes no such code:
+  the offer with the header answers `409 no_account_named`, starting no code and leaving the one
+  pending as it was. `GET /api/relay` says whether one is named (`account_named`), and the relay
+  tab, where its button would be, says what names one ([Adding a PC](#adding-a-pc), "By QR code").
+  A device that waits to link on a PC with none named is refused `409 account_mismatch` and goes
+  at once.
 - **A device that pairs with that QR code's code waits to link.** The code of an offer asked for
   with `x-ovis-no-account-only` is redeemed through the relay only: sent to the PC's own address
   (`POST /api/devices/pair`) it pairs nobody, is answered `401 invalid_code` as a wrong code is,
@@ -302,6 +310,9 @@ names another account is refused 409 `account_mismatch`, whichever code its devi
 and the answer says to run `ovis add` on the PC again, which names the account its owner is
 signed in to now. A device that waited to link goes with that refusal; a device that was paired
 keeps what it had; the code is not ended, so the device of the named account still pairs with it.
+A device that waits to link is taken into no other account, so with none named it is refused the
+same way, and the relay tab's QR code is made only once one is named
+([Who may admit a device](#who-may-admit-a-device)).
 No answer through the relay names that account. Once a PC has a member, its members' account
 decides, whatever was named.
 
@@ -425,10 +436,11 @@ Tailnet Lock follow the same idea: an existing device approves once, and the ser
 messages):
 
 **By QR code.** On the new PC, Settings → Devices and PCs → Add a connection → Ovis relay →
-**Show the QR code**, with the relay on. A device that is signed in to the account scans it: it is
-paired with its account key, links itself as the PC's first member, lists the PC in the account's
-directory and enrolls it ([Enrolling a PC](#enrolling-a-pc)). Nothing is typed and nothing is
-approved on the PC, and the PC itself needs no sign-in. Because the code admits whoever holds it
+**Show the QR code**, with the relay on and an account named for the PC: signing in on the PC's
+own page and adding it there names one, and so does `ovis add`. A device that is signed in to that
+account scans it: it is paired with its account key, links itself as the PC's first member, lists
+the PC in the account's directory and enrolls it ([Enrolling a PC](#enrolling-a-pc)). Nothing is
+typed and nothing is approved on the PC. Because the code admits whoever holds it
 ([Who may admit a device](#who-may-admit-a-device)), the page guards it:
 
 - The QR code is for a PC in no account. On a PC that is in one the tab has no button and no QR
@@ -440,6 +452,13 @@ approved on the PC, and the PC itself needs no sign-in. Because the code admits 
   the PC itself refuses the code (`409 in_account`), so a page that read it a moment too early
   shows no QR code either: the refusal makes it look at the PC at once, and the notice below
   takes the QR code's place.
+- It is for a PC that an account was named for. On a PC with none named the tab has no button and
+  no QR code either, and asks the PC for no code: where the button would be it says **Sign in
+  above first; then this PC can show its QR code.** to a browser that is signed out, and **Add
+  this PC to your account first; then it can show its QR code.** to one that is signed in. The PC
+  says whether an account is named in its relay state (`account_named` of `GET /api/relay`, which
+  the page reads again every 15 seconds while the relay is online), and it refuses the code
+  itself (`409 no_account_named`).
 - Nothing is asked of the PC before the press. The QR code comes down, and its six-digit code is
   ended on the PC (`POST /api/devices/pair/cancel` with that code), when the dialog closes or
   another tab opens, when the page goes (a reload, a closed tab or window: the request is sent to
@@ -1005,7 +1024,7 @@ with "continue only if you started this on your own PC".
 | code | status | meaning |
 |---|---|---|
 | `account_required` | 403 | this needs a drive account member |
-| `account_mismatch` | 409 | the record is for another account than this PC's; or, on a PC in no account, a first link names another account than the one its owner set it up for (`relay-account`) |
+| `account_mismatch` | 409 | the record is for another account than this PC's; or, on a PC in no account, a first link names another account than the one its owner set it up for (`relay-account`), or comes from a device that waits to link while no account is named |
 | `record_invalid` | 400 | a record that does not parse, or a field out of range |
 | `signature_invalid` | 400 | the signature does not hold over the signing bytes |
 | `signer_not_member` | — | the signer is not a drive account member on this PC (a record outcome) |
@@ -1020,6 +1039,7 @@ with "continue only if you started this on your own PC".
 | `enrolling` | — | the PC waits for its first member's enrollment; an add waits too (a record outcome) |
 | `removal_pending` | — | the key is held: a waiting remove or an enrollment named it, or the waiting queue cannot be trusted (a record outcome) |
 | `in_account` | 409 | `POST /api/relay/offer` with `x-ovis-no-account-only`: this PC is in an account, so it makes no QR code that would put it in one |
+| `no_account_named` | 409 | `POST /api/relay/offer` with `x-ovis-no-account-only`: no account was named for this PC (`relay-account`), so it makes no QR code yet |
 
 ## What this does not protect against
 
