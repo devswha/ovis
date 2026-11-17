@@ -1,10 +1,4 @@
 /**
- * A directory opened without following a link and held, and the entries inside it opened through the
- * very directory held, never by walking a path again: what the held object is (its identity) and where
- * it is now (its path) are asked of the open object itself. omp's blob reads stand on it (codex-images.ts
- * openBlob, conversation.ts ompBlobIdentity), so nothing swapped in a directory's place, or above it,
- * a link or another directory, can stand in for the one held.
- *
  * Linux reaches an entry through the held descriptor's /proc/self/fd link and names the descriptor by
  * reading that link (it needs /proc). Node has no descriptor-relative open elsewhere, so macOS calls
  * libSystem's openat(2) and fgetattrlist(2) (ATTR_CMN_FULLPATH) and Windows calls NtCreateFile with the
@@ -15,30 +9,19 @@ import { closeSync, constants, fstatSync, openSync, readlinkSync, readSync } fro
 import { join } from "node:path";
 import { dlopen, FFIType, ptr } from "bun:ffi";
 
-/** A directory or file held open. Every method but path throws when the system refuses. */
 export interface Held {
-  /** What the held object is: its identity (`dev:ino`, exact), whether it is a regular file, and its size. */
   stat(): { identity: string; file: boolean; size: number };
-  /** Where the held object is now, as the system names the open object; null when it cannot say. */
   path(): string | null;
-  /**
-   * Whether the held object is the one `path` names now: no link or other directory stands between.
-   * Windows names one path several ways (a short 8.3 name, another letter case), each the same entries.
-   */
   isAt(path: string): boolean;
-  /** The entry `name` of this held directory, opened through it, a link there not followed but refused. */
   open(name: string, as: "directory" | "file"): Held;
-  /** Reads `length` bytes at `position` into `buffer` at `offset`: how many were read. */
   read(buffer: Buffer, offset: number, length: number, position: number): number;
   close(): void;
 }
 
-/** Whether `platform` has a descriptor-relative open here: elsewhere nothing is held and opened through. */
 export function heldOpenPlatform(platform: NodeJS.Platform): boolean {
   return platform === "linux" || platform === "darwin" || platform === "win32";
 }
 
-/** The directory `path`, opened as a directory and not through a link at its last component, and held. */
 export function openHeldDirectory(path: string): Held {
   if (process.platform === "win32") return WindowsHeld.directory(path);
   const fd = openSync(path, DIRECTORY_FLAGS);
@@ -56,7 +39,6 @@ function entryName(name: string): string {
 const FILE_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
 const DIRECTORY_FLAGS = constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0);
 
-/** A descriptor held: what it is and its bytes, asked of the descriptor (fstat, pread). */
 abstract class DescriptorHeld implements Held {
   constructor(protected readonly fd: number) {}
   abstract path(): string | null;
@@ -72,7 +54,6 @@ abstract class DescriptorHeld implements Held {
   close(): void { closeSync(this.fd); }
 }
 
-/** Linux: the held descriptor's /proc/self/fd link names it and leads into it. */
 class LinuxHeld extends DescriptorHeld {
   path(): string | null {
     try { return readlinkSync(`/proc/self/fd/${this.fd}`); } catch { return null; }
@@ -101,7 +82,6 @@ function openLibSystem() {
   }).symbols;
 }
 
-/** macOS: openat(2) opens through the held descriptor, and fgetattrlist(2) names it. */
 class DarwinHeld extends DescriptorHeld {
   path(): string | null {
     const symbols = libSystem ??= openLibSystem();
@@ -178,8 +158,6 @@ function handleInformation(handle: bigint): { attributes: number; identity: stri
   if (windowsApi().kernel.GetFileInformationByHandle(handle, info) === 0) throw new Error("GetFileInformationByHandle failed");
   const index = (BigInt(info.readUInt32LE(44)) << 32n) | BigInt(info.readUInt32LE(48));
   const size = (info.readUInt32LE(32) * 2 ** 32) + info.readUInt32LE(36);
-  // the volume's serial and the file index, as a bigint stat gives them (st_dev, st_ino); none when
-  // the file system gives no index of its own
   return { attributes: info.readUInt32LE(0), identity: NO_FILE_INDEX.has(index) ? null : `${info.readUInt32LE(28)}:${index}`, size };
 }
 
@@ -203,15 +181,9 @@ function fullIdentity(handle: bigint): string | null {
   return `${info.readBigUInt64LE(0)}:${id.toString("hex")}`;
 }
 
-/**
- * Windows: a handle opened on the link itself (FILE_FLAG_OPEN_REPARSE_POINT, FILE_OPEN_REPARSE_POINT),
- * refused when it is one (a junction, a symbolic link, any reparse point); an entry is opened by
- * NtCreateFile relative to the held directory's handle, and the handle is named by GetFinalPathNameByHandleW.
- */
 class WindowsHeld implements Held {
   private constructor(private readonly handle: bigint) {}
 
-  /** `handle`, held only when it is what was asked for and no reparse point; closed otherwise. */
   private static checked(handle: bigint, as: "directory" | "file"): WindowsHeld {
     const held = new WindowsHeld(handle);
     try {
@@ -231,7 +203,6 @@ class WindowsHeld implements Held {
 
   stat() {
     const { attributes, identity, size } = handleInformation(this.handle);
-    // an index that names no one file proves no identity: refused, as every caller compares it
     if (identity === null) throw new Error("no file index");
     const file = (attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) === 0 && windowsApi().kernel.GetFileType(this.handle) === FILE_TYPE_DISK;
     return { identity, file, size };
