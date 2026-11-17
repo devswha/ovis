@@ -1,11 +1,8 @@
-// ```svg fences in chat: agents that draw figures (omp's assistant ```svg blocks) color them with
-// a small token vocabulary, `var(--fg)`, `var(--muted)`, ... `var(--c6)` plus `currentColor`, on
-// a transparent background. The figure is shown as an <img> from a data: URL, so its markup never
+// The figure is shown as an <img> from a data: URL, so its markup never
 // joins the page: a script, an event handler or an external reference in it does nothing. An image
 // document does not see the page's CSS variables, so the tokens are resolved here to the theme's
 // current colors before the URL is made.
 
-/** Each figure token, as the theme role (src/styles.css) that colors it. */
 export const SVG_FIGURE_ROLES = {
   fg: "text",
   muted: "text-dim",
@@ -25,7 +22,6 @@ export const SVG_FIGURE_ROLES = {
 
 export type SvgFigurePalette = Partial<Record<keyof typeof SVG_FIGURE_ROLES, string>>;
 
-/** The figure tokens in the page's current theme; `read` is `getComputedStyle(root).getPropertyValue`. */
 export function svgFigurePalette(read: (property: string) => string): SvgFigurePalette {
   const palette: SvgFigurePalette = {};
   for (const [token, role] of Object.entries(SVG_FIGURE_ROLES) as [keyof typeof SVG_FIGURE_ROLES, string][]) {
@@ -35,7 +31,6 @@ export function svgFigurePalette(read: (property: string) => string): SvgFigureP
   return palette;
 }
 
-/** The longest fence drawn as a figure (UTF-16 units); a longer one stays a code block. */
 export const SVG_FIGURE_MAX_LENGTH = 256 * 1024;
 
 /**
@@ -63,7 +58,6 @@ const UNSAFE = [
   /image-set\(/i,
 ];
 
-/** Sticky tokens: a malformed tag/attribute is refused, never skipped to find a later match. */
 const ELEMENT = /<(\/?)([^\s/<>="'!?]+)(?=[\s/>])/y;
 const ATTRIBUTE = /\s+([^\s/<>="'!?]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/y;
 const TAG_END = /\s*(\/?)>/y;
@@ -79,18 +73,9 @@ function readReferences(text: string): string {
   }).replace(/\s+/g, " ");
 }
 
-/**
- * Scan the resolved markup once, respecting quoted attributes before decoding references.
- * Names end at XML delimiters, not at an ASCII-only prefix pattern. Comments contribute no
- * text and CDATA contributes its contents, so neither can split a CSS token past the checks.
- * Every cursor moves forward; an unterminated comment, CDATA section or quoted value stops
- * the scan rather than retrying at every possible opening. CSS checks collapse whitespace
- * runs first, so their adjacent `\s*` matches cannot try every split of a long run.
- */
 function unsafe(svg: string): boolean {
   const parts: string[] = [];
   let styled = false;
-  // a style element's text is read as one run: an element inside it would split a CSS token past the checks
   let inStyle = false;
   let from = 0;
   for (let start = svg.indexOf("<"); start !== -1; start = svg.indexOf("<", from)) {
@@ -140,12 +125,10 @@ function unsafe(svg: string): boolean {
   return UNSAFE.some((pattern) => pattern.test(read)) || (styled && read.includes("\\"));
 }
 
-/** An XML declaration the root may follow; nothing else (a comment, whitespace aside) may come first. */
 const DECLARATION = /^<\?xml\s[^?]{0,200}\?>\s*/;
 const ROOT_START = /^<(?:[\w.-]+:)?svg(?=[\s/>])/;
 const CLOSE_TAG = /<\/(?:[\w.-]+:)?svg\s*>$/;
 
-/** Where the start tag opening at 0 ends (its `>`, quotes respected), or -1 when it does not end. */
 function tagEnd(text: string): number {
   let quote = "";
   for (let index = 1; index < text.length; index += 1) {
@@ -157,15 +140,9 @@ function tagEnd(text: string): number {
   return -1;
 }
 
-/** Most characters, spaces aside, a `var(--name, fallback)` fallback is read for; a longer one is left as written. */
 const MAX_FALLBACK = 200;
 const SPACE = /\s/;
 
-/**
- * `var(--name)` / `var(--name, fallback)` (the fallback may hold one level of parentheses,
- * `rgb(…)`) as `value(name, fallback)`. One pass: spaces are stepped over, and each reference is
- * read for at most MAX_FALLBACK other characters, so no input makes it slow.
- */
 function resolveTokens(text: string, value: (name: string, fallback: string) => string): string {
   const skip = (index: number): number => { while (index < text.length && SPACE.test(text[index]!)) index += 1; return index; };
   let out = "";
@@ -199,16 +176,6 @@ function resolveTokens(text: string, value: (name: string, fallback: string) => 
 }
 const VIEW_BOX = /\sviewBox\s*=\s*["']\s*[-\d.eE+]+[\s,]+[-\d.eE+]+[\s,]+([\d.eE+]+)[\s,]+([\d.eE+]+)\s*["']/;
 
-/**
- * A fence's source as a data: URL the chat draws as an image, or null while it is not a whole
- * figure yet (a reply still streaming, or not SVG at all: the root comes first, after an XML
- * declaration at most), past the size cap, holding markup that could run or load something
- * (UNSAFE), or not text a URL can carry (a lone surrogate), which keeps the fence a code block.
- * Tokens become the palette's colors (an unknown name takes its fallback, else the text color).
- * The root gets what an image document cannot inherit from the page: `color` for `currentColor`,
- * a sans-serif `font-family`, the SVG namespace, and a size from its `viewBox` when it has none
- * (one unit is one CSS pixel), so the figure is not drawn at the 300×150 an unsized image gets.
- */
 export function svgFigureUrl(source: string, palette: SvgFigurePalette): string | null {
   if (source.length > SVG_FIGURE_MAX_LENGTH) return null;
   const trimmed = source.trim();

@@ -1,16 +1,13 @@
 import type { SystemDisk, SystemReport } from "../../shared/system.ts";
 import type { Translate } from "./i18n.ts";
 
-/** CPU, memory or disk at or above this reads as high */
 export const SYSTEM_HIGH_PERCENT = 85;
 
-/** The fullest disk is the one that can stop work; the sidebar shows that one. */
 export function fullestDisk(disks: readonly SystemDisk[]): SystemDisk | null {
   return disks.reduce<SystemDisk | null>((fullest, disk) => fullest === null || disk.percent > fullest.percent ? disk : fullest, null);
 }
 
 const UNITS = ["B", "KB", "MB", "GB", "TB", "PB"];
-/** 1536 -> "1.5 KB"; one decimal below 10, none above; powers of 1024, as `df -h` writes them. */
 export function formatBytes(bytes: number): string {
   let value = Math.max(0, bytes);
   let unit = 0;
@@ -19,7 +16,6 @@ export function formatBytes(bytes: number): string {
   return `${text} ${UNITS[unit]}`;
 }
 
-/** Uptime in its two largest units; the unit letters are the UI language's. */
 export function formatUptime(seconds: number, t: Translate): string {
   const days = Math.floor(seconds / 86400);
   const hours = Math.floor((seconds % 86400) / 3600);
@@ -35,11 +31,6 @@ const finite = (value: unknown): value is number => typeof value === "number" &&
 const percentOf = (value: unknown): value is number => finite(value) && value >= 0 && value <= 100;
 const MAX_DISKS = 4;
 
-/**
- * What another PC's bridge said, checked: a bridge of another version, or a broken one, must not
- * be able to throw while the sidebar draws. Null when anything the UI reads is missing or of the
- * wrong kind; a list longer than a PC can have is cut.
- */
 export function parseSystemReport(value: unknown): SystemReport | null {
   if (typeof value !== "object" || value === null) return null;
   const r = value as Record<string, unknown>;

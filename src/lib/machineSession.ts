@@ -17,8 +17,6 @@ export interface MachineSessionOptions {
 }
 let nextSession = 1;
 
-/** A PC's connection outlives its pane views. Detaching a view releases its input lease,
- * while this connection still receives the bridge's held state and delivery receipts. */
 export class MachineSession {
   readonly socket: HerdrSocket;
   private readonly store: PendingMessageStore;
@@ -27,7 +25,6 @@ export class MachineSession {
   private currentConnection: string | null = null;
   private currentEpoch = 0;
   private announcedLifetime: string | undefined;
-  /** the least (this page's clock less the PC's) any frame of this connection carrying server_time gave: delay only raises it */
   private offset: number | undefined;
   private noteClock(serverTime: unknown): void {
     if (typeof serverTime !== "number" || !Number.isFinite(serverTime)) return;
@@ -35,8 +32,6 @@ export class MachineSession {
     this.offset = this.offset === undefined ? seen : Math.min(this.offset, seen);
   }
   private resumedReceipts: Array<{ paneId: string; lifetime: string; removal: Removal }> = [];
-  /** rows seen going out (`sending`), each with when and what its pane's chat held then (lib/sentWaiting.ts); a row
-   * back as queued or held leaves it, so the next attempt (Send now) is timed from itself */
   private readonly going = new Map<string, { at: number; after: WaitingBaseline | null }>();
   private role: RoleAck | null = null;
   private readonly handlers = new Set<Handler>();
@@ -48,32 +43,20 @@ export class MachineSession {
   constructor(readonly machineId: string, options: MachineSessionOptions = {}) {
     this.socket = options.socket ?? new HerdrSocket(`${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/ws?machine_id=${encodeURIComponent(machineId)}&surface=${currentSurface()}`);
     this.store = options.pendingStore ?? pendingMessages;
-    // A features frame says what the bridge takes before the snapshot only for the herdr this page already
-    // proved: the herdr-lifetime fence (paneLifetimes.observe) runs on the snapshot, and a send or receipt made
-    // before it for a replaced herdr's reused pane IDs would be retired as unsent text while it is live (#2257)
     this.socket.trustFeatures((frame) => this.knownHerdr(frame.herdr_lifetime));
-    // Installed before view subscribers, and kept even while this PC has no mounted pane.
     this.offMessage = this.socket.on((message) => {
       if (this.closed) return;
       if (message.type === "features") {
         this.announcedLifetime = message.herdr_lifetime; setPasteFolder(this.machineId, message.paste_dir);
-        // each connection reckons the PC's clock afresh: a clock that moved since an earlier one does not carry over
         this.offset = undefined;
         this.noteClock(message.server_time);
       }
       if (message.type === "pending-messages") this.noteClock(message.server_time);
-      // a connection that came back to a replaced herdr, or to one it cannot prove, can say so before
-      // the roster does: the earlier herdr's drafts and lenses leave the reused pane IDs before any
-      // pane hears of it
       if (message.type === "snapshot") paneLifetimes.observe([{ id: this.machineId, snapshot: message.snapshot }]);
-      // the connection's first trusted word from the server (a features frame naming the known herdr, else the
-      // snapshot) opens its scope: a send can leave once the features are known, and its receipt is this connection's own
       const told = message.type === "snapshot" || (message.type === "features" && this.knownHerdr(message.herdr_lifetime));
       if (told && this.currentScope === null) this.currentScope = `${this.identity}:${this.currentEpoch}`;
       if (told && message.connection !== undefined) this.currentConnection = message.connection;
       if (message.type === "pending-messages" && this.currentScope === null && this.announcedLifetime !== undefined) {
-        // Open replays attaches before the first snapshot. Keep only exact resumed receipts,
-        // tagged with this connection's announced herdr, never its live queue or ordinary removals.
         for (const removal of frameRemovals(message, this.offset)) if (removal.resumed === true) {
           this.resumedReceipts.push({ paneId: message.pane_id, lifetime: this.announcedLifetime, removal });
           if (this.resumedReceipts.length > 128) this.resumedReceipts.shift();
@@ -93,13 +76,8 @@ export class MachineSession {
         const owner = paneStorageId(this.machineId, message.pane_id);
         const scope = this.currentScope;
         const key = waitingKey(this.machineId, message.pane_id);
-        // taken before the row's Enter, as a composer send's are before it is submitted. A row back in
-        // the queue or held was not typed: its next try takes its own
         for (const item of message.messages) {
           if (item.state === "sending" && !this.going.has(item.id)) {
-            // that frame can come after the row's Enter (replayed after a reconnect, or handled late): the
-            // PC's clock now would bound it too tightly, but the PC stamped the row before typing it, which
-            // bounds it though the chat never read the pane. An older bridge does not: only the turns' times do then
             const after = waitingBaseline(key);
             this.going.set(item.id, { at: Date.now(), after: stampedBaseline(after !== null ? { ...after, pcFloor: null } : null, item.sending_at) });
           }
@@ -107,17 +85,12 @@ export class MachineSession {
         }
         const typed = message.removed?.filter((item) => item.outcome === "sent" && this.store.isOwned(owner, item.id, scope)) ?? [];
         sent = typed.length > 0;
-        // the rows' words, read before the publish lets them go
         const rows = this.store.read(owner);
         this.store.publish(owner, message.messages, frameRemovals(message, this.offset), scope);
         if (sent) {
           const memory = greetingMemory(owner);
           rememberGreeting(owner, afterSettled(afterSend(memory), true, memory.history));
         }
-        // a typed row stays in the chat as the user's waiting message until its turn is read, as a
-        // composer send does (#2258): the turn end's drain and Send now leave no gap between the two.
-        // Only a row this connection saw going out: one sent through another, its turn perhaps read
-        // already, has no time before its Enter that the turn could settle
         for (const item of typed) {
           const text = rows.find((row) => row.id === item.id)?.text, went = this.going.get(item.id);
           if (text !== undefined && went !== undefined) rememberWaitingSend(key, text, went.at, went.after);
@@ -130,13 +103,11 @@ export class MachineSession {
     this.offPresence = watchPageInUse((active) => this.socket.setPresence(active));
   }
 
-  /** a herdr this page proved from an earlier snapshot of this PC, still the one it knows */
   private knownHerdr(lifetime: string | undefined): boolean {
     return lifetime !== undefined && paneLifetimes.generation(this.machineId) === lifetime;
   }
 
   get scope(): string | null { return this.currentScope; }
-  /** the PC's id for this open connection (its features frame or first snapshot), for a create request's `first_message_connection`; null while closed or from an older bridge */
   get connection(): string | null { return this.currentConnection; }
   get epoch(): number { return this.currentEpoch; }
 
@@ -144,7 +115,6 @@ export class MachineSession {
     if (this.currentScope !== null) this.store.suspendScope(this.currentScope);
     this.currentScope = null;
     this.announcedLifetime = undefined;
-    // the next connection's features frame names its own folder; an older bridge's snapshot names none
     setPasteFolder(this.machineId, undefined);
     this.resumedReceipts = [];
     this.going.clear();
@@ -156,8 +126,6 @@ export class MachineSession {
   on(handler: Handler): () => void {
     if (this.closed) return () => {};
     this.handlers.add(handler);
-    // A pane mounted on an existing connection must honor an enforced observe role.
-    // Snapshots and terminal bytes are never replayed from a browser-owned cache.
     if (this.role !== null) handler(this.role, false);
     return () => { this.handlers.delete(handler); };
   }
@@ -165,12 +133,9 @@ export class MachineSession {
   onDisconnect(handler: () => void): () => void { return this.socket.onDisconnect(handler); }
   connect(): void { if (!this.closed) this.socket.connect(); }
 
-  /** A receipt belongs to the captured connection, whether its pane is still mounted or not. */
   acceptPending(paneId: string, message: PendingMessage, capturedEpoch: number): void {
     const scope = !this.closed && this.socket.connected && this.currentEpoch === capturedEpoch ? this.currentScope : null;
     const owner = paneStorageId(this.machineId, paneId);
-    // The live stream may already have advanced this item to held, sending or uncertain
-    // before a submit promise consumer runs. Its receipt only fills a missing record.
     if (this.store.isOwned(owner, message.id, scope)) return;
     this.store.accept(owner, message, scope);
   }
@@ -187,8 +152,6 @@ export class MachineSession {
   }
 }
 
-/** Owned by the unlocked app, outside its PC-keyed canvas. Clearing it is reusable for
- * React's effect restart; selecting another PC does not close any existing connection. */
 export class MachineSessionRegistry {
   private readonly sessions = new Map<string, MachineSession>();
   constructor(private readonly makeSession: (machineId: string) => MachineSession = (machineId) => new MachineSession(machineId)) {}
@@ -199,7 +162,6 @@ export class MachineSessionRegistry {
     return session;
   }
 
-  /** the PC's open session, if one exists: nothing is made or connected for asking */
   peek(machineId: string): MachineSession | undefined { return this.sessions.get(machineId); }
 
   retainMachines(machineIds: ReadonlySet<string>): void {

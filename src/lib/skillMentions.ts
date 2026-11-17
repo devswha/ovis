@@ -1,38 +1,27 @@
 import type { SlashCommand } from "../../shared/protocol.ts";
 import { DEFAULT_SKILL_SYNTAX, type SkillSyntax } from "../../shared/skill-syntax.ts";
 
-/** One skill name as an answer spells it: `/name`, or `$name` for a Codex skill. */
 export interface SkillMention {
-  /** the exact text in the answer, trigger included: what a copy yields */
   raw: string;
   name: string;
 }
 
 export type SkillSplit = string | SkillMention;
 
-/** Splits plain answer text around the skill names in it; null when the pane lists no skill. */
 export type SkillMatcher = (text: string) => SkillSplit[];
 
-/** A name does not start inside a word, a path or an address. */
 const BEFORE = /[\w/.:~$@#\\-]/;
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/**
- * Matches only skills the pane's command list names, whole, in the form they are typed (`/name`;
- * `$name` for a Codex skill). A bare word never matches, nor does a longer name that merely starts
- * with a skill's (`/review-all` for `review`), a path (`/review/x`, `a/review`) or a file (`/review.md`).
- */
 export function createSkillMatcher(commands: readonly SlashCommand[], syntax: SkillSyntax = DEFAULT_SKILL_SYNTAX): SkillMatcher | null {
   const names = new Map<string, string>();
-  /** omo's placeholder `[skill: name]`: bracketed, so it needs neither the leading nor the trailing guard */
   const bracketed = new Map<string, string>();
   for (const command of commands) {
     if (command.source !== "skill" || command.name === "") continue;
     const trigger = command.trigger ?? "/";
-    // an OpenCode v2 skill is sent as `@name` (compose.ts atSkillReplacement)
     names.set(trigger + command.name, command.name);
     if (command.name.startsWith("skill:") && command.name.length > "skill:".length) {
       for (const form of syntax.chipForms) {
@@ -42,7 +31,6 @@ export function createSkillMatcher(commands: readonly SlashCommand[], syntax: Sk
     }
   }
   if (names.size === 0) return null;
-  // longest first, so `/review-pr` is not cut at a skill named `review`
   const alternatives = [...names.keys()].sort((a, b) => b.length - a.length).map(escapeRegExp).join("|");
   const bracketAlternatives = [...bracketed.keys()].map(escapeRegExp).join("|");
   const source = `(?:${alternatives})(?![\\w:/-]|\\.\\w)`;

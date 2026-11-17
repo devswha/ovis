@@ -1,11 +1,5 @@
 import { createCSSVariablesTheme, registerCustomTheme } from "@pierre/diffs";
 
-/**
- * What the virtualized source (components/VirtualSource.tsx) and the repository diff
- * (components/RepoDiff.tsx) share of the package: the app's tokens as its theme, the shadow CSS
- * that carries them into its rows, the worker pool that colors them, and the row fixes both need.
- */
-
 export const SOURCE_THEME = "herdr-source";
 registerCustomTheme(SOURCE_THEME, async () => {
   const theme = createCSSVariablesTheme({
@@ -58,22 +52,11 @@ export const SHADOW_CSS = `
 }
 `;
 
-/** The window of rows the virtualizer keeps mounted around the view, in pixels. */
 export const SCROLL_CONFIG = { overscrollSize: 600, intersectionObserverMargin: 1200 };
 
-/**
- * The highlighter runs in the package's own worker, never on the page: the whole file is colored
- * at once, and 8 MiB of it measured 54 s of blocked page without one. Two workers color one file
- * at a time; the pool is created with the first virtualized source (plain rows use its manager's
- * windowed rows) or diff, and ended after the last. Its two
- * result caches (files, diffs) hold 12 entries each, not the package's 100: one colored file can
- * be megabytes of heap, and stepping through a repository's changes keeps the pool alive.
- */
 export const POOL_OPTIONS = { workerFactory: (): Worker => new Worker(new URL("@pierre/diffs/worker/worker.js", import.meta.url), { type: "module" }), poolSize: 2, totalASTLRUCacheSize: 12 };
-/** The JavaScript regex engine: the app's CSP allows no WebAssembly compilation. */
 export const HIGHLIGHTER_OPTIONS = { theme: SOURCE_THEME, preferredHighlighter: "shiki-js" as const };
 
-/** A key for the worker's highlight cache: two contents of one name and length must not share one (FNV-1a, 32 bit). */
 export function contentKey(name: string, text: string): string {
   let hash = 0x811c9dc5;
   for (let at = 0; at < text.length; at++) {

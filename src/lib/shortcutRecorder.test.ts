@@ -26,7 +26,6 @@ describe("recordShortcut", () => {
     expect(recordShortcut(press("PageUp", { ctrlKey: false, shiftKey: false, metaKey: true }), true)).toEqual({ kind: "exact", value: "meta+PageUp", risk: null });
     expect(recordShortcut(press("k", { shiftKey: false }), false)).toEqual({ kind: "exact", value: "ctrl+k", risk: "terminal" });
     expect(recordShortcut(press("g", { altKey: true }), false)).toEqual({ kind: "exact", value: "ctrl+alt+shift+g", risk: "terminal" });
-    // on a Mac Ctrl+Shift+G is not Mod+Shift: the pane would get Ctrl+G
     expect(recordShortcut(press("G"), true)).toEqual({ kind: "exact", value: "ctrl+shift+g", risk: "terminal" });
     expect(recordShortcut(press("ArrowLeft", { ctrlKey: false, shiftKey: false, altKey: true }), false)).toEqual({ kind: "exact", value: "alt+ArrowLeft", risk: "terminal" });
   });

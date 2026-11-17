@@ -15,7 +15,6 @@ describe("markdownImagePath", () => {
   it("keeps an absolute path and a file URI", () => {
     expect(markdownImagePath("/var/x.png", "/tmp/doc/README.md")).toBe("/var/x.png");
     expect(markdownImagePath("file:///var/x.png", "/tmp/doc/README.md")).toBe("/var/x.png");
-    // decoded once: the `%` that `%25` stands for is not read as an escape again
     expect(markdownImagePath("file:///tmp/100%25.png", "/tmp/a.md")).toBe("/tmp/100%.png");
   });
   it("refuses what the page cannot load or place", () => {

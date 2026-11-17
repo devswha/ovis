@@ -36,7 +36,6 @@ function snapshot(): number {
   return revision;
 }
 
-// every display mode an installed app can run in; browser and unknown modes are a plain tab
 const INSTALLED_DISPLAY_MODES = ["standalone", "minimal-ui", "window-controls-overlay", "tabbed", "unframed"].map((mode) => `(display-mode: ${mode})`);
 const FULLSCREEN_DISPLAY = "(display-mode: fullscreen)";
 
@@ -45,12 +44,10 @@ export interface InstalledStateInput {
   iosStandalone: boolean;
   installedByEvent: boolean;
   relatedInstalled: boolean;
-  /** the verdict last returned, kept while fullscreen hides which window this is */
   previous: boolean;
 }
 
-/** Whether this page runs as an installed app. Fullscreen (F11, the macOS green button) reports no
- * window mode of its own, so it keeps the previous verdict instead of guessing from the display mode. */
+/** Fullscreen (F11, the macOS green button) reports no window mode of its own. */
 export function installedState(input: InstalledStateInput): boolean {
   const signalled = input.iosStandalone || input.installedByEvent || input.relatedInstalled;
   if (input.matches(FULLSCREEN_DISPLAY)) return input.previous || signalled;
@@ -62,7 +59,6 @@ function isStandalone(): boolean {
   const iosNavigator = navigator as Navigator & { standalone?: boolean };
   lastInstalled = installedState({
     matches: (query) => window.matchMedia?.(query).matches === true,
-    // the iOS app (app/) and Ovis for Mac (app/mac) are this client installed, as a home-screen app is
     iosStandalone: iosNavigator.standalone === true || inNativeApp() || inMacApp(),
     installedByEvent,
     relatedInstalled,
@@ -71,11 +67,6 @@ function isStandalone(): boolean {
   return lastInstalled;
 }
 
-/**
- * Whether this window itself is the installed app's, not a tab of a browser that has the app
- * installed. A link that opens a new tab of this origin (`target="_blank"`) lands in another app
- * window there, since the app's scope is the whole origin and no page can send it to the browser.
- */
 export function isAppWindow(): boolean {
   if (typeof window === "undefined" || typeof navigator === "undefined") return false;
   const iosNavigator = navigator as Navigator & { standalone?: boolean };
@@ -101,7 +92,6 @@ if (typeof window !== "undefined") {
     emitChange();
   });
   for (const query of [...INSTALLED_DISPLAY_MODES, FULLSCREEN_DISPLAY]) window.matchMedia?.(query).addEventListener("change", emitChange);
-  // Chrome and Edge 140+ tell a tab of the same origin that the app is installed
   if (window.top === window) {
     const related = (navigator as Navigator & { getInstalledRelatedApps?: () => Promise<{ platform?: string }[]> }).getInstalledRelatedApps;
     const refreshRelated = () => {
@@ -130,7 +120,6 @@ export interface InstallEnvironment {
   maxTouchPoints: number;
 }
 
-/** How to install when the browser offers no prompt of its own (iOS never does). */
 export function installHelp(env: InstallEnvironment): string {
   const ua = env.userAgent;
   const ios = /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && env.maxTouchPoints > 1);
@@ -151,7 +140,6 @@ export interface InstallPromptState {
   canInstall: boolean;
   installed: boolean;
   install(): Promise<void>;
-  /** what to tell the user when there is no prompt to show */
   help: string;
 }
 
@@ -169,7 +157,6 @@ export function useInstallPrompt(): InstallPromptState {
   return { canInstall: pendingPrompt !== null && !installed, installed, install, help: currentInstallHelp() };
 }
 
-/** Whether the page runs in the installed app's own window (isAppWindow), kept current. */
 export function useAppWindow(): boolean {
   useSyncExternalStore(subscribe, snapshot, snapshot);
   return isAppWindow();

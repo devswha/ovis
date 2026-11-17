@@ -25,7 +25,6 @@ describe("installHintKind", () => {
   it("stays away from desktop browsers and the desktop app", () => {
     expect(installHintKind(env({ userAgent: DESKTOP, maxTouchPoints: 0 }))).toBeNull();
     expect(installHintKind(env({ userAgent: ELECTRON, maxTouchPoints: 0 }))).toBeNull();
-    // a Mac reports the iPad's user agent without touch points
     expect(installHintKind(env({ userAgent: IPAD, maxTouchPoints: 0 }))).toBeNull();
   });
 

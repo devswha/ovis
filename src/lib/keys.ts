@@ -1,21 +1,11 @@
-/**
- * Key-bar key mappings, kept free of DOM and xterm so they can be unit-tested.
- * PaneTerminal feeds the result to term.input(), which takes the same
- * onData -> socket path as typed keys. The keyboard's own keys xterm.js encodes
- * differently from a terminal are below them.
- */
-
-/** Keys a soft keyboard has no room for; ctrl-* are chords, pipe/tilde/slash the characters, the rest DOM key names. */
 export type KeyBarKey =
   | "Escape" | "Tab" | "Enter" | "BackTab" | "ArrowUp" | "ArrowDown" | "ArrowLeft" | "ArrowRight"
   | "Home" | "End" | "PageUp" | "PageDown" | "Backspace" | "Delete" | "Insert"
   | "ctrl-c" | "ctrl-d" | "ctrl-z" | "pipe" | "tilde" | "slash";
 
-/** The key bar's optional keys, as Settings lists them; a pair is one choice. Esc, Tab, Ctrl, the arrows and ^C are always there. */
 export type KeyBarExtra = "alt" | "shift-tab" | "home-end" | "page-up-down" | "ctrl-d" | "ctrl-z" | "pipe" | "tilde" | "slash";
 export const KEY_BAR_EXTRAS: readonly KeyBarExtra[] = ["alt", "shift-tab", "home-end", "page-up-down", "ctrl-d", "ctrl-z", "pipe", "tilde", "slash"];
 
-/** The chosen optional keys: known ones only, each once, in KEY_BAR_EXTRAS order; anything but a list keeps the default. */
 export function sanitizeKeyBarExtras(value: unknown, fallback: readonly KeyBarExtra[]): KeyBarExtra[] {
   if (!Array.isArray(value)) return [...fallback];
   return KEY_BAR_EXTRAS.filter((extra) => value.includes(extra));
@@ -28,11 +18,6 @@ export function hasModifiers(modifiers: StickyModifiers): boolean {
   return modifiers.ctrl || modifiers.alt || modifiers.shift;
 }
 
-/**
- * The key bar's modifiers: `held` is what the next key carries, `locked` the part of it that stays
- * after that key. A tap steps one modifier off -> once -> locked -> off, the way a phone keyboard's
- * Shift goes from one capital to Caps Lock, by taps rather than a double tap's timing.
- */
 export interface ModifierLatch { held: StickyModifiers; locked: StickyModifiers }
 export const NO_MODIFIER_LATCH: ModifierLatch = { held: NO_STICKY_MODIFIERS, locked: NO_STICKY_MODIFIERS };
 
@@ -45,34 +30,24 @@ export function stepModifier(latch: ModifierLatch, modifier: keyof StickyModifie
   };
 }
 
-/** After a key that carried them: only the locked modifiers stay held. Same object when nothing changes. */
 export function releaseLatched(latch: ModifierLatch): ModifierLatch {
   const { held, locked } = latch;
   if (held.ctrl === locked.ctrl && held.alt === locked.alt && held.shift === locked.shift) return latch;
   return { held: { ctrl: held.ctrl && locked.ctrl, alt: held.alt && locked.alt, shift: held.shift && locked.shift }, locked };
 }
 
-/** Ctrl+C/V remain native clipboard shortcuts on non-Latin layouts; Latin layouts keep their typed letter. */
 export function clipboardKey(key: string, code: string): string {
   const typed = key.toLowerCase();
   return /^[a-z]$/.test(typed) ? typed : /^Key([A-Z])$/.exec(code)?.[1]?.toLowerCase() ?? typed;
 }
 
-/** The key a physical chord names. A non-Latin layout's letter goes by its position, as the plain
- * Ctrl path reads it: Korean ㅊ or Russian с on KeyC with a held Ctrl is Ctrl+C, which herdr's
- * encoder knows, not ctrl+ㅊ, which it types. A Latin layout keeps its own letter (Dvorak's C is
- * not KeyC), and anything that is not a letter position stays as typed.
- */
 export function physicalKey(key: string, code: string): string {
   if ([...key].length !== 1 || /^[a-zA-Z]$/.test(key)) return key;
   const letter = /^Key([A-Z])$/.exec(code)?.[1];
   return letter === undefined ? key : letter.toLowerCase();
 }
 
-/** Send logical chords to Herdr, which owns the target pane's keyboard protocol.
- * A plus or space needs a name because Herdr's chord parser splits on '+' and trims.
- * Keep the typed symbol: the phone's layout already chose it; don't assume US Shift.
- */
+/** A plus or space needs a name because Herdr's chord parser splits on '+' and trims. */
 export function terminalChord(key: string, modifiers: StickyModifiers): string | null {
   if (["Home", "End", "PageUp", "PageDown", "Delete", "Insert"].includes(key)) return null;
   if (/^ctrl-[cdz]$/.test(key)) { key = key.slice(-1); modifiers = { ...modifiers, ctrl: true }; }
@@ -104,9 +79,6 @@ export function navigationSequence(key: string, modifiers: StickyModifiers): str
   }
 }
 
-/** Soft keyboards often emit input events without a DOM keydown. Only individual
- * committed characters are keys; a multi-character composition is text.
- */
 export function keyFromData(data: string): string | null {
   const fixed: Record<string, string> = { "\r": "Enter", "\t": "Tab", "\x7f": "Backspace", "\x1b": "Escape" };
   if (Object.hasOwn(fixed, data)) return fixed[data]!;
@@ -115,23 +87,17 @@ export function keyFromData(data: string): string | null {
   return [...data].length === 1 && data.codePointAt(0)! >= 0x20 ? data : null;
 }
 
-/** A single printable UTF-16 character. */
 export function isPrintable(data: string): boolean {
   if (data.length !== 1) return false;
   const code = data.charCodeAt(0);
   return code >= 0x20 && code !== 0x7f;
 }
 
-/** The control code for A-Z and @ [ \ ] ^ _ (Ctrl+C = 0x03, Ctrl+[ = ESC, ...), null otherwise. */
 export function controlCode(ch: string): string | null {
   if (!/^[A-Za-z@[\\\]^_]$/.test(ch)) return null;
   return String.fromCharCode(ch.toUpperCase().charCodeAt(0) & 0x1f);
 }
 
-/**
- * What a key-bar tap feeds xterm. Arrows follow DECCKM like a real keyboard: SS3
- * while a full-screen program has application cursor keys on, CSI otherwise.
- */
 export function keySequence(key: KeyBarKey, applicationCursorKeys: boolean): string {
   const cursor = (final: "A" | "B" | "C" | "D" | "H" | "F"): string => (applicationCursorKeys ? "\u001bO" : "\u001b[") + final;
   switch (key) {
@@ -181,10 +147,8 @@ export function keySequence(key: KeyBarKey, applicationCursorKeys: boolean): str
 }
 
 /**
- * One keystroke under the key bar's one-shot Alt, as xterm sends it with metaSendsEscape: ESC
- * before a single character (Alt+b, Alt+Backspace, Alt+Enter), and the Alt modifier in a cursor
- * or editing key's sequence (Alt+Left is CSI 1;3D, Alt+PageUp CSI 5;3~). Null for anything else,
- * such as a paste or a report the terminal answers with, which the armed Alt lets through as it is.
+ * One keystroke under Alt as xterm sends it with metaSendsEscape: ESC before a single character,
+ * and the Alt modifier in a cursor or editing key's sequence (Alt+Left is CSI 1;3D, Alt+PageUp CSI 5;3~).
  */
 export function altSequence(data: string): string | null {
   if ([...data].length === 1) return "\u001b" + data;
@@ -199,30 +163,24 @@ export function altSequence(data: string): string | null {
  * xterm's modifyOtherKeys level after CSI > 4 ; Pv m, or CSI > 4 n, which turns it off. Other
  * resources leave it as it was. xterm.js (5.5 and 6.0) ignores the request and types Ctrl+Enter as a plain
  * CR, the same as Enter, so PaneTerminal keeps the level here and sends that key itself.
- * herdr passes the pane program's request on to the attached client, and again on every
- * attach; Claude Code asks for level 2.
  */
 export function modifyOtherKeysLevel(level: number, final: "m" | "n", params: ReadonlyArray<number | number[]>): number {
   // a bare CSI > m or CSI > n resets every key-modifier resource (xterm). xterm.js hands it over
-  // as [0], the same as an explicit resource 0 (modifyKeyboard, which this does not track): off
-  // is the safe reading, since a level left on would type CSI 27;5;13~ into a shell
+  // as [0], the same as an explicit resource 0
   if (params.length === 0 || (params.length === 1 && params[0] === 0)) return 0;
   if (params[0] !== 4) return level;
   const value = params[1];
   return final === "m" && typeof value === "number" ? value : 0;
 }
 
-/** Ctrl+Enter under modifyOtherKeys, as xterm encodes it; null keeps xterm.js's own CR. */
+/** Ctrl+Enter under modifyOtherKeys, as xterm encodes it. */
 export function ctrlEnterSequence(modifyOtherKeys: number): string | null {
   return modifyOtherKeys > 0 ? "\u001b[27;5;13~" : null;
 }
 
 /**
- * Ctrl+Enter on a mirrored pane, as a herdr key (#924). A mirror's repaint carries no terminal
- * modes (server/mirror.ts), so the browser never learns that the program asked for
- * modifyOtherKeys; herdr holds the pty and encodes `ctrl+enter` in the program's own mode:
- * CSI 27;5;13~ after `CSI > 4;2 m` (Claude Code's "send now"), CR otherwise (herdr 0.9.3).
- * null: the attached pane's own sequence, from ctrlEnterSequence.
+ * Ctrl+Enter on a mirrored pane, as a herdr key (#924): herdr holds the pty and encodes `ctrl+enter`
+ * in the program's own mode: CSI 27;5;13~ after `CSI > 4;2 m`, CR otherwise (herdr 0.9.3).
  */
 export function mirroredCtrlEnterKey(mirrored: boolean, modifyOtherKeys: number): string | null {
   return mirrored && modifyOtherKeys === 0 ? "ctrl+enter" : null;

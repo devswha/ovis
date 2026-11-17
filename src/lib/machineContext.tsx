@@ -6,23 +6,12 @@ import type { ZoomMode } from "./layoutMap.ts";
 import { ReorderCoordinator } from "./workspaceOrder.ts";
 export const MachineContext = createContext("local");
 export const useMachineId = () => useContext(MachineContext);
-/**
- * Which layout calls a PC's herdr answers, so the components offer only those, as VS Code's `when`
- * clauses leave a command out of its menus where it cannot run: renaming workspaces and tabs,
- * splitting a pane, moving a one-pane tab to another workspace, `arrange` for the rest (reordering,
- * swap, zoom, resize, pane names) and the worktree actions. herdr's TUI server answers all of them;
- * herdr-core (shared/machines.ts HerdrIdentity.runtime) only as its `layout` says. App provides it per PC beside MachineContext (the selected PC, each half of
- * the split view, each PC's sidebar); everything outside App, as for herdr's own TUI server.
- */
 export interface LayoutOffer { rename: boolean; split: boolean; move: boolean; arrange: boolean; worktrees: boolean }
 export const FULL_LAYOUT: LayoutOffer = Object.freeze({ rename: true, split: true, move: true, arrange: true, worktrees: true });
 const NO_LAYOUT: LayoutOffer = Object.freeze({ rename: false, split: false, move: false, arrange: false, worktrees: false });
-/** one object per herdr-core offer, so a context value or a hook's dependency stays the same between renders */
 const coreOffers = new Map<string, LayoutOffer>();
 export const AppLayoutContext = createContext<LayoutOffer>(FULL_LAYOUT);
 export const useAppLayout = () => useContext(AppLayoutContext);
-/** the value AppLayoutContext carries for a PC's herdr (this PC's from /api/health, a remote PC's from its roster entry);
- * a herdr not known yet (health still loading) offers none of the layout calls, until it says what it is */
 export const appLayoutOf = (herdr: HerdrIdentity | undefined): LayoutOffer => {
   if (herdr === undefined) return NO_LAYOUT;
   if (herdr.runtime !== "herdr-core") return FULL_LAYOUT;
@@ -32,10 +21,8 @@ export const appLayoutOf = (herdr: HerdrIdentity | undefined): LayoutOffer => {
   if (!offer) coreOffers.set(key, offer = Object.freeze({ rename, split, move, arrange, worktrees }));
   return offer;
 };
-/** App's workspace order for every PC (lib/workspaceOrder.ts); a Sidebar outside App gets its own */
 export const ReorderContext = createContext(new ReorderCoordinator());
 export const useReorderCoordinator = () => useContext(ReorderContext);
-/** Bound functions retain their owner across an async upload or a fast PC switch. */
 export function useMachineApi() {
   const id = useMachineId();
   return useMemo(() => ({

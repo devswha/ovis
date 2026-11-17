@@ -182,11 +182,9 @@ describe("modifyOtherKeysLevel", () => {
   it("follows CSI > 4 ; Pv m and turns off on CSI > 4 m and CSI > 4 n", () => {
     expect(modifyOtherKeysLevel(0, "m", [4, 2])).toBe(2);
     expect(modifyOtherKeysLevel(0, "m", [4, 1])).toBe(1);
-    // herdr turns it off as CSI > 4 ; 0 m, a program may leave the value out
     expect(modifyOtherKeysLevel(2, "m", [4, 0])).toBe(0);
     expect(modifyOtherKeysLevel(2, "m", [4])).toBe(0);
     expect(modifyOtherKeysLevel(2, "n", [4])).toBe(0);
-    // a bare CSI > m or CSI > n resets every resource; xterm.js reports it as [0] or []
     expect(modifyOtherKeysLevel(2, "m", [0])).toBe(0);
     expect(modifyOtherKeysLevel(2, "n", [0])).toBe(0);
     expect(modifyOtherKeysLevel(2, "m", [])).toBe(0);
@@ -209,12 +207,10 @@ describe("ctrlEnterSequence", () => {
 
 describe("mirroredCtrlEnterKey", () => {
   it("sends a mirrored pane's Ctrl+Enter as herdr's key, which herdr encodes in the program's own mode (#924)", () => {
-    // regression (fails on main): a mirror never shows the browser the program's modifyOtherKeys
     expect(mirroredCtrlEnterKey(true, 0)).toBe("ctrl+enter");
   });
 
   it("leaves an attached pane's Ctrl+Enter to xterm and to what its stream asked for", () => {
-    // control: unchanged on an attached pane, with or without modifyOtherKeys
     expect(mirroredCtrlEnterKey(false, 0)).toBeNull();
     expect(mirroredCtrlEnterKey(false, 2)).toBeNull();
   });
