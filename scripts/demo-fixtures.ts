@@ -1,3 +1,8 @@
+/**
+ * Everything comes from the staged, fictional README session
+ * (scripts/readme-media/stage.ts), never from the herdr you work in, and the real hostname and
+ * login are replaced before anything is written to site/demo/fixtures/.
+ */
 import { hostname, userInfo } from "node:os";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -8,6 +13,7 @@ const OUT = join(import.meta.dir, "../site/demo/fixtures");
 const REAL_HOST = hostname();
 const REAL_USER = userInfo().username;
 const demo = await stage();
+/** neither the machine's name nor the user's login belong in a public fixture */
 const scrub = (text: string) => text.split(REAL_HOST).join("workstation").split(REAL_USER).join("demo");
 const save = (name: string, body: unknown) => writeFileSync(join(OUT, name), JSON.stringify(body, null, 2) + "\n");
 const get = async (path: string): Promise<unknown> => JSON.parse(scrub(await (await fetch(demo.base + path)).text()));
