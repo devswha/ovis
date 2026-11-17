@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HerdrError } from "../herdr/client.ts";
 import { PendingInputError } from "../pending-input.ts";
-import { createSubmitText, pendingFault, pendingText, submitFraming } from "./composer.ts";
+import { closeBackslash, createSubmitText, pendingFault, pendingText, submitFraming } from "./composer.ts";
 
 // The real RPC client against a unix socket this test owns; only herdr's answers are synthetic. The pane runs a
 // shell (herdr names no agent), so a chat message falls back from agent.prompt to the payload, as a typed line does.
@@ -170,5 +170,15 @@ describe("a pending row's fault", () => {
     // any other fault keeps its code, in the view's sentence where there is one, and as it is without
     expect([pendingFault(new TypeError("other"), view), pendingFault(new TypeError("other"), undefined)])
       .toEqual([{ code: "submit_failed", message: view().message }, { code: "submit_failed", message: "other" }]);
+  });
+});
+
+describe("closeBackslash", () => {
+  // Pi's editor (pi-tui 1.5.2) reads `\` + Enter as a new line too: the message stayed in its box, and its later
+  // record (without the backslash) never matched the chat's receipt, which then waited for its transcript forever
+  it("gives a Pi message that ends in a backslash a space, so its Enter sends", () => {
+    expect(closeBackslash("pi", "under requisiciones? \\")).toBe("under requisiciones? \\ ");
+    expect(closeBackslash("pi", "\u001b[200~see C:\\temp\\\u001b[201~")).toBe("\u001b[200~see C:\\temp\\ \u001b[201~");
+    expect(closeBackslash("pi", "see C:\\temp\\x")).toBe("see C:\\temp\\x");
   });
 });
