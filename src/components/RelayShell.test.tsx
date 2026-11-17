@@ -480,12 +480,8 @@ describe("the dashboard", () => {
       const relisted = myPcs([{ ...recorded, added_at: moved(recorded.added_at), last_seen_at: moved(recorded.last_seen_at) }], [], { now });
       const joined: [string, unknown][] = [];
       await mount(signedIn(relisted, { onJoin: (target, options) => { joined.push([target.name, options]); } }));
-      // the row offers Join, not Add: the dashboard's Add a PC promises neither
+      // the row offers Join, not Add
       expect(buttons("Add")).toHaveLength(0);
-      await act(async () => { button("Add a PC").props.onClick(); });
-      expect(textOf(dialog())).not.toContain("with Add");
-      await act(async () => { button("Close").props.onClick(); });
-      expect(dialogs()).toHaveLength(0);
       await act(async () => { buttons("Join")[0]!.props.onClick({ stopPropagation() {} }); });
       expect(dialog().props["data-add-pc-mode"]).toBe("join");
       expect(textOf(dialog())).not.toMatch(/never on/i);

@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { isValidElement, type ReactNode } from "react";
+import { createElement, isValidElement, type ReactNode } from "react";
+import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { exportPublicKey, generateKeyPair } from "../../../shared/relay-e2ee.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import { RelayShell, type RelayShellProps } from "../../components/RelayShell.tsx";
 import type { MyPc } from "../account/myPcs.ts";
 import { memoryAccountStore } from "../account/store.ts";
+import { SettingsProvider } from "../settings.ts";
 import { nativeTransport, setTransport } from "../transport.ts";
 import type { RelayDeviceStore } from "./device.ts";
 import { mountRelayShell } from "./shell.tsx";
@@ -14,7 +16,13 @@ import type { RelayShellMount } from "./shellState.ts";
 describe("explicit dashboard pairing consent", () => {
   let browser: ReturnType<typeof createShellTestPage>;
   beforeEach(() => { browser = createShellTestPage(); browser.setVisibility("hidden"); });
-  afterEach(() => { setTransport(nativeTransport); browser.dispose(); });
+  /** the globals a test that draws the shell with the test renderer sets beyond the page's, put back after it */
+  const drawn = new Map<string, PropertyDescriptor | undefined>();
+  afterEach(() => {
+    setTransport(nativeTransport); browser.dispose();
+    for (const [key, descriptor] of drawn) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key); }
+    drawn.clear();
+  });
 
   /**
    * A shell that opened the dashboard's sheet for one PC and arrived on its page: the PC asks to compare 123456, and
@@ -29,12 +37,15 @@ describe("explicit dashboard pairing consent", () => {
     };
     const paths: string[] = [];
     let props: RelayShellProps | undefined;
+    let shown: (() => void) | undefined;
     const render = (node: ReactNode): void => {
       if (!isValidElement<{ readonly children?: ReactNode }>(node)) throw new TypeError("Missing shell element");
-      if (node.type === RelayShell && isValidElement<RelayShellProps>(node)) { props = node.props; return; }
+      if (node.type === RelayShell && isValidElement<RelayShellProps>(node)) { props = node.props; shown?.(); return; }
       render(node.props.children);
     };
     const current = (): RelayShellProps => { if (!props) throw new TypeError("Missing shell props"); return props; };
+    /** settles once the shell shows a state of `kind` (subscribe before the action that leads there) */
+    const until = (kind: RelayShellProps["state"]["kind"]): Promise<void> => new Promise((resolve) => { shown = () => { if (current().state.kind === kind) { shown = undefined; resolve(); } }; });
     const store: RelayDeviceStore = {
       get: async () => undefined, list: async () => [], remove: async () => {},
       update: async () => { throw new TypeError("Pairing has not been approved by the PC"); },
@@ -65,7 +76,7 @@ describe("explicit dashboard pairing consent", () => {
     const scoped = { ...mount, entryUrl: new URL(path, mount.entryUrl).href };
     await mountRelayShell(scoped);
     await compared.promise;
-    return { pc, current, approved: approved.promise, again: () => mountRelayShell(scoped) };
+    return { pc, current, until, approved: approved.promise, again: () => mountRelayShell(scoped) };
   };
 
   it.each(["new", "join"] as const)("starts the %s sheet's comparison after one confirmation", async (mode) => {
@@ -90,5 +101,28 @@ describe("explicit dashboard pairing consent", () => {
     current().onMatch();
     expect(current().state).toMatchObject({ kind: "compare", digits: "123456", confirmed: true });
     await approved;
+  });
+
+  it("draws Ask to join on the continued sheet's typed comparison, and a Try again after it fails asks to join again", async () => {
+    const { current, until } = await arrive("new");
+    // the test renderer draws no DOM: the sheet portals into a body whose nodes stand in for every element
+    const node = () => ({ isConnected: true, focus() {}, contains: () => false, querySelectorAll: () => [], closest: () => null, addEventListener() {}, removeEventListener() {} });
+    const globals = { IS_REACT_ACT_ENVIRONMENT: true, HTMLElement: class { isConnected = true; focus(): void {} }, getComputedStyle: () => ({ getPropertyValue: () => "" }) };
+    for (const [key, value] of Object.entries(globals)) { drawn.set(key, Object.getOwnPropertyDescriptor(globalThis, key)); Object.defineProperty(globalThis, key, { configurable: true, value }); }
+    Object.assign(window, { requestAnimationFrame: () => 1, cancelAnimationFrame() {}, setTimeout, clearTimeout });
+    Object.assign(document, { body: { nodeType: 1, children: [], createNodeMock: node }, activeElement: null, querySelectorAll: () => [] });
+    let sheet!: ReactTestRenderer;
+    await act(async () => { sheet = create(createElement(SettingsProvider, { children: createElement(RelayShell, current()) }), { createNodeMock: node }); });
+    await act(async () => { sheet.root.findByProps({ "data-action": "ask-to-join" }).props.onClick(); });
+    await act(async () => { sheet.unmount(); });
+    expect(current().state).toMatchObject({ kind: "compare", digits: "123456", confirmed: false });
+    const failed = until("failed");
+    current().onMatch();
+    await failed;
+    const compared = until("compare");
+    current().onRetry();
+    await compared;
+    expect(current().state).toMatchObject({ kind: "compare", digits: "123456", confirmed: false });
+    expect(current().sheetJoin?.mode).toBe("join");
   });
 });
