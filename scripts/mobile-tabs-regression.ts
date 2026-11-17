@@ -7,7 +7,6 @@ import { appFaces } from "./app-faces.ts";
 import { herdrRpc, paneSplit, tabCreate, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
 import { chromePath } from "./chrome-path.ts";
 import { openLens } from "./header-lens.ts";
-import { sheetEntryLeft } from "./sheets-settled.ts";
 
 type Box = { left: number; top: number; right: number; bottom: number; width: number; height: number };
 type KeyboardQA = Window & { keyboardQA: (height: number | null) => void };
@@ -52,10 +51,17 @@ async function openTabs(page: Page) {
   return sheet;
 }
 
+/**
+ * A sheet closed by its Cancel, and its history entry left: a phone sheet steps back off its entry a
+ * task after it closes (src/lib/sheetHistory.ts), and that traversal aborts a page.goto it overtakes.
+ */
 async function cancelSheet(page: Page, sheet: Locator): Promise<void> {
   await sheet.getByRole("button", { name: "Cancel", exact: true }).tap();
   await sheet.waitFor({ state: "detached" });
-  await sheetEntryLeft(page);
+  await page.waitForFunction(() => {
+    const state: unknown = window.history.state;
+    return state === null || typeof state !== "object" || !("ovis:sheet" in state);
+  }, null, { timeout: 5_000 });
 }
 
 async function pickTab(page: Page, name: string): Promise<void> {
