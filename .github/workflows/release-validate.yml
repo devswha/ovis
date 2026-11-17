@@ -91,8 +91,6 @@ jobs:
     env:
       CHECK_DIR: ${{ github.workspace }}/.ci
       UNIT_TEST_WORKERS: 4
-      # as ci.yml's; empty here (no pull request, no push), so the ratchets compare with nothing
-      RATCHET_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -103,8 +101,6 @@ jobs:
           node: 'true'
           cache: none
       - run: bun install --frozen-lockfile
-      - name: Fetch the base the ratchets compare with
-        run: if [ -n "$RATCHET_BASE" ]; then git fetch --no-tags --depth=1 origin "$RATCHET_BASE"; fi
       - run: bun run check fast
       # BASE_SHA is empty here (no push, no pull request), so a commit whose version has no tag yet is
       # checked as the release it is; release.yml's preflight (`release-guards.ts --release`) checks more
