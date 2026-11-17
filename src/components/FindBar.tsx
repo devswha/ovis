@@ -17,8 +17,6 @@ export function FindBar({ paneId, viewportIntent, disabled, focusRequest, active
   const { findPane } = useMachineApi();
   const [query, setQuery] = useState("");
   const [result, setResult] = useState<PaneFindResponse | null>(null);
-  // Back closes the bar, as Escape does, and leaves the terminal where it is. A split tab's pane a
-  // phone keeps hidden behind the one it shows keeps its bar and no Back: it is not there to close
   const shown = useContext(PaneShownContext);
   usePhoneSheetBack(() => { onClose(); }, shown);
   const [busy, setBusy] = useState(false);
@@ -44,8 +42,6 @@ export function FindBar({ paneId, viewportIntent, disabled, focusRequest, active
     let releaseViewport: (() => void) | null = null;
     try {
       releaseViewport = await viewportIntent.beginSearch();
-      // A pending scrollbar request may outlive this pane, the search bar or the connection.
-      // Never turn its late completion into a search on a pane the user has already left.
       if (!releaseViewport || !active.current || disabledRef.current) return;
       const answer = await findPane({
         pane_id: paneId, query, direction,

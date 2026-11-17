@@ -5,11 +5,9 @@ import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { SettingsRow } from "./SettingsControls.tsx";
 
 /**
- * What Sign out says of the way back in, which depends on how the browser got in: a token or a
- * pairing code, or, for a visitor Portal's own sign-in let in (`viaPortal`), Portal's sign-in again.
  * With a Google or company login (`oidc`) that sign-in can pass without a word: Portal asks the provider
  * with no `prompt` or `max_age`, so a browser still signed in there is let straight back in, and Sign out
- * looks like it did nothing. The confirmation says so.
+ * looks like it did nothing.
  */
 export function wayBackIn(t: Translate, viaPortal: boolean, oidc = false): { row: string; confirm: string } {
   return viaPortal
@@ -17,7 +15,6 @@ export function wayBackIn(t: Translate, viaPortal: boolean, oidc = false): { row
     : { row: t("Forget this browser's sign-in. Getting back in takes the access token or a pairing code."), confirm: t("Getting back in takes the access token, or a pairing code from the PC: Settings → Devices and PCs there, or the pair command in its terminal.") };
 }
 
-/** Settings → Phone & devices → Devices → Sign out: forget this browser's sign-in, after asking once. */
 export function SignOutRow({ viaPortal, oidc = false, onSignOut, label }: { viaPortal: boolean; oidc?: boolean; onSignOut: () => Promise<void>; /** the row's and its button's name, beside another Sign out on the page */ label?: string }) {
   const t = useT();
   const [confirming, setConfirming] = useState(false);
