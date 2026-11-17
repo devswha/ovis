@@ -9,7 +9,7 @@ import { DEPLOY_ACTIONS, type Job, parseWorkflow, root, runScript, scriptProblem
 // there, or main's own push run that scripts/release-ci-reuse.ts verified, with Fast checks run
 // again on GitHub's runner. These tests hold the shape that makes a skipped, failed or cancelled job
 // stop a release instead of passing it, and run the two scripts that decide.
-type CallJob = Job & { name?: string; with?: Record<string, string>; "continue-on-error"?: boolean };
+type CallJob = Job & { name?: string; with?: Record<string, unknown>; "continue-on-error"?: boolean };
 interface Input { description?: string; required?: boolean; default?: unknown; type?: string }
 const wrapper = parseWorkflow(join(root, ".github/workflows/release-validate.yml"));
 const release = parseWorkflow(join(root, ".github/workflows/release.yml"));
