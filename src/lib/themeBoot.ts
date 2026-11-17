@@ -46,7 +46,8 @@ export function readStoredAppearance(storage: () => Pick<Storage, "getItem">): S
   try {
     const raw = storage().getItem(SETTINGS_STORAGE_KEY);
     if (raw !== null) stored.main = { value: JSON.parse(raw) };
-  } catch {}
+  } catch {
+  }
   try {
     const raw = storage().getItem(THEMES_STORAGE_KEY);
     const themes: unknown = raw === null ? null : JSON.parse(raw);
