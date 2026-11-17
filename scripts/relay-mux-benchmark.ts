@@ -5,8 +5,8 @@ import type { HttpStream, MuxClock } from "../shared/relay-mux-engine.ts";
 import { WS_CONTINUATION_CAPACITY } from "../shared/relay-mux.ts";
 
 export const BULK_BYTES = 64 * 1024 * 1024;
+const PROBE_INTERVAL_OFF_RTT_MS = 37;
 
-/** Discrete events, not elapsed wall time. An event-loop turn drains producer/reader microtasks. */
 export class BenchmarkClock implements MuxClock {
   private time = 0;
   private sequence = 0;
@@ -20,7 +20,6 @@ export class BenchmarkClock implements MuxClock {
   async run<T>(work: Promise<T>): Promise<T> {
     let settled = false;
     const result = work.finally(() => { settled = true; });
-    // Attach rejection handling before driving events; the original rejection still propagates.
     void result.catch(() => undefined);
     for (let budget = 200_000; !settled; budget--) {
       assert.ok(budget > 0, "benchmark event budget exhausted");
@@ -49,12 +48,6 @@ export interface BenchmarkResult {
   readonly peakAccounted: number;
 }
 
-/**
- * Two real engines with a full-duplex, FIFO, bandwidth-limited carrier. send() resolves on
- * submission, NOT delivery: it cannot accidentally turn the receipt test into stop-and-wait.
- * Protected binary records cost plaintext + 24 bytes. Crypto CPU and WebSocket framing are
- * excluded; this is a mux/window benchmark, not a hosted relay speed claim.
- */
 export async function benchmarkMux(
   clock: MuxClock, rttMs: number, bulk: boolean, linkMbps = 100, wireMode: "binary" | "base64" = "binary",
 ): Promise<BenchmarkResult> {
@@ -77,7 +70,6 @@ export async function benchmarkMux(
       deliveries.delete(cancel);
       queues[role].shift();
       (role === "client" ? server : client).receive(next.bytes);
-      // Real timers can fire late; drain due records in FIFO order, never reorder rounded timers.
       while (queues[role][0] && queues[role][0].at <= clock.now()) {
         const due = queues[role].shift();
         if (due) (role === "client" ? server : client).receive(due.bytes);
@@ -136,13 +128,11 @@ export async function benchmarkMux(
       const key = `terminal-${sent++}`;
       pending.set(key, clock.now());
       terminal.send(key);
-      // Fixed offered load avoids coordinated omission; 37 ms is not phase-locked to RTT.
-      if (!finished && (bulk || sent < 128)) cancelProbe = clock.setTimeout(probe, 37);
+      if (!finished && (bulk || sent < 128)) cancelProbe = clock.setTimeout(probe, PROBE_INTERVAL_OFF_RTT_MS);
     };
     probe();
     let bytes = 0;
     let elapsedMs = 0;
-    // Match the production server adapter's bounded, maximum-DATA-sized writes.
     const bodyDone = bulk ? new Promise<void>((resolve, reject) => {
       respond = (stream) => {
         void (async () => {

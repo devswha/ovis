@@ -1,25 +1,7 @@
 /**
- * Large-roster benchmark (#772): what a burst of agent status changes costs the server and the
- * browser when herdr holds many panes with agents in them.
- *
- * For each roster size it opens that many panes in the test herdr (four to a workspace), reports
- * a Claude agent at rest in each (`pane.report_agent`, as a plugin does), starts an Ovis server
- * of its own in a child process (a temp state dir and HOME, port 0 on loopback) and opens the
- * built client in headless Chrome at a desktop size. Each run is two bursts: every pane reports
- * `working`, then every pane reports `idle` (a finish). A burst is measured from its first report
- * until the browser shows every row in its new state and the event stream has been quiet for a
- * moment:
- *
- * - browser main-thread time (Chrome's TaskDuration; ScriptDuration, layout and style beside it)
- *   and long tasks;
- * - time until the last row showed the new status;
- * - server CPU time over the same window, and its memory after the runs.
- *
  * Needs a built client (`dist/`) and the isolated herdr of a check run:
  *
  *   bun run check run --build bun scripts/roster-bench.ts --panes 20,100,300 --runs 5 --out <file.json>
- *
- * Never point it at the herdr you work in: it opens and closes hundreds of panes.
  */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { cpus, loadavg, tmpdir } from "node:os";
@@ -33,7 +15,6 @@ const SERVE = "--serve";
 if (process.argv[2] === SERVE) await serve(process.argv[3] ?? "");
 else await bench();
 
-/** The server under test, in a process of its own so its CPU time is its own. */
 async function serve(stateDir: string): Promise<void> {
   const { createServer } = await import("../server/index.ts");
   const { UsageService } = await import("../server/usage.ts");
@@ -56,9 +37,7 @@ async function serve(stateDir: string): Promise<void> {
 }
 
 async function bench(): Promise<void> {
-  // the isolated herdr of a check run (or the `ovis-test` session): never the user's own
   const { testSocketPath } = await import("./test-herdr.ts");
-  // test-herdr.ts leaves the inherited socket in place in live mode or with no herdr binary: refuse both
   if (process.env["HERDR_TEST_LIVE"] === "1" || process.env["HERDR_SOCKET"] !== testSocketPath()) {
     throw new Error("roster-bench: runs only on the isolated test herdr (`bun run check run ...`), never on a live session");
   }
@@ -79,7 +58,6 @@ async function bench(): Promise<void> {
 
   const pool = async <T>(items: readonly T[], width: number, work: (item: T) => Promise<unknown>): Promise<void> => {
     let next = 0, failed = false;
-    // a failure stops new work and waits for the rest, so nothing is opened after the run has unwound
     const workers = await Promise.allSettled(Array.from({ length: Math.min(width, items.length) }, async () => {
       while (!failed && next < items.length) {
         try { await work(items[next++]!); } catch (error) { failed = true; throw error; }
@@ -89,7 +67,6 @@ async function bench(): Promise<void> {
     if (rejected) throw rejected.reason;
   };
   const report = (paneId: string, state: Phase) => herdrRpc("pane.report_agent", { pane_id: paneId, source: "roster-bench", agent: "claude", state });
-  // what a roster size opened, undone last first when it ends or fails: its workspaces, server and page
   const undo: (() => unknown)[] = [];
   const unwind = async (): Promise<void> => {
     for (let step = undo.pop(); step !== undefined; step = undo.pop()) await Promise.resolve().then(step).catch(() => undefined);
@@ -145,7 +122,6 @@ async function bench(): Promise<void> {
         },
       });
       undo.push(async () => { child.kill(); await child.exited; });
-      // a server that died or stopped answering answers nothing: every wait on it ends instead of hanging the run
       const unlessExited = <T>(wait: Promise<T>, what: string): Promise<T> => {
         let timer: ReturnType<typeof setTimeout> | undefined;
         const deadline = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`roster-bench: the server did not answer ${what} within 60 s`)), 60_000); });
@@ -161,7 +137,6 @@ async function bench(): Promise<void> {
       };
       const origin = `http://127.0.0.1:${await unlessExited(port.promise, "with its port")}`;
 
-      // the working rows' spinners would otherwise fill every window with style work of their own
       const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, reducedMotion: "reduce" });
       undo.push(() => context.close());
       await context.addInitScript(() => {

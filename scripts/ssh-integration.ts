@@ -1,7 +1,3 @@
-/** Real OpenSSH, real isolated herdr, real bundle install. No remote API mocks.
- * SSH_TEST_PASSWORD=1 uses a temporary system account (CI sudo required).
- * Otherwise an encrypted key exercises the askpass + dedicated-key flow.
- */
 import assert from "node:assert/strict";
 import { createServer as tcpServer } from "node:net";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -29,7 +25,6 @@ process.env["OVIS_BUNDLE_MANIFEST"] = resolve(`remote-bundles/manifest-${process
 const sockets: WebSocket[] = [];
 let port = 0;
 let originalKey = "";
-/** when a setup job was last seen saying connected (performance.now()): a failed PC request says how long ago */
 let lastConnectedAt: number | undefined;
 
 function command(args: string[], input?: string): void {
@@ -44,21 +39,15 @@ async function until<T>(read: () => Promise<T>, done: (value: T) => boolean, lab
 }
 async function api<T>(path: string, method = "GET", body?: unknown): Promise<T> {
   const r = await fetch(`http://127.0.0.1:${server!.port}${path}`, { method, headers: { "x-herdr-machine": "1", "x-herdr-update": "1", "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
-  // a failure's own status and text are read first: the diagnostic after them is bounded and cannot hold them back
   const failure = r.ok ? "" : `${path}: ${r.status} ${await r.text()}`;
   assert.ok(r.ok, r.ok ? "" : failure + await pcWhenFailed(path));
   return r.json() as Promise<T>;
 }
-/**
- * Diagnostic only, read once a request to one PC's route has already failed: how /api/machines shows that PC right
- * then. A PC that dropped its connection says so in its state, and `error` names the way it was lost.
- */
 async function pcWhenFailed(path: string): Promise<string> {
   const id = /^\/api\/machines\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:[/?]|$)/.exec(path)?.[1];
   if (!id) return "";
   const since = lastConnectedAt === undefined ? "no setup job has said connected yet" : `${Math.round(performance.now() - lastConnectedAt)} ms after a setup job last said connected`;
   try {
-    // one deadline for the answer and its body: a server in a bad way right then must not stall the failure
     const r = await fetch(`http://127.0.0.1:${server!.port}/api/machines`, { headers: { "x-herdr-machine": "1" }, signal: AbortSignal.timeout(2000) });
     const machine = (await r.json() as { machines: Machine[] }).machines.find((m) => m.id === id);
     return `\n  this PC in /api/machines now: ${machine ? JSON.stringify({ state: machine.state, error: machine.error }) : "not listed"}, ${since}`;
@@ -106,7 +95,6 @@ function remoteExists(path: string): boolean {
 }
 async function startSshd(): Promise<void> {
   sshd = Bun.spawn([...(passwordMode ? ["sudo", "-n"] : []), "/usr/sbin/sshd", "-D", "-e", "-f", join(root, "sshd_config")], { stdout: "ignore", stderr: Bun.file(join(root, "sshd.log")) });
-  // sshd listens a moment after it starts, later on a loaded runner: wait for its port, not a guessed time
   const accepts = () => Bun.connect({ hostname: "127.0.0.1", port, socket: { data() {}, open(socket) { socket.end(); } } }).then(() => true, () => false);
   const deadline = Date.now() + 15_000;
   while (!(await accepts())) {
@@ -141,8 +129,6 @@ try {
   assert.ok(remoteFile(join(remoteHome, ".ssh/authorized_keys")).includes(`ovis:${machineId}`));
   assert.ok(!readFileSync(join(state, "machines.json"), "utf8").includes(password), "password is never persisted");
   console.log("PASS first install, fingerprint, secret authentication and dedicated-key registration");
-  // A second herdr beside the first is asked for: a setup that only names another session is offered the running one
-  // (choose_herdr) instead of starting its own.
   const second = await setup({ ...target, identity_file: join(state, "ssh", machineId), session: "ssh-second", name: "QA second PC", start_new_herdr: true });
   assert.equal(second.phase, "connected", second.error ?? "");
   const secondPath = `/api/machines/${second.machine_id}`;
@@ -155,7 +141,6 @@ try {
   ws.send(JSON.stringify({ type: "role", mode: "observe" }));
   ws.send(JSON.stringify({ type: "attach", pane_id: paneId, cols: 80, rows: 24, flow_control: "ack" }));
   await until(async () => frames, (list) => list.some((m) => m.type === "pty-data"), "remote terminal paint");
-  // a mirror paints too (pty-data), on a grid it fixes: the remote PC has Node, so this must be herdr's own attach (#265)
   assert.ok(!frames.some((m) => m.type === "pane-geometry" && m.fixed === true), "remote terminal is attached, not mirrored");
   ws.send(JSON.stringify({ type: "input", pane_id: paneId, text: "forbidden\n" }));
   await until(async () => frames, (list) => list.some((m) => m.type === "error" && m.code === "read_only"), "observe enforcement");
@@ -241,7 +226,6 @@ try {
 } finally {
   for (const socket of sockets) socket.close();
   server?.stop();
-  // Stop only daemons created under this test's HOME; never use the user's socket.
   for (const name of ["ssh-qa", "ssh-cancel", "ssh-second"]) {
     const socket = join(remoteHome, ".config/herdr/sessions", name, "herdr.sock");
     try { await herdrRpc("server.stop", {}, socket, 1000); } catch {}
