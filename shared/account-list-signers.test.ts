@@ -1,6 +1,7 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import {
   ListEntryError, entryFromText, entryHash, entryHolds, entryToText, firstState, isListHash, isListKey, readFields, signEntry, verifySignature,
   type EntryBody, type HeldEntry, type ListRefusalCode, type SignerPower,
@@ -188,31 +189,37 @@ describe("the signers", () => {
     }
   });
 
-  test("a row is frozen when it is made: states share their rows, and writing one through a later state throws and changes no earlier state", async () => {
+  test("a row is frozen when it is made, and so is every state, with its footing and its rows: writing through a state that a function gives throws, and changes no state it was given", async () => {
     const out = await on(addInvite, owner, { ends: watch });
     const { took, member } = await replay([...base, out]);
     if (member === null) throw new Error("entry 0 does not hold");
     // Entry 0's row, the rows that an adds made, and the row of a key that an ends ended.
     expect(Object.values(firstSignersState(at(took, 0).held, 1).signers).map((row) => Object.isFrozen(row))).toEqual([true]);
     expect(Object.entries(member.state.signers).map(([key, row]) => [names.get(key), row.ended, Object.isFrozen(row)])).toEqual([["owner", null, true], ["phone", null, true], ["watch", 4, true], ["invite", null, true]]);
-    // Judging one entry gives a new map of the same rows, but for the row it writes.
+    // Judging one entry gives a state of its own: a new map, with copies of the rows it was given and the row it writes.
     const before = await stateOf(base);
     const after = judgeEntry(before, last(took).held).state;
-    expect([after.signers === before.signers, after.signers[phone.key] === before.signers[phone.key], after.signers[watch.key] === before.signers[watch.key]]).toEqual([false, true, false]);
+    expect([after.signers === before.signers, after.signers[phone.key] === before.signers[phone.key], after.signers[phone.key], after.signers[watch.key] === before.signers[watch.key]]).toEqual([false, false, rowBy("full", addPhone, owner), false]);
     expect([Object.isFrozen(after.signers[watch.key]), before.signers[watch.key]]).toEqual([true, rowBy("bound", addWatch, owner)]);
-    // A shared row cannot be written through the later state, and the earlier state is as it was.
+    // A row cannot be written through the later state, and the earlier state is as it was.
     const kept = JSON.stringify(before);
-    const shared: { ended: number | null; power: SignerPower } = after.signers[phone.key] ?? { ended: null, power: "bound" };
+    const copied: { ended: number | null; power: SignerPower } = after.signers[phone.key] ?? { ended: null, power: "bound" };
     expect(() => {
-      shared.ended = 5;
+      copied.ended = 5;
     }).toThrow(TypeError);
     expect(() => {
-      shared.power = "bound";
+      copied.power = "bound";
     }).toThrow(TypeError);
     expect([JSON.stringify(before), after.signers[phone.key]]).toEqual([kept, rowBy("full", addPhone, owner)]);
     // Through an answer the member it gives has rows of its own, copies of those it was given: they are frozen as well.
     const shown = await shownEntries(await memberOf(base), answer(addInvite, [out]));
     expect(Object.values(shown.member.state.signers).map((row) => Object.isFrozen(row))).toEqual([true, true, true, true]);
+    // Every state this file gives is frozen, with its footing and the map of its rows: of a replay, of entry 0, of one entry judged, of an answer, and read again.
+    const again = readSignersState(JSON.parse(JSON.stringify(before)));
+    if (again === null) throw new Error("the saved state does not read");
+    for (const state of [member.state, firstSignersState(at(took, 0).held, 1), before, after, shown.member.state, again]) {
+      expect([Object.isFrozen(state), Object.isFrozen(state.footing), Object.isFrozen(state.signers)]).toEqual([true, true, true]);
+    }
   });
 
   describe("an entry that carries adds and power", () => {
@@ -1128,28 +1135,6 @@ describe("what a caller hands in is read as its type names it, whatever carries 
     expect(readSignersState(hidden)).toEqual(state);
   });
 
-  test("a field is read once: one that reads otherwise the second time is taken as it first read", async () => {
-    /** `data` with one field as a getter that answers `first` the first time it is read and `later` from then on. */
-    const twice = <T extends object, K extends keyof T>(data: T, name: K, first: T[K], later: T[K]): T => {
-      let read = 0;
-      return Object.defineProperty({ ...data }, name, { enumerable: true, get: () => (read++ === 0 ? first : later) });
-    };
-    const member = await memberOf(root);
-    const { state } = member;
-    // A saved state whose footing reads 0 while it is checked and 999 when it is copied.
-    const zero = await stateOf([g]);
-    expect(readSignersState({ ...zero, footing: twice(zero.footing, "seq", 0, 999) })).toEqual(zero);
-    expect(signingPlace({ entries: member.entries, state: { ...state, footing: twice(state.footing, "seq", 1, 7) } }, state.footing)).toEqual(signingPlace(member, state.footing));
-    expect(listHead(twice(member, "entries", member.entries, member.entries.slice(0, 1)))).toEqual(listHead(member));
-    const { held } = at((await replay(root)).took, 0);
-    const first = firstSignersState(twice(held, "hash", held.hash, otherList), 1);
-    expect([first.list, first.footing.hash]).toEqual([held.hash, held.hash]);
-    // The rows read whole first and without the phone later: an entry that adds the phone again is passed over all the same.
-    const again = (await shownEntries(member, answer(addPhone, [await on(addPhone, owner, { kind: "device", adds: [phone, "bound"] })]))).took;
-    const without = Object.fromEntries(Object.entries(state.signers).filter(([key]) => key !== phone.key));
-    expect(judgeEntry(twice(state, "signers", state.signers, without), at(again, 0).held).outcome).toEqual(passedOver("key_reused"));
-  });
-
   test("judgeEntry: the state it gives has the level and the list of the one it was given, and a key it ends keeps the rest of its row", async () => {
     const out = await on(addInvite, owner, { ends: watch });
     const state = await stateOf(base);
@@ -1161,6 +1146,108 @@ describe("what a caller hands in is read as its type names it, whatever carries 
       const rows = Object.fromEntries(Object.entries(state.signers).map(([key, row]) => [key, as(row)]));
       expect([how, judgeEntry({ ...state, signers: rows }, held).state.signers[watch.key]]).toEqual([how, rowBy("bound", addWatch, owner, out)]);
     }
+  });
+});
+
+describe("what a caller hands in is taken once, when it is handed over", () => {
+  const isData = (value: unknown): value is object => typeof value === "object" && value !== null && !(value instanceof Uint8Array);
+  /** `value` as plain frozen data: every object and list in it copied and frozen. Bytes and functions are kept as they are. */
+  function frozen<T>(value: T): T {
+    if (!isData(value)) return value;
+    const copy: T & object = Array.isArray(value) ? Object.assign([], value) : { ...value };
+    for (const name of Object.keys(copy)) Reflect.set(copy, name, frozen(Reflect.get(copy, name)));
+    Object.freeze(copy);
+    return copy;
+  }
+  /**
+   * `first` behind a Proxy: each field reads as `first` has it the first time it is read, and as `later` has it at every
+   * reading after that; an object or a list in a field is handed out the same way. Once `turned` says so, an object that was
+   * handed out before then reads as `later` has it at every reading. Bytes and functions are handed out as they are.
+   */
+  function shifting<T extends object>(first: T, later: T, turned: () => boolean): T {
+    const read = new Set<string>();
+    const born = turned();
+    const target: T = Array.isArray(first) ? Object.assign([], first) : { ...first };
+    return new Proxy(target, {
+      get(_target, name) {
+        if (typeof name === "symbol") return Reflect.get(first, name);
+        const [now, then] = read.has(name) || (!born && turned()) ? [later, first] : [first, later];
+        read.add(name);
+        const value: unknown = Reflect.get(now, name);
+        const other: unknown = Reflect.get(then, name);
+        return isData(value) ? shifting(value, isData(other) ? other : value, turned) : value;
+      },
+    });
+  }
+  /** How a call hands over what the caller holds: `first` is what it reads as at first, `later` what it reads as after that. */
+  type Handed = <T extends object>(first: T, later: T) => T;
+
+  test("every function gives, for objects that read otherwise at each reading after the first, what it gives for plain frozen data of what they first read: so also when they read otherwise from the moment a signature is being checked", async () => {
+    // Two members, each of a list of its own: the first is what every object reads as at first, the second what it reads as after that.
+    const more = await row(addInvite, [owner, { kind: "device", adds: [late, "full"] }], [phone, { ends: watch }]);
+    const a = await memberOf(base);
+    const tookA = (await replay([...base, ...more])).took;
+    const otherZero = await genesis(phone);
+    const others = [otherZero, ...(await row(otherZero,
+      [phone, { kind: "device", adds: [watch, "full"] }], [phone, { kind: "device", adds: [owner, "bound"] }], [watch, { v: 5 }], [phone, { ends: owner }], [watch, {}], [phone, {}], [watch, {}]))];
+    const b = await memberOf(others.slice(0, 5), 3);
+    const tookB = (await replay(others, 3)).took;
+    const shownA = answer(addInvite, more);
+    const shownB = answer(at(others, 4), others.slice(5));
+    // A member of level 2, and a key that a later kind lets in on a proof: the proof reads what it is handed, and what it answers is handed over too.
+    const above = await memberOf(base, 2);
+    const enters = await on(addInvite, login, { kind: "later_login" });
+    const byLogin = await on(enters, login, { kind: "device", adds: [late, "bound"] });
+    const entersHeld = at((await replay([...base, enters], 2)).took, 4).held;
+    const lets = (handed: Handed): KeyProof => (held, state) =>
+      held.hash === enters.hash && held.body.signer === login.key && state.level === 2 && state.footing.seq === addInvite.seq
+        ? handed<NonNullable<ReturnType<KeyProof>>>({ key: login.key, power: "full" }, { key: stranger.key, power: "bound" }) : null;
+    const entry = (link: Link) => entryFromText(link.text);
+    const saved = (state: SignersState): SignersState => JSON.parse(JSON.stringify(state));
+
+    /** Each call: the function, whether a signature is checked in it, and the call itself, which hands over what `handed` makes of the two. */
+    const calls: readonly (readonly [string, boolean, (handed: Handed) => unknown])[] = [
+      ["signerPower", false, (handed) => signerPower(handed(a.state, b.state), watch.key)],
+      ["isBehind", false, (handed) => isBehind(handed(a.state, b.state))],
+      ["firstSignersState", false, (handed) => firstSignersState(handed(at(tookA, 0).held, at(tookB, 0).held), 1)],
+      ["judgeEntry", false, (handed) => judgeEntry(handed(a.state, b.state), handed(at(tookA, 4).held, at(tookB, 1).held))],
+      ["judgeEntry, its state alone", false, (handed) => judgeEntry(handed(a.state, b.state), frozen(at(tookA, 4).held))],
+      ["judgeEntry, its entry alone", false, (handed) => judgeEntry(frozen(a.state), handed(at(tookA, 4).held, at(tookB, 1).held))],
+      ["judgeEntry, with a proof", false, (handed) => judgeEntry(handed(above.state, b.state), handed(entersHeld, at(tookB, 1).held), lets(handed))],
+      ["listHead", false, (handed) => listHead(handed(a, b))],
+      ["signingPlace", false, (handed) => signingPlace(handed(a, b), handed(place(addInvite), place(at(others, 4))))],
+      ["readSignersState", false, (handed) => readSignersState(handed(saved(a.state), saved(b.state)))],
+      ["shownEntries", true, (handed) => shownEntries(handed(a, b), handed(shownA, shownB))],
+      ["shownEntries, with a proof", true, (handed) => shownEntries(handed(above, b), handed(answer(addInvite, [enters, byLogin]), shownB), lets(handed))],
+      ["shownEntries, shown its own entry again", false, (handed) => shownEntries(handed(a, b), handed(answer(addWatch, [addInvite]), shownB))],
+      ["replayEntries", true, (handed) => replayEntries(handed(texts([...base, ...more]), texts(others)), 1, handed({ given: g.hash }, { given: otherZero.hash }))],
+      ["replayEntries, with a proof", true, (handed) => replayEntries(handed(texts([...base, enters, byLogin]), texts(others)), 2, handed({ proof: lets(handed) }, { proof: () => null }))],
+      ["replayEntries, of what is no entry", false, (handed) => replayEntries(handed(["not an entry"], texts(others)), 1, handed({}, { given: otherZero.hash }))],
+      ["entryHolds", true, (handed) => entryHolds(handed(entry(addPhone), entry(at(others, 2))), handed(at(tookA, 0).held, at(tookB, 1).held))],
+      ["entryHolds, of an entry out of its place", false, (handed) => entryHolds(handed(entry(addWatch), entry(at(others, 2))), handed(at(tookA, 0).held, at(tookB, 1).held))],
+      ["firstState", true, (handed) => firstState(handed(entry(g), entry(otherZero)), g.hash)],
+    ];
+    /** What a call came to: what it gave, or the refusal or the error it threw. */
+    const cameTo = async (work: () => unknown): Promise<unknown> => {
+      try {
+        return await work();
+      } catch (error) {
+        return { thrown: error instanceof ListEntryError ? error.code : String(error) };
+      }
+    };
+    const blind: string[] = [];
+    const differs: string[] = [];
+    for (const [name, verifies, call] of calls) {
+      const plain = await cameTo(() => call((first) => frozen(first)));
+      // The call tells the two apart: handed what is read later, it comes to something else.
+      if (isDeepStrictEqual(await cameTo(() => call((_first, later) => frozen(later))), plain)) blind.push(name);
+      if (!isDeepStrictEqual(await cameTo(() => call((first, later) => shifting(first, later, () => false))), plain)) differs.push(name);
+      if (!verifies) continue;
+      let turned = false;
+      const pending = await cameTo(() => whileVerifying(() => { turned = true; }, async () => call((first, later) => shifting(first, later, () => turned))));
+      if (!isDeepStrictEqual(pending, plain)) differs.push(`${name}, while a signature is checked`);
+    }
+    expect({ blind, differs }).toEqual({ blind: [], differs: [] });
   });
 });
 
@@ -1561,7 +1648,7 @@ describe("replaying from entry 0", () => {
     expect([counts.lists, counts.whole, counts.stopped, counts.prevAfterLoose + counts.prevAfterSigned, counts.prevAfterLoose >= 13]).toEqual([150, 44, 106, 51, true]);
   }, 60_000);
 
-  test("judgeEntry reads no row but those the entry names: on those rows alone it gives the same outcome and the same rows", async () => {
+  test("judgeEntry turns on no row but those the entry names: on those rows alone it gives the same outcome and the same rows", async () => {
     const entries = await row(addInvite,
       [stranger, { ends: owner }], [owner, { kind: "later", v: 2, adds: [late, "full"], ends: watch }], [invite, { kind: "join" }], [watch, {}],
       [late, { kind: "device", adds: [phone, "full"] }], [phone, { ends: phone }], [late, { ends: stranger }], [invite, { ends: invite }]);
