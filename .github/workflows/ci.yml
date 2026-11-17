@@ -75,7 +75,7 @@ jobs:
           FAST_LABELS: ${{ vars.CI_FAST_SELF_HOSTED_LABELS }}
           GH_TOKEN: ${{ github.token }}
         run: bash scripts/ci-runner-route.sh >> "$GITHUB_OUTPUT"
-      # A push to main: the newest main commit in this push's history whose CI push run passed, for Fast checks'
+      # A push to main: the latest main commit in this push's history whose CI push run passed (of the last 100), for Fast checks'
       # ratchets to compare with. A waiting push run that a newer push replaces (the concurrency group above) never
       # runs, so the next run takes its change in too; a re-run keeps its old commit, so a later green one is no base
       # for it. Empty for any other event, and when none is found or the API does not answer after three tries:
@@ -90,10 +90,14 @@ jobs:
         run: |
           if [ "$EVENT_NAME" != push ] || [ "$REF" != refs/heads/main ]; then exit 0; fi
           for try in 1 2 3; do
-            if passed=$(gh run list --repo "$REPOSITORY" --workflow ci.yml --branch main --event push --status success --limit 30 --json headSha --jq '.[].headSha'); then
+            if passed=$(gh run list --repo "$REPOSITORY" --workflow ci.yml --branch main --event push --status success --limit 100 --json headSha --jq '.[].headSha'); then
+              # the latest in history, not in the list's order: a run's date says nothing of where its commit stands
+              best=
               for sha in $passed; do
-                if git merge-base --is-ancestor "$sha" HEAD; then echo "base=$sha" >> "$GITHUB_OUTPUT"; exit 0; fi
+                git merge-base --is-ancestor "$sha" HEAD || continue
+                if [ -z "$best" ] || git merge-base --is-ancestor "$best" "$sha"; then best=$sha; fi
               done
+              if [ -n "$best" ]; then echo "base=$best" >> "$GITHUB_OUTPUT"; exit 0; fi
               echo "::warning::No passed CI push run of main is in this push's history."; exit 0
             fi
             sleep $((try * 5))
