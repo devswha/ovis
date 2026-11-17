@@ -9,9 +9,11 @@
 # every label of CI_MAIN_BROWSER_PARTS_LABELS among the first and at least one among the second, before it sends
 # main's browser parts 1 and 2 to the host (CI_BROWSER_PARTS_RUNNERS_SEEN), and counts the jobs that ask only for the
 # first as the host's. Listing runners needs the repository admin's token, which the workflow token lacks, so this
-# runs outside Actions with the maintainer's `gh`, once a minute from the loop that hands the host its registration
-# tokens: when that loop or the host stops, the value ages and the parts run where they always did. Too few runners
-# online writes nothing; a failed listing writes nothing and exits 1.
+# runs outside Actions with the maintainer's `gh`, once a minute from remote-runners.sh --heartbeat, the launcher that
+# hands the host its just-in-time runner configurations: when it or the host stops, the value ages and the parts run
+# where they always did. Too few runners
+# online, or a listing that took over 180 s, writes nothing; a failed listing writes nothing and exits 1. The time
+# written is when the listing started.
 set -euo pipefail
 
 if [[ $# -lt 3 || $# -gt 4 ]]; then
@@ -25,6 +27,8 @@ if ! [[ "$min" =~ ^[1-9][0-9]{0,2}$ ]]; then
   exit 2
 fi
 
+# the observation's time is when the listing starts: a later page cannot make an earlier one look newer
+started=$(date +%s)
 if ! runners=$(gh api --paginate "repos/$repo/actions/runners?per_page=100"); then
   echo "could not list the runners of $repo: heartbeat not written" >&2
   exit 1
@@ -49,5 +53,9 @@ if [[ "$alone" == "[]" ]]; then
   echo "every label of the runners $prefix* with $label is carried by another runner too: heartbeat not written" >&2
   exit 0
 fi
-now=$(date +%s)
-gh variable set "$variable" --repo "$repo" --body "$now $labels $alone"
+# a listing that took longer than the route's 180 s limit (scripts/ci-runner-route.sh) is too old to count
+if (( $(date +%s) - started > 180 )); then
+  echo "listing the runners took over 180 s: heartbeat not written" >&2
+  exit 0
+fi
+gh variable set "$variable" --repo "$repo" --body "$started $labels $alone"

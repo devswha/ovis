@@ -29,6 +29,7 @@ const bin = tempDir();
 writeFileSync(join(bin, "gh"), `#!/bin/sh
 echo "$*" >> "$FAKE_GH/calls"
 if [ -n "$ROUTE_TEST_SECONDS_FILE" ]; then echo $(( $(cat "$ROUTE_TEST_SECONDS_FILE") + FAKE_CALL_SECONDS )) > "$ROUTE_TEST_SECONDS_FILE"; fi
+if [ -n "$FAKE_CLOCK" ]; then echo $(( $(cat "$FAKE_CLOCK") + FAKE_CALL_SECONDS )) > "$FAKE_CLOCK"; fi
 [ "$1" = api ] && [ "$2" = --paginate ] || exit 1
 case "$3" in
   */jobs*) id=\${3#*/runs/}; f=jobs-\${id%%/*} ;;
@@ -41,10 +42,11 @@ if [ -f "$FAKE_GH/fail-$f" ]; then rm "$FAKE_GH/fail-$f"; cat "$FAKE_GH/$f.json"
 cat "$FAKE_GH/$f.json"
 `);
 chmodSync(join(bin, "gh"), 0o755);
-// `date +%s` answers $FAKE_NOW (`fail` fails) when it is set, so a heartbeat's age is exact; anything else is the real
-// date
+// `date +%s` answers $FAKE_NOW (`fail` fails) when it is set, so a heartbeat's age is exact, or the file $FAKE_CLOCK, which
+// each fake gh call moves on by $FAKE_CALL_SECONDS; anything else is the real date
 writeFileSync(join(bin, "date"), `#!/bin/sh
 if [ "$*" = +%s ]; then
+  if [ -n "$FAKE_CLOCK" ]; then cat "$FAKE_CLOCK"; exit 0; fi
   if [ "$FAKE_NOW" = fail ]; then exit 1; fi
   if [ -n "$FAKE_NOW" ]; then echo "$FAKE_NOW"; exit 0; fi
 fi
@@ -641,7 +643,22 @@ describe.skipIf(process.platform === "win32")("CI runner route", () => {
       expect(slow.calls[1]!.trim().split("\n")).toHaveLength(3);
     });
 
-it("warns and keeps the parts with the Linux jobs when the labels cannot be compared with the heartbeat's", () => {
+    it("checks the heartbeat's age again once the host's jobs are counted", () => {
+      /** A clock that each read moves on by five seconds: three reads (two run lists and run 1's jobs) take 15 s. */
+      const clock = (): Record<string, string> => {
+        const file = join(tempDir(), "clock");
+        writeFileSync(file, String(now));
+        return { ...main, FAKE_NOW: "", FAKE_CLOCK: file, FAKE_CALL_SECONDS: "5" };
+      };
+      const runs = () => actions({ in_progress: { 1: running(1) } });
+      expect(withParts(clock(), { ...set, PARTS_SEEN: beat(now - 165) }, runs).parts).toEqual(onHost);
+      const aged = withParts(clock(), { ...set, PARTS_SEEN: beat(now - 170) }, runs);
+      expect(aged.parts).toBeNull();
+      expect(aged.result.stderr).toContain("once its jobs were counted");
+      expect(aged.result.stderr).not.toContain("::warning::");
+    });
+
+    it("warns and keeps the parts with the Linux jobs when the labels cannot be compared with the heartbeat's", () => {
       const { parts, result, calls } = withParts({ ...main, FAKE_JQ_FAIL: "have" });
       expect(result.status).toBe(0);
       expect(parts).toBeNull();

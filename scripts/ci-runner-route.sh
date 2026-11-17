@@ -261,6 +261,11 @@ if [[ "$event" == push && "${REF:-}" == refs/heads/main && -n "${parts_labels//[
     echo "::warning::could not count the jobs on $parts within $parts_budget s; every browser part runs with the Linux jobs" >&2
   elif (( busy > 0 )); then
     echo "Browser parts: with the Linux jobs (a job is queued or running on $parts)" >&2
+  # the count took time: the heartbeat must still be fresh once it is done
+  elif ! now=$(date +%s) || ! [[ "$now" =~ ^[0-9]{1,12}$ ]]; then
+    echo "::warning::could not read the clock; every browser part runs with the Linux jobs" >&2
+  elif (( 10#$now - 10#$seen_at > parts_seen_seconds )); then
+    echo "Browser parts: with the Linux jobs (the host's heartbeat from $seen_at was older than $parts_seen_seconds s once its jobs were counted, at $((10#$now)))" >&2
   else
     echo "Browser parts 1 and 2: self-hosted $parts (from repository variable CI_MAIN_BROWSER_PARTS_LABELS)" >&2
     echo "parts=$parts"

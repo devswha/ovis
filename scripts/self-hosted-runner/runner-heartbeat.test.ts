@@ -18,24 +18,32 @@ afterAll(() => {
 });
 
 // A fake `gh` that logs each call, answers the runner list from $FAKE_GH/runners.json (failing like an API error
-// without it) and accepts `variable set`.
+// without it), moving the clock file $FAKE_CLOCK on by $FAKE_LIST_SECONDS when it is set, and accepts `variable set`;
+// and a `date +%s` that answers that file when it is set.
 const bin = tempDir();
 writeFileSync(join(bin, "gh"), `#!/bin/sh
 echo "$*" >> "$FAKE_GH/calls"
 case "$1 $2" in
-  "api --paginate") [ -f "$FAKE_GH/runners.json" ] || { echo "gh: Server Error (HTTP 502)" >&2; exit 1; }; cat "$FAKE_GH/runners.json" ;;
+  "api --paginate") [ -f "$FAKE_GH/runners.json" ] || { echo "gh: Server Error (HTTP 502)" >&2; exit 1; }
+    if [ -n "$FAKE_CLOCK" ]; then echo $(( $(cat "$FAKE_CLOCK") + FAKE_LIST_SECONDS )) > "$FAKE_CLOCK"; fi
+    cat "$FAKE_GH/runners.json" ;;
   "variable set") ;;
   *) exit 1 ;;
 esac
 `);
 chmodSync(join(bin, "gh"), 0o755);
+writeFileSync(join(bin, "date"), `#!/bin/sh
+if [ "$*" = +%s ] && [ -n "$FAKE_CLOCK" ]; then cat "$FAKE_CLOCK"; exit 0; fi
+PATH=\${PATH#*:} exec date "$@"
+`);
+chmodSync(join(bin, "date"), 0o755);
 
 type Runner = { name: string; status: "online" | "offline"; labels: string[] };
 const host = (n: number, status: Runner["status"] = "online", labels = ["self-hosted", "Linux", "X64", "self-hosted-ovis-parts"]): Runner =>
   ({ name: `herdr-ci-ovis-parts-${n}`, status, labels });
 
 /** Runs the heartbeat against `pages` of the runner list (none: the list fails) and returns what it set. */
-function beat(pages: Runner[][] | null, args: string[] = ["herdr-ci-ovis-parts-", "self-hosted-ovis-parts", "CI_BROWSER_PARTS_RUNNERS_SEEN"]) {
+function beat(pages: Runner[][] | null, args: string[] = ["herdr-ci-ovis-parts-", "self-hosted-ovis-parts", "CI_BROWSER_PARTS_RUNNERS_SEEN"], clock: Record<string, string> = {}) {
   const state = tempDir();
   if (pages) {
     writeFileSync(join(state, "runners.json"), pages.map((runners) => JSON.stringify({
@@ -47,7 +55,7 @@ function beat(pages: Runner[][] | null, args: string[] = ["herdr-ci-ovis-parts-"
   const result = spawnSync("bash", [script, ...args], {
     encoding: "utf8",
     timeout: 5_000,
-    env: { PATH: `${bin}:${process.env.PATH ?? ""}`, FAKE_GH: state, REPO: "devswha/ovis" },
+    env: { PATH: `${bin}:${process.env.PATH ?? ""}`, FAKE_GH: state, REPO: "devswha/ovis", ...clock },
   });
   const after = Math.floor(Date.now() / 1000);
   expect(result.error).toBeUndefined();
@@ -133,6 +141,20 @@ describe.skipIf(process.platform === "win32")("runner-heartbeat.sh", () => {
       expect(result.status).toBe(2);
       expect(calls).toEqual([]);
     }
+  });
+
+  it("writes the time the listing started, and nothing when the listing took longer than the route's 180 s", () => {
+    const args = ["herdr-ci-ovis-parts-", "self-hosted-ovis-parts", "CI_BROWSER_PARTS_RUNNERS_SEEN"];
+    const clock = (listSeconds: number): Record<string, string> => {
+      const file = join(tempDir(), "clock");
+      writeFileSync(file, "2000000000");
+      return { FAKE_CLOCK: file, FAKE_LIST_SECONDS: String(listSeconds) };
+    };
+    expect(written(beat([[host(1), host(2)]], args, clock(180)).set[0]!).at).toBe(2_000_000_000);
+    const slow = beat([[host(1), host(2)]], args, clock(181));
+    expect(slow.result.status).toBe(0);
+    expect(slow.set).toEqual([]);
+    expect(slow.result.stderr).toContain("over 180 s");
   });
 
   it("writes nothing and fails when the runner list cannot be read", () => {
