@@ -1,5 +1,7 @@
 name: Mac app
-# Release calls it after publishing: a release made with GITHUB_TOKEN fires no release event.
+# Release calls it after publishing (a release made with GITHUB_TOKEN fires
+# no release event, so nothing else would).
+# Without the signing secrets it skips with a notice; app/mac/README.md lists them.
 on:
   workflow_call:
     inputs:
@@ -20,6 +22,8 @@ concurrency:
   cancel-in-progress: false
 jobs:
   gate:
+    # it reads the signing secrets (only whether they are set), which Release passes on: GitHub-hosted whatever the
+    # runner variables say (scripts/privileged-jobs-workflow.test.ts)
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -90,6 +94,7 @@ jobs:
           security import "$RUNNER_TEMP/DeveloperIDG2CA.cer" -k "$keychain"
           rm -f "$RUNNER_TEMP/developer-id.p12"
           security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" >/dev/null
+          # shellcheck disable=SC2046 # keep the existing keychains, one word each
           security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
           identity=$(security find-identity -v -p codesigning "$keychain" | sed -n 's/^ *[0-9]*) [0-9A-F]* "\(Developer ID Application: [^"]*\)".*$/\1/p' | head -n 1)
           if [ -z "$identity" ]; then

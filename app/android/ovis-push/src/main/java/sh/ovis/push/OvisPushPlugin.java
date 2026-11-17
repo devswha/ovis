@@ -29,6 +29,10 @@ import java.util.concurrent.TimeoutException;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+/**
+ * The endpoint is the relay's, for this phone's FCM token; one per PC, as the
+ * relay pins each endpoint to the first PC that pushes to it.
+ */
 @CapacitorPlugin(
     name = "OvisPush",
     permissions = @Permission(alias = "notifications", strings = { Manifest.permission.POST_NOTIFICATIONS })
@@ -59,6 +63,11 @@ public class OvisPushPlugin extends Plugin {
         }
     }
 
+    /**
+     * Asks for notifications (Android 13 and later), then gets this PC an endpoint, reusing a live
+     * one. `applicationServerKey`: the PC's VAPID public key (its GET /api/push), base64url, as a
+     * browser's pushManager.subscribe takes it; the relay pins the endpoint to it.
+     */
     @PluginMethod
     public void subscribe(PluginCall call) {
         if (getBridge().getServerUrl() == null) {
@@ -112,6 +121,10 @@ public class OvisPushPlugin extends Plugin {
         else call.reject("Notifications are off for Ovis", "permission");
     }
 
+    /**
+     * The client asks once the PC has dropped the subscription: the
+     * relay keeps the endpoint live, so forgetting it before would leave the PC pushing to this phone.
+     */
     @PluginMethod
     public void unsubscribe(PluginCall call) {
         String origin = getBridge().getServerUrl();
@@ -142,6 +155,7 @@ public class OvisPushPlugin extends Plugin {
         }
     }
 
+    /** POST /v1/register on the relay (push-relay/worker.ts): this FCM token gets a new endpoint, pinned to the PC's key. */
     private String registerWithRelay(String token, String vapidKey) throws IOException, JSONException {
         String relay = getContext().getString(R.string.ovis_push_relay);
         HttpURLConnection connection = (HttpURLConnection) new URL(relay + "/v1/register").openConnection();
@@ -177,6 +191,7 @@ public class OvisPushPlugin extends Plugin {
         return out.toString("UTF-8");
     }
 
+    /** An uncompressed P-256 point in base64url, as the Push API's applicationServerKey is. */
     private static boolean isPublicKey(String value) {
         if (value == null) return false;
         try {

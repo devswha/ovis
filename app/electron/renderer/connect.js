@@ -44,6 +44,7 @@ void desktop.status().then(show);
 
 const install = document.getElementById("update-install");
 install.addEventListener("click", () => {
+  // answered only when Ovis keeps running (a .deb's password prompt cancelled): then it may be pressed again
   install.disabled = true;
   const again = () => { install.disabled = false; };
   window.ovisUpdate.install().then(again, again);
