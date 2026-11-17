@@ -467,9 +467,13 @@ setup-ci's `cache: none` (or its `hosted_only` form), cache steps whose conditio
 `!inputs.hosted_only` as a top-level `&&` term, and reviewed actions at their exact references. It
 also fails on a workflow or action file GitHub loads that does not end in `.yml` (a `.yaml` one), on a
 symlink anywhere in `.github/workflows` or `.github/actions` (never followed), on a job that calls a
-workflow it cannot read (another repository's), and on a key it reads written in another case or two keys
-that differ only in case (GitHub reads many of them without regard to case; a matrix axis it resolves the
-same way GitHub does). A permission value other than `read`, `none` or `read-all` counts as write. It reads runner labels, actions and
+workflow it cannot read (another repository's), on a key it reads written in another case or two keys
+(or two workflow files) that differ only in case, and on a runner label or action reference other than its
+exact listed form. A trial on 2026-11-17 observed why: GitHub refuses structural keys in another case and
+keys that differ only in case, but reads a matrix include key `OS` as the axis `os` (a job then waited for a
+`self-hosted` runner), expression contexts and hosted labels without regard to case; the test resolves matrix
+axes the same way and refuses the rest itself. A permission value other than `read`, `none` or `read-all`
+counts as write. It reads runner labels, actions and
 their inputs; it does not inspect shell commands or scripts for cache access.
 The hosted labels on the list are the ones the covered jobs use: `ubuntu-24.04`, `ubuntu-24.04-arm`,
 `windows-latest`, `windows-2025`, `macos-15`, `macos-15-intel` and `macos-latest`. For `ubuntu-24.04` the

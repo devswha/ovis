@@ -40,8 +40,8 @@ export function topLevelTerms(condition: string): string[] {
 export function unreadWorkflowFiles(paths: string[]): string[] {
   return paths.filter((path) => {
     const name = path.slice(path.lastIndexOf("/") + 1);
-    if (/^\.github\/workflows\/[^/]+$/.test(path)) return /\.ya?ml$/i.test(name) && !name.endsWith(".yml");
-    if (path.startsWith(".github/actions/")) return /^action\.ya?ml$/i.test(name) && name !== "action.yml";
+    if (/^\.github\/workflows\/[^/]+$/.test(path)) return /\.ya?ml$/iu.test(name) && !name.endsWith(".yml");
+    if (path.startsWith(".github/actions/")) return /^action\.ya?ml$/iu.test(name) && name !== "action.yml";
     return false;
   });
 }
@@ -59,10 +59,13 @@ export function workflowAndActionFiles(): string[] {
   return workflowEntries(root).filter(([, entry]) => entry.isFile()).map(([path]) => path).sort();
 }
 
-/** Why the workflow tests cannot be sure they read every workflow and action: a symlink there (never followed), or a file GitHub loads under another spelling. */
+/** Why the workflow tests cannot be sure they read every workflow and action: a symlink there (never followed), a file GitHub loads under another spelling, or two names that differ only in case. */
 export function workflowFileProblems(base = root): string[] {
-  return workflowEntries(base)
+  const entries = workflowEntries(base);
+  return entries
     .flatMap(([path, entry]) => {
+      const twin = entries.find(([other]) => other !== path && other.toLowerCase() === path.toLowerCase());
+      if (twin !== undefined && path > twin[0]) return [`${path}: differs from ${twin[0]} only in case, which a case-insensitive checkout merges`];
       if (entry.isSymbolicLink()) return [`${path}: a symlink, which the workflow tests do not follow`];
       if (entry.isFile() && unreadWorkflowFiles([path]).length > 0) return [`${path}: GitHub loads it, but it does not end in .yml, so the workflow tests would not read it`];
       return [];

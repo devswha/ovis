@@ -4,8 +4,7 @@
 // GitHub Actions expressions, the part of the language the workflows use, evaluated against contexts a test gives:
 // literals, context paths (case-insensitive), `!`, `==`/`!=` (strings compared ignoring case, mixed types as numbers),
 // `&&`/`||` (which return an operand, as GitHub's do), and fromJSON, toJSON, contains, startsWith, endsWith, format and
-// the status functions. Tests use it to show where a job runs for each event (scripts/privileged-jobs-workflow.test.ts,
-// scripts/light-runner-workflow.test.ts).
+// the status functions. light-runner-workflow.test.ts uses it to show where a job runs for each event.
 
 export type Value = null | boolean | number | string | Value[] | { [key: string]: Value };
 export type Contexts = Record<string, Value>;
