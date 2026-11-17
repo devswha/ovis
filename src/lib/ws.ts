@@ -159,8 +159,8 @@ export class HerdrSocket {
   private readonly unconfirmed = new Map<string, { text: string; fence: number; id?: number }[]>();
   /** per pane, the fences of keys sent as a password (no receipt, nothing of them kept) that no pong has confirmed yet */
   private readonly unconfirmedSecrets = new Map<string, number[]>();
-  /** per pane, how many of those a connection ended with, until the pane's terminal says one may not have arrived */
-  private readonly lostSecrets = new Map<string, number>();
+  /** per pane, how many of those connections ended with, until the pane's terminal says one may not have arrived, with the herdr that pane belonged to (as lostInput) */
+  private readonly lostSecrets = new Map<string, { lifetime: string | undefined | null; count: number }>();
   private nextInput = 1;
   /** the ping that fences typing, while its pong is on its way: typing sent meanwhile waits for the next one */
   private inputFence: number | null = null;
@@ -463,6 +463,7 @@ export class HerdrSocket {
         // typing lost on another herdr, or on one never proven, is not this herdr's pane's, whatever its ID
         this.lifetime = message.type === "snapshot" ? message.snapshot.herdr_lifetime : message.herdr_lifetime;
         for (const [paneId, lost] of this.lostInput) if (lost.lifetime !== this.lifetime) this.lostInput.delete(paneId);
+        for (const [paneId, lost] of this.lostSecrets) if (lost.lifetime !== this.lifetime) this.lostSecrets.delete(paneId);
         this.pingKnown = this.features.has("ping");
         // a probe sent before these features (running or paused), on ping support remembered from an
         // earlier connection: this bridge does not answer pings (an older one after a reconnect), so
@@ -605,7 +606,11 @@ export class HerdrSocket {
       this.lostInput.set(paneId, { lifetime: this.lifetime, typed: [...kept, ...typed.map((entry) => entry.text)] });
     }
     this.unconfirmed.clear();
-    for (const [paneId, fences] of this.unconfirmedSecrets) this.lostSecrets.set(paneId, (this.lostSecrets.get(paneId) ?? 0) + fences.length);
+    for (const [paneId, fences] of this.unconfirmedSecrets) {
+      const earlier = this.lostSecrets.get(paneId);
+      const kept = earlier !== undefined && earlier.lifetime === this.lifetime ? earlier.count : 0;
+      this.lostSecrets.set(paneId, { lifetime: this.lifetime, count: kept + fences.length });
+    }
     this.unconfirmedSecrets.clear();
     this.inputFence = null;
     for (const handler of this.disconnectHandlers) handler();
@@ -1131,9 +1136,11 @@ export class HerdrSocket {
 
   /** How many keys sent to this pane as a password the last connections ended with before the server confirmed them; given once. */
   takeUnconfirmedSecrets(paneId: string): number {
-    const lost = this.lostSecrets.get(paneId) ?? 0;
+    // as takeUnconfirmedInput: a new connection that has not proved its herdr yet may be another herdr's
+    if (this.socket !== null && this.lifetime === null) return 0;
+    const lost = this.lostSecrets.get(paneId);
     this.lostSecrets.delete(paneId);
-    return lost;
+    return lost?.count ?? 0;
   }
 
   /** The typing for this pane that the last connection ended with before the server confirmed it, in the order sent; given once. */
