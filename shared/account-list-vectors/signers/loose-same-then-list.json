@@ -279,12 +279,11 @@
     "took": [
       {
         "seq": 1,
-        "outcome": "cannot_read"
+        "outcome": "reads"
       },
       {
         "seq": 2,
-        "outcome": "passed_over",
-        "code": "signer_unknown"
+        "outcome": "reads"
       },
       {
         "seq": 3,
@@ -297,19 +296,25 @@
       "hash": "f44069ef4ba3a11e43ec6584e4331f5d87d7ec353ea1aea630135e7406316c5b"
     },
     "state": {
-      "level": 1,
+      "level": 2,
       "list": "0f484e9226ad290aaac6dea9244aced4e2b7b97297ecd8d52d437a57c33e5383",
       "footing": {
         "seq": 3,
         "hash": "f44069ef4ba3a11e43ec6584e4331f5d87d7ec353ea1aea630135e7406316c5b"
       },
       "needs": 2,
-      "behind": 1,
+      "behind": null,
       "signers": {
         "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEfO8CPMl0i3ugPwrtGgMjwfvxwBNcQ5auuNvraC_PoVEUlKYIMR-Pv9j0Z_maVBgqXQ6a5bBoL1WpIcuiZ3KW9g": {
           "power": "full",
           "seq": 0,
           "by": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEfO8CPMl0i3ugPwrtGgMjwfvxwBNcQ5auuNvraC_PoVEUlKYIMR-Pv9j0Z_maVBgqXQ6a5bBoL1WpIcuiZ3KW9g",
+          "ended": null
+        },
+        "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAES0dyAV_mopNei6q0XMmmPhSHlUZkwWXaF2zYm0JJUuKwF6WJC5MBhHMnPl9IVcvYM4QsWRNgkNu-etb9ZFhB6Q": {
+          "power": "full",
+          "seq": 2,
+          "by": null,
           "ended": null
         },
         "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEuZ4MBeQtWe3FdZDmOAIR7JxwMUdA9e72x28D2Noh7OzNmITIQwpCfFgpu8rtU3HjHpL7y-iSh-u83DSeUv6FCw": {
