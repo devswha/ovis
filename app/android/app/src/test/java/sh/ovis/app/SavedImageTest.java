@@ -23,6 +23,26 @@ public class SavedImageTest {
     }
 
     @Test
+    public void takesAnyWellFormedFileType() {
+        assertTrue(SavedImage.isFileType("text/plain"));
+        assertTrue(SavedImage.isFileType("application/pdf"));
+        assertTrue(SavedImage.isFileType("application/vnd.openxmlformats-officedocument.wordprocessingml.document"));
+        assertTrue(SavedImage.isFileType("image/svg+xml"));
+        assertFalse(SavedImage.isFileType(null));
+        assertFalse(SavedImage.isFileType(""));
+        assertFalse(SavedImage.isFileType("text"));
+        assertFalse(SavedImage.isFileType("text/plain; charset=utf-8"));
+        assertFalse(SavedImage.isFileType("text/../plain"));
+    }
+
+    @Test
+    public void namesAFileWithNothingLeftOfItsName() {
+        assertEquals("file", SavedImage.fileName("..", "file"));
+        assertEquals("notes.md", SavedImage.fileName("/private/tmp/claude/notes.md", "file"));
+        assertEquals("image", SavedImage.fileName(null));
+    }
+
+    @Test
     public void decodesBase64UpToTheLimit() {
         byte[] bytes = { 0, 1, (byte) 255 };
         assertArrayEquals(bytes, SavedImage.decode(Base64.getEncoder().encodeToString(bytes)));

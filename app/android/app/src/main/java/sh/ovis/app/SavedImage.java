@@ -22,6 +22,11 @@ final class SavedImage {
         return type != null && type.matches("image/[A-Za-z0-9.+-]+");
     }
 
+    /** A well-formed MIME type (`type/subtype`, parameters dropped by the page), of any kind. */
+    static boolean isFileType(String type) {
+        return type != null && type.matches("[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}");
+    }
+
     static byte[] decode(String data) {
         if (data == null || data.isEmpty() || data.length() / 4 * 3 > MAX_BYTES + 3) return null;
         try {
@@ -33,6 +38,11 @@ final class SavedImage {
     }
 
     static String fileName(String name) {
+        return fileName(name, "image");
+    }
+
+    /** `name` as a file name Downloads takes, or `fallback` when nothing of it is left. */
+    static String fileName(String name, String fallback) {
         String last = name == null ? "" : name.substring(Math.max(name.lastIndexOf('/'), name.lastIndexOf('\\')) + 1);
         String clean = last.replaceAll("[\\p{Cntrl}:*?\"<>|]", "").trim().replaceFirst("^\\.+", "");
         if (utf8(clean) > MAX_NAME_BYTES) {
@@ -48,7 +58,7 @@ final class SavedImage {
             }
             clean = stem.substring(0, end) + extension;
         }
-        return clean.isEmpty() ? "image" : clean;
+        return clean.isEmpty() ? fallback : clean;
     }
 
     private static int utf8(String text) {
