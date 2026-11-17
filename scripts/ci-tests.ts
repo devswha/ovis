@@ -1,7 +1,8 @@
 /**
- * Each file runs in a process group of its own: a test that signals its own group (kill(0), kill(-pgid)) ends only
- * its file, which then fails by that signal, instead of the whole run, which `bun run check` runs in one group and
- * which would otherwise end with no failure named. What a file leaves running is ended with it.
+ * In a parallel unit run, off Windows, each file runs in a process group of its own: a test that signals its own group
+ * (kill(0), kill(-pgid)) ends only its file, which then fails by that signal, instead of the whole run, which `bun run
+ * check` runs in one group and which would otherwise end with no failure named. What a file leaves running is ended
+ * with it. A unit run with one worker and the integration files share this runner's group.
  */
 import { availableParallelism } from "node:os";
 

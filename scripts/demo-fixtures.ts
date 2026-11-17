@@ -1,7 +1,9 @@
 /**
  * Everything comes from the staged, fictional README session
- * (scripts/readme-media/stage.ts), never from the herdr you work in, and the real hostname and
- * login are replaced before anything is written to site/demo/fixtures/.
+ * (scripts/readme-media/stage.ts), not from the herdr you work in, and the real hostname and
+ * login are replaced before anything is written to site/demo/fixtures/. Never run it with
+ * HERDR_TEST_LIVE=1: staging then uses HERDR_SOCKET or the default session, and first closes
+ * every workspace in it.
  */
 import { hostname, userInfo } from "node:os";
 import { mkdirSync, writeFileSync } from "node:fs";

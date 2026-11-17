@@ -291,8 +291,8 @@ console.log(JSON.stringify({ install, stamp, status, calls, trees: sourceTrees()
     expect(err).toContain("git could not read the checkout's commit (git is not on PATH)");
   });
 
-  // Without sources git ties to the release (no git, no checkout, changes not committed) its binary is never taken, so
-  // nothing the release answers changes the choice: it is not asked.
+  // Without sources git ties to the release (no git, no checkout, changes not committed) its binary is not installed
+  // (none is in these checkouts yet), so nothing the release answers changes the choice: it is not asked.
   // `key`: the release key this checkout pins instead of RELEASE_PUBLIC_KEY, so a release the test signs is checked as
   // the real one is
   function checkout({ packages = true, client = true, stamp, git = false, key }: { packages?: boolean; client?: boolean; stamp?: string; git?: boolean; key?: string } = {}): string {

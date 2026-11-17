@@ -9,18 +9,22 @@
  * needs no network. OVIS_RELEASES_URL names another place for releases: https://, or a file:// folder.
  *
  * Source instead of the binary (INSTALL.md, "Binary or source"; install.sh's pick_install is wider for now): with
- * OVIS_FROM_SOURCE=1 (a developer checkout, or a branch install.sh hands to herdr), and when this version's release ships no ovis-server.json at all
- * (HTTP 404, or none in a file:// folder: a release from before the compiled server). A manifest that exists and fails a
- * check, a server error or a network failure is a failure, never a reason to build from source.
+ * OVIS_FROM_SOURCE=1 (a developer checkout, or a branch install.sh hands to herdr), when this version's release ships no
+ * ovis-server.json at all (HTTP 404, or none in a file:// folder: a release from before the compiled server) or a signed
+ * one of the shape from before schema 1, and when the manifest's sources are not this checkout's (other git trees). A
+ * manifest that fails any other check (its signature among them), a server error or a network failure is a failure,
+ * never a reason to build from source.
  * .ovis/server/source-build is what that build came to (install.ps1 reads it): `started` from its first step, and the
  * version and the checkout's commit (the version alone in a folder that has none: see checkoutCommit) only once every
  * step returned 0, and only when git read the same answer before and after the build. Without git on PATH the launcher
- * still runs: the release's binary is taken only for sources git can tie to it (scripts/server-manifest.ts
+ * still runs: the release's binary is installed only for sources git can tie to it (scripts/server-manifest.ts
  * sourceTrees), so such a checkout runs from source, saying why, without asking the release (scripts/server-install.ts):
- * nothing it answers could change that, and a release out of reach does not stop it. Wherever the sources run without a
- * marker for this version (that case, or a release with no compiled server for them), `start`, the one command that
- * brings a server up, runs only a build that is complete (see `builtState`), saying so where it is another version's or
- * commit's, and only a start remembers the choice.
+ * nothing it answers could change that, and a release out of reach does not stop it. These checks decide a new install
+ * only: short of OVIS_FROM_SOURCE=1 or a marker, a binary of this version installed earlier that still verifies runs,
+ * whatever the sources (installServer looks for it first). Wherever the sources run without a marker for this version
+ * (that case, or a release with no compiled server for them), `start`, the one command that brings a server up, runs
+ * only a build that is complete (see `builtState`), saying so where it is another version's or commit's, and only a
+ * start remembers the choice.
  */
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { constants } from "node:os";
@@ -190,7 +194,8 @@ export async function main(args: string[], { home = join(root, ".ovis", "server"
   let binary: string;
   try {
     const result = await installServer({
-      // the release's binary only for the sources it was built from: a branch or main between releases builds its own
+      // the release's binary is installed only for the sources it was built from (one installed already that still
+      // verifies runs as it is): a branch or main between releases builds its own
       home, version, fetchFile, sources,
       // the Rust PTY host comes with it, the one the signed manifest names (scripts/server-install.ts)
     });
