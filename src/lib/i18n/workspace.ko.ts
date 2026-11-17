@@ -1,3 +1,9 @@
+/**
+ * Korean for the keys only the workspace files use:
+ * components/NewSessionDialog.tsx, components/WorktreeDialog.tsx, components/DirectoryBrowser.tsx,
+ * components/RecentFolderChips.tsx, components/SessionHistory.tsx, lib/sessionHistory.ts.
+ * Register and fixed terms follow ../i18n.ko.ts; a key another feature also uses goes there.
+ */
 export const WORKSPACE_KO: Record<string, string> = {
   "Use folder {path}": "{path} 폴더 사용",
   "{n} more recent folders": "최근 폴더 {n}개 더",

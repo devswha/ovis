@@ -1,3 +1,8 @@
+/**
+ * Korean for the keys only the updates files use:
+ * components/UpdateControls.tsx, lib/updateProgress.ts (with STEPS).
+ * Register and fixed terms follow ../i18n.ko.ts; a key another feature also uses goes there.
+ */
 export const UPDATES_KO: Record<string, string> = {
   "Updates": "업데이트",
   "Running {version}": "{version} 실행 중",

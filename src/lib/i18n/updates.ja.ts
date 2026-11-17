@@ -1,3 +1,8 @@
+/**
+ * Japanese for the keys only the updates files use:
+ * components/UpdateControls.tsx, lib/updateProgress.ts (with STEPS).
+ * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
+ */
 export const UPDATES_JA: Record<string, string> = {
   "Updates": "更新",
   "Running {version}": "{version} を実行中",

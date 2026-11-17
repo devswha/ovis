@@ -1,3 +1,10 @@
+/**
+ * Japanese for the keys only the usage files use:
+ * components/UsageAccountDialog.tsx, components/UsageLocalLogin.tsx,
+ * components/UsageHubConnect.tsx, components/CLIProxyLogin.tsx, components/UsageMeters.tsx,
+ * lib/usage.ts (with WINDOW_LABEL).
+ * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
+ */
 export const USAGE_JA: Record<string, string> = {
   "Remove {name}?": "{name}を削除しますか？",
   "Remove this account from Ovis? Its CLI sign-in and credentials stay on this PC, and Restore under Removed from Ovis brings it back.": "このアカウントをOvisから削除しますか？CLIのログインと認証情報はこのPCに残り、「Ovisから削除済み」の「復元」で戻せます。",

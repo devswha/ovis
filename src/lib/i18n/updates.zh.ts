@@ -1,3 +1,8 @@
+/**
+ * Simplified Chinese for the keys only the updates files use:
+ * components/UpdateControls.tsx, lib/updateProgress.ts (with STEPS).
+ * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
+ */
 export const UPDATES_ZH: Record<string, string> = {
   "Updates": "更新",
   "Running {version}": "正在运行 {version}",

@@ -1,3 +1,10 @@
+/**
+ * Simplified Chinese for the keys only the terminal files use:
+ * components/PaneTerminal.tsx, components/PaneCanvas.tsx, components/KeyBar.tsx (with ARROWS and
+ * KEY_SPOKEN_NAMES), components/FindBar.tsx, components/TerminalViewportTools.tsx,
+ * components/SplitDropPreview.tsx, components/TabStrip.tsx, lib/terminalLabel.ts, lib/tabName.ts.
+ * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
+ */
 export const TERMINAL_ZH: Record<string, string> = {
   "Searching…": "搜索中…",
   "Pane changed. Search again.": "窗格内容已更改，请重新搜索。",

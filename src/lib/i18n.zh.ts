@@ -21,6 +21,19 @@ import { RELAY_ZH } from "./i18n/relay.zh.ts";
 import { DASHBOARD_ZH } from "./i18n/dashboard.zh.ts";
 import { RUNTIME_MOVE_ZH } from "./i18n/runtime-move.zh.ts";
 
+/**
+ * Simplified Chinese for every `t("…")` in src/ that no part in lib/i18n/ holds: keys more than
+ * one feature uses, and the app shell's. ZH at the end is this and the parts together. The English
+ * string is the key. Grouped by where
+ * the text shows; within a group, roughly in the order it appears. Register: zh-CN software UI
+ * (like VS Code 简体中文): concise labels and buttons, plain declarative sentences, full-width
+ * punctuation in Chinese sentences, a half-width space between Chinese and Latin words. Fixed
+ * terms: 窗格 (pane; 面板 only in 命令面板), 工作区 (workspace), 终端 (terminal), 聊天 (chat),
+ * 配对 (pairing), 设备 (device), 会话 (session), 输入框 (composer). Terms Chinese developers read
+ * in English stay English: Agent, Token, Skill, Star, bridge, Issue, CLI, SSH, Markdown, Shell;
+ * product names (herdr, Tailscale, Codex, Claude Code, GitHub) and key caps stay as they are.
+ * Placeholders in braces keep their English names.
+ */
 const BASE: Record<string, string> = {
   "A key may not have reached the terminal: the connection ended before it was confirmed.": "按键可能未送达终端：确认之前连接已断开。",
   "Open PC": "打开 PC",

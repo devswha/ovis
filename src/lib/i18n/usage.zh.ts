@@ -1,3 +1,10 @@
+/**
+ * Simplified Chinese for the keys only the usage files use:
+ * components/UsageAccountDialog.tsx, components/UsageLocalLogin.tsx,
+ * components/UsageHubConnect.tsx, components/CLIProxyLogin.tsx, components/UsageMeters.tsx,
+ * lib/usage.ts (with WINDOW_LABEL).
+ * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
+ */
 export const USAGE_ZH: Record<string, string> = {
   "Remove {name}?": "移除 {name}？",
   "Remove this account from Ovis? Its CLI sign-in and credentials stay on this PC, and Restore under Removed from Ovis brings it back.": "要从 Ovis 移除此账号吗？CLI 登录状态和凭据会保留在这台电脑上，可在“已从 Ovis 移除”中点击“恢复”找回。",
