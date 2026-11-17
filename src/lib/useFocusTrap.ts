@@ -1,3 +1,11 @@
+/**
+ * What every `aria-modal` surface owes its keyboard: Tab stays inside it, and the focus goes
+ * back to whatever opened it. Browsers do not enforce the first for the keyboard, and nothing
+ * does the second for us - lifted from ConfirmDialog, which was the one dialog that had both.
+ *
+ * `useFocusTrap(open)` returns the ref for the dialog surface. Give the surface `tabIndex={-1}`
+ * when it can hold the focus itself (a dialog whose controls are all disabled while it works).
+ */
 import { useEffect, useLayoutEffect, useRef, type MutableRefObject, type RefObject } from "react";
 import { typeAheadFocused } from "./typeAhead.ts";
 
@@ -34,6 +42,7 @@ export function inFocusTrap(node: Element): boolean {
 function reachable(node: HTMLElement): boolean {
   if (node.hasAttribute("disabled") || node.getAttribute("aria-hidden") === "true") return false;
   if (node.tabIndex < 0) return false;
+  // a disconnected PC's cached rows are inert: the browser refuses them the focus, so Tab must not stop there
   if (node.closest("[inert]") !== null) return false;
   // hidden ancestors and collapsed sections report no box at all
   return node.getClientRects().length > 0;
@@ -43,6 +52,13 @@ function tabStops(surface: HTMLElement, options: FocusTrapOptions): HTMLElement[
   return [...(options.leadingStops?.() ?? []), ...surface.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(reachable);
 }
 
+/**
+ * The stops of what lies over every dialog without being one: a device waiting for this PC's approval
+ * (components/RelayPairingPrompt.tsx). They follow the dialog's own in its Tab order, so a prompt that
+ * left the focus in one of the dialog's fields can still be answered by keyboard. Each prompt is a stop
+ * itself, before its buttons: Tab from the dialog lands on the prompt, never straight on Approve, and so
+ * does Shift+Tab, which would reach its last button first (`overlayEntry`).
+ */
 export function overlayStops(): HTMLElement[] {
   const stops: HTMLElement[] = [];
   for (const prompt of document.querySelectorAll<HTMLElement>(".relay-pairing-prompt")) {
@@ -56,6 +72,11 @@ function overlayOf(stop: HTMLElement): HTMLElement | undefined {
   return [...document.querySelectorAll<HTMLElement>(".relay-pairing-prompt")].find((prompt) => prompt.contains(stop));
 }
 
+/**
+ * Where the focus goes when Tab's next stop is `next`: a button of a waiting prompt is reached only from
+ * inside that prompt. From outside it (Shift+Tab from the dialog's first stop, or from the prompt below)
+ * the prompt itself is entered first, so two Shift+Tabs and an Enter typed for the dialog never press Approve.
+ */
 export function overlayEntry(next: HTMLElement, active: Element | null): HTMLElement {
   const overlay = overlayOf(next);
   return overlay === undefined || overlay === next || (active !== null && overlay.contains(active)) ? next : overlay;

@@ -1,3 +1,11 @@
+/**
+ * The PC's direct carriers (`ws://<private or Tailscale IPv4>:<port>/v1/ws?v=1`, docs/relay.md "Direct on
+ * the same network") through the phone apps' OvisDirect plugin (app/ios/App/App/OvisDirectPlugin.swift,
+ * app/android/app/src/main/java/sh/ovis/app/OvisDirectPlugin.java): a page on https cannot open plain
+ * `ws://`. Frames cross the bridge in an envelope `{ id, kind, data }`, a binary one as base64, so text
+ * and binary stay apart; the plugin delivers them in order and keeps at most 4 MiB or 16,384 messages
+ * this page has not acknowledged (the transport's own send queue), closing the socket with 1009 beyond that.
+ */
 import { arrayBufferToBase64, base64ToArrayBuffer } from "../../../shared/vendor/paseo-e2ee/base64.ts";
 import type { RelaySocket } from "../../../shared/relay-channel.ts";
 import { isDirectCarrier } from "../../../shared/relay-mux.ts";

@@ -1,3 +1,13 @@
+/**
+ * Which workspaces a worktree can start from, as the sidebar's row menu and the palette offer New
+ * worktree and Open worktree…: a repository's main checkout. herdr marks only a workspace it opened
+ * as a worktree. One made on a repository's folder has no `worktree`, and it is where the first
+ * worktree starts: each is asked once whether git answers for it. A refusal (4xx) is an answer and
+ * is kept; a failure to ask is not, so that workspace keeps what was known of it and is asked again
+ * when the set changes (its order is no change) or the PC comes back. The answers are per PC and
+ * shared by every reader of that PC (the sidebar, the palette, App), so each asks git once and all
+ * offer the same items. They are one herdr's: a snapshot of another reads none of them.
+ */
 import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 
 import type { SessionSnapshot, WorkspaceInfo } from "../../shared/protocol.ts";
@@ -7,7 +17,9 @@ const answers = new Map<string, Map<string, boolean>>();
 const asking = new Map<string, Promise<void>>();
 const rounds = new Map<string, number>();
 const listeners = new Set<() => void>();
+/** the herdr each PC's answers came from (the snapshot's `herdr_lifetime`): another may give a workspace id to another folder */
 const lifetimes = new Map<string, string | undefined>();
+/** herdr's connection failing mid-call, which the bridge answers as a 404 (server/http.ts): no refusal, so asked again */
 const NOT_ANSWERED = new Set(["closed", "socket_error", "bad_frame", "cancelled"]);
 const readers = new Map<string, number>();
 const unanswered = new Map<string, { asked: string; ids: Set<string> }>();
@@ -61,6 +73,11 @@ function ask(machineId: string, workspaceId: string, listWorktrees: (workspace: 
   return question;
 }
 
+/**
+ * The PC's unmarked workspaces git answered for, asked while the PC is online and offers worktrees
+ * to this device (a watching device is refused the listing, #2250; a PC the Herdr app lays out has
+ * none). `notCheckout` keeps a later refusal (a folder that stopped being a checkout, #2726).
+ */
 export function useRepositoryWorkspaces({ machineId, snapshot, online, watching, offered, listWorktrees }: {
   machineId: string;
   snapshot: SessionSnapshot | null | undefined;

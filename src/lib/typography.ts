@@ -44,6 +44,7 @@ export function uiFontStack(family: string, language: Language = "en"): string |
   return `${chosen}, ${UI_FONT_STACK}`;
 }
 
+/** The interface's body size (`--fs-md`) in px: the chat's range, less the sizes a 32px control cannot hold. */
 export const UI_FONT_MIN = 11;
 export const UI_FONT_MAX = 20;
 

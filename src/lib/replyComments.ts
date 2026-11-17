@@ -44,7 +44,7 @@ export class ReplyCommentStore {
   private notify(): void { for (const listener of this.listeners) listener(); }
   read = (key: string): readonly ReplyComment[] => {
     let raw: string | null = null;
-    try { raw = this.storage().getItem(key); } catch {}
+    try { raw = this.storage().getItem(key); } catch { /* private mode: none */ }
     const cached = this.cache.get(key);
     if (cached !== undefined && cached.raw === raw) return cached.list;
     const list = parse(raw);
@@ -152,6 +152,10 @@ export function quoteBlock(quote: string): string {
   return lines.map((line) => line.trim() === "" ? ">" : `> ${line}`).join("\n");
 }
 
+/**
+ * Whether text holds a `>` quote line, as a message that carries comments does (#511): put back in a box
+ * from anywhere, it goes only to an agent, as a shell would read the line as a redirect.
+ */
 export function holdsQuoteLine(text: string): boolean {
   return /^>/m.test(text);
 }

@@ -40,6 +40,7 @@ interface AgentRowBodyProps {
   title: string;
   name: string | null;
   context: string;
+  /** what herdr plugins report on the pane (`$name` tokens), in the order herdr's rows draw them */
   tokens: readonly string[];
   backgroundTasks?: number;
   plan?: PlanSummary;
@@ -48,8 +49,10 @@ interface AgentRowBodyProps {
   note?: string | null;
   muted: boolean;
   locked?: boolean;
+  /** why a blocked agent waits, in the agent's own report (herdr-core's OSC 7501 kind and message) */
   blockedNote?: string | null;
   blockedLabel?: string | null;
+  /** how far the agent says it is, 0 to 100 (herdr-core's OSC 7501 progress) */
   progress?: number;
   helper?: boolean;
   since?: string | null;
@@ -144,6 +147,7 @@ export function agentRowTitle(row: AgentRow, oneLine: boolean): { own: string; t
   const replaced = label === null && titleOnlyNamesAgent(own, markNames(row.entry));
   const title = replaced ? worktree ? compactWorktreeName(workspace.label) : workspace.label : own;
   if (!oneLine) return { own, title, replaced, drawn: title };
+  // a tab herdr only numbers ("Tab 2") never stands in for what the agent is on: only one the user named does
   const place = workspaceTabs(row).findIndex((candidate) => candidate.tab_id === tab?.tab_id) + 1 || tab?.number;
   const named = label || (tab ? customTabLabel(tab, place) : null) || title;
   return { own, title, replaced, drawn: worktree && named === workspace.label ? compactWorktreeName(named) : named };
@@ -238,8 +242,11 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   const pinned = useSyncExternalStore(subscribeSidebarPins, currentSidebarPins, currentSidebarPins);
   const muted = useSyncExternalStore(subscribePaneMutes, currentPaneMutes, currentPaneMutes);
   const locked = useMemo(() => lockedPinKeys(settings.lockedAgents, pinned, settings.agentLocks), [settings.lockedAgents, pinned, settings.agentLocks]);
+  // which `$name` tokens herdr's own sidebar draws, from this server's herdr config (server/herdr-sidebar.ts)
   const rowTokens = useSyncExternalStore(subscribeAgentRowTokens, currentAgentRowTokens, currentAgentRowTokens);
   const activity = useSidebarActivity();
+  // Settings → Agents order: herdr's order, or Activity within each PC (each herdr counts its own changes);
+  // the pinned rows stand first, in the order they were pinned (lib/agentRoster.ts)
   const byActivity = settings.agentOrder === "activity" && !settings.agentGroups;
   const roster = useMemo(() => agentRoster(machines, { byActivity, seqs: activity.seqs, pinned }), [machines, byActivity, activity, pinned]);
   const allRows = useMemo(() => [...roster.pinned, ...roster.rest], [roster]);
@@ -343,6 +350,8 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   }, [foldRequest?.seq]);
   const hidden = useHiddenMachines();
   const togglePin = (key: string): void => {
+    // pins of panes gone from this server leave with a change of the user's, never by themselves: the
+    // list is shared, and a pane this page has not seen yet (a PC still loading) is not gone
     const live = new Set(allRows.map(({ machine, entry }) => sidebarPinKey(machine.id, entry.pane.pane_id)));
     const next = toggleSidebarPin(pruneSidebarPins(pinned, live, machines, hidden), key);
     setSidebarPins(next);
@@ -546,6 +555,8 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   };
 
   const loading = machines.length === 0 || machines.some((machine) => machine.state === "connected" && machine.snapshot === null);
+  // the empty list's line is a live region that is in the list from its first render, clipped while empty (never
+  // display: none), and its words land a frame after it (lib/useAnnouncedText.ts)
   const shownEmpty = useAnnouncedText(rows.length === 0 && !filter.active ? (loading ? t("Loading agents…") : t("No agents running")) : null);
   const menuPinned = menu !== null && pinned.includes(menu.key);
   const menuLocked = menu !== null && locked.has(menu.key);
@@ -673,9 +684,11 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
         ? { id: "unpin", label: t("Unpin agent"), icon: PinOff, run: () => runPin(menu) }
         : { id: "pin", label: t("Pin agent"), icon: Pin, run: () => runPin(menu) }]),
       ...(!menuPinned || !settings.agentLocks ? [] : [{
+        // a watching device sends no settings: it sees the lock and cannot change it, as with Mute alerts
         id: menuLocked ? "unlock" : "lock", label: menuLocked ? t("Unlock agent") : t("Lock agent"), icon: menuLocked ? LockOpen : Lock, disabled: watching,
         run: () => updateSettings({ lockedAgents: toggleAgentLock(settings.lockedAgents, pinned, menu.key) }),
       }]),
+      // Settings -> Named agent groups: into each other group, and out of the one it was put in; a watching device sends no settings
       ...(menuRow === undefined || menuBackground ? [] : groupNames.filter((name) => name !== menuGroup).map((name) => ({
         id: `group:${name}`, label: t("Move to {group}", { group: name }), icon: FolderInput, disabled: watching,
         run: () => setGroup(menu.key, name),
@@ -684,6 +697,7 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
         id: "ungroup", label: t("Remove from {group}", { group: menuOwnGroup }), icon: FolderOutput, disabled: watching,
         run: () => setGroup(menu.key, null),
       }]),
+      // one switch for every alert channel and every browser (lib/paneMutes.ts); a watching device sees its state and cannot flip it
       ...(muted === null || menuRow === undefined ? [] : [{
         id: "mute", label: menuMuted ? t("Unmute alerts") : t("Mute alerts"), icon: menuMuted ? Bell : BellOff, checked: menuMuted, disabled: watching,
         run: () => toggleMute(menuRow.machine.id, menuRow.entry.pane.pane_id),

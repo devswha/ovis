@@ -14,6 +14,11 @@ const URL_PLACEHOLDER: Readonly<Record<Exclude<AlertWebhookPreset, "telegram">, 
   json: "https://…",
 };
 
+/**
+ * Settings → Alerts → Also send to (server/alert-webhook.ts): one destination this PC also posts its
+ * alerts to, with its own choice of alerts. The URL or token is typed into an uncontrolled field and
+ * sent once; the server only ever answers it masked.
+ */
 export function AlertWebhookGroup() {
   const t = useT();
   const [view, setView] = useState<AlertWebhookView | null>(null);

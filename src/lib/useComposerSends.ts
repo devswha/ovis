@@ -84,9 +84,12 @@ export function useComposerSends(deps: ComposerSendsDeps) {
       if (pane !== null && heldByOpenQueue) {
         return t("Codex has a question open in the terminal: answer it above, or close it there (alt+↓) to message Codex.");
       }
+      // Send it: the draft a refusal named goes as the message, over itself (the server clears it, then
+      // sends the same text). A menu opened since would take it as a choice, so it is never an answer
       const asDraft = clearDraft !== undefined && text === clearDraft;
       if (pane !== null && asDraft && answering !== null) return submitNote("agent_blocked", "");
       if (pane !== null && answering !== null && !hold) {
+        // never typed into the agent's menu: only as one of its options, or its own reply row
         const choice = answerFromText(answering, text);
         if (choice === null) return answerRefusal(answering);
         if (needsConfirmation(answering, choice)) {
@@ -96,6 +99,9 @@ export function useComposerSends(deps: ComposerSendsDeps) {
         return sendAnswer(pane, answering, choice);
       }
       if (!socketRef.current?.connected || heldRef.current || secretRef.current !== null) return false;
+      // A screen a peek left open in the terminal would take the message: Send says so and keeps it,
+      // and the note's Send anyway sends it once (the recognizer may be wrong), as a plain send: it
+      // answers this guard, never a box the server showed
       const notedStillOpen = stillOpenNotedRef.current;
       stillOpenNotedRef.current = false;
       const open = stillOpenRef.current;
@@ -116,6 +122,7 @@ export function useComposerSends(deps: ComposerSendsDeps) {
       const socket = socketRef.current, session = sessionRef.current;
       const sentAt = Date.now();
       const sentAfter = pane === null ? null : waitingBaseline(waitingKey(machineId, pane));
+      // a PC that cannot hold refuses a hold rather than queuing it to go on its own (HerdrSocket `holdOnly`)
       const result = submitComposerMessage(text, delivery, delivery === "immediate" ? clearDraft : undefined, sendAnyway, undefined, undefined, agentOnly, hold);
       return result === null ? false : result.then((answer) => {
         if (!answer.ok) return submitRefusal(answer.code, answer.message, answer.draft, answer.box, agent);
@@ -146,6 +153,9 @@ export function useComposerSends(deps: ComposerSendsDeps) {
       if (action === "edit" && (!message.serverOwned || message.state !== "queued" && message.state !== "held" || message.resendInFlight)) return;
       if (action === "steer" && (message.state === "uncertain" || !socket?.connected || heldRef.current || secretRef.current !== null || observeRef.current || ended || heldByOpenQueue || answering !== null)) return;
       if (message.serverOwned && !pendingMessages.isOwned(owner, id, scope)) return;
+      // keys held back in the terminal draft would run in front of the message: the server pastes a
+      // server-owned row's text and sends Enter without looking for a partial line (only Claude's box
+      // is checked there). The row stays as it is, so Send now after the draft is settled, or Discard, still works.
       if (action === "steer" && draftHeldForRef.current === pane) {
         pendingMessages.fail(owner, id, { code: "held_input", message: "send or discard the held input first" }, false);
         return;

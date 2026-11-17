@@ -25,6 +25,7 @@ function startMark(range: Range): Mark {
 function pointMark(x: number, y: number, target: Node | null, within: Node): Mark | null {
   const caret = document.caretRangeFromPoint?.(x, y) ?? null;
   if (caret !== null && within.contains(caret.startContainer)) return startMark(caret);
+  // Firefox's own name for it
   const position = document.caretPositionFromPoint?.(x, y) ?? null;
   if (position !== null && within.contains(position.offsetNode)) return markAt(position.offsetNode, position.offset);
   return target === null || !within.contains(target) ? null : markAt(target, 0);
@@ -261,6 +262,9 @@ export function ChatTimeline<Row extends ChatTimelineRow>(given: ChatTimelinePro
       content.style.minHeight = `${content.offsetHeight + Math.ceil(short)}px`;
     }
     node.scrollTop = target;
+    // The view lands on whole pixels: the words' place stays where it was aimed, so what the rounding
+    // leaves adds up with the next move instead of being taken as their place. A view that could not
+    // go as far (at its top) leaves them where it stopped.
     held.y = Math.abs(node.scrollTop - target) < 1 ? y - back : markTop(held.mark) ?? y;
     held.top = node.scrollTop;
     onFollowed(node.scrollTop);

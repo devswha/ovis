@@ -1,3 +1,12 @@
+/**
+ * Keys typed right after New terminal, before the new tab exists. A field out of sight takes the
+ * keyboard at the choice, so nothing reaches the old tab and a Space or Enter cannot press the +
+ * again; what it holds goes to the new tab's terminal (useTerminalMount adopts it ahead of anything
+ * typed there), which sends it, in order, once its attach takes input, as it does for a pane taken
+ * back from idleness. What may not go by itself is held for review instead (`held`): a paste (it
+ * skipped the terminal's bracketed paste), and keys the user walked away from (the focus went
+ * elsewhere before the tab came). On a touch screen the field opens no keyboard (inputmode none).
+ */
 import { paneStorageId } from "../../shared/machines.ts";
 import { t } from "./i18n.ts";
 
@@ -15,7 +24,9 @@ export interface TypeAhead {
   items: TypeAheadItem[];
   since: number;
   at: number;
+  /** held for review, never sent by itself: keys typed before the user went elsewhere, or around a paste */
   held: boolean;
+  /** a paste was refused: it never reached the terminal's bracketed paste, so it is not kept at all (the user is told) */
   pasteRefused: boolean;
   focused: boolean;
 }
@@ -46,6 +57,11 @@ const ARROW_INPUT: Record<string, string> = { ArrowUp: "\x1b[A", ArrowDown: "\x1
 const PLAIN_INPUT: Record<string, string> = { Enter: "\r", Tab: "\t", Escape: "\x1b", Delete: "\x1b[3~", Home: "\x1b[H", End: "\x1b[F" };
 const EDITING = new Set(["Enter", "Tab", "Backspace", "Escape", "Delete", "Home", "End", ...Object.keys(ARROW_INPUT)]);
 
+/**
+ * The input a key typed in the field stands for, as the terminal (xterm) sends it; "hold" for an editing key the
+ * field cannot be sure of (a word move, a modified Enter): the catch is then held for review, so nothing runs that
+ * the user did not see. null for one the field leaves to the browser (text, its own shortcuts).
+ */
 export function typeAheadKey(event: Pick<KeyboardEvent, "key" | "ctrlKey" | "metaKey" | "altKey" | "shiftKey">): TypeAheadItem | "hold" | null {
   const { key, ctrlKey: ctrl, metaKey: meta, altKey: alt, shiftKey: shift } = event;
   if (key === "Backspace") {
@@ -96,6 +112,7 @@ export function catchTypeAhead(): TypeAheadCatch | null {
     caught.items.push(item);
   };
   const onInput = (event: Event): void => { if (!(event as InputEvent).isComposing) commit(); };
+  // a paste is the terminal's to bracket once the program says it takes one: refused here, the keys around it held
   const onPaste = (event: ClipboardEvent): void => {
     event.preventDefault();
     caught.held = true;
@@ -130,6 +147,8 @@ export function catchTypeAhead(): TypeAheadCatch | null {
     return focused;
   };
   caught.end = end;
+  // the user went elsewhere (not the window losing focus, which gives it back, nor the new tab's own terminal
+  // taking the keyboard, whose next key takes what was typed here first): what was typed is held, never sent
   const onBlur = (event: FocusEvent): void => {
     if (!document.hasFocus()) return;
     const to = event.relatedTarget instanceof Element ? event.relatedTarget.closest("[data-layout-pane]")?.getAttribute("data-layout-pane") : null;

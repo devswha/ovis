@@ -161,6 +161,8 @@ describe("the hosted shell's front page", () => {
     opened.close();
   });
 
+  // REGRESSION GUARD: only a consent stored one navigation earlier (the typed code's ID match, the Add-a-PC sheet)
+  // skips the confirm. A link someone sends, with a code or without, never pairs by itself.
   it.each([["a code", "123456", false], ["no code", undefined, false], ["a code, signed in", "123456", true], ["no code, signed in", undefined, true]] as const)(
     "stops a link opened by navigation with %s at the confirm, and pairs only after the button", async (_what, code, signedIn) => {
       browser.setVisibility("hidden");

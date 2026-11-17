@@ -1,11 +1,16 @@
 import type { FrameClock } from "./touchWheelPacer.ts";
 
+/** Only the finger's last this many milliseconds count toward its speed at the lift (Android's `VelocityTracker` horizon). */
 export const FLING_HORIZON_MS = 100;
+/** A finger that has not moved for this long before it lifts had stopped: no fling (Android's `ASSUME_POINTER_STOPPED_TIME`). */
 export const FLING_STOPPED_MS = 40;
 export const FLING_MIN_VELOCITY = 0.3;
+/** A stroke that has not travelled this far, in CSS pixels, is a tap that jittered and never flings (Android's touch slop, 8 dp). */
 export const FLING_SLOP_PX = 8;
+/** Fastest fling, in CSS pixels per millisecond (Android's maximum fling velocity, 8000 dp/s). */
 export const FLING_MAX_VELOCITY = 8;
 export const FLING_STOP_VELOCITY = 0.02;
+/** The speed a fling keeps per millisecond (UIScrollView's normal deceleration rate). */
 export const FLING_DECELERATION = 0.998;
 const FLING_MAX_FRAME_MS = 50;
 
@@ -39,6 +44,11 @@ export function createVelocityTracker(): VelocityTracker {
   };
 }
 
+/**
+ * One frame of a fling: the pixels it travels over `elapsed` milliseconds starting at `velocity`,
+ * and its speed after them. The speed decays by {@link FLING_DECELERATION} per millisecond, so the
+ * whole glide travels `velocity / -ln(FLING_DECELERATION)`, about 500 ms of the lift's speed.
+ */
 export function flingStep(velocity: number, elapsed: number): { travel: number; velocity: number } {
   if (!Number.isFinite(velocity) || !(elapsed > 0)) return { travel: 0, velocity: Number.isFinite(velocity) ? velocity : 0 };
   const kept = FLING_DECELERATION ** elapsed;

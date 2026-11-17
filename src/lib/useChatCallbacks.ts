@@ -23,6 +23,7 @@ export interface ChatCallbacksDeps {
 
 export function useChatCallbacks(deps: ChatCallbacksDeps) {
   const { activeRef, agentStatus, chatHistoryRef, chatViewRef, findOpenRef, machineId, pendingOpenRef, setStillOpen, socketRef, stackRef, stillOpenRef, undecidedOpenRef } = deps;
+  // an older bridge pushes no transcript changes: the chat reads at the former 2s cadence
   const [conversationPushes, setConversationPushes] = useState(false);
   const onConversationWatch = useCallback((pane: string, enabled: boolean) => {
     socketRef.current?.watchConversation(pane, enabled);

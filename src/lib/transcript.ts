@@ -1,3 +1,12 @@
+/**
+ * pane.read "recent" text -> chat-style transcript messages.
+ *
+ * herdr's scrollback is plain text (strip_ansi), so speaker attribution is
+ * heuristic and deliberately conservative: only markers every agent TUI in
+ * this setup actually emits are structural (the ❯ prompt echo and full-width
+ * rule lines); everything else degrades to an agent bubble instead of being
+ * misfiled. Pure logic, DOM-free, unit-tested in transcript.test.ts.
+ */
 
 export type TranscriptRole = "user" | "agent" | "status";
 

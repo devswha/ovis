@@ -195,6 +195,7 @@ it("sends a request body where the browser has no Request.body, as Firefox", asy
   expect(await response.text()).toBe('{"a":1}');
 });
 
+/** A browser without Request.body (Firefox) for the page's requests: bodies given to them and their reads are counted, and reads wait for `hold`. */
 function firefoxRequests(hold: Promise<void> = Promise.resolve()) {
   const native = globalThis.Request;
   const reads = { count: 0, bodies: 0 };

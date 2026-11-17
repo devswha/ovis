@@ -534,6 +534,10 @@
 .markdown-h5 { color: inherit; font-weight: var(--fw-semibold); line-height: var(--lh-heading); }
 .markdown-h6 { color: var(--text-dim); font-weight: var(--fw-semibold); line-height: var(--lh-heading); }
 
+/* A marker sits outside its item, in this indent, and is drawn in the Chat font: in a monospace face
+   every digit and the ". " after it take a whole cell (`1ch`), so a fixed 20px cut "1." off on the
+   left (#1993). The indent is the widest marker in cells, never less than the 20px a bullet always
+   had; the list's widest number has --markdown-list-digits digits (Markdown.tsx). */
 .markdown-list {
   --markdown-list-digits: 1;
   padding-left: max(var(--space-5), 2ch);
@@ -1246,6 +1250,7 @@ ol.markdown-list {
 
 .chat-activity-line svg { width: 1em; height: 1em; flex: none; }
 
+/* the Working head while herdr's status may still trail an answer: its place is kept, unseen */
 .chat-activity-reserved { visibility: hidden; }
 
 .work-block.is-pending .work-block-head,
@@ -1338,6 +1343,7 @@ ol.markdown-list {
     min-height: var(--touch-target);
   }
 
+  /* a tap on a toggle, a copy or a path is one tap, never the start of a double-tap zoom */
   .work-block-head,
   .work-row-head,
   .chat-copy,

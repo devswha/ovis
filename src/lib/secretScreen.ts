@@ -7,6 +7,18 @@ function sameAsking(seen: Asking, now: Asking): boolean {
   return seen.prompt === now.prompt && (seen.repeats === now.repeats || (now.cut && now.repeats < seen.repeats));
 }
 
+/**
+ * The masked prompt a terminal's screen shows now, if any (shared/secret-prompt.ts), read off xterm's screen for
+ * `pane`. `cursorKnown`: whether the screen's cursor is the program's (an attached pane). A mirrored pane's
+ * repaints carry none, so its prompt counts while it is the last text; so does one not known to be attached.
+ *
+ * With the cursor known, a prompt whose cursor was seen on its line and then left has been answered: the program
+ * printed its line break and works on, the prompt still the last text, and an answer sent again would wait in the
+ * terminal for whatever reads next. A prompt whose cursor was never seen on it asks while it is the last text: a
+ * script that prints its prompt with a line break and reads below it (`echo "Password:"; read -s`), or a screen
+ * first seen after the answer. What was seen is one pane's: it is kept while that pane's screen is drawn again (a
+ * reconnect, a phone that let the pane go while hidden), and dropped when the terminal shows another pane.
+ */
 export function createSecretScreen(term: Terminal, cursorKnown: () => boolean): { read: (pane: string) => string | null } {
   let seen: Asking | null = null;
   let seenOn: string | null = null;

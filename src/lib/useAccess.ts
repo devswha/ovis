@@ -10,10 +10,15 @@ import { addServedFonts } from "./userFonts.ts";
 export type SecurityFacts = { state: "loading" } | { state: "error" } | { state: "absent" } | { state: "known"; summary: SecuritySummary };
 
 export function useAccessState(fonts: { readonly ui: string; readonly chat: string } = { ui: "", chat: "" }) {
+  // null until the server has said whether it wants a token: the shell, and with it
+  // the WebSocket, never mounts before that is known
   const [locked, setLocked] = useState<boolean | null>(null);
   const [lockReason, setLockReason] = useState<AccessRefusal | null>(null);
+  /** the code a scanned QR brought along (`?pair=CODE`), taken off the address at once */
   const [pairCode, setPairCode] = useState(() => takePairCode());
   const pairCodeConsumed = useRef(false);
+  // both the gate and an already-open browser claim the same single-use address code
+  // the ref also stops a second claim before React renders the cleared state
   const consumePairCode = useCallback(() => {
     if (pairCodeConsumed.current) return "";
     pairCodeConsumed.current = true;
@@ -25,6 +30,7 @@ export function useAccessState(fonts: { readonly ui: string; readonly chat: stri
   const pairingUnconfirmed = locked === true && pairingSucceeded;
   const [auth, setAuth] = useState<HealthAuth | null>(null);
   const [security, setSecurity] = useState<SecurityFacts>({ state: "loading" });
+  // a token a proxy sends with every request comes back right after signing out: signing out is the proxy's
   const canSignOut = authEndsHere(auth);
   const started = useRef(0);
   const settled = useRef(0);

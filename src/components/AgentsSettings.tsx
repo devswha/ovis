@@ -32,6 +32,7 @@ import "./AgentsSettings.css";
 type Translate = ReturnType<typeof useT>;
 
 export interface AgentsSettingsProps {
+  /** a watching device reads the page, but installs, signs in and adds nothing */
   watching: boolean;
   onLocalLogin: (paneId: string) => void;
   onOpenPane: (machineId: string, paneId: string) => void;
@@ -106,6 +107,10 @@ function AgentOwnRows({ agentId }: { agentId: string }) {
 const OWN_NAMES: Readonly<Record<string, string>> = { claude: "Claude Code", codex: "Codex" };
 const OWN_ROWS = new Set(Object.keys(OWN_NAMES));
 
+/**
+ * herdr's integration for one agent (`integration.list`), read only: installing one writes into the
+ * agent's hooks or settings, which this app leaves to the user, so it shows the command to run.
+ */
 function IntegrationRow({ integration, label }: { integration: AgentIntegration; label: string }) {
   const t = useT();
   const commandRef = useRef<HTMLElement>(null);
@@ -377,6 +382,7 @@ export function AgentsSettings({ watching, onLocalLogin, onOpenPane, onOpenGuide
   const otherIntegrations = page?.otherIntegrations ?? [];
   return (
     <SettingsBare.Provider value={true}>
+      {/* the first-run guide again (lib/setupGuide.ts): it sets up this PC, and a watching device is never shown it */}
       {!watching && local && <SettingsGroup section="guide">
         <SettingsRow icon={Compass} label={t("Setup guide")} description={t("Opens the first-run guide again, from its first step, to install coding agents on this PC and connect them. What was set up before stays as it is.")}>
           <button type="button" className="btn" onClick={() => { onOpenGuide(); openSetupGuide(); }}>{t("Open setup guide")}</button>

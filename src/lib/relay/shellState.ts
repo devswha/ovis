@@ -23,6 +23,13 @@ import { formatDashboardHash, isDashboardHash, parseDashboardHash } from "./dash
 
 export type KeySource = "link" | "saved";
 
+/**
+ * A key that is not the one a PC id names, as the phone can show it: the id named (a PC's id is a
+ * SHA-256 of its real key, server/relay/identity.ts), the id the other key would have (null for a
+ * key that does not even parse) and where that key came from. Neither is vouched for here: a link
+ * names any id it likes, so the person compares them with the id the PC itself shows. Both come
+ * from what the phone holds already, so telling them apart sends nothing to the relay or the PC.
+ */
 export interface KeyMismatch { expected: string; received: string | null; from: KeySource }
 
 export function keyIdOf(publicKey: string): string | null {
@@ -66,8 +73,10 @@ export type RelayShellState =
   | { kind: "code-entry"; failure: TypedCodeFailure | null }
   | { kind: "code-looking" }
   | { kind: "code-compare"; offer: RelayOffer }
-  | { kind: "compare"; name: string | null; digits: string; confirmed: boolean; typed?: boolean; wrong?: boolean; challenge?: number }
+  | { kind: "compare"; name: string | null; digits: string; confirmed: boolean; /** the digits are typed from the PC's screen, never shown here */ typed?: boolean; wrong?: boolean; challenge?: number }
+  /** the phone's key for a PC whose identity changed is gone; only a new QR code from the PC pairs it again */
   | { kind: "forgotten"; name: string | null }
+  /** a link with another key under a PC's id (forgedOffer): refused every time, and no saved key is touched */
   | { kind: "forged"; name: string | null; mismatch: KeyMismatch | null }
   | { kind: "failed"; failure: RelayFailure; name: string | null; detail: string | null; mismatch?: KeyMismatch | null; server_id?: string };
 
@@ -87,6 +96,11 @@ export function shellEntry(url: string): ShellEntry {
   }
 }
 
+/**
+ * An offer whose key is not the one its PC's id is derived from (server/relay/identity.ts): never
+ * that PC's own link, whatever it says, so it is refused like a changed identity, every time it is
+ * opened. A PC's own QR code always passes, so only a pairing from the PC itself gets through.
+ */
 export function forgedOffer(offer: RelayOffer): boolean {
   return keyIdOf(offer.server_public_key) !== offer.server_id;
 }
@@ -162,13 +176,16 @@ export interface Attempt {
   fresh?: boolean;
   introducible?: boolean;
   accountEnrollment?: boolean;
+  /** the confirm before this pairing said the device gets a key of its own: it uses no account key and joins no account, whoever signed in since */
   accountless?: boolean;
+  /** the sign-in the confirm before this pairing was drawn for: the pairing uses its account key and joins its account, and no other's */
   signIn?: AccountSession;
   retryEnrollment?: boolean;
   retriedPending?: boolean;
 }
 
 
+/** Non-secret navigation context only; no labels, offers, keys or input values cross the load here. */
 export interface SheetJoin {
   readonly mode: "new" | "join";
   readonly server_id: string;
@@ -199,8 +216,9 @@ export function keepTypedJoin(serverId: string | null): void {
   catch {}
 }
 
+/** One navigation's consent: only the PC ID, consumed even if the next load has no offer. */
 export function keepConfirmedPc(serverId: string): void {
-  try { sessionStorage.setItem("ovis-confirmed-pc", serverId); } catch {}
+  try { sessionStorage.setItem("ovis-confirmed-pc", serverId); } catch { /* ask again if consent cannot cross the load */ }
 }
 export function takeConfirmedPc(): string | null {
   try {
@@ -210,6 +228,13 @@ export function takeConfirmedPc(): string | null {
   } catch { return null; }
 }
 
+/**
+ * The PC whose pairing was confirmed as one with a key of this device's own, kept for the load that follows: a reload
+ * before the app opened (for a newer shell) starts from the saved pairing, which does not say what was confirmed.
+ * Only the PC ID, in this tab. It stays until that pairing's page opens the app, another confirm for a PC takes its
+ * place, or the PC is forgotten: a load that is itself reloaded or interrupted while it connects leaves it for the
+ * next one, which would otherwise open the PC as whoever is signed in by then.
+ */
 export function keepDeviceOnlyPc(serverId: string | null): void {
   try { if (serverId === null) sessionStorage.removeItem("ovis-device-only-pc"); else sessionStorage.setItem("ovis-device-only-pc", serverId); }
   catch {}
@@ -218,6 +243,13 @@ export function deviceOnlyPc(): string | null {
   try { return sessionStorage.getItem("ovis-device-only-pc"); } catch { return null; }
 }
 
+/**
+ * The sign-in a pairing's confirm was drawn for, kept for the load that follows: a reload before the app opened (for
+ * a newer shell) starts from the saved pairing, which does not say whose account was confirmed, and would add the
+ * PC to the account of whoever is signed in by then. Only the PC ID and the sign-in's id (`sign_in_id`, none of its
+ * tokens; null for a sign-in that has none), in this tab. Like the one above it stays until that pairing's page
+ * opens the app, another confirm takes its place, or the PC is forgotten, so a second reload on the way finds it too.
+ */
 export interface ConfirmedSignIn { readonly server_id: string; readonly sign_in_id: string | null }
 export function keepConfirmedSignIn(confirmed: ConfirmedSignIn | null): void {
   try {

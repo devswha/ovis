@@ -118,6 +118,7 @@ function hydrate(): void {
   const seenDuringRefresh = refreshing ? new Set<string>() : null;
   let complete = true;
   try {
+    // Walk backwards so removing an old/evicted key never shifts an unvisited key index.
     for (let index = storage.length - 1; index >= 0; index--) {
       const key = storage.key(index);
       if (!key) continue;
@@ -332,6 +333,11 @@ export function receiveSeen(finishes: readonly SeenFinish[]): void {
   notify(changes);
 }
 
+/**
+ * Only an epoch this tab actually left is known to be obsolete. An arbitrary other epoch might
+ * belong to a newer tab than this tab's initial roster, so it is capped, not guessed to be old.
+ * Never prune from a pane/PC roster. Old-format records cannot identify finishes and are removed.
+ */
 export function cleanSeen(retired: readonly { pc: string; epoch: string }[]): void {
   hydrate();
   const storage = storageNow();

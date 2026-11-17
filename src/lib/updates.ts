@@ -126,6 +126,11 @@ export function useUpdates(enabled: boolean) {
   return { status, error, busy, needsReload, reload, notes, installed, request, failure, offered: offeredRevision(status) };
 }
 
+/**
+ * The revision an Update button may install: the offer's, where the server installs exactly the
+ * revision it is sent. A server that cannot (`revision_bound_install` absent: an older supervisor
+ * runs it) is sent no install at all, never one without a revision.
+ */
 export function offeredRevision(status: UpdateStatus | null): string | null {
   if (!status?.managed || !status.available || status.blocked_reason || !status.latest_revision) return null;
   return status.revision_bound_install === true ? status.latest_revision : null;

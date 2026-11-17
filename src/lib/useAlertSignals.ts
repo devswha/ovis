@@ -55,6 +55,8 @@ export function useAlertSignals({ settings, selectionRef, drawerOpenRef, splitRe
     });
   }, []);
 
+  // The alert sound (lib/alertSound.ts): heard also while the tab is hidden and a Focus silences
+  // system notifications; never for the pane open in front of the user.
   const alertTurns = useRef<ReturnType<typeof createAlertTurnPlayer> | null>(null);
   useEffect(() => {
     const player = createAlertTurnPlayer({

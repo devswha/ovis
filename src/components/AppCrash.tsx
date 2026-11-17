@@ -11,6 +11,12 @@ export function crashDetails(error: unknown): string {
   return [head, trace, `Path: ${window.location.pathname}`, `User agent: ${navigator.userAgent}`].filter((line) => line !== "").join("\n");
 }
 
+/**
+ * What the page shows when a render error reached the top of the tree (main.tsx). It sits
+ * outside SettingsProvider, which may be what threw, so it reads the module-level `t` (the
+ * language last set, English before any) and never a context. An installed web app has no
+ * browser reload button, so Reload app is the way back.
+ */
 export function AppCrash({ error }: { error: unknown }) {
   const details = crashDetails(error);
   const detailsRef = useRef<HTMLPreElement>(null);

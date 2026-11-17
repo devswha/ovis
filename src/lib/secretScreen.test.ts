@@ -186,6 +186,8 @@ test("a prompt that went away and is printed again, read below its line, asks", 
 });
 
 test("a row is read as wide as the pane is now, not as it was drawn when the pane was wider", async () => {
+  // herdr draws on the alternate screen, where xterm keeps a row's cells past a narrower edge, and its redraw for
+  // a new grid clears nothing
   const listing = ["-rw-r--r-- 1 alice alice  48213 Nov 11 10:02 quarterly-report-final.pdf", "-rw-r--r-- 1 alice alice   1178 Nov 11 10:02 notes-from-the-planning-call.txt"];
   const term = await attached(80, 8);
   const screen = createSecretScreen(term, () => true);

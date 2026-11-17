@@ -89,6 +89,7 @@
   max-width: 8em;
 }
 
+/* without its words the chip would be a 28px target, an icon alone while nothing runs */
 @media (max-width: 480px), (pointer: coarse) {
   .composer-surface[data-compact] .bg-tasks-toggle {
     min-width: var(--touch-target);

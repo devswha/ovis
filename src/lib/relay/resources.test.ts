@@ -120,6 +120,7 @@ function streamTransfers(): boolean {
 
 describe("the service worker resource path", () => {
   it("falls back to a blob where this window cannot transfer a stream to the worker", async () => {
+    // Given a runtime that cannot transfer a ReadableStream (Bun, as Safari before 27), under a worker that speaks the resource protocol
     expect(streamTransfers()).toBe(false);
     controlledBy({
       scriptURL: `https://shell.example/s/${id}/sw.js`,

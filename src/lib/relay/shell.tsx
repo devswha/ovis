@@ -71,6 +71,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   let press = 0;
   let unanswered = false;
   let readWait: ReturnType<typeof setTimeout> | undefined;
+  // the sign-in each confirm that names an account was drawn for (kept off the rendered state: it holds the tokens)
   const drawnFor = new WeakMap<RelayShellState, AccountSession>();
   const accountChanged = async (): Promise<void> => {
     const read = account.state?.kind !== "signing-in";
@@ -81,6 +82,13 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   };
   const account = createAccountController(mount, { active: frontUp, changed: accountChanged, outdated: () => new Set([...observedVersions()].filter(([, value]) => value.outdated).map(([id]) => id)) });
   accountRead = !account.enabled;
+  /**
+   * What the confirm says now. Signed in, nothing can be confirmed until the directory is read: before that, whether
+   * the pairing adds the PC to the account is not known. A directory whose read failed, or was not answered in time,
+   * says nothing about now, and the PC then counts as one this pairing adds. A sign-in that was not read in time
+   * (the store did not answer, or a sign-in's return did not finish) counts as none: the pairing then uses a key of
+   * the device's own, which only ever keeps a PC out of an account.
+   */
   const confirmOf = (offer: RelayOffer): Extract<RelayShellState, { kind: "confirm" }> => {
     const view = account.state, signIn = account.signedInAs;
     const said = confirming || ((!accountRead || view?.kind === "signing-in") && !unanswered) ? "checking" as const
@@ -222,16 +230,21 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       if (controller.signal.aborted) return;
       if (error instanceof ConsentChangedError && last === attempt) {
         if (!attempt.paired && entry.offer === attempt.offer) { last = null; opening = null; readAgain(attempt.offer, () => undefined); return; }
+        // a PC this page already paired opens with the key it holds, and joins no account
         if (attempt.paired) { await connect({ ...attempt, accountless: true }); return; }
       }
       await failed(error, attempt);
       return;
     }
+    // kept for a reload before the app opens (a newer shell): the page that follows opens this PC from its saved
+    // pairing, and must not add it to the account of a sign-in stored since the confirm said "a key of its own"
     keepDeviceOnlyPc(attempt.accountless ? attempt.offer.server_id : null);
     keepConfirmedSignIn(attempt.signIn ? { server_id: attempt.offer.server_id, sign_in_id: attempt.signIn.sign_in_id ?? null } : null);
     if (controller.signal.aborted) { opened.close(); return; }
     opening = null;
     comparison = null;
+    // the PC admitted this phone: a pairing code is spent, and every later attempt (Try again on
+    // the update screen included) signs with the saved device key instead of pairing again
     const { code, ...saved } = attempt.offer;
     const fresh = !attempt.paired || attempt.fresh === true;
     const enrolled: Attempt = { offer: saved, code: false, paired: true, accountEnrollment: attempt.accountEnrollment === true, retryEnrollment: attempt.retryEnrollment === true, ...(fresh ? { fresh: true, introducible: attempt.paired ? attempt.introducible === true : !attempt.code } : {}), ...(attempt.accountless ? { accountless: true } : {}), ...(attempt.signIn ? { signIn: attempt.signIn } : {}) };
@@ -253,6 +266,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   };
   const openPc = (): void => { if (app === null && shown?.kind === "ready" && transport && last) enterApp(transport, last); };
   const enroll = (opened: RelayTransport, attempt: Attempt, settled?: () => void): void => {
+    // the confirm said this device gets a key of its own: a sign-in stored since then adds nothing to its account here
     if (attempt.accountless) return;
     enrolling.add(opened);
     void account.enroll(opened, attempt.offer.server_id, attempt.fresh === true, attempt.fresh === true && attempt.introducible === true, { consent: consentOf(attempt), ...(settled ? { settled } : {}) }).then((enrollment) => {
@@ -281,10 +295,17 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       enroll(opened, attempt);
     },
   }, store);
+  /** `consent`: the sign-in the confirm named, `null` when it said the device gets a key of its own; absent for the sheet's join, which acts as whoever is signed in. */
   const pair = (consent?: AccountSession | null): void => {
     if (entry.offer === null || shown?.kind !== "confirm") return;
     void connect({ offer: entry.offer, code: entry.offer.code !== undefined, paired: false, codeless: entry.offer.code === undefined, typed: typedJoin(entry.offer.server_id), ...(consent === null ? { accountless: true } : consent ? { signIn: consent } : {}) });
   };
+  /**
+   * The confirm's button. What was confirmed is what the screen said, about the account it named: the sign-in and its
+   * directory are read again, and a pairing that would now do something else (another tab signed out, or in, as the
+   * same account or another; the PC left the directory) is asked about again instead of made. A press that cannot be
+   * shown to match what was drawn pairs nothing. A confirm that said "a key of its own" pairs without the account.
+   */
   const confirmed = (): void => {
     const asked = shown, offer = entry.offer;
     if (offer === null || asked?.kind !== "confirm" || asked.account === "checking") return;
@@ -354,6 +375,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const arrived = (): boolean => {
     const confirmedPc = takeConfirmedPc();
     if (entry.damaged) { show({ kind: "failed", failure: "bad-offer", name: null, detail: null }); return true; }
+    // a link that puts another key under this PC's id is never paired with, before or after a
+    // Forget: it is no attempt (nothing retries it) and it touches no saved key
     if (entry.offer !== null && forgedOffer(entry.offer)) {
       show({ kind: "forged", name: entry.offer.name ?? null, mismatch: keyMismatch(entry.offer.server_id, [{ key: entry.offer.server_public_key, from: "link" }]) });
       entry = { ...entry, offer: null };
@@ -387,8 +410,12 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   if (entry.serverId !== null) {
     const saved = await store.get(entry.serverId);
     if (saved === undefined) show({ kind: "empty" });
+    // a key saved from a forged link (an earlier build saved before admission): Forget removes it
     else if (forgedOffer(offerOf(saved))) show({ kind: "failed", failure: "identity-changed", name: saved.name ?? null, detail: null, mismatch: keyMismatch(saved.server_id, [{ key: saved.server_public_key, from: "saved" }]) });
     else {
+      // this load follows a reload before the app opened, of a pairing whose confirm named a sign-in: it goes on under
+      // that sign-in alone. Another one stored by now, or none, gets nothing of it: the PC opens with the key this
+      // page holds and joins no account, as after a confirm that said "a key of its own"
       const named = namedSignIn?.server_id === saved.server_id ? namedSignIn : null;
       const now = named === null || named.sign_in_id === null ? undefined : await account.stored();
       const signIn = now !== undefined && now.sign_in_id === named?.sign_in_id ? now : undefined;

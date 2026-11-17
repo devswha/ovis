@@ -19,6 +19,7 @@ const wait = (ms: number): Promise<void> => new Promise((resolve) => { setTimeou
 export async function reloadPage(serverId: string | null): Promise<void> {
   try {
     const registration = await navigator.serviceWorker?.getRegistration();
+    // a worker check that hangs must not keep the stale shell up: the reload goes on without it
     await Promise.race([registration?.update(), wait(5000)]);
   } catch (error) { console.warn("Ovis: the service worker did not check for a newer shell", error); }
   if (serverId !== null) await freshShellNext(serverId);
@@ -45,6 +46,7 @@ function takeLegacyVersions(): ReadonlyMap<string, ObservedVersion> {
     try {
       const area = storage();
       let value: unknown;
+      // the record goes even when it cannot be read: a damaged one would otherwise stay forever
       try { value = JSON.parse(area.getItem(LEGACY_VERSION_KEY) ?? "[]"); } finally { area.removeItem(LEGACY_VERSION_KEY); }
       if (!Array.isArray(value)) continue;
       for (const item of value) {

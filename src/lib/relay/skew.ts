@@ -59,6 +59,12 @@ function reloaded(memory: ReloadMemory): string[] {
   }
 }
 
+/**
+ * Whether a newer PC should reload this page onto a newer shell: once per (shell, server)
+ * pair, recorded in the tab's sessionStorage, so a host still serving the old shell after the
+ * reload connects instead of reloading again. Storage that throws (a private window) answers no:
+ * a missed reload costs less than a loop.
+ */
 export function reloadOnce(memory: ReloadMemory, shellVersion: string, serverVersion: string): boolean {
   const pair = `${shellVersion}->${serverVersion}`;
   try {

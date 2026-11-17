@@ -38,11 +38,11 @@ export function AgentTile({ agent, has, picked = false, locked = false, machineI
   }, [turning, attempt]);
   const state = tileState(has, step, pending, overdue ? INSTALL_GIVE_UP_MS : 0);
   const running = state === "installing" || pending;
-  useEffect(() => { onRunning?.(agent.id, running); }, [running]);
-  useEffect(() => () => onRunning?.(agent.id, false), []);
+  useEffect(() => { onRunning?.(agent.id, running); }, [running]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => onRunning?.(agent.id, false), []); // eslint-disable-line react-hooks/exhaustive-deps
   const reason = state === "failed" && step.kind === "failed" ? step.message ?? t("It is on this PC, but it does not start. Install it again.") : state === "stuck" ? t("It took too long. Try again.") : null;
-  useEffect(() => { onError?.(agent.id, reason === null ? null : t("{agent} did not install. {reason}", { agent: agent.name, reason })); }, [reason]);
-  useEffect(() => () => onError?.(agent.id, null), []);
+  useEffect(() => { onError?.(agent.id, reason === null ? null : t("{agent} did not install. {reason}", { agent: agent.name, reason })); }, [reason]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => onError?.(agent.id, null), []); // eslint-disable-line react-hooks/exhaustive-deps
   const tile = useRef<HTMLLIElement>(null);
   const focused = useRef(false);
   useEffect(() => { if (state === "installed" && step.kind === "installing") stop.current(); }, [state, step.kind]);
@@ -52,7 +52,7 @@ export function AgentTile({ agent, has, picked = false, locked = false, machineI
     started.current = false;
     onInstalled(agent.id);
     if (focused.current && (document.activeElement === null || document.activeElement === document.body)) tile.current?.querySelector<HTMLElement>("button")?.focus();
-  }, [state]);
+  }, [state]); // eslint-disable-line react-hooks/exhaustive-deps
   const tap = (): void => {
     if (pending) return;
     started.current = true;

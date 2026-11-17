@@ -15,6 +15,11 @@ export function downloadLeavesApp(): boolean {
   return (navigator as Navigator & { standalone?: boolean }).standalone === true || (inNativeApp() && !inAndroidApp());
 }
 
+/**
+ * The picture `src` as a file named `name`. A PC path is read through the transport, as the page's
+ * CSP lets no fetch reach a blob: or data: URL (a relay PC's pictures are blob: URLs once shown);
+ * any other picture is the decoded `shown` one, encoded as PNG.
+ */
 export async function imageFile(src: string, name: string, shown: HTMLImageElement | null, signal?: AbortSignal): Promise<File> {
   if (src.startsWith("/api/")) {
     const response = await getTransport().fetch(src, { signal });
@@ -30,6 +35,11 @@ export const SAVE_PLUGIN = "OvisSave";
 
 export const SAVE_MAX_BYTES = 20 * 1024 * 1024;
 
+/**
+ * How Download saves the picture here: a download link, the share sheet, or the Android app. An
+ * Android app built before its plugin has neither a working link nor a share sheet, so Download
+ * there says it could not save rather than doing nothing.
+ */
 export function saveRoute(): "link" | "share" | "app" {
   if (hasNativePlugin(SAVE_PLUGIN)) return "app";
   return downloadLeavesApp() || inAndroidApp() ? "share" : "link";

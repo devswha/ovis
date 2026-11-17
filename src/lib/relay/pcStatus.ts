@@ -20,6 +20,11 @@ export interface PcCheckSockets {
   readonly direct?: (url: string) => RelaySocket;
 }
 
+/**
+ * The saved PCs one sweep probes: paired ones whose key is the one their id names (a mismatch is the
+ * identity-changed screen's to handle), at most `max`, starting at `cursor` so that past `max` every
+ * PC gets its turn. The rows marked as being checked are exactly these.
+ */
 export function sweepOf(devices: readonly RelayDevice[], cursor: number, max: number): RelayDevice[] {
   const paired = devices.filter((device) => device.device_id !== null && keyIdOf(device.server_public_key) === device.server_id);
   const start = paired.length > max && Number.isSafeInteger(cursor) && cursor >= 0 ? cursor % paired.length : 0;

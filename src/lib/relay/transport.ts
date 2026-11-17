@@ -124,6 +124,11 @@ function eventProperties(target: EventTarget, names: readonly string[]): void {
   }
 }
 
+/**
+ * How long a reconnect waits at the relay for a PC that is away, under the relay's own 30 s hold
+ * (relay/core.ts OFFLINE_WAIT_MS): with the one-second pause between such waits, a phone opens
+ * about two relay sockets a minute while its PC is away, well under the relay's per-address limit.
+ */
 export const RECONNECT_PC_ANSWER_MS = 25_000;
 
 export async function openRelayTransport(offer: RelayOffer, options: RelayTransportOptions = {}): Promise<RelayTransport> {
@@ -149,6 +154,7 @@ export class RelayTransport implements Transport {
   private openHttp = 0;
   private socketSentAt = -Infinity;
   private probeBackoff = 1;
+  /** requests whose body is still being read before they open (Firefox buffers it) */
   private preparingHttp = 0;
   private upgrading = false;
   private probedAt = -Infinity;
@@ -187,6 +193,7 @@ export class RelayTransport implements Transport {
 
   private async establish(): Promise<void> {
     const generation = ++this.generation;
+    // A one-use pairing code must never be reused after admission.
     const { code, ...savedOffer } = this.offer;
     const offer = generation === 1 ? this.offer : savedOffer;
     const options: RelayChannelOptions = {
@@ -317,6 +324,7 @@ export class RelayTransport implements Transport {
           const timer = setTimeout(() => attempt.abort(), left / rounds);
           const signal = AbortSignal.any([this.abort.signal, attempt.signal, ended]);
           const onClose = (error: Error): void => { if (kept === direct) options.onClose?.(error); };
+          // the plugin counts a socket until its close is done (iOS: up to 5 s after asking): the lane's place frees only then
           const freed = deferred();
           let opened = false;
           const counted = (url: string): RelaySocket => { opened = true; return untilClosed(socket(url), freed.resolve); };
@@ -342,6 +350,11 @@ export class RelayTransport implements Transport {
     });
   }
 
+  /**
+   * While the relay carries `channel`: when one of the PC's direct carriers proves to be the PC (a probe that makes
+   * no session), and no request is under way, closes `channel` so the reconnect comes back on that carrier. Never
+   * moves a stream: the switch is a reconnect like any other, and nothing typed is sent again by itself.
+   */
   private upgrade(channel: RelayChannel): void {
     const socket = this.options.directSocket;
     const carriers = this.directCarriers ?? [];
@@ -413,6 +426,12 @@ export class RelayTransport implements Transport {
 
   private routeChanged(): void { for (const listener of [...this.routeListeners]) listener(); }
 
+  /**
+   * Ends this carrier and connects again, signing in with the key the saved pairing holds now: after
+   * a link swapped it for the account key, the PC takes this device's account actions only from a
+   * session that proved that key. Settles once the carrier that signed in again is up (an attempt
+   * already on its way may still sign with the old key), and never if the transport closes first.
+   */
   renew(): Promise<void> {
     const up = new Promise<void>((resolve) => this.renewing.add({ after: this.generation, up: resolve }));
     this.channel?.close();
@@ -488,6 +507,8 @@ export class RelayTransport implements Transport {
 
   async fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
     const address = input instanceof Request ? input : new URL(String(input), "https://relay.ovis.invalid").href;
+    // The request belongs to the carrier up when it was made: if that one is gone before it is sent, it fails
+    // and is never sent on a later one (nothing typed is sent automatically after a disconnect).
     const mux = this.mux();
     const connected = (): void => { if (this.stopped || !mux.active) throw new TypeError("Relay carrier is disconnected"); };
     // Firefox has no Request.body (undefined, where a request without one has null): its body is buffered below,
@@ -607,6 +628,11 @@ export class RelayWebSocket extends EventTarget implements WebSocketLike {
   readonly CLOSING = 2;
   readonly CLOSED = 3;
   private state: number = this.CONNECTING;
+  /**
+   * CLOSING as soon as the relay carrier is no longer open, before its close reaches this stream:
+   * HerdrSocket reads it as disconnected, so typing stays a draft instead of going into a socket
+   * that drops it.
+   */
   get readyState(): number { return this.state === this.OPEN && !this.carrier() ? this.CLOSING : this.state; }
   binaryType: BinaryType = "blob";
   declare onopen: WebSocketLike["onopen"];
