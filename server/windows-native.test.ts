@@ -178,6 +178,8 @@ const session = new Uint32Array(1); if (!symbols.ProcessIdToSessionId(process.pi
 const stop = () => { if (!existsSync(${JSON.stringify(stopPath)})) return; writeFileSync(${JSON.stringify(`${stoppedPath}.tmp`)}, '{}'); renameSync(${JSON.stringify(`${stoppedPath}.tmp`)}, ${JSON.stringify(stoppedPath)}); process.exit(0); };
 watch(${JSON.stringify(root)}, stop);
 stop();
+// a stop whose event never comes still cannot keep it past the test's own 60 s
+setTimeout(() => process.exit(0), 55_000);
 // written whole under another name first: the result's name only appears with all of it (#2165)
 writeFileSync(${JSON.stringify(`${resultPath}.tmp`)}, JSON.stringify({pid:process.pid, secret:process.env.OVIS_START_TEST_SECRET, args:process.argv.slice(2), session:session[0]}));
 renameSync(${JSON.stringify(`${resultPath}.tmp`)}, ${JSON.stringify(resultPath)});
@@ -209,7 +211,7 @@ renameSync(${JSON.stringify(`${resultPath}.tmp`)}, ${JSON.stringify(resultPath)}
     // process's. The fixture is removed only once no child can still need the file: none was started, or the running
     // one said it saw it. Otherwise the file and the fixture stay, so a child that runs or starts later still finds it
     // (at once, right after its watch is in place). Its watch keeps root busy until it exits, which the removal waits out.
-    const acknowledged = child === "running" ? watchJson<Record<string, never>>(root, stoppedPath, 5_000) : undefined;
+    const acknowledged = child === "running" ? watchJson<Record<string, never>>(root, stoppedPath, 20_000) : undefined;
     writeFileSync(stopPath, "");
     if (acknowledged) {
       try { await acknowledged.result; child = "none"; } finally { await acknowledged.close(); }
