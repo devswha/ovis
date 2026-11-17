@@ -1,8 +1,18 @@
 /* Navigation → Rail (Rail.tsx): the agent inbox's rail before the workspaces sidebar too. As in the inbox's
    column (InboxMode.css), the rail is cut out of the sidebar's width, never added to it, and is as wide as the
    inbox's band is tall, so it stands where it stands in the inbox and nothing moves between the two. */
+/* the rail's width, also known to the header's start, which makes room for it (further down) */
+.app:has(.sidebar:not(.inbox-column) > .inbox-rail) {
+  --fork-rail-control: var(--control-h);
+  --fork-rail-box: calc(var(--fork-rail-control) + var(--space-3) * 2 + env(safe-area-inset-left, 0px));
+}
+
+@media (pointer: coarse) {
+  .app:has(.sidebar:not(.inbox-column) > .inbox-rail) { --fork-rail-control: var(--touch-target); }
+}
+
 .sidebar:has(> .inbox-rail) {
-  --inbox-control: var(--control-h);
+  --inbox-control: var(--fork-rail-control);
   --inbox-rail-w: calc(var(--inbox-control) + var(--space-3) * 2);
   flex-direction: row;
   padding-left: 0;
@@ -13,8 +23,21 @@
   min-width: 0;
 }
 
-@media (pointer: coarse) {
-  .sidebar:has(> .inbox-rail) { --inbox-control: var(--touch-target); }
+/* The rail runs the window's full height, as it does in the inbox, so its buttons stand where they stand there and
+   nothing moves between the two: it climbs over the header's start, and the sidebar's own top row (.header-side,
+   styles.css: New workspace, the palette and the sidebar's toggle) starts after it, as the inbox's top row does.
+   Not over a folded sidebar: there the header's start holds the toggle, and the peeked sidebar starts under it. */
+@media (min-width: 769px) {
+  .app:not(.sidebar-collapsed) .sidebar:not(.inbox-column) > .inbox-rail {
+    position: relative;
+    margin-top: calc(-1 * var(--header-h));
+  }
+
+  .app:not(.sidebar-collapsed):has(.sidebar:not(.inbox-column) > .inbox-rail) .header-side {
+    flex-basis: calc(var(--sidebar-shown-w) - var(--fork-rail-box));
+    margin-left: var(--fork-rail-box);
+    padding-left: calc(var(--space-3) + 2px);
+  }
 }
 
 /* The rail has the gear, so the sidebar's foot drops its own, and the gear's row when the plan meters leave it empty */
