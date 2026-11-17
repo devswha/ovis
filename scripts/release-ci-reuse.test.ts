@@ -835,7 +835,14 @@ describe("ci.yml", () => {
       };
       const commit = (message: string): string => { git("commit", "-q", "--allow-empty", "-m", message); return git("rev-parse", "HEAD"); };
       git("init", "-q", "-b", "main");
-      const [a, b, head] = [commit("a"), commit("b"), commit("head")];
+      const [a, b] = [commit("a"), commit("b")];
+      // HEAD is a merge commit, as a pull request's checkout is: first parent b, last parent a side commit
+      git("checkout", "-q", "-b", "side", a);
+      const side = commit("side");
+      git("checkout", "-q", "main");
+      git("merge", "-q", "--no-ff", "-m", "head", "side");
+      const head = git("rev-parse", "HEAD");
+      expect(git("rev-list", "--parents", "-n", "1", head).split(" ").slice(1)).toEqual([b, side]);
       git("checkout", "-q", "--orphan", "elsewhere");
       const elsewhere = commit("not in main's history");
       git("checkout", "-q", "main");
@@ -843,7 +850,7 @@ describe("ci.yml", () => {
       // cancelled run of HEAD itself, which only a query that lost one of its filters would see; sleep returns at once
       const bin = join(dir, "bin");
       mkdirSync(bin);
-      writeFileSync(join(bin, "gh"), `#!/bin/sh\necho call >> "$CALLS"\n[ -n "$DOWN" ] && exit 1\ncase "$*" in "run list --repo o/r --workflow ci.yml --branch main --event push --status success --limit 100 --json headSha --jq .[].headSha") printf '%s\\n' $PASSED ;; *) printf '%s\\n' $ANY ;; esac\n`, { mode: 0o755 });
+      writeFileSync(join(bin, "gh"), `#!/bin/sh\necho call >> "$CALLS"\n[ -n "$DOWN" ] && exit 1\ncase "$(printf '%s|' "$@")" in "run|list|--repo|o/r|--workflow|ci.yml|--branch|main|--event|push|--status|success|--limit|100|--json|headSha|--jq|.[].headSha|") printf '%s\\n' $PASSED ;; *) printf '%s\\n' $ANY ;; esac\n`, { mode: 0o755 });
       writeFileSync(join(bin, "sleep"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
       const found = async (env: Record<string, string>): Promise<{ base: string; calls: number }> => {
         const [output, calls] = [join(dir, "output"), join(dir, "calls")];
@@ -879,7 +886,12 @@ describe("ci.yml", () => {
       };
       expect(await handed({ GITHUB_EVENT_NAME: "push", EVENT_BASE: b, LAST_GREEN: a })).toBe(`RATCHET_BASE=${a}`);
       expect(Bun.spawnSync(["git", "cat-file", "-e", `${a}^{commit}`], { cwd: shallow }).exitCode).toBe(0);
+      const has = (sha: string): boolean => Bun.spawnSync(["git", "cat-file", "-e", `${sha}^{commit}`], { cwd: shallow }).exitCode === 0;
+      expect(has(b)).toBe(false);
       expect(await handed({ GITHUB_EVENT_NAME: "pull_request", EVENT_BASE: a, LAST_GREEN: "" })).toBe(`RATCHET_BASE=${b}`);
+      expect(has(b)).toBe(true);
+      // the base reaches the fetch step from Detect changes' ratchet step
+      expect([ci.jobs["changes"]!.outputs?.["ratchet_base"], fetchBase.env?.["LAST_GREEN"]]).toEqual(["${{ steps.ratchet.outputs.base }}", "${{ needs.changes.outputs.ratchet_base }}"]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
