@@ -5,14 +5,11 @@ import type { PendingPush, PendingPushStore } from "../push.ts";
 export { base64url, ServerIdentityChangedError, sign } from "../../../shared/relay-device.ts";
 export type { RelayDevice } from "../../../shared/relay-device.ts";
 
-/** The version a PC's last admission named, and whether it was older than this shell accepts. */
 export interface ObservedVersion { readonly version: string; readonly outdated: boolean }
-/** A saved PC as this browser keeps it: the shared record plus the version its last admission named (updateFlow.ts). */
 export type EnrollmentState = "pending" | "complete" | "failed";
 export type SavedDevice = RelayDevice & { readonly observed_version?: ObservedVersion; readonly account_enrollment?: { readonly account: string; readonly state: EnrollmentState } };
 
 export interface RelayDeviceStore extends SharedRelayDeviceStore {
-  /** Reads and checks `source` in the target's write transaction before applying `change`. */
   update(serverId: string, change: (current: RelayDevice | undefined) => RelayDevice, source?: { readonly serverId: string; readonly assert: (current: RelayDevice | undefined) => void }): Promise<RelayDevice>;
 }
 
@@ -24,7 +21,6 @@ export function enrollmentOf(device: RelayDevice, account?: string): EnrollmentS
   return value.state === "pending" || value.state === "complete" || value.state === "failed" ? value.state : undefined;
 }
 
-/** The version kept on a saved record, if a well-formed one is there (the record is read back from IndexedDB). */
 export function observedVersionOf(device: RelayDevice): ObservedVersion | undefined {
   if (!("observed_version" in device)) return undefined;
   const value: unknown = device.observed_version;
@@ -96,7 +92,6 @@ export const indexedDeviceStore: RelayDeviceStore = {
   },
 };
 
-/** The subscriptions each PC's worker kept for the shell to register (lib/push.ts registerPendingPush). */
 export const indexedPendingPush: PendingPushStore = {
   async get(serverId) {
     const db = await openDatabase();
@@ -124,10 +119,6 @@ export const indexedPendingPush: PendingPushStore = {
   },
 };
 
-/**
- * The shell's database. Version 2 added `pending-push`, which the worker writes too: public/sw.js
- * openRelayDatabase opens the same name and version with the same stores.
- */
 function openDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open("ovis-relay", 2);
@@ -141,7 +132,6 @@ function openDatabase(): Promise<IDBDatabase> {
   });
 }
 
-/** The saved key for the offer's PC in this browser (IndexedDB unless another store is given), or a new unsaved one. */
 export function getDevice(offer: RelayOffer, store: RelayDeviceStore = indexedDeviceStore, label?: string): Promise<RelayDevice> {
   return getSharedDevice(offer, store, label);
 }

@@ -10,17 +10,11 @@ import { drawnPng } from "./clipboard.ts";
 import { callNative, hasNativePlugin, inAndroidApp, inNativeApp } from "./nativeApp.ts";
 import { getTransport } from "./transport.ts";
 
-/** Whether a download link here would load the file over the app instead of saving it. */
 export function downloadLeavesApp(): boolean {
   if (typeof navigator === "undefined") return false;
   return (navigator as Navigator & { standalone?: boolean }).standalone === true || (inNativeApp() && !inAndroidApp());
 }
 
-/**
- * The picture `src` as a file named `name`. A PC path is read through the transport, as the page's
- * CSP lets no fetch reach a blob: or data: URL (a relay PC's pictures are blob: URLs once shown);
- * any other picture is the decoded `shown` one, encoded as PNG.
- */
 export async function imageFile(src: string, name: string, shown: HTMLImageElement | null, signal?: AbortSignal): Promise<File> {
   if (src.startsWith("/api/")) {
     const response = await getTransport().fetch(src, { signal });
@@ -32,17 +26,10 @@ export async function imageFile(src: string, name: string, shown: HTMLImageEleme
   return new File([await drawnPng(shown)], name, { type: "image/png" });
 }
 
-/** The Android app's plugin that saves a picture to Downloads (app/android/.../SaveImagePlugin.java). */
 export const SAVE_PLUGIN = "OvisSave";
 
-/** The app's limit (SavedImage.MAX_BYTES), checked here before the bytes are copied into base64. */
 export const SAVE_MAX_BYTES = 20 * 1024 * 1024;
 
-/**
- * How Download saves the picture here: a download link, the share sheet, or the Android app. An
- * Android app built before its plugin has neither a working link nor a share sheet, so Download
- * there says it could not save rather than doing nothing.
- */
 export function saveRoute(): "link" | "share" | "app" {
   if (hasNativePlugin(SAVE_PLUGIN)) return "app";
   return downloadLeavesApp() || inAndroidApp() ? "share" : "link";
@@ -61,7 +48,6 @@ export async function saveInApp(file: File): Promise<"saved" | "shared" | "faile
     const { saved } = await callNative<{ saved?: string }>(SAVE_PLUGIN, "saveImage", { name: file.name, type: file.type, data: base64(new Uint8Array(await file.arrayBuffer())) });
     return saved === "downloads" ? "saved" : "shared";
   } catch {
-    // the app refused it (not a picture, too large) or could not write it: the viewer says so
     return "failed";
   }
 }

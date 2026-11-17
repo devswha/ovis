@@ -69,7 +69,6 @@ describe("usage counters", () => {
       { counts: { width: "narrow", add: { composer_voice: 1 }, shown: [], generation: 0 }, keepalive: false },
       { counts: { width: "wide", add: { chat_send: 2 }, shown: [], generation: 0 }, keepalive: false },
     ]);
-    // told: the next flush has nothing to tell
     counters.flush(true);
     await settle();
     expect(sent).toHaveLength(2);
@@ -85,8 +84,6 @@ describe("usage counters", () => {
   });
 
   test("no counting while the server is off, blocked or its notice is unseen, and a no in an answer drops the batch", async () => {
-    // an older PC says nothing of a counting generation: its notice_seen is for a notice that said nothing of counts
-    // (the hosted app reaching it), so nothing is counted there and nothing is posted to it
     for (const no of [status({ enabled: false }), status({ blocked_by_env: true }), status({ notice_seen: false }), status({ counts_generation: undefined }), null]) {
       const { counters, sent, fire, armed } = setup(no);
       counters.heard(no);
@@ -101,7 +98,6 @@ describe("usage counters", () => {
     const { counters, sent, answer } = setup();
     counters.heard(status());
     counters.count("chat_send");
-    // the server answers this batch that it was turned off meanwhile: what is counted after is not kept
     answer(status({ enabled: false }));
     counters.flush(false);
     await settle();
@@ -129,7 +125,6 @@ describe("usage counters", () => {
     counters.draw("composer");
     counters.flush(false);
     await settle();
-    // another tab turned the counts off and on again: the PC's day is gone, and so is what it knew was shown
     counters.heard(status({ counts_generation: 1 }));
     counters.flush(false);
     await settle();
@@ -199,7 +194,6 @@ describe("usage counters", () => {
       ["wide", ["composer"], []],
       ["wide", ["composer"], ["chat_send"]],
       ["narrow", ["composer"], []],
-      // no longer drawn: nothing to say it was shown on the third day
       ["narrow", [], ["chat_send"]],
     ]);
   });
@@ -240,7 +234,6 @@ describe("usage counters", () => {
     counters.flush(false);
     await settle();
     expect([sent.length, asked]).toEqual([1, 0]);
-    // a later yes (Settings asking the status) does not undo it: the page never counts again
     counters.heard(status());
     counters.count("chat_send");
     counters.flush(false);
@@ -253,7 +246,6 @@ describe("usage counters", () => {
     counters.draw("composer");
     expect(armed()).toBe(0);
     counters.heard(status());
-    // the yes alone arms the batch: no use and no flush by hand
     fire();
     await settle();
     expect(sent.map(({ counts }) => counts.shown)).toEqual([["composer"]]);
@@ -271,7 +263,6 @@ describe("usage counters", () => {
       usageCounters.flush(true);
       await settle();
     } finally { globalThis.fetch = original; }
-    // 6 is the notice whose wording says buttons are counted: below it, not one request
     expect(calls.length > 0).toBe(NOTICE_VERSION >= 6);
   });
 
@@ -279,9 +270,7 @@ describe("usage counters", () => {
     const here = (can = {}, machineId = "local") => ({ machineId, can });
     expect(actionUse("split", "shortcut", here())).toBe("split_by_shortcut");
     expect(actionUse("settings", "palette", here())).toBe("settings_by_palette");
-    // nothing selected to split, close or add a tab beside: the key or row did nothing
     expect([actionUse("split", "shortcut", here({ split: false })), actionUse("close_pane", "palette", here({ close_pane: false })), actionUse("new_tab", "shortcut", here({ new_tab: false }))]).toEqual([null, null, null]);
-    // another PC's pane: those three are not counted; the rest are the app's own, wherever the pane is
     expect([actionUse("split", "button", here({}, "pc-2")), actionUse("close_pane", "menu", here({}, "pc-2")), actionUse("new_tab", "shortcut", here({}, "pc-2")), actionUse("files", "menu", here({}, "pc-2"))]).toEqual([null, null, null, null]);
     expect(actionUse("sidebar", "shortcut", here({}, "pc-2"))).toBe("sidebar_by_shortcut");
   });
@@ -297,7 +286,6 @@ describe("usage counters", () => {
     counters.heard(status());
     counters.count("chat_send");
     counters.flush(false);
-    // counted while the batch is on its way, then the refusal, then a later yes (Settings asking the status)
     counters.count("composer_voice");
     answer!();
     await settle();
@@ -313,7 +301,6 @@ describe("usage counters", () => {
     expect(actionsCan({ ...now, inboxShown: true })).toMatchObject({ new_tab: false, sidebar: true });
     expect(actionsCan({ ...now, inMode: true })).toMatchObject({ new_tab: false, sidebar: false });
     expect(actionsCan({ ...now, tabTarget: false, split: false, closePane: false, files: false })).toEqual({ split: false, close_pane: false, files: false, new_tab: false, sidebar: true });
-    // and actionUse counts nothing App cannot do: a sidebar shortcut in the mode is no use of the sidebar
     expect(actionUse("sidebar", "shortcut", { machineId: "local", can: actionsCan({ ...now, inMode: true }) })).toBeNull();
     expect(actionUse("files", "menu", { machineId: "local", can: actionsCan(now) })).toBe("files_by_menu");
   });
@@ -349,7 +336,6 @@ describe("usage counters", () => {
     const { counters, sent } = setup();
     counters.heard({ ...status(), counts_generation: 4 });
     counters.heard({ ...status(), enabled: false, counts_generation: 5 });
-    // the answer to a batch sent before the off arrives now
     counters.heard({ ...status(), counts_generation: 4 });
     counters.count("chat_send");
     counters.flush(false);
