@@ -1,18 +1,11 @@
 import { readSync } from "node:fs";
 import { StringDecoder } from "node:string_decoder";
 
-/** Long records retain their envelope and tool calls, even between large content strings. */
 export type OmoLine = { text: string } | { head: string; tail: string; record?: string };
 const CHUNK_BYTES = 256 * 1024;
 const LONG_LINE_BYTES = 64 * 1024;
 const LINE_END_BYTES = 4096;
 
-/**
- * A JSON projection with bounded string values. Keep complete JSON escapes, including across
- * chunks, and scan to each closing quote: text that looks like a tool call inside a string is
- * never interpreted as one. Question arguments fit within this limit; large tool output and
- * thinking do not need to be retained to reconstruct the question lifecycle.
- */
 class RecordProjection {
   private parts: string[] = [];
   private quoted = false;
@@ -56,7 +49,6 @@ class RecordProjection {
   finish(): string { return this.parts.join(""); }
 }
 
-/** Complete JSONL records only; an unfinished final record is retried from its first byte. */
 export function readOmoLines(fd: number, from: number, size: number, each: (line: OmoLine) => void, read: typeof readSync = readSync): number {
   const chunks = readOmoChunks(fd, from, size, each, read);
   let next = chunks.next();
@@ -64,7 +56,6 @@ export function readOmoLines(fd: number, from: number, size: number, each: (line
   return next.value;
 }
 
-/** Small reads finish inline; larger reads yield even in the middle of one JSONL record. */
 export function readOmoLinesCooperatively(fd: number, from: number, size: number, each: (line: OmoLine) => void, current: () => boolean): number | Promise<number> {
   const chunks = readOmoChunks(fd, from, size, each, readSync);
   const advance = (): number | Promise<number> => {
@@ -76,7 +67,6 @@ export function readOmoLinesCooperatively(fd: number, from: number, size: number
   return advance();
 }
 
-/** Keep the decoder and unfinished record alive across bounded read steps. */
 function* readOmoChunks(fd: number, from: number, size: number, each: (line: OmoLine) => void, read: typeof readSync): Generator<void, number> {
   let offset = from;
   let position = from;
