@@ -98,6 +98,7 @@ export async function offeredProviders(service: string, fallback: readonly Accou
   };
 }
 
+/** One way the account signs in (`GET /v1/identities`); the service keeps no email or login to name it by. */
 export interface AccountIdentity {
   readonly provider: AccountProvider;
   readonly added_at: string;
@@ -254,6 +255,8 @@ export class AccountService {
    * store holds, whichever tab named it. A sign-in made meanwhile has an id of its own (sessionOf).
    */
   async session(): Promise<AccountSession | undefined> {
+    // read and named in one update of the store, with no read before it: no other tab's write (a refresh, another
+    // sign-in, a sign-out) falls between this tab seeing the session and naming it
     let seen: AccountSession | undefined;
     try {
       await this.options.store.update("session", (current) => {
@@ -266,6 +269,11 @@ export class AccountService {
     return seen;
   }
 
+  /**
+   * This service acting only for `session`, the sign-in a person acted on: once another one is stored
+   * (signed out and in again meanwhile), its calls throw SignedOutError without touching that one, and
+   * its sign-out ends `session` alone.
+   */
   forSignIn(session: AccountSession): AccountService {
     return new AccountService({ ...this.options, signIn: session });
   }
@@ -303,6 +311,8 @@ export class AccountService {
     const list = isRecord(body) && Array.isArray(body.admissions) ? body.admissions : [];
     return list.flatMap((entry) => {
       if (!isRecord(entry) || typeof entry.key !== "string" || typeof entry.label !== "string" || typeof entry.server_id !== "string" || typeof entry.at !== "string") return [];
+      // shown on the approval card and signed into the add: one plain line; a name with nothing left
+      // keeps its row (it may be the newest) under a plain stand-in
       const label = accountLabel(entry.label) || UNNAMED_DEVICE;
       const city = typeof entry.city === "string" ? accountLabel(entry.city) : "";
       const place = typeof entry.country === "string" && /^[A-Z]{2}$/.test(entry.country)
@@ -348,10 +358,12 @@ export class AccountService {
       await end(after, "a sign-in for another account");
       throw new AccountServiceError(502, "invalid_answer", "The account service answered for another account");
     }
+    // under the lock sign-out and refresh take: the answer replaces only the sign-in that asked for it
     const outcome = await this.lock(async () => {
       let result: "kept" | "moved-on" | "signed-out" = "signed-out";
       await this.options.store.update("session", (current) => {
         if (current?.refresh_token === before.refresh_token) { result = "kept"; return after; }
+        // refreshed by another tab, or signed in again there: the link holds at the service, and that session stays
         if (current !== undefined && current.account === before.account) result = "moved-on";
         return current;
       });
@@ -423,11 +435,13 @@ export class AccountService {
     });
   }
 
+  /** Forgets `from` here, unless another sign-in took its place meanwhile. */
   private async signedOut(from?: AccountSession): Promise<never> {
     await this.options.store.update("session", (current) => from === undefined || current?.refresh_token === from.refresh_token ? undefined : current);
     throw new SignedOutError();
   }
 
+  /** One refresh of `from`; its answer is stored only if `from` is still the stored session. */
   private async refreshed(from: AccountSession): Promise<AccountSession> {
     let next: AccountSession;
     try {
@@ -448,6 +462,7 @@ export class AccountService {
 
   /** A session whose access token is good, refreshing once between tabs; `stale` is a token the service just refused. */
   private async fresh(stale?: string): Promise<AccountSession> {
+    // bound to a sign-in that is no longer the stored one: the stored one is someone else's to use or end
     const foreign = (session: AccountSession | undefined): boolean => this.options.signIn !== undefined && (session === undefined || !sameSignIn(session, this.options.signIn));
     const session = await this.session();
     if (foreign(session)) throw new SignedOutError();

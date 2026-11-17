@@ -15,6 +15,10 @@ export interface AgentRosterOptions {
   pinned: readonly string[];
 }
 
+/**
+ * A PC's rows with each helper right under the agent that started it (herdr-core's `parent_pane_id`),
+ * after that agent's earlier helpers.
+ */
 export function nestHelpers(entries: readonly SidebarAgent[]): SidebarAgent[] {
   return nestRows(entries, (entry) => entry.pane.pane_id, (entry) => entry.pane.parent_pane_id);
 }
@@ -61,6 +65,10 @@ export function agentRoster(machines: readonly Machine[], options: AgentRosterOp
   return splitPinnedRows(rows, options.pinned, ({ machine, entry }) => sidebarPinKey(machine.id, entry.pane.pane_id));
 }
 
+/**
+ * Whether a launcher tagged the pane as a background agent: `herdr pane report-metadata <pane>
+ * --token role=background` (any case, spaces around it ignored).
+ */
 export function isBackgroundAgent({ pane, agent }: SidebarAgent): boolean {
   return isBackgroundRole((pane.tokens ?? agent?.tokens)?.[ROLE_TOKEN]);
 }

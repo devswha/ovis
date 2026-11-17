@@ -1,3 +1,8 @@
+/**
+ * A page that was not running (a phone asleep, a laptop's lid shut, a tab the browser froze)
+ * or that could not reach its server learns of what it missed all at once, later: stamped then, a
+ * wait of an hour would say a minute.
+ */
 const BEAT_MS = 5_000;
 /**
  * A hidden tab's timers run as seldom as once a minute: a longer silence is a page that was not
@@ -80,6 +85,10 @@ export const stateWatch = {
     const now = beat();
     return knownAt !== null && now - knownAt > BLIND_MS;
   },
+  /**
+   * The watch has one keeper at a time: keeping it starts it anew, so a second keeper would take the first one's
+   * knowledge with it.
+   */
   keep(look: (look: UnseenLook) => void): () => void {
     unseen = look;
     knownAt = null;

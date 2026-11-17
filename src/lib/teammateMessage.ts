@@ -32,6 +32,7 @@ export function teammateMessageParts(text: string): TeammateMessagePart[] | null
       attr = attr.slice(pair[0].length);
     }
     const name = attributes.get("teammate_id")?.trim();
+    // A torn/ambiguous header is still readable as the original message, not a guessed actor.
     if (attr.trim() || !name || envelope[2]!.includes("<teammate-message")) { rest = before; break; }
     const body = envelope[2]!.trim();
     let result = body;
@@ -40,6 +41,7 @@ export function teammateMessageParts(text: string): TeammateMessagePart[] | null
       const event: unknown = JSON.parse(body);
       if (event !== null && typeof event === "object" && !Array.isArray(event)) {
         const data = event as Record<string, unknown>;
+        // Idle is availability, not success. Unknown/mismatched events keep their full payload.
         if (data.type === "idle_notification" && data.from === name &&
             (data.result === undefined || typeof data.result === "string")) {
           status = "idle";

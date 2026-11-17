@@ -35,6 +35,7 @@ describe("openWebLink", () => {
       blocked = true;
       createWebLinkOpener()("https://blocked.example", true);
       expect(clicked.at(-1)).toEqual({ href: "https://blocked.example", target: "_blank", rel: "noopener noreferrer" });
+      // a tab the browser no longer lets this page steer still opens the address, in a new tab
       blocked = false;
       const refusing = createWebLinkOpener();
       refusing("https://five.example", true);
@@ -170,6 +171,7 @@ describe("terminal file links", () => {
     // a network share on a Windows PC, however its second separator is written, and a control character
     for (const uri of ["file:////attacker.example/share/doc.txt", "file:///%2Fattacker.example/share/doc.txt", "file:///%5C%5Cattacker.example/share", "file:///tmp/a.md\u0000", "file:///tmp/a\u001b.md"])
       expect(fileUriPath(uri)).toBeNull();
+    // a control character written encoded is refused too: the server trimmed `%0A` and opened /etc/hosts
     for (const uri of ["file:///etc/hosts%0A", "file:///tmp/a%1B.md", "file:///tmp/a%7F.md"]) expect(fileUriPath(uri)).toBeNull();
     expect(fileUriPath("file:///tmp/Bob's-notes.md")).toBe("/tmp/Bob's-notes.md");
     // a Windows drive path loses the slash a URI puts before it
@@ -177,6 +179,7 @@ describe("terminal file links", () => {
   });
 
   it("reads a long line of paths in one pass", async () => {
+    // `(src/a.ts)` over and over as one wrapped line froze the page for seconds while hovering
     const term = new Terminal({ cols: 200, rows: 40, allowProposedApi: true });
     await written(term, "(src/a.ts)".repeat(700));
     expect(terminalFileLinks(term.buffer.active, 1, () => {})).toHaveLength(20);
@@ -289,6 +292,10 @@ describe("terminal file links", () => {
     await written(term, "a.md b.md src/c.md");
     const bare = bareNameLinks(false);
     const [first, second, folder] = terminalFileLinks(term.buffer.active, 1, () => {}, bare);
+    // what xterm 5.5's Linkifier does (_handleNewLink, _linkHover, _linkLeave): a hovered link's
+    // drawing is read from its decorations, which are then swapped for an object whose getters and
+    // setters reach the link hovered now. A link hovered again on its row is read from that object
+    // while it still answers with how the link was drawn when the pointer left it.
     type Drawn = { pointerCursor: boolean; underline: boolean };
     const states = new Map<object, { state?: Drawn }>();
     let current: { state?: Drawn } | undefined;

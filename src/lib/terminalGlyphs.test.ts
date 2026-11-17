@@ -18,6 +18,7 @@ describe("glyphFit", () => {
 
   it("widens a 1em Hangul or Han glyph until it fills 90% of its cells, keeping its height", () => {
     const fit = glyphFit(2 * IOS_CELL - 13, 13, IOS_CELL);
+    // D2Coding's syllable beside Menlo: enlarged it grew as tall as the row, and Korean lines touched
     expect(fit!.scale).toBe(1);
     expect(13 * fit!.stretch).toBeCloseTo(0.9 * 2 * IOS_CELL, 6);
     expect(fit!.spacing).toBeCloseTo(0.1 * 2 * IOS_CELL, 6);
@@ -61,6 +62,7 @@ describe("textPresentation", () => {
   });
 
   it("leaves a span alone when it already chooses a presentation anywhere", () => {
+    // xterm measured ⏺️ as the emoji it asks to be; respacing it as text would shift X
     expect(textPresentation("⏺\ufe0fX")).toBeNull();
     expect(textPresentation("⏺⏺\ufe0f")).toBeNull();
     expect(textPresentation("⏺\ufe0e")).toBeNull();
@@ -274,6 +276,9 @@ function glyphPage(faces: FakeFace[], texts = ["\uf07b", "가"], composing = fal
   const span = (text: string): FakeSpan => Object.assign(new FakeSpan(), { textContent: text });
   const drawn = texts.map(span);
   const rows = { querySelectorAll: () => drawn, getBoundingClientRect: () => ({ left: 0, top: 0, width: 78 }), offsetWidth: 78 };
+  // xterm's composition view, open while an IME composes, and the element its WidthCache measures in:
+  // a Hangul syllable 13px wide there once a late Hangul face has loaded, 11.245px in the stand-in
+  // before it, anything else a 7.8px cell
   const hangul = faces.find((each) => each.family.includes("Hangul"));
   const view = Object.assign(new FakeSpan(), { className: "composition-view active" });
   Object.assign(view.style, { fontSize: "13px", transform: "", transformOrigin: "", paddingLeft: "" });
@@ -458,6 +463,7 @@ describe("adjustTerminalGlyphs fitting a syllable composed before any row drew i
 describe("stretchedView", () => {
   it("adds the stretch to xterm's move of a long composition, counting the stretched width", () => {
     expect(stretchedView("translateX(min(0px, calc(40px - 100%)))", "scaleX(1.1)")).toBe("translateX(min(0px, calc(40px - 110%))) scaleX(1.1)");
+    // as Chromium gives the same value back
     expect(stretchedView("translateX(min(0px, -100% + 40px))", "scaleX(1.1)")).toBe("translateX(min(0px, calc(40px - 110%))) scaleX(1.1)");
     expect(stretchedView("translateX(min(0px, calc(-3.5px - 100%)))", "scaleX(1.1)")).toBe("translateX(min(0px, calc(-3.5px - 110%))) scaleX(1.1)");
     expect(stretchedView("translateX(min(0px, -100% - 3.5px))", "scaleX(1.1)")).toBe("translateX(min(0px, calc(-3.5px - 110%))) scaleX(1.1)");

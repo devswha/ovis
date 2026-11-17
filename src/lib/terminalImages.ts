@@ -152,6 +152,8 @@ export function useTerminalImages(terminal: Terminal | null, enabled: boolean, c
     let gone = false;
     import("@xterm/addon-image").then(({ ImageAddon }) => {
       if (gone || loaded.has(terminal)) return;
+      // the addon turns xterm's pixel size reports on (the bridge passes the cell size on to hc, which
+      // answers the program with it); turned off, the terminal answers as it did before
       const windowOptions = { ...terminal.options.windowOptions };
       const options = terminalImageOptions(coarseRef.current);
       const addon = new ImageAddon(options);
@@ -170,6 +172,9 @@ export function useTerminalImages(terminal: Terminal | null, enabled: boolean, c
         end: (success) => pictures.stream.end(success && taking),
       };
       if (pictures && stream && !registerOscStream(terminal, 1337, stream)) terminal.parser.registerOscHandler(1337, pictures.handle);
+      // XTSMGRAPHICS goes unanswered, as without the addon: hc leaves it to its viewers, and two
+      // browsers on one pane answered it late, into the program's next read (measured on hc 0.1.17).
+      // xterm disposes the handler with the terminal, as it does the addon.
       terminal.parser.registerCsiHandler({ prefix: "?", final: "S" }, () => true);
       loaded.set(terminal, entry);
       if (typeof __HERDR_TEST_HOOKS__ === "boolean" && __HERDR_TEST_HOOKS__ && terminal.element) {

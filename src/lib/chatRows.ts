@@ -45,6 +45,11 @@ export function appendChatRowSlots(slots: ChatRowSlots, count: number): ChatRowS
   return insertChatRowSlots(slots, slots.rows.length, count);
 }
 
+/**
+ * Where turns were written between turns already shown, by their index in `after`: a notice or a
+ * subagent's result Claude Code records while a turn is at work goes before that turn
+ * (server/claude-transcript.ts noticeAt), and the turns after it must keep their rows.
+ */
 export function insertedTurns(before: readonly string[], after: readonly string[]): number[] {
   const inserted: number[] = [];
   let shown = 0;

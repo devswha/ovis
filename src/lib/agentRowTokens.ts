@@ -1,5 +1,9 @@
 import type { AgentRowTokens } from "../../shared/pane-tokens.ts";
 
+/**
+ * The `$name` tokens herdr's `[ui.sidebar.agents]` rows draw, as the server reads them from the
+ * herdr config of its PC (server/herdr-sidebar.ts) and tells them on the machine events.
+ */
 let current: AgentRowTokens | null = null;
 const listeners = new Set<() => void>();
 

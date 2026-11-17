@@ -2,6 +2,11 @@ import { useLayoutEffect, type RefObject } from "react";
 
 import { chatLaneLength, useSettings } from "./settings.ts";
 
+/**
+ * A percentage would resolve against each column's own box and leave them a gutter apart. The lane's
+ * ceiling stays 60rem inside the length, so a change of the browser's font size moves it at once, as it
+ * moves Wide's 72rem.
+ */
 function useLaneOf(target: RefObject<HTMLElement | null>, locate: () => HTMLElement | null, key: string | null): void {
   const { settings } = useSettings();
   useLayoutEffect(() => {

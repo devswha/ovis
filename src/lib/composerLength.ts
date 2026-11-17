@@ -1,3 +1,8 @@
+/**
+ * The box's maxLength clamps typing and pasting without a word; these say it: the box is full, and
+ * how much of a paste did not fit.
+ */
+
 export function composerFull(length: number, max: number): boolean {
   return length >= max;
 }

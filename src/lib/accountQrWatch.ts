@@ -3,16 +3,34 @@ import { pcAccountStatus } from "./account/join.ts";
 import { fetchDevices } from "./api.ts";
 import { apiFetch } from "./api-request-id.ts";
 
+/**
+ * Who is vouched for is decided here as `ovis add` decides it (scripts/plugin-link.ts): only a member of the PC's
+ * account is named as the one that added it, and every other device that came since the code is asked about.
+ */
+
 export const ACCOUNT_QR_POLL_MS = 3000;
 export const ACCOUNT_QR_ALONE_MS = 10_000;
+/** how long the PC is watched after its QR code came down: as long as a pairing code lives (server/devices.ts) */
 export const ACCOUNT_QR_LATE_MS = 10 * 60_000;
 
+/**
+ * The PC's devices as the press on Show the QR code found them, on a PC in no account (the QR code is shown for no
+ * other): a device the person kept since counts in `ids`. `seen`: when each device that came since was first seen,
+ * filled in by every read (dueStrays). It travels with the press, to the watch and to a notice that waits, so a notice
+ * drawn again later does not give a device its ten seconds anew.
+ */
 export interface AccountQrBaseline { readonly ids: ReadonlySet<string>; readonly seen: Map<string, number> }
 
 export interface AccountQrStray { readonly id: string; readonly label: string; readonly relay: boolean }
 
+/**
+ * What there is to tell of a PC that was in no account when its QR code was made (`known`), and to ask: `strays` are
+ * removed unless the person keeps them, and `checking` are the devices still in their ten seconds, asked about once
+ * those end.
+ */
 export type AccountQrNotice =
   | { readonly kind: "alone"; readonly strays: readonly AccountQrStray[]; readonly checking: readonly AccountQrStray[]; readonly known: AccountQrBaseline }
+  /** the PC joined `account`; `device` is the member of that account that added it, null when no row is one */
   | { readonly kind: "joined"; readonly account: string; readonly device: string | null; readonly strays: readonly AccountQrStray[]; readonly checking: readonly AccountQrStray[]; readonly known: AccountQrBaseline };
 
 export const ACCOUNT_QR_WATCH_EVENT = "ovis:account-qr-watch";
@@ -30,12 +48,21 @@ export function addedBy(devices: readonly PairedDevice[], known: ReadonlySet<str
   return newest(members.filter((device) => !known.has(device.id))) ?? newest(members);
 }
 
+/**
+ * The devices the code let in that nobody vouched for: every one that came since `known` was read, through the relay
+ * or at the PC's own address, and is no member of the account the PC is in (`account`; null: in none, so none is one).
+ */
 export function unvouched(devices: readonly PairedDevice[], known: ReadonlySet<string>, account: string | null): PairedDevice[] {
   return devices.filter((device) => !known.has(device.id) && (account === null || device.account !== account));
 }
 
 export const strayOf = (device: PairedDevice): AccountQrStray => ({ id: device.id, label: device.label, relay: device.via_relay === true });
 
+/**
+ * Which of the unvouched devices are asked about now. One that came through the relay gets ACCOUNT_QR_ALONE_MS from
+ * when it was first seen (`seen`, filled in here) to become a member: a signed-in device links itself within seconds.
+ * One that paired at the PC's own address cannot become a member, and is asked about at once.
+ */
 export function dueStrays(strays: readonly PairedDevice[], seen: Map<string, number>, now: number): AccountQrStray[] {
   return strays.filter((device) => {
     if (!seen.has(device.id)) seen.set(device.id, now);
@@ -43,6 +70,10 @@ export function dueStrays(strays: readonly PairedDevice[], seen: Map<string, num
   }).map(strayOf);
 }
 
+/**
+ * What one read of the PC says of the devices that came since `known`: `due` are asked about now, `checking` are still
+ * in their ten seconds. While either is not empty somebody the code let in is unanswered, and no notice may go.
+ */
 export function accountQrFindings(devices: readonly PairedDevice[], account: string | null, known: AccountQrBaseline, now: number): { due: AccountQrStray[]; checking: AccountQrStray[] } {
   const strays = unvouched(devices, known.ids, account);
   const due = dueStrays(strays, known.seen, now);
@@ -119,6 +150,8 @@ export function watchEndedAccountQr(known: AccountQrBaseline, ended: Promise<boo
       if (!live) return;
       const found = accountQrFindings(devices, status.account, known, Date.now());
       const { checking } = found;
+      // lingering, the code ended long ago: a device that paired at the PC's own address since then came by another
+      // code (Phones and devices), not by this QR code, and is nobody to ask about
       const due = linger ? found.due.filter((stray) => stray.relay) : found.due;
       if (status.account !== null) {
         stop();

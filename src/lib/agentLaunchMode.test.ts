@@ -31,8 +31,11 @@ it("leaves other agents and a plain shell alone", () => {
 });
 
 it("names a model and an effort for the agents whose CLI documents them, and a positional prompt only where the separator makes it safe", () => {
+  // Claude Code's parser runs a subcommand named by the first operand even after `--` (claude -- update ran the updater)
   expect(launchCapabilities("claude")).toEqual({ model: true, efforts: CLAUDE_EFFORTS, ultracode: true, positionalPrompt: false });
+  // clap takes everything after `--` as the PROMPT positional (codex -- logout started the TUI)
   expect(launchCapabilities("codex")).toEqual({ model: true, efforts: CODEX_EFFORTS, ultracode: false, positionalPrompt: true });
+  // Letta Code takes a prompt only with `-p`, its headless mode (letta-code 0.34.23, src/cli/args.ts)
   for (const kind of ["omp", "pi", "gemini", "opencode", "letta", ""]) expect(launchCapabilities(kind)).toEqual({ model: false, efforts: [], ultracode: false, positionalPrompt: false });
   expect(modelSuggestions("claude")).toEqual(["sonnet", "opus", "haiku"]);
   expect(modelSuggestions("codex")).toEqual([]);
@@ -46,6 +49,7 @@ it("puts the model, the effort and then the prompt after the mode, each in the a
   expect(launchAgent("codex", plain, { prompt: "$review-pr" })).toEqual({ kind: "codex", args: ["--", "$review-pr"] });
   for (const prompt of ["logout", "update", "--help", "-p x"]) expect(launchArgs("codex", plain, { prompt })).toEqual(["--", prompt]);
   expect(launchArgs("codex", plain, { model: "  ", effort: "", prompt: "" })).toBeUndefined();
+  // DeepSeek Harness: an effort only (the bridge saves it for dsh-tui, which has no such flag), never a model
   expect(launchArgs("dsh-tui", plain, { model: "dsh-deepseek-flash", effort: "off", prompt: "hi" })).toEqual(["--effort", "off"]);
   expect(launchChoiceFault("dsh-tui", { effort: "medium" })).toBe("effort");
 });

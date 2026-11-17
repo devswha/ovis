@@ -14,7 +14,7 @@ export function authTokenFromHash(hash: string): string | null {
   try {
     return decodeURIComponent(encoded);
   } catch {
-    return null;
+    return null; // a truncated percent-escape: nothing we can offer to the gate
   }
 }
 

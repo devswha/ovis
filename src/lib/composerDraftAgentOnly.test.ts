@@ -34,6 +34,7 @@ it("keeps the draft agent-only in this page when storage refuses the mark", () =
   store.restorePending(key, "> quote\ncomment", true);
   expect(store.read(key).text).toBe("existing draft\n\n> quote\ncomment");
   expect(store.isAgentOnly(key)).toBe(true);
+  // its text is never stored without the mark, so another tab or a reload never reads it unmarked
   const other = new ComposerDraftStore(() => storage);
   expect(other.read(key).text).toBe("existing draft");
   expect(store.isUnsaved(key)).toBe(true);

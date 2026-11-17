@@ -8,10 +8,13 @@ const Terminal = await patchedTerminal(join(import.meta.dir, "../.."));
 type Term = InstanceType<typeof Terminal>;
 const write = (term: Term, data: string): Promise<void> => new Promise((resolve) => term.write(data, resolve));
 
+// Ovis keeps scrollback 0, so a narrower pane reflows wrapped rows with no history to push them into.
 describe("xterm reflow with no scrollback", () => {
   it("keeps the viewport inside the buffer when a narrower width pushes the cursor's row to the bottom", async () => {
     const term = new Terminal({ cols: 40, rows: 5, scrollback: 0, allowProposedApi: true });
     try {
+      // three rows of 35 cells, the cursor on the third: at 10 columns the first two take four rows each
+      // (xterm leaves the cursor's own row unwrapped)
       await write(term, ["0".repeat(35), "1".repeat(35), "2".repeat(35)].join("\r\n"));
       term.resize(10, 5);
       const buffer = term.buffer.active;
@@ -44,6 +47,7 @@ describe("xterm erase above (ESC[1J) from a row's last column", () => {
   it("keeps the row below wrapped when a selective erase (DECSED) leaves the cursor's row protected", async () => {
     const term = new Terminal({ cols: 5, rows: 3, scrollback: 100, allowProposedApi: true });
     try {
+      // abcde is protected (DECSCA), so ESC[?1J leaves it, and fgh still continues it
       await write(term, "p\r\nq\r\nr\r\ns\r\n\x1b[1\"qabcde\x1b[0\"qfgh\x1b[2;5H\x1b[?1J");
       const buffer = term.buffer.active;
       expect(buffer.getLine(buffer.baseY + 1)?.translateToString(true)).toBe("abcde");

@@ -16,6 +16,7 @@ export function quoteHeading(label: string, range: TerminalQuote["range"]): stri
   return start === end ? `${label} line ${start}` : `${label} lines ${start}-${end}`;
 }
 
+/** A heading and the text in a code fence that no backtick run inside the text can close. */
 export function formatTerminalQuote(quote: TerminalQuote): string | null {
   const text = quotedText(quote.text);
   if (text === null) return null;

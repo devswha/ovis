@@ -15,6 +15,12 @@ const HANGUL_GAP_EM = 0.35;
 /** xterm counts a row in whole device pixels: a factor a hair above the quotient keeps its floor on the wanted pixel. */
 const ROUNDING = 0.001;
 
+/**
+ * xterm's lineHeight for a font whose line (as xterm measures it) is `charHeight` px at
+ * `fontSize`, on a screen of `ratio` device pixels per CSS pixel: the smallest that makes a row
+ * as tall as Hangul's ink and its gap (to the nearest device pixel), and 1 when the font's line
+ * already is.
+ */
 export function terminalLineHeight(charHeight: number, fontSize: number, ratio: number): number {
   if (!(charHeight > 0) || !(fontSize > 0) || !(ratio > 0)) return 1;
   // xterm's own rounding (DomRenderer): the line up to whole device pixels, the row down; the row

@@ -45,6 +45,7 @@ describe("terminal disposal", () => {
 
     disposeAfterPendingFrame({ dispose: () => { renderer = undefined; } }, clock);
 
+    // A hidden tab can run tasks without delivering its animation frames.
     clock.tick();
     expect(reads).toEqual([80]);
     clock.frame();

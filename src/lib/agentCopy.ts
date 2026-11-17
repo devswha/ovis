@@ -4,6 +4,12 @@
  * width and starts each continuation row at its block's hanging indent, so those breaks are real
  * rows on the grid, and both xterm's selection and herdr's `pane.selection.read` return them with
  * the newline and the indent. herdr's own TUI copies the same rows as one line.
+ *
+ * The rows alone cannot tell a wrap from a line the agent ended there (two commands in a code
+ * block, a path in tool output, a hard break in prose all look the same at a phone's width), so a
+ * break is joined only when the agent's own text proves it was a wrap: the words on either side of
+ * it stand in that text with a space between them (or none, for a word split at the edge, or
+ * Chinese and Japanese text), never with a line break.
  */
 import { herdrWidthProvider } from "./terminalWidths.ts";
 

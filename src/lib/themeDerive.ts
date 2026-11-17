@@ -27,6 +27,7 @@ export type RoleName = keyof typeof ROLES | "notice-tint" | (typeof INDICATOR_RO
 type Under = string | ((candidate: Vector) => Vector);
 interface Ground { readonly color: Under; readonly floor: number }
 
+/** How far over a floor a moved colour is taken, so rounding it to #rrggbb cannot leave it under. */
 const MARGIN = 0.1;
 const STEPS = 200;
 const CHROMA = [1, 0.9, 0.75, 0.5, 0.25, 0] as const;
@@ -101,8 +102,10 @@ function stepped(bg: string, way: number, ratio: number): string | null {
 }
 
 const TEXT_STEP = 12;
+/** How far off the ground a surface lies that the theme has to make itself, as contrast with the ground: the built-in themes' medians. */
 const RAISED = 1.1;
 const ROW = 1.2;
+/** Under this a surface cannot be told from the ground it lies on (the built-in themes' least is 1.09). */
 const TELLS = 1.05;
 
 function place(seeds: Base16, text: string): { elevated: string; hover: string; crowded: string[] } {
@@ -125,6 +128,10 @@ function place(seeds: Base16, text: string): { elevated: string; hover: string; 
 
 const NOTICE_TINT = { dark: 0.12, light: 0.06 } as const;
 
+/**
+ * herdr's TUI state colours as the base blocks of src/styles.css carry them (Catppuccin Mocha, and
+ * Latte in light).
+ */
 export const INDICATORS: Readonly<Record<Mode, Readonly<Record<(typeof INDICATOR_ROLES)[number], string>>>> = {
   dark: { "indicator-working": "#f9e2af", "indicator-blocked": "#f38ba8", "indicator-done": "#94e2d5", "indicator-idle": "#a6e3a1", "indicator-unknown": "#6c7086" },
   light: { "indicator-working": "#df8e1d", "indicator-blocked": "#d20f39", "indicator-done": "#179299", "indicator-idle": "#40a02b", "indicator-unknown": "#9ca0b0" },
@@ -168,6 +175,8 @@ export function deriveTheme(seeds: Base16): { mode: Mode; vars: Record<RoleName,
   const working = fit(seeds.base0D, indicator);
   const blocked = fit(seeds.base08, indicator);
   const done = fit(seeds.base0B, indicator);
+  // The button's text reads on its fill and on the fill under the pointer: fitted to the first alone it can
+  // drop under its floor on the second.
   const onFill = [ground(accent, TEXT_FLOOR)];
   const onBoth = fit(bg, [...onFill, ground(mix(accent, text), TEXT_FLOOR)]);
   const onPrimary = clears(onBoth, onFill) ? onBoth : fit(bg, onFill);

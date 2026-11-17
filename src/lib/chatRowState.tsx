@@ -52,6 +52,8 @@ export function useRowFocus<T extends HTMLElement>(key: string, from: readonly s
     };
   }, []);
   const onFocus = useCallback(() => { if (memory) memory.focused = { key }; }, [memory, key]);
+  // a head that leaves the page takes no blur from it, and the window losing the focus is no move
+  // away: the record stays for the head that replaces it while the reader is in another app
   const onBlur = useCallback((event: FocusEvent<T>) => {
     if (memory && memory.focused?.key === key && event.currentTarget.isConnected && document.hasFocus()) memory.focused = undefined;
   }, [memory, key]);

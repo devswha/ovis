@@ -7,6 +7,10 @@ import { BASE16_KEYS, deriveTheme, fit, INDICATORS, type Base16 } from "./themeD
 import { INDICATOR_ROLES, LIGHT_ANSI_ROLES, ROLES } from "./themeRoles.ts";
 
 const TELLS = 1.05;
+/**
+ * The two tests that derive hundreds of themes take a few seconds of plain arithmetic: more than a
+ * single file's default five on a PC that is busy with other checks, where CI gives a minute.
+ */
 const HEAVY = 30_000;
 
 function below({ mode, vars }: ReturnType<typeof deriveTheme>): string[] {

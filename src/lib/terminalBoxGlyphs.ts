@@ -6,6 +6,8 @@
  * an agent's TUI draws came out as dashes down its sides; a corner did not meet its lines;
  * and a phone's font draws the heavy forms `━ ┃ ╋` like the light ones, or as `- | +` (#289).
  * xterm's own fix for this (custom glyphs) exists only in its canvas and WebGL renderers.
+ *
+ * The character stays in the DOM, unpainted, and copy reads xterm's buffer as before.
  */
 
 export interface BoxRect { x: number; y: number; w: number; h: number; alpha?: number }
@@ -13,22 +15,30 @@ export interface BoxArc { x: number; y: number; r: number; t: number; right: boo
 export interface BoxShape { x: number; y: number; w: number; h: number; image: string }
 export interface BoxDrawing { rects: BoxRect[]; arcs: BoxArc[]; shapes?: BoxShape[] }
 
+/** 0 none, 1 light, 2 heavy, 3 double */
 type Weight = 0 | 1 | 2 | 3;
+/** left, right, up, down */
 type Arms = readonly [Weight, Weight, Weight, Weight];
 
 const LINES = (
-  "1100 2200 0011 0022 h31 h32 v31 v32 h41 h42 v41 v42 0101 0201 0102 0202 " +
-  "1001 2001 1002 2002 0110 0210 0120 0220 1010 2010 1020 2020 0111 0211 0121 0112 " +
-  "0122 0221 0212 0222 1011 2011 1021 1012 1022 2021 2012 2022 1101 2101 1201 2201 " +
-  "1102 2102 1202 2202 1110 2110 1210 2210 1120 2120 1220 2220 1111 2111 1211 2211 " +
-  "1121 1112 1122 2121 1221 2112 1212 2221 2212 2122 1222 2222 h21 h22 v21 v22 " +
-  "3300 0033 0301 0103 0303 3001 1003 3003 0310 0130 0330 3010 1030 3030 0311 0133 " +
-  "0333 3011 1033 3033 3301 1103 3303 3310 1130 3330 3311 1133 3333 aRD aLD aLU aRU " +
-  "x x x 1000 0010 0100 0001 2000 0020 0200 0002 1200 0012 2100 0021"
+  "1100 2200 0011 0022 h31 h32 v31 v32 h41 h42 v41 v42 0101 0201 0102 0202 " + // 2500
+  "1001 2001 1002 2002 0110 0210 0120 0220 1010 2010 1020 2020 0111 0211 0121 0112 " + // 2510
+  "0122 0221 0212 0222 1011 2011 1021 1012 1022 2021 2012 2022 1101 2101 1201 2201 " + // 2520
+  "1102 2102 1202 2202 1110 2110 1210 2210 1120 2120 1220 2220 1111 2111 1211 2211 " + // 2530
+  "1121 1112 1122 2121 1221 2112 1212 2221 2212 2122 1222 2222 h21 h22 v21 v22 " + // 2540
+  "3300 0033 0301 0103 0303 3001 1003 3003 0310 0130 0330 3010 1030 3030 0311 0133 " + // 2550
+  "0333 3011 1033 3033 3301 1103 3303 3310 1130 3330 3311 1133 3333 aRD aLD aLU aRU " + // 2560
+  "x x x 1000 0010 0100 0001 2000 0020 0200 0002 1200 0012 2100 0021" // 2570
 ).split(" ");
 
+/** U+2596-259F as quadrants: upper left 1, upper right 2, lower left 4, lower right 8 */
 const QUADRANTS = [4, 8, 1, 13, 9, 7, 11, 2, 6, 14];
 
+/**
+ * Powerline's separators, U+E0B0-E0B7: filled and outlined arrows, filled and outlined half
+ * circles. They join a prompt's segments from the top of the row to the bottom, and a font
+ * draws them no taller than its own box, nor one cell wide when its icons advance 1em.
+ */
 const POWERLINE_FIRST = 0xe0b0;
 const POWERLINE_LAST = 0xe0b7;
 const OUTLINE = 0.75;
@@ -101,6 +111,7 @@ export function boxDrawing(char: string, w: number, h: number, fontSize: number)
     const t = light;
     const r = Math.min(w, h) / 2;
     const rects: BoxRect[] = [];
+    // what the arc leaves of each half line, a pixel into the arc's straight end so no gap opens between them
     const lap = Math.min(1, r);
     if (w / 2 > r) rects.push({ x: right ? w / 2 + r - lap : 0, y: (h - t) / 2, w: w / 2 - r + lap, h: t });
     if (h / 2 > r) rects.push({ x: (w - t) / 2, y: down ? h / 2 + r - lap : 0, w: t, h: h / 2 - r + lap });
@@ -199,6 +210,10 @@ function joined(rects: readonly BoxRect[]): BoxRect[] {
   return pass(pass(rects, true), false);
 }
 
+/**
+ * Cells are a fraction of a pixel wide, so a line painted cell by cell showed a seam at every cell;
+ * here the pieces of a line that touch end to end become one rectangle.
+ */
 export function boxRun(drawings: readonly BoxDrawing[], w: number): BoxDrawing {
   const rects: BoxRect[] = [];
   const arcs: BoxArc[] = [];
@@ -217,6 +232,11 @@ const px = (value: number): string => `${Math.round(value * 1000) / 1000}px`;
 export interface BoxPlacement { x: (value: number) => number; y: (value: number) => number }
 const AS_DRAWN: BoxPlacement = { x: (value) => value, y: (value) => value };
 
+/**
+ * The browser paints each element from its own pixel-snapped corner, so the same column's line fell
+ * on one device pixel in a row where it was a cell of its own and on the next in a row where it was
+ * the fifteenth cell of a run, and an upright jogged from row to row.
+ */
 export function pixelPlacement(left: number, top: number, originX: number, originY: number, ratio: number): BoxPlacement {
   return {
     x: (value) => Math.round((left + value) * ratio) / ratio - originX,

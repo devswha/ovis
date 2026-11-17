@@ -90,6 +90,7 @@ it("keeps a line that holds an API key or token in this page alone, never in sto
     expect([...data.values()].some((value) => value.includes(key))).toBe(false);
     expect(data.has("ovis:terminal-line:" + owner)).toBe(false);
   }
+  // typed a character at a time, storage holds no more of a vendor's key than its first few characters
   written.length = 0;
   for (const key of [SK, "AKIAIOSFODNN7EXAMPLE"]) for (let end = 1; end <= key.length; end++) writeTerminalDraft(owner, key.slice(0, end));
   expect(written.some((value) => value.includes("sk-0f3c") || value.includes("AKIAIOSF"))).toBe(false);
@@ -98,6 +99,7 @@ it("keeps a line that holds an API key or token in this page alone, never in sto
     writeTerminalDraft(owner, line);
     expect(data.get("ovis:terminal-line:" + owner)).toBe(line);
   }
+  // nor does a herdr replacement leave a key to recovery
   writeTerminalDraft(owner, SK);
   herdr("keys", "keys-herdr-2");
   expect(readTerminalDraft(owner)).toBe("");
@@ -125,9 +127,11 @@ it("takes a key an earlier release stored out of storage, and never leaves it to
   expect(readTerminalDraft(read)).toBe(SK);
   expect(data.has("ovis:terminal-line:" + read)).toBe(false);
   expect(readTerminalDraft(read)).toBe(SK);
+  // unread when its herdr is replaced: it goes, and not to recovery
   herdr("legacy", "legacy-herdr-2");
   expect([...data.values()].some((value) => value.includes(SK))).toBe(false);
   expect(paneLifetimes.unsent().some((item) => item.text.includes(SK))).toBe(false);
+  // unread, or already kept for recovery, when the page starts: both go, and ordinary text stays
   herdr("legacy", "legacy-herdr-3");
   data.set("ovis:terminal-line:" + unread, SK);
   data.set("ovis:terminal-line:" + paneStorageId("legacy", "w1:p3"), "make release");

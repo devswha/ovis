@@ -37,7 +37,9 @@ const FIRST_SPACING_MARK = 0x0903;
 const FIRST_EMOJI_PRESENTATION = 0x231a;
 /** Regional indicators are emoji-presentation one at a time, but only a pair is a (two-cell) flag. */
 const REGIONAL_INDICATORS = [0x1f1e6, 0x1f1ff] as const;
+/** A two-cell emoji the addon's tables know, standing in for a newer one with the same joining. */
 const KNOWN_WIDE_EMOJI = 0x1f600;
+/** A zero-width character the addon joins to the cell before it, standing in for one it does not. */
 const KNOWN_INVISIBLE = 0x200c;
 const TEXT_PRESENTATION = 0xfe0e;
 const EMOJI_PRESENTATION_SELECTOR = 0xfe0f;
@@ -106,6 +108,7 @@ export function herdrWidthProvider(): IUnicodeVersionProvider {
       case "spacing-mark":
         return inner.charProperties(codepoint, 0);
       case "invisible":
+        // at the start of a line there is no cell to join; the addon's answer stands there
         return inner.charProperties(preceding === 0 ? codepoint : KNOWN_INVISIBLE, preceding);
       case "plain":
         return inner.charProperties(codepoint, preceding);

@@ -16,6 +16,7 @@ export interface LeaveResult {
   readonly remove: RemoveRecord;
   /** PCs this device signs in to with the account key that the account does not list: no remove reached them, so their pairing is kept */
   readonly unconfirmed: readonly string[];
+  /** PCs the remove only went to by mailbox: each applies it when it next reads its mail, or refuses it there if this device was revoked meanwhile, so none is confirmed here */
   readonly queued?: readonly string[];
 }
 
@@ -31,6 +32,8 @@ export async function leaveAccount(options: { service: AccountService; accountSt
     v: 1, kind: "remove", account: session.account, key: key.public_spki,
     issued_at: new Date((options.now ?? Date.now)()).toISOString(), id: newRecordId(), signer: key.public_spki,
   }, key.private_key);
+  // marked in the transaction that reads the links on their way (relay/accountController.ts takes one in the
+  // same names before it sends a link): a link recorded before is named below, and none goes out after
   const leave = newRecordId();
   let linking: readonly string[] | undefined;
   await options.accountStore.updateMany(["session", "leaving", "linking"], (current) => {
@@ -49,9 +52,11 @@ export async function leaveAccount(options: { service: AccountService; accountSt
     for (const device of await options.relayStore.list()) {
       const accountKeyed = device.public_spki === key.public_spki || device.pending_key?.public_spki === key.public_spki;
       if (!accountKeyed) continue;
+      // reached only where the PC confirmed this pairing is a member of this account, and the remove went to it
       if (listed.has(device.server_id) && device.account === session.account) { await options.relayStore.remove(device.server_id); forgotten.add(device.server_id); }
       else unconfirmed.push(device.server_id);
     }
+    // a link already on its way may still land on its PC, whatever the pairing says now
     for (const serverId of new Set(linking)) if (!forgotten.has(serverId) && !unconfirmed.includes(serverId)) unconfirmed.push(serverId);
   } catch (error) {
     // nothing was left: links with this key go out again
@@ -61,6 +66,7 @@ export async function leaveAccount(options: { service: AccountService; accountSt
     });
     throw error;
   }
+  // the removes are queued: the sign-in ends here whatever the service answers to the sign-out
   try { await service.signOut(); }
   catch (error) { console.warn("Ovis: the account service did not confirm the sign-out", error instanceof Error ? error.name : error); }
   // the account's PCs tombstone this key: never sign in with it again (a kept pairing holds its own copy of the key)
@@ -80,6 +86,7 @@ export async function removeFromAccount(options: {
 }): Promise<LeaveResult> {
   const session = await options.service.session();
   if (session === undefined) throw new Error("Sign in first, so every PC of the account hears of it");
+  // the row shown belongs to the account signed in here, or nothing is signed for it
   if (session.account !== options.account) throw new Error("That device belongs to another account");
   const own = await options.accountStore.key();
   if (options.key === own.public_spki) throw new TypeError("This device leaves the account with leaveAccount");
@@ -89,8 +96,10 @@ export async function removeFromAccount(options: {
   }, own.private_key);
   // kept before it is sent: a PC this device brings into the account later tombstones the key, and never gets an add for it
   await rememberDevice(options.accountStore, remove);
+  // a PC applies the remove only where this device is a member: pairings that PC confirmed for this account
   const linked = new Set((await options.relayStore.list()).filter((device) => device.public_spki === own.public_spki && device.account === session.account).map((device) => device.server_id));
   if (options.here) {
+    // the PC answers every record's outcome with 200: a refusal there is a failure here
     const answer = await (await post(options.here, "/api/account/records", { records: [remove] })).json() as { results?: { outcome?: string; code?: string }[] };
     const outcome = answer.results?.[0];
     if (outcome?.outcome === "refused") throw new Error(`This PC refused the removal (${outcome.code ?? "refused"})`);
@@ -103,6 +112,7 @@ export async function removeFromAccount(options: {
     const batch = reached.slice(start, start + 32);
     try { await options.service.postRecord(batch, remove); } catch { failed.push(...batch); }
   }
+  // not reached: listed PCs this device is not a member of, linked PCs the account does not list, and failed posts
   const unconfirmed = [...listed.filter((id) => !linked.has(id)), ...[...linked].filter((id) => !listed.includes(id)), ...failed].filter((id) => !done(id));
   return { remove, unconfirmed, queued: reached.filter((id) => !failed.includes(id)) };
 }

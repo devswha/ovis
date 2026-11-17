@@ -17,6 +17,7 @@ import { indexedAccountStore, type AccountSession } from "./store.ts";
 export type LinkPageSignInState =
   | { kind: "idle" }
   | { kind: "starting" }
+  /** `opened`: the page is in a tab of its own; false, the browser blocked it and only this page shows it */
   | { kind: "waiting"; started: Pick<DeviceSignIn, "provider" | "userCode" | "verificationUri" | "verificationUriComplete">; opened: boolean }
   | { kind: "signed-in"; session: AccountSession }
   | { kind: "failed"; error: unknown };
@@ -47,6 +48,7 @@ export function useLinkPageSignIn(service: string, onSignedIn: (session: Account
     running.current?.abort();
     // in the click, before anything is awaited: a tab opened later is a popup the browser blocks
     const tab = window.open("about:blank", "_blank");
+    // the sign-in page gets no handle on this one
     if (tab !== null) tab.opener = null;
     const controller = new AbortController();
     let sent = false;

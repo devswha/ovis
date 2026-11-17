@@ -103,6 +103,7 @@ function chime(audio: AudioContext, kind: AlertSoundKind, preview = false): { st
     const gain = audio.createGain();
     oscillator.type = "sine";
     oscillator.frequency.value = frequency;
+    // a ramp from near silence on both ends: a note that starts or stops at full level clicks
     gain.gain.setValueAtTime(0.0001, at);
     gain.gain.exponentialRampToValueAtTime(PEAK_GAIN, at + 0.015);
     gain.gain.exponentialRampToValueAtTime(0.0001, at + NOTE_LENGTH_S);

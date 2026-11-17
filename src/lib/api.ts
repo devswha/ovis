@@ -135,6 +135,7 @@ export async function sendUsageLoginCode(request: UsageLoginCode): Promise<void>
   await sendJson("/api/usage/login/code", "POST", request);
 }
 
+/** A handoff must see a failure rather than start beside it. */
 export async function cancelUsageLogin(login: string): Promise<void> {
   const url = "/api/usage/login/cancel";
   const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-machine": "1" }, body: JSON.stringify({ login }), keepalive: true });
@@ -224,6 +225,7 @@ export async function stopMovePane(paneId: string, command: string | null, force
   if (!response.ok) throw await errorFrom(url, response);
 }
 
+/** End all and move now, asked: the running commands it would end, under a token for exactly that list. */
 export async function prepareStopAll(): Promise<MoveStopAllOffer> {
   const url = "/api/runtime/move/stop-all";
   const response = await apiFetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({} satisfies MoveStopAllRequest) });
@@ -231,6 +233,7 @@ export async function prepareStopAll(): Promise<MoveStopAllOffer> {
   return (await response.json()) as MoveStopAllOffer;
 }
 
+/** End all and move now, confirmed: refused when the panes changed since the offer, so the person is asked again. */
 export async function confirmStopAll(token: string): Promise<void> {
   const url = "/api/runtime/move/stop-all";
   const response = await apiFetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ token } satisfies MoveStopAllRequest) });
@@ -273,15 +276,22 @@ export async function issuePortalInvite(name: string, days: number): Promise<Por
   return (await response.json()) as PortalInvite;
 }
 
+/** Settings → Phone & devices: the Ovis relay, through which paired phones reach this PC from anywhere. */
 export function fetchRelay(): Promise<RelayStatus> {
   return getJson<RelayStatus>("/api/relay");
 }
 
+/** POST /api/relay/offer: a one-time pairing offer for the QR code, good until `expires_at`. */
 export interface RelayOffer {
   readonly url: string;
   readonly expires_at: string;
 }
 
+/**
+ * The relay actions answer with the state they left the relay in, a refusal too: a start that
+ * serve-only blocks is a 409 whose body is still the RelayStatus, so it is the answer, not an error.
+ * Only a body without a phase (the origin gate, a watching device, an older server) is one.
+ */
 export async function requestRelay(action: "start" | "stop" | "reset-identity"): Promise<RelayStatus> {
   const url = `/api/relay/${action}`;
   const response = await apiFetch(url, { method: "POST", headers: { "x-herdr-update": "1" } });
@@ -293,14 +303,20 @@ export async function requestRelay(action: "start" | "stop" | "reset-identity"):
   return (await response.json()) as RelayStatus;
 }
 
+/** POST /api/relay/direct: whether paired phones may connect straight to this PC on its networks while the relay is on. */
 export function requestRelayDirect(on: boolean): Promise<RelayStatus> {
   return getJson<RelayStatus>("/api/relay/direct", { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ on }) });
 }
 
+/**
+ * `noAccountOnly`: the offer is to put this PC in an account (the relay tab's QR code). The PC then makes it only while
+ * it is in no account, answers 409 `in_account` once it is in one, and ends the offer's code when it joins one.
+ */
 export function requestRelayOffer({ noAccountOnly = false }: { noAccountOnly?: boolean } = {}): Promise<RelayOffer> {
   return getJson<RelayOffer>("/api/relay/offer", { method: "POST", headers: { "x-herdr-update": "1", ...(noAccountOnly ? { "x-ovis-no-account-only": "1" } : {}) } });
 }
 
+/** POST /api/relay/code: a code to type on the device being paired, good until `expires_at`; it replaces any showing. */
 export interface RelayCode {
   readonly code: string;
   readonly expires_at: string;
@@ -311,20 +327,28 @@ export function requestRelayCode(): Promise<RelayCode> {
   return getJson<RelayCode>("/api/relay/code", { method: "POST", headers: { "x-herdr-update": "1" } });
 }
 
+/** POST /api/relay/code/cancel: takes the code showing off the relay. `keepalive`: the request outlives a page that is going. */
 export function cancelRelayCode(keepalive = false): Promise<{ readonly ok: true }> {
   return getJson<{ readonly ok: true }>("/api/relay/code/cancel", { method: "POST", headers: { "x-herdr-update": "1" }, ...(keepalive ? { keepalive } : {}) });
 }
 
+/**
+ * POST /api/relay/link: a pairing link without a code; the phone that opens it compares six digits with this PC.
+ * `localOnly`: this PC's screen waits to be added to an account, so what comes is approved on this PC only.
+ */
 export function requestRelayLink(options: { localOnly?: boolean } = {}): Promise<{ readonly url: string }> {
   return getJson<{ readonly url: string }>("/api/relay/link", { method: "POST", headers: { "x-herdr-update": "1", ...(options.localOnly ? { "x-ovis-local-only": "1" } : {}) } });
 }
 
+/** POST /api/relay/link/close: the owner stopped waiting, so this PC takes no more comparisons from its link. An older server has no such route (404). */
 export function closeRelayLink(): Promise<{ readonly ok: true }> {
   return getJson<{ readonly ok: true }>("/api/relay/link/close", { method: "POST", headers: { "x-herdr-update": "1" } });
 }
 
+/** POST /api/relay/pairing: the owner's answer to a phone waiting with the same digits (`relay-pairings` events). */
 export async function decideRelayPairing(id: string, decision: "approve" | "decline", digits?: string): Promise<void> {
   const url = "/api/relay/pairing";
+  // an account member approving through the relay names the digits it picked (docs/account.md, "Who may admit a device")
   const response = await apiFetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ id, decision, ...(digits === undefined ? {} : { digits }) }) });
   if (!response.ok) throw await errorFrom(url, response);
 }
@@ -341,6 +365,10 @@ export async function savePreferences(body: PreferencesChange, keepalive = false
   return (await response.json()) as SharedPreferences;
 }
 
+/**
+ * A server that predates it (404) or a watching device (403) keeps the read to this browser; one that
+ * predates `presented` ignores it.
+ */
 export async function shareSeen(finish: SeenFinish, presented?: SeenPresentation): Promise<void> {
   const url = "/api/seen";
   const response = await apiFetch(url, { method: "POST", headers: { "content-type": "application/json" },
@@ -373,6 +401,10 @@ export async function changeTelemetry(change: TelemetryChange, { keepalive = fal
   return toldTelemetryStatus((await response.json()) as TelemetryStatus);
 }
 
+/**
+ * `code` is the server's error-envelope code when it sent one, so callers can branch on `status`
+ * (401 = the token gate) without parsing the message.
+ */
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string | null;
@@ -461,6 +493,13 @@ export type ConversationPageQuery = {
   signal?: AbortSignal;
 };
 
+/**
+ * The last answer per newest-page conversation URL and its ETag. The chat reads it again on
+ * every transcript push (at most every 2s), every send and status edge, and a 10s backstop
+ * (2s without pushes),
+ * and a newest page can be megabytes: an unchanged one comes back as a bodyless 304,
+ * and the chat gets the very same object back, which tells it nothing changed.
+ */
 interface ConversationAnswer {
   etag: string;
   body: ConversationResponse;
@@ -474,10 +513,15 @@ function paneKey(paneId: string, machineId: string): string {
 }
 const conversationAnswers = new Map<string, ConversationAnswer>();
 export const CONVERSATION_ANSWERS_KEPT = 24;
+/** …and this much of them: enough for the panes of ten open tabs at the default page size. */
 export const CONVERSATION_ANSWERS_BYTES = 64 * 1024 * 1024;
 export const CONVERSATION_ANSWER_MAX_BYTES = 8 * 1024 * 1024;
 const pinnedConversations = new Set<string>();
 
+/**
+ * `String.length` counts UTF-16 code units, which under-reports CJK and emoji by up to three times;
+ * a page's cap is bytes.
+ */
 function utf8Length(text: string): number {
   let bytes = 0;
   for (let index = 0; index < text.length; index++) {
@@ -493,6 +537,10 @@ function utf8Length(text: string): number {
   return bytes;
 }
 
+/**
+ * The body a cache entry carries: the server's own count when it sends one for the body as it is,
+ * else the JSON we parsed. A compressed answer's length counts the bytes on the wire, not these.
+ */
 export function conversationAnswerBytes(body: ConversationResponse, contentLength: string | null, contentEncoding: string | null = null): number {
   const declared = Number(contentLength);
   const identity = contentEncoding === null || contentEncoding.trim().toLowerCase() === "identity";
@@ -500,6 +548,10 @@ export function conversationAnswerBytes(body: ConversationResponse, contentLengt
   return utf8Length(JSON.stringify(body) ?? "");
 }
 
+/**
+ * The pane, not its URL, is what is pinned: the chat reads its newest page at the page size the
+ * setting names, so a pin taken on the URL alone would never match the entry the open pane actually holds.
+ */
 function trimConversationAnswers(keep: string): void {
   let total = 0;
   for (const answer of conversationAnswers.values()) total += answer.bytes;
@@ -731,6 +783,7 @@ export interface HealthInfo {
   version?: string;
   /** `server_id`: this PC's relay ID, told to an authenticated browser where the PC has one; absent from an older server */
   web_ui?: { boot_id: string | null; revision: string | null; server_id?: string };
+  /** Absent only on a server that predates the token gate. */
   auth?: HealthAuth;
   /** authenticated only; absent from an older server */
   relay?: RelayStatus;
@@ -742,6 +795,7 @@ export interface HealthInfo {
   security?: SecuritySummary;
   /** authenticated only; absent from an older server and until the server's first look for hc has ended */
   herdr_core?: HerdrCoreFacts;
+  /** a driving owner only; absent from an older server */
   herdr_runtime?: HerdrRuntimeFacts;
 }
 
@@ -779,6 +833,11 @@ export async function startPairing(): Promise<PairingCode> {
   return (await sendJson("/api/devices/pair/start", "POST", {})).json();
 }
 
+/**
+ * POST /api/devices/pair/cancel { code }: takes that six-digit code back, and the typed relay code bound to it, when it
+ * is the one pending; `cancelled` is false when it was not (used up, expired, or replaced by a newer code).
+ * `keepalive`: the request outlives a page that is going (a reload, a closed tab).
+ */
 export async function endPairing(code: string, keepalive = false): Promise<{ readonly ok: true; readonly cancelled: boolean }> {
   return (await sendJson("/api/devices/pair/cancel", "POST", { code }, keepalive)).json();
 }
@@ -840,6 +899,7 @@ export function assertAttachable(file: Blob): void {
   if (file.size > MAX_ATTACHMENT_BYTES) throw new AttachmentTooLargeError(file instanceof File && file.name ? file.name : file.type || "file", file.size);
 }
 
+/** Any file: an image is stored as a paste, anything else under its own (sanitised) name. */
 export async function uploadPaneImage(paneId: string, image: Blob, machineId = "local"): Promise<string> {
   assertAttachable(image);
   const data_base64 = base64FromBytes(new Uint8Array(await image.arrayBuffer()));
@@ -969,6 +1029,8 @@ export async function clearPane(paneId: string, machineId = "local"): Promise<vo
 }
 
 export async function fetchAgentKinds(machineId = "local"): Promise<AgentKind[]> {
+  // filtered here, not on the server: a remote PC's older bridge still answers every manifest,
+  // and says nothing of what is installed, so its supported kinds are all offered
   return (await getJson<{ agents: AgentKind[] }>(machinePath(machineId, "agents"))).agents.filter((agent) => SUPPORTED_AGENT_KINDS.has(agent.kind) && agent.installed !== false);
 }
 
@@ -1098,6 +1160,7 @@ export async function fetchPullRequestLog(target: PullRequestTarget, jobId: stri
   return getJson<PullRequestCheckLog>(machinePath(machineId, `workspace/pr/log?${params.toString()}`));
 }
 
+/** POST /api/workspace/pr/merge: merges the pull request at the head it was read at, with the method shown. */
 export async function mergePullRequest(target: PullRequestTarget, merge: Pick<PullRequestMergeRequest, "number" | "head_oid" | "base_ref" | "method">, machineId = "local"): Promise<void> {
   await sendJson(machinePath(machineId, "workspace/pr/merge"), "POST", { ...(target.paneId ? { pane_id: target.paneId } : {}), ...(target.directory ? { directory: target.directory } : {}), ...merge } satisfies PullRequestMergeRequest);
 }
@@ -1140,6 +1203,12 @@ export async function resumeSession(request: SessionResumeRequest, machineId = "
   const response = await sendJson(machinePath(machineId, "sessions/resume"), "POST", request);
   return (await response.json()) as SessionResumeResponse;
 }
+/**
+ * Whether the PC's bridge has the session history route, asked without a query so no session is
+ * listed: a bridge that has it refuses the query (400), one from before it answers not_found (404).
+ * Any other refusal (403 for a device that only watches) still says the route is there; a PC that
+ * could not be asked rejects, so the caller asks again when it comes back.
+ */
 export async function sessionHistoryOffered(machineId = "local"): Promise<boolean> {
   try { await getJson(machinePath(machineId, "sessions/history")); return true; }
   catch (error) {
@@ -1163,12 +1232,14 @@ export async function moveTab(tabId: string, insertIndex: number, machineId = "l
   return (await response.json()) as TabMoved;
 }
 
+/** A one-pane tab into a new tab of another workspace; its pane answers under its new ID. */
 export async function moveTabToWorkspace(tabId: string, workspaceId: string, machineId = "local"): Promise<TabMovedToWorkspace> {
   const request: MoveTabToWorkspaceRequest = { tab_id: tabId, workspace_id: workspaceId };
   const response = await sendJson(machinePath(machineId, "tab/move-to-workspace"), "POST", request);
   return (await response.json()) as TabMovedToWorkspace;
 }
 
+/** POST /api/tab/close: the tab and every pane in it; a workspace's last tab takes the workspace with it. */
 export async function closeTab(tabId: string, machineId = "local"): Promise<void> {
   await sendJson(machinePath(machineId, "tab/close"), "POST", { tab_id: tabId });
 }
@@ -1208,6 +1279,12 @@ export async function fetchPaneOmoActivity(paneId: string, machineId = "local"):
   return { tasks: activity.tasks ?? [], runs: activity.runs ?? [], serverTime: activity.server_time ?? null, moreRunning: typeof activity.more_running === "number" && activity.more_running > 0 ? activity.more_running : 0 };
 }
 
+/**
+ * GET /api/pane/background-agent: what a running Claude Code subagent's own transcript holds now,
+ * read-only and bounded (its dispatch prompt, its prose and the tools it called), for the
+ * background-task list's detail sheet. The PC resolves the session and the files: the caller
+ * names a pane and the agent id the list gave it, nothing else.
+ */
 export async function fetchPaneBackgroundAgent(paneId: string, agentId: string, machineId = "local"): Promise<PaneBackgroundAgentDetail> {
   const query = new URLSearchParams({ pane_id: paneId, agent_id: agentId });
   return await getJson<PaneBackgroundAgentDetail>(machinePath(machineId, `pane/background-agent?${query.toString()}`));
@@ -1250,6 +1327,7 @@ export async function fetchPanePromptState(paneId: string, machineId = "local"):
   };
 }
 
+/** How long a summary request may take: the PC answers within PANE_SUMMARY_DEADLINE_MS, the rest is the way there and back. */
 export const SUMMARY_REQUEST_MS = 8_000;
 
 export async function fetchPaneSummaries(machineId: string, paneIds: readonly string[]): Promise<PaneSummaries | null> {
@@ -1269,6 +1347,7 @@ export async function answerPanePrompt(answer: PromptAnswer, machineId = "local"
   await sendJson(machinePath(machineId, "pane/prompt/answer"), "POST", answer);
 }
 
+/** GET /api/push: the server's VAPID key, the `applicationServerKey` this device subscribes with. */
 export async function fetchPushKey(): Promise<string> {
   return (await getJson<PushKey>("/api/push")).public_key;
 }
@@ -1281,6 +1360,7 @@ export async function unregisterPushSubscription(endpoint: string): Promise<void
   await sendJson("/api/push/subscribe", "DELETE", { endpoint });
 }
 
+/** One confirmation push to this device only; ApiError 502 `push_failed` when the push service refused it. */
 export async function sendTestPush(endpoint: string): Promise<void> {
   await sendJson("/api/push/test", "POST", { endpoint });
 }
@@ -1311,6 +1391,11 @@ export async function fetchMachines(signal?: AbortSignal, full = false): Promise
     throw error;
   }
 }
+/**
+ * GET /api/machines?verify_source_boot: the roster, and the boot id of the server behind `machineId`
+ * proved during this very request (shared/protocol.ts). Null when the server proves nothing: a
+ * refusal, or an older server that ignored the query.
+ */
 export async function verifySourceBoot(machineId: string, signal: AbortSignal): Promise<{ machines: Machine[]; boot_id: string } | null> {
   const path = `/api/machines?verify_source_boot=${encodeURIComponent(machineId)}`;
   const bounded = new AbortController();
@@ -1340,6 +1425,7 @@ export interface SshCandidate {
   readonly tailnet?: string;
 }
 export const findSshCandidates = () => machineRequest<{ pcs: SshCandidate[] }>("/ssh-candidates");
+/** A PC of this PC's Tailscale login whose Ovis lets this PC in as its owner (server/tailnet-pcs.ts); `outdated`: older than 0.5. */
 export interface TailnetPc { readonly name: string; readonly url: string; readonly relay: string | null; readonly outdated: boolean }
 export const findTailnetPcs = () => machineRequest<{ pcs: TailnetPc[] }>("/tailnet");
 /** Another PC of the account as the page read it from the account's directory: its key checked against its id here too. */

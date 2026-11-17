@@ -41,6 +41,7 @@ export function parseThemeValue(entry: string, role: string, raw: string): Theme
   if (isColor(value)) return { kind: "color", value };
   const alias = ALIAS.exec(value);
   if (alias?.[1]) return { kind: "alias", role: alias[1] };
+  // A layer separator is a comma outside rgba(), whose arguments contain commas too.
   const layers = value.split(/,\s*(?![^()]*\))/).map((layer) => {
     const match = /^((?:-?\d+(?:\.\d+)?(?:px)? ){1,3}-?\d+(?:\.\d+)?(?:px)?) (rgba\([^()]*\)|var\(--border\))$/.exec(layer);
     if (!match?.[1] || !match[2]) throw new ThemeValueError(entry, role, raw);

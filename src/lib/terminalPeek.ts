@@ -1,3 +1,17 @@
+/**
+ * The chat comes back by hand (Back to Chat, the header's Chat, Mod+Shift+J, a phone's Back), and
+ * on its own after a command its agent is known to close in a way the chat can see:
+ * - Claude Code records a `local_command` answer when one of its panels closes ("Settings dialog
+ *   dismissed"), and the chat reads it as a local-command notice. Only a notice written after the
+ *   send's own outcome was created counts; both times are the PC's clock, never this browser's.
+ * - The other agents with a recorded input row (lib/inputRow.ts) draw that row again, empty, when
+ *   the screen closes: the peek watches the grid's frames, arms once the row has gone (or been
+ *   covered) after the send, and ends on the first frame that shows it back.
+ *
+ * A peek ended by hand while the command's screen is still open leaves a guard on the composer
+ * (PaneTerminal's still-open notice): the next message would be typed into that screen.
+ */
+
 import type { CommandOutcome, ConversationTurn } from "../../shared/protocol.ts";
 import type { PaneView } from "./actions.ts";
 import type { InputRowState } from "./inputRow.ts";
@@ -46,6 +60,11 @@ export function paneLensFlags(view: PaneView, peek: TerminalPeek | null): { chat
   return { chatMounted, gridCovered: chatMounted && peek === null };
 }
 
+/**
+ * Whether the chat comes back by itself after `text`, which invokes `command` (its name, no
+ * trigger), is sent to `agent`: Claude Code's record, and only a bare command the recording covers
+ * (`/fast on` sets the mode with no screen to close, and no other form was recorded).
+ */
 export function autoReturnArmed(agent: string | null, text: string, command: string): boolean {
   return agent === "claude" && /^\S+$/u.test(text.trim()) && CLAUDE_AUTO_RETURN.has(command.toLocaleLowerCase());
 }
@@ -129,6 +148,13 @@ export function screenReturnArmed(agent: string | null, text: string, command: s
 
 export type WatchStep = { step: "wait"; armed: boolean } | { step: "return" } | { step: "manual" };
 
+/**
+ * One frame of a watched peek (no timer, no key): the first frame whose row is in the agent's arm
+ * set arms it, and the first ready frame after that brings the chat back. A ready frame before it
+ * (the row still drawn as the command leaves, Hermes' moment before its screen) and a draft (the
+ * command echoed in the row) never arm; a draft after it (a screen that closed onto text) leaves
+ * the return to the reader.
+ */
 export function watchReturn(agent: string, armed: boolean, state: InputRowState): WatchStep {
   const known = Object.hasOwn(SCREEN_AUTO_RETURN, agent) ? SCREEN_AUTO_RETURN[agent] : undefined;
   if (known === undefined) return { step: "manual" };
@@ -139,6 +165,10 @@ export function watchReturn(agent: string, armed: boolean, state: InputRowState)
   return { step: "wait", armed: true };
 }
 
+/**
+ * An older identical send was read already and is passed over; so is one sent just before that no
+ * read had listed yet, whose earlier close notice would otherwise end this peek at once.
+ */
 export function sentOutcome(peek: PeekRequest, outcomes: readonly CommandOutcome[]): CommandOutcome | null {
   if (peek.text === null || peek.knownOutcomeIds === null) return null;
   const known = new Set(peek.knownOutcomeIds);
@@ -150,6 +180,11 @@ export function sentOutcome(peek: PeekRequest, outcomes: readonly CommandOutcome
   return null;
 }
 
+/**
+ * Whether the command's screen has closed: Claude Code wrote a local-command notice after the
+ * send's outcome was created (`sentAt`, that outcome's `created_at`). No other agent says so in
+ * its transcript; their peek stays until the reader leaves it.
+ */
 export function commandScreenClosed(peek: PeekRequest, agent: string | null, sentAt: string | null, turns: readonly ConversationTurn[]): boolean {
   if (!peek.auto || agent !== "claude" || sentAt === null) return false;
   const sent = Date.parse(sentAt);
@@ -161,6 +196,7 @@ export function commandScreenClosed(peek: PeekRequest, agent: string | null, sen
 export interface ReturnBlockers {
   heldDraft: boolean;
   findOpen: boolean;
+  /** an IME composition is under way in the grid or in its input line (the return would unmount the line) */
   composing: boolean;
 }
 

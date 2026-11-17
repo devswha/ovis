@@ -1,5 +1,6 @@
 import { getTransport } from "./transport.ts";
 
+/** Whether a picture can go on the clipboard here: only the clipboard API takes one, and only in a secure context. */
 export function canCopyImage(): boolean {
   return typeof ClipboardItem !== "undefined" && typeof navigator.clipboard?.write === "function";
 }
@@ -66,6 +67,8 @@ export async function copyText(text: string, fallback?: HTMLElement | null): Pro
     }
   } catch {
   }
+  // A refusal can come late. If focus has moved on by then, the user is elsewhere (the message box,
+  // a terminal, perhaps mid-IME): taking focus to copy would cut into what they are typing.
   if (document.activeElement !== initiator) return false;
   const active = document.activeElement;
   const selection = window.getSelection();

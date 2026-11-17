@@ -55,6 +55,16 @@ export interface AppActions {
   splitPane: ((direction: SplitPaneDirection, focus?: boolean) => void) | null;
   zoomPane: ((mode: ZoomMode) => void) | null;
   toggleZoom: (() => void) | null;
+  /**
+   * The Close pane shortcut and palette row: the selected pane's own menu's Close (PaneCanvas), with
+   * its confirmation for a busy pane or a workspace's last one, and nothing for a locked pane. null
+   * without a pane and on a watching device
+   */
   closePane: (() => void) | null;
+  /**
+   * The Close tab shortcut and palette row: the open tab's own Close, as its row's menu has it (TabStrip), or the
+   * pane's menu where the tab has no row (PaneCanvas), with the same confirmation, and nothing for a tab holding a
+   * locked pane. null without a pane and on a watching device
+   */
   closeTab: (() => void) | null;
 }

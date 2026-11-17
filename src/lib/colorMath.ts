@@ -12,6 +12,7 @@ export function hex([r, g, b]: Vector): string {
 export const linear = (c: number): number => c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
 const gamma = (c: number): number => c <= 0.0031308 ? 12.92 * c : 1.055 * c ** (1 / 2.4) - 0.055;
 
+/** OKLab a,b preserve OKLCH hue/chroma while L changes; dE is 100 * Euclidean OKLab. */
 export function lab([red, green, blue]: Vector): Vector {
   const r = linear(red / 255), g = linear(green / 255), b = linear(blue / 255);
   const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
@@ -51,6 +52,7 @@ export function luminance([r, g, b]: Vector): number {
   return 0.2126 * linear(r / 255) + 0.7152 * linear(g / 255) + 0.0722 * linear(b / 255);
 }
 
+/** The WCAG contrast ratio of two `#rrggbb` colours. */
 export function contrast(a: string, b: string): number {
   const x = luminance(rgb(a)), y = luminance(rgb(b));
   return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);

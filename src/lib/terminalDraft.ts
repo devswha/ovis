@@ -73,11 +73,13 @@ paneLifetimes.onRetire((machineId) => {
     const line = memory.get(owner);
     if (unsaved.delete(owner) && line !== undefined) paneLifetimes.keep(machineId, pane.paneId, "line", line);
     memory.delete(owner);
+    // the line is another one now: a paste still waiting on the clipboard is not put into it
     versions.set(owner, terminalDraftVersion(owner) + 1);
   }
   notify();
 });
 
+/** An acknowledgement removes only the unchanged sent prefix, never replacement text. */
 export function acknowledgeTerminalDraft(owner: string): void {
   const sent = pending.get(owner);
   const current = readTerminalDraft(owner);

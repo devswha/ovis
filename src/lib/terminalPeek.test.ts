@@ -116,6 +116,7 @@ describe("watchReturn", () => {
     expect(watchReturn("codex", true, "ready")).toEqual({ step: "return" });
     expect(watchReturn("agy", false, "covered")).toEqual({ step: "wait", armed: true });
     expect(watchReturn("codex", false, "covered")).toEqual({ step: "wait", armed: false });
+    // Hermes draws its row again before every screen: only a covered row arms it
     expect(watchReturn("hermes", false, "gone")).toEqual({ step: "wait", armed: false });
     expect(watchReturn("hermes", false, "covered")).toEqual({ step: "wait", armed: true });
   });

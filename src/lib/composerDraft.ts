@@ -12,6 +12,7 @@ export const SEND_LEASE_MS = 120_000;
 const SENDING_PREFIX = "ovis:composer-sending:";
 const DRAFT_PREFIX = "ovis:composer-draft:";
 export const composerDraftKey = (paneKey: string): string => DRAFT_PREFIX + paneKey;
+/** a draft that holds an agent-only message put back by Edit (#511): it is sent `agent_only` until the box is emptied */
 export const AGENT_ONLY_PREFIX = "ovis:composer-agent-only:";
 const agentOnlyKey = (key: string): string => AGENT_ONLY_PREFIX + (key.startsWith(DRAFT_PREFIX) ? key.slice(DRAFT_PREFIX.length) : key);
 export function sendLease(storage: Pick<Storage, "getItem">, key: string): InFlight | null {
@@ -67,6 +68,7 @@ export class ComposerDraftStore {
   refresh(key: string): void {
     if (this.unsaved.has(key)) return;
     const draft = this.read(key);
+    // another tab's send is on its way: its draft must not be sent a second time from here
     const lease = this.inFlight(key);
     const sending = this.own.has(key) || lease !== null;
     if (lease !== null && !this.own.has(key) && !this.expiries.has(key)) {
@@ -87,6 +89,8 @@ export class ComposerDraftStore {
   set(key: string, value: string | ((previous: string) => string)): void {
     const draft = this.read(key);
     const text = typeof value === "string" ? value : value(draft.text);
+    // cleared and retyped while on its way, a draft can end up starting with the sent text
+    // again: once it stopped extending it, the whole of it is the user's own
     const pending = this.pending.get(key);
     if (pending && !text.startsWith(pending.sent)) pending.edited = true;
     this.drafts.set(key, { ...draft, text });
@@ -102,6 +106,7 @@ export class ComposerDraftStore {
     } catch { this.unsaved.add(key); }
     this.notify();
   }
+  /** Never truncate recovered input: an oversized draft can be edited down. */
   restorePending(key: string, text: string, agentOnly = false): void {
     // its `> quote` lines must never reach a shell: the box stays agent-only until it is emptied, in this
     // page whatever storage does, and marked before the text is there to send (set stores the mark first)
@@ -109,9 +114,12 @@ export class ComposerDraftStore {
     if (agentOnly) this.markAgentOnly(key);
     this.set(key, (draft) => draft ? `${draft}\n\n${text}` : text);
   }
+  /** The draft's next text is a message for an agent alone (#511): set stores it only with the mark. */
   markAgentOnly(key: string): void {
     this.agentOnly.add(key);
   }
+  /** A marked draft read from storage stays agent-only in this page, also if another tab clears it meanwhile and
+   * this one edits it before hearing so; one read empty is no longer. */
   private adoptMark(key: string, text: string | null): void {
     if (!text) { this.agentOnly.delete(key); return; }
     try { if (this.storage().getItem(agentOnlyKey(key)) !== null) this.agentOnly.add(key); } catch {}
@@ -133,6 +141,8 @@ export class ComposerDraftStore {
     return true;
   }
   claim(key: string, sent: string): boolean {
+    // the lease is read before the text: a tab's acknowledgement clears the text and only then ends its
+    // lease, so a claim sees either that send still on its way or the draft it settled
     if (this.own.has(key) || this.inFlight(key) !== null) return false;
     this.refresh(key);
     return this.read(key).text === sent && this.begin(key, sent);
@@ -163,6 +173,8 @@ export class ComposerDraftStore {
   }
   /** Another herdr took the PC's pane IDs: its drafts are read again from where they now are. */
   forget(machineId: string, lifetimes: Pick<PaneLifetimes, "keep"> = paneLifetimes): void {
+    // a send begun for the earlier herdr's pane settles nothing in the draft that pane ID holds now,
+    // and does not hold the new pane's box as sending
     for (const [key, send] of [...this.sends]) {
       if (paneStateKey(key)?.machineId !== machineId || send.lifetime === this.lifetimeOf(key)) continue;
       this.sends.delete(key);
@@ -181,6 +193,11 @@ export class ComposerDraftStore {
     this.notify();
   }
   isUnsaved(key: string): boolean { return this.unsaved.has(key); }
+  /**
+   * Remove only the acknowledged prefix; edits within the sent text stay unsent. `send`: the one
+   * sendOf named; null when that send was for a pane another herdr's has replaced, whose draft it
+   * leaves alone.
+   */
   settle(key: string, sent: string): { text: string; edited: boolean };
   settle(key: string, sent: string, send: number | undefined): { text: string; edited: boolean } | null;
   settle(key: string, sent: string, send?: number): { text: string; edited: boolean } | null {

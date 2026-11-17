@@ -75,6 +75,7 @@ describe("the folded view of a mirrored grid", () => {
   });
 
   test("faint text on a cell background the browser hands back as rgb() is lifted as on its hex", () => {
+    // a span's style.backgroundColor reads back serialized: "#2e3436" comes back as "rgb(46, 52, 54)"
     const onHex = dimmedColor("#4e9a06", "#2e3436", 4.5);
     expect(onHex).toMatch(/^#[0-9a-f]{6}$/i);
     expect(dimmedColor("#4e9a06", "rgb(46, 52, 54)", 4.5)).toBe(onHex);
@@ -128,6 +129,7 @@ describe("the folded view of a mirrored grid", () => {
       .toBe('ab <span class="terminal-fold-cursor" style="box-shadow:inset 0 0 0 1px #ff0000;"> </span>');
     expect(rowHtml(line([{ chars: "한", width: 2 }, { chars: "", width: 0 }, { chars: "x" }], 3), 3, theme, scratch, 1, { x: 1, shape: "none" }))
       .toBe('<span class="terminal-fold-cursor">한</span>x');
+    // a write that filled the row: the cursor waits past the last column, and stands on the last cell
     expect(rowHtml(line(plain("abcde"), 5), 5, theme, scratch, 1, { x: 5, shape: "block" }))
       .toBe('abcd<span class="terminal-fold-cursor" style="background:#ff0000;color:#000000;">e</span>');
   });

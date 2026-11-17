@@ -1,3 +1,8 @@
+/**
+ * An activity is never dismissed: it holds input the user typed while offline, and its Send and
+ * Discard are the only way to deal with it.
+ */
+
 export type NoticePriority = "activity" | "urgent" | "notice";
 
 export interface ComposerNotice {

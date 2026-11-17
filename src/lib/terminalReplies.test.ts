@@ -13,6 +13,7 @@ describe("userInputTracker", () => {
   it("tells xterm's answer to the program's query from input someone made", async () => {
     const term = new Terminal({ cols: 20, rows: 4, allowProposedApi: true });
     const { seen, dispose } = record(term);
+    // a program asking for the cursor's position (DSR 6): xterm answers it on its own
     const { promise, resolve } = Promise.withResolvers<void>();
     term.write("\x1b[6n", resolve);
     await promise;

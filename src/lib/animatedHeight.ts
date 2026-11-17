@@ -17,6 +17,7 @@ export function settled(state: HeightState): HeightState {
   return state.moving ? { height: state.height, moving: false } : state;
 }
 
+/** Each entry of a computed `transition-duration` or `transition-delay` ("0.18s, 50ms"), in ms. */
 export function transitionTimes(value: string): number[] {
   return value.split(",").map((entry) => {
     const match = /^\s*(-?\d*\.?\d+)(ms|s)\s*$/.exec(entry);

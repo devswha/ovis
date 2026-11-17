@@ -2,9 +2,11 @@ import { hasNoControlCharacters, CLAUDE_EFFORTS, CLAUDE_ULTRACODE_SETTINGS, CODE
 
 export { CLAUDE_EFFORTS, CODEX_EFFORTS };
 
+/** Claude Code's `--permission-mode` choices; "default" leaves the flag out */
 export const CLAUDE_LAUNCH_MODES = ["default", "acceptEdits", "auto", "plan", "dontAsk", "bypassPermissions"] as const;
 export type ClaudeLaunchMode = (typeof CLAUDE_LAUNCH_MODES)[number];
 
+/** Codex's `/approvals` presets, each a sandbox and an approval policy; "default" leaves both out */
 export const CODEX_LAUNCH_MODES = ["default", "readOnly", "auto", "fullAccess"] as const;
 export type CodexLaunchMode = (typeof CODEX_LAUNCH_MODES)[number];
 
@@ -17,6 +19,7 @@ const CODEX_ARGS: Record<Exclude<CodexLaunchMode, "default">, string[]> = {
 export interface LaunchCapabilities {
   model: boolean;
   efforts: readonly string[];
+  /** Claude Code's Ultracode switch goes on the command line as one inline `--settings` object */
   ultracode: boolean;
   /**
    * the first prompt goes on the command line after an end-of-options separator, which the agent's
@@ -55,6 +58,8 @@ const CAPABILITIES: Readonly<Record<string, LaunchCapabilities>> = {
   // 2026-10-20: `codex -- logout`, `-- update`, `-- --help` and `-- '-p x'` all started the TUI, and
   // `codex -- logout extra` failed with the root `[PROMPT]` usage, `codex logout extra` with the subcommand's
   codex: { model: true, efforts: CODEX_EFFORTS, ultracode: false, positionalPrompt: true },
+  // dsh-tui 0.20.0 takes no effort flag: the bridge saves `--effort <level>` to ~/.dsh-tui/effort.json, which its
+  // `/effort <id>` writes and its boot reads, and types the command without it (server/agent-launch.ts).
   "dsh-tui": { model: false, efforts: DSH_EFFORTS, ultracode: false, positionalPrompt: false },
 };
 
@@ -126,6 +131,7 @@ export function launchArgs(kind: string, modes: { claudeLaunchMode: ClaudeLaunch
     args.push(...(kind === "codex" ? ["-c", `model_reasoning_effort=${choices.effort}`] : ["--effort", choices.effort]));
   }
   if (choices.ultracode && can.ultracode) args.push("--settings", CLAUDE_ULTRACODE_SETTINGS);
+  // the prompt last, after the end-of-options separator: nothing it says can be a flag or a subcommand there
   if (firstPromptDelivery(kind, choices.prompt) === "positional") args.push("--", choices.prompt!.trim());
   return args.length === 0 ? undefined : args;
 }

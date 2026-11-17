@@ -9,6 +9,13 @@ const VERB_LABEL: Record<ToolVerbKind, string> = {
   run: "Ran",
 };
 
+/**
+ * The tool ids a verb stands for, by exact name (case aside): Claude's Read / Edit / MultiEdit /
+ * NotebookEdit / Write / Bash, Codex's exec / exec_command / shell / local_shell / apply_patch,
+ * and the lowercase read / edit / write / bash / patch of pi, omp, gjc and omo. Anything else
+ * (Grep, a web or task tool, a todo or goal call, an MCP tool) keeps its own name: a guess by
+ * substring would call `mcp__files__read_all` a read.
+ */
 const VERB_OF: Record<string, ToolVerbKind> = {
   read: "read",
   edit: "edit", multiedit: "edit", notebookedit: "edit", apply_patch: "edit", patch: "edit",
@@ -29,9 +36,15 @@ export function toolVerbKind(name: string, input = ""): ToolVerbKind | null {
   const key = name.toLowerCase();
   if (!Object.hasOwn(VERB_OF, key)) return null;
   const kind = VERB_OF[key]!;
+  // Codex applies a patch from inside an exec script: the row names the files, so it is an edit.
   return kind === "run" && patchText(input) !== null ? "edit" : kind;
 }
 
+/**
+ * Whether a row's summary is the thing the call acted on: its command or path, or the files of
+ * its patch. omp sums a call up by its `intent` ("Checking ports") instead, and a verb in front
+ * of that sentence would read "Ran Checking ports".
+ */
 function isObjectOf(kind: ToolVerbKind, input: string, object: string): boolean {
   const patch = patchText(input);
   if (patch !== null && patchFiles(patch).join(", ").slice(0, SUMMARY_LENGTH) === object) return true;

@@ -76,6 +76,7 @@ describe("omo command completion", () => {
     const row = (name: string, source: SlashCommand["source"] = "builtin"): SlashCommand => ({ name, description: "", source });
     expect(sendsBarePick(row("new"), "opencode")).toBeTrue();
     expect(sendsBarePick(row("compact"), "opencode")).toBeTrue();
+    // OpenCode's own menu only types these, with their space, for Enter to send
     for (const name of ["rename", "cd", "btw"]) expect(sendsBarePick(row(name), "opencode")).toBeFalse();
     for (const name of ["init", "review", "hello"]) expect(sendsBarePick(row(name), "opencode")).toBeFalse();
     for (const source of ["user", "project", "plugin", "skill"] as const) expect(sendsBarePick(row("hello", source), "opencode")).toBeFalse();
@@ -215,6 +216,7 @@ describe("composerMessage and submitNote", () => {
     // a refusal over another agent's box keeps its note where herdr labels the pane Claude Code (an OmO with its SDK child)
     expect(submitNote("input_draft", AGENT_INPUT_DRAFT_MESSAGE, "claude")).toBe(submitNote("input_draft", "x", "gjc"));
     expect(submitNote("input_draft", "x", "claude")).not.toBe(submitNote("input_draft", "x", "gjc"));
+    // Claude Code's box holding a folded paste has a note of its own, saying why nothing can be sent over it
     expect(submitNote("input_draft", CLAUDE_FOLDED_DRAFT_MESSAGE, "claude")).not.toBe(submitNote("input_draft", "x", "claude"));
     expect(submitRefusal("input_draft", "x", undefined, "! ls")).toEqual({ note: "Not sent: Claude Code's input box in the terminal may not be empty. It shows “! ls”.", anyway: true });
     expect(submitRefusal("input_draft", "x", undefined, "")).toBe(submitNote("input_draft", "x"));
@@ -567,6 +569,7 @@ describe("terminal commands", () => {
     expect(typedTerminalCommand(commands, "config")).toBeNull();
     expect(typedTerminalCommand(commands, "//config")).toBeNull();
     expect(typedTerminalCommand(commands, "")).toBeNull();
+    // a row typed with another trigger is another row: Codex's $skill is never /skill
     expect(typedTerminalCommand([{ ...config, trigger: "$" }], "/config")).toBeNull();
     expect(typedTerminalCommand([{ ...config, trigger: "$" }], "$config")).toEqual({ ...config, trigger: "$" });
     expect(typedTerminalCommand([plain, skill], "/compact")).toBeNull();

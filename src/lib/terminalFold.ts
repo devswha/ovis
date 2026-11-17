@@ -43,6 +43,7 @@ const XTERM_ANSI = ["#2e3436", "#cc0000", "#4e9a06", "#c4a000", "#3465a4", "#755
 const CUBE = [0, 95, 135, 175, 215, 255];
 const hex = (value: number): string => value.toString(16).padStart(2, "0");
 
+/** A 256-colour palette index as CSS: the theme's sixteen colours (xterm's where it names none), then xterm's 6x6x6 cube and grey ramp. */
 export function paletteColor(index: number, theme: ITheme): string {
   if (index < 16) return theme[ANSI[index]!] ?? XTERM_ANSI[index]!;
   if (index < 232) {
@@ -102,6 +103,7 @@ export function readableColor(fg: string, bg: string, ratio: number): string {
     ?? (contrast([255, 255, 255], under) >= contrast([0, 0, 0], under) ? "#ffffff" : "#000000");
 }
 
+/** `fg` faded halfway toward `bg` (as SGR 2's 50% alpha draws it over `bg`), then lifted to `ratio` against `bg`. */
 export function dimmedColor(fg: string, bg: string, ratio = 4.5): string {
   // a background read back from an element's style comes serialized, as rgb(r, g, b)
   const serialized = /^rgba?\(\s*(\d{1,3}),\s*(\d{1,3}),\s*(\d{1,3})(?:,\s*1(?:\.0+)?)?\s*\)$/i.exec(bg);
@@ -232,6 +234,11 @@ export function webLinkAt(text: string, offset: number): { url: string; start: n
   return null;
 }
 
+/**
+ * The OSC 8 target (`ESC ] 8 ; ; uri`) of grid cell `x` on buffer row `y`, or null. xterm (5.5 and 6.0) keeps it in its own link
+ * service with no public way to read it, so this reads its internals and finds nothing where they are not there; the
+ * caller applies the grid's own link policy (http(s) or file only) to what it finds.
+ */
 export function hyperlinkAt(term: Terminal, y: number, x: number): string | null {
   const cell = term.buffer.active.getLine(y)?.getCell(x) as (IBufferCell & { extended?: { urlId?: number } }) | undefined;
   const id = cell?.extended?.urlId;
@@ -263,6 +270,7 @@ export interface TerminalFold {
 export type FoldLinkTarget = { url: string } | { row: number; col: number };
 
 export interface TerminalFoldOptions {
+  /** the grid is not this browser's to size: a mirror, a grid it watches, or one held at another device's size */
   foreign: () => boolean;
   wrap: () => boolean;
   onWide: (wide: boolean) => void;
@@ -416,6 +424,7 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { foreign,
     const row = caret.node.parentElement?.closest(".terminal-fold-row");
     const index = row ? rows.indexOf(row as HTMLDivElement) : -1;
     if (!row || index < 0) return null;
+    // the caret falls between characters: on a glyph's right half it is after it, so the glyph is the one before
     const node = caret.node;
     const holds = (at: number): boolean => {
       if (at < 0 || at >= node.data.length) return false;

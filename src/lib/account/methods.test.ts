@@ -77,6 +77,7 @@ describe("sign-in methods", () => {
     expect(after).toMatchObject({ account: "acct_1", provider: "google" });
     expect((await service.identities()).map((identity) => identity.provider).sort()).toEqual(["github", "google"]);
     expect(fake.requests).toContain("POST /v1/signout");
+    // the replaced sign-in's tokens are over
     expect((await fake.fetch(new Request(`${SERVICE}/v1/pcs`, { headers: { authorization: `Bearer ${before.access_token}` } }))).status).toBe(401);
   });
 
@@ -117,6 +118,7 @@ describe("sign-in methods", () => {
     await expect(redirectSignIn(fake, "google", victim, { linkToken: token })).rejects.toMatchObject({ code: "invalid_grant" });
     const service = new AccountService({ store: attacker, fetch: fake.fetch, lock: memoryLock() });
     expect((await service.identities()).map((identity) => identity.provider)).toEqual(["github"]);
+    // the victim's own Google sign-in still lands in their own account
     expect((await redirectSignIn(fake, "google", memoryAccountStore())).account).toBe("acct_victim");
   });
 

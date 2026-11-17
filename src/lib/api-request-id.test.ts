@@ -36,6 +36,7 @@ it("never stamps external or non-API requests", async () => {
 });
 
 it("generates UUIDs on plain-HTTP LAN origins without secure-context randomUUID", async () => {
+  // Given: randomUUID is unavailable on plain HTTP, but getRandomValues works.
   const uuid = spyOn(crypto, "randomUUID").mockImplementation(() => { throw new Error("not a secure context"); });
   try {
     await apiFetch("/api/session");
@@ -58,6 +59,7 @@ it("covers JSON reads, writes, auth and pairing at their existing call sites", a
 
 it("ends a Portal sign-in with Portal's own POST, which is no call of this app's API", async () => {
   await signOutOfPortal();
+  // Then: Portal's gateway answers a same-origin POST to this path; it takes no body and no correlation header
   expect(calls).toEqual([{ url: "/_portal/auth/logout", init: { method: "POST" } }]);
   fetchSpy.mockImplementationOnce(Object.assign(async () => Response.json({ error: { code: "forbidden", message: "logout requires a same-origin POST" } }, { status: 403 }), { preconnect: globalThis.fetch.preconnect }));
   await expect(signOutOfPortal()).rejects.toMatchObject({ status: 403, detail: "logout requires a same-origin POST" });

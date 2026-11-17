@@ -1,3 +1,7 @@
+/**
+ * Every call goes through the PC's own session (`fetch` is that PC's transport), so the PC sees which of
+ * its devices is asking.
+ */
 import { ACCOUNT_ENROLL_MAX, AccountRecordError, accountDeviceId, isAccountKeyEncoding, newRecordId, readAccountRecord, signAccountRecord } from "../../../shared/account-records.ts";
 import type { AddRecord, LinkRecord, RemoveRecord } from "../../../shared/account-records.ts";
 import { isWssOrigin } from "../../../shared/relay-offer.ts";
@@ -37,16 +41,21 @@ export async function post(fetch: PcFetch, path: string, body: unknown): Promise
 export interface PcAccountStatus {
   readonly account: string | null;
   readonly unlinked: readonly string[];
+  /** the signed `remove`s behind its tombstones, as it says: unchecked until keepRemovals verifies them */
   readonly removals: readonly unknown[];
+  /** the signed `add`s behind its account rows, as it says: unchecked until enrollPc verifies them */
   readonly adds: readonly unknown[];
   /** every key it keeps out, signed removal or not, as it says */
   readonly blocked: readonly string[];
+  /** with `fresh`: it read its whole mailbox just now, so no removal waits unread there */
   readonly fresh?: boolean;
   /** it holds every add back: it lost removal evidence, so `blocked` may not name every key it keeps out */
   readonly blockedAll?: boolean;
+  /** it waits for its first member's enrollment; absent from an Ovis from before enrollments */
   readonly enrolling?: boolean;
 }
 
+/** `fresh`: the PC reads its mailbox first, so a removal waiting there is counted (docs/account.md, "PC API"). */
 export async function pcAccountStatus(fetch: PcFetch, options: { fresh?: boolean } = {}): Promise<PcAccountStatus> {
   const response = await fetch(options.fresh ? "/api/account/status?fresh=1" : "/api/account/status");
   if (!response.ok) throw await refusal(response);
@@ -56,6 +65,7 @@ export async function pcAccountStatus(fetch: PcFetch, options: { fresh?: boolean
     account: typeof body.account === "string" ? body.account : null, unlinked,
     removals: Array.isArray(body.removals) ? body.removals : [], adds: Array.isArray(body.adds) ? body.adds : [],
     blocked: Array.isArray(body.blocked) ? body.blocked.filter(isAccountKeyEncoding) : [],
+    // an Ovis from before enrollments sends no `fresh` at all
     ...(options.fresh && "fresh" in body ? { fresh: (body as { fresh?: unknown }).fresh === true } : {}),
     ...((body as { blocked_all?: unknown }).blocked_all === true ? { blockedAll: true } : {}),
     ...(typeof (body as { enrolling?: unknown }).enrolling === "boolean" ? { enrolling: (body as { enrolling: boolean }).enrolling } : {}),
@@ -64,6 +74,7 @@ export async function pcAccountStatus(fetch: PcFetch, options: { fresh?: boolean
 
 export function needsLink(status: PcAccountStatus, device: RelayDevice, account: string): boolean {
   if (device.device_id === null) return false;
+  // a PC of another account keeps this pairing as it is: the account cannot reach it
   if (status.account !== null && status.account !== account) return false;
   return status.account === null || status.unlinked.includes(device.device_id);
 }
@@ -140,6 +151,7 @@ export class UnverifiedJoinError extends Error {
   }
 }
 
+/** The device asking changed what it says (or where it asks from) after the approval card was drawn. */
 export class AdmissionChangedError extends Error {
   constructor() {
     super("The device asked again with other details");
@@ -152,6 +164,7 @@ const sameAdmission = (a: Admission, b: Admission): boolean => a.key === b.key &
 
 const tieKey = (admission: Admission): string => [admission.label, admission.os, admission.country, admission.city].join("\u0000");
 
+/** An admission counts for this long after the device rang (docs/account.md, "Joining through the account"). */
 export const ADMISSION_MS = 10 * 60_000;
 
 /**
@@ -165,7 +178,9 @@ export const ADMISSION_MS = 10 * 60_000;
 export async function approveJoin(options: {
   request: RemotePairingRequest; digits: string; through: string; service: AccountService;
   decide: (decision: "approve" | "decline", digits?: string) => Promise<void>;
+  /** with the admission that vouched for the device: its name is the one the device gave the account service, not the PC's */
   admit: (admission: Admission) => Promise<unknown>; now?: () => number;
+  /** the admission the card showed, null when it showed none: approval goes ahead only for exactly that one */
   shown?: Admission | null;
 }): Promise<void> {
   const { request } = options;
@@ -175,8 +190,11 @@ export async function approveJoin(options: {
     await options.decide("decline");
     throw new UnverifiedJoinError();
   }
+  // the device asked again with another name, system or place since the card was drawn: nothing is
+  // answered, and the card shows the new details before anyone approves them
   if (options.shown !== undefined && (options.shown === null || !sameAdmission(options.shown, vouched))) throw new AdmissionChangedError();
   await options.decide("approve", options.digits);
+  // a PC vouched for joins X alone: no add, no introduction
   if (request.intent === "account") await options.admit(vouched);
 }
 
@@ -230,6 +248,7 @@ export async function admitToAccount(options: {
     v: 1, kind: "add", account: options.account, key: options.joining.key, label: options.joining.label, role: "drive",
     issued_at: new Date(now()).toISOString(), id: newRecordId(), signer: options.key.public_spki,
   }, options.key.private_key);
+  // X keeps it on the row it made, so a client enrolling a later PC finds it there (docs/account.md, "PC API")
   try { await post(options.fetch, "/api/account/records", { records: [add] }); } catch (error) {
     console.warn("Ovis: the PC that let the device in did not keep its add", error instanceof Error ? error.name : error);
   }
@@ -238,6 +257,8 @@ export async function admitToAccount(options: {
     for (let start = 0; start < others.length; start += 32) await options.service.postRecord(others.slice(start, start + 32), add);
     return add;
   }
+  // X already let the device in: kept before it is sent, so a refusal or a lost answer is sent again;
+  // and, in the same write, as a device this client checked itself, which a PC it enrolls later gets too
   await options.store.updateMany(["adds", "devices"], (current) => ({
     adds: { ...current.adds, [add.id]: { account: options.account, record: add, to: others } },
     devices: withDevice(current.devices, add),
@@ -292,6 +313,7 @@ export async function keepRemovals(options: { store: AccountStore; account: stri
   if (checked.length === 0) return;
   await options.store.update("removals", (current) => {
     const next = { ...current };
+    // a record id already kept keeps its first record
     for (const record of checked) if (next[record.id] === undefined && Object.keys(next).length < KEPT_REMOVALS_MAX) next[record.id] = record;
     return next;
   });
@@ -301,11 +323,13 @@ export async function planEnroll(store: AccountStore, serverId: string, account:
   await store.update("enrolls", (current) => ({ ...current, [serverId]: { account, done: [] } }));
 }
 
+/** A refusal that says nothing final about the record: the PC could not read its tombstones, so it is sent again. */
 const UNDECIDED = new Set(["account_unavailable", "enrolling"]);
 
 /** Another PC of the account this client is paired with, over a session signed in with the account key there. */
 export interface AccountPeer { readonly serverId: string; readonly fetch: PcFetch; readonly assertOwned?: () => Promise<void> }
 
+/** How long an enrollment waits for another PC of the account to say what it keeps out, before it counts that PC as not checked. */
 export const PEER_STATUS_MS = 8_000;
 const HELD_MAX = 4096;
 
@@ -347,7 +371,9 @@ export interface Enrollment { readonly finished: boolean; readonly checked: numb
  */
 export async function enrollPc(options: {
   fetch: PcFetch; store: AccountStore; account: string; serverId: string; others?: readonly AccountPeer[]; pc?: IntroducedPc; assertOwned?: () => Promise<void>;
+  /** how many other PCs the account's directory lists: some this client cannot read keep its adds home */
   listed?: number;
+  /** the new PC is from before enrollments (its status has no `enrolling`): removes only, through records */
   legacyTarget?: boolean;
 }): Promise<Enrollment> {
   const others = options.others ?? [];
@@ -356,13 +382,17 @@ export async function enrollPc(options: {
   if (planned.introduce !== undefined) return { finished: await introduceLeft(options, others), checked: 0, of: others.length, admitted: planned.introduce.keys };
   const answered: AccountPeer[] = [];
   const seen: PcAccountStatus[] = [];
+  /** PCs that cannot say they read their whole mailbox (from before enrollments, or whose read failed): their removals are relayed, and no add goes */
   let legacy = 0;
   let unvouched = 0;
   await Promise.all(others.map(async (peer) => {
     try {
       const status = await within(PEER_STATUS_MS, pcAccountStatus(peer.fetch, { fresh: true }));
       if (status.account !== options.account) return;
+      // from before enrollments: its removals count, but it cannot vouch for its mailbox
       if (status.fresh === undefined) { legacy++; seen.push(status); return; }
+      // a PC whose mailbox read failed or stopped short may hold a removal it does not list yet: its removals
+      // go, no add does, and the new PC keeps its wait until a later connection finds that PC read whole
       if (status.fresh !== true) { unvouched++; seen.push(status); return; }
       answered.push(peer);
       seen.push(status);
@@ -375,6 +405,7 @@ export async function enrollPc(options: {
     ...Object.values(devices ?? {}).filter((record): record is RemoveRecord => record.kind === "remove"),
     ...Object.values(kept ?? {}),
   ].filter((record, index, all) => record.account === options.account && !planned.done.includes(record.id) && all.findIndex((other) => other.id === record.id) === index)
+    // in the order they were signed: a removal of a member then comes after the removals that member signed before it
     .sort((a, b) => a.issued_at < b.issued_at ? -1 : a.issued_at > b.issued_at ? 1 : 0);
   const known = await options.store.get("devices");
   const kept = await options.store.get("removals");
@@ -398,14 +429,18 @@ export async function enrollPc(options: {
   const records: (AddRecord | RemoveRecord)[] = [...removes, ...adds];
   const done: string[] = [];
   const admitted: string[] = [...planned.admitted ?? []];
+  // an unvouched PC keeps the new PC waiting: this enrollment is sent, but not as the last part
   let sent = unvouched === 0;
+  // the removes go first and the PC ends its wait only with the last part, so a long enrollment lets nothing in early
   for (let start = 0; start === 0 || start < records.length; start += ACCOUNT_ENROLL_MAX) {
     const batch = records.slice(start, start + ACCOUNT_ENROLL_MAX);
     // only a PC that lost removal evidence for good latches every add off; one that could not read its mailbox this time
     // (or is older) only keeps this enrollment's adds home, so a passing failure never spreads a permanent hold
     const first = start === 0 ? { held: [...held].slice(0, HELD_MAX), ...(held.size > HELD_MAX || seen.some((status) => status.blockedAll === true) ? { held_full: true } : {}) } : {};
+    // a part with a remove the PC could not decide keeps its wait: this enrollment is sent again on the next connection
     let response: Response;
     try { response = await post(options.fetch, "/api/account/enroll", { account: options.account, records: batch, last: sent && start + ACCOUNT_ENROLL_MAX >= records.length, ...first }); } catch (error) {
+      // an Ovis from before enrollments takes adds only there: the removes go through records, as they did, and no add
       if (!(error instanceof AccountPcError) || error.code !== "record_invalid") throw error;
       return enrollLegacy({ ...options, removes });
     }
@@ -420,6 +455,7 @@ export async function enrollPc(options: {
     }
   }
   let finished = false;
+  // checked in the same write that ends the plan: a record signed meanwhile (another tab) keeps it for the next call
   await options.store.updateMany(["enrolls", "devices", "removals"], (current) => {
     const entry = current.enrolls?.[options.serverId];
     if (current.enrolls === undefined || entry === undefined || entry.account !== options.account) return current;
@@ -436,6 +472,10 @@ export async function enrollPc(options: {
   return { finished, checked: answered.length, of: others.length, admitted };
 }
 
+/**
+ * Sends the introductions a plan still holds through each of `peers` it names, and drops each PC that
+ * took them all (a device a PC does not know is skipped there).
+ */
 async function introduceLeft(options: { store: AccountStore; serverId: string; assertOwned?: () => Promise<void> }, peers: readonly AccountPeer[]): Promise<boolean> {
   const { store, serverId, assertOwned } = options;
   const left = (await store.get("enrolls"))?.[serverId]?.introduce;
@@ -459,6 +499,7 @@ async function introduceLeft(options: { store: AccountStore; serverId: string; a
   return none;
 }
 
+/** A new PC from before enrollments: the removes as they were sent then, through records, and no add. */
 async function enrollLegacy(options: { fetch: PcFetch; store: AccountStore; account: string; serverId: string; others?: readonly AccountPeer[]; removes: readonly RemoveRecord[] }): Promise<Enrollment> {
   const done: string[] = [];
   let sent = true;
@@ -487,6 +528,10 @@ async function enrollLegacy(options: { fetch: PcFetch; store: AccountStore; acco
   return { finished, checked: 0, of: options.others?.length ?? 0, admitted: [] };
 }
 
+/**
+ * PC `peer` tells the devices just let in about the new PC (docs/account.md, "Introductions"); a
+ * device it does not know is skipped.
+ */
 async function introduce(peer: AccountPeer, keys: readonly string[], pc: IntroducedPc): Promise<boolean> {
   let all = true;
   for (const key of keys) {
@@ -514,6 +559,11 @@ export async function enrollOnPc(options: { fetch: PcFetch; store: AccountStore;
 
 export const QUEUED_ADD_MS = 30 * 24 * 60 * 60_000;
 
+/**
+ * Sends the adds this device signed that some PCs' mailboxes have not taken (admitToAccount), and
+ * forgets each PC the account service took it for. A refusal or a failure keeps the rest for the
+ * next try; one of another account waits for its sign-in, and one older than the mailbox keeps a record is dropped.
+ */
 export async function sendQueuedAdds(options: { service: AccountService; store: AccountStore; account: string; now?: () => number }): Promise<void> {
   const now = (options.now ?? Date.now)();
   const queued = Object.values((await options.store.get("adds")) ?? {});

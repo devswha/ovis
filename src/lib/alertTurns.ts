@@ -49,6 +49,10 @@ export class AlertTurns {
         return [];
       }
       case "chimed":
+        // A tab that heard the alert late chimed it again after this one did. That duplicate
+        // tells nothing new, and taking it for a chime could silence the pane's next question.
+        // While this tab waits on the pane's next alert, though, a chime is that alert's, or
+        // ignoring it would let this tab's rescue chime it a second time.
         if (this.played.has(message.key) && !this.pending.has(message.key)) return [];
         this.chimed.set(message.key, now);
         this.claims.delete(message.key);
@@ -73,6 +77,7 @@ export class AlertTurns {
     for (const [key, pending] of this.pending) {
       if (pending.due > now) continue;
       if (!pending.rescue && this.lowerClaim(key)) {
+        // Each lower claimant gets its own turn first, so two deferring tabs never rescue together.
         pending.rescue = true;
         pending.due = now + Math.max(RESCUE_MS * this.lowerClaims(key), this.announced.has(key) ? this.hold(key) : 0);
         continue;
@@ -185,6 +190,8 @@ export function createAlertTurnPlayer(options: {
     if (channel) channel.onmessage = (event: MessageEvent<unknown>) => {
       if (!isMessage(event.data)) return;
       const plays = turns.receive(event.data, performance.now());
+      // Only a chime that settled the alert ends this tab's attempt. An ignored late duplicate
+      // leaves it, or its result could never clear the pending alert and the pane went silent.
       if (event.data.type === "chimed" && !turns.has(event.data.key)) playing.delete(event.data.key);
       run(plays);
     };

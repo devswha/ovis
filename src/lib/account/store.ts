@@ -10,6 +10,7 @@ import type { AddRecord, RemoveRecord } from "../../../shared/account-records.ts
 
 export interface AccountKey {
   readonly private_key: CryptoKey;
+  /** P-256 SPKI, base64url: the device's `relay_public_key` on every PC of the account */
   readonly public_spki: string;
 }
 
@@ -22,6 +23,7 @@ export interface AccountSession {
   readonly provider: AccountProvider;
   readonly access_token: string;
   readonly refresh_token: string;
+  /** when the access token runs out, in ms since the epoch */
   readonly expires_at: number;
   /** which sign-in this is, kept by every refresh: random for one made by this build (sessionOf), a digest of the saved refresh token for one saved before sign-ins had an id (service.ts, session) */
   readonly sign_in_id?: string;
@@ -40,7 +42,9 @@ export interface PendingSignIn {
 interface Records {
   key: AccountKey;
   session: AccountSession;
+  /** by `state`, so a return consumes only its own sign-in and two tabs can each have one */
   pending: Readonly<Record<string, PendingSignIn>>;
+  /** by record id: an `add` this device signed that some PCs' mailboxes have not taken yet (account/join.ts) */
   adds: Readonly<Record<string, QueuedAdd>>;
   /**
    * By key: the latest record this device signed for a device of the account, an `add` for one it
@@ -48,6 +52,10 @@ interface Records {
    * brings into the account (account/join.ts, enrollPc)
    */
   devices: Readonly<Record<string, AddRecord | RemoveRecord>>;
+  /**
+   * By record id: other members' signed `remove`s that a PC of the account listed and this device
+   * checked (account/join.ts, keepRemovals), kept verbatim to relay to a PC it brings into the account
+   */
   removals: Readonly<Record<string, RemoveRecord>>;
   enrolls: Readonly<Record<string, PlannedEnroll>>;
   /**
@@ -80,6 +88,7 @@ export interface AccountStore {
   key(): Promise<AccountKey>;
   get<N extends Exclude<Name, "key">>(name: N): Promise<Records[N] | undefined>;
   set<N extends Exclude<Name, "key">>(name: N, value: Records[N] | undefined): Promise<void>;
+  /** Reads and writes `name` in one transaction; `change` runs synchronously inside it. */
   update<N extends Exclude<Name, "key">>(name: N, change: (current: Records[N] | undefined) => Records[N] | undefined): Promise<void>;
   updateMany<N extends Exclude<Name, "key">>(names: readonly N[], change: (current: Many<N>) => Many<N>): Promise<void>;
   /**
@@ -129,6 +138,7 @@ export function memoryAccountStore(): AccountStore {
   };
 }
 
+/** Runs `work` alone among this origin's tabs (Web Locks), where the browser has them. */
 export type AccountLock = <T>(work: () => Promise<T>) => Promise<T>;
 
 export const accountLock: AccountLock = (work) => {

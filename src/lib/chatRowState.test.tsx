@@ -19,6 +19,7 @@ afterEach(() => {
 
 const row = (defaultOpen: boolean) => createElement(ChatDetails, { memoryKey: "failed:0", defaultOpen }, createElement("summary", null, "Request failed"));
 const details = () => renderer!.root.findByType("details");
+/** the toggle event a <details> fires, as the browser fires it: after its open attribute changed */
 const toggled = (open: boolean) => act(() => details().props.onToggle({ currentTarget: { open } }));
 
 test("follows its default until the reader opens or closes it: a failure the turn went on from folds again", () => {

@@ -36,6 +36,8 @@ describe("previewChunks", () => {
 });
 
 describe("previewElements", () => {
+  // what the Preview draws, counted on its markup: the estimate the worker refuses a file by must
+  // never be below it, or a file under the limit could still hold the page
   const drawn = (source: string): { estimate: number; actual: number } => {
     const blocks = parseMarkdown(source, 0, true);
     const html = renderToStaticMarkup(createElement(SettingsProvider, { children: createElement(OpenFileContext.Provider, {

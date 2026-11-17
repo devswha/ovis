@@ -53,6 +53,10 @@ function phases(list: unknown): TodoItem[] {
   });
 }
 
+/**
+ * A whole-list tool's list is its input (`todos` / `plan`); an operations tool's is only its answer:
+ * an `init` input is one operation, not the list as it stands, so it is never read as one.
+ */
 export function todoSnapshot(part: Tool): TodoItem[] | null {
   const kind = toolKind(part.name);
   if (kind === null) return null;

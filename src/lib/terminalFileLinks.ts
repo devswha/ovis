@@ -12,6 +12,12 @@ export function canReuseExternalLinkTab(): boolean {
 }
 
 const NAME = "\\p{L}\\p{N}\\p{M}_";
+/**
+ * A bare name (`README.md`) opens only on Cmd+click, Ctrl+click off a Mac (`bareNameLinks`): a terminal
+ * is full of them (`ls`, `git status`, a compiler's output), a tap or a click to focus the pane lands on
+ * one, and the file viewer would open over the terminal for it. The character before it is matched too,
+ * not looked behind at (shared/lookbehind.ts): group 1 is the link, group 2 its path.
+ */
 const FILE_PATH = new RegExp(`(?:^|[^${NAME}/.@~:-])(((?:~\\/|\\.{1,2}\\/|\\/)?(?:[${NAME}@.+-]+\\/)*[${NAME}@+-][${NAME}@.+-]*\\.[A-Za-z0-9]{1,8})(?::\\d+(?::\\d+)?|#L\\d+(?:-L?\\d+)?)?)(?![${NAME}/])`, "gu");
 const CALL = /\s*\((?!\d+(?:,\d+)?\))/y;
 const FILE_URI = /file:\/\/\/[^\s<>"`]+/gi;
@@ -54,6 +60,7 @@ export function createWebLinkOpener(): (uri: string, reuse: boolean) => void {
       reusable.location.href = uri;
       reusable.focus();
     } catch {
+      // the browser refused to open or steer that tab (say, it no longer counts this page as its opener): a click never does nothing
       reusable = null;
       newTab(uri);
     }
@@ -78,7 +85,7 @@ export function hyperlinkFilter(): { handler: (payload: string) => boolean; rese
   return {
     handler: (payload) => {
       const separator = payload.indexOf(";");
-      if (separator === -1) return false;
+      if (separator === -1) return false; // malformed: xterm ignores it, and so does `open`
       const uri = payload.slice(separator + 1);
       if (uri !== "" && !open && !isWebLink(uri) && fileUriPath(uri) === null) return true;
       open = uri !== "";
@@ -132,6 +139,7 @@ export type BareNameLinks = ReturnType<typeof bareNameLinks>;
 
 interface LogicalLine {
   text: string;
+  /** the cell each UTF-16 unit of `text` sits in (1-based, as xterm's link ranges are) and its width */
   positions: { x: number; y: number; width: number }[];
   clipped: boolean;
 }
@@ -177,6 +185,7 @@ export function terminalFileLinks(buffer: IBuffer, lineNumber: number, open: (pa
   const line = logicalLine(buffer, lineNumber);
   if (line === null) return [];
   const { text, positions } = line;
+  // the first word of a line whose beginning is gone would open as a path of its own: `hijk/App.tsx`
   const firstGap = text.search(/\s/);
   const lead = !line.clipped ? 0 : firstGap === -1 ? text.length : firstGap;
   const links: FileLink[] = [];

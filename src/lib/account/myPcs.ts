@@ -23,6 +23,7 @@ export function newPcs(pcs: readonly MyPc[], now: number): MyPc[] {
   return pcs.filter((pc) => pc.state === "needs-approval" && pc.join !== undefined && pc.last_seen_at === null && pc.added_at !== null && now - Date.parse(pc.added_at) < NEW_PC_MS);
 }
 
+/** The PC pulls its mailbox every five minutes while it belongs to the account; three missed pulls and it is called off. */
 export const OFFLINE_AFTER_MS = 15 * 60_000;
 
 export type MyPcState = "paired" | "needs-approval" | "offline" | "needs-update";

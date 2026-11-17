@@ -129,5 +129,6 @@ export function applyThemeEntry(root: HTMLElement, entry: DrawnTheme): void {
     if (value === undefined) root.style.removeProperty(`--${name}`);
     else root.style.setProperty(`--${name}`, value);
   }
+  // `<meta name="theme-color">` follows the panel surface so the PWA title bar matches
   document.querySelector('meta[name="theme-color"]')?.setAttribute("content", entry.bgPanel);
 }

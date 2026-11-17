@@ -5,6 +5,11 @@
  * agent doing anything. A state this device did not see begin has no stamp, and its row says no
  * time rather than a wrong one.
  *
+ * A pane's ID is not the pane for good: herdr gives a pane it moves to another workspace a new ID,
+ * and an ID may come to name another pane (the server reckons with an ended pane's ID being given
+ * out again, server/finishes.ts). A pane's terminal is its own for as long as it lives, so a stamp
+ * names the terminal of the pane it tells of, and tells of no other.
+ *
  * A kept stamp is trusted by a look that did not see its state begin only on proof that the state
  * held meanwhile. Two counters give it together: herdr's `state_change_seq`, which moves with every
  * state of herdr's own, and the server's `finish_id`, which moves whenever the status Ovis shows
@@ -55,6 +60,7 @@ export type StateStamps = Readonly<Record<string, PcStamps>>;
 
 export interface SeenRow {
   pane: string;
+  /** the pane's terminal (`terminal_id`): herdr gives a pane it moves to another workspace a new ID, and leaves it this */
   terminal: string;
   state: StampState;
   seq: number | undefined;
@@ -143,6 +149,11 @@ function leftStamp(stamp: StateStamp, now: number, counted: boolean): StateStamp
   return stamp.gone === undefined ? kept : { ...kept, gone: Math.min(stamp.gone, now) };
 }
 
+/**
+ * herdr gives a pane it moves to another workspace a new ID and leaves it its terminal (#1503), so a row whose
+ * terminal the page saw under another ID is that pane; and so is one whose terminal the page saw before its ID went
+ * to another pane, under whatever ID it is back.
+ */
 function movedRows(rows: readonly SeenRow[], watched: PcSeen | undefined): Map<string, WatchedRow> {
   const moved = new Map<string, WatchedRow>();
   if (watched === undefined) return moved;
