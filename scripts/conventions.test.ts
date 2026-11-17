@@ -97,7 +97,9 @@ function ratchetBase(env: Record<string, string | undefined> = process.env, cwd:
     return named;
   }
   const base = gitIn(cwd, "merge-base", "HEAD", "origin/main");
-  return base.status === 0 ? base.stdout.trim() : null;
+  if (base.status === 0) return base.stdout.trim();
+  if (env["CI"]) console.log("No base for the ratchets here (no RATCHET_BASE, no origin/main): they compare with nothing.");
+  return null;
 }
 
 /** The files git sees renamed since `base` (committed, or staged as `git mv` does), each new path with its old one. */
@@ -144,7 +146,7 @@ describe("fixed sleeps", () => {
     return base === null || json === null ? null : { counts: JSON.parse(json) as Record<string, number>, renames: renamesSince(base) };
   };
 
-  it("never raises scripts/fixed-sleeps.json above the one on origin/main", () => {
+  it("never raises scripts/fixed-sleeps.json above the one at the ratchets' base", () => {
     const at = committed();
     if (at === null) return;
     const before = at.counts;
@@ -152,8 +154,8 @@ describe("fixed sleeps", () => {
     const was = (file: string): number => before[file] ?? before[at.renames.get(file) ?? ""] ?? 0;
     const total = (counts: Record<string, number>) => Object.values(counts).reduce((sum, count) => sum + count, 0);
     fail([
-      ...Object.entries(baseline).filter(([file, count]) => count > was(file)).map(([file, count]) => `${file}: ${count}, origin/main has ${was(file)}`),
-      ...total(baseline) > total(before) ? [`total: ${total(baseline)}, origin/main has ${total(before)}`] : [],
+      ...Object.entries(baseline).filter(([file, count]) => count > was(file)).map(([file, count]) => `${file}: ${count}, the base has ${was(file)}`),
+      ...total(baseline) > total(before) ? [`total: ${total(baseline)}, the base has ${total(before)}`] : [],
     ], "scripts/fixed-sleeps.json may only shrink: take the new fixed sleep out of the code instead (see the message of the test above for how). A renamed file takes its entry along with the same count, which keeps the total.");
   });
 

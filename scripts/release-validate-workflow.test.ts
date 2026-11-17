@@ -135,13 +135,13 @@ describe("release-validate.yml", () => {
       return { ...candidate, with: inputs };
     };
     // ci.yml's ratchets compare with the pull request's base or the commit before a push, which a Release run never has:
-    // the copy leaves out RATCHET_BASE and the step that fetches it, and compares with nothing, as ci.yml's own would there
+    // the copy leaves out EVENT_BASE and the step that fetches the base, and compares with nothing, as ci.yml's own would there
     const RATCHET_STEP = "Fetch the base the ratchets compare with";
     expect(stepList(theirs)).toContain(RATCHET_STEP);
-    const { RATCHET_BASE: _base, ...ciEnv } = theirs.env!;
+    const { EVENT_BASE: _base, ...ciEnv } = theirs.env!;
     /** All of a job but where it runs and when, its artifact's name, ci.yml's hosted_only cache, the ratchets' base and this workflow's own answer left out. */
     const checks = ({ name: _name, needs: _needs, if: _if, "runs-on": _runner, "continue-on-error": _may, outputs: _outputs, env, ...rest }: CallJob): object =>
-      ({ ...rest, env: env && (({ RATCHET_BASE: _ratchetBase, ...kept }) => kept)(env), steps: rest.steps!.filter((candidate) => candidate.id !== "passed" && candidate.name !== RATCHET_STEP).map(withoutCache).map((candidate) => (uploads(candidate) ? { ...candidate, with: { ...candidate.with, name: "" } } : candidate)) });
+      ({ ...rest, env: env && (({ EVENT_BASE: _eventBase, ...kept }) => kept)(env), steps: rest.steps!.filter((candidate) => candidate.id !== "passed" && candidate.name !== RATCHET_STEP).map(withoutCache).map((candidate) => (uploads(candidate) ? { ...candidate, with: { ...candidate.with, name: "" } } : candidate)) });
     expect(checks(fast), UPDATE).toEqual(checks(theirs));
     expect(fast["timeout-minutes"], UPDATE).toBe(theirs["timeout-minutes"]!);
     expect(fast.env, UPDATE).toEqual(ciEnv);
