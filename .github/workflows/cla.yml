@@ -22,7 +22,6 @@ jobs:
       (github.event.issue.pull_request &&
         (github.event.comment.body == 'recheck' ||
           github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA'))
-    # GitHub-hosted: it needs no toolchain and checks out nothing
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

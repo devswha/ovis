@@ -42,9 +42,11 @@ export interface HerdrUiConfig {
   keys?: HerdrKeys;
 }
 
-/** Friendly aliases used across the UI. */
 export type HerdrWorkspace = WorkspaceInfo;
 export type HerdrTab = TabInfo;
+/** What a request filled of the model's context, in tokens; `window` is null when nothing says it. */
+export type PaneContext = { used: number; window: number | null };
+
 /**
  * `background_tasks`: an OmO pane's `task` children, a Claude Code or OpenCode pane's subagents and background commands, or an agy or grok pane's background tasks, still running, counted by the server; absent when none.
  * `background_wait`: the pane is at rest while work its turn started still runs, and the turn goes on when it ends (server/background-wait.ts); absent when not.
@@ -60,9 +62,6 @@ export type HerdrTab = TabInfo;
  * agent waits for (`permission`, `question`, `auth`), its message in its own words (never
  * translated), and how far it is, 0 to 100.
  */
-/** What a request filled of the model's context, in tokens; `window` is null when nothing says it. */
-export type PaneContext = { used: number; window: number | null };
-
 export type HerdrPane = PaneInfo & {
   background_tasks?: number; background_wait?: true; plan?: PlanSummary; context?: PaneContext;
   parent_pane_id?: string;
@@ -703,7 +702,8 @@ export type ConversationPart =
      * What the transcript itself records of the call's outcome, never guessed from its output text.
      * Claude: `pending` until its tool_result, then `ok`, or `error` when the result is flagged so.
      * Codex: `pending` until its output record, then absent (it records no failure flag: done, outcome
-     * unknown). Absent for other agents and older servers.
+     * unknown). OpenCode: `pending` while waiting or running, then `ok` or `error` as it records the call.
+     * Absent for other agents and older servers.
      */
     state?: "pending" | "ok" | "error";
   }
@@ -1195,7 +1195,7 @@ export interface PendingMessage {
 
 export type ClientMessage =
   /** Subscribe to this connection server's authorized machine document; requires machine-events. */
-  | { type: "machine-events"; enabled: boolean }
+  | { type: "machine-events"; enabled: boolean; compact_agents?: boolean }
   /** keep_size: the grid is covered (the chat lens), so the attach leaves the shared pty's size as it is */
   | { type: "attach"; pane_id: string; cols: number; rows: number; flow_control?: "ack"; keep_size?: boolean; /** Opaque browser UUID for device-bound Pi presentation receipts only; never input authority. */ receipt_resume_id?: string }
   | { type: "detach"; pane_id: string }

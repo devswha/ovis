@@ -1,14 +1,10 @@
-/**
- * Starting the agent a create request names in the pane herdr just made: the request's own check
- * of `agent`, then the start, which retries a pane whose shell is not up yet and a name another
- * agent took. Workspace, tab and worktree creation share it.
- */
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync, type Stats } from "node:fs";
 import { join } from "node:path";
 import { freeAgentName } from "./agent-name.ts";
 import { launchedAgents } from "./launched-agents.ts";
 import { isShellAgentKind, startShellAgent, type ShellAgentLocator } from "./shell-agent.ts";
 import { agentStart, HerdrError, sessionSnapshot } from "./herdr/client.ts";
+import { requestFault } from "./http.ts";
 import { agentStartArgs } from "./claude-settings-file.ts";
 import { DSH_EFFORTS, launchArgsFault } from "../shared/launch-rules.ts";
 import { hcMachine } from "./herdr-core/runtime.ts";
@@ -16,7 +12,6 @@ import { userHome } from "./user-home.ts";
 
 export type AgentPayload = { kind?: unknown; name?: unknown; args?: unknown };
 
-/** What is wrong with a request's `agent`, in the API's words; null when it can be started. */
 export function agentFault(agent: AgentPayload | undefined): string | null {
   if (agent === undefined) return null;
   if (typeof agent !== "object" || typeof agent.kind !== "string" || agent.kind.length === 0) return "agent.kind is required";
@@ -66,14 +61,12 @@ async function startDshTui(paneId: string, args: string[], options: { locator?: 
   const written = JSON.stringify({ effort }, null, 2);
   mkdirSync(join(home, ".dsh-tui"), { recursive: true });
   writeFileSync(file, written);
-  // the file as this launch left it: a rewrite with the same level changes its times, if not its bytes
   const same = (stats: Stats, then: Stats): boolean => stats.ino === then.ino && stats.size === then.size && stats.mtimeMs === then.mtimeMs && stats.ctimeMs === then.ctimeMs;
   const ours = statSync(file);
   try {
     return await startShellAgent("dsh-tui", paneId, rest, options);
   } catch (error) {
     try {
-      // only this launch's own write is taken back: a level written (or a file removed) meanwhile stays
       if (existsSync(file) && same(statSync(file), ours) && readFileSync(file, "utf8") === written) {
         if (before === null) rmSync(file);
         else writeFileSync(file, before);
@@ -85,13 +78,6 @@ async function startDshTui(paneId: string, args: string[], options: { locator?: 
   }
 }
 
-/**
- * Starts a checked `agent` in a pane herdr just made. A failure is answered, not thrown: the
- * workspace, tab or worktree around the pane is there either way. `launched` is told the pid of
- * the process a shell-started agent came up as, when one is seen in front of the pane; `locator`
- * is the one `/api/agents` offered it from. `options` stands in for this PC's platform, the
- * folder Claude Code's settings files go to and the user's home, for a test.
- */
 export async function agentLaunch(paneId: string, agent: AgentPayload, launched?: (pid: number) => void, locator?: ShellAgentLocator, options: { platform?: string; settingsDir?: string; home?: string } = {}): Promise<{ agent_started: true } | { agent_started: false; error: { code: string; message: string } }> {
   try {
     const kind = agent.kind as string;
@@ -139,10 +125,7 @@ export async function agentLaunch(paneId: string, agent: AgentPayload, launched?
   } catch (error) {
     return {
       agent_started: false,
-      error: {
-        code: error instanceof HerdrError ? error.code : "agent_start_failed",
-        message: error instanceof Error ? error.message : String(error),
-      },
+      error: requestFault(error, "agent_start_failed"),
     };
   }
 }

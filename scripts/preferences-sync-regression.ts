@@ -1,14 +1,9 @@
-/**
- * Real browser preferences sync against an isolated server. Storage events and request gates
- * observe completion; the browser clock advances send windows without fixed sleeps.
- */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, type BrowserContext, type Page, type Response } from "playwright-core";
 import { chromePath } from "./chrome-path.ts";
-// machine events stay on SSE here: these checks hold or watch /api/machines/events (the socket transport has its own checks)
 process.env["OVIS_MACHINE_EVENTS_WS"] = "0";
 
 await import("./test-herdr.ts");
@@ -19,6 +14,7 @@ const root = mkdtempSync(join(tmpdir(), "herdr-preferences-sync-"));
 const serve = (port: number) => createServer({ port, hostname: "127.0.0.1", token: "", stateDir: join(root, "state"), usage: new UsageService(undefined, []) });
 let server = serve(0);
 const origin = `http://127.0.0.1:${server.port}`;
+const isEventStream = (url: string | URL) => new URL(url).pathname === "/api/machines/events";
 
 interface Opened { context: BrowserContext; page: Page; puts: { settings: Record<string, unknown>; pins?: string[] }[] }
 const mainKey = "ovis:settings";
@@ -35,12 +31,11 @@ async function browserAt(browser: Awaited<ReturnType<typeof chromium.launch>>, o
       setItem.call(this, key, value);
       window.dispatchEvent(new Event("preferences-test-storage"));
     };
-    // the app's own event stream reporting its loss, as the browser does when the server goes away
     const NativeEventSource = window.EventSource;
     window.EventSource = class extends NativeEventSource {
       constructor(url: string | URL, init?: EventSourceInit) {
         super(url, init);
-        if (!String(url).endsWith("/api/machines/events")) return;
+        if (new URL(String(url), location.href).pathname !== "/api/machines/events") return;
         this.addEventListener("error", () => {
           window.dispatchEvent(new Event("preferences-test-stream-lost"));
           // a non-200 answer to its reconnect: the browser never reconnects this one
@@ -59,7 +54,6 @@ async function browserAt(browser: Awaited<ReturnType<typeof chromium.launch>>, o
   return { context, page, puts };
 }
 
-/** Subscribe to exactly the storage state the action must produce, with an initial-state check. */
 function storageHolds(page: Page, key: string, expected: Record<string, unknown> | string[]): Promise<void> {
   return page.evaluate(({ key, expected }) => {
     // Keep the observed promise rooted while Chromium's virtual clock is paused.
@@ -105,7 +99,6 @@ async function reached(onWay: Promise<void>, what: string, state: () => Promise<
   clearTimeout(timer);
   if (!came) throw new Error(`${what}: no save reached the server in 60 s; ${await state()}`);
 }
-/** The next PUT's answer: the virtual clock steps a second at a time until one is sent (a send window, or a RETRY_MS wait). */
 async function nextPut(opened: Opened): Promise<Response> {
   const answered = opened.page.waitForResponse(isPut);
   let got = false;
@@ -113,7 +106,6 @@ async function nextPut(opened: Opened): Promise<Response> {
   for (let second = 0; second < 12 && !got; second++) await opened.page.clock.runFor(1_000);
   return await answered;
 }
-/** how long each real reopen took, from the restart until every page's EventSource had its answer */
 const reopenMs: number[] = [];
 /**
  * The event stream reopens for real: the server restarts on its port, and each page's EventSource
@@ -121,7 +113,7 @@ const reopenMs: number[] = [];
  * which a loaded PC can stretch past Playwright's 30 s default, so the deadline is named here.
  */
 async function restartServer(pages: readonly Page[]): Promise<void> {
-  const reopened = pages.map((page) => page.waitForResponse((response) => response.url().endsWith("/api/machines/events"), { timeout: 120_000 }));
+  const reopened = pages.map((page) => page.waitForResponse((response) => isEventStream(response.url()), { timeout: 120_000 }));
   const port = server.port;
   const started = Date.now();
   server.stop();
@@ -139,7 +131,6 @@ async function chooseMode(opened: Opened, mode: "Light" | "Dark"): Promise<void>
 try {
   const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
   try {
-    // F3: these bytes are pinned to pre-change records, before the server holds any settings.
     for (const [index, [record, dark, light]] of ([
       [{ theme: "system", palette: "amber", paletteLight: "catppuccin", paletteDark: "charcoal" }, "charcoal", "catppuccin"],
       [{ theme: "dark", palette: "catppuccin", paletteDark: "charcoal" }, "catppuccin", "catppuccin"],
@@ -178,7 +169,6 @@ try {
     console.log("QA empty server clients opened");
     await windows([a, b]);
     assert.deepEqual([...a.puts, ...b.puts], []);
-    // a server that keeps the mute list always says it, empty while nothing is muted
     assert.deepEqual(await held(), { revision: 0, settings: {}, muted_panes: [] });
 
     await a.page.goto(`${origin}/?settings=appearance`);
@@ -201,7 +191,6 @@ try {
     await aPins;
     console.log("QA device settings and pins verified");
 
-    // Hold the actual PUT, subscribe before sending, and let the other write land first.
     const onWay = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
     await a.page.route("**/api/preferences", async (route) => {
@@ -233,7 +222,6 @@ try {
     });
     await settingsHold(d.page, { lightTheme: "catppuccin" });
 
-    // (i): a new-format change crosses two real browser clients through the event stream.
     const newChoice = settingsHold(b.page, { darkTheme: "tokyo-night", palette: "tokyo-night" });
     await write({ darkTheme: "tokyo-night" });
     await newChoice;
@@ -244,8 +232,6 @@ try {
     for (const opened of [a, b, c, d]) await opened.context.close();
     console.log("PASS shared settings and pins, device settings, gated concurrent writes, new theme sides, event-stream recovery and no correcting PUTs");
 
-    // A save that keeps failing pauses after three, keeps what is edited meanwhile, and goes out
-    // on Retry or when the event stream reopens; another client converges on the latest values.
     const pinnedWorkspace = (await workspaceCreate({ cwd: root, label: "ovis-test-preferences-pin" })).workspace.workspace_id;
     try {
       const refusal = { error: { code: "preferences_unwritable", message: "EACCES: permission denied, open '/state/preferences.json.tmp'" } };
@@ -276,7 +262,6 @@ try {
       const statuses = async (count: number) => { const seen: number[] = []; for (let index = 0; index < count; index++) seen.push((await nextPut(e)).status()); return seen; };
       const quiet = async () => { for (let index = 0; index < 6; index++) await e.page.clock.runFor(5_600); };
 
-      // persistent-save-refusal: three settled failures, then nothing for a minute (the paused wait)
       failing = true;
       await mode("Light");
       const firstRound = await statuses(3);
@@ -286,12 +271,10 @@ try {
       assert.equal(await alert.count(), 1);
       await quiet();
       assert.equal(e.puts.length, 3, "a paused save sends nothing more within the minute");
-      // an ordinary document from the event stream does not unpause it
       await Promise.all([settingsHold(e.page, { showThinking: false }), write({ showThinking: false })]);
       for (let index = 0; index < 2; index++) await e.page.clock.runFor(5_600);
       assert.equal(e.puts.length, 3, "an ordinary preferences event resumes nothing");
 
-      // edits while paused: the theme and a pin change here, and still nothing is sent
       await mode("System");
       await e.page.keyboard.press("Escape");
       await e.page.locator(".settings-dialog").waitFor({ state: "detached" });
@@ -303,19 +286,15 @@ try {
       await e.page.getByRole("tab", { name: "Appearance" }).click();
       await e.page.clock.runFor(5_600);
       assert.equal(e.puts.length, 3, "edits while paused do not restart the failed loop");
-      // the paused wait ends: the change goes once more on its own, edits made meanwhile with it, and
-      // pauses again for twice as long when the server still refuses it (about 53 s of the minute have run)
       await e.page.clock.runFor(3_000);
       assert.equal(e.puts.length, 3);
       assert.equal((await nextPut(e)).status(), 500);
       assert.equal(e.puts[3]?.settings["theme"], "system");
       assert.deepEqual(e.puts[3]?.pins, pins);
       await e.page.locator(".settings-save-error[data-paused]").waitFor();
-      // past the first wait (60 s), short of the doubled one (120 s)
       for (let index = 0; index < 11; index++) await e.page.clock.runFor(5_600);
       assert.equal(e.puts.length, 4, "a refused send after the wait waits twice as long");
 
-      // retry-confirms-latest: Retry sends the latest intent; an edit made while it is on its way goes next
       failing = false;
       hold = Promise.withResolvers<void>();
       await retry.click();
@@ -346,8 +325,6 @@ try {
       if (qaDir) writeFileSync(join(qaDir, "retry-confirms-latest.json"), JSON.stringify(happy, null, 2));
       console.log(`PASS retry-confirms-latest ${JSON.stringify(happy)}`);
 
-      // persistent-save-refusal: a real reopen of the event stream, whose opening document carries an
-      // unchanged revision, gives a paused save one new round; when the server can write again, it lands
       failing = true;
       await mode("Dark");
       const secondRound = await statuses(3);
@@ -372,8 +349,6 @@ try {
       if (qaDir) writeFileSync(join(qaDir, "persistent-save-refusal.json"), JSON.stringify(failure, null, 2));
       console.log(`PASS persistent-save-refusal ${JSON.stringify(failure)}`);
 
-      // undone-while-refused: a change put back while its save is on the way, then refused, leaves
-      // nothing unconfirmed: no alert, no Retry waiting on a send that never starts, no more PUTs
       const putsBefore = e.puts.length;
       onWay = Promise.withResolvers<void>();
       hold = Promise.withResolvers<void>();
@@ -393,15 +368,11 @@ try {
       failing = false;
       console.log(`PASS undone-while-refused ${JSON.stringify({ puts: e.puts.length - putsBefore, alert: 0, server: (await held()).settings["theme"] })}`);
 
-      // disconnected-while-refused: after one settled refusal the server goes away; the browser's own
-      // EventSource error cancels the wait, nothing is sent while the stream is down, and its real
-      // reopening sends the latest change once, in one chain
       const putsAtStart = e.puts.length;
       failing = true;
       await mode("Light");
       assert.equal((await nextPut(e)).status(), 500);
       await alert.waitFor();
-      /** the server goes away, until the page's own EventSource reports the loss; its port, to serve again */
       const loseStream = async (): Promise<number> => {
         await e.page.evaluate(() => {
           Reflect.set(window, "__preferencesStreamLost", new Promise<void>((resolve) => window.addEventListener("preferences-test-stream-lost", () => resolve(), { once: true })));
@@ -419,7 +390,7 @@ try {
       assert.equal(e.puts.length, atDisconnect, "a lost event stream cancels the wait for the next save");
       assert.equal(atDisconnect, putsAtStart + 1);
       failing = false;
-      const reopened = [e.page, f.page].map((page) => page.waitForResponse((response) => response.url().endsWith("/api/machines/events"), { timeout: 120_000 }));
+      const reopened = [e.page, f.page].map((page) => page.waitForResponse((response) => isEventStream(response.url()), { timeout: 120_000 }));
       server = serve(port);
       await Promise.all(reopened);
       assert.equal((await nextPut(e)).status(), 200);
@@ -433,8 +404,6 @@ try {
       if (qaDir) writeFileSync(join(qaDir, "disconnected-while-refused.json"), JSON.stringify(lost, null, 2));
       console.log(`PASS disconnected-while-refused ${JSON.stringify(lost)}`);
 
-      // retry-during-automatic-send: Retry pressed while the automatic retry is on its way is used up
-      // when that save confirms everything; an edit made once the stream is lost then waits for its reopening
       const putsFirst = e.puts.length;
       failing = true;
       await mode("Dark");
@@ -457,7 +426,7 @@ try {
       await mode("Light");
       await quiet();
       assert.equal(e.puts.length, atLoss, "a Retry already answered authorizes no later send while the stream is lost");
-      const reopenedAgain = [e.page, f.page].map((page) => page.waitForResponse((response) => response.url().endsWith("/api/machines/events"), { timeout: 120_000 }));
+      const reopenedAgain = [e.page, f.page].map((page) => page.waitForResponse((response) => isEventStream(response.url()), { timeout: 120_000 }));
       server = serve(portAgain);
       await Promise.all(reopenedAgain);
       assert.equal((await nextPut(e)).status(), 200);
@@ -473,15 +442,14 @@ try {
       // the browser closes the stream for good; a change made then still goes out, and the app opens a
       // new stream that brings other browsers' changes again
       let streamRefused = true;
-      /** while set, the page's next stream request waits for it, and says it is asked */
       let streamHold: PromiseWithResolvers<void> | null = null;
       const streamAsked = Promise.withResolvers<void>();
-      await e.context.route("**/api/machines/events", async (route) => {
+      await e.context.route(isEventStream, async (route) => {
         if (streamRefused) { await route.fulfill({ status: 502, body: "Bad Gateway" }); return; }
         if (streamHold !== null) { streamAsked.resolve(); await streamHold.promise; }
         await route.continue();
       });
-      const isStream = (response: Response) => response.url().endsWith("/api/machines/events");
+      const isStream = (response: Response) => isEventStream(response.url());
       const portClosed = await loseStream();
       await e.page.evaluate(() => {
         Reflect.set(window, "__preferencesStreamClosed", new Promise<void>((resolve) => window.addEventListener("preferences-test-stream-closed", () => resolve(), { once: true })));
@@ -509,9 +477,6 @@ try {
       if (qaDir) writeFileSync(join(qaDir, "closed-stream.json"), JSON.stringify(closedStream, null, 2));
       console.log(`PASS closed-stream ${JSON.stringify(closedStream)}`);
 
-      // reopened-gives-way: a refused change waits while the stream is lost; another browser saves the
-      // same setting meanwhile, and the reopened stream's opening document comes before the resend, so
-      // this page takes the newer value and sends nothing over it
       failing = true;
       await mode("Light");
       assert.equal((await nextPut(e)).status(), 500);
@@ -526,7 +491,6 @@ try {
       await settingsHold(f.page, { theme: "system" });
       await quiet();
       assert.equal(e.puts.length, atRefusal, "nothing is sent while the stream is lost");
-      // the page's clock stays still until the opening document is read, so the send wait has not begun
       const tookNewer = settingsHold(e.page, { theme: "system" });
       void tookNewer.catch(() => {});
       streamHold.resolve();

@@ -8,7 +8,6 @@ import type { ConversationMetadata, ConversationResponse } from "../shared/proto
 type Screen = Pick<ConversationMetadata, "model" | "reasoning_effort">;
 const NOTHING: Screen = { model: null, reasoning_effort: null };
 
-/** Claude's model families and a version part, as its ids and display names write them (also conversation-metadata.ts) */
 export const CLAUDE_FAMILY = "opus|sonnet|haiku|fable|mythos";
 export const VERSION = "[1-9]\\d?";
 const EFFORT = "none|minimal|low|medium|high|xhigh|max";
@@ -33,11 +32,8 @@ function claudeScreen(lines: string[]): Screen {
 /** A prompt line of Codex's: one sent (`›`), or its composer, which it marks `»` at Ultra reasoning effort (0.164 on, its `prompt_glyph`). */
 const CODEX_PROMPT = /^\s*[›»](?:\s|$)/u;
 
-/** The lines under the last Codex session header down to its composer footer, the model and
- * effort that footer states, or null when the screen does not show both. */
 function codexLayout(lines: string[]): { header: number; visible: string[]; end: number; model: RegExpExecArray } | null {
   let header = lines.length - 1;
-  // the banner's own line, boxed or not: an answer that only mentions it is no header
   while (header >= 0 && !/^[\s\u2502|]*>_ OpenAI Codex \(v\d[^)]*\)[\s\u2502|]*$/u.test(lines[header]!)) header--;
   if (header < 0) return null;
   const visible = lines.slice(header + 1);
@@ -60,17 +56,8 @@ function codexScreen(lines: string[]): Screen {
   return { model: /^GPT-/u.test(found[1]!) ? found[1]!.toLowerCase() : found[1]!, reasoning_effort: found[2]! };
 }
 
-/** A cell Codex draws for something said or done: an answer or a tool call, a warning, an error. */
 const CODEX_CELL = /^\s*[•⚠■]/u;
 
-/**
- * Whether a Codex screen is its start screen with nothing said in it yet: under the last session
- * header, its card and start tips, then the composer (the first prompt line, `›`) with what it
- * holds, then the footer. A message sent or a resumed conversation puts a prompt or an answer
- * above the composer, and a long one pushes the header off the screen; either way this says no.
- * So does one said above the header: the header may be a card a command drew (`/status`) after
- * a conversation, or a session started after another one in the same terminal.
- */
 export function codexStartScreenUnused(screen: string): boolean {
   const all = screen.split("\n");
   const layout = codexLayout(all);
@@ -86,12 +73,6 @@ const AGY_RULE = /^\s*─{10,}\s*$/u;
 const AGY_PROMPT = /^\s*>(?:\s|$)/u;
 const AGY_CELL = /^\s*[✦●•■](?:\s|$)/u;
 
-/**
- * Whether an Agy screen is its start screen with nothing said in it yet: under the last session
- * header, its banner and optional startup warning, then the composer (`>` between two full-width
- * rules) and its `? for shortcuts` footer, with no prompt, command, answer, or panel above or
- * below the composer.
- */
 export function agyStartScreenUnused(screen: string): boolean {
   const all = screen.split("\n");
   let header = all.length - 1;
@@ -109,6 +90,28 @@ export function agyStartScreenUnused(screen: string): boolean {
   if (upper < 0 || visible.slice(0, upper).some((line) => AGY_RULE.test(line) || AGY_PROMPT.test(line) || AGY_CELL.test(line))) return false;
   const box = visible.slice(upper + 1, lower).filter((line) => line.trim() !== "");
   return box.length > 0 && AGY_PROMPT.test(box[0]!) && box.slice(1).every((line) => /^\s{2,}\S/u.test(line));
+}
+
+/** OpenCode's logo as its home screen draws it (2.0.32 to 2.2.2): "open" and "code" side by side, or, in a narrow pane, "open" over "code". */
+const OPENCODE_OPEN = ["█▀▀█ █▀▀█ █▀▀█ █▀▀▄", "█  █ █  █ █▀▀▀ █  █", "▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀▀▀▀"];
+const OPENCODE_CODE = ["█▀▀▀ █▀▀█ █▀▀█ █▀▀█", "█    █  █ █  █ █▀▀▀", "▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀"];
+const OPENCODE_LOGO = OPENCODE_OPEN.map((row, index) => `${row} ${OPENCODE_CODE[index]}`);
+const OPENCODE_DOT = "▄";
+const OPENCODE_FRAME = /[┃╹│┌┐└┘╭╮╰╯]/u;
+
+export function opencodeStartScreenUnused(screen: string): boolean {
+  const lines = screen.split("\n").map((line) => line.trim());
+  const top = lines.findIndex((line) => line !== "" && line !== OPENCODE_DOT);
+  const drawn = (at: number, logo: readonly string[]) => logo.every((row, index) => lines[at + index] === row);
+  let below: number;
+  if (top >= 0 && drawn(top, OPENCODE_LOGO)) below = top + OPENCODE_LOGO.length;
+  else if (top >= 0 && drawn(top, OPENCODE_OPEN) && lines[top + 3] === OPENCODE_DOT && drawn(top + 4, OPENCODE_CODE)) below = top + 7;
+  else return false;
+  const composer = lines.findIndex((line, index) => index >= below && OPENCODE_FRAME.test(line));
+  if (composer < 0 || !lines[composer]!.startsWith("┃")) return false;
+  let end = composer;
+  while (lines[end]?.startsWith("┃")) end++;
+  return /^╹▀+$/u.test(lines[end] ?? "") && !lines.slice(end + 1).some((line) => OPENCODE_FRAME.test(line));
 }
 
 /** ` ⬢ opus-5.5 · ◉ xhigh · 1.5% / …`, the status line over the composer. */

@@ -8,9 +8,7 @@ import { appFaces } from "./app-faces.ts";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 
-// A header tab's mark (its agent's logo, or a shell's glyph) sits on the tab's middle, beside its
-// name. The agent's mark is a span around an SVG: drawn inline, the SVG sat on the text baseline
-// of a line box taller than the mark, and the logo rode a few pixels above the name. On the
+// On the
 // unmodified app over the demo's fixture transport, at a desktop's width and a touch tablet's
 // (the header row starts at 769px), every tab's mark is centred on its tab, and an agent's mark
 // box is as tall as its logo. All files and HTTP traffic stay in this disposable, loopback-only
@@ -22,7 +20,6 @@ if (evidence !== null) mkdirSync(evidence, { recursive: true });
 const PANE = panes.api;
 const CASES = [
   { name: "desktop", width: 1280, touch: false, shell: true },
-  // a tablet's finger-sized tabs leave the shell's behind More: the agent's tab is the one checked
   { name: "tablet", width: 800, touch: true, shell: false },
 ] as const;
 

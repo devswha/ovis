@@ -19,7 +19,6 @@ function tempDir(): string {
   return dir;
 }
 
-/** a stand-in server: server/ovis-server runs the given script on this Bun, and only as its `serve` entry */
 function fakeServer(script: string): ReturnType<typeof layout> {
   const root = tempDir();
   mkdirSync(join(root, "server"), { recursive: true });
@@ -178,7 +177,6 @@ describe.skipIf(!posix)("startServer", () => {
 });
 
 describe("installCore", () => {
-  /** an hc that records how it was run, beside itself */
   function fakeHc(dir: string, tag: string): string {
     mkdirSync(dir, { recursive: true });
     const path = join(dir, "herdr-core");
@@ -209,7 +207,6 @@ describe("installCore", () => {
     await installCore(bundled, join(root, "data", "bin"), process.env, log);
     expect(readFileSync(join(root, "data", "bin", "conpty", "conpty.dll"), "utf8")).toBe("dll");
     expect(readFileSync(join(root, "data", "bin", "conpty", "x64", "OpenConsole.exe"), "utf8")).toBe("exe");
-    // closed before afterEach removes the folder it writes in
     await new Promise<void>((resolve) => log.end(resolve));
   });
 

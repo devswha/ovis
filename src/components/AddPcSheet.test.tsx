@@ -3,6 +3,7 @@ import { act, createElement, useLayoutEffect } from "react";
 import { create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 
 import type { MyPc } from "../lib/account/myPcs.ts";
+import { translate } from "../lib/i18n.ts";
 import type { RelayShellState } from "../lib/relay/shellState.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { AddPcSheet, addPcPhase, addPcSteps, type AddPcSheetProps } from "./AddPcSheet.tsx";
@@ -20,7 +21,6 @@ describe("the Add-a-PC sheet", () => {
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
   let renderer: ReactTestRenderer | undefined;
   let events: EventTarget;
-  /** what had the focus when the sheet opened, and how often it got it back */
   let opener: { isConnected: boolean; focus: () => void; focused: number };
   let calls: { joins: unknown[][]; matches: unknown[][]; cancels: number; closes: number; pairs: number; qr: number; retries: number; opens: number };
 
@@ -103,7 +103,6 @@ describe("the Add-a-PC sheet", () => {
     expect(addPcSteps("new", "start", null)).toEqual(["done", "running", "todo", "todo"]);
     expect(addPcSteps("new", "compare", null)).toEqual(["done", "running", "todo", "todo"]);
     expect(addPcSteps("new", "approving", null)).toEqual(["done", "done", "running", "todo"]);
-    // the relay's refusal comes after the digits were confirmed: the typed number was right
     expect(addPcSteps("new", "failed", "new-devices-refused")).toEqual(addPcSteps("new", "failed", "pair-declined"));
     expect(addPcSteps("join", "failed", "new-devices-refused")).toEqual(addPcSteps("join", "failed", "pair-declined"));
     expect(addPcSteps("new", "ready", null)).toEqual(["done", "done", "done", "done"]);
@@ -124,12 +123,10 @@ describe("the Add-a-PC sheet", () => {
     expect(steps()).toEqual(["done", "running", "todo", "todo"]);
     await click("Add this PC");
     expect(calls.joins).toEqual([[pc, { typed: true }]]);
-    // connecting shows visible status text alongside the spinner
     await update(props("new", pc, { kind: "connecting", name: "desk2" }));
     const waitStatus = renderer!.root.findByProps({ role: "status" });
     expect(waitStatus.findAll((n) => n.props.className === "visually-hidden")).toHaveLength(0);
     expect(text(waitStatus)).toContain("desk2");
-    // the shell asks for the number the PC shows: visible label, .input class, footer submit button, no h1 inside dialog
     await update(props("new", pc, { kind: "compare", name: "desk2", digits: "123456", confirmed: false, typed: true, challenge: 1 }));
     expect(renderer!.root.findAllByType("h1")).toHaveLength(0);
     expect(digitField()).toHaveLength(1);
@@ -143,19 +140,15 @@ describe("the Add-a-PC sheet", () => {
     const mockField = { value: "123 456" };
     await act(async () => { form.props.onSubmit({ preventDefault() {}, currentTarget: { elements: { namedItem: () => mockField } } }); });
     expect(calls.matches).toEqual([["123456"]]);
-    // value preserved in DOM input across submission
     expect(mockField.value).toBe("123 456");
-    // pending submit suppression: a second submit before challenge advances is ignored and button is disabled
     const submitBtn = footer.findAll((n) => n.type === "button" && n.props.type === "submit")[0]!;
     expect(submitBtn.props.disabled).toBe(true);
     await act(async () => { form.props.onSubmit({ preventDefault() {}, currentTarget: { elements: { namedItem: () => mockField } } }); });
     expect(calls.matches).toHaveLength(1);
-    // approving states the 90-second deadline and keeps Cancel
     await update(props("new", pc, { kind: "compare", name: "desk2", digits: "123456", confirmed: true, challenge: 1 }));
     expect(steps()).toEqual(["done", "done", "running", "todo"]);
     expect(all()).toContain("90");
     expect(renderer!.root.findByType("footer").findAll((n) => n.type === "button").map(text)).toEqual(["Cancel"]);
-    // ready step marks all 4 steps done and offers Open PC
     await update(props("new", pc, { kind: "ready", name: "desk2", server_id: SERVER_ID }));
     expect(addPcPhase(pc, { kind: "ready", name: "desk2", server_id: SERVER_ID })).toBe("ready");
     expect(steps()).toEqual(["done", "done", "done", "done"]);
@@ -188,7 +181,10 @@ describe("the Add-a-PC sheet", () => {
     const stateWithPcs: RelayShellState = { kind: "list", devices: [], account: { kind: "signed-in", provider: "github", error: null, pcs: [unrelated, pc] } };
     await mount(props("join", pc, stateWithPcs));
     expect(all()).toContain("Add this device to desk2");
-    expect(text(renderer!.root.findByProps({ className: "add-pc-sub" }))).toBe("A device of your account that is connected to desk2 approves this one.");
+    // the approvers it names are a device connected to desk2 and desk2 itself, never the unrelated paired PC
+    const sub = text(renderer!.root.findByProps({ className: "add-pc-sub" }));
+    expect(sub).toBe(translate("en", "Approve this device on a device of your account connected to {name}, or on {name} if it shows this request.", { name: "desk2" }));
+    expect(sub).not.toContain("Work MacBook");
     // the start says what must be open before the press: only a device with the PC open hears the request
     expect(all()).toContain("First open desk2 in Ovis on a device that already uses it (your phone, for example) and keep it open. Then choose Ask to join.");
     expect(all()).not.toContain("Add window closed");
@@ -198,7 +194,7 @@ describe("the Add-a-PC sheet", () => {
     await click("Ask to join");
     expect(calls.joins).toEqual([[pc]]);
     await update(props("join", pc, { kind: "compare", name: "desk2", digits: "123456", confirmed: false }));
-    expect(all()).toContain("A device connected to desk2 shows three numbers: pick this one there.");
+    expect(all()).toContain("Check that this number matches where you approve, then approve.");
     const digits = renderer!.root.findByProps({ className: "relay-shell-digits" });
     expect(text(digits)).toBe("123 456");
     expect(digits.props["aria-label"]).toBe("1 2 3 4 5 6");
@@ -208,13 +204,14 @@ describe("the Add-a-PC sheet", () => {
     expect(calls.matches).toEqual([[]]);
     await update(props("join", pc, { kind: "compare", name: "desk2", digits: "123456", confirmed: true }));
     expect(steps()).toEqual(["done", "done", "running", "todo"]);
-    expect(all()).toContain("Waiting for an account member to approve this device within 90 seconds…");
+    expect(all()).toContain("Waiting up to 90 seconds for approval…");
+    expect(all()).toContain("On a device of your account that is connected to desk2, or on desk2 itself");
     await update(props("join", pc, { kind: "failed", failure: "pair-declined", name: "desk2", detail: null }));
     expect(steps()).toEqual(["done", "done", "failed", "todo"]);
     expect(all()).not.toContain("Work MacBook");
-    // a join is never approved on the PC and has no link to open again: the refusal names the device that approves
-    expect(text(renderer!.root.findByProps({ className: "add-pc-problem" }))).toBe("No device of your account approved this one");
-    expect(all()).toContain("Nobody picked the number within 90 seconds, or it was denied. Open desk2 in Ovis on a device that already uses it, keep it open, then try again. If it keeps failing, pair this device with a QR or code from desk2.");
+    // a join has no link to open again: the refusal names both that may approve it, the PC itself among them when its own Add screen waits
+    expect(text(renderer!.root.findByProps({ className: "add-pc-problem" }))).toBe("Nobody approved this device for desk2");
+    expect(all()).toContain("Nobody approved it within 90 seconds, or it was denied. Try again, and approve it on a device of your account that is connected to desk2 (keep desk2 open in Ovis there), or on desk2 itself if it shows this request. If it keeps failing, pair this device with a QR or code from desk2.");
     expect(all()).not.toContain("Open the link again");
     expect(renderer!.root.findAll((instance) => instance.type === "button").map(text)).toEqual(["Close", "Try again"]);
     await click("Try again");
@@ -226,7 +223,6 @@ describe("the Add-a-PC sheet", () => {
     const buttons = () => renderer!.root.findAll((instance) => instance.type === "button").map(text);
     const problem = () => text(renderer!.root.findByProps({ className: "add-pc-problem" }));
     const expired = pcOf({ added_at: new Date(Date.now() - 15 * 60_000).toISOString() });
-    // a new PC that is no longer waiting: its Account screen on the PC is where the wait starts again
     await mount(props("new", pcOf(), { kind: "failed", failure: "pair-unavailable", name: "desk2", detail: null, server_id: SERVER_ID }));
     expect(problem()).toBe("desk2 is no longer waiting to be added");
     expect(all()).toContain("On desk2, open Settings → Devices and PCs → Account and keep that screen open (choose Keep waiting or Add this PC to my account if it shows one), then try again here. If it still refuses, wait a few minutes: it pauses after too many tries.");
@@ -241,7 +237,7 @@ describe("the Add-a-PC sheet", () => {
     // a new PC that declined, or was not approved in time, is approved on the PC itself
     await update(props("new", pcOf(), { kind: "failed", failure: "pair-declined", name: "desk2", detail: null, server_id: SERVER_ID }));
     expect(problem()).toBe("desk2 did not approve this device");
-    expect(all()).toContain("It was declined on desk2, or not approved there within 90 seconds. Try again, then press Approve on desk2.");
+    expect(all()).toContain("It was declined on desk2, or not approved within 90 seconds. Try again and press Approve on desk2. If desk2 showed no number, ask to join instead.");
     expect(all()).not.toContain("Open the link again");
     expect(buttons()).toEqual(["Close", "Try again"]);
     // a join the PC refused before any digits: it has not learned this device yet, or it is paused (nobody connected is a timeout, not this)
@@ -250,11 +246,9 @@ describe("the Add-a-PC sheet", () => {
     expect(all()).toContain("desk2 did not take this request. It may not know this device yet (it learns your account's devices within a few minutes), or it is paused after too many tries. Wait a moment, then try again. If no device of your account uses desk2 yet, pair this device with a QR or code from desk2 instead.");
     expect(all()).not.toContain("Copy a new link");
     expect(buttons()).toEqual(["Close", "Try again"]);
-    // a refused join differs from a refused new PC
     await update(props("join", expired, { kind: "failed", failure: "pair-declined", name: "desk2", detail: null, server_id: SERVER_ID }));
-    expect(problem()).toBe("No device of your account approved this one");
+    expect(problem()).toBe("Nobody approved this device for desk2");
     expect(buttons()).toEqual(["Close", "Try again"]);
-    // without a way to retry, the sheet only closes
     const { onRetry: _onRetry, ...noRetry } = props("new", pcOf(), { kind: "failed", failure: "pair-unavailable", name: "desk2", detail: null, server_id: SERVER_ID });
     await update(noRetry);
     expect(buttons()).toEqual(["Close"]);
@@ -282,7 +276,6 @@ describe("the Add-a-PC sheet", () => {
     await update(props("join", expired, { kind: "failed", failure: "pc-offline", name: "desk2", detail: null, server_id: SERVER_ID }));
     expect(all()).toContain("desk2 is offline");
     expect(all()).toContain("Start Ovis on the PC");
-    // a new PC's subtitle is the same past its window: nothing there needs an account member
     for (const pc of [pcOf(), expired]) {
       await update(props("new", pc, LIST));
       expect(text(renderer!.root.findByProps({ className: "add-pc-sub" }))).toBe("Type the number desk2 shows on its own screen, then approve there.");
@@ -300,7 +293,6 @@ describe("the Add-a-PC sheet", () => {
     expect(retryBtn).toHaveLength(1);
     await click("Try again");
     expect(calls.retries).toBe(1);
-    // fresh challenge arrives with challenge: 2
     await update(props("new", pc, { kind: "compare", name: "desk2", digits: "654321", confirmed: false, typed: true, challenge: 2 }));
     expect(digitField()).toHaveLength(1);
     expect(all()).toContain("changed");
@@ -349,7 +341,6 @@ describe("the Add-a-PC sheet", () => {
     await update(props("new", pcOf(), { kind: "compare", name: "desk2", digits: "123456", confirmed: false, typed: true }));
     await escape();
     expect(calls).toMatchObject({ closes: 2, cancels: 1 });
-    // scrim click on the backdrop also closes and cancels an active phase
     const scrim = renderer!.root.findByProps({ className: "modal-scrim" });
     await act(async () => { scrim.props.onMouseDown({ target: scrim, currentTarget: scrim }); });
     expect(calls).toMatchObject({ closes: 3, cancels: 2 });
@@ -362,11 +353,9 @@ describe("the Add-a-PC sheet", () => {
     const page = document as unknown as { activeElement: unknown; body: unknown };
     let inert = true;
     opener.focus = () => { if (!inert) page.activeElement = opener; };
-    // the page behind is inert while the sheet is open; the commit that removes the sheet lifts it after the sheet's cleanup ran
     const Behind = ({ shown }: { shown: boolean }) => { useLayoutEffect(() => { inert = shown; }, [shown]); return null; };
     const screen = (shown: boolean) => createElement(SettingsProvider, { children: [shown && createElement(AddPcSheet, { key: "sheet", ...props("add", null, LIST) }), createElement(Behind, { key: "behind", shown })] });
     await act(async () => { renderer = create(screen(true), { createNodeMock: node }); });
-    // the focus was in the sheet and leaves with it
     page.activeElement = page.body;
     await act(async () => { renderer!.update(screen(false)); });
     expect(page.activeElement).toBe(opener);
@@ -375,13 +364,45 @@ describe("the Add-a-PC sheet", () => {
   it("with no PC, says how one is added in one concise sentence and leads to the QR and code screen", async () => {
     await mount(props("add", null, LIST));
     expect(all()).toContain("Add a PC");
-    expect(all()).toContain("On the PC, open Settings → Devices and PCs → Account, sign in, then choose Add this PC to my account. It then shows here with Add.");
+    expect(all()).toContain("On the PC, open Settings → Devices and PCs → Account, sign in, then choose Add this PC to my account. It then shows here.");
     expect(steps()).toEqual([]);
     expect(renderer!.root.findAll((instance) => instance.props.className === "add-pc-bars")).toHaveLength(0);
     await click("Pair with a QR or code");
     expect(calls.qr).toBe(1);
     await click("Close");
     expect(calls).toMatchObject({ closes: 1, cancels: 0 });
+  });
+
+  it("keeps a second way on a new PC's sheet and on the join sheet based on whether the PC waits to be added, not a number before Add starts", async () => {
+    let asked = 0;
+    await mount({ ...props("new", pcOf(), LIST), onAskToJoin: () => { asked += 1; } });
+    expect(text(renderer!.root.findByProps({ className: "add-pc-sub" }))).toBe("Type the number desk2 shows on its own screen after you start Add, then approve there. If desk2 is already in your account, ask to join instead.");
+    expect(renderer!.root.findByType("footer").findAll((n) => n.type === "button").map(text)).toEqual(["Cancel", "Ask to join", "Add this PC"]);
+    await click("Ask to join");
+    expect(asked).toBe(1);
+    expect(calls.joins).toEqual([]);
+
+    let typed = 0;
+    await update({ ...props("join", pcOf(), LIST), onTypeNumber: () => { typed += 1; } });
+    expect(all()).toContain("If desk2 is waiting on its own screen to be added, type its number here instead.");
+    expect(renderer!.root.findByType("footer").findAll((n) => n.type === "button").map(text)).toEqual(["Cancel", "Type the number", "Ask to join"]);
+    await click("Type the number");
+    expect(typed).toBe(1);
+  });
+
+  it("offers Ask to join under a typed comparison, for a PC that shows no number, and only where the shell can turn the request into a join", async () => {
+    const typing: RelayShellState = { kind: "compare", name: "desk2", digits: "", confirmed: false, typed: true, challenge: 1 };
+    const footer = () => renderer!.root.findByType("footer").findAll((n) => n.type === "button").map(text);
+    let asked = 0;
+    await mount({ ...props("new", pcOf(), typing), onAskToJoin: () => { asked += 1; } });
+    expect(all()).toContain("desk2 shows no number? Ask to join instead.");
+    expect(footer()).toEqual(["Cancel", "Ask to join", "Add this PC"]);
+    await click("Ask to join");
+    expect(asked).toBe(1);
+    expect(calls).toMatchObject({ cancels: 0, closes: 0 });
+    await update(props("new", pcOf(), typing));
+    expect(all()).not.toContain("desk2 shows no number? Ask to join instead.");
+    expect(footer()).toEqual(["Cancel", "Add this PC"]);
   });
 
   it("places the primary action first in DOM order on phone sheets and second on desktop across sheet phases", async () => {
@@ -423,11 +444,9 @@ describe("the Add-a-PC sheet", () => {
     const id = (s: string, vars?: Record<string, string | number>) => vars ? s.replace(/\{(\w+)\}/g, (_, k: string) => String(vars[k] ?? "")) : s;
     expect(relayFailureText(id, "pair-declined", "desk2").title).toBe("desk2 did not approve this device");
     expect(relayFailureText(id, "pair-unavailable", "desk2").title).toBe("desk2 is not taking new devices right now");
-    // without a flow the texts are the pairing link's, and a new link is the fix, not Try again
     expect(relayFailureText(id, "pair-declined", "desk2")).toMatchObject({ copy: "It was declined on the PC, or not approved within 90 seconds. Open the link again to compare new numbers.", retry: false });
     expect(relayFailureText(id, "pair-unavailable", "desk2")).toMatchObject({ retry: false });
     expect(relayFailureText(id, "pair-unavailable", "desk2").copy).toContain("Copy a new link on the PC");
-    // a flow changes only the two refusals: every other failure reads the same in the sheet as on the shell's screen
     for (const flow of ["new", "join"] as const) {
       expect(relayFailureText(id, "pair-unavailable", "desk2", null, flow).retry).toBe(true);
       expect(relayFailureText(id, "pair-declined", "desk2", null, flow).retry).toBe(true);

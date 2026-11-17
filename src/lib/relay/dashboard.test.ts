@@ -14,7 +14,6 @@ function pc(server_id: string, state: DashboardPc["state"], relay: string | null
   };
 }
 
-/** A PC new in the directory `ago` ms before NOW that this device can add (it has a join route). */
 function fresh(server_id: string, ago: number): DashboardPc {
   return { ...pc(server_id, "needs-approval"), added_at: new Date(NOW - ago).toISOString(), join: { server_public_key: "k", relay: GLOBAL } };
 }
@@ -61,7 +60,6 @@ describe("dashboardModel counts and filters", () => {
 
 describe("dashboardModel provenance", () => {
   it("says a PC the directory does not list is known to this device alone, and not checked until a check returns", () => {
-    // local mode: myPcs without a directory makes every pairing a "paired" row nobody has vouched for
     const local = { ...pc("qr", "paired"), listed: false };
     const [row] = model([local]).rows;
     expect(row).toMatchObject({ source: "this-device", check: null });
@@ -103,6 +101,12 @@ describe("dashboardModel urgency", () => {
   it("closes the Add window at exactly ten minutes", () => {
     const m = model([fresh("closed", NEW_PC_MS), fresh("open", NEW_PC_MS - 1)]);
     expect(m.attention.map(({ server_id, expiresAt }) => [server_id, expiresAt])).toEqual([["open", NOW + 1], ["closed", null]]);
+  });
+
+  it("offers no Add window to a new PC that already came by the account service: it pulls only once it belongs to the account", () => {
+    const inAccount: DashboardPc = { ...fresh("in-account", 2 * 60_000), last_seen_at: new Date(NOW - 30_000).toISOString() };
+    const m = model([inAccount, fresh("waiting", 2 * 60_000)]);
+    expect(m.attention.map(({ server_id, expiresAt }) => [server_id, expiresAt])).toEqual([["waiting", NOW + 8 * 60_000], ["in-account", null]]);
   });
 
   it("offers no Add window to a new PC without a join route, and puts a PC without a relay under the default one", () => {
@@ -170,7 +174,6 @@ describe("dashboardModel relays and map", () => {
     expect(relayHost("wss://relay-ap.ovis.sh")).toBe("relay-ap.ovis.sh");
     expect(relayHost("wss://relay.example:8443/path")).toBe("relay.example:8443");
     expect(relayHost("not a url")).toBe("not a url");
-    // the map, the strip and the table name one origin alike: a default port is the same relay
     expect(relayHost("wss://relay.example:443")).toBe("relay.example");
   });
 });
@@ -186,7 +189,6 @@ describe("dashboardPcs", () => {
       [{ server_id: "listed", relay: "wss://relay.ovis.sh" }, { server_id: "joinable", relay: "wss://relay-ap.ovis.sh" }],
     );
     expect(relayOf(pcs)).toEqual({ listed: "wss://relay.ovis.sh", joinable: "wss://relay-ap.ovis.sh", qr: "wss://relay.example" });
-    // the rows keep everything myPcs said of them
     expect(pcs.find(({ server_id }) => server_id === "listed")).toMatchObject({ state: "paired", listed: true, paired: true });
   });
 
@@ -197,7 +199,6 @@ describe("dashboardPcs", () => {
       [{ server_id: "paired", relay: null }, { server_id: "unknown", relay: null }],
     );
     expect(relayOf(pcs)).toEqual({ paired: "wss://relay.example", unknown: null });
-    // the model then puts the unknown one under the shell's default relay
     expect(model(pcs).relays.map(({ origin, pcs: ids }) => [origin, ids])).toEqual([["wss://relay.example", ["paired"]], ["wss://relay.ovis.sh", ["unknown"]]]);
   });
 
