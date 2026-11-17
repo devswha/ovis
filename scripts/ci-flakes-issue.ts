@@ -2,7 +2,8 @@
  * Keeps one open issue up to date with scripts/ci-flakes.ts's ranked list of the browser scripts that failed or
  * needed a second run (.github/workflows/ci-flakes.yml runs it daily):
  *   bun scripts/ci-flakes-issue.ts [--hours 24] [--repo owner/name] [--dry-run]
- * The issue is the open one titled ISSUE_TITLE, created when there is none. It writes through the REST API, never
+ * The issue is the open one titled ISSUE_TITLE that ISSUE_AUTHOR (the workflow's token) opened, created when there is
+ * none: an issue anyone else opens under that title is never taken over. It writes through the REST API, never
  * `gh issue edit`, which fails on this repository with a Projects (classic) GraphQL error. --dry-run prints what it
  * would do and the body, and writes nothing.
  */
@@ -10,16 +11,16 @@ import { parseArgs } from "node:util";
 import { gh, scan, type Scan } from "./ci-flakes.ts";
 
 export const ISSUE_TITLE = "CI flakes: browser scripts that failed or needed a second run";
-/** Rows past this are left out and counted: 50 rows of capped cells stay far below GitHub's 65,536-character body limit. */
+export const ISSUE_AUTHOR = "github-actions[bot]";
+/** Rows past this are left out and counted: 50 rows of capped cells stay below GitHub's 65,536-character body limit. */
 export const MAX_ROWS = 50;
 const MAX_CELL = 200;
 
-/** Text as a code span inside a table cell: one line, at most MAX_CELL characters, no backtick, its pipes escaped. */
+/** Text as a code span inside a table cell: one line, no backtick, its pipes escaped, then at most MAX_CELL characters. */
 function code(text: string | null): string {
   if (text === null) return "-";
-  const line = text.replace(/\s+/g, " ").replaceAll("`", "'").trim();
-  const short = line.length > MAX_CELL ? `${line.slice(0, MAX_CELL - 3)}...` : line;
-  return `\`${short.replaceAll("|", "\\|")}\``;
+  const line = text.replace(/\s+/g, " ").replaceAll("`", "'").trim().replaceAll("|", "\\|");
+  return `\`${line.length > MAX_CELL ? `${line.slice(0, MAX_CELL - 3)}...` : line}\``;
 }
 
 export function issueBody(result: Scan): string {
@@ -50,15 +51,18 @@ export function issueBody(result: Scan): string {
 export interface ListedIssue {
   readonly number: number;
   readonly title: string;
+  readonly user: { readonly login: string } | null;
   /** Set on a pull request, which the issues endpoint lists too. */
   readonly pull_request?: unknown;
 }
 
 export type IssueAction = { readonly kind: "create" } | { readonly kind: "update"; readonly number: number };
 
-/** Update the oldest open issue titled ISSUE_TITLE exactly, or create one when there is none. */
+/** Update the oldest open issue titled ISSUE_TITLE exactly that ISSUE_AUTHOR opened, or create one when there is none. */
 export function issueAction(open: readonly ListedIssue[]): IssueAction {
-  const [number] = open.filter((issue) => issue.pull_request === undefined && issue.title === ISSUE_TITLE).map((issue) => issue.number).sort((a, b) => a - b);
+  const [number] = open
+    .filter((issue) => issue.pull_request === undefined && issue.title === ISSUE_TITLE && issue.user?.login === ISSUE_AUTHOR)
+    .map((issue) => issue.number).sort((a, b) => a - b);
   return number === undefined ? { kind: "create" } : { kind: "update", number };
 }
 

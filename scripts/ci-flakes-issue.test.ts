@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { RankedFailure, Scan } from "./ci-flakes.ts";
-import { ISSUE_TITLE, MAX_ROWS, issueAction, issueBody } from "./ci-flakes-issue.ts";
+import { ISSUE_AUTHOR, ISSUE_TITLE, MAX_ROWS, issueAction, issueBody } from "./ci-flakes-issue.ts";
 
 const stats = { runs: 164, jobs: 682, jobsSkipped: 26, jobsClean: 602, logsRead: 52, runsUnread: 1, logsUnread: 1 };
 const scanned = (rows: RankedFailure[], overrides: Partial<Scan> = {}): Scan => ({
@@ -40,20 +40,35 @@ describe("CI flakes issue body", () => {
     expect(body.length).toBeLessThan(65_536);
     expect(rankedRows(body).map(([, , script]) => script)).toEqual(rows.slice(0, MAX_ROWS).map((row) => `\`${row.script}\``));
     expect(body).toContain(String(500 - MAX_ROWS));
+    const pipes = "|".repeat(5_000);
+    expect(issueBody(scanned(rows.map((row) => ({ ...row, script: pipes, site: pipes, message: pipes, branch: pipes })))).length).toBeLessThan(65_536);
+  });
+
+  it("keeps log text inside one code span of one row", () => {
+    const rows = rankedRows(issueBody(scanned([failure(1, "a `b`\nc | d @devswha ![x](https://e.test/x.png)")])));
+    expect(rows.map((cells) => cells[4])).toEqual(["`a 'b' c \\| d @devswha ![x](https://e.test/x.png)`"]);
   });
 });
 
 describe("CI flakes issue choice", () => {
-  it("updates the oldest open issue with the exact title, never a pull request or another title", () => {
+  const bot = { login: ISSUE_AUTHOR };
+
+  it("updates the oldest open issue the workflow opened with the exact title, never a pull request, another title or another author's", () => {
     expect(issueAction([
-      { number: 40, title: ISSUE_TITLE },
-      { number: 7, title: ISSUE_TITLE, pull_request: {} },
-      { number: 9, title: `${ISSUE_TITLE} (old)` },
-      { number: 12, title: ISSUE_TITLE },
+      { number: 40, title: ISSUE_TITLE, user: bot },
+      { number: 7, title: ISSUE_TITLE, user: bot, pull_request: {} },
+      { number: 8, title: ISSUE_TITLE, user: { login: "someone" } },
+      { number: 9, title: `${ISSUE_TITLE} (old)`, user: bot },
+      { number: 12, title: ISSUE_TITLE, user: bot },
     ])).toEqual({ kind: "update", number: 12 });
   });
 
-  it("creates one when no open issue has the title", () => {
-    expect(issueAction([{ number: 7, title: ISSUE_TITLE, pull_request: {} }, { number: 9, title: "CI flakes" }])).toEqual({ kind: "create" });
+  it("creates one when the workflow has no open issue with the title", () => {
+    expect(issueAction([
+      { number: 7, title: ISSUE_TITLE, user: bot, pull_request: {} },
+      { number: 8, title: ISSUE_TITLE, user: { login: "someone" } },
+      { number: 9, title: "CI flakes", user: bot },
+      { number: 10, title: ISSUE_TITLE, user: null },
+    ])).toEqual({ kind: "create" });
   });
 });
