@@ -30,7 +30,8 @@ import { FileTextSizeRow } from "./FileTextSizeRow.tsx";
 import { FoldHelpersRow } from "./FoldHelpersRow.tsx";
 import { FilesPanelRow } from "./FilesPanelRow.tsx";
 import { onSettingsHistory, recordSettings, settingsEntry, settingsLevels, type SettingsLevel } from "../lib/settingsHistory.ts";
-import { ForkFeatures, LiveVoiceRow, OmarchyRow, OpenLiveWorkRow, ReadAloudVoiceRow } from "../fork/settings/SettingsRows.tsx";
+import { ForkPage, OmarchyRow } from "../fork/settings/SettingsRows.tsx";
+import { FORK_PAGE, forkPageLabel, forkPageNote } from "../fork/settings/page.ts";
 import { ThemeFiles, themeLabel } from "./ThemeFiles.tsx";
 import { THEME_NAMES, ThemeCard } from "./ThemeCard.tsx";
 import { ChipToggles, SettingsBare, Segmented, SettingsFold, SettingsGroup, SettingsQuery, SettingsRow, SettingsSelect, Stepper, Toggle, settingsQueryWords, useSettingsRowSentence } from "./SettingsControls.tsx";
@@ -292,6 +293,7 @@ export const PAGES: readonly { id: SettingsPage; icon: LucideIcon }[] = [
   { id: "shortcuts", icon: Keyboard },
   { id: "devices", icon: Smartphone },
   { id: "experimental", icon: FlaskConical },
+  FORK_PAGE,
   { id: "about", icon: Info },
 ];
 
@@ -309,6 +311,7 @@ function pageNote(t: Translate, page: SettingsPage): string | null {
     case "shortcuts": return t("Keyboard shortcuts, and herdr's prefix keys.");
     case "devices": return t("Phones, browsers and PCs that reach this Ovis.");
     case "experimental": return t("Features still being shaped; they may change.");
+    case "fork": return forkPageNote(t);
     default: return null;
   }
 }
@@ -611,9 +614,7 @@ function ChatPage() {
         <SettingsRow icon={ListCollapse} label={t("Collapse work")} description={t("On this device, the work an agent does in a reply (commands, file reads and edits) starts folded to one line, also while it is still running. Work that waits for your answer stays open.")} reset={["foldWork"]}>
           <Toggle label={t("Collapse work")} checked={settings.foldWork} onChange={(foldWork) => update({ foldWork })} />
         </SettingsRow>
-        <OpenLiveWorkRow />
       </SettingsGroup>
-      <ForkFeatures />
 
       <SettingsGroup title={t("Composer")} section="composer">
         <SettingsRow icon={CornerDownLeft} label={touch ? t("Return inserts a new line") : t("Enter sends")} description={touch ? t("On, Return starts a new line on this device and the Send button sends. Off, Return sends the message.") : t("On, Enter sends the message on this device and Shift+Enter starts a new line. Off, Enter starts a new line and Ctrl+Enter (⌘+Enter on a Mac) sends.")} reset={["enterSends"]}>
@@ -951,14 +952,6 @@ function VoiceMore() {
           </SettingsGroup>
         )}
       </>}
-
-      <SettingsGroup title={t("Read aloud")} section="read-aloud">
-        <ReadAloudVoiceRow />
-      </SettingsGroup>
-
-      <SettingsGroup title={t("Live voice")} section="live-voice">
-        <LiveVoiceRow />
-      </SettingsGroup>
 
       <SettingsGroup title={t("OpenAI API key")} section="openai-key">
         <div className="settings-item">
@@ -1912,7 +1905,7 @@ function OpenSettingsDialog({ section = null, linkPage = null, linkSection = nul
   const following = useRef<{ group: HTMLElement; page: SettingsPage | null } | null>(null);
   // the group a landing named that was not drawn yet, waited for until the reader moves the page
   const awaited = useRef<{ named: string; page: SettingsPage | null } | null>(null);
-  const label = (id: SettingsPage): string => t(id === "appearance" ? "Appearance" : id === "chat" ? "Chat" : id === "terminal" ? "Terminal" : id === "alerts" ? "Alerts" : id === "agents" ? "Agents" : id === "shortcuts" ? "Shortcuts" : id === "devices" ? "Devices and PCs" : id === "experimental" ? "Experimental" : "About");
+  const label = (id: SettingsPage): string => id === "fork" ? forkPageLabel(t) : t(id === "appearance" ? "Appearance" : id === "chat" ? "Chat" : id === "terminal" ? "Terminal" : id === "alerts" ? "Alerts" : id === "agents" ? "Agents" : id === "shortcuts" ? "Shortcuts" : id === "devices" ? "Devices and PCs" : id === "experimental" ? "Experimental" : "About");
   const openPage = (id: SettingsPage): void => { setKeyBarOpen(false); setChosen(id); };
   // Settings' search: every page's rows that hold all the words typed, each where it can be changed
   // at once, under its page's name, as Zed's and VS Code's settings searches show them
@@ -2088,6 +2081,7 @@ function OpenSettingsDialog({ section = null, linkPage = null, linkSection = nul
       case "devices": return <DevicesPage auth={auth} security={security} onSignOut={actions.lock} onRevokedAll={actions.refresh} openAddPc={actions.openAddPc} connectPc={actions.connectPc}
         machines={machines} pcSettings={pcSettings} pcSettingsError={pcSettingsError} onPcSettings={(patch) => void updatePcSettings(patch)} />;
       case "experimental": return <ExperimentalPage />;
+      case "fork": return <ForkPage />;
       case "about": return <AboutPage updates={updates} herdrVersion={herdrVersion} herdrRuntime={herdrRuntime} herdrCore={herdrCore} herdrRuntimeFacts={herdrRuntimeFacts} bootId={bootId} onServerRestarted={onServerRestarted} onOpenPane={onOpenPane} bridgesFollow={pcSettings?.auto_update_bridges === true} />;
       default: return null;
     }

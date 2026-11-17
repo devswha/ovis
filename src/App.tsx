@@ -156,6 +156,7 @@ import { pageStartsInInbox, useInboxMode } from "./lib/inboxMode.ts";
 import { InboxList } from "./components/InboxList.tsx";
 import { ForkPlacePane, ForkPlaceSection } from "./fork/inbox/Places.tsx";
 import { ForkInboxFoot, ForkSidebarFoot, useForkInboxStatusBar } from "./fork/inbox/SidebarFoot.tsx";
+import { ForkWorkspaceRail } from "./fork/inbox/Rail.tsx";
 import { InboxConnecting, InboxFootEntry, InboxUnchosen, ThreadTitle, ThreadTop } from "./components/InboxMode.tsx";
 import { InboxRail } from "./components/InboxRail.tsx";
 import { OvisMark } from "./components/OvisMark.tsx";
@@ -421,7 +422,7 @@ export function App() {
   // A phone's open drawer has the Ovis mark where its X was: the way into the inbox, so its foot holds none. It closes
   // by a tap outside, a swipe, Back, Escape or the named close a screen reader finds at its start
   // fork: with the inbox footer, the drawer's foot has the way in, so its head keeps the X (src/fork/SidebarFoot.tsx)
-  const markInDrawer = modeOffered && !wideScreen && drawerOpen && !inMode && !settings.inboxFooter;
+  const markInDrawer = modeOffered && !wideScreen && drawerOpen && !inMode && settings.navigation === "upstream";
   // going into the agent inbox and out of it, counted wherever a person asked
   const { enter: enterInbox, leave: leaveMode } = useCountedInboxWays(enterInboxShell, leaveModeShell);
   useShownCount("inbox", modeOffered, LOCAL_MACHINE);
@@ -1079,6 +1080,12 @@ export function App() {
   const railFrom = { machineId: selectedMachineId, paneId: inbox.shown ? null : selectedPaneId };
   const railNext = inboxWide ? nextWaitingTarget(waitingRosters, railFrom) : null;
   const railWaiting = railNext !== null ? { count: waitingTargets(waitingRosters, railFrom), open: () => openThread(railNext.machineId, railNext.paneId) } : null;
+  const inboxRail = <InboxRail onExit={leaveMode} onInbox={() => inbox.list.current?.toTop()} waiting={railWaiting}
+    alerts={{ on: bell.on, title: bell.title, toggle: () => void bell.run() }} onSettings={actions.openSettings} shortcutTitle={shortcutTitle}
+    pcs={{ machines: sidebarMachines, selectedId: selectedMachineId, connection: rosterConnection,
+      saidByThread: !inbox.shown && selectedPane !== null && note === null && rosterConnection === headerConnection,
+      // a PC alone, as the classic app opens one: no thread of it is chosen, so the list stands with none open
+      onSelect: (machineId) => selectTarget(machineId, null) }} />;
   // More's button: a square of the header's, or one of the mode's round controls over the wide pane
   const moreButton = (round: boolean): ReactNode => (
     <span className="header-more">
@@ -1312,12 +1319,7 @@ export function App() {
             mode's rail comes first in that column, then the list, then the column's edge: the keyboard follows
             the drawn order */}
         {inMode ? (inboxWide && <aside className="sidebar inbox-column">
-          <ForkInboxFoot watching={auth?.role === "watch"} onUsageLogin={(paneId) => { selectTarget("local", paneId, "terminal"); void load(); }}><InboxRail onExit={leaveMode} onInbox={() => inbox.list.current?.toTop()} waiting={railWaiting}
-            alerts={{ on: bell.on, title: bell.title, toggle: () => void bell.run() }} onSettings={actions.openSettings} shortcutTitle={shortcutTitle}
-            pcs={{ machines: sidebarMachines, selectedId: selectedMachineId, connection: rosterConnection,
-              saidByThread: !inbox.shown && selectedPane !== null && note === null && rosterConnection === headerConnection,
-              // a PC alone, as the classic app opens one: no thread of it is chosen, so the list stands with none open
-              onSelect: (machineId) => selectTarget(machineId, null) }} /></ForkInboxFoot>
+          <ForkInboxFoot watching={auth?.role === "watch"} onUsageLogin={(paneId) => { selectTarget("local", paneId, "terminal"); void load(); }}>{inboxRail}</ForkInboxFoot>
           {modeList(true)}
           <SidebarResizer width={sidebarWidth} onResize={setSidebarWidth} />
         </aside>) : <aside id="workspace-drawer" className={`sidebar${drawerOpen ? " is-open" : ""}${sidebarPeeking ? " is-peek" : ""}`} role={drawerModal ? "dialog" : undefined} aria-modal={drawerModal ? true : undefined} tabIndex={drawerModal ? -1 : undefined} aria-label={drawerModal ? t("Workspace list") : undefined}
@@ -1325,6 +1327,7 @@ export function App() {
           aria-owns={drawerModal ? "drawer-toggle" : undefined} ref={drawerRef} {...peekSidebarHandlers}>
           {/* the X became the Ovis mark: the modal drawer still starts with a named way out, drawn while the keyboard is on it,
               and the open drawer's disclosure state goes with it (expanded, and the list it closes) */}
+          {wideScreen && <ForkWorkspaceRail enter={enterInbox}>{inboxRail}</ForkWorkspaceRail>}
           {markInDrawer && <button type="button" className="visually-hidden drawer-close" aria-controls="workspace-drawer" aria-expanded="true" onClick={() => setDrawerOpen(false)}>{t("Close workspace list")}</button>}
           {error && <div className="error-state" role="alert"><p>{error}</p><button className="btn" onClick={() => void load()}>{t("Retry")}</button></div>}
           {/* a sidebar that cannot be drawn leaves the panes working */}

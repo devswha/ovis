@@ -2,34 +2,50 @@ import { isPiVoice, PI_VOICES } from "../../../shared/pi-voice.ts";
 import { SPEECH_VOICES, type SpeechVoice } from "../../../shared/speech.ts";
 import { useT } from "../../lib/i18n.ts";
 import { useSettings } from "../../lib/settings.ts";
-import { SettingsGroup, SettingsRow, SettingsSelect, Toggle } from "../../components/SettingsControls.tsx";
+import { AudioLines, BellOff, Cpu, GitPullRequest, ListCollapse, Monitor, Notebook, PanelLeft, Smile, Sparkles, Square, SquareTerminal, Volume2, type LucideIcon } from "lucide-react";
+import { Segmented, SettingsGroup, SettingsRow, SettingsSelect, Toggle } from "../../components/SettingsControls.tsx";
+import { NAVIGATIONS, type ForkSettings } from "./settings.ts";
 
-/** Settings rows only this fork has, kept apart from SettingsDialog.tsx. */
-export function ForkFeatures() {
+/** Settings → Fork: the rows only this fork has, by what they change, kept apart from SettingsDialog.tsx. */
+export function ForkPage() {
   const { settings, update } = useSettings();
   const t = useT();
-  const choices = [
-    ["squareCorners", t("Square corners")],
-    ["moreViewToggle", t("View toggle in More")],
-    ["agentFriends", t("Agent friends")],
-    ["piModelPicker", t("Pi model picker")],
-    ["chatMotion", t("Animated replies")],
-    ["piLiveVoice", t("Pi live voice")],
-    ["computerView", t("Computer view")],
-    ["readAloud", t("Read aloud")],
-    ["inboxFooter", t("Inbox footer")],
-    ["muteSubAgents", t("Mute sub-agents")],
-    ["notes", t("Notes")],
-  ] as const;
-  const row = (key: typeof choices[number][0] | "pullRequests", label: string) => <SettingsRow key={key} label={label} reset={[key]}>
+  const toggle = (key: ForkSwitch, label: string, icon: LucideIcon, description: string) => <SettingsRow icon={icon} label={label} description={description} reset={[key]}>
     <Toggle label={label} checked={settings[key]} onChange={(checked) => update({ [key]: checked })} />
   </SettingsRow>;
   return <>
-    <SettingsGroup title={t("Fork features")} section="fork-features">{choices.map(([key, label]) => row(key, label))}</SettingsGroup>
-    {/* GitHub's own group, which other GitHub features can join */}
-    <SettingsGroup title={t("GitHub|fork")} section="fork-github">{row("pullRequests", t("Pull requests"))}</SettingsGroup>
+    <SettingsGroup title={t("Places|fork")} section="fork-places">
+      <SettingsRow icon={PanelLeft} label={t("Navigation|fork")} description={t("How a wide screen moves between the workspaces, the agent inbox, Pull requests and Notes: the rail in the inbox only, one footer in both, or the rail in both. A phone keeps them in its drawer's footer.")} wide reset={["navigation"]}>
+        <Segmented label={t("Navigation|fork")} value={settings.navigation} onChange={(navigation) => update({ navigation })}
+          options={NAVIGATIONS.map((navigation) => ({ value: navigation, label: t(navigation === "upstream" ? "Default|fork" : navigation === "footer" ? "Footer|fork" : "Rail|fork") }))} />
+      </SettingsRow>
+      {toggle("pullRequests", t("Pull requests"), GitPullRequest, t("Your pull requests and the ones waiting for your review, from every GitHub account gh is signed in to on this PC."))}
+      {toggle("notes", t("Notes"), Notebook, t("Markdown notes in ~/Notes on this PC, for you and your agents."))}
+    </SettingsGroup>
+    <SettingsGroup title={t("Chat")} section="fork-chat">
+      {toggle("chatMotion", t("Animated replies"), Sparkles, t("A reply's new words fade in as the agent writes them."))}
+      <SettingsRow icon={ListCollapse} label={t("Open work while the agent runs")} description={t("Off, a running turn shows only its Working… row until tapped")} reset={["openLiveWork"]}>
+        <Toggle label={t("Open work while the agent runs")} checked={settings.openLiveWork} onChange={(openLiveWork) => update({ openLiveWork })} />
+      </SettingsRow>
+      {toggle("readAloud", t("Read aloud"), Volume2, t("A speaker button under a reply reads it aloud."))}
+      {settings.readAloud && <ReadAloudVoiceRow />}
+      {toggle("piModelPicker", t("Pi model picker"), Cpu, t("A menu in a Pi pane's message box that switches its model."))}
+      {toggle("piLiveVoice", t("Pi live voice"), AudioLines, t("A call button in a Pi pane, to talk with it live."))}
+      {settings.piLiveVoice && <LiveVoiceRow />}
+    </SettingsGroup>
+    <SettingsGroup title={t("Agents")} section="fork-agents">
+      {toggle("agentFriends", t("Agent friends"), Smile, t("Each agent has a friend's face and name in the lists and its alerts."))}
+      {toggle("muteSubAgents", t("Mute sub-agents"), BellOff, t("Sub-agents send no alerts; the agent that started them still does. On every device."))}
+    </SettingsGroup>
+    <SettingsGroup title={t("Look|fork")} section="fork-look">
+      {toggle("squareCorners", t("Square corners"), Square, t("Buttons, cards and panels with square corners."))}
+      {toggle("moreViewToggle", t("View toggle in More"), SquareTerminal, t("Chat and terminal switch from the More menu, not from a button in the header."))}
+      {toggle("computerView", t("Computer view"), Monitor, t("A PC's desktop in Ovis, opened from its screen button in the sidebar."))}
+    </SettingsGroup>
   </>;
 }
+
+type ForkSwitch = { [K in keyof ForkSettings]: ForkSettings[K] extends boolean ? K : never }[keyof ForkSettings];
 
 /**
  * Settings → Appearance → Follow Omarchy: offered on a device whose theme-set hook sent its Omarchy
@@ -51,7 +67,7 @@ export function OmarchyRow() {
   );
 }
 
-export function ReadAloudVoiceRow() {
+function ReadAloudVoiceRow() {
   const { settings, update } = useSettings();
   const t = useT();
   return (
@@ -63,7 +79,7 @@ export function ReadAloudVoiceRow() {
   );
 }
 
-export function LiveVoiceRow() {
+function LiveVoiceRow() {
   const { settings, update } = useSettings();
   const t = useT();
   return (
@@ -72,16 +88,6 @@ export function LiveVoiceRow() {
         <option value="pi">{t("Same as Pi")}</option>
         {PI_VOICES.map((voice) => <option key={voice} value={voice}>{`${voice.charAt(0).toUpperCase()}${voice.slice(1)}`}</option>)}
       </SettingsSelect>
-    </SettingsRow>
-  );
-}
-
-export function OpenLiveWorkRow() {
-  const { settings, update } = useSettings();
-  const t = useT();
-  return (
-    <SettingsRow label={t("Open work while the agent runs")} description={t("Off, a running turn shows only its Working… row until tapped")}>
-      <Toggle label={t("Open work while the agent runs")} checked={settings.openLiveWork} onChange={(openLiveWork) => update({ openLiveWork })} />
     </SettingsRow>
   );
 }

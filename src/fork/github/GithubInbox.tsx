@@ -1,5 +1,5 @@
-import { cloneElement, useEffect, useRef, useState, useSyncExternalStore, type MouseEventHandler, type ReactElement } from "react";
-import { ArrowLeft, Check, ChevronRight, CircleAlert, CircleCheck, CircleDot, CircleX, Eye, FolderGit2, GitPullRequest, GitPullRequestDraft, ListFilter, RefreshCw, Search, X } from "lucide-react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { ArrowLeft, Check, ChevronRight, CircleAlert, CircleCheck, CircleDot, CircleX, Eye, FolderGit2, GitPullRequestDraft, ListFilter, RefreshCw, Search, X } from "lucide-react";
 
 import { RowMenu } from "../../components/RowMenu.tsx";
 
@@ -76,18 +76,6 @@ function openLinked(enter: () => void, inMode: boolean) {
       openPull(row, phone);
     }, () => window.open(url, "_blank", "noopener,noreferrer"));
   };
-}
-
-/** Wrap the existing Inbox button: its original action and focus behavior still run on return. */
-export function ForkGithubRail({ children }: { children: ReactElement<{ "aria-current"?: "page"; onClick?: MouseEventHandler<HTMLButtonElement> }> }) {
-  const { settings } = useSettings();
-  const current = usePlace();
-  const t = useT();
-  if (!settings.pullRequests) return children;
-  return <>
-    {cloneElement(children, { "aria-current": current === "inbox" ? "page" : undefined, onClick: (event) => { setPlace("inbox"); children.props.onClick?.(event); } })}
-    <button type="button" className="icon-button inbox-rail-item" aria-label={t("Pull requests")} title={t("Pull requests")} aria-current={current === "github" ? "page" : undefined} onClick={() => setPlace("github")}><GitPullRequest aria-hidden="true" /></button>
-  </>;
 }
 
 export interface ViewProps { wide: boolean; watching: boolean; onOpened(opened: WorktreeOpened): void }

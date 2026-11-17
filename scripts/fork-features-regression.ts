@@ -243,7 +243,7 @@ try {
           await checkGithub(page, url, legacy);
           if (legacy) {
             await page.evaluate(() => {
-              localStorage.setItem("ovis:fork-settings", JSON.stringify({ inboxFooter: false }));
+              localStorage.setItem("ovis:fork-settings", JSON.stringify({ navigation: "upstream" }));
               localStorage.removeItem("ovis:fork-github-repo");
             });
             await checkGithub(page, url, true);

@@ -6,6 +6,7 @@ import { SidebarFooter } from "../../components/SidebarFooter.tsx";
 import { useT } from "../../lib/i18n.ts";
 import { useSettings } from "../../lib/settings.ts";
 import { setPlace, usePlace, type Place as InboxPlace } from "./place.ts";
+import { useNavigation } from "./Rail.tsx";
 
 type Place = "workspaces" | InboxPlace;
 
@@ -16,6 +17,7 @@ type Place = "workspaces" | InboxPlace;
  */
 function FootPlaces({ current, onPlace, waiting = null }: { current: Place; onPlace(place: Place): void; waiting?: InboxRailProps["waiting"] }) {
   const { settings } = useSettings();
+  const footer = useNavigation() === "footer";
   const t = useT();
   const place = (id: Place, label: string, Icon: typeof Inbox) => <button type="button" className="btn btn-ghost sidebar-footer-action fork-github-foot-open"
     aria-label={label} title={label} aria-current={current === id ? "page" : undefined} onClick={() => onPlace(id)}><Icon aria-hidden="true" /></button>;
@@ -24,7 +26,7 @@ function FootPlaces({ current, onPlace, waiting = null }: { current: Place; onPl
       aria-label={t("{count} waiting for you", { count: waiting.count })} title={t("Open the next session waiting for you")} onClick={waiting.open}>
       <CircleHelp aria-hidden="true" /><span className="header-more-dot is-waiting" data-count={waiting.count} aria-hidden="true" />
     </button>}
-    {settings.inboxFooter && place("workspaces", t("Workspace list"), FolderTree)}
+    {footer && place("workspaces", t("Workspace list"), FolderTree)}
     {place("inbox", t("Agent inbox"), Inbox)}
     {settings.pullRequests && place("github", t("Pull requests"), GitPullRequest)}
     {settings.notes && place("notes", t("Notes"), Notebook)}
@@ -32,12 +34,15 @@ function FootPlaces({ current, onPlace, waiting = null }: { current: Place; onPl
 }
 
 /**
- * The workspaces sidebar's foot (App.tsx wraps upstream's inbox row): with Pull requests or the inbox footer on,
- * the places as icons on the gear's row instead of the row. Off, upstream's inbox row stays.
+ * The workspaces sidebar's foot (App.tsx wraps upstream's inbox row): with Pull requests, Notes or Navigation →
+ * Footer, the places as icons on the gear's row instead of the row. Under Navigation → Rail the rail has them, and
+ * the foot keeps the gear and the meters. Otherwise upstream's inbox row stays.
  */
 export function ForkSidebarFoot({ children }: { children: ReactElement<{ onOpen(): void }> }) {
   const { settings } = useSettings();
-  if (!settings.pullRequests && !settings.notes && !settings.inboxFooter) return children;
+  const navigation = useNavigation();
+  if (navigation === "rail") return null;
+  if (!settings.pullRequests && !settings.notes && navigation !== "footer") return children;
   const enter = children.props.onOpen;
   return <FootPlaces current="workspaces" onPlace={(place) => {
     if (place === "workspaces") return;
@@ -47,14 +52,13 @@ export function ForkSidebarFoot({ children }: { children: ReactElement<{ onOpen(
 }
 
 /**
- * The agent inbox's wide column (App.tsx wraps upstream's rail): with the inbox footer on, the workspaces
+ * The agent inbox's wide column (App.tsx wraps upstream's rail): under Navigation → Footer, the workspaces
  * sidebar's own foot (SidebarFooter) under the list instead of the rail, with the places and the agents that wait
  * in its start slot. Alerts and the PCs menu are left out. Off, upstream's rail stays.
  */
 export function ForkInboxFoot({ children, watching, onUsageLogin }: { children: ReactElement<InboxRailProps>; watching: boolean; onUsageLogin(paneId: string): void }) {
-  const { settings } = useSettings();
   const current = usePlace();
-  if (!settings.inboxFooter) return children;
+  if (useNavigation() !== "footer") return children;
   const { onExit, onInbox, onSettings, waiting } = children.props;
   return <SidebarFooter watching={watching} onUsageLogin={onUsageLogin} onSettings={onSettings}
     start={<FootPlaces current={current} waiting={waiting} onPlace={(place) => {
@@ -65,11 +69,11 @@ export function ForkInboxFoot({ children, watching, onUsageLogin }: { children: 
 }
 
 /**
- * With the inbox footer on, the agent inbox's open thread ends in the workspaces view's status bar too (App.tsx
+ * Under Navigation → Footer, the agent inbox's open thread ends in the workspaces view's status bar too (App.tsx
  * adds this to where the bar shows), so a pane reads the same in both: not while Pull requests or Notes stands over it.
  */
 export function useForkInboxStatusBar(threadShown: boolean): boolean {
-  const { settings } = useSettings();
+  const footer = useNavigation() === "footer";
   const current = usePlace();
-  return settings.inboxFooter && threadShown && current === "inbox";
+  return footer && threadShown && current === "inbox";
 }

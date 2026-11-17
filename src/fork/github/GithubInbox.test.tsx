@@ -4,7 +4,8 @@ import { create, type ReactTestRenderer } from "react-test-renderer";
 import type { WorktreeListing } from "../../../shared/protocol.ts";
 import { createGithubFilesReader } from "../../../server/fork/github.ts";
 import { SettingsProvider } from "../../lib/settings.ts";
-import { closeGithubPull, ForkGithubPane, ForkGithubRail, GithubInbox, refreshGithubListing } from "./GithubInbox.tsx";
+import { closeGithubPull, ForkGithubPane, GithubInbox, refreshGithubListing } from "./GithubInbox.tsx";
+import { ForkRailPlaces } from "../inbox/Rail.tsx";
 import { setPlace } from "../inbox/place.ts";
 
 let renderer: ReactTestRenderer | undefined;
@@ -42,7 +43,7 @@ const detailUnread = () => Response.json({ error: { code: "gh_failed", message: 
 const button = (name: string) => renderer!.root.findAllByType("button").find((node) => node.props["aria-label"] === name || node.findAll((child) => child.children.includes(name)).length > 0)!;
 async function rail(enabled: boolean) {
   records.set("ovis:settings", JSON.stringify({ pullRequests: enabled }));
-  await act(async () => { renderer = create(<SettingsProvider><ForkGithubRail><button aria-current="page">Inbox</button></ForkGithubRail></SettingsProvider>); });
+  await act(async () => { renderer = create(<SettingsProvider><ForkRailPlaces><button aria-current="page">Inbox</button></ForkRailPlaces></SettingsProvider>); });
 }
 
 const checkoutListing = (sourceId: string | null = "w1"): WorktreeListing => ({

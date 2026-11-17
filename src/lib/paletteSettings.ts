@@ -1,6 +1,7 @@
 import type { Translate } from "./i18n.ts";
+import { forkPageLabel } from "../fork/settings/page.ts";
 
-export type SettingsPageId = "appearance" | "chat" | "terminal" | "alerts" | "agents" | "shortcuts" | "devices" | "experimental" | "about";
+export type SettingsPageId = "appearance" | "chat" | "terminal" | "alerts" | "agents" | "shortcuts" | "devices" | "experimental" | "fork" | "about";
 
 /**
  * What the palette shows for one Settings page, or for one group on it: its name and the words a
@@ -34,6 +35,7 @@ export function settingsPageEntries(t: Translate): SettingsPageEntry[] {
     { id: "shortcuts", label: t("Shortcuts"), aliases: t("keyboard keys bindings hotkeys") },
     { id: "devices", label: t("Devices and PCs"), aliases: t("phone install keep screen on app") },
     { id: "experimental", label: t("Experimental"), aliases: `${t("Start a replaced server again")} ${t("Named agent groups")} ${t("Lock pinned agents")} ${t("Codex panes: let Codex select and scroll")} ${t("OMP: side conversations chip")}` },
+    { id: "fork", label: forkPageLabel(t), aliases: [t("Navigation|fork"), t("Pull requests"), t("Notes"), t("Animated replies"), t("Read aloud"), t("Pi model picker"), t("Pi live voice"), t("Agent friends"), t("Mute sub-agents"), t("Square corners"), t("Computer view")].join(" ") },
     { id: "about", label: t("About"), aliases: t("version update release herdr") },
     { id: "chat", section: "voice", label: t("Voice input"), aliases: t("dictation microphone speech openai") },
     { id: "chat", section: "voice-more", label: t("Dictation language"), aliases: "" },

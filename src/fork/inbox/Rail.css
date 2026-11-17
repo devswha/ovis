@@ -1,0 +1,25 @@
+/* Navigation → Rail (Rail.tsx): the agent inbox's rail before the workspaces sidebar too. As in the inbox's
+   column (InboxMode.css), the rail is cut out of the sidebar's width, never added to it, and is as wide as the
+   inbox's band is tall, so it stands where it stands in the inbox and nothing moves between the two. */
+.sidebar:has(> .inbox-rail) {
+  --inbox-control: var(--control-h);
+  --inbox-rail-w: calc(var(--inbox-control) + var(--space-3) * 2);
+  flex-direction: row;
+  padding-left: 0;
+}
+
+.sidebar:has(> .inbox-rail) > .sidebar-shell {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+@media (pointer: coarse) {
+  .sidebar:has(> .inbox-rail) { --inbox-control: var(--touch-target); }
+}
+
+/* The rail has the gear, so the sidebar's foot drops its own, and the gear's row when the plan meters leave it empty */
+.sidebar:has(> .inbox-rail) .sidebar-footer-settings,
+.sidebar:has(> .inbox-rail) .sidebar-footer-row:not(:has(> :not(.sidebar-footer-settings))),
+.sidebar:has(> .inbox-rail) .sidebar-footer:not(:has(> :not(.sidebar-footer-row:not(:has(> :not(.sidebar-footer-settings)))))) {
+  display: none;
+}
