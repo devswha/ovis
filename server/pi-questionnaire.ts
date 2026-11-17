@@ -3,7 +3,6 @@ import { piBranchRecordRanges, piEntryIndex } from "./pi-tree.ts";
 
 export interface PiQuestionnaireCall { id: string; args: unknown }
 
-// Reuse an unchanged branch without reparsing long histories on every cursor reread.
 const cache = new Map<string, { stamp: string; calls: readonly PiQuestionnaireCall[] }>();
 
 /** Pending calls on the same last-written branch Pi's conversation reader projects.
@@ -28,8 +27,6 @@ export function pendingPiQuestionnaires(path: string): readonly PiQuestionnaireC
   const seen = new Set<string>();
   for (const item of piBranchRecordRanges(path, before.size)) {
     const entry = JSON.parse(item.line);
-    // Unlike display history, prompt authorization cannot accept a truncated chain,
-    // duplicate identity or an entry whose ancestry could not be verified to its root.
     if (!entry || typeof entry.id !== "string" || !entry.id || seen.has(entry.id)
       || entry.parentId !== parent) return null;
     seen.add(entry.id);

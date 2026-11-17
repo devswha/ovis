@@ -3,12 +3,6 @@
  * Label semantics follow Pi 1.4.0's buildSessionInfo/getSessionName (MIT, earendil-works/pi);
  * this parser is independently implemented. In particular, only `text` blocks count, joined by
  * spaces, and a session_info with no usable name clears the old name. No `title` extension entry.
- *
- * Strings (including image data) are validated without buffering them. Selected strings retain
- * only their first 2001 non-leading-whitespace characters (201 for names); header fields retain
- * at most 16 KiB; overflowing cwd/id fields are refused, never used as truncated identities.
- * Keys, numbers and nesting are bounded too. Malformed records, including records
- * deeper than 64 levels, are discarded through the next newline, never hiding later records.
  */
 type Json = Record<string, unknown>;
 const object = (value: unknown): Json => value !== null && typeof value === "object" ? value as Json : {};
@@ -31,7 +25,6 @@ class Text {
     if (text.slice(remaining).trim() !== "") this.beyond = true;
     if (remaining > 0) this.value += text.slice(0, remaining);
   }
-  // Keep evidence of usable text beyond a clipped whitespace suffix, so the row still clips it.
   retained(): string { return this.value + (this.beyond && /\s$/.test(this.value) ? "…" : ""); }
 }
 
@@ -43,7 +36,6 @@ const KEYS: Record<Mode, readonly string[]> = {
 };
 const ESCAPED: Readonly<Record<string, string>> = { '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" };
 
-/** One JSON value, consumed incrementally; no value is published until its entire record is valid. */
 class Projection {
   private frames: Frame[] = [];
   private token: "string" | "primitive" | null = null;
@@ -118,10 +110,6 @@ class Projection {
           }
         } else if (char.charCodeAt(0) < 32) this.invalid = true;
         else {
-          // Validate ordinary string spans in the regexp engine, not one JS iteration and
-          // clipped-text update per character of a huge system prompt, tool result or image.
-          // Quotes, escapes and forbidden controls still take the checked path above, even
-          // after the retained text is full. Each span stays inside the current read chunk.
           this.stringEnd.lastIndex = at;
           const end = this.stringEnd.exec(text)?.index ?? text.length;
           this.string.add(text.slice(at, end));
@@ -160,8 +148,6 @@ class Projection {
       if (this.key && char !== '"') { this.invalid = true; continue; }
       if (char === '"') {
         this.token = "string";
-        // A root string keeps one character to distinguish native falsy preambles from
-        // truthy non-headers; ignored object fields still retain no string content.
         const keep = !frame || this.key || KEYS[frame.mode].includes(frame.key);
         const max = !frame ? 1 : this.key ? 64 : frame.mode === "root" && frame.key === "name" ? 201
           : frame?.mode === "block" || frame?.mode === "message" ? 2001 : 16384;
@@ -210,14 +196,12 @@ function apply(label: PiLabel, value: Json | null): PiLabel {
   return label;
 }
 
-/** Keeps only metadata and one bounded unfinished projection for this scan. */
 export class PiLabelParser {
   private label: PiLabel = { header: null, title: null, firstMessage: null };
   private projection = new Projection();
   private decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
   private malformedUtf8 = false;
 
-  /** Bytes from the already checked descriptor. Newline is ASCII in UTF-8. */
   feed(bytes: Buffer): void {
     let start = 0;
     while (start < bytes.length) {
@@ -236,7 +220,6 @@ export class PiLabelParser {
     }
   }
 
-  /** A completed header can identify a row before EOF; unfinished labels must stay private. */
   partial(): PiLabel { return { header: this.label.header, title: null, firstMessage: null }; }
 
   /** Finalize once at EOF: Pi accepts a whole final record without a newline, but not cut UTF-8. */

@@ -1,11 +1,3 @@
-/**
- * This server's identity on the relay: the X25519 key pair phones pin, and the server_id derived
- * from its public key, so the relay can make the PC prove it holds the key (shared/relay-server-proof.ts).
- * It lives in `stateDir/relay/identity.json` (0600, written through private-state.ts) and nowhere
- * else; the secret key is never logged. A file that will not parse is never replaced: the relay
- * refuses to start with `identity_unreadable`, since a silent new identity would orphan every
- * paired phone. Only rotateRelayIdentity replaces it, on the user's explicit reset.
- */
 import { chmodSync, linkSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import nacl from "tweetnacl";
@@ -17,7 +9,6 @@ import { preparePrivateState, syncDirectory, writePrivateState } from "../privat
 export interface RelayIdentity {
   v: 1;
   server_id: string;
-  /** base64, as the vendored key helpers encode it */
   public_key: string;
   secret_key: string;
 }
@@ -32,7 +23,6 @@ export class RelayIdentityError extends Error {
 
 export const relayIdentityPath = (stateDir: string): string => join(stateDir, "relay", "identity.json");
 
-/** The saved identity, or a new one written on first use. Throws RelayIdentityError on a bad file. */
 export function loadRelayIdentity(stateDir: string): RelayIdentity {
   const path = relayIdentityPath(stateDir);
   let text: string;
@@ -44,12 +34,10 @@ export function loadRelayIdentity(stateDir: string): RelayIdentity {
   return loadExisting(path, text);
 }
 
-/** The saved identity's server_id, without creating one: undefined where there is none, or it will not read. */
 export function savedServerId(stateDir: string): string | undefined {
   try { return parseIdentity(readFileSync(relayIdentityPath(stateDir), "utf8")).server_id; } catch { return undefined; }
 }
 
-/** Makes a saved identity private again before parsing it, even if its content is corrupt. */
 function loadExisting(path: string, text: string): RelayIdentity {
   if (process.platform !== "win32") {
     try {
@@ -59,7 +47,6 @@ function loadExisting(path: string, text: string): RelayIdentity {
   return parseIdentity(text);
 }
 
-/** Replaces the identity with a new server_id and key pair, atomically. */
 export function rotateRelayIdentity(stateDir: string): RelayIdentity {
   return createIdentity(relayIdentityPath(stateDir), true);
 }
@@ -76,7 +63,6 @@ function createIdentity(path: string, replace = false): RelayIdentity {
     writePrivateState(path, identity);
     return identity;
   }
-  // Publish complete, flushed bytes without replacing another creator's identity.
   const temporary = preparePrivateState(path, identity);
   try {
     try { linkSync(temporary, path); }
@@ -114,7 +100,6 @@ function parseIdentity(text: string): RelayIdentity {
     const derived = nacl.box.keyPair.fromSecretKey(secretKey).publicKey;
     if (!nacl.verify(derived, publicKey)) throw new Error("mismatch");
   } catch { throw new RelayIdentityError("the key pair is invalid"); }
-  // the relay admits only the PC whose key derives its server_id
   if (deriveServerId(importPublicKey(o.public_key)) !== o.server_id) throw new RelayIdentityError("the server_id is not derived from the public key");
   return { v: 1, server_id: o.server_id, public_key: o.public_key, secret_key: o.secret_key };
 }
