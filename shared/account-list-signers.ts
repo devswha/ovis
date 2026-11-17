@@ -180,21 +180,21 @@ export function isBehind(state: SignersState): boolean {
 
 /** The signers' rules: entry 0 makes its own signer the first signer, with power `full`; it is the footing at the least, and its `v` is the first that the list needs. */
 export function firstSignersState(first: HeldEntry, level: number): SignersState {
-  const { signer, v } = first.body;
-  const at = { seq: 0, hash: first.hash };
-  return { level, list: first.hash, footing: at, needs: v, behind: v > level ? 0 : null, signers: { [signer]: Object.freeze({ power: "full", seq: 0, by: signer, ended: null }) } };
+  const { body, hash } = first;
+  const { signer, v } = body;
+  const at = { seq: 0, hash };
+  return { level, list: hash, footing: at, needs: v, behind: v > level ? 0 : null, signers: { [signer]: Object.freeze({ power: "full", seq: 0, by: signer, ended: null }) } };
 }
 
 /** The signers' rules for `adds` and for `ends`, both judged on the state before the entry: the code of the first clause that is not lawful (for `adds`, then for `ends`; in each the signer's power, then the key), or null. */
-function unlawful(state: SignersState, power: SignerPower, { adds, ends, signer }: EntryBody): PassedOverCode | null {
+function unlawful(power: SignerPower, signer: string, adds: EntryBody["adds"], added: SignerRow | null, ends: string | undefined, going: SignerRow | null): PassedOverCode | null {
   if (adds !== undefined) {
     if (power !== "full") return "signer_not_allowed";
-    const row = rowOf(state.signers, adds.key);
-    if (row !== null && row.by !== null) return "key_reused";
+    if (added !== null && added.by !== null) return "key_reused";
   }
   if (ends !== undefined) {
     if (power !== "full" && ends !== signer) return "signer_not_allowed";
-    if (signerPower(state, ends) === null) return "already_out";
+    if (going === null || going.ended !== null) return "already_out";
   }
   return null;
 }
@@ -208,22 +208,33 @@ interface Judged {
   readonly behind: number | null;
   /** The rows it writes, each by its key: the key that comes in, then the key that goes. */
   readonly rows: readonly (readonly [string, SignerRow])[];
+  /** The entry's place. */
+  readonly seq: number;
 }
 
-/** What a member does with one entry that holds on this state's list, by the signers' rules. It reads no row but those the entry names, and writes none. */
+/** What a member does with one entry that holds on this state's list, by the signers' rules. It reads the entry's body and the state's members once each, and no row but those the entry names, each once (its signer's, that of the key it adds, that of the key it ends); it writes none. */
 function judge(state: SignersState, held: HeldEntry, proof: KeyProof | undefined): Judged {
   const { adds, ends, seq, signer, v } = held.body;
-  const { needs, behind } = state;
-  const power = signerPower(state, signer);
-  const reads = v <= state.level;
+  const { level, needs, behind, signers } = state;
+  const read = (key: string): SignerRow | null => {
+    const row = rowOf(signers, key);
+    return row === null ? null : plainRow(row);
+  };
+  const own = read(signer);
+  const added = adds === undefined ? null : adds.key === signer ? own : read(adds.key);
+  const going = ends === undefined ? null : ends === signer ? own : ends === adds?.key ? added : read(ends);
+  const power = own !== null && own.ended === null ? own.power : null;
+  const reads = v <= level;
   if (power === null) {
     // Nobody the member knows has vouched for it, unless a kind it reads lets this entry's own signer in on a proof, and only a key that has no row.
-    const asked = reads && adds === undefined && ends === undefined && proof !== undefined && rowOf(state.signers, signer) === null ? proof(held, state) : null;
-    if (asked === null || asked.key !== signer) return { outcome: { outcome: "passed_over", code: "signer_unknown", loose: true }, loose: true, needs, behind, rows: [] };
-    return { outcome: { outcome: "reads", power: null, behind: behind !== null }, loose: false, needs, behind, rows: [[signer, Object.freeze({ power: asked.power, seq, by: null, ended: null })]] };
+    const asked = reads && adds === undefined && ends === undefined && proof !== undefined && own === null ? proof(held, state) : null;
+    if (asked === null) return { outcome: { outcome: "passed_over", code: "signer_unknown", loose: true }, loose: true, needs, behind, rows: [], seq };
+    const { key, power: lets } = asked;
+    if (key !== signer) return { outcome: { outcome: "passed_over", code: "signer_unknown", loose: true }, loose: true, needs, behind, rows: [], seq };
+    return { outcome: { outcome: "reads", power: null, behind: behind !== null }, loose: false, needs, behind, rows: [[signer, Object.freeze({ power: lets, seq, by: null, ended: null })]], seq };
   }
-  const code = unlawful(state, power, held.body);
-  if (code !== null) return { outcome: { outcome: "passed_over", code, loose: false }, loose: false, needs, behind, rows: [] };
+  const code = unlawful(power, signer, adds, added, ends, going);
+  if (code !== null) return { outcome: { outcome: "passed_over", code, loose: false }, loose: false, needs, behind, rows: [], seq };
 
   // `adds` and `ends` always apply, read or not: first the key that comes in, then the key that goes. One key in both goes with the row that the `adds` gave it.
   const rows: (readonly [string, SignerRow])[] = [];
@@ -233,7 +244,7 @@ function judge(state: SignersState, held: HeldEntry, proof: KeyProof | undefined
     rows.push([adds.key, comes]);
   }
   if (ends !== undefined) {
-    const goes = adds?.key === ends ? comes : rowOf(state.signers, ends);
+    const goes = adds?.key === ends ? comes : going;
     if (goes !== null) rows.push([ends, Object.freeze({ power: goes.power, seq: goes.seq, by: goes.by, ended: seq })]);
   }
   const counts = power === "full";
@@ -244,12 +255,13 @@ function judge(state: SignersState, held: HeldEntry, proof: KeyProof | undefined
     needs: counts && v > needs ? v : needs,
     behind: behindAfter,
     rows,
+    seq,
   };
 }
 
 /** The state after an entry, with these rows: a new state of the six members, its level and its list id read from the state before. The footing is the last entry that is not loose. */
 function stateAfter(state: SignersState, held: HeldEntry, judged: Judged, signers: SignersState["signers"]): SignersState {
-  const footing = judged.loose ? state.footing : { seq: held.body.seq, hash: held.hash };
+  const footing = judged.loose ? state.footing : { seq: judged.seq, hash: held.hash };
   return { level: state.level, list: state.list, footing, needs: judged.needs, behind: judged.behind, signers };
 }
 
@@ -261,9 +273,11 @@ function stateAfter(state: SignersState, held: HeldEntry, judged: Judged, signer
  * changes nothing it was given.
  */
 export function judgeEntry(state: SignersState, held: HeldEntry, proof?: KeyProof): { readonly outcome: TakenOutcome; readonly state: SignersState } {
-  const judged = judge(state, held, proof);
-  const signers = judged.rows.length === 0 ? state.signers : Object.fromEntries([...ownRows(state.signers), ...judged.rows]);
-  return { outcome: judged.outcome, state: stateAfter(state, held, judged, signers) };
+  const { level, list, footing, needs, behind, signers } = state;
+  /** The state as it was read, once: the entry is judged on these members, and the state it gives is made of them. */
+  const given: SignersState = { level, list, footing, needs, behind, signers };
+  const judged = judge(given, held, proof);
+  return { outcome: judged.outcome, state: stateAfter(given, held, judged, judged.rows.length === 0 ? signers : Object.fromEntries([...ownRows(signers), ...judged.rows])) };
 }
 
 /** A member's rows while it takes entries: one copy that every entry of the same run writes into. An answer makes it when it arrives; a replay when an entry first writes a row, and until then its rows are the state's own. */
@@ -295,8 +309,9 @@ function ownEntry(entries: readonly string[], seq: number, list: string): HeldEn
 
 /** The member's head: the last entry it took. */
 export function listHead(member: ListMember): ListPlace {
-  const seq = member.entries.length - 1;
-  return { seq, hash: ownEntry(member.entries, seq, member.state.list).hash };
+  const { entries, state } = member;
+  const seq = entries.length - 1;
+  return { seq, hash: ownEntry(entries, seq, state.list).hash };
 }
 
 function refusalOf(error: unknown): ListRefusalCode {
@@ -495,11 +510,18 @@ export async function replayEntries(entries: readonly string[], level: number, o
 
 /**
  * A member signs an entry only on its footing. The place its next entry takes, or null when the
- * head it is shown lies past its footing: it then places nothing, says so, and asks again.
+ * head it is shown lies past its footing: it then places nothing, says so, and asks again. Null
+ * as well when the head lies at or under its footing and is not the member's own entry at that
+ * place, or names no place: that is another history under its footing, which an answer stops as
+ * `stuck` (shownEntries), and the member signs nothing on top of it.
  */
 export function signingPlace(member: ListMember, shown: ListPlace): { readonly list: string; readonly prev: string; readonly seq: number } | null {
-  const { footing, list } = member.state;
-  return shown.seq > footing.seq ? null : { list, prev: footing.hash, seq: footing.seq + 1 };
+  const { entries, state } = member;
+  const { footing, list } = state;
+  const { seq: at, hash: prev } = footing;
+  const { seq, hash } = shown;
+  if (!Number.isInteger(seq) || seq < 0 || seq > at || ownEntry(entries, seq, list).hash !== hash) return null;
+  return { list, prev, seq: at + 1 };
 }
 
 const isCount = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
@@ -524,14 +546,16 @@ export function readSignersState(value: unknown): SignersState | null {
   const { level, list, footing, needs, behind, signers } = value;
   if (!isCount(level) || level < 1 || !isCount(needs) || needs < 1) return null;
   if (typeof list !== "string" || !isListHash(list)) return null;
-  if (!isRecord(footing) || !isCount(footing.seq) || typeof footing.hash !== "string" || !isListHash(footing.hash)) return null;
-  if (footing.seq === 0 && footing.hash !== list) return null;
-  if (behind !== null && !(isCount(behind) && behind <= footing.seq)) return null;
+  if (!isRecord(footing)) return null;
+  const { seq, hash } = footing;
+  if (!isCount(seq) || typeof hash !== "string" || !isListHash(hash)) return null;
+  if (seq === 0 && hash !== list) return null;
+  if (behind !== null && !(isCount(behind) && behind <= seq)) return null;
   if ((behind !== null) !== (needs > level)) return null;
   if (!isRecord(signers)) return null;
   const rows: { [key: string]: SignerRow } = {};
   for (const key of Object.getOwnPropertyNames(signers)) {
-    const row = readSignerRow(key, signers[key], footing.seq);
+    const row = readSignerRow(key, signers[key], seq);
     if (row === null) return null;
     rows[key] = row;
   }
@@ -539,5 +563,5 @@ export function readSignersState(value: unknown): SignersState | null {
   if (all.filter((row) => row.seq === 0).length !== 1) return null;
   // A row's `by` is null or the key of a row: whoever added a key was a signer itself. So it is a key in form too, and no name that every object answers to.
   if (all.some((row) => row.by !== null && rowOf(rows, row.by) === null)) return null;
-  return { level, list, footing: { seq: footing.seq, hash: footing.hash }, needs, behind, signers: rows };
+  return { level, list, footing: { seq, hash }, needs, behind, signers: rows };
 }
