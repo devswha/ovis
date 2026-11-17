@@ -1815,6 +1815,28 @@ it("holds typing the socket took when its connection ends before the server conf
   }
 });
 
+it("counts keys sent as a password that a connection ended with before the server confirmed them, keeping nothing of them", () => {
+  const { client, socket } = liveClient(["submit", "ping", "input-receipt"]);
+  try {
+    // a password goes with no id, so a ping fences it as typing to an older bridge is
+    expect(client.sendInput("w1:p1", "a", false, false, true)).toBe(true);
+    expect(submissions(socket)).toEqual([{ type: "input", pane_id: "w1:p1", text: "a" }]);
+    expect(pings(socket)).toEqual([{ type: "ping", id: 1 }]);
+    socket.receive({ type: "pong", id: 1 });
+    expect(client.sendInput("w1:p1", "b", false, false, true)).toBe(true);
+    expect(pings(socket)).toEqual([{ type: "ping", id: 1 }, { type: "ping", id: 2 }]);
+    socket.disconnect();
+    // "a" was confirmed by its pong, "b" was not: one key may not have arrived, and neither is held
+    expect(client.takeUnconfirmedSecrets("w1:p1")).toBe(1);
+    expect(client.takeUnconfirmedInput("w1:p1")).toEqual([]);
+    // given once, and only for its pane
+    expect(client.takeUnconfirmedSecrets("w1:p1")).toBe(0);
+    expect(client.takeUnconfirmedSecrets("w1:p2")).toBe(0);
+  } finally {
+    client.close();
+  }
+});
+
 it("holds typing a bridge with input-receipt read but did not confirm typing when its connection ends (#2677)", () => {
   const { client, socket } = liveClient(["submit", "ping", "input-receipt"]);
   try {

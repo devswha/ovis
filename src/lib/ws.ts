@@ -157,6 +157,10 @@ export class HerdrSocket {
    * alone confirms it (a pong only proves the bridge read it, not that the pane took it).
    */
   private readonly unconfirmed = new Map<string, { text: string; fence: number; id?: number }[]>();
+  /** per pane, the fences of keys sent as a password (no receipt, nothing of them kept) that no pong has confirmed yet */
+  private readonly unconfirmedSecrets = new Map<string, number[]>();
+  /** per pane, how many of those a connection ended with, until the pane's terminal says one may not have arrived */
+  private readonly lostSecrets = new Map<string, number>();
   private nextInput = 1;
   /** the ping that fences typing, while its pong is on its way: typing sent meanwhile waits for the next one */
   private inputFence: number | null = null;
@@ -468,7 +472,7 @@ export class HerdrSocket {
         // typing sent with an id to a bridge that now lists no receipts is fenced by a ping instead
         if (!this.features.has("input-receipt")) for (const typed of this.unconfirmed.values()) for (const entry of typed) if (entry.id !== undefined) { delete entry.id; entry.fence = this.nextPing; }
         if (this.features.has("ping")) this.fenceInput();
-        else { this.unconfirmed.clear(); this.inputFence = null; }
+        else { this.unconfirmed.clear(); this.unconfirmedSecrets.clear(); this.inputFence = null; }
         if (!this.features.has("input-ready")) for (const pane of this.outputSeen) if (this.attached.has(pane)) this.inputReady.add(pane);
         // Capabilities arrive after open's role/attach replay. Restore only current interest,
         // never send an unknown frame to an older bridge or replay a hidden/detached chat.
@@ -601,6 +605,8 @@ export class HerdrSocket {
       this.lostInput.set(paneId, { lifetime: this.lifetime, typed: [...kept, ...typed.map((entry) => entry.text)] });
     }
     this.unconfirmed.clear();
+    for (const [paneId, fences] of this.unconfirmedSecrets) this.lostSecrets.set(paneId, (this.lostSecrets.get(paneId) ?? 0) + fences.length);
+    this.unconfirmedSecrets.clear();
     this.inputFence = null;
     for (const handler of this.disconnectHandlers) handler();
     this.markFeatures();
@@ -1063,6 +1069,7 @@ export class HerdrSocket {
     const id = !secret && !automatic && (!this.featuresKnown || this.features.has("input-receipt")) ? this.nextInput++ : undefined;
     try { this.rawSend({ type: "input", pane_id: paneId, text, ...(stop ? { stop: true } : {}), ...(automatic ? { automatic: true } : {}), ...(id !== undefined ? { id } : {}) }); } catch { return false; }
     if (!secret && !automatic) this.awaitReceipt(paneId, text, id);
+    if (secret && !automatic) this.awaitSecretReceipt(paneId);
     return true;
   }
 
@@ -1084,9 +1091,16 @@ export class HerdrSocket {
     if (this.featuresKnown) this.fenceInput();
   }
 
+  /** A key sent as a password is fenced as typing is, but only counted: a connection that ends first makes its terminal say a key may not have arrived (takeUnconfirmedSecrets). */
+  private awaitSecretReceipt(paneId: string): void {
+    if (this.featuresKnown && !this.features.has("ping")) return;
+    this.unconfirmedSecrets.set(paneId, [...(this.unconfirmedSecrets.get(paneId) ?? []), this.nextPing]);
+    if (this.featuresKnown) this.fenceInput();
+  }
+
   private needsFence(): boolean {
     for (const typed of this.unconfirmed.values()) if (typed.some((entry) => entry.id === undefined)) return true;
-    return false;
+    return this.unconfirmedSecrets.size > 0;
   }
 
   /** Pings after the typing still unconfirmed, unless a fence is already on its way: one at a time, however fast the typing. */
@@ -1104,10 +1118,22 @@ export class HerdrSocket {
       if (left.length === 0) this.unconfirmed.delete(paneId);
       else this.unconfirmed.set(paneId, left);
     }
+    for (const [paneId, fences] of this.unconfirmedSecrets) {
+      const left = fences.filter((fence) => fence > pong);
+      if (left.length === 0) this.unconfirmedSecrets.delete(paneId);
+      else this.unconfirmedSecrets.set(paneId, left);
+    }
     if (this.inputFence !== null && pong >= this.inputFence) {
       this.inputFence = null;
       this.fenceInput();
     }
+  }
+
+  /** How many keys sent to this pane as a password the last connections ended with before the server confirmed them; given once. */
+  takeUnconfirmedSecrets(paneId: string): number {
+    const lost = this.lostSecrets.get(paneId) ?? 0;
+    this.lostSecrets.delete(paneId);
+    return lost;
   }
 
   /** The typing for this pane that the last connection ended with before the server confirmed it, in the order sent; given once. */

@@ -76,6 +76,7 @@ export const TERMINAL_ZH: Record<string, string> = {
   "Not stopped: Grok does not show a turn to cancel. Check the terminal.": "未停止：Grok 没有显示可以取消的回合。请检查终端。",
   "Not stopped: Grok got Ctrl+C under 2 seconds ago, and a second one may quit it. Try again in a moment.": "未停止：2 秒内已向 Grok 发送过 Ctrl+C，再发送一次可能会使其退出。请稍后再试。",
   "Not stopped: Hermes got Ctrl+C under 2 seconds ago, and a second one would quit it. Try again in a moment.": "未停止：Hermes 在 2 秒内刚收到 Ctrl+C，再发送一次会使其退出。请稍后再试。",
+  "A key may not have reached the terminal: the connection ended before it was confirmed.": "按键可能未送达终端：确认之前连接已断开。",
   "Not sent: the terminal is not ready, and a password is never held for later.": "未发送：终端尚未就绪，密码不会被保留以供稍后发送。",
   "Queued messages ({n})": "排队的消息（{n}）",
   "{n} message": "{n} 条消息",

@@ -76,6 +76,7 @@ export const TERMINAL_JA: Record<string, string> = {
   "Not stopped: Grok does not show a turn to cancel. Check the terminal.": "停止していません: Grok にキャンセルできるターンが表示されていません。ターミナルを確認してください。",
   "Not stopped: Grok got Ctrl+C under 2 seconds ago, and a second one may quit it. Try again in a moment.": "停止していません: Grok には 2 秒以内に Ctrl+C を送っています。もう一度送ると終了する可能性があります。少し待ってからもう一度お試しください。",
   "Not stopped: Hermes got Ctrl+C under 2 seconds ago, and a second one would quit it. Try again in a moment.": "停止していません: Hermes は 2 秒以内に Ctrl+C を受け取っており、もう一度送ると終了します。少し待ってから再試行してください。",
+  "A key may not have reached the terminal: the connection ended before it was confirmed.": "キーがターミナルに届いていない可能性があります: 確認される前に接続が切れました。",
   "Not sent: the terminal is not ready, and a password is never held for later.": "未送信: ターミナルの準備ができておらず、パスワードは後のために保持されません。",
   "Queued messages ({n})": "キュー内のメッセージ ({n})",
   "{n} message": "メッセージ {n} 件",
