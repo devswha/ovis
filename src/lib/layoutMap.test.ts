@@ -92,6 +92,8 @@ describe("resizeMove", () => {
 
 describe("zoomMode", () => {
   it("unzooms only the pane the tab shows alone, and shows any other pane alone with an explicit on", () => {
+    // herdr focuses the pane before it reads the mode: a toggle on p2 of a tab zoomed on p1
+    // would unzoom the tab, so p2 is zoomed `on`, and only p1 sends `off`
     const zoomedOnP1 = tab([{ id: "p1", rect: rect(0, 0, 60, 40), focused: true }, { id: "p2", rect: rect(60, 0, 60, 40) }], true);
     expect(zoomMode(zoomedOnP1, "p1")).toBe("off");
     expect(zoomMode(zoomedOnP1, "p2")).toBe("on");

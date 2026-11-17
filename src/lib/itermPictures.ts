@@ -252,7 +252,8 @@ export function itermPictures(feed: PictureFeed, limits: () => PictureLimits): {
   };
 
   // xterm's string handlers hold a payload up to 10,000,000 characters and are not called for a longer
-  // one.
+  // one, which then went to the addon as it came: a picture of 7.5 MB or more without a size, or a TIFF,
+  // was not drawn. Fed piece by piece, a payload is held here up to the addon's own cap.
   let held: string[] = [];
   let recent: string[] = [];
   let heldLength = 0;

@@ -1,3 +1,11 @@
+/**
+ * A row is matched by the palette's fuzzy matcher (lib/paletteSearch.ts), its membership alone
+ * and never its rank, on the labels the row shows: the PC's name; a workspace's name and the
+ * branch its row says; an agent row's title, its agent's kind and name, and the tab name its
+ * context line says. A shell has no row of its own, so its title is not searched. Nothing hidden
+ * is searched: no working directory, no transcript, no
+ * environment, no token value, no id.
+ */
 // The idea, a row that survives when it, a header over it or a row under it matches, is adapted from agent-of-empires' sidebar filter (THIRD_PARTY_NOTICES.md).
 import type { Machine } from "../../shared/machines.ts";
 import { paneTitle } from "../../shared/notify-policy.ts";

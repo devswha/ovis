@@ -14,6 +14,12 @@ function nonblank(value: string | null | undefined): string | null {
   return value?.trim() || null;
 }
 
+/**
+ * The API's live agent roster, joined to the pane that owns its current state. OmO is also
+ * recognized by the bridge's process-tree lookup, before herdr necessarily lists it as an
+ * agent. A shell is never included just because it reports a working or blocked state.
+ * Order follows the server's workspace, tab and pane order, independently of UI folds.
+ */
 export function sidebarAgents(snapshot: SessionSnapshot | null): SidebarAgent[] {
   if (!snapshot) return [];
   const agentByPane = new Map<string, AgentInfo>();

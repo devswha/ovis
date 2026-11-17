@@ -92,6 +92,7 @@ if (typeof window !== "undefined") {
     emitChange();
   });
   for (const query of [...INSTALLED_DISPLAY_MODES, FULLSCREEN_DISPLAY]) window.matchMedia?.(query).addEventListener("change", emitChange);
+  // Chrome and Edge 140+ tell a tab of the same origin that the app is installed
   if (window.top === window) {
     const related = (navigator as Navigator & { getInstalledRelatedApps?: () => Promise<{ platform?: string }[]> }).getInstalledRelatedApps;
     const refreshRelated = () => {
@@ -120,6 +121,7 @@ export interface InstallEnvironment {
   maxTouchPoints: number;
 }
 
+/** How to install when the browser offers no prompt of its own (iOS never does). */
 export function installHelp(env: InstallEnvironment): string {
   const ua = env.userAgent;
   const ios = /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && env.maxTouchPoints > 1);

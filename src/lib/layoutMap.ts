@@ -36,6 +36,7 @@ export function zoomedPaneId(layout: PaneLayoutSnapshot): string | null {
   return layout.zoomed ? layout.focused_pane_id : null;
 }
 
+/** `pane.zoom`'s explicit modes: the UI never sends its `toggle`. */
 export type ZoomMode = "on" | "off";
 
 /**
@@ -53,6 +54,7 @@ export interface PaneNeighbors {
   down: boolean;
 }
 
+/** herdr tiles the area in whole cells; a cell of slack covers a split rounded either way. */
 const SLACK = 1;
 const overlaps = (from: number, length: number, otherFrom: number, otherLength: number): boolean =>
   otherFrom < from + length - SLACK && from < otherFrom + otherLength - SLACK;
@@ -88,6 +90,12 @@ export interface ResizeMove {
   direction: PaneDirection;
 }
 
+/**
+ * How to make the pane wider, narrower, taller or shorter; null when it fills the tab on that
+ * axis. Growing moves the pane's own border toward a neighbour. Shrinking a pane with one
+ * neighbour on the axis moves the border away from it; a pane between two neighbours grows on
+ * both of herdr's directions, so its neighbour is told to grow toward it instead.
+ */
 export function resizeMove(layout: PaneLayoutSnapshot, paneId: string, intent: ResizeIntent): ResizeMove | null {
   const [near, far]: [PaneDirection, PaneDirection] = intent === "wider" || intent === "narrower" ? ["right", "left"] : ["down", "up"];
   const onNear = neighborPane(layout, paneId, near);

@@ -1,3 +1,18 @@
+/**
+ * No entry is made where Back would not keep it. Chromium's Back skips every entry of a page that
+ * added one with no tap since it loaded or since the user's last Back or Forward (its history
+ * manipulation intervention; a step the page takes by itself ends nothing), and on a phone that
+ * leaves the app with the sheet still up. So a sheet that closes itself over one that stays hands
+ * its entry back to it with no step; there, a Back that leaves a sheet up (it refused, or what
+ * covered it went) goes again onto the entry it left, which is still in the history, instead of
+ * making one; the file list, in front again once Back closed the file or the diff opened from it,
+ * goes onto the entry that Back left and takes it (`returns`); and any other sheet that opens
+ * with no tap behind it waits for the next one to make its entry.
+ *
+ * Going onto an entry again, and telling which one a traversal landed on, takes a key and a count
+ * for each entry: the browser's own (the Navigation API), or, in a Chromium that skips entries
+ * and has none (before 102), the ones this module keeps in each entry's state (`places`).
+ */
 import { useEffect, useRef } from "react";
 import { PLACE_KEY, SHEET_HISTORY_KEY, SHEET_UNDER_KEY, overCopiedEntry, sheetStep } from "./historyKeys.ts";
 import { SHEET_QUERY } from "./sheets.ts";

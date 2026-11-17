@@ -1,10 +1,25 @@
+/*
+ * A tap is an event; data-keyboard is a value in flight while a phone's keyboard slides, and
+ * Chromium's geometry overshoots the resting height with no signal for the settled value. Deciding
+ * a tap from the measurement alone put the tap on whichever side of the animation the last event
+ * landed: Hide ran as Show, the open control stayed armed over a keyboard visibly up, and Show
+ * after Android's back gesture focused a field that was already focused, which raises nothing.
+ */
+
 export type KeyboardDirection = "show" | "hide";
 
+/**
+ * The longest a tap's intent outlives its gesture without a confirming measurement — or a locally
+ * confirmed hide stands after it: above the keyboard's slide, so a mid-animation value can never
+ * take a tap back. Its cost is only a stale label on a tap that did nothing, which then falls back
+ * to the measurement.
+ */
 export const KEYBOARD_SETTLE_MS = 700;
 
 /**
- * Chromium's geometry overshoot means a value that agrees with the intent once can disagree on the
- * next event.
+ * How still the measured value must be before a change of it is trusted. Chromium's geometry
+ * overshoot means a value that agrees with the intent once can disagree on the next event; one
+ * quiet spell of this length is the cheapest honest "it stopped moving" this platform offers.
  */
 export const KEYBOARD_QUIET_MS = 120;
 

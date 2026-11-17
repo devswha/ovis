@@ -1,3 +1,10 @@
+/*
+ * Putting a phone's soft keyboard away to read the chat. iOS gives a textarea's keyboard
+ * no dismiss key, so the chat offers two ways, as messaging apps do: a tap on the
+ * transcript and a drag down on it. Each only blurs the field: the draft stays in the
+ * composer.
+ */
+
 export const DISMISS_DRAG_PX = 32;
 
 export function keyboardUp(): boolean {

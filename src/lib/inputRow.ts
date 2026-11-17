@@ -85,6 +85,7 @@ export class FrameGate {
       if (stamp.whole) this.settledEpoch = this.epoch;
       else settled = false;
     }
+    // the first frame for the pane's new size: maybe herdr's reflow of the old screen, the agent's redraw after it
     this.reflowFrame = settled && this.reflow;
     if (settled) this.reflow = false;
     this.last = settled;
@@ -113,6 +114,11 @@ export class FrameGate {
     return this.last;
   }
 
+  /**
+   * The current frame is the first since the pane's grid changed size: possibly herdr's own redraw
+   * of the old screen, reflowed. It may be read, but no screen opened or closed by it: a watched
+   * peek neither arms nor comes back on it.
+   */
   get reflowing(): boolean {
     return this.last && this.reflowFrame;
   }

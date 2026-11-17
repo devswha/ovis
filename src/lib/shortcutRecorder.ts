@@ -3,6 +3,10 @@ import { exactChordFromEvent, shortcutEventKey, type ShortcutEventLike } from ".
 
 export const SHORTCUT_KEYS: readonly string[] = [..."abcdefghijklmnopqrstuvwxyz0123456789,-=[];'\\./`§", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown", "Home", "End"];
 
+/**
+ * The Mod+Shift keys the Settings list offers. Home, End and the punctuation keys are left to Record:
+ * punctuation is bound by position, so a US character in a list would name another key on most layouts.
+ */
 export const MENU_SHORTCUT_KEYS: readonly string[] = [..."abcdefghijklmnopqrstuvwxyz0123456789,", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown"];
 
 export type RecordedShortcut =

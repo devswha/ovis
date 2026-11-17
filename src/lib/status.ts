@@ -47,6 +47,11 @@ export function paneStatus(pane: { agent_status?: AgentStatus; background_wait?:
  */
 const ROLLUP: readonly KnownStatus[] = ["blocked", "done", "working", "waiting", "idle"];
 
+/**
+ * One state for a row that stands for several panes, as herdr rolls a workspace's agents up:
+ * blocked wins, then done, then working, then waiting on background work, then ready; unknown only
+ * when no pane says more.
+ */
 export function rollupStatus(statuses: ReadonlyArray<AgentStatus | undefined>): KnownStatus {
   const known = statuses.map((status) => knownStatus(status));
   return ROLLUP.find((state) => known.includes(state)) ?? "unknown";

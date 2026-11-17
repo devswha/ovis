@@ -4,9 +4,16 @@ import { LOCAL_MACHINE } from "../../shared/machines.ts";
 import { ApiError, fetchSystem } from "./api.ts";
 import { usePageVisible } from "./visibility.ts";
 
+/** the pause between one answer and the next ask for a PC that is on screen; the server shares one reading between asks closer than 1.5 s */
 export const SYSTEM_POLL_MS = 5000;
 export const SYSTEM_ASK_TIMEOUT_MS = 4000;
 export const SYSTEM_STALE_MS = 60_000;
+/**
+ * This PC cannot say, and asking again will not change that until its bridge does. A bridge from
+ * before the route answers 404; one that has a browser token set refuses what its allowlist does
+ * not know with 401 or 403. For the PC this browser talks to itself, 401 means signed out, which
+ * is not a reason to stop asking.
+ */
 export function systemUnavailable(error: unknown, machineId: string): boolean {
   if (!(error instanceof ApiError)) return false;
   if (error.status === 404 || error.status === 405) return true;

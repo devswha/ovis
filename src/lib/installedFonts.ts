@@ -32,6 +32,10 @@ export function filterFamilies(families: readonly string[], query: string): stri
   return needle === "" ? [...families] : families.filter((family) => family.toLowerCase().includes(needle));
 }
 
+/**
+ * Asks for the installed fonts. Call it from a click: the permission prompt needs a gesture.
+ * Refusal, a missing API and any failure all answer "unavailable", never throw.
+ */
 export async function queryInstalledFonts(): Promise<InstalledFonts> {
   const query = queryFunction();
   if (query === null) return { status: "unavailable" };

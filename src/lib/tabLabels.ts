@@ -1,3 +1,23 @@
+/**
+ * A few words of each agent pane's first message, shared with the other browsers of the server
+ * (the `tab_labels` of shared/preferences.ts, through lib/preferencesSync.ts). A tab herdr still
+ * names by its number shows them (lib/tabName.ts autoTabLabel), so tabs of the same agent tell
+ * apart (#2019). It is an Ovis display name only: herdr's tab label is never written, so herdr's
+ * own tab row and its other clients keep theirs.
+ *
+ * A label is keyed with the pane's PC, its id and its terminal (`tabLabelKey`): herdr reuses pane
+ * ids after a restart, never a terminal id, so a new pane never shows an old one's words. A label
+ * leaves once this page saw its pane and then saw it gone (`settleTabLabels`), and the server drops
+ * all when the setting is turned off. Only the short label is kept, never the message.
+ *
+ * A line is learned once per pane, from what Ovis knows first: the New tab dialog's first message,
+ * a transcript read from its beginning, or a Chat send delivered to a pane with no transcript. It
+ * is first held by pane id (`pending`) and keyed once the pane's terminal is seen in a snapshot.
+ * Only a user's own action shares it (the dialog's Start, a message delivered from Chat to an agent's
+ * pane): a label read from a transcript is this page's alone (`shownTabLabels`) until then, so
+ * reading or watching a pane never writes the shared preferences.
+ */
+
 import type { Machine } from "../../shared/machines.ts";
 import { paneStorageId } from "../../shared/machines.ts";
 import { capTabLabels, MAX_TAB_LABEL_LENGTH } from "../../shared/preferences.ts";

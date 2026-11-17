@@ -182,6 +182,7 @@ describe("modifyOtherKeysLevel", () => {
   it("follows CSI > 4 ; Pv m and turns off on CSI > 4 m and CSI > 4 n", () => {
     expect(modifyOtherKeysLevel(0, "m", [4, 2])).toBe(2);
     expect(modifyOtherKeysLevel(0, "m", [4, 1])).toBe(1);
+    // herdr turns it off as CSI > 4 ; 0 m, a program may leave the value out
     expect(modifyOtherKeysLevel(2, "m", [4, 0])).toBe(0);
     expect(modifyOtherKeysLevel(2, "m", [4])).toBe(0);
     expect(modifyOtherKeysLevel(2, "n", [4])).toBe(0);

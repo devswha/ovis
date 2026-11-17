@@ -29,6 +29,7 @@ export function createDayStore(clock: DayClock): DayStore {
   let notifiedKey = 0;
   let stopResume: (() => void) | null = null;
   const arm = (): void => {
+    // at least 1 ms: a timer fired a moment early re-arms for the rest instead of spinning
     timer = clock.setTimer(fire, Math.max(1, msUntilNextLocalMidnight(clock.now())));
   };
   const fire = (): void => {

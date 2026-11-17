@@ -31,6 +31,11 @@ const finite = (value: unknown): value is number => typeof value === "number" &&
 const percentOf = (value: unknown): value is number => finite(value) && value >= 0 && value <= 100;
 const MAX_DISKS = 4;
 
+/**
+ * What another PC's bridge said, checked: a bridge of another version, or a broken one, must not
+ * be able to throw while the sidebar draws. Null when anything the UI reads is missing or of the
+ * wrong kind; a list longer than a PC can have is cut.
+ */
 export function parseSystemReport(value: unknown): SystemReport | null {
   if (typeof value !== "object" || value === null) return null;
   const r = value as Record<string, unknown>;

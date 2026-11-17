@@ -58,6 +58,7 @@ const UNSAFE = [
   /image-set\(/i,
 ];
 
+/** Sticky tokens: a malformed tag/attribute is refused, never skipped to find a later match. */
 const ELEMENT = /<(\/?)([^\s/<>="'!?]+)(?=[\s/>])/y;
 const ATTRIBUTE = /\s+([^\s/<>="'!?]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/y;
 const TAG_END = /\s*(\/?)>/y;
@@ -73,9 +74,18 @@ function readReferences(text: string): string {
   }).replace(/\s+/g, " ");
 }
 
+/**
+ * Scan the resolved markup once, respecting quoted attributes before decoding references.
+ * Names end at XML delimiters, not at an ASCII-only prefix pattern. Comments contribute no
+ * text and CDATA contributes its contents, so neither can split a CSS token past the checks.
+ * Every cursor moves forward; an unterminated comment, CDATA section or quoted value stops
+ * the scan rather than retrying at every possible opening. CSS checks collapse whitespace
+ * runs first, so their adjacent `\s*` matches cannot try every split of a long run.
+ */
 function unsafe(svg: string): boolean {
   const parts: string[] = [];
   let styled = false;
+  // a style element's text is read as one run: an element inside it would split a CSS token past the checks
   let inStyle = false;
   let from = 0;
   for (let start = svg.indexOf("<"); start !== -1; start = svg.indexOf("<", from)) {
@@ -176,6 +186,16 @@ function resolveTokens(text: string, value: (name: string, fallback: string) => 
 }
 const VIEW_BOX = /\sviewBox\s*=\s*["']\s*[-\d.eE+]+[\s,]+[-\d.eE+]+[\s,]+([\d.eE+]+)[\s,]+([\d.eE+]+)\s*["']/;
 
+/**
+ * A fence's source as a data: URL the chat draws as an image, or null while it is not a whole
+ * figure yet (a reply still streaming, or not SVG at all: the root comes first, after an XML
+ * declaration at most), past the size cap, holding markup that could run or load something
+ * (UNSAFE), or not text a URL can carry (a lone surrogate), which keeps the fence a code block.
+ * Tokens become the palette's colors (an unknown name takes its fallback, else the text color).
+ * The root gets what an image document cannot inherit from the page: `color` for `currentColor`,
+ * a sans-serif `font-family`, the SVG namespace, and a size from its `viewBox` when it has none
+ * (one unit is one CSS pixel), so the figure is not drawn at the 300×150 an unsized image gets.
+ */
 export function svgFigureUrl(source: string, palette: SvgFigurePalette): string | null {
   if (source.length > SVG_FIGURE_MAX_LENGTH) return null;
   const trimmed = source.trim();

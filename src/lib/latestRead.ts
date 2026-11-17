@@ -6,6 +6,7 @@ export function latestRead(): () => () => boolean {
   };
 }
 
+/** After an install: read again every 10 s, seven reads in all: about a minute, at most 70 s when every read stalls. */
 export const READ_AGAIN_MS = 10_000;
 export const READ_AGAIN_TIMES = 7;
 

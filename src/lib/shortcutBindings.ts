@@ -46,6 +46,13 @@ export function isReservedShortcutKey(key: string, platformIsMac: boolean): bool
     : normalized === "c" || normalized === "i" || normalized === "j" || normalized === "o" || normalized === "PageUp" || normalized === "PageDown";
 }
 
+/**
+ * Why an exact chord cannot be bound, or null when it can:
+ * - "chord": without Ctrl, Alt or ⌘ a key types text, and a non-Mac Meta (Windows/Super) chord
+ *   belongs to the OS;
+ * - "reserved": the browser or OS acts before the page can (Mod+N/T/W, Cmd+Q/H/M, macOS Ctrl+arrows
+ *   for Spaces, Ctrl+PageUp/PageDown between tabs), or text editing needs it (Mod+A/C/V/X/Z).
+ */
 export function exactChordRefusal(chord: ExactChord, platformIsMac: boolean): "chord" | "reserved" | null {
   if (!chord.ctrl && !chord.alt && !chord.meta) return "chord";
   if (!platformIsMac && chord.meta) return "chord";
@@ -57,6 +64,14 @@ export function exactChordRefusal(chord: ExactChord, platformIsMac: boolean): "c
   return null;
 }
 
+/**
+ * A bindable chord the user should confirm before saving:
+ * - "terminal": Ctrl or Alt without ⌘ is a key shells, editors and agents use (Ctrl+R, Ctrl+A/E,
+ *   Alt+word moves, AltGr and macOS Option characters); the app takes it, so it never reaches the pane;
+ * - "browser": a ⌘ chord the browser commonly uses (find, location bar, reload, print, save, tab
+ *   numbers, history arrows, and with ⌥ the developer tools and page source); the app gets it only
+ *   where the browser lets it through.
+ */
 export function exactChordRisk(chord: ExactChord, platformIsMac: boolean): "terminal" | "browser" | null {
   if (!chord.meta && (chord.ctrl || chord.alt)) return "terminal";
   if (platformIsMac && chord.meta && (/^[0-9defgjloprsuy=\-[\]]$/.test(chord.key) || chord.key === "ArrowLeft" || chord.key === "ArrowRight")) return "browser";

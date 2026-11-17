@@ -145,6 +145,11 @@ export function closeLayoutPane(layout: PaneLayoutSnapshot, paneId: string): voi
   layout.panes = render(layout, remaining);
 }
 
+/**
+ * A pane moved beside another of its tab, as herdr-core moves it: it leaves the tree as a close
+ * takes it, then halves the target as a split does, so the target's room is measured once the
+ * pane has left. With no room there, the tab stays as it was.
+ */
 export function moveLayoutPane(layout: PaneLayoutSnapshot, paneId: string, targetId: string, direction: SplitDirection): boolean {
   const root = tree(layout);
   const moving = layout.panes.find((pane) => pane.pane_id === paneId);
@@ -175,6 +180,7 @@ export function swapLayoutPanes(layout: PaneLayoutSnapshot, paneId: string, othe
   layout.panes = render(layout, root);
 }
 
+/** herdr's layout.set_split_ratio: [] names the root, false the first child, true the second. */
 export function setLayoutSplitRatio(layout: PaneLayoutSnapshot, path: readonly boolean[], ratio: number): boolean {
   const root = tree(layout);
   if (!root || !Number.isFinite(ratio)) return false;

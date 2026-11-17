@@ -43,6 +43,9 @@ export class MachineSession {
   constructor(readonly machineId: string, options: MachineSessionOptions = {}) {
     this.socket = options.socket ?? new HerdrSocket(`${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/ws?machine_id=${encodeURIComponent(machineId)}&surface=${currentSurface()}`);
     this.store = options.pendingStore ?? pendingMessages;
+    // A features frame says what the bridge takes before the snapshot only for the herdr this page already
+    // proved: the herdr-lifetime fence (paneLifetimes.observe) runs on the snapshot, and a send or receipt made
+    // before it for a replaced herdr's reused pane IDs would be retired as unsent text while it is live (#2257)
     this.socket.trustFeatures((frame) => this.knownHerdr(frame.herdr_lifetime));
     this.offMessage = this.socket.on((message) => {
       if (this.closed) return;
@@ -126,6 +129,8 @@ export class MachineSession {
   on(handler: Handler): () => void {
     if (this.closed) return () => {};
     this.handlers.add(handler);
+    // A pane mounted on an existing connection must honor an enforced observe role.
+    // Snapshots and terminal bytes are never replayed from a browser-owned cache.
     if (this.role !== null) handler(this.role, false);
     return () => { this.handlers.delete(handler); };
   }

@@ -4,6 +4,13 @@ import { hasPreview } from "./textPreview.ts";
 
 export const VIRTUAL_SOURCE_LINES = 2_000;
 
+/**
+ * A virtualized source is colored only up to these (characters, so a budget the text itself can be
+ * measured against; lines). The virtualizer's highlighter colors the whole file in its worker and
+ * keeps the result on the page: 8 MiB of JavaScript measured 55 s of worker time and 192 MB of
+ * heap, so past these the rows are plain text, with the notice the header shows for code too long
+ * to color.
+ */
 export const VIRTUAL_HIGHLIGHT_CHARS = 256 * 1024;
 export const VIRTUAL_HIGHLIGHT_LINES = 5_000;
 

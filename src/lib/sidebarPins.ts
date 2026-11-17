@@ -6,6 +6,10 @@ export function sidebarPinKey(machineId: string, paneId: string): string {
   return `${machineId}:${paneId}`;
 }
 
+/**
+ * The pins after herdr moved a pane under a new ID (#1503): its pin keeps its place under the new ID. The
+ * list itself when the pane had none.
+ */
 export function movedSidebarPins(keys: readonly string[], machineId: string, from: string, to: string): readonly string[] {
   const before = sidebarPinKey(machineId, from), after = sidebarPinKey(machineId, to);
   if (!keys.includes(before)) return keys;
