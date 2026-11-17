@@ -30,6 +30,8 @@ export function parseLaneLog(log: string): LaneFailure[] {
 }
 
 export interface FailureObservation extends LaneFailure {
+  /** A run of the default branch itself: no change under review was there to break the script. */
+  readonly main: boolean;
   readonly runId: number;
   readonly branch: string;
   readonly createdAt: string;
@@ -41,6 +43,8 @@ export interface RankedFailure {
   readonly message: string | null;
   failed: number;
   flaky: number;
+  /** How many of the failed and flaky were in runs of the default branch itself. */
+  main: number;
   runId: number;
   branch: string;
   createdAt: string;
@@ -52,10 +56,11 @@ export function aggregateFailures(observations: readonly FailureObservation[]): 
     const key = JSON.stringify([observation.script, observation.site, observation.message]);
     let row = rows.get(key);
     if (!row) {
-      row = { script: observation.script, site: observation.site, message: observation.message, failed: 0, flaky: 0, runId: observation.runId, branch: observation.branch, createdAt: observation.createdAt };
+      row = { script: observation.script, site: observation.site, message: observation.message, failed: 0, flaky: 0, main: 0, runId: observation.runId, branch: observation.branch, createdAt: observation.createdAt };
       rows.set(key, row);
     }
     row[observation.outcome]++;
+    if (observation.main) row.main++;
     if (observation.createdAt > row.createdAt || (observation.createdAt === row.createdAt && observation.runId > row.runId)) {
       row.runId = observation.runId;
       row.branch = observation.branch;
@@ -102,6 +107,7 @@ async function pooled<T, R>(items: readonly T[], visit: (item: T) => Promise<R>)
 interface Run {
   readonly id: number;
   readonly run_attempt: number;
+  readonly event: string;
   readonly head_branch: string;
   readonly created_at: string;
   readonly check_suite_node_id: string;
@@ -204,6 +210,7 @@ export async function scan(hours: number, repoName?: string): Promise<Scan> {
     "api", `repos/${repo}/actions/workflows/ci.yml/runs?per_page=100&created=${encodeURIComponent(`>=${since}`)}`, "--paginate", "--slurp",
   ]));
   const runs = runPages.flatMap((page) => page.workflow_runs);
+  const defaultBranch = (await gh(["api", `repos/${repo}`, "--jq", ".default_branch"])).trim();
   // runsUnread, logsUnread: a run's job list or a job's log that a server error kept from us, after gh()'s retries
   const stats: ScanStats = { runs: runs.length, jobs: 0, jobsSkipped: 0, jobsClean: 0, logsRead: 0, runsUnread: 0, logsUnread: 0 };
   const groups = await pooled(runs, async (run) => {
@@ -263,7 +270,7 @@ export async function scan(hours: number, repoName?: string): Promise<Scan> {
     }
     stats.logsRead++;
     return parseLaneLog(log).map((failure) => ({
-      ...failure, runId: run.id, branch: run.head_branch, createdAt: run.created_at,
+      ...failure, main: run.event !== "pull_request" && run.head_branch === defaultBranch, runId: run.id, branch: run.head_branch, createdAt: run.created_at,
     }));
   });
   return { repo, hours, since, until: until.toISOString(), stats, rows: aggregateFailures(observations.flat()) };
@@ -289,8 +296,8 @@ async function main(): Promise<void> {
     console.log(unread > 0 ? "No browser script failed or needed a second run in what could be read." : "No browser script failed or needed a second run.");
     return;
   }
-  console.log("failed\tflaky\tscript\tsite\tmessage\tmost recent run\tbranch");
-  for (const row of rows) console.log([row.failed, row.flaky, row.script, row.site ?? "-", row.message ?? "-", row.runId, row.branch].join("\t"));
+  console.log("failed\tflaky\ton main\tscript\tsite\tmessage\tmost recent run\tbranch");
+  for (const row of rows) console.log([row.failed, row.flaky, row.main, row.script, row.site ?? "-", row.message ?? "-", row.runId, row.branch].join("\t"));
 }
 
 if (import.meta.main) {

@@ -8,7 +8,7 @@ const scanned = (rows: RankedFailure[], overrides: Partial<Scan> = {}): Scan => 
 });
 const failure = (index: number, message = "AssertionError: broken"): RankedFailure => ({
   script: `scripts/s${index}-regression.ts`, site: `scripts/s${index}-regression.ts:${index + 1}`, message,
-  failed: index % 2, flaky: 3, runId: 44_000_000_000 + index, branch: `fix/b${index}`, createdAt: "2026-11-17T06:00:00Z",
+  failed: index % 2, flaky: 3, main: 2, runId: 44_000_000_000 + index, branch: `fix/b${index}`, createdAt: "2026-11-17T06:00:00Z",
 });
 /** The cells of each table row, split on the pipes that are not escaped. */
 const tableRows = (body: string): string[][] =>
@@ -21,11 +21,11 @@ describe("CI flakes issue body", () => {
     expect(tableRows(body)[1]).toEqual(["164", "682", "602", "52", "26", "1", "1"]);
     expect(body).toContain("2026-11-16T07:00:00.000Z");
     const rows = rankedRows(body);
-    expect(rows.map((cells) => cells.length)).toEqual([6, 6]);
-    expect(rows.map(([failed, flaky, script, site]) => [failed, flaky, script, site])).toEqual([
-      ["1", "3", "`scripts/s1-regression.ts`", "`scripts/s1-regression.ts:2`"], ["0", "3", "`scripts/s2-regression.ts`", "`scripts/s2-regression.ts:3`"],
+    expect(rows.map((cells) => cells.length)).toEqual([7, 7]);
+    expect(rows.map(([failed, flaky, main, script, site]) => [failed, flaky, main, script, site])).toEqual([
+      ["1", "3", "2", "`scripts/s1-regression.ts`", "`scripts/s1-regression.ts:2`"], ["0", "3", "2", "`scripts/s2-regression.ts`", "`scripts/s2-regression.ts:3`"],
     ]);
-    expect(rows[0]![5]).toContain("(https://github.com/devswha/ovis/actions/runs/44000000001)");
+    expect(rows[0]![6]).toContain("(https://github.com/devswha/ovis/actions/runs/44000000001)");
   });
 
   it("has no ranked rows when nothing failed or needed a second run", () => {
@@ -38,7 +38,7 @@ describe("CI flakes issue body", () => {
     const rows = Array.from({ length: 500 }, (_, index) => failure(index, "x".repeat(5_000)));
     const body = issueBody(scanned(rows));
     expect(body.length).toBeLessThan(65_536);
-    expect(rankedRows(body).map(([, , script]) => script)).toEqual(rows.slice(0, MAX_ROWS).map((row) => `\`${row.script}\``));
+    expect(rankedRows(body).map(([, , , script]) => script)).toEqual(rows.slice(0, MAX_ROWS).map((row) => `\`${row.script}\``));
     expect(body).toContain(String(500 - MAX_ROWS));
     const pipes = "|".repeat(5_000);
     expect(issueBody(scanned(rows.map((row) => ({ ...row, script: pipes, site: pipes, message: pipes, branch: pipes })))).length).toBeLessThan(65_536);
@@ -46,7 +46,7 @@ describe("CI flakes issue body", () => {
 
   it("keeps log text inside one code span of one row", () => {
     const rows = rankedRows(issueBody(scanned([failure(1, "a `b`\nc | d @devswha ![x](https://e.test/x.png)")])));
-    expect(rows.map((cells) => cells[4])).toEqual(["`a 'b' c \\| d @devswha ![x](https://e.test/x.png)`"]);
+    expect(rows.map((cells) => cells[5])).toEqual(["`a 'b' c \\| d @devswha ![x](https://e.test/x.png)`"]);
   });
 });
 

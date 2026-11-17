@@ -37,15 +37,15 @@ TypeError: broken`)).toEqual([
 });
 
 describe("Failure ranking", () => {
-  it("ranks combined frequency and keeps the most recent run and branch", () => {
+  it("ranks combined frequency, counts the default branch's own runs and keeps the most recent run and branch", () => {
     const common = { script: "scripts/ui-regression.ts", site: "scripts/ui-regression.ts:10", message: "AssertionError: broken" };
     const rows = aggregateFailures([
-      { ...common, outcome: "flaky", runId: 3, branch: "new", createdAt: "2026-10-14T03:00:00Z" },
-      { ...common, outcome: "failed", runId: 1, branch: "old", createdAt: "2026-10-14T01:00:00Z" },
-      { ...common, site: null, outcome: "failed", runId: 4, branch: "other", createdAt: "2026-10-14T04:00:00Z" },
+      { ...common, outcome: "flaky", main: false, runId: 3, branch: "new", createdAt: "2026-10-14T03:00:00Z" },
+      { ...common, outcome: "failed", main: true, runId: 1, branch: "main", createdAt: "2026-10-14T01:00:00Z" },
+      { ...common, site: null, outcome: "failed", main: false, runId: 4, branch: "other", createdAt: "2026-10-14T04:00:00Z" },
     ]);
-    expect(rows.map((row) => [row.site, row.failed, row.flaky, row.runId, row.branch])).toEqual([
-      ["scripts/ui-regression.ts:10", 1, 1, 3, "new"], [null, 1, 0, 4, "other"],
+    expect(rows.map((row) => [row.site, row.failed, row.flaky, row.main, row.runId, row.branch])).toEqual([
+      ["scripts/ui-regression.ts:10", 1, 1, 1, 3, "new"], [null, 1, 0, 0, 4, "other"],
     ]);
   });
 });
