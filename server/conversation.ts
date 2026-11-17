@@ -2758,6 +2758,19 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
       || copilotHistoryIdentity(resolved.path) !== history) throw new HistoryChanged();
     return bindCopilotAnswer(answer, prefix);
   }
+  if (resolved.source === "agy-transcript") {
+    // The ledger never records the selected model. The live status row does, and a switch there
+    // writes no turn, so the answer is marked screen and the chat re-reads it on terminal output.
+    // A scroll or a failed read leaves the name unknown rather than one from an older frame, and is
+    // still marked screen so the next draw can fill it. Enrich the response, never the shared page.
+    const screen = await screenMetadata("agy-transcript");
+    return {
+      ...answer,
+      screen: true,
+      metadata: { ...answer.metadata, ...screen },
+      version: answerVersion(answer.version, `${screen.model}\0${screen.reasoning_effort}`),
+    };
+  }
   return answer;
 }
 

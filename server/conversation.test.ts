@@ -4113,6 +4113,30 @@ describe("Agy native ledger through shared paging", () => {
       expect(await paneConversation(pane.pane_id).catch((error: unknown) => error)).toMatchObject({ name: "ConversationUnavailable", message: "transcript_missing" });
     } finally { snapshot.mockRestore(); store.mockRestore(); rpc.mockRestore(); }
   });
+  it("reads the live status row after a conversation exists, and not a scrolled frame", async () => {
+    const session = "00000000-0000-4000-8000-000000000001";
+    add(0, "USER_INPUT", "one");
+    const pane = { pane_id: "agy-model", cwd: root, agent: "agy", agent_status: "idle" } as HerdrPane;
+    const footer = " ? for shortcuts   Gemini 3.8 Flash · high\n";
+    let offset = 0;
+    const snapshot = spyOn(herdr, "sessionSnapshot").mockImplementation(async () => ({ panes: [pane], agents: [] }) as unknown as SessionSnapshot);
+    const store = spyOn(agyStore, "resolveAgyStore").mockResolvedValue({ root, session, path, pid: 2, started: "test" });
+    const rpc = spyOn(herdr, "herdrRpc").mockImplementation(async (method: string) => (method === "pane.get"
+      ? { pane: { ...pane, scroll: { offset_from_bottom: offset, max_offset_from_bottom: 10, viewport_rows: 40 } } }
+      : { process_info: { foreground_processes: [] } }) as never);
+    const read = spyOn(herdr, "paneRead").mockImplementation(async () => ({ text: footer }) as never);
+    try {
+      const shown = await paneConversation(pane.pane_id);
+      expect(shown.turns).toHaveLength(1);
+      expect(shown.metadata).toMatchObject({ model: "Gemini 3.8 Flash", reasoning_effort: "high" });
+      expect(shown.screen).toBe(true);
+      offset = 4;
+      const scrolled = await paneConversation(pane.pane_id);
+      expect(scrolled.screen).toBe(true);
+      expect(scrolled.metadata?.model ?? null).toBeNull();
+      expect(scrolled.metadata?.reasoning_effort ?? null).toBeNull();
+    } finally { snapshot.mockRestore(); store.mockRestore(); rpc.mockRestore(); read.mockRestore(); }
+  });
   it("retries a transient mid-turn catalog race and answers 503 ConversationReadPending instead of dropping chat", async () => {
     const session = "00000000-0000-4000-8000-000000000001";
     add(0, "USER_INPUT", "one");
@@ -4215,7 +4239,10 @@ describe("Agy native ledger through shared paging", () => {
     const read = spyOn(herdr, "paneRead").mockImplementation(async () => ({ text: currentScreen }) as never);
     try {
       const greeting = await paneConversation(pane.pane_id);
-      expect(greeting).toMatchObject({ source: "agy-transcript", turns: [], cursor: null });
+      expect(greeting).toMatchObject({
+        source: "agy-transcript", turns: [], cursor: null, screen: true,
+        metadata: { model: "Gemini 3.8 Flash", reasoning_effort: "high" },
+      });
       expect(greeting.history_id).toStartWith(`unwritten:agy:${pane.pane_id}:${process.pid}:`);
       // Resumed or prompt-flag invocations, scrolled viewports, or screens with a turn fall back to scrollback.
       argv = ["agy", "--continue"];
