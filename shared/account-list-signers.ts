@@ -53,8 +53,8 @@ export interface SignerRow {
  * What a member's entries gave it, as plain data: JSON saves it and readSignersState reads it again.
  * Its head is not in it, and dropping loose entries never changes it. The state of the kinds' own
  * rules begins with these members. A state that a function of this file gives back is frozen, with
- * its footing and its rows, and has these six and no other: what else the state it was given
- * carries is left out, as readSignersState leaves it out.
+ * its footing and its rows, and has these six, `needs_replay` when it stopped for a replay, and no
+ * other: what else the state it was given carries is left out, as readSignersState leaves it out.
  */
 export interface SignersState {
   /** The level it was made by: a whole number from 1. After an update the member replays every entry it kept by its new level. */
@@ -71,11 +71,20 @@ export interface SignersState {
    * everything holds, the same rows and the same footing. One entry alone can part the two: an
    * entry for which a kind may let a key in on a proof (KeyProof), which a member that is behind
    * cannot hear. There it stops, also when the proof lets nobody in, which it cannot tell, and it
-   * takes no entry (`needs_replay`) until it replays after an update.
+   * takes no entry until it replays after an update. The stop is kept in the state (`needs_replay`).
    */
   readonly behind: number | null;
   /** One row for each key that was made a signer, named by that key. A key is a signer while its row's `ended` is null; the first signer is the row whose `seq` is 0. */
   readonly signers: { readonly [key: string]: SignerRow };
+  /**
+   * Only on a member that stopped for a replay (`behind`): the place of the entry at which it
+   * stopped. While it is set the member takes no entry, judges none and places none to sign: an
+   * answer ends for it with `needs_replay` again, whatever it shows. It is saved and read again
+   * with the state. A replay of the member's own entries starts anew: it sets it only where the
+   * member stops again, so by the level of an update it is gone. A state has no such member
+   * otherwise.
+   */
+  readonly needs_replay?: number;
 }
 
 /** What a member holds: every entry it took, from entry 0, each as its one text, and what they gave it. */
@@ -205,9 +214,15 @@ function plainRows(signers: SignersState["signers"]): SignersState["signers"] {
 
 /** A state: its six members, its footing as a place and its rows as rows. Its level is a level, or it is no state of this file's. */
 function plainState(state: SignersState): SignersState {
-  const { level, list, footing, needs, behind, signers } = state;
+  const { level, list, footing, needs, behind, signers, needs_replay } = state;
   mustBeLevel(level);
-  return Object.freeze({ level, list, footing: plainPlace(footing), needs, behind, signers: plainRows(signers) });
+  const plain = { level, list, footing: plainPlace(footing), needs, behind, signers: plainRows(signers) };
+  return needs_replay === undefined ? Object.freeze(plain) : stoppedAt(plain, needs_replay);
+}
+
+/** The state of a member that stopped for a replay at this place: the same six members, frozen, with `needs_replay`. */
+function stoppedAt({ level, list, footing, needs, behind, signers }: SignersState, seq: number): SignersState {
+  return Object.freeze({ level, list, footing, needs, behind, signers, needs_replay: seq });
 }
 
 /** A list of texts: its length, and then the text at each place. A place that holds none reads as the empty text, which is no entry. */
@@ -368,17 +383,20 @@ function stateAfter(state: SignersState, held: HeldEntry, judged: Judged, signer
  * signed moves the footing, also when it is passed over for a field that is not lawful. It turns on
  * no row but those the entry names: its signer's, and those of the keys in `adds` and `ends`. A
  * member that is behind stops at an entry for which a proof may be asked (SignersState.behind):
- * the outcome is `stops`, and the state is as it was. The state and the entry are taken once
- * (plainState, plainHeld), and the state it gives is made of those copies. It changes nothing it
- * was given. The entry is one that holds on this state's list: the caller says so, and an entry of
- * another list is its mistake, a RangeError.
+ * the outcome is `stops`, and the state is as it was but for `needs_replay`, which holds the
+ * stop. On a state that holds one already, every entry is a `stops`. The state and the entry are
+ * taken once (plainState, plainHeld), and the state it gives is made of those copies. It changes
+ * nothing it was given. The entry is one that holds on this state's list: the caller says so, and
+ * an entry of another list is its mistake, a RangeError.
  */
 export function judgeEntry(state: SignersState, held: HeldEntry, proof?: KeyProof): { readonly outcome: TakenOutcome | StopsOutcome; readonly state: SignersState } {
   const given = plainState(state);
   const entry = plainHeld(held);
   if (entry.list !== given.list) throw new RangeError("The entry is of another list than the state");
+  // A member that stopped for a replay judges nothing: it is stopped still.
+  if (given.needs_replay !== undefined) return { outcome: STOPS, state: given };
   const judged = judge(given, entry, proof);
-  if (judged.outcome.outcome === "stops") return { outcome: judged.outcome, state: given };
+  if (judged.outcome.outcome === "stops") return { outcome: judged.outcome, state: stoppedAt(given, entry.body.seq) };
   const signers = judged.rows.length === 0 ? given.signers : Object.freeze(Object.fromEntries([...Object.entries(given.signers), ...judged.rows]));
   return { outcome: judged.outcome, state: stateAfter(given, entry, judged, signers) };
 }
@@ -498,7 +516,8 @@ async function fits(entry: Entry, before: HeldEntry): Promise<Fit> {
  *
  * A member that is behind stops at an entry it cannot place (SignersState.behind): the answer
  * ends there for it with `needs_replay`, stuck. It takes neither that entry nor any after it, and
- * drops none of its own for it.
+ * drops none of its own for it. Its state keeps the stop: every later answer ends the same way,
+ * also one that shows another entry in that place, until the member replays.
  *
  * A place the member does not hold for the answer to follow, a state whose footing is not the
  * member's own entry at that place, or one whose level is no level, is the caller's mistake: a
@@ -530,6 +549,8 @@ export async function shownEntries(member: ListMember, answer: ShownAnswer, proo
   };
   const stops = (seq: number, code: ListRefusalCode) => done({ stopped: { seq, code } });
   const stuck = (seq: number) => done({ stopped: { seq, code: "chain_broken" }, stuck: true });
+  // A member that stopped for a replay takes nothing, whatever it is shown: the answer ends for it as it ended then.
+  if (state.needs_replay !== undefined) return done({ stopped: { seq: state.needs_replay, code: "needs_replay" }, stuck: true });
 
   /** The place that the answer's head names; -1 for what is no place. */
   const headSeq = Number.isInteger(head.seq) && head.seq >= 0 ? head.seq : -1;
@@ -575,7 +596,10 @@ export async function shownEntries(member: ListMember, answer: ShownAnswer, proo
     if (seq <= state.footing.seq) return stuck(seq);
     const taken = takeEntry(state, rows, fit.held, proof);
     // Behind, the member cannot place the entry: it takes neither it nor any after it, and drops nothing for it, until it replays.
-    if (taken === null) return done({ stopped: { seq, code: "needs_replay" }, stuck: true });
+    if (taken === null) {
+      state = stoppedAt(state, seq);
+      return done({ stopped: { seq, code: "needs_replay" }, stuck: true });
+    }
     if (own !== null) {
       entries.length = seq;
       dropped = seq;
@@ -633,7 +657,10 @@ export async function replayEntries(entries: readonly string[], level: number, o
     }
     const taken = takeEntry(state, rows, held, proof);
     // Behind, the member cannot place the entry: its copy ends before it, until it replays after an update.
-    if (taken === null) return replayed({ seq: index + 1, code: "needs_replay" });
+    if (taken === null) {
+      state = stoppedAt(state, index + 1);
+      return replayed({ seq: index + 1, code: "needs_replay" });
+    }
     state = taken.state;
     rows = taken.rows;
     kept.push(next);
@@ -654,6 +681,8 @@ export function signingPlace(member: ListMember, shown: ListPlace): { readonly l
   const { entries, state } = plainMember(member);
   const { seq, hash } = plainPlace(shown);
   const { footing, list } = state;
+  // A member that stopped for a replay places nothing: it does not know what the list holds past its stop.
+  if (state.needs_replay !== undefined) return null;
   if (!Number.isInteger(seq) || seq < 0 || seq > footing.seq || ownEntry(entries, seq, list).hash !== hash) return null;
   return { list, prev: footing.hash, seq: footing.seq + 1 };
 }
@@ -702,7 +731,7 @@ function madeByItsSigner(rows: SignersState["signers"], row: SignerRow, level: n
  */
 export function readSignersState(value: unknown): SignersState | null {
   if (!isRecord(value)) return null;
-  const { level, list, footing, needs, behind, signers } = value;
+  const { level, list, footing, needs, behind, signers, needs_replay } = value;
   if (!isLevel(level) || !isCount(needs) || needs < 1) return null;
   if (typeof list !== "string" || !isListHash(list)) return null;
   if (!isRecord(footing)) return null;
@@ -722,5 +751,8 @@ export function readSignersState(value: unknown): SignersState | null {
   if (all.filter((row) => row.seq === 0).length !== 1) return null;
   // Each row's `by` is what SignerRow says it is (madeByItsSigner). So it is null or the key of a row: a key in form, and no name that every object answers to.
   if (!all.every((row) => madeByItsSigner(rows, row, level))) return null;
-  return Object.freeze({ level, list, footing: Object.freeze({ seq, hash }), needs, behind, signers: Object.freeze(rows) });
+  const read = { level, list, footing: Object.freeze({ seq, hash }), needs, behind, signers: Object.freeze(rows) };
+  if (needs_replay === undefined) return Object.freeze(read);
+  // Only a member that is behind stops for a replay, at an entry past its footing.
+  return isCount(needs_replay) && behind !== null && needs_replay > seq ? stoppedAt(read, needs_replay) : null;
 }
