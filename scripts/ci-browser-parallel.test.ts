@@ -70,7 +70,7 @@ async function runStub(end: string, timeoutSeconds: string) {
   const stubborn = join(dir, "stubborn.pid");
   mkdirSync(bin);
   writeFileSync(join(bin, "bash"), '#!/bin/sh\nprintf "/stub/chrome\\\\n"\n', { mode: 0o755 });
-  writeFileSync(join(bin, "bun"), `#!/bin/sh\nif [ "$1" = scripts/demo-build.ts ]; then exit 0; fi\n${STARTED}\n${STAND_IN.join(" ")} &\necho "$! $(started $!)" > ${leftover}\n(trap '' TERM; exec ${STAND_IN.join(" ")}) >/dev/null 2>&1 &\necho "$! $(started $!)" > ${stubborn}\necho "PASS a step before the end"\necho "the last line it wrote"\n${end}\n`, { mode: 0o755 });
+  writeFileSync(join(bin, "bun"), `#!/bin/sh\nif [ "$1" = scripts/demo-build.ts ]; then exit 0; fi\n${STARTED}\n(exec ${STAND_IN.join(" ")}) &\necho "$! $(started $!)" > ${leftover}\n(trap '' TERM; exec ${STAND_IN.join(" ")}) >/dev/null 2>&1 &\necho "$! $(started $!)" > ${stubborn}\necho "PASS a step before the end"\necho "the last line it wrote"\n${end}\n`, { mode: 0o755 });
   try {
     const child = Bun.spawn([process.execPath, "scripts/ci-browser-parallel.ts"], {
       cwd: join(import.meta.dir, ".."),

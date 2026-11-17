@@ -217,7 +217,8 @@ renameSync(${JSON.stringify(`${resultPath}.tmp`)}, ${JSON.stringify(resultPath)}
     if (child !== "none") throw new Error(`${root} is kept with its stop file: a child that did not say it stopped may still run or start`);
     // Remove the junction itself before recursively cleaning its target fixture.
     await rm(legacy, { force: true, recursive: true });
-    const cleanupBy = Date.now() + 5000;
+    // the child exits by itself now, in the desktop session: a slow hosted runner gets more than the 5 s a kill needed
+    const cleanupBy = Date.now() + 20_000;
     for (;;) {
       try { await rm(root, { recursive: true, force: true }); break; }
       catch (error) {
