@@ -93,7 +93,9 @@ export function startBunRelay(options: BunRelayOptions = {}): BunRelay {
       // the room closes a frame over MAX_MESSAGE_BYTES with 1009; Bun's own cap only cuts the
       // connection (1006), so it stays well above for frames far too big to read at all
       maxPayloadLength: 16 * MAX_MESSAGE_BYTES,
+      // a peer that cannot keep up is closed rather than having frames dropped
       closeOnBackpressureLimit: true,
+      // the room closes idle sockets itself (IDLE_MS), as on Cloudflare
       idleTimeout: 0,
       open(socket) {
         const entry = roomOf(socket.data.request);

@@ -30,6 +30,8 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     throw 'Install Git for Windows (https://git-scm.com/download/win), then run this again.'
 }
 if (-not (Get-Command herdr -ErrorAction SilentlyContinue)) {
+    # install.sh runs Ovis on herdr-core where there is no herdr; here the plugin runs under herdr,
+    # and Settings switches the server to herdr-core afterwards
     if (Get-Command herdr-core, hc -CommandType Application -ErrorAction SilentlyContinue) {
         Write-Host 'Ovis: found herdr-core (hc). Ovis starts on herdr; to show the Herdr app''s terminals, switch in Settings > About > Terminals'
     }
@@ -46,6 +48,7 @@ if (-not (Get-Command herdr -ErrorAction SilentlyContinue)) {
         }
         if ($LASTEXITCODE -ne 0) {
             if ($output -match $download) { throw "herdr could not be downloaded: the connection was too slow or was cut off (curl's message is above). Run this again, on another network if it keeps failing, or install herdr from https://herdr.dev first." }
+            # Seen stopping without a message of its own on a PC with banking security software.
             throw "herdr's installer did not finish. If it showed no error, security software may have stopped it: install herdr from https://herdr.dev, then run this again."
         }
     } finally { Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue }
@@ -229,6 +232,7 @@ function Expand-Client([string]$Archive, [string]$Into) {
     if (Get-ChildItem -LiteralPath $Into -Recurse -Force | Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint }) { throw 'ovis-dist.tar.gz unpacked a link' }
     if (-not (Test-Path -LiteralPath (Join-Path $Into 'index.html'))) { throw 'ovis-dist.tar.gz holds no index.html' }
 }
+# With three or more installs started at the same instant a narrow race remains (a follow-up).
 function Enter-InstallLock([string]$Lock, [int]$WaitSeconds = 600) {
     $breaker = "$Lock.break"
     $waited = 0
@@ -576,6 +580,14 @@ if (-not $plugin) {
     Write-Host 'Ovis: already installed; Settings > Updates keeps it current'
     $launcherScript = Join-Path $plugin.plugin_root 'scripts\plugin-launch.ts'
     $repairing = $false
+    # The installed checkout's commit, by what git answers, by the rule scripts/plugin-launch.ts (checkoutCommit) and
+    # install.sh (ref_not_moved) read it by: at a checkout's top level its commit; none in a folder inside another
+    # repository (--show-prefix names its path there: git would read that repository's commit, not the plugin's) or one
+    # git says is no repository (a plugin linked from such a folder); anything else is git failing ($gitFailed: what it
+    # said), and nothing is decided on it below. git runs untranslated (LC_ALL=C), so its "not a git repository" can be
+    # told by its words, and so can a folder it distrusts ($distrusted: the folder as git names it on its first line); what
+    # it says is kept off the console, and from the error stream a host under Stop could turn native stderr into (as
+    # Run-HerdrInstaller does). Each stderr line is its exception's message: an empty one prints as the exception's type.
     $installedCommit = ''
     $gitFailed = ''
     $distrusted = ''
@@ -714,6 +726,9 @@ if (-not $plugin) {
                 }
             } finally {
                 $env:OVIS_FROM_SOURCE = $givenSource
+                # the launcher names this version in the marker before it builds: a build that did not finish, failed or
+                # cut off (Ctrl+C reaches finally, not catch), takes it back, so the launcher's start does not run sources
+                # that were never built, and the next run builds again also where the launcher writes no stamp
                 if (-not $built) { Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue }
             }
         }
@@ -895,6 +910,7 @@ namespace Ovis {
                 get { int code; if (!GetExitCodeProcess(Handle, out code)) throw new Win32Exception(); return code; }
             }
             public void Dispose() {
+                // An error before Resume must not strand a suspended process, even without a job.
                 if (thread != IntPtr.Zero) { TerminateProcess(Handle, 1); CloseHandle(thread); thread = IntPtr.Zero; }
                 StandardInput.Dispose();
                 foreach (StreamReader reader in new[] { StandardOutput, StandardError }) {
@@ -939,6 +955,7 @@ namespace Ovis {
                 if (error != null) error.Dispose();
                 throw;
             } finally {
+                // Only the child keeps the inherited ends; parent ends now belong to the streams.
                 foreach (IntPtr handle in new[] { inputRead, inputWrite, outputRead, outputWrite, errorRead, errorWrite })
                     if (handle != IntPtr.Zero) CloseHandle(handle);
             }

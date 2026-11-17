@@ -126,6 +126,8 @@ offer_star() {
   # 20 seconds to end that. Then what was typed before the question is not an answer to it: it is
   # discarded, and when it cannot be, there is no question (tcflush is "0 but true", undef on failure).
   perl -MPOSIX -e 'exit 1 unless POSIX::tcgetpgrp(0) == POSIX::getpgrp(); POSIX::tcflush(0, POSIX::TCIFLUSH) or exit 1' </dev/tty >/dev/null 2>&1 || return 0
+  # the install is done: leaving the question with Ctrl-C is an answer, not a failure. The trap
+  # comes before the question: a Ctrl-C the moment it shows must not end the script with 130
   trap 'echo; exit 0' INT
   printf '%s' "Ovis: star it now with the GitHub account gh is signed in to? [y/N] " >/dev/tty 2>/dev/null || { trap - INT; return 0; }
   # shellcheck disable=SC2016 # bash's variable, not this shell's
@@ -543,6 +545,7 @@ closing_lines() {
   [ "${token_said:-0}" = 1 ] || token_line
 }
 
+# kills a process and everything it started (ps -A -o pid= -o ppid= reads the same on Linux and macOS)
 kill_tree() {
   for kill_child in $(ps -A -o pid= -o ppid= 2>/dev/null | awk -v parent="$1" '$2 == parent { print $1 }'); do
     kill_tree "$kill_child"
@@ -1075,6 +1078,13 @@ EOF
 
 ref_not_moved() {
   [ -n "${OVIS_REF:-${HERDR_WEB_UI_REF:-}}" ] || return 0
+  # What git answers, by the rule scripts/plugin-launch.ts (checkoutCommit) and install.ps1 read the installed commit
+  # by: a checkout's top level has its commit; a folder inside another repository (--show-prefix names its path there:
+  # git would read that repository's commit, not the plugin's) or one git says is no repository has none; anything else
+  # is git failing, which is said with git's first line (untranslated: LC_ALL=C). Only git's stdout is the prefix and
+  # the commit: a warning it prints on stderr while it succeeds is neither. With no checkout to read (herdr did not name
+  # the plugin's root), git -C "" would read the current directory's. With no file for git's stderr (mktemp failed), the
+  # commit is still read, git's stderr discarded, and git's failures, which can no longer be told apart, are not said.
   ref_not_moved_at=""
   if [ -n "$1" ]; then
     ref_not_moved_err=$(mktemp 2>/dev/null) || ref_not_moved_err=""

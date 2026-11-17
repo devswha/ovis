@@ -144,6 +144,7 @@ async function install(dir: string, tag: string, revision: string, archive: Uint
     if (revisionOf(await json(fetcher, `${APP}/build.json`)) !== revision) throw new Error(`${APP} changed while ${tag} was being checked`);
     const name = `${tag}+${Date.now().toString(36)}`;
     renameSync(staging, join(releases, name));
+    // swapped by a rename, so the web server never sees a missing `current`
     const link = join(dir, ".current-next");
     rmSync(link, { force: true });
     symlinkSync(join("releases", name), link);
