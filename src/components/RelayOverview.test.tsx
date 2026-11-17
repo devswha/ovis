@@ -519,7 +519,7 @@ describe("RelayOverview", () => {
     expect(empty.findAll((node) => node.type === "li").map(textOf)).toEqual([
       `Install Ovis on the PC.On macOS or Linux:${INSTALLER_COMMAND}CopyOn Windows, in PowerShell:${WINDOWS_INSTALLER_COMMAND}Copy`,
       "On that PC, open Settings → Devices and PCs → Account and sign in with the same Google account as on this device.",
-      "Choose Add this PC to my account there. It then shows here with Add.",
+      "Choose Add this PC to my account there. It then shows here with Add, or with Join if it was in your account before: then choose Join and Type the number.",
     ]);
     expect(empty.findAll((node) => node.type === "code").map(textOf)).toEqual([INSTALLER_COMMAND, WINDOWS_INSTALLER_COMMAND]);
     expect(textOf(empty.find((node) => node.props["data-empty-provider"] === ""))).toBe("Signed in with Google. GitHub and Google are separate Ovis accounts until you link them, so a PC signed in the other way is not listed here.");

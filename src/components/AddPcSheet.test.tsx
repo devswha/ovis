@@ -379,7 +379,7 @@ describe("the Add-a-PC sheet", () => {
   it("with no PC, says how one is added in one concise sentence and leads to the QR and code screen", async () => {
     await mount(props("add", null, LIST));
     expect(all()).toContain("Add a PC");
-    expect(all()).toContain("On the PC, open Settings → Devices and PCs → Account, sign in, then choose Add this PC to my account. It then shows here with Add.");
+    expect(all()).toContain("On the PC, open Settings → Devices and PCs → Account, sign in, then choose Add this PC to my account. It then shows here with Add, or with Join if it was in your account before: then choose Join and Type the number.");
     expect(steps()).toEqual([]);
     expect(renderer!.root.findAll((instance) => instance.props.className === "add-pc-bars")).toHaveLength(0);
     await click("Pair with a QR or code");

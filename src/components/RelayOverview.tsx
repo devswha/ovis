@@ -267,7 +267,7 @@ export function RelayOverview(props: RelayOverviewProps) {
                 <li>{pcCanSignIn
                   ? t("On that PC, open Settings → Devices and PCs → Account and sign in with the same {provider} account as on this device.", { provider: providerName })
                   : t("On that PC, open Settings → Devices and PCs → Account and sign in with a GitHub or Google sign-in that is linked to this account.")}</li>
-                <li>{t("Choose Add this PC to my account there. It then shows here with Add.")}</li>
+                <li>{t("Choose Add this PC to my account there. It then shows here with Add, or with Join if it was in your account before: then choose Join and Type the number.")}</li>
               </ol>
               <p className="relay-overview-empty-copy" data-empty-provider="">{pcCanSignIn
                 ? t("Signed in with {provider}. GitHub and Google are separate Ovis accounts until you link them, so a PC signed in the other way is not listed here.", { provider: providerName })

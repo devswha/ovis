@@ -480,6 +480,12 @@ describe("the dashboard", () => {
       const relisted = myPcs([{ ...recorded, added_at: moved(recorded.added_at), last_seen_at: moved(recorded.last_seen_at) }], [], { now });
       const joined: [string, unknown][] = [];
       await mount(signedIn(relisted, { onJoin: (target, options) => { joined.push([target.name, options]); } }));
+      // the PC's own screen says to choose Add, yet the row offers Join: the dashboard's Add a PC says where that leads
+      expect(buttons("Add")).toHaveLength(0);
+      await act(async () => { button("Add a PC").props.onClick(); });
+      expect(textOf(dialog())).toContain("or with Join if it was in your account before: then choose Join and Type the number.");
+      await act(async () => { button("Close").props.onClick(); });
+      expect(dialogs()).toHaveLength(0);
       await act(async () => { buttons("Join")[0]!.props.onClick({ stopPropagation() {} }); });
       expect(dialog().props["data-add-pc-mode"]).toBe("join");
       expect(textOf(dialog())).not.toMatch(/never on/i);
