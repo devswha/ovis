@@ -15,7 +15,7 @@ export const DASHBOARD_JA: Record<string, string> = {
   "Type the number": "番号を入力",
   "{name} shows no number? Ask to join instead.": "{name} に番号が表示されていませんか？ 代わりに参加を申請してください。",
   "A new number is shown on {name} because the previous number changed.": "前の番号が変わったため、{name} に新しい番号が表示されています。",
-  "Pick this number where you approve this device.": "このデバイスを承認する画面で、この番号を選んでください。",
+  "Check that this number matches where you approve, then approve.": "承認する画面でこの番号と同じか確かめてから、承認してください。",
   "Nothing was added. Try again to compare a new number, and type the one {name} shows.": "何も追加されていません。もう一度試して新しい番号を比べ、{name} に表示された番号を入力してください。",
   "Waiting up to 90 seconds for approval…": "承認を最大 90 秒待っています…",
   "Check the number on a device connected to {name}": "{name} に接続しているデバイスで番号を確認",

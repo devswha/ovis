@@ -177,7 +177,7 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
           body = (
             <>
               <p className="relay-shell-digits" aria-label={digits.split("").join(" ")}>{`${digits.slice(0, 3)} ${digits.slice(3)}`}</p>
-              <p className="relay-shell-copy">{t("Pick this number where you approve this device.")}</p>
+              <p className="relay-shell-copy">{t("Check that this number matches where you approve, then approve.")}</p>
             </>
           );
           actions = pairActions(cancel, <button key="primary" type="button" className="btn btn-primary" data-sheet-primary onClick={() => onMatch()}>{t("The numbers match")}</button>);

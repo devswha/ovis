@@ -15,7 +15,7 @@ export const DASHBOARD_ZH: Record<string, string> = {
   "Type the number": "输入数字",
   "{name} shows no number? Ask to join instead.": "{name} 没有显示数字？请改为请求加入。",
   "A new number is shown on {name} because the previous number changed.": "之前的数字已更改，{name} 上显示了新数字。",
-  "Pick this number where you approve this device.": "请在批准此设备的地方选择这个数字。",
+  "Check that this number matches where you approve, then approve.": "请在批准的地方确认数字与这里一致，然后批准。",
   "Nothing was added. Try again to compare a new number, and type the one {name} shows.": "未添加任何内容。请重试以核对新数字，并输入 {name} 显示的数字。",
   "Waiting up to 90 seconds for approval…": "正在等待批准（最多 90 秒）…",
   "Check the number on a device connected to {name}": "在连接到 {name} 的设备上核对数字",

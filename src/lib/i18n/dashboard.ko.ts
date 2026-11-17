@@ -15,7 +15,7 @@ export const DASHBOARD_KO: Record<string, string> = {
   "Type the number": "숫자 입력",
   "{name} shows no number? Ask to join instead.": "{name} 화면에 숫자가 없나요? 대신 참여를 요청하세요.",
   "A new number is shown on {name} because the previous number changed.": "이전 숫자가 바뀌어 {name} 화면에 새 숫자가 표시됩니다.",
-  "Pick this number where you approve this device.": "이 기기를 승인하는 곳에서 이 숫자를 고르세요.",
+  "Check that this number matches where you approve, then approve.": "승인하는 곳에서 이 숫자와 같은지 확인한 뒤 승인하세요.",
   "Nothing was added. Try again to compare a new number, and type the one {name} shows.": "아무것도 추가되지 않았습니다. 다시 시도해 새 숫자를 비교하고 {name} 화면에 나온 숫자를 입력하세요.",
   "Waiting up to 90 seconds for approval…": "최대 90초 동안 승인을 기다리는 중…",
   "Check the number on a device connected to {name}": "{name}에 연결된 기기에서 숫자 확인",
