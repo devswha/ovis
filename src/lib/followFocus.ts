@@ -5,6 +5,15 @@ import { paneLifetimes } from "./paneLifetime.ts";
 import { readTerminalDraft } from "./terminalDraft.ts";
 import { sameTarget, type SplitTarget } from "./split.ts";
 
+/**
+ * Following herdr's focus (Settings → Terminal, `followHerdrFocus`, #311): herdr's own window
+ * moves to the pane a click there, `herdr tab focus` or a script brings to the front, and a
+ * `pane-focused` frame says so. This device opens that pane too, only when it asked to and only on
+ * the PC it has open: another PC's focus is that PC's business, and a pane already in front (the
+ * selected one, or the other half of a split) stays where it is. A link still landing goes first,
+ * someone using this device (`busy`, deviceInUse) keeps the pane they are on, and a move this device
+ * asked for itself (`ownMove`, movingHerdrFocus) is opened by its own answer.
+ */
 export function followsHerdrFocus(input: {
   enabled: boolean;
   machineId: string;
@@ -21,6 +30,10 @@ export function followsHerdrFocus(input: {
 }
 
 const ownMoves = new Map<string, number>();
+/**
+ * How long a request this device made leaves herdr's focus to it at most: a PC that never answers
+ * (a stalled connection, neither refused nor closed) must not turn following off until a reload.
+ */
 export const OWN_MOVE_HOLD_MS = 10_000;
 
 export function movingHerdrFocus<T>(machineId: string, request: Promise<T>): Promise<T> {

@@ -124,6 +124,7 @@ describe("tab alerts shown through the worker", () => {
   });
 
   type Data = { pane_id?: string; machine_id?: string; workspace_id?: string; alert_id?: string };
+  /** What iOS shows: one notification per show, whatever the tag, each closed on its own. */
   function iosCentre() {
     let delivered: Array<{ tag: string; data: Data; close: () => void }> = [];
     const add = (tag: string, data: Data): void => {

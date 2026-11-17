@@ -12,6 +12,7 @@ export function taskRowLines({ paneTitle, labelled, folder, workspace, alias }: 
   paneTitle: string;
   labelled: boolean;
   folder: string;
+  /** the workspace's row name: its label, which herdr makes from the branch until its owner names it */
   workspace: string;
   alias?: string | null;
 }): { title: string; place: string } {

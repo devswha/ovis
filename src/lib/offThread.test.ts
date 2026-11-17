@@ -131,6 +131,7 @@ describe("highlightOffThread", () => {
     expect(highlightKnown(source, "ts")!.lines).toBe(lines!);
   });
   it("gives up past its budget without holding the page", async () => {
+    // a line of dashes in YAML: quadratic for the tokenizer, about half a minute at this size
     const source = "-".repeat(200_000);
     const start = performance.now();
     let ticks = 0;

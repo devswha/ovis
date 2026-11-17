@@ -131,6 +131,7 @@ describe("the New workspace dialog", () => {
     for (const share of ["//host/share/repo", "\\\\host\\share\\repo", "/\\host/share", "~///host/share", "~/\\\\host\\share"]) {
       expect(readLink(`?new=workspace&cwd=${encodeURIComponent(share)}&name=x&agent=claude`).create, share).toEqual({ kind: "workspace", cwd: null, name: "x", agent: "claude" });
     }
+    // WSL's own folders are this PC's, not another host's share (#3634)
     for (const wsl of ["//wsl$/Ubuntu/home/me/project", "\\\\wsl.localhost\\Ubuntu\\home\\me", "//WSL.LOCALHOST/Ubuntu/home"]) {
       expect(readLink(`?new=workspace&agent=claude&cwd=${encodeURIComponent(wsl)}`).create?.cwd, wsl).toBe(wsl);
     }

@@ -1,6 +1,12 @@
+/**
+ * The disconnected-input draft: while the socket is down, typed text is held for the
+ * user to review and send after reconnect instead of being queued and fired blindly.
+ */
+
 export interface InputDraft {
   readonly text: string;
   readonly truncated: boolean;
+  /** an Enter or a line break was typed or pasted: it is never held, so it is not replayed by Send */
   readonly leftOut: boolean;
 }
 
@@ -8,6 +14,13 @@ export const EMPTY_DRAFT: InputDraft = { text: "", truncated: false, leftOut: fa
 
 const MAX_DRAFT_CHARS = 1024;
 
+/**
+ * How long held input stays in the browser profile once it has been written there. The draft is
+ * kept so a reload in the middle of a disconnect does not lose what the user typed; a day is far
+ * longer than that, and short enough that text typed at a password prompt is not left lying
+ * about afterwards. A record without a timestamp was written before the TTL existed: it is kept,
+ * so an update in the middle of a disconnect loses nothing, and it is dated as it is restored.
+ */
 export const DRAFT_TTL_MS = 24 * 60 * 60 * 1000;
 
 interface StoredDraft extends InputDraft { at: number }
@@ -23,6 +36,7 @@ export function restoreDraft(raw: string | null, now: number): InputDraft {
   return { text, truncated: truncated === true, leftOut: leftOut === true };
 }
 
+/** An IME commit can contain several code points. Never preserve terminal control sequences. */
 function isPrintableChar(data: string): boolean {
   return data.length > 0 && !/[\x00-\x1f\x7f-\x9f]/u.test(data);
 }
@@ -33,6 +47,20 @@ const ERASE = /^[\x7f\b\x17]+/;
 
 const LINE_BREAKS = /[\r\n]+/g;
 
+/**
+ * Folds one onData chunk into the draft: printable text accumulates, a paste by the text
+ * inside its bracketed-paste frames, a tab in it held as a space so Send never completes.
+ * Backspace deletes the last code point held (Ctrl+W, Ctrl+Backspace's, the last word), so the draft matches what was typed, and erasing
+ * all of it clears the draft, left-out break included; once text was left out for want of room, Backspace may be meant for that text, so it no longer edits the
+ * draft. An Enter or a line break is never held, because Send must never run a command: the text
+ * on either side is kept, a space where the break was, and the draft says that a break was left
+ * out. A break with no text to separate (Enter on an empty draft) changes nothing. A chunk with
+ * other controls is left out and not told: arrows and the answers xterm gives a program by itself
+ * (cursor position, focus, mouse) are not text the user typed, and neither is a typed chunk with
+ * ESC in it even when it ends in CR (Shift+Enter, Alt+Enter); a paste or a multi-line chunk with
+ * other controls is told as left out. Text the draft has no room for is left out whole, never cut in the middle of what was
+ * typed, and the draft says so.
+ */
 export function applyToDraft(draft: InputDraft, data: string): InputDraft {
   const pasted = BRACKETED_PASTE.exec(data)?.[1];
   let text = pasted?.replace(/\t/g, " ") ?? data;

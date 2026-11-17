@@ -75,6 +75,7 @@ export async function readFilePreviewText(response: Response, limit: number, opt
           if (stopped) throw stopped;
           more = !next.done;
         }
+        // Never wait on a remote cancellation promise, or a hostile/stalled body can hold the UI.
         void reader.cancel().catch(() => {});
         return finish(more, by);
       }

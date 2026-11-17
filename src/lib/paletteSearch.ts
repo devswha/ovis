@@ -7,6 +7,11 @@ export type PaletteStatusFilter = "all" | Exclude<KnownStatus, "unknown">;
 
 export const STATUS_FILTERS: readonly PaletteStatusFilter[] = ["all", "blocked", "working", "idle", "done", "waiting"];
 
+/**
+ * herdr's picker keys as they are: b blocked, w working, i idle, d done, a all. The palette
+ * listens for them only while the focus is outside its search field, so a query never loses a
+ * letter to them. BG has no key in herdr and gets none here.
+ */
 export const FILTER_KEYS: Readonly<Record<string, PaletteStatusFilter>> = { a: "all", b: "blocked", w: "working", i: "idle", d: "done" };
 
 export function filterKeyOf(filter: PaletteStatusFilter): string | null {
@@ -45,6 +50,10 @@ export interface PaletteSearchContext {
   t?: Translate;
 }
 
+/**
+ * What a tab can be found by: its label as herdr holds it, and the name the UI shows for it
+ * ("Tab 2" for a tab herdr still names by its place), when the two differ.
+ */
 function tabNames(tabs: readonly TabInfo[], t: Translate): Map<string, string[]> {
   const names = new Map<string, string[]>();
   const placed = new Map<string, number>();
@@ -62,6 +71,12 @@ export interface OfferedPluginAction {
   action: PluginAction;
 }
 
+/**
+ * The plugin actions the palette can run now. A disabled plugin's are left out (herdr refuses
+ * them), as is one that only applies to selected text, which the web has none of to hand over.
+ * Without a selected pane only an action that needs no place is offered: herdr would otherwise
+ * run it against its own focus, a pane the user is not looking at here.
+ */
 export function offeredPluginActions(plugins: readonly PluginActions[], hasPane: boolean, query: string): OfferedPluginAction[] {
   const needle = query.trim().toLocaleLowerCase();
   const offered: OfferedPluginAction[] = [];

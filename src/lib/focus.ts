@@ -6,6 +6,11 @@ export function focusWorkspaceListToggle(when: "always" | "lost" = "always"): vo
   });
 }
 
+/**
+ * Whether a modal surface is up (Settings, a dialog). A pane that appears under one, as a link
+ * that opens Settings mounts it beneath the dialog (lib/deepLink.ts), must not take the focus out
+ * of the modal: its composer and its grid leave the keyboard where it is.
+ */
 export function modalOpen(): boolean {
   return document.querySelector("[aria-modal='true'], dialog[open]") !== null;
 }

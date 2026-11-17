@@ -1,3 +1,9 @@
+/**
+ * Themes a user imports (Settings → Appearance): a file of colours and nothing else. A theme is a
+ * name and the sixteen Base16 seeds of a dark side, a light side or both; the app derives every
+ * colour it draws from them (themeDerive.ts). No code or CSS is read from a file, and what is
+ * kept is only what this module parsed: colours as `#rrggbb` and a short name.
+ */
 import { lab, luminance, rgb } from "./colorMath.ts";
 import { LIGHT_ANSI_ROLES } from "./themeRoles.ts";
 import { BASE16_KEYS, deriveTheme, type Base16, type Base16Key } from "./themeDerive.ts";

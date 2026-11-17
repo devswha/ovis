@@ -8,6 +8,8 @@ export const RESUME_INPUT_WAIT_MS = 5_000;
 export const VIEW_BUFFER_MAX = 512 * 1024;
 export const VIEW_HOLD_MS = 1000;
 
+// A switch's pane attaches before the hidden recent tabs' views start or stop: herdr serves a
+// starting view and the attach in turn, so a view started beside it delays the pane the user picked.
 const viewHold = { held: false, queued: new Set<() => void>(), timer: 0 };
 
 export function holdViews(): void {
@@ -37,10 +39,15 @@ export function dropViewChange(change: () => void): void {
   viewHold.queued.delete(change);
 }
 
+// Only a tab the user is in drives the shared grid. A window left open behind another app
+// still turns visible when the screen wakes, and reconnects, reloads or moves on to the next pane
+// in the background: taking the pane then sized it for nobody, and herdr's own TUI drew it cut
+// off at its split's edge
 export const inUse = (): boolean => document.visibilityState === "visible" && document.hasFocus();
 
 export const connectedSockets = new WeakSet<HerdrSocket>();
 
+/** A character a terminal takes as a key (a line break reaches the program as Enter): never pasted inside a stored file's path. */
 export const CONTROL_CHARACTER = /[\u0000-\u001f\u007f]/;
 
 export const plainError = (cause: unknown): string => {

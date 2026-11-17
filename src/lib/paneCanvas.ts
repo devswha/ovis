@@ -6,6 +6,11 @@ export const SOLO_PANE_QUERY = "(max-width: 768px)";
 export const CRAMPED_QUERY = "(max-width: 768px) and (max-height: 700px)";
 export const tabRowHidden = (cramped: boolean, tabCount: number, inHeader: boolean): boolean => inHeader || (cramped && tabCount === 1);
 
+/**
+ * The pane a tab shows alone, or null when every pane is drawn: herdr's zoomed pane, else on a
+ * narrow screen the selected pane (herdr's focused one, then the first, while the selection is
+ * not in this tab). A narrow screen changes only what this browser draws, never herdr's zoom.
+ */
 export function soloPane(layout: PaneLayoutSnapshot | null, paneIds: readonly string[], selectedPaneId: string | null, narrow: boolean): string | null {
   if (layout?.zoomed) return layout.focused_pane_id;
   if (!narrow || paneIds.length < 2) return null;
@@ -24,6 +29,7 @@ export function paneFieldTarget(target: EventTarget | null): boolean {
   return field !== null && !field.classList.contains("xterm-helper-textarea");
 }
 
+/** herdr's stable split path, not its preorder number (which changes after another split). */
 export function splitPath(id: string): boolean[] | null {
   const match = /^split_\d+_(root|[01]+)$/.exec(id);
   if (!match) return null;

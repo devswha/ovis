@@ -4,6 +4,23 @@ import { looksLikeKey } from "../../shared/secret-prompt.ts";
 import { restoreDraft } from "./draft.ts";
 import { serverIdOfPath } from "./shellMode.ts";
 
+/**
+ * herdr gives pane IDs out again once it is replaced (#1608), and a pane's unsent state is stored
+ * under its PC and pane ID alone (`paneStorageId`): the message draft and its sending lease, the
+ * terminal line, the input held for the terminal, and the lens. So each PC's stored state says
+ * which herdr it belongs to (`ovis:pane-lifetime:<PC>`, the snapshot's `herdr_lifetime`). When a
+ * snapshot names another one, the earlier herdr's text leaves its panes for Recover unsent text
+ * (`ovis:unsent:`), never deleted and never sent, and its lenses and leases go. A server restart
+ * alone keeps the lifetime, and the state with it. Text stored before any record was (an earlier
+ * release) names no herdr: it goes to recovery on the first load, and its lenses stay.
+ *
+ * A PC whose snapshot names no lifetime (an older bridge) keeps its pane state in this page only:
+ * it survives reconnects, never reaches storage, and reads none of it. So does a PC whose stored
+ * state another tab already gave to a herdr this page has not seen yet. When the app replaces the
+ * page (PAGE_LEAVING_EVENT), that state waits in storage for the next page of this address, which
+ * leaves its text to recovery (carry): nothing proves the herdr it comes back to is the one it was
+ * typed under, whose pane IDs another herdr may have given out again meanwhile.
+ */
 export type UnsentKind = "message" | "line" | "held" | "pending";
 export interface UnsentText { id: string; machine_id: string; pane_id: string; pane_title?: string; kind: UnsentKind; text: string; at: number; agent_only?: true }
 
@@ -95,6 +112,7 @@ const defaultTimers: UndoTimers = {
 export class PaneLifetimes {
   private readonly generations = new Map<string, string | null>();
   private readonly proven = new Map<string, string>();
+  /** lifetimes this page drew a PC under and then left: a replaced herdr never comes back */
   private readonly outlived = new Map<string, Set<string>>();
   private readonly skipped = new Map<string, { machine: Pick<Machine, "id" | "snapshot">; title?: (pane: HerdrPane) => string }>();
   private readonly titles = new Map<string, Map<string, string>>();
@@ -179,6 +197,8 @@ export class PaneLifetimes {
         this.retireMemory(machine.id, titles);
         if (next !== null && proven !== undefined && proven !== next) this.outlived.set(machine.id, new Set([...this.outlived.get(machine.id) ?? [], proven].slice(-RETIRED_KEPT)));
         this.generations.set(machine.id, next);
+        // what the page before this one kept for the PC (carry) was typed while no read proved its herdr,
+        // and herdr may have been replaced since: to recovery, as any such text is, never into a pane
         if (first && this.takeCarried(machine.id)) this.retireMemory(machine.id, titles);
         if (next !== null) this.settle(machine.id, next, titles);
         changed.push(machine.id);
@@ -307,6 +327,7 @@ export class PaneLifetimes {
     const ids: string[] = [];
     for (const { text, agentOnly } of values) {
       if (text.trim() === "") continue;
+      // the input line's key is never written down, by an earlier release's storage either (#2523)
       if (kind === "line" && looksLikeKey(text)) continue;
       const same = own ? undefined : this.unsent().find((item) => item.machine_id === machineId && item.pane_id === paneId && item.kind === kind && item.text === text && (item.agent_only === true) === agentOnly);
       if (same !== undefined) { ids.push(same.id); continue; }
@@ -322,6 +343,7 @@ export class PaneLifetimes {
     return ids;
   }
 
+  /** Input-line keys an earlier release kept (#2523): out of storage, recovery records too. */
   forgetLineKeys(): void {
     try {
       const storage = this.storage();

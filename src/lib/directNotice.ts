@@ -2,6 +2,14 @@ import { useCallback, useEffect, useState } from "react";
 
 import type { HealthInfo } from "./api.ts";
 
+/**
+ * Whether the line that says the relay's same-Wi-Fi direct connection listens on this PC's network
+ * (components/LanExposureNotice.tsx, `direct_exposure`) was dismissed in this browser. It is news
+ * once, not a warning: direct is on by default with the relay, and only relay-paired devices sign in
+ * there. Settings, Devices and PCs keeps saying it. One dismissal covers one PC at one address: the
+ * line comes back when the address changes, or once a health answer says direct is off and it is
+ * turned on again. The open-server warning (`lan_exposure`) is never dismissed.
+ */
 const KEY = "ovis:direct-notice-dismissed";
 
 const entry = (scope: string, host: string) => `${scope} ${host}`;

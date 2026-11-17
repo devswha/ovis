@@ -1,5 +1,6 @@
 import { paneLifetimes, paneStateKey } from "./paneLifetime.ts";
 
+/** Held messages are explicitly sent, never dispatched by reconnects or status changes. */
 export interface HeldMessage { id: string; text: string }
 type QueueStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 const newId = () => globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;

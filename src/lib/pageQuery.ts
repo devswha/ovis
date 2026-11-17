@@ -1,8 +1,17 @@
+/**
+ * The query of this page's address: what it shows, such as the app's place (lib/deepLink.ts), a
+ * reader tab's file (lib/fileReader.ts) or a tapped alert's pane (public/sw.js). A PC's own server
+ * keeps it in the query (`/?file=…`), as it always has: that server is the PC. In the hosted shell
+ * (app.ovis.sh) every request goes to a host of ours, query included, while the paths and names in
+ * it are the PC's: there the same query rides in the fragment (`/s/<id>/#file=…`), which a browser
+ * keeps to the page and never sends, as the pairing offer does.
+ */
 import { shellMode, type ShellMode } from "./shellMode.ts";
 
 export function pageSearch(location: { search: string; hash: string } = window.location, mode: ShellMode = shellMode()): string {
   if (mode !== "relay") return location.search;
   if (location.search.length > 1) return location.search;
+  // a pairing link pasted over the app is the shell's to ask about (lib/relay/shell.tsx), never the page's state
   return location.hash.length > 1 && !location.hash.startsWith("#offer=") ? `?${location.hash.slice(1)}` : "";
 }
 

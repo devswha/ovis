@@ -1,3 +1,13 @@
+/**
+ * `new` opens the New workspace dialog (a tab in the linked workspace with `tab`), its fields
+ * filled from the link and the address following what is typed. A link never creates anything:
+ * it fills the form, and Create is still the user's.
+ *
+ * `machine` is left out for the local PC; `pane` and `machine` are the names a tapped
+ * notification already opens the app with (public/sw.js). `ws` is herdr's workspace id, then a
+ * hyphen and the workspace's name as a short slug: readable, and a check, since herdr's ids are
+ * short counters a new session can hand out again.
+ */
 import type { SessionSnapshot } from "../../shared/protocol.ts";
 
 export type LinkView = "chat" | "terminal";
@@ -59,6 +69,7 @@ export function fileFromLink(link: Pick<AppLink, "file" | "pane">): string | nul
 export function readLink(search: string): AppLink {
   const query = new URLSearchParams(search);
   const view = query.get("view");
+  // the first hyphen starts the slug; herdr-core's ids hold hyphens, and resolveLink joins those again
   const ws = named(query.get("ws"));
   const cut = ws?.indexOf("-") ?? -1;
   const settings = currentSettingsPage(named(query.get("settings")));
@@ -76,6 +87,7 @@ export function readLink(search: string): AppLink {
   };
 }
 
+/** The names Windows serves WSL's own files under: this PC, no other host (server/windows-share.ts) */
 const WSL_HOSTS = new Set(["wsl$", "wsl.localhost"]);
 
 function readCreate(query: URLSearchParams): CreateDraft | null {
@@ -140,6 +152,12 @@ export function resolveLink(snapshot: Pick<SessionSnapshot, "workspaces" | "pane
   return { pane: null, workspace: null, note: link.pane || link.workspace ? "workspace-closed" : null };
 }
 
+/**
+ * The link with the workspace id as the roster holds it. readLink cuts `ws` at its first hyphen,
+ * but herdr-core's ids hold hyphens (`ovis-<uuid>`): when no workspace has the cut id, the whole
+ * value is a workspace's id, or its id followed by the slug. Such an id is never handed out again,
+ * so it alone names the workspace: its slug is dropped, never preferred as a short id's is.
+ */
 function withRosterId<T extends Pick<AppLink, "workspace" | "workspaceSlug">>(snapshot: Pick<SessionSnapshot, "workspaces">, link: T): T {
   if (!link.workspace || !link.workspaceSlug || snapshot.workspaces.some((candidate) => candidate.workspace_id === link.workspace)) return link;
   const whole = `${link.workspace}-${link.workspaceSlug}`;

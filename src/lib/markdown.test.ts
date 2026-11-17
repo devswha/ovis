@@ -149,6 +149,9 @@ describe("inline markdown", () => {
   });
 
   it("keeps a Markdown link to a path that begins with two separators a file link: the server says whether it opens", () => {
+    // on a Windows PC such a path is a network share. Whether it is another host's is the server's to say, which knows
+    // its system and the folders its panes work in (server/windows-share.ts): a pane on `//nas/work` links its own
+    // files this way, and on Linux and macOS the path is the local one
     for (const [target, path] of [
       ["//nas/work/report.md", "//nas/work/report.md"], ["//nas/work/report.md:12", "//nas/work/report.md:12"], ["//nas/work/a%20b.md#L3", "//nas/work/a b.md#L3"],
       ["%5C%5Cnas%5Cwork%5Creport.md", "\\\\nas\\work\\report.md"], ["~///nas/work/report.md", "~///nas/work/report.md"],
@@ -553,6 +556,8 @@ describe("text no one wrote by hand", () => {
 
   it("looks once for what closes a bracket, an inline formula or an underscore", () => {
     const exec = RegExp.prototype.exec;
+    // These searches have no variable-length backtracking inside one attempt. The token pattern
+    // is deliberately absent: a single global exec of it can search quadratically before failing.
     const searches = new Set([
       /[`[<*_~$]|:codex-file-citation\{|\\\(|file:\/\/\/|https?:\/\/|www\./g,
       /\n/g, /}/g, /[\n\r\u2028\u2029]/g, /\\\)/g, /\$/g, /[\]\n]/g, /[\s)]/g,
@@ -617,6 +622,7 @@ describe("text no one wrote by hand", () => {
       if (/^\d+:\[a\]\(b .*\)$/m.test(marks)) titled += 1;
     }
     expect(titled).toBeGreaterThan(40);
+    // it counts searches, not time: with titles it runs past bun's 5 s on a loaded host
   }, 20_000);
 
   it("reads a line of dollars that never closes in linear time", () => {

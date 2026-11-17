@@ -1,3 +1,10 @@
+/**
+ * herdr gives a pane a new ID when it moves to another workspace (`pane.move`). What this browser
+ * keeps under the old ID and the user would miss goes to the new one: the chat's draft, the input
+ * the terminal held while it was cut off, and the lens picked for the pane. Nothing is sent: the
+ * text waits there for its Send or Discard, as it did before. What another browser keeps, and a
+ * move made elsewhere (herdr's TUI), are not seen here.
+ */
 import { paneStorageId } from "../../shared/machines.ts";
 import { moveChatPosition } from "./chatScrollMemory.ts";
 import { pendingMessages } from "./pendingMessages.ts";

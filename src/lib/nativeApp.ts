@@ -19,6 +19,7 @@ export function inMacApp(): boolean {
   return typeof navigator !== "undefined" && /\bOvisMac\//.test(navigator.userAgent);
 }
 
+/** Whether this page runs inside the Android app, whose WebView draws no menu of its own for a long-pressed link. */
 export function inAndroidApp(): boolean {
   return inNativeApp() && bridge()?.getPlatform?.() === "android";
 }

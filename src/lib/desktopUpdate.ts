@@ -8,6 +8,7 @@ export interface DesktopUpdate {
 export interface DesktopUpdateBridge {
   current(): Promise<unknown>;
   onChange(listener: (update: unknown) => void): () => void;
+  /** Restart to Update: settles only when Ovis keeps running after it (a .deb's password prompt cancelled) */
   install(): Promise<void>;
   close(version: string): void;
 }

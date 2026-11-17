@@ -1,6 +1,14 @@
 /**
- * OSC 52 payload: `<selection>;<base64>`. The selection char (c/p/s) names a clipboard the
- * browser does not have; an empty or `?` payload is a clipboard query.
+ * OSC 52 (clipboard set): a pane program's "copy" button can only emit an escape
+ * sequence down the pty - it cannot reach the browser clipboard by itself. xterm
+ * hands the sequence to an addOscHandler(52) callback (PaneTerminal), and this
+ * module turns the raw payload into text for navigator.clipboard.
+ *
+ * Payload shape: `<selection>;<base64>` - the selection char (c/p/s) is accepted and
+ * ignored (one browser clipboard); an empty or `?` payload is a clipboard QUERY,
+ * which we do not answer. Anything above MAX_OSC52_BYTES is dropped: clipboard
+ * writes are user-visible side effects and a runaway paste loop must not wedge the
+ * tab.
  */
 
 export const MAX_OSC52_BYTES = 100 * 1024;

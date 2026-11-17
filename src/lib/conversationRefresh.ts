@@ -1,5 +1,7 @@
 const BACKSTOP_MS = 10_000;
 
+/** Pushes start newest-page reads at least 1s apart: a streaming answer moves every second, and
+ * a bridge's transcript reads stay bounded while an agent writes continuously. */
 const INVALIDATION_MS = 1000;
 
 const POLL_MS = 2000;

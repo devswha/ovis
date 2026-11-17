@@ -1,3 +1,10 @@
+/**
+ * Pinned agent rows locked against a close from this app (#2432): the shared `lockedAgents` setting,
+ * by pin key (lib/sidebarPins.ts), so every browser and the phone apps honour it. A lock holds only
+ * while its row is pinned. It guards this app's own buttons only: herdr, the Herdr app or a script
+ * still close the pane.
+ */
+
 import { useCallback, useMemo, useSyncExternalStore } from "react";
 import { useSettings } from "./settings.ts";
 import { currentSidebarPins, sidebarPinKey, subscribeSidebarPins } from "./sidebarPins.ts";

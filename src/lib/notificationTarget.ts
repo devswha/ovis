@@ -52,6 +52,12 @@ export function sameLink(a: AppLink | null, b: AppLink): boolean {
 
 type MessageSource = { addEventListener: (type: string, listener: (event: Event) => void) => void };
 
+/**
+ * The event the Android app dispatches on an open page's window with a tapped alert's "select-pane"
+ * as its data (PCStore.selectionScript): a page on plain http has no navigator.serviceWorker. Taken
+ * as the worker's message is, and cancelled, so the app knows this page heard it and does not
+ * dispatch it on the worker as well, as it does for an older page.
+ */
 export const SELECT_PANE_EVENT = "ovis-select-pane";
 
 export function linkTarget(query: string): NotificationTarget | null {

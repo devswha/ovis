@@ -16,6 +16,7 @@ export interface DeleteRepeatEnvironment {
   maxTouchPoints: number;
 }
 
+/** iPhone and iPad, whatever the browser: they all use WebKit and the system keyboard. */
 export function keyboardNeedsText(env: DeleteRepeatEnvironment): boolean {
   return /iPhone|iPad|iPod/.test(env.userAgent) || (/Macintosh/.test(env.userAgent) && env.maxTouchPoints > 1);
 }

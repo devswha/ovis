@@ -10,6 +10,7 @@ class FakeSource {
   constructor(readonly url: string) {}
   open(): void { this.readyState = 1; this.onopen?.(); }
   lose(): void { this.readyState = 0; this.onerror?.(); }
+  /** a non-200 answer (a proxy's 502): the browser never reconnects it */
   refuse(): void { this.readyState = 2; this.onerror?.(); }
   say(data: string): void { this.onmessage?.(new MessageEvent("message", { data })); }
   close(): void { this.readyState = 2; this.closedByApp = true; }

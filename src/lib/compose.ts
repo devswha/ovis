@@ -12,6 +12,12 @@ export const MAX_COMPOSER_CHARS = 20_000;
 const PASTE_START = "\u001b[200~";
 const PASTE_END = "\u001b[201~";
 
+/**
+ * A composer message as written: trailing newlines are the composer's, not the text's; CRLF reads as one newline.
+ * A whole paste marker pasted into it is dropped (until none is left, so dropping one cannot form another): it would
+ * end the paste the message goes in early. Any other escape byte stays, and the bridge refuses the message for it.
+ * One pass: each marker goes the moment its last byte arrives, so one that dropping another forms goes too.
+ */
 export function composerMessage(text: string): string {
   const kept: string[] = [];
   for (let i = 0; i < text.length; i++) {
@@ -211,6 +217,12 @@ export function composerStatusWord(status?: AgentStatus): string {
   return known === "unknown" ? "READY" : STATUS_WORD[known];
 }
 
+/**
+ * Below this card width the controls row cannot hold the background-task chip's words beside the
+ * model, the effort and the offline sentence, so the chip shows its icon and count instead.
+ * The input card is at most 820px wide (`--content-w`); a 1024px window with the sidebar open
+ * still has a 672px card and keeps the words, a 940px one has 588px and gives them up.
+ */
 export const COMPOSER_STATUS_COMPACT_BELOW = 640;
 
 export function composerStatusCompact(cardWidth: number): boolean {

@@ -2,6 +2,17 @@ import type { AgentStatus } from "../../shared/protocol.ts";
 import { ENDED_NOTIFICATION_BODY, paneNotificationTag, statusNotificationBody } from "../../shared/notify-policy.ts";
 import { callNative, hasNativePlugin, PUSH_PLUGIN } from "./nativeApp.ts";
 
+/**
+ * Tab alerts: Web Notifications for pane status transitions while this page is open
+ * but hidden. A device with a push subscription (lib/push.ts) gets the same alerts from
+ * the server instead, and App skips these. Notification exists only in secure contexts
+ * (https or localhost) - a plain-http LAN deployment reports "unsupported", and the bell
+ * there switches only the in-app alerts.
+ *
+ * The phone app's web view has no Notification either: there the permission is the app's, asked
+ * through its push plugin (lib/nativeApp.ts), and the app shows the server's pushes itself.
+ */
+
 export { alertPcAllowed, alertStatus, alertsAllow, paneAlertsMuted, shouldNotifyStatus } from "../../shared/notify-policy.ts";
 
 export type NotificationState = "unsupported" | "default" | "granted" | "denied";
@@ -16,6 +27,10 @@ export function notificationState(): NotificationState {
   return globalThis.Notification.permission;
 }
 
+/**
+ * Capacitor's permission states as the app's push plugin answers them; Android's "prompt-with-rationale"
+ * may still ask. Resolves to the newest permission known, which an answer that overtook this one set.
+ */
 async function askApp(method: "checkPermissions" | "requestPermissions"): Promise<NotificationState> {
   const asked = method === "checkPermissions" ? ++turns : 0;
   const { notifications } = await callNative<{ notifications?: string }>(PUSH_PLUGIN, method);

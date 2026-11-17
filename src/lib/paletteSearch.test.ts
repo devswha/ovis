@@ -60,6 +60,7 @@ describe("rankPanes", () => {
   });
 
   it("finds a pane by the name the UI gives a tab herdr still numbers, in the user's language too", () => {
+    // herdr names a tab by its place ("2") until it is renamed; the strip and the footer say "Tab 2"
     const numbered = [
       { ...tabs[0]!, label: "1" },
       { tab_id: "t1b", workspace_id: "w1", label: "2", number: 2, agent_status: "idle", focused: false, pane_count: 1 },

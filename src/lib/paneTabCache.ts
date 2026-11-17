@@ -5,6 +5,7 @@ export function visitPaneTab(previous: readonly string[], current: string | null
   return current !== null && liveTabs.has(current) ? [current, ...surviving].slice(0, 4) : surviving.slice(0, 4);
 }
 
+/** Only previously mounted panes survive: new hidden splits must not acquire an attach. */
 export function cachedPaneCells(
   tabs: readonly string[], current: string | null,
   panes: readonly { readonly pane_id: string; readonly tab_id: string }[],
