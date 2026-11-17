@@ -1271,7 +1271,7 @@ describe("what a caller hands in is taken once, when it is handed over", () => {
       ["shownEntries", true, (handed) => shownEntries(handed(a, b), handed(shownA, shownB))],
       ["shownEntries, with a proof", true, (handed) => shownEntries(handed(above, b), handed(answer(rises, [enters, byLogin]), shownB), lets(handed))],
       ["shownEntries, shown its own entry again", false, (handed) => shownEntries(handed(a, b), handed(answer(addWatch, [addInvite]), shownB))],
-      ["replayEntries", true, (handed) => replayEntries(handed(texts([...base, ...more]), texts(others)), 1, handed({ given: g.hash }, { given: otherZero.hash }))],
+      ["replayEntries", true, (handed) => replayEntries(handed(texts([...base, ...more]), texts(others)), 1, handed<{ given: string; needs_replay?: number }>({ given: g.hash, needs_replay: 9 }, { given: otherZero.hash }))],
       ["replayEntries, with a proof", true, (handed) => replayEntries(handed(texts([...base, rises, enters, byLogin]), texts(others)), 2, handed({ proof: lets(handed) }, { proof: () => null }))],
       ["replayEntries, of what is no entry", false, (handed) => replayEntries(handed(["not an entry"], texts(others)), 1, handed({}, { given: otherZero.hash }))],
       ["entryHolds", true, (handed) => entryHolds(handed(entry(addPhone), entry(at(others, 2))), handed(at(tookA, 0).held, at(tookB, 1).held))],
@@ -1432,7 +1432,7 @@ describe("a member of a higher level, and a key that a later kind lets in on a p
       expect(await besideLevel2(links)).toEqual({ far: links.length, stopped: null, signers: { phone: "full", late: "full" } });
     });
 
-    test("a member that stopped for a replay stays stopped: shown another entry in the place where it stopped, it takes nothing and answers the same again; it places no entry to sign; its state, saved and read again, is still stopped; a replay of its own entries clears it", async () => {
+    test("a member that stopped for a replay stays stopped: shown another entry in the place where it stopped, it takes nothing and answers the same again; it places no entry to sign; its state, saved and read again, is still stopped; a replay keeps the stop unless it takes the entry at that place", async () => {
       const rises = await on(g, owner, { kind: "later", v: 2 });
       const key = await on(rises, login, { kind: "later_login", v: 2 });
       const other = await on(rises, owner, { kind: "device", adds: [watch, "bound"] });
@@ -1449,11 +1449,20 @@ describe("a member of a higher level, and a key that a later kind lets in on a p
       if (loaded === null) throw new Error("the saved state does not read");
       expect([loaded, Object.keys(loaded)]).toEqual([first.member.state, ["level", "list", "footing", "needs", "behind", "signers", "needs_replay"]]);
       expect((await shownEntries({ entries: first.member.entries, state: loaded }, answer(rises, [other]))).stopped).toEqual(stoppedAt);
-      // A replay of its own entries starts anew: after an update, by level 2, it is not stopped and goes on.
-      const updated = await replayEntries(first.member.entries, 2, { proof: letsIn("full", login, key) });
+      // An app that replays its own entries at every start hands in the stop that its saved state holds. Its entries end before that place, so it is stopped still, by its own level and by a higher one: it takes nothing and places nothing.
+      for (const level of [1, 2]) {
+        const again = await replayEntries(first.member.entries, level, { needs_replay: loaded.needs_replay, proof: letsIn("full", login, key) });
+        if (again.member === null) throw new Error("the replay holds no entry");
+        expect([level, again.stopped, again.member.state.needs_replay, signingPlace(again.member, place(rises))]).toEqual([level, null, 2, null]);
+        expect([level, (await shownEntries(again.member, answer(rises, [other]))).stopped]).toEqual([level, stoppedAt]);
+      }
+      // A replay that takes the entry at that place clears the stop: the member's own entries and the log's from there on, by a level that can judge them. By its own level it stops there again.
+      const list = texts([g, rises, key]);
+      const updated = await replayEntries(list, 2, { needs_replay: loaded.needs_replay, proof: letsIn("full", login, key) });
       if (updated.member === null) throw new Error("the replay holds no entry");
-      expect([updated.stopped, updated.member.state.needs_replay]).toEqual([null, undefined]);
-      expect((await shownEntries(updated.member, answer(rises, [key]), letsIn("full", login, key))).took.map(({ outcome }) => outcome)).toEqual([reads(null)]);
+      expect([updated.stopped, updated.member.state.needs_replay, last(updated.took).outcome, signingPlace(updated.member, place(key))]).toEqual([null, undefined, reads(null), { list: g.hash, prev: key.hash, seq: 3 }]);
+      const same = await replayEntries(list, 1, { needs_replay: loaded.needs_replay });
+      expect([same.stopped, same.member?.state.needs_replay, same.member?.entries.length]).toEqual([stoppedAt, 2, 2]);
     });
 
     test("over random lists and random proofs, taken at levels 1, 2 and 3: as far as a member goes it has passed over what a member of a higher level has, and holds the same rows and the same footing; it stops short only where it is behind, for a replay", async () => {
@@ -1527,16 +1536,14 @@ describe("a member of a higher level, and a key that a later kind lets in on a p
     expect(await shownEntries(higher, answer(turnsOn, other), letsIn("full"))).toEqual({ ...quiet, member: higher, stopped: { seq: 3, code: "chain_broken" }, stuck: true });
   });
 
-  test("an older member holds, where it stops, what the other holds there; after its update it replays its copy, takes the rest, and holds what the other holds", async () => {
+  test("an older member holds, where it stops, what the other holds there; after its update it replays its copy and the rest of the log, and holds what the other holds", async () => {
     const older = await replay(loginLog, 1);
     const higher = await memberOf(loginLog, 2, letsIn("full"));
     if (older.member === null) throw new Error("entry 0 does not hold");
     expect(older.member.state).toEqual({ ...(await stateOf([...root, turnsOn], 2)), level: 1, behind: turnsOn.seq, needs_replay: enters.seq });
-    const updated = await replayEntries(older.member.entries, 2, { proof: letsIn("full") });
-    if (updated.member === null) throw new Error("the replay holds no entry");
-    expect([updated.stopped, isBehind(updated.member.state)]).toEqual([null, false]);
-    const rest = await shownEntries(updated.member, answer(turnsOn, [enters, ...byLogin]), letsIn("full"));
-    expect([rest.stopped, rest.member]).toEqual([null, higher]);
+    // After its update it replays its own entries together with the log's from the place where it stopped, and hands in that stop: it takes them all.
+    const updated = await replayEntries(texts(loginLog), 2, { proof: letsIn("full"), needs_replay: older.member.state.needs_replay });
+    expect([updated.stopped, updated.member]).toEqual([null, higher]);
     expect(signerPower(higher.state, phone.key)).toBeNull();
   });
 
