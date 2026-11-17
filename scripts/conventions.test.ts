@@ -214,7 +214,7 @@ describe("the tools typecheck", () => {
   // had, and the untracked scripts/*.tmp.ts probes .gitignore allows. A new file is checked without being named
   // anywhere, and the list may only shrink.
   const ROOTS = ["scripts", "integrations", "site", "app/scripts"];
-  const config = JSON.parse(read("tsconfig.tools.json")) as { extends?: unknown; include?: unknown; files?: unknown; compilerOptions?: unknown };
+  const config = JSON.parse(read("tsconfig.tools.json")) as { extends?: unknown; include?: unknown; exclude?: unknown; files?: unknown; compilerOptions?: unknown };
   const excluded = (json: string): string[] | null => {
     const list = (JSON.parse(json) as { exclude?: unknown }).exclude;
     return Array.isArray(list) ? list as string[] : null;
@@ -226,9 +226,14 @@ describe("the tools typecheck", () => {
 
   it("excludes no more files than at the ratchets' base", () => {
     const base = ratchetBase();
-    const json = base === null ? null : atBase(base, "tsconfig.tools.json");
+    if (base === null) return;
+    const json = atBase(base, "tsconfig.tools.json");
     const before = json === null ? null : excluded(json);
-    if (base === null || before === null) return;
+    if (before === null) {
+      // the one base without the list is the file list it replaced, from before the list was made
+      if (json !== null && "files" in (JSON.parse(json) as object)) return;
+      throw new Error(`tsconfig.tools.json at ${base} has no exclude list to compare with: keep the list in it, empty when every file is fixed.`);
+    }
     fail(added(now, before, renamesSince(base)), "The exclude list of tsconfig.tools.json may only shrink: fix the type errors `bun run typecheck` reports in these files instead of excluding them. A renamed file (renamed with `git mv`, or with the rename staged, so git sees it) takes its entry along under the new path.");
   });
 
@@ -245,9 +250,12 @@ describe("the tools typecheck", () => {
     expect(config.include, `tsconfig.tools.json checks the folders ${ROOTS.join(", ")} whole: keep them all in "include".`).toEqual(ROOTS);
     expect(config.files, "tsconfig.tools.json names no files: a file under its roots is checked without being listed.").toBeUndefined();
     expect([config.extends, config.compilerOptions], "tsconfig.tools.json loosens nothing of tsconfig.json: it extends it and only adds noEmit.").toEqual(["./tsconfig.json", { noEmit: true }]);
+    expect(Array.isArray(config.exclude), "Keep the exclude list in tsconfig.tools.json, empty when every file is fixed: the next change compares with it.").toBe(true);
+    const inherited = (JSON.parse(read("tsconfig.json")) as { compilerOptions?: Record<string, unknown> }).compilerOptions ?? {};
+    expect([inherited["strict"], inherited["noCheck"]], "tsconfig.json, which both typechecks extend, keeps full checking: strict, and no noCheck.").toEqual([true, undefined]);
     expect(gitIn(repo, "ls-files", "scripts/*.tmp.ts").stdout.trim(), "A tracked scripts/*.tmp.ts is not typechecked: that name is for untracked probes, so give a script another name.").toBe("");
     // one glob per root: Bun.Glob reads no slash inside braces; the untracked probes are not checked
-    const sources = ROOTS.flatMap((root) => files(`${root}/**/*.{ts,tsx}`)).filter((file) => !file.endsWith(".tmp.ts"));
+    const sources = ROOTS.flatMap((root) => files(`${root}/**/*.{ts,tsx}`)).filter((file) => !/^scripts\/[^/]+\.tmp\.ts$/.test(file));
     expect(sources.length).toBeGreaterThan(400);
     // the directive in a line comment of any number of slashes, or a block comment
     fail(sources.filter((file) => /^\s*(?:\/\/+|\/\*+)\s*@ts-nocheck\b/m.test(read(file))),
