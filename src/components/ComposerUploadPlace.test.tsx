@@ -624,6 +624,19 @@ it.each([["pasted", "paste"], ["picked", "pick"]] as const)("keeps a placed path
   expect(box().props.value).toBe("see ");
 });
 
+// files picked together inside a placed path go in front of it in pick order, however their uploads finish
+it.each([["b", "c", "d"], ["b", "d", "c"], ["c", "b", "d"], ["c", "d", "b"], ["d", "b", "c"], ["d", "c", "b"]])("keeps the pick order of files picked together inside a placed path when they finish %s, %s, %s", async (...order) => {
+  await open();
+  await type("see ", 4);
+  await paste(4, "a");
+  await finish("a");
+  element.value = box().props.value as string;
+  await pick(4 + "@/tmp/".length, "b", "c", "d");
+  for (const name of order) await finish(name);
+  expect(box().props.value).toBe(`see @${path("b")} @${path("c")} @${path("d")} @${path("a")} `);
+  expect(badges()).toEqual(["ready", "ready", "ready", "ready"]);
+});
+
 // Remove never glues the path beside it to a word: one space stays, and that file stays attached
 it.each([
   ["two files picked together at the end of a word", async () => { await type("x", 1); await pick(1, "one", "two"); await finish("one"); await finish("two"); }],

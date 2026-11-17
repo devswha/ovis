@@ -752,13 +752,15 @@ export function Composer({
           setAttachments((current) => current.map((item) => (item.id === id ? { ...item, state: "no-room", missing } : item)));
           break;
         }
-        // the other places move with it; one that lands at the same place (after a leading /command
-        // too) goes after it when picked after it, so a batch keeps its order
+        // the other places move with it; one that lands at the same place (after a leading /command,
+        // or at the front of a placed path it is inside) goes after it when picked after it, so a batch
+        // keeps its order
         places.current.delete(id);
         orphans.current.delete(id);
         for (const [other, at] of places.current) {
-          const lands = mentionPlace(textRef.current, at);
-          places.current.set(other, lands > next.at || (lands === next.at && other > id) ? lands + next.length : at);
+          let lands = mentionPlace(textRef.current, at);
+          for (const path of placed.current.values()) if (path.start < lands && lands < path.end) lands = path.start;
+          places.current.set(other, lands > next.at || (lands === next.at && other > id) ? lands + next.length : lands === next.at ? lands : at);
         }
         const shift: TextEdit = { start: next.at, removed: 0, inserted: next.length };
         for (const [other, earlier] of placed.current) {
