@@ -1235,6 +1235,9 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // connection, the wait running out, or the attach given up (cancelLeave: let go of again, cached, another
       // pane). Nothing of it goes by itself after that; a masked prompt on screen keeps it out of the draft too.
       let resumeInput: { pane: string; items: Typed[]; since: number } | null = null;
+      // A held pane taken back: until the new attach's screen is read for a masked prompt (below), the one known may be
+      // stale (drawn while the view was stopped, or still unparsed), so what is typed is taken as a password then
+      let promptUnknown = false;
       let resumeTimer: number | null = null;
       const takeResume = (): { pane: string; items: Typed[]; since: number } | null => {
         const resumed = resumeInput;
@@ -1450,6 +1453,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
             if (stamp.boundary || socket.hasTerminalHistory()) {
               const prompt = secretScreen.read(owner);
               secretRef.current = prompt;
+              promptUnknown = false;
               showSecret(owner, prompt);
             }
             term.options.disableStdin = observeRef.current || heldRef.current;
@@ -1779,7 +1783,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         if (!current || !presentedRef.current || !shownRef.current || observeRef.current || heldRef.current) return;
         // while a masked prompt is on screen, what is typed goes to the program or nowhere: never
         // into a draft, which is kept in the clear and offered back for review
-        const secret = secretRef.current !== null;
+        const secret = secretRef.current !== null || promptUnknown;
         const input = data;
         const key = keyFromData(data);
         const chord = enterChord ?? (!pasting && !composingRef.current && !compositionCommitPendingRef.current
@@ -2424,9 +2428,6 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         setReleased(false);
         const current = paneRef.current;
         if (!current) return;
-        // the masked prompt this terminal knows of is read from the view as it is drawn: current only for a view drawn up
-        // to now, not for none (a hidden page stopped it) or one buffered unparsed for a hidden tab's return
-        const viewDrawn = watchingRef.current && viewBuffer === null;
         if (watchingRef.current) socket.unwatch(viewPane ?? current);
         // also a view only held for a hidden page's return
         setWatching(false);
@@ -2434,9 +2435,12 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         const wasHeld = heldRef.current;
         setHeld(false);
         // and what the hold closed opens with it: the key that takes the pane back, and those typed before the new
-        // attach's screen is drawn, go where typing goes now (onData) instead of being dropped by the terminal. Only
-        // while that prompt is known: a password typed at one drawn unseen would otherwise go to a draft
-        if (wasHeld && viewDrawn) term.options.disableStdin = observeRef.current || endedRef.current;
+        // attach's screen is drawn, go where typing goes now (onData) instead of being dropped by the terminal. Taken as
+        // a password until that screen is read: sent to the pane or told, never put in a draft
+        if (wasHeld) {
+          term.options.disableStdin = observeRef.current || endedRef.current;
+          promptUnknown = true;
+        }
         // the pane's screen starts again from the new attach, as on a pane switch
         const generation = ++outputGeneration;
         // A new attach owns a new output lifetime. A recovering attachment sends output-recovering
