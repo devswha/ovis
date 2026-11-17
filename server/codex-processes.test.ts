@@ -3,8 +3,8 @@ import { Database } from "bun:sqlite";
 import * as fs from "node:fs";
 import { appendFileSync, closeSync, mkdirSync, mkdtempSync, openSync, rmSync, statSync, symlinkSync, truncateSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { asCodexTitle, codexOpenRollout, codexTranscriptPath, limitCodexHistoryForTests } from "./codex.ts";
+import { basename, join } from "node:path";
+import { asCodexTitle, CODEX_PEER_PANE_LIMIT, codexOpenRollout, codexTranscriptPath, limitCodexHistoryForTests } from "./codex.ts";
 import * as codexModule from "./codex.ts";
 import * as conversationModule from "./conversation.ts";
 import * as processStart from "./process-start.ts";
@@ -23,8 +23,12 @@ let path: string;
 let screen: string;
 let peerScreens: Map<string, string | Error>;
 let foreground: { pid: number; name?: string; argv?: string[] }[];
-/** A pane's own foreground, where it is not [foreground]. */
-let foregrounds: Map<string, { pid: number; name?: string; argv?: string[] }[]>;
+/** A pane's own foreground, where it is not [foreground] (null: herdr gives that pane no process_info). */
+let foregrounds: Map<string, { pid: number; name?: string; argv?: string[] }[] | null>;
+/** The terminal title herdr reports for another pane (pane.get); none for a pane not listed. */
+let peerTitles: Map<string, string>;
+/** Run as herdr is asked each request, before it answers: a pane that changes while it is read. */
+let onRequest: ((method: string, paneId: string | undefined) => void) | undefined;
 let listener: ReturnType<typeof Bun.listen>;
 let socketBefore: string | undefined;
 /** The terminal title herdr reports for the pane (Codex's [tui].terminal_title), null for none. */
@@ -68,6 +72,8 @@ beforeEach(() => {
   peerScreens = new Map();
   foreground = [];
   foregrounds = new Map();
+  peerTitles = new Map();
+  onRequest = undefined;
   socketBefore = process.env["HERDR_SOCKET"];
   const socket = join(root, "herdr.sock");
   process.env["HERDR_SOCKET"] = socket;
@@ -79,6 +85,8 @@ beforeEach(() => {
         socket.data.buffer += chunk.toString();
         if (!socket.data.buffer.includes("\n")) return;
         const request = JSON.parse(socket.data.buffer) as { id: string; method: string; params?: { pane_id?: string } };
+        onRequest?.(request.method, request.params?.pane_id);
+        const peerTitle = peerTitles.get(request.params?.pane_id ?? "");
         const peerScreen = peerScreens.get(request.params?.pane_id ?? "");
         if (request.method === "agent.get" && unlabelled) {
           socket.end(`${JSON.stringify({ id: request.id, error: { code: "agent_not_found", message: "outer shell" } })}\n`);
@@ -93,9 +101,11 @@ beforeEach(() => {
           return;
         }
         const own = request.method === "pane.process_info" && request.params?.pane_id === root && processReads.length > 0 ? processReads.shift() : undefined;
-        const result = request.method === "pane.get" ? { pane: { pane_id: root, cwd: root, ...(title === null ? {} : { terminal_title: title, terminal_title_stripped: title }), ...(reportedSession === null ? {} : { agent_session: reportedSession }) } }
+        const result = request.method === "pane.get" && request.params?.pane_id !== undefined && request.params.pane_id !== root
+          ? { pane: { pane_id: request.params.pane_id, cwd: root, ...(peerTitle === undefined ? {} : { terminal_title: peerTitle, terminal_title_stripped: peerTitle }) } }
+          : request.method === "pane.get" ? { pane: { pane_id: root, cwd: root, ...(title === null ? {} : { terminal_title: title, terminal_title_stripped: title }), ...(reportedSession === null ? {} : { agent_session: reportedSession }) } }
           : request.method === "agent.get" ? { agent: { ...agentFolders, ...(title === null ? {} : { terminal_title: title, terminal_title_stripped: title }), ...(reportedSession === null ? {} : { agent_session: reportedSession }) } }
-          : request.method === "pane.process_info" ? (own === null ? {} : { process_info: { ...(shellPid === undefined || request.params?.pane_id !== root ? {} : { shell_pid: shellPid }), foreground_processes: own ?? foregrounds.get(request.params?.pane_id ?? "") ?? foreground } })
+          : request.method === "pane.process_info" ? (own === null || foregrounds.get(request.params?.pane_id ?? "") === null ? {} : { process_info: { ...(shellPid === undefined || request.params?.pane_id !== root ? {} : { shell_pid: shellPid }), foreground_processes: own ?? foregrounds.get(request.params?.pane_id ?? "") ?? foreground } })
           : request.method === "pane.read" ? { read: { text: peerScreen ?? screen } }
           // the session as a background reader asks for it: this pane alone
           : request.method === "session.snapshot" ? { snapshot: { panes: [{ pane_id: root, workspace_id: root, tab_id: root, terminal_id: root, agent: "codex", agent_status: "working", cwd: root, focused: false, revision: 0 }], workspaces: [], tabs: [], layouts: [], agents: [] } }
@@ -4196,4 +4206,311 @@ describe("a Codex pane keeps its conversation beside a second Codex that only st
     peerScreens.set("peer", `OpenAI Codex (v0.164.0)\n\n› ${shortPrompt}\n\n• ok\n\n› `);
     expect(await codexTranscriptPath(root, root, home, [fixturePane(root), fixturePane("peer")])).toBe(path);
   });
+});
+
+
+describe("a Codex pane recovered by its saved thread name (#3442)", () => {
+  const live = [{ pid: 2147483647, argv: ["/usr/bin/codex"] }];
+  const named = "01a0c7a1-56d9-7e20-9f08-f7a2d973bc02";
+  const asked = "Check the restored records before changing anything";
+  const toolScreen = `› ${asked}\n\n• Ran ls\n  └ output\n\n› Ask Codex to do anything`;
+  /** A second thread of this folder, saved under the name, whose latest prompt is [asked]. */
+  function namedThread(name: string, folder = root): string {
+    const file = join(home, "sessions", `rollout-${named}.jsonl`);
+    writeFileSync(file, [
+      { type: "session_meta", payload: { id: named, cwd: folder } },
+      { type: "event_msg", payload: { type: "user_message", message: asked } },
+    ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+    const db = new Database(join(home, "state_5.sqlite"));
+    db.query("INSERT INTO threads VALUES (?, ?, ?, 0, NULL, 2, 2, 'cli')").run(named, file, folder);
+    db.close();
+    writeFileSync(join(home, "session_index.jsonl"), `${JSON.stringify({ id: named, thread_name: name })}\n`);
+    foreground = live;
+    return file;
+  }
+  /** What another pane's Codex shows in its title: a conversation of its own. */
+  const elsewhereTitle = "Another conversation | elsewhere";
+
+  it("reads the thread the title names when the screen shows its latest prompt and tool work", async () => {
+    const file = namedThread("Investigate a restored conversation");
+    title = "Investigate a restored conversation | project";
+    screen = toolScreen;
+    expect(await resolve()).toBe(file);
+  }, 20_000);
+
+  it("reads the thread while Codex works, its title's spinner moving on between reads", async () => {
+    const file = namedThread("Investigate a restored conversation");
+    screen = toolScreen;
+    const frames = ["\u280b", "\u2819", "\u2839", "\u2838"];
+    let frame = 0;
+    // each time herdr is asked about the pane, Codex has drawn the next frame ahead of the same title
+    onRequest = (method) => {
+      if (method === "agent.get") title = `${frames[frame++ % frames.length]} Investigate a restored conversation | project`;
+    };
+    expect(await resolve()).toBe(file);
+    expect(frame).toBeGreaterThan(1);
+  }, 20_000);
+
+  it("takes no thread for a TUI of an app server elsewhere (--remote), whose conversation this store does not hold", async () => {
+    const file = namedThread("Investigate a restored conversation");
+    title = "Investigate a restored conversation | project";
+    screen = toolScreen;
+    expect(await resolve()).toBe(file);
+    for (const remote of [["--remote", "ws://127.0.0.1:4500"], ["--remote=ws://127.0.0.1:4500"]]) {
+      foreground = [{ pid: 2147483640 - remote.length, argv: ["/usr/bin/codex", ...remote] }];
+      expect([remote, await resolve()]).toEqual([remote, null]);
+    }
+  }, 20_000);
+
+  it("takes no thread another pane's Codex shows by the same name: opened through the picker or `resume --last`", async () => {
+    const file = namedThread("Investigate a restored conversation");
+    const panes = [fixturePane(root), fixturePane("peer", join(root, "elsewhere"))];
+    title = "Investigate a restored conversation | project";
+    screen = toolScreen;
+    foregrounds.set("peer", [{ pid: 2147483646, argv: ["/usr/bin/codex", "resume", "--last"] }]);
+    peerTitles.set("peer", elsewhereTitle);
+    expect(await codexTranscriptPath(root, root, home, panes)).toBe(file);
+    // the same thread in the other pane, at work: its title names it, the spinner ahead of it
+    peerTitles.set("peer", "\u2819 Investigate a restored conversation | elsewhere");
+    expect(await codexTranscriptPath(root, root, home, panes)).toBeNull();
+    // a picker resume leaves the plain command line
+    foregrounds.set("peer", [{ pid: 2147483646, argv: ["/usr/bin/codex"] }]);
+    expect(await codexTranscriptPath(root, root, home, panes)).toBeNull();
+    // nor is a Codex whose title herdr does not report taken as showing another
+    peerTitles.delete("peer");
+    expect(await codexTranscriptPath(root, root, home, panes)).toBeNull();
+  }, 20_000);
+
+  /** A saved name 200 characters long: the pane's own title still holds it whole, a busier title is cut inside it. */
+  const longName = `Investigate ${Array.from({ length: 40 }, (_, at) => `r${at}`).join(" ")}`.slice(0, 200);
+  // every form Codex writes a title in that titledCandidate reads: under GNU Screen (STY: "|" for the spinner, "*"
+  // for the dot, "?" for other non-ASCII), behind the dot, with the name after another item, by the thread-id item,
+  // and at the 240-character cap (a space dropped before the last character, the rest cut)
+  for (const [form, name, peerTitle] of [
+    ["under GNU Screen, at work", "Investigate a restored conversation", "| Investigate a restored conversation | elsewhere"],
+    ["under GNU Screen, behind the dot", "Investigate a restored conversation", "* | Investigate a restored conversation | elsewhere"],
+    ["behind the dot", "Investigate a restored conversation", "\u25cf Investigate a restored conversation | elsewhere"],
+    ["behind the dot and the spinner", "Investigate a restored conversation", "\u25cf \u2807 Investigate a restored conversation | elsewhere"],
+    ["after another item", "Investigate a restored conversation", "\u2819 elsewhere | Investigate a restored conversation"],
+    ["by its thread-id item, shortened", "Investigate a restored conversation", `elsewhere | ${named.slice(0, 29)}...`],
+    ["at the cap, a space dropped", "Investigate a restored conversation", `${"w".repeat(240 - " | Investigate a restoredc".length)} | Investigate a restoredc`],
+    ["under GNU Screen, its non-ASCII letters as ?", "\ud655\uc778 Investigate the restored records", "| ?? Investigate the restored records | elsewhere"],
+    ["cut at the cap inside a long name", longName, `\u2819 Working on the migration | ${longName} | elsewhere`.slice(0, 240)],
+  ] as const) {
+    it(`takes no thread another pane's Codex shows by the same name ${form}`, async () => {
+      const file = namedThread(name);
+      const panes = [fixturePane(root), fixturePane("peer", join(root, "elsewhere"))];
+      title = `${name} | project`;
+      screen = toolScreen;
+      foregrounds.set("peer", [{ pid: 2147483646, argv: ["/usr/bin/codex"] }]);
+      peerTitles.set("peer", elsewhereTitle);
+      expect(await codexTranscriptPath(root, root, home, panes)).toBe(file);
+      peerTitles.set("peer", peerTitle);
+      expect(await codexTranscriptPath(root, root, home, panes)).toBeNull();
+    }, 20_000);
+  }
+
+  it("takes no thread once the pane moves to another conversation while the other panes are asked", async () => {
+    const file = namedThread("Investigate a restored conversation");
+    const panes = [fixturePane(root), fixturePane("peer", join(root, "elsewhere"))];
+    title = "Investigate a restored conversation | project";
+    screen = toolScreen;
+    foregrounds.set("peer", [{ pid: 2147483646, argv: ["/usr/bin/codex"] }]);
+    peerTitles.set("peer", elsewhereTitle);
+    expect(await codexTranscriptPath(root, root, home, panes)).toBe(file);
+    // the pane resumes another conversation through the picker while the peer's processes are being read
+    onRequest = (method, pane) => {
+      if (method !== "pane.process_info" || pane !== "peer") return;
+      title = "Another saved conversation | project";
+      screen = "› Summarize the other work\n\n• Ran git log\n  └ output\n\n› Ask Codex to do anything";
+    };
+    expect(await codexTranscriptPath(root, root, home, panes)).toBeNull();
+  }, 20_000);
+
+  it("takes no rollout the thread's row no longer names once the other panes are asked (a backtrack)", async () => {
+    const file = namedThread("Investigate a restored conversation");
+    const panes = [fixturePane(root), fixturePane("peer", join(root, "elsewhere"))];
+    title = "Investigate a restored conversation | project";
+    screen = toolScreen;
+    foregrounds.set("peer", [{ pid: 2147483646, argv: ["/usr/bin/codex"] }]);
+    peerTitles.set("peer", elsewhereTitle);
+    expect(await codexTranscriptPath(root, root, home, panes)).toBe(file);
+    // Codex backtracks the thread while the peer is read: its row moves to a new rollout, the old one stays on disk
+    const moved = join(home, "sessions", `rollout-${named}-backtracked.jsonl`);
+    onRequest = (method, pane) => {
+      if (method !== "pane.process_info" || pane !== "peer" || fs.existsSync(moved)) return;
+      fs.copyFileSync(file, moved);
+      const db = new Database(join(home, "state_5.sqlite"));
+      db.query("UPDATE threads SET rollout_path = ? WHERE id = ?").run(moved, named);
+      db.close();
+    };
+    expect(await codexTranscriptPath(root, root, home, panes)).toBeNull();
+  }, 20_000);
+
+  for (const change of ["replaced by a copy", "cut back"] as const) {
+    it(`takes no rollout ${change} while the other panes are asked`, async () => {
+      const file = namedThread("Investigate a restored conversation");
+      const read = fs.readFileSync(file, "utf8");
+      appendFileSync(file, `${JSON.stringify({ type: "event_msg", payload: { type: "token_count", info: "later" } })}\n`);
+      const panes = [fixturePane(root), fixturePane("peer", join(root, "elsewhere"))];
+      title = "Investigate a restored conversation | project";
+      screen = toolScreen;
+      foregrounds.set("peer", [{ pid: 2147483646, argv: ["/usr/bin/codex"] }]);
+      peerTitles.set("peer", elsewhereTitle);
+      expect(await codexTranscriptPath(root, root, home, panes)).toBe(file);
+      // the same prompt still recorded either way: only the file's identity or its size tells
+      let done = false;
+      onRequest = (method, pane) => {
+        if (method !== "pane.process_info" || pane !== "peer" || done) return;
+        done = true;
+        if (change === "cut back") writeFileSync(file, read);
+        else {
+          fs.copyFileSync(file, `${file}.new`);
+          fs.renameSync(`${file}.new`, file);
+        }
+      };
+      expect(await codexTranscriptPath(root, root, home, panes)).toBeNull();
+    }, 20_000);
+  }
+
+  it("takes no thread named like the folder, which a title without a thread name shows", async () => {
+    namedThread(asCodexTitle(basename(root)));
+    title = basename(root);
+    screen = toolScreen;
+    expect(await resolve()).toBeNull();
+  }, 20_000);
+
+  it("takes no thread named like the start of a folder name that holds the title's separator", async () => {
+    const folder = join(root, "release | api");
+    mkdirSync(folder);
+    namedThread("release", folder);
+    title = "release | api";
+    screen = toolScreen;
+    expect(await codexTranscriptPath(root, folder, home)).toBeNull();
+  }, 20_000);
+
+  it("takes no name that may be another folder's, whose unnamed thread a picker may have resumed here", async () => {
+    const file = namedThread("release");
+    /** An unnamed thread of [folder]: its title is that folder's name. */
+    const unnamedIn = (id: string, folder: string) => {
+      const db = new Database(join(home, "state_5.sqlite"));
+      db.query("INSERT INTO threads VALUES (?, ?, ?, 0, NULL, 1, 1, 'cli')").run(id, join(home, "sessions", `rollout-${id}.jsonl`), join(root, folder));
+      db.close();
+    };
+    screen = toolScreen;
+    unnamedIn("01a0c7a1-56d9-7e20-9f08-f7a2d973bc04", "release | api");
+    title = "release | project";
+    expect(await resolve()).toBe(file);
+    title = "release | api";
+    expect(await resolve()).toBeNull();
+    title = "release";
+    expect(await resolve()).toBe(file);
+    unnamedIn("01a0c7a1-56d9-7e20-9f08-f7a2d973bc05", "release");
+    expect(await resolve()).toBeNull();
+  }, 20_000);
+
+  it("takes no thread another pane was started on with `codex resume <id>`", async () => {
+    const file = namedThread("Investigate a restored conversation");
+    const panes = [fixturePane(root), fixturePane("peer", join(root, "elsewhere"))];
+    title = "Investigate a restored conversation | project";
+    screen = toolScreen;
+    foregrounds.set("peer", [{ pid: 2147483646, argv: ["/usr/bin/codex"] }]);
+    peerTitles.set("peer", elsewhereTitle);
+    expect(await codexTranscriptPath(root, root, home, panes)).toBe(file);
+    foregrounds.set("peer", [{ pid: 2147483646, argv: ["/usr/bin/codex", "resume", named.toUpperCase()] }]);
+    expect(await codexTranscriptPath(root, root, home, panes)).toBeNull();
+  }, 20_000);
+
+  it("takes no thread any of another pane's processes was resumed on, not only its first", async () => {
+    const file = namedThread("Investigate a restored conversation");
+    const panes = [fixturePane(root), fixturePane("peer", join(root, "elsewhere"))];
+    title = "Investigate a restored conversation | project";
+    screen = toolScreen;
+    const other = ["/usr/bin/codex", "resume", "01a0c7a1-56d9-7e20-9f08-f7a2d973bc09"];
+    foregrounds.set("peer", [{ pid: 2147483645, argv: other }]);
+    peerTitles.set("peer", elsewhereTitle);
+    expect(await codexTranscriptPath(root, root, home, panes)).toBe(file);
+    foregrounds.set("peer", [{ pid: 2147483645, argv: other }, { pid: 2147483646, argv: ["/usr/bin/codex", "resume", named] }]);
+    expect(await codexTranscriptPath(root, root, home, panes)).toBeNull();
+  }, 20_000);
+
+  it("takes no thread while another pane's processes cannot be read: that pane may be resumed on it", async () => {
+    const file = namedThread("Investigate a restored conversation");
+    const panes = [fixturePane(root), fixturePane("peer", join(root, "elsewhere"))];
+    title = "Investigate a restored conversation | project";
+    screen = toolScreen;
+    foregrounds.set("peer", [{ pid: 2147483646, argv: ["/usr/bin/codex"] }]);
+    peerTitles.set("peer", elsewhereTitle);
+    expect(await codexTranscriptPath(root, root, home, panes)).toBe(file);
+    // herdr names the process alone and its command line is gone (no such pid)
+    foregrounds.set("peer", [{ pid: 2147483646, name: "codex" }]);
+    expect(await codexTranscriptPath(root, root, home, panes)).toBeNull();
+    foregrounds.set("peer", null);
+    expect(await codexTranscriptPath(root, root, home, panes)).toBeNull();
+  }, 20_000);
+
+  it("takes no thread when more panes than it asks about could hold it", async () => {
+    const file = namedThread("Investigate a restored conversation");
+    title = "Investigate a restored conversation | project";
+    screen = toolScreen;
+    const peers = Array.from({ length: CODEX_PEER_PANE_LIMIT }, (_, at) => fixturePane(`peer-${at}`, join(root, "elsewhere")));
+    for (const peer of peers) peerTitles.set(peer.pane_id, elsewhereTitle);
+    peerTitles.set("one-more", elsewhereTitle);
+    expect(await codexTranscriptPath(root, root, home, [fixturePane(root), ...peers])).toBe(file);
+    expect(await codexTranscriptPath(root, root, home, [fixturePane(root), ...peers, fixturePane("one-more", join(root, "elsewhere"))])).toBeNull();
+  }, 20_000);
+
+  it("takes no name a thread of another folder also has, which a picker may have resumed here", async () => {
+    namedThread("Investigate a restored conversation");
+    appendFileSync(join(home, "session_index.jsonl"), `${JSON.stringify({ id: "01a0c7a1-56d9-7e20-9f08-f7a2d973bc03", thread_name: "Investigate a restored conversation" })}\n`);
+    title = "Investigate a restored conversation | project";
+    screen = toolScreen;
+    expect(await resolve()).toBeNull();
+  }, 20_000);
+
+  it("takes no prompt still in the composer", async () => {
+    namedThread("Investigate a restored conversation");
+    title = "Investigate a restored conversation | project";
+    screen = `› ${asked}\n\n  gpt-5.1-codex default · ${root}`;
+    expect(await resolve()).toBeNull();
+  }, 20_000);
+
+  it("keeps the thread the pane was bound to by its screen over the one its title names", async () => {
+    namedThread("Investigate a restored conversation");
+    title = "Investigate a restored conversation | project";
+    screen = `• ${answer}`;
+    expect(await resolve()).toBe(path);
+    screen = toolScreen;
+    expect(await resolve()).toBe(path);
+  }, 20_000);
+
+  it("takes no thread another pane is bound to", async () => {
+    const file = namedThread("Investigate a restored conversation");
+    appendFileSync(file, `${JSON.stringify({ type: "event_msg", payload: { type: "agent_message", message: answer } })}\n`);
+    rmSync(path);
+    title = "Investigate a restored conversation | project";
+    screen = `• ${answer}`;
+    const panes = [fixturePane(root), fixturePane("peer")];
+    // a Codex there that shows another conversation by its title: only its binding holds this one
+    peerTitles.set("peer", elsewhereTitle);
+    expect(await codexTranscriptPath("peer", root, home, panes)).toBe(file);
+    screen = toolScreen;
+    expect(await codexTranscriptPath(root, root, home, panes)).toBeNull();
+  }, 20_000);
+
+  it("does not hold the server on a FIFO in place of the name index", async () => {
+    namedThread("Investigate a restored conversation");
+    const index = join(home, "session_index.jsonl");
+    rmSync(index);
+    expect(Bun.spawnSync(["mkfifo", index]).exitCode).toBe(0);
+    // in a child, so a read that blocks on the pipe fails the test by its timeout instead of hanging the run
+    const script = `import { codexTranscriptPath } from ${JSON.stringify(join(import.meta.dir, "codex.ts"))};
+      console.log(JSON.stringify(await codexTranscriptPath(${JSON.stringify(root)}, ${JSON.stringify(root)}, ${JSON.stringify(home)})));`;
+    title = "Investigate a restored conversation | project";
+    screen = toolScreen;
+    const child = Bun.spawn([process.execPath, "-e", script], { env: { ...process.env, HERDR_SOCKET: join(root, "herdr.sock") }, stdout: "pipe", stderr: "inherit", timeout: 10_000 });
+    children.push(child);
+    expect(await child.exited).toBe(0);
+    expect((await new Response(child.stdout).text()).trim()).toBe("null");
+  }, 20_000);
 });
