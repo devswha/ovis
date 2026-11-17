@@ -49,6 +49,7 @@ interface Registry { gate_closed_at: string | null; devices: StoredDevice[] }
 interface PreferencesSnapshot { settings: PreferencesChange["settings"]; pins?: string[]; muted_panes: string[] }
 interface MergeRecord {
   version: 1;
+  /** one more than the newest record of the two dirs: the clock may go back, this never does */
   seq: number;
   at: string;
   dirs: string[];

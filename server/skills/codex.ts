@@ -34,6 +34,7 @@ function offersPrompts(version: string | null | undefined): boolean {
   return false;
 }
 
+/** The machine-wide skills root: %ProgramData%\\OpenAI\\Codex\\skills on Windows, /etc/codex/skills elsewhere. */
 export function adminSkillsRoot(platform: string, env: readonly string[] | null, programData: string | undefined): string | null {
   if (platform !== "win32") return "/etc/codex/skills";
   const base = Object.entries(environRecord(env)).find(([key]) => key.toLowerCase() === "programdata")?.[1] || programData;

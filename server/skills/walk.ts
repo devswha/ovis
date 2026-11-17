@@ -34,6 +34,8 @@ export function canonicalFile(path: string): string {
   try { return realpathSync(path); } catch { return resolve(path); }
 }
 
+// Only blanks may follow the opening `---` on its line: `\s*` there also took newlines, so a header
+// left unclosed (a file cut at 64 KiB) was retried at every split of them, quadratic in its length.
 const FRONTMATTER = /^\uFEFF?---[ \t]*\r?\n([\s\S]*?)\r?\n---(?:\s*\r?\n|$)/;
 
 function parseFrontmatter(markdown: string): Readonly<Record<string, unknown>> | null {
@@ -314,6 +316,13 @@ export function* customCommandSteps(root: string, source: SlashCommand["source"]
 }
 
 
+/**
+ * Templates are commands. A conventional prompt directory holds direct `.md` children only —
+ * pi reads no deeper there, so recursing would offer commands pi never loads.
+ *
+ * A link is asked of what it points at, not of itself: pi stats the entry, so a `.md` reached
+ * through a symlink is a template it loads, and a directory is not one however the link is named.
+ */
 export function piTemplates(root: string, source: SlashCommand["source"]): SlashCommand[] {
   if (!existsSync(root)) return [];
   const result: SlashCommand[] = [];

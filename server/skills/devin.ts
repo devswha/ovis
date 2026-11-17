@@ -62,6 +62,7 @@ const forms: Record<string, CommandForm[]> = {
   mode: [{ match: "bare", interaction: "terminal" }, { match: "other", interaction: "none" }],
   revert: [{ match: "bare", interaction: "terminal" }, { match: "other", interaction: "unknown" }],
   bug: [{ match: "bare", interaction: "terminal" }, { match: "other", interaction: "unknown" }],
+  // bare lists the directories; a directory Devin has not trusted yet asks "Do you trust the authors…?"
   "add-dir": [{ match: "bare", interaction: "unknown" }, { match: "other", interaction: "terminal" }],
 };
 

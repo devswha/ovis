@@ -35,6 +35,12 @@ function findPart(part: string, text: string, from: number, end: number, budget:
   return -1;
 }
 
+/**
+ * Whether `text` matches an ssh pattern, compared as given: callers lowercase what ssh compares in lowercase. The ends
+ * are checked in place and each part between stars is taken at its first place, which is never worse, so `*aaa…ab`
+ * against a long alias costs one pass instead of one per start. Null when a part holding a `?` would take more steps
+ * than the pattern and text are long.
+ */
 export function globMatch(glob: string, text: string): boolean | null {
   const parts = glob.split("*");
   if (parts.length === 1) return glob.length === text.length && fitsAt(glob, text, 0);

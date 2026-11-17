@@ -47,6 +47,9 @@ function codexLayout(lines: string[]): { header: number; visible: string[]; end:
   return { header, visible, end, model };
 }
 
+/** Only the live composer footer owns a Codex model. Text above it (an answer quoting the
+ * /model picker, a draft) never does, and while a popup hides the footer the model is unknown.
+ * OpenAI's `GPT-…` is given as its id; a model another provider names is kept as written. */
 function codexScreen(lines: string[]): Screen {
   const found = codexLayout(lines)?.model;
   if (!found) return NOTHING;

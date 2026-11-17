@@ -116,6 +116,7 @@ export function refusalHint(client: SshClient, stderr: string): string {
 }
 
 let gitInstall: string | null | undefined;
+/** Git for Windows' machine-wide install folder, as its installer recorded it, read once. */
 function gitInstallPath(): string | null {
   if (gitInstall !== undefined) return gitInstall;
   gitInstall = null;

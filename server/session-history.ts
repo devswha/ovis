@@ -68,6 +68,7 @@ export interface SessionHistoryOptions {
   opendir?: (dir: string) => Dir;
   spent?: number;
   platform?: NodeJS.Platform;
+  /** Resolves a Windows cwd to its canonical long form (tests map an 8.3 alias); defaults to realpathSync.native. */
   realpath?: (path: string) => string;
   tmpdir?: string;
 }
@@ -634,6 +635,11 @@ function grokSessions(cwds: readonly string[], home: string, env: Record<string,
   return rows.filter((found) => !ids.has(found.id) && ids.add(found.id)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, MAX_ROWS);
 }
 
+/**
+ * Whether a Grok group's name is the URI-encoded name of another folder than the cwd. A hashed name
+ * is not, nor is another spelling of the cwd: a drive letter in either case, a verbatim `\\?\` or
+ * `\\?\UNC\` prefix (codex.ts directoryKey), and on Windows any letter case.
+ */
 function otherFolder(group: string, cwd: string, platform: NodeJS.Platform): boolean {
   let decoded: string;
   try { decoded = decodeURIComponent(group); } catch { return false; }
@@ -642,6 +648,11 @@ function otherFolder(group: string, cwd: string, platform: NodeJS.Platform): boo
   return key(decoded) !== key(cwd);
 }
 
+/**
+ * A Windows folder in one spelling: without a verbatim `\\?\` or `\\?\UNC\` prefix (codex.ts
+ * withoutVerbatimPrefix), normalized by path.win32 (either separator, `.` and `..` resolved), with no
+ * trailing separator past a drive or share root, and an upper-case drive letter. The rest keeps its case.
+ */
 function windowsFolder(path: string): string {
   const normal = win32.normalize(withoutVerbatimPrefix(path.replaceAll("/", "\\")));
   const root = win32.parse(normal).root;
@@ -961,6 +972,7 @@ export function listSessions(agent: Exclude<SessionHistoryAgent, "pi">, cwd: str
 export function listSessions(agent: SessionHistoryAgent, cwd: string, options?: SessionHistoryOptions): Row[] | Promise<Row[]>;
 export function listSessions(agent: SessionHistoryAgent, cwd: string, options: SessionHistoryOptions = {}): Row[] | Promise<Row[]> {
   const env = options.env ?? process.env;
+  // the OS's answer when the environment names no home, as before: never a relative store path
   const home = options.home ?? (environmentHome(env, options.platform ?? process.platform) || homedir());
   const read = options.readHead;
   const budget = new Budget(options.stat ?? ((path, bigint) => bigint ? statSync(path, { bigint: true }) : statSync(path)), options.platform ?? process.platform, options.resolve, options.lstat, options.fstat, options.opendir, options.opened);

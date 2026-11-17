@@ -29,6 +29,7 @@ const BUILTINS = [
 // review, autoresearch and green are bundled extensions in omp, not registry builtins: they are
 // listed only when an installed extension provides them. `skill:` is a group, not a command.
 
+// Registry aliases reserve their names as well: a file command named like one never runs.
 const ALIASES = ["providers", "models", "status", "rewind", "worktree", "plugin", "force:", "q"] as const;
 
 // Terminal-only: no `handle` in the registry (handleTui only), except btw whose answer omp stores

@@ -27,6 +27,7 @@ export const SHELL_AGENTS: Record<string, (argv: readonly string[]) => boolean> 
   gjc: isGjcProcess,
   "dsh-tui": isDshProcess,
 };
+/** The shell-started agents known to start on Windows; the others are not offered there. */
 const WINDOWS_SHELL_AGENTS = new Set(["omo", "gjc"]);
 
 export function isShellAgentKind(kind: string): boolean { return Object.hasOwn(SHELL_AGENTS, kind); }
@@ -210,6 +211,7 @@ function loginShellProbe<T>(options: LoginShellOptions, script: string, read: (o
       failure = `${shell} -l ${reason}`;
       if (exited) { done({ value: null, reason: failure }); return; }
       try { process.kill(-child.pid!, "SIGKILL"); } catch { child.kill("SIGKILL"); }
+      // the answer never waits on an exit SIGKILL may not bring; the exit handler still reaps it
       const killed = failure;
       grace = setTimeout(() => done({ value: null, reason: `${killed}, and did not end after SIGKILL` }), graceMs);
     };
@@ -223,6 +225,7 @@ function loginShellProbe<T>(options: LoginShellOptions, script: string, read: (o
     };
     child.stdout!.on("data", (chunk: Buffer) => { if (count(chunk)) chunks.push(chunk); });
     child.stderr!.on("data", count);
+    // a shell that cannot be run never exits: its error is the answer
     child.on("error", (error: NodeJS.ErrnoException) => done({ value: null, reason: `${shell} could not run: ${error.code ?? error.message}` }));
     child.on("exit", (code, exitSignal) => {
       exited = true;

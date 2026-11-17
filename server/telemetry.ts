@@ -43,6 +43,7 @@ export const COUNTS_SETTLE_MS = 5 * 60_000;
 const TELEMETRY_CHANGE_KEYS = new Set(["enabled", "notice_seen", "notice_version", "settings", "alert_opened", "counts", "generation"]);
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 export const USAGE_RESEND_MS = 60 * 60_000;
+/** a change is a few small fields and at most one settings snapshot, which the receiver takes only under 8 KiB with the rest of its event */
 const MAX_CHANGE_BYTES = 16 * 1024;
 
 interface ActiveDay {

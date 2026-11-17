@@ -31,6 +31,7 @@ const MIME: Record<string, string> = {
   ".wasm": "application/wasm",
 };
 
+/** Files whose URL never changes but whose contents decide what the app becomes. */
 const REVALIDATED_PATHS = new Set(["/sw.js", "/manifest.webmanifest", "/index.html"]);
 
 const SHORT_CACHE = "public, max-age=86400";

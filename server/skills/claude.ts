@@ -79,6 +79,7 @@ const foldCase = (text: string): string =>
 const comparePass = (name: string): string =>
   foldCase(name.replace(IGNORED, "").normalize("NFKC")).replace(/[\p{Pd}\u2212]/gu, "-").normalize("NFKC").replace(IGNORED, "");
 
+/** One pass can leave work for the next (NFKC of a spacing accent yields a space, and removing it frees a mark to compose), so repeat until the key stops changing. */
 export function comparableName(name: string): string {
   let key = name;
   for (let pass = 0; pass < 4; pass++) {
@@ -255,6 +256,8 @@ export const source: AgentCommandSource = {
     const overrides = skillOverrides(config, ancestors, managed);
     const shown = ({ name }: SlashCommand): boolean => !reservedName(name);
     const visible = (command: SlashCommand): boolean => shown(command) && overrides.get(command.name) !== "off";
+    // Skills beat legacy command files; within each kind enterprise > personal > nearest project.
+    // Plugin rows are namespaced, and skillOverrides never applies to them.
     const candidates = [
       ...claudeSkills(join(managed, ".claude", "skills"), "user", budget).filter(visible),
       ...claudeSkills(join(config, "skills"), "user", budget).filter(visible),

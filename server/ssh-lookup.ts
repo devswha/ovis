@@ -12,6 +12,10 @@ export interface Lookup {
   timeoutMs: number;
 }
 
+/**
+ * One spelling per address: `FD7A:0:0::1` is `fd7a::1` and `::ffff:100.64.0.1` is `100.64.0.1`. A zone id stays, so
+ * the same address on two links never compares equal.
+ */
 export const canonicalIp = (ip: string): string => {
   const zoneAt = ip.indexOf("%");
   const [address, zone] = zoneAt < 0 ? [ip, ""] : [ip.slice(0, zoneAt), ip.slice(zoneAt)];
