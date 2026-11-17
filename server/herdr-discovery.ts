@@ -36,8 +36,7 @@ async function discoveryScope(host: HerdrDiscoveryHost): Promise<DiscoveryScope>
   const add = (path: string) => { if (scope.paths.size < MAX_CANDIDATES && existsSync(path)) scope.paths.add(path); };
   const allowRoot = (root: string | undefined) => {
     if (!root?.startsWith("/")) return;
-    // Canonicalize the trusted directory, never a candidate socket or a session symlink.
-    try { scope.dirs.add(realpathSync(join(root, "herdr"))); } catch { /* a missing root holds no sockets */ }
+    try { scope.dirs.add(realpathSync(join(root, "herdr"))); } catch {}
   };
   allowRoot(join(host.home, ".config")); allowRoot(host.xdg);
   const server = (args: string[], home: string | undefined, xdg?: string) => {
@@ -61,10 +60,10 @@ async function discoveryScope(host: HerdrDiscoveryHost): Promise<DiscoveryScope>
               const at = item.indexOf("="); return at < 0 ? [item, ""] : [item.slice(0, at), item.slice(at + 1)];
             }));
             server(args, env.HOME, env.XDG_CONFIG_HOME);
-          } catch { /* the process exited or its environment is private */ }
+          } catch {}
         }
       } finally { directory.closeSync(); }
-    } catch { /* /proc is optional; the configured roots still work */ }
+    } catch {}
   } else if (host.platform === "darwin") {
     const ps = Bun.spawn(["ps", "eww", "-U", String(scope.uid), "-o", "command="], { env: process.env, stdin: "ignore", stdout: "pipe", stderr: "ignore", timeout: PROBE_TIMEOUT_MS });
     const text = await new Response(ps.stdout).text();
@@ -83,13 +82,11 @@ async function discoveryScope(host: HerdrDiscoveryHost): Promise<DiscoveryScope>
           if (entry.isDirectory()) add(join(dir, "sessions", entry.name, "herdr.sock"));
         }
       } finally { directory.closeSync(); }
-    } catch { /* a missing sessions directory is normal */ }
+    } catch {}
   }
-  // Roots and their named sessions cover the contract; /proc/net/unix cannot authorize another directory.
   return scope;
 }
 
-/** Shared by discovery and the remote bridge immediately before using an explicitly selected socket. */
 export async function chosenHerdrSocketStatus(path: string, host: HerdrDiscoveryHost = currentHost(), scope?: DiscoveryScope): Promise<"usable" | "gone" | "refused"> {
   if (!validHerdrSocket(path)) return "refused";
   const allowed = scope ?? await discoveryScope(host);
@@ -112,25 +109,10 @@ export async function chosenHerdrSocketStatus(path: string, host: HerdrDiscovery
   finally { clearTimeout(timer); }
 }
 
-/**
- * Where a socket a server keeps for its life may be (pinnedHerdrSocketStatus): trusted herdr folders, this account,
- * and `walk`, why another account could rename, replace or write something on the way from `/` to a folder or in
- * it (null: nobody could).
- */
 export interface HerdrSocketPlace { dirs: string[]; uid: number | undefined; walk(folder: string): string | null }
 
-/** How long a pinned place keeps its ACL answers and its private group: as long as macOS's ACL reads are kept. */
 const PLACE_ACL_AGE_MS = 60_000;
 
-/**
- * A place's walk: trustRefusal (each folder this account's or root's, none writable by anybody else but a sticky
- * one on the way, as /tmp). A check of where a path points proves nothing about the connection after it while
- * another account may rename a folder above it. One ACL reader and one private-group answer per place, read again
- * after PLACE_ACL_AGE_MS: getfacl, which runs for each group-writable folder, would otherwise run before every
- * connection. Modes, owners and groups are read on every walk, so a folder made unsafe by chmod or chown is
- * refused at once. Only an ACL answer waits out its age, and only this account or root can change the ACL of a
- * folder the walk accepts: every such folder is theirs.
- */
 function placeWalk(): (folder: string) => string | null {
   let harmless = profileGroups(), acl = aclReader(), since = Date.now();
   return (folder) => {
@@ -139,18 +121,10 @@ function placeWalk(): (folder: string) => string | null {
   };
 }
 
-/**
- * The groups whose write access lets nobody else into the machine profile's own folders (its herdr sockets' and its
- * state folder's walks): this account's provably private group alone. harmlessGroups' Homebrew rule, which trusts
- * macOS's admin group under /opt/homebrew and /usr/local for the hc found there, is left out: a second admin
- * account could write there. Its rule without the darwin case, whatever the platform; `own` stands in for the
- * account's private group in a test.
- */
 export function profileGroups(own?: () => number | null): (gid: number, path: string) => boolean {
   return harmlessGroups("linux", own);
 }
 
-/** The nearest folder of `path` that exists, from its parent up, and its lstat; null when one on the way cannot be read. */
 function nearestFolder(path: string): { dir: string; folder: Stats } | null {
   for (let dir = dirname(path); ; dir = dirname(dir)) {
     try { return { dir, folder: lstatSync(dir) }; }
@@ -158,17 +132,6 @@ function nearestFolder(path: string): { dir: string; folder: Stats } | null {
   }
 }
 
-/**
- * chosenHerdrSocketStatus for a socket a server selects once and keeps talking to for its life (the machine
- * profile), with `place`, what each later connection is held to (heldHerdrSocketStatus). Before anything
- * connects there, the walk to the nearest folder of the path that exists must be safe (`reason`: why it is not,
- * naming the folder, for the owner). "gone"
- * (absent, or a socket that does not answer) means the server will use whatever answers there later, so it is
- * "gone" only where no other account can put a socket: the path is normalized and lies under a trusted herdr
- * folder of this account, or under a configured one (`<home>/.config/herdr`, `<xdg>/herdr`) that does not exist
- * yet, and that nearest folder is this account's, reached through no link, and writable by no group or other
- * account. A herdr folder found only from a running server's environment counts only once it exists.
- */
 export async function pinnedHerdrSocketStatus(path: string, host: HerdrDiscoveryHost = currentHost()): Promise<{ status: "usable" | "gone" | "refused"; place: HerdrSocketPlace; reason?: string }> {
   const scope = await discoveryScope(host);
   const configured = [join(host.home, ".config"), host.xdg].flatMap((root) => root?.startsWith("/") && !existsSync(join(root, "herdr")) ? [join(root, "herdr")] : []);
@@ -185,12 +148,7 @@ export async function pinnedHerdrSocketStatus(path: string, host: HerdrDiscovery
   return { status: own ? "gone" : "refused", place };
 }
 
-/**
- * A pinned socket as it is now, checked before each connection to it: "usable" only while it is this account's
- * socket under `place`, its folder reached through no link and walked safely; "gone" while nothing is there.
- * It does not connect. The socket's own path is never resolved: macOS refuses realpath on a socket
- * (EOPNOTSUPP), and a last part that lstat calls a socket is no link.
- */
+// macOS refuses realpath on a socket (EOPNOTSUPP)
 export function heldHerdrSocketStatus(path: string, place: HerdrSocketPlace): "usable" | "gone" | "refused" {
   try {
     const socket = lstatSync(path);
@@ -201,13 +159,6 @@ export function heldHerdrSocketStatus(path: string, place: HerdrSocketPlace): "u
   }
 }
 
-/**
- * discoverHerdrSessions for the machine profile: a candidate whose walk from `/` refuses its folder is never
- * connected to and is not a session found, so one safe session beside an unsafe one is the one found. The rest,
- * this account's socket under its herdr folders and answering, is chosenHerdrSocketStatus's, as discovery's.
- * `refused`: the walk's reason for the first candidate it dropped (null: it dropped none), for the owner when no
- * session is found.
- */
 export async function discoverPinnableHerdrSessions(host: HerdrDiscoveryHost = currentHost()): Promise<{ sessions: FoundHerdrSession[]; refused: string | null }> {
   const scope = await discoveryScope(host);
   const walk = placeWalk();

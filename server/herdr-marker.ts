@@ -8,8 +8,7 @@
 /**
  * On Linux and macOS a herdr that was killed, or lost to a reboot, leaves its socket file
  * behind, and the kernel refuses a connection to it (live-verified, herdr 0.9.0 and 0.9.3;
- * `herdr server` starts over such a file). Any other failure, a daemon that is slow or a
- * file that may not be read, is not proof that the daemon is gone.
+ * `herdr server` starts over such a file).
  */
 export async function refusedSocket(path: string): Promise<boolean> {
   try { (await Bun.connect({ unix: path, socket: { data() {} } })).end(); return false; }
@@ -26,20 +25,13 @@ export function markerOwner(marker: string): MarkerOwner | null {
 }
 
 export interface RunningProcess { name: string; startedMs: number | null }
-/** `name|unixMs`, as the probe in remote-entry.ts prints a running process; nothing for a pid nobody has. */
 export function parseProcessLine(output: string): RunningProcess | null {
   const match = /^([^|\r\n]+)\|(\d+)\s*$/m.exec(output);
   return match ? { name: match[1]!.trim(), startedMs: Number(match[2]) } : null;
 }
 
-/** how far the marker's start may sit from the process's creation time and still be the same daemon */
 export const MARKER_START_SLACK_MS = 30_000;
 
-/**
- * A marker nobody stands behind: its pid is gone, belongs to a program that is not herdr,
- * or to a herdr that started at another time (a later daemon, or another session's). A
- * marker that cannot be read is not called stale: replacing a daemon needs proof it is gone.
- */
 export function staleMarker(marker: string, processOf: (pid: number) => RunningProcess | null): boolean {
   const owner = markerOwner(marker);
   if (owner === null) return false;

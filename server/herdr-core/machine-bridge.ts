@@ -4,17 +4,10 @@ import { entryCommand, ROOT } from "../entries.ts";
 import type { HcConnection } from "./connection.ts";
 import { hcBin } from "./runtime.ts";
 
-/**
- * Another machine this PC's core reaches (`hc machine add`), as machine.list tells it. A temporary
- * one (a sandbox for a task) is not a PC: it is left out.
- */
 export interface HcMachine {
-  /** the other core's permanent id: the PC's id, which a rename keeps */
   id: string;
-  /** what this core calls it: its terminals are `<name>/t3` */
   name: string;
   connected: boolean;
-  /** why it is not connected, in hc's words; null when hc gives none */
   why: string | null;
 }
 
@@ -24,26 +17,16 @@ export async function listHcMachines(hc: Pick<HcConnection, "call">): Promise<Hc
     .map((machine) => ({ id: machine.id, name: machine.name, connected: machine.state === "connected", why: machine.why ?? (machine.state === "connected" ? null : machine.state) }));
 }
 
-/** A machine's own server (machine-entry.ts), on loopback for this one, and how to end it. */
 export interface MachineBridge {
   endpoint: { url: string; token: string };
-  /** settles when that server ended, whoever ended it */
   exited: Promise<unknown>;
   stop: () => void;
 }
 
-/** What finds the core (`hc connect`) and what else a program needs to run, as this server has them. */
 const CORE_ENV = /^(?:HC_.*|HOME|USERPROFILE|APPDATA|LOCALAPPDATA|XDG_RUNTIME_DIR|XDG_CONFIG_HOME|XDG_STATE_HOME)$/;
 const PROGRAM_ENV = /^(?:PATH|PATHEXT|LANG|LC_.*|TMPDIR|TEMP|TMP|SystemRoot|SYSTEMROOT|WINDIR|ComSpec|COMSPEC)$/;
 const READY_MS = 30_000;
 
-/**
- * Starts a machine's server: this server's own code, in a process of its own, serving herdr's API from
- * that machine's terminals over this PC's core (machine-scope.ts). It runs with an empty home folder
- * of its own and none of this server's settings: the agents' files and processes here are not that
- * machine's, so no transcript of this PC can be taken for one of its panes. Its state lives under
- * `stateDir`; it ends with this server (it holds the stdin this one keeps open).
- */
 export async function startMachineBridge(machine: Pick<HcMachine, "id" | "name">, stateDir: string): Promise<MachineBridge> {
   const dir = join(stateDir, "hc-machines", machine.id);
   const home = join(dir, "home");
@@ -68,7 +51,7 @@ export async function startMachineBridge(machine: Pick<HcMachine, "id" | "name">
     },
   });
   const stop = () => {
-    try { child.stdin.end(); } catch { /* already gone */ }
+    try { child.stdin.end(); } catch {}
     child.kill();
   };
   void child.exited.then((code) => ready.reject(new Error(`The server for ${machine.name} stopped before it answered (exit ${code})`)));

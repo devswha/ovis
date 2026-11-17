@@ -1,14 +1,3 @@
-/**
- * Installing herdr-core (`hc`) for a person who asked for it in Settings, the way its own installer
- * does (releases.herdr.dev/core/install.sh): the release archive for this PC, checked against its
- * SHA-256, then `herdr-core` copied into ~/.local/bin, with `hc` linked beside it only when no `hc`
- * is there. No sudo, and nothing of herdr's TUI is touched.
- *
- * Unlike that installer, the version and its checksums are pinned here (the desktop app carries the
- * same hc: app/electron/scripts/runtimes.ts), so a click never runs whatever the release server
- * hands out that day. Nothing already installed is replaced: a `herdr-core` in ~/.local/bin, even
- * one that does not answer, refuses the install. A failure leaves ~/.local/bin as it was.
- */
 import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readlinkSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -19,7 +8,6 @@ type Env = Record<string, string | undefined>;
 
 export interface HcRelease {
   version: string;
-  /** per `<platform>-<arch>` as Node names them: the archive and its SHA-256 (releases.herdr.dev/core/<version>/manifest.json) */
   targets: Partial<Record<string, { url: string; sha256: string }>>;
 }
 
@@ -34,7 +22,6 @@ export const HC_RELEASE: HcRelease = {
   },
 };
 
-/** an hc archive is about 3 MB: anything far larger is not the release */
 const ARCHIVE_LIMIT = 64 * 1024 * 1024;
 const DOWNLOAD_TIMEOUT_MS = 120_000;
 
@@ -47,18 +34,15 @@ export interface InstallHcOptions {
   fetch?: typeof fetch;
 }
 
-/** The release archive for this PC, or null where herdr-core has no build Ovis offers. */
 export function hcInstallTarget(release: HcRelease = HC_RELEASE, platform: NodeJS.Platform = process.platform, arch: string = process.arch) {
   return release.targets[`${platform}-${arch}`] ?? null;
 }
 
 export interface InstalledHc {
   path: string;
-  /** takes out what this install put in ~/.local/bin, and only that: a file there that is no longer the one installed stays */
   undo: () => void;
 }
 
-/** Installs herdr-core into `<home>/.local/bin/herdr-core`; throws, leaving the folder as it was, on any failure. */
 export async function installHc(options: InstallHcOptions): Promise<InstalledHc> {
   const release = options.release ?? HC_RELEASE;
   const env = options.env ?? process.env;
@@ -79,7 +63,6 @@ export async function installHc(options: InstallHcOptions): Promise<InstalledHc>
   try {
     // unzipped here: GNU tar would need a gzip on the PATH
     writeFileSync(join(work, "hc.tar"), Bun.gunzipSync(archive));
-    // the member named, nothing else: the archive's other files are its license and notices
     // a service's PATH may be bare: tar is in /usr/bin on every Linux and macOS
     const tarBin = Bun.which("tar", { PATH: env["PATH"] ?? "" }) ?? "/usr/bin/tar";
     const tar = Bun.spawn([tarBin, "-xf", join(work, "hc.tar"), "-C", work, "herdr-core"], { stdin: "ignore", stdout: "ignore", stderr: "pipe", env });
@@ -104,7 +87,7 @@ export async function installHc(options: InstallHcOptions): Promise<InstalledHc>
       linkSync(staged, dest);
       mark = identity(dest);
     } finally {
-      try { unlinkSync(staged); } catch { /* not written */ }
+      try { unlinkSync(staged); } catch {}
     }
   } finally {
     rmSync(work, { recursive: true, force: true });
@@ -113,18 +96,17 @@ export async function installHc(options: InstallHcOptions): Promise<InstalledHc>
   let linked = false;
   const hc = join(bin, "hc");
   if (!present(hc) && Bun.which("hc", { PATH: env["PATH"] ?? "" }) === null) {
-    try { symlinkSync("herdr-core", hc); linked = true; } catch { /* herdr-core is found by its own name */ }
+    try { symlinkSync("herdr-core", hc); linked = true; } catch {}
   }
   return {
     path: dest,
     undo: () => {
-      try { if (identity(dest) === mark) unlinkSync(dest); } catch { /* gone already */ }
-      try { if (linked && readlinkSync(hc) === "herdr-core") unlinkSync(hc); } catch { /* gone already */ }
+      try { if (identity(dest) === mark) unlinkSync(dest); } catch {}
+      try { if (linked && readlinkSync(hc) === "herdr-core") unlinkSync(hc); } catch {}
     },
   };
 }
 
-/** The whole body, refused as soon as it passes `limit`: a server that sends more is never held in memory. */
 async function boundedBody(response: Response, limit: number): Promise<Uint8Array<ArrayBuffer>> {
   const chunks: Uint8Array<ArrayBuffer>[] = [];
   let size = 0;

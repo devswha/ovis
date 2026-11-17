@@ -5,11 +5,8 @@ import type { Machine } from "../shared/machines.ts";
 import type { SessionSnapshot } from "../shared/protocol.ts";
 import { isBackgroundRole, PANE_TOKEN_NAME, paneTokenRuleMatches, paneTokenSpecs, type AgentRowTokens, type PaneTokenRule, type PaneTokenSpec, ROLE_TOKEN } from "../shared/pane-tokens.ts";
 
-/** how often a watched config.toml is looked at again while a browser listens */
 const POLL_MS = 5_000;
-/** A config is a short TOML document, not an unbounded log. */
 const MAX_CONFIG_BYTES = 1024 * 1024;
-/** herdr's canonical agent ids (`rows_by_agent` keys): `claude`, `codex`, `pi` */
 const AGENT_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const TEXT_CONDITIONS = ["equals", "contains", "starts_with"] as const;
 const NUMBER_CONDITIONS = ["gt", "lt"] as const;
@@ -29,7 +26,6 @@ function table(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
-/** Line-start BOMs outside strings are config markers; inside multiline strings they are value data. */
 function normalizeConfigBom(text: string): string {
   let quote: string | null = null;
   return text.split("\n").map((line) => {
@@ -51,17 +47,11 @@ function normalizeConfigBom(text: string): string {
         quote = null;
       } else i++;
     }
-    // Single-line strings cannot carry delimiter state into the next line.
     if (quote?.length === 1) quote = null;
     return normalized;
   }).join("\n");
 }
 
-/**
- * herdr's config.toml at `path`, parsed, or null when it is no regular file of a config's size, cannot
- * be read whole, or is no TOML. The opened file is checked too: a FIFO swapped in after a stat must not
- * block the server. A file that grew while being read is not taken (a later read takes it whole).
- */
 export function readHerdrConfig(path: string): unknown {
   let fd: number | undefined;
   try {
@@ -96,9 +86,7 @@ function tokenRule(value: unknown): PaneTokenRule | null {
 }
 
 /**
- * The `$name` tokens of one layout's rows, in order, a token named twice kept twice: herdr tests each
- * place's rules on its own, so one hidden at its first place may still show at a later one
- * (paneTokenValues draws it once, at the first place that shows it). Null when it is not a list of rows.
+ * herdr tests each place's rules on its own, so a token hidden at its first place may still show at a later one.
  */
 function tokenSpecs(rows: unknown): PaneTokenSpec[] | null {
   if (!Array.isArray(rows) || !rows.every(Array.isArray)) return null;
@@ -111,17 +99,12 @@ function tokenSpecs(rows: unknown): PaneTokenSpec[] | null {
       const name = token.slice(1);
       if (!PANE_TOKEN_NAME.test(name)) continue;
       const rules = Array.isArray(style?.["rules"]) ? (style["rules"] as unknown[]).flatMap((rule) => tokenRule(rule) ?? []) : [];
-      // only a rule that hides decides anything here: the web UI does not draw herdr's styles
       specs.push(rules.some((rule) => rule.hide) ? { name, rules } : { name });
     }
   }
   return specs;
 }
 
-/**
- * The `$name` tokens herdr's `[ui.sidebar.agents]` rows draw, from a parsed config.toml; null when
- * the config sets neither `rows` nor `rows_by_agent`, and the web UI then draws every token.
- */
 export function agentRowTokens(config: unknown): AgentRowTokens | null {
   const agents = table(table(table(config)?.["ui"])?.["sidebar"])?.["agents"];
   const layout = table(agents);
@@ -139,20 +122,12 @@ export function agentRowTokens(config: unknown): AgentRowTokens | null {
 
 const nonblank = (value: string | null | undefined): string | null => value?.trim() || null;
 
-/** Whether every place `specs` name `name` hides `value`: the agent row then never draws it. */
 function hiddenEverywhere(specs: PaneTokenSpec[], name: string, value: unknown): boolean {
   if (typeof value !== "string" || !value.trim()) return false;
   const places = specs.filter((spec) => spec.name === name);
   return places.length > 0 && places.every(({ rules }) => rules?.find((rule) => paneTokenRuleMatches(rule, value))?.hide === true);
 }
 
-/**
- * The PCs as browsers are told them (#1349): without the token values herdr's rows hide wherever
- * they name them, so no roster, streamed or polled, holds a value the user chose to hide, whatever
- * rows a browser holds when it lands. A row's tokens are its pane's, else its agent's, under its
- * pane's agent, else its agent record's (src/lib/sidebarAgents.ts, src/components/AgentSidebar.tsx).
- * The machines are copied where a value leaves, never changed: the manager keeps them.
- */
 export function withoutHiddenTokens(layout: AgentRowTokens | null, machines: Machine[]): Machine[] {
   if (layout === null) return machines;
   return machines.map((machine) => {
@@ -162,13 +137,6 @@ export function withoutHiddenTokens(layout: AgentRowTokens | null, machines: Mac
   });
 }
 
-/**
- * One PC's snapshot as a browser is told it, wherever it goes (#2160): the session read, the /ws
- * snapshot frame and the relayed or proxied ones, without the token values herdr's rows hide, as
- * withoutHiddenTokens tells the roster. Copied where a value leaves; the same object when none does.
- * Another Ovis server reading this PC with its bridge token gets the snapshot whole: it applies its
- * own rows, as herdr's sidebar is the client's config.
- */
 export function snapshotWithoutHiddenTokens<S extends Pick<SessionSnapshot, "panes" | "agents">>(layout: AgentRowTokens | null, snapshot: S): S {
   if (layout === null) return snapshot;
   const recordAgent = new Map<string, string | null | undefined>();
@@ -179,8 +147,6 @@ export function snapshotWithoutHiddenTokens<S extends Pick<SessionSnapshot, "pan
   const shown = <T extends { pane_id: string; tokens?: Record<string, unknown> }>(item: T, agent: string | null): T => {
     const specs = paneTokenSpecs(layout, agent);
     if (!item.tokens || specs === null) return item;
-    // the background tag files the row under the Agents list's background part: a rule may hide it from
-    // the row (the browser applies the rows' rules too), never from the browser
     const kept = Object.entries(item.tokens).filter(([name, value]) => (name === ROLE_TOKEN && isBackgroundRole(value)) || !hiddenEverywhere(specs, name, value));
     if (kept.length === Object.keys(item.tokens).length) return item;
     changed = true;
@@ -191,10 +157,6 @@ export function snapshotWithoutHiddenTokens<S extends Pick<SessionSnapshot, "pan
   return changed ? { ...snapshot, panes, agents } : snapshot;
 }
 
-/**
- * The token values the PCs' panes and agents report in `machines`, by token name, read now: the
- * manager's machines are changed in place, so a roster kept for later is kept as this.
- */
 export function reportedTokenValues(machines: readonly Machine[]): Map<string, Set<string>> {
   const reported = new Map<string, Set<string>>();
   for (const { snapshot } of machines) {
@@ -209,16 +171,6 @@ export function reportedTokenValues(machines: readonly Machine[]): Map<string, S
   return reported;
 }
 
-/**
- * What browsers are told of the rows (#1349): the rows' tokens as they are, with the hide rules of
- * each place that has them decided here for the values reported (reportedTokenValues, of one roster
- * or of several): an `equals` rule that shows each such value the place draws, then one that hides
- * any other (`contains: ""` matches every value). The rules' own operands (a literal no pane
- * reports, a number's bound) stay on this PC, while a browser, an older one too, draws the same
- * tokens for those values (shared/pane-tokens.ts paneTokenValues). A value the server has not
- * decided, as one a browser kept from a roster told under other rows, is hidden there: a decision
- * that lands out of step with a roster can hide a value for a moment, never show one.
- */
 export function decidedRowTokens(layout: AgentRowTokens | null, ...reported: ReadonlyMap<string, ReadonlySet<string>>[]): AgentRowTokens | null {
   if (layout === null) return null;
   const valuesOf = (name: string): string[] => [...new Set(reported.flatMap((values) => [...values.get(name) ?? []]))];
@@ -230,13 +182,7 @@ export function decidedRowTokens(layout: AgentRowTokens | null, ...reported: Rea
   return { rows: layout.rows && decide(layout.rows), by_agent: Object.fromEntries(Object.entries(layout.by_agent).map(([agent, specs]) => [agent, decide(specs)])) };
 }
 
-/**
- * herdr's sidebar rows for agents, read from its config.toml, and read again when the file
- * changes while a browser listens (herdr's own sidebar reads them at start and on reload-config).
- * A config that is missing or does not parse names no token: the rows draw every one.
- */
 export class HerdrSidebarConfig {
-  /** the file's mtime and size when last read; null when it was missing, undefined before the first look */
   private stamp: string | null | undefined;
   private layout: AgentRowTokens | null = null;
   private readonly listeners = new Set<(layout: AgentRowTokens | null) => void>();
@@ -249,7 +195,6 @@ export class HerdrSidebarConfig {
     return this.layout;
   }
 
-  /** Told each time what the rows draw changes; the file is looked at only while someone listens. */
   subscribe(listener: (layout: AgentRowTokens | null) => void): () => void {
     this.listeners.add(listener);
     if (this.timer === null) {
@@ -264,13 +209,11 @@ export class HerdrSidebarConfig {
     };
   }
 
-  /** A change found by any read is told to everyone listening: a browser that connects must not take it from the others. */
   private refresh(): void {
     if (!this.read()) return;
     for (const told of [...this.listeners]) told(this.layout);
   }
 
-  /** Reads the file again when it changed; true when what the rows draw changed with it. */
   private read(): boolean {
     let stamp: string | null;
     try {

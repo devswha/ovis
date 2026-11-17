@@ -3,12 +3,10 @@ import { promisify } from "node:util";
 import type { SshTarget } from "../shared/machines.ts";
 import { validateTarget } from "./machine-security.ts";
 
-/** Saved by the local herdr client; reading its catalog never connects to a host. */
 export interface HerdrMachineProfile {
   id: string;
   label: string;
   enabled: boolean;
-  /** null when herdr accepts an address this web client cannot represent safely. */
   target: SshTarget | null;
 }
 
@@ -17,8 +15,7 @@ const run = promisify(execFile);
 function profileTarget(target: string, session: string): SshTarget | null {
   try {
     const selectedSession = session === "default" || session === "" ? {} : { session };
-    // Herdr also accepts SSH URIs. Keep the SSH alias verbatim (URL would lowercase it),
-    // and split only the explicit port; credentials, paths and encoded options are refused.
+    // Herdr also accepts SSH URIs; URL would lowercase the SSH alias
     if (target.startsWith("ssh://")) {
       const match = /^ssh:\/\/((?:[a-zA-Z0-9_.-]+@)?(?:\[[a-fA-F0-9:]+\]|[a-zA-Z0-9_.-]+))(?::([0-9]+))?$/.exec(target);
       if (!match) return null;
@@ -42,14 +39,12 @@ export function parseHerdrProfiles(text: string): HerdrMachineProfile[] {
   });
 }
 
-/** the same port by its number ("022" is 22); an omitted one matches only another omitted one */
 export function samePort(a: SshTarget["port"], b: SshTarget["port"]): boolean {
   return a === undefined || b === undefined ? a === b : Number(a) === Number(b);
 }
 
 export function sameSshSession(a: SshTarget, b: SshTarget): boolean {
-  // An omitted port is resolved by OpenSSH config, and need not be 22. Do not guess
-  // that two aliases or an implicit and explicit port name the same destination.
+  // An omitted port is resolved by OpenSSH config, and need not be 22.
   return a.destination === b.destination && samePort(a.port, b.port) && (a.session || "default") === (b.session || "default");
 }
 
@@ -60,8 +55,6 @@ export async function readHerdrProfiles(): Promise<HerdrMachineProfile[]> {
     });
     return parseHerdrProfiles(stdout);
   } catch {
-    // CLI stderr can include local paths. Keep the discovery diagnostic bounded and actionable;
-    // manual setup remains usable with old/missing herdr or an unreadable catalog.
     throw new Error("Could not read saved herdr machines. Check herdr machine list --json on this PC, or enter an SSH address manually.");
   }
 }
