@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from "bun:test";
 import { keepEventStream, STREAM_REOPEN_MAX_MS, STREAM_REOPEN_MS, type EventStreamHandlers } from "./eventStream.ts";
 
-/** an EventSource the test drives: the browser's own reconnect, its giving up, a message */
 class FakeSource {
   readyState = 0;
   closedByApp = false;
@@ -10,9 +9,7 @@ class FakeSource {
   onmessage: ((event: MessageEvent<string>) => void) | null = null;
   constructor(readonly url: string) {}
   open(): void { this.readyState = 1; this.onopen?.(); }
-  /** lost; the browser reconnects it */
   lose(): void { this.readyState = 0; this.onerror?.(); }
-  /** a non-200 answer (a proxy's 502): the browser never reconnects it */
   refuse(): void { this.readyState = 2; this.onerror?.(); }
   say(data: string): void { this.onmessage?.(new MessageEvent("message", { data })); }
   close(): void { this.readyState = 2; this.closedByApp = true; }
@@ -53,7 +50,6 @@ describe("the app's event stream", () => {
   it("opens a new stream after the browser gave up on one (a proxy's 502 while the server restarts), and tells it apart from a loss", () => {
     const stop = keepEventStream("/api/machines/events", handlers, open);
     last().open();
-    // the restart: the browser's reconnect gets a 502 and the stream stays closed
     last().lose();
     last().refuse();
     expect(seen).toEqual(["opened", "lost", "closed"]);

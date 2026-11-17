@@ -1,22 +1,11 @@
 import type { PaneLayoutSnapshot } from "../../shared/protocol.ts";
 type PaneLayoutSplit = PaneLayoutSnapshot["splits"][number];
 
-/** Where a split has no room: a tab's panes are shown one at a time (PaneCanvas) and picked from the tab's menu (TabStrip). */
 export const SOLO_PANE_QUERY = "(max-width: 768px)";
 
-/** A compact-height phone screen (a foldable's outer display, landscape or the keyboard): a lone tab is not drawn there (TabStrip). */
 export const CRAMPED_QUERY = "(max-width: 768px) and (max-height: 700px)";
-/**
- * Whether the tab strip is left out of a workspace's view: on a phone the header's title lists the
- * tabs (`inHeader`, App), and a lone tab on a cramped screen needs no row.
- */
 export const tabRowHidden = (cramped: boolean, tabCount: number, inHeader: boolean): boolean => inHeader || (cramped && tabCount === 1);
 
-/**
- * The pane a tab shows alone, or null when every pane is drawn: herdr's zoomed pane, else on a
- * narrow screen the selected pane (herdr's focused one, then the first, while the selection is
- * not in this tab). A narrow screen changes only what this browser draws, never herdr's zoom.
- */
 export function soloPane(layout: PaneLayoutSnapshot | null, paneIds: readonly string[], selectedPaneId: string | null, narrow: boolean): string | null {
   if (layout?.zoomed) return layout.focused_pane_id;
   if (!narrow || paneIds.length < 2) return null;
@@ -29,25 +18,18 @@ export function paneContextPress(event: { button: number; ctrlKey: boolean }, ap
   return event.button === 2 || (apple && event.button === 0 && event.ctrlKey);
 }
 
-/**
- * A right-click in a pane's own text field (the composer, the terminal's input line, the find or
- * secret field) is the browser's: its Copy, Paste and spelling menu on that field (#1180). xterm's
- * hidden textarea is the terminal's, so a right-click on the terminal stays the pane menu.
- */
 export function paneFieldTarget(target: EventTarget | null): boolean {
   if (!(target instanceof Element)) return false;
   const field = target.closest("input, textarea, [contenteditable=true]");
   return field !== null && !field.classList.contains("xterm-helper-textarea");
 }
 
-/** herdr's stable split path, not its preorder number (which changes after another split). */
 export function splitPath(id: string): boolean[] | null {
   const match = /^split_\d+_(root|[01]+)$/.exec(id);
   if (!match) return null;
   return match[1] === "root" ? [] : [...match[1]!].map((side) => side === "1");
 }
 
-/** Changes in ratios/terminal size are harmless; changes in topology cancel a drag. */
 export function layoutTopology(layout: PaneLayoutSnapshot): string {
   return JSON.stringify([layout.tab_id, layout.zoomed, layout.panes.map((pane) => pane.pane_id),
     layout.splits.map((split) => [split.id, split.direction])]);

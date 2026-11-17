@@ -5,7 +5,6 @@ class FakeItem {
   constructor(readonly items: Record<string, Promise<Blob>>) {}
 }
 
-/** A clipboard that, like Safari's, waits for the item's text and keeps what it had when that fails. */
 function fakeClipboard(initial: string) {
   const state = { text: initial, writes: [] as Promise<void>[] };
   const access = {

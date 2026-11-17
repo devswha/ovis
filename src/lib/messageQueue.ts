@@ -1,11 +1,9 @@
 import { paneLifetimes, paneStateKey } from "./paneLifetime.ts";
 
-/** Held messages are explicitly sent, never dispatched by reconnects or status changes. */
 export interface HeldMessage { id: string; text: string }
 type QueueStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 const newId = () => globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 
-/** Target-scoped cache also lets an ACK remove its own item after the user switches panes. */
 export class MessageQueueStore {
   private saved = new Map<string, string | null>();
   private unsaved = new Set<string>();
@@ -30,10 +28,8 @@ export class MessageQueueStore {
     this.queues.set(owner, [...this.read(owner)]);
     for (const listener of this.listeners) listener();
   }
-  // the pane's herdr's storage, or this page's memory (lib/paneLifetime.ts)
   constructor(private storage: () => QueueStorage = () => paneLifetimes.paneStorage) {}
 
-  /** Another herdr took the PC's pane IDs: its queues are read again from where they now are. */
   forget(machineId: string): void {
     for (const [owner, messages] of [...this.queues]) {
       const pane = paneStateKey(`ovis:queue:${owner}`);
@@ -46,7 +42,6 @@ export class MessageQueueStore {
     for (const listener of this.listeners) listener();
   }
 
-  /** Reconcile storage before mutation; another tab may have written since our last render. */
   refresh(owner: string): void {
     if (this.unsaved.has(owner)) return;
     try {
@@ -55,14 +50,14 @@ export class MessageQueueStore {
       this.queues.delete(owner);
       this.read(owner);
       for (const listener of this.listeners) listener();
-    } catch { /* keep in-memory messages when storage cannot be read */ }
+    } catch {}
   }
 
   read(owner: string): HeldMessage[] {
     const cached = this.queues.get(owner);
     if (cached) return cached;
     let raw: string | null = null;
-    try { raw = this.storage().getItem(`ovis:queue:${owner}`); } catch { /* private mode */ }
+    try { raw = this.storage().getItem(`ovis:queue:${owner}`); } catch {}
     let messages: HeldMessage[] = raw ? [{ id: newId(), text: raw }] : [];
     try {
       const data = JSON.parse(raw ?? "null");
@@ -75,7 +70,7 @@ export class MessageQueueStore {
           ids.add(value.id); return true;
         });
       }
-    } catch { /* previous versions stored a single plain-text message */ }
+    } catch {}
     this.saved.set(owner, raw);
     this.queues.set(owner, messages);
     return messages;
@@ -108,7 +103,6 @@ export class MessageQueueStore {
   }
 }
 
-// Machine switches remount the terminal; outstanding sends must share the same owner cache.
 export const messageQueues = new MessageQueueStore();
 paneLifetimes.onRetire((machineId) => messageQueues.forget(machineId));
 

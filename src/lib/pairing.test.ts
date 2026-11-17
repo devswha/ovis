@@ -1,8 +1,6 @@
 import { describe, expect, it, spyOn } from "bun:test";
 import { pairThisBrowser, singleFlight } from "./pairing.ts";
 
-// This browser pairing itself (the guide's Connect your phone, Settings → Phone's Pair this device
-// now): two at once could leave the later, already void, cookie in place of the good one.
 describe("singleFlight", () => {
   it("lets every view that asks while one runs join it", async () => {
     let runs = 0;

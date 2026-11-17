@@ -37,7 +37,6 @@ it("looks past only informational and local-command notices, never new user work
   expect(conversationFinishPresented({ source: "claude-transcript", turns: [
     answer, { role: "user", ts: null, parts: [{ kind: "notice", text: "Work arrived", source: "async-result" }] },
   ] })).toBe(false);
-  // an OmO goal waiting on background work after its answer starts nothing yet
   expect(conversationFinishPresented({ source: "omp-transcript", turns: [
     answer, { role: "user", ts: null, parts: [{ kind: "goal_wait", due_at: "2026-10-19T00:05:00Z", waiting_on: { tasks: 0, monitors: 1, terminals: 0, dags: 0, cells: 0 } }] },
   ] })).toBe(true);
@@ -47,8 +46,6 @@ it("looks past a compaction's summary and its notices to the answer before them 
   const answered = { source: "claude-transcript", history_id: "session", turns: [
     { role: "assistant", ts: "2026-10-19T00:00:00Z", end_ts: "2026-10-19T00:00:05Z", parts: [{ kind: "text", text: "Finished", phase: "final_answer" }] },
   ] } satisfies Parameters<typeof conversationFinishPresented>[0];
-  // as server/claude-transcript.ts parses what Claude Code records for /compact typed at rest (server/core/status.test.ts):
-  // the command, then the summary; the command's echo and output lines are dropped
   const compacted = { ...answered, turns: [...answered.turns,
     { role: "user", ts: "2026-10-19T00:59:57Z", parts: [{ kind: "text", text: "/compact" }] },
     { role: "user", ts: "2026-10-19T01:00:00Z", parts: [{ kind: "compact", text: "Summary of the earlier session" }] },
@@ -57,23 +54,18 @@ it("looks past a compaction's summary and its notices to the answer before them 
   ] } satisfies Parameters<typeof conversationFinishPresented>[0];
   expect(conversationFinishPresented(compacted)).toBe(true);
   expect(new ConversationFinishEvidence().accept("compact-unseen", 40, compacted)).toBe(true);
-  // the answer was seen at its own finish; /compact then brings another, which the compaction proves
   const seen = new ConversationFinishEvidence();
   expect(seen.accept("compact-seen", 40, answered)).toBe(true);
   expect(seen.accept("compact-seen", 41, answered)).toBe(false);
   expect(seen.accept("compact-seen", 41, compacted)).toBe(true);
-  // and the same compaction proves no finish after it
   expect(seen.accept("compact-seen", 42, structuredClone(compacted))).toBe(false);
-  // a finish after the compaction's, before its own turn is in the transcript, is not the compaction's to prove
   const skipped = new ConversationFinishEvidence();
   expect(skipped.accept("compact-skipped", 40, answered)).toBe(true);
   expect(skipped.accept("compact-skipped", 42, compacted)).toBe(false);
-  // nor when the answer seen at the last finish is another one
   const other = new ConversationFinishEvidence();
   const older = { ...answered, turns: [{ ...answered.turns[0]!, ts: "2026-10-18T00:00:00Z", end_ts: "2026-10-18T00:00:05Z", parts: [{ kind: "text" as const, text: "Older", phase: "final_answer" as const }] }] };
   expect(other.accept("compact-other", 40, older)).toBe(true);
   expect(other.accept("compact-other", 41, compacted)).toBe(false);
-  // a second /compact in a row is the next finish's, proved by its own compaction
   const twice = new ConversationFinishEvidence();
   const again = { ...compacted, turns: [...compacted.turns,
     { role: "user", ts: "2026-10-19T03:59:50Z", parts: [{ kind: "text", text: "/compact keep the test list" }] },
@@ -82,7 +74,6 @@ it("looks past a compaction's summary and its notices to the answer before them 
   expect(twice.accept("compact-twice", 41, compacted)).toBe(true);
   expect(twice.accept("compact-twice", 42, again)).toBe(true);
   expect(twice.accept("compact-twice", 43, structuredClone(again))).toBe(false);
-  // the finish was seen in the terminal view, which stores no answer: the compaction still proves the next one
   const local = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
   Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
     getItem: (key: string) => key === "compact-terminal" ? JSON.stringify({ id: 40, at: 1 }) : null,
@@ -98,8 +89,6 @@ it("looks past a compaction's summary and its notices to the answer before them 
     { role: "user", ts: "2026-10-19T03:00:00Z", parts: [{ kind: "text", text: "Next request" }] }] } satisfies Parameters<typeof conversationFinishPresented>[0];
   expect(conversationFinishPresented(prompted)).toBe(false);
   expect(new ConversationFinishEvidence().accept("compact-prompted", 40, prompted)).toBe(false);
-  // a compaction no /compact asked for (Claude Code's own; at rest it keeps the finish id, server/core/status.test.ts)
-  // leaves the answer before it presented and proving its own finish, and proves no finish of its own
   const idle = { ...answered, turns: [...answered.turns,
     { role: "user", ts: "2026-10-19T01:00:00Z", parts: [{ kind: "compact", text: "Summary of the earlier session" }] }] } satisfies Parameters<typeof conversationFinishPresented>[0];
   expect(conversationFinishPresented(idle)).toBe(true);
@@ -108,20 +97,17 @@ it("looks past a compaction's summary and its notices to the answer before them 
   expect(unattributed.accept("compact-idle", 40, answered)).toBe(true);
   expect(unattributed.accept("compact-idle", 40, idle)).toBe(true);
   expect(unattributed.accept("compact-idle", 41, idle)).toBe(false);
-  // nor does it count as the earlier compaction a later /compact's proof may follow: only the commanded one proves 41
   const idleThenCommanded = { ...idle, turns: [...idle.turns,
     { role: "user", ts: "2026-10-19T01:30:00Z", parts: [{ kind: "text", text: "/compact" }] },
     { role: "user", ts: "2026-10-19T01:30:05Z", parts: [{ kind: "compact", text: "Summary after the idle one" }] }] } satisfies Parameters<typeof conversationFinishPresented>[0];
   const sequence = new ConversationFinishEvidence();
   expect(sequence.accept("compact-idle-then", 40, idle)).toBe(true);
   expect(sequence.accept("compact-idle-then", 41, idleThenCommanded)).toBe(true);
-  // the other agents record no command: each compaction of theirs proves its finish, as with #3690
   const opencode = { ...answered, source: "opencode-transcript" as const };
   const opencodeCompacted = { ...opencode, turns: [...opencode.turns, idle.turns[1]!] };
   const otherAgent = new ConversationFinishEvidence();
   expect(otherAgent.accept("compact-opencode", 40, opencode)).toBe(true);
   expect(otherAgent.accept("compact-opencode", 41, opencodeCompacted)).toBe(true);
-  // a proof an earlier version saved over a compaction Claude Code ran by itself still counts as finish 40's
   const answer = answered.turns[0]!;
   const savedByMain = JSON.stringify([answered.source, answered.history_id, idle.turns[1]!.ts, turnRevision({ role: answer.role, ts: answer.ts,
     parts: [answer.parts[0]!, idle.turns[1]!.parts[0]!] })]);
@@ -135,7 +121,6 @@ it("looks past a compaction's summary and its notices to the answer before them 
     if (upgradeStorage) Object.defineProperty(globalThis, "localStorage", upgradeStorage);
     else Reflect.deleteProperty(globalThis, "localStorage");
   }
-  // a command whose compaction is not written yet is no compaction either
   expect(conversationFinishPresented({ ...answered, turns: [...answered.turns, compacted.turns[1]!] })).toBe(false);
 });
 
@@ -217,11 +202,9 @@ it("keeps proving a finish when Codex dates its answer again with a later task_c
   ] } satisfies Parameters<typeof conversationFinishPresented>[0];
   const completed = structuredClone(answered);
   completed.turns[0]!.end_ts = "2026-10-19T00:00:06Z";
-  // Read once before the pane was presented, then again after task_complete moved end_ts.
   expect(evidence.accept("codex-scope", 3, answered)).toBe(true);
   expect(evidence.accept("codex-scope", 3, completed, answered)).toBe(true);
   expect(evidence.accept("codex-scope", 3, completed, completed)).toBe(true);
-  // Another answer is still not this finish's.
   const other = structuredClone(completed);
   other.turns[0]!.parts[0]!.text = "Something else";
   expect(evidence.accept("codex-scope", 3, other, completed)).toBe(false);
@@ -260,7 +243,6 @@ for (const id of [5, 10]) {
   });
 }
 
-/** Exercise the production selector with Bun's CSS selector engine, not a string assertion. */
 async function covered(html: string): Promise<boolean> {
   let matched = false;
   await new HTMLRewriter().on(PANE_COVER_SELECTOR, { element() { matched = true; } })

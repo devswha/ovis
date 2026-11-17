@@ -13,7 +13,6 @@ describe("isDagViewerPane", () => {
     expect(isDagViewerPane(pane("p", "t1", { label: "DAG · 01a10998" }))).toBeTrue();
     expect(isDagViewerPane(omo)).toBeFalse();
     expect(isDagViewerPane(pane("p", "t1", { label: "DAG notes", terminal_title: "OmO DAG viewer" }))).toBeFalse();
-    // the label is the plugin's prefix and the title its exact words, not the other way round
     expect(isDagViewerPane(pane("p", "t1", { label: "OmO DAG" }))).toBeFalse();
     expect(isDagViewerPane(pane("p", "t1", { terminal_title: "DAG · 01a10998" }))).toBeFalse();
   });
@@ -22,7 +21,6 @@ describe("isDagViewerPane", () => {
     expect(isDagViewerPane(pane("p", "t1", { label: "DAG · research", agent: "claude" }))).toBeFalse();
     expect(isDagViewerPane(pane("p", "t1", { label: "DAG · research", agent_status: "working" }))).toBeFalse();
     expect(isDagViewerPane(pane("p", "t1", { terminal_title: "OmO DAG", agent_status: "blocked" }))).toBeFalse();
-    // so a pane that is busy stays in the roster, where a tab's close asks about it
     const busy = pane("busy", "t1", { label: "DAG · research", agent: "claude", agent_status: "working" });
     expect(rosterPanes([omo, busy]).map((entry) => entry.pane_id)).toEqual(["omo", "busy"]);
   });

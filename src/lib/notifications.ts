@@ -2,31 +2,11 @@ import type { AgentStatus } from "../../shared/protocol.ts";
 import { ENDED_NOTIFICATION_BODY, paneNotificationTag, statusNotificationBody } from "../../shared/notify-policy.ts";
 import { callNative, hasNativePlugin, PUSH_PLUGIN } from "./nativeApp.ts";
 
-/**
- * Tab alerts: Web Notifications for pane status transitions while this page is open
- * but hidden. A device with a push subscription (lib/push.ts) gets the same alerts from
- * the server instead, and App skips these. Notification exists only in secure contexts
- * (https or localhost) - a plain-http LAN deployment reports "unsupported", and the bell
- * there switches only the in-app alerts.
- *
- * The phone app's web view has no Notification either: there the permission is the app's, asked
- * through its push plugin (lib/nativeApp.ts), and the app shows the server's pushes itself.
- *
- * The transition policy is shared with the server (shared/notify-policy.ts).
- */
-
 export { alertPcAllowed, alertStatus, alertsAllow, paneAlertsMuted, shouldNotifyStatus } from "../../shared/notify-policy.ts";
 
 export type NotificationState = "unsupported" | "default" | "granted" | "denied";
 
-/** The app's permission, the newest of its push plugin's answers (`askApp`); the page cannot read it synchronously. */
 let appPermission: NotificationState = "default";
-/**
- * Orders the plugin's answers, so an out-of-date one never replaces a newer one. A check counts from
- * when it was asked: what it read can be older than an answer that overtakes it (the page came back
- * into view as the user tapped Alerts, and the check answers after the tap's request). A request
- * counts from when its answer came, as the user gave it then.
- */
 let turns = 0;
 let answeredTurn = 0;
 
@@ -36,10 +16,6 @@ export function notificationState(): NotificationState {
   return globalThis.Notification.permission;
 }
 
-/**
- * Capacitor's permission states as the app's push plugin answers them; Android's "prompt-with-rationale"
- * may still ask. Resolves to the newest permission known, which an answer that overtook this one set.
- */
 async function askApp(method: "checkPermissions" | "requestPermissions"): Promise<NotificationState> {
   const asked = method === "checkPermissions" ? ++turns : 0;
   const { notifications } = await callNative<{ notifications?: string }>(PUSH_PLUGIN, method);
@@ -51,7 +27,6 @@ async function askApp(method: "checkPermissions" | "requestPermissions"): Promis
   return appPermission;
 }
 
-/** The app's permission read anew from its push plugin, as the phone's Settings can change it while the page is away; elsewhere notificationState(). */
 export async function refreshNotificationState(): Promise<NotificationState> {
   return hasNativePlugin(PUSH_PLUGIN) ? askApp("checkPermissions") : notificationState();
 }
@@ -71,7 +46,7 @@ export async function requestNotificationPermission(): Promise<NotificationState
 async function show(paneId: string, title: string, body: string, onClick?: () => void, machineId = "local", workspaceId?: string): Promise<void> {
   if (typeof globalThis.Notification === "undefined") return;
   if (globalThis.Notification.permission !== "granted") return;
-  if (typeof document !== "undefined" && !document.hidden) return; // visible tab: the UI already shows it
+  if (typeof document !== "undefined" && !document.hidden) return;
   const tag = paneNotificationTag(paneId, machineId);
   const alertId = crypto.randomUUID();
   const options: NotificationOptions = { body, tag, data: { pane_id: paneId, machine_id: machineId, ...(workspaceId ? { workspace_id: workspaceId } : {}), alert_id: alertId }, icon: "/icons/icon-192.png?v=sheep1" };
@@ -84,7 +59,7 @@ async function show(paneId: string, title: string, body: string, onClick?: () =>
         try {
           return await registration.getNotifications({ tag });
         } catch {
-          return []; // an older browser without getNotifications: the alert still shows
+          return [];
         }
       };
       const alertIdOf = (alert: Notification) => (alert.data as { alert_id?: string } | null)?.alert_id;
@@ -101,19 +76,13 @@ async function show(paneId: string, title: string, body: string, onClick?: () =>
       onClick?.();
     });
   } catch {
-    /* no way to show it here: the sidebar badge still carries the change */
   }
 }
 
-/** The page can show its own notifications here: a browser's, not the phone app's web view (the app shows only the server's pushes). */
 export function pageNotifications(): boolean {
   return !hasNativePlugin(PUSH_PLUGIN) && typeof globalThis.Notification !== "undefined";
 }
 
-/**
- * One alert on this device now, through the page as its own alerts come (`show`), visible tab or not: the setup
- * guide's Send test. False when the browser has no notifications, they are not allowed, or none could be shown.
- */
 export async function showTestNotification(title: string, body: string): Promise<boolean> {
   if (typeof globalThis.Notification === "undefined" || globalThis.Notification.permission !== "granted") return false;
   const options: NotificationOptions = { body, tag: "ovis-test", icon: "/icons/icon-192.png?v=sheep1" };
@@ -127,7 +96,6 @@ export async function showTestNotification(title: string, body: string): Promise
   }
 }
 
-/** `workspaceId`: the pane's workspace, as the server's push names it (server/push.ts), so a tap after the pane ends opens it. */
 export function showPaneStatusNotification(paneId: string, title: string, status: AgentStatus, onClick?: () => void, machineId = "local", workspaceId?: string): Promise<void> {
   return show(paneId, title, statusNotificationBody(status), onClick, machineId, workspaceId);
 }

@@ -8,20 +8,15 @@ import { getTransport, type EventSourceLike } from "./transport.ts";
  */
 export const STREAM_REOPEN_MS = 2_000;
 export const STREAM_REOPEN_MAX_MS = 60_000;
-/** EventSource.CLOSED, named here: the demo's stand-in (site/demo/transport.ts) has no statics */
 const CLOSED = 2;
 
 export interface EventStreamHandlers {
-  /** opened, reopened by the browser, or opened anew after the browser gave up on the last one */
   opened(): void;
-  /** lost; the browser is reconnecting it */
   lost(): void;
-  /** the browser gave up on it; a new one opens after a wait */
   closed(): void;
   message(event: MessageEvent<string>): void;
 }
 
-/** Opens the stream and keeps one open until the returned stop is called. */
 export function keepEventStream(url: string, handlers: EventStreamHandlers, open: (url: string) => EventSourceLike = (target) => getTransport().openEventSource(target)): () => void {
   let current: EventSourceLike | null = null;
   let reopen: ReturnType<typeof setTimeout> | undefined;

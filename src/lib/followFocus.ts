@@ -5,27 +5,14 @@ import { paneLifetimes } from "./paneLifetime.ts";
 import { readTerminalDraft } from "./terminalDraft.ts";
 import { sameTarget, type SplitTarget } from "./split.ts";
 
-/**
- * Following herdr's focus (Settings → Terminal, `followHerdrFocus`, #311): herdr's own window
- * moves to the pane a click there, `herdr tab focus` or a script brings to the front, and a
- * `pane-focused` frame says so. This device opens that pane too, only when it asked to and only on
- * the PC it has open: another PC's focus is that PC's business, and a pane already in front (the
- * selected one, or the other half of a split) stays where it is. A link still landing goes first,
- * someone using this device (`busy`, deviceInUse) keeps the pane they are on, and a move this device
- * asked for itself (`ownMove`, movingHerdrFocus) is opened by its own answer.
- */
 export function followsHerdrFocus(input: {
   enabled: boolean;
-  /** the PC and pane the frame names */
   machineId: string;
   paneId: string;
   selection: { machineId: string; paneId: string | null };
-  /** the panes the split's other slots show, while they are drawn */
   splitOthers: readonly SplitTarget[];
   linkPending: boolean;
-  /** this device is in use: following would drop the keyboard, close what is open or leave an unsent message (#1470) */
   busy: boolean;
-  /** this device's own request is moving herdr's focus on that PC (movingHerdrFocus) */
   ownMove: boolean;
 }): boolean {
   if (!input.enabled || input.linkPending || input.busy || input.ownMove) return false;
@@ -33,21 +20,9 @@ export function followsHerdrFocus(input: {
   return !input.splitOthers.some((other) => sameTarget(other, { machineId: input.machineId, paneId: input.paneId }));
 }
 
-/** This device's requests that move herdr's focus, still unanswered, by PC. */
 const ownMoves = new Map<string, number>();
-/**
- * How long a request this device made leaves herdr's focus to it at most: a PC that never answers
- * (a stalled connection, neither refused nor closed) must not turn following off until a reload.
- */
 export const OWN_MOVE_HOLD_MS = 10_000;
 
-/**
- * A request from this device that moves herdr's focus (a split that opens its new pane): herdr's
- * pane-focused frame may come before the answer, and following it would open the pane as an
- * automatic pick, with no keyboard and no Back entry, before the caller opens it as its own (#1470).
- * Until the request settles, or OWN_MOVE_HOLD_MS passes, frames from that PC are left to the
- * caller; its own `then` runs after.
- */
 export function movingHerdrFocus<T>(machineId: string, request: Promise<T>): Promise<T> {
   ownMoves.set(machineId, (ownMoves.get(machineId) ?? 0) + 1);
   let held = true;
@@ -62,16 +37,10 @@ export function movingHerdrFocus<T>(machineId: string, request: Promise<T>): Pro
   return request.finally(() => { clearTimeout(bound); release(); });
 }
 
-/** A request from this device is moving herdr's focus on that PC (movingHerdrFocus). */
 export function movingHerdrFocusOn(machineId: string): boolean {
   return ownMoves.has(machineId);
 }
 
-/**
- * A dialog is open over the pane, or the keyboard is in a text field (the composer, the input line,
- * the terminal's own): following herdr's focus would close the dialog or drop the keyboard
- * mid-sentence. Only a window in front counts (deviceInUse).
- */
 export function deviceBusy(doc: Pick<Document, "activeElement" | "querySelector"> = document): boolean {
   if (doc.querySelector('[aria-modal="true"], dialog[open]') !== null) return true;
   const active = doc.activeElement;
@@ -79,13 +48,9 @@ export function deviceBusy(doc: Pick<Document, "activeElement" | "querySelector"
     && active.matches("textarea, input, select, [contenteditable]:not([contenteditable='false'])");
 }
 
-/** The unsent text each of a pane's three drafts holds, by its owner (paneStorageId). */
 export interface PaneDrafts {
-  /** the chat composer's (ovis:composer-draft:) */
   composer: (owner: string) => string;
-  /** the terminal input line's on a touch screen (ovis:terminal-line:) */
   line: (owner: string) => string;
-  /** what the terminal held when its connection dropped, waiting for Send or Discard (ovis:terminal-draft:) */
   held: (owner: string) => string;
 }
 
@@ -94,27 +59,17 @@ const draftsHere: PaneDrafts = {
   line: (owner) => readTerminalDraft(owner),
   held: (owner) => {
     let raw: string | null = null;
-    try { raw = paneLifetimes.paneStorage.getItem(`ovis:terminal-draft:${owner}`); } catch { /* private mode */ }
+    try { raw = paneLifetimes.paneStorage.getItem(`ovis:terminal-draft:${owner}`); } catch {}
     return restoreDraft(raw, Date.now()).text;
   },
 };
 
-/**
- * The pane this device has open holds an unsent message in any of its drafts: following would
- * leave it behind, so the pane stays until it is sent or cleared.
- */
 export function unsentDraft(selection: { machineId: string; paneId: string | null }, drafts: PaneDrafts = draftsHere): boolean {
   if (selection.paneId === null) return false;
   const owner = paneStorageId(selection.machineId, selection.paneId);
   return [drafts.composer(owner), drafts.line(owner), drafts.held(owner)].some((text) => text.trim() !== "");
 }
 
-/**
- * Someone is using this device on the pane it has open (#1470): its window is in front and it is
- * busy there (deviceBusy) or holds an unsent message on the pane (unsentDraft). A window in the
- * background is not in use, whatever it has open or kept: its reader is in herdr's own window,
- * the case following herdr's focus is for.
- */
 export function deviceInUse(
   selection: { machineId: string; paneId: string | null },
   doc: Pick<Document, "activeElement" | "hasFocus" | "querySelector"> = document,

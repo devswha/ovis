@@ -60,7 +60,6 @@ describe("rankPanes", () => {
   });
 
   it("finds a pane by the name the UI gives a tab herdr still numbers, in the user's language too", () => {
-    // herdr names a tab by its place ("2") until it is renamed; the strip and the footer say "Tab 2"
     const numbered = [
       { ...tabs[0]!, label: "1" },
       { tab_id: "t1b", workspace_id: "w1", label: "2", number: 2, agent_status: "idle", focused: false, pane_count: 1 },
@@ -70,7 +69,6 @@ describe("rankPanes", () => {
     expect(ids(rankPanes("Tab 2", roster, workspaces, { tabs: numbered }))).toEqual(["delta"]);
     expect(ids(rankPanes("탭 2", roster, workspaces, { tabs: numbered, t: (key, vars) => translate("ko", key, vars) }))).toEqual(["delta"]);
     expect(ids(rankPanes("탭 2", roster, workspaces, { tabs: numbered }))).toEqual([]);
-    // the shown name adds to the label herdr holds, it does not replace it
     expect(ids(rankPanes("2", roster, workspaces, { tabs: numbered }))).toContain("delta");
     expect(ids(rankPanes("Tab 2", roster, workspaces, { tabs }))).toEqual([]);
   });
@@ -154,7 +152,6 @@ describe("groupByWorkspace", () => {
   });
 
   it("follows the workspaces' order for an unsearched list, as a move in the roster leaves it", () => {
-    // workspace.move reorders the workspaces alone; the panes keep the order they came in
     const moved = [workspaces[1]!, workspaces[0]!];
     expect(groupByWorkspace(roster, moved).map((section) => [section.workspaceId, ids(section.panes)])).toEqual([
       ["w2", ["b1"]],
@@ -170,7 +167,6 @@ describe("groupByWorkspace", () => {
       ["w2", ["b1"]],
       ["w1", ["a1", "a2"]],
     ]);
-    // the workspaces' own order does not pull the top result down the list
     expect(groupByWorkspace(ranked, [workspaces[0]!, workspaces[1]!], true).map((section) => section.workspaceId)).toEqual(["w2", "w1"]);
   });
 

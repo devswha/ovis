@@ -4,7 +4,6 @@ import { HIGHLIGHT_BUDGET_MS, highlightKnown, highlightOffThread, LinesCache } f
 import { normalizeCode, type Lines } from "./highlight.ts";
 import { createOffThreadQueue, type OffThreadAnswer, type OffThreadRequest, type WorkerLike } from "./offThread.ts";
 
-/** A worker that answers only when the test says so, and remembers what it was sent and whether it was ended. */
 class FakeWorker implements WorkerLike {
   onmessage: ((event: MessageEvent) => void) | null = null;
   onerror: ((event: Event) => void) | null = null;
@@ -17,7 +16,6 @@ class FakeWorker implements WorkerLike {
   }
 }
 
-/** A queue over fake workers, with every worker it started. */
 function fakeQueue(budgetMs = 1_000) {
   const workers: FakeWorker[] = [];
   const run = createOffThreadQueue<string, string>(() => {
@@ -51,7 +49,6 @@ describe("createOffThreadQueue", () => {
     expect(workers[0]!.terminated).toBe(true);
     expect(workers).toHaveLength(2);
     expect(workers[1]!.sent.map((m) => m.request)).toEqual(["next"]);
-    // a late answer from the ended worker is not taken for the next job
     workers[0]!.answer(workers[0]!.sent[0]!.id, "late");
     workers[1]!.answer(workers[1]!.sent[0]!.id, "NEXT");
     expect(await next.promise).toBe("NEXT");
@@ -134,7 +131,6 @@ describe("highlightOffThread", () => {
     expect(highlightKnown(source, "ts")!.lines).toBe(lines!);
   });
   it("gives up past its budget without holding the page", async () => {
-    // a line of dashes in YAML: quadratic for the tokenizer, about half a minute at this size
     const source = "-".repeat(200_000);
     const start = performance.now();
     let ticks = 0;
@@ -143,13 +139,10 @@ describe("highlightOffThread", () => {
     clearInterval(timer);
     expect(lines).toBeNull();
     expect(performance.now() - start).toBeLessThan(HIGHLIGHT_BUDGET_MS + 1_000);
-    // the page kept running meanwhile
     expect(ticks).toBeGreaterThan(HIGHLIGHT_BUDGET_MS / 50 / 2);
     expect(highlightKnown(source, "yaml")?.tooLong).toBe(true);
   }, HIGHLIGHT_BUDGET_MS + 5_000);
   it("remembers giving up on a text whose view left while it ran", async () => {
-    // a view that unmounts (or a StrictMode remount) cancels the running job: it still ran, so the
-    // next view of the text must not spend another budget on it
     const source = "-".repeat(200_001);
     const job = highlightOffThread(source, "yaml");
     expect(job.cancel()).toBe(false);

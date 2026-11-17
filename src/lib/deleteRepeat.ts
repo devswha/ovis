@@ -16,15 +16,10 @@ export interface DeleteRepeatEnvironment {
   maxTouchPoints: number;
 }
 
-/** iPhone and iPad, whatever the browser: they all use WebKit and the system keyboard. */
 export function keyboardNeedsText(env: DeleteRepeatEnvironment): boolean {
   return /iPhone|iPad|iPod/.test(env.userAgent) || (/Macintosh/.test(env.userAgent) && env.maxTouchPoints > 1);
 }
 
-/**
- * Puts the character back into an empty field, caret after it. Only an empty field is touched:
- * a composition's preedit and the text an IME is working on stay as they are.
- */
 export function keepDeleteRepeatText(field: Pick<HTMLTextAreaElement, "value" | "setSelectionRange">): boolean {
   if (field.value !== "") return false;
   field.value = DELETE_REPEAT_TEXT;
@@ -32,7 +27,6 @@ export function keepDeleteRepeatText(field: Pick<HTMLTextAreaElement, "value" | 
   return true;
 }
 
-/** Before the next edit, keep the placeholder outside the range xterm will commit. */
 export function restoreDeleteRepeatCaret(field: Pick<HTMLTextAreaElement, "value" | "selectionStart" | "selectionEnd" | "setSelectionRange">): boolean {
   if (field.value !== DELETE_REPEAT_TEXT
     || (field.selectionStart === DELETE_REPEAT_TEXT.length && field.selectionEnd === DELETE_REPEAT_TEXT.length)) return false;

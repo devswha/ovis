@@ -2,11 +2,6 @@ import type { Translate } from "./i18n.ts";
 
 export type SettingsPageId = "appearance" | "chat" | "terminal" | "alerts" | "agents" | "shortcuts" | "devices" | "experimental" | "about";
 
-/**
- * What the palette shows for one Settings page, or for one group on it: its name and the words a
- * user may look for it by. A group's entry names the group (`section`, its `data-section`) as well
- * as the page it is on, and opens on the group.
- */
 export interface SettingsPageEntry {
   id: SettingsPageId;
   section?: string;
@@ -14,16 +9,6 @@ export interface SettingsPageEntry {
   aliases: string;
 }
 
-/**
- * The Settings pages as the palette lists them. The aliases are one translated phrase per page, so
- * a user finds a page by the words of their own language ("theme", "font", "sound"); every phrase is
- * a literal key, which keeps it in the translation files. The font rows of every page are in Appearance's
- * Typography group, found by their own labels.
- *
- * After the pages come the groups a setting is looked for by but whose page's words do not say it,
- * as Zed's settings search lands on the setting: each is found by its heading and the labels of the
- * settings it holds, a touch screen's and a desktop's alike. Within a rank a page comes before its groups.
- */
 export function settingsPageEntries(t: Translate): SettingsPageEntry[] {
   return [
     { id: "appearance", label: t("Appearance"), aliases: t("theme themes palette dark light mode colors density language sidebar logos") },
@@ -51,7 +36,6 @@ export function settingsPageEntries(t: Translate): SettingsPageEntry[] {
   ];
 }
 
-/** Other words for the palette's actions, by action id: a name the user may remember instead of the label. */
 export function actionAliases(t: Translate): Readonly<Record<string, string>> {
   return {
     new: t("create workspace session start"),
@@ -88,12 +72,6 @@ function normalize(text: string): string {
   return text.toLocaleLowerCase().replace(/\s+/g, " ").trim();
 }
 
-/**
- * Rows a query finds, best first. A title that holds every word of the query is a strong match
- * (the whole title, then its start, then anywhere in it); a row found only through its aliases is a
- * weak match and comes after every strong one, as T3 Code sorts a secondary hit last. Within a rank
- * the rows keep the order they came in. An empty query keeps every row as it is.
- */
 export function rankByTitle<T>(query: string, rows: readonly SearchableRow<T>[]): T[] {
   const needle = normalize(query);
   if (needle === "") return rows.map((row) => row.item);
@@ -111,17 +89,11 @@ export function rankByTitle<T>(query: string, rows: readonly SearchableRow<T>[])
   return found.sort((a, b) => b.rank - a.rank || a.index - b.index).map((entry) => entry.item);
 }
 
-/** A page the palette asks Settings to open, and the group on it to land on, when it names one. */
 export interface SettingsPageRequest {
   page: SettingsPageId;
   section?: string;
 }
 
-/**
- * The page the palette asked Settings to open. The dialog mounts per opening and reads it when it
- * mounts; it clears it once it has, and the palette clears it on its own opening, so a request the
- * dialog never saw cannot steer a later opening.
- */
 let requested: SettingsPageRequest | null = null;
 
 export function requestSettingsPage(request: SettingsPageRequest | null): void {
