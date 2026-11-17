@@ -3,6 +3,11 @@ import { paneLifetimes, paneStateKey, type PaneLifetimes } from "./paneLifetime.
 type DraftStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 interface Draft { text: string; sending: boolean }
 interface InFlight { sent: string; at: number }
+/**
+ * How long another tab's in-flight send is honoured before it is read as abandoned (a tab that
+ * closed mid-send never clears it). Longer than the 90s submit timeout in ws.ts, so a send that
+ * is still legitimately on its way is never seconded by a second tab.
+ */
 export const SEND_LEASE_MS = 120_000;
 const SENDING_PREFIX = "ovis:composer-sending:";
 const DRAFT_PREFIX = "ovis:composer-draft:";
@@ -88,6 +93,7 @@ export class ComposerDraftStore {
     if (!text) this.agentOnly.delete(key);
     try {
       if (text) {
+        // an agent-only draft is stored only with its mark: another tab or a reload never reads it unmarked
         if (this.agentOnly.has(key)) this.storage().setItem(agentOnlyKey(key), "1");
         this.storage().setItem(key, text);
       } else { this.storage().removeItem(key); this.storage().removeItem(agentOnlyKey(key)); }
@@ -97,6 +103,8 @@ export class ComposerDraftStore {
     this.notify();
   }
   restorePending(key: string, text: string, agentOnly = false): void {
+    // its `> quote` lines must never reach a shell: the box stays agent-only until it is emptied, in this
+    // page whatever storage does, and marked before the text is there to send (set stores the mark first)
     this.refresh(key);
     if (agentOnly) this.markAgentOnly(key);
     this.set(key, (draft) => draft ? `${draft}\n\n${text}` : text);
@@ -139,6 +147,11 @@ export class ComposerDraftStore {
     this.drafts.set(key, { ...this.read(key), sending: false });
     this.notify();
   }
+  /**
+   * herdr gave the draft's pane a new ID (lib/paneMove.ts): the text goes to the new key. A send of
+   * it on its way, from this tab or another, stays with the ID it went under, and a new key that
+   * holds a draft already keeps its own.
+   */
   move(from: string, to: string): void {
     this.refresh(from);
     this.refresh(to);
@@ -148,6 +161,7 @@ export class ComposerDraftStore {
     this.set(to, text);
     this.set(from, "");
   }
+  /** Another herdr took the PC's pane IDs: its drafts are read again from where they now are. */
   forget(machineId: string, lifetimes: Pick<PaneLifetimes, "keep"> = paneLifetimes): void {
     for (const [key, send] of [...this.sends]) {
       if (paneStateKey(key)?.machineId !== machineId || send.lifetime === this.lifetimeOf(key)) continue;

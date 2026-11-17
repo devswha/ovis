@@ -176,6 +176,7 @@ describe("enrolling a PC this device brings into the account", () => {
     const mac = await approve("Mac app");
     const lost = await approve("Lost phone");
     await disconnect(lost);
+    // X lists a device this phone never approved
     const stranger = await accountKey();
     x.f.app.context.services.devices.addAccountDevice({ id: accountDeviceId(x.identity.server_id, stranger.public_spki), key: stranger.public_spki, label: "Stranger", role: "drive", account: ACCOUNT, addedBy: onX.device_id! });
 
@@ -489,6 +490,7 @@ describe("enrolling a PC this device brings into the account", () => {
     const onY = await linkY();
     await account.putPc(y.identity.server_id, { label: "nuc", public_key: Array.from(importPublicKey(y.identity.public_key), (byte) => byte.toString(16).padStart(2, "0")).join(""), relay: "wss://relay.example" });
     const before = await accountStore.get("devices");
+    // Y's status, tampered, says the account removed the Mac and this phone's own key
     const link = await connect(y, onY);
     const tampered = async (path: string, init?: RequestInit) => {
       const answer = await pcFetch(link)(path, init);

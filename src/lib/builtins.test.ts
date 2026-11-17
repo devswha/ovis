@@ -1,5 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
+// the module fills in only what is missing: each built-in is taken away first, as an older Safari
+// lacks it, and Bun's own put back afterwards so later test files see the real ones
 const owners: [object, string][] = [[Promise, "withResolvers"], [AbortSignal, "any"]];
 const native = owners.map(([owner, name]) => [owner, name, Object.getOwnPropertyDescriptor(owner, name)] as const);
 for (const [owner, name] of owners) delete (owner as Record<string, unknown>)[name];

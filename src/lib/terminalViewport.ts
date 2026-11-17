@@ -23,9 +23,17 @@ export function validScroll(value: PaneScrollInfo | null | undefined): value is 
     && value.viewport_rows > 0 && value.max_offset_from_bottom >= 0 && value.offset_from_bottom >= 0 && value.offset_from_bottom <= value.max_offset_from_bottom;
 }
 export const SCROLL_POLL_BUSY_MS = 250;
+/** While output is all that moved and the view follows the bottom, a read only learns that the history
+ * grew: this pace keeps the scroll bar current without a request every 250 ms for every busy pane (each one
+ * is a round trip, and behind a metered relay a billed request). A key, wheel or drag that needs fresh
+ * metrics still asks at once. */
 export const SCROLL_POLL_FOLLOW_MS = 2000;
 export const SCROLL_POLL_SETTLE_MS = 1000;
 export const SCROLL_POLL_IDLE_MAX_MS = 15_000;
+/** Delay before the next metrics read after `idleReads` reads in a row with no output, scroll,
+ * resize or visibility change in between: 1 s, 2 s, 4 s, 8 s, then 15 s. Any of those events
+ * resets the count, so a quiet pane stops asking herdr every second yet still catches a scroll
+ * made without output (another client, herdr itself) within the cap. */
 export function idleScrollPollDelay(idleReads: number): number {
   const reads = Number.isFinite(idleReads) && idleReads > 0 ? Math.floor(idleReads) : 0;
   return Math.min(SCROLL_POLL_IDLE_MAX_MS, 1000 * 2 ** Math.min(reads, 4));
@@ -43,6 +51,9 @@ export function sameFindMatch(a: PaneFindMatch | null | undefined, b: PaneFindMa
 }
 const quote = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+/** Native history cells are inclusive. Validate against the attach buffer before painting:
+ * the HTTP reply and terminal bytes have no shared delivery sequence. Never use DOM text,
+ * xterm's lost wrap flags or its selection to fabricate/paint a native match. */
 export function visibleFindRects(matches: readonly PaneFindMatch[], scroll: PaneScrollInfo, query: string, cols: number, rows: number, read: CellReader, current?: PaneFindMatch | null): FindCellRect[] {
   if (!query || !validScroll(scroll) || scroll.viewport_rows !== rows || cols <= 0) return [];
   const top = scroll.max_offset_from_bottom - scroll.offset_from_bottom;

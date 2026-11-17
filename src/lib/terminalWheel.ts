@@ -26,6 +26,7 @@ export function canPanTerminalGrid(view: Pick<HTMLElement, "scrollTop" | "scroll
   return delta < 0 ? view.scrollTop > 1 : delta > 0 && view.scrollTop < view.scrollHeight - view.clientHeight - 1;
 }
 
+/** herdr owns history; xterm owns encoding mouse reports for applications that use them. */
 export function attachTerminalWheel(term: Terminal, state: { readonly current: TerminalWheelState }, viewport: WheelViewport): void {
   term.attachCustomWheelEventHandler((event) => {
     if (viewport.drag(event) || viewport.pan?.(event)) return false;

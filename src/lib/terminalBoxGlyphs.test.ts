@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 
 import { BOX_GLYPHS, boxBackground, boxDrawing, boxRun, boxStrokes, isBoxGlyph, pixelPlacement } from "./terminalBoxGlyphs.ts";
 
+// a cell as an iPhone draws it at 13px: 8 wide, 20 high, a light line 1px and a heavy one 3px
 const draw = (char: string) => boxDrawing(char, 8, 20, 13)!;
 const rects = (char: string) => draw(char).rects.map((r) => [r.x, r.y, r.w, r.h]);
 
@@ -82,11 +83,13 @@ describe("box-drawing characters as painted cells", () => {
   });
 
   it("lands a column's line on the same device pixel whether its cell stands alone or in a run", () => {
+    // column 14 of a 6.50279px grid at 2x: alone in an element at 91.06, and as the 15th cell of a run at 0.03
     const cell = 6.50279;
     const alone = pixelPlacement(14 * cell, 0, Math.round(91.06 * 2) / 2, 0, 2);
     const inRun = pixelPlacement(0, 0, 0, 0, 2);
     const upright = 2.75;
     expect(Math.round(91.06 * 2) / 2 + alone.x(upright)).toBe(inRun.x(14 * cell + upright));
+    // and both edges snap, so a 1px line is 2 device pixels wide wherever it falls
     expect(alone.x(upright + 1) - alone.x(upright)).toBe(1);
     expect(pixelPlacement(0, 0, 0, 0, 1).y(9.5)).toBe(10);
     expect(boxBackground(draw("│"), pixelPlacement(0, 0, 0, 0, 1))).toBe("linear-gradient(currentColor,currentColor) 4px 0px/1px 20px no-repeat");

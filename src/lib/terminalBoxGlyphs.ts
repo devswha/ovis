@@ -1,3 +1,13 @@
+/**
+ * Box-drawing and block characters, drawn instead of taken from a font.
+ *
+ * xterm's DOM renderer writes them as text, and a font's glyph is not the cell: the row is
+ * taller than the font's box, so a vertical line stops short of the row below and every frame
+ * an agent's TUI draws came out as dashes down its sides; a corner did not meet its lines;
+ * and a phone's font draws the heavy forms `━ ┃ ╋` like the light ones, or as `- | +` (#289).
+ * xterm's own fix for this (custom glyphs) exists only in its canvas and WebGL renderers.
+ */
+
 export interface BoxRect { x: number; y: number; w: number; h: number; alpha?: number }
 export interface BoxArc { x: number; y: number; r: number; t: number; right: boolean; down: boolean }
 export interface BoxShape { x: number; y: number; w: number; h: number; image: string }
@@ -57,6 +67,7 @@ export function isBoxGlyph(char: string): boolean {
 
 export const BOX_GLYPHS = /[\u2500-\u259f\ue0b0-\ue0b7]/;
 
+/** Line widths for a font size: a light line is a pixel at 13px, a heavy one three. */
 export function boxStrokes(fontSize: number): { light: number; heavy: number } {
   const light = Math.max(1, Math.round(fontSize / 13));
   return { light, heavy: light * 3 };
@@ -151,6 +162,12 @@ function lineRects(arms: Arms, w: number, h: number, light: number, heavy: numbe
   return joined(rects);
 }
 
+/**
+ * Rectangles that continue each other end to end, as one. Two that meet at half a pixel (the
+ * middle of a 19px row, the edge of a 7.8px cell) are each painted with a soft edge there,
+ * and the line showed a notch. Pieces across first, then pieces down; each pass sorts the
+ * pieces of one line, so a row of a thousand cells costs no more per cell than a short one.
+ */
 function joined(rects: readonly BoxRect[]): BoxRect[] {
   const pass = (list: readonly BoxRect[], across: boolean): BoxRect[] => {
     const lines = new Map<string, BoxRect[]>();

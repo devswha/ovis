@@ -5,6 +5,7 @@ import { terminalLineHeight } from "./terminalLineHeight.ts";
 const row = (charHeight: number, lineHeight: number, ratio: number): number =>
   Math.floor(Math.ceil(charHeight * ratio) * lineHeight) / ratio;
 
+// Hangul's ink (0.913em) and the gap kept below it (0.35em)
 const WANTED_EM = 1.263;
 
 describe("terminalLineHeight", () => {

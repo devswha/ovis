@@ -1,3 +1,8 @@
+/**
+ * The account service as this client calls it (docs/account.md, "Account service API"): the
+ * directory of the account's PCs, and the tokens a sign-in gives. Answers are parsed here, at the
+ * edge; a token is never logged or put in an error's text.
+ */
 import { accountLabel, accountOsOf, type AccountAsker, type AccountOs } from "../../../shared/account-asker.ts";
 import type { AccountLimits } from "../../../shared/protocol.ts";
 import { sha256 } from "@noble/hashes/sha2.js";
@@ -8,6 +13,11 @@ import { GLOBAL_APP } from "../../../shared/relay-regions.ts";
 import type { AccountLock, AccountProvider, AccountSession, AccountStore } from "./store.ts";
 import { ACCOUNT_PROVIDERS, accountLock } from "./store.ts";
 
+/**
+ * The account service this page signs in with, from `<meta name="ovis-account-service">`: an https
+ * origin, or http on loopback for a local test. None, or one that is neither, and the page offers
+ * no sign-in at all, so a build is never left with buttons for a service it cannot reach.
+ */
 export function accountServiceOf(document: { querySelector(selector: string): { getAttribute(name: string): string | null } | null }): string | null {
   const content = document.querySelector('meta[name="ovis-account-service"]')?.getAttribute("content");
   if (!content) return null;
@@ -20,10 +30,22 @@ export function accountServiceOf(document: { querySelector(selector: string): { 
   return url.protocol === "https:" || (url.protocol === "http:" && loopback) ? url.origin : null;
 }
 
+/**
+ * The account service the hosted shell signs in with: the page's (accountServiceOf), but in a browser
+ * only on app.ovis.sh. The service sends a browser back to `<origin>/` for that origin alone, so a
+ * copy served anywhere else (the regional app beside a relay, a preview, a local test run) offers
+ * no sign-in rather than one the service refuses; the phone app comes back through its own scheme.
+ */
 export function shellAccountServiceOf(document: { querySelector(selector: string): { getAttribute(name: string): string | null } | null }, origin: string, nativeApp: boolean): string | null {
   return nativeApp || origin === GLOBAL_APP ? accountServiceOf(document) : null;
 }
 
+/**
+ * The account service a PC's own page signs in with (GitHub's device flow, lib/account/deviceSignIn.ts),
+ * from `<meta name="ovis-pc-account-service">`, which only the PC's server writes (server/static.ts):
+ * an https origin, and only on a secure page, where WebCrypto works and no one on the network could
+ * have rewritten the script that holds the sign-in. The hosted shell has its own meta and redirect.
+ */
 export function pcAccountServiceOf(document: { querySelector(selector: string): { getAttribute(name: string): string | null } | null }, secure: boolean): string | null {
   const content = document.querySelector('meta[name="ovis-pc-account-service"]')?.getAttribute("content");
   if (!secure || !content) return null;
@@ -81,6 +103,7 @@ export interface AccountIdentity {
   readonly added_at: string;
 }
 
+/** A refresh this long before the access token runs out, so a request never leaves with one about to. */
 const REFRESH_EARLY_MS = 60_000;
 
 export class AccountServiceError extends Error {
@@ -90,6 +113,7 @@ export class AccountServiceError extends Error {
   }
 }
 
+/** The sign-in is gone (revoked, expired past refresh, or never made): the client is signed out. */
 export class SignedOutError extends Error {
   readonly code = "signed_out";
   constructor() {
@@ -107,6 +131,7 @@ export interface DirectoryPc {
   readonly label: string;
   readonly added_at: string;
   readonly last_seen_at: string | null;
+  /** the PC's relay key (X25519, 64 hex) and relay, to compare digits with it; null from an entry without them */
   readonly public_key: string | null;
   readonly relay: string | null;
 }
@@ -119,6 +144,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** The service's error code only: its message is the service's text, which could echo a token, so it is never kept. */
 export async function failure(response: Response): Promise<AccountServiceError> {
   let code = "http_error";
   try {
@@ -171,6 +197,7 @@ export function sessionOf(body: unknown, service: string, now: number): AccountS
   return { service, account, provider: provider as AccountProvider, access_token, refresh_token, expires_at: now + expires_in * 1000, sign_in_id: newRecordId() };
 }
 
+/** The id of a sign-in saved without one: a digest of the refresh token it was saved with, the same in every tab. */
 function legacySignInId(refreshToken: string): string {
   return `saved-${bytesToHex(sha256(utf8ToBytes(refreshToken)).subarray(0, 16))}`;
 }
@@ -179,6 +206,7 @@ export function sameSignIn(a: AccountSession, b: AccountSession): boolean {
   return a.refresh_token === b.refresh_token || (a.sign_in_id !== undefined && a.sign_in_id === b.sign_in_id);
 }
 
+/** `POST /v1/token`: a code, a refresh token or a native Apple token for a session; `bearer` redeems a linking sign-in. */
 export async function requestToken(service: string, grant: Record<string, string>, options: { fetch?: Fetch; now?: () => number; bearer?: string } = {}): Promise<AccountSession> {
   const now = options.now ?? Date.now;
   const response = await (options.fetch ?? fetch)(new URL("/v1/token", service), {
@@ -196,6 +224,15 @@ export interface AccountServiceOptions {
   readonly signIn?: AccountSession;
 }
 
+/**
+ * Calls on the signed-in account. An access token about to run out is refreshed first; a refused
+ * refresh, or a 401 after one, signs this client out (the stored session goes) and throws
+ * SignedOutError. PC pairings are untouched: they never depended on the sign-in.
+ *
+ * Refresh tokens rotate and a second use ends the whole sign-in, so one refresh runs at a time
+ * between tabs (the lock), and a refresh stores its answer only over the session it started from:
+ * another tab's refresh, a sign-out or a new sign-in meanwhile wins.
+ */
 export class AccountService {
   private readonly fetch: Fetch;
   private readonly now: () => number;
@@ -207,6 +244,15 @@ export class AccountService {
     this.lock = options.lock ?? accountLock;
   }
 
+  /**
+   * The stored sign-in. One saved before sign-ins had an id (`sign_in_id`) gets one here, in the store: without it
+   * its first refresh, which changes the refresh token, would make every copy read before it another sign-in
+   * (sameSignIn), and a call bound to such a copy (forSignIn) would then refuse its own sign-in.
+   *
+   * The id is worked out from the session itself, so tabs of this build give one sign-in the same id, and it is
+   * given in the same update of the store that reads the session: a copy from here always carries the id the
+   * store holds, whichever tab named it. A sign-in made meanwhile has an id of its own (sessionOf).
+   */
   async session(): Promise<AccountSession | undefined> {
     let seen: AccountSession | undefined;
     try {
@@ -231,6 +277,7 @@ export class AccountService {
     return pcs.map(parsePc).filter((pc): pc is DirectoryPc => pc !== null);
   }
 
+  /** Lists a PC in the account's directory, with its relay key and relay so a new device can compare digits with it. */
   async putPc(serverId: string, entry: { label: string; public_key: string; relay: string }): Promise<void> {
     await this.call("PUT", `/v1/pcs/${serverId}`, entry);
   }
@@ -239,10 +286,18 @@ export class AccountService {
     await this.call("DELETE", `/v1/pcs/${serverId}`);
   }
 
+  /**
+   * Says this signed-in device waits at that PC with its account key: the account's other devices
+   * hear of it, and the PC takes a comparison that asks to join the account for 10 minutes.
+   */
   async postAdmission(serverId: string, label: string, key: string, os: AccountOs | null = null): Promise<void> {
     await this.call("POST", "/v1/admissions", { server_id: serverId, label, key, ...(os === null ? {} : { os }) });
   }
 
+  /**
+   * The account's admissions of the last 10 minutes, straight from the account service: what a PC
+   * passes on cannot change them. Each says who is asking, as far as the service knows (null each).
+   */
   async recentAdmissions(): Promise<Admission[]> {
     const body = await this.call("GET", "/v1/admissions");
     const list = isRecord(body) && Array.isArray(body.admissions) ? body.admissions : [];
@@ -270,6 +325,16 @@ export class AccountService {
       .map(({ provider, added_at }) => ({ provider, added_at }));
   }
 
+  /**
+   * Adds `provider` to the signed-in account on purpose, through a redirect sign-in only (a device
+   * code can be phished): the service hands a one-time link token, `signIn` runs that provider's
+   * sign-in with it and redeems the code with this account's access token (`bearer`), and only then
+   * does the service link it. Its session replaces the one this client had, which then ends at the
+   * service. An answer for any other account is ended and refused, and the session stays as it was;
+   * an identity another account already has is refused (SignInError `in_use`) and nothing changes.
+   * A sign-in older than ten minutes gets 403 `reauth_required` before anything starts: the caller
+   * asks the person to sign in again, then repeats. The link is redeemed by this same sign-in.
+   */
   async addMethod(provider: AccountProvider, signIn: (linkToken: string, bearer: string) => Promise<AccountSession>): Promise<AccountSession> {
     const body = await this.call("POST", "/v1/identities/link", { provider });
     const linkToken = isRecord(body) && typeof body.link_token === "string" && body.link_token !== "" ? body.link_token : null;
@@ -293,6 +358,7 @@ export class AccountService {
       return result;
     });
     if (outcome === "signed-out") {
+      // signed out (or into another account) meanwhile: the new sign-in must not outlive that
       await end(after, "a link that finished after a sign-out");
       throw new SignedOutError();
     }
@@ -300,14 +366,26 @@ export class AccountService {
       await end(after, "a link's sign-in no tab keeps");
       return (await this.session()) ?? after;
     }
+    // the old sign-in's tokens would otherwise live on at the service until they expire
     await end(before, "the replaced sign-in");
     return after;
   }
 
+  /**
+   * Removes a sign-in method; the service refuses the account's last one (409 `last_identity`), and
+   * like a link wants a sign-in made in the last ten minutes (403 `reauth_required`).
+   */
   async removeIdentity(provider: AccountProvider): Promise<void> {
     await this.call("DELETE", `/v1/identities/${provider}`);
   }
 
+  /**
+   * Deletes the signed-in account and everything the service keeps under it, for good. Like a change
+   * to the sign-in methods it wants a sign-in made in the last ten minutes (403 `reauth_required`), and
+   * the service refuses it while a subscription still renews (409 `subscription_active`). What this device
+   * keeps of the deleted sign-in is forgotten by its caller (deleteAccount.ts), with `forSignIn` so that a
+   * sign-in made meanwhile is never the one deleted.
+   */
   async deleteAccount(): Promise<void> {
     await this.call("DELETE", "/v1/account");
   }
@@ -318,10 +396,17 @@ export class AccountService {
     return isRecord(body) && typeof body.queued === "number" ? body.queued : 0;
   }
 
+  /**
+   * Ends the sign-in on the service, then here. An expired access token is refreshed first, so the
+   * service really ends the sign-in's tokens; the session goes here whatever the service answers, and
+   * a revocation the service did not confirm throws, so the caller can say so. Only the session it
+   * ended goes: a new sign-in made while the service answers (the phone app's page stays open) stays.
+   */
   async signOut(): Promise<void> {
     await this.lock(async () => {
       const stored = await this.session();
       if (stored === undefined) return;
+      // signed in again since the sign-in this service is for: that one's tokens are ended, and the new sign-in stays
       const from = this.options.signIn;
       const replaced = from !== undefined && !sameSignIn(stored, from);
       const session = replaced ? from : stored;
@@ -361,6 +446,7 @@ export class AccountService {
     return carried;
   }
 
+  /** A session whose access token is good, refreshing once between tabs; `stale` is a token the service just refused. */
   private async fresh(stale?: string): Promise<AccountSession> {
     const foreign = (session: AccountSession | undefined): boolean => this.options.signIn !== undefined && (session === undefined || !sameSignIn(session, this.options.signIn));
     const session = await this.session();
@@ -371,6 +457,7 @@ export class AccountService {
       const current = await this.session();
       if (foreign(current)) throw new SignedOutError();
       if (current === undefined) return this.signedOut();
+      // another tab refreshed while this one waited: its tokens are the ones to use
       if (current.access_token !== (stale ?? session.access_token)) return current;
       return this.refreshed(current);
     });

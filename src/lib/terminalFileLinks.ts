@@ -3,6 +3,10 @@ import { fileUriPath } from "../../shared/fileUri.ts";
 import { isCodeName } from "./filePaths.ts";
 import { inMacApp, inNativeApp } from "./nativeApp.ts";
 
+/**
+ * Whether this page can keep a browser tab to reuse. The iOS, Android, Mac and desktop apps hand an
+ * external address to the system browser, so the window they give back is never that tab.
+ */
 export function canReuseExternalLinkTab(): boolean {
   return !inNativeApp() && !inMacApp() && !(typeof navigator !== "undefined" && /\bElectron\//.test(navigator.userAgent));
 }
@@ -13,6 +17,11 @@ const CALL = /\s*\((?!\d+(?:,\d+)?\))/y;
 const FILE_URI = /file:\/\/\/[^\s<>"`]+/gi;
 const MAX_LINE_CHARS = 8192;
 
+/**
+ * A URI this app opens in a new tab: an http(s) address and nothing else. Both link paths in
+ * PaneTerminal answer to it, so a line crafted to look like a link cannot hand the browser a
+ * scheme of its own choosing (`javascript:`, `data:`, an OS handler).
+ */
 export function isWebLink(uri: string): boolean {
   return /^https?:\/\//i.test(uri);
 }
@@ -101,6 +110,7 @@ export function bareNameLinks(mac: boolean) {
     hovered.decorations.underline = held;
   };
   return {
+    /** the key that follows a bare name: Cmd on a Mac, Ctrl elsewhere */
     pressed: (event: { metaKey: boolean; ctrlKey: boolean }): boolean => mac ? event.metaKey : event.ctrlKey,
     // read when xterm first hovers the link; the hover's own write lands on nothing until xterm swaps them
     decorations: (): ILinkDecorations => ({

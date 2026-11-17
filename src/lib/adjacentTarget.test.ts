@@ -21,6 +21,7 @@ function roster(workspaces: WorkspaceInfo[], tabs: TabInfo[], panes: HerdrPane[]
 const nothingViewed = () => undefined;
 
 describe("adjacentTabPane", () => {
+  // herdr's order (the tab strip's) is the snapshot's, not the tab numbers
   const tabs = [tab("w1:t2", "w1"), tab("w1:t1", "w1"), tab("w2:t1", "w2"), tab("w1:t3", "w1")];
   const panes = [pane("p1", "w1:t1"), pane("p2", "w1:t2"), pane("p3a", "w1:t3"), pane("p3b", "w1:t3"), pane("q1", "w2:t1")];
   const snapshot = roster([workspace("w1"), workspace("w2")], tabs, panes);

@@ -1,7 +1,16 @@
 import type { Terminal } from "@xterm/xterm";
 
+/**
+ * How tall a terminal row is drawn. xterm makes a row as tall as the Latin font's line, and
+ * Hangul fills the height of its line where Latin's lowercase does not: in Menlo's 15px line at
+ * 13px a syllable leaves 2.5px to the next row, and Korean lines read crowded. So the row is made
+ * as tall as a syllable's ink and a gap of HANGUL_GAP_EM below it, and no taller: a Latin font
+ * whose line is already that tall (JetBrains Mono, Noto Sans Mono) keeps its rows as they are.
+ */
+
 /** The ink of the terminal's Hangul, Ovis Hangul Mono (D2Coding's outlines): 0.78em above the baseline to 0.133em below. */
 export const HANGUL_INK_EM = 0.913;
+/** The gap left between two Korean rows: 4.6px at 13px, Menlo's 16.5px row on a 2x screen. */
 const HANGUL_GAP_EM = 0.35;
 /** xterm counts a row in whole device pixels: a factor a hair above the quotient keeps its floor on the wanted pixel. */
 const ROUNDING = 0.001;

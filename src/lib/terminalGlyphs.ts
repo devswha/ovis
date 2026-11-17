@@ -1,8 +1,44 @@
+/**
+ * xterm's DOM renderer sizes every cell from the Latin font and gives each glyph the
+ * difference to its cells as letter-spacing, which lands after the glyph: a narrower glyph
+ * sits at the left edge of its cells. With a 1em CJK fallback beside a 0.54em Latin cell
+ * (Linux) that leftover is a pixel. Apple's Menlo cell is 0.6em, though, and no font on
+ * iPhone draws Hangul wider than 0.87em, so every syllable trailed a 4px gap and Korean read
+ * as falling apart (kana and Han too, at 0.87em to 1em).
+ *
+ * So each span the renderer draws with extra spacing is adjusted after the fact:
+ * - a glyph in two cells that fills less than FILL of them is drawn wider, up to
+ *   MAX_SCALE, the way a CJK coding font sizes it against its Latin. It is widened before it
+ *   is enlarged: the row is as tall as the Latin font's line, and a syllable enlarged to fill
+ *   Menlo's 1.2em of two cells grew as tall as the row, so Korean lines nearly touched;
+ * - the glyph is centered in its cells: padding moves the text right by half the spacing
+ *   left over, a negative margin takes it back after the span so the next span keeps its
+ *   column, and a clip trims the trailing half so an underline stays on its own cells.
+ *   All of that goes on a span inside xterm's, which keeps the cells' background and block
+ *   cursor: a stretched or clipped box ends inside a device pixel, and a background painted
+ *   there left a line of the pane between it and the next cell's (a light seam after every
+ *   Korean word in a dark block).
+ * A glyph wider than its cells is left to run over, as in a native terminal.
+ *
+ * The renderer also hands the browser each cell's text as written, and two kinds of text
+ * draw wrong on iPhone:
+ * - iOS Safari draws only the first of two stacked marks on a decomposed letter (`e` +
+ *   U+0302 + U+0301, as in a Vietnamese file name from a Mac), so such text is shown composed
+ *   (NFC), and decomposed Hangul with it, which then measures as the syllable it is;
+ * - iOS draws a symbol that is text by default, such as ⏺ (the bullet before every Claude
+ *   Code message), as a color emoji two cells wide in its one cell, so a symbol that
+ *   overflows its cell is asked for its text form (U+FE0E).
+ * Copy reads xterm's buffer, not the DOM, and still returns what the pane wrote.
+ */
 import type { Terminal } from "@xterm/xterm";
 
 import { BOX_GLYPHS, boxBackground, boxDrawing, boxRun, isBoxGlyph, pixelPlacement, type BoxDrawing } from "./terminalBoxGlyphs.ts";
 
 const MIN_SPACING_PX = 1;
+/**
+ * A glyph filling this much of its cells is left as drawn (a 1em CJK glyph on Linux fills
+ * 93%); a narrower one is centered, and a two-cell one enlarged to fill this much.
+ */
 const FILL = 0.9;
 const MAX_SCALE = 1.2;
 const MAX_STRETCH = 1.1;
@@ -352,6 +388,17 @@ export function adjustTerminalGlyphs(term: Terminal): () => void {
     }
   };
 
+  /**
+   * Paints the boxes of a pass. Text and boxes each round their width to the layout's own
+   * unit, so a box sits a fraction of a pixel off its column, differently in every row, and
+   * the browser rounds each element's corner its own way before painting (measured at 2x:
+   * the same column's line fell a device pixel apart in a row where its cell stood alone and
+   * in one where it was the fifteenth of a run). So the lines go on a layer inside the box
+   * that is put on a whole device pixel of the grid at the column the box stands in, and are
+   * placed from there (pixelPlacement). Everything is counted inside the grid (a grid shown
+   * scaled or panned is measured back to its own pixels), so every row lands alike whenever
+   * it was drawn. All boxes are measured first and painted after: one layout, however many.
+   */
   const placeBoxes = (): void => {
     const made = placed;
     placed = [];
@@ -376,6 +423,20 @@ export function adjustTerminalGlyphs(term: Terminal): () => void {
     });
   };
 
+  /**
+   * The icon font and the Hangul face are fetched only once a pane prints an icon or Korean that
+   * reaches them (unicode-range, and no font ahead of them drawing it), after xterm and this module
+   * measured those characters with whatever stood in for them, and both keep what they measured. So
+   * a character drawn while a face that covers it has not loaded follows that face
+   * (followLateFaces): its own `loaded` promise tells when it arrives, as no event can (WebKit, in
+   * Safari and Ovis for Mac's window, fires no `loadingdone` for a face a stylesheet loads). Then,
+   * once a frame whatever number of faces arrived, the widths here start over, the font family is
+   * set again in a form that reads differently and means the same, so xterm measures anew, and every
+   * row is drawn again: xterm keeps the rows it drew while the cell stays the same size, and only a
+   * row drawn again is fitted again. The widths are cleared here rather than when the family reads
+   * differently: two arrivals set it back as it was. A face that never loads leaves the fallback as
+   * measured.
+   */
   const lateFaces = followLateFaces(document.fonts as FontFaceSet | undefined, (callback) => { requestAnimationFrame(callback); }, () => {
     widths.clear();
     viewFits.clear();
@@ -413,6 +474,11 @@ export function adjustTerminalGlyphs(term: Terminal): () => void {
     // a span), which a canvas can measure differently (Hangul on macOS WebKit: 13px against 11.2px)
     const xtermMeasure = term.element?.querySelector<HTMLElement>(".xterm-width-cache-measure-container .xterm-char-measure-element");
     if (view.classList.contains("active") && cellWidth > 0 && xtermMeasure) {
+      // xterm rewrites the box several times for each key an IME takes (its text, place and font), and
+      // reading offsetWidth makes the browser recalculate the whole page's style first: measured on
+      // every rewrite, fast Korean typing kept the main thread busy and the box lagged behind. A fit
+      // is measured once for its glyph and font; a face that arrives late clears it with the widths
+      // the device pixel ratio too: xterm measures its cells again when the page zooms or the window changes screen
       const key = `${first}\u0000${fontWeight}\u0000${fontSize}\u0000${fontFamily}\u0000${cellWidth}\u0000${globalThis.devicePixelRatio ?? 1}`;
       let fit = viewFits.get(key);
       if (fit === undefined) {

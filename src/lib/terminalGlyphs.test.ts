@@ -3,6 +3,7 @@ import type { Terminal } from "@xterm/xterm";
 
 import { adjustTerminalGlyphs, coversAny, displayText, followLateFaces, glyphFit, graphemes, iconScale, type LateFace, oversizedIcon, stretchedView, textPresentation } from "./terminalGlyphs.ts";
 
+// iPhone Safari at 13px: Menlo cells are 7.84px, Hangul from Apple SD Gothic Neo 11.24px
 const IOS_CELL = 7.8367;
 const IOS_HANGUL = 11.245;
 
@@ -38,6 +39,7 @@ describe("glyphFit", () => {
 
 describe("icons fitted to their cells", () => {
   it("takes a Nerd Font icon wider than its cell for one to fit, and nothing else", () => {
+    // Symbols Nerd Font Mono advances 1em: 13px against a 6.5px cell
     expect(oversizedIcon("\uf07b", 13, 6.5)).toBe(true);
     expect(oversizedIcon("\u{f0219}", 13, 7.8)).toBe(true);
     expect(oversizedIcon("\uf07b", 7, 6.5)).toBe(false);
@@ -83,6 +85,7 @@ describe("displayText", () => {
   });
 });
 
+// PaneTerminal.css's faces, as FontFace gives them back (Chrome quotes the family, WebKit does not)
 const ICON_RANGE = "U+e000-f8ff, U+f0000-ffffd";
 const HANGUL_RANGE = "U+3131-318e, U+ac00-d7a3";
 const STACK = '"Symbols Nerd Font Mono", Pretendard Variable, Menlo, "Noto Sans Mono CJK KR", "Ovis Hangul Mono", monospace';

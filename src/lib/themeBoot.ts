@@ -69,12 +69,17 @@ export function resolveTheme(setting: ThemeSetting): ResolvedTheme {
   return typeof window !== "undefined" && window.matchMedia?.(DARK_QUERY).matches === false ? "light" : "dark";
 }
 
+/**
+ * The imported themes and the one chosen for either side (customThemes.ts), in a key of their own:
+ * an older tab of this browser saving the whole main record does not drop them.
+ */
 export const CUSTOM_THEMES_STORAGE_KEY = "ovis:custom-themes";
 
 export const CUSTOM_ROWS_STORAGE_KEY = "ovis:custom-theme-rows";
 
 export const THEME_VARS: readonly string[] = [...Object.keys(ROLES), "notice-tint", ...INDICATOR_ROLES, ...Object.values(LIGHT_ANSI_ROLES)];
 
+/** A stored colour or shadow as the derivation writes them: hex, rgba(), lengths and var(--border), and nothing that fetches. */
 const SAFE_VALUE = /^[#a-z0-9(),.\s-]{1,120}$/i;
 const isColor = (value: unknown): value is string => typeof value === "string" && /^#[0-9a-f]{6}$/.test(value);
 

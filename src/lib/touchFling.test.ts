@@ -74,6 +74,7 @@ describe("the finger's speed at the lift", () => {
   });
 
   test("is none for a tap that jittered: under the touch slop no speed flings", () => {
+    // 3 px in 8 ms is 0.375 px/ms, over the slowest fling, and 2 px in one timestamp counts as 2 px/ms
     for (const moves of [[[8, 3]], [[0, 2]], [[4, 2], [8, -3], [12, FLING_SLOP_PX - 1]]]) {
       const tracker = createVelocityTracker();
       tracker.add(0, 0);

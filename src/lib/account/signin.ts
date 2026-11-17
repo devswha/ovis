@@ -1,3 +1,9 @@
+/**
+ * Signing in with GitHub, Google or Apple through the account service: OAuth's authorization code with
+ * PKCE, the service standing between this client and the provider. The service sends the browser
+ * back with the code in the fragment, which no request carries, so the code never reaches the
+ * host that serves the app.
+ */
 import { toBase64Url } from "../../../shared/relay-pair-sas.ts";
 import { AccountServiceError, requestToken } from "./service.ts";
 import type { AccountProvider, AccountSession, AccountStore, PendingSignIn } from "./store.ts";
@@ -17,6 +23,10 @@ function random(bytes: number): string {
   return toBase64Url(crypto.getRandomValues(new Uint8Array(bytes)));
 }
 
+/**
+ * Where to send the browser to sign in; the verifier and state wait in the store for the return.
+ * `linkToken` (AccountService.addMethod) adds the provider to the signed-in account instead.
+ */
 export async function beginSignIn(provider: AccountProvider, options: { store: AccountStore; service: string; redirectUri: string; now?: () => number; linkToken?: string }): Promise<string> {
   const verifier = random(32);
   const state = random(16);
@@ -48,10 +58,19 @@ export function signInReturn(params: string): SignInReturn | null {
   return error === null ? null : { error, state };
 }
 
+/**
+ * Trades the returned code for a session, once: the sign-in its `state` names is taken in one
+ * transaction, so a return opened twice does nothing, and one this client never started touches no
+ * sign-in that is still waiting.
+ */
 export interface FinishOptions {
   readonly store: AccountStore;
   readonly fetch?: Fetch;
   readonly now?: () => number;
+  /**
+   * the signed-in session's access token: a linking sign-in is redeemed by the sign-in that asked for
+   * it, and is not stored here; AccountService.addMethod keeps it only if that sign-in is still current
+   */
   readonly bearer?: string;
 }
 
@@ -81,6 +100,11 @@ export async function finishSignIn(returned: SignInReturn, options: FinishOption
   return session;
 }
 
+/**
+ * Finishes the sign-in `started` began, from what came back: a return naming another sign-in's
+ * state (an older one, or one never started here) is refused before anything is consumed, and the
+ * sign-in this call started is dropped whatever the outcome, so it cannot be finished later.
+ */
 export async function finishOwnSignIn(started: string, back: string, options: FinishOptions): Promise<AccountSession> {
   const state = new URL(started).searchParams.get("state") ?? "";
   const returned = signInReturn(back);

@@ -1,3 +1,10 @@
+/**
+ * Copied text from an agent's pane, as one paragraph per paragraph (#2558). An agent on the
+ * alternate screen (Claude Code, Codex) wraps its reply itself: it breaks a paragraph at the pane
+ * width and starts each continuation row at its block's hanging indent, so those breaks are real
+ * rows on the grid, and both xterm's selection and herdr's `pane.selection.read` return them with
+ * the newline and the indent. herdr's own TUI copies the same rows as one line.
+ */
 import { herdrWidthProvider } from "./terminalWidths.ts";
 
 const MARKER = /^(?:[⏺●•◦▪*+-]|[⎿└]|\d{1,3}[.)])\s+/u;

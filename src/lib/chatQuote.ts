@@ -27,6 +27,11 @@ export function onQuoted(paneKey: string, listener: () => void): () => void {
   };
 }
 
+/**
+ * Puts `quote` into the draft of the pane `paneKey` (its `paneStorageId`) and hands the keyboard to
+ * its composer. The draft goes to an agent alone from then on, as a draft carrying comments does
+ * (#511): a shell would read its `>` lines as redirects. False: it would not fit, and nothing changed.
+ */
 export function quoteIntoComposer(paneKey: string, quote: string): boolean {
   return quote.trim() === "" || blockIntoComposer(paneKey, quoteBlock(quote));
 }

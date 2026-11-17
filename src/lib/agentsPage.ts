@@ -14,6 +14,11 @@ export interface AgentsPageRow {
 export interface AgentsPage {
   rows: AgentsPageRow[];
   otherProviders: UsageProviderId[];
+  /**
+   * herdr's integrations no row shows: agents not on the PC, or ones the catalog does not know; found
+   * ones first. One with neither its agent nor its hook on the PC is left out: herdr lists every
+   * built-in one, so it would only say what the PC does not have (Install another agent offers those).
+   */
   otherIntegrations: AgentIntegration[];
   installable: AgentCatalogRow[];
   installsUnknown: boolean;

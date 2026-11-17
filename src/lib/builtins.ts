@@ -1,3 +1,11 @@
+/**
+ * The built-ins the app calls that are newer than the oldest Safari it runs on, filled in where the
+ * browser lacks them (#2513). That Safari is 16.4: the app's regular expressions look behind,
+ * which no earlier one parses, so an iPhone 8 or X (capped at iOS 16) runs the app from iOS 16.4.
+ * Imported first by main.tsx, before any module that may call one as it loads. A real module, not
+ * an inline script: the Content-Security-Policy allows only the app's own files.
+ */
+
 const define = (owner: object, name: string, value: unknown): void => {
   if (name in owner) return;
   Object.defineProperty(owner, name, { value, writable: true, configurable: true, enumerable: false });

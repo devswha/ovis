@@ -20,6 +20,7 @@ export function terminalDraftVersion(owner: string): number {
 const unsaved = new Set<string>();
 const PREFIX = "ovis:terminal-line:";
 export const TERMINAL_LINE_LIMIT = 32_768;
+/** the herdr each line that looks like a key was typed under: it stays in this page alone while that herdr does */
 const keyLifetimes = new Map<string, string | null | undefined>();
 function lifetimeOf(owner: string): string | null | undefined {
   const pane = paneStateKey(PREFIX + owner);
@@ -29,10 +30,11 @@ export function readTerminalDraft(owner: string): string {
   if (memory.has(owner)) return memory.get(owner)!;
   let stored = "";
   try { stored = (paneLifetimes.paneStorage.getItem(PREFIX + owner) ?? "").slice(0, TERMINAL_LINE_LIMIT); } catch { return ""; }
+  // a key an earlier release stored leaves storage on its first read, and stays in this page
   if (looksLikeKey(stored)) {
     memory.set(owner, stored);
     keyLifetimes.set(owner, lifetimeOf(owner));
-    try { paneLifetimes.paneStorage.removeItem(PREFIX + owner); } catch {}
+    try { paneLifetimes.paneStorage.removeItem(PREFIX + owner); } catch { /* storage refused: retirement still never archives it */ }
   }
   return stored;
 }
@@ -42,6 +44,7 @@ export function writeTerminalDraft(owner: string, text: string): void {
   if (sent && !value.startsWith(sent.written)) sent.canClear = false;
   memory.set(owner, value);
   versions.set(owner, terminalDraftVersion(owner) + 1);
+  // a key is never written down: not to storage, nor to the recovery a herdr replacement leaves
   const key = looksLikeKey(value);
   if (key) keyLifetimes.set(owner, lifetimeOf(owner));
   else keyLifetimes.delete(owner);
@@ -56,12 +59,15 @@ export function writeTerminalDraft(owner: string, text: string): void {
   notify();
 }
 
+// keys an earlier release stored, for panes this page may never open
 if (typeof window !== "undefined") paneLifetimes.forgetLineKeys();
 
+// another herdr took the PC's pane IDs: its lines are read again from where they now are
 paneLifetimes.onRetire((machineId) => {
   for (const owner of new Set([...memory.keys(), ...versions.keys()])) {
     const pane = paneStateKey(PREFIX + owner);
     if (pane?.machineId !== machineId) continue;
+    // a key typed under the herdr the PC still has (storage took its record late) stays where it is
     if (memory.has(owner) && keyLifetimes.has(owner) && keyLifetimes.get(owner) === paneLifetimes.generation(machineId)) continue;
     keyLifetimes.delete(owner);
     const line = memory.get(owner);

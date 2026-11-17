@@ -61,6 +61,7 @@ describe("state stamps: when this device saw a state begin", () => {
     page.see(T + 11 * MIN + 5000, look({ a: ["idle", 1], b: ["blocked", 3], c: ["working", 4] }));
     expect(page.since("c", "working")).toBeNull();
 
+    // nor do its looks at the herdr another one replaced: that one finds its agents again over its first moments
     const replaced = device();
     replaced.see(T, look({ a: ["idle", 1] }));
     replaced.see(T + 10 * MIN, look({ a: ["idle", 1] }, "herdr-2"));
@@ -137,12 +138,14 @@ describe("state stamps: when this device saw a state begin", () => {
     page.see(T, look({ a: ["idle", 1] }));
     page.see(T + MIN, look({ a: ["working", 2] }));
     page.reload();
+    // a Claude whose turn ended while a subagent kept herdr at working, and that works again: one finish counted, herdr's counter where it was
     page.see(T + 600 * MIN, look({ a: ["working", 2, 1] }));
     expect(page.since("a", "working")).toBeNull();
   });
 
   it("trusts no kept stamp of an agent whose state Ovis reads itself: herdr's counter stands whatever it does", () => {
     const page = device();
+    // here herdr's counter even moved with the change, as it may for what herdr takes the pane for
     page.see(T, look({ a: ["idle", 5, 0, OWN] }));
     page.see(T + MIN, look({ a: ["working", 6, 0, OWN] }));
     expect(page.since("a", "working")).toBe(T + MIN);
@@ -236,6 +239,7 @@ describe("state stamps: when this device saw a state begin", () => {
       if (pushed) page.see(T + 10 * MIN, look({ a: ["working", 2, 1, WAITING] }));
       page.see(T + 10 * MIN + 1000, look({ a: ["working", 3, 1, WAITING] }));
       expect(page.since("a", "working")).toBe(T + MIN);
+      // the subagent's notice starts the next turn: herdr turns from done to working, told by a pushed status first
       page.see(T + 12 * MIN, look({ a: ["working", 3, 1] }));
       page.see(T + 12 * MIN + 1000, look({ a: ["working", 4, 1] }));
       expect(page.since("a", "working")).toBe(T + MIN);
@@ -308,6 +312,7 @@ describe("state stamps: when this device saw a state begin", () => {
   });
 
   it("says no time for a pane back from a missed look in the state it left in where herdr's counter does not stand: another agent may have been started there", () => {
+    // herdr-core names no counter: an agent that rested, and one started in its pane a moment later, read the same
     const uncounted = device();
     uncounted.see(T, look({ a: ["working"] }));
     uncounted.see(T + MIN, look({ a: ["idle"] }));
@@ -324,6 +329,7 @@ describe("state stamps: when this device saw a state begin", () => {
     counted.see(T + 11 * MIN, look({ a: ["working", 4] }));
     expect(counted.since("a", "working")).toBe(T + 11 * MIN);
 
+    // herdr's counter stands for an agent whose state Ovis reads itself whatever it did meanwhile
     const own = device();
     own.see(T, look({ a: ["idle", 5, 0, OWN] }));
     own.see(T + MIN, look({ a: ["working", 5, 0, OWN] }));
@@ -333,6 +339,7 @@ describe("state stamps: when this device saw a state begin", () => {
   });
 
   it("does not take the stamp of an agent that left for another tab's stamp of the one that comes after it", () => {
+    // herdr-core names no counter. An agent rests and leaves in one moment, and nothing else changes until another is started in its pane
     const page = device();
     page.see(T, look({ a: ["working"] }));
     page.see(T + MIN, look({ a: ["idle"] }));

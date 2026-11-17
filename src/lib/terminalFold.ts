@@ -1,6 +1,19 @@
 import type { IBufferCell, IBufferLine, ITheme, Terminal } from "@xterm/xterm";
 import { canPanTerminalGrid, forwardWheel } from "./terminalWheel.ts";
 
+/*
+ * The folded view of a grid wider than its screen that this browser does not size. A Windows PC's
+ * herdr has no terminal attach, so the bridge repaints the pane at the pane's own size on that PC
+ * (server/mirror.ts) and a phone cannot resize it; an attached pane a phone only watches, or holds
+ * under its keyboard, is drawn at the pty's grid, which another device sized. Drawn as it is, every
+ * row ran off the right edge. The grid stays as it is, unseen, so whatever reads it (the masked
+ * prompt, the agent's input row, Find) still reads what herdr drew (for an attached pane, what the
+ * attach stream drew: never a pane read); this view draws its rows again as text that wraps at the
+ * screen's width, the way Collie draws a pane read (AltanS/collie, web/src/components/ansi-output.tsx:
+ * SGR runs in a pre-wrap block; no code is taken from it). A full-screen program's boxes and
+ * right-aligned bars fold with the text: the pane menu's "Original width" draws the grid as it is again.
+ */
+
 export const MIRROR_WRAP_QUERY = "(pointer: coarse), (max-width: 768px)";
 
 export const wideGridKey = (machineId: string, paneId: string): string => `${machineId}\n${paneId}`;
@@ -160,6 +173,13 @@ const cursorStyle = (shape: FoldCursor["shape"], theme: ITheme): string => {
   return "";
 };
 
+/**
+ * One grid row as HTML, its cells grouped in runs drawn alike, without the blank cells it ends with:
+ * herdr pads every row to the grid's width, and folded those would add an empty line to each row.
+ * `scratch` is a cell to read into (xterm reuses it for every getCell). `cursor`, on the cursor's row:
+ * its cell is drawn on its own (FOLD_CURSOR_CLASS), the blank cells up to it included; past the last
+ * column (a write that filled the row, waiting to wrap) it stands on the last cell, as xterm draws it.
+ */
 export function rowHtml(line: IBufferLine, cols: number, theme: ITheme, scratch: IBufferCell, minimumContrast = 1, cursor: FoldCursor | null = null): string {
   let end = 0;
   for (let x = 0; x < cols; x++) {
@@ -284,6 +304,15 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { foreign,
     const row = cursorRow();
     return active && row ? view.offsetTop + row.offsetTop + row.offsetHeight : null;
   };
+  // The hidden grid holds xterm's input: its helper textarea and an IME's preedit stand at the grid's
+  // cursor, and the input bounds keep them inside the part of the grid in view. Folded rows are taller
+  // than the grid, so the grid moves down with them until its cursor row lies on the folded cursor row:
+  // a preedit is drawn where the text it adds will show. It never reaches past the folded rows' end.
+  // A cursor the grid shows (an attached pane's: a mirror hides it) is drawn in the folded rows, and the
+  // grid moves down to the folded line it is on and sideways to its column, so the input stands on it even
+  // in an earlier part of a long folded row. Sideways it scrolls within .xterm (overflow hidden, as wide as
+  // the mount) as far as that goes, and moves by `left` for the rest: moved by `left` alone, .xterm's box
+  // would leave the input outside its own clip, and the browser would scroll it back.
   // It moves by `top` (.xterm is relative), not a transform: a transform would make the grid a stacking
   // context, and the preedit (xterm's helpers, z-index 5) would go under the folded rows drawn after it.
   const align = (): void => {

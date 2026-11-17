@@ -67,6 +67,12 @@ export function inboxWords(input: { group: AgentGroup; blocked: string | null; q
   return input.last;
 }
 
+/**
+ * Since when a row is in its state (ms): a waiting agent since this device saw it begin to wait (`waitStart`, the
+ * stamp the Agents list reads too, lib/agentStateSince.ts), else since its last message (herdr tells no time of a
+ * state change: the summary's time of its last words, which a done or ready row draws too, where the Agents list says
+ * none); a working agent since the user last asked it, any other since its last words.
+ */
 export function inboxSinceAt(group: AgentGroup, summary: RowSummary | null | undefined, waitStart: number | null): number | null {
   if (group === "blocked") return waitStart ?? summary?.at ?? null;
   if (!summary) return null;

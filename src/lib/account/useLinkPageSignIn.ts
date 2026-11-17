@@ -1,3 +1,12 @@
+/**
+ * Signing in from a button outside Settings (the relay tab of Add a connection): the sign-in starts
+ * on the Ovis link page (deviceSignIn.ts, startLinkPageSignIn) in a new tab, with its code filled in,
+ * and this page waits for it there. The tab is opened blank in the click itself, so no popup blocker
+ * takes it, and pointed at the page once the service named it; in the desktop app that blank window
+ * hands the page to the system browser (app/electron/src/main.ts, guard). A blocked tab leaves the
+ * page and its code to open from here. Unmounting ends a sign-in still waiting, as Settings' does.
+ * A sent tab stays open (no opener by design); after cancellation its old code never completes here.
+ */
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { deviceLabel, deviceOs } from "../phone.ts";

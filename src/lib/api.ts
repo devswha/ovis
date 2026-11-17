@@ -172,6 +172,7 @@ export async function setStatusline(enabled: boolean): Promise<StatuslineState> 
   return await (await sendJson("/api/usage/statusline", "POST", { enabled })).json() as StatuslineState;
 }
 
+/** Local server's CLIProxyAPI controls; secrets are only ever sent, never read back. */
 export function cliProxyRequest<T>(path = "", init: RequestInit = {}): Promise<T> {
   return getJson<T>(`/api/cliproxy${path}`, { ...init, cache: "no-store", signal: init.signal ?? AbortSignal.timeout(60_000) });
 }
@@ -264,6 +265,7 @@ export async function requestPortal(action: "start" | "stop", relay?: string, au
   if (!response.ok) throw await errorFrom(url, response);
 }
 
+/** A private link for `name`, good for `days`: a bearer secret the server keeps nowhere, so this is the one time it is read. */
 export async function issuePortalInvite(name: string, days: number): Promise<PortalInvite> {
   const url = "/api/portal/invite";
   const response = await apiFetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ name, days }) });
@@ -426,8 +428,16 @@ export async function fetchSession(machineId = "local"): Promise<SessionSnapshot
   return body.snapshot;
 }
 
+/** PCs whose herdr rejected `recent_unwrapped`: an older herdr, read row by row from then on. */
 const wrappedOnly = new Set<string>();
 
+/**
+ * GET /api/pane/read as the chat view reads it: herdr's own scrollback (up to
+ * `lines`), ANSI-stripped text. herdr owns scrollback — the attach stream cannot
+ * serve history, so the transcript reads it back instead. `recent_unwrapped`
+ * rejoins the rows the terminal soft-wrapped, so a line reflows to the chat's
+ * width instead of breaking where the pty's columns ended.
+ */
 export async function fetchPaneTranscript(paneId: string, lines: number, machineId = "local", signal?: AbortSignal): Promise<PaneReadResult> {
   const read = async (source: "recent" | "recent_unwrapped"): Promise<PaneReadResult> => {
     const query = new URLSearchParams({ pane_id: paneId, source, format: "text", lines: String(lines) });
@@ -516,6 +526,11 @@ function sessionNow(pane: string): string | undefined {
   return movingSessions.get(pane.slice(0, pane.indexOf("\u0000")))?.token ?? paneSessions.get(pane);
 }
 
+/**
+ * The session names the conversation: herdr reports the pane's agent_session, and its PC has said nothing
+ * since. A press read is started and taken only then: a pane with no reported session can change
+ * conversation with nothing on the client changing, so its chat asks the server on mount, as before #2562.
+ */
 function namesSession(session: string | undefined): boolean {
   return session !== undefined && !movingToken(session) && !session.endsWith("\u0000");
 }
@@ -529,6 +544,11 @@ export function paneSessionKey(pane: Pick<HerdrPane, "agent" | "agent_session">)
   return `${pane.agent ?? ""}\u0000${pane.agent_session?.value ?? ""}`;
 }
 
+/**
+ * Takes every pane's session from a roster as it arrives, before any chat renders from it. A herdr that
+ * replaced another reuses its pane IDs, so the session is the herdr's too; a pane the roster no longer
+ * lists has none.
+ */
 export function observePaneSessions(machines: readonly { id: string; snapshot: { herdr_lifetime?: string; panes: readonly Pick<HerdrPane, "pane_id" | "agent" | "agent_session" | "cwd" | "foreground_cwd">[] } | null }[], readAfter?: number): void {
   for (const machine of machines) {
     if (machine.snapshot === null) continue;
@@ -596,6 +616,13 @@ export const PRESS_READ_MS = 1000;
 const lastNewestRead = new Map<string, number>();
 let newestReads = 0;
 
+/**
+ * Starts the first read of a chat that a press is about to open (a tab or a sidebar row, before
+ * the pick renders), with the query ChatView's mount read sends. Sent at the press, it answers
+ * before the herdr calls the pick sets off, which herdr 0.9.0 holds about 250 ms when they overlap.
+ * A pane whose chat is mounted (pinned: shown, or kept in the tab cache) reads it itself, so
+ * nothing starts for it.
+ */
 export function prefetchPaneConversation(paneId: string, machineId: string, prompts: number): void {
   const pane = paneKey(paneId, machineId);
   if (pinnedConversations.has(pane) || !namesSession(sessionNow(pane))) return;
@@ -700,13 +727,20 @@ async function readPaneConversation(paneId: string, machineId: string, page: Con
 export interface HealthInfo {
   ok: boolean;
   herdr: HerdrIdentity;
+  /** this Ovis server's version (`0.5.3`), authenticated only; absent from an older server */
   version?: string;
+  /** `server_id`: this PC's relay ID, told to an authenticated browser where the PC has one; absent from an older server */
   web_ui?: { boot_id: string | null; revision: string | null; server_id?: string };
   auth?: HealthAuth;
+  /** authenticated only; absent from an older server */
   relay?: RelayStatus;
+  /** present only while this server is reachable beyond this PC with no token and nothing paired */
   lan_exposure?: LanExposure;
+  /** present only while lan_exposure is not: the relay's direct carrier listens on this PC's network, for relay-paired devices only */
   direct_exposure?: DirectExposure;
+  /** authenticated only; absent from an older server, which the summary shows as unavailable */
   security?: SecuritySummary;
+  /** authenticated only; absent from an older server and until the server's first look for hc has ended */
   herdr_core?: HerdrCoreFacts;
   herdr_runtime?: HerdrRuntimeFacts;
 }
@@ -715,6 +749,11 @@ export async function fetchHealth(): Promise<HealthInfo> {
   return await getJson<HealthInfo>("/api/health");
 }
 
+/**
+ * POST /api/auth. Resolves once the server has set its HttpOnly session cookie;
+ * there is nothing to store client-side. Throws ApiError (401 `invalid_token`) on
+ * a mismatch.
+ */
 export async function authenticate(token: string): Promise<void> {
   const response = await apiFetch("/api/auth", {
     method: "POST",
@@ -725,6 +764,7 @@ export async function authenticate(token: string): Promise<void> {
   resumeConnectionTraces();
 }
 
+/** POST /api/devices/pair: the code shown on the PC, once; the server answers with this device's own HttpOnly cookie. */
 export async function pairDevice(code: string, label: string): Promise<void> {
   const response = await apiFetch("/api/devices/pair", { method: "POST", headers: { "content-type": "application/json", "x-herdr-machine": "1" }, body: JSON.stringify({ code, label }) });
   if (!response.ok) throw await errorFrom("/api/devices/pair", response);
@@ -751,15 +791,22 @@ export async function revokeDevice(id: string): Promise<void> {
   await sendJson(`/api/devices/${encodeURIComponent(id)}`, "DELETE", {});
 }
 
+/**
+ * POST /api/devices/revoke-all: every paired device loses its pairing access in one durable step,
+ * this browser's own included (the answer clears its device cookie). The access token, the PC
+ * itself and its Tailscale login get in as before.
+ */
 export async function revokeAllDevices(): Promise<DevicesRevokedAll> {
   return (await sendJson("/api/devices/revoke-all", "POST", {})).json();
 }
 
+/** DELETE /api/auth: clears the session and device cookies, so the next health check reports the gate again. */
 export async function signOut(): Promise<void> {
   const response = await apiFetch("/api/auth", { method: "DELETE" });
   if (!response.ok) throw await errorFrom("/api/auth", response);
 }
 
+/** Portal's own sign-out, answered by its gateway and never by this server: a same-origin POST that clears Portal's session cookie for this address. */
 export async function signOutOfPortal(): Promise<void> {
   const url = "/_portal/auth/logout";
   const response = await apiFetch(url, { method: "POST" });
@@ -833,6 +880,7 @@ export async function fetchPaneScroll(paneId: string, machineId = "local"): Prom
   return (await getJson<{ scroll: PaneScrollInfo | null }>(machinePath(machineId, `pane/scroll?pane_id=${encodeURIComponent(paneId)}`))).scroll;
 }
 
+/** POST /api/pane/scroll: moves the viewport; herdr redraws the attached terminal. */
 export async function scrollPane(paneId: string, offsetFromBottom: number, machineId = "local"): Promise<PaneScrollInfo | null> {
   const response = await sendJson(machinePath(machineId, "pane/scroll"), "POST", { pane_id: paneId, offset_from_bottom: offsetFromBottom });
   return ((await response.json()) as { scroll: PaneScrollInfo | null }).scroll;
@@ -857,6 +905,7 @@ export async function closePane(paneId: string, machineId = "local"): Promise<vo
   await sendJson(machinePath(machineId, "pane/close"), "POST", { pane_id: paneId });
 }
 
+/** POST /api/pane/focus: herdr brings this pane and its tab/workspace to the front. */
 export async function focusPane(paneId: string, machineId = "local"): Promise<void> {
   await sendJson(machinePath(machineId, "pane/focus"), "POST", { pane_id: paneId } satisfies FocusPaneRequest);
 }
@@ -865,10 +914,17 @@ export async function renamePane(paneId: string, label: string, machineId = "loc
   await sendJson(machinePath(machineId, "pane/rename"), "POST", { pane_id: paneId, label });
 }
 
+/** POST /api/agent/rename: the live name of the agent in the pane, what `herdr agent prompt <name>` addresses; null clears it. */
 export async function renameAgent(paneId: string, name: string | null, machineId = "local"): Promise<void> {
   await sendJson(machinePath(machineId, "agent/rename"), "POST", { pane_id: paneId, name } satisfies AgentRenameRequest);
 }
 
+/**
+ * POST /api/pane/split: a new pane beside this one in herdr (its prefix+v / prefix+-), answered as
+ * herdr lists it. herdr's focus stays put unless `focus` asks for the new pane, which the caller then
+ * opens itself (movingHerdrFocus); the sidebar and the tab strip learn of it from the server's
+ * session-changed broadcast.
+ */
 export async function splitPane(paneId: string, direction: SplitPaneDirection, focus = false, machineId = "local"): Promise<PaneInfo> {
   const request = sendJson(machinePath(machineId, "pane/split"), "POST", { pane_id: paneId, direction, ...(focus ? { focus: true } : {}) } satisfies SplitPaneRequest)
     .then(async (response) => ((await response.json()) as PaneSplit).pane);
@@ -891,6 +947,7 @@ export async function swapPaneWith(paneId: string, targetPaneId: string, machine
   return movingHerdrFocus(machineId, request);
 }
 
+/** POST /api/pane/move: the pane goes to that side of another pane of its tab; herdr's focus moves on the way and back, so its events wait as a swap's do. */
 export async function movePaneBeside(paneId: string, targetPaneId: string, side: PaneDirection, machineId = "local"): Promise<PaneMoved> {
   const request = sendJson(machinePath(machineId, "pane/move"), "POST", { pane_id: paneId, target_pane_id: targetPaneId, side } satisfies MovePaneRequest)
     .then(async (response) => (await response.json()) as PaneMoved);
@@ -901,6 +958,7 @@ export async function setSplitRatio(tabId: string, path: boolean[], ratio: numbe
   await sendJson(machinePath(machineId, "layout/ratio"), "POST", { tab_id: tabId, path, ratio } satisfies SetSplitRatioRequest);
 }
 
+/** POST /api/pane/resize: the border the pane shares with a neighbour moves that way, by herdr's default share (0.05) of the split the border belongs to. */
 export async function resizePane(paneId: string, direction: PaneDirection, machineId = "local"): Promise<PaneResized> {
   const response = await sendJson(machinePath(machineId, "pane/resize"), "POST", { pane_id: paneId, direction } satisfies ResizePaneRequest);
   return (await response.json()) as PaneResized;
@@ -1046,6 +1104,11 @@ export async function mergePullRequest(target: PullRequestTarget, merge: Pick<Pu
 
 export type { CreateTabRequest, CreateWorkspaceRequest } from "../../shared/protocol.ts";
 
+/**
+ * POST /api/workspace/create: a new herdr workspace (and an agent started in its root
+ * pane when `agent` is given). Slow when an agent starts: herdr waits for the agent's
+ * interactive prompt (up to 60s) before answering.
+ */
 export async function createWorkspace(request: CreateWorkspaceRequest, machineId = "local"): Promise<WorkspaceCreated> {
   const response = await sendJson(machinePath(machineId, "workspace/create"), "POST", request);
   return (await response.json()) as WorkspaceCreated;
@@ -1119,6 +1182,7 @@ export async function moveWorkspace(workspaceId: string, insertIndex: number, ma
   return (await response.json().catch(() => ({ ok: true }))) as WorkspaceMoved;
 }
 
+/** closeGroup takes the repository's open worktree workspaces with it; herdr refuses to close over them otherwise. */
 export async function closeWorkspace(workspaceId: string, machineId = "local", closeGroup = false): Promise<void> {
   await sendJson(machinePath(machineId, "workspace/close"), "POST", { workspace_id: workspaceId, ...(closeGroup ? { close_group: true } : {}) });
 }
@@ -1129,6 +1193,8 @@ export async function removeWorktree(request: RemoveWorktreeRequest, machineId =
 }
 
 export async function fetchPaneCommands(paneId: string, machineId = "local"): Promise<SlashCommand[]> {
+  // a read that never answers would be shared by every later caller for good: it fails at a deadline instead,
+  // past the 45 s the server waits for a scan before it answers 503 (server/commands.ts COMMANDS_WAIT_MS)
   return (await withChatReadDeadline((signal) => getJson<{ commands: SlashCommand[] }>(machinePath(machineId, `pane/commands?pane_id=${encodeURIComponent(paneId)}`), { signal }), 4 * chatReadDeadlineMs(machineId))).commands;
 }
 
@@ -1219,6 +1285,12 @@ export async function sendTestPush(endpoint: string): Promise<void> {
   await sendJson("/api/push/test", "POST", { endpoint });
 }
 
+/**
+ * POST /api/push/status: what the server knows of this browser's own subscription (the one its
+ * PushManager holds, never the selected PC's), once it has proven the keys. `null` when the
+ * server does not know it: another owner's, a stranger's or never registered are one answer.
+ * A server from before the route throws its 404 `not_found` (`routeMissing`).
+ */
 export async function fetchPushSubscriptionStatus(subscription: PushSubscriptionJSON): Promise<PushSubscriptionStatus | null> {
   try {
     return await (await sendJson("/api/push/status", "POST", { subscription })).json() as PushSubscriptionStatus;
@@ -1258,6 +1330,7 @@ export async function verifySourceBoot(machineId: string, signal: AbortSignal): 
   }
 }
 export async function machineRequest<T>(path: string, method = "GET", body?: unknown): Promise<T> {
+  // x-herdr-update: an owner's actions on its PCs (updates, turning one on, approving an install) need it, as this PC's own updates do
   const response = await apiFetch(`/api/machines${path}`, { method, headers: { "content-type": "application/json", "x-herdr-machine": "1", "x-herdr-update": "1" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   if (!response.ok) throw await errorFrom("/api/machines", response);
   return response.json();
@@ -1269,10 +1342,17 @@ export interface SshCandidate {
 export const findSshCandidates = () => machineRequest<{ pcs: SshCandidate[] }>("/ssh-candidates");
 export interface TailnetPc { readonly name: string; readonly url: string; readonly relay: string | null; readonly outdated: boolean }
 export const findTailnetPcs = () => machineRequest<{ pcs: TailnetPc[] }>("/tailnet");
+/** Another PC of the account as the page read it from the account's directory: its key checked against its id here too. */
 export interface AccountPcEntry { readonly server_id: string; readonly server_public_key: string; readonly relay: string; readonly name: string }
 export type AccountPcState = "ready" | "outdated" | "offline";
 export const checkAccountPcs = (pcs: readonly AccountPcEntry[]) => machineRequest<{ pcs: { server_id: string; state: AccountPcState }[] }>("/relay/account/check", "POST", { pcs });
+/** POST /api/machines/relay/account/start: the key this PC would hold for that PC, for the admission to name; ApiError `account_pc_outdated` for an older one. */
 export const startAccountPc = (pc: AccountPcEntry) => machineRequest<{ ticket: string; key: string; label: string }>("/relay/account/start", "POST", { pc });
+/**
+ * POST /api/machines/relay/account/pair: compares digits with that PC through the relay, `onDigits` told them once that
+ * PC took the request, and resolves with the PC once a member of the account approved it there. Aborting `signal`
+ * cancels it on this PC's server too. ApiError `account_pc_<failure>` otherwise.
+ */
 export async function pairAccountPc(ticket: string, onDigits: (digits: string) => void, signal: AbortSignal): Promise<Machine> {
   const url = "/api/machines/relay/account/pair";
   const response = await apiFetch(url, { method: "POST", signal, headers: { "content-type": "application/json", "x-herdr-machine": "1", "x-herdr-update": "1" }, body: JSON.stringify({ ticket }) });
@@ -1296,12 +1376,14 @@ export const startMachineSetup = (request: SetupRequest) => machineRequest<Setup
 export const fetchMachineSetup = (id: string) => machineRequest<SetupJob>(`/setup/${encodeURIComponent(id)}`);
 export const answerMachineSetup = (id: string, action: SetupAction) => machineRequest<SetupJob>(`/setup/${encodeURIComponent(id)}`, "POST", action);
 
+/** GET /api/voice: whether the server holds a key; the key itself never comes back. */
 export async function fetchVoiceStatus(): Promise<VoiceStatus> {
   const response = await apiFetch("/api/voice", { cache: "no-store" });
   if (!response.ok) throw await errorFrom("/api/voice", response);
   return (await response.json()) as VoiceStatus;
 }
 
+/** Settings → Alerts → Also send to: the destination this PC also posts its alerts to, its URL or token masked. */
 export function fetchAlertWebhook(): Promise<AlertWebhookView> {
   return getJson<AlertWebhookView>("/api/alerts/webhook", { cache: "no-store" });
 }
@@ -1322,6 +1404,7 @@ export async function testAlertWebhook(): Promise<void> {
   if (!response.ok) throw await errorFrom("/api/alerts/webhook/test", response);
 }
 
+/** PUT /api/voice/config: ApiError 409 `key_from_env` when the key comes from OVIS_OPENAI_API_KEY. */
 export async function saveVoiceConfig(update: VoiceConfigUpdate): Promise<VoiceStatus> {
   const response = await apiFetch("/api/voice/config", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(update) });
   if (!response.ok) throw await errorFrom("/api/voice/config", response);

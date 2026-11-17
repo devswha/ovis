@@ -1,5 +1,6 @@
 import { getTransport } from "./transport.ts";
 
+/** Only this app's API gets correlation metadata; never change the global fetch function. */
 export function apiFetch(url: string, init?: RequestInit): Promise<Response> {
   const origin = typeof location === "undefined" ? "http://localhost" : location.origin;
   const target = new URL(url, origin);

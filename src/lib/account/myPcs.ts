@@ -1,3 +1,9 @@
+/**
+ * My PCs: the account's directory, which this client does not trust, merged with the PCs this
+ * client is paired with, which it does. A PC in the directory alone still needs this device
+ * approved; its name there is only a label, and its key comes from comparing digits, never from
+ * the directory (docs/account.md, rule 6).
+ */
 import type { RelayDevice } from "../relay/device.ts";
 import { enrollmentOf, type EnrollmentState } from "../relay/device.ts";
 import { exportPublicKey } from "../../../shared/relay-e2ee.ts";
@@ -28,9 +34,19 @@ export interface MyPc {
   readonly last_seen_at: string | null;
   readonly added_at: string | null;
   readonly listed: boolean;
+  /** this device holds an admitted key for it, so it can open; whatever its state says */
   readonly paired: boolean;
+  /**
+   * this device signs in to it with the account key, so removing the device through the account
+   * reaches it; a pairing from before the account is not covered until it is linked
+   */
   readonly linked: boolean;
   readonly enrollment?: EnrollmentState;
+  /**
+   * For a PC this device is not paired with: its relay key (base64, as an offer carries it) and
+   * relay, to compare digits with it. Only when the key is the one the PC's id is derived from,
+   * so the directory cannot point this device at another PC (docs/account.md, rule 6).
+   */
   readonly join?: { readonly server_public_key: string; readonly relay: string };
 }
 

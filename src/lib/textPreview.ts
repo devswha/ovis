@@ -6,6 +6,13 @@ export function hasPreview(language: string | null): boolean {
   return language === "markdown";
 }
 
+/**
+ * How many elements a Preview may draw. Its parse runs in a worker, but drawing is on the page: in
+ * Chromium a list of 65 536 items (about 131 000 elements) held it for 1.6 s, about 12 µs an
+ * element. It bounds the whole Preview's memory and work; no single task draws it all, since the
+ * viewer adds it a chunk at a time (PREVIEW_CHUNK_ELEMENTS). A file past it opens as its source, "Too
+ * long to preview".
+ */
 export const PREVIEW_ELEMENT_LIMIT = 60_000;
 
 /**
@@ -30,6 +37,11 @@ export function previewElements(blocks: readonly MarkdownBlock[]): number {
   return 1 + blockElements(blocks);
 }
 
+/**
+ * How many elements a Preview draws in one task. The whole Preview at once is one task proportional
+ * to the file: 256 KB of ordinary notes (about 30 000 elements) held a CI runner's page past a
+ * second. A chunk this size is about 25 ms on a desktop, and the Preview fills in one per task.
+ */
 export const PREVIEW_CHUNK_ELEMENTS = 2_000;
 
 export function previewChunks(blocks: readonly MarkdownBlock[], limit = PREVIEW_CHUNK_ELEMENTS): MarkdownBlock[][] {

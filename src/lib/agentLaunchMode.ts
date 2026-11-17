@@ -18,6 +18,11 @@ export interface LaunchCapabilities {
   model: boolean;
   efforts: readonly string[];
   ultracode: boolean;
+  /**
+   * the first prompt goes on the command line after an end-of-options separator, which the agent's
+   * parser verifiably takes as the prompt and never as a subcommand or a flag; otherwise the bridge
+   * queues the message for the agent's first ready turn (POST .../create `first_message`)
+   */
   positionalPrompt: boolean;
 }
 

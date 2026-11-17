@@ -65,6 +65,11 @@ const loaded = new WeakMap<Terminal, Loaded>();
 
 const holding = new WeakMap<Terminal, { resumes: Array<() => void>; timer: ReturnType<typeof setTimeout> }>();
 let unavailable = false;
+/**
+ * How long output waits for the addon's chunk: a stalled fetch (a phone on a slow link) must not stop the
+ * pane. The mount acknowledges what waits, so the server's flow control (server/output-window.ts) does not
+ * take the wait for a reader that stopped.
+ */
 const PICTURES_WAIT_MS = 1000;
 const waitedOut = new WeakSet<Terminal>();
 const release = (terminal: Terminal): void => {
@@ -105,6 +110,13 @@ function pictureColour(picture: CanvasImageSource | undefined): number[] | null 
 
 const SIZE_REPORTS = { getWinSizePixels: true, getCellSizePixels: true, getWinSizeChars: true };
 
+/**
+ * Settings -> Terminal -> Pictures in the terminal: draws sixel and iTerm2 inline images (imgcat,
+ * img2sixel, chafa, yazi) with xterm's image addon, loaded only once the setting is on. It does not
+ * draw kitty's graphics protocol. The pictures reach the tab only where the attach stream carries
+ * them: herdr-core passes a pane's output on as it is, herdr draws the pane from its own grid again
+ * and drops them; a pane drawn again (attached anew) comes back without its pictures either way.
+ */
 export function terminalDrawsPictures(terminal: Terminal): boolean {
   return loaded.get(terminal)?.enabled === true;
 }

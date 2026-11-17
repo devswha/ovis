@@ -1,3 +1,13 @@
+/**
+ * The alert sound: a short chime the open tab plays itself when an alert is due. It is page
+ * audio, not a system notification, so it is heard where notifications stay quiet - a macOS
+ * Focus, Do Not Disturb - as long as a tab of the app is open.
+ *
+ * A browser lets a page play audio only after the user interacted with it, so the audio context
+ * is made and resumed from a tap or key (`unlockAlertSound`); until then a chime is skipped,
+ * never queued to sound late.
+ */
+
 export type AlertSoundKind = "blocked" | "done";
 
 export const CHIME_NOTES: Readonly<Record<AlertSoundKind, readonly number[]>> = {
@@ -26,6 +36,7 @@ function contextClass(): typeof AudioContext | undefined {
 export async function unlockAlertSound(): Promise<boolean> {
   const Context = contextClass();
   if (!Context) return false;
+  // a context the browser closed never resumes: the next gesture makes a new one
   if (!context || context.state === "closed") context = new Context();
   // suspended before the first gesture, or "interrupted" (iOS Safari, after a call or a switch away):
   // both resume from a gesture

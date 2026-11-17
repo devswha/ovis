@@ -19,6 +19,12 @@ export const ACCOUNT_QR_WATCH_EVENT = "ovis:account-qr-watch";
 
 const newest = (devices: readonly PairedDevice[]): PairedDevice | null => devices.reduce<PairedDevice | null>((latest, device) => latest === null || device.created_at > latest.created_at ? device : latest, null);
 
+/**
+ * Who put the PC in `account`: a member of that account (its row carries the account, whose key signed its link), never
+ * a device that only holds the code. The newest member that came since `known` was read; without one, the account's
+ * newest member on the PC (a device paired before that linked itself meanwhile). Null when no row is a member: then
+ * nobody is named. The same rule as `ovis add` (scripts/plugin-link.ts `addedBy`).
+ */
 export function addedBy(devices: readonly PairedDevice[], known: ReadonlySet<string>, account: string): PairedDevice | null {
   const members = devices.filter((device) => device.account === account);
   return newest(members.filter((device) => !known.has(device.id))) ?? newest(members);
@@ -78,6 +84,15 @@ export function resetAccountQrWatch(): void {
   notice = null;
 }
 
+/**
+ * Watches a PC that was in no account (`known`) after its QR code came down, and ends with the first thing to tell:
+ * the PC joined an account, or a device nobody vouched for is due to be asked about.
+ * `ended` settles once the code's end was asked of the PC: true when the PC answered, so a read begun after it that
+ * finds no new device proves nobody got in, and the watch ends there. Otherwise (the request failed, or the code
+ * was never known) it lasts as long as the code can (ACCOUNT_QR_LATE_MS).
+ * `linger`: the devices that got in were kept (and count in `known`), so only the PC joining an account, or a device
+ * that came through the relay, is left to tell, and no read ends the watch early.
+ */
 export function watchEndedAccountQr(known: AccountQrBaseline, ended: Promise<boolean>, linger = false): void {
   stopAccountQrWatch();
   let live = true;

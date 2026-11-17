@@ -111,6 +111,7 @@ describe("sign-in methods", () => {
     const attacker = memoryAccountStore();
     const session = await redirectSignIn(fake, "github", attacker);
     const token = await linkToken(fake, session.access_token, "google");
+    // the victim opens the attacker's link URL: their own Google identity, their own client, no attacker token
     fake.signInAs("google", "acct_victim");
     const victim = memoryAccountStore();
     await expect(redirectSignIn(fake, "google", victim, { linkToken: token })).rejects.toMatchObject({ code: "invalid_grant" });

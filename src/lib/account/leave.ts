@@ -1,3 +1,10 @@
+/**
+ * Leaving the account from this device (docs/account.md, rule 5; design "sign out"): a `remove`
+ * for its own account key, signed by that key, goes to the mailbox of every PC of the account, so
+ * each PC revokes this device the next time it collects its mail; then the sign-in ends and this
+ * device forgets its account key and the pairings that used it. Signing out only ends the sign-in
+ * and keeps every pairing, as one made by QR code is kept.
+ */
 import { newRecordId, signAccountRecord } from "../../../shared/account-records.ts";
 import type { RemoveRecord } from "../../../shared/account-records.ts";
 import type { RelayDeviceStore } from "../relay/device.ts";
@@ -7,10 +14,15 @@ import { post, rememberDevice, type PcFetch } from "./join.ts";
 
 export interface LeaveResult {
   readonly remove: RemoveRecord;
+  /** PCs this device signs in to with the account key that the account does not list: no remove reached them, so their pairing is kept */
   readonly unconfirmed: readonly string[];
   readonly queued?: readonly string[];
 }
 
+/**
+ * `session` is the sign-in the person left from, read when they asked: every call is made for it
+ * alone, so a sign-in made meanwhile is never sent removals, signed out or forgotten.
+ */
 export async function leaveAccount(options: { service: AccountService; accountStore: AccountStore; relayStore: RelayDeviceStore; session: AccountSession; now?: () => number }): Promise<LeaveResult> {
   const { session } = options;
   const service = options.service.forSignIn(session);
@@ -31,6 +43,7 @@ export async function leaveAccount(options: { service: AccountService; accountSt
   try {
     const pcs = (await service.listPcs()).map((pc) => pc.server_id);
     for (let start = 0; start < pcs.length; start += 32) await service.postRecord(pcs.slice(start, start + 32), remove);
+    // only pairings on PCs the remove went to are forgotten: one on a PC the account does not list (or of another account) still works there
     const listed = new Set(pcs);
     const forgotten = new Set<string>();
     for (const device of await options.relayStore.list()) {
@@ -41,6 +54,7 @@ export async function leaveAccount(options: { service: AccountService; accountSt
     }
     for (const serverId of new Set(linking)) if (!forgotten.has(serverId) && !unconfirmed.includes(serverId)) unconfirmed.push(serverId);
   } catch (error) {
+    // nothing was left: links with this key go out again
     await options.accountStore.update("leaving", (current) => {
       const { [leave]: _failed, ...rest } = current ?? {};
       return Object.keys(rest).length > 0 ? rest : undefined;
@@ -49,10 +63,18 @@ export async function leaveAccount(options: { service: AccountService; accountSt
   }
   try { await service.signOut(); }
   catch (error) { console.warn("Ovis: the account service did not confirm the sign-out", error instanceof Error ? error.name : error); }
+  // the account's PCs tombstone this key: never sign in with it again (a kept pairing holds its own copy of the key)
   await options.accountStore.clear((current) => !sameSignIn(current, session));
   return { remove, unconfirmed };
 }
 
+/**
+ * Disconnects another device of the account from every PC of it (a lost phone): a `remove` for
+ * its account key, signed by this device's. A PC applies it only when this device is one of its
+ * members, so it goes to the PCs this device is linked on, first through the account service and
+ * then at once on the PC this window is in (`here`); the account's other PCs are named back as not
+ * reached, for another member to disconnect it there.
+ */
 export async function removeFromAccount(options: {
   service: AccountService; accountStore: AccountStore; relayStore: RelayDeviceStore; key: string; account: string; here?: PcFetch; hereId?: string; now?: () => number;
 }): Promise<LeaveResult> {
@@ -65,6 +87,7 @@ export async function removeFromAccount(options: {
     v: 1, kind: "remove", account: session.account, key: options.key,
     issued_at: new Date((options.now ?? Date.now)()).toISOString(), id: newRecordId(), signer: own.public_spki,
   }, own.private_key);
+  // kept before it is sent: a PC this device brings into the account later tombstones the key, and never gets an add for it
   await rememberDevice(options.accountStore, remove);
   const linked = new Set((await options.relayStore.list()).filter((device) => device.public_spki === own.public_spki && device.account === session.account).map((device) => device.server_id));
   if (options.here) {

@@ -5,6 +5,11 @@ const BEAT_MS = 5_000;
  * the same measure for a pane missing from a roster (lib/agentStateSince.ts).
  */
 export const BLIND_MS = 90_000;
+/**
+ * How long after a read took a silent stream at its word the stream may still prove to have been
+ * dead: its socket probes the connection as the page comes back and drops one that does not answer
+ * twice (lib/ws.ts, 3 s each at first).
+ */
 const VERDICT_MS = 30_000;
 
 export type UnseenLook = "first" | "undated";

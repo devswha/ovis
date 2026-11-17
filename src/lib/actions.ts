@@ -40,12 +40,18 @@ export interface AppActions {
   inboxMode: { on: boolean; go: () => void } | null;
   openSidebarFilter: () => void;
   toggleTheme: () => void;
+  /** Sign out of token/device authentication; null for automatic local/Tailscale access. */
   lock: (() => Promise<void>) | null;
   enableNotifications: (() => void) | null;
   refresh: () => void;
   openFiles: (() => void) | null;
   openLocalPage: ((url: string) => void) | null;
   searchConversation: (() => void) | null;
+  /**
+   * herdr's split beside the selected pane (its prefix+v and prefix+-), null without a pane. The
+   * selection stays on this pane, as herdr's --no-focus keeps its focus, unless `focus` asks for
+   * the new pane: then herdr focuses it and the app opens it.
+   */
   splitPane: ((direction: SplitPaneDirection, focus?: boolean) => void) | null;
   zoomPane: ((mode: ZoomMode) => void) | null;
   toggleZoom: (() => void) | null;

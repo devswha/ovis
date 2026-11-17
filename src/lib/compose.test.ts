@@ -136,6 +136,9 @@ describe("omo command completion", () => {
 describe("composerMessage and submitNote", () => {
   it("keeps the message as written for agent.prompt: inner newlines stay, the composer's own trailing ones go", () => {
     expect(composerMessage("line one\r\nline two\n\n")).toBe("line one\nline two");
+    // line breaks that do not end the message are read in one pass, by the rule the server reads them with
+    // (withoutTrailingBreaks): as a pattern they cost their count squared, a third of a second for the 20,000 the
+    // composer takes
     expect(composerMessage(`${"\n".repeat(60_000)}a\n\n`).length).toBe(60_001);
   });
 
@@ -209,6 +212,7 @@ describe("composerMessage and submitNote", () => {
   });
 
   it("offers to send anyway only when the server showed the box and named no draft", () => {
+    // a refusal over another agent's box keeps its note where herdr labels the pane Claude Code (an OmO with its SDK child)
     expect(submitNote("input_draft", AGENT_INPUT_DRAFT_MESSAGE, "claude")).toBe(submitNote("input_draft", "x", "gjc"));
     expect(submitNote("input_draft", "x", "claude")).not.toBe(submitNote("input_draft", "x", "gjc"));
     expect(submitNote("input_draft", CLAUDE_FOLDED_DRAFT_MESSAGE, "claude")).not.toBe(submitNote("input_draft", "x", "claude"));
@@ -624,6 +628,8 @@ describe("the menu over a catalog the server built", () => {
 });
 
 describe("claudeMainAtRest", () => {
+  // the real shape of a Claude screen whose main turn ended while two subagents ran: herdr's claude
+  // manifest still says working (a braille title spinner, plus background_agents_working)
   const restingWithSubagents = [
     "  Waiting for 2 background agents to finish",
     "  ◯ impl-mismatch2-sonnet      Resume store-mismatch build        24m 28s · ↓ 132.6k tokens",

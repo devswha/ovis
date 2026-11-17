@@ -6,6 +6,11 @@ export interface ComposerStrip {
   branch: string | null;
 }
 
+/**
+ * What the strip draws, or null when there is nothing to draw. `repo` is the repository a linked worktree
+ * belongs to: its name stands in the folder's place, since a worktree's checkout folder is its branch again
+ * (herdr names it the branch with dashes) and the branch is already at the strip's other end.
+ */
 export function composerStrip(input: { cwd?: string | null | undefined; branch?: string | null | undefined; repo?: string | null | undefined }): ComposerStrip | null {
   const path = input.cwd !== undefined && input.cwd !== null && input.cwd.trim() !== "" ? input.cwd : null;
   const branch = input.branch !== undefined && input.branch !== null && input.branch.trim() !== "" ? input.branch.trim() : null;

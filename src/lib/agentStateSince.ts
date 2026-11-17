@@ -1,3 +1,22 @@
+/**
+ * How long each agent has been in its state (#3505). herdr reports no time of change, so this device
+ * stamps a change when it sees one and keeps the stamps, per PC and pane, across reloads. Done and
+ * idle are one state here: reading a finished agent turns done into idle, and looking is not the
+ * agent doing anything. A state this device did not see begin has no stamp, and its row says no
+ * time rather than a wrong one.
+ *
+ * A kept stamp is trusted by a look that did not see its state begin only on proof that the state
+ * held meanwhile. Two counters give it together: herdr's `state_change_seq`, which moves with every
+ * state of herdr's own, and the server's `finish_id`, which moves whenever the status Ovis shows
+ * turns done. The state Ovis shows is not always herdr's (a Claude whose turn ended while a
+ * subagent keeps herdr at working rests; server/core/status.ts), and every way back to a state
+ * left that way passes a finish. For the agents whose state Ovis reads from their own session
+ * files, herdr's counter stands still whatever they do, so nothing proves their stamps. The server
+ * counts a pane's finishes by its ID (server/finishes.ts): a count is held against another only
+ * where both were counted under the same ID. One thing no counter follows: the hold that a turn's
+ * background work puts on a row at rest (`background_wait`, server/background-wait.ts). A hold
+ * that began and ended wholly out of sight leaves a kept stamp of that rest standing.
+ */
 import type { Machine } from "../../shared/machines.ts";
 import type { AgentStatus } from "../../shared/protocol.ts";
 import { agentGroup, type AgentGroup } from "./agentRoster.ts";
@@ -16,11 +35,21 @@ export interface StateStamp {
   state: StampState;
   at: number;
   terminal: string;
+  /**
+   * herdr's `state_change_seq` of the change that began the state. Absent while only a pushed status told of the
+   * change (the roster that carries its counter comes after), where the state changed and herdr's counter did not
+   * (a status Ovis makes itself), and where herdr gives none: nothing proves such a stamp after a reload.
+   */
   seq?: number;
   finish?: number;
   gone?: number;
 }
 
+/**
+ * One PC's stamps, by pane, under the herdr they were made on (the snapshot's `herdr_lifetime`: another herdr gives
+ * its pane ids to other panes) and the server's `finish_epoch` their `finish` counts in (a server that started anew
+ * counts from nothing).
+ */
 export interface PcStamps { lifetime: string | null; epoch: string | null; rows: Readonly<Record<string, StateStamp>> }
 export type StateStamps = Readonly<Record<string, PcStamps>>;
 
@@ -30,8 +59,13 @@ export interface SeenRow {
   state: StampState;
   seq: number | undefined;
   finish: number | undefined;
+  /**
+   * The roster says done, whatever the row shows (a finish this device has read shows idle, lib/sidebarOrder.ts):
+   * herdr's own turn from done moves its counter, and is no change of a state that reads the same before and after.
+   */
   done: boolean;
   wait: boolean;
+  /** an agent whose state Ovis reads from its own session files: herdr's counter says nothing of it */
   own: boolean;
 }
 export interface PcLook { id: string; lifetime: string | null; epoch: string | null; rows: readonly SeenRow[] | null }
@@ -44,6 +78,12 @@ export interface PcSeen { lifetime: string | null; epoch: string | null; at: num
 export type LastLook = ReadonlyMap<string, PcSeen>;
 export interface SeenStamps { stamps: StateStamps; last: LastLook }
 
+/**
+ * The agents whose state Ovis reads from their own session files in place of herdr's: the names the server's trackers
+ * report under (server/omo-status.ts for OmO, and server/gjc-status.ts and server/letta-status.ts, built on it). herdr
+ * goes on calling such a pane what it took it for, so its counter stands still while the agent works, waits and
+ * rests.
+ */
 const OWN_STATE_AGENTS: ReadonlySet<string> = new Set(["omo", "gjc", "letta"]);
 
 export function stateLooks(machines: readonly Machine[], status: (machineId: string, pane: SidebarAgent["pane"]) => AgentStatus | undefined): PcLook[] {
@@ -128,6 +168,8 @@ export function advanceStateStamps({ stamps, last }: SeenStamps, looks: readonly
       if (kept !== undefined) next[look.id] = kept;
       continue;
     }
+    // another herdr: its pane ids start over, so no stamp of the old one tells of a pane of this one, and no state
+    // this page saw on the old one is a state this one's pane was in: its rows are first seen
     const sameHerdr = kept !== undefined && kept.lifetime === look.lifetime;
     const before = sameHerdr ? kept.rows : {};
     const counted = sameHerdr && look.epoch !== null && kept.epoch === look.epoch;
@@ -151,6 +193,8 @@ export function advanceStateStamps({ stamps, last }: SeenStamps, looks: readonly
       const began = watched !== undefined && saw?.state !== row.state;
       const counter = saw !== undefined && saw.seq !== undefined && row.seq !== undefined && row.seq !== saw.seq;
       const lags = began && saw !== undefined && !counter;
+      // two turns of herdr's own leave the state reading the same: from done (a finish read there, or the next turn its
+      // background work started), and into the rest of a turn whose background work holds the row at working
       const undone = !began && saw !== undefined && saw.done && !row.done;
       const held = !began && saw !== undefined && row.wait && !saw.wait;
       memory.set(row.pane, { ...row, since: saw !== undefined && !began ? saw.since : now, owed: began ? lags : !counter && (undone || held || saw?.owed === true) });
@@ -171,6 +215,9 @@ export function advanceStateStamps({ stamps, last }: SeenStamps, looks: readonly
       } else if (stamp !== undefined && saw !== undefined) {
         const recounted = recount || (elsewhere && saw.left === undefined);
         const finished = !recounted && saw.finish !== undefined && row.finish !== undefined && row.finish !== saw.finish && !(held && row.finish === saw.finish + 1);
+        // herdr's counter counts every change of state in its session, so a move by one is a single turn of herdr's own,
+        // and this pane's: it cannot have left a state that reads the same before and after it. Unless background work
+        // held the row at working: that work's end shows the rest, and moves no counter
         const single = !saw.wait && saw.seq !== undefined && row.seq === saw.seq + 1;
         const stands = saw.left === undefined ? !counter || saw.owed || single : !row.own && saw.seq !== undefined && row.seq === saw.seq;
         if (!finished && stands) {

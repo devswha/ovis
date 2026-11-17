@@ -1,3 +1,12 @@
+/**
+ * Bookmarkable one-click unlock: `#auth=<token>` in the URL fragment.
+ *
+ * The fragment never leaves the browser (it is not sent with any request, so
+ * it cannot land in server logs), and it is consumed exactly once: the address
+ * bar is rewritten without it, and the HttpOnly session cookie stays the only
+ * stored credential. A wrong or stale link token simply falls back to the gate.
+ */
+
 export function authTokenFromHash(hash: string): string | null {
   const match = /^#auth=(.+)$/.exec(hash);
   const encoded = match?.[1];
@@ -9,6 +18,10 @@ export function authTokenFromHash(hash: string): string | null {
   }
 }
 
+/**
+ * Consumes the auth link on load: returns the token (if any) after stripping
+ * the fragment from the address bar, keeping any `?pane=` search intact.
+ */
 export function takeAuthTokenFromUrl(): string | null {
   if (!window.location.hash.startsWith("#auth=")) return null;
   const token = authTokenFromHash(window.location.hash);

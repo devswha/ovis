@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { CHIME_NOTES, playAlertSound, previewAlertSound, recheckAlertSounds, unlockAlertSound } from "./alertSound.ts";
 
+/** A stand-in AudioContext that starts suspended, as a page's does before any tap or key. */
 const started: number[] = [];
 const startedAt: number[] = [];
 const cut: number[] = [];
@@ -8,6 +9,7 @@ let disconnected = 0;
 let resumes = 0;
 const made: FakeAudioContext[] = [];
 class FakeAudioContext {
+  // "interrupted" is iOS Safari's state after a phone call or a switch away: not in the DOM typings
   state: "suspended" | "running" | "closed" | "interrupted" = "suspended";
   constructor() { made.push(this); }
   currentTime = 0;
@@ -29,6 +31,7 @@ class FakeAudioContext {
   }
 }
 
+/** How long a chime sounds: its last note starts 0.16 s after the one before and lasts 0.3 s. */
 const LENGTH = 0.16 + 0.3;
 
 const saved = (globalThis as { AudioContext?: unknown }).AudioContext;

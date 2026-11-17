@@ -1,5 +1,11 @@
 import { agentRuns, type AgentCatalogRow, type AgentTabStarted } from "../../shared/agent-catalog.ts";
 
+/**
+ * Where one agent's setup stands (AgentSetupCard): its install runs in a terminal tab, Ovis reads
+ * the catalog again until the agent is there, then its sign-in runs in a tab of its own. Installed
+ * is decided by detection alone, never by the install tab's exit: an installer may end with an error
+ * after installing (Devin's sign-in with no browser) or succeed without the agent on PATH yet.
+ */
 export type SetupStep =
   | { kind: "idle" }
   | { kind: "installing"; tab: AgentTabStarted }

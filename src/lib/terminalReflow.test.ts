@@ -27,6 +27,7 @@ describe("xterm reflow with no scrollback", () => {
   });
 });
 
+// A herdr-core pane keeps its history (scrollback > 0), so the buffer is taller than the screen.
 describe("xterm erase above (ESC[1J) from a row's last column", () => {
   it("unwraps the screen row below the cursor, not a history row", async () => {
     const term = new Terminal({ cols: 5, rows: 3, scrollback: 100, allowProposedApi: true });

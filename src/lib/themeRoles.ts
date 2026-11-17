@@ -1,3 +1,7 @@
+/**
+ * The theme role contract, apart from the generated theme data: the generator reads it to
+ * produce themes.generated.ts, so it must load even when that output is missing or conflicted.
+ */
 export const ROLES = {
   bg: "color",
   "bg-panel": "color",
