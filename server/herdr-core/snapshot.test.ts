@@ -211,6 +211,23 @@ describe("buildSnapshot", () => {
     expect(tab.splits.map((split) => [split.id, split.direction, split.ratio])).toEqual([["split_0_root", "right", 0.75], ["split_1_1", "down", 0.5]]);
   });
 
+  // the snapshot carries shares, not the viewer's pixels: a pixel size counts against the tab's nominal LAYOUT_AREA (#3969)
+  it("gives a pane the app sizes in pixels its pixels of the tab, and the weighted ones what is left", () => {
+    const heights = (children: unknown[], type = "column", count = children.length) => buildSnapshot(
+      Array.from({ length: count }, (_, index) => terminal(`t${index + 1}`)),
+      { spaces: [{ id: "s1", name: "a", tabs: [{ id: "s1t1", name: "", root: { type, id: "r", children } }] }] }, "0.1.17",
+    ).layouts[0]!.panes.map((pane) => type === "column" ? pane.rect.height : pane.rect.width);
+    const sized = (address: string, size: unknown) => ({ ...block(address), size });
+    expect(heights([block("t1"), sized("t2", { px: 200 })])).toEqual([800, 200]);
+    expect(heights([sized("t1", { weight: 0.5 }), sized("t2", { px: 200 })])).toEqual([800, 200]);
+    expect(heights([sized("t1", { weight: 1 }), sized("t2", { px: 300 }), sized("t3", { weight: 3 })], "row")).toEqual([175, 300, 525]);
+    // only pixels: each its pixels' share of the tab
+    expect(heights([sized("t1", { px: 100 }), sized("t2", { px: 300 })])).toEqual([250, 750]);
+    // inside a column half the tab tall, 200 pixels are 40% of it
+    const nested = { type: "row", id: "n", children: [{ type: "column", id: "c", children: [block("t2"), sized("t3", { px: 200 })] }, block("t4")] };
+    expect(heights([block("t1"), nested], "column", 4)).toEqual([500, 300, 200, 500]);
+  });
+
   it("shows every child of a stack and a hidden node in the app's tab, once, as Ovis can neither switch nor show them", () => {
     const hidden = { ...block("t3"), hidden: true };
     const layout = { spaces: [{ id: "s1", name: "a", tabs: [{ id: "s1t1", name: "", root: { type: "row", id: "r", children: [

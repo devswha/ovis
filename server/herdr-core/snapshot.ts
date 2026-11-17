@@ -170,10 +170,27 @@ function rollUp(statuses: readonly AgentStatus[]): AgentStatus {
   return best;
 }
 
-/** A size the Herdr app gives a node (herdr-app src/layout.rs `Size`): a weight shares its row; pixels or none weigh 1. */
-function weightOf(node: Record<string, unknown>): number {
+/** A size the Herdr app gives a node (herdr-app src/layout.rs `Size`): pixels, or a weight that shares its row; none weighs 1. */
+type Size = { px: number } | { weight: number };
+
+function sizeOf(node: Record<string, unknown>): Size {
   const size = node["size"];
-  return isRecord(size) && typeof size["weight"] === "number" && Number.isFinite(size["weight"]) && size["weight"] > 0 ? size["weight"] : 1;
+  const positive = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value > 0;
+  if (isRecord(size) && positive(size["px"])) return { px: size["px"] };
+  return { weight: isRecord(size) && positive(size["weight"]) ? size["weight"] : 1 };
+}
+
+/**
+ * Each node's weight in a row `length` long. The snapshot carries shares, not the viewer's pixels,
+ * so pixels count against the tab's nominal LAYOUT_AREA: each its pixels' share of the row, the
+ * weights sharing what is left. Pixels alone share the row by their pixels; pixels that fill it
+ * leave the weighted nodes nothing but the smallest split (`clampRatio`).
+ */
+function weights(sizes: readonly Size[], length: number): number[] {
+  const free = sizes.reduce((sum, size) => sum + ("weight" in size ? size.weight : 0), 0);
+  const fixed = sizes.reduce((sum, size) => sum + ("px" in size ? size.px / length : 0), 0);
+  const scale = free > 0 && fixed < 1 ? free / (1 - fixed) : 1;
+  return sizes.map((size) => "px" in size ? size.px / length * scale : fixed < 1 ? size.weight : 0);
 }
 
 /** Nodes side by side (or stacked), each its weight's share, as one split after another. */
@@ -190,7 +207,7 @@ function chain(parts: readonly { node: LayoutNode; weight: number }[], direction
  * too, which Ovis cannot switch or show, so each terminal stays in reach and closes with its tab. `take` hands over a live terminal not placed
  * yet, so one named twice is placed once; each one placed is added to `held`, in reading order.
  */
-function appTree(node: unknown, take: (address: string) => HcTerminal | null, held: HcTerminal[]): LayoutNode | null {
+function appTree(node: unknown, take: (address: string) => HcTerminal | null, held: HcTerminal[], extent: { width: number; height: number } = LAYOUT_AREA): LayoutNode | null {
   if (!isRecord(node)) return null;
   const content = node["content"];
   if (isRecord(content) && typeof content["terminal"] === "string") {
@@ -201,11 +218,20 @@ function appTree(node: unknown, take: (address: string) => HcTerminal | null, he
   }
   const children = node["children"];
   if (!Array.isArray(children)) return null;
-  const parts = children.flatMap((child) => {
-    const tree = appTree(child, take, held);
-    return tree && isRecord(child) ? [{ node: tree, weight: weightOf(child) }] : [];
+  const down = node["type"] === "column";
+  const length = down ? extent.height : extent.width;
+  // a child's own pixels count against the part of the tab it is laid out in
+  const sized = children.filter(isRecord).map((child) => ({ child, size: sizeOf(child) }));
+  const nominal = weights(sized.map(({ size }) => size), length);
+  const total = nominal.reduce((sum, weight) => sum + weight, 0);
+  const parts = sized.flatMap(({ child, size }, index) => {
+    const share = nominal[index]! / total;
+    const tree = appTree(child, take, held, down ? { width: extent.width, height: extent.height * share } : { width: extent.width * share, height: extent.height });
+    return tree ? [{ node: tree, size }] : [];
   });
-  return parts.length === 0 ? null : chain(parts, node["type"] === "column" ? "down" : "right");
+  // the nodes shown share the row: one with no live terminal leaves its part to the others
+  const shown = weights(parts.map(({ size }) => size), length);
+  return parts.length === 0 ? null : chain(parts.map(({ node: tree }, index) => ({ node: tree, weight: shown[index]! })), down ? "down" : "right");
 }
 
 /** Whether a path is Windows-shaped: a drive letter or a UNC prefix. */
