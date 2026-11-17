@@ -625,14 +625,14 @@ it.each([["pasted", "paste"], ["picked", "pick"]] as const)("keeps a placed path
 });
 
 // files picked together inside a placed path go in front of it in pick order, however their uploads finish
-it.each([["b", "c", "d"], ["b", "d", "c"], ["c", "b", "d"], ["c", "d", "b"], ["d", "b", "c"], ["d", "c", "b"]])("keeps the pick order of files picked together inside a placed path when they finish %s, %s, %s", async (...order) => {
+it.each([["b", "c", "d"], ["b", "d", "c"], ["c", "b", "d"], ["c", "d", "b"], ["d", "b", "c"], ["d", "c", "b"]] as const)("keeps the pick order of files picked together inside a placed path when they finish %s, %s, %s", async (first, second, third) => {
   await open();
   await type("see ", 4);
   await paste(4, "a");
   await finish("a");
   element.value = box().props.value as string;
   await pick(4 + "@/tmp/".length, "b", "c", "d");
-  for (const name of order) await finish(name);
+  for (const name of [first, second, third]) await finish(name);
   expect(box().props.value).toBe(`see @${path("b")} @${path("c")} @${path("d")} @${path("a")} `);
   expect(badges()).toEqual(["ready", "ready", "ready", "ready"]);
 });
