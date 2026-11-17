@@ -5,6 +5,12 @@ import { join } from "node:path";
 import { DIST_ARCHIVE, generateKeyPair, RELEASE_PUBLIC_KEY, releaseFile, PTY_ASSETS, ptyFile, SERVER_PLATFORMS, signManifest, verifyRelease, writeManifest } from "./server-manifest.ts";
 import { parseWorkflow, root } from "./shell-workflow-rules.ts";
 
+/**
+ * The release's sign and publish steps, run as the jobs run them: their own scripts from release.yml, in folders of
+ * stand-in files. Both check against RELEASE_PUBLIC_KEY, whose private half no test has, so a test that needs a release
+ * to pass runs a copy of the step whose verify and sign lines name its own key; the step as written is what refuses
+ * every other key.
+ */
 const release = parseWorkflow(join(root, ".github/workflows/release.yml"));
 const job = (name: string) => release.jobs[name]!;
 const step = (jobName: string, name: string) => job(jobName).steps!.find((candidate) => candidate.name === name)!;

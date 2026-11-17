@@ -204,6 +204,10 @@ export async function withInstallLock<T>(home: string, run: () => Promise<T>, wa
   }
 }
 
+/**
+ * Whether `binary` has the SHA-256 `digest`. Hashing a whole binary costs about 100 ms, on every plugin command, so a
+ * match is remembered in <home>/.verified.json with the file's size, mtime and inode: the hash is taken again whenever
+ */
 function binaryMatches(home: string, binary: string, digest: string): boolean {
   const { size, mtimeMs, ino } = statSync(binary);
   const seen = join(home, ".verified.json");

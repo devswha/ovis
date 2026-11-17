@@ -39,6 +39,7 @@ async function until<T>(read: () => Promise<T>, done: (value: T) => boolean, lab
 }
 async function api<T>(path: string, method = "GET", body?: unknown): Promise<T> {
   const r = await fetch(`http://127.0.0.1:${server!.port}${path}`, { method, headers: { "x-herdr-machine": "1", "x-herdr-update": "1", "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  // a failure's own status and text are read first: the diagnostic after them is bounded and cannot hold them back
   const failure = r.ok ? "" : `${path}: ${r.status} ${await r.text()}`;
   assert.ok(r.ok, r.ok ? "" : failure + await pcWhenFailed(path));
   return r.json() as Promise<T>;
@@ -48,6 +49,7 @@ async function pcWhenFailed(path: string): Promise<string> {
   if (!id) return "";
   const since = lastConnectedAt === undefined ? "no setup job has said connected yet" : `${Math.round(performance.now() - lastConnectedAt)} ms after a setup job last said connected`;
   try {
+    // one deadline for the answer and its body: a server in a bad way right then must not stall the failure
     const r = await fetch(`http://127.0.0.1:${server!.port}/api/machines`, { headers: { "x-herdr-machine": "1" }, signal: AbortSignal.timeout(2000) });
     const machine = (await r.json() as { machines: Machine[] }).machines.find((m) => m.id === id);
     return `\n  this PC in /api/machines now: ${machine ? JSON.stringify({ state: machine.state, error: machine.error }) : "not listed"}, ${since}`;
@@ -129,6 +131,8 @@ try {
   assert.ok(remoteFile(join(remoteHome, ".ssh/authorized_keys")).includes(`ovis:${machineId}`));
   assert.ok(!readFileSync(join(state, "machines.json"), "utf8").includes(password), "password is never persisted");
   console.log("PASS first install, fingerprint, secret authentication and dedicated-key registration");
+  // A second herdr beside the first is asked for: a setup that only names another session is offered the running one
+  // (choose_herdr) instead of starting its own.
   const second = await setup({ ...target, identity_file: join(state, "ssh", machineId), session: "ssh-second", name: "QA second PC", start_new_herdr: true });
   assert.equal(second.phase, "connected", second.error ?? "");
   const secondPath = `/api/machines/${second.machine_id}`;
@@ -226,6 +230,7 @@ try {
 } finally {
   for (const socket of sockets) socket.close();
   server?.stop();
+  // Stop only daemons created under this test's HOME; never use the user's socket.
   for (const name of ["ssh-qa", "ssh-cancel", "ssh-second"]) {
     const socket = join(remoteHome, ".config/herdr/sessions", name, "herdr.sock");
     try { await herdrRpc("server.stop", {}, socket, 1000); } catch {}

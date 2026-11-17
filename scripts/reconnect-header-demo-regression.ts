@@ -1,3 +1,6 @@
+/**
+ * by the return. The real client over owned demo fixtures; no live herdr session.
+ */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -150,6 +153,7 @@ try {
           await appFaces(page);
           await page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
           assert.equal(await page.locator(".context-connection").count(), 0, `${width}: a page opening is not a reconnect`);
+          // the crumb, not the session's line (.context-session) that shares its class
           const crumb = await page.locator(".context-sub:not(.context-session)").innerText();
           const height = await page.locator(".app-header").evaluate((node) => node.getBoundingClientRect().height);
           const composer = page.getByRole("textbox", { name: "Message", exact: true });

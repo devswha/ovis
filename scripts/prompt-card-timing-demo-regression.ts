@@ -1,3 +1,6 @@
+/**
+ * PROMPT_READ_MS, as the server's does. Loopback only; no herdr session is opened.
+ */
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

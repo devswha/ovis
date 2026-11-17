@@ -29,6 +29,7 @@ export const CI_SHARD_COUNTS = [3, 4, 5];
 export const matrixJobs = (count: number): string[] =>
   Array.from({ length: count }, (_, index) => CI_MATRIX_JOB.replace(SHARD, count > 1 ? ` ${index + 1}/${count}` : ""));
 
+/** Main's push run takes 15 to 30 minutes, so 40 cover one that began when the Release run did. */
 const WAIT_SECONDS = 2400;
 const POLL_MS = 20_000;
 const RETRY_MS = 5_000;
@@ -216,6 +217,7 @@ if (import.meta.main) {
   const outcome = await main(process.env, { get: fetch, now: Date.now, sleep: Bun.sleep, log: (line) => console.error(line) })
     .catch((error: unknown): Outcome => ({ green: false, run: null, why: `the check itself failed (${oneLine(String(error))})` }));
   try { report(outcome, process.env); } catch { /* the answer below does not depend on it */ }
+  // one synchronous write, last: an answer is either whole or not there at all
   try { writeSync(1, outputLines(outcome)); } catch { /* no answer is a no to release-validate.yml */ }
   process.exit(0);
 }

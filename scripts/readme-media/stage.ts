@@ -1,3 +1,9 @@
+/**
+ * A staged, fictional herdr session for the README media (capture.ts): its own named herdr
+ * session (never the one you work in), the demo's two repositories under /tmp/herdr-demo with
+ * their agent worktrees and the release shell tab, and curated chats served in place of real
+ * transcripts. The real hostname never reaches the page.
+ */
 process.env["HERDR_TEST_SESSION"] = "ovis-demo";
 await import("../test-herdr.ts");
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
@@ -43,6 +49,7 @@ export async function stage() {
   rmSync(join(ROOT, "worktrees"), { recursive: true, force: true });
   const panes: DemoPane[] = [];
   const byKey = (key: string | undefined) => panes.find((p) => p.key === key);
+  // a worktree is herdr's own (under the demo root, so no home path shows), and a tab joins its
   for (const spec of SPECS) {
     const parent = byKey(spec.worktreeOf ?? spec.tabOf);
     let pane: string, workspace: string, cwd: string;
@@ -64,6 +71,7 @@ export async function stage() {
       workspace = ws.workspace.workspace_id;
     }
     panes.push({ ...spec, pane, workspace });
+    // a plain prompt: no user, host or home path on screen
     await herdrRpc("pane.send_text", { pane_id: pane, text: `exec env -i HOME=${cwd} TERM=xterm-256color PATH=$PATH bash --norc --noprofile\n` });
   }
   await Bun.sleep(800);
@@ -72,6 +80,7 @@ export async function stage() {
     await herdrRpc("pane.rename", { pane_id: p.pane, label: p.title });
     if (p.agent) await herdrRpc("pane.report_agent", { pane_id: p.pane, source: "manual", agent: p.agent, state: p.state ?? "idle" });
   }
+  // the resident workspace test-herdr keeps must not show
   for (const ws of (await sessionSnapshot()).workspaces) if (!panes.some((p) => p.workspace === ws.workspace_id)) await workspaceClose(ws.workspace_id).catch(() => {});
   const stateDir = mkdtempSync(join(tmpdir(), "herdr-demo-state-"));
   const server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir });

@@ -581,6 +581,7 @@ describe("port", () => {
       keep(ours.port!);
       mkdirSync(join(scratch, "state"), { recursive: true });
       writeFileSync(join(scratch, "state", "server.pid"), `${process.pid}\n`);
+      // a start that moves anyway spawns no real server: there is no server/managed.ts under this root
       const started = await run("start", { HERDR_PLUGIN_ROOT: scratch });
       expect(started.out).not.toContain("instead");
       expect(started.exitCode).toBe(1);
@@ -1407,6 +1408,9 @@ describe("a command handed on to the release the app updated to", () => {
     } finally { clearTimeout(timer); }
   }
 
+  /**
+   * in a terminal does. Its stderr goes into a file: a release left running would hold a pipe open.
+   */
   function handOn(command: string, { fail = false, group = false } = {}) {
     const port = quietPort();
     writeFileSync(join(configDir, ".env"), `PORT=${port}\n`);

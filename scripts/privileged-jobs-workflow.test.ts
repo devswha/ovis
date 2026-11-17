@@ -448,6 +448,7 @@ describe("jobs that hold a write permission, an environment or a secret", () => 
   });
 
   test("every label on the hosted-label list is one a covered job names", () => {
+    // only this direction: a label a job names that is not on the list is refused by the rule itself
     expect(GITHUB_HOSTED_LABELS.filter((label) => !coveredLabels(repository).includes(label))).toEqual([]);
   });
 

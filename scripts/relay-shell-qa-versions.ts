@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { compareVersions, parseVersion } from "../src/lib/relay/skew.ts";
 
+/** Pure fixture setup, separate from the browser script so unit tests start no PC or herdr. */
 export function relayShellQaVersions(shellVersion: string, minServerVersion: string): { readonly below: string; readonly newer: string } {
   const shell = parseVersion(shellVersion);
   const minimum = parseVersion(minServerVersion);

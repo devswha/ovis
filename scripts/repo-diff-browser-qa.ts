@@ -1,3 +1,7 @@
+/**
+ * The browser is Playwright's headless shell, whose clipboard is its own: a real Cmd+C here never
+ * touches the clipboard of the PC running the check.
+ */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

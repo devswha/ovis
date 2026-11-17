@@ -480,6 +480,7 @@ async function checkDesktop(browser: Browser, origin: string, first: string, sec
     const grip = await rect(vertical, "the root divider");
     const canvas = await rect(page.locator(".pane-canvas"), "the canvas");
     const movedRatio = page.waitForResponse((response) => response.request().method() === "POST" && new URL(response.url()).pathname.endsWith("/layout/ratio"));
+    // Avoid the horizontal divider's intersection with this vertical root divider.
     await page.mouse.move(grip.left + grip.width / 2, grip.top + grip.height / 4);
     await page.mouse.down();
     await page.mouse.move(grip.left + grip.width / 2 + canvas.width * 0.12, grip.top + grip.height / 4, { steps: 5 });

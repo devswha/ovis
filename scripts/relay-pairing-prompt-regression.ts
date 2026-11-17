@@ -4,6 +4,11 @@ import { chromium, type Page } from "playwright-core";
 import type { Machine, RelayPairingRequest } from "../shared/machines.ts";
 import { chromePath } from "./chrome-path.ts";
 
+// A built client with an in-memory API; no relay, no herdr and no user session. The PC's prompt for a
+// device waiting for approval (src/components/RelayPairingPrompt.tsx), told over the event stream as
+// server/dispatch.ts does (`relay-pairings`), in a real browser for what the unit test's hand-made
+// nodes cannot show: where the focus really goes, what Tab and Escape do, and which of the page's
+// "a dialog is open" checks the prompt trips.
 const snapshot = { version: "0.9.3", protocol: 22, focused_workspace_id: null, focused_tab_id: null, focused_pane_id: null, workspaces: [], tabs: [], panes: [], layouts: [], agents: [] };
 const local = { id: "local", name: "QA host", kind: "local", state: "connected", enabled: true, error: null, snapshot } as Machine;
 let waiting: RelayPairingRequest[] = [];

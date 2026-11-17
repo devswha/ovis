@@ -1,3 +1,9 @@
+/**
+ * The private key lives only in the secret OVIS_SERVER_SIGNING_KEY (a PKCS#8 PEM) of the environment release-signing, which
+ * only main may use, never in a repository secret, and with the owner
+ * offline; the public key is 32 raw bytes in base64. This file imports Node's built-ins alone, so the release job
+ * that signs runs it without installing a single package next to the key.
+ */
 import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, sign, verify } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";

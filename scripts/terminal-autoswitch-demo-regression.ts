@@ -10,6 +10,8 @@ import { shownRows } from "./shown-rows.ts";
 import panes from "../site/demo/fixtures/panes.json";
 import { openLens } from "./header-lens.ts";
 
+// Real client and demo transport. Only receipts and demo-turn completion are held, then released
+// explicitly: no provider, live herdr, sleeps or deadline-dependent assertions.
 const app = mkdtempSync(join(tmpdir(), "terminal-autoswitch-"));
 const evidence = join(process.env.UI_EVIDENCE_DIR || "/tmp/terminal-autoswitch-shots", "edges");
 mkdirSync(evidence, { recursive: true });
@@ -165,6 +167,7 @@ try {
         assert.deepEqual(await lens(page), chatLens, "a peek writes no lens or address, and the header keeps Chat pressed");
         if (touch) assert.deepEqual(await phoneButton(), { view: "terminal", label: "Switch to chat" }, "the phone's lens button reflects the peek");
         assert.deepEqual(await logState(page), { same: true, visibility: "hidden" }, "the chat stays mounted under the grid, hidden");
+        // shown, not only laid out: under the chat the grid keeps its box with content-visibility hidden
         assert.ok(await stack(page).locator(".xterm-screen").isVisible(), "the grid shows");
         if (touch) {
           assert.equal(await chat(page).locator(".composer").evaluate((node) => getComputedStyle(node).display), "none");

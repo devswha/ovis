@@ -1,3 +1,11 @@
+/**
+ * the Tailscale address; a device paired through the relay wears the via relay pill. GET /api/access is pinned
+ * per context, and the account service is a route of the context with the sign-in an IndexedDB fixture, so
+ * neither what Tailscale does on the PC running this nor account.ovis.sh changes the outcome.
+ * All on pages the PC serves: that the hosted shell's Settings has no relay group is checked where the app
+ * really runs under the shell, in relay-shell-browser-qa.ts (a page of the PC's own build given the shell's
+ * meta boots the shell, not the app). Imported by ui-regression.ts; `startRelayFixture` also serves the
+ */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -36,6 +44,7 @@ export function startRelayFixture(options: { serveOnly?: boolean } = {}): RelayF
   const server = createServer({
     port: 0, hostname: "127.0.0.1", stateDir, token: "", tailscaleOwner: null, sidecar: false,
     tailscaleServeOnly: options.serveOnly ?? false, relay: service, usage: new UsageService(undefined, []), registerBridge: false,
+    // the SSH tab reads a fixture, never the runner's own ssh config or Tailscale
     tailnetPcs: { readStatus: async () => null }, sshCandidates: { sshDir: join(stateDir, "no-ssh"), readStatus: async () => null },
   });
   return {

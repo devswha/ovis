@@ -10,6 +10,9 @@ import { openSettingsFolds } from "./settings-page.ts";
 import { DEMO_FILE_PREVIEW_SCRIPT } from "./demo-file-preview.ts";
 import { KO } from "../src/lib/i18n.ko.ts";
 
+/**
+ * before. No herdr session is opened; the app is served on loopback from a temporary directory.
+ */
 const app = mkdtempSync(join(tmpdir(), "herdr-security-summary-demo-"));
 const evidence = process.env["UI_EVIDENCE_DIR"] || "";
 const SECTION = '.settings-body:not([hidden]) [data-section="access"]';

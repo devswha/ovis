@@ -94,6 +94,7 @@ async function round(browser: Browser, origin: string, root: string, viewport: k
       tabs.push({ tab: tab.root_pane.tab_id, pane: tab.root_pane.pane_id });
     }
     const marker = (i: number): string => `TABMARK-${String(i).padStart(2, "0")}-${viewport}-${index}`;
+    // the marker is the command's output, not its echo (TAB''MARK)
     for (const [i, { pane }] of tabs.entries()) {
       const text = marker(i);
       await herdrRpc("pane.send_text", { pane_id: pane, text: `echo TAB''${text.slice(3)}\n` });
@@ -165,6 +166,7 @@ try {
   const loadBefore = loadavg();
   const cpuBefore = cpuTimes();
   const samples: Sample[] = [];
+  // one warm-up round of each, not counted: the first attach of a run also loads the PTY host's binary
   for (const viewport of Object.keys(VIEWPORTS) as (keyof typeof VIEWPORTS)[]) await round(browser, origin, root, viewport, -1);
   for (let index = 0; index < ROUNDS; index++) {
     for (const viewport of Object.keys(VIEWPORTS) as (keyof typeof VIEWPORTS)[]) {

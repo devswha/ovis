@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { atDay, COUNTER_SHARES, COUNTS_BUCKETS, COUNTS_INSTALLS, COUNTS_PER_INSTALL, COUNTS_SHOWN, SWITCH_DAYS_BY_VERSION, SWITCHES_BY_AGENT, counterShares, html, QUERIES, table } from "./telemetry-report.ts";
 
+/** scripts/telemetry-report.ts with a stand-in bunx on a private PATH: no wrangler, no D1. */
 const SCRIPT = join(import.meta.dir, "telemetry-report.ts");
 const scratches: string[] = [];
 afterAll(() => { for (const dir of scratches) rmSync(dir, { recursive: true, force: true }); });

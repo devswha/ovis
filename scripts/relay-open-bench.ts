@@ -1,4 +1,6 @@
 /**
+ * port 0, and HERDR_SOCKET at a path that does not exist (no herdr is touched). The relay is the real one
+ *
  *   bun scripts/relay-open-bench.ts --arms A,B,B,A --rounds 8 [--a-dir <tree with the A files>] [--files a,b] [--relay wss://...]
  *
  * Arm A copies each of --files from --a-dir over this tree before its PC starts, arm B restores this tree's own.
@@ -182,5 +184,6 @@ async function bench(): Promise<void> {
   const result = { at: new Date().toISOString(), relay: EMULATE ? `local Bun relay, emulated RTT ${EMULATE} ms per leg` : RELAY || "wss://relay.ovis.sh", arms: ARMS, rounds: ROUNDS, files: FILES, load: loadavg(), summary, samples };
   console.log(`BENCH-RESULT ${JSON.stringify({ ...result, samples: undefined })}`);
   if (OUT) writeFileSync(OUT, JSON.stringify(result, null, 2));
+  // the emulated relay and its proxy would keep this process alive
   process.exit(0);
 }

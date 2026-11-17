@@ -11,6 +11,9 @@ import { buildDemoApp } from "./demo-build.ts";
 import { DEMO_FILE_PREVIEW_SCRIPT } from "./demo-file-preview.ts";
 import { openSettingsPage } from "./settings-page.ts";
 
+// answers come from this script, through a fetch of its own layered over the demo's, so nothing is
+// built, installed or restarted. All files and HTTP traffic stay in this disposable, loopback-only
+// app; no herdr session is opened.
 // REVISION_UPDATE_RECEIPTS: a JSON file for the install requests and status receipts seen.
 // UPDATE_CONSENT_SHOTS: a directory for the capture matrix (phone and desktop, light and dark,
 // Korean), with its manifest and measurements. VISUAL_QA_CHECKLIST: a checklist path the manifest
@@ -119,6 +122,10 @@ async function open(browser: Browser, fixture: Fixture, options: { width: number
 }
 
 const label = (language: "en" | "ko", text: string) => language === "ko" ? KO[text] ?? text : text;
+/**
+ * Nothing overflows sideways: not the page, and not inside the update line, the Updates section or
+ * its notes, where a box that clips its overflow would hide a long word without widening the page.
+ */
 const fits = async (page: Page, what: string) => assert.deepEqual(await page.evaluate(() => {
   const found: string[] = [];
   if (document.documentElement.scrollWidth > window.innerWidth) found.push(`page ${document.documentElement.scrollWidth} > ${window.innerWidth}`);
@@ -128,7 +135,9 @@ const fits = async (page: Page, what: string) => assert.deepEqual(await page.eva
     if (region.scrollWidth > region.clientWidth + 1) found.push(`${name} scrolls sideways: ${region.scrollWidth} > ${region.clientWidth}`);
     for (const node of region.querySelectorAll("*")) {
       const rect = node.getBoundingClientRect();
+      // a screen-reader-only clip is 1 px wide on purpose
       if (rect.width <= 1 || rect.height <= 1) continue;
+      // what is read or pressed: text of its own, or a control. A progress bar's sliding fill has neither
       const text = [...node.childNodes].some((child) => child.nodeType === Node.TEXT_NODE && child.textContent!.trim() !== "");
       if (!text && !node.matches("button, a, input")) continue;
       if (rect.left < box.left - 1 || rect.right > box.right + 1) found.push(`${name} > ${node.tagName.toLowerCase()}.${(node as HTMLElement).className}: ${Math.round(rect.left)}..${Math.round(rect.right)} outside ${Math.round(box.left)}..${Math.round(box.right)} ("${node.textContent?.slice(0, 40)}")`);

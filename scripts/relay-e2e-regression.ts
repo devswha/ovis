@@ -1,4 +1,24 @@
 /**
+ * The relay end to end, cross-origin as in production: the hosted shell (dist-shell/, served as
+ * Cloudflare Pages serves it by scripts/pages-static.ts, under its real _headers and _redirects)
+ * on one loopback origin, two PCs (`createServer`, each with its own mkdtemp state dir, on the
+ * isolated herdr test session) on others, and one Bun relay (relay/bun.ts) between them. The page
+ * never reaches a PC except through the relay WebSocket. Run after `bun run build:shell`.
+ *
+ * The shell accepts only a wss: relay and a PC only a wss: relay origin, so both name
+ * `wss://relay.test`: the PCs' outbound sockets reach the local relay through RelayService's
+ * `connect` seam, the browser's through Playwright's WebSocket routing (relay-browser-bridge.ts).
+ * Every page runs on a frozen clock; a deadline is reached by advancing it, never by waiting.
+ *
+ * Its own journey is pairing, terminal, roster, reload, the relay lost mid-session, storage,
+ * network and revoke. Against this checkout's server that is the whole run: the browser lane
+ * (scripts/ci-browser.sh) runs relay-shell-browser-qa.ts (the shell's states, push per PC and its
+ * rotation, version skew) and relay-media-browser-qa.ts (both PCs' files and media, a remote PC,
+ * isolation in worker and blob mode, MP4 seek and Range) as entries of their own. Against another
+ * server tree (the two commands below that name one) it runs both after its journey, on that tree,
+ * so one command still checks an older server from end to end. The media part encodes its video
+ * with FFMPEG (default `ffmpeg`; CI: scripts/ci-ffmpeg.sh).
+ *
  * Run after `bun run build:shell`. The media part encodes its video with FFMPEG (default `ffmpeg`).
  *
  *   bun scripts/relay-e2e-regression.ts                  this checkout's shell against this checkout's server
@@ -233,6 +253,9 @@ async function main(): Promise<void> {
     const stack = page.locator(`.terminal-stack[data-pane-owner=${JSON.stringify(pane)}]`);
     const screen = stack.locator(".xterm-screen");
     await screen.waitFor({ state: "attached" });
+    // this pane's banners only: the pane the app opened by itself at load (herdr's focused one, lib/useSelection.ts)
+    // stays mounted behind it with its own (components/PaneCanvas.tsx), and on the test session every script's
+    // server shares, another server may hold that pane's attach, which says nothing of this pane's
     const live = async (): Promise<boolean> => await stack.locator(".terminal-banner-warning").count() === 0 && (await terminalText(page, pane)).trim() !== "";
     await frames(page, "the pane's terminal attached and drew its prompt", live);
     await screen.click();

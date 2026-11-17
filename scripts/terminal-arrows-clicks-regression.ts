@@ -198,6 +198,7 @@ try {
         }
       }
       await s.page.keyboard.up("ArrowDown");
+      // a key out of order stops the matching above, so this times out with the rest still waiting
       await until(() => tokens.every((token) => token.arrived !== undefined), "every held key received in order").catch((error) => {
         console.log("held keys received:", tokens.filter((token) => token.arrived !== undefined).length, "of", tokens.length, "left over:", JSON.stringify(buffer));
         throw error;
@@ -401,6 +402,7 @@ try {
   assert.deepEqual(errors, [], "no page errors");
   console.log("terminal arrows and clicks: PASS");
 } finally {
+  // each step on its own: one that fails must not leave the rest behind
   await launched?.close().catch((error) => console.log("browser close failed", error));
   for (const server of servers) await Promise.resolve().then(() => server.stop()).catch((error) => console.log("server stop failed", error));
   for (const id of owned) await workspaceClose(id).catch((error) => console.log("workspace close failed", id, error));

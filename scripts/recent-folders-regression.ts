@@ -1,3 +1,4 @@
+/** Owned workspace lifecycle; agent readiness is controlled, so no paid agent process starts. */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { homedir } from "node:os";

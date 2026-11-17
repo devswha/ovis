@@ -1,3 +1,12 @@
+/**
+ * never writes the clipboard; live copies still do, once each. Runs the real client and its
+ * patched xterm on the demo's fixture transport: no herdr, no user state, loopback only.
+ * Every frame carries an ACK offset, and each step waits for its frame's ACK, which the client
+ * sends from that frame's xterm write callback: the fixture records the clipboard calls and the
+ * terminal's parse state at that moment (the test-hook build's `outputProbe`). For a write still
+ * pending at a reconnect, reset or dispose, the fixture holds xterm's own parse of it (`hold`) and
+ * releases it once the new output has begun.
+ */
 /** UI_EVIDENCE_DIR=<dir> also saves screenshots; REPLAY_CLIPBOARD_REPORT=<file> writes the results. */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";

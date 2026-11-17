@@ -1,3 +1,7 @@
+/**
+ * device. No notification is sent to any real device; all files and HTTP traffic stay in this
+ * disposable, loopback-only app, and no herdr session is opened.
+ */
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -142,6 +146,8 @@ async function run(browser: Browser, origin: string, width: number, theme: Theme
   const closeSettings = async (page: Page): Promise<void> => {
     await page.getByRole("button", { name: label("Close settings"), exact: true }).click();
     await page.locator(".settings-dialog").waitFor({ state: "detached" });
+    // a phone's sheet drops out of sight after React removed it: its last frame hangs on an inert host at
+    // the end of <body> (lib/sheets.ts) until it has slid out, and a capture waits for it to go
     await page.waitForFunction(() => ![...document.body.children].some((node) => node instanceof HTMLDivElement && node.inert && node.getAttribute("aria-hidden") === "true" && node.childElementCount === 0));
   };
   const notice = (page: Page): Locator => page.locator(NOTICE);

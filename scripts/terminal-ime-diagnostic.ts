@@ -1,3 +1,7 @@
+/**
+ * the OS input method; WebDriver text insertion is not a native IME reproduction.
+ * No tracing is added to the normal app build. Ctrl+C closes the owned workspace.
+ */
 import assert from "node:assert/strict";
 import { appendFileSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -107,6 +111,7 @@ function stop(): Promise<void> {
       events: records.length, onData: emitted, ws: sent, received: bytes.toString("utf8"),
       receivedHex: bytes.toString("hex"), onDataMatchesWs: emitted === sent,
       wsMatchesPty: Buffer.from(sent).equals(bytes),
+      // Equality alone does not show that the intended Korean text was composed.
       nativeImeVerified: false, cleanup: "owned workspace and servers closed",
     }, null, 2) + "\n");
     console.log(`CLEANUP owned workspace and servers closed; artifacts: ${root}`);

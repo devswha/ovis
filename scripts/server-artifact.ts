@@ -26,6 +26,7 @@ export const PTY_PINS: Record<ServerPlatform, string> = {
 
 const sha256 = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
 
+// source maps. The source is not published with it, but anyone who unpacks the file can read that code.
 // `--format=esm` because the entries await at top level, which bytecode allows only in an ES module.
 export async function buildBinary(platform: ServerPlatform, outfile: string, entry = "server/main.ts"): Promise<void> {
   const statusline = Object.fromEntries(["statusline-context.ts", "statusline-capture.ts"].map((name) => [name, readFileSync(join(root, "server", name), "utf8")]));

@@ -48,6 +48,7 @@ stat_of() {
   IFS= read -r line 2>/dev/null <"$proc/$1/stat" || return 1
   line=${line##*) }
   set -f
+  # shellcheck disable=SC2086 # split into its fields on purpose
   set -- $line
   set +f
   stat_ppid=${2-} stat_start=${20-}
@@ -99,6 +100,7 @@ refuse() {
     # macOS's ps names a process by the path it was started from
     name=$(ps_of comm "$worker") && [[ ${name##*/} == Runner.Worker ]] || block "its executable is not Runner.Worker"
     [[ $(ps_of ruid "$worker") == "$UID" && $(ps_of uid "$worker") == "$UID" ]] || block "it runs as another user"
+    # to the second only: the same start time, as this shell's parent all along, is the same process
     worker_start=$(ps_of lstart "$worker") || block "its start time cannot be read"
     [[ $(ps_of lstart "$worker") == "$worker_start" && $(ps_of ppid $$) == "$worker" ]] || block "it changed during the checks"
   fi

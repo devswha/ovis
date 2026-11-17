@@ -15,6 +15,7 @@ export async function pickTab(page: Page, tabId: string): Promise<void> {
 export async function clickTab(page: Page, tabId: string, untrusted = false): Promise<void> {
   const press = (target: Locator): Promise<void> => untrusted ? target.evaluate((button: HTMLElement) => button.click()) : target.click();
   const inRow = `.tab-strip [role="tab"][data-tab-id="${tabId}"]`;
+  // the tab comes before More in the strip: More first means the row has no room for it
   const first = page.locator(`${inRow}, .tab-strip-more`).first();
   if (!(await first.evaluate((node) => node.classList.contains("tab-strip-more")))) {
     await press(first);

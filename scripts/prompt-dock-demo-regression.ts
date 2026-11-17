@@ -10,6 +10,8 @@ import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 
+// prompt of another pane the same way (window.panePrompts). All files and HTTP traffic stay in
+// this disposable, loopback-only app; no herdr session is opened.
 // PROMPT_DOCK_SHOTS=<dir> also saves a screenshot of each state there.
 const repo = join(import.meta.dir, "..");
 const app = mkdtempSync(join(tmpdir(), "herdr-prompt-dock-demo-"));
@@ -119,6 +121,7 @@ const reach = async (page: Page, selector: string): Promise<{ hit: string | null
     const card = document.querySelector<HTMLElement>(".prompt-card")!;
     const node = [...document.querySelectorAll<HTMLElement>(target)].at(-1)!;
     const sticky = card.querySelector<HTMLElement>(".prompt-card-confirm");
+    // clear of what stays pinned on the card's fold: the confirm row and the fade under it
     const pinned = (sticky === null || sticky === node ? 0 : sticky.offsetHeight + 12) + 12;
     const over = node.getBoundingClientRect().bottom - (card.getBoundingClientRect().bottom - pinned);
     if (over > 0) card.scrollTop += over;
@@ -245,6 +248,7 @@ try {
           localStorage.setItem("ovis:settings", settings!);
           const enterSends: unknown = JSON.parse(settings!).enterSends;
           if (typeof enterSends === "boolean") localStorage.setItem("ovis:enter-sends", String(enterSends));
+          // held under the demo's herdr (site/demo/transport.ts), not an earlier release's (lib/paneLifetime.ts)
           localStorage.setItem("ovis:pane-lifetime:local", "demo-local");
           if (messages !== "") localStorage.setItem(`ovis:queue:${owner}`, messages!);
         }, [panes.web, held.length === 0 ? "" : JSON.stringify({ version: 1, messages: held.map((text, at) => ({ id: `m${at}`, text })) }), JSON.stringify({ language, theme, enterSends: true, ...settings })] as const);

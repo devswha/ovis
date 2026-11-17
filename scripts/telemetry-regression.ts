@@ -44,6 +44,7 @@ function fixtureSettings() {
   };
 }
 
+/** A real app page and local API; the injected transport cannot reach the production receiver. */
 export async function checkTelemetrySettings(browser: Browser): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "ovis-telemetry-regression-"));
   const serverState = join(root, "server-state");
@@ -113,6 +114,7 @@ export async function checkTelemetrySettings(browser: Browser): Promise<void> {
     });
 
     await page.goto(origin);
+    // the notice by its role, not its sentence: a new notice version rewords it, and the version is asserted below
     const notice = page.locator(".update-notice.is-telemetry[role='status']").first();
     await notice.waitFor({ state: "visible" });
     assert.ok((await notice.locator(".update-notice-text").innerText()).trim().length > 0, "the notice says something, whatever its wording");

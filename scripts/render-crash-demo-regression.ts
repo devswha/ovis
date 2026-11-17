@@ -8,6 +8,7 @@ import { buildDemoApp } from "./demo-build.ts";
 import { DEMO_FILE_PREVIEW_SCRIPT } from "./demo-file-preview.ts";
 import { chromePath } from "./chrome-path.ts";
 
+// On the unmodified app over the demo's fixture transport: no herdr session is opened.
 const app = mkdtempSync(join(tmpdir(), "herdr-render-crash-demo-"));
 
 interface OpenOptions { phone?: boolean; clipboardRefused?: boolean }

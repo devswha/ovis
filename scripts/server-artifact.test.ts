@@ -7,6 +7,8 @@ import { version } from "../package.json";
 import { binaryName, PTY_PINS, stageServerArtifact } from "./server-artifact.ts";
 import { SERVER_PLATFORMS, type ServerPlatform } from "./server-manifest.ts";
 
+// node-pty's package for this PC is installed, so nothing is downloaded; the compile is stood in for (the integration
+// lane's server/compiled-server.contract.test.ts runs a real one)
 const platform = `${process.platform === "win32" ? "windows" : process.platform}-${process.arch}` as ServerPlatform;
 const root = mkdtempSync(join(tmpdir(), "ovis-artifact-"));
 const dir = join(root, "server");

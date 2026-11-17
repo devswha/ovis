@@ -368,6 +368,11 @@ function warnShadowed(): void {
   process.stdout.write(`both env and .env in ${CONFIG_DIR} set ${shadowed.join(", ")}; .env wins. Merge them into one file.\n`);
 }
 
+/**
+ * A start's failure, in full to herdr's plugin log and in one line to server.log: the Windows
+ * launcher runs this in a hidden console, so the log is all it can show. A start that opened its
+ * server's log passes that handle, so the line stays with its run if the log has moved meanwhile.
+ */
 function failStart(message: string, detail = "", log: number | string = LOG_FILE): number {
   process.stderr.write(`${message}${detail}\n`);
   appendFileSync(log, `start: ${message}\n`);
@@ -402,6 +407,7 @@ function keepPreviousLog(): void {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
     const message = `appending to ${LOG_FILE}: it could not be moved to ${LOG_FILE}.1 (${(error as Error).message})`;
     process.stdout.write(`${message}\n`);
+    // the Windows launcher's console is hidden: the log is where this can be read
     appendFileSync(LOG_FILE, `start: ${message}\n`);
   }
 }
@@ -543,6 +549,7 @@ async function startInTurn(): Promise<number> {
   return failStart(why, `; ${LOG_FILE} ends with:\n${logSince(log, logged)}`, log);
 }
 
+/** Written whole or not at all, and flushed before it replaces the old one: a reader never finds half a record, nor an empty one after a power cut. */
 function writeRecord(file: string, text: string): void {
   writeStateDocument(file, text, false);
 }

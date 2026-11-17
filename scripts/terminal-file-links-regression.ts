@@ -13,6 +13,7 @@ const cwd = process.cwd();
 const shortUri = "file:///etc/hosts";
 const workspace = await workspaceCreate({ cwd, label: "ovis-test-file-links" });
 const pane = workspace.root_pane.pane_id;
+// its own state dir: the default is the user's real devices and push registry
 const stateDir = mkdtempSync(join(tmpdir(), "herdr-file-links-"));
 let server: ReturnType<typeof createServer> | undefined;
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;

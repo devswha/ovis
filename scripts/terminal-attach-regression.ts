@@ -39,6 +39,8 @@ async function openPhone(browser: Browser, origin: string, pane: string, attach:
 
 async function pick(page: Page, open: () => Promise<void>, files: Array<{ name: string; mimeType: string; buffer: Buffer }>): Promise<string[]> {
   const stored: string[] = [];
+  // a wrong answer fails the pick where it is awaited, not the run from a handler; once every file is stored the
+  // listener leaves, so no later answer (the next picks', the held upload's) is read as the page closes
   const responses = new Promise<void>((resolve, reject) => {
     const heard = async (response: Response): Promise<void> => {
       if (!response.url().endsWith("/api/pane/image") || response.request().method() !== "POST") return;
@@ -50,6 +52,7 @@ async function pick(page: Page, open: () => Promise<void>, files: Array<{ name: 
     };
     page.on("response", heard);
   });
+  // a rejection is reported at `await responses` below, not as an unhandled one if it comes before that await
   responses.catch(() => {});
   const chooser = page.waitForEvent("filechooser");
   await open();

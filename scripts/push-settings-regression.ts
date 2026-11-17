@@ -1,3 +1,4 @@
+/** Browser UI with a stand-in push service: never sends a notification to a real device. */
 import assert from "node:assert/strict";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";

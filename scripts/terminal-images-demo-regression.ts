@@ -1,3 +1,6 @@
+/**
+ * Demo fixtures only: no herdr, hc or user state.
+ */
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

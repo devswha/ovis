@@ -24,6 +24,7 @@ it("gives a free port outside this host's own, and never the same one twice", ()
   expect(new Set(ports).size).toBe(40);
   let first = 32768, last = 65535;
   try { [first, last] = readFileSync("/proc/sys/net/ipv4/ip_local_port_range", "utf8").trim().split(/\s+/).map(Number) as [number, number]; } catch {}
+  // a host that hands out nearly every port has none to give: nothing to hold it to
   if (quietRange(first, last) === null) return;
   for (const port of ports) {
     expect(port < first || port > last).toBe(true);

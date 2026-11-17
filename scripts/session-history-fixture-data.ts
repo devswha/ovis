@@ -1,3 +1,4 @@
+/** The fictional sessions session-history-browser-qa.ts answers with, and the one its fixture's pane already shows; no browser or Bun globals, so both sides import it. */
 import type { SessionHistoryRow } from "../shared/protocol.ts";
 export const SHOWN_SESSION = "11111111-1111-4111-8111-111111111112";
 export const OLDER_SESSION = "11111111-1111-4111-8111-111111111111";

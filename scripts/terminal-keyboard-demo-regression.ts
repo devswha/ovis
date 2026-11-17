@@ -1,3 +1,8 @@
+/**
+ * and a held, ended or offline pane a disabled one. Chromium's synthetic viewport geometry stands
+ * in for a keyboard here and proves nothing about a native one: that is checked by hand on an iOS
+ * Simulator against `--serve-ios`, which only serves the built demo on loopback until SIGINT.
+ */
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";

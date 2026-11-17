@@ -1,3 +1,10 @@
+/**
+ * while it is drawn as before. The real client over the demo's fixture transport, in a disposable
+ * loopback copy; no herdr session is opened. Each case is a phone (390x844 and 412x915, touch, 3x,
+ * So a neighbour's expander that took a corner of it fails. elementFromPoint sees only the topmost
+ * element, so an expander buried under a later sibling is caught from the CSS instead: each control's
+ * reach (its box and its ::before, from getComputedStyle) must share no point with another's. On a desktop window (1280, a mouse) the same controls take taps over
+ */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -122,6 +129,7 @@ const DRAWER: Target[] = [
   { name: "the drawer's Settings gear", selector: ".sidebar.is-open .sidebar-footer-settings" },
   { name: "the plan meters beside it", selector: ".sidebar.is-open .sidebar-footer-row .usage-strip", neighbour: true },
 ];
+/** the terminal's input line (Settings > Terminal > input line): its mic is a --touch-target circle already, and grows no further onto Insert */
 const LINE: Target[] = [
   { name: "the input line's mic", selector: ".terminal-input .terminal-input-mic .voice-mic" },
   { name: "Insert text", selector: ".terminal-input .terminal-input-insert", neighbour: true },

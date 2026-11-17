@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
+# The iOS app paired through the Ovis relay in the iOS Simulator on the test MacBook Air (`ssh eamac`,
+# never the MacBook Pro): todo 21's scenario as a script. Run on this PC from a checkout:
+#
 # bash scripts/relay-ios-sim.sh [evidence-dir]
 #
+# eamac: a fresh clone in /tmp from a git bundle of HEAD (nothing is pushed), the app built with
 # CODE_SIGN_IDENTITY=-: an unsigned build cannot store the relay device key, WebKit's IndexedDB put of a
 # CryptoKey fails with DataCloneError.
 set -euo pipefail
@@ -92,6 +96,7 @@ serve_port() {
   return 1
 }
 
+# no account service: the simulator's WebView has the sign-in plugin, and this run must not reach account.ovis.sh
 [ -f "$repo/dist-shell/index.html" ] || (cd "$repo" && OVIS_ACCOUNT_SERVICE_URL=off bun run build:shell)
 shell_local="$(local_port)"
 relay_local="$(local_port)"
@@ -197,6 +202,7 @@ cd ovis
 bun install --frozen-lockfile >/dev/null
 (cd app && bun install --frozen-lockfile >/dev/null && OVIS_APP_URL="$app_url" bun run build:web >/dev/null && npx cap sync ios >/dev/null) >&2
 grep -q "APP_ORIGIN = \"$app_url\"" app/ios/App/App/public/shell.js
+# this test build only: Capacitor's console lines ("WebView loaded"), which the shipped config keeps off
 python3 - app/ios/App/App/capacitor.config.json <<'PY'
 import json, sys
 path = sys.argv[1]

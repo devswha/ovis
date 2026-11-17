@@ -11,6 +11,14 @@ const script = fileURLToPath(new URL("./self-hosted-runner/run.sh", import.meta.
 const jobStarted = fileURLToPath(new URL("./self-hosted-runner/job-started.sh", import.meta.url));
 const hookHarness = fileURLToPath(new URL("./self-hosted-runner/hook-test-harness.sh", import.meta.url));
 
+/**
+ * Runs the hook on this host, for jobs it allows only, under a parent that can never pass its proof of the worker:
+ * a copy of bash (on macOS a symlink to it) named not-the-worker. The hook may kill only its direct parent, and only
+ * when that parent's executable is Runner.Worker: /proc/<pid>/exe and the name on Linux, the path ps prints on macOS,
+ * all of which name this file. So a refusal nobody meant here blocks and kills nothing, and the test fails at its
+ * 5 s timeout, which ends the parent spawnSync holds and nothing else. Every refusal the tests mean runs in
+ * runHookIsolated.
+ */
 function runJobStarted(eventName: string, payload: unknown) {
   const tempDir = mkdtempSync(join(tmpdir(), "herdr-runner-hook-test-"));
   try {
@@ -36,6 +44,12 @@ function runJobStarted(eventName: string, payload: unknown) {
   }
 }
 
+/**
+ * How hook-test-harness.sh is started for each guard it checks itself. namespace: a PID namespace of its own
+ * (--kill-child ends it with unshare). container: a container of an image that carries the marker
+ * (hook-test.Dockerfile's), the harness made a child
+ * subreaper first, so the orphans of its subtree come to it.
+ */
 const HARNESS_LAUNCH = {
   // The hook writes its refusal to PID 1's stderr by opening /proc/1/fd/2, which works for a pipe or a file but not for a
   // socket (ENXIO), and Bun's "pipe" is a socket: so PID 1 (the harness) gets a real pipe, which a cat started before
@@ -67,6 +81,10 @@ type HookParent = "worker" | "nested" | "renamed" | "posing" | "gone" | "leaves"
 
 type HookPs = "procps" | "fails" | "silent" | "lookalike";
 
+/**
+ * above the harness still runs. `output` is what the hook wrote; `pidOne` what it wrote to PID 1's stderr (in a
+ * namespace, the harness's own; in a container, the container's output, which the test cannot see); `logged` what it sent to
+ */
 async function runHookIsolated(
   mode: Isolation,
   eventName: string,
@@ -190,6 +208,7 @@ async function endsWithin(argv: string[], ms: number) {
 async function runRunnerUntilHung(options: RunnerOptions & { hang: "fetch" | "ls-remote" | "build" }, signal: NodeJS.Signals | null, endMs = LOADED_BOUND_MS) {
   const { tempDir, args, env, logPath } = prepareRunner(options);
   const child = Bun.spawn(["bash", ...args], { env, stdout: "ignore", stderr: "pipe" });
+  // read as it comes: a process left holding stderr must not hold the test past its bound
   const stderrText = new Response(child.stderr).text();
   let release: ReturnType<typeof Bun.spawn> | undefined;
   try {
@@ -600,6 +619,7 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
       const mode = (path: string) => spawnSync("stat", ["-c", "%a", path], { encoding: "utf8" }).stdout.trim();
       const first = join(outboxes, `herdr-ci-${host}-1`);
       expect([mode(join(root, "entries")), mode(join(root, "used")), mode(first)]).toEqual(["755", "755", "1777"]);
+      // what the launcher hands a runner for the cache, not the words: the temp directory's own name may hold them
       expect(runRunner().calls).not.toMatch(/:\/build-cache|OVIS_BUILD_CACHE_|build-cache-locks/);
       mkdirSync(join(first, "junk"), { recursive: true });
       writeFileSync(join(first, "junk/blob"), "x");
@@ -718,6 +738,7 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
     const cwd = mkdtempSync(join(tmpdir(), "herdr-runner-dash-"));
     try {
       writeFileSync(join(cwd, "-"), "GH_TOKEN\n");
+      // stubs first on PATH: a launcher that wrongly went on must never reach the real gh or docker
       const bin = join(cwd, "bin");
       mkdirSync(bin);
       for (const tool of ["gh", "docker"]) {
@@ -1333,6 +1354,7 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
 
 describe.skipIf(process.platform === "win32")("self-hosted runner job-started hook", () => {
   it("runs a job from this repository", () => {
+    // without jq the hook would refuse (and, under runJobStarted's parent, block): fail before it starts
     expect(Bun.which("jq")).not.toBeNull();
     for (const [event, payload] of [
       ["push", { ref: "refs/heads/main" }],

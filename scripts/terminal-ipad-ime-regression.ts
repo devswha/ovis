@@ -1,3 +1,4 @@
+/** Replay the native iPadOS Safari + hardware keyboard and iPhone on-screen keyboard traces (Korean 2-set), not a claim to automate the OS IME. */
 import assert from "node:assert/strict";
 import { EventEmitter, once } from "node:events";
 import { mkdirSync } from "node:fs";
@@ -222,8 +223,10 @@ export async function checkIpadIme(browser: Browser, origin: string, pane: strin
       await fresh("ㄱ"); await replace("ㅡ", "그");
       const sizes = await page.evaluate((shown) => {
         const row = [...document.querySelector(shown)!.querySelectorAll<HTMLElement>("span")].find((span) => span.textContent?.includes("한"))!;
+        // the fit is drawn by a span inside the row's (terminalGlyphs.ts, or the one in libghostty's two-cell box), which carries any enlarged size
         const glyph = row.querySelector<HTMLElement>(".herdr-box-glyph, .ghostty-fit") ?? row.querySelector<HTMLElement>(".ghostty-wide") ?? row;
         const view = document.querySelector<HTMLElement>(".composition-view")!;
+        // where the pending syllable stands against the cursor cell libghostty draws (xterm's own cursor is hidden under it)
         const cursor = document.querySelector<HTMLElement>(".pane-terminal[data-renderer='ghostty'] .ghostty-cursor");
         const at = cursor ? { view: view.getBoundingClientRect().left, cursor: cursor.getBoundingClientRect().left, top: view.getBoundingClientRect().top, cursorTop: cursor.getBoundingClientRect().top } : null;
         return { row: getComputedStyle(glyph).fontSize, view: getComputedStyle(view).fontSize, pending: view.classList.contains("active") ? view.textContent : null, at };

@@ -1,4 +1,7 @@
 /**
+ * https://app.ovis.sh (routed here), the account service the in-memory fake with the directory answered here; no
+ * relay or PC takes part (every WebSocket is closed at once), so nothing is paired.
+ *
  * The shell is SHELL_DIR when set, else dist-shell/, else a build of its own when neither is there.
  *
  *   UI_EVIDENCE_DIR=<dir> bun scripts/relay-second-device-join-regression.ts

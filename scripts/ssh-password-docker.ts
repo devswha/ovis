@@ -1,3 +1,6 @@
+/**
+ * Requires Docker. No host accounts or SSH settings are changed.
+ */
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync, readFileSync } from "node:fs";

@@ -1,3 +1,6 @@
+/**
+ * draws an iTerm2 picture by itself. Demo fixtures only: no herdr, hc or user state.
+ */
 import { deflateSync } from "node:zlib";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -120,6 +123,7 @@ async function open(browser: Browser, server: number, prefix: string, kind: "cor
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("console", (message) => { if (message.type() === "warning" && message.text().includes("libghostty")) errors.push(message.text()); });
   await page.goto(`http://127.0.0.1:${server}${prefix}?pane=${encodeURIComponent(panes.shell)}&view=terminal&server=${kind}`);
+  // attached, not visible: once libghostty draws, xterm's own rows are hidden under it
   await page.locator(".pane-frame.is-current .xterm-rows", { hasText: "BEFORE-LOAD" }).waitFor({ state: "attached" });
   return { page, wasm, errors };
 }

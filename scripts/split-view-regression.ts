@@ -327,6 +327,7 @@ export async function checkSplitView(browser: Browser, origin: string): Promise<
       assert.equal(await half(page, "left").locator(".pane-terminal").count(), 2, "the left half draws herdr's split of its tab");
       assert.equal(await half(page, "right").locator(".pane-terminal").count(), 1);
       await half(page, "right").locator(".tab-strip [role=tab]").nth(0).click();
+      // (a canvas keeps tabs it showed mounted, inert: only the frames drawn count)
       await page.waitForFunction((pane) => document.querySelector(`.pane-slot[data-side="right"] [data-layout-pane="${pane}"]:not([inert])`) !== null, first);
       await isActive(page, "right");
       assert.equal(await page.locator(".pane-slot").count(), 2);

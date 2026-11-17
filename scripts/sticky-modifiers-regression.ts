@@ -13,6 +13,7 @@ import { openLens } from "./header-lens.ts";
 const root = mkdtempSync(join(tmpdir(), "herdr-sticky-qa-"));
 const owned: string[] = [];
 const server = createServer({ port: 0, stateDir: join(root, "state"), token: "" });
+// launched inside the try: a missing Chrome must still stop the server and remove the temp directory
 let launched: Browser | undefined;
 const BRACKETED_PASTE_OFF = "\x1b[?2004l";
 const errors: string[] = [];

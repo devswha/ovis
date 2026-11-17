@@ -1,3 +1,7 @@
+/**
+ * service is shared/account-service-fake.ts, a route of the browser context for A's page and B's own fetch, and A's
+ * account status is pinned, so neither account.ovis.sh nor the PC running this changes the outcome.
+ */
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";

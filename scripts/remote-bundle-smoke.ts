@@ -8,8 +8,12 @@ const windows = process.platform === "win32";
 const root = realpathSync(mkdtempSync(join(process.platform === "darwin" ? "/tmp" : tmpdir(), "herdr-bundle-smoke-")));
 const bundle = join(root, "runtime");
 const home = join(root, "home");
+// herdr follows XDG_CONFIG_HOME; a value apart from ~/.config proves the bridge follows it too.
+// On Windows it follows APPDATA instead, and the bundle carries no herdr: the one herdr's own
+// installer left (the stable alias under %LOCALAPPDATA%), or OVIS_HERDR_BIN.
 // herdr follows XDG_CONFIG_HOME, and APPDATA on Windows
 const xdg = join(home, "xdg");
+// Claude's store: the bridge reads a pane's Claude transcripts from here, not the runner's own
 const claudeConfig = join(home, ".claude");
 mkdirSync(bundle); mkdirSync(home);
 const server = join(bundle, windows ? "ovis-server.exe" : "ovis-server");
@@ -104,6 +108,7 @@ try {
   // Windows keeps the directory busy for a moment after the daemon lets go of its files
   for (let i = 0; ; i++) {
     try { rmSync(root, { recursive: true, force: true }); break; } catch (error) {
+      // a throw here would replace the assertion that failed above with a cleanup error
       if (i === 20) { console.error(`could not remove ${root}: ${error instanceof Error ? error.message : String(error)}`); break; }
       await Bun.sleep(500);
     }

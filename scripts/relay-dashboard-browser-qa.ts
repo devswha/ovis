@@ -493,6 +493,7 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
         particles: document.querySelectorAll(".relay-map-dot").length,
         endless: document.getAnimations().filter((animation) => animation.effect?.getTiming().iterations === Infinity).length,
       }));
+      // narrow screens hide a diagram the layout made (data-diagram stays "true"): what counts is what is drawn
       expect(map.drawn === (diagram ? 1 : 0), `diagram ${JSON.stringify(map)}: want ${diagram ? "drawn" : "the list alone"}`);
       expect(map.routeLists === 1, `${map.routeLists} route lists, want 1`);
       expect(map.particles === 0 && map.endless === 0, `nothing moves on a map no check runs on ${JSON.stringify(map)}`);

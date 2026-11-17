@@ -1,3 +1,7 @@
+/**
+ * resume route) offering no Resume rather than an unbound one. No herdr pane is touched; every request
+ * stays on this loopback server.
+ */
 import assert from "node:assert/strict";
 import { EventEmitter, once } from "node:events";
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
@@ -47,6 +51,7 @@ let piLists = 0;
 const piRetry = "Pi sessions could not be read right now. Try again.";
 const json = (body: unknown, status = 200) => Response.json(body, { status, headers: { "cache-control": "no-store" } });
 const refusal = (code: string, message: string, status: number) => json({ error: { code, message } }, status);
+/** every bounded animation (the sheet's rise) over, then two frames; a looping one (a breathing status dot) never finishes and is not waited for */
 const settled = (page: Page) => page.evaluate(() => Promise.all(document.getAnimations().filter((animation) => animation.effect?.getTiming().iterations !== Infinity).map((animation) => animation.finished.catch(() => undefined))).then(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done())))));
 try {
   const build = await Bun.build({ entrypoints: ["scripts/session-history-fixture.tsx"], outdir: root, target: "browser", define: { "process.env.NODE_ENV": '"development"' } });
