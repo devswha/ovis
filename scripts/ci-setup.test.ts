@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { topLevelTerms, unreadWorkflowFiles, workflowAndActionFiles } from "./shell-workflow-rules.ts";
+import { topLevelTerms, workflowAndActionFiles, workflowFileProblems } from "./shell-workflow-rules.ts";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const action = Bun.YAML.parse(readFileSync(join(root, ".github/actions/setup-ci/action.yml"), "utf8")) as {
@@ -268,8 +268,8 @@ describe("action pins and checkout credentials", () => {
   });
 
   it("pins every external action to a full commit SHA and keeps local actions and workflows relative", () => {
-    // a workflow or action GitHub loads under another spelling (`.yaml`) would escape this audit: it fails instead
-    expect(unreadWorkflowFiles(workflowAndActionFiles())).toEqual([]);
+    // a workflow or action GitHub loads under another spelling (`.yaml`), or behind a symlink, would escape this audit: it fails instead
+    expect(workflowFileProblems()).toEqual([]);
     expect(actionFiles).toContain(".github/actions/setup-ci/action.yml");
     const names = new Set<string>();
     for (const file of actionFiles) {

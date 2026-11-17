@@ -1,7 +1,8 @@
-import { describe, expect, test } from "bun:test";
-import { readdirSync, readFileSync } from "node:fs";
+import { afterAll, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { GITHUB_HOSTED_LABELS, parseWorkflow, root, topLevelTerms, unreadWorkflowFiles, workflowAndActionFiles, type Job, type Step } from "./shell-workflow-rules.ts";
+import { GITHUB_HOSTED_LABELS, parseWorkflow, root, topLevelTerms, unreadWorkflowFiles, workflowFileProblems, type Job, type Step } from "./shell-workflow-rules.ts";
 
 // Anyone who holds a runner registration token can register a self-hosted runner under any label; it then takes the
 // jobs that ask for that label, with the run's runtime token, which lets a job write any artifact of its run and any
@@ -24,8 +25,8 @@ import { GITHUB_HOSTED_LABELS, parseWorkflow, root, topLevelTerms, unreadWorkflo
 // runner carries that label, was observed by a trial on 2026-11-17 (14 of 14 jobs); it is not documented by GitHub. The
 // other labels on GITHUB_HOSTED_LABELS are assumed to behave the same (scripts/self-hosted-runner/README.md, "Security model").
 
-/** Any reference to the secrets context, in any form, but the automatic GITHUB_TOKEN, which the permissions count instead. */
-const SECRET = /(?<![\w.-])secrets\b(?!\s*\.\s*GITHUB_TOKEN\b)(?:\s*\.\s*(?:\w+|\*)|\s*\[[^\]]*\])?/i;
+/** A reference to the secrets context, in any form, but the automatic GITHUB_TOKEN, which the permissions count instead. */
+const SECRET = /(?<![\w.-])secrets\b(?!\s*\.\s*GITHUB_TOKEN\b)(?:\s*\.\s*(?:\w+|\*)|\s*\[[^\]]*\])?/gi;
 /** The actions a job of a Pages run may use, each at the exact reference reviewed. */
 const REVIEWED_ACTIONS = [
   "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
@@ -42,8 +43,9 @@ const SETUP_CI_ACTIONS = [
   "actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
   "actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
 ];
-const LABEL_FORM = /^\$\{\{ inputs\.hosted_only && '([^']+)' \|\| .+ \}\}$/s;
-const NO_CACHE_FORM = /^\$\{\{ inputs\.hosted_only && 'none' \|\| .+ \}\}$/s;
+// the whole value is one expression with the reviewed prefix: no second `${{ }}` and no text around it
+const LABEL_FORM = /^\$\{\{ inputs\.hosted_only && '([^']+)' \|\| (?:(?!\$\{\{|\}\}).)+ \}\}$/s;
+const NO_CACHE_FORM = /^\$\{\{ inputs\.hosted_only && 'none' \|\| (?:(?!\$\{\{|\}\}).)+ \}\}$/s;
 
 type Permissions = Record<string, string> | "read-all" | "write-all";
 type Matrix = Record<string, unknown> & { include?: Record<string, unknown>[] };
@@ -78,13 +80,26 @@ function writeScopes(workflows: Workflows, file: string, job: AnyJob): string[] 
   return [...scopes];
 }
 
-/** What makes `job` privileged: write scopes, an environment, a secret (its own, its workflow env's, or a caller's `secrets: inherit` it reads). */
+/**
+ * The secrets-context references `value` makes where GitHub evaluates expressions: inside `${{ }}` in any string (a `run:`
+ * script's included), and in a whole `if:` value, which is an expression without braces. A bare word elsewhere (a step's
+ * name) is prose, not a reference. Each reference once, in the order the job makes them.
+ */
+function secretReferences(value: unknown, key = ""): string[] {
+  if (typeof value === "string") {
+    const expressions = key === "if" ? [value] : [...value.matchAll(/\$\{\{([\s\S]*?)\}\}/g)].map((match) => match[1]!);
+    return expressions.flatMap((expression) => [...expression.matchAll(SECRET)].map((match) => match[0].replace(/\s+/g, "")));
+  }
+  if (Array.isArray(value)) return value.flatMap((entry) => secretReferences(entry));
+  if (typeof value === "object" && value !== null) return Object.entries(value).flatMap(([name, entry]) => secretReferences(entry, name));
+  return [];
+}
+
+/** What makes `job` privileged: write scopes, an environment, each secret it references (its own, or its workflow env's). */
 function privileges(workflows: Workflows, file: string, job: AnyJob): string[] {
   const reasons = writeScopes(workflows, file, job);
   if (job.environment !== undefined) reasons.push("environment");
-  const secret = SECRET.exec(JSON.stringify([workflows[file]!.env ?? {}, job]));
-  if (secret) reasons.push(secret[0]);
-  return reasons;
+  return [...reasons, ...new Set([...secretReferences(workflows[file]!.env ?? {}), ...secretReferences(job)])];
 }
 
 /** Whether `job` names a hosted label literally, or a matrix axis whose every value is one. */
@@ -104,7 +119,7 @@ function hostedLiteral(job: AnyJob): boolean {
   return values.length > 0 && values.every((value) => typeof value === "string" && GITHUB_HOSTED_LABELS.includes(value));
 }
 
-type Pending = { file: string; job: string; runsOn: string };
+type Pending = { file: string; job: string; runsOn: string; reasons: string[] };
 const pendingKey = ({ file, job }: { file: string; job: string }): string => `${file} ${job}`;
 
 /** Each privileged job of `workflows` that can reach a runner GitHub does not host, but those `pending` names; and each call this test cannot read. */
@@ -123,7 +138,7 @@ function privilegeProblems(workflows: Workflows, pending: Pending[] = []): strin
   );
 }
 
-/** What is wrong with the `pending` list: an entry twice, a job gone, a runs-on other than listed, or one that no longer breaks the rule. */
+/** What is wrong with the `pending` list: an entry twice, a job gone, a runs-on or privileges other than listed, or one that no longer breaks the rule. */
 function pendingProblems(workflows: Workflows, pending: Pending[]): string[] {
   const problems: string[] = [];
   const seen = new Set<string>();
@@ -138,6 +153,8 @@ function pendingProblems(workflows: Workflows, pending: Pending[]): string[] {
       problems.push(`${key}: runs-on is ${JSON.stringify(job["runs-on"])}, not the listed ${JSON.stringify(entry.runsOn)}`);
     } else if (hostedLiteral(job) || privileges(workflows, entry.file, job).length === 0) {
       problems.push(`${key}: no longer breaks the rule: remove it from the list`);
+    } else if (JSON.stringify(privileges(workflows, entry.file, job)) !== JSON.stringify(entry.reasons)) {
+      problems.push(`${key}: holds ${JSON.stringify(privileges(workflows, entry.file, job))}, not the listed ${JSON.stringify(entry.reasons)}`);
     }
   }
   return problems;
@@ -224,9 +241,13 @@ function pagesRoots(workflows: Workflows): string[] {
   ))];
 }
 
-/** The problems of every run that contains a job deploying Pages. */
-function pagesProblems(workflows: Workflows): string[] {
-  return pagesRoots(workflows).flatMap((runRoot) => runProblems(workflows, runRoot));
+/** The problems of every run that contains a job deploying Pages; each of `deploying` must still have such a job, or the check would pass on nothing. */
+function pagesProblems(workflows: Workflows, deploying: string[] = []): string[] {
+  const missing = deploying.filter((file) => !Object.values(workflows[file]?.jobs ?? {}).some((job) => (job.steps ?? []).some((step) => step.uses !== undefined && action(step.uses) === "actions/deploy-pages")));
+  return [
+    ...missing.map((file) => `${file}: has no job that deploys Pages (actions/deploy-pages), so no run of it is checked as a whole`),
+    ...pagesRoots(workflows).flatMap((runRoot) => runProblems(workflows, runRoot)),
+  ];
 }
 
 /** The labels named by the jobs these rules cover: privileged jobs, and every job of a Pages run. */
@@ -242,19 +263,29 @@ const repository: Workflows = Object.fromEntries(
     .filter((name) => name.endsWith(".yml"))
     .map((name) => [name, parseWorkflow(join(dir, name)) as unknown as AnyWorkflow]),
 );
+const scratch: string[] = [];
+afterAll(() => {
+  for (const dir of scratch) rmSync(dir, { recursive: true, force: true });
+});
 const setupCi = Bun.YAML.parse(readFileSync(join(root, ".github/actions/setup-ci/action.yml"), "utf8")) as { inputs: { cache: { default: string } }; runs: { steps: AnyStep[] } };
 
 const LIGHT = "${{ github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || fromJSON(github.ref == 'refs/heads/main' && vars.CI_MAIN_SELF_HOSTED_LABELS || vars.CI_LIGHT_LABELS || vars.CI_SELF_HOSTED_LABELS || '[\"self-hosted\",\"self-hosted-ovis\"]') }}";
 const VARIABLE = "${{ vars.CI_SELF_HOSTED_LABELS && fromJSON(vars.CI_SELF_HOSTED_LABELS) || 'ubuntu-24.04' }}";
 // KNOWN AND PENDING (2026-11-17): the release-side jobs that hold a write permission or a secret and still take
 // CI_SELF_HOSTED_LABELS (unset today, so they run GitHub-hosted). The owner's second pull request moves them and removes
-// this list. Each entry names the job and its exact runs-on as on main, and must still break the rule, so the list
-// can hide no other job and cannot outlive the change (the tests below).
+// this list. Each entry names the job, its exact runs-on as on main and exactly the privileges it holds; the tests below
+// fail on another job breaking the rule, on a listed job whose runs-on or privileges change, on an entry that no longer
+// breaks the rule, and on a duplicate, so the list can hide nothing and cannot outlive the change.
 const PENDING: Pending[] = [
-  { file: "release.yml", job: "publish", runsOn: "${{ vars.CI_SELF_HOSTED_LABELS && fromJSON(vars.CI_SELF_HOSTED_LABELS) || 'ubuntu-24.04' }}" },
-  { file: "release.yml", job: "shell-attach", runsOn: "${{ vars.CI_SELF_HOSTED_LABELS && fromJSON(vars.CI_SELF_HOSTED_LABELS) || 'ubuntu-24.04' }}" },
-  { file: "windows-app.yml", job: "attach", runsOn: "${{ vars.CI_SELF_HOSTED_LABELS && fromJSON(vars.CI_SELF_HOSTED_LABELS) || 'ubuntu-24.04' }}" },
-  { file: "mac-dmg.yml", job: "gate", runsOn: "${{ vars.CI_SELF_HOSTED_LABELS && fromJSON(vars.CI_SELF_HOSTED_LABELS) || 'ubuntu-24.04' }}" },
+  { file: "release.yml", job: "publish", runsOn: "${{ vars.CI_SELF_HOSTED_LABELS && fromJSON(vars.CI_SELF_HOSTED_LABELS) || 'ubuntu-24.04' }}", reasons: ["contents: write"] },
+  { file: "release.yml", job: "shell-attach", runsOn: "${{ vars.CI_SELF_HOSTED_LABELS && fromJSON(vars.CI_SELF_HOSTED_LABELS) || 'ubuntu-24.04' }}", reasons: ["contents: write"] },
+  { file: "windows-app.yml", job: "attach", runsOn: "${{ vars.CI_SELF_HOSTED_LABELS && fromJSON(vars.CI_SELF_HOSTED_LABELS) || 'ubuntu-24.04' }}", reasons: ["contents: write"] },
+  {
+    file: "mac-dmg.yml",
+    job: "gate",
+    runsOn: "${{ vars.CI_SELF_HOSTED_LABELS && fromJSON(vars.CI_SELF_HOSTED_LABELS) || 'ubuntu-24.04' }}",
+    reasons: ["secrets.MAC_DEVELOPER_ID_P12", "secrets.MAC_DEVELOPER_ID_P12_PASSWORD", "secrets.MAC_NOTARY_KEY_P8", "secrets.MAC_NOTARY_KEY_ID", "secrets.MAC_NOTARY_ISSUER"],
+  },
 ];
 const HOSTED_ONLY = "${{ inputs.hosted_only && 'ubuntu-24.04' || fromJSON(vars.CI_SELF_HOSTED_LABELS) }}";
 const DEPLOY: AnyJob = { "runs-on": "ubuntu-24.04", permissions: { pages: "write", "id-token": "write" }, environment: "github-pages", steps: [{ uses: "actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346" }] };
@@ -276,12 +307,32 @@ const HOSTED_JOB: AnyJob = { "runs-on": "ubuntu-24.04", steps: [{ uses: CHECKOUT
 const cacheIf = (condition: string): AnyJob => ({ "runs-on": HOSTED_ONLY, steps: [{ uses: CACHE, if: condition, with: { path: "x", key: "k" } }] });
 
 describe("jobs that hold a write permission, an environment or a secret", () => {
-  test("every workflow and action file GitHub loads ends in .yml, so these tests read it", () => {
-    expect(unreadWorkflowFiles(workflowAndActionFiles())).toEqual([]);
+  test("every workflow and action file GitHub loads ends in .yml, so these tests read it, and none is a symlink", () => {
+    expect(workflowFileProblems()).toEqual([]);
     expect(unreadWorkflowFiles([
       ".github/workflows/safe.yml", ".github/workflows/unsafe.yaml", ".github/workflows/Upper.YML", ".github/workflows/README.md", ".github/workflows/old/x.yaml",
       ".github/actions/a/action.yml", ".github/actions/b/action.yaml", ".github/actions/c/Action.yml", ".github/actions/a/script.yaml",
     ])).toEqual([".github/workflows/unsafe.yaml", ".github/workflows/Upper.YML", ".github/actions/b/action.yaml", ".github/actions/c/Action.yml"]);
+  });
+
+  test("the discovery reads a real tree: a symlinked workflow, action metadata or action folder is refused, not followed", () => {
+    const base = mkdtempSync(join(tmpdir(), "privileged-jobs-"));
+    scratch.push(base);
+    mkdirSync(join(base, ".github/workflows/old"), { recursive: true });
+    mkdirSync(join(base, ".github/actions/real"), { recursive: true });
+    mkdirSync(join(base, "elsewhere/action"), { recursive: true });
+    for (const file of [".github/workflows/safe.yml", ".github/workflows/unsafe.yaml", ".github/workflows/old/x.yaml", ".github/actions/real/action.yml", "elsewhere/action.yaml", "elsewhere/action/action.yml"]) {
+      writeFileSync(join(base, file), "name: x\n");
+    }
+    symlinkSync(join(base, "elsewhere/action.yaml"), join(base, ".github/workflows/linked.yml"));
+    symlinkSync(join(base, "elsewhere/action.yaml"), join(base, ".github/actions/real/action.yaml"));
+    symlinkSync(join(base, "elsewhere/action"), join(base, ".github/actions/linked"));
+    expect(workflowFileProblems(base)).toEqual([
+      ".github/actions/linked: a symlink, which the workflow tests do not follow",
+      ".github/actions/real/action.yaml: a symlink, which the workflow tests do not follow",
+      ".github/workflows/linked.yml: a symlink, which the workflow tests do not follow",
+      ".github/workflows/unsafe.yaml: GitHub loads it, but it does not end in .yml, so the workflow tests would not read it",
+    ]);
   });
 
   test("every one in .github/workflows names a GitHub-hosted label literally, but the pending ones", () => {
@@ -290,11 +341,13 @@ describe("jobs that hold a write permission, an environment or a secret", () => 
 
   test("the pending list names exactly the jobs that still break the rule, each once and with its runs-on as listed", () => {
     expect(pendingProblems(repository, PENDING)).toEqual([]);
-    expect(privilegeProblems(repository).sort()).toEqual(PENDING.map((entry) => `${pendingKey(entry)}: runs-on ${JSON.stringify(entry.runsOn)} with ${privileges(repository, entry.file, repository[entry.file]!.jobs[entry.job]!).join(", ")}`).sort());
+    // without the list, exactly the listed jobs break the rule, for exactly the listed privileges
+    expect(privilegeProblems(repository).sort()).toEqual(PENDING.map((entry) => `${pendingKey(entry)}: runs-on ${JSON.stringify(entry.runsOn)} with ${entry.reasons.join(", ")}`).sort());
   });
 
-  test("the hosted-label list holds exactly the labels the covered jobs name", () => {
-    expect([...GITHUB_HOSTED_LABELS].sort()).toEqual(coveredLabels(repository));
+  test("every label on the hosted-label list is one a covered job names", () => {
+    // only this direction: a label a job names that is not on the list is refused by the rule itself
+    expect(GITHUB_HOSTED_LABELS.filter((label) => !coveredLabels(repository).includes(label))).toEqual([]);
   });
 
   test("the Pages deploy, the release's publish job and the Mac app's gate count as privileged", () => {
@@ -303,9 +356,7 @@ describe("jobs that hold a write permission, an environment or a secret", () => 
     // Release hands the Mac app workflow every secret; its gate reads whether the signing ones are set
     expect(repository["release.yml"]!.jobs["mac-dmg"]!).toMatchObject({ secrets: "inherit" });
     const gate = privileges(repository, "mac-dmg.yml", repository["mac-dmg.yml"]!.jobs.gate!);
-    // any mention of the secrets context counts, the step's name ("... the signing secrets") included: fail closed
-    expect(gate).toHaveLength(1);
-    expect(gate[0]).toMatch(/^secrets\b/);
+    expect(gate).toEqual(PENDING.find((entry) => entry.job === "gate")!.reasons);
   });
 
   const cases: [string, Workflows, number][] = [
@@ -348,6 +399,9 @@ describe("jobs that hold a write permission, an environment or a secret", () => 
     ["refuses a secret handed to an action's input", one({ "runs-on": LIGHT, steps: [{ uses: "x/y@v1", with: { token: "${{ secrets.T }}" } }] }), [`x.yml job: runs-on ${JSON.stringify(LIGHT)} with secrets.T`]],
     ["refuses a secret in a job's condition", one({ "runs-on": LIGHT, if: "secrets.T != ''" }), [`x.yml job: runs-on ${JSON.stringify(LIGHT)} with secrets.T`]],
     ["refuses a called job that reads a secret its caller passes by name", called({ secrets: { T: "${{ secrets.T }}" } }, { "runs-on": VARIABLE, permissions: { contents: "read" }, env: { T: "${{ secrets.T }}" } }), [`called.yml job: runs-on ${JSON.stringify(VARIABLE)} with secrets.T`]],
+    ["does not count a step's name that says secrets: prose, not a reference", one({ "runs-on": LIGHT, steps: [{ name: "Check the signing secrets", run: "echo the secrets are set" }] }), []],
+    ["refuses a secret a run script reads through an expression", one({ "runs-on": LIGHT, steps: [{ run: 'echo "${{ secrets.T }}"' }] }), [`x.yml job: runs-on ${JSON.stringify(LIGHT)} with secrets.T`]],
+    ["refuses a secret in a step's condition, an expression without braces", one({ "runs-on": LIGHT, steps: [{ if: "secrets.T != ''", run: "true" }] }), [`x.yml job: runs-on ${JSON.stringify(LIGHT)} with secrets.T`]],
     ["refuses a call to another repository's workflow", one({ uses: "owner/repo/.github/workflows/deploy.yml@main", secrets: "inherit", permissions: WRITE }), ["x.yml job: calls owner/repo/.github/workflows/deploy.yml@main, which this test cannot read: only a workflow in ./.github/workflows/<name>.yml of this repository"]],
     ["refuses a full-path call to a workflow of this repository", one({ uses: "devswha/ovis/.github/workflows/ci.yml@main", permissions: WRITE }), ["x.yml job: calls devswha/ovis/.github/workflows/ci.yml@main, which this test cannot read: only a workflow in ./.github/workflows/<name>.yml of this repository"]],
     ["refuses a call to a .yaml workflow", one({ uses: "./.github/workflows/callee.yaml", secrets: "inherit" }), ["x.yml job: calls ./.github/workflows/callee.yaml, which this test cannot read: only a workflow in ./.github/workflows/<name>.yml of this repository"]],
@@ -359,9 +413,20 @@ describe("jobs that hold a write permission, an environment or a secret", () => 
     });
   }
 
-  const listed = (job: string, runsOn: string): Pending => ({ file: "x.yml", job, runsOn });
+  const listed = (job: string, runsOn: string, reasons = ["contents: write"]): Pending => ({ file: "x.yml", job, runsOn, reasons });
   const two = (runsOn: string, permissions: Permissions = WRITE): Workflows => ({
     "x.yml": { on: { push: {} }, permissions: { contents: "read" }, jobs: { pending: { "runs-on": runsOn, permissions }, other: { "runs-on": VARIABLE, permissions: WRITE } } },
+  });
+  const withPending = (extra: Partial<AnyJob>): Workflows => {
+    const workflows = two(VARIABLE);
+    Object.assign(workflows["x.yml"]!.jobs.pending!, extra);
+    return workflows;
+  };
+  test("the pending list fails on mac-dmg.yml's gate once its secret references are gone, though its step's name still says secrets", () => {
+    const copy = structuredClone(repository);
+    for (const step of copy["mac-dmg.yml"]!.jobs.gate!.steps ?? []) delete step.env;
+    expect(copy["mac-dmg.yml"]!.jobs.gate!.steps!.some((step) => /secrets/.test(step.name ?? ""))).toBe(true);
+    expect(pendingProblems(copy, PENDING)).toEqual(["mac-dmg.yml gate: no longer breaks the rule: remove it from the list"]);
   });
   test("the pending list excuses only the jobs it names", () => {
     expect(privilegeProblems(two(VARIABLE), [listed("pending", VARIABLE)])).toEqual([`x.yml other: runs-on ${JSON.stringify(VARIABLE)} with contents: write`]);
@@ -372,6 +437,9 @@ describe("jobs that hold a write permission, an environment or a secret", () => 
     ["fails when a listed job moved to a hosted label", two("ubuntu-24.04"), [listed("pending", "ubuntu-24.04")], ["x.yml pending: no longer breaks the rule: remove it from the list"]],
     ["fails when a listed job no longer holds a write permission or a secret", two(VARIABLE, { contents: "read" }), [listed("pending", VARIABLE)], ["x.yml pending: no longer breaks the rule: remove it from the list"]],
     ["fails when a job is listed twice", two(VARIABLE), [listed("pending", VARIABLE), listed("pending", VARIABLE)], ["x.yml pending: listed twice"]],
+    ["fails when a listed job gains an environment", withPending({ environment: "production" }), [listed("pending", VARIABLE)], ['x.yml pending: holds ["contents: write","environment"], not the listed ["contents: write"]']],
+    ["fails when a listed job gains a secret", withPending({ env: { T: "${{ secrets.T }}" } }), [listed("pending", VARIABLE)], ['x.yml pending: holds ["contents: write","secrets.T"], not the listed ["contents: write"]']],
+    ["fails when a listed job's write scope changes", two(VARIABLE, { actions: "write" }), [listed("pending", VARIABLE)], ['x.yml pending: holds ["actions: write"], not the listed ["contents: write"]']],
   ];
   for (const [name, workflows, pending, problems] of rot) {
     test(name, () => {
@@ -382,8 +450,8 @@ describe("jobs that hold a write permission, an environment or a secret", () => 
 
 describe("a run that deploys Pages is GitHub-hosted and cacheless as a whole", () => {
   test("pages.yml's runs, with the ci.yml its validation calls", () => {
-    expect(pagesProblems(repository)).toEqual([]);
-    expect(runRoots(repository, "pages.yml")).toEqual(["pages.yml"]);
+    expect(pagesProblems(repository, ["pages.yml"])).toEqual([]);
+    expect(pagesRoots(repository)).toEqual(["pages.yml"]);
     expect(repository["pages.yml"]!.jobs.validate).toMatchObject({ uses: "./.github/workflows/ci.yml", with: { hosted_only: true } });
   });
 
@@ -437,6 +505,9 @@ describe("a run that deploys Pages is GitHub-hosted and cacheless as a whole", (
     ["refuses a label of a hosted form that is not on the list", pages({ ...HOSTED_JOB, "runs-on": "ubuntu-99.99" }, { hosted_only: true }, HOSTED_JOB), [`${SIBLING}: runs-on "ubuntu-99.99" ${RUNS_ON}`]],
     ["refuses the hosted_only form outside a call that passes it", pages({ ...HOSTED_JOB, "runs-on": HOSTED_ONLY }, { hosted_only: true }, HOSTED_JOB), [`${SIBLING}: runs-on ${JSON.stringify(HOSTED_ONLY)} ${RUNS_ON}`]],
     ["refuses a called job whose call does not pass hosted_only", pages(HOSTED_JOB, undefined, { "runs-on": HOSTED_ONLY }), [`${CHECK}: runs-on ${JSON.stringify(HOSTED_ONLY)} ${RUNS_ON}`]],
+    ["refuses the hosted_only form followed by a second expression", pages(HOSTED_JOB, { hosted_only: true }, { "runs-on": "${{ inputs.hosted_only && 'ubuntu-24.04' || 'x' }}${{ '-evil' }}" }), [`${CHECK}: runs-on "\${{ inputs.hosted_only && 'ubuntu-24.04' || 'x' }}\${{ '-evil' }}" ${RUNS_ON}`]],
+    ["refuses the hosted_only form followed by text", pages(HOSTED_JOB, { hosted_only: true }, { "runs-on": "${{ inputs.hosted_only && 'ubuntu-24.04' || 'x' }}-evil" }), [`${CHECK}: runs-on "\${{ inputs.hosted_only && 'ubuntu-24.04' || 'x' }}-evil" ${RUNS_ON}`]],
+    ["refuses setup-ci's hosted_only form followed by a second expression", pages(HOSTED_JOB, { hosted_only: true }, { "runs-on": HOSTED_ONLY, steps: [{ uses: "./.github/actions/setup-ci", with: { cache: "${{ inputs.hosted_only && 'none' || 'save' }}${{ '' }}" } }] }), [`${CHECK}: setup-ci cache "\${{ inputs.hosted_only && 'none' || 'save' }}\${{ '' }}" is neither none nor the hosted_only form under a call that passes hosted_only: true`]],
     ["refuses a called job whose call passes hosted_only as an expression", pages(HOSTED_JOB, { hosted_only: "${{ github.ref == 'refs/heads/main' }}" }, { "runs-on": HOSTED_ONLY }), [`${CHECK}: runs-on ${JSON.stringify(HOSTED_ONLY)} ${RUNS_ON}`]],
     ["refuses setup-ci's default cache", pages({ ...HOSTED_JOB, steps: [{ uses: "./.github/actions/setup-ci" }] }, { hosted_only: true }, HOSTED_JOB), [`${SIBLING}: setup-ci cache "save (default)" is neither none nor the hosted_only form under a call that passes hosted_only: true`]],
     ["refuses setup-ci's cache taken from a variable", pages({ ...HOSTED_JOB, steps: [{ uses: "./.github/actions/setup-ci", with: { cache: "${{ vars.MODE }}" } }] }, { hosted_only: true }, HOSTED_JOB), [`${SIBLING}: setup-ci cache "\${{ vars.MODE }}" is neither none nor the hosted_only form under a call that passes hosted_only: true`]],
@@ -463,4 +534,10 @@ describe("a run that deploys Pages is GitHub-hosted and cacheless as a whole", (
       expect(pagesProblems(workflows)).toEqual(problems);
     });
   }
+
+  test("fails when the workflow that deploys Pages no longer has its deploy step, instead of checking nothing", () => {
+    const workflows = pages(HOSTED_JOB, { hosted_only: true }, HOSTED_JOB);
+    workflows["site.yml"]!.jobs.deploy!.steps = [{ uses: CHECKOUT }];
+    expect(pagesProblems(workflows, ["site.yml"])).toEqual(["site.yml: has no job that deploys Pages (actions/deploy-pages), so no run of it is checked as a whole"]);
+  });
 });

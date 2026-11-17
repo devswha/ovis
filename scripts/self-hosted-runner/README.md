@@ -451,8 +451,10 @@ too), an environment or a secret runs on GitHub-hosted runners only: its `runs-o
 label from a fixed list literally, never a self-hosted label or a variable, input, job output or
 matrix value that could carry one, whatever the routing variables above say. Four release-side jobs are
 known and pending: `release.yml`'s publish and shell-attach, `windows-app.yml`'s attach and
-`mac-dmg.yml`'s gate still take `CI_SELF_HOSTED_LABELS` (unset, so they run GitHub-hosted); a second
-pull request moves them and removes the test's list of them.
+`mac-dmg.yml`'s gate still take `CI_SELF_HOSTED_LABELS` (unset, so they run GitHub-hosted); the test lists
+each with its exact runs-on and privileges, and fails on another job breaking the rule, on a listed job
+whose runs-on or privileges change, on an entry that no longer breaks the rule, and on a duplicate. A
+second pull request moves them and removes the list.
 The Pages run is GitHub-hosted as a whole, and restores no Actions cache: every job of a run can
 write the run's artifacts with its own token, deploy publishes the run's `github-pages` artifact
 by its name, and any job of a main run can write a cache that later runs restore. Its build,
@@ -525,7 +527,7 @@ the rules.
 | pty-sidecar.yml | manifest | `ubuntu-24.04` | yes | - | setup-bun Bun cache |
 | pty-sidecar.yml | attest | `ubuntu-24.04` | yes | id-token, attestations write | none |
 | relay-deploy.yml | validate | calls `ci.yml` | (its jobs) | - | (its jobs) |
-| relay-deploy.yml | deploy | `ubuntu-24.04` | yes | environment production; secrets CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID | setup-ci save |
+| relay-deploy.yml | deploy | `ubuntu-24.04` | yes | environment production; secrets: a deploy token and an account id for the host it deploys to | setup-ci save |
 | release-validate.yml | reuse | `ubuntu-24.04` | yes | - | none |
 | release-validate.yml | fast | `ubuntu-24.04` | yes | - | setup-ci save |
 | release-validate.yml | ci | calls `ci.yml` | (its jobs) | - | (its jobs) |
@@ -538,7 +540,7 @@ the rules.
 | release.yml | server-binary-attest | `ubuntu-24.04` | yes | id-token, attestations write | none |
 | release.yml | publish | VAR | yes while CI_SELF_HOSTED_LABELS is unset | contents write | setup-ci save |
 | release.yml | shell-build | `ubuntu-24.04` | yes | - | setup-ci restore |
-| release.yml | shell-deploy | `ubuntu-24.04` | yes | environment production; secrets CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID | none |
+| release.yml | shell-deploy | `ubuntu-24.04` | yes | environment production; secrets: a deploy token and an account id for the host it deploys to | none |
 | release.yml | shell-attach | VAR | yes while CI_SELF_HOSTED_LABELS is unset | contents write | none |
 | release.yml | windows-app | calls `windows-app.yml` | (its jobs) | contents write | (its jobs) |
 | release.yml | desktop | calls `desktop.yml` | (its jobs) | contents write; passes 7 secrets | (its jobs) |
@@ -549,7 +551,7 @@ the rules.
 | remote-bundles.yml | ssh | `ubuntu-24.04` | yes | - | setup-bun Bun cache |
 | remote-bundles.yml | release | `ubuntu-24.04` | yes | contents write | none |
 | shell-preview.yml | shell-build | `ubuntu-24.04` | yes | - | setup-ci restore |
-| shell-preview.yml | shell-deploy | `ubuntu-24.04` | yes | environment production; secrets CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID | none |
+| shell-preview.yml | shell-deploy | `ubuntu-24.04` | yes | environment production; secrets: a deploy token and an account id for the host it deploys to | none |
 | windows-app.yml | gate | VAR | yes while CI_SELF_HOSTED_LABELS is unset | - | none |
 | windows-app.yml | build | `windows-latest` | yes | - | none |
 | windows-app.yml | attach | VAR | yes while CI_SELF_HOSTED_LABELS is unset | contents write | none |

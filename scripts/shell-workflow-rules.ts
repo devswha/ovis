@@ -46,13 +46,28 @@ export function unreadWorkflowFiles(paths: string[]): string[] {
   });
 }
 
-/** Every file at the top of .github/workflows and under .github/actions, as paths from the repository's root. */
-export function workflowAndActionFiles(): string[] {
-  const top = readdirSync(join(root, ".github/workflows"), { withFileTypes: true }).filter((entry) => entry.isFile()).map((entry) => `.github/workflows/${entry.name}`);
-  const actions = (readdirSync(join(root, ".github/actions"), { recursive: true, withFileTypes: true }) as Dirent[])
-    .filter((entry) => entry.isFile())
-    .map((entry) => relative(root, join(entry.parentPath, entry.name)).split("\\").join("/"));
-  return [...top, ...actions].sort();
+/** The entries at the top of .github/workflows and under .github/actions (symlinks listed, not followed), as paths from `base`. */
+function workflowEntries(base: string): [string, Dirent][] {
+  const top = readdirSync(join(base, ".github/workflows"), { withFileTypes: true }).map((entry): [string, Dirent] => [`.github/workflows/${entry.name}`, entry]);
+  const actions = (readdirSync(join(base, ".github/actions"), { recursive: true, withFileTypes: true }) as Dirent[])
+    .map((entry): [string, Dirent] => [relative(base, join(entry.parentPath, entry.name)).split("\\").join("/"), entry]);
+  return [...top, ...actions];
+}
+
+/** Every regular file at the top of .github/workflows and under .github/actions, as paths from `base`. */
+export function workflowAndActionFiles(base = root): string[] {
+  return workflowEntries(base).filter(([, entry]) => entry.isFile()).map(([path]) => path).sort();
+}
+
+/** Why the workflow tests cannot be sure they read every workflow and action: a symlink there (never followed), or a file GitHub loads under another spelling. */
+export function workflowFileProblems(base = root): string[] {
+  return workflowEntries(base)
+    .flatMap(([path, entry]) => {
+      if (entry.isSymbolicLink()) return [`${path}: a symlink, which the workflow tests do not follow`];
+      if (entry.isFile() && unreadWorkflowFiles([path]).length > 0) return [`${path}: GitHub loads it, but it does not end in .yml, so the workflow tests would not read it`];
+      return [];
+    })
+    .sort();
 }
 
 /** The GitHub-hosted runner labels the workflows may name for a job that must never reach a self-hosted runner. */
