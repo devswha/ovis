@@ -183,31 +183,46 @@ function sizeOf(node: Record<string, unknown>): Size {
 /**
  * Each node's weight in a row `length` long. The snapshot carries shares, not the viewer's pixels,
  * so pixels count against the tab's nominal LAYOUT_AREA: each its pixels' share of the row, the
- * weights sharing what is left. Pixels alone share the row by their pixels; pixels that fill it
- * leave the weighted nodes nothing but the smallest split (`clampRatio`).
+ * weights sharing what is left. Pixels that fill the row leave the weighted nodes a sliver rather
+ * than nothing (`clampRatio` draws at least its smallest split), so a nested node keeps an extent of
+ * its own. Pixels alone share the row by their pixels.
  */
 function weights(sizes: readonly Size[], length: number): number[] {
   const free = sizes.reduce((sum, size) => sum + ("weight" in size ? size.weight : 0), 0);
   const fixed = sizes.reduce((sum, size) => sum + ("px" in size ? size.px / length : 0), 0);
-  const scale = free > 0 && fixed < 1 ? free / (1 - fixed) : 1;
-  return sizes.map((size) => "px" in size ? size.px / length * scale : fixed < 1 ? size.weight : 0);
+  const scale = free > 0 ? free / Math.max(1 - fixed, 0.1) : 1;
+  return sizes.map((size) => "px" in size ? size.px / length * scale : size.weight);
 }
 
-/** Nodes side by side (or stacked), each its weight's share, as one split after another. */
-function chain(parts: readonly { node: LayoutNode; weight: number }[], direction: "right" | "down"): LayoutNode {
-  if (parts.length === 1) return parts[0]!.node;
-  const total = parts.reduce((sum, part) => sum + part.weight, 0);
-  return { split: direction, ratio: clampRatio(parts[0]!.weight / total), first: parts[0]!.node, second: chain(parts.slice(1), direction) };
+/** The app's tree over the live terminals, its sizes not yet turned into ratios. */
+type AppNode = { leaf: string } | { direction: "right" | "down"; parts: { node: AppNode; size: Size }[] };
+type Extent = { width: number; height: number };
+
+/** A tree as Ovis's split tree, laid out in `extent`: each node's pixels count against the extent it is drawn in. */
+function resolve(node: AppNode, extent: Extent): LayoutNode {
+  return "leaf" in node ? node : chain(node.parts, node.direction, extent);
+}
+
+/**
+ * Nodes side by side (or stacked) as one split after another, each its size's share of what the
+ * splits before it leave, so a nested node lays out in the extent its drawn (clamped) ratio gives it.
+ */
+function chain(parts: readonly { node: AppNode; size: Size }[], direction: "right" | "down", extent: Extent): LayoutNode {
+  if (parts.length === 1) return resolve(parts[0]!.node, extent);
+  const shares = weights(parts.map(({ size }) => size), direction === "down" ? extent.height : extent.width);
+  const ratio = clampRatio(shares[0]! / shares.reduce((sum, share) => sum + share, 0));
+  const cut = (share: number): Extent => direction === "down" ? { width: extent.width, height: extent.height * share } : { width: extent.width * share, height: extent.height };
+  return { split: direction, ratio, first: resolve(parts[0]!.node, cut(ratio)), second: chain(parts.slice(1), direction, cut(1 - ratio)) };
 }
 
 /**
  * A tab's tree in the app's document (never trusted to have a shape: herdr-app src/layout.rs
- * `Node`) as a split tree over the live terminals, so it is laid out top down like Ovis's own: a
+ * `Node`) as a tree over the live terminals, which `resolve` lays out top down like Ovis's own: a
  * `column` stacks its children, anything else sets them side by side: a \`stack\` and a hidden node
  * too, which Ovis cannot switch or show, so each terminal stays in reach and closes with its tab. `take` hands over a live terminal not placed
  * yet, so one named twice is placed once; each one placed is added to `held`, in reading order.
  */
-function appTree(node: unknown, take: (address: string) => HcTerminal | null, held: HcTerminal[], extent: { width: number; height: number } = LAYOUT_AREA): LayoutNode | null {
+function appTree(node: unknown, take: (address: string) => HcTerminal | null, held: HcTerminal[]): AppNode | null {
   if (!isRecord(node)) return null;
   const content = node["content"];
   if (isRecord(content) && typeof content["terminal"] === "string") {
@@ -218,20 +233,12 @@ function appTree(node: unknown, take: (address: string) => HcTerminal | null, he
   }
   const children = node["children"];
   if (!Array.isArray(children)) return null;
-  const down = node["type"] === "column";
-  const length = down ? extent.height : extent.width;
-  // a child's own pixels count against the part of the tab it is laid out in
-  const sized = children.filter(isRecord).map((child) => ({ child, size: sizeOf(child) }));
-  const nominal = weights(sized.map(({ size }) => size), length);
-  const total = nominal.reduce((sum, weight) => sum + weight, 0);
-  const parts = sized.flatMap(({ child, size }, index) => {
-    const share = nominal[index]! / total;
-    const tree = appTree(child, take, held, down ? { width: extent.width, height: extent.height * share } : { width: extent.width * share, height: extent.height });
-    return tree ? [{ node: tree, size }] : [];
+  // a child with no live terminal is left out, and the ones shown share its part
+  const parts = children.flatMap((child) => {
+    const tree = appTree(child, take, held);
+    return tree && isRecord(child) ? [{ node: tree, size: sizeOf(child) }] : [];
   });
-  // the nodes shown share the row: one with no live terminal leaves its part to the others
-  const shown = weights(parts.map(({ size }) => size), length);
-  return parts.length === 0 ? null : chain(parts.map(({ node: tree }, index) => ({ node: tree, weight: shown[index]! })), down ? "down" : "right");
+  return parts.length === 0 ? null : { direction: node["type"] === "column" ? "down" : "right", parts };
 }
 
 /** Whether a path is Windows-shaped: a drive letter or a UNC prefix. */
@@ -293,14 +300,14 @@ function groups(terminals: readonly HcTerminal[], layout: unknown): Group[] {
       if (!isRecord(tab) || !fresh(tab["id"])) continue;
       ids.add(tab["id"]);
       const held: HcTerminal[] = [];
-      const root = appTree(tab["root"], take, held);
+      const tree = appTree(tab["root"], take, held);
       const tabName = tab["name"];
       // a tab with no live terminal stays a place: a labeled terminal the app will adopt into it keeps its ids
       // (unnamed, it reads as the terminal it gets is labeled, below)
       if (held.length === 0) { group.tabs.push({ id: tab["id"], label: typeof tabName === "string" ? tabName : "", terminals: [], root: null, kept: false }); continue; }
       const first = held[0]!;
       const where = first.labels?.["where"]?.split(" / ").map((part) => part.trim());
-      group.tabs.push({ id: tab["id"], label: typeof tabName === "string" && tabName ? tabName : where?.[1] || first.labels?.[TAB_NAME_LABEL] || String(index + 1), terminals: held, root, kept: false });
+      group.tabs.push({ id: tab["id"], label: typeof tabName === "string" && tabName ? tabName : where?.[1] || first.labels?.[TAB_NAME_LABEL] || String(index + 1), terminals: held, root: tree && resolve(tree, LAYOUT_AREA), kept: false });
       if (!group.label) {
         const spaceName = space["name"];
         const folder = space["folder"];

@@ -226,6 +226,12 @@ describe("buildSnapshot", () => {
     // inside a column half the tab tall, 200 pixels are 40% of it
     const nested = { type: "row", id: "n", children: [{ type: "column", id: "c", children: [block("t2"), sized("t3", { px: 200 })] }, block("t4")] };
     expect(heights([block("t1"), nested], "column", 4)).toEqual([500, 300, 200, 500]);
+    // a sibling with no live terminal leaves its part to the column the pixels are in
+    expect(heights([block("t9"), { type: "column", id: "c", children: [block("t1"), sized("t2", { px: 200 })] }])).toEqual([800, 200]);
+    // pixels taller than the tab still leave the rest the smallest split, and what is nested in it a place
+    const squeezed = { type: "column", id: "c", children: [sized("t2", { px: 100 }), block("t3")] };
+    expect(heights([sized("t1", { px: 1200 }), squeezed], "column", 3)).toEqual([900, 90, 10]);
+    expect(heights([sized("t1", { px: 1200 }), block("t2"), block("t3")], "row")).toEqual([900, 50, 50]);
   });
 
   it("shows every child of a stack and a hidden node in the app's tab, once, as Ovis can neither switch nor show them", () => {
