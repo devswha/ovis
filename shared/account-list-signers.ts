@@ -5,6 +5,11 @@
  * does with one entry; and it holds loose entries, the footing and going back as a function over
  * what the member holds and what it is shown. It does no I/O and reads no clock: the caller reads
  * the log and stores the entries. What a kind's own fields mean is not here.
+ *
+ * What a caller hands in is read as its type names it, never by a spread: a place, a row and a
+ * state by their fields, a state's rows by the names they are held under, a list of texts through
+ * the list. A spread takes an object's own enumerable fields alone, and a field may as well be
+ * inherited, or the object's own and not enumerable.
  */
 import {
   ListEntryError, entryFromText, entryHash, entryHolds, firstState, isListHash, isListKey, readBody,
@@ -42,7 +47,9 @@ export interface SignerRow {
 /**
  * What a member's entries gave it, as plain data: JSON saves it and readSignersState reads it again.
  * Its head is not in it, and dropping loose entries never changes it. The state of the kinds' own
- * rules begins with these members.
+ * rules begins with these members. A state that a function of this file gives back has these six
+ * and no other: what else the state it was given carries is left out, as readSignersState leaves
+ * it out.
  */
 export interface SignersState {
   /** The level it was made by. After an update the member replays every entry it kept by its new level. */
@@ -144,6 +151,22 @@ function rowOf(signers: SignersState["signers"], key: string): SignerRow | null 
   return Object.hasOwn(signers, key) ? (signers[key] ?? null) : null;
 }
 
+/** The rows that a state's `signers` hold, each with its key: every name that object has of its own, enumerable or not, with the row that rowOf finds under it. */
+function ownRows(signers: SignersState["signers"]): (readonly [string, SignerRow])[] {
+  const rows: (readonly [string, SignerRow])[] = [];
+  for (const key of Object.getOwnPropertyNames(signers)) {
+    const row = rowOf(signers, key);
+    if (row !== null) rows.push([key, row]);
+  }
+  return rows;
+}
+
+/** A place as plain data: its seq and its hash, each read once, in a new frozen object. */
+const placeOf = ({ seq, hash }: ListPlace): ListPlace => Object.freeze({ seq, hash });
+
+/** A row as plain data: its four fields, each read once, in a new frozen row. */
+const plainRow = ({ power, seq, by, ended }: SignerRow): SignerRow => Object.freeze({ power, seq, by, ended });
+
 /** The power of a key that is a signer in this state, or null. */
 export function signerPower(state: SignersState, key: string): SignerPower | null {
   const row = rowOf(state.signers, key);
@@ -211,7 +234,7 @@ function judge(state: SignersState, held: HeldEntry, proof: KeyProof | undefined
   }
   if (ends !== undefined) {
     const goes = adds?.key === ends ? comes : rowOf(state.signers, ends);
-    if (goes !== null) rows.push([ends, Object.freeze({ ...goes, ended: seq })]);
+    if (goes !== null) rows.push([ends, Object.freeze({ power: goes.power, seq: goes.seq, by: goes.by, ended: seq })]);
   }
   const counts = power === "full";
   const behindAfter = behind ?? (counts && !reads ? seq : null);
@@ -224,10 +247,10 @@ function judge(state: SignersState, held: HeldEntry, proof: KeyProof | undefined
   };
 }
 
-/** The state after an entry, with these rows. The footing is the last entry that is not loose. */
+/** The state after an entry, with these rows: a new state of the six members, its level and its list id read from the state before. The footing is the last entry that is not loose. */
 function stateAfter(state: SignersState, held: HeldEntry, judged: Judged, signers: SignersState["signers"]): SignersState {
   const footing = judged.loose ? state.footing : { seq: held.body.seq, hash: held.hash };
-  return { ...state, footing, needs: judged.needs, behind: judged.behind, signers };
+  return { level: state.level, list: state.list, footing, needs: judged.needs, behind: judged.behind, signers };
 }
 
 /**
@@ -239,7 +262,7 @@ function stateAfter(state: SignersState, held: HeldEntry, judged: Judged, signer
  */
 export function judgeEntry(state: SignersState, held: HeldEntry, proof?: KeyProof): { readonly outcome: TakenOutcome; readonly state: SignersState } {
   const judged = judge(state, held, proof);
-  const signers = judged.rows.length === 0 ? state.signers : { ...state.signers, ...Object.fromEntries(judged.rows) };
+  const signers = judged.rows.length === 0 ? state.signers : Object.fromEntries([...ownRows(state.signers), ...judged.rows]);
   return { outcome: judged.outcome, state: stateAfter(state, held, judged, signers) };
 }
 
@@ -255,7 +278,7 @@ function takeEntry(state: SignersState, rows: Rows | null, held: HeldEntry, proo
   const judged = judge(state, held, proof);
   let written = rows;
   if (judged.rows.length > 0) {
-    written ??= { ...state.signers };
+    written ??= Object.fromEntries(ownRows(state.signers));
     // Each key is one of an entry that holds, so it is a key in form and never a name that an object has of itself.
     for (const [key, row] of judged.rows) written[key] = row;
   }
@@ -298,7 +321,7 @@ async function fits(entry: Entry, before: HeldEntry): Promise<Fit> {
   const { prev } = readBody(entry.body);
   if (prev === "" || prev === before.hash) return { fit: "no", code };
   try {
-    await entryHolds(entry, { ...before, hash: prev });
+    await entryHolds(entry, { entry: before.entry, body: before.body, hash: prev, list: before.list });
     return { fit: "elsewhere" };
   } catch (error) {
     if (!(error instanceof ListEntryError)) throw error;
@@ -343,22 +366,23 @@ async function fits(entry: Entry, before: HeldEntry): Promise<Fit> {
  * A place the member does not hold for the answer to follow, or a state whose footing is not the
  * member's own entry at that place, is the caller's mistake: a RangeError, and nothing is judged.
  *
- * The member and the answer are read once, before a signature is awaited: the member's entries
- * and its state, each row by its four fields (a frozen row too: a field that is read through an
- * accessor may read otherwise later), and the answer's entries and its head are copied. What
- * comes back is built from those copies alone, so it is of the member and of the answer as they
- * were handed over, whatever the caller does to either meanwhile or later.
+ * The member and the answer are read once, before a signature is awaited, and each as its type
+ * names it: the place the answer follows, its entries and the two fields of its head; the member's
+ * entries, the six members of its state, the two fields of its footing, and each row that its
+ * `signers` hold, by its four fields (a frozen row too: a field that is read through an accessor
+ * may read otherwise later). The head, the state, the footing and the rows are new frozen objects
+ * of those fields alone. What comes back is built from those copies, so it is of the member and
+ * of the answer as they were handed over, whatever the caller does to either meanwhile or later.
  */
 export async function shownEntries(member: ListMember, answer: ShownAnswer, proof?: KeyProof): Promise<ShownResult> {
   const { after } = answer;
-  const head: ListPlace = { ...answer.head };
-  const shown = [...answer.entries];
-  const entries = [...member.entries];
-  const handed = { ...member.state };
-  let rows: Rows | null = Object.fromEntries(Object.entries(handed.signers).map(([key, { power, seq, by, ended }]) => [key, Object.freeze({ power, seq, by, ended })]));
+  const head = placeOf(answer.head);
+  const shown = Array.from(answer.entries);
+  const entries = Array.from(member.entries);
+  const { level, list, footing, needs, behind, signers } = member.state;
+  let rows: Rows | null = Object.fromEntries(ownRows(signers).map(([key, row]) => [key, plainRow(row)]));
   /** The footing is read from here wherever it is asked for: it moves with each entry that the member takes and that is not loose, also inside this answer. */
-  let state: SignersState = { ...handed, footing: { ...handed.footing }, signers: rows };
-  const { list } = state;
+  let state: SignersState = Object.freeze({ level, list, footing: placeOf(footing), needs, behind, signers: rows });
   const top = entries.length - 1;
   if (!Number.isInteger(after) || after < 0 || after > top) throw new RangeError(`The member holds no entry ${after} for the answer to follow`);
   if (ownEntry(entries, state.footing.seq, list).hash !== state.footing.hash) throw new RangeError(`The member's entry ${state.footing.seq} is not its footing: this state is not that of these entries`);
@@ -439,7 +463,7 @@ export async function shownEntries(member: ListMember, answer: ShownAnswer, proo
  * proof are read once, before a signature is awaited.
  */
 export async function replayEntries(entries: readonly string[], level: number, options: { readonly given?: string; readonly proof?: KeyProof } = {}): Promise<ReplayResult> {
-  const [text, ...rest] = entries;
+  const [text, ...rest] = Array.from(entries);
   const { given, proof } = options;
   if (text === undefined) return { member: null, took: [], stopped: null };
   let before: HeldEntry;
@@ -506,8 +530,8 @@ export function readSignersState(value: unknown): SignersState | null {
   if ((behind !== null) !== (needs > level)) return null;
   if (!isRecord(signers)) return null;
   const rows: { [key: string]: SignerRow } = {};
-  for (const [key, saved] of Object.entries(signers)) {
-    const row = readSignerRow(key, saved, footing.seq);
+  for (const key of Object.getOwnPropertyNames(signers)) {
+    const row = readSignerRow(key, signers[key], footing.seq);
     if (row === null) return null;
     rows[key] = row;
   }

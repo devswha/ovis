@@ -1080,6 +1080,68 @@ describe("going back", () => {
   });
 });
 
+describe("what a caller hands in is read as its type names it, whatever carries its fields", () => {
+  /** The fields of `data` as getters over it. */
+  const getters = (data: object) => Object.fromEntries(Object.keys(data).map((name) => [name, { get: (): unknown => Reflect.get(data, name) }]));
+  /** The same data as an object whose fields are getters: inherited from its prototype, or its own and not enumerable. A spread finds no field of either. */
+  const carried: readonly (readonly [string, <T extends object>(data: T) => T])[] = [
+    ["inherited", (data) => Object.create(Object.create(Object.prototype, getters(data)))],
+    ["its own, not enumerable", (data) => Object.create(Object.prototype, getters(data))],
+  ];
+
+  test("an answer's head: one that names another entry under the footing stops the member, stuck", async () => {
+    // The member holds entry 0 alone; the answer has no entry, and its head names another entry 0.
+    const member = await memberOf([g]);
+    const other = { seq: 0, hash: otherList };
+    const stuck = await shownEntries(member, { after: 0, entries: [], head: other });
+    expect([stuck.stuck, stuck.stopped]).toEqual([true, { seq: 0, code: "chain_broken" }]);
+    for (const [how, as] of carried) expect([how, await shownEntries(member, { after: 0, entries: [], head: as(other) })]).toEqual([how, stuck]);
+  });
+
+  test("a member's state, its footing and its rows: an entry by a signer is read", async () => {
+    const member = await memberOf(root);
+    const next = await on(addPhone, phone, {});
+    const taken = await shownEntries(member, answer(addPhone, [next]));
+    expect(taken.took.map((item) => item.outcome)).toEqual([reads()]);
+    const { state } = member;
+    for (const [how, as] of carried) {
+      const states: readonly (readonly [string, SignersState])[] = [
+        ["its footing", { ...state, footing: as(state.footing) }],
+        ["its rows", { ...state, signers: Object.fromEntries(Object.entries(state.signers).map(([key, row]) => [key, as(row)])) }],
+        ["its state", as(state)],
+      ];
+      for (const [what, given] of states) expect([how, what, await shownEntries({ entries: member.entries, state: given }, answer(addPhone, [next]))]).toEqual([how, what, taken]);
+    }
+  });
+
+  test("a row that a state's rows hold as a property of their own that is not enumerable is a row: for an answer, for judgeEntry and for a saved state", async () => {
+    const member = await memberOf(root);
+    const { state } = member;
+    /** The phone's row is of the rows' own and not enumerable: signerPower finds it, Object.entries and a spread do not. */
+    const hidden = { ...state, signers: Object.defineProperty({ ...state.signers }, phone.key, { enumerable: false }) };
+    expect([Object.keys(hidden.signers).length, signerPower(hidden, phone.key)]).toEqual([1, "full"]);
+    const next = await on(addPhone, phone, { kind: "device", adds: [watch, "bound"] });
+    const taken = await shownEntries(member, answer(addPhone, [next]));
+    expect(taken.took.map((item) => item.outcome)).toEqual([reads()]);
+    expect(await shownEntries({ entries: member.entries, state: hidden }, answer(addPhone, [next]))).toEqual(taken);
+    expect(judgeEntry(hidden, at(taken.took, 0).held).state.signers).toEqual(taken.member.state.signers);
+    expect(readSignersState(hidden)).toEqual(state);
+  });
+
+  test("judgeEntry: the state it gives has the level and the list of the one it was given, and a key it ends keeps the rest of its row", async () => {
+    const out = await on(addInvite, owner, { ends: watch });
+    const state = await stateOf(base);
+    const { held } = last((await replay([...base, out])).took);
+    const plain = judgeEntry(state, held);
+    expect(plain.state.signers[watch.key]).toEqual(rowBy("bound", addWatch, owner, out));
+    for (const [how, as] of carried) {
+      expect([how, judgeEntry(as(state), held)]).toEqual([how, plain]);
+      const rows = Object.fromEntries(Object.entries(state.signers).map(([key, row]) => [key, as(row)]));
+      expect([how, judgeEntry({ ...state, signers: rows }, held).state.signers[watch.key]]).toEqual([how, rowBy("bound", addWatch, owner, out)]);
+    }
+  });
+});
+
 describe("where a member signs", () => {
   test("only on its footing: the place after it, on its hash", async () => {
     const member = await memberOf([...root, ...real]);
