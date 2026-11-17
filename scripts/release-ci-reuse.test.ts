@@ -796,6 +796,8 @@ describe("ci.yml", () => {
     // the ratchets' base: the same commits, none in a Release run, whose ratchets then compare with nothing (a pull
     // request's own run compared them before it merged)
     "jobs.fast.env.EVENT_BASE": "${{ github.event.pull_request.base.sha || github.event.before }}",
+    // the last main commit whose CI passed, for a push to main only: a Release run's caller is no push, so it finds none
+    "jobs.changes.steps.ratchet.env.EVENT_NAME": "${{ github.event_name }}",
   };
 
   it("never validates a release on the self-hosted Mac: CI_MAC_LABELS reaches neither a Release run nor main's run", () => {
