@@ -96,7 +96,7 @@ final class PushStore {
     }
 
     /**
-     * The random value this app's own alert taps carry (OvisMessagingService.EXTRA_PROOF), made once
+     * The random value this app's own alert taps carry (AlertProof.EXTRA), made once
      * and kept only here: MainActivity is exported, so any app can send it an alert's intent, but
      * none can read this one's preferences or the extras of its notifications' PendingIntents.
      */
