@@ -1412,10 +1412,10 @@ signing secrets and stay hosted, as do `macos-15-intel` jobs. A job waits for a 
 is off or both runners are busy: delete the variable to go back to `macos-15`.
 The runner runs jobs as the Mac's own account, so on it `setup-ci` installs Bun under the job's temp
 folder, not that account's `~/.bun`; the prepared-image check and the host's Bun cache are for the
-self-hosted Linux runners alone. Before the variable is set, the Mac runner needs a fork refusal
-that works on macOS: `job-started.sh` finds the job's worker through `/proc`, which macOS lacks.
-Until then, only the repository's approval policy for fork pull request workflows (every outside
-contributor's run waits for a maintainer) keeps a fork's own workflow from naming the Mac's labels.
+self-hosted Linux runners alone. Each Mac runner refuses a fork's job with the same `job-started.sh`
+as the Linux runners, which finds the job's worker through `/proc` on Linux and `/bin/ps` on macOS
+([Mac runner](../scripts/self-hosted-runner/README.md#mac-runner)); the repository's approval policy for
+fork pull request workflows (every outside contributor's run waits for a maintainer) stays on as well.
 
 The other Windows and macOS jobs, the Rust PTY host job (the runner image has no Rust toolchain),
 `remote-bundles.yml`'s other jobs (Rust builds, and the SSH job's `sudo apt-get` and Docker),
