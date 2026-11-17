@@ -84,8 +84,6 @@ namespace Ovis
                         while ((line = text.ReadLine()) != null)
                         {
                             line = line.Replace("\r", "");
-                            // under the same lock as abandoning: once the run has stopped waiting, no line reaches
-                            // its log or its caller
                             lock (lines)
                             {
                                 if (abandoned) break;

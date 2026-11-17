@@ -97,7 +97,6 @@ jobs:
         run: curl.exe -fsSLo install.cmd https://herdr.dev/install.cmd && install.cmd && del install.cmd
       - run: bun run scripts/remote-bundle-smoke.ts
         shell: pwsh
-      # what only a real Windows PC shows: its process table and its path rules (server/windows-native.test.ts)
       - run: bun install --frozen-lockfile
       - name: Windows-only code on Windows
         shell: pwsh

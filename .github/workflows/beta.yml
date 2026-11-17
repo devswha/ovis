@@ -8,7 +8,6 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
-# one beta at a time: a newer run waits instead of cancelling the one building (and then takes the newest green commit)
 concurrency:
   group: beta
   cancel-in-progress: false

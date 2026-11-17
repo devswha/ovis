@@ -53,11 +53,6 @@ import java.util.Set;
 import sh.ovis.push.AlertProof;
 import sh.ovis.push.OvisMessagingService;
 
-/**
- * Capacitor's activity with the chosen PC as the WebView's first page, as HerdrBridgeViewController
- * does on iOS: opening or leaving a PC starts the activity again (reopen), so the next page is a
- * first load too.
- */
 public class MainActivity extends BridgeActivity {
     private static final String BAR_COLOR_SCRIPT =
         "(() => {" +

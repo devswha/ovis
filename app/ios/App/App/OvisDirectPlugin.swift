@@ -28,7 +28,6 @@ public class OvisDirectPlugin: CAPPlugin, CAPBridgedPlugin {
         init(task: URLSessionWebSocketTask) { self.task = task }
     }
 
-    /// every socket's state, and the session's callbacks, on this one queue
     private let queue = DispatchQueue(label: "sh.ovis.direct")
     private var sockets: [String: Socket] = [:]
     private var sessionMade = false
@@ -89,7 +88,6 @@ public class OvisDirectPlugin: CAPPlugin, CAPBridgedPlugin {
             task.maximumMessageSize = Self.maxQueuedBytes
             let id = UUID().uuidString
             self.sockets[id] = Socket(task: task)
-            // answered before the socket starts, so the page knows it before any of its events
             call.resolve(["id": id])
             task.resume()
             self.receive(id)
@@ -281,7 +279,6 @@ final class DirectCallGate: NSObject, WKScriptMessageHandler {
 
     private init(inner: WKScriptMessageHandler) { self.inner = inner }
 
-    /// Puts the gate in front of Capacitor's "bridge" handler; before the first page loads.
     static func install(on handler: WebViewDelegationHandler) {
         handler.contentController.removeScriptMessageHandler(forName: "bridge")
         handler.contentController.add(DirectCallGate(inner: handler), name: "bridge")

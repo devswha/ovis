@@ -103,7 +103,6 @@ final class WebPageController: NSObject, ObservableObject {
 
     static func configuration() -> WKWebViewConfiguration {
         let configuration = WKWebViewConfiguration()
-        // the page's sign-in cookie and its drafts stay across launches
         configuration.websiteDataStore = .default()
         configuration.applicationNameForUserAgent = userAgentSuffix
         return configuration

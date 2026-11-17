@@ -42,7 +42,6 @@ struct RunResult {
     let output: String
 }
 
-/// Splits a child's output into lines as it arrives; the pipe's handler and the exit handler run on different threads.
 final class LineCollector: @unchecked Sendable {
     private let lock = NSLock()
     private var buffer = Data()
