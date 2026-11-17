@@ -43,7 +43,9 @@
 .fork-note-title:hover:not(:read-only) { border-color: var(--border); }
 .fork-note-title:focus-visible { border-color: var(--accent); outline: none; }
 
+/* positioned for its loading line, the pane's quiet line (.inbox-unchosen, InboxMode.css) over the body alone */
 .fork-note-body {
+  position: relative;
   flex: 1;
   min-height: 0;
   overflow-y: auto;

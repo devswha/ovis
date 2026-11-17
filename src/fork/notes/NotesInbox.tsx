@@ -232,8 +232,8 @@ function NotePage({ path, wide, watching }: { path: string; wide: boolean; watch
     </header>
     {failed !== null && <p className="fork-github-note" role="alert">{failed}</p>}
     <div className="fork-note-body">
-      {file === null ? failed === null && <p className="inbox-empty" role="status">{t("Reading notes…")}</p>
-        : <Suspense fallback={<p className="inbox-empty" role="status">{t("Reading notes…")}</p>}>
+      {file === null ? failed === null && <p className="inbox-unchosen" role="status">{t("Reading notes…")}</p>
+        : <Suspense fallback={<p className="inbox-unchosen" role="status">{t("Reading notes…")}</p>}>
           <NoteEditor text={file.text} editable={!watching} label={title}
             onText={(read) => { pending.current = read; clearTimeout(timer.current); timer.current = setTimeout(() => void flush(), SAVE_AFTER_MS); }} />
         </Suspense>}
