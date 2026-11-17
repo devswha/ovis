@@ -7,15 +7,6 @@ import { manifestBody } from "../server/static.ts";
 import { buildDemoApp } from "./demo-build.ts";
 import { openSettingsPage } from "./settings-page.ts";
 
-// Install app against a real install: the unmodified app over the demo's fixture
-// transport, served at the ROOT of a loopback origin so the manifest's id, start_url and scope "/"
-// are this app, installed with the browser's own PWA domain (CDP). The browser runs on a profile,
-// HOME and XDG data dir of its own, so the install's OS integration (desktop entries, icons) lands
-// in this run's directory and never in the user's; no herdr session is opened.
-// The sidebar offers no Install app at any point: it kept showing in every tab of a browser that had
-// the app installed and in browsers that never prompt. Settings → Devices and PCs → More settings → Install offers it:
-// the button while the browser holds a prompt, the steps while it holds none, Installed once it is.
-// HEADED=1 (under xvfb-run where there is no display) runs the same steps in a window.
 const root = mkdtempSync(join(tmpdir(), "herdr-install-state-demo-"));
 const app = join(root, "app");
 const profile = join(root, "profile");
@@ -33,14 +24,11 @@ const ready = async (page: Page): Promise<void> => {
   await page.locator(".sidebar-footer").waitFor();
   await assertNoSidebarInstall(page);
 };
-// by its words or by a name alone (an icon-only button labelled Install app counts too)
 const assertNoSidebarInstall = async (page: Page): Promise<void> => {
   const sidebar = page.locator(".sidebar-shell");
   assert.equal(await sidebar.getByText(/install app/i).count() + await sidebar.getByRole("button", { name: /install/i }).count(), 0, "the sidebar offers no Install app");
 };
-// installHelp() for desktop Chromium over loopback (src/lib/install.ts)
 const CHROMIUM_HELP = "Use the install icon in the address bar, or the browser menu's Install option.";
-/** Settings → Devices and PCs → More settings → Install, opened in this page. */
 const installRow = async (page: Page): Promise<Locator> => {
   await page.keyboard.press("ControlOrMeta+Shift+Comma");
   await openSettingsPage(page, "Devices and PCs");
@@ -79,7 +67,6 @@ try {
     catch { return new Response("bad path", { status: 400 }); }
     if (!file || file.endsWith("/")) file += "index.html";
     if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    // the production path the server answers the manifest with (server/static.ts)
     if (file === "manifest.webmanifest") return new Response(manifestBody(manifest, origin), { headers: { "content-type": "application/manifest+json" } });
     const body = Bun.file(join(app, file));
     return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
@@ -107,12 +94,10 @@ try {
       const errors: string[] = [];
       const watch = (page: Page): Page => { page.on("pageerror", (error) => errors.push(`${page.url()}: ${error.message}`)); return page; };
 
-      // spike: the PWA domain installs and uninstalls in this mode at all
       await send(cdp, "PWA.install", { manifestId, installUrlOrBundleUrl: manifestId });
       await send(cdp, "PWA.uninstall", { manifestId });
       console.log(`PASS spike: PWA.install and PWA.uninstall accepted in ${headless ? "headless" : "headed"} Chromium ${browser.version()}`);
 
-      // (a) before the install, with no prompt held: no sidebar Install app; Settings says how to install
       const tab = watch(context.pages()[0] ?? await context.newPage());
       await tab.goto(manifestId);
       await ready(tab);
@@ -123,7 +108,6 @@ try {
       await shot(tab, "settings-help");
       console.log("PASS (a) before install, without a prompt: no sidebar Install app, Settings > Install shows the steps");
 
-      // (a2) a prompt: Settings' Install app shows it, once, and no help
       const prompted = watch(await context.newPage());
       await prompted.goto(manifestId);
       await ready(prompted);
@@ -142,7 +126,6 @@ try {
       console.log("PASS (a2) with a prompt: no sidebar Install app, Settings' Install app calls prompt() exactly once and shows no help");
       await prompted.close();
 
-      // (b) installed and launched in its own window: no Install app, Settings says Installed.
       // An install through CDP opens in a tab by default; the user setting makes it a window.
       await send(cdp, "PWA.install", { manifestId, installUrlOrBundleUrl: manifestId });
       await send(cdp, "PWA.changeAppUserSettings", { manifestId, displayMode: "standalone" });
@@ -156,7 +139,6 @@ try {
       await shot(appWindow, "app-window");
       console.log("PASS (b) the installed app window: display-mode standalone, no Install app, Settings > Install says Installed");
 
-      // (c) a normal tab of the same origin knows the app is installed (related_applications)
       const related = watch(await nextPage(context, () => send(cdp, "Target.createTarget", { url: manifestId })));
       await ready(related);
       assert.equal(await related.evaluate(() => matchMedia("(display-mode: browser)").matches), true, "this is a browser tab, not the app window");
@@ -169,7 +151,6 @@ try {
       await shot(related, "tab");
       console.log("PASS (c) a tab of the installed origin: getInstalledRelatedApps() has 1 entry, no sidebar Install app, Settings > Install says Installed");
 
-      // (d) after the uninstall a NEW tab is told how to install again (installedByEvent is per page)
       await send(cdp, "PWA.uninstall", { manifestId });
       const after = watch(await context.newPage());
       await after.goto(manifestId);

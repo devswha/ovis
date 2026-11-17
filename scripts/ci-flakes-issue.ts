@@ -1,12 +1,3 @@
-/**
- * Keeps one open issue up to date with scripts/ci-flakes.ts's ranked list of the browser scripts that failed or
- * needed a second run (.github/workflows/ci-flakes.yml runs it daily):
- *   bun scripts/ci-flakes-issue.ts [--hours 24] [--repo owner/name] [--dry-run]
- * The issue is the open one titled ISSUE_TITLE that ISSUE_AUTHOR (the workflow's token) opened, created when there is
- * none: an issue anyone else opens under that title is never taken over. It writes through the REST API, never
- * `gh issue edit`, which fails on this repository with a Projects (classic) GraphQL error. --dry-run prints what it
- * would do and the body, and writes nothing.
- */
 import { parseArgs } from "node:util";
 import { gh, scan, type Scan } from "./ci-flakes.ts";
 
@@ -16,7 +7,6 @@ export const ISSUE_AUTHOR = "github-actions[bot]";
 export const MAX_ROWS = 50;
 const MAX_CELL = 200;
 
-/** Text as a code span inside a table cell: one line, no backtick, its pipes escaped, then at most MAX_CELL characters. */
 function code(text: string | null): string {
   if (text === null) return "-";
   const line = text.replace(/\s+/g, " ").replaceAll("`", "'").trim().replaceAll("|", "\\|");
@@ -60,7 +50,6 @@ export interface ListedIssue {
 
 export type IssueAction = { readonly kind: "create" } | { readonly kind: "update"; readonly number: number };
 
-/** Update the oldest open issue titled ISSUE_TITLE exactly that ISSUE_AUTHOR opened, or create one when there is none. */
 export function issueAction(open: readonly ListedIssue[]): IssueAction {
   const [number] = open
     .filter((issue) => issue.pull_request === undefined && issue.title === ISSUE_TITLE && issue.user?.login === ISSUE_AUTHOR)
@@ -86,7 +75,6 @@ async function main(): Promise<void> {
     console.log(body);
     return;
   }
-  // a write is not repeated on a server error: it may have been done
   switch (action.kind) {
     case "create": {
       const created: { html_url: string } = JSON.parse(await gh(["api", "-X", "POST", `repos/${result.repo}/issues`, "--input", "-"], { attempts: 1, input: JSON.stringify({ title: ISSUE_TITLE, body }) }));

@@ -16,7 +16,6 @@ function agentDir(): string {
 it("rejects an unknown CLI flag before installing anything", async () => {
   const root = agentDir();
 
-  // HOME and pi's agent directory point at the temp root too, so a regression could never install into the real home
   const command = Bun.spawn([process.execPath, join(import.meta.dir, "install-pi-integration.ts"), "--agent-dir", root], {
     stdout: "ignore", stderr: "ignore", env: { ...process.env, HOME: root, USERPROFILE: root, PI_CODING_AGENT_DIR: root },
   });

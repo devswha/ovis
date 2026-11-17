@@ -1,4 +1,3 @@
-/** A fictional Codex that never writes the message it was sent -> the chat says it went unanswered, at 1280 and 390, and keeps it over a reload. */
 import "./test-herdr.ts";
 import assert from "node:assert/strict";
 import { Database } from "bun:sqlite";
@@ -21,8 +20,6 @@ db.exec("CREATE TABLE threads (rollout_path TEXT, cwd TEXT, archived INTEGER, ag
 db.query("INSERT INTO threads VALUES (?, ?, 0, NULL, 1)").run(rollout, root);
 db.close();
 
-// a Codex that shows its last answer (the chat ties a rollout to the screen that shows it), then reads what is
-// typed and writes none of it: a turn it failed before recording it
 mkdirSync(join(root, "bin"));
 const codex = join(root, "bin", "codex");
 writeFileSync(codex, `#!/bin/sh\nprintf '%s\\n' '${EARLIER}' | fold -s -w 60 | sed '1s/^/• /;2,$s/^/  /'\ncat > /dev/null\n`);
@@ -36,7 +33,6 @@ try {
   const created = await workspaceCreate({ cwd: root, label: "ovis-test-unanswered-send", focus: false });
   workspace = created.workspace.workspace_id;
   const pane = created.root_pane.pane_id;
-  // as server/codex.contract.test.ts binds its stand-in: the session reported, the Codex started, its rollout written
   await herdrRpc("pane.report_agent", { pane_id: pane, source: "manual", agent: "codex", state: "idle", agent_session_path: rollout });
   await herdrRpc("pane.send_text", { pane_id: pane, text: `${codex}\n` });
   for (const deadline = Date.now() + 10_000; !(await herdrRpc<{ read: { text: string } }>("pane.read", { pane_id: pane, source: "visible", format: "text" })).read.text.includes("• The fictional");) {

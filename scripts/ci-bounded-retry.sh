@@ -1,8 +1,4 @@
 #!/usr/bin/env bash
-# CI only: apt on the runners has sat on an Ubuntu mirror until the job's own timeout, past
-# apt's own timers (a stall they do not see). Each attempt gets a wall-clock limit; one that
-# fails or runs past it is ended with everything it started, and the command runs again.
-# usage: ci-bounded-retry.sh <seconds per attempt> <command...>
 set -uo pipefail
 limit=$1
 shift

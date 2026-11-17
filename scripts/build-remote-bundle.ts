@@ -1,9 +1,3 @@
-/**
- * A remote PC's runtime: the compiled server and what runs beside it (scripts/server-artifact.ts), plus checksum-pinned
- * Node and herdr. Every platform's bundle is assembled from the compile and verified downloads on any OS; only one built
- * for this PC runs its PTY smoke test here. A Windows bundle is the server alone: herdr has no `terminal attach` there
- * (no Node, no PTY), and herdr itself comes from its own installer, which setup runs (server/remote-host.ts).
- */
 import { createHash } from "node:crypto";
 import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -23,7 +17,6 @@ const herdrPins: Record<string, [string, string]> = {
   "darwin-x64": ["herdr-macos-x86_64", "db62d548ff3e832b087a96b1894a08d26be3905f1830309cd556783f215d4054"],
   "darwin-arm64": ["herdr-macos-aarch64", "5173a3e0ae42d5d1ab7ebfa5d5e6329f7c3d23f8e1a3677c7ce3231da2884157"],
 };
-// Official release digests: nodejs.org/dist/v22.23.2/SHASUMS256.txt.
 const nodePins: Record<string, string> = {
   "linux-x64": "b294a556e639d64338823920e5866c21c02741742d2e1529ee1a225c1ec9252a",
   "linux-arm64": "013b59cfd2819703a6f4a14ab891fc46fc2a4e3f5bcd92de3fb4929b43e35b30",
@@ -74,8 +67,6 @@ function verifyMachO(path: string): void {
 }
 
 try {
-  // the Rust PTY host built for this platform (scripts/pty-sidecar.ts build), where server/pty/host.ts looks beside the
-  // server; the bundle's Node sidecar stays its fallback
   const ptySidecar = windows ? undefined : process.env["HERDR_BUNDLE_PTY_SIDECAR"];
   if (ptySidecar) {
     const want = `${mac ? "macho" : "elf"}-${platform.endsWith("arm64") ? "aarch64" : "x86_64"}`;
@@ -83,10 +74,7 @@ try {
   } else if (!windows) {
     console.log(`${platform}: HERDR_BUNDLE_PTY_SIDECAR is not set, so this bundle has no Rust PTY host`);
   }
-  // nothing native on Windows: without Node and node-pty the server finds no PTY sidecar and mirrors panes (server/pty/sidecar.ts)
   await stageServerArtifact({ platform: serverPlatform, dir: stage, nodePty: !windows, downloads, ...(ptySidecar ? { ptySidecar: { binary: ptySidecar } } : {}) });
-  // the bundle number: the bridge protocol reads it from the binary (shared/machines.ts), this file only records it;
-  // /api/health's version is the app's, compiled into the binary
   const bundle = { version: REMOTE_BUNDLE_VERSION, platform, server: (JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version: string }).version, bun: Bun.version };
   if (windows) {
     writeFileSync(join(stage, "bundle.json"), JSON.stringify({ ...bundle, herdr: null, node: null, native_smoke_tested: false }));

@@ -1,4 +1,3 @@
-/** Native Gboard taps on an owned API-36 Pixel 7 emulator. See docs/terminal-input.md. */
 import "./test-herdr.ts";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
@@ -35,7 +34,6 @@ const adbRun = async (...args: string[]) => {
   assert.equal(await proc.exited, 0, await new Response(proc.stderr).text());
   return output;
 };
-// Coordinates are intentionally tied to this fixture, not claimed to work with arbitrary keyboards.
 const keys: Record<string, [number, number]> = {};
 for (const [i, key] of [..."qwertyuiop"].entries()) keys[key] = [[59,166,275,382,489,594,702,808,915,1023][i]!,1715];
 for (const [i, key] of [..."asdfghjkl"].entries()) keys[key] = [[112,220,328,435,542,649,756,864,970][i]!,1871];
@@ -45,7 +43,6 @@ const tap = async (sequence: string) => {
   for (const key of sequence) {
     const [x, y] = keys[key]!;
     await adbRun("shell", "input", "tap", String(x), String(y));
-    // Input cadence, not a readiness wait: distinct native touches at a human typing rate.
     await Bun.sleep(120);
   }
 };
@@ -85,7 +82,6 @@ try {
   };
   const line = page.locator(".terminal-input-text");
   await line.waitFor();
-  // A plain DOM editor is the control: a missing Gboard language model must not be blamed on xterm.
   await page.evaluate(() => {
     const box = document.createElement("textarea"); box.id = "native-ime-control";
     box.style.cssText = "position:fixed;top:80px;left:10px;width:350px;height:80px;z-index:99999;background:white;color:black";
@@ -103,7 +99,6 @@ try {
   if (evidence) { mkdirSync(evidence, { recursive: true }); await device.screenshot({ path: join(evidence, "android-gboard-line.png") }); }
   await page.reload(); await line.waitFor();
   assert.equal(await line.inputValue(), "한글 ");
-  // Send tapped while Gboard still composes the last syllable: it sends after the commit, never silently drops.
   await line.fill(""); await line.tap(); await keyboardReady();
   writeFileSync(received, "");
   await tap("gksrmf");

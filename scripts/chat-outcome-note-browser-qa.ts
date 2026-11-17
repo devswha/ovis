@@ -1,8 +1,3 @@
-/**
- * Real ChatView for an OpenCode pane whose `@effect` send went as plain text: the outcome chip says
- * "Runs in the terminal", and under it the note names the skill that was not attached, at 1280 and 390 px, light and dark. All traffic stays on this loopback fixture server.
- * Then /compact and /clear: the new conversation shows no row of a send to the one it left.
- */
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -58,7 +53,6 @@ try {
       const note = chip.locator(".chat-outcome-note");
       await note.waitFor();
       assert.equal(await note.innerText(), "Not attached, sent as plain text: @effect");
-      // inside the chat column: no sideways scroll at either width
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
       assert.ok(overflow <= 0, `no horizontal overflow at ${width}px (${overflow}px)`);
       const box = await note.boundingBox();
@@ -72,9 +66,6 @@ try {
   }
   console.log(`PASS outcome note: ${RUNS.length} runs; screenshots in ${evidence}`);
 
-  // /compact, then /clear: the server lists the /compact send until herdr names the new session, which can be
-  // after the chat has read the new, empty conversation. The chat held /compact's outcome when it saw the move,
-  // or a poll lists it only after the move.
   const at = (seconds: number) => new Date(Date.now() - 50_000 + seconds * 1000).toISOString();
   const compact: CommandOutcome = { id: "compact-1", pane_id: "opencode-pane", text: "/compact", state: "result-observed", evidence: [{ kind: "transcript", at: at(1) }], created_at: at(0), updated_at: at(1) };
   const clear: CommandOutcome = { ...compact, id: "clear-1", text: "/clear", state: "accepted", evidence: [], created_at: at(5), updated_at: at(5) };

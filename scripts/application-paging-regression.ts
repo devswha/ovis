@@ -1,4 +1,3 @@
-/** An owned alternate-screen application receives plain paging keys from app shortcuts; the shell behind it does not. */
 import "./test-herdr.ts";
 import assert from "node:assert/strict";
 import { mkdtempSync, realpathSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -52,15 +51,14 @@ sys.stdout.flush()
   const page = await context.newPage();
   const errors: string[] = [];
   page.on("pageerror", error => errors.push(error.message));
-  // every keystroke the page writes to the pane
   const inputs: string[] = [];
-  let outputs = 0; // pty-data frames the page received: what it knows of the pane's screen
+  let outputs = 0;
   page.on("websocket", (socket) => {
     socket.on("framesent", ({ payload }) => {
-      try { const message = JSON.parse(String(payload)) as { type?: string; text?: string }; if (message.type === "input" && typeof message.text === "string") inputs.push(message.text); } catch { /* not JSON */ }
+      try { const message = JSON.parse(String(payload)) as { type?: string; text?: string }; if (message.type === "input" && typeof message.text === "string") inputs.push(message.text); } catch {}
     });
     socket.on("framereceived", ({ payload }) => {
-      try { if ((JSON.parse(String(payload)) as { type?: string }).type === "pty-data") outputs++; } catch { /* not JSON */ }
+      try { if ((JSON.parse(String(payload)) as { type?: string }).type === "pty-data") outputs++; } catch {}
     });
   });
   const nativeMetrics = page.waitForResponse((response) => response.url().includes("/api/pane/scroll") && response.request().method() === "GET");
@@ -95,9 +93,6 @@ sys.stdout.flush()
   await page.keyboard.press("ControlOrMeta+Shift+U");
   await page.keyboard.press("ControlOrMeta+Shift+D");
   await until(async () => read() === "\x1b[5~\x1b[6~\x1b[5~\x1b[5~\x1b[6~", "remapped paging actions still send plain page sequences to the application");
-  // The program quits and hands the screen back to the shell, whose history the browser does not know
-  // about until its next metrics read. A page asked for in that window must scroll that history once
-  // the read lands, never reach the shell as a key. The read is slowed to widen the window.
   await page.route((url) => url.pathname === "/api/pane/scroll", async (route) => {
     if (route.request().method() === "GET") await new Promise((resolve) => setTimeout(resolve, 600));
     await route.continue();
@@ -107,7 +102,6 @@ sys.stdout.flush()
   await page.keyboard.press("q");
   await until(async () => read().endsWith("q"), "the program read its quit key");
   await until(async () => ((await paneScrollInfo(paneId))?.max_offset_from_bottom ?? 0) > 0, "the shell's history is back once the program left its screen");
-  // the page has drawn the shell's return (what a user sees before pressing), but its metrics read is still on the way
   await until(async () => outputs > seenBefore, "the page received the program's exit and the shell's prompt");
   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   await page.keyboard.press("ControlOrMeta+Shift+U");

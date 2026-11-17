@@ -14,6 +14,5 @@ export async function appFaces(page: Page, sample = "Mg"): Promise<void> {
     const loaded = (family: string) => [...document.fonts].some((face) => face.family.replace(/["']/g, "") === family && face.status === "loaded");
     return loaded("Pretendard Variable") && loaded("JetBrains Mono Web");
   }, sample, { timeout: 10_000 });
-  // the composer measures again in the render an arrival causes: let that frame be drawn
   await page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
 }
