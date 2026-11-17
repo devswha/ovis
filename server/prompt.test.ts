@@ -539,7 +539,7 @@ Press enter to continue
       { keys: ["down"] }, { keys: ["down"] }, { keys: ["enter"] },
     ]);
 
-    // Codex 0.167's update menu, as its start drew it on a herdr-core terminal: the footer no longer says "Press enter to continue"
+    // Codex's update menu, as its start drew it on a herdr-core terminal: the footer does not say "Press enter to continue"
     const update = parseInteractivePrompt("codex", `
   Update available · 0.167.0 → 0.167.2
   Release notes: https://github.com/openai/codex/releases/latest

@@ -8,7 +8,7 @@ export const CODEX_ASK_HINT_RE = /tab to add notes.*enter to submit (?:answer|al
 
 export const CODEX_ASYNC_ASK_HINT_RE = /(?:enter|return).*submit.*(?:ctrl\s*\+\s*\]|skip)/i;
 
-// "Press enter to continue" up to Codex 0.16x; "enter continue · esc skip" under the update menu since (0.167)
+// "Press enter to continue", and "enter continue · esc skip" under the update menu
 export const CODEX_CONTINUE_HINT_RE = /press\s+enter\s+to\s+continue|^\s*enter\s+continue\s*·\s*esc\s+skip\s*$/i;
 
 // Codex 0.156's queue of questions asked with request_user_input_async, above the main

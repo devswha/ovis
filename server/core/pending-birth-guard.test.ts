@@ -236,6 +236,14 @@ it("holds a message when the turn ends on the folder question while herdr report
   expect(listed()).toEqual(HELD_FOR_SCREEN);
 });
 
+it("holds a message when the turn ends on Codex's update menu, so that nothing is typed while the chosen install runs", async () => {
+  const menu = "  Update available · 0.167.0 → 0.167.2\n  Release notes: https://github.com/openai/codex/releases/latest\n\n› 1. Update now (runs `npm install -g @openai/codex`)\n  2. Skip\n  3. Skip until next version\n\n  enter continue · esc skip\n";
+  // "Update now" is chosen: Codex leaves its screen and runs npm as its child, so its process stays in front while herdr reports idle
+  expect(await drain({ mode: "codex-queued", screen: CODEX_COMPOSER, beforeDrain: (pane) => { pane.screen = menu; },
+    afterDrain: async (pane, turn) => { pane.screen = "$ npm install -g @openai/codex\nadded 1 package in 4s\n"; await turn(); } })).toEqual([]);
+  expect(listed()).toEqual(HELD_FOR_SCREEN);
+});
+
 it("types none of the queued messages when the screen closes between two of them: all are held in one step, in their order", async () => {
   // the first try reads the theme list; the user closes it as that read is answered, so the next try would find the composer
   expect(await drain({ mode: "codex-queued", screen: CODEX_COMPOSER, behind: 2,
