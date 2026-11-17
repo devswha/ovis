@@ -1,3 +1,7 @@
+/**
+ * A plain drag in a Codex pane (#2384): Codex selects on its alternate screen and scrolls its own
+ * history past an edge, then copies with OSC 52, which herdr's attach drops. So the drag stays Ovis's
+ */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -26,6 +30,7 @@ function installDragFixture(): void {
       if ((frame.type === "snapshot" || frame.type === "features") && Array.isArray(frame.features) && core) {
         push({ ...frame, features: [...(frame.features as string[]), "terminal-history"] });
       } else if (frame.type === "pty-data") {
+        // the demo's own recording would draw over the fixture's screen
         if (frame.fixture !== "drag") return;
         const { fixture: _, ...output } = frame;
         push(output);

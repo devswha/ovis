@@ -105,6 +105,7 @@ async function checkLayout(): Promise<void> {
             const image = document.querySelector<HTMLImageElement>(".file-viewer-media");
             return image?.complete && image.naturalWidth > 0;
           });
+          // a phone's viewer rises into place (styles.css): measure where it comes to rest
           await sheetsSettled(page);
           const geometry = await page.evaluate(() => {
             const rect = (element: Element) => {
@@ -125,6 +126,8 @@ async function checkLayout(): Promise<void> {
               title: { ...rect(title), scrollWidth: title.scrollWidth, clientWidth: title.clientWidth, overflow: getComputedStyle(title).textOverflow },
               documentWidth: document.documentElement.scrollWidth, documentHeight: document.documentElement.scrollHeight };
           });
+          // an image opens in a new tab, downloads (a new tab in an installed app need not save it) and
+          // closes; up to 600px the first two are in More
           assert.equal(geometry.controls.length, scenario.width <= 600 ? 2 : 3, label);
           assert.ok(geometry.dialog.x >= -1 && geometry.dialog.right <= scenario.width + 1, `${label}: dialog fits width`);
           assert.ok(geometry.dialog.y >= -1 && geometry.dialog.bottom <= limit + 1, `${label}: dialog fits usable height`);
@@ -194,6 +197,7 @@ async function checkLayout(): Promise<void> {
       await page.goto(`http://127.0.0.1:${server.port}/?kind=text`);
       await page.locator(".file-viewer-text").waitFor();
       await page.getByRole("button", { name: "Copy file", exact: true }).waitFor();
+      // Main's sheet entrance moves every header element; compare their settled positions.
       await sheetsSettled(page);
       const dialog = await page.locator(".file-viewer").boundingBox();
       assert.ok(dialog, "text: dialog is laid out");

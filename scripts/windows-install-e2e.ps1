@@ -1,3 +1,5 @@
+# It replaces an installed Ovis and leaves the one it installed. A herdr server it had to
+# start is stopped again; one that was already running is left alone.
 param(
     [string]$Installer = (Join-Path $PSScriptRoot '..\install.ps1'),
     [string]$Ref = '',
@@ -14,6 +16,7 @@ $env:PATH = "$env:USERPROFILE\.bun\bin;$env:LOCALAPPDATA\Programs\Herdr\bin;$env
 
 function Assert([bool]$Condition, [string]$Message) { if (-not $Condition) { throw $Message } }
 function Get-Json([string]$Path) { (Invoke-WebRequest "$origin$Path" -UseBasicParsing -TimeoutSec 5).Content | ConvertFrom-Json }
+# The app and herdr report their state only when asked; an unanswered question is asked again.
 function Wait-Until([scriptblock]$Test, [int]$Seconds, [string]$What) {
     $deadline = (Get-Date).AddSeconds($Seconds)
     do {
@@ -94,8 +97,11 @@ try {
         $found = Wait-Until { $status = Get-Json '/api/updates'; if ($status.latest_version) { $status } } 90 'the app to find the latest release'
         Assert ($found.available -and "v$($found.latest_version)" -eq $latest) "The app offers $($found.latest_version) (available: $($found.available)), not $latest"
         Write-Host "e2e: updating $expected to $latest"
+        # an install names the release it was offered, as the app's Update does; a release older
+        # than that contract ignores the body
         $install = @{ expected_revision = $found.latest_revision } | ConvertTo-Json -Compress
         Invoke-WebRequest "$origin/api/updates/install" -Method POST -Headers @{ 'x-herdr-update' = '1' } -ContentType 'application/json' -Body $install -UseBasicParsing -TimeoutSec 30 | Out-Null
+        # the app restarts in the middle of this, so some of these questions go unanswered
         $after = Wait-Until {
             $status = Get-Json '/api/updates'
             if ($status.phase -eq 'error' -or ($status.phase -eq 'idle' -and "v$($status.current_version)" -eq $latest)) { $status }

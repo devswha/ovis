@@ -105,6 +105,9 @@ const hook = `<script>(() => {
   };
 })();</script>`;
 
+/** The demo ends the Claude pane's turn 4500 ms in (and answers a sent message 2400 ms in). Run as a context init script, before
+ *  any of the page's own scripts, this holds those timers for good: the transport's completion is registered here and never runs,
+ *  so every assertion and capture sees the same working turn. window.planChipHeld lists what was held. */
 const holdTurn = () => {
   const held: number[] = [];
   const later = window.setTimeout.bind(window);
@@ -304,6 +307,7 @@ try {
         assert.equal(row.chip?.focusVisible, true, `${what}: the chip shows its focus ring from the keyboard`);
         oneRow(row, `${what} focused`);
         await shot(page, width, theme, "en", "focus");
+        // pressed: the pointer held on the chip before it lets go (a held touch is cancelled, so the tap below opens it)
         const centre = await chipOf(page).boundingBox();
         assert.ok(centre, `${what}: the chip has a box to press`);
         const point = { x: centre.x + centre.width / 2, y: centre.y + centre.height / 2 };
@@ -393,6 +397,8 @@ try {
         assert.ok(row.chip && row.card && row.chip.width < row.card.width / 2 + 60, `${what}: the step's room is bounded: ${JSON.stringify({ chip: row.chip.width, card: row.card.width })}`);
         await shot(page, width, theme, "en", "long");
         results.push({ what, state: "long", chip: row.chip, current: row.current, card: row.card, model: row.model });
+        // the list while the plan is still being read, then while it cannot be read (a failed read
+        // stays said until one succeeds, so this order)
         await hook.status({ done: 1, total: 3, current: STEP }, 0);
         await page.waitForFunction((step) => document.querySelector(".bg-tasks-current")?.textContent === step && document.querySelector(".bg-tasks-count") === null, STEP);
         await hook.answer("hang");

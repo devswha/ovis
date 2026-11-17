@@ -7,6 +7,11 @@ import { quietPort } from "./quiet-port.ts";
 
 const ROOT = join(import.meta.dir, "..");
 const DNS = "pc.example.ts.net";
+/**
+ * A `tailscale` that answers from files and records every call. PATH holds only its directory, so
+ * the real Tailscale on the machine running the tests is never found, let alone changed; the tools
+ * it runs are named by their full paths for the same reason.
+ */
 const FAKE = `#!/bin/sh
 echo "$*" >> "$FAKE_TS/calls"
 case "$1 $2" in

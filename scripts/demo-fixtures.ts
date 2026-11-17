@@ -14,6 +14,7 @@ const get = async (path: string): Promise<unknown> => JSON.parse(scrub(await (aw
 
 try {
   mkdirSync(OUT, { recursive: true });
+  // the roster fills in once the local bridge has read herdr: wait for the snapshot
   let roster: { machines: Array<{ state: string; snapshot: unknown | null }> } = { machines: [] };
   for (let attempt = 0; attempt < 50; attempt++) {
     roster = (await get("/api/machines")) as typeof roster;

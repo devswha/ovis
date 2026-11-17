@@ -6,6 +6,7 @@ import { appFaces } from "./app-faces.ts";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 
+// an id the composer cannot name is drawn as received, in the mono face: the widest label there is
 const LONG_MODEL = "gpt-5.6-sol-codex-preview-2026-10";
 const NAMED = ["gpt-5.6", "claude-opus-5-5"] as const;
 
@@ -51,6 +52,7 @@ const measure = (page: Page) => page.evaluate(() => {
       return {
         width: box.width, height: box.height, inRow: box.left >= row.left - 0.5 && box.right <= row.right + 0.5,
         holds: inside(".agent-mark") && inside(".composer-model") && (pill.querySelector(".composer-context") === null || inside(".composer-context"))
+          // the level too, wherever it is drawn (stepped out or not recorded it is a 1px box that is only read)
           && ((pill.querySelector<HTMLElement>(".composer-reasoning")?.getBoundingClientRect().width ?? 0) <= 1.5 || inside(".composer-reasoning")),
         inert: pill.tagName === "SPAN" && !pill.hasAttribute("role") && !pill.hasAttribute("tabindex") && style.cursor === "auto",
       };
@@ -78,6 +80,7 @@ const measure = (page: Page) => page.evaluate(() => {
 });
 type Row = Awaited<ReturnType<typeof measure>>;
 
+/** The fit answers after the commit, a resize a frame later: wait for the mark, never a fixed time. */
 const drawn = async (page: Page, draw: Draw, what: string): Promise<Row> => {
   await page.waitForFunction((want) => (document.querySelector(".composer-status")?.getAttribute("data-model") ?? "full") === want, draw, { timeout: 5_000 })
     .catch(async () => assert.fail(`${what}: the model label is drawn "${(await measure(page)).draw}", not "${draw}": ${JSON.stringify(await measure(page))}`));

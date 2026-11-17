@@ -3,6 +3,8 @@ import { join } from "node:path";
 import { chromium, type BrowserContext, type Page } from "playwright-core";
 import { chromePath } from "./chrome-path.ts";
 
+// own with no opener. The page that clicks is served on 127.0.0.1 with Ovis's Referrer-Policy and
+// the links on localhost, so the tab is another site's, as an agent's link is. Loopback only.
 const built = await Bun.build({ entrypoints: [join(import.meta.dir, "../src/lib/terminalFileLinks.ts")], format: "esm", target: "browser" });
 assert.ok(built.success, built.logs.join("\n"));
 const opener = await built.outputs[0]!.text();
@@ -29,6 +31,7 @@ async function follow(context: BrowserContext, page: Page, button: string, path:
     context.waitForEvent("page").then(async (tab) => { await tab.waitForURL(shows); return tab; }),
     ...context.pages().filter((tab) => tab !== page).map(async (tab) => { await tab.waitForURL(shows); return tab; }),
   ];
+  // the waits that lose, or a click that fails, still settle quietly once the context closes
   for (const wait of waits) wait.catch(() => undefined);
   await page.click(button);
   const tab = await Promise.any(waits).catch(() => { throw new Error(`no tab showed ${path} after ${button}`); });

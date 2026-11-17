@@ -31,7 +31,9 @@ export async function routeDrained(page: Pick<Page, "route" | "unroute">, url: s
       timer = setTimeout(() => reject(new Error(`route ${named}: its handlers did not finish in ${DRAIN_MS} ms`)), DRAIN_MS);
     });
     try {
+      // the route stays while its calls finish, so a poll arriving meanwhile is handled too
       while (running.size > 0) await Promise.race([Promise.all(running), deadline]);
+      // nothing awaited between the empty set and the removal: no call can start in between
       await Promise.race([page.unroute(url, handler), deadline]);
     } finally {
       clearTimeout(timer);

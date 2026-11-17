@@ -24,6 +24,7 @@ export async function checkDroplet(browser: Browser, origin: string): Promise<vo
     await report(otherPane, "idle");
 
     await context.addInitScript(() => {
+      // finished turns stay quiet here: putting a pane back to idle between steps reads as one
       if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", alertDone: "off" }));
     });
     const page = await context.newPage();

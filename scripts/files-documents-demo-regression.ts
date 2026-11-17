@@ -68,6 +68,7 @@ async function exercise(page: Page, surface: string, theme: string): Promise<voi
   assert.equal(await page.locator(".md-docs .dir-browser-path").innerText(), ROOT, "the folder listed is named");
   const overflow = await page.locator(".md-docs").evaluate((list) => list.scrollWidth - list.clientWidth);
   assert.ok(overflow <= 1, `the list does not scroll sideways (${overflow}px)`);
+  // the tabs fade their background: the picture waits for the pressed one to land
   await page.waitForFunction(() => document.getAnimations().every((animation) => animation.playState !== "running"));
   await shot(page, `files-documents-${surface}-${theme}`);
   const filter = page.getByRole("searchbox", { name: "Filter documents" });
@@ -118,6 +119,7 @@ async function phone(browser: Browser, theme: "light" | "dark"): Promise<void> {
     await page.locator(".header-more-button").click();
     await page.getByText("Browse files", { exact: true }).click();
     await page.locator(".modal-scrim .files-dialog").waitFor();
+    // the menu's sheet drops while the Files sheet rises: the picture waits for both to land
     await page.waitForFunction(() => document.getAnimations().every((animation) => animation.playState !== "running"));
     await exercise(page, "390", theme);
     await page.keyboard.press("ControlOrMeta+Shift+K");

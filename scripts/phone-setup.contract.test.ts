@@ -9,6 +9,7 @@ it("herdr loads the Phone setup entrypoint and keeps its QR and code visible in 
   // the session socket lives under root: a temp dir (macOS's, or a TMPDIR set deeper by hand) is too deep for a socket
   // path (104 bytes on macOS, 108 on Linux), and herdr then refuses to start
   const root = mkdtempSync(join(process.platform === "win32" ? tmpdir() : "/tmp", "herdr-phone-pane-"));
+  // after the test's own finally has stopped the daemon, also when an assertion before it fails
   onTestFinished(() => rmSync(root, { recursive: true, force: true }));
   const source = join(import.meta.dir, "..");
   const config = join(root, "config");

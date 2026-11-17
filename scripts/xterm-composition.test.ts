@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, jest } from "bun:test";
 import { join } from "node:path";
 import { buildXtermSource, xtermSourcePlugin } from "./build-xterm.ts";
 
+// Exercise the patched source Vite ships, without a browser, server or herdr session.
 const source = buildXtermSource(join(import.meta.dir, ".."));
 const bundle = await Bun.build({
   entrypoints: [join(source, "browser/input/CompositionHelper.js"), join(source, "browser/CoreBrowserTerminal.js")],

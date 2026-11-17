@@ -23,10 +23,13 @@ const turnAt = (index: number): ConversationTurn => {
     { kind: "text", text: prompt === 180 ? "The zebra test moved to crossing.test.ts, beside the other crossing tests." : `Answer ${prompt}. ${"Variable height paragraph. ".repeat(prompt % 5 + 1)}` },
   ] };
 };
+// each text part read from a store row of its own (as Hermes's are), so a match names the row its words are in
 const TURNS = Array.from({ length: PROMPTS * 2 }, (_, index): ConversationTurn => ({ ...turnAt(index), text_rows: [index + 1] }));
 const [call, said] = TURNS.at(-1)!.parts as [ConversationTurn["parts"][number], { kind: "text"; text: string }];
 const RETRIED: ConversationTurn = { ...TURNS.at(-1)!, parts: [call, { kind: "text", text: `${said.text} Retried.` }], text_rows: [TURNS.length + 1] };
 let retried = false;
+// a newest page that holds only an agent's tool calls since (Hermes reads its text rows alone):
+// no row it shows tells whether a match is newer or older than it
 const RUN: ConversationTurn = { role: "assistant", ts: "2026-10-12T06:40:00.000Z", text_rows: [], parts: Array.from({ length: 3 }, (_, step) =>
   ({ kind: "tool" as const, name: "Bash", summary: `cargo build step ${step}`, input: "{}", output: "ok" })) };
 let toolRun: "after" | "alone" | null = null;

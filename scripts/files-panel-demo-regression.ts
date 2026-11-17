@@ -130,6 +130,7 @@ async function phone(browser: Browser, theme: "light" | "dark"): Promise<void> {
     await page.locator(".header-more-button").click();
     await page.getByText("Browse files", { exact: true }).click();
     await page.locator(".modal-scrim .files-dialog").waitFor();
+    // the menu's sheet drops while the Files sheet rises: the picture waits for both to land
     await page.waitForFunction(() => document.getAnimations().every((animation) => animation.playState !== "running"));
     await page.getByText("package.json").waitFor();
     assert.equal(await page.locator("aside.files-panel").count(), 0);

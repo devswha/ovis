@@ -20,6 +20,8 @@ const touch = (cdp: CDPSession, type: "touchStart" | "touchMove" | "touchEnd", p
   cdp.send("Input.dispatchTouchEvent", { type, touchPoints: point ? [{ x: point.x, y: point.y }] : [] });
 
 async function stroke(page: Page, cdp: CDPSession, from: { x: number; y: number }, to: { x: number; y: number }, holdMs: number, during?: () => Promise<void>): Promise<void> {
+  // the demo's timeline raises a finish droplet over the top of a phone's screen at its own moment, where the first
+  // row sits: a person dismisses it before pressing the row under it
   if (holdMs > 0) {
     const dismiss = page.locator(".droplet-close");
     if (await dismiss.isVisible()) {
@@ -129,12 +131,21 @@ const waitOrder = (page: Page, want: readonly string[], label: string) => page.w
 const logCount = (page: Page, kind: string) => page.evaluate((kind) => ((window as unknown as { __herdrDemoOrder: { log(): { kind: string }[] } }).__herdrDemoOrder.log()).filter((entry) => entry.kind === kind).length, kind);
 const waitLog = (page: Page, kind: string, count: number) => page.waitForFunction(([kind, count]) =>
   ((window as unknown as { __herdrDemoOrder: { log(): { kind: string }[] } }).__herdrDemoOrder.log()).filter((entry) => entry.kind === kind).length >= (count as number), [kind, count] as const, { timeout: 10_000 });
+/**
+ * The page reads the roster now and counts that read, as a tab coming back does (useMachineRoster's
+ * visibilitychange). A case must not wait on a refetch it did not start: one debounced after an earlier
+ * move may already have come, and with the stream open the next poll is 30 s away.
+ */
 async function readRoster(page: Page): Promise<void> {
   const reads = await logCount(page, "read-start");
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   await waitLog(page, "read-start", reads + 1);
 }
 let markerStatus: "working" | "idle" = "idle";
+/**
+ * A pane-status patch after a delivery: once its badge shows, every frame before it was drawn. The
+ * marker is an agent pane alone in its workspace, so the row's badge is that pane's own status.
+ */
 async function drawn(page: Page): Promise<void> {
   const marker = await page.evaluate(async () => {
     const { snapshot } = await (await fetch("/api/session")).json() as { snapshot: { panes: { pane_id: string; workspace_id: string; agent: string | null }[] } };
@@ -374,6 +385,7 @@ async function checkUnseenRetiredEra(browser: Browser, url: string): Promise<unk
   return { O, D, X, Y, Z };
 }
 
+/** The demo's verify_source_boot admission, as the manager's: one health call per PC, starts 1000 ms apart. */
 async function checkAdmission(browser: Browser, url: string): Promise<unknown> {
   const { context, page, errors } = await openOrderPage(browser, url);
   await demo(page, "addPc");

@@ -1,3 +1,7 @@
+/**
+ * (a sheet's cap that cut them off would hide them from that check). An iPhone's keyboard (the layout
+ * viewport stays, the visual one shrinks) keeps the search sheet and Settings below the island too.
+ */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -48,6 +52,7 @@ async function open(browser: Browser, origin: string, screen: Screen, run: (page
 
 async function outside(page: Page, surface: string, insets: Insets): Promise<string[]> {
   await page.locator(surface).last().waitFor();
+  // a sheet rises for --dur-sheet: measure where it rests
   await page.waitForFunction((selector) => [...document.querySelectorAll(selector)].every((node) => node.getAnimations({ subtree: true }).every((animation) => animation.playState !== "running")), surface);
   return page.evaluate(({ surface, insets }) => {
     const safe = { left: insets.left, top: insets.top, right: innerWidth - insets.right, bottom: innerHeight - insets.bottom };
@@ -216,6 +221,8 @@ try {
       }
     }, true);
 
+    // the web pane's agent waits on its question for good: closing its tab always asks first. The api pane's turn ends
+    // 4.5 s after load (site/demo/transport.ts), and an idle tab among others closes without a confirmation
     await open(browser, origin, LANDSCAPE, async (page) => {
       const label = LANDSCAPE.label;
       await page.locator(".sidebar").getByRole("button", { name: /^Settings/ }).first().click();

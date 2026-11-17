@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { it } from "bun:test";
 
+/** herdr moves an automatic tab name up when an earlier tab closes; a renamed tab keeps its name. */
 it("the demo relabels automatic tab names by place and leaves custom numeric names alone", async () => {
   const saved = new Map(["window", "location", "PushManager"].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
   try {

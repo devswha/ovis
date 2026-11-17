@@ -8,6 +8,8 @@ const script = join(import.meta.dir, "with-bun.sh");
 const preflight = join(import.meta.dir, "preflight.sh");
 
 describe.skipIf(process.platform === "win32")("Unix Bun discovery", () => {
+  // A PATH with the three tools the scripts call and nothing else, so a bun or node installed on
+  // this PC (in /usr/bin, say) can neither satisfy a case nor break one.
   let base: string, home: string, tools: string;
   beforeEach(() => {
     base = mkdtempSync(join(tmpdir(), "with-bun-"));

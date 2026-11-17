@@ -3,6 +3,7 @@ import { availableParallelism } from "node:os";
 const suite = process.argv[2];
 if (suite !== "unit" && suite !== "integration") throw new Error("Usage: bun scripts/ci-tests.ts unit|integration");
 const files = [...new Bun.Glob("{src,shared,server,scripts,telemetry,push-relay,relay,integrations}/**/*.test.{ts,tsx}").scanSync({ cwd: process.cwd() })].sort();
+// The legacy updater suite mixes Git-only cases with real bridge restart/rollback cases.
 const needsHerdr = (file: string) => file.endsWith(".contract.test.ts") || file === "server/updater.test.ts" || file.startsWith("server/herdr/") || file.startsWith("server/pty/");
 const selected = files.filter((file) => needsHerdr(file) === (suite === "integration"));
 if (!selected.length) throw new Error(`No ${suite} tests found`);
@@ -20,6 +21,8 @@ if (suite === "unit") {
   const isCI = !!process.env["CI"];
   const defaultWorkers = isCI ? 4 : Math.min(Math.floor(availableParallelism() / 2), 8);
   const workers = requestedWorkers >= 1 ? Math.floor(requestedWorkers) : defaultWorkers;
+  // Each parallel worker merges a file's stdout and stderr through `sh`; without one (native
+  // Windows), the files run serially in one bun process instead.
   const effectiveWorkers = Bun.which("sh") ? Math.min(workers, selected.length) : 1;
 
   if (effectiveWorkers <= 1) {
@@ -93,6 +96,7 @@ const requested = Number(process.env["HERDR_TEST_SHARDS"]);
 const shards = Math.min(selected.length, requested >= 1 ? Math.floor(requested) : Math.min(4, availableParallelism()));
 const baseSession = process.env["HERDR_TEST_SESSION"] || "ovis-test";
 const sessions = Array.from({ length: shards }, (_, index) => `${baseSession}-${index + 1}`);
+// Largest first: the long files are the large ones, and one started last would run on alone.
 const queue = [...selected].sort((a, b) => Bun.file(b).size - Bun.file(a).size);
 const totals = { pass: 0, fail: 0, skip: 0 };
 const failed: string[] = [];

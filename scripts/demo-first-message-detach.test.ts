@@ -15,6 +15,7 @@ it("the demo holds a first message when the page that asked for it leaves the pa
       fetch, WebSocket, EventSource: class {},
       localStorage: { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value) },
     };
+    // its own module instance: the transport binds the window it finds, and another file's import would reuse this one
     const transport = "../site/demo/transport.ts?first-message-detach";
     await import(transport);
     const demo = (globalThis as any).window;

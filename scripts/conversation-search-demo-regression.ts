@@ -91,6 +91,8 @@ try {
       await page.goto(url());
       await page.locator(".conn-live").waitFor({ state: "attached" });
       await page.locator(".pane-frame.is-current .chat-turn").first().waitFor();
+      // the demo ends this turn 4.5 s after load (site/demo/transport.ts) and adds its final answer to it: search the
+      // conversation as it is after that, never across it
       await page.locator(".pane-frame.is-current .chat-turn").getByText("6 tests pass.", { exact: false }).first().waitFor();
 
       await paneMenu(page, width);

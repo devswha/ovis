@@ -13,6 +13,7 @@ const repo = join(import.meta.dir, "..");
 const app = mkdtempSync(join(tmpdir(), "herdr-command-outcome-demo-"));
 const evidence = join(process.env.UI_EVIDENCE_DIR || join(repo, "evidence"), "command-outcome");
 const RUNS = [[1280, "light"], [1280, "dark"], [390, "light"], [390, "dark"]] as const;
+/** the demo answers a chat message, and settles a command's outcome, in 2.4 s; its outcome poll is 2 s */
 const SETTLE_MS = 15_000;
 
 const failures: string[] = [];

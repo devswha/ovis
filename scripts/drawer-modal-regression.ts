@@ -125,6 +125,7 @@ try {
     await toggle.tap();
     await page.waitForFunction(() => window.toggleClicks.length === 2);
     const [opened, second] = await page.evaluate(() => window.toggleClicks) as [number, number];
+    // the click's own handlers ran in its dispatch; the render a way in would cause is drawn by the next frame
     await page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
     assert.ok(second - opened < SECOND_TAP_MS, `the two taps landed ${Math.round(second - opened)} ms apart, not a double tap: the guard was not exercised`);
     assert.equal(await page.locator(".mode-inbox").count(), 0, `the second tap of a double tap (${Math.round(second - opened)} ms apart) on the mark's spot is not a way into the inbox`);

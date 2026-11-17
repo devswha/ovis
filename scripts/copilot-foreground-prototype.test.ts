@@ -163,6 +163,13 @@ linux("never reuses a binding after a transport gap or explicit reader cleanup",
   } finally { await test.close(); }
 });
 
+// The fake Copilot is another process: on a starved runner its answer can come after the product's
+// 2 s RPC deadline, and the product then rightly says rpc_timeout. Unless the fault under test is that
+// stall, a timeout only means the fixture was late, so observe again (the timeout closed the
+// connection, so each attempt starts afresh) a bounded number of times. Only an rpc_timeout is asked
+// again, so no answer on the way can be a foreground ID, and the last answer must be the fault's own.
+// One attempt can wait on three of the product's 2 s deadlines in turn: the connection with its
+// `connect` RPC, then each of the two `session.getForeground` requests a read makes.
 const attempts = 3;
 const attemptBudget = 3 * COPILOT_RPC_TIMEOUT_MS;
 const fixtureStart = 5_000;

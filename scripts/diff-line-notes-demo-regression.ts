@@ -47,6 +47,7 @@ async function closeFiles(page: Page): Promise<void> {
   if (await files.count() === 0) return;
   await page.keyboard.press("Escape");
   await files.waitFor({ state: "detached" });
+  // a closed sheet's last frame stays, on an inert host at the end of <body>, until its slide ends (lib/sheets.ts `leave`)
   await page.waitForFunction(() => ![...document.body.children].some((node) => node instanceof HTMLElement && node.inert && node.getAttribute("aria-hidden") === "true"));
 }
 
@@ -58,6 +59,10 @@ async function rowPoint(page: Page, selector: string): Promise<{ x: number; y: n
   }, selector);
 }
 
+/**
+ * Hovers a row until its + stands beside it: the rows are drawn again when their colors arrive from
+ * the worker, which drops the hovered row until the pointer moves, as a hand's pointer always does.
+ */
 async function hoverRow(page: Page, selector: string): Promise<void> {
   for (let attempt = 0; attempt < 10; attempt++) {
     const point = await rowPoint(page, selector);

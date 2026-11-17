@@ -15,6 +15,8 @@ $launcher = Join-Path $pluginRoot 'scripts\plugin.ps1'
 function Assert([bool]$Condition, [string]$Message) { if (-not $Condition) { throw $Message } }
 function Start-Process { $global:herdrInstallOpened += ($args -join ' ') }
 
+# Tool boundaries only: no downloads, installed plugins, processes or user settings are changed.
+# The commit a ref names: a commit id itself, or a stand-in id for a branch or tag
 function Get-TestCommit {
     param([string]$Ref)
     if ($Ref -match '^[0-9a-f]{7,40}$') { return $Ref.PadRight(40, '0') }
@@ -67,6 +69,17 @@ function bun {
         $state.stopStateDirs += "$env:HERDR_PLUGIN_STATE_DIR"
         if ($state.handStarted -and $env:HERDR_PLUGIN_STATE_DIR) { 'herdr web ui is not running' } else { 'stopped herdr web ui (pid 1234)' }
     }
+    # the plugin's launcher: its command, and whether it was told to build from source. As scripts/plugin-launch.ts does,
+    # a stop runs the release's binary of this version kept in .ovis/server/bin once it passes its check, unless
+    # OVIS_FROM_SOURCE=1 or a marker naming this version chose the sources; under either, or with no such binary for any
+    # reason (none kept, another version's, one failing its check, the release out of reach: a branch's sources are not
+    # the release's, and a stop only works with the server that runs), it goes to scripts/plugin.ts, which fails without all
+    # the packages (node_modules\all-installed stands for bun install's end). As scripts/plugin.ts's stop on Windows, it
+    # stops a recorded server it identifies by the creation time its start recorded, takes its record away and says so,
+    # fails on a live pid it cannot identify (another creation time, or none recorded: this process is no Ovis) and keeps
+    # its record, and says it is not running without a record. An install under it says `started` in .ovis/server/source-build and names the version
+    # in .ovis/server/from-source before it builds the packages and the client, and the version and commit in
+    # source-build once they are built; it notes when a server's pid record is still there as it builds
     elseif ($args[0] -like '*\scripts\plugin-launch.ts') {
         $state.launcherCalls += if ($args[-1] -eq 'stop') { 'stop' } else { "$($args[-1]) $env:OVIS_FROM_SOURCE".Trim() }
         $root = Split-Path (Split-Path $args[0])
@@ -194,6 +207,8 @@ echo gh: Not Found (HTTP 404) 1>&2
 exit /b 1
 '@
     $env:PATH = "$ghStandIn;$env:PATH"
+    # herdr's state dir is the test's own (a section that needs another sets it and puts this back): the installer reads
+    # a server a start recorded there (scripts/plugin.ts's server.pid and server.owner), and none of this PC's
     $env:XDG_STATE_HOME = Join-Path $ghStandIn 'state home'
     $ghCalls = Join-Path $ghStandIn 'calls.txt'
     $firstInstall = {
@@ -662,13 +677,17 @@ exit /b 1
     $said = & $firstInstall 'hangs'
     Assert ($said -match $mention -and $said -notmatch $question -and $clock.Elapsed.TotalSeconds -lt 14) "A gh that does not answer must be left after 10 seconds, with the link: $($clock.Elapsed.TotalSeconds) s, $said"
 
+    # The installer as it is, where this test runs: CI has no terminal, and a developer's terminal is told it is CI.
     $ci = $env:CI; $env:CI = 'true'
     try { $said = & $firstInstall 'not' } finally { $env:CI = $ci }
     Assert ($said -match $mention -and $said -notmatch $question -and $star.asked -eq 0 -and (& $given) -eq 0) "An agent or a script must get the link and no question: $said"
 
+    # Whether somebody is at a terminal is what a test host cannot be: the installer's own text, with those two answers given.
     $source = Get-Content -Raw $installer
     $decision = 'if ($newInstall) {'
     Assert (($source -split [regex]::Escape($decision)).Count -eq 2) 'The installer must decide once, after its helpers, whether this was a first install'
+    # The installer defines its own Read-Answer above the decision, so the test's stands in after it: the answer
+    # given here, or null where nobody is at the terminal and the installer's own wait is what ended.
     $answering = 'function Read-Answer { $star.asked++; if ($star.failAsk) { throw "Read-Answer has no console to read from" }; $star.answer }'
     $atTerminal = $source.Replace($decision, "function Test-Terminal { `$true }; $answering; $decision")
     $nobodyThere = $source.Replace($decision, "function Test-Terminal { `$true }; function Read-Answer { `$null }; $decision")

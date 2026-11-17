@@ -25,6 +25,8 @@ try {
         await page.evaluate(() => (window as any).fitReply(true));
         await page.locator(".composer-stop").waitFor();
       });
+      // Typography is applied by SettingsProvider after the render. At this fixed card width,
+      // the larger interface font must step effort out without needing a viewport resize.
       await withCard(browser, 1075, { agent: "codex", model: LONG_MODEL }, async (page) => {
         const before = await measure(page);
         assert.equal(before.draw, "full");
@@ -206,6 +208,8 @@ try {
         assert.equal(await page.locator(".pending-message").getAttribute("data-state"), "held", "a reconnect leaves a held follow-up held");
         const notSent = await page.evaluate(async (paneId) => await (await fetch(`/api/pane/conversation?pane_id=${encodeURIComponent(paneId)}`)).json(), panes.api);
         assert.ok(!JSON.stringify(notSent).includes(text), "a held follow-up is not sent by the reconnect");
+        // A hold its sender asked for needs no receipt: with the page off for longer than the bridge keeps one (the same
+        // ten minutes after which the queued copy below is uncertain), it is still held, and still goes only on Send now.
         await page.evaluate(() => { const fit = window as unknown as { fitSocket: { close: () => void }; fitOffline?: boolean }; fit.fitOffline = true; fit.fitSocket.close(); });
         await page.clock.setSystemTime(await page.evaluate(() => Date.now()) + 10 * 60 * 1000 + 1000);
         await page.evaluate(() => { (window as unknown as { fitOffline?: boolean }).fitOffline = false; });
@@ -227,6 +231,7 @@ try {
         await page.evaluate(({ held, paneId }) => {
           const fit = window as unknown as { fitSocket: { holdPending: (pane: string) => void; close: () => void }; fitOffline?: boolean };
           if (held) fit.fitSocket.holdPending(paneId);
+          // the page stays off while its clock passes the receipt's ten minutes
           else fit.fitOffline = true;
           fit.fitSocket.close();
         }, { held, paneId: panes.api });
@@ -288,6 +293,7 @@ try {
           assert.match(await usage.getAttribute("title") ?? "", account);
         });
       }
+      // a plain `anthropic` is recorded the same for a Claude sign-in and an API key
       for (const provider of [undefined, "zai", "anthropic"]) await withCard(browser, 1440, { agent: "pi", model: "gpt-5.6", ...(provider ? { provider } : {}), showUsage: true }, async (page) => {
         await page.locator(".composer-status").waitFor();
         assert.equal(await page.locator(".composer-status .composer-usage").count(), 0, "no plan without a provider that names one");

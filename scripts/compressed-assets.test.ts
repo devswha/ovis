@@ -38,4 +38,5 @@ test("a production build produces exact compressed JS/CSS sidecars and leaves th
   } finally {
     rmSync(output, { recursive: true, force: true });
   }
+// a whole production build, beside the other unit files CI runs four at a time: it took 23 s there
 }, 120_000);

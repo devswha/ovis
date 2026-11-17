@@ -37,11 +37,21 @@ async function settled(page: Page, count: string, place: string, step: string): 
   }
   return bar(page);
 }
+/**
+ * A sheet rising or dropping (a closed one is drawn until its slide ends, lib/sheets.ts) or a button's
+ * hover fading would be caught at a moment of its own: every finite animation ends first, then any
+ * transition still running is taken to its end for the shot.
+ */
 async function shot(page: Page, name: string, state: string): Promise<void> {
   if (!evidence) return;
   await page.evaluate(() => Promise.all(document.getAnimations().filter((animation) => animation.effect?.getTiming().iterations !== Infinity).map((animation) => animation.finished.catch(() => undefined))));
   await page.screenshot({ path: join(evidence, `diff-find-${name}-${state}.png`), animations: "disabled" });
 }
+/**
+ * The page's clock is Playwright's (installed before the load, it runs on its own): run past the demo's
+ * one-shot turn completion (site/demo/transport.ts, 4500 ms after load), so every shot shows its
+ * finished status, and its finish droplet is not drawn, as in terminal-keyboard-demo-regression.ts.
+ */
 async function pastDemoTurn(page: Page): Promise<void> {
   await page.clock.runFor(5_000);
   await page.addStyleTag({ content: ".droplet { visibility: hidden !important; }" });
@@ -96,6 +106,7 @@ async function check(browser: Browser, origin: string, width: 390 | 1440, theme:
       await shot(page, name, "hover");
     }
 
+    // the diff and file requests the page makes while it searches: none (the demo's transport answers /api/ in the page; the app's own polling goes on)
     await page.evaluate(() => {
       const record = window as unknown as { findRequests: string[] };
       record.findRequests = [];

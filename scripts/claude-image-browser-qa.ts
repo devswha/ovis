@@ -76,6 +76,7 @@ try {
   } finally { clearTimeout(timeout); listener.stop(true); }
   await herdrRpc("pane.report_agent", { pane_id: paneId, source: "manual", agent: "claude", state: "idle" });
 
+  // tailscaleOwner null: the plain-HTTP page below must not be sent to pairing on a PC with Tailscale
   server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: join(root, "state"), tailscaleOwner: null });
   browser = await chromium.launch({ executablePath: chromePath(), headless: process.env["HEADED"] !== "1", args: ["--no-sandbox", "--no-proxy-server"] });
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en-US" });

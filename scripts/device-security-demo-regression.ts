@@ -13,6 +13,7 @@ const evidence = process.env.UI_EVIDENCE_DIR || "";
 const NOTICE = '[data-testid="device-paired-notice"]';
 const ROW = ".devices-panel .devices-row";
 const PAIRS_WITHIN_MS = 10_000;
+/** how far under a whole pixel a measured box may fall from layout rounding alone (a fractional offset above the list) */
 const SUBPIXEL = 0.01;
 
 type Theme = "light" | "dark";
@@ -45,6 +46,11 @@ async function reveal(target: Locator): Promise<void> {
   await target.evaluate((node) => node.scrollIntoView({ block: "end" }));
 }
 
+/**
+ * A phone's sheet rises with an animation, and a closed one drops as its last frame, put back inert
+ * and aria-hidden at the end of <body> until it has slid out (lib/sheets.ts): a capture waits two
+ * frames for that drop to be set up, then for it to be gone and for every finite animation to end.
+ */
 async function settled(page: Page): Promise<void> {
   await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
   await page.waitForFunction(() => ![...document.body.children].some((node) => node instanceof HTMLElement && node.inert && node.getAttribute("aria-hidden") === "true" && node.childElementCount === 0));
@@ -122,6 +128,11 @@ async function dialogAnimations(page: Page): Promise<string[]> {
     .map((animation) => (animation as CSSAnimation).animationName));
 }
 
+/**
+ * Every running animation of a dialog's scrim and surface held at `share` of its duration: 0 is its
+ * first frame, 1 its last. Returns the surface's top edge then, read from the animation's own target,
+ * which for a closed sheet's drop sits in a closed shadow root no query reaches (src/lib/sheets.ts).
+ */
 async function holdAt(page: Page, share: number): Promise<number> {
   return page.evaluate((share) => {
     const held = ((window as unknown as { herdrAnimations?: () => Animation[] }).herdrAnimations?.() ?? document.getAnimations()).filter((animation) => ((animation.effect as KeyframeEffect | null)?.target as Element | null)?.closest?.(".modal-scrim") && animation.effect!.getTiming().iterations !== Infinity);
@@ -130,6 +141,7 @@ async function holdAt(page: Page, share: number): Promise<number> {
     for (const animation of held) {
       animation.pause();
       const duration = Number(animation.effect!.getComputedTiming().duration);
+      // the very last frame would end it, and a drop's end takes its sheet away
       animation.currentTime = Math.max(0, Math.min(duration * share, duration - 1));
       const target = (animation.effect as KeyframeEffect).target as HTMLElement;
       if (target.classList.contains("modal")) top = target.getBoundingClientRect().top;
@@ -138,6 +150,12 @@ async function holdAt(page: Page, share: number): Promise<number> {
   }, share);
 }
 
+/**
+ * Holds the next dialog animation at its first moment, whatever the host's load: each one that
+ * starts on a dialog's scrim or surface is paused as the node it runs on is put in, and the closed
+ * sheet's fallback removal (src/lib/sheets.ts LEAVE_MS, 600 ms) is not scheduled, so its drop stays
+ * until it has played out. `disarm` undoes both; `release` also lets the held animations run on.
+ */
 async function arm(page: Page): Promise<void> {
   await page.evaluate(() => {
     const hook = window as unknown as { herdrHoldMotion?: () => void; herdrAnimations?: () => Animation[]; herdrShadowRoots?: ShadowRoot[] };
@@ -258,6 +276,8 @@ try {
             const words = await row.locator(".settings-description").innerText();
             assert.equal(words, label("Every paired device, this one included, loses its pairing access at once. The access token, this PC and its Tailscale login are not affected."), "the row warns the caller that their own pairing goes, and names what stays");
             assert.equal(await rowButton.isEnabled(), true);
+            // three places on one short page, each its own frame: the row at rest just come into view at the bottom
+            // edge, the long label at that edge, and the true end (a target past the end would clamp them all into one)
             await reveal(row);
             const rest = await capture(page, `${prefix}-rest`, about("rest"));
             measurements[prefix] = {
@@ -285,6 +305,8 @@ try {
               return card.getBoundingClientRect().bottom <= (scroller as HTMLElement).getBoundingClientRect().bottom + 0.5;
             }, scroller), true, "the devices card ends inside the view, its bottom padding included");
             const end = await capture(page, `${prefix}-scrolled-end`, about("scrolled-end"));
+            // Revoke every device sits in More settings, out of the devices card these frames were made to show; on a short
+            // page two of them may be one picture, so they are kept as evidence without asserting that they differ
             void [rest, longLabel, end, scrolls];
             assert.deepEqual(await overflow(page), [], `nothing reaches past the edge at ${width}`);
             if (phone) {
@@ -303,6 +325,8 @@ try {
               assert.equal(await rowButton.evaluate((node) => node === document.activeElement && node.matches(":focus-visible")), true, "Tab reaches Revoke all with a visible focus ring");
               const focused = await capture(page, `${prefix}-focus-visible`, about("focus-visible"));
               measurements[prefix]!.focusRing = { ...await contrast(page, ".devices-revoke-all button", "outline-color"), outline: await rowButton.evaluate((node) => `${getComputedStyle(node).outlineWidth} ${getComputedStyle(node).outlineStyle}, offset ${getComputedStyle(node).outlineOffset}`) };
+              // a mouse press draws only on an icon button (styles.css .icon-button:active; a .btn keeps its
+              // hover look): the first device's revoke icon, held down, and let go away from it so nothing is clicked
               const icon = page.locator(ROW).first().locator("button").last();
               await icon.scrollIntoViewIfNeeded();
               const box = (await icon.boundingBox())!;
@@ -524,6 +548,8 @@ try {
             await capture(page, `${prefix}-watch`, { ...about("disabled-watch"), note: "a watching device gets the explanation and no button (no disabled control is drawn)" });
             measurements[prefix]!.watchCopy = await contrast(page, ".devices-revoke-all .settings-description");
             assert.deepEqual(await overflow(page), [], "the watch words fit");
+            // The name is set in place and put back, so React's own text stays what it rendered. Read at rest:
+            // under the rising sheet's transform, a pill on the next line reads a hair off the first one's height
             await settled(page);
             const split = await page.locator(".devices-current").evaluate(async (badge) => {
               const name = badge.parentElement!.firstChild as Text;
@@ -647,6 +673,8 @@ try {
           }
 
           {
+            // the fictional phone waits until it is let go (site/demo/transport.ts `demo_pairing=held`), so the
+            // code is seen before its enrollment takes it away
             const { page, errors } = await open(context, server.port, "&demo_pairing=held");
             errorsOf.push(errors);
             const notice = page.locator(NOTICE);

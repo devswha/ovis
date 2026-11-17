@@ -1,3 +1,8 @@
+/** What a PC without terminal attach (Windows, herdrdev/herdr#4821) looks like in the browser:
+ * the server answers as a Windows herdr would (`terminalAttach: false`) over a real pane of
+ * the test herdr, and the terminal lens shows that pane's screen, mirrored. A grid that is not
+ * the browser's own (a mirror's, an observer's) must pan to every cell on a small screen. Run after
+ * `bun run build`; UI_EVIDENCE_DIR saves screenshots. */
 import "./test-herdr.ts";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
@@ -107,6 +112,7 @@ try {
   await page.keyboard.type("echo mirror-ok-$((40+2))");
   await page.keyboard.press("Enter");
   await until(async () => (await screen(page)).includes("mirror-ok-42"), "the command's output reaches the mirrored terminal");
+  // colour survives: herdr's read keeps the escape sequences
   await page.keyboard.type("printf '\\033[31mred-cell\\033[0m\\n'");
   await page.keyboard.press("Enter");
   // herdr may expand palette colours to RGB; test the painted colour, not xterm's palette class.
@@ -214,6 +220,7 @@ try {
   const operator = await context.newPage();
   operator.on("pageerror", (error) => errors.push(error.message));
   await operator.goto(`${attachOrigin}/?pane=${encodeURIComponent(attached)}`);
+  // typed before the terminal is attached, it would be held as a draft
   await operator.locator(".conn-live").waitFor();
   await until(async () => (await screen(operator)).includes("hist-"), "the operator's terminal is attached");
   await operator.locator(".xterm-helper-textarea").focus();
@@ -225,6 +232,7 @@ try {
   const observer = await watch.newPage();
   observer.on("pageerror", (error) => errors.push(error.message));
   observer.setDefaultTimeout(10_000);
+  // the app has no control for the role: the role frame its socket opens with is sent as an observer's
   await observer.routeWebSocket(/\/ws(\?|$)/, (socket) => {
     const upstream = socket.connectToServer();
     socket.onMessage((message) => {

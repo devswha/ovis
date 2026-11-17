@@ -43,6 +43,10 @@ const WINDOW_MS = 10 * 60_000;
 const LAST_MS = 30_000;
 const DWELL_MS = 1_500;
 const MAX_CODES = 3;
+/**
+ * How long a device that paired gets to put this PC in its account before it is asked about: one that is signed in
+ * links itself and lists the PC within seconds (src/lib/relay/accountController.ts).
+ */
 const ALONE_MS = 15_000;
 const SWEEP_MS = 4_000;
 const CLEAR_ROUNDS = 4;

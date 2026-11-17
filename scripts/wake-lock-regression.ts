@@ -81,6 +81,7 @@ export async function checkWakeLock(browser: Browser, origin: string, paneId: st
 
     await context.route(rosterStream, (route) => route.abort());
     await context.route(rosterRead, async (route) => {
+      // full rows: a compact roster's agent_refs would name the panes emptied below
       const response = await route.fetch({ url: `${origin}/api/machines` });
       const body = await response.json();
       for (const machine of body.machines) {

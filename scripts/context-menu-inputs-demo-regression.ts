@@ -7,6 +7,7 @@ import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 
+/** What the page did with one contextmenu event, read after every handler and React's commit ran. */
 interface Seen { target: string; defaultPrevented: boolean; reachedWindow: boolean; paneMenu: boolean; active: string }
 declare global { interface Window { __contextmenus: Seen[] } }
 

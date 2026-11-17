@@ -59,6 +59,8 @@ try {
   server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch(request) {
     const url = new URL(request.url);
     if (url.pathname === "/api/pane/conversation/image") {
+      // served for real rather than by page.route: a fulfilled binary body is the harness's
+      // business, and the point here is that the browser decodes the bytes the endpoint gives
       const image = bytes.get(url.searchParams.get("ref") ?? "");
       served.push(url.searchParams.get("ref") ?? "");
       return image ? new Response(new Uint8Array(image.data), { headers: { "content-type": image.type } }) : new Response(JSON.stringify({ error: { code: "image_not_found" } }), { status: 404 });
@@ -188,6 +190,10 @@ try {
   assert.equal(await smallLine.locator(".work-image:not(.is-more)").count(), 3);
   const boxes = await smallLine.locator(".work-image").evaluateAll((buttons) => buttons.map((button) => [button.getBoundingClientRect().width, button.getBoundingClientRect().height]));
   assert.deepEqual(boxes, [[44, 44], [44, 44], [44, 44], [44, 44]], "every thumbnail and the tile is a 44px square");
+  // the virtual list first places its rows at estimated heights and moves them once it has measured
+  // them: two separate reads can fall on either side of that move. Both boxes come from one frame's
+  // layout, taken once two frames in a row agree. The deadline is a timer, not a frame: a page that
+  // stops drawing frames still fails here instead of leaving the evaluate waiting forever
   type Box = { x: number; y: number; width: number; height: number };
   const [head, strip] = await small.evaluate(() => new Promise<[Box, Box]>((settled, fail) => {
     let before = "";

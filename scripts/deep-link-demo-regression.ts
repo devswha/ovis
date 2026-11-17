@@ -36,6 +36,7 @@ async function withPage(browser: Browser, search: string, run: (page: Page) => P
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(`${url}${search}`);
     await page.locator(".conn-live").waitFor({ state: "attached" });
+    // attached, not visible: a link can open with the sidebar collapsed
     await page.locator(".agents-sidebar .agent-item").first().waitFor({ state: "attached" });
     await run(page);
     assert.deepEqual(errors, []);

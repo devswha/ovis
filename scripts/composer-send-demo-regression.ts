@@ -99,6 +99,7 @@ try {
       });
       console.log("PASS a phone's Return inserts a new line by default with Send and Mod+Enter sending, a chosen Return sends after reload, desktop Enter and Mod+Enter stay, and native multiline paste reaches chat through Send");
 
+      // The conversation is frozen: the accepted send's reply never lands mid-capture, so every frame shows the same turns.
       const framingMeasures: Record<string, unknown>[] = [];
       for (const [width, language] of [[390, "en"], [1440, "en"], [390, "ko"]] as const) for (const theme of ["light", "dark"] as const) await withCard(browser, width, { agent: "claude", model: "claude-opus-5-5", status: "idle", freezeConversation: true, language, theme, ...(width === 390 ? { scale: 3 } : {}) }, async (page) => {
         const evidence = process.env.UI_EVIDENCE_DIR;
@@ -257,6 +258,7 @@ try {
         assert.equal(before.height, empty.height);
         assert.equal(await button.locator("[aria-live], [role=status]").count(), 0, "no repeated live announcement");
         const progress = button.locator(".composer-send-progress");
+        // every theme row of this mode, so each real block of styles.css is behind the button once
         for (const { id: palette } of SUPPORTED_ENTRIES.filter((entry) => entry.mode === theme)) {
           await page.evaluate((palette) => { document.documentElement.dataset.palette = palette; }, palette);
           assert.equal(await progress.evaluate((node) => getComputedStyle(node).animationTimingFunction), "steps(8)");
@@ -344,6 +346,8 @@ try {
         await box.tap();
         await box.fill("dropped while composing ");
         await page.evaluate(() => {
+          // the keyboard keeps composing through the tap's blur, and the tap's 300 ms deadline is held,
+          // so only the drop can withdraw the tap, however long the reconnect takes
           document.querySelector<HTMLTextAreaElement>(".composer-text")!.blur = () => {};
           const later = window.setTimeout;
           window.setTimeout = ((callback: TimerHandler, ms?: number, ...args: unknown[]) => ms !== undefined && ms >= 280 && ms <= 300 ? 0 : later(callback, ms, ...args)) as typeof window.setTimeout;
@@ -375,6 +379,7 @@ try {
           fixture.fitSocket.send = (raw) => { if (typeof raw === "string" && JSON.parse(raw).type === "submit") fixture.fitSubmits += 1; send(raw); };
         });
         await cdp.send("Input.insertText", { text: "안" });
+        // the committed word's send runs a task after compositionend: wait one task and a frame past it
         await page.evaluate(() => new Promise((resolve) => setTimeout(() => requestAnimationFrame(resolve))));
         assert.equal(await page.evaluate(() => (window as unknown as { fitSubmits: number }).fitSubmits), 0, "nothing is submitted on the new connection");
         assert.equal(await box.inputValue(), "dropped while composing 안", "the message stays in the box");

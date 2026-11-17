@@ -1,3 +1,9 @@
+/**
+ * The server goes into .ovis/server in this checkout: herdr gives its build step no state dir, and every later command
+ */
+/**
+ * Source instead of the binary (INSTALL.md, "Binary or source"; install.sh's pick_install is wider for now): with
+ */
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { constants } from "node:os";
 import { join, resolve } from "node:path";

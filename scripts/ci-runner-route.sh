@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# stays on ubuntu-24.04. "Room" is counted from the Actions API, since the workflow token cannot
+# list runners: CI_SELF_HOSTED_CAPACITY (default 10) minus the queued and running jobs of every
+# workflow that could take those runners must leave at least the jobs one run needs. When that count
+# fails, the pull request stays hosted. Setting the variable to labels sends every pull request to
 set -euo pipefail
 
 hosted='"ubuntu-24.04"'
@@ -28,6 +32,9 @@ choose_labels() {
 pool_labels='["self-hosted","linux","x64","self-hosted-ovis"]'
 light_job_names='["Detect changes","herdr-core live contract","Integration and browser","Pull request title","bundle-windows"]'
 
+# hosted fallback is printed well inside Detect changes' five minutes; each attempt is bounded by a
+# minute or what is left, with timeout or gtimeout where there is one (stock macOS has neither: there
+# an attempt is unbounded, and only the shared budget stops further ones).
 API_BUDGET=240
 bound=""
 if command -v timeout >/dev/null 2>&1; then bound=timeout

@@ -59,6 +59,7 @@ async function showOther(page: Page, pane: string): Promise<void> {
 try {
   await buildDemoApp(app);
   const index = join(app, "index.html");
+  // the demo's socket is a class of its own that no browser event reports: note every frame it sends
   const record = `<script>(() => {
     const Demo = window.WebSocket;
     window.sent = [];

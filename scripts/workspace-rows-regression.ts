@@ -110,7 +110,11 @@ try {
   });
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, locale: "en-US" });
   await context.addInitScript(({ ids, legacyFoldKey }) => {
+    // Browser locale alone does not override the app's remembered language.
+    // Preserve a language changed through Settings across subsequent reloads.
     if (!localStorage.getItem("ovis:settings")) {
+      // Two lines: the task row (pane title over its place) is what this script reads; One line,
+      // the default, is ui-regression's sidebar-rows check
       localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", alertsOn: false, sidebarRows: "two" }));
       localStorage.setItem(legacyFoldKey, "1");
     }
@@ -121,6 +125,8 @@ try {
   page.on("pageerror", (error) => errors.push(error.message));
 
   const navigate = async (action: () => Promise<unknown>, paneId: string): Promise<void> => {
+    // Register the exact network signal before replacing the document. DOM
+    // readiness then comes from Playwright's attached-state signal.
     const snapshot = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/machines" && response.ok());
     await action();
     await snapshot;
@@ -252,6 +258,7 @@ try {
   try { server?.stop(); } catch (error) { cleanupErrors.push(error); }
   for (const id of ownedWorkspaces) {
     try { await workspaceClose(id); } catch (error) {
+      // Closing the last pane can already have removed its workspace.
       if (!(error instanceof HerdrError && error.code === "workspace_not_found")) cleanupErrors.push(error);
     }
   }

@@ -23,6 +23,7 @@ function installHistoryFixture(clearHistory: string): void {
   const stream = `${clearHistory}${lines.join("\r\n")}`;
   const sockets: Array<WebSocket & { push(frame: Record<string, unknown>): void }> = [];
   let pane: string | null = null;
+  // a server lists its features before any pane's bytes; the demo lists them in its snapshot, after
   let featured = false;
   let waiting: (() => void) | null = null;
   const state: HistoryFixture = {
@@ -40,6 +41,7 @@ function installHistoryFixture(clearHistory: string): void {
         push({ ...frame, features: [...(frame.features as string[]), "terminal-history"] });
       } else if (frame.type === "snapshot" || frame.type === "features") push(frame);
       else if (frame.type === "pty-data") {
+        // the demo's own recording would move the screen under the test
         if (frame.fixture !== "history") return;
         const { fixture: _, ...output } = frame;
         push(output);
@@ -68,6 +70,7 @@ function installHistoryFixture(clearHistory: string): void {
   window.WebSocket = Recorded as unknown as typeof WebSocket;
 }
 
+/** the rows the user sees: libghostty's layer when it draws the pane (xterm's own rows are hidden under it), else xterm's */
 const drawn = (page: Page) => page.evaluate(() => {
   const host = document.querySelector<HTMLElement>(".pane-frame.is-current .pane-terminal");
   const rows = host?.querySelectorAll(host.dataset["renderer"] === "ghostty" ? ".ghostty-row" : ".xterm-rows > div") ?? [];

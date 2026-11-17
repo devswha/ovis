@@ -195,6 +195,11 @@ describe("the tools typecheck", () => {
   };
   const added = (now: readonly string[], before: readonly string[], renames: ReadonlyMap<string, string>): string[] =>
     now.filter((file) => !before.includes(file) && !before.includes(renames.get(file) ?? ""));
+  /**
+   * The exclude entries that take out a file the base checked: those its exclude list lacks but a renamed file's. Null
+   * when the base has no exclude list: every base since main went green with the list (dad4ce663) has one, and the
+   * file list before it cannot say what the folder include checks now.
+   */
   const uncheckedNow = (now: readonly string[], baseJson: string, renames: ReadonlyMap<string, string>): string[] | null => {
     const base = JSON.parse(baseJson) as { exclude?: unknown };
     return Array.isArray(base.exclude) ? added(now, base.exclude as string[], renames) : null;
@@ -349,6 +354,7 @@ describe("names from before Ovis", () => {
     "docs/guide.md": "tells users the old names still work",
     "shared/telemetry.ts": "pinned to the deployed telemetry Worker, so not even a comment changes",
   };
+  // released notes keep the names they shipped with; telemetry/ is the deployed Worker's source
   const HISTORY = [":!CHANGELOG.md", ":!release-summaries.json", ":!changelog.d", ":!telemetry"];
 
   it("appear only where an older install hands them in", () => {

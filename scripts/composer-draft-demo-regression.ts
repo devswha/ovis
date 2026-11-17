@@ -74,10 +74,12 @@ try {
         assert.equal(await page.locator(".composer-suggestion").count(), suggestionChip ? 1 : 0);
         assert.equal(await box.evaluate((node) => getComputedStyle(node, "::placeholder").color === "rgba(0, 0, 0, 0)"), false, "the placeholder itself shows the suggestion");
         await page.evaluate(() => Object.assign(window, { fitSubmitCount: 0 }));
+        // the box takes the focus when it mounts: it starts unfocused here, so only the tap can focus it
         await box.evaluate((node) => node.blur());
         assert.equal(await page.evaluate(() => document.activeElement?.classList.contains("composer-text") ?? false), false, "the box starts unfocused");
         const bounds = await box.boundingBox();
         assert.ok(bounds);
+        // a real touch sequence on the grey words, not a synthetic click
         const x = bounds.x + 40, y = bounds.y + Math.min(bounds.height / 2, 20);
         assert.equal(await page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.classList.contains("composer-text"), [x, y]), true, "the grey words are the message box itself");
         const session = await page.context().newCDPSession(page);
@@ -196,6 +198,7 @@ try {
         await page.getByRole("listbox", { name: "Files", exact: true }).waitFor();
         await box.fill("look at /tmp");
         await box.press(width <= 480 ? "ControlOrMeta+Enter" : "Enter");
+        // the send is claimed in the pane's cross-tab lock (#2369), a moment after the key: the box empties then
         await page.waitForFunction(() => document.querySelector<HTMLTextAreaElement>("textarea.composer-text")?.value === "");
         await page.getByText("look at /tmp", { exact: true }).waitFor();
         assert.equal(await box.inputValue(), "", "the send key sends a path verbatim instead of accepting a fuzzy skill");
@@ -251,6 +254,7 @@ try {
         }, reading);
         assert.equal(await box.inputValue(), draft, "the unsent draft survives the terminal/chat round trip");
         await page.getByRole("button", { name: "Jump to latest", exact: true }).waitFor();
+        // Leave in the same task: the list's deferred scroll cannot update memory first.
         await page.evaluate(() => {
           document.querySelector<HTMLButtonElement>('button[title="Jump to latest"]')!.click();
           document.querySelector<HTMLButtonElement>('.view-switch .is-terminal, .lens-toggle[data-view="chat"]')!.click();
@@ -468,6 +472,8 @@ try {
       });
       console.log("PASS changing Chat font size grows and shrinks an existing draft's automatic box");
 
+      // CSS layout zoom exercises fractional geometry and rewrapping; it is not native browser
+      // zoom or mobile pinch zoom. Keep one draft mounted while changing each scale.
       for (const width of [390, 1440]) await withCard(browser, width, { model: "gpt-5.6-sol", status: "idle" }, async (page) => {
         const box = page.getByRole("textbox", { name: "Message", exact: true });
         const drafts = ["", "A short message. 짧은 메시지", "long_unbroken_text_".repeat(100), Array.from({ length: 40 }, (_, i) => `Line ${i + 1}: a long draft`).join("\n")];
@@ -476,6 +482,7 @@ try {
           for (const zoom of [0.8, 1, 1.25, 1.5, 2, 1]) {
             await page.evaluate((scale) => { document.documentElement.style.zoom = String(scale); }, zoom);
             await page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
+            // The width observer commits the automatic height after layout zoom rewraps text.
             await page.waitForFunction((short) => {
               const node = document.querySelector<HTMLTextAreaElement>(".composer-text")!;
               return node.scrollWidth <= node.clientWidth + 1 && (!short || node.scrollHeight <= node.clientHeight + 1);

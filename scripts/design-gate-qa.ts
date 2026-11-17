@@ -211,6 +211,7 @@ const UNSENT_STORAGE = {
 
 const TAB_LABELS = ["api", "web", "docs", "deploy", "review", "tests", "release-notes", "migrations", "infra", "billing", "search", "mobile", "analytics", "onboarding"];
 
+/** Holds the demo's 4500 ms turn-ending timer (the api pane stays mid-turn; no finished-turn alert lands over a visit). */
 const HOLD_DEMO_TURN = `<script>(() => { const later = window.setTimeout; window.__laterTimeout = later; window.setTimeout = (callback, ms, ...rest) => ms === 4500 ? 0 : later(callback, ms, ...rest); })();</script>`;
 const RELEASE_TIMERS = `<script>if (window.__laterTimeout) window.setTimeout = window.__laterTimeout;</script>`;
 const STAGE_HOOKS = `<script>(() => {
@@ -435,11 +436,13 @@ const SURFACES: Surface[] = [
   { id: "drawer-open", only: "phone", pane: panes.api, run: openDrawer },
   {
     id: "phone-inbox", only: "phone", plain: true, ready: ".mode-inbox", storage: { "ovis:phone-inbox": "true" },
+    // the inbox mode's list also stands while it says Loading…: measured once a row is drawn
     run: async (page) => { await page.locator(".mode-inbox .inbox-item").first().waitFor(); await settle(page); },
   },
   {
     id: "held-messages", pane: panes.web,
     storage: {
+      // kept under the demo's herdr: with no record they would be an earlier release's and go to Recover unsent text
       "ovis:pane-lifetime:local": "demo-local",
       [`ovis:queue:${panes.web}`]: JSON.stringify({ version: 1, messages: [{ id: "gate-q1", text: "끝나면 /metrics 응답 예시도 README에 넣어 줘." }, { id: "gate-q2", text: "그리고 재생 카운터에 대한 테스트를 하나 더." }] }),
     },
@@ -493,6 +496,7 @@ const SURFACES: Surface[] = [
   {
     id: "terminal-view", pane: panes.flaky, view: "terminal",
     run: async (page, env) => {
+      // Claude's screen ends on a dim (SGR 2) hint line; libghostty draws it as DOM rows over xterm's hidden ones
       await page.waitForFunction(() => [...document.querySelectorAll(".pane-frame.is-current .ghostty-row, .pane-frame.is-current .xterm-rows > div")].some((row) => row.textContent?.includes("for shortcuts")));
       await settle(page);
       env.steps.push("the Claude pane in the Terminal lens, its dim hint line drawn");
@@ -584,6 +588,10 @@ const SURFACES: Surface[] = [
   },
 ];
 
+/**
+ * IS-100's 130% pass: Settings > Appearance's interface size, stored as whole px, so 18px over the comfortable
+ * density's 14px (--ui-scale 1.29) is the nearest to 130%. Each visit waits for the app to draw that scale.
+ */
 const UI_130_PX = 18;
 const at130 = (id: string, baseId: string): Surface => {
   const base = SURFACES.find((surface) => surface.id === baseId);
@@ -617,6 +625,7 @@ function gateRuntime(): void {
   const OVERLAY = '.modal-scrim, [role="dialog"], [role="menu"], [role="listbox"], [role="tooltip"], [popover], #workspace-drawer.is-open';
   const MODAL = '.modal-scrim, [aria-modal="true"]';
   const BOOT = "#root > [role='status']";
+  // a terminal's text: xterm's own rows, or libghostty's rows drawn over them (lib/ghostty/overlay.ts)
   const TERMINAL = ".xterm, .ghostty-layer";
   let canvas: HTMLCanvasElement | null = null;
   const colors = new Map<string, RGBA>();
@@ -719,6 +728,7 @@ function gateRuntime(): void {
     for (let node: Element | null = el; node; node = node.parentElement) {
       const s = style(node);
       if (s.backgroundImage !== "none") return null;
+      // a terminal's rows are drawn over its viewport, a sibling of theirs, not an ancestor
       const viewport = node.matches(".pane-terminal") ? node.querySelector(".xterm-viewport") : null;
       const color = viewport && rgba(s.backgroundColor)[3] < 0.999 ? rgba(style(viewport).backgroundColor) : rgba(s.backgroundColor);
       if (color[3] > 0) layers.push(color);
@@ -763,6 +773,7 @@ function gateRuntime(): void {
 
     if (want.has("contrast") || want.has("font")) {
       for (const { el, boxes } of texts) {
+        // a terminal stays mounted under the chat lens: its rows count only where the terminal is what the point hits
         if (el.closest(TERMINAL)) {
           const [box] = boxes;
           const top = box ? document.elementFromPoint((box.l + box.r) / 2, (box.t + box.b) / 2) : null;
@@ -1035,6 +1046,7 @@ function gateRuntime(): void {
     for (const [name, selector] of anchors) {
       [...document.querySelectorAll(selector)].filter(shown).forEach((el, index) => { found[index ? `${name} #${index + 1}` : name] = rect(el); });
     }
+    // every control of the composer root (the context ring and the suggestion menu sit outside .composer-controls)
     [...document.querySelectorAll(`${composer} :is(${INTERACTIVE})`)].filter(shown).forEach((el, index) => {
       const kind = [...el.classList].find((name) => !/^(?:is|has)-/.test(name) && !/\d{3,}/.test(name) && !["icon-button", "composer-action", "btn", "btn-ghost"].includes(name))
         ?? `${el.tagName.toLowerCase()}${el.getAttribute("role") ? `[${el.getAttribute("role")}]` : ""}`;
@@ -1088,6 +1100,7 @@ async function visit(browser: Browser, origin: string, surface: Surface, viewpor
     }
     await page.screenshot({ path: shot, animations: "disabled" });
     if (result.stageError) return { visit: result, failures, anchors };
+    // what the screenshot set going (a fade it finished, a frame it asked for) has landed before anything is measured
     await settle(page);
 
     const statics = [...checks].filter((check) => check !== "focus" && check !== "motion" && check !== "layout");
@@ -1103,6 +1116,7 @@ async function visit(browser: Browser, origin: string, surface: Surface, viewpor
         current: focusNow,
         tab: async () => {
           await page.keyboard.press("Tab");
+          // a control that fades in on focus (the tab's menu button) is judged once its fade is done
           await page.waitForFunction(() => document.getAnimations().every((animation) => animation.playState !== "running" || !Number.isFinite(animation.effect?.getComputedTiming().endTime ?? Infinity)), undefined, { timeout: 2_000 }).catch(() => undefined);
           return focusNow();
         },

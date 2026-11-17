@@ -38,6 +38,7 @@ it.skipIf(process.platform !== "win32")("runs the Windows launcher with executab
     await Bun.write(${JSON.stringify(result)}, JSON.stringify(process.argv.slice(2)));
     process.exit(process.argv[2] === "status" ? 7 : 0);
   `);
+  // This executable is private to the fixture, never installed on the host.
   const executable = join(scratch, "runtime.exe");
   copyFileSync(process.execPath, executable);
   writeFileSync(join(bin, "bun.ps1"), "throw 'PowerShell shim must never run'");
@@ -164,6 +165,7 @@ it.skipIf(process.platform !== "win32")("starts after its launcher exits, stops 
   const transcript = join(scratch, ".omp", "agent", "sessions", "history.jsonl");
   mkdirSync(dirname(transcript), { recursive: true });
   writeFileSync(transcript, JSON.stringify({ type: "message", message: { role: "user", content: [{ type: "text", text: "saved history" }] } }) + "\n");
+  // An isolated Herdr wire peer: no real sessions, panes, plugin registry or push keys.
   const peer = createServer(connection => {
     let buffer = "";
     connection.on("error", error => {

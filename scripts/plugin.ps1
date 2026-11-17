@@ -37,6 +37,7 @@ if ($Command -eq 'start') {
     $null = $child.Handle # Keep the exit code available even when start exits quickly.
     $child.WaitForExit() # -Wait would also wait for the server's descendants.
     if ($child.ExitCode -ne 0) {
+        # The hidden console took the start's own words; server.log holds them and the server's.
         $log = Join-Path $env:HERDR_PLUGIN_STATE_DIR 'server.log'
         $tail = if (Test-Path -LiteralPath $log) { (Get-Content -LiteralPath $log -Tail 15) -join "`n" } else { '(no log)' }
         throw "Could not start Ovis. $log ends with:`n$tail"
