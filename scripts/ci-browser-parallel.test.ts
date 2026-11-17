@@ -2,7 +2,8 @@ import { describe, expect, it } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { failureSite, longestFirst, scriptTimeoutSeconds, serialBrowserScripts, shardScripts } from "./ci-browser-parallel.ts";
+import { failureSite, longestFirst, scriptTimeoutSeconds, serialBrowserScripts, shardScripts, stopReport, stopRun } from "./ci-browser-parallel.ts";
+import type { StopIo } from "./ci-browser-parallel.ts";
 
 /** A killed process that its parent (a subreaper, say) has not reaped yet is a zombie: not alive. */
 const alive = (pid: number): boolean => {
@@ -79,6 +80,43 @@ describe("parallel browser script deadline", () => {
     expect(run.summary.scripts).toEqual([expect.objectContaining({ code: 1, message: "Exited 0, but a process it started still held its output" })]);
     expect(run.leftAlive).toEqual([]);
   }, 20_000);
+
+  it("names what SIGKILL did not end within the grace, and says it was NOT stopped", async () => {
+    // a process table: 11 ends on SIGTERM, 12 on SIGKILL, 13 on neither (a process no signal ends)
+    const alive = new Set([11, 12, 13]);
+    const sent: string[] = [];
+    const io: StopIo = {
+      processes: async () => [...alive],
+      signal: (pids, name) => {
+        for (const pid of pids) {
+          sent.push(`${name} ${pid}`);
+          if (pid === 11 || (pid === 12 && name === "SIGKILL")) alive.delete(pid);
+        }
+      },
+      running: (pid) => alive.has(pid),
+      command: (pid) => `stub-${pid}`,
+      graceMs: 50,
+    };
+    // the run never finishes: its output stays held
+    const survivors = await stopRun(io, new Promise(() => {}));
+    expect(sent).toEqual(["SIGTERM 11", "SIGTERM 12", "SIGTERM 13", "SIGKILL 12", "SIGKILL 13"]);
+    expect(survivors).toEqual(["13 stub-13"]);
+    expect(stopReport("Timed out after 5s", survivors)).toBe("Timed out after 5s; 1 process it started could NOT be stopped and still runs: 13 stub-13.");
+    expect(stopReport("Timed out after 5s", survivors)).not.toContain("what it started was stopped");
+    // one that ends on SIGKILL only once the kernel runs it again: waited for, and not named
+    const late = new Set([21]);
+    let killed = false;
+    const lateIo: StopIo = {
+      processes: async () => [...late],
+      signal: (_pids, name) => { if (name === "SIGKILL") killed = true; },
+      // gone at the second look after SIGKILL
+      running: (() => { let looks = 0; return (pid: number) => !(killed && ++looks > 1) && late.has(pid); })(),
+      command: () => "slow",
+      graceMs: 50,
+    };
+    expect(await stopRun(lateIo, new Promise(() => {}))).toEqual([]);
+    expect(stopReport("Timed out after 5s", [])).toBe("Timed out after 5s; what it started was stopped.");
+  });
 
   it("reads its bound as positive seconds and refuses anything else", () => {
     expect(scriptTimeoutSeconds(undefined)).toBe(600);
