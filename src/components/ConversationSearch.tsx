@@ -38,6 +38,10 @@ interface ConversationSearchProps {
   onPick: (match: ConversationSearchMatch) => Promise<RevealResult>;
 }
 
+/**
+ * The Codex app's Find in chat searches the same parts on its server; this lists the matches instead
+ * of stepping through them, and marks nothing in the chat.
+ */
 export function ConversationSearch({ paneId, agent, historyId, title = null, onClose, onPick }: ConversationSearchProps) {
   const t = useT();
   const today = useLocalDay();

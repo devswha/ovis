@@ -7,6 +7,11 @@ export interface PluginRunApi {
   fetchPluginActionStatus(pluginId: string, logId: string): Promise<PluginActionResult>;
 }
 
+/**
+ * Who may still act on an answer: one opening of one PC's palette. An answer can arrive after the
+ * palette closed, or after it was unmounted for another PC, and must then select no pane and close
+ * nothing there: a pane ID of the PC that answered means another pane, or none, on the PC shown.
+ */
 export class Ownership {
   private epoch = 0;
 

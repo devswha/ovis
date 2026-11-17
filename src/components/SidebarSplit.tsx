@@ -57,6 +57,7 @@ function measure({ top, bottom, footer }: Parts, line: HTMLElement, order: Split
   return {
     topHead: above.height,
     bottomHead: under.height,
+    // Measure available room, not the footer's current top: an oversized saved split may have pushed it down.
     room: Math.max(0, Math.round(end - foot.height - top.getBoundingClientRect().top - line.getBoundingClientRect().height)),
     row,
     topRow: rowHeight(top, "top"),
@@ -64,6 +65,10 @@ function measure({ top, bottom, footer }: Parts, line: HTMLElement, order: Split
   };
 }
 
+/**
+ * Dragged to within about a row of a section's head, that section snaps to its head and dims, and folds
+ * when let go, as VS Code's views and a macOS split view's panes do, with no words of their own to say so.
+ */
 export function SidebarSplit({ shell, order, split, controls, onSplit, onFold }: SidebarSplitProps) {
   const t = useT();
   const ref = useRef<HTMLDivElement>(null);

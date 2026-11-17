@@ -116,6 +116,7 @@ export function DirectoryBrowser({ start, onPick, onOpenFile, onFolder }: Direct
   const directories = listing === null || onPick === undefined || normalizedQuery === ""
     ? listing?.directories
     : listing.directories.filter((name) => name.toLowerCase().includes(normalizedQuery));
+  // A listing in flight owns the next answer: a toggle that opened the old path would discard it.
   const toggleHidden = (): void => {
     if (loading || listing === null) return;
     const next = !hidden;

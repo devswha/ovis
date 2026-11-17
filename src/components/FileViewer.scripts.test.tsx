@@ -80,6 +80,7 @@ test("an HTML page is framed without its scripts until Run scripts, in a frame o
   await until(() => frames().length === 0);
   await press("Page");
   await until(() => frames().length === 1);
+  // Then it still runs: the choice is the file's for as long as this viewer is open
   expect(frames()[0]!.props["sandbox"]).toBe("allow-scripts");
 });
 
@@ -102,6 +103,7 @@ test("over a relay the render host is told whether the page's scripts were asked
     (frame.props["onLoad"] as (event: unknown) => void)({ currentTarget: { contentWindow: { postMessage: (message: unknown) => { messages.push(message); } } } });
     return messages;
   };
+  // Then the render host's frame is the relay's (it needs its own few lines to run), and is told to draw the page without scripts
   const still = frames()[0]!;
   expect([still.props["src"], still.props["sandbox"], still.props["data-page-scripts"]]).toEqual(["/s/shell/~render", "allow-scripts", "off"]);
   expect(sent(still)).toEqual([{ type: "ovis-render", html: HTML, scripts: false }]);

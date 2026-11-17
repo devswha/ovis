@@ -1,3 +1,7 @@
+/**
+ * ChatView holds the viewer, not the chat row, so a row scrolled out of the render window does not
+ * close it.
+ */
 import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { createPortal } from "react-dom";
 import { Check, ChevronLeft, ChevronRight, Copy, Download, ImageOff, Minus, Plus, Scan, X } from "lucide-react";
@@ -51,6 +55,7 @@ export function ImageLightbox({ images, index, onClose }: { images: GalleryImage
   const [saveFailed, setSaveFailed] = useState(false);
   const [saved, setSaved] = useState(false);
   const preparing = useRef<AbortController | null>(null);
+  // a tap while a save runs is dropped, so taps never hold several copies of the picture
   const busy = useRef(false);
   const shown = useRef(image?.src);
   shown.current = image?.src;

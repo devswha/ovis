@@ -40,6 +40,7 @@ export interface InboxListProps {
   ref?: Ref<InboxListHandle>;
   machines: Machine[];
   activity: SidebarActivity;
+  /** this device only watches: it is offered no New workspace */
   watching: boolean;
   wide: boolean;
   filter: InboxFilter;
@@ -104,6 +105,10 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
   };
   const found = inboxSearched(inboxFiltered(all, filter, activity), query, machines, t, wordsOf);
 
+  // a state change never moves a row under a finger or the keyboard's focus (AgentSidebar.tsx): while either is in
+  // the list, rows keep the order last drawn; the reader's own doing (a filter, a query) draws them as they are at
+  // once. Only a focus drawn with its ring holds them: the one this list gives a row after a thread's Back is no
+  // one's place on a touch screen, and held there it would keep a new question from rising to the top
   const [focusIn, setFocusIn] = useState(false);
   const [pressHeld, setPressHeld] = useState(false);
   const pressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -296,6 +301,7 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
                 {failed.error !== "" && <p className="inbox-failed-cause" dir="auto">{failed.error}</p>}
               </div>
             )}
+            {/* aria-disabled, not disabled: a press keeps the focus it had */}
             <button type="button" className="btn inbox-retry" aria-disabled={retrying || undefined} aria-busy={retrying || undefined} onClick={retry}>
               <span className="inbox-retry-words">
                 <span aria-hidden={retrying || undefined}>{t("Retry")}</span>

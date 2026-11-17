@@ -3,16 +3,30 @@ import { askedQuestions } from "../../shared/askQuestions.ts";
 import { parseInline, shownText } from "../../shared/markdown.ts";
 import { t as inCurrentLanguage, type Translate } from "./i18n.ts";
 
+/**
+ * An option's name as its card shows it, the one reading the card's rendering and a typed answer share
+ * (#2220): an omp card in Markdown shows its label whole (InlineMarkdown), and `words` are the
+ * characters that shows (shownText, which the server held to omp's screen); another card reads a
+ * trailing "(Recommended)" off as the Recommended tag (Claude draws its own pick as "Redis (Recommended)").
+ * A Markdown link to `recommended` is an omp option's words, never that tag.
+ */
 export function optionName(prompt: InteractivePrompt, label: string): { text: string; recommended: boolean; words: string } {
   if (prompt.text_format === "markdown") return { text: label, recommended: false, words: shownText(parseInline(label, false)) ?? label };
   const text = label.replace(/^\(recommended\)\s+|\s*\(recommended\)$/i, "");
   return { text, recommended: text !== label, words: text };
 }
 
+/** What an approval's option grants: this one call, every call like it from now on, or nothing. */
 export type ApprovalScope = "once" | "always" | "deny";
 
 const TRAILING_HINT = /\s*[([][^)\]]*[)\]]\s*$/u;
 
+/**
+ * The scope an approval option's own words state, or `yes` for a bare consent whose scope they
+ * leave unsaid: "No…", "Deny", "Reject" and pi's "Block" deny; a consent that says "don't ask
+ * again", "always", "allow all" or "this session" keeps allowing; one that says "once" or "this
+ * time" allows this once. Any other wording ("Modify with external editor") states no scope.
+ */
 function statedScope(label: string): ApprovalScope | "yes" | null {
   const words = label.replace(TRAILING_HINT, "").trim().toLowerCase();
   if (/^(?:no|deny|reject|block)\b/u.test(words)) return "deny";

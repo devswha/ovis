@@ -715,6 +715,8 @@
     min-height: var(--touch-target);
   }
 
+  /* options that take more than one row (a stacked row, below) stand a whole hit box apart: the pill is shorter than
+     the hit box by this much, so with less between the rows a tap under one row's pill would be the next row's */
   .settings-segmented {
     --segmented-row-gap: calc(var(--touch-target) - (var(--control-h) - var(--segmented-inset)));
   }
@@ -822,6 +824,9 @@
     padding-inline: var(--space-1);
   }
 
+  /* a label takes the room its chosen weight needs, chosen or not (the chosen one is heavier, and in Latin text
+     wider): what Segmented measures is then the same whichever option is chosen, and a tap never changes how many
+     rows the options take. */
   .settings-row.is-wide > .settings-segmented > button > span {
     text-align: center;
   }

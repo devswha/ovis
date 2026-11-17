@@ -26,7 +26,7 @@ export function usePortal() {
         const next = await fetchPortal();
         if (!stopped) setStatus((previous) => JSON.stringify(previous) === JSON.stringify(next) ? previous : next);
         if (SETTLING.has(next.phase)) delay = 1_500;
-      } catch {}
+      } catch { /* an older server has no such route, and a restart must not erase the last answer */ }
       if (!stopped) timer = setTimeout(() => void poll(), delay);
     }
     void poll();

@@ -226,6 +226,8 @@
   background: var(--pdf-page);
 }
 
+/* around the page's frame: beside the pane, a press on a page with scripts comes to this box until the person has
+   put the focus in the page (the frame takes no pointer meanwhile) */
 .file-viewer-page-frame {
   display: flex;
   flex-direction: column;
@@ -713,6 +715,12 @@
   overflow-wrap: anywhere;
 }
 
+/*
+ * On screen the frame fills the window at every width and the reader fills the frame under any
+ * reload line above it, so the reader's body is the one scroll box; if it grew with the document, a
+ * wheel over it would scroll the page instead. Printed (or saved as a PDF), the frame grows with the
+ * document again, so every page of it prints rather than the first screen cut off.
+ */
 @media screen {
   .file-reader-frame {
     height: 100%;

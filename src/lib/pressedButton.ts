@@ -1,5 +1,9 @@
 /**
- * The browser then sends the press's click to an element holding the button or link, not to it.
+ * A press that selects another pane can move what it pressed before the release: the selection
+ * closes a file docked beside the panes, and the panes widen under the pointer (#3368). The browser
+ * then sends the press's click to an element holding the button or link, not to it. This sends that
+ * click on to the pressed button or link when it lands where that was when pressed; a release
+ * dragged off that place still cancels the click, as it does on one that stayed put.
  *
  * The browser's own click is cancelled when handed on: a tap's click comes from a new hit test and
  * could press whatever moved under the finger as well.

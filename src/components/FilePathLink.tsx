@@ -4,7 +4,12 @@ import { splitFilePaths } from "../lib/filePaths.ts";
 import { FileNameLookupContext } from "../lib/fileNameLookup.ts";
 import { useT } from "../lib/i18n.ts";
 
+/**
+ * Text past this many characters stays plain: a whole tool output can be megabytes, and every
+ * path in it would be an element.
+ */
 export const FILE_LINK_LIMIT = 256 * 1024;
+/** Nor does a text with more paths than this link any: a listing of thousands would be thousands of buttons. */
 export const FILE_LINK_COUNT = 500;
 
 export function linksFilePaths(text: string): boolean {

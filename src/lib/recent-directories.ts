@@ -1,3 +1,4 @@
+/** Lexical paths only: the browser cannot resolve a remote PC's symlinks or filesystem case. */
 function directoryPath(cwd: string | null | undefined): string | null {
   if (!cwd) return null;
   const path = /^[A-Za-z]:[\\/]|^\\\\/u.test(cwd) ? cwd.replace(/\\/g, "/") : cwd;
@@ -30,6 +31,10 @@ function absoluteDirectories(values: readonly unknown[]): string[] {
   return [...new Set(paths)];
 }
 
+/**
+ * A pane's folder follows every `cd` of its shell, so a folder seen there is somewhere a shell has
+ * been, not a project that was opened.
+ */
 export class RecentDirectoryStore {
   private readonly memory = new Map<string, string[]>();
   private readonly unsaved = new Set<string>();

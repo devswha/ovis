@@ -228,6 +228,7 @@ describe("Connect a phone on a phone", () => {
     expect(connectTabs({ sshOffered: true, relay: off, readOnly: false })).toEqual(["ssh", "devices", "relay"]);
     expect(connectTabs({ sshOffered: false, relay: relayState(), readOnly: false })).toEqual(["devices", "relay"]);
     expect(connectTabs({ sshOffered: true, relay: { ...off, unsupported: true }, readOnly: false })).toEqual(["ssh", "devices"]);
+    // a watching device or a Portal visitor cannot use the relay, and the hosted shell already is on it
     expect(connectTabs({ sshOffered: false, relay: relayState(), readOnly: true })).toEqual(["devices"]);
     shellMeta = true;
     expect(connectTabs({ sshOffered: false, relay: relayState(), readOnly: false })).toEqual(["devices"]);
@@ -258,8 +259,12 @@ describe("Connect a phone on a phone", () => {
   });
 
   it("says where the list can be seen when the server keeps it from this window", async () => {
+    // the server's own words for the refusal (server/dispatch.ts): no instruction to type an address, which an open LAN
+    // window could not add either
     const hint = "See the PCs this PC knows on this PC itself, or from a device paired with it directly.";
     const added: (AddPcPreset | undefined)[] = [];
+    // an open LAN window: the one window that shows the SSH tab and is refused the list (the relay shell and a Portal
+    // visitor, read only, show no SSH tab)
     candidatesRefused = "owner_only";
     await mount(<SshTab machines={[]} onAddPc={(preset) => { added.push(preset); }} onConnectMachine={() => {}} />);
     expect(requests).toContain("/api/machines/ssh-candidates");
@@ -269,6 +274,7 @@ describe("Connect a phone on a phone", () => {
     await act(async () => { renderer!.root.findByType("form").props.onSubmit({ preventDefault() {} }); });
     expect(added).toEqual([{ destination: "mymac" }]);
     await act(async () => { renderer!.unmount(); });
+    // a watching device adds no PC: it is not told to type one
     candidatesRefused = "read_only";
     await mount(<SshTab machines={[]} onAddPc={() => {}} onConnectMachine={() => {}} />);
     expect(text(renderer!.root)).not.toContain(hint);
@@ -337,6 +343,9 @@ describe("sameNameRelayDevice", () => {
   });
 });
 
+// The relay tab where the page has an Ovis account: the relay's QR code behind a press. A signed-in device that scans
+// it puts a PC in no account into its own, so nothing is minted before the press, the code is ended when the QR code
+// comes down, and the tab then says which account the PC joined and by which device (docs/account.md, "Adding a PC").
 describe("the relay tab's QR code behind a press", () => {
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
   const ACCOUNT_ID = "acct_0123456789abcdefgh";
@@ -489,7 +498,9 @@ describe("the relay tab's QR code behind a press", () => {
       expect(qrCodes()).toHaveLength(0);
       expect(minted()).toEqual([]);
       await press("Show the QR code");
+      // the QR code alone: no code to type is made, so nothing here can be read off the screen and typed elsewhere
       expect(minted()).toEqual(["/api/relay/offer"]);
+      // and the PC is told what the code is for, so it makes none once it is in an account
       expect(offerMarks).toEqual(["1"]);
       expect(qrCodes()).toHaveLength(1);
       expect(text(section())).not.toContain("7K3QD-M2XHA");
@@ -498,6 +509,7 @@ describe("the relay tab's QR code behind a press", () => {
     });
   }
 
+  // the owner's decision (2026-11-11): a PC that is in an account shows no QR code and has no code made for one
   for (const [name, options, whose, heading] of [
     ["this browser signed in to the PC's account", { signedIn: true, joinBySignIn: true }, "mine", "This PC is in your Ovis account (acct_0123456)."],
     ["this browser signed in to another account", { signedIn: true, accountId: "acct_mine_0000000000000" }, "other", "This PC is in another Ovis account (acct_0123456), not the one this browser is signed in to (acct_mine_00)."],
@@ -572,6 +584,7 @@ describe("the relay tab's QR code behind a press", () => {
     expect(text(notice)).toContain("Added by Laptop · Chrome.");
     expect(count("/api/relay/offer")).toBe(1);
     expect(section().findAllByProps({ role: "alert" })).toHaveLength(0);
+    // it had no code: a typed code another place shows on the PC is left alone
     expect(count("/api/relay/code/cancel")).toBe(0);
     await press("Done");
     expect(buttons()).toEqual([]);
@@ -949,6 +962,7 @@ describe("the relay tab's QR code behind a press", () => {
     expect(buttons()).toEqual(["Done", "Not me: revoke every device"]);
     expect(held.at(-1)).toBe(true);
     await press("Done");
+    // the PC is in an account now: no QR code is offered for it again
     expect(buttons()).toEqual([]);
     expect(text(section())).toContain("This PC is in your Ovis account (acct_0123456).");
     expect(text(section())).toContain("To add a device, sign in to this PC's account on it");
@@ -956,6 +970,7 @@ describe("the relay tab's QR code behind a press", () => {
     expect(minted()).toEqual(["/api/relay/offer"]);
   });
 
+  // a device the code let in is asked about before the notice can go, also one still in its ten seconds
   it("offers no Done while a device the code let in is still in its ten seconds, and asks about it once they end", async () => {
     await mount();
     await press("Show the QR code");
@@ -1110,6 +1125,7 @@ describe("the relay tab's QR code behind a press", () => {
     expect(text(renderer!.root.findByProps({ "data-testid": "connect-account-joined" }))).toContain("Added by iPhone · Safari.");
   });
 
+  // (2) a scan by a device that is not signed in gets a Not me too: one press removes it
   it("Not me on a device that paired without an account removes that device, and watches for nothing more", async () => {
     await mount();
     await press("Show the QR code");
@@ -1192,6 +1208,7 @@ describe("the relay tab's QR code behind a press", () => {
     expect(notice().props["data-account"]).toBe("unknown");
     expect(text(notice())).toContain("This PC joined an Ovis account (acct_0123456).");
     expect(text(notice())).toContain("This browser is not signed in, so it cannot tell whether that account is yours: sign in above to check.");
+    // something the owner can answer without knowing an account id, and Not me first: whoever scanned may be a stranger
     expect(text(notice())).toContain("If your own device did not just say that it added this PC, this was not you: revoke every device, and this PC leaves that account.");
     expect(buttons()).toEqual(["Not me: revoke every device", "Keep it"]);
     const [notMe, keep] = section().findAll((node) => node.type === "button");
@@ -1218,6 +1235,7 @@ describe("the relay tab's QR code behind a press", () => {
     expect(text(section())).toContain("This browser is not signed in, so it cannot tell whether that account is yours: sign in above to check.");
   });
 
+  // (4) only a member of the account is named as the one that added the PC; a device that only holds the code is asked about
   it("never names a device that is no member of the joined account as the one that added the PC, and asks about it", async () => {
     await mount();
     await press("Show the QR code");
@@ -1227,11 +1245,13 @@ describe("the relay tab's QR code behind a press", () => {
     const notice = () => renderer!.root.findByProps({ "data-testid": "connect-account-joined" });
     expect(text(notice())).toContain("Added by Laptop · Chrome.");
     expect(text(notice())).not.toContain("Added by Stranger");
+    // through the relay it gets its ten seconds to become a member: not asked about yet, and no Done meanwhile
     expect(text(notice())).not.toContain("not in that account");
     expect(text(notice())).toContain("Checking a device that just paired: Stranger · Firefox.");
     expect(buttons()).toEqual(["Not me: revoke every device"]);
     await advance(ACCOUNT_QR_ALONE_MS);
     expect(text(notice())).toContain("Paired with this PC while its QR code was up, and not in that account: Stranger · Firefox.");
+    // no Done while a device nobody vouched for is unanswered
     expect(buttons()).toEqual(["Not me: remove it", "Keep it", "Not me: revoke every device"]);
     await press("Not me: remove it");
     expect(removed).toEqual(["b"]);
@@ -1256,6 +1276,7 @@ describe("the relay tab's QR code behind a press", () => {
     const notice = () => renderer!.root.findByProps({ "data-testid": "connect-account-joined" });
     expect(text(notice())).toContain("Added by Laptop · Chrome.");
     expect(text(notice())).not.toContain("Added by Stranger");
+    // the stranger's ten seconds run from when the watch first saw it, and until it is answered there is no Done
     expect(text(notice())).toContain("Checking a device that just paired: Stranger · Firefox.");
     expect(buttons()).toEqual(["Not me: revoke every device"]);
     await advance(ACCOUNT_QR_ALONE_MS - ACCOUNT_QR_POLL_MS);
@@ -1351,18 +1372,22 @@ describe("the relay tab's QR code behind a press", () => {
   it("names as the adder only a member of the account: the newest that came since the press, else the account's newest", () => {
     const known = new Set(["a"]);
     const stranger = phoneDevice({ id: "s", label: "Stranger", created_at: "2026-11-10T09:00:00Z" });
+    // a newcomer that is no member is never the adder, however new
     expect(addedBy([device({}), stranger], known, ACCOUNT_ID)).toBeNull();
     expect(addedBy([device({ account: ACCOUNT_ID }), stranger], known, ACCOUNT_ID)?.label).toBe("Laptop · Chrome");
     expect(addedBy([device({ account: ACCOUNT_ID }), stranger, phoneDevice({ account: ACCOUNT_ID })], known, ACCOUNT_ID)?.label).toBe("iPhone · Safari");
+    // a member of another account is not vouched for either
     expect(addedBy([device({}), phoneDevice({ account: "acct_other" })], known, ACCOUNT_ID)).toBeNull();
   });
 
   it("tells the devices to ask about now from the ones still in their ten seconds, by when each was first seen", () => {
     const known = { ids: new Set(["a"]), seen: new Map<string, number>() };
     const list = [device({}), phoneDevice({ id: "s", label: "Stranger" }), device({ id: "c", label: "Tablet" })];
+    // one that paired at the PC's own address cannot become a member: asked about at once
     expect(accountQrFindings(list, null, known, 1000)).toEqual({ due: [{ id: "c", label: "Tablet", relay: false }], checking: [{ id: "s", label: "Stranger", relay: true }] });
     expect(accountQrFindings(list, null, known, 1000 + ACCOUNT_QR_ALONE_MS - 1).checking.map((stray) => stray.id)).toEqual(["s"]);
     expect(accountQrFindings(list, null, { ids: known.ids, seen: known.seen }, 1000 + ACCOUNT_QR_ALONE_MS)).toEqual({ due: [{ id: "s", label: "Stranger", relay: true }, { id: "c", label: "Tablet", relay: false }], checking: [] });
+    // a member of the PC's account is vouched for
     expect(accountQrFindings([device({}), phoneDevice({ id: "s", account: ACCOUNT_ID })], ACCOUNT_ID, known, 2000)).toEqual({ due: [], checking: [] });
   });
 

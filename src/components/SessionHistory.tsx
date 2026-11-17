@@ -1,3 +1,11 @@
+/**
+ * A row whose resume syntax is not verified is listed with no button. A Claude row is the session in the
+ * store of the pane the list was asked for from (`sourcePaneId`): its Resume goes to POST
+ * /api/sessions/resume, which starts it in that store or names the pane already showing it there;
+ * a store that changed since the list is read again with its rows held in place and the focus kept
+ * on the row that asked, and a bridge that gives no source (an older one, or a store it cannot
+ * choose again) offers no Resume rather than one in another store.
+ */
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";

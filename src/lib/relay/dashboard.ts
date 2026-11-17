@@ -15,6 +15,10 @@ export function dashboardState(pc: Pick<MyPc, "state" | "listed">, check: PcStat
 
 export type DashboardFilter = "all" | "ready" | "needs" | "offline";
 
+/**
+ * Needs you: whatever the owner has to act on, an approval, an update or a PC gone offline. It
+ * overlaps Offline on purpose, so the counts are never added up as a partition.
+ */
 function needsYou(state: DashboardState): boolean {
   switch (state) {
     case "needs-approval": case "needs-update": case "offline": return true;
@@ -56,6 +60,10 @@ export interface DashboardViewer {
 
 const ATTENTION_RANK: Record<Exclude<MyPcState, "paired">, number> = { "needs-update": 1, "needs-approval": 2, offline: 3 };
 
+/**
+ * `displayState` reconciles them once: a live answer beats stale Offline, while an unlisted
+ * pairing without an answer remains unchecked. Pairing membership still controls access.
+ */
 export function dashboardModel(pcs: readonly DashboardPc[], me: DashboardViewer, defaultRelay: string) {
   const now = me.now ?? Date.now();
   const expiries = new Map(newPcs(pcs, now).flatMap((pc) => pc.added_at === null ? [] : [[pc.server_id, Date.parse(pc.added_at) + NEW_PC_MS] as const]));

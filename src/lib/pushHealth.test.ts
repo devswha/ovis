@@ -41,6 +41,8 @@ describe("classifyPushHealth", () => {
     expect(repairs({ ...fine, status: status({ registered: false, last_failure_at: at(1), last_failure: "gone" }) })).toEqual(["gone", true]);
     expect(repairs({ ...fine, keyMatches: false })).toEqual(["key-mismatch", true]);
     expect(repairs({ ...fine, subscribed: false, keyMatches: null, status: null })).toEqual(["missing", true]);
+    // the push service refused the server's key (401/403) while the browser's key is the server's own: subscribing
+    // anew would make the same subscription, so it is a refusal with no repair; unknown local key alike
     expect(repairs({ ...fine, status: status({ last_failure_at: at(1), last_failure: "key-mismatch" }) })).toEqual(["rejected", false]);
     expect(repairs({ ...fine, keyMatches: null, status: status({ last_failure_at: at(1), last_failure: "key-mismatch" }) })).toEqual(["key-mismatch", true]);
     expect(repairs({ ...fine, status: status({ last_failure_at: at(1), last_failure: "rejected" }) })).toEqual(["rejected", false]);
@@ -150,6 +152,7 @@ describe("the shared health state", () => {
     answer = async () => Response.json({ error: { code: "not_found", message: "no such route" } }, { status: 404 });
     await refreshPushHealth(true);
     expect(readPushHealth().health).toEqual({ problem: null, repair: false, transient: null });
+    // the open LAN signs in as nobody, so its subscription has no record to read: quiet, never "missing"
     answer = async () => Response.json({ error: { code: "subscription_not_found", message: "no" } }, { status: 404 });
     await refreshPushHealth(true);
     expect(readPushHealth().health.problem).toBe("missing");
@@ -312,6 +315,7 @@ describe("the shared health state", () => {
   });
 
   it("keeps why a repair failed while the fault it was meant to mend stands", async () => {
+    // a browser that will not make a subscription (Brave with its push service off): the repair fails every time
     live = null;
     await refreshPushHealth(true);
     expect(readPushHealth().health.problem).toBe("missing");

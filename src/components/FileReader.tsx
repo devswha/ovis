@@ -16,6 +16,8 @@ const close = (): void => {};
 export function FileReader({ target }: { target: ReaderTarget }) {
   const t = useT();
   const [path, setPath] = useState(target.path);
+  // the same gate as the app's: a tab opened from a bookmark or another browser signs in here, and
+  // the document is read once the server has set its cookie
   const [locked, setLocked] = useState<boolean | null>(null);
   const [lockReason, setLockReason] = useState<AccessRefusal | null>(null);
   useEffect(() => {

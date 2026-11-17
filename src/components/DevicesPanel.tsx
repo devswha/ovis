@@ -23,6 +23,7 @@ import { getTransport } from "../lib/transport.ts";
 import { pairThisBrowser, UnconfirmedPairing } from "../lib/pairing.ts";
 
 const POLL_MS = 3000;
+/** a device seen this recently is not called offline, whatever its sessions: it may be in by its cookie */
 const SEEN_LATELY_MS = 2 * 60_000;
 const seenLately = (at: string | null): boolean => at !== null && Date.now() - Date.parse(at) < SEEN_LATELY_MS;
 const REFRESH_MS = 30_000;
@@ -106,6 +107,7 @@ export function DevicesPanel({ onDevicePaired, auth, onPaired, onRevokedAll, kin
   }, [t, onDevicePaired]);
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
+    // never over a read still on its way: a later quiet read landing first would make a Check now's answer stale
     const timer = setInterval(() => { if (inFlight.current === 0) void load({ quiet: true }); }, REFRESH_MS);
     return () => clearInterval(timer);
   }, [load]);
@@ -142,6 +144,7 @@ export function DevicesPanel({ onDevicePaired, auth, onPaired, onRevokedAll, kin
     return () => { window.clearInterval(timer); window.clearInterval(poll); };
   }, [code, load]);
 
+  /** an "open" browser pairs itself: a code, used at once, so the gate closes to everyone else */
   const pairSelf = async () => {
     if (pairingSelfLock.current) return;
     pairingSelfLock.current = true;
@@ -178,6 +181,7 @@ export function DevicesPanel({ onDevicePaired, auth, onPaired, onRevokedAll, kin
     return () => { live = false; };
   }, [signedIn]);
   const [disconnecting, setDisconnecting] = useState<string | null>(null);
+  /** A device of the account, gone from every PC of it: at once here, from the mailbox on the others. */
   const disconnect = async (id: string, key: string, account: string) => {
     // fixed wait: the second tap must come within 4 seconds, as Revoke's does
     if (disconnecting !== id) { setDisconnecting(id); window.setTimeout(() => setDisconnecting((c) => (c === id ? null : c)), 4000); return; }
@@ -189,6 +193,7 @@ export function DevicesPanel({ onDevicePaired, auth, onPaired, onRevokedAll, kin
         here: (path, init) => transport.fetch(path, init), ...(serverIdOfPath(window.location.pathname) ? { hereId: serverIdOfPath(window.location.pathname)! } : {}) });
       await load();
       if (unconfirmed.length > 0 || queued.length > 0) {
+        // only this PC answered: the others are named, rather than claimed (one may have revoked this device and refuse it)
         const names = new Map((await service.listPcs()).map((pc) => [pc.server_id, pc.label]));
         const named = (ids: readonly string[]) => ids.map((id) => names.get(id) ?? id.slice(0, 8)).join(", ");
         setError([
@@ -204,8 +209,15 @@ export function DevicesPanel({ onDevicePaired, auth, onPaired, onRevokedAll, kin
     setRevokedAll(false);
     try { await revokeDevice(id); await load(); } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   };
+  /**
+   * One request ends every pairing, this browser's included (the server clears its device cookie).
+   * A failure stays in the dialog; after a success nothing is asked of the server again from here:
+   * a browser that was in as a device is out now, and the app finds that out through `onRevokedAll`.
+   */
   const revokeAll = async () => {
     try { await revokeAllDevices(); } catch (e) {
+      // no answer from the server (the connection dropped, the answer did not parse): the write may have
+      // happened, so nothing is promised; the list is read again to show what is still paired
       if (!(e instanceof ApiError)) {
         void load();
         throw new Error(t("The PC did not answer, so it is not known whether the devices were revoked. Check the list, and try again if they are still there."));
@@ -228,7 +240,9 @@ export function DevicesPanel({ onDevicePaired, auth, onPaired, onRevokedAll, kin
     setRevokedAll(true);
     onRevokedAll?.();
   };
+  /** a watching device reads this page and changes nothing on it */
   const watching = auth?.role === "watch";
+  /** so does a visitor Portal's own sign-in let in: the server refuses it every change here */
   const guest = auth?.via === "portal";
 
   const elsewhere = (

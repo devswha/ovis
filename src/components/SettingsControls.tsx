@@ -135,6 +135,11 @@ if (typeof window !== "undefined" && typeof window.addEventListener === "functio
   window.addEventListener("pointerdown", () => inputWas("pointer"), true);
 }
 
+/**
+ * Whose Escape it is while a row's sentence is shown: the sentence's alone; the sentence's and the text field's it is
+ * typed in; or not the sentence's at all, when an IME takes it to drop its composition, when nothing is drawn (its row
+ * is outside the page's view), or when a dialog opened over Settings (Files, the palette) has the keyboard.
+ */
 function escapeFor(state: { composing: boolean; drawn: boolean; textField: boolean; otherModal: boolean }): "sentence" | "both" | "other" {
   if (state.composing || !state.drawn || state.otherModal) return "other";
   return state.textField ? "both" : "sentence";
@@ -269,6 +274,11 @@ export function useRowSentence(on: boolean): {
   };
 }
 
+/**
+ * The sentence is cut out in exactly those parts (sentenceHoles, a clip-path, which cuts the pointer's reach with
+ * what is drawn), so a press there reaches the control itself, and a copy under it, which takes no pointer, draws
+ * what was cut.
+ */
 function RowSentence({ row, drawn, children }: { row: HTMLElement; drawn: RefObject<boolean>; children: ReactNode }) {
   const box = useRef<HTMLDivElement>(null);
   const copy = useRef<HTMLDivElement>(null);
@@ -332,6 +342,10 @@ function RowSentence({ row, drawn, children }: { row: HTMLElement; drawn: RefObj
 
 const DESCRIBED_ELEMENTS = new Set(["button", "input", "select", "textarea"]);
 
+/**
+ * A row without a sentence goes through it too, unchanged: a row whose sentence comes and goes (a shortcut being
+ * recorded) keeps one shape, so its controls are never drawn anew and keep the focus.
+ */
 function describedByRow(children: ReactNode, sentence: string | undefined): ReactNode {
   return Children.map(children, (child) => {
     if (!isValidElement<{ children?: ReactNode; "aria-describedby"?: string }>(child)) return child;
@@ -461,6 +475,10 @@ export function typedStep(draft: string, min: number, max: number): number | nul
   return value >= min && value <= max ? value : null;
 }
 
+/**
+ * A valid number still in the field is kept when the field goes without a blur (a swipe or Back closing Settings),
+ * and the -/+ buttons step from it (G-179).
+ */
 export function Stepper({ label, value, text, min, max, decreaseLabel, increaseLabel, onChange, unit, range }: { label: string; value: number; text: string; min: number; max: number; decreaseLabel: string; increaseLabel: string; onChange: (value: number) => void; unit?: string; range?: string }) {
   const [draft, setDraft] = useState<string | null>(null);
   const [refused, setRefused] = useState(false);

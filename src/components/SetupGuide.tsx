@@ -294,6 +294,8 @@ function Steps({ page, setPage, onEnableAlerts, notifications, settingsOpen = fa
   const [signedHere, setSignedHere] = useState<readonly string[]>([]);
   const unsigned = machineId === "local" && auth?.role !== "watch" && signedIn !== null ? installed.filter((agent) => (agent.id === "claude" || agent.id === "codex") && !signedIn.includes(agent.id) && !signedHere.includes(agent.id)) : [];
   const [signingIn, setSigningIn] = useState<{ provider: "claude" | "codex"; default: true } | null>(null);
+  // the tiles whose install runs: Look again waits for them (a fresh read would end their watch);
+  // Start does not: an install runs on in its tab whatever the guide does
   const [installing, setInstalling] = useState<readonly string[]>([]);
   const busy = installing.length > 0;
   const onRunning = useCallback((id: string, running: boolean): void => setInstalling((list) => running ? (list.includes(id) ? list : [...list, id]) : list.filter((one) => one !== id)), []);
@@ -573,7 +575,7 @@ function ThemePreview() {
 
 /**
  * The test is the page's own notification, as an open tab of Ovis shows its alerts, so it works in the
- * desktop app too, where web push does not reach.
+ * desktop app too, where web push does not reach; Settings → Alerts' test goes through the push service.
  */
 function AlertsHere({ onEnable, notifications: state, alerts, uncheckable, failure, onFailure }: { onEnable: () => Promise<PushActionResult>; notifications: NotificationState; alerts: AlertsAnswer; uncheckable: boolean; failure: string | null; onFailure: (text: string | null) => void }) {
   const t = useT();
@@ -869,7 +871,8 @@ function PhoneQr({ auth, onOpenSettings, onPaired, onPhonePaired, given, large =
   const mode = phoneBoxMode(address, pairedHere && auth?.via === "open" ? { ...auth, via: "device" } : auth);
   useEffect(() => { if (mode === "settings") onOpenSettings(); }, [mode]); // eslint-disable-line react-hooks/exhaustive-deps
   // a pairing code for the QR, asked for by the user each time (opening the box, New code): never
-  // renewed behind their back, where it would replace a code Settings → Phone shows.
+  // renewed behind their back, where it would replace a code Settings → Phone shows. Used by a phone
+  // (a device paired since) or run out, it is gone.
   const [code, setCode] = useState<PairingCode | null>(null);
   const [paired, setPaired] = useState<string | null>(null);
   const [asking, setAsking] = useState(0);
@@ -878,7 +881,8 @@ function PhoneQr({ auth, onOpenSettings, onPaired, onPhonePaired, given, large =
   const [failure, setFailure] = useState<string | null>(null);
   const [agreed, setAgreed] = useState(false);
   // hidden behind another way's tab: the PC keeps one pairing code at a time, and that way (or Settings) may replace
-  // this one, so its code goes, and its device check with it
+  // this one, so its code goes, and its device check with it; back in view, New code asks for one on a press
+  // a phone that paired while it was hidden is said once it is shown again (one read of the devices)
   const dropped = useRef(false);
   const shownNow = useRef(shown);
   shownNow.current = shown;

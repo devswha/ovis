@@ -69,6 +69,7 @@ describe("preferences sync real send path", () => {
     const tab = new Map<string, string>();
     Object.defineProperty(globalThis, "window", { configurable: true, value: {
       localStorage,
+      // this tab's session storage, which a reload keeps
       sessionStorage: { getItem: (key: string) => tab.get(key) ?? null, setItem: (key: string, value: string) => tab.set(key, value), removeItem: (key: string) => tab.delete(key) },
       setTimeout: (fn: () => void, ms: number) => {
         const id = globalThis.setTimeout(() => { waits.delete(id); fn(); }, ms);
@@ -256,6 +257,7 @@ describe("preferences sync real send path", () => {
     const client = await open();
     await act(async () => { client.update({ showUsage: !DEFAULT_SETTINGS.showUsage }); });
 
+    // When the page closes, or is hidden (a phone may kill it then).
     Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
     await act(async () => { pageEvents.dispatchEvent(new Event(type)); });
 
@@ -287,6 +289,7 @@ describe("preferences sync real send path", () => {
     const client = await open();
     await act(async () => { client.update({ showUsage: !DEFAULT_SETTINGS.showUsage }); });
 
+    // When the page is hidden, then goes, before the answer (a reload fires both).
     Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
     await act(async () => { pageEvents.dispatchEvent(new Event("visibilitychange")); pageEvents.dispatchEvent(new Event("pagehide")); });
 

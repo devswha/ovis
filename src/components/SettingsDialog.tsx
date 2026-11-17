@@ -270,6 +270,7 @@ export const PAGES: readonly { id: SettingsPage; icon: LucideIcon }[] = [
   { id: "about", icon: Info },
 ];
 
+/** Literal `t()` calls, so the dictionaries' checks find each key. */
 function pageNote(t: Translate, page: SettingsPage): string | null {
   switch (page) {
     case "appearance": return t("Theme and language apply on every device; fonts, sizes and density on this device.");
@@ -1326,6 +1327,7 @@ function UseRelayHere() {
 
 function RelayControls({ relay, closesGate, onReset }: { relay: RelayState; closesGate: boolean; onReset: () => void }) {
   const t = useT();
+  // the English name stays the one the scripts know
   const switchLabel = t("Ovis relay|relay switch");
   const { status, pending, request } = relay;
   const [error, setError] = useState<string | null>(null);
@@ -1849,6 +1851,7 @@ function OpenSettingsDialog({ section = null, linkPage = null, linkSection = nul
       case "alerts": return <AlertsPage onEnableNotifications={onEnableNotifications} machines={machines} />;
       case "agents": return <AgentsSettings watching={auth?.role === "watch"} onLocalLogin={onUsageLogin} onOpenPane={onOpenPane} onOpenGuide={onClose} />;
       case "shortcuts": return <ShortcutsPage />;
+      // after every device went, its own pairing included, a browser asks the server where it stands: the roster answers, or the gate does
       case "devices": return <DevicesPage auth={auth} security={security} onSignOut={actions.lock} onRevokedAll={actions.refresh} openAddPc={actions.openAddPc} connectPc={actions.connectPc}
         machines={machines} pcSettings={pcSettings} pcSettingsError={pcSettingsError} onPcSettings={(patch) => void updatePcSettings(patch)} />;
       case "experimental": return <ExperimentalPage />;

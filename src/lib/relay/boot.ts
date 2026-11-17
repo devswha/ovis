@@ -32,6 +32,7 @@ function signInFragment(hash: string): boolean {
 
 export function bootRelayShell(container: HTMLElement, renderApp: () => Root, load: typeof loadRelayShell = loadRelayShell): void {
   const entryUrl = takeEntryUrl(window);
+  // an older entry of this tab's history may still hold its query: it moves as the load's did, before the app reads it
   window.addEventListener("popstate", () => { moveQueryToFragment(window); });
   void load().then(({ mountRelayShell }) => mountRelayShell({ container, entryUrl, renderApp })).catch((error: unknown) => {
     console.error("Ovis: the relay shell did not start", error);

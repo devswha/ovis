@@ -20,6 +20,7 @@ const unsafeDestinations = [
 
 for (const { field, value } of unsafeDestinations) {
   it(`refuses unsafe ${field} ${value} before touching storage or sockets`, async () => {
+    // Given an offer passed directly to the exported boundary, bypassing decodeOffer.
     const offer = {
       v: 1 as const, relay: "wss://relay.example", server_id: "12".repeat(16),
       server_public_key: exportPublicKey(generateKeyPair().publicKey),
@@ -56,6 +57,8 @@ it("refuses an unsafe carrier relay before touching storage or sockets", async (
 });
 
 it("connects through the carrier relay rather than the offer's own", async () => {
+  // Given a connection carried by another relay than the one the offer names (the device, saved
+  // only once the PC admits it, is made from the offer, so it keeps the offer's relay)
   const offer = { v: 1 as const, relay: "wss://relay-ap.example", server_id: "12".repeat(16), server_public_key: exportPublicKey(generateKeyPair().publicKey) };
   const store = {
     get: mock(async () => undefined),

@@ -83,9 +83,16 @@ export interface FileViewerProps {
   panelStart?: ReactNode;
   onKind?: (presentation: FilePresentation) => void;
   onTogglePresentation?: () => void;
+  /** this browser drives the PC (not a watching device, a Portal visitor or an open LAN window): with Settings → Edit text files on, a text file can be edited */
   editable?: boolean;
 }
 
+/**
+ * When nothing copies it (no clipboard API on plain-HTTP LAN, and the browser's copy command
+ * refused: copyText) it selects the source `<pre>` instead; in a Markdown Preview there is none,
+ * and a virtualized source has no element holding the whole text, so `onShowSource` shows a
+ * selectable source first and the viewer selects it once rendered.
+ */
 function CopyFileButton({ text, sourceRef, onShowSource }: { text: string; sourceRef: RefObject<HTMLElement | null>; onShowSource: () => void }) {
   const t = useT();
   const [copied, setCopied] = useState(false);
@@ -142,6 +149,8 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
   const [saves, setSaves] = useState(0);
   const locale = useLocale();
   const { fetchFileInfo, fileUrl, fetchDirectories } = useMachineApi();
+  // a remote PC's bridge reads a relative folder from the pane's folder only from its next bundle
+  // on; until then it would list the bridge's own folder, so only an absolute or ~/ one is listed there
   const machineId = useMachineId();
   const remote = machineId !== LOCAL_MACHINE;
   const [directory, setDirectory] = useState<string | null>(null);
@@ -160,6 +169,8 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
   const [moreOpen, setMoreOpen] = useState(false);
   const moreRef = useRef<HTMLDivElement>(null);
   usePhoneSheetBack(() => setMoreOpen(false), moreOpen);
+  // the popup opens with the focus on its content, not its first button: Space then plays a video or
+  // scrolls the text, where on the first button (Show beside the pane) it would press it
   const bodyRef = useRef<HTMLDivElement>(null);
   const mediaRef = useRef<HTMLMediaElement>(null);
   const surface = useFocusTrap<HTMLElement>(!page && !docked, { initialFocus: bodyRef });
@@ -310,6 +321,8 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
   const pageSrc = useResourceUrl(!relay && htmlPage && !source ? pageUrl : null);
   const image = useResourceUrlState(info?.kind === "image" && info.size <= MAX_INLINE_IMAGE_BYTES ? `${url}&revision=${encodeURIComponent(`${info.modified}:${info.size}`)}` : null);
   const imageSrc = image.url;
+  // The same inert media body can be saved through the download attribute. In blob mode this
+  // avoids fetching and retaining a second complete video/PDF merely to draw its download link.
   const mediaDownload = relay && (info?.kind === "video" || info?.kind === "audio" || info?.kind === "pdf");
   const download = useResourceUrlState(info === null || mediaDownload ? null : fileUrl(info.path, paneId, true));
   const downloadHref = mediaDownload ? resource.url : download.url;
@@ -339,6 +352,7 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
   const outlineButton = outlined && <button ref={outlineToggle} type="button" className="icon-button file-viewer-action file-viewer-outline-toggle" aria-expanded={outlineShown} aria-controls={outlineShown ? outlineId : undefined} aria-label={t("Outline")} title={t("Outline")} onClick={() => setOutlineChoice(!outlineShown)}>
     <TableOfContents aria-hidden="true" />
   </button>;
+  /** The wrapper is always there (`display: contents` without an outline), so the body is never remounted, its focus and scroll kept, as an outline comes and goes. */
   const withOutline = (box: ReactNode) => <div ref={setSplit} className={outlined ? "file-viewer-split is-outlined" : "file-viewer-split"}>
     {box}
     {outlineShown && <MarkdownOutline id={outlineId} entries={outline} scroller={bodyRef} drawer={!outlineColumn} toggle={outlineToggle} onClose={closeOutline} />}
@@ -377,6 +391,7 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
   ].filter((note): note is string => typeof note === "string");
   const noticed = notes.length > 0;
   const copyable = textFile && loaded !== null && !loaded.truncated;
+  // shown as text (an HTML page as its source), in a pane's folder the server checks it lies in, and small enough
   const canEdit = editable && settings.editTextFiles && !page && paneId !== null && textFile && (!htmlPage || source) && info.size <= MAX_EDITABLE_TEXT_BYTES;
   const draftWaits = canEdit && hasDraft(machineId, info.path);
   useEffect(() => { if (draftWaits) setEditing(true); }, [draftWaits]);
@@ -483,6 +498,7 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
     {!page && onTogglePresentation && <button type="button" className="icon-button file-viewer-action" aria-label={docked ? t("Show as a popup") : t("Show beside the pane")} title={docked ? t("Show as a popup") : t("Show beside the pane")} onClick={onTogglePresentation}>
       {docked ? <Maximize2 aria-hidden="true" /> : <PanelRight aria-hidden="true" />}
     </button>}
+    {/* in the installed app's window a new tab would be another app window: Copy link takes their place */}
     {!page && !appWindow && <a className="icon-button file-viewer-action file-viewer-wide" href={newTabSrc ?? undefined} target="_blank" rel="noopener" aria-label={t("Open in a new tab")} title={t("Open in a new tab")}><ExternalLink aria-hidden="true" /></a>}
     {(page || markdown) && !appWindow && <a className="icon-button file-viewer-action file-viewer-wide" href={rawSrc ?? undefined} target="_blank" rel="noopener" aria-label={t("Open raw file")} title={t("Open raw file")}><Code aria-hidden="true" /></a>}
     {!page && appWindow && <CopyLinkButton href={newTabHref} />}

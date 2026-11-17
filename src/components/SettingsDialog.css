@@ -228,6 +228,10 @@
   gap: var(--space-2) var(--space-3);
 }
 
+/* never narrower than its longest unbreakable phrase (the Korean copy joins its negative predicate
+   with no-break spaces), so a large text size moves Retry below the words instead of drawing them
+   under it; a phrase wider than the whole row still breaks (break-word, unlike anywhere, leaves
+   that minimum as it is) */
 .settings-save-local > p {
   flex: 1 1 12rem;
   margin: 0;
@@ -326,6 +330,8 @@
   cursor: pointer;
 }
 
+/* a column, not a grid: a grid's track is as wide as a text field asks to be, and on a phone
+   that pushed each row's Remove button out of the card */
 .quick-replies-list {
   display: flex;
   flex-direction: column;

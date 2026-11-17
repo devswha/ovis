@@ -15,6 +15,7 @@ describe("the Portal sign-in form", () => {
     const oidc = { method: "oidc", allow: ["me@example.com"], issuer: "https://login.example.com", client_id: "client-1" } as const;
     expect(authOf(draftOf(oidc))).toEqual(oidc);
     expect(authOf({ ...draftOf(wallets), method: "credential" })).toEqual({ method: "credential", allow: [], issuer: null, client_id: null });
+    // and an OIDC address typed earlier is not sent with a wallet
     expect(authOf({ ...draftOf(oidc), method: "siwe" })).toMatchObject({ method: "siwe", issuer: null, client_id: null });
   });
 
@@ -25,6 +26,7 @@ describe("the Portal sign-in form", () => {
     expect(authProblem({ ...oidc, issuer: "http://login.example.com" })).toBe("issuer");
     expect(authProblem({ ...oidc, allow: { ...oidc.allow, oidc: [] } })).toBe("no_principal");
     expect(authProblem({ ...draftOf(NONE), method: "siwe" })).toBe("no_wallet");
+    // a private link needs no name, and no sign-in needs nothing at all
     expect(authProblem({ ...draftOf(NONE), method: "credential" })).toBeNull();
     expect(authProblem(draftOf(NONE))).toBeNull();
     expect(PORTAL_AUTH_PROBLEMS[authProblem({ ...draftOf(NONE), method: "siwe" })!]).toContain("any wallet");

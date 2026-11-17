@@ -118,6 +118,7 @@ describe("ensurePushSubscription", () => {
     expect(registered).toEqual(["https://push.example/1"]);
   });
 
+  // regression (fails on main): "Turn alerts on again" must not hand the server the retired endpoint again (#1038)
   it("drops a subscription the server says its push service retired and registers a fresh one", async () => {
     const first = await ensurePushSubscription();
     const old = live!;
@@ -177,6 +178,7 @@ describe("testDevicePush", () => {
       globalThis.fetch = (async (_url: string) => new Response(null, { status: 204 })) as typeof fetch;
       expect(await testDevicePush()).toBe("sent");
       expect(confirmation("https://push.example/existing")).toBe(true);
+      // a watching device's refusal says nothing of delivery
       globalThis.fetch = (async (_url: string) => Response.json({ error: { code: "read_only", message: "watch" } }, { status: 403 })) as typeof fetch;
       await expect(testDevicePush()).rejects.toBeInstanceOf(ApiError);
       expect(confirmation("https://push.example/existing")).toBe(true);
@@ -258,6 +260,7 @@ it("still cleans up the browser subscription when registration fails", async () 
 });
 
 describe("in the phone app", () => {
+  /** The page has no service worker and no Notification. */
   const KEYS = { p256dh: Buffer.from(new Uint8Array(65).fill(9)).toString("base64url"), auth: Buffer.from(new Uint8Array(16).fill(3)).toString("base64url") };
   let app: { permission: string; answer: string; saved: string | null; made: number; calls: string[]; checkGate: Promise<void> | null };
   let sent: Array<{ url: string; method: string | undefined; body: unknown }>;
@@ -390,6 +393,8 @@ describe("in the phone app", () => {
     };
   }
 
+  // the relay keeps an endpoint the app forgot live: the phone would get this PC's alerts with alerts
+  // off, and nothing left in the app to remove them by
   it("keeps the app's endpoint when the PC could not forget it, so the next removal still reaches the PC", async () => {
     const endpoint = await ensurePushSubscription();
     sent = [];

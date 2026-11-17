@@ -81,6 +81,7 @@ export function tabPaneTitle(pane: PaneInfo): string {
   return pane.label?.trim() || tabTitle(paneTitle(pane), pane.agent) || pane.pane_id;
 }
 
+/** The title an alert names a pane by: as a row's, with the folder Codex adds after its thread kept. */
 export function alertPaneTitle(pane: PaneInfo): string {
   return pane.label?.trim() || shortPathTitle(stripPaneChrome(paneTitle(pane), pane.agent, true)) || pane.pane_id;
 }
@@ -128,6 +129,10 @@ export function StatusBadge({ status, compact = false, detail = null, label: sai
   );
 }
 
+/**
+ * Background tasks an agent started that still run (OmO's `task` children): the main turn can be
+ * done while they work, and they wake the session by themselves.
+ */
 export function BackgroundBadge({ count }: { count?: number }) {
   const t = useT();
   if (!count || count <= 0) return null;
@@ -473,6 +478,7 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
 
   const closeMenu = useCallback(() => setMenu(null), []);
 
+  // A close takes the workspace with it, so it asks first, as herdr's ui.confirm_close does.
   const leave = async (close: () => Promise<void>): Promise<void> => {
     await close();
     setConfirm(null);
@@ -506,6 +512,7 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
         body: t("The folder at {path} is deleted and the workspace closes. The branch stays.", { path: workspace.worktree?.checkout_path ?? "" }),
         action: t("Delete"),
         run: () => leave(async () => { await removeWorktree({ workspace_id: workspace.workspace_id }); }),
+        // git refuses a checkout with unsaved changes: the refusal shows, and the action becomes a forced one
         escalation: { label: t("Delete anyway"), code: "dirty_worktree_requires_force", run: () => leave(async () => { await removeWorktree({ workspace_id: workspace.workspace_id, force: true }); }) },
       }),
     }] : [];
@@ -598,7 +605,7 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
   };
 
   const onDrop = (event: DragEvent<HTMLElement>, targetWorkspaceId: string): void => {
-    // the Herdr app's order is its own
+    // a move waits until the filter is cleared, also one dragged in from another window; the Herdr app's order is its own
     if (filtered !== null || !arrange) return;
     event.preventDefault();
     let payload: { machine_id?: string; workspace_id?: string };
@@ -761,8 +768,11 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
     const linked = workspace.worktree?.is_linked_worktree === true;
     const branch = branches.get(workspace.workspace_id);
     const branchTitle = branch?.branch ?? (branch?.isDetached ? t("Detached HEAD") : null);
+    // the row says the workspace's name, the one its owner gave it or herdr made from the branch
     const rowTitle = workspace.label;
     const secondaryBranch = linked && branchTitle && workspace.label !== branchTitle && workspace.label !== worktreeLabel(branchTitle) ? branchTitle : null;
+    // the compact rows (the default), as herdr-app's Spaces list: one line, the name without herdr's worktree prefix and
+    // hash, and a branch other than the default one dim at its end, unless it only repeats the name
     const compact = !twoLine;
     // only a worktree herdr opened has a name it made: a name the user chose is drawn whole
     const shownTitle = compact && linked ? compactWorktreeName(rowTitle) : rowTitle;

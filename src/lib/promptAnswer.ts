@@ -22,7 +22,7 @@ function boundLetter(label: string): string | null {
  * Unicode form by look (NFKC: `e` and a combining accent is `é`, the ligature `ﬁ` is `fi`), without
  * the marks a page does not draw (format characters and every default-ignorable code point: zero-width
  * space and joiners, word joiner, soft hyphen, byte order mark, the combining grapheme joiner, variation
- * selectors, Hangul fillers; a visible accent stays), its spacing collapsed.
+ * selectors, Hangul fillers; a visible accent stays), its spacing collapsed. Rows that read alike then name each other (#2220).
  */
 const spaced = (text: string): string => text.normalize("NFKC").replace(/[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu, "").replace(/\s+/g, " ").trim().toLowerCase();
 
@@ -42,7 +42,13 @@ const unconfused = (text: string): string => Array.from(text, (char) => confusab
 
 /**
  * What a name reads as, for telling rows apart (#2220): Unicode's compatibility caseless form (Unicode 3.13,
- * D146: NFKD(toCasefold(NFKD(toCasefold(NFD(x)))))), then its letters, marks and digits alone.
+ * D146: NFKD(toCasefold(NFKD(toCasefold(NFD(x)))))), then its letters, marks and digits alone. Marks a page
+ * does not draw, spacing, punctuation, blanks such as U+2800 and controls such as U+007F all go; the last
+ * NFD puts the marks left in canonical order again, so a skeleton is its own skeleton. Then a letter drawn
+ * like a Latin one is that Latin letter (unconfused), folded again (#2233): only after the case folding, so a
+ * capital `I` stays `i` and every name keeps the skeleton of its other case. Two rows with one skeleton may
+ * look the same, so a typed name picks neither (their numbers and a click still do). That over-refuses pairs
+ * like `production.` and `production`.
  */
 export const skeleton = (text: string): string => toCasefold(unconfused(toCasefold(toCasefold(text.normalize("NFD")).normalize("NFKD")).normalize("NFKD"))).normalize("NFKD")
   .replace(/[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu, "").replace(/[^\p{L}\p{M}\p{N}]/gu, "").normalize("NFD");
@@ -62,20 +68,29 @@ export function answerFromText(prompt: InteractivePrompt, text: string): TypedAn
   };
   const typed = (): TypedAnswer | null => prompt.custom_option_index !== null ? { custom_text: value } : null;
   const words = promptWords(prompt);
+  /** `literal`: only a row's own name counts, not words that merely look like one (a typed row number, which `1` beside rows `I` and `l` still is) */
   const nameOf = (said: string, literal = false): number | null | undefined => {
     const lower = spaced(said);
     const names = (label: string): boolean => spaced(label) === lower || bareLabel(label) === lower || boundLetter(label) === lower;
     const only = (label: (index: number) => string, named = names): number | null | undefined => {
       const found = valid.filter((index) => named(label(index)));
       if (found.length > 1) return null;
+      // rows that may look the same pick none: the one named shares its skeleton with another row, or the
+      // words read as two rows' names
       const alike = (shape: string): number => valid.filter((index) => skeleton(label(index)) === shape).length;
       if (found.length === 1) return alike(skeleton(label(found[0]!))) > 1 ? null : found[0];
       return !literal && alike(skeleton(said)) > 1 ? null : undefined;
     };
+    // an option's own words first: a translated label never takes the words another option shows
+    // an omp card in Markdown is named by the words it shows alone (optionName, as the card draws them):
+    // its raw Markdown may be another option's words (`*main*` beside `` `*main*` ``)
     if (prompt.text_format === "markdown") return only((index) => optionName(prompt, prompt.options[index]!.label).words, (shown) => spaced(shown) === lower);
     const own = only((index) => prompt.options[index]!.label);
     return own !== undefined ? own : only((index) => words.label(index));
   };
+  // One rule for a single and a multiple choice. The whole text first: a row's shown name picks that row
+  // alone, words several rows show pick none. Only words no row shows are read as numbers, and each number
+  // must then name no other row: an omp card's `` `2` `` or `` `1 2` ``, typed, is that row, never rows 2 or 1 and 2
   const whole = nameOf(value, /^[\d\s,]+$/.test(value));
   if (whole === null) return typed();
   if (whole !== undefined) return prompt.multi_select ? { option_indices: [whole] } : { option_index: whole };
@@ -98,6 +113,7 @@ export function sendsChecksWithText(prompt: InteractivePrompt): boolean {
   return prompt.multi_select && !prompt.fallback && (prompt.checks_with_text === true || prompt.agent === "opencode");
 }
 
+/** Pi and Claude Code switch native tabs, not web-owned drafts. */
 export function blocksStepNavigation(prompt: InteractivePrompt, selected: ReadonlySet<number>, custom: string): boolean {
   if (!KEYED_STEPS.has(prompt.agent) || prompt.drafts_saved || !(prompt.can_step_next || prompt.can_step_back || prompt.steps?.some(step => step.can_navigate))) return false;
   return custom !== (prompt.default_custom_text ?? "") || prompt.multi_select
@@ -106,6 +122,7 @@ export function blocksStepNavigation(prompt: InteractivePrompt, selected: Readon
 
 export function answerHint(prompt: InteractivePrompt): string {
   if (prompt.multi_select) return t("Type the numbers you choose, e.g. 1 3");
+  // a free-form question (Codex's queue) has no options to number
   if (choices(prompt).length === 0) return t("Type your reply…");
   return prompt.custom_option_index !== null
     ? t("Type {range} or your own reply…", { range: range(prompt) })
@@ -118,6 +135,12 @@ export function answerRefusal(prompt: InteractivePrompt): string {
     : t("Choose one of the options above: type {range}.", { range: range(prompt) });
 }
 
+/**
+ * A typed message picking an approval's option (or a plan's, or a menu's: Claude's
+ * "Review your answers" submits every answer at once, Codex's menus continue or stop)
+ * could act on a stray "yes" or "1": the card asks for a tap on Confirm first. A tap on
+ * an option in the card is explicit already, and a plan's own reply is feedback.
+ */
 export function needsConfirmation(prompt: InteractivePrompt, answer: TypedAnswer): boolean {
   return (prompt.kind === "approval" || prompt.kind === "plan" || prompt.kind === "menu") && answer.option_index !== undefined;
 }

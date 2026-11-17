@@ -83,6 +83,12 @@ export interface Taken {
   tabLabels: Record<string, string> | null;
 }
 
+/**
+ * With `force` (a watching device, which sends nothing) every value is taken. `refused` is the last change
+ * the server refused (it has taken none since): a value of it this browser still holds as sent gives
+ * way where the document's differs from `base`, since another browser saved that setting after the
+ * change was made, and the change, sent late, would overwrite the newer value.
+ */
 export function takePreferences(base: Baseline, local: Local, remote: SharedPreferences, inFlight: PreferencesChange | null, force = false, refused: PreferencesChange | null = null): Taken {
   const settings: Shared = { ...base.settings };
   const patch: Record<string, unknown> = {};
@@ -165,6 +171,7 @@ export interface PreferencesSync {
   retry(): void;
   resubscribed(): void;
   disconnected(): void;
+  /** the browser gave up on the event stream (EventSource CLOSED, App opens a new one): a change nobody refused stops waiting for it; a refused one waits for `resubscribed` or `retry` */
   closed(): void;
 }
 
@@ -181,6 +188,7 @@ export function usePreferencesSync(enabled: boolean): PreferencesSync {
   const loadedRef = useRef(false);
   const [loaded, setLoaded] = useState(false);
   const off = useRef(false);
+  // a watching device: it takes what the others share and sends nothing; a change of its own lasts until the next shared one
   const readOnly = useRef(false);
   const inFlight = useRef<PreferencesChange | null>(null);
   const held = useRef<SharedPreferences | null>(null);
@@ -344,6 +352,8 @@ export function usePreferencesSync(enabled: boolean): PreferencesSync {
       outlives.current = keepalive ? pending : null;
       savePreferences(body, keepalive).then((saved) => {
         refused.current = null;
+        // An older server silently drops new names. Acknowledge exactly what was sent, not
+        // today's local value: an edit made while the request was in flight still goes next.
         for (const key of SHARED_SETTING_KEYS) {
           if (key in body.settings && !(key in saved.settings)) base.current.settings[key] = body.settings[key];
         }

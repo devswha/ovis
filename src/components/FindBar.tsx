@@ -42,6 +42,8 @@ export function FindBar({ paneId, viewportIntent, disabled, focusRequest, active
     let releaseViewport: (() => void) | null = null;
     try {
       releaseViewport = await viewportIntent.beginSearch();
+      // A pending scrollbar request may outlive this pane, the search bar or the connection.
+      // Never turn its late completion into a search on a pane the user has already left.
       if (!releaseViewport || !active.current || disabledRef.current) return;
       const answer = await findPane({
         pane_id: paneId, query, direction,

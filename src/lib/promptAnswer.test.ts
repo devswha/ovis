@@ -16,6 +16,7 @@ describe("a multi-select's checks and typed answer", () => {
     const multi = prompt(["Unit tests", "Browser QA", "Type your own answer"], 2, true);
     expect(sendsChecksWithText({ ...multi, agent: "pi", checks_with_text: true })).toBe(true);
     expect(sendsChecksWithText({ ...multi, agent: "opencode" })).toBe(true);
+    // pi's own screen-read forms keep one answer per press
     expect(sendsChecksWithText({ ...multi, agent: "pi" })).toBe(false);
     expect(sendsChecksWithText({ ...multi, agent: "opencode", fallback: true })).toBe(false);
     expect(sendsChecksWithText({ ...prompt(["A", "B"], 1), agent: "pi", checks_with_text: true })).toBe(false);
@@ -23,8 +24,10 @@ describe("a multi-select's checks and typed answer", () => {
 
   it("never hold a step button back on a card that saves its edits as it moves", () => {
     const card = { ...prompt(["A", "B"], 1), agent: "pi", steps: [{ label: "One", answered: false, current: true }, { label: "Two", answered: true, current: false, can_navigate: true }] };
+    // pi's own tabs drop edits that were not sent, so the button waits for them
     expect(blocksStepNavigation(card, new Set(), "typed")).toBe(true);
     expect(blocksStepNavigation({ ...card, drafts_saved: true }, new Set(), "typed")).toBe(false);
+    // so do Claude Code's question tabs: a move with ←/→ leaves what the card alone holds
     expect(blocksStepNavigation({ ...card, agent: "claude" }, new Set(), "typed")).toBe(true);
   });
 });
@@ -231,9 +234,11 @@ describe("answering a prompt from the chat", () => {
     expect(answerFromText(approval, "maybe later")).toBeNull();
     expect(answerHint(approval)).toBe("Type 1–3 to choose…");
     expect(answerRefusal(approval)).toBe("Choose one of the options above: type 1–3.");
+    // typed, an approval's pick waits for Confirm; a question's does not
     expect(needsConfirmation(approval, { option_index: 0 })).toBe(true);
     expect(needsConfirmation(prompt(["LM-O"], 1), { option_index: 0 })).toBe(false);
     expect(needsConfirmation({ ...prompt(["Yes", "No", "Tell Claude what to change"], 2), kind: "plan" }, { custom_text: "shorter" })).toBe(false);
+    // Claude's review submits every answer, a Codex menu continues or stops: a typed pick waits too
     expect(needsConfirmation({ ...prompt(["Submit answers", "Cancel"], null), kind: "menu" }, { option_index: 0 })).toBe(true);
   });
 
@@ -334,8 +339,10 @@ describe("moving between questions with the agent's own keys", () => {
       expect(blocksStepNavigation(card, new Set(), "typed")).toBe(true);
       expect(blocksStepNavigation(card, new Set(), "")).toBe(false);
     }
+    // Codex has Back and Next, no steps to tap
     const codex = { ...prompt(["A", "B"], 2), agent: "codex", can_step_next: true };
     expect(blocksStepNavigation(codex, new Set(), "typed")).toBe(true);
+    // its last question has only Back, which drops them too
     expect(blocksStepNavigation({ ...codex, can_step_next: false, can_step_back: true }, new Set(), "typed")).toBe(true);
     expect(blocksStepNavigation({ ...codex, can_step_next: false }, new Set(), "typed")).toBe(false);
   });

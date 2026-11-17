@@ -23,6 +23,7 @@
 .machine-list[data-fade-bottom],
 .agent-list-contents[data-fade-bottom] { --fade-bottom: var(--space-4); }
 
+/* Forced colors paint every edge in full: there a fade would only take contrast from the words it covers. */
 @media (forced-colors: active) {
   .machine-list,
   .agent-list-contents {

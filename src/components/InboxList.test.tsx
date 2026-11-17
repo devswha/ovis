@@ -123,6 +123,7 @@ describe("InboxList", () => {
     failure?: { error: string; retry(): Promise<void> | void } | null;
     opening?: number; focusTaken?: number;
     returnTo?: string | null;
+    /** how far the scroller can scroll at first: a scrollTop past it is clamped, as a browser does */
     scrollMax?: number;
     searchToggleHidden?: boolean;
     more?: Parameters<typeof InboxList>[0]["more"]; note?: ReactNode;
@@ -381,6 +382,7 @@ describe("InboxList", () => {
     expect(byClass(none, "inbox-empty").map(text)).toEqual(["Nothing is running yet Use + to start a workspace"]);
     await act(async () => { renderer?.unmount(); });
 
+    // no plus is offered to a watching device, nor with no PC connected: the line names none
     const watching = await draw(empty(), { watching: true });
     expect(byClass(watching, "inbox-add").length).toBe(0);
     expect(byClass(watching, "inbox-empty").map(text)).toEqual(["Nothing is running yet"]);
@@ -903,6 +905,7 @@ describe("InboxList", () => {
       await redraw({ query: "export" });
       const field = () => root.findByProps({ type: "search" });
       const escape = (isComposing = false) => ({ key: "Escape", nativeEvent: { isComposing }, preventDefault() {} });
+      // an Escape that ends an IME's composition is the composition's: the words and the field stay
       await act(async () => { field().props.onKeyDown(escape(true)); });
       expect(queries).toEqual([]);
       // Safari reports a composition's Escape by its keyCode alone

@@ -30,6 +30,7 @@ class FakeSocket implements RelaySocket {
   onclose: RelaySocket["onclose"] = null;
   onerror: RelaySocket["onerror"] = null;
   closed = false;
+  /** closing with no close event yet, as a browser socket the page closed while the relay has not answered */
   closing = false;
   get readyState(): number { return this.closed ? 3 : this.closing ? 2 : 1; }
   constructor(readonly daemon: Transport) {}
@@ -303,11 +304,14 @@ it("names the relay's refusal of a new device (4403), on a code and on compared 
     await flush();
     return outcome.get()?.error;
   };
+  // Then 4403 is its own failure and screen, whatever the attempt was, and nothing retries it by itself.
   const refused = await run(RELAY_NEW_SESSIONS_CLOSE);
   expect(refused).toBeInstanceOf(RelayNewSessionsRefusedError);
   expect(failureOf(refused, { code: true, paired: false })).toBe("new-devices-refused");
   expect(failureOf(refused, { code: false, paired: false, codeless: true, compared: true })).toBe("new-devices-refused");
   expect(isFatalRelayError(refused)).toBe(true);
+  // A device this PC already knows only signs in, and the relay never refuses that: the same code to it is a lost
+  // socket (another host at a saved address, a relay fault), so it reconnects as it always did.
   const store = new MemoryDeviceStore();
   const known = { v: 1 as const, server_id: "12".repeat(16), server_public_key: exportPublicKey(generateKeyPair().publicKey), relay: "wss://relay.example" };
   const paired = await getDevice(known, store);
@@ -372,6 +376,7 @@ it("keeps no key from a pairing link whose PC never admitted the phone", async (
   for (let i = 0; i < 200 && !f.trace.includes("client:HELLO"); i++) await Promise.resolve();
   jest.advanceTimersByTime(ADMISSION_MS);
   await flush();
+  // Then the attempt failed and this PC's slot is still empty: a later real QR pairs without a warning.
   expect(outcome.get()?.error).toBeInstanceOf(RelayAdmissionTimeoutError);
   expect(await f.store.list()).toEqual([]);
 });
@@ -552,6 +557,7 @@ it("does not take AUTH_OK from a PC before this phone said the digits match", as
   socket = new FakeSocket(daemon);
   const ready = Promise.withResolvers<SecureChannel>();
   const send = (frame: MuxFrame) => ready.promise.then((channel) => channel.send(encodeFrame(frame).slice().buffer));
+  // a PC endpoint that skips the comparison: it admits the phone as soon as the phone reveals its nonce
   void openDaemonSecureChannel(daemon, { daemonKeyPair: keys, events: { onmessage: (data) => {
     const frame = decodeFrame(new Uint8Array(data as ArrayBuffer));
     if (frame.type === FrameType.HELLO) void send({ type: FrameType.WELCOME, flags: 0, stream_id: 0, payload: { protocol: "ovis-mux", version: 1,

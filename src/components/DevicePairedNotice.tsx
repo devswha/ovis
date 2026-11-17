@@ -5,6 +5,10 @@ import "./DevicePairedNotice.css";
 import type { DevicePairedEvent, DeviceRemovedEvent } from "../../shared/protocol.ts";
 import { currentLocale, useT } from "../lib/i18n.ts";
 
+/**
+ * The owner pairing their own phone is the usual case, and the line is calm for it; the words carry
+ * the warning for the other case, so no colour has to: if that was not you, revoke it.
+ */
 export function DevicePairedNotice({ events, onOpen, onDismiss }: { events: readonly DevicePairedEvent[]; onOpen: (event: DevicePairedEvent) => void; onDismiss: (event: DevicePairedEvent) => void }) {
   const t = useT();
   return <>{events.map((event) => {
@@ -24,6 +28,11 @@ export function DevicePairedNotice({ events, onOpen, onDismiss }: { events: read
   })}</>;
 }
 
+/**
+ * A device was removed from this PC while this window was open (`device-removed`): revoked here,
+ * or removed through the account by another device. One calm line per removal, saying by whom, so
+ * a removal nobody here made shows; dismissed by hand.
+ */
 export function DeviceRemovedNotice({ events, onDismiss }: { events: readonly DeviceRemovedEvent[]; onDismiss: (event: DeviceRemovedEvent) => void }) {
   const t = useT();
   return <>{events.map((event) => {

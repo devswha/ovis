@@ -101,6 +101,7 @@ export function FirstStartHints({ active }: { active: boolean }) {
   useLayoutEffect(() => {
     if (!shown || anchor === null || card === null) return;
     const measure = (): void => {
+      // a replaced anchor measures nothing: the hint waits for the new one rather than go to the corner
       const box = anchor.getBoundingClientRect();
       if (!anchor.isConnected || box.width === 0 || box.height === 0) { setAnchor(null); setPlace(null); return; }
       setPlace(placeBy(anchor, card.offsetWidth, card.offsetHeight));

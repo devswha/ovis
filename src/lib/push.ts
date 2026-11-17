@@ -6,7 +6,10 @@ import { recordConfirmation } from "./pushConfirm.ts";
 
 /**
  * A browser needs a service worker and PushManager, which exist only in secure contexts (https or
- * localhost) - and on iPhone only in the app added to the home screen.
+ * localhost) - and on iPhone only in the app added to the home screen. The phone app's web view
+ * has neither: there the app's push plugin (lib/nativeApp.ts) makes the subscription. Its endpoint
+ * is on the push relay (push-relay/) and only the app holds its keys; it has the shape a browser
+ * hands over, so the server takes it as one more browser's.
  */
 
 const WORKER_READY_TIMEOUT_MS = 10_000;
@@ -39,6 +42,7 @@ export async function testDevicePush(tested?: (endpoint: string) => void): Promi
   const subscription = appPush() ? await appSubscription() : await (await navigator.serviceWorker.getRegistration())?.pushManager.getSubscription();
   if (!subscription) return "missing";
   tested?.(subscription.endpoint);
+  // a watching device's refusal says nothing of delivery
   try {
     await sendTestPush(subscription.endpoint);
   } catch (error) {
@@ -155,6 +159,7 @@ async function subscribeDevice(alerts?: AlertPrefs, handedOver: Recovered | null
     if (!(error instanceof ApiError && error.code === "subscription_gone")) throw error;
     const retired = subscription.endpoint;
     await subscription.unsubscribe();
+    // a browser still handing over the retired endpoint cannot be repaired from here
     if ((await registration.pushManager.getSubscription())?.endpoint === retired) throw error;
     subscription = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
     await registerPushSubscription(subscription.toJSON(), alerts);

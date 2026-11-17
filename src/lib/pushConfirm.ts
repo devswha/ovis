@@ -1,3 +1,7 @@
+/**
+ * Kept for where the PC cannot say (the open LAN signs in as no device and gets no delivery record, an older server
+ * has no record at all): the setup guide's rule then reads it (lib/setupGuideFlow.ts alertsHere).
+ */
 import { browserStorage } from "./firstHints.ts";
 
 export const PUSH_CONFIRM_KEY = "ovis:push-confirmed";

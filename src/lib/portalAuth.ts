@@ -1,3 +1,8 @@
+/**
+ * The Portal panel's choice of who may open the address (Settings → Phone & devices → Portal), as a
+ * form the person edits before Start. The rules for an entry are shared/portal.ts's, the same the
+ * server applies.
+ */
 import { checkEntry, checkPortalAuth, type PortalAuthProblem } from "../../shared/portal.ts";
 import type { PortalAuth, PortalAuthMethod, PortalSignIn } from "../../shared/protocol.ts";
 import { t } from "./i18n.ts";
