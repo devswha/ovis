@@ -194,6 +194,7 @@ try {
     try {
       const failDeadline = Date.now() + 20000;
       while (!failedAt) { assert.ok(Date.now() < failDeadline, "the backed-off poll reads again within its 15 s cap"); await Bun.sleep(25); }
+      // the failed request's own read event may land just after failedAt, so the retry starts 50 ms later
       const afterFailure = () => metricsReads.find((at) => at > failedAt + 50);
       await until(async () => afterFailure() !== undefined || Date.now() - failedAt > 3000, "a read follows the failed one");
       const retry = afterFailure();

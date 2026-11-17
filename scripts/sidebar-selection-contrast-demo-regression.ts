@@ -1,5 +1,14 @@
 /**
- * Prints one CONTRAST line per theme entry, row and state.
+ * Purpose: measure the selected workspace and agent rows of the sidebar in every theme entry of src/styles.css
+ * (SUPPORTED_ENTRIES, both modes) on the real demo client, as the browser paints them: selected with the focus
+ * elsewhere, selected and hovered, selected and keyboard-focused. In a theme the selection is the row's fill alone,
+ * with no leading stroke (the owner's call after #2352: on a rounded row the stroke read as a bracket); its contrast
+ * on the panel is recorded, not held to 3:1. Every text in the row stays at least 4.5:1 on what is behind it (issue
+ * #1618). Prints one CONTRAST line per entry, row and state, and with UI_EVIDENCE_DIR writes them to
+ * measurements.json beside the Codex theme's screenshots at 1280 and 390, dark and light.
+ * Tags: sidebar, theme, contrast, accessibility, browser, regression.
+ * The same rows are measured with forced colors (Windows high contrast) active, where the browser repaints fills
+ * as Canvas and the fill would vanish: there the selection keeps a leading bar of at least 3:1.
  * Usage: bun scripts/sidebar-selection-contrast-demo-regression.ts   (UI_EVIDENCE_DIR=<dir> for the table and shots;
  *   SIDEBAR_SELECTION_CASE=themes|forced runs one half)
  */

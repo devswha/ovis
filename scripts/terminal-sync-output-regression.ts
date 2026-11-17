@@ -1,4 +1,29 @@
-/** SYNC_OUTPUT_REPORT=<file> writes the counts as JSON. */
+/**
+ * Synchronized output (`CSI ? 2026 h` … `CSI ? 2026 l`) from a pane program to the pixels (#1617).
+ *
+ * A real herdr pane in the test session runs a step-by-step producer: each step is a file the
+ * script writes, each answer a file the producer writes once its bytes are out, so every chunk of a
+ * frame is written only after the one before it, with no sleeps. Frames are drawn inside 2026
+ * blocks and split over several chunks. The bytes are recorded at each hop:
+ *
+ * - A: herdr's `terminal attach` stream as the server reads it (each PtySession read);
+ * - B: the `pty-data` frames as the browser's WebSocket receives them;
+ * - C: the client's `pty-ack` for each frame, sent from xterm's write callback in the task that
+ *   parsed it, so a frame not yet acked has not been parsed whole;
+ * - D: every render of the rows the pane shows (a MutationObserver on `shownRows`: libghostty's
+ *   while it draws, xterm's otherwise), decoded back to the frame each row belongs to.
+ *
+ * A render is `torn` when xterm had parsed a herdr block's open but not its close, and `mixed` when
+ * its rows are not all one frame. xterm 5.5 did not honour mode 2026, so a herdr block split over
+ * two frames could render half (26 to 46 mixed renders a run, #1617); xterm 6 holds the drawing
+ * until the close, so none is.
+ *
+ * Asserts the brackets pass every hop intact (hop B's bytes are hop A's, every open is closed, at
+ * least one block split), no render is mixed or drawn inside an open block, a block left open
+ * recovers at the next whole frame, and every frame is rendered whole in the end. What herdr does
+ * with a block the pane leaves open (herdr 0.9.5 sends nothing of it until it closes) is herdr's to
+ * decide, so it is recorded, not asserted. SYNC_OUTPUT_REPORT=<file> writes the counts as JSON.
+ */
 import "./test-herdr.ts";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";

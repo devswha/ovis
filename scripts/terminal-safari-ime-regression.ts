@@ -1,3 +1,4 @@
+/** Replay the native Safari 26.6.2 trace from #432, not a claim to automate the OS IME. */
 import assert from "node:assert/strict";
 import { EventEmitter, once } from "node:events";
 import type { Browser } from "playwright-core";
@@ -63,6 +64,11 @@ export async function checkSafariIme(browser: Browser, origin: string, pane: str
     sent.length = 0;
   };
   // Safari 26.6.2 edits the DOM BEFORE keydown 229, with no composition events. Each
+  // beforeinput selection is the range Safari replaces, including final consonants.
+  // The keyCode and the keydown's place (before or after the edit) are parameters: the
+  // recorded trace fixes them for typing, not for Backspace, Delete or punctuation.
+  // "commit" is Safari 27.0.1's Backspace on a single jamo: the input method's unchanged
+  // replacement first, then a keyCode 8 keydown whose default action deletes the jamo.
   const edit = async (type: string, data: string, start: number, end = start, keyCode = 229, order: "after" | "before" | "commit" | "blur" = "after") => {
     await input.evaluate(async (element, { type, data, start, end, keyCode, order }) => {
       const box = element as HTMLTextAreaElement;
@@ -98,6 +104,8 @@ export async function checkSafariIme(browser: Browser, origin: string, pane: str
   };
   const report = (label: string, owner = pane) => console.log(`  ok ${label}: pane ${owner} bytes ${JSON.stringify(sent.map((frame) => frame.text).join(""))}`);
   // Dictation (and Safari's text replacement) replaces its hypothesis in place: each one an
+  // insertReplacementText over the previous one, with no composition events. withKey adds the
+  // keydown 229 Safari sends after an edit (#432's order).
   const dictate = (hypotheses: string[], withKey: boolean) => input.evaluate(async (element, { hypotheses, withKey }) => {
     const box = element as HTMLTextAreaElement;
     const from = box.value.length;

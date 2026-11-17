@@ -7,6 +7,11 @@ import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 
+// A tap on the dimmed page around a phone's sheet closes the sheet and goes nowhere else: the whole tap (its touch,
+// pointer and mouse events and the click the browser sends after the touch ends) lands on the scrim, not on the row
+// or the pane behind it. Real touch input in an Android WebView's shape (Playwright's touchscreen, a mobile context):
+// a click dispatched on the scrim would not show it, since the leak was the rest of the tap hit-testing through a
+// sheet that had already closed on its pointerdown. On the unmodified app over the demo's fixture transport.
 const app = mkdtempSync(join(tmpdir(), "ovis-sheet-outside-tap-"));
 const PHONE = { width: 390, height: 844 };
 const ANDROID_WEBVIEW = "Mozilla/5.0 (Linux; Android 14; Pixel 8 Build/UP1A.231005.007; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/131.0.6778.135 Mobile Safari/537.36";
@@ -73,6 +78,8 @@ async function withPhone(browser: Browser, base: string, path: string, what: str
       localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "light" }));
     });
     await context.addInitScript(recordTaps);
+    // the Claude pane's turn stays at work: on a slow runner the end the demo times 4.5s in raises its finish droplet
+    // over the top of the screen, where the taps outside a sheet land, before they come
     await context.addInitScript(() => Reflect.set(window, "__ovisDemoHoldTurn", true));
     const page = await context.newPage();
     page.on("pageerror", (error) => errors.push(`${what}: ${error.message}`));

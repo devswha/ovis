@@ -51,6 +51,13 @@ export const ANDROID_APP_FINGERPRINTS = [
 const APPLE_TEAM_ID = "5987KT43TJ";
 export const IOS_APP_ID = `${APPLE_TEAM_ID}.${APP_ID}`;
 
+/**
+ * The files that let the phone apps open a PC's page on app.ovis.sh (a pairing link tapped in a
+ * message, or the camera reading the PC's QR code) instead of the browser: Android checks
+ * `assetlinks.json` for the app's `autoVerify` link (app/android/app/src/main/AndroidManifest.xml),
+ * iOS `apple-app-site-association` for an app whose Associated Domains name this host. Only a PC's
+ * scope, `/s/`, is the app's: the front page stays the hosted shell's.
+ */
 export function appLinkFiles(): Record<string, string> {
   return {
     ".well-known/assetlinks.json": `${JSON.stringify([{
@@ -122,6 +129,7 @@ export function shellCaddyfile(site: string, root = "/opt/ovis-shell/current"): 
     `\thandle @manifest {\n\t\trewrite * /manifest.webmanifest\n\t}`,
     `\thandle @worker {\n\t\trewrite * /sw.js\n\t}`,
     `\thandle_path /s/* {\n\t\trewrite * /index.html\n\t}`,
+    // relay/shell-mirror.ts drops the precompressed copies, which Pages never serves as files
     `\tencode zstd gzip`,
     `\tfile_server`,
     "}",

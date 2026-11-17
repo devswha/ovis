@@ -69,6 +69,7 @@ try {
         assert.equal(await nextPane.inputValue(), "End");
         assert.match((await nextPane.locator("option:checked").textContent()) ?? "", /End/);
 
+        // macOS Option is read by its key, not by the character it types
         await record(page, "Toggle sidebar", "Meta+Alt+KeyB");
         assert.equal((await stored(page))["toggle-sidebar"], "alt+meta+b");
 

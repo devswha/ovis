@@ -43,6 +43,10 @@ function installViewFixture(): void {
 }
 
 const ESC = "\x1b", BEL = "\x07";
+// A cursor-position query, a copy request ("history") and mouse tracking to see the view parsed by.
+// Not a line of text: the attach's replay clears the screen 60 ms after the return, and the drawn
+// rows are painted a frame after a parse, so on a loaded runner the line was cleared before any
+// frame had drawn it. The mode is set as the view parses, and the replay's clear keeps it.
 const VIEW = `${ESC}[6n${ESC}]52;c;aGlzdG9yeQ==${BEL}${ESC}[?1000h`;
 const evidence = process.env["UI_EVIDENCE_DIR"];
 const app = mkdtempSync(join(tmpdir(), "ovis-view-replay-demo-"));

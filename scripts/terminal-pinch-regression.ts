@@ -75,6 +75,7 @@ export async function checkTerminalPinch(browser: Browser, origin: string, paneI
     await page.goto(`${origin}/?pane=${encodeURIComponent(paneId)}`);
     await page.locator(shownRows()).first().waitFor();
     await until(() => ready, "owned terminal must accept input");
+    // The 120 ms resize settle plus margin bounds the negative resize assertions.
     await Bun.sleep(400);
     const box = (await page.locator(".pane-terminal").boundingBox())!;
     const cx = box.x + box.width / 2;
@@ -272,6 +273,7 @@ export async function checkTerminalPinch(browser: Browser, origin: string, paneI
 }
 
 if (import.meta.main) {
+  // Importing the reusable check must not start herdr; bootstrap only the standalone fixture.
   await import("./test-herdr.ts");
   const root = mkdtempSync(join(tmpdir(), "herdr-terminal-pinch-qa-"));
   const server = createServer({ port: 0, hostname: "127.0.0.1", stateDir: root, token: "", usage: new UsageService(undefined, []) });

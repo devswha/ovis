@@ -9,8 +9,11 @@ import { ping, sessionSnapshot, workspaceCreate } from "../server/herdr/client.t
 import { testShellEnv } from "./test-shell.ts";
 
 // macOS's temp dir is behind a symlink (/var -> /private/var): herdr reports a pane's cwd
+// resolved, so a fixture made under the unresolved path never matches the pane it is for
 process.env["TMPDIR"] = realpathSync(tmpdir());
 
+// the config folder this run started with: the live-herdr guard (server/herdr/client.ts) refuses its
+// herdr socket, in this process and the children tests spawn, whatever XDG_CONFIG_HOME a test sets later
 process.env["OVIS_TEST_USER_XDG_CONFIG_HOME"] ??= process.env["XDG_CONFIG_HOME"] ?? "";
 
 if (process.env["NODE_ENV"] === "test") {
@@ -71,18 +74,24 @@ export function unitHerdrOnly(): () => void {
 }
 
 export async function useTestHerdr(): Promise<string | null> {
+  // Unit tests must not discover or start herdr, even on a developer's PC. Nor may they fall back
+  // to the default socket: a bare `HERDR_TEST_MODE=unit bun test` also loads the contract files,
+  // and those would open their workspaces and stand-in agents in the herdr the user works in.
   if (process.env["HERDR_TEST_MODE"] === "unit") {
     process.env["HERDR_SOCKET"] = UNIT_SOCKET();
     return null;
   }
   if (process.env["HERDR_TEST_LIVE"] === "1") return null;
   const herdr = herdrBinary();
+  // no herdr to isolate: a socket that does not exist, never the default one (the user's own session)
   if (!herdr) {
     process.env["HERDR_SOCKET"] = join(tmpdir(), "ovis-tests-found-no-herdr.sock");
     return null;
   }
   const socket = testSocketPath();
   // an empty ZDOTDIR: a pane's zsh (macOS's login shell) reads none of the user's own files,
+  // where a shell integration can start a CLI herdr takes for an agent, ending the agent a test
+  // reported, or set a title that names the pane's tab
   const zdotdir = join(dirname(socket), "zdotdir");
   // Windows panes cannot run the stand-ins (and keep their own PATH)
   const standIns = process.platform === "win32" ? null : join(dirname(socket), "agent-stand-ins");
@@ -94,6 +103,9 @@ export async function useTestHerdr(): Promise<string | null> {
     }
   }
   // Empty of the user's files, not of every file: with no startup file at all, a zsh that ships
+  // its new-user wizard (zsh-newuser-install; Ubuntu's zsh does) opens it in every pane, and the
+  // wizard takes the first keys a test types into the shell. An empty .zshrc is read as nothing.
+  // A pane reads it when its shell starts, so a server already running needs no restart for it.
   mkdirSync(zdotdir, { recursive: true });
   if (!existsSync(join(zdotdir, ".zshrc"))) writeFileSync(join(zdotdir, ".zshrc"), "");
   if (!(await answers(socket))) {
@@ -103,6 +115,8 @@ export async function useTestHerdr(): Promise<string | null> {
       stdout: Bun.file(join(dirname(socket), "test-server.log")),
       stderr: Bun.file(join(dirname(socket), "test-server.log")),
       // run from inside a herdr pane, this process carries that pane's HERDR_* variables; run by
+      // an agent, it carries the agent's too (OMO_CODING_AGENT_DIR moves where a pane's omo is
+      // read from), and every pane of this server would inherit them
       env: { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^(HERDR|OMO|SENPI|PI)_/.test(name))), ...testShellEnv(dirname(socket)), ...path, ZDOTDIR: zdotdir },
     }).unref();
     const deadline = Date.now() + 15_000;

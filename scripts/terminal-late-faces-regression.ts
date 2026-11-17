@@ -1,3 +1,18 @@
+/**
+ * Icons and Hangul are fitted from the faces that draw them, however their late loads interleave
+ * (#2064). The icon font and the Hangul face load only once a pane prints an icon or Korean, after
+ * xterm and lib/terminalGlyphs.ts measured those characters with a stand-in, narrower than either
+ * in WebKit (Apple SD Gothic Neo's Hangul is 0.86em, the bundled face's 1em). Each arrival set the
+ * terminal's font family again in another form so that both measured anew, and two arrivals heard
+ * in the same task (both Hangul weights from WebKit's cache, or an icon with Korean) undid each
+ * other's change before the glyph fit looked: the family read as before, and the widths measured
+ * with the stand-in stayed. An icon stayed its full em across the cell after it, and Hangul was
+ * enlarged as for the stand-in and pushed the rest of its row right.
+ *
+ * Chromium on Linux stands in with fonts as wide as the faces, so the page gets WebKit's: the same
+ * two files drawn smaller (size-adjust) behind the late faces. The promises that tell of an arrival
+ * wait at a gate while both faces load, and go on together, as from a cache.
+ */
 import "./test-herdr.ts";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";

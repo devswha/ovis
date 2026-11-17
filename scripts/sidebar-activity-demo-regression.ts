@@ -136,6 +136,8 @@ function installSidebarFixture(): void {
     constructor(url: string | URL, protocols?: string | string[]) {
       super(url, protocols);
       sockets.add(this);
+      // The demo constructor returns its own EventTarget object, so wrap that instance's
+      // method instead of overriding a subclass prototype that the returned object never uses.
       const send = this.send.bind(this);
       this.send = (raw) => {
         const message = JSON.parse(String(raw));

@@ -309,6 +309,8 @@ process.stdout.write(Array.from({ length: 400 }, (_, n) => "app history " + n + 
       const lastWheel = wheels.at(-1)?.t ?? touchend;
       const lastMove = gestureEvents.filter((event) => event.k === "touchmove").at(-1)?.t ?? touchend;
       const gaps = probe.frames.slice(1).map((t, i) => t - probe.frames[i]!).filter((_, i) => probe.frames[i + 1]! >= touchstart && probe.frames[i]! <= lastWheel + 50);
+      // reports dispatched per animation frame: wheel events grouped by the frame callback that sent
+      // them (its frame timestamp), never by wall-clock time, which a late frame under load blurs
       const perFrame = new Map<number, number>();
       for (const event of wheels) {
         const frame = event.ft ?? -1;

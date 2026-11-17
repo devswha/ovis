@@ -67,9 +67,11 @@ export function workflowFileProblems(base = root): string[] {
     .sort();
 }
 
+/** The GitHub-hosted runner labels the workflows may name for a job that must never reach a self-hosted runner. */
 export const GITHUB_HOSTED_LABELS = ["ubuntu-24.04", "ubuntu-24.04-arm", "windows-latest", "windows-2025", "macos-15", "macos-15-intel", "macos-latest"];
 export const parseWorkflow = (path: string): Workflow => Bun.YAML.parse(readFileSync(path, "utf8")) as Workflow;
 
+/** The only actions a job holding the Cloudflare token may use, each at its full commit SHA. */
 export const DEPLOY_ACTIONS = [
   "oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6",
   "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333",
@@ -98,6 +100,7 @@ export function backgroundProblems(name: string, job: Job): string[] {
   return problems;
 }
 
+/** A job that may run next to a token: no checkout, no local action, only the allowed pinned actions. */
 export function actionProblems(name: string, job: Job, allowed: string[]): string[] {
   const problems: string[] = [];
   steps(job).forEach((step, index) => {
