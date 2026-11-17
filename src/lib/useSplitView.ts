@@ -8,6 +8,10 @@ import { paneDrag, type PaneDrag } from "./paneDrag.ts";
 const SELECTION_KEY = "ovis:selection";
 type StoredSelection = { machine_id?: string; pane_id?: string | null };
 
+/**
+ * The pane to open: this window's own (sessionStorage is per window and survives
+ * its reloads), else the last one any window showed, for a newly opened window.
+ */
 export function storedSelection(): StoredSelection | null {
   for (const storage of ["sessionStorage", "localStorage"] as const) {
     try {
@@ -58,6 +62,9 @@ export function useSplitState() {
     setGridDrop((shown) => (shown?.slot === zone?.slot && shown?.edge === zone?.edge ? shown : zone));
   }, []);
   const hideDropTarget = useCallback((): void => showGridDrop(null), [showGridDrop]);
+  // the pane being dragged, read at dragstart (a dragover cannot read the drag's data), the title it
+  // would trade places with if dropped now, and the pane it would go beside, its frame showing the
+  // side (PaneCanvas.css).
   const draggedPaneRef = useRef<SplitTarget | null>(null);
   const swapHeadRef = useRef<HTMLElement | null>(null);
   const markSwap = useCallback((head: HTMLElement | null): void => {
@@ -166,6 +173,8 @@ export function useSplitLayout({ machines, split, wideScreen, selectedPaneId, se
     return tab !== null && leaders.get(tab) !== slot;
   };
 
+  // a slot's pane closed: another pane of its tab takes its place, else the slot closes. An offline
+  // PC's cached roster cannot say so, as for the selection itself
   const slotTabsRef = useRef(new Map<string, Pick<HerdrPane, "tab_id" | "terminal_id">>());
   const slotKeys = new Set<string>();
   for (const view of others.values()) {
@@ -196,6 +205,8 @@ export function useSplitLayout({ machines, split, wideScreen, selectedPaneId, se
       const movedTo = seen?.terminal_id ? panes.find((pane) => pane.terminal_id === seen.terminal_id) : undefined;
       if (movedTo) { moved.push([target, movedTo.pane_id]); continue; }
       const tabId = seen?.tab_id ?? null;
+      // a pane this page has not seen in the roster yet (a saved split, a pane made just before the page
+      // loaded) may be newer than the cached roster: ask the PC before the slot closes, as the selection does
       if (tabId === null) { asks.push([slot, target]); continue; }
       const focused = machine.snapshot.layouts.find((layout) => layout.tab_id === tabId)?.focused_pane_id;
       const heir = panes.find((pane) => pane.tab_id === tabId && pane.pane_id === focused) ?? panes.find((pane) => pane.tab_id === tabId);
@@ -213,6 +224,7 @@ export function useSplitLayout({ machines, split, wideScreen, selectedPaneId, se
       const gone = new Set<SplitSlot>();
       answers.forEach((answer, index) => {
         const [slot, target] = asks[index]!;
+        // a failed read is not evidence that the pane closed: ask again on the next roster
         if (answer.status === "rejected") { otherRecheck.current = true; return; }
         if (!moving(target) && !answer.value.panes.some((pane) => pane.pane_id === target.paneId) && now && sameTarget(now.panes[slot], target)) gone.add(slot);
       });
@@ -251,6 +263,8 @@ export function useSplitLayout({ machines, split, wideScreen, selectedPaneId, se
     const open = splitRef.current;
     if (!open || !splitOn || open.active === slot) { selectPane(paneId, focusInput); return; }
     if (current === null) return;
+    // The press's own activation and this pick both read the state from before the event: as two steps the
+    // second would undo the first
     const change = pickInSlot(open, current, slot, { machineId, paneId });
     if (change) applySplit(change, !focusInput);
   };

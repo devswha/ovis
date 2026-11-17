@@ -66,6 +66,7 @@ export function useTypedKeys(deps: TypedKeysDeps) {
   const hermesCtrlCAtRef = useRef<number | null>(null);
   useEffect(() => { if (agentStatus !== "working" && agentStatus !== "blocked") hermesStopSentRef.current = false; }, [agentStatus]);
   useEffect(() => { hermesStopSentRef.current = false; hermesCtrlCAtRef.current = null; }, [paneId, agent]);
+  // the second Escape of a two-Escape Stop, still to be sent: it belongs to the pane and connection of the first
   const secondEscapeRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dropSecondEscape = useCallback(() => {
     if (secondEscapeRef.current !== null) clearTimeout(secondEscapeRef.current);

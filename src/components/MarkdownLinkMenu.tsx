@@ -52,6 +52,7 @@ export function MarkdownLinkMenu() {
   const { link, point } = pressed;
   const href = link.href;
   const text = link.textContent?.trim() ?? "";
+  // Markdown links any address it reads, one no URL parser takes (port 99999) included
   const title = text !== "" && text !== href ? text : hostOf(href) || href;
   const items: RowMenuItem[] = [
     { id: "copy", label: t("Copy link"), icon: Link2, run: () => { void copyText(href); } },

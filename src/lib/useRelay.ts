@@ -3,12 +3,22 @@ import type { PairingCode, RelayStatus } from "../../shared/protocol.ts";
 import { ApiError, fetchRelay, requestRelay, requestRelayDirect } from "./api.ts";
 import { usePageVisible } from "./visibility.ts";
 
+/**
+ * The hosted shell names itself in its `index.html`: a phone that reached this PC through the
+ * relay cannot control that relay (the server refuses every mutation over a relayed session),
+ * so the relay panel stays off it.
+ */
 export function inRelayShell(): boolean {
   return typeof document !== "undefined" && document.querySelector('meta[name="ovis-shell"]')?.getAttribute("content") === "relay";
 }
 
+/**
+ * The server keeps one pending pairing code, which both the Devices group's code and the relay
+ * panel's QR offer carry.
+ */
 export const PAIRING_CODE_EVENT = "ovis:pairing-code";
 
+/** `qrOnly`: the code of a QR code shown alone (RelayPairing `qrOnly`), which no place shows as digits */
 export interface AnnouncedCode extends PairingCode {
   readonly qrOnly?: true;
 }
@@ -17,6 +27,11 @@ export function announcePairingCode(code: AnnouncedCode): void {
   window.dispatchEvent(new CustomEvent<AnnouncedCode>(PAIRING_CODE_EVENT, { detail: code }));
 }
 
+/**
+ * The relay tab's QR codes in this browser's other windows share the PC's one pending code (server/devices.ts
+ * `pairingForNoAccount`): one that ends it says so on this channel, with the code as the message, and one still
+ * showing that code asks for a new one (RelayPairing `qrOnly`).
+ */
 export const QR_CODE_ENDED_CHANNEL = "ovis:qr-code-ended";
 
 export function announceQrCodeEnded(code: string): void {
@@ -62,6 +77,7 @@ export function useRelay() {
         setStatus((previous) => JSON.stringify(previous) === JSON.stringify(next) ? previous : next);
         delay = pollDelay(next);
       } catch (error) {
+        // the route is missing on an older server; a restart or a dropped answer must not erase the last state
         if (!stopped && error instanceof ApiError && error.status === 404) { setUnsupported(true); return; }
       }
       if (!stopped) timer = setTimeout(() => void poll(), delay);

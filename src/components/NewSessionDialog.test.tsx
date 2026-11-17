@@ -4,6 +4,8 @@ import { create, type ReactTestRenderer } from "react-test-renderer";
 import { SettingsProvider, useSettings, type Settings } from "../lib/settings.ts";
 import { clearNewSessionDrafts, NewSessionDialog, type NewSessionDialogProps } from "./NewSessionDialog.tsx";
 
+// App keeps the dialog mounted and flips `open`: every hook runs whether it is open or not, or React
+// refuses the render where it opens ("Rendered more hooks than during the previous render").
 describe("NewSessionDialog", () => {
   let renderer: ReactTestRenderer | undefined;
   const descriptors = new Map<string, PropertyDescriptor | undefined>();

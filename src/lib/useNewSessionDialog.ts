@@ -21,6 +21,7 @@ export function useNewSessionState({ initialLink, watching = false }: { initialL
   const [newTab, setNewTab] = useState<NewTabTarget | null>(null);
   const [sessionHistory, setSessionHistory] = useState<{ machineId: string; workspaceId: string; agent: SessionHistoryAgent; paneId: string | null; askingPaneId: string | null; selectedPaneId: string | null } | null>(null);
   const [worktreeFor, setWorktreeFor] = useState<WorktreeRequest | null>(null);
+  // worktrees are not offered to a watching device: one open when this device turns into one closes
   useEffect(() => { if (watching) setWorktreeFor(null); }, [watching]);
   return { newSessionOpen, setNewSessionOpen, newPrefill, setNewPrefill, newFields, setNewFields, pendingCreate, newSessionPending, newTab, setNewTab, sessionHistory, setSessionHistory, worktreeFor, setWorktreeFor };
 }

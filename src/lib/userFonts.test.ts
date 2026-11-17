@@ -63,6 +63,7 @@ it("adds every face of a named family the PC serves, once, and no other family",
 });
 
 it("gives FontFace the family as it is, never quoted, whatever CSS would need to read it bare", async () => {
+  // FontFace takes its family literally: a quoted one is a family named with the quotes, which no stack names
   serving([font("1st.Mono+X.ttf", "1st.Mono+X")]);
   await addServedFonts('"1st.Mono+X"', fontSet);
   expect(added.map(({ family }) => family)).toEqual(["1st.Mono+X"]);

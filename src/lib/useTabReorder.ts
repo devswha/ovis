@@ -13,6 +13,12 @@ export interface TabDragOut {
   cancel: () => void;
 }
 
+/**
+ * Herdr's next snapshot owns the actual order.
+ * `fixed`: the order is not this client's to change (the Herdr app's window lays the PC out,
+ * lib/machineContext.tsx AppLayoutContext): no insertion line and no move, as among one tab; a
+ * drag can still leave the strip (`outside`).
+ */
 export function useTabReorder({ owner, tabs, strip, moveTab, failed, stale, outside, fixed = false }: {
   owner: string;
   tabs: HerdrTab[];
@@ -59,6 +65,8 @@ export function useTabReorder({ owner, tabs, strip, moveTab, failed, stale, outs
   }, [owner]);
   useLayoutEffect(() => {
     cancelDrag();
+    // An unrelated snapshot received before the answer is not an acknowledgement, and must not enable
+    // another stale-coordinate move.
     const op = operation.current;
     if (op?.settled && key === op.expected) finishOperation(op);
   }, [key, owner]);
@@ -79,6 +87,8 @@ export function useTabReorder({ owner, tabs, strip, moveTab, failed, stale, outs
       op.expected = JSON.stringify(result.tabs.map((tab) => tab.tab_id));
       op.settled = true;
       if (current.current.key === op.expected) finishOperation(op);
+      // Concurrent native edits may supersede this order before it is published. Give the gate
+      // a deadline and report that the expected snapshot never arrived rather than getting stuck.
       else op.timer = window.setTimeout(() => {
         if (operation.current !== op) return;
         finishOperation(op);

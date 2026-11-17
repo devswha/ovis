@@ -3,6 +3,7 @@
  */
 
 export const USER_MESSAGE_FOLD_LINES = 12;
+/** Characters a message folds past without line breaks: about twelve lines of the widest bubble. */
 export const USER_MESSAGE_FOLD_CHARS = 900;
 
 const MARKDOWN_LINK = /!?\[([^\]\n]*)\]\((?:<[^>\n]*>|[^\s)]*)\)/g;

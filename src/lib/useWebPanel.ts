@@ -109,6 +109,7 @@ export function useWebPanel({ settings, filePanelAvailable }: { settings: Settin
     if (webPanelFromState(state) !== null || (ownsEntry.current && isDocked(state))) {
       closingWebPage.current = true;
       if (isDocked(state)) setWebPage(null);
+      // past the pages stacked under this one too, or the one under it would show again (#3054)
       backUnderCurrentEntry(1 + pagesBelow(state))?.catch(() => { closingWebPage.current = false; });
     } else {
       ownsEntry.current = false;

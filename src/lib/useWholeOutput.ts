@@ -2,6 +2,8 @@ import { useCallback, useLayoutEffect, useMemo, useState } from "react";
 
 import { getTransport } from "./transport.ts";
 
+/** Each request belongs to one immutable pane/history/tool target. Aborting saves
+ * work; identity checks also reject responses whose transport ignores cancellation. */
 export function useWholeOutput(url: string | null, scope: string) {
   const owner = useMemo(() => ({ controller: null as AbortController | null, active: true }), [url, scope]);
   const [result, setResult] = useState<{ owner: typeof owner; text: string | null; state: "idle" | "loading" | "failed" } | null>(null);

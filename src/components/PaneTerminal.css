@@ -1,3 +1,5 @@
+/* The range is the private use area alone, so the browser fetches the file only once a pane
+   prints an icon, and a heart, a lightning bolt or a box line keeps the system font's glyph */
 @font-face {
   font-family: "Symbols Nerd Font Mono";
   src: url("../fonts/SymbolsNerdFontMono-Regular.woff2") format("woff2");
@@ -54,6 +56,7 @@
   overflow: auto;
 }
 
+/* The helper textarea is not hidden: typing still reaches xterm */
 .pane-terminal[data-folded] {
   position: relative;
   overflow-x: hidden;
@@ -149,6 +152,8 @@
   visibility: hidden;
 }
 
+/* the native viewport never scrolls (xterm draws its own scrollbar for a herdr-core pane's history):
+   hide the track that would otherwise sit over the last columns on platforms with classic scrollbars */
 .pane-terminal .xterm-viewport {
   background-color: var(--term-bg);
   scrollbar-width: none;
@@ -350,6 +355,8 @@
   overflow-wrap: normal;
   overflow: hidden;
   text-overflow: ellipsis;
+  /* takes the pointer back from the pass-through column, as a banner's action does: a title only
+     shows for an element the pointer can reach */
   pointer-events: auto;
 }
 

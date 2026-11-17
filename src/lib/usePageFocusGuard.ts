@@ -20,6 +20,7 @@ import { useCallback, useEffect, useRef, useState, type RefObject } from "react"
 const TAB_REACH_MS = 150;
 
 export function usePageFocusGuard(frame: RefObject<HTMLIFrameElement | null>, active: boolean, onGrab: () => void): { shield: boolean; enter: () => void } {
+  // the person asked for the scripts with a press: the page may take the focus until the app has it again
   const [inside, setInside] = useState(true);
   const state = useRef({ inside: true, tabAt: -Infinity, last: null as HTMLElement | null });
   const grabbed = useRef(onGrab);

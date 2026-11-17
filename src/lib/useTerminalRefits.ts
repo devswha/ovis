@@ -91,6 +91,7 @@ export function useTerminalRefits(deps: TerminalRefitsDeps): void {
     return () => { superseded = true; };
   }, [terminalFontSize, fontFamily]);
 
+  // the setting, a zoom or the last sibling closing need not resize the host: the observer may stay silent
   useEffect(() => {
     if (narrowFontFitted.current === narrowFont) return;
     narrowFontFitted.current = narrowFont;
@@ -106,6 +107,8 @@ export function useTerminalRefits(deps: TerminalRefitsDeps): void {
     if (pane && sizesPty() && inUse()) socketRef.current?.resize(pane, term.cols, term.rows);
   }, [narrowFont]);
 
+  // the grid must re-fit when the lens switches back: the chat lens covered it, and a
+  // resize while covered may have been skipped by a zero-size layout
   useEffect(() => {
     if (chatView) {
       const pane = paneRef.current;

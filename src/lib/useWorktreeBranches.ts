@@ -9,6 +9,7 @@ import { inventoryReads, WorkspaceBranchCache, worktreeRepositories, worktreeWor
 const BRANCH_POLL_MS = 30_000;
 const NONE: ReadonlySet<string> = new Set();
 
+/** `unmarked`: git workspaces herdr has not marked as a repository's (no `worktree`), read one by one. */
 /** `watching`: this device may only watch, and the PC refuses it the listing (#2250): nothing is asked. */
 export function useWorktreeBranches(snapshot: SessionSnapshot | null, online: boolean, roster = false, unmarked: ReadonlySet<string> = NONE, watching = false, onNotCheckout?: (workspaceId: string) => void): {
   branches: ReadonlyMap<string, WorkspaceBranch>;
@@ -19,6 +20,7 @@ export function useWorktreeBranches(snapshot: SessionSnapshot | null, online: bo
   const visible = usePageVisible();
   // `refused`: the PC answered that this device may only watch (#2250): it is not asked again until the
   // device's role changes, which starts over (a device signed in to drive reads branches again).
+  // `oneByOne`: the PC's bridge is from before GET /api/worktree/inventory, so each workspace is asked alone (#2661).
   const owner = useMemo(() => ({ cache: new WorkspaceBranchCache(), pending: null as Promise<void> | null, refused: watching, oneByOne: false, turn: 0 }), [machineId, watching]);
   const [, publish] = useState(0);
   const [refresh, setRefresh] = useState(0);
@@ -84,6 +86,7 @@ export function useWorktreeBranches(snapshot: SessionSnapshot | null, online: bo
             if (listing && !stopped) changed = owner.cache.applyUnmarked(workspaceId, listing, generation) || changed;
           } catch (error) {
             if (error instanceof ApiError && error.code === "read_only") { owner.refused = true; break; }
+            // a refusal (4xx) says it is no checkout now; a failure to ask keeps the last known branch
             if (!stopped && error instanceof ApiError && error.status < 500) {
               changed = owner.cache.forgetUnmarked(workspaceId, generation) || changed;
               // only this cycle's git refusal says so: herdr's dropped connections are 404s too (server/http.ts)

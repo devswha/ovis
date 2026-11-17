@@ -95,6 +95,7 @@ export function usePaneAttach(deps: PaneAttachDeps): void {
     secretRef.current = null;
     setSecret(null);
     term.options.disableStdin = observeRef.current;
+    // a record past its TTL, an undated one, and a hand-edited one all restore as nothing held
     let saved = EMPTY_DRAFT;
     try {
       saved = paneId ? restoreDraft(paneLifetimes.paneStorage.getItem(`ovis:terminal-draft:${paneStorageId(machineId, paneId)}`), Date.now()) : EMPTY_DRAFT;
@@ -118,6 +119,8 @@ export function usePaneAttach(deps: PaneAttachDeps): void {
         setWatching(false);
       }
     };
+    // A fresh background pane must not acquire size ownership even with the release setting off.
+    // This also covers a replacement pane: no prior release or input ownership is inherited.
     setReleased(false);
     if (cachedRef.current) {
       setReleased(true);
@@ -138,6 +141,7 @@ export function usePaneAttach(deps: PaneAttachDeps): void {
       const away = !inUse();
       typeAheadRef.current(paneId);
       socket.attach(paneId, term.cols, term.rows, chatViewRef.current || away || !shownRef.current || followRef.current || coveredRef.current || held);
+      // no blur or hidden comes for a tab already out of use: it lets go of this pane after a moment too
       if (away) leaveRef.current();
       // the chat lens covers the grid and its composer takes the keyboard: focusing the hidden
       // grid sent the keys straight to the pane, and showed a phone's IME text mid-screen
@@ -148,6 +152,9 @@ export function usePaneAttach(deps: PaneAttachDeps): void {
       attach();
       return leavePane;
     }
+    // A new terminal's first font is still loading (the bundled face, fonts/fonts.css): the first fit
+    // and the size the pty is attached at wait for it, within the font effect's own bound, so the pane
+    // is not sized for a fallback's cell and then again for the face's (two SIGWINCHes, a reflow).
     let gone = false;
     let attached = false;
     let backstop: ReturnType<typeof setTimeout> | undefined;

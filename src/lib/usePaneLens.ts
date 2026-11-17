@@ -66,6 +66,9 @@ export function usePaneLens({ settings, selectedPaneId, selectedMachineId, selec
   terminalPeek: TerminalPeek | null;
   setTerminalPeek: Dispatch<SetStateAction<TerminalPeek | null>>;
 }) {
+  // the lens follows the selected pane: each pane remembers its own. It is settled in the render
+  // that selects the pane, not in an effect after it: the pane's terminal attaches in that render's
+  // layout effect, and an attach in the previous pane's lens resized a pane whose lens is chat
   const lenses = useMemo(() => new PaneLenses(settings.defaultView), [settings.defaultView]);
   const lifetime = useSyncExternalStore(paneLifetimes.subscribe, () => paneLifetimes.generation(selectedMachineId));
   const lensKey = JSON.stringify([selectedPaneId, selectedMachineId, lifetime ?? null, selectedPane !== null, selectedAgent !== null, terminalAttach, settings.defaultView]);

@@ -39,6 +39,7 @@ describe("usePaneAttach with the inbox mode's list over the pane", () => {
     Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
     Object.defineProperty(globalThis, "WebSocket", { configurable: true, value: FakeSocket });
     Object.defineProperty(globalThis, "window", { configurable: true, value: globalThis });
+    // the page in use: an attach sizes the pty unless it says keep_size
     Object.defineProperty(globalThis, "document", { configurable: true, value: { visibilityState: "visible", hasFocus: () => true, addEventListener() {}, removeEventListener() {} } });
     termRef.current = null;
     client = new HerdrSocket("ws://test/ws");

@@ -8,6 +8,11 @@ import { ensurePushSubscription, pushSupported, registeredPushEndpoint, removePu
 import { refreshPushHealth, resetPushHealth, runPushAction, type PushActionOutcome, type PushActionResult } from "./pushHealth.ts";
 import { hasNativePlugin, PUSH_PLUGIN } from "./nativeApp.ts";
 
+/**
+ * The PC's own answer is an ApiError (a retired endpoint the browser keeps handing over is "gone"), and a
+ * fetch that never reached it a TypeError; anything else came from the browser's PushManager or the app's
+ * push plugin, which would not make a subscription (Brave with its push service off, a phone without one).
+ */
 export function subscribeFailure(error: unknown): PushActionResult {
   if (error instanceof ApiError) return error.code === "subscription_gone" ? "gone" : "unregistered";
   return error instanceof TypeError ? "unregistered" : "refused";
@@ -42,6 +47,7 @@ export function useNotificationState() {
     // while it stays in view: the permission's change event (the address bar's site settings), a read, never a request
     let permissionStatus: PermissionStatus | null = null;
     if (!native && typeof navigator !== "undefined" && navigator.permissions?.query) {
+      // a webview that throws rather than rejects is the same as one that cannot answer
       try {
         navigator.permissions.query({ name: "notifications" }).then((status) => {
           if (!current) return;
@@ -77,6 +83,7 @@ export function useNotificationSwitch({ updateSettings, locked, notifications, s
   const alertsOnRef = useRef(alertsOn);
   alertsOnRef.current = alertsOn;
   const enableNotifications = useCallback(async (): Promise<PushActionResult> => {
+    // in-app alerts need no permission: the switch goes on whatever the browser answers
     updateSettings({ alertsOn: true });
     const current = notificationState();
     const next = current === "default" ? await requestNotificationPermission() : current;
@@ -97,6 +104,8 @@ export function useNotificationSwitch({ updateSettings, locked, notifications, s
         recordConfirmation(endpoint, true);
       } catch (err) {
         recordConfirmation(endpoint, false);
+        // the subscription stays on the PC, and the next alert is tried through it as usual: the tab stays silent, so
+        // one alert (with its answer buttons) arrives once delivery recovers, never two (#3907 review)
         console.warn("the confirmation push failed", err);
         return "failed";
       }
@@ -119,6 +128,8 @@ export function useNotificationSwitch({ updateSettings, locked, notifications, s
     void runPushAction("repair", async () => repairOutcome(await enableNotifications()), () => alertsOnRef.current);
   }, [enableNotifications]);
 
+  // in the app, alerts turned off while the PC could not be told keep the app's endpoint (lib/push.ts),
+  // and the phone goes on getting this PC's alerts until the PC forgets it.
   useEffect(() => {
     if (locked !== false || alertsOn || !hasNativePlugin(PUSH_PLUGIN)) return;
     const retry = () => {

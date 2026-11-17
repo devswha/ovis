@@ -88,6 +88,7 @@ export function useTerminalSends(deps: TerminalSendsDeps) {
     const session = sessionRef.current;
     const pane = paneRef.current;
     if (!term || !socket || !session || pane === null || secretRef.current !== null || heldRef.current) return null;
+    // its Enter would run the pty's line without the start a held draft keeps
     if (draftHeldForRef.current === pane) return Promise.resolve({ ok: false, code: "held_input", message: "send or discard the held input first" });
     const epoch = session.epoch;
     const sent = socket.submit(pane, composerMessage(text), composerPayload(text, term.modes.bracketedPasteMode), false, delivery, clearDraft, sendAnyway, resendId, generation, agentOnly, holdOnly);
@@ -131,6 +132,7 @@ export function useTerminalSends(deps: TerminalSendsDeps) {
 
   const sendComposerText = useCallback((text: string, delivery: "queue" | "immediate" = "immediate"): false | Promise<true | string> => {
     const pane = paneRef.current;
+    // a screen a peek left open would take it: the row keeps it (the notice's close, or the screen's, lets it go)
     const open = stillOpenRef.current;
     if (pane !== null && open !== null && open.pane === pane) return Promise.resolve(stillOpenNote(open));
     const known = knownOutcomes(pane);
@@ -138,6 +140,7 @@ export function useTerminalSends(deps: TerminalSendsDeps) {
     const result = submitComposerMessage(text, delivery);
     return result === null ? false : result.then((answer) => {
       if (!answer.ok) return submitNote(answer.code, answer.message, agent);
+      // an older bridge took it with no receipt: the held row goes, a row not confirmed keeps its text
       if (answer.unconfirmed && pane !== null) pendingMessages.keepUnconfirmed(paneStorageId(machineId, pane), text);
       if (pane !== null && answer.pending === undefined && !answer.unconfirmed) showSentCommand(pane, text, known, seen);
       return true;
@@ -149,6 +152,7 @@ export function useTerminalSends(deps: TerminalSendsDeps) {
     const socket = socketRef.current;
     const pane = paneRef.current;
     if (!term || !socket || pane === null || secretRef.current !== null) return false;
+    // its text and Enter would land beside the held draft: Send or Discard that first
     if (draftHeldForRef.current === pane) return Promise.resolve(tRef.current("Not sent: send or discard the held input first."));
     const message = composerMessage(text);
     const payload = message.includes("\n") ? composerPayload(text, term.modes.bracketedPasteMode) : message;
@@ -170,6 +174,7 @@ export function useTerminalSends(deps: TerminalSendsDeps) {
     const socket = socketRef.current;
     const pane = paneRef.current;
     if (!term || !socket || pane === null || secretRef.current !== null) return false;
+    // its text would land beside the held draft: Send or Discard that first
     if (draftHeldForRef.current === pane) return Promise.resolve(insertNote("held_input", ""));
     const sent = socket.insert(pane, text);
     if (sent === null) return false;
@@ -190,6 +195,7 @@ export function useTerminalSends(deps: TerminalSendsDeps) {
     const socket = socketRef.current;
     const pane = paneRef.current;
     if (!socket || pane === null || !socket.connected) return false;
+    // Enter beside a held draft would run the pty's line without the held start
     if (draftHeldForRef.current === pane) return tRef.current("Not sent: send or discard the held input first.");
     reassertIfStaleRef.current();
     cancelTouchRef.current();

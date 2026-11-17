@@ -80,6 +80,7 @@ export function PortalAuthSummary({ auth, url, shortUrl = null }: { auth: Portal
   );
 }
 
+/** Where the provider sends a person back after they sign in, to register with it before anyone can. */
 function RedirectAddress({ url }: { url: string }) {
   const t = useT();
   const addressRef = useRef<HTMLElement>(null);
@@ -130,6 +131,7 @@ function OidcFields({ status, draft, onChange }: { status: PortalStatus; draft: 
   );
 }
 
+/** A list of entries as chips, each added through the check Portal itself applies to its kind. */
 function AllowList({ method, entries, label, placeholder, hint, onChange }: { method: PortalSignIn; entries: readonly string[]; label: string; placeholder: string; hint?: string | undefined; onChange: (list: readonly string[]) => void }) {
   const t = useT();
   const id = useId();

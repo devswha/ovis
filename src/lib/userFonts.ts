@@ -26,6 +26,7 @@ async function fetchList(): Promise<readonly UserFont[]> {
 async function bytesOf(font: UserFont): Promise<ArrayBuffer> {
   const path = `${USER_FONTS_PATH}/${encodeURIComponent(font.file)}`;
   const url = `${path}?v=${encodeURIComponent(font.version)}`;
+  // every PC's app shares the hosted shell's origin: its files are kept under its own scope
   const serverId = typeof location === "undefined" ? null : serverIdOfPath(location.pathname);
   const keptPath = serverId === null ? path : `${serverScopePath(serverId).slice(0, -1)}${path}`;
   const keptUrl = `${keptPath}?v=${encodeURIComponent(font.version)}`;
@@ -51,6 +52,7 @@ function addFace(font: UserFont, fonts: Pick<FontFaceSet, "add">): Promise<void>
   let added = faces.get(key);
   if (added) return added;
   added = bytesOf(font).then(async (bytes) => {
+    // the name as it is: FontFace takes it literally (quotes would become part of it), digits, "." and "+" too
     const face = new FontFace(font.family, bytes, { weight: String(font.weight), style: font.style });
     fonts.add(face);
     await face.loaded;

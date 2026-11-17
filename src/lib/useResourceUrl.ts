@@ -7,6 +7,9 @@ export interface ResourceUrlState {
   readonly error: unknown;
 }
 
+/**
+ * Change `retry` only when the caller has authorized another load of a failed resource.
+ */
 export function useResourceUrlState(path: string | null, retry = 0): ResourceUrlState {
   const transport = getTransport();
   const target = useMemo(() => ({ path, transport }), [path, transport, retry]);
@@ -30,6 +33,7 @@ export function useResourceUrlState(path: string | null, retry = 0): ResourceUrl
         if (live) setResolved({ target, state: { url: null, error } });
       }
     };
+    // Start effects, not render-time requests: StrictMode may discard a render or replay an effect.
     void load();
     return () => { live = false; abort.abort(); if (owned) URL.revokeObjectURL(owned); };
   }, [target, direct]);

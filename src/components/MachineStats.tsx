@@ -63,6 +63,10 @@ export function formatPcLoad(t: Translate, report: SystemReport): string | null 
   return parts.length > 0 ? parts.join(" · ") : null;
 }
 
+/**
+ * Asks only while `active` (lib/system.ts), and draws nothing for a herdr-core PC (whose server runs
+ * on this PC and cannot read that machine's load: server/system-stats.ts) or a PC that cannot say.
+ */
 export function PcLoadStatus({ machine, active = true }: { machine: Machine | null; active?: boolean }) {
   const t = useT();
   const enabled = active && machine !== null && machine.state === "connected" && machine.kind !== "hc";

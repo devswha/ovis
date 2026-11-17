@@ -60,6 +60,8 @@
 .pane-frame-close { color: inherit; pointer-events: auto; margin-inline-start: var(--space-2); }
 .pane-frame-menu, .pane-frame-zoom, .pane-frame-close { position: relative; z-index: calc(var(--z-banner) + 1); }
 .pane-frame-body { flex: 1; min-width: 0; min-height: 0; position: relative; }
+/* A lone pane's head floats over the terminal's top right corner, where a full-screen program may
+   draw a control of its own (Claude Code's diff panel close): only its ellipsis takes a press. */
 .pane-frame.is-single > .pane-frame-head { position: absolute; right: 0; top: var(--header-over, 0px); z-index: var(--z-banner); background: transparent; pointer-events: none; }
 .pane-frame.is-single .pane-frame-title { display: none; }
 @media (hover: hover) and (pointer: fine) and (not (any-pointer: coarse)) {

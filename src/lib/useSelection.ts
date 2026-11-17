@@ -85,6 +85,8 @@ export function useLinkLanding({ initialLink, otherRecheck, setOtherRosterTick, 
 }
 
 export function useSelectionMark({ selectedMachineId, selectedPaneId }: { selectedMachineId: string; selectedPaneId: string | null }) {
+  // Marked at commit, not in render: a render React throws away (Strict Mode, a replay) must not move the
+  // generation on, and every reader runs from an event or a reply, after the commit
   const selectionRef = useRef<SelectionMark>({ machineId: selectedMachineId, paneId: selectedPaneId, generation: 0 });
   useLayoutEffect(() => {
     selectionRef.current = markSelection(selectionRef.current, selectedMachineId, selectedPaneId);
@@ -138,6 +140,7 @@ export function useSelectTarget({ selectedMachineId, setConnected, setConnectedB
     setOutputStopped(false);
     setNotificationViewTarget(view && paneId !== null ? { machine_id: machineId, pane_id: paneId, view } : null);
     setTerminalPeek(null);
+    // this browser's choice only: herdr's focus, its TUI and every other device stay where they are
     storeSelection(machineId, paneId);
     pendingLink.current = null; pendingFile.current = null; setLinkLanded(true);
     selectionHint.current = null;
@@ -146,6 +149,7 @@ export function useSelectTarget({ selectedMachineId, setConnected, setConnectedB
   const selectTargetRef = useRef(selectTarget); selectTargetRef.current = selectTarget;
   const lastSeen = useRef<{ machine: string; pane: string; roster: NonNullable<typeof snapshot>; previous: string | null } | null>(null);
   useEffect(() => {
+    // An offline PC's cached roster cannot invalidate a selection.
     if (!snapshot || selectedMachine?.state !== "connected") return;
     const seen = lastSeen.current?.machine === selectedMachineId && lastSeen.current.pane === selectedPaneId ? lastSeen.current : null;
     const fallback = (current: typeof snapshot) => (seen && paneAfterClose(seen.roster, current, seen.pane, seen.previous, (scope, id) => lastViewedPane(scope, selectedMachineId, id)))
@@ -176,9 +180,13 @@ export function useSelectTarget({ selectedMachineId, setConnected, setConnectedB
       if (!landed.note) {
         if (land(landed)) return;
       } else {
+        // The combined roster is cached: a pane made just before the link opened can be missing
+        // from it. Ask this PC before saying the link's place has closed.
         let cancelled = false;
         void fetchSession(selectedMachineId).then((current) => ({ current, confirmed: resolveLink(current, linked) }), () => null).then((read) => {
           if (cancelled || pendingLink.current !== linked) return;
+          // A failed read is not evidence that anything closed: a pane still selected stays, and the
+          // link settles without a word.
           if (read === null) {
             if (selectedPaneId !== null) { land({ pane: null, workspace: null, note: null }); return; }
             if (!land({ ...landed, note: null })) setSelectedPaneId(fallback(snapshot));
@@ -197,6 +205,8 @@ export function useSelectTarget({ selectedMachineId, setConnected, setConnectedB
     if (selectedPaneId === null) { setSelectedPaneId(fallback(snapshot)); return; }
     const moving = (): boolean => movingPanes.current.has(paneStorageId(selectedMachineId, selectedPaneId));
     if (moving()) return;
+    // The combined roster is cached: a newly created pane can be selected before it
+    // appears there. Confirm absence against this PC before discarding the selection.
     let cancelled = false;
     void fetchSession(selectedMachineId).then((current) => {
       if (cancelled || moving() || current.panes.some((pane) => pane.pane_id === selectedPaneId)) return;
@@ -212,7 +222,7 @@ export function useSelectTarget({ selectedMachineId, setConnected, setConnectedB
       }
       setSelectedPaneId(fallback(current));
       setAutoSelected(true);
-    }).catch(() => { });
+    }).catch(() => { /* a failed read is not evidence that the pane disappeared */ });
     return () => { cancelled = true; };
   }, [snapshot, selectedPaneId, selectedMachineId, selectedMachine?.state, linkTick]);
   useEffect(() => {
@@ -267,6 +277,8 @@ export function useNotificationTargets({ machinesRef, selectTargetRef, selection
       setLinkTick((tick) => tick + 1);
       if (stale) void load();
     };
+    // a desktop link lands as the address's own link does: its pane once the roster says it is the
+    // link's, and until then no pane at all, only its PC, so nothing draws or attaches a pane it may not mean
     if (target.link) {
       const link = target.link;
       const landing = linkLanding(machinesRef.current, link);

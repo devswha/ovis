@@ -42,6 +42,7 @@ export function MarkdownDocuments({ paneId, onOpenFile }: MarkdownDocumentsProps
       }
     }, (reason: unknown) => {
       if (controller.signal.aborted) return;
+      // an older PC answers the route it does not know with its generic 404; a missing pane has its own code
       setLoad({ status: "error", oldBridge: reason instanceof ApiError && reason.status === 404 && reason.code === "not_found" });
     });
   }, [fetchPaneDocuments, paneId]);

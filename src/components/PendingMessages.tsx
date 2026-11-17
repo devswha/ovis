@@ -20,7 +20,14 @@ interface Props {
   onDiscard: (id: string) => Promise<void>;
 }
 
+/**
+ * A held message waits for Send now only while this connection holds it on the bridge: a copy
+ * restored from storage (another tab's live hold, or one from before a reload) is reviewed first,
+ * since the tab that held it may still send it.
+ */
 export function pendingStatus(message: Pick<PendingMessageView, "state" | "error" | "serverOwned" | "waiting">, busy: boolean, t: (text: string, vars?: Vars) => string): string {
+  // Only of a row the bridge still has: a copy kept after the connection dropped keeps the field it was last
+  // told, and the bridge sends nothing of it by itself
   if (message.waiting === "omp_starting" && message.serverOwned && (message.state === "queued" || message.state === "sending")) return t("Waiting for omp to start…");
   if (busy) return t("Sending…");
   if (message.state === "queued") return t("Next turn");

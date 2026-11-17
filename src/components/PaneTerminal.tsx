@@ -119,8 +119,10 @@ export interface PaneTerminalProps {
   autoSelected?: boolean;
   terminalFontSize: number;
   split?: boolean;
+  /** mouse reports sent per wheel event (settings): 1 is xterm's own one report */
   terminalWheelSpeed: number;
   terminalFontFamily: string;
+  /** the drawn theme's terminal colours (lib/themes.ts): xterm reads no CSS, so its theme object is given them */
   colors: TerminalColors;
   role?: ClientRole;
   onRoleAck?: (mode: ClientRole) => void;
@@ -206,6 +208,8 @@ export function PaneTerminal({
   const cachedRef = useRef(cached); cachedRef.current = cached;
   const watched = useContext(PaneWatchedContext);
   const watchedRef = useRef(watched); watchedRef.current = watched;
+  // a split tab's pane a phone keeps behind the one it shows sizes nothing: the pty is shared with
+  // every device, and a PC drawing the split would see it at the phone's size (#819)
   const shown = useContext(PaneShownContext);
   const shownRef = useRef(shown); shownRef.current = shown;
   const follow = useContext(PaneFollowContext);
@@ -226,6 +230,8 @@ export function PaneTerminal({
   const [searchState, setSearchState] = useState<TerminalSearchState | null>(null);
   const viewportIntent = useMemo(() => new ViewportIntentGate(), [machineId, paneId]);
   const viewportSearching = useSyncExternalStore(viewportIntent.subscribe, viewportIntent.isSearching, viewportIntent.isSearching);
+  // A find bar left open under the Terminal lens is not the peek's: the peek opens without it, or it
+  // would take the focus, the first Escape (the agent's) and a grid row.
   const [findPeek, setFindPeek] = useState(peek);
   if (findPeek !== peek) {
     setFindPeek(peek);
@@ -261,6 +267,7 @@ export function PaneTerminal({
   const lineScroll = useRef<((lines: number) => void) | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  /** OSC 8 links this app cannot open are not drawn (#739); its state ends with `term.reset()` */
   const hyperlinksRef = useRef(hyperlinkFilter());
   const retireOutputRef = useRef<() => void>(() => {});
   const socketRef = useRef<HerdrSocket | null>(null);
@@ -415,6 +422,7 @@ export function PaneTerminal({
   const idleReleaseRef = useRef(settings.releasePaneAway && directTyping);
   idleReleaseRef.current = settings.releasePaneAway && directTyping;
   const [idleView, setIdleView] = useState(false);
+  // input typed while disconnected, held for the user to review and send
   const [draftState, setDraftState] = useState<{ owner: string | null; value: InputDraft }>({ owner: null, value: EMPTY_DRAFT });
   const draft = draftState.value;
   const [actedWhileDropped, setActedWhileDropped] = useState(false);
@@ -492,6 +500,11 @@ export function PaneTerminal({
   const keyboardOwner = `${keyboardInstance}:${paneId === null ? "" : paneStorageId(machineId, paneId)}`;
   const keyboardOwnerRef = useRef(keyboardOwner);
   keyboardOwnerRef.current = keyboardOwner;
+  // Settings > Terminal > Keyboard only from the key bar (#1635): on a touch screen, until the control's
+  // Show asks for the keyboard, this pane's fields carry inputmode="none": a tap on the grid, the line,
+  // Send or a key still focuses them, and raises no keyboard. The request is the tap's, not the
+  // measurement's, which is blind to a floating keyboard or a zoomed page: it ends at Hide, at a
+  // keyboard measured going down (the back gesture), or when the focus leaves this pane's fields
   const [keyboardRequested, setKeyboardRequested] = useState(false);
   const keyboardControlUsable = connected && inputReady && !held && !ended && !viewOnly;
   const keyboardHeld = settings.terminalKeyboardOnRequest && coarse && !keyboardRequested && keyboardControlUsable;
@@ -544,6 +557,7 @@ export function PaneTerminal({
   useLayoutEffect(() => {
     if (lifetimeRef.current === lifetime) return;
     lifetimeRef.current = lifetime;
+    // input held a moment ago may not be saved yet (the effect above saves it after paint): to recovery with the rest
     if (paneId && draftState.owner === paneStorageId(machineId, paneId) && draft.text.trim() !== "" && !looksLikeKey(draft.text)) paneLifetimes.keep(machineId, paneId, "held", draft.text);
     let saved = EMPTY_DRAFT;
     try { saved = paneId ? restoreDraft(paneLifetimes.paneStorage.getItem(`ovis:terminal-draft:${paneStorageId(machineId, paneId)}`), Date.now()) : EMPTY_DRAFT; } catch {}
@@ -573,6 +587,8 @@ export function PaneTerminal({
       if (waits) release ??= submitRetention.retain(paneId);
       else { release?.(); release = undefined; }
     };
+    // Transfer retention before the submit promise releases its receipt claim. A React
+    // render/effect after that release would let navigation unmount the pane in between.
     const off = pendingMessages.subscribe(retainPending);
     retainPending();
     return () => { off(); release?.(); };
@@ -582,6 +598,8 @@ export function PaneTerminal({
   // a refused Send now's note outlives this mount: a pane left for another workspace unmounts, and
   // the note must still be there when the user comes back (it is never a retry, only the words)
   const [queueError, setQueueErrorState] = useState<{ owner: string; id: string; text: string } | null>(() => (queueOwner === null ? null : heldRowNotes.get(queueOwner) ?? null));
+  // the note is kept at once, not in the state update: a Send now answered after this pane
+  // unmounted (the user went to another workspace) runs no update here, and the note must stay
   const setQueueError = useCallback((note: { owner: string; id: string; text: string } | null): void => {
     if (note) heldRowNotes.set(note.owner, note);
     setQueueErrorState(note);
@@ -641,6 +659,9 @@ export function PaneTerminal({
     if (activeRef.current && wasAuto && !autoSelected && !chatViewRef.current && !coarseRef.current && !modalOpen() && !findOpenRef.current && !typeAheadFocused()) termRef.current?.focus();
   }, [autoSelected]);
 
+  // ask the server for the role change; the role-ack handler applies the local
+  // consequences (stdin gate, grid adoption or reclamation) once it is confirmed.
+  // The initial default is skipped: the server already treats fresh connections as interact.
   const lastSentRole = useRef<ClientRole>("interact");
   useEffect(() => {
     if (role === lastSentRole.current) return;
@@ -652,18 +673,26 @@ export function PaneTerminal({
 
   const { pressKey, toggleModifier, abortTurn } = useTypedKeys({ agent, agentStatus, barKeyRef, coarseRef, commitPendingText, compositionCommitPendingRef, composingRef, inputLineRef, modifiersRef, lockedRef, setLatch, consumeModifiers, paneId, reassertIfStaleRef, setInputError, socketRef, stopKeyRef, tRef, termRef });
 
+  // what a paste into the line is for: this PC's pane on this connection, while it can type there.
+  // Read at the tap and once the clipboard answers (TerminalInput.tsx): any difference drops the paste
+  /** the PC, pane, connection and input lease a paste (the input line) or an attach (direct typing) is for; null while it cannot take one */
   const inputTarget = useCallback((line: boolean): string | null => {
     const socket = socketRef.current;
     const pane = paneRef.current;
+    // a pane put out of sight (another pane picked in the split) is no longer where the user pastes
     if (!socket || pane === null || !socket.connected || !activeRef.current || !presentedRef.current || secretRef.current !== null || observeRef.current || heldRef.current || endedRef.current || releasedRef.current || inputLineRef.current !== line) return null;
     return `${paneStorageId(machineId, pane)}:${socket.inputLease(pane)}`;
   }, [machineId]);
   const pasteTarget = useCallback(() => inputTarget(true), [inputTarget]);
+  // the key bar's Attach files: what the tap found must still hold when the files are stored, or nothing is typed
   const attachTarget = useCallback(() => {
     const target = inputTarget(false);
     return target === null ? null : (files: File[]) => attachFilesRef.current(files, () => inputTarget(false) === target);
   }, [inputTarget]);
 
+  // the key bar's Paste goes into the input line, never into the grid: with the line put away
+  // (direct typing), the bar says so beside the Input line key it names, in its own row (never over
+  // the grid's output), and changes nothing, the mode included
   const [pasteGuidance, setPasteGuidance] = useState(false);
   const pasteGuidanceTimerRef = useRef<number | null>(null);
   const dismissPasteGuidance = useCallback(() => {
@@ -729,8 +758,13 @@ export function PaneTerminal({
     keyboardControl.settled(action, !keyboardTypingField(document.activeElement));
   }, []);
 
+  // While the agent runs, append to its held messages. Each requires an explicit send.
+  // a question in Codex's queue leaves the composer alone: Codex keeps working, and a
+  // message ("stop, don't touch prod") must reach it, not become the answer; its card answers it
+  // a fallback card is answered with its own buttons: what the user types still goes to the agent
   const answering = chatView && chatPrompt !== null && chatPrompt.pane === paneId && !chatPrompt.value.queued && !chatPrompt.value.fallback ? chatPrompt.value : null;
   const answerPending = answering !== null && chatPrompt?.answered === true;
+  // ...and while it is open in the terminal it holds the input: nothing is sent into it
   const heldByOpenQueue = chatView && chatPrompt !== null && chatPrompt.pane === paneId && chatPrompt.value.queued === "open";
   const readyForQueue = agentStatus !== undefined && QUEUE_READY_STATUS[agentStatus] === true;
   const shortPhone = useMediaQuery(SHORT_PHONE_QUERY);
@@ -817,6 +851,7 @@ export function PaneTerminal({
       </>,
     });
     if (clipboardNote) noticeItems.push({ id: `${owner}:clipboard`, priority: "notice", revision: clipboardNote, warning: false, mark: <ClipboardCheck />, text: clipboardNote });
+    // a peek ended by hand over a screen still open in the terminal: the next message would land in it
     if (stillOpen !== null && stillOpen.pane === paneId) noticeItems.push({
       id: `${owner}:still-open`, priority: "urgent", revision: stillOpen.named ? stillOpen.command : "", warning: false, mark: <SquareTerminal />,
       text: stillOpen.named ? t("{command} is still open in the terminal", { command: stillOpen.command }) : t("A screen is still open in the terminal"),
@@ -841,6 +876,7 @@ export function PaneTerminal({
   }, [showSentCommand]);
   const { composerSend, actOnPending, waitingAnswer } = useComposerSends({ agent, agentStatus, answerPanePrompt, answering, answerPending, draftHeldForRef, ended, heldByOpenQueue, heldRef, inputAtRest, inputRowNow, knownOutcomes, observeRef, paneId, paneRef, pendingAnswer, pendingScopeRef, queueOwner, queueStore, machineId, secretRef, setPendingAnswer, setPromptRefresh, settings, showSentCommand: showSentAndName, socketRef, stillOpenNote, stillOpenNotedRef, stillOpenRef, submitComposerMessage, submitRetention, t, chatNavigation, setChatLocalSend, sessionRef });
 
+  // Capture the owner's pane for the entire upload batch, even across a pane switch.
   const uploadImage = useCallback((file: Blob) => uploadPaneImage(paneId ?? "", file), [paneId]);
 
   useEffect(() => {
@@ -933,6 +969,8 @@ export function PaneTerminal({
   const waitingWords = useAnnouncedText(paneId !== null && !chatView && !observing && connected && !inputReady && !held && !ended && !released ? t("Waiting for terminal input…") : null);
 
   return (
+    // A press on the peek's dimmed, inert composer lands on the stack itself: it keeps the keyboard
+    // in the grid, so Escape still reaches the agent, instead of handing focus to the pane frame
     <div ref={stackRef} className={`terminal-stack${chatMounted ? " is-chat" : ""}${peek !== null ? " is-peek" : ""}${greeted ? " is-greeted" : ""}`} data-pane-owner={paneId === null ? undefined : paneStorageId(machineId, paneId)} data-direct-typing={coarse && directTyping && !chatView ? "" : undefined}
       onMouseDown={peek !== null && !coarse ? (event) => {
         if (event.target !== event.currentTarget) return;
@@ -1240,6 +1278,8 @@ export function PaneTerminal({
           suggestion={chatPrompt?.pane !== paneId && chatSuggestion?.pane === paneId ? chatSuggestion.value : null}
           restored={chatPrompt?.pane !== paneId && chatRestored?.pane === paneId ? chatRestored.value : null}
           notices={composerNotices}
+          // a device that only watches: the composer locks what writes from this role alone, in its own
+          // render. Its lists (background tasks, side conversations) only read, so their rows stay usable
           role={viewOnly ? "observe" : role}
           onOpenHistory={historyOffered ? onOpenHistory : undefined}
           greeting={greetingDue ? (

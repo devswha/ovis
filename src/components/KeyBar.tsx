@@ -26,6 +26,7 @@ export interface KeyBarProps {
   directTyping?: boolean;
   onToggleDirect?: () => void;
   directDisabled?: boolean;
+  /** on a touch screen: pastes the clipboard into the terminal's input line (never into the grid), from this tap */
   onPaste?: () => void;
   pasteDisabled?: boolean;
   note?: string | null;
@@ -82,6 +83,10 @@ function holdKeyboardForTap(): void {
 
 interface KeyProps {
   disabled?: boolean;
+  /**
+   * live, so a press still keeps the focus where it is, but doing nothing (aria-disabled): a
+   * disabled button would let the press move the focus, and end the composition it was guarding
+   */
   refused?: boolean;
   command?: boolean;
   describedBy?: string;
@@ -163,6 +168,7 @@ function Key({ dataKey, label, pressed, latch, expanded, onPress, onHoldEnd, chi
         pointer.pendingClick = true;
         pointer.cancelClick = false;
         repeatRef.current?.press(event.clientX, event.clientY);
+        // Capture keeps release/move visible outside the key; browser panning can still cancel it.
         try { event.currentTarget.setPointerCapture(event.pointerId); } catch {}
       }}
       onPointerMove={repeatable ? (event) => {
@@ -253,6 +259,11 @@ export const KEY_SPOKEN_NAMES: ReadonlyArray<{ key: string; label: string }> = [
   { key: "-", label: "Minus" },
 ];
 
+/**
+ * Keys are tabIndex -1 on purpose: they exist for touch, a hardware keyboard already has all of
+ * them. Hence role="group", not toolbar: a toolbar promises arrow-key navigation between items,
+ * which these skip.
+ */
 export function KeyBar({ onKey, onKeyHoldEnd, modifiers, lockedModifiers, onToggleModifier, items, expanded = false, onToggleExpanded, directTyping, onToggleDirect, directDisabled, onPaste, pasteDisabled, note, onNoteDismiss, onToggleKeyboard, keyboardOwner = "", keyboardDisabled, keyboardRefused, onAttach, disabled, holdScope }: KeyBarProps) {
   const t = useT();
   const noteId = useId();
@@ -264,6 +275,7 @@ export function KeyBar({ onKey, onKeyHoldEnd, modifiers, lockedModifiers, onTogg
     const bar = barRef.current;
     if (!bar) return;
     const place = (): void => {
+      // measured without the room the class adds, which would otherwise keep itself
       bar.classList.remove("is-at-screen-bottom");
       bar.classList.toggle("is-at-screen-bottom", bar.getBoundingClientRect().bottom >= window.innerHeight - 1);
     };

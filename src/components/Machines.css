@@ -202,6 +202,10 @@ button.machine-title:focus-visible { outline-offset: calc(var(--ring-offset) * -
   .machine-group:not(.is-two-line) .machine-toggle { padding-inline-start: calc(var(--touch-target) - var(--space-6)); }
 }
 
+/* a + that is off (its PC away, a device that only watches) rests in view there wherever a finger may come, beside a
+   mouse too (SidebarSections.css hides a PC's actions at rest only where none can): it keeps more ink than the 0.55
+   of a row action (Sidebar.css), the least round step that holds its glyph at 3:1 on the drawer's surface in every
+   shipped theme */
 @media (max-width: 768px) and (any-pointer: coarse) {
   .machine-header > .machine-new:disabled { opacity: 0.75; }
 }

@@ -47,6 +47,7 @@ describe("localPageAddress", () => {
     expect(localPageAddress(" :8448 ", lan)).toBe("http://localhost:8448/");
     expect(localPageAddress("127.0.0.1:8448/#/repository?path=/src", lan)).toBe("http://127.0.0.1:8448/#/repository?path=/src");
     expect(localPageAddress("[::1]:3000/docs", lan)).toBe("http://[::1]:3000/docs");
+    // an https app frames only https: a port `tailscale serve` fronts is reached there
     expect(localPageAddress("localhost:8448", tls)).toBe("https://localhost:8448/");
     expect(localPageAddress("http://localhost:8448", tls)).toBe("http://localhost:8448/");
     expect(localPageAddress("HTTPS://LOCALHOST:8448/", lan)).toBe("https://localhost:8448/");

@@ -1,3 +1,6 @@
+/**
+ * Nothing is stored past the page; a row that leaves the list leaves its summary behind.
+ */
 import { useEffect, useRef, useSyncExternalStore } from "react";
 import { PANE_SUMMARY_MAX_IDS } from "../../shared/pane-summary.ts";
 import type { PaneSummaries, PaneSummary } from "../../shared/protocol.ts";
@@ -44,6 +47,7 @@ function timeOf(stamp: string | null, offset: number): number | null {
 }
 
 const stampOrNull = (value: unknown): value is string | null => value === null || typeof value === "string";
+/** An answer's summary as the wire types it: another PC's comes through the proxy unchecked. */
 function wellFormed(value: unknown): value is PaneSummary {
   if (typeof value !== "object" || value === null) return false;
   const summary = value as Record<string, unknown>;

@@ -55,6 +55,7 @@ interface Props {
   renameRequest?: RenameRequest | null;
   closeTabRequest?: RenameRequest | null;
   tabsInHeader?: boolean;
+  /** a watching device sends no settings: it sees a locked pane's Unlock and cannot use it, as in the Agents list */
   watching?: boolean;
   solo?: boolean;
 }
@@ -85,6 +86,7 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
   const mirrorWraps = settings.terminalMirrorWrap ?? narrowScreen;
   const wideGrid = useSyncExternalStore(wideGrids.subscribe, wideGrids.snapshot, wideGrids.snapshot);
   const machineId = useMachineId();
+  // the Herdr app's window owns this PC's splits (lib/machineContext.tsx): its panes are not named, swapped, split, zoomed or resized here
   const appLayout = useAppLayout();
   const apple = /Mac|iPhone|iPad/.test(navigator.platform);
   const coarse = useMediaQuery("(pointer: coarse)");
@@ -193,6 +195,9 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
     const made = await api.splitPane(target.pane_id, direction, true);
     if (alive.current && latest.current.tabId === tabId && latest.current.selection === selection) onSelect(made.pane_id);
   };
+  // a close herdr has not yet taken out of the roster, by workspace: until then the roster still counts
+  // the pane, so a second close there (another press of a bound key) would take the workspace's last pane
+  // without asking, or ask herdr for the same pane again; it waits for the roster instead
   const closingIn = useRef(new Map<string, string>());
   useEffect(() => {
     for (const [workspace, paneId] of closingIn.current) if (!snapshot?.panes.some((item) => item.pane_id === paneId)) closingIn.current.delete(workspace);
@@ -374,6 +379,7 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
         aria-label={displayPaneTitle(item)} aria-current={active ? "true" : undefined} aria-hidden={hidden || undefined} inert={hidden || undefined} tabIndex={-1}
         style={!offTab && (alone === item.pane_id || stacked) ? { left: 0, top: 0, width: "100%", height: "100%" }
           : { left: `${cell.left}%`, top: `${cell.top}%`, width: `${cell.width}%`, height: `${cell.height}%` }}
+        // a menu asked for from the keyboard (Shift+F10, the Menu key) comes with no pointer: the last touch is not it
         onKeyDownCapture={() => { touchPress.current = false; }}
         onPointerDownCapture={(event) => {
           touchPress.current = event.pointerType === "touch" || event.pointerType === "pen";
@@ -385,6 +391,7 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
           const titleOrFrame = element?.closest(".pane-frame-head") || element === event.currentTarget;
           if (event.button === 0 && !paneContextPress(event, apple) && !coarse && titleOrFrame && !element?.closest("button")) {
             // Cancelling pointerdown also cancels the title's native mouse drag.
+            // A click focuses below; a drag suppresses that click.
             if (onOpenInHalf && element?.closest(".pane-frame-head")) return;
             event.preventDefault();
             const frame = event.currentTarget;
@@ -423,6 +430,7 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
             onClick={(event) => { zoom(item); if (event.detail > 0) paneInput(event.currentTarget.closest(".pane-frame"))?.focus({ preventScroll: true }); }}>{zoomedHere ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}</button>}
           {zoomable && !offTab && !paneLocked(item.pane_id) && <button type="button" className="icon-button pane-frame-close" aria-label={t("Close pane")} title={t("Close pane")} disabled={watching}
             // Safari focuses no button a click pressed: focused here, it is the confirmation's opener, which Cancel and Escape hand back to
+            // a double click's second press may land on the neighbour that took this corner: only a first press closes
             onClick={(event) => { if (event.detail > 1) return; event.currentTarget.focus({ preventScroll: true }); tally(() => usageCounters.paneUse("close_pane_by_button", machineId)); requestClose(item); }}><X aria-hidden="true" /></button>}
         </div>}
         <div className="pane-frame-body"><PaneCachedContext.Provider value={cell.cached && !cell.retained}><PaneWatchedContext.Provider value={cell.cached && !cell.retained && watchedTabs.has(item.tab_id)}><PanePresentedContext.Provider value={!offTab}><PaneShownContext.Provider value={!hidden}>{renderPane(item, active, alone === null && cells.length > 1)}</PaneShownContext.Provider></PanePresentedContext.Provider></PaneWatchedContext.Provider></PaneCachedContext.Provider></div>

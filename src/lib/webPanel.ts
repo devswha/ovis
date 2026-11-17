@@ -23,6 +23,14 @@ export function shouldOpenWebPage(
 
 const LOOPBACK = /^(?:localhost|[^.]+(?:\.[^.]+)*\.localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|\[::1?\])$/i;
 
+/**
+ * Only a page served
+ * by the PC this app runs on is framed, on another port than the app's: the app's policy
+ * (server/static.ts) frames that host alone, and most other sites refuse to be framed anyway.
+ * A loopback name means that PC, so it is reached under the host the browser used for the app:
+ * from another computer, `localhost:5173` would be that computer's own. An https app cannot
+ * frame an http page (mixed content), so that one opens in a tab too.
+ */
 export function panelUrl(uri: string, app: AppLocation): string | null {
   if (!/^https?:\/\//i.test(uri)) return null;
   let url: URL;
@@ -51,6 +59,7 @@ export function localPageAddress(query: string, app: Pick<AppLocation, "protocol
   const [, scheme = app.protocol.slice(0, -1), host = "localhost", port = "", rest = "/"] = match;
   const number = Number(port);
   if (number < 1 || number > 65535) return null;
+  // the pattern lets an octet past 255 through (`127.999.0.1`), which no URL holds
   try {
     return new URL(`${scheme.toLowerCase()}://${host}:${port}${rest}`).href;
   } catch {

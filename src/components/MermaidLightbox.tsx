@@ -24,6 +24,7 @@ export function zoomAt(view: View, factor: number, px: number, py: number): View
   return { scale, x: px - (px - view.x) * k, y: py - (py - view.y) * k };
 }
 
+/** `svg` is markup drawn into the page (Mermaid's own sanitized output); `src` is a figure drawn as an image. */
 export function MermaidLightbox({ svg, src, onClose }: ({ svg: string; src?: undefined } | { svg?: undefined; src: string }) & { onClose: () => void }) {
   const t = useT();
   const close = useRef<HTMLButtonElement>(null);

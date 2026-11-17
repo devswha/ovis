@@ -16,6 +16,12 @@ const OPEN_POLL_MS = 3000;
 const CLOSED_POLL_MS = 10_000;
 const READ_DEADLINE_MS = 10_000;
 
+/**
+ * OMP keeps these out of its transcript and its model's context, so Chat does not draw them as
+ * turns: they are listed here, newest first, read-only, as OMP's own `/btw` history lists them.
+ * A `/btw` answer is saved without touching the transcript, so the list is read on a timer, not
+ * on the conversation's updates.
+ */
 export function OmpBtw(props: { paneId: string }) {
   const { settings } = useSettings();
   return settings.composerBtw ? <OmpBtwChip {...props} /> : null;
@@ -43,6 +49,8 @@ function OmpBtwChip({ paneId }: { paneId: string }) {
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let reading: AbortController | undefined;
+    // a read that stalls is given up at its deadline and asked again, so the list never stops refreshing;
+    // a hidden page asks nothing and looks again on the next tick
     const load = (): void => {
       const later = (): void => { if (alive) timer = setTimeout(load, open ? OPEN_POLL_MS : CLOSED_POLL_MS); };
       if (document.visibilityState === "hidden") { later(); return; }

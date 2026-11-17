@@ -117,6 +117,8 @@ describe("a desktop link to a pane the cached roster lacks", () => {
   let reads: number;
   let landed: Promise<void>;
 
+  // workspace 3 "alpha" (t1 selected, t2 in front), workspace 4 "beta" (t4, herdr's focus), and
+  // "gamma" (t5) with an id as herdr-core gives them, hyphens included
   const gamma = "ovis-367b423f-b9d6-4055-8a21-95d49868783e";
   const snapshot = {
     workspaces: [{ workspace_id: "3", label: "alpha", active_tab_id: "3:1" }, { workspace_id: "4", label: "beta", active_tab_id: "4:1" }, { workspace_id: gamma, label: "gamma", active_tab_id: `${gamma}:1` }],

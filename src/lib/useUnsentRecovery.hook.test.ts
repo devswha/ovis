@@ -40,6 +40,7 @@ function mount(): { hook: () => Hook; unmount: () => void } {
 
 it("keeps the record of text put in the box of a PC whose herdr is not proven, and lets one go that storage kept", () => {
   const pane = { pane_id: "w1:p1" } as HerdrPane;
+  // an older bridge names no herdr: its panes' drafts live in this page alone
   paneLifetimes.observe([{ id: "older-bridge", snapshot: { panes: [] } } as unknown as Machine], (item) => item.pane_id);
   paneLifetimes.observe([{ id: "proven-pc", snapshot: { panes: [], herdr_lifetime: "recovery-herdr" } } as unknown as Machine], (item) => item.pane_id);
   const { hook, unmount } = mount();

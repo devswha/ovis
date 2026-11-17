@@ -63,6 +63,8 @@ interface Props { machines: Machine[]; footerStart?: ReactNode; allMachines?: Ma
 export function MachineSidebar(props: Props) {
   const t = useT();
   const activity = props.activity;
+  // the filter's query lives here and nowhere else: not in storage, not in the address, not past this
+  // mount (lib/sidebarFilter.ts).
   const [query, setQuery] = useState("");
   const filterId = useId();
   const suggestionsId = useId();
@@ -83,6 +85,7 @@ export function MachineSidebar(props: Props) {
   const loneHostName = loneHost === null ? null : props.machines[0]!.name || null;
   const filter = useMemo(() => sidebarFilter(query, props.machines, { machineId: props.selectedMachineId, paneId: props.selectedPaneId }, t, branchLabels, unnamed), [query, props.machines, props.selectedMachineId, props.selectedPaneId, t, branchLabels, unnamed]);
   const filterView = useMemo(() => ({ filter, reportBranches }), [filter, reportBranches]);
+  // the field offers the labels the rows show, as the browser's own suggestions: nothing typed is kept
   const suggestions = useMemo(() => filterSuggestions(props.machines, branchLabels, unnamed), [props.machines, branchLabels, unnamed]);
   const { settings } = useSettings();
   const shell = useRef<HTMLDivElement>(null);
@@ -239,6 +242,8 @@ export function MachineSidebar(props: Props) {
           <ArrowLeftRight aria-hidden="true" />
         </button>
       )}
+      {/* no Install app here: a page knows it is installed only in the app's own window, so a row kept
+          showing in every tab. */}
       <div className="sidebar-footer-row">
         <button className="btn btn-ghost sidebar-footer-action sidebar-footer-settings" aria-label={t("Settings")} title={t("Settings (⌘⇧,)")} onClick={() => { tally(() => props.actions.counted?.("settings", "button")); props.actions.openSettings(); }}><Settings aria-hidden="true" /></button>
         <UsageMeters watching={props.watching} onLocalLogin={props.watching ? undefined : props.onUsageLogin} />
@@ -295,12 +300,18 @@ function MachineGroup({ machine, headerless = false, canHide, onHide, ...props }
   })();
   const nextStep = !noticed && machine.kind === "local" && machine.error !== null && saysHerdrAway(machine.error) ? t("Start herdr on this PC, or check HERDR_SOCKET.")
     : ssh !== null ? t("Reconnect or change its address from Manage PC, the sliders beside its name.") : null;
+  // one request at a time: a double-clicked Disconnect/Connect can otherwise race and leave this
+  // UI's idea of the state opposite the server's until the next refetch
   const [busy, setBusy] = useState(false);
+  // the state disables the items; the ref refuses a second request that lands before that render
   const inFlight = useRef(false);
   const mutate = async (method: string, body?: unknown, inDialog = false) => {
     if (inFlight.current) return;
     inFlight.current = true;
     setBusy(true);
+    // The selected PC moves to this one before it is removed: the server tells every tab the
+    // roster without it before it answers, and a selection on a PC the roster has dropped reads
+    // as one removed elsewhere ("That link's PC is not set up here").
     const leaving = method === "DELETE" && props.selectedMachineId === machine.id ? { pane: props.selectedPaneId } : null;
     if (leaving) props.onSelect("local", null);
     try { await machineRequest(`/${machine.id}`, method, body); setError(null); }
@@ -347,6 +358,7 @@ function MachineGroup({ machine, headerless = false, canHide, onHide, ...props }
   };
   const agentCount = useMemo(() => sidebarAgents(machine.snapshot).length, [machine.snapshot]);
   const current = props.selectedMachineId === machine.id;
+  // a watching device is refused a new workspace (G-040): the + stays where it is, disabled, and says why
   const canCreate = online && !props.watching;
   const createTitle = props.watching ? `${t("New workspace")} · ${t("View only")}` : t("New workspace");
   const foldLabel = folded ? t("Expand {name}", { name: machine.name }) : t("Collapse {name}", { name: machine.name });
@@ -494,16 +506,23 @@ function MachineActionNotice({ machine, onSetup }: { machine: Machine; onSetup(m
     </p>
     {update ? <div className="machine-action-buttons">
       <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void run(() => machineRequest(`/${encodeURIComponent(machine.id)}/update-bridge`, "POST", shownRevision(machine)).catch((e) => { if (!machine.herdr_profile_id) throw e; onSetup(machine, true); }))}>{t("Update bridge")}</button>
+      {/* a PC that needs a password or a new host key goes through its dialog */}
       <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => onSetup(machine, true)}>{t("Sign in and update…")}</button>
     </div> : <button type="button" className="btn btn-primary" onClick={() => onSetup(machine, false)}>{t("Set up web access")}</button>}
     {error && <p className="machine-error" role="alert">{error}</p>}
   </div>;
 }
 
+/**
+ * Where a PC's own Ovis answers, to open it there: an address the PC gave as a link (an https one
+ * only), else its host and port as text to copy, since nothing here proves that address opens from
+ * this device (a server bound to that PC's loopback answers only there or through its own tailnet).
+ */
 export function OwnOvisAddress({ own }: { own: Pick<RemoteOvis, "address" | "url"> }) {
   const t = useT();
   const [copied, setCopied] = useState(false);
   const field = useRef<HTMLElement>(null);
+  // the host it named is shown with the link: an address that PC chose, which the link text alone would hide
   if (own.url) return <p className="machine-own-address"><a href={own.url} target="_blank" rel="noopener noreferrer">{t("Open that PC's Ovis")}</a><code>{urlHost(own.url)}</code></p>;
   return <div className="machine-own-address">
     <span>{t("Open it on that PC or through its own tailnet address:")}</span>

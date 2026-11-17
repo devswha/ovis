@@ -18,6 +18,7 @@ const listings: Record<string, unknown> = {
 describe("useWorktreeBranches", () => {
   let renderer: ReactTestRenderer | null = null;
   let refused = false;
+  /** while set, the PC's bridge is from before GET /api/worktree/inventory and answers it as an unknown endpoint */
   let before = false;
   let fetchSpy: ReturnType<typeof spyOn<typeof globalThis, "fetch">>;
   const asked = () => fetchSpy.mock.calls.map(([input]) => new URL(String(input), "http://pc"));

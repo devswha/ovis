@@ -58,6 +58,8 @@ export function InboxRail({ onExit, onInbox, waiting, alerts, onSettings, pcs, s
   const { machines, selectedId, connection, saidByThread, onSelect } = pcs;
   const pcLabel = pcsLabel(pcs, t);
   const PcGlyph = machines.length > 0 && machines.every((machine) => pcState(machine, connection) === "offline") ? MonitorOff : Monitor;
+  // The same word is announced from a line that is in the document before it (lib/useAnnouncedText.ts):
+  // a button's name is not read out when it changes.
   const dot = saidByThread ? null : connection;
   const announced = useAnnouncedText(dot === null ? null : pcWord(dot, t));
   return (

@@ -44,6 +44,9 @@ const sortedKeys = (_key: string, value: unknown): unknown => value !== null && 
 
 export function sameData(a: unknown, b: unknown): boolean {
   if (a === b) return true;
+  // Sorting every object's keys costs about ten times as much, and runs for any two
+  // encodings of the same length: equal data in another key order (a row restored from a compact one beside
+  // a full read), and a change that keeps the length (working to blocked, idle to done, a counter's digits).
   const plain = JSON.stringify(a);
   const other = JSON.stringify(b);
   return plain === other || (plain?.length === other?.length && JSON.stringify(a, sortedKeys) === JSON.stringify(b, sortedKeys));
@@ -132,9 +135,12 @@ export function useRosterLoader({ locked, healthFailing, rosterIn, setMachines, 
     else stateWatch.subscription(update);
     const previous = stream.current.open && stream.current.localConnected;
     if (Array.isArray(update)) stream.current.localConnected = localConnectedIn(update);
+    // Every opening, a switch from SSE to the terminal socket included, waits for its own first
+    // roster (each subscription sends one at once) rather than trusting the last transport's.
     else if (update === "opened") stream.current = { open: true, localConnected: false };
     else stream.current = { open: false, localConnected: false };
     const slow = stream.current.open && stream.current.localConnected;
+    // Repeated pushed rosters must not postpone the backstop.
     if (previous !== slow) polling.current?.(!slow && lockedRef.current !== true);
   }, []);
   const healthFailingRef = useRef(healthFailing);
@@ -173,6 +179,9 @@ export function useRosterLoader({ locked, healthFailing, rosterIn, setMachines, 
         setMachineRosterLoaded(true);
         setError(null); setLocked(false);
       }, full ? (next) => {
+        // A PC whose own messages keep overtaking its reads would never recover: after RECOVERY_DROPS such
+        // reads, the next one begun in this recovery is applied anyway, with the pane statuses that came while
+        // it was out on top
         const { machines: waiting, told } = recovery.current;
         const recovered = next.flatMap((machine) => {
           const recovering = waiting.get(machine.id);
@@ -296,6 +305,7 @@ export function useRosterEvents({ onPaneMoved, machineSessions, locked, onRoster
   getTakeNotificationTargetRef: () => RefObject<(target: NotificationTarget) => void>;
 }) {
   useCloseSessionsWhenLocked(machineSessions, locked);
+  // The local socket watches every PC, even when no terminal is selected; older servers use SSE.
   useEffect(() => {
     if (locked !== false) return;
     const onMessage = (payload: MachineEvent, kept: ReadonlySet<string>) => {
@@ -364,6 +374,7 @@ export function useRosterEvents({ onPaneMoved, machineSessions, locked, onRoster
         setNotificationViewTarget(null); setTerminalPeek(null);
         setAutoSelected(true);
       }
+      // told before the structure change of the move: the pane's state and view go to the new ID first
       if (message.type === "pane-moved") onPaneMoved(machine.id, message.from, message.to);
       if (message.type === "session-changed" || message.type === "pane-exited") {
         paneSessionsMoving(machine.id);
@@ -372,7 +383,11 @@ export function useRosterEvents({ onPaneMoved, machineSessions, locked, onRoster
     };
     const stop = keepMachineEvents(machineSessions.get("local").socket, {
       opened: () => { onRosterStream("opened"); preferencesResubscribedRef.current(); },
+      // lost (the browser reconnects by itself): a shared-settings save waits for that instead of retrying
       lost: () => { onRosterStream("lost"); preferencesDisconnectedRef.current(); },
+      // the browser gave up on it (a proxy's 502 during a restart): a save nobody refused stops waiting for
+      // it while a new one is opened, and a refused one waits for that one's opening document (after a 401
+      // the next poll locks the app, which ends this effect and its wait)
       closed: () => { onRosterStream("closed"); preferencesClosedRef.current(); },
       message: onMessage,
       previous: (machineId) => machinesRef.current.find((machine) => machine.id === machineId),

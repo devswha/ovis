@@ -54,6 +54,7 @@ export interface NewSessionDialogProps {
   onDraft?: (fields: DialogFields) => void;
   worktrees?: readonly string[];
   onOpenPane?: (paneId: string) => void;
+  /** this device only watches: a setup types into the PC's terminal, so Add another agent is not offered */
   watching?: boolean;
   groupKept?: (groupOf: Readonly<Record<string, string>>) => ReadonlySet<string>;
 }
@@ -177,6 +178,7 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onPend
   const shownFolders = recentFolders.filter((path) => !passingFolder(path, worktrees)).slice(0, RECENT_FOLDERS_SHOWN);
   const firstFieldRef = useRef<HTMLButtonElement>(null);
   const promptField = useRef<HTMLTextAreaElement>(null);
+  // one Start at a time, whatever the fields' disabled state has rendered yet: a double tap sends one create
   const guard = useRef(inFlightGuard());
   const cwdField = useRef<HTMLInputElement>(null);
   const showPathEnd = (): void => {
@@ -334,6 +336,8 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onPend
     if (!next.ultracode) setUltracode(false);
   };
 
+  // Its installer may still be editing the shell profile the PC reads the PATH from: until then the
+  // dialog says why and reads again, every READ_AGAIN_MS for about a minute (lib/latestRead.ts readAgainUntil)
   const addedAgent = (kind: string): void => {
     const opening = openings.current;
     setAdding(false);
@@ -362,6 +366,8 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onPend
     const field = promptField.current;
     const at = field !== null && document.activeElement === field ? field.selectionEnd : prompt.length;
     const next = insertToken(prompt, at, skillToken(skill));
+    // committed now and the caret placed in the same task, as the composer's completions are: a
+    // placement deferred to the next frame would land behind a key typed right after the tap
     flushSync(() => setPrompt(next.text));
     const box = promptField.current;
     if (box === null) return;
@@ -574,6 +580,7 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onPend
                 <option value="">{t("Agent default")}</option>
                 {can.efforts.map((level) => <option key={level} value={level}>{level}</option>)}
               </select>
+              {/* dsh-tui keeps the level in its own file for every later session (server/agent-launch.ts) */}
               <span id="new-session-effort-hint" className="field-hint">{agentKind === "dsh-tui" ? t("Saved as dsh-tui's default for every later session, outside Ovis too. A default set in dsh-tui's /settings wins over it.") : t("Levels depend on the model.")}</span>
             </div>}
           </div>}

@@ -52,6 +52,7 @@ afterEach(async () => {
   }
 });
 
+/** The frame has the focus and the window lost it: what a browser reports when the focus goes into a page. */
 const intoPage = async (): Promise<void> => { doc.activeElement = frame; await act(async () => win.fire("blur", false)); };
 const tab = async (defaultPrevented = false): Promise<void> => { await act(async () => win.fire("keydown", false, { key: "Tab", defaultPrevented })); };
 

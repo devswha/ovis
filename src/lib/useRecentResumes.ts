@@ -1,3 +1,8 @@
+/**
+ * The sessions Resume started a moment ago (lib/sessionHistory.ts RecentResume), kept by App for as
+ * long as they stand: across the session list's openings, so a list reopened before herdr has
+ * reported the new pane's session offers Open (the new pane) and not a second Resume.
+ */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { HerdrPane } from "../../shared/protocol.ts";
 import { observeRecentResume, recentResumeEnded, type RecentResume } from "./sessionHistory.ts";

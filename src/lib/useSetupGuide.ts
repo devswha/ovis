@@ -35,6 +35,8 @@ export function useSetupGuide({ enabled, workspaces, pairingGate, watching, show
   const [settled, setSettled] = useState(record !== null || savedSettings);
   const openedHere = useRef(false);
   const lastWrite = useRef<string | null>(null);
+  // a watching device sets nothing up: no guide is restored, reopened or kept for it (the server refuses
+  // its installs and workspaces anyway, as #2330's Settings hides Install for it)
   const watchingRef = useRef(watching);
   watchingRef.current = watching;
   const enabledRef = useRef(enabled);
@@ -42,6 +44,7 @@ export function useSetupGuide({ enabled, workspaces, pairingGate, watching, show
 
   useEffect(() => {
     if (!enabled || decided.current) return;
+    // no answer, or a server without shared settings, is not proof of a fresh install
     fetchPreferences().then((preferences) => setSharedRevision(preferences?.revision ?? -1), () => setSharedRevision(-1));
   }, [enabled]);
 
@@ -99,6 +102,7 @@ export function useSetupGuide({ enabled, workspaces, pairingGate, watching, show
     if (store !== null) { saveGuide(store, null); if (begun) setupRowOn(store); }
   }, []);
   const resume = useCallback(() => { pausedRef.current = false; setPaused(false); }, []);
+  // turned into a watching device (its pairing changed): an open guide goes, without closing it for this browser
   useEffect(() => { if (watching) { setGuide(null); setPaused(false); } }, [watching]);
   const finish = useCallback((select: () => void) => {
     const aside = pausedRef.current;
@@ -113,11 +117,16 @@ export function useSetupGuide({ enabled, workspaces, pairingGate, watching, show
   return { guide: watching ? null : guide, settled: settled || watching, paused, dispatch, close, resume, stepAside, finish, ticket, voidTickets };
 }
 
+/**
+ * Closing the guide stops it: no retry reads again, and no late answer turns usage on
+ * over a choice made since in Settings.
+ */
 export function useSignedInUsage(ready: readonly string[], read: (refresh: boolean) => Promise<readonly string[]>, showing: boolean, turnOn: () => void, enabled = true): readonly string[] | null {
   const [signedIn, setSignedIn] = useState<readonly string[] | null>(null);
   const shown = useRef(showing);
   shown.current = showing;
   const readyKey = ready.join(",");
+  // nothing is read, nor turned on, until the caller says so (the guide: after the user's own press on the agent step)
   useEffect(() => !enabled ? undefined : readSignedIn(
     () => read(readyKey !== ""),
     (agents) => {
@@ -129,6 +138,10 @@ export function useSignedInUsage(ready: readonly string[], read: (refresh: boole
   return signedIn;
 }
 
+/**
+ * A device paired here other than this browser (otherDevice), read from the server while `enabled`, and again when
+ * `again` changes; null until it answers, and when it cannot (a watching device, an older server).
+ */
 export function useOtherDevice(enabled: boolean, again?: unknown): string | null;
 export function useOtherDevice(enabled: boolean, again: unknown, pending: true): string | null | undefined;
 export function useOtherDevice(enabled: boolean, again?: unknown, pending = false): string | null | undefined {

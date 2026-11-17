@@ -1,3 +1,4 @@
+/** The pane owns this gate, so a tools effect restart cannot forget an outstanding native write. */
 export class ViewportIntentGate {
   private writes = new Set<Promise<unknown>>();
   private search: object | null = null;

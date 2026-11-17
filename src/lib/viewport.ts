@@ -58,6 +58,8 @@ const topInset = document.createElement("div");
 topInset.style.cssText = "position:fixed;top:0;left:0;width:0;height:env(safe-area-inset-top, 0px);visibility:hidden;pointer-events:none;contain:strict";
 topInset.setAttribute("aria-hidden", "true");
 root.append(topInset);
+// Retain the baseline when a keyboard shrinks all three viewports, but not when a split view
+// shrinks the large viewport while leaving only its ordinary visual inset.
 const unobstructedHeights = new Map<number, { large: number; height: number }>();
 const typing = keyboardTypingField;
 // An iPad home-screen app with a hardware keyboard (iPadOS 26, Magic Keyboard) reports a visual viewport
@@ -238,5 +240,6 @@ window.addEventListener("pageshow", () => {
 });
 // focus moving from one field to the next blurs first: read where it landed
 document.addEventListener("focusout", () => window.setTimeout(syncKeyboard, 0));
+// Switching xterm direct typing leaves its helper focused; observe the mode change.
 new MutationObserver(syncKeyboard).observe(root, { attributes: true, subtree: true, attributeFilter: ["data-direct-typing"] });
 syncKeyboard();

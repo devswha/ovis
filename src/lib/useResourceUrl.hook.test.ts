@@ -28,6 +28,7 @@ it("gives a refused address as a failed state, not an unhandled rejection", asyn
   setTransport({ ...nativeTransport, kind: "relay", resourceUrl: () => Promise.reject(refusal) });
   await act(async () => { renderer = create(createElement(Probe, { path: "/api/fs/file?path=a.png" })); });
   await settle(() => last()?.error != null);
+  // Then the caller sees the refusal (Bun's runner also fails an unhandled rejection)
   expect(last()).toEqual({ url: null, error: refusal });
 });
 

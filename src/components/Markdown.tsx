@@ -28,6 +28,7 @@ import { isWebLink, openWebLink } from "../lib/terminalFileLinks.ts";
 const SkillMatcherContext = createContext<SkillMatcher | null>(null);
 
 type Katex = typeof import("katex").default;
+/** KaTeX is a fifth of the app's script: the first expression loads it (lib/katex.ts), and every later one has it at once. */
 let katexModule: Katex | null = null;
 
 export const loadKatex: () => Promise<Katex> = lazyChunk(() => import("../lib/katex.ts").then((module) => (katexModule = module.default)));
@@ -142,6 +143,12 @@ function SvgFigure({ value }: { value: string }) {
 }
 
 export type ImageSize = { width: number; height: number };
+/**
+ * Stats an image before it can load; null context keeps image references as links. `size` gives
+ * the size an image of this source decoded at before, and `remember` keeps it, so a reopened image
+ * holds that box, not 16:9, while it is stat'ed and loaded again. Nothing else is reused: its
+ * bytes wait for the new stat.
+ */
 export type MarkdownImageResolver = ((src: string) => Promise<MarkdownImagePreview | null>) & {
   size?: (src: string) => ImageSize | undefined; remember?: (src: string, size: ImageSize) => void;
 };
@@ -235,6 +242,7 @@ function MarkdownImage({ src, alt, width, fallback, resolve, interactive, standa
   }
   if (preview === undefined && !standalone) return <span>{alt}</span>;
   if (!standalone && preview?.url === failedUrl) return <>{fallback}</>;
+  // A failed byte load retries only after the new stat has passed the same size/type checks.
   return <ReservedImage src={preview?.url ?? null} alt={alt} width={width} className="markdown-image" slot={standalone} size={standalone ? resolve.size?.(src) : undefined} onDecoded={standalone ? (size) => resolve.remember?.(src, size) : undefined} slotStyle={standalone ? imageSlotStyle(width) : undefined} fallback={fallback} retry={loaded?.retry ?? 0} renderImage={preview === undefined || !interactive || openImage === null ? undefined : (image) =>
     <button type="button" className={`markdown-image-open${standalone ? " is-standalone" : ""}`} aria-label={alt || preview.name} title={t("Open image")} onClick={(event) => {
       event.currentTarget.focus({ preventScroll: true });
@@ -246,6 +254,9 @@ function MarkdownImage({ src, alt, width, fallback, resolve, interactive, standa
   }} />;
 }
 
+/**
+ * `interactive` is false inside a link or file label: nothing clickable nests in another.
+ */
 function Inline({ nodes, interactive = true, standalone = false }: { nodes: InlineNode[]; interactive?: boolean; standalone?: boolean }) {
   const context = useContext(OpenFileContext);
   const open = interactive ? context : null;
@@ -396,6 +407,7 @@ function Blocks({ blocks }: { blocks: MarkdownBlock[] }) {
         ? <MermaidDiagram key={key} value={block.value} />
         : block.language.toLowerCase() === "svg"
           ? <SvgFigure key={key} value={block.value} />
+          // a ```math fence (GitHub's form) is display math; one KaTeX cannot draw stays the code block it is
           : block.language === "math"
             ? <MathExpression key={key} value={block.value} displayMode fallback={<CodeBlock language="math" value={block.value} />} />
             : <CodeBlock key={key} language={block.language} value={block.value} />;
@@ -417,6 +429,9 @@ export const Markdown = memo(function Markdown({ children, className, html = fal
   visualizations?: boolean;
 }) {
   const blocks = useMemo(() => parseMarkdown(children, 0, html, visualizations), [children, html, visualizations]);
+  // always a provider, which passes on the names around it when it has none of its own: the pane's skill names
+  // load after its text, and a tree that changed shape then would mount every message again, a decoded image
+  // dropping back to its loading slot
   const around = useContext(SkillMatcherContext);
   return <SkillMatcherContext.Provider value={skills ?? around}><ParsedMarkdown blocks={blocks} className={className} /></SkillMatcherContext.Provider>;
 });
@@ -445,6 +460,10 @@ const BlockChunk = memo(function BlockChunk({ blocks }: { blocks: MarkdownBlock[
   return <Blocks blocks={blocks} />;
 });
 
+/**
+ * `ParsedMarkdown` drawn a chunk of blocks per task (previewChunks), for a whole file's Preview: up
+ * to PREVIEW_ELEMENT_LIMIT elements drawn and laid out in one task held a slow page past a second.
+ */
 export const ProgressiveMarkdown = memo(function ProgressiveMarkdown({ blocks, className }: { blocks: MarkdownBlock[]; className?: string }) {
   const chunks = useMemo(() => previewChunks(blocks), [blocks]);
   const [drawn, setDrawn] = useState<{ blocks: MarkdownBlock[]; count: number }>({ blocks, count: 1 });

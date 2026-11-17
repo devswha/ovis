@@ -1,5 +1,9 @@
 import { useEffect, useState } from "react";
 
+/**
+ * A hidden tab, a minimized window or a phone app in the
+ * background reads "hidden": polls pause then and pick up at once on return.
+ */
 export function usePageVisible(): boolean {
   const [visible, setVisible] = useState(() => typeof document === "undefined" || document.visibilityState !== "hidden");
   useEffect(() => {

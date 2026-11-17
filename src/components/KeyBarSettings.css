@@ -7,6 +7,7 @@
 .key-bar-settings-list {
   margin: 0;
   padding: 0;
+  /* Clip the rounded corners without trapping a row swipe in a nested scroll container. */
   overflow: clip;
   list-style: none;
   border: var(--hairline) solid var(--border);

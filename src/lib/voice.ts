@@ -26,14 +26,17 @@ import {
 export type VoiceState = "idle" | "starting" | "recording" | "transcribing";
 export type VoiceEngine = "server" | "browser";
 export type VoiceError = "insecure" | "permission" | "no_mic" | "speech_unavailable" | "not_configured" | "provider_auth" | "provider" | "network" | "too_large" | "no_speech";
+/** why the mic button is off: the setting, no https, or neither a server key nor browser speech */
 export type VoiceUnavailable = "disabled" | "insecure" | "not_configured" | "unsupported";
 export interface VoiceText { text: string; phase: "raw" | "polished"; take: number }
 
 export const HOLD_MS = 300;
+/** after a finish the mic stays open this long, so the next dictation starts at once */
 export const WARM_MIC_MS = 30_000;
 const SILENT_AFTER_MS = 3000;
 const SILENT_RMS = 0.003;
 const METER_INTERVAL_MS = 250;
+/** a muted track can deliver exact zeros forever: the recorder running this long counts as ready */
 const READY_FALLBACK_MS = 400;
 const BAR_MIN = 0.12;
 const BAR_WEIGHTS = [0.45, 0.65, 0.85, 1, 0.85, 0.65, 0.45];
@@ -62,6 +65,10 @@ export function smoothLevel(previous: number, target: number, dtMs: number): num
   return previous + (target - previous) * (1 - Math.exp(-Math.max(0, dtMs) / tau));
 }
 
+/**
+ * The recorder hears the microphone this much later than the meter does, so the speech gate opens
+ * before a word's first sound reaches it: no syllable is clipped by trimming.
+ */
 export const SPEECH_PREROLL_MS = 350;
 /** quiet this long closes the gate; with the pre-roll ~350 ms of quiet stays after the last word */
 export const SPEECH_HANG_MS = 700;
@@ -75,6 +82,11 @@ export interface SpeechGate {
   step(rms: number, now: number): "open" | "close" | null;
 }
 
+/**
+ * Silence is billed by the second, so the recorder only runs while someone speaks. The noise
+ * floor learns from quiet readings alone: a long sentence never raises it until it shuts itself,
+ * and a room too loud to tell apart keeps the gate open (costlier, but nothing said is lost).
+ */
 export function createSpeechGate(): SpeechGate {
   let open = false;
   let everOpened = false;
@@ -95,6 +107,7 @@ export function createSpeechGate(): SpeechGate {
   };
 }
 
+/** RMS of [-1, 1] samples to 0..1 on a -60..-10 dBFS scale, so normal speech fills the meter. */
 export function levelFromRms(rms: number): number {
   if (!(rms > 0)) return 0;
   return Math.min(1, Math.max(0, (20 * Math.log10(rms) + 60) / 50));
@@ -125,6 +138,7 @@ function parseVoiceLine(line: string): VoiceEvent | null {
   return event;
 }
 
+/** The transcribe stream's events as they arrive; a line may span chunks, the last may lack its newline. */
 export async function* readVoiceEvents(body: ReadableStream<Uint8Array>): AsyncGenerator<VoiceEvent> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -143,6 +157,7 @@ export async function* readVoiceEvents(body: ReadableStream<Uint8Array>): AsyncG
       }
     }
   } finally {
+    // a consumer that stops early (cancel, bad line) must not leave the response open
     if (!finished) await reader.cancel().catch(() => undefined);
     reader.releaseLock();
   }
@@ -180,6 +195,8 @@ const SPANS_KEPT = 8;
 export type DictationSpans = Map<number, InsertedSpan> & { box?: string };
 
 export function applyDictation(value: string, selection: { start: number; end: number }, spans: DictationSpans, result: VoiceText, maxLength = Infinity): { value: string; caret: number } | "too_long" | null {
+  // the box no longer holds what the last dictation left: the user edited it, and the stored
+  // offsets may now sit on other words that happen to read the same
   if (spans.box !== undefined && spans.box !== value) spans.clear();
   spans.box = value;
   if (result.phase === "raw") {
@@ -351,6 +368,7 @@ interface Take {
   id: number;
   engine: VoiceEngine;
   discard: boolean;
+  /** cancelled or the tab hid: a mic still opening for it closes instead of staying warm */
   releaseMic: boolean;
   closing: AbortController | null;
   recorder: MediaRecorder | null;
@@ -476,7 +494,7 @@ export function createVoiceEngine(io: EngineIO) {
   }
 
   function keepWarm(): void {
-    if (take !== null) return;
+    if (take !== null) return; // a newer take is using the stream
     if (warmTimer !== null) clearTimeout(warmTimer);
     warmTimer = stream ? setTimeout(releaseStream, WARM_MIC_MS) : null;
   }
@@ -515,6 +533,8 @@ export function createVoiceEngine(io: EngineIO) {
         stream = null;
         const opened = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
         if (take !== current) {
+          // this request was cancelled or finished while the mic opened: only its own stream may
+          // close, never the one a newer take is recording from
           if (take !== null || stream || current.releaseMic || document.hidden) opened.getTracks().forEach((track) => track.stop());
           else { stream = opened; keepWarm(); }
           return;
@@ -647,6 +667,7 @@ export function createVoiceEngine(io: EngineIO) {
     }
   }
 
+  /** `release`: the tab is going away, so the mic closes now instead of staying warm. */
   function finishTake(release: boolean): void {
     pressedAt = null;
     const current = take;
@@ -685,6 +706,7 @@ export function createVoiceEngine(io: EngineIO) {
     };
     if (!recorder || recorder.state === "inactive") { stopped(); return; }
     recorder.onstop = stopped;
+    // still speaking at the finish: the last words are SPEECH_PREROLL_MS behind in the delay line
     const tail = gate && recorder.state === "recording" && !release ? Math.max(0, gate.lastLoudAt + SPEECH_PREROLL_MS - finishedAt) : 0;
     if (tail > 0) setTimeout(() => { if (recorder.state !== "inactive") recorder.stop(); }, tail);
     else recorder.stop();
@@ -756,6 +778,10 @@ export function createVoiceEngine(io: EngineIO) {
   };
 }
 
+/**
+ * The engine a take uses for the chosen one: auto prefers the server's key and falls back to the
+ * browser's recognition; an explicit choice never falls back, so the mic says why it cannot record.
+ */
 export function pickVoiceEngine(choice: VoiceEngineChoice, configured: boolean, recorder: boolean, speech: boolean): { engine: VoiceEngine | null; unavailableReason: VoiceUnavailable | null } {
   const server = choice !== "browser" && configured && recorder;
   const browser = choice !== "server" && speech;

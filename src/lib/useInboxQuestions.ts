@@ -1,3 +1,8 @@
+/**
+ * What each waiting agent of the inbox asks (components/InboxList.tsx): its prompt card read once per
+ * wait and each time the list is shown, through the read-only GET /api/pane/prompt, a few at a time.
+ * Nothing is answered from here.
+ */
 import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import type { InteractivePrompt } from "../../shared/protocol.ts";
 import { inboxKey, inboxStatus, questionWords } from "./agentInbox.ts";
@@ -41,6 +46,11 @@ const sameWait = (read: ReadFor | undefined, target: QuestionTarget): boolean =>
   && (read.lifetime === target.lifetime || read.lifetime === "" || target.lifetime === "");
 const readOf = (ask: Ask): string => `${ask.key}\n${waitOf(ask)}\n${ask.language}`;
 
+/**
+ * Each target's question, read once per key, seq and language, at most QUESTION_READS_AT_ONCE at a time, and
+ * once more each time the list is shown (`shownAgain`): a seq is no prompt's identity (a bridge without one
+ * gives every wait 0, and two prompts can share a state), so the words kept from before are checked.
+ */
 export class QuestionReads {
   private readonly listeners = new Set<() => void>();
   private current: ReadonlyMap<string, string> = NO_TEXTS;

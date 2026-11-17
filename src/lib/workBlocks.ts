@@ -118,6 +118,7 @@ export function workSummary(parts: readonly ConversationPart[]): string {
   const counts: Record<WorkCategory, number> = { edit: 0, read: 0, command: 0, other: 0 };
   for (const part of parts) {
     if (part.kind !== "tool") continue;
+    // a todo update is the plan, pinned under the chat, not an edit: TodoWrite would match /write/
     if (!part.skill && !isTodoTool(part.name)) counts[categorize(part.name)] += 1;
   }
   const skills = turnSkills(parts).length;
@@ -143,6 +144,9 @@ export function formatWorkDuration(startTs: string | null, endTs: string | null)
   return t("{h}h {m}m", { h: Math.floor(minutes / 60), m: minutes % 60 });
 }
 
+/**
+ * end_ts is the latest activity time, not proof that an approval-blocked turn finished.
+ */
 export function isLiveWorkTurn(turn: ConversationTurn, last: boolean, status?: string, sentOver?: ConversationTurn | null): boolean {
   if (turn === sentOver) return false;
   if (status === "working" && endedOnAnswer(turn)) return false;
@@ -154,6 +158,10 @@ export function endedOnAnswer(turn: ConversationTurn): boolean {
   return end?.kind === "text" && end.phase === "final_answer";
 }
 
+/**
+ * `state` is the transcript's own word for it (shared/protocol.ts):
+ * `unknown` when it records none (Codex after its output, other agents, older servers).
+ */
 export interface TodoAttempt {
   part: ToolPart;
   state: "ok" | "pending" | "error" | "unknown";
@@ -205,6 +213,10 @@ export function visibleWorkParts(parts: ConversationPart[], showThinking: boolea
   return parts.filter((part) => part.kind !== "skill" && (showThinking || part.kind !== "thinking"));
 }
 
+/**
+ * By the pane's status, not by a parsed prompt: a blocked pane whose menu no reader
+ * knows waits just the same, and a question in Codex's queue leaves Codex working.
+ */
 export function isWaitingWorkTurn(live: boolean, status?: string): boolean {
   return live && status === "blocked";
 }
