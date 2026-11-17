@@ -157,8 +157,8 @@ export class HerdrSocket {
    * alone confirms it (a pong only proves the bridge read it, not that the pane took it).
    */
   private readonly unconfirmed = new Map<string, { text: string; fence: number; id?: number }[]>();
-  /** per pane, the fences of keys sent as a password (no receipt, nothing of them kept) that no pong has confirmed yet */
-  private readonly unconfirmedSecrets = new Map<string, number[]>();
+  /** per pane, keys sent as a password and not confirmed yet, nothing of them kept: as `unconfirmed`, an `id` waits for its input-result, a `fence` alone for a pong */
+  private readonly unconfirmedSecrets = new Map<string, { fence: number; id?: number }[]>();
   /** per pane, how many of those connections ended with, until the pane's terminal says one may not have arrived, with the herdr that pane belonged to (as lostInput) */
   private readonly lostSecrets = new Map<string, { lifetime: string | undefined | null; count: number }>();
   private nextInput = 1;
@@ -471,7 +471,7 @@ export class HerdrSocket {
         if (!this.pingKnown && this.probing) this.endProbe();
         // typing sent before this was kept unfenced: fenced now, or trusted as before by a bridge that answers no ping
         // typing sent with an id to a bridge that now lists no receipts is fenced by a ping instead
-        if (!this.features.has("input-receipt")) for (const typed of this.unconfirmed.values()) for (const entry of typed) if (entry.id !== undefined) { delete entry.id; entry.fence = this.nextPing; }
+        if (!this.features.has("input-receipt")) for (const typed of [...this.unconfirmed.values(), ...this.unconfirmedSecrets.values()]) for (const entry of typed) if (entry.id !== undefined) { delete entry.id; entry.fence = this.nextPing; }
         if (this.features.has("ping")) this.fenceInput();
         else { this.unconfirmed.clear(); this.unconfirmedSecrets.clear(); this.inputFence = null; }
         if (!this.features.has("input-ready")) for (const pane of this.outputSeen) if (this.attached.has(pane)) this.inputReady.add(pane);
@@ -542,6 +542,9 @@ export class HerdrSocket {
         const left = typed?.filter((entry) => entry.id !== message.id);
         if (left && left.length > 0) this.unconfirmed.set(message.pane_id, left);
         else this.unconfirmed.delete(message.pane_id);
+        const secrets = this.unconfirmedSecrets.get(message.pane_id)?.filter((entry) => entry.id !== message.id);
+        if (secrets && secrets.length > 0) this.unconfirmedSecrets.set(message.pane_id, secrets);
+        else this.unconfirmedSecrets.delete(message.pane_id);
       }
       if (message.type === "insert-result" && this.matchesRequest(message.id, "insert", message.pane_id)) {
         this.resolveRequest(message.id, message.ok ? { ok: true } : { ok: false, code: message.code ?? "insert_failed", message: message.message ?? "the pane did not take the text" });
@@ -1071,10 +1074,11 @@ export class HerdrSocket {
   sendInput(paneId: string, text: string, stop = false, automatic = false, secret = false): boolean {
     if (!this.canInput(paneId)) { this.traceProbeRefusal(); return false; }
     // an id before the bridge said what it takes too: an older bridge ignores it, and the typing is fenced by a ping then
-    const id = !secret && !automatic && (!this.featuresKnown || this.features.has("input-receipt")) ? this.nextInput++ : undefined;
+    // a password's too: its input-result proves the pane took it, where a pong proves only that the bridge read it
+    const id = !automatic && (!this.featuresKnown || this.features.has("input-receipt")) ? this.nextInput++ : undefined;
     try { this.rawSend({ type: "input", pane_id: paneId, text, ...(stop ? { stop: true } : {}), ...(automatic ? { automatic: true } : {}), ...(id !== undefined ? { id } : {}) }); } catch { return false; }
     if (!secret && !automatic) this.awaitReceipt(paneId, text, id);
-    if (secret && !automatic) this.awaitSecretReceipt(paneId);
+    if (secret && !automatic) this.awaitSecretReceipt(paneId, id);
     return true;
   }
 
@@ -1097,15 +1101,15 @@ export class HerdrSocket {
   }
 
   /** A key sent as a password is fenced as typing is, but only counted: a connection that ends first makes its terminal say a key may not have arrived (takeUnconfirmedSecrets). */
-  private awaitSecretReceipt(paneId: string): void {
-    if (this.featuresKnown && !this.features.has("ping")) return;
-    this.unconfirmedSecrets.set(paneId, [...(this.unconfirmedSecrets.get(paneId) ?? []), this.nextPing]);
+  private awaitSecretReceipt(paneId: string, id?: number): void {
+    if (id === undefined && this.featuresKnown && !this.features.has("ping")) return;
+    this.unconfirmedSecrets.set(paneId, [...(this.unconfirmedSecrets.get(paneId) ?? []), { fence: this.nextPing, ...(id !== undefined ? { id } : {}) }]);
     if (this.featuresKnown) this.fenceInput();
   }
 
   private needsFence(): boolean {
-    for (const typed of this.unconfirmed.values()) if (typed.some((entry) => entry.id === undefined)) return true;
-    return this.unconfirmedSecrets.size > 0;
+    for (const typed of [...this.unconfirmed.values(), ...this.unconfirmedSecrets.values()]) if (typed.some((entry) => entry.id === undefined)) return true;
+    return false;
   }
 
   /** Pings after the typing still unconfirmed, unless a fence is already on its way: one at a time, however fast the typing. */
@@ -1124,7 +1128,7 @@ export class HerdrSocket {
       else this.unconfirmed.set(paneId, left);
     }
     for (const [paneId, fences] of this.unconfirmedSecrets) {
-      const left = fences.filter((fence) => fence > pong);
+      const left = fences.filter((entry) => entry.id !== undefined || entry.fence > pong);
       if (left.length === 0) this.unconfirmedSecrets.delete(paneId);
       else this.unconfirmedSecrets.set(paneId, left);
     }
