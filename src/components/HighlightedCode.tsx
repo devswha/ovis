@@ -48,6 +48,18 @@ interface CodeLinesProps {
   open: ((path: string) => void) | null;
 }
 
+/**
+ * Code colored by role, one `.hl-line` per source line. `memo` skips a parent's re-render while
+ * `lines` is the same array, and the line elements are built apart from the attributes: toggling
+ * `wrap` or `lineNumbers` leaves them alone. The line-number gutter is a CSS counter, so it never
+ * reaches a copy.
+ *
+ * The lines are inline spans joined by literal "\n" text nodes (none after the last line), so the
+ * text of the `<pre>` is the code itself: `innerText` and a copied selection keep every blank line.
+ * Block lines would add a line break of their own between lines and drop or double the blank ones.
+ * Past `LINE_ELEMENT_LIMIT` lines it is one text, as drawing an element per line would hold the page.
+ * The ref is that `<pre>`: the file viewer selects it when the clipboard is out of reach.
+ */
 export const CodeLines = memo(forwardRef<HTMLPreElement, CodeLinesProps>(function CodeLines({ lines, open, lineNumbers = false, wrap = false, className, markedLine = null }, ref) {
   const plain = lines.length > LINE_ELEMENT_LIMIT;
   const elements = useMemo(() => plain

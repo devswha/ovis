@@ -152,6 +152,8 @@ export function DirectoryBrowser({ start, onPick, onOpenFile, onFolder }: Direct
       </div>
       {onPick !== undefined && <div className="dir-browser-tools">
         <div className="dir-browser-filter">
+          {/* a touch screen would raise its keyboard over the list just opened; Escape clears the
+              filter before it reaches the dialog's own Escape, which closes the dialog */}
           <input type="search" className="input" aria-label={t("Filter folders")} placeholder={t("Filter folders")} value={query} autoFocus={window.matchMedia?.("(pointer: coarse)").matches !== true}
             autoComplete="off" spellCheck={false}
             onChange={(event) => { setQuery(event.target.value); listRef.current?.scrollTo({ top: 0 }); }}

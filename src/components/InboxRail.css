@@ -152,6 +152,9 @@
   }
 }
 
+/* An installed desktop app with the title bar folded away draws the window's own controls over the window's top.
+   Where they stand at its start (macOS: the title bar's area begins after them), the rail begins under the title
+   bar; where they stand at its end, it begins where it always does. */
 @media (display-mode: window-controls-overlay) {
   .inbox-rail {
     padding-block-start: calc(var(--space-3) + min(env(titlebar-area-height, 0px), env(titlebar-area-x, 0px) * 1000));

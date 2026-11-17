@@ -37,6 +37,11 @@ export type ConnectTab = "ssh" | "devices" | "relay";
 
 const PHONE_QUERY = "(pointer: coarse), (max-width: 768px)";
 
+/**
+ * The label of a device paired through the relay under this phone's own name, for a quiet hint.
+ * A name is no proof (two iPhones share one, and any device can be renamed), so it never stands in
+ * for the phone's pairing: the relay key is the hosted shell's, out of this page's reach.
+ */
 export function sameNameRelayDevice(devices: readonly PairedDevice[], label: string): string | null {
   return devices.find((device) => device.via_relay === true && !device.current && device.label === label)?.label ?? null;
 }
@@ -153,6 +158,12 @@ export function ConnectPhoneDialog({ plan, pairUrl, relay, readOnly, closesGate,
 type FoundSource = "herdr" | SshCandidate["source"];
 const SOURCE_LABEL: Record<FoundSource, string> = { herdr: "herdr", ssh_config: "ssh config", tailscale: "Tailscale" };
 
+/**
+ * SSH: the PCs found, each with Connect (saved in herdr, its own dialog), Add (Add PC with its address) or Added,
+ * then a field for any other address. A window the server will not tell (an open LAN window, Portal, the relay)
+ * gets the field; one refused as owner_only (an open LAN window: the relay shell and a Portal visitor show no SSH tab)
+ * is told where the list can be seen, so an empty tab is not taken for a PC that knows none.
+ */
 export function SshTab({ machines, onAddPc, onConnectMachine }: { machines: readonly Machine[]; onAddPc: (preset?: AddPcPreset) => void; onConnectMachine: (machine: Machine) => void }) {
   const t = useT();
   const [found, setFound] = useState<SshCandidate[] | null>(null);
@@ -369,6 +380,34 @@ type AccountQrView =
 const sameView = (a: AccountQrView, b: AccountQrView): boolean => JSON.stringify(a) === JSON.stringify(b);
 const names = (strays: readonly AccountQrStray[]): string => strays.map((stray) => stray.label).join(", ");
 
+/**
+ * The relay tab's part under the sign-in, where the page has an Ovis account.
+ *
+ * On a PC in no account, the relay's QR code behind a press: a signed-in device that scans it is paired with its
+ * account key and then links itself and adds the PC (lib/relay/accountController.ts), so the PC joins the scanning
+ * device's account with nothing typed and no approval here (docs/account.md, "Adding a PC"). A code admits whoever
+ * holds it, so:
+ * - nothing is asked of the PC until Show the QR code is pressed, and the code is ended when the QR code comes down:
+ *   as the dialog closes or another tab opens, as the page goes (a reload, a closed tab), once the page was hidden
+ *   for a minute, and 30 minutes after the press;
+ * - the QR code is shown alone: no code to type is made, which could be read off the screen and typed elsewhere;
+ * - when the PC goes from no account to one, the QR code gives way to which account, told apart as the one this
+ *   browser is signed in to, another one, or one it cannot tell (`accountId`), and to the device that added it: only a
+ *   member of that account is named. "Not me: revoke every device" undoes it, and comes first unless the account is
+ *   this browser's own;
+ * - every device that came since the press and is no member of the PC's account is named and asked about, "Not me:
+ *   remove it" first, whether or not the PC joined an account. Which code let it in the page cannot know;
+ * - a notice goes only by one of its buttons, and only once nobody is left unanswered, a device still in its ten
+ *   seconds included: Done reads the PC once more first. One the dialog closed over waits for the next opening;
+ * - a device that took the code just before it was ended links only afterwards: the PC is watched on after the QR
+ *   code came down, outside this component (lib/accountQrWatch.ts), and what that finds is shown here.
+ *
+ * On a PC that is in an account there is no QR code, and no code is asked of the PC for one: whoever scanned it
+ * would be paired with a PC that has members, with nobody approving. In its place the part says which account the
+ * PC is in and that a device is added by signing in to that account on it. The PC refuses the code too (409
+ * `in_account`), and takes back one that is out when it joins an account, so a page that read the PC a moment too
+ * early shows none either.
+ */
 export function AccountQr({ relay, phone, active, signedIn, accountId = null, pcAccount, onPcAccount, first = false, relayControls, onPairingHeld, onRevokedAll }: {
   relay: RelayState; phone: boolean; active: boolean; signedIn: boolean;
   first?: boolean;
@@ -506,6 +545,7 @@ export function AccountQr({ relay, phone, active, signedIn, accountId = null, pc
     let ended = false;
     const onCode = (event: Event) => { code = (event as CustomEvent<PairingCode | undefined>).detail?.code ?? code; };
     // the page goes (a reload, a closed tab or window, another address): no cleanup runs then, and nothing after an
+    // answer would, so the one request that ends this QR code's own code is sent to outlive the page
     const onPageHide = () => {
       if (ended) return;
       ended = true;
@@ -750,6 +790,7 @@ export function RelayRoute({ relay, readOnly, phone = false, pairHere = false, s
   readOnly: boolean;
   phone?: boolean;
   pairHere?: boolean;
+  /** a relay device under this phone's name: a hint, never proof that this phone is paired */
   sameName?: string | null;
 }) {
   const t = useT();
@@ -823,6 +864,8 @@ export function CodeRoute({ pairUrl, startAtOnce, phone = false, compact = false
     const onCode = (event: Event) => {
       if (announcing.current) return;
       const detail = (event as CustomEvent<AnnouncedCode>).detail;
+      // a QR code shown alone (the relay tab's) is never shown here as digits; the PC's one pending code is now that
+      // one, so the code this showed is gone
       setCode(detail.qrOnly === true ? null : detail);
     };
     window.addEventListener(PAIRING_CODE_EVENT, onCode);

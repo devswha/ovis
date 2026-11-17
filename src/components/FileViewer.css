@@ -12,6 +12,7 @@
 }
 
 .file-viewer-header {
+  /* Only the body may shrink/scroll: large media must not collapse the controls. */
   flex: none;
   min-width: 0;
   gap: var(--space-4);
@@ -597,6 +598,9 @@
   height: var(--icon-size-md);
 }
 
+/* The narrowest panel (a 980px window with the sidebar at its widest, 320px kept for the pane) has
+   no row for every action. The name keeps its type and the ways out stay, the popup and Close; the
+   file's own actions (new tab, raw, download, copy) wait for a wider panel, as does the glyph. */
 @container file-panel (max-width: 300px) {
   .file-viewer-header-docked .file-viewer-glyph,
   .file-viewer-header-docked .file-viewer-actions > :not(:first-child) { display: none; }

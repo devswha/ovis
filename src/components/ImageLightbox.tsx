@@ -36,6 +36,9 @@ export function ImageLightbox({ images, index, onClose }: { images: GalleryImage
   const image = images[current];
   const src = useResourceUrl(image?.src ?? null);
   // where a download link would replace the app (the iOS app, a home-screen app), Download hands
+  // the shown picture to the share sheet instead: its own bytes keep their image type, which a
+  // relay download (application/octet-stream) would lose, and Save Image needs. The Android app
+  // saves those same bytes to Downloads
   const [route] = useState(saveRoute);
   const viaShare = route !== "link";
   const download = useResourceUrl(viaShare ? null : image?.src.startsWith("/api/") && getTransport().kind === "relay"
@@ -43,6 +46,7 @@ export function ImageLightbox({ images, index, onClose }: { images: GalleryImage
   const many = count > 1;
   const copyable = canCopyImage();
   // the sheet opens only within the tap, so the file is read once the picture has loaded, and
+  // Download waits for it
   const [prepared, setPrepared] = useState<{ src: string; file: File | null } | null>(null);
   const [saveFailed, setSaveFailed] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -111,6 +115,7 @@ export function ImageLightbox({ images, index, onClose }: { images: GalleryImage
       const node = surface.current;
       if (!node || nativeModalOver(node)) return;
       // a dialog opened over this one by its shortcut (Settings) has the keys; the focus may
+      // also rest on the body (Safari after a click on the stage), which is still ours
       const dialog = event.target instanceof Element ? event.target.closest('[aria-modal="true"]') : null;
       if (dialog !== null && dialog !== node) return;
       if (event.ctrlKey || event.metaKey || event.altKey) return;

@@ -11,11 +11,15 @@
   outline: none;
 }
 
+/* the pane keeps its size under the list (never display: none: a terminal refit to nothing would resize its pty) */
 .pane-split.is-under-inbox > .pane-slot {
   visibility: hidden;
   pointer-events: none;
 }
 
+/* and the box it was shown in (lib/coveredPane.ts, written on the slot's own style, where a split's slot carries
+   its rectangle): the list takes the shell's bars away, and from 769px it draws its column whether or not the
+   classic sidebar was open, so laid out again the pane would have another box than the one its pty was sized to */
 .pane-split.is-under-inbox {
   overflow: hidden;
 }
@@ -369,6 +373,8 @@
   height: auto;
 }
 
+/* an unread finish's check is a box turned 45 degrees (Sidebar.css), which draws it about 2.5px wider on each side
+   than its layout box: it gets that room here, so its drawn edge stands on the row's inset as a dot's does */
 .mode-inbox .inbox-state > .sidebar-status[data-status="done"] .sidebar-status-dot {
   margin-inline: calc(var(--space-half) + var(--hairline) / 2);
 }
@@ -489,6 +495,11 @@
   min-width: calc(var(--space-3) + var(--inbox-control) + var(--hairline) * 2);
 }
 
+/* A list with the room for it (256px and more: the default sidebar with a mouse) always shows its search field at the
+   row's start, before the filter and New workspace, and draws no Search button: the rail has no magnifier, so the
+   field is the only one on the screen. A narrower list, in which the field could not hold its own placeholder, folds it
+   into Search: the field is drawn only while it is open, and then takes the row, the filter and New workspace giving
+   way until it is put away. */
 @container (min-width: 256px) {
   .mode-inbox.is-wide .inbox-top > .inbox-search-toggle {
     display: none;

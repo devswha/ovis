@@ -45,6 +45,7 @@ export function FilesDialog({ start, paneId, viewing, onOpenFile, onOpenDiff, on
   useSheetSwipe(surface, docked ? null : onClose);
   usePhoneSheetBack(onClose, !viewing && !docked, false, true);
   // the listener stays put across renders: an earlier listener of the same key that re-renders the app (the split
+  // guide Escape puts away) would otherwise swap it out mid-dispatch, and a listener removed then never runs (#2631)
   const onKey = useEffectEvent((event: KeyboardEvent): void => {
     if (event.key !== "Escape" || event.defaultPrevented) return;
     if (focusInOtherModal(surface.current)) return;

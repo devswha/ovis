@@ -45,6 +45,7 @@ export function FirstStartHints({ active }: { active: boolean }) {
     { title: t("Waiting agents first"), text: t("From every workspace.") },
     { title: t("Start another agent"), text: t("Pick a folder to start in.") },
   ];
+  // where the sidebar is drawn beside the pane: up to 768px it is a closed drawer (MachineSidebar.tsx DRAWER_QUERY)
   const wide = useMediaQuery("(min-width: 769px)");
   const shown = active && pending && wide;
   const finish = (): void => {
@@ -95,7 +96,7 @@ export function FirstStartHints({ active }: { active: boolean }) {
     document.addEventListener("pointerup", rewatch, true);
     document.addEventListener("keyup", rewatch, true);
     return () => { stop(); cancelAnimationFrame(frame); };
-  }, [shown, step, anchor]);
+  }, [shown, step, anchor]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useLayoutEffect(() => {
     if (!shown || anchor === null || card === null) return;

@@ -56,6 +56,12 @@
   color: var(--status-done);
 }
 
+/* The list is in the sidebar's column, at the sidebar's own width (the shell's --sidebar-shown-w, styles.css), so
+   the pane is as wide here as in the classic shell and entering or leaving the mode refits no terminal. The
+   column's rail is cut out of that width, never added to it, at every width the sidebar can have: the list is what
+   the rail leaves, down to a sidebar at its least width (InboxList.css says how its top row fits there). No bar
+   crosses the window: the column's top controls and the pane's zone share one band (--inbox-zone-h), and the seam
+   runs from the window's top. */
 .app.is-inbox-wide {
   --inbox-control: var(--control-h);
   --inbox-rail-w: var(--inbox-zone-h);

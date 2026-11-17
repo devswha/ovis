@@ -48,6 +48,12 @@ export const VIA: Record<NonNullable<HealthAuth["via"]>, string> = {
   open: "This browser is in only because nothing is paired yet: from anywhere that can reach this address, so would anyone.",
 };
 
+/**
+ * Whether `row` can be disconnected from every PC from here: another device of the account, and a
+ * `remove` signed with this client's account key would be applied, as the PC takes one only from a
+ * drive member of the account (server/account/records.ts). A browser signed in on the PC's own address,
+ * paired by cookie, holds a key no row has, and every PC would refuse it (`signer_not_member`).
+ */
 export function offersAccountRemove(devices: readonly PairedDevice[], row: PairedDevice, account: string, key: string | null): boolean {
   return key !== null && !row.current && row.account === account && row.account_key !== undefined && row.account_key !== key
     && devices.some((d) => d.account === account && d.account_key === key && d.role === "drive");
@@ -163,6 +169,7 @@ export function DevicesPanel({ onDevicePaired, auth, onPaired, onRevokedAll, kin
     try { await renameDevice(renaming.id, renaming.label); setRenaming(null); await load(); } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   };
   const signedIn = useAccountSignedIn();
+  /** this client's account key, read only once it is signed in (reading it makes one) */
   const [accountKey, setAccountKey] = useState<string | null>(null);
   useEffect(() => {
     if (signedIn === null) return;
@@ -203,6 +210,8 @@ export function DevicesPanel({ onDevicePaired, auth, onPaired, onRevokedAll, kin
         void load();
         throw new Error(t("The PC did not answer, so it is not known whether the devices were revoked. Check the list, and try again if they are still there."));
       }
+      // the dialog shows this: what did not happen, why in words, and what to do next; a server fault
+      // carries its log reference (`internal error (<id>)`), never a file name or a stack
       const detail = e.detail;
       const reference = e.status >= 500 ? /\(([^()]+)\)\s*$/.exec(detail)?.[1] : undefined;
       throw new Error(reference !== undefined
@@ -268,6 +277,9 @@ export function DevicesPanel({ onDevicePaired, auth, onPaired, onRevokedAll, kin
                     <span className="settings-label">{d.label}{kindOf?.(d.label) != null && <span className="devices-kind">{kindOf(d.label)}</span>}{d.current && <span className="devices-current">{t("This device now")}</span>}</span>
                     {d.connection
                       ? <ConnectionLine state={{ kind: "connected", route: d.connection.route, ...(d.connection.relay === undefined ? {} : { relay: d.connection.relay }), rttMs: d.connection.rtt_ms }} />
+                      // a device with a relay key connects through an encrypted session, which the PC sees come and go; a browser's cookie does not
+                      // a device that watches, or a Portal visitor, is not told how the others are connected: for them no row says offline
+                      // nor one seen in the last minutes, which may be reaching this PC another way (its browser cookie)
                       : d.via_relay && !watching && !guest && !seenLately(d.last_seen_at)
                         ? <ConnectionLine state={{ kind: "offline", text: t("Offline · last seen {when}", { when: lastSeen(d.last_seen_at) }) }} reason={t("The app is closed, or its network is off.")} />
                         : <span className="settings-description">{t("Last seen {when}", { when: lastSeen(d.last_seen_at) })}</span>}

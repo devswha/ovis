@@ -75,6 +75,7 @@ export interface FileViewerProps {
   path: string;
   paneId: string | null;
   onClose: () => void;
+  /** Settings can open above this preview; its Escape must not also close the file. */
   keyboardActive?: boolean;
   onOpen?: (path: string) => void;
   page?: boolean;
@@ -150,6 +151,9 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
   const reportedKind = useRef<string | null>(null);
   const [candidates, setCandidates] = useState<string[] | null>(null);
   const [source, setSource] = useState(false);
+  // A page is drawn without its scripts until the person asks for them: for the file named here, and for as long
+  // as this viewer stays open (another file, a close or a reload starts without them again). `stopped`: the file
+  // whose scripts were taken away again because its frame took the keyboard (lib/usePageFocusGuard.ts).
   const [scriptsFor, setScriptsFor] = useState<string | null>(null);
   const [stopped, setStopped] = useState<string | null>(null);
   const pageFrame = useRef<HTMLIFrameElement | null>(null);
@@ -290,9 +294,12 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
   };
 
   const url = fileUrl(info?.path ?? target.path, paneId);
+  // drawn by its own script in a sandbox with no origin and no network (server/file-view.ts); a PC
+  // whose bridge predates `render` answers with the source, which the frame shows as text
   const htmlPage = info !== null && info.kind === "text" && info.mime === "text/html";
   const pageUrl = `${url}&render=1`;
   const pageScripts = htmlPage && !source && scriptsFor === info.path;
+  // beside the pane the app stays in reach, so a page with scripts must not take its keys; the popup holds the focus itself
   const guard = usePageFocusGuard(pageFrame, docked && pageScripts, () => {
     // at once, not at the next render: only taking the frame away gives the keys back
     flushSync(() => { setScriptsFor(null); setStopped(info?.path ?? null); });
@@ -379,6 +386,8 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
     src, shownPath, (target) => fetchFileInfo(target, paneId), (target, download) => fileUrl(target, paneId, download),
   ), [shownPath, paneId, fetchFileInfo, fileUrl]);
   // "Opening…" while the file's info, or a text's content or preview, is on its way. The note is in the
+  // viewer from its first render, clipped while empty (never display: none), and its words land a frame
+  // after it (lib/useAnnouncedText.ts)
   const opening = directory === null && error === null && candidates === null
     && (info === null || (info.kind === "text" && (!htmlPage || source) && (loaded === null || (view === "markdown" && preview.status !== "ready"))));
   const openingWords = useAnnouncedText(opening ? t("Opening…") : null);
@@ -464,6 +473,9 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
       : <span className="file-viewer-size">{formatBytes(info.size)}</span>)}
     {folder !== "" && <span className="file-viewer-path"><span dir="ltr">{info && <span className="file-viewer-dot" aria-hidden="true">·</span>}{remote ? `${machineId}:${folder}` : folder}</span></span>}
   </p>;
+  // the file itself: a Markdown tab is the reader; raw and download keep the original bytes
+  // A saved shell link opens the reader, which can establish its own channel after a reload.
+  // In particular, never navigate a blob containing HTML, SVG, XML or other active text.
   const newTabHref = relay ? previewUrl : htmlPage && !source ? pageUrl : markdown ? previewUrl : url;
   const newTabSrc = useResourceUrl(newTabHref);
   const rawSrc = relay ? readerHref(machineId, `${shownPath}#L1`) : urlSrc;
