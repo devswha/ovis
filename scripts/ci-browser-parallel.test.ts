@@ -96,7 +96,10 @@ async function runStub(end: string, timeoutSeconds: string) {
     };
   } finally {
     try {
-      for (const file of [leftover, stubborn]) if (existsSync(file)) stopStandIn(readFileSync(file, "utf8"));
+      for (const file of [leftover, stubborn]) {
+        // a record that cannot be read proves nothing: it is left alone, and the error the run raised for it stands
+        try { if (existsSync(file)) stopStandIn(readFileSync(file, "utf8")); } catch { continue; }
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -128,6 +131,13 @@ describe("parallel browser script deadline", () => {
     expect(run.summary.scripts).toEqual([expect.objectContaining({ code: 1, message: "Exited 0, but a process it started still held its output" })]);
     expect(run.leftAlive).toEqual([]);
   }, 20_000);
+
+  // A stand-in the stub records that standIn could never prove would read as gone, and leftAlive would pass unchecked.
+  it.skipIf(process.platform !== "linux" && process.platform !== "darwin")("records a start exactly as processStart names it", () => {
+    const own = processStart(process.pid);
+    expect(own).not.toBeNull();
+    expect(spawnSync("sh", ["-c", `${STARTED}\nstarted ${process.pid}`], { encoding: "utf8" }).stdout).toBe(`${own}\n`);
+  });
 
   // Every process here is one this test started for the purpose, its handle kept: nothing else is signalled.
   it.skipIf(process.platform !== "linux" && process.platform !== "darwin")("ends a recorded stand-in only, never another process its pid names", async () => {
