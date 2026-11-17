@@ -400,7 +400,10 @@ function parseOmoReview(screen: string, ask: OmoAsk | null, trusted: boolean): P
  *    +1 more question
  *    enter to answer · /answer · or just type your reply
  *
- * It shows the first unanswered question of one call, by its header.
+ * It shows the first unanswered question of one call, by its header; the session's open calls
+ * that do not wait name it, and the card is only for one of them. The answer route opens the
+ * form with Alt+Up, verifies the call and question again, then uses the form's navigation.
+ * No answer text is sent to the composer, even when whitespace makes its draft look empty.
  */
 function parseOmoPending(screen: string, pending: readonly OmoAsk[]): ParsedPrompt | null {
   const lines = screen.replace(ANSI_RE, "").split(/\r?\n/);

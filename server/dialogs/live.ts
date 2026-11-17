@@ -23,6 +23,7 @@ const OMO_SPINNER_ROW_RE = /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏‖] /u;
 const OMO_TASK_TAIL_RE = /^(?:[^\u00b7]+ \u00b7 )*\d+[hms](?: \d+[hms])*$/u;
 const OMO_TASK_WRAP_MAX = 32;
 const OMO_HINT_END_RE = /\besc (?:cancel|back|discard)$/;
+/** OmO's apparently empty input box; never sufficient evidence for sending text into it. */
 const OMO_EMPTY_BOX_RE = /^[❯›>]$/;
 
 /**
@@ -81,6 +82,9 @@ export function promptTailIsActive(prompt: ParsedPrompt, screen: string): boolea
     : prompt.responder.startsWith("claude-") ? withoutClaudeTasks(visible)
     : prompt.responder === "omp-question" || prompt.responder === "omp-submit" ? withoutOmpStatusRow(visible, cleanLines) : visible;
   const last = shown.at(-1) ?? "";
+  // The menu is still at the bottom. A narrow pane wraps its hint, so the last line alone can
+  // be the hint's tail (`cancel`): the lines before it count only when the match runs into
+  // the last one, never for a hint that ended above later output (an answered, stale menu).
   const ends = (re: RegExp): boolean => [1, 2, 3].some((span) =>
     re.test(shown.slice(-span).join(" ")) && (span === 1 || !re.test(shown.slice(-span, -1).join(" "))));
   if (prompt.responder.startsWith("pi-questionnaire-")) return true;

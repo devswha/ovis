@@ -1342,6 +1342,10 @@ describe("herdr-core adapter, agents on Windows", () => {
   // named as its file is: Windows takes a program's name in any case
   const claude = row(11, 10, "C:\\Users\\u\\.local\\bin\\Claude.exe", "\"C:\\Users\\u\\.local\\bin\\Claude.exe\" --model x");
 
+  /**
+   * A pane whose own program is `argv`, at `path`, which hc names in front of itself whatever runs
+   * in it, as it does on Windows; this PC's process table is `table` for what was typed so far.
+   */
   async function windows(argv: string[], table: (typed: string) => ProcessRow[] | Promise<ProcessRow[]>, path = POWERSHELL) {
     let cores: FakeCore[] = [];
     const typed = () => cores[0]?.typed.map((write) => write.text).join("") ?? "";

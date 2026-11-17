@@ -345,6 +345,8 @@ it.skipIf(!unix)("passes over a candidate that does not answer in time", async (
   const { root, log } = scratch();
   script(join(root, "slow"), "hc", "exec /bin/sleep 30", log);
   const real = fake(join(root, "real"), "hc", "hc 0.1.17", log);
+  // the product's own deadline, not a shorter one: it also bounds the candidate that does answer, which a starved
+  // runner can take hundreds of ms just to start
   expect(await findHc({ env: { PATH: [join(root, "slow"), join(root, "real")].join(":") }, home: root, loginShellPath: async () => null, usualDirs: [] })).toEqual({ bin: real, version: "0.1.17" });
   expect(runs(log)).toEqual(["--version", "--version"]);
 }, 3 * PROBE_TIMEOUT_MS);

@@ -1,4 +1,10 @@
 /**
+ * A directory opened without following a link and held, and the entries inside it opened through the
+ * very directory held, never by walking a path again: what the held object is (its identity) and where
+ * it is now (its path) are asked of the open object itself. omp's blob reads stand on it (codex-images.ts
+ * openBlob, conversation.ts ompBlobIdentity), so nothing swapped in a directory's place, or above it,
+ * a link or another directory, can stand in for the one held.
+ *
  * Linux reaches an entry through the held descriptor's /proc/self/fd link and names the descriptor by
  * reading that link (it needs /proc). Node has no descriptor-relative open elsewhere, so macOS calls
  * libSystem's openat(2) and fgetattrlist(2) (ATTR_CMN_FULLPATH) and Windows calls NtCreateFile with the
@@ -12,6 +18,10 @@ import { dlopen, FFIType, ptr } from "bun:ffi";
 export interface Held {
   stat(): { identity: string; file: boolean; size: number };
   path(): string | null;
+  /**
+   * Whether the held object is the one `path` names now: no link or other directory stands between.
+   * Windows names one path several ways (a short 8.3 name, another letter case), each the same entries.
+   */
   isAt(path: string): boolean;
   open(name: string, as: "directory" | "file"): Held;
   read(buffer: Buffer, offset: number, length: number, position: number): number;
@@ -181,6 +191,11 @@ function fullIdentity(handle: bigint): string | null {
   return `${info.readBigUInt64LE(0)}:${id.toString("hex")}`;
 }
 
+/**
+ * Windows: a handle opened on the link itself (FILE_FLAG_OPEN_REPARSE_POINT, FILE_OPEN_REPARSE_POINT),
+ * refused when it is one (a junction, a symbolic link, any reparse point); an entry is opened by
+ * NtCreateFile relative to the held directory's handle, and the handle is named by GetFinalPathNameByHandleW.
+ */
 class WindowsHeld implements Held {
   private constructor(private readonly handle: bigint) {}
 

@@ -172,7 +172,12 @@ function parseHermesClarify(screen: string): ParsedPrompt | null {
  *
  * A pane short of rows drops the blank rows, then the description (the warning), with nothing to say
  * so; a command over 70 characters adds a last row, Show full command, which only redraws the panel.
- * A digit picks a row and confirms it at once.
+ * A digit picks a row and confirms it at once: the card's answer moves to the row and takes Enter.
+ *
+ * The card is the panel as drawn, its command lines as they wrap. A panel that leaves anything out
+ * (its own "… (" note where it cut the command or the description, or no description), a box out of
+ * line (a newline or tab in the command breaks its rows), labels other than these, or anything under
+ * it but Hermes's own lines is no card, and no generic card either: the terminal answers it.
  */
 const HERMES_APPROVAL_TITLE_RE = /^⚠\uFE0F?\s+Dangerous Command$/u;
 

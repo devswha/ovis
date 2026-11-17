@@ -15,6 +15,36 @@ import { checkoutHolding, defaultCheckoutPath, factsOf, git, gitDirIdentity, lab
 import type { AgentStatus, SessionSnapshot, WorkspaceWorktreeInfo } from "../../shared/herdr-api.generated.ts";
 import type { WorktreeInfo } from "../herdr/client.ts";
 
+/**
+ * herdr's socket API, answered from herdr-core. The server talks to herdr through one client
+ * (server/herdr/client.ts) whose callers read herdr's session snapshot, panes, screens and status
+ * events; this adapter listens where that client connects (HERDR_SOCKET) and answers the methods a
+ * terminal view needs from hc, so none of those callers learns a second runtime:
+ *
+ * - `ping`, `session.snapshot`, `pane.get`, `agent.get`, `pane.process_info` and `pane.read` from
+ *   hc's terminal records, the app's layout document and `terminal.read`;
+ * - `pane.send_text` as bytes typed into the terminal, over a short attach stream at the
+ *   terminal's own grid (hc has no other way to type raw bytes, and a viewer at the current size
+ *   resizes nothing);
+ * - `pane.send_keys` as those keys' bytes in the same way, or hc's `terminal.keys` for a key that
+ *   only hc can encode for the program's keyboard mode;
+ * - `agent.prompt` as hc's `terminal.send` (paste and Enter, refused while the program is blocked);
+ * - `events.subscribe` from hc's own event stream: status changes per pane, and terminal and layout
+ *   changes as herdr's lifecycle events.
+ *
+ * On a core no Herdr app arranges (its document was never written: the desktop app's own core),
+ * Ovis keeps names and a pane's workspace and tab in terminal labels, and the order of workspaces
+ * and tabs, each tab's splits and its zoom in a document of its own, `ovis-layout`
+ * (layout-doc.ts; `ping` says which in `layout`). Where the app arranges them, they are the app's.
+ * hc has no worktrees: `worktree.*` runs git itself and opens a checkout as a workspace of its own
+ * (worktrees.ts). Everything else (focus, plugins) is refused as `unsupported`.
+ * The live terminal itself is `hc attach`, which the server
+ * runs in place of `herdr terminal attach` (server/core/terminal-process.ts).
+ *
+ * As herdr does, each request has a connection of its own that ends with its answer; only an
+ * events subscription stays open.
+ */
+
 interface Request { id: string; method: string; params: Record<string, unknown> }
 type Reply = { result: unknown } | { error: { code: string; message: string } };
 
@@ -56,6 +86,11 @@ export interface HerdrCoreAdapter {
 
 export type SeenObserver = (address: string, turn: number, labels: Record<string, string>) => void;
 
+/**
+ * `otherMachine`: the terminals are another machine's, reached through this PC's core (machine-scope.ts):
+ * their processes and folders are not this PC's, so no process facts are told and no checkout opened,
+ * and a Windows PC, which reads what runs in a pane off its own processes, starts no agent there.
+ */
 export interface AdapterOptions {
   otherMachine?: boolean;
   opencodeTitled?: (terminalTitle: string) => readonly string[];
@@ -367,6 +402,7 @@ const CHECKOUT_FACTS_WAIT_MS = 2_000;
 function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (live: ReadonlySet<string>) => void, options: AdapterOptions, sessionOf?: SessionOf): (request: Request) => Promise<Reply> {
   const platform = options.platform ?? process.platform;
   const processTable = options.processTable ?? windowsProcessTable;
+  /** A Windows pane's programs are read off this PC's process table, which says nothing of another machine's. */
   const programsUnseen = platform === "win32" && options.otherMachine === true;
   /** Where a shell starts in place of `folder`: hc refuses a folder since removed (a deleted worktree) with `spawn_failed`, so this PC's home instead; another machine's folders are not on this disk, so they go as they are. */
   const startFolder = (folder: string | undefined): string | undefined => !folder || options.otherMachine || existsSync(folder) ? folder : homedir();
@@ -583,6 +619,7 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
     }
     if (!record.pid) return null;
     const rows = await processTable(timeoutMs);
+    // a PC runs hundreds of processes: none at all is a table that could not be read
     if (rows.length === 0) return null;
     return descendantProcesses(rows, record.pid).filter((entry) => !CONSOLE_HOSTS.has(windowsProgram(entry.argv[0] ?? "")))
       .map((entry) => entry.argv.slice(0, 2).flatMap((word) => word.toLowerCase().split(/[\\/]/)));
@@ -699,6 +736,7 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
     },
     async "pane.process_info"(params) {
       const found = await terminal(paneIdOf(params));
+      // another machine's pids name nothing here: a reader must not take one of this PC's processes for it
       if (options.otherMachine) return { type: "pane_process_info", process_info: { pane_id: found.address, shell_pid: null, foreground_process_group_id: null, foreground_processes: [] } };
       return { type: "pane_process_info", process_info: processInfoOf(found) };
     },
@@ -725,6 +763,12 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
       // hc reads text only: plain text is an ANSI screen without colours
       return { read: { pane_id: paneId, workspace_id: pane.workspace_id, tab_id: pane.tab_id, source, format, text, revision: pane.revision, truncated: !read.complete || (recent && !history) } };
     },
+    // herdr starts an agent by its kind (its command is its kind) from herdr's own manifests; hc has
+    // none, so the kinds Ovis knows are offered, and the start types the command into the pane's
+    // shell as a person would. Ovis's own shell-started agents are offered and started by the
+    // server itself (shell-agent.ts), through pane.send_text. On Windows that shell is PowerShell or
+    // cmd (startShellOf), and another machine's terminals, whose programs its table does not show,
+    // are offered no kind; nor is Command Code, whose command `cmd` is cmd.exe there.
     async "server.agent_manifests"() {
       if (programsUnseen) return { manifests: [] };
       const manifests = Object.keys(AGENT_LABELS).filter((agent) => !Object.hasOwn(SHELL_AGENTS, agent) && !(platform === "win32" && agent === "cmd"))
@@ -738,8 +782,12 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
       // Command Code's command `cmd` is cmd.exe here, which would answer as a started agent
       if (platform === "win32" && kind === "cmd") throw new AdapterError("invalid_params", "Command Code's command is cmd.exe on Windows");
       const args = Array.isArray(params["args"]) ? params["args"].filter((arg): arg is string => typeof arg === "string") : [];
+      // a control character could end the quoted line early and type something else
       if (args.some((arg) => /[\u0000-\u001f\u007f]/.test(arg))) throw new AdapterError("invalid_params", "an argument holds a control character");
       const command = AGENT_COMMANDS[kind] ?? kind;
+      // only into the pane's own shell, once hc has seen it in front: a running program would take
+      // the line as its input (agent-launch.ts retries a busy pane while a new shell comes up). The
+      // pane's input turn is held for the check and the typing only, so nothing typed after waits on the start.
       await inTurn(paneId, async () => {
         const ready = await terminal(paneId);
         if (programsUnseen) throw new AdapterError("agent_pane_unsupported", `pane ${paneId} is on another machine, whose programs this PC cannot see`);
@@ -1111,6 +1159,7 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
     if (!workspace) throw new AdapterError("workspace_not_found", `workspace ${workspaceId} not found`);
     const facts = workspace.worktree;
     if (!facts?.is_linked_worktree) throw new AdapterError("not_linked_worktree", `workspace ${workspaceId} is not a linked worktree`);
+    // the folder the label names must still be a linked checkout of that repository, not one moved away or replaced by another
     const now = await repositoryOf(facts.checkout_path).catch(() => null);
     let gitId: string | null = null;
     for (const pane of shown.panes.filter((candidate) => candidate.workspace_id === workspaceId)) {
@@ -1138,6 +1187,7 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
     } catch (error) {
       if (error instanceof AdapterError || error instanceof WorktreeError) return { error: { code: error.code, message: error.message } };
       if (error instanceof HcError) return { error: { code: herdrCode(error, "pane_not_found"), message: error.message } };
+      // what failed is the server's own business: its log has it, the caller a plain reason
       console.error(`herdr-core adapter: ${request.method} failed:`, error);
       return { error: { code: "internal", message: `herdr-core could not answer ${request.method}` } };
     }

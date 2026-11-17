@@ -34,6 +34,7 @@ export function dshSessionsDirectory(environ: readonly string[]): string | null 
   return isAbsolute(base) ? join(resolve(base), "sessions") : null;
 }
 
+/** Authorize both physical encodings inside the canonical store before opening their bytes. */
 export async function authorizeDshTranscript(path: string, sessions: string): Promise<DshTranscript | null> {
   try {
     const root = await realpath(sessions);
@@ -118,6 +119,7 @@ export async function resolveDshTranscript(info: Processes | null | undefined, s
         processLocks.add(folder);
         for (const name of ["session.v4.jsonl.zstd", "session.v4.jsonl"]) {
           const path = join(folder, name);
+          // Only an absent encoding permits trying the older one, never an unreadable or linked log.
           const present = await lstat(path).catch((error: NodeJS.ErrnoException) => {
             if (error.code === "ENOENT") return null;
             throw error;

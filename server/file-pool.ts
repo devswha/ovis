@@ -2,9 +2,29 @@ import { closeSync } from "node:fs";
 
 import type { FileTask, FileTaskResult } from "./file-tasks.ts";
 
+/**
+ * The threads the file routes read the filesystem on (#790): a file's type and size, a folder's
+ * names, a page rendered with its own files put into it, a file opened to stream. Each of those
+ * calls is synchronous and may wait on the disk for as long as the disk takes (a network share
+ * that stalls, a page of tens of megabytes), so each runs on one of a few worker threads
+ * (`file-worker.ts`), never on the thread that answers every other request and terminal.
+ *
+ * At most `workers` threads, each with one task at a time, and at most `waiting` tasks waiting
+ * for one; past that a task is refused at once (`FileBusyError`, which the routes answer with 503).
+ * A task not answered within its deadline (waiting included) is refused the same way, but the
+ * thread it ran on stays taken until the call it is in returns: a thread cannot be stopped inside
+ * a system call, and only a thread that answered is known to be free. What that late answer
+ * opened is closed, never handed out.
+ */
 
 export const FILE_TASK_DEADLINE_MS = 3_000;
 export const FILE_LONG_TASK_DEADLINE_MS = 15_000;
+/**
+ * An agent's commands scanned (`commands`, #2254): every skill and command folder it reads, which on
+ * a slow mount took 10-27 s, and may take minutes on a slower one. Each request waits for it only
+ * `COMMANDS_WAIT_MS` (`commands.ts`), and a request asking again waits for the same scan, so it is
+ * given this long, waiting for a thread included, before nobody may still be waiting for it.
+ */
 export const FILE_SCAN_DEADLINE_MS = 5 * 60_000;
 
 export class FileBusyError extends Error {
@@ -50,6 +70,11 @@ export function setFilePoolOptions(next: Partial<PoolOptions> = {}): void {
   endThreads("the file threads were replaced");
 }
 
+/**
+ * Every thread ended, a busy one too, and every task under way or waiting failed now. A thread
+ * inside a system call (a read on a stalled disk) ends only once that call returns: what it opened
+ * is closed when it has ended (its `close`), never under a read still in flight.
+ */
 function endThreads(reason: string): void {
   idle.length = 0;
   for (const thread of [...threads]) {
@@ -92,10 +117,18 @@ export function filePoolSize(): { threads: number; idle: number; waiting: number
   return { threads: threads.size, idle: idle.length, waiting: queue.length };
 }
 
+/**
+ * `task` run on a file thread; rejects with `FileBusyError` when none is free in time, or at once
+ * when `signal` aborts (the request went away). Either way a task already on a thread keeps it
+ * until its call returns, and what that late answer opened is closed then, never under it.
+ * `onRun`: called once the task is handed to a thread (it no longer waits for one).
+ */
 export function fileTask<T extends FileTaskResult>(task: FileTask, signal?: AbortSignal, onRun?: () => void): Promise<T> {
   const inline = options.inline;
   if (inline !== null) return Promise.resolve().then(() => inline(task) as T);
   if (signal?.aborted) return Promise.reject(new FileBusyError("the request was cancelled"));
+  // the thread names the descriptor it opens here at once, so one never answered (a thread that
+  // failed or was ended mid-task) can still be closed (`abandon`)
   if (task.op === "open" || task.op === "describe") task = { ...task, opened: openedCell() };
   return new Promise<T>((done, fail) => {
     const deadline = task.op === "commands" ? options.scanDeadlineMs : task.op === "render" || task.op === "walk" || task.op === "documents" || task.op === "claude-tasks" || task.op === "agy-catalog" || task.op === "letta-output" || task.op === "text-read" ? options.longDeadlineMs : options.deadlineMs;

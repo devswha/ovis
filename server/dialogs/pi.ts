@@ -8,8 +8,10 @@ import { ANSI_RE, onePerPass, KEY, PI_MODEL_HINT_RE, PI_ROW_RE, type ParsedPromp
  * hint line at the dialog's end: `↑↓ navigate  enter select  escape/ctrl+c cancel`, or
  * `enter submit  escape/ctrl+c cancel` while it wants text. Read off that hint, not off
  * indentation: a confirm's message sits indented beside its options, so a row is told from
- * prose only by the hint that follows it. pi never reports itself blocked for a dialog: it stays idle
- * while one waits.
+ * prose only by the hint that follows it. `/tree` is left alone on purpose: its hint says
+ * `↑/↓ move`, and answering it from the chat would move the session's branch, which the chat
+ * has no way to undo by clicking. pi never reports itself blocked for a dialog — it stays idle
+ * while one waits — so the card can only come from the screen, as it does for the other agents.
  * OmO draws the same widget but names Escape `esc` (`esc/ctrl+c cancel`, senpi 2026.10.19).
  */
 export const PI_MENU_HINT_RE = /\u2191\u2193 navigate\s+enter select\s+esc(?:ape)?\/ctrl\+c cancel/i;
@@ -19,7 +21,9 @@ export const PI_INPUT_HINT_RE = /enter submit\s+esc(?:ape)?\/ctrl\+c cancel/i;
 /**
  * A dialog asked with a timeout counts down at the end of its title (`Init-deep (9s)`) and cancels
  * itself at zero. A confirm is a select titled with its title and message on two lines, so there
- * the count ends the message. Only the last line can hold it, alone there when a narrow pane wrapped it (`(10s)` may wrap where `(9s)` fits); a
+ * the count ends the message. The card's id reads the dialog's words without the count, or an
+ * answer tapped a second later would be refused as one to another card. Only the last line can
+ * hold it, alone there when a narrow pane wrapped it (`(10s)` may wrap where `(9s)` fits); a
  * `(30s)` on an earlier line is the text's.
  */
 const PI_COUNTDOWN_RE = /(?:^|\s)\(\d+s\)$/;
@@ -154,6 +158,9 @@ export function parsePiDialog(screen: string, moved = false): ParsedPrompt | nul
   const rows = block.rows.map((row) => row.line.match(PI_ROW_RE)).filter((row): row is RegExpMatchArray => row !== null && row[2] !== undefined);
   if (rows.length !== block.rows.length || rows.length < 2) return null;
   if (rows.some((row) => /\s{2,}/.test(row[2]!))) return null;
+  // a dialog moved through by hand sits wherever its last key left the cursor, and the chat
+  // would then navigate from a position it cannot see. `moved`: an answer's own keys moved it,
+  // and the read before its Enter looks where it stands (the answer route)
   const cursor = block.rows.findIndex((row) => row.cursor);
   if (moved ? cursor < 0 : cursor !== 0) return null;
   const labels = rows.map((row) => row[2]!.trim());

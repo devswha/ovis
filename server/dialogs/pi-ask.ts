@@ -73,6 +73,7 @@ function question(frame: Frame, expected?: OmoAsk): ParsedPrompt | null {
   const typing = other.selected && /Shift\+Enter for newline|Ctrl\+U to clear/.test(hint);
   if (other.label !== OTHER && !typing && !expected) return null;
   if (other.description.length || rows.slice(0, -1).some(row => !row.label || /…$/.test(row.label))) return null;
+  // A multi-pick from the web must not silently include a custom draft owned by the terminal.
   if (multi && (other.checked || (typing && other.label.trim()))) return null;
   const heading = lines.slice(top + 1, first);
   const tabBar = heading.filter(line => /^\s*←.*✓ Submit\s*→$/.test(line)).map(line => line.trim()).join(" ");
@@ -188,6 +189,8 @@ function review(frame: Frame, expected?: OmoAsk): ParsedPrompt | null {
     ...(tabs?.index !== null && tabs?.index !== undefined ? { piAskForm: { identity: `${expected?.id ?? ""}\0${tabs.identity}`, index: tabs.index } } : {}),
     responder: "pi-ask-submit", menuLabels: ["Submit answers", "Cancel"],
     selectedIndex: rows[0][1] === "❯ " ? 0 : 1, checkedOptionIndices: [], customMenuIndex: null,
+    // Partial review offers recovery through the question chips, never an accidental Submit.
+    // Its only answer is cancellation via Escape, independent of the native highlighted row.
     rejectWithEscapeIndex: missing.length ? 0 : null,
   }, { call: expected?.id });
 }

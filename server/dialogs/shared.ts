@@ -465,7 +465,9 @@ export function piModelRows(lines: string[], startIndex: number, minRows = 2): {
   }
   // A row cut before its provider bracket closes is a catalogue still being drawn, not a note.
   // pi's own notes ("Model Name: …", "Refreshing model catalogs…") are indented lines with no
-  // bracket at all.
+  // bracket at all, and they end the list without voiding it; an unclosed `[` is the one mark that
+  // tells the two apart, and it means the rows above are a prefix of a list pi has not finished
+  // writing. Offering that prefix would let a reader count down into rows that do not exist.
   const cutMidBracket = (line: string) => line.includes("[") && !PI_MODEL_PROVIDER_RE.test(line);
   for (const raw of block) {
     const line = cleanLine(raw);

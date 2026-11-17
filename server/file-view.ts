@@ -14,6 +14,12 @@ import { otherHostsShare } from "./windows-share.ts";
 export { pagePolicy };
 
 
+/**
+ * A path as agents and people write it: absolute, `~/…`, or relative to the pane's folder. Every path the page
+ * asks for comes through here, whoever wrote it (a Markdown link, a tool call's row, the address's `?file=`, the
+ * reader's `?read=`), so this is where a network share is refused on a Windows PC (windows-share.ts): never one
+ * of another host, however it is written. `rules` and `home`: this system's; a test passes Windows' own.
+ */
 export function resolveFilePath(input: string, cwd: string | null, rules: Pick<PlatformPath, "resolve" | "isAbsolute" | "sep"> = { resolve, isAbsolute, sep }, home = homedir()): string | null {
   const path = input.trim();
   if (path === "") return null;
@@ -96,6 +102,15 @@ export async function locateFile(input: string, cwd: string | null, anyForm = fa
 
 export type LocatedFile = { info: FileInfo; within?: string } | { candidates: string[] } | null;
 
+/**
+ * A relative fallback stays in its own folder, including after following symlinks. Checking a
+ * path and then following it again could meet a link put there in between, so the file is
+ * described from a descriptor shown to lie in the folder (`describeWithin`, on a file thread), and
+ * comes back with that folder (`within`), in which `fileResponse` opens it again the same way.
+ * Candidates are only names to choose from. Without `walk`, only the place `input` names is
+ * looked at (in another form of the name too, with `anyForm`), never a file deeper in the folder
+ * whose path ends in it: a path given in full that is not there is not found, as anywhere else.
+ */
 export async function locateFileInFolder(input: string, folder: string, anyForm = false, walk = true): Promise<LocatedFile> {
   const relative = input.trim();
   if (isAbsolute(relative) || relative.startsWith("~") || !resolve(folder, relative).startsWith(resolve(folder) + sep)) return null;
@@ -119,6 +134,13 @@ export function describeWithin(path: string, folder: string, cell?: Int32Array<S
   }
 }
 
+/**
+ * Try every exact place before opening a name stored in another form. A file named by a path in
+ * the scratch folder (the viewer opens what it found there by the path it was given, and a choice
+ * among candidates by its own) is still that folder's: found only there, in any form, as
+ * `locateFileInFolder` finds it, and never by a lookup that is not held to the folder.
+ * `mayBeScratch` tells, without asking for the folder, whether a path can lie in one.
+ */
 export async function findFile(input: string, cwd: string | null, scratchFolder: () => Promise<string | null>, mayBeScratch: (path: string) => boolean = () => false): Promise<LocatedFile> {
   let asked: Promise<string | null> | undefined;
   const scratchOnce = () => asked ??= scratchFolder();
@@ -166,8 +188,26 @@ const EMBED_TOTAL_BYTES = 32 * 1024 * 1024;
 const EMBED_PAGE_BYTES = 8 * 1024 * 1024;
 const EMBED_REFS = 1_000;
 
+/**
+ * Where a rendered page plays a video or sound too large to put into it: a random address per
+ * file and render, handed out only by `pageWithLocalFiles` for a file that page names. The page
+ * never holds the file (its script cannot read media served to another origin), but its script
+ * can read the address from its own `<video src>` and pass it on. So an address plays only for
+ * the client address (`authClient`) that rendered the page, only for `PAGE_MEDIA_LIFETIME_MS`
+ * from the render, and no longer once that device is revoked or signs out (`forgetPageMedia`).
+ * The page's request carries no cookie (it has no origin, and the cookies are SameSite=Strict),
+ * so the client address is the one identity the render and the playing share: another device
+ * behind the same address (one NAT, one proxy that hides its visitors) shares it too, and a phone
+ * whose address changes must reload the page. The shared token is read once at startup, and
+ * these addresses live in memory only: the restart that changes the token drops them all.
+ */
 export const PAGE_MEDIA_PATH = "/api/fs/page-media/";
 export const PAGE_MEDIA_ROUTE = /^\/api\/fs\/page-media\/[A-Za-z0-9_-]{32}$/;
+/**
+ * How long an address plays after its render, never extended. A player asks by Range for as long
+ * as it plays and seeks, not only to start, so this covers a sitting with the page; past it a
+ * reload gives a new address. It is also how long an address a page passed on keeps working.
+ */
 export const PAGE_MEDIA_LIFETIME_MS = 30 * 60 * 1000;
 const PAGE_MEDIA_ADDRESSES = 4_096;
 export const PAGE_MEDIA_PER_RENDER = 50;
@@ -231,12 +271,27 @@ export function forgetPageMedia(owner: MediaOwnerKey): void {
   }
 }
 
+/**
+ * The media source a page's policy allows, for the address the browser asked this server by;
+ * null for a Host that is not a plain host[:port]. Behind a proxy (`cameThroughProxy`) that is
+ * the X-Forwarded-Host it passes on, as the scheme is its X-Forwarded-Proto: a proxy that rewrites
+ * Host would otherwise write a source the page's relative `<video src>` never matches.
+ */
 export function pageMediaSource(host: string | null, secure: boolean, forwardedHost: string | null = null): string | null {
   const asked = forwardedHost?.split(",")[0]?.trim() || host;
   if (asked === null || !/^(?:[a-z0-9.-]+|\[[0-9a-f:.]+\])(?::\d{1,5})?$/i.test(asked)) return null;
   return `${secure ? "https" : "http"}://${asked}${PAGE_MEDIA_PATH}`;
 }
 
+/**
+ * The file behind a page's media address, or null when this server never gave it out, it lapsed,
+ * another client asks for it, or the file is not the one its render checked. Each request opens
+ * the path its render asked for again, authorizes what it opened as the render did
+ * (`openAuthorized`), and plays it only while it is still the file, size and modification time
+ * the render saw: a folder on the way swapped for a symlink since, the file replaced or written
+ * over in place would otherwise serve another one under the address (a new render gives a new
+ * address). It is sent from that descriptor (`descriptorBody`), with `request`'s Range.
+ */
 export function pageMediaResponse(token: string, client: string | null, request: Request | null = null, now = Date.now()): Response | null {
   const entry = pageMediaFiles.get(token);
   if (entry === undefined) return null;
@@ -244,6 +299,7 @@ export function pageMediaResponse(token: string, client: string | null, request:
     pageMediaFiles.delete(token);
     return null;
   }
+  // an address the page passed on plays nowhere else, answered like an address that never existed
   if (entry.client !== client) return null;
   const file = openAuthorized(entry.requested, entry.roots);
   if (file === null) return null;
@@ -302,6 +358,16 @@ export function byteRange(header: string | null, ifRange: boolean, size: number)
 
 export const STREAM_CHUNK_BYTES = 256 * 1024;
 
+/**
+ * `length` bytes of an open file from `start`, read from its descriptor a chunk at a time as the
+ * client takes them, never the whole file in memory, and never on the server's thread: each read
+ * is asynchronous. With `unchanged` (an authorized file, `openAuthorized`), each chunk is followed
+ * by a look at the descriptor: a file written over in place since it was authorized (another size
+ * or modification time) ends the stream with an error. That cannot see a write that keeps both, nor
+ * take back bytes already sent. Any file that ends before `length` ends the stream with an error.
+ * The descriptor is closed once: at the end, on an error, or when the client goes away (after a
+ * read under way returns, so the number is never reused under it).
+ */
 function descriptorBody(fd: number, start: number, length: number, unchanged: { size: number; mtimeNs: bigint } | null): ReadableStream<Uint8Array> {
   let position = start;
   let left = length;
@@ -416,6 +482,28 @@ export function release(fd: number): void {
 
 export interface Authorized { fd: number; requested: string; file: string; roots: readonly string[]; mime: string; dev: bigint; ino: bigint; size: number; mtimeNs: bigint }
 
+/**
+ * `requested` opened for a page to read, when what was opened is a file in one of `roots` with no
+ * hidden name below it; null for anything else. The checks of the path before it is opened only
+ * refuse early: a folder on the way can be swapped between any check of a path and the next, so
+ * what decides is the opened file. The path is resolved and checked again once it is open, and it
+ * must still name the opened file (the same device and inode), but these are samples of a path
+ * too, which a swap timed around each of them passes. So each platform proves it as it can:
+ * - Linux: the kernel's own path of the opened file (`/proc/self/fd`) must lie in `roots`, with no
+ *   hidden name; a descriptor whose path cannot be read, or whose file was deleted, is refused.
+ * - macOS: every folder from the root the file lies in down to its own folder must be a folder,
+ *   not a link, owned by this server's user and writable by no group or other user, so only this
+ *   user's own processes can swap them, and those can already read what a swap would expose. It
+ *   is not a proof against this user's own processes.
+ * - Windows: the second resolution and identity check only, and no look at the folders' access
+ *   lists: anyone allowed to write to a folder on the way can race them. That is outside the one
+ *   user this server serves.
+ * - Anywhere else, nothing is authorized.
+ * `hidden` lets a file with a hidden name below its root through too. `cell`: where a file thread
+ * names the descriptor the moment it is open (`file-pool.ts`), so a thread ended mid-check leaves
+ * none open; a refused one is taken back from it before it is closed. The caller reads only from
+ * the descriptor and closes it (`release`).
+ */
 export function openAuthorized(requested: string, roots: readonly string[], hidden = false, cell?: Int32Array<SharedArrayBuffer>): Authorized | null {
   const hooks = pageFileHooks;
   let file: string;
@@ -441,6 +529,8 @@ export function openAuthorized(requested: string, roots: readonly string[], hidd
     if (named.dev !== opened.dev || named.ino !== opened.ino) return null;
     if (!openedWithin(fd, again, root, roots, hidden)) return null;
     hooks.afterAuthorize?.(requested);
+    // what is handed out (an address's size, a HEAD's length) is the file as it is once authorized:
+    // one written over in place since it was first looked at is refused, not described by that look
     const settled = (hooks.fstat ?? fstatBig)(fd);
     if (settled.dev !== opened.dev || settled.ino !== opened.ino || settled.size !== opened.size || settled.mtimeNs !== opened.mtimeNs) return null;
     kept = true;
@@ -463,6 +553,13 @@ function openedWithin(fd: number, file: string, root: string, roots: readonly st
   return platform === "win32";
 }
 
+/**
+ * Whether the page open at `fd` (whose identity is `opened`) is `file`, its path resolved once before
+ * it was opened: on Linux the kernel's path of the descriptor is that path (one that cannot be read, or
+ * was deleted, is not); elsewhere that path is a file, not a link, with the descriptor's device and
+ * inode, and still resolves to itself (no folder on the way became a link): samples, like the other
+ * platforms' checks (`openAuthorized`).
+ */
 function pageOpenedAs(fd: number, file: string, opened: BigIntStats): boolean {
   if ((pageFileHooks.platform ?? process.platform) === "linux") {
     let path: string;
@@ -487,6 +584,15 @@ export function ownedFolders(root: string, file: string, uid: number | undefined
   }
 }
 
+/**
+ * The folders besides a page's own that a video it plays may lie in (a network share where
+ * recordings are kept), from OVIS_MEDIA_ROOTS: absolute paths joined by the path delimiter.
+ * None by default: a page that came with its own symlinks (an unpacked archive, a cloned
+ * repository) could otherwise name any of this PC's videos, and whether one plays would tell it
+ * that the file exists; in a folder named here, any page may learn that. Read on every render, so
+ * a share mounted later counts. On macOS a share owned by another user, or one its group or anyone
+ * else may write to, plays nothing (`openAuthorized`).
+ */
 function mediaRoots(): string[] {
   const roots: string[] = [];
   for (const entry of (process.env["OVIS_MEDIA_ROOTS"] ?? "").split(delimiter)) {
@@ -504,6 +610,8 @@ function pageStreamTarget(ref: string, folder: string, roots: readonly string[])
   return target.startsWith(folder + sep) || roots.length > 0 ? target : null;
 }
 
+/** The page's script can read what is put into it, so each element takes only its own kind of
+ * file: never a key or a .env named as a picture's source. */
 const mimeOf = (file: string): string => Bun.file(file).type.split(";")[0] || "application/octet-stream";
 const MEDIA = (mime: string) => /^(?:image|video|audio)\//.test(mime);
 const PLAYS = (mime: string) => /^(?:video|audio)\//.test(mime);
@@ -524,7 +632,26 @@ function readWhole(fd: number, size: number, mtimeNs: bigint): Buffer | null {
 
 interface PageAsset { target: string; mime: string; size: number; data: string | null }
 
+/**
+ * The page at `path` (any file this server's user can read, as every file the viewer opens), read
+ * from one descriptor, with the pictures, media, stylesheets and scripts it takes from its own
+ * folder put into it as data: URLs, so the element keeps its attributes (`defer`, `type="module"`,
+ * a stylesheet's `media`): the sandbox may ask this server for nothing, and on a paired phone it
+ * could not anyway (the device cookie is SameSite=Strict, and a sandboxed page has no origin).
+ * Nothing outside the page's folder is read, and each file only from a descriptor
+ * `openAuthorized` let through; a URL is resolved once however often it is named. With `media`,
+ * a video or sound that does not fit is given an address to play from instead
+ * (`PAGE_MEDIA_PATH`, up to `PAGE_MEDIA_PER_RENDER` files), the one thing this server answers the
+ * page; each address is handed to `grant` (by default kept at once, `keepPageMedia`). Null when
+ * the page is not a file of at most `EMBED_PAGE_BYTES`, or changed while it was read, or, with
+ * `within` (a page found as one that stays in that folder, `locateFileInFolder`), when the page
+ * opened is not shown to lie in it as `openAuthorized` shows it.
+ */
 export function pageWithLocalFiles(path: string, media: PageMedia | null = null, grant: (given: PageMediaGrant) => void = (given) => keepPageMedia([given]), within: string | null = null): string | null {
+  // the page's path is resolved once, before the page is opened (a page that is a link, to the file it
+  // leads to), and the page read must be that file, proven from its descriptor (`pageOpenedAs`), never by
+  // looking a path up again; its files come from that file's folder: a folder swapped for a link between
+  // two lookups would otherwise serve another folder's page, or make it the folder the page's files come from
   let file: string;
   try { file = realpathSync(path); } catch { return null; }
   if (within !== null && rootOf(file, [within], true) === undefined) return null;
@@ -630,6 +757,13 @@ export function pageWithLocalFiles(path: string, media: PageMedia | null = null,
     .transform(html);
 }
 
+/**
+ * A file read asked for by another site's page as a picture, script or fetch, not a navigation:
+ * a rendered page (which has no origin) naming this server's files to learn which exist, or any
+ * other site doing the same where the server lets a request in without a cookie. A navigation (a
+ * new tab, a download, Android's PDF "Open" button) and a browser that sends no Fetch Metadata
+ * still pass.
+ */
 export function crossSiteFileRead(request: Request): boolean {
   const site = request.headers.get("sec-fetch-site");
   if (site === null || site === "same-origin" || site === "none") return false;
@@ -640,6 +774,19 @@ export function isHtmlPage(info: FileInfo): boolean {
   return info.kind === "text" && info.mime === "text/html";
 }
 
+/**
+ * The file itself. `download` asks the browser to save it. Answers are sandboxed (an HTML
+ * or SVG file opened from this origin must not run script with the app's access), and
+ * text is served as plain text whatever its extension says it runs as. `render` asks for an
+ * HTML page as a page (`pagePolicy`); any other file ignores it. `media`
+ * (`pageMediaSource` and who asked) lets that page play its videos too large to put into it.
+ * `request` gives the method and Range: a HEAD sends no body, a GET a Range asks for gets that
+ * range (`byteRange`). The page is rendered, and the file opened, on a file thread (`file-pool.ts`).
+ * `watched`: a `watchPageMedia` the caller began before it looked for the file, so a revocation
+ * meanwhile counts too (without it, one begun here). `within`: the folder a file found as one that
+ * stays in it came with (`locateFileInFolder`); such a file is sent only from a descriptor shown to
+ * lie in that folder (`openAuthorized`), and such a page only when the page opened lies there.
+ */
 /**
  * Descriptors a file body names by `/proc/self/fd` (`fileResponse`), each closed once both that body
  * and its answer are collected: Bun opens the body's path only when it sends it, so the descriptor
@@ -652,6 +799,20 @@ const bodyDescriptors = new FinalizationRegistry<{ fd: number; left: number }>((
   bodiesHeld -= 1;
   try { release(held.fd); } catch { }
 });
+/**
+ * Such bodies waiting to be collected; past `bodyLimits().most` (a player seeking through a long
+ * video asks for many ranges before a collection) a body is streamed from its descriptor instead,
+ * so descriptors held for collection stay bounded. A streamed body has no content-length (Bun
+ * drops it): the cap is set above what is held at once in use, sent bodies waiting for a
+ * collection included. Sent bodies that lived through a collection while they were sent wait for
+ * one of Bun's own full collections, and until one runs their count grows with the downloads: with
+ * no cap and a heap of a million objects, 1,942 at the most over 60,000 downloads 16 at a time,
+ * 6,657 over 30,000 downloads 64 at a time, and about 270 more a second over a longer run 64 at a
+ * time with no full collection. The cap stays well above that (`most`), but never past a quarter
+ * of this process's open files, which the server's own sockets, terminals and file threads need
+ * too. Bun raises that limit to the hard one at start: hundreds of thousands on most Linux
+ * systems, the only one that sends such a body, and 1,024 on some, where the cap stays 256.
+ */
 let bodiesHeld = 0;
 let bodyCap: { most: number; collectPast: number } | null = null;
 const bodyLimits = (): { most: number; collectPast: number } => {

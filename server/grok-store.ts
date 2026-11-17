@@ -75,6 +75,7 @@ export function grokTranscriptPath(home: string, session: string): string | null
 const MAX_LISTED_FILES = 4096;
 const MAX_LISTING_BYTES = 1024 * 1024;
 
+/** Do not substitute the bridge's home when the pane's environment is unreadable. */
 export function grokHomeFromEnvironment(environment: string): string | null {
   const fields = environment.split("\0");
   const explicit = fields.find((field) => field.startsWith("GROK_HOME="))?.slice(10);
@@ -214,9 +215,14 @@ async function resolveDarwinGrokStore(paneId: string, pid: number, sessionId: st
   return current.length === 1 && current[0]!.pid === pid && darwinProcess.startTime(pid) === started ? path : null;
 }
 
+/** Bind Herdr's exact ID only when its unique held directory has the newest events.jsonl.
+ * Linux reads /proc. macOS reads lsof and the kernel's copy of the environment. Windows stays
+ * on the terminal view.
+ * Write times confirm that ID; they never select a different conversation. */
 export async function resolveGrokStore(pane: HerdrPane, configuredHome?: string, platform: string = process.platform): Promise<string | null> {
   const session = pane.agent_session;
   if (pane.agent !== "grok" || session?.agent !== "grok" || session.kind !== "id" || session.source !== "herdr:grok" || !SESSION.test(session.value)) return null;
+  // The executable may be any Grok build. Herdr's id chooses the session; an events.jsonl it did not name does not.
   if (platform !== "linux" && platform !== "darwin") return null;
   try {
     const processes = grokPaneProcesses((await paneProcessInfo(pane.pane_id)) ?? {});

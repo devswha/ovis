@@ -29,6 +29,11 @@ export function isGjcProcess(argv: readonly string[]): boolean {
 const PROCESS_TABLE_MS = 5000;
 let processTable: { at: number; rows: Promise<ProcessRow[]> } | null = null;
 
+/**
+ * The Windows process table, read at most once per PROCESS_TABLE_MS. The chat polls a pane
+ * every 2 s and each read starts a PowerShell (about 1.3 s on a real PC), so the polls of a
+ * few seconds share one; a gjc that left its pane can still count as running for that long.
+ */
 export function recentProcessTable(read: () => Promise<ProcessRow[]> = windowsProcessTable, now = Date.now()): Promise<ProcessRow[]> {
   if (processTable && now - processTable.at < PROCESS_TABLE_MS) return processTable.rows;
   const entry = { at: now, rows: read() };
@@ -40,6 +45,10 @@ export function recentProcessTable(read: () => Promise<ProcessRow[]> = windowsPr
 let freshReads = 0;
 let freshTable: { read: () => Promise<ProcessRow[]>; started: number; rows: Promise<ProcessRow[]> } | null = null;
 
+/**
+ * A fresh Windows process table for the final PID-reuse check. Concurrent lookups share a read only
+ * when it started after their own initial check (`after`), so N GJC panes start one PowerShell, not N.
+ */
 function freshProcessTable(read: () => Promise<ProcessRow[]>, after: number): Promise<ProcessRow[]> {
   if (freshTable && freshTable.read === read && freshTable.started > after) return freshTable.rows;
   const entry = { read, started: ++freshReads, rows: Promise.resolve().then(read) };
@@ -99,6 +108,11 @@ export function forgetGjcPane(paneId: string): void {
   lookupsInFlight.delete(paneId);
 }
 
+/**
+ * Where `file` sits inside `root`, as path segments, or null when it is not inside. The
+ * platform's own rules decide: a Windows path comes with backslashes and a drive letter whose
+ * case means nothing, and a prefix test would take `sessions-evil` or a `..` for the store.
+ */
 export function storeRelative(root: string, file: string, paths: PlatformPath = nodePath): string[] | null {
   const relative = paths.relative(root, file);
   // another drive or share comes back absolute
@@ -201,6 +215,20 @@ export function terminalBreadcrumb(store: string | StoreRoots, cwd: string, term
   } catch { return null; }
 }
 
+/**
+ * The transcript an agent's processes show, from its store's `roots` (GJC and omp lay theirs out
+ * alike): an exact open transcript first, then the terminal-scoped breadcrumb written
+ * during the process's lifetime. A directory descriptor or cwd proves only the store, not the
+ * active session; never infer ownership from cwd or session recency. `path` is null unless
+ * exactly one transcript qualifies; `found` says how many did. `environOf` supplies a process's
+ * environment already read elsewhere, so none is read here; undefined for a pid reads it.
+ * `openFilesOf` supplies the files a process holds open where there is no /proc (lsof on macOS
+ * herdr-core); there they are the only proof, and with none held no breadcrumb stands in (#3365).
+ * There a process whose listing held a name that could not be read (null), or that holds a `.jsonl` in
+ * the store that does not resolve, may hold the very session: nothing is bound for the pane then. So may a
+ * held `.jsonl` lsof names under neither the store's configured root nor its canonical one (lsof lists
+ * resolved paths, so a store reached through a link is placed by the canonical root).
+ */
 export function heldTranscript(roots: StoreRoots, cwd: string, pids: readonly number[], probe: HeldProbe = {}): { path: string | null; found: number } {
   const { environOf, openFilesOf } = probe;
   let root: string;
@@ -318,6 +346,7 @@ async function foregroundProcesses(
   const foreground = processInfo.foreground_processes;
   if (!Array.isArray(foreground)) return null;
   const identities = new Map<number, number>();
+  // awaited: GJC discovery runs this for every snapshot, and macOS reads a start with `ps` (#1545)
   const birthOf = options.processBirth ?? processStartedAtAsync;
   for (const process of foreground) {
     const argv = Array.isArray(process.argv) ? process.argv.filter((arg): arg is string => typeof arg === "string") : [];

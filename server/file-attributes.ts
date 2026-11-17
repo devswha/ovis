@@ -1,5 +1,13 @@
 import { dlopen, FFIType, read, type Pointer } from "bun:ffi";
 
+/**
+ * A file's extended attributes, and its access list, carried from one descriptor to another
+ * (`file-edit.ts`: the file a save replaces, to the new file that takes its place). Node has no call
+ * for them, so they are read and written through the C library. An access list decides who may read
+ * the file: one that cannot be carried over refuses the save, since the new file would otherwise be
+ * open to whoever its mode and folder let in. Any other attribute (a label, a download's quarantine
+ * mark) is carried over when it can be and left behind when it cannot.
+ */
 
 /** Linux keeps an access list as this attribute; macOS keeps it apart (`acl_get_fd_np`). */
 const LINUX_ACCESS_LIST = "system.posix_acl_access";

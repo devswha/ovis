@@ -9,6 +9,11 @@ const YES_NO_RE = /[([]\s*y(?:es)?\s*\/\s*n(?:o)?\s*[)\]]\s*[:?]?\s*$/i;
 
 const ARROWS_RE = /[↑↓]|\barrow keys\b/i;
 
+/**
+ * what a menu's hint line says to do with it: a way to choose ("Enter to select", "↵ choose",
+ * "Enter a number", "Type 1-3", "↑/↓ to move"). A plain Enter or Press asks for something else
+ * ("Enter recovery code", "Enter your phone number", "Press any key").
+ */
 const MENU_HINT_RE = /\b(?:select|choose|pick|confirm|navigate|move|esc|cancel)\b|[↑↓↵⏎]|\b(?:enter|type)\s+(?:(?:a|an|the)\s+)?number\b|\b\d\s*[-–]\s*\d\b/i;
 
 const GJC_SELECT_HINT_RE = /^(?:\[↑↓ to navigate, enter to select, esc to (?:cancel|go back)\]|up\/down navigate\s+enter select(?:\s+←\/→ question)?\s+esc cancel|↑\/↓ select\s+enter(?:\s+←\/→ question)?\s+esc\s+PgUp\/PgDn\/Ctrl\+u\/d: question · Wheel: transcript)$/i;
@@ -47,6 +52,14 @@ const OMP_STATUS_ROW_RE = /^((?:[\ue0b0-\ue0d4] |╭─+ )?)(?:[⠋⠙⠹⠸⠼�
  * How a fallback card's id reads a line of the screen. Claude Code keeps its working line on the
  * screen while it waits on a prompt, and the line's spinner, time and token count change every
  * second or so. An id that took them in refused each answer tapped after a tick as stale (#365).
+ *
+ * They are blanked on that one line, and only when it is known to be it: the pane runs Claude,
+ * the line is its working line to the letter, token count with its arrow included, and no other
+ * line of the screen has that shape. Without the token count a time in parentheses may be one
+ * that is offered ("Restart service… (300s)"), and two such lines may be a menu's rows with their
+ * marker ("· Delete all…" / "* Cancel…"): those screens are hashed as they are, like every other
+ * line and every other agent's screen. The words stay in the id, so "Deleting staging…" is never
+ * "Deleting production…".
  */
 function steadyReader(agent: string, shown: string[]): SteadyReader {
   const waiting = agent === "claude" || agent === "omp" ? undefined : WAITING_LINES[agent];
@@ -188,8 +201,13 @@ export function parseFallbackPrompt(agent: string, screen: string): InteractiveP
     }, steadyFields(agent, question, body, steady.read)), choiceRows);
   }
   const last = shown.slice(-16).map((index) => cleanLine(lines[index]!));
+  // letters and arrows only for the prompt's own last lines, never while an input box ends the
+  // screen (the agent's composer owns the keys then) or for a line of quoted output
   const hints = NOT_PROMPT_TEXT_RE.test(last.at(-1) ?? "") ? [] : last.slice(-2).filter((line) => !NOT_PROMPT_TEXT_RE.test(line));
   const question = [...last].reverse().find((line) => ASKED_RE.test(line)) ?? last.at(-1);
+  // a (y/n) letter is offered only for the prompt at the screen's end, never for a mention
+  // above it; it is typed without an Enter: a program reading a whole line still waits for
+  // one, and the card that follows offers it
   const choices: { label: CardWords; steps: AnswerStep[] }[] = [
     ...(hints.some((line) => YES_NO_RE.test(line)) ? [{ label: own("Yes (y)"), steps: [{ text: "y" }] }, { label: own("No (n)"), steps: [{ text: "n" }] }] : []),
     ...(hints.some((line) => ARROWS_RE.test(line)) ? [{ label: "↑", steps: keySteps([KEY.up]) }, { label: "↓", steps: keySteps([KEY.down]) }] : []),
@@ -225,6 +243,11 @@ function tickless(agent: string, line: string): string {
 
 const gjcMenuIdentities = new WeakMap<ParsedPrompt, string>();
 
+/**
+ * A fallback card's id covers the whole visible screen, not just the lines it shows: a changed
+ * command, footer or wrapped label anywhere on it makes an answer to the old card stale. A working
+ * line's spinner, time and token count are the one thing it leaves out (steadyReader).
+ */
 function screenCard(lines: string[], shown: number[], steady: SteadyReader, parsed: ParsedPrompt, cursorRows?: ReadonlySet<number>): InteractivePrompt {
   if (parsed.responder === "fallback-gjc-menu") gjcMenuIdentities.set(parsed, parsed.id);
   const screen = parsed.agent === "cmd" ? lines.join("\n") : shown.map((index) => {
@@ -246,6 +269,8 @@ function fallbackMenu(lines: string[], shown: number[]): { start: number; rows: 
   const hintIndex = shown.at(-1);
   if (lastRow === undefined || hintIndex === undefined || hintIndex === lastRow) return null;
   const hint = cleanLine(lines[hintIndex]!);
+  // a hint that says to choose, and no input field ("Password:", "Choice: 2"): a numbered
+  // list in the agent's output is not a menu
   if (!MENU_HINT_RE.test(hint) || SELECTED_RE.test(hint) || NOT_PROMPT_TEXT_RE.test(hint) || INPUT_FIELD_RE.test(hint)) return null;
   let end = lastRow + 1;
   const numberAt = lines[lastRow]!.search(/\d/);
@@ -256,6 +281,8 @@ function fallbackMenu(lines: string[], shown: number[]): { start: number; rows: 
   while (start < lastRow && !NUMBERED_OPTION_RE.test(cleanLine(lines[start]!))) start += 1;
   const rows = parseNumberedRows(lines, start, end);
   if (!sequentialRows(rows) || rows.length < 2 || rows.length > 9 || rows.filter((row) => row.selected).length > 1) return null;
+  // the lines a row wraps onto belong to its label; an input box or quote between rows, or a
+  // row with its own letter key ("Read only (r)"), means the number may not be the key
   for (const [at, row] of rows.entries()) {
     const wrapped = lines.slice(row.lineIndex + 1, rows[at + 1]?.lineIndex ?? end).map(cleanLine).filter(Boolean);
     if (wrapped.some((line) => NOT_PROMPT_TEXT_RE.test(line) || (at === rows.length - 1 && (HINT_LINE_RE.test(line) || /:\s*$/.test(line))))) return null;
@@ -353,6 +380,8 @@ export function gjcCustomEditorMatches(screen: string, expected: ParsedPrompt, d
     characters += editorLines[input]!.replace(/\s/g, "").length;
     if (characters > draftCharacters + 1) break;
     if (characters !== draftCharacters + 1 || !/^>(?:\s|$)/.test(cleanLine(editorLines[input]!))) continue;
+    // Like claudeRestoredDraft, walk exact row contents: a soft wrap can split a word or
+    // consume one separating space. Do not flatten internal whitespace or accept missing text.
     let positions = new Set([0]);
     for (let index = input; index < editorLines.length; index++) {
       const row = index === input ? editorLines[index]!.replace(/^\s*> ?/, "") : editorLines[index]!;

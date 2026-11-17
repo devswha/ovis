@@ -28,6 +28,7 @@ export function setGitListOptions(options: Partial<GitListOptions> = {}): void {
   gitList = { ...GIT_LIST_DEFAULTS, ...options };
 }
 
+/** The same policy as `repo-diff.ts`: only read the repository, run no hook or helper, never prompt. */
 function gitEnvironment(): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [name, value] of Object.entries(process.env)) {
@@ -218,6 +219,13 @@ const walked = new Map<string, { expires: number; files: string[] }>();
 const listing = new Map<string, Promise<string[]>>();
 let generation = 0;
 
+/**
+ * The files under `cwd` whose path ends in `name` (a bare `demo.mp4`, or `screenshots/demo.mp4`),
+ * for a path an agent wrote without its folders. The git inventory comes first, whole, so a
+ * folder of thousands of files cannot hide the one named; the bounded walk follows, since that
+ * inventory leaves out ignored files (build output, recordings). The listing is awaited, not
+ * waited for: a slow git in a large repository must not hold every other request (#1404).
+ */
 export async function filesNamed(cwd: string, name: string, limit = 10, anyForm = false): Promise<string[]> {
   const suffix = anyForm ? name.replace(/^\.\//, "").normalize("NFC") : name.replace(/^\.\//, "");
   const hit = walked.get(cwd);

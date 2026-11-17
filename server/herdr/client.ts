@@ -41,6 +41,15 @@ export function sameSocket(path: string): string {
   try { return join(realpathSync(dirname(absolute)), basename(absolute)); } catch { return absolute; }
 }
 
+/**
+ * A process that names a test session never reaches herdr's default socket, the user's own session:
+ * a script whose scripts/test-herdr.ts import Bun dropped (its binding unused) would otherwise create,
+ * type into and close panes there. Both homes count (HOME may be changed for a fixture after the
+ * socket was chosen), and every spelling of the same socket.
+ * The XDG_CONFIG_HOME that counts is the one the test run started with (scripts/test-herdr.ts records
+ * it in OVIS_TEST_USER_XDG_CONFIG_HOME, and children inherit it), not one a test gave a child of its
+ * own: refusing that would refuse the test's own herdr. Without the record, this process's own counts.
+ */
 function refuseLiveHerdr(socketPath: string, env: Record<string, string | undefined> = process.env): void {
   if (!liveSessionsRefused(env)) return;
   const homes = [...new Set([env["HOME"], homedir()].filter((home): home is string => Boolean(home)))];
@@ -65,6 +74,11 @@ export function socketAddress(socketPath: string): string {
   return process.platform === "win32" && !checked.startsWith("\\\\.\\pipe\\") ? `\\\\.\\pipe\\${checked}` : checked;
 }
 
+/**
+ * The machine profile's check of a herdr socket before each connection to it, set once it pins its session
+ * (server/machine-profile.ts): the address to use instead, where nothing listens, while the socket fails it.
+ * An ordinary server sets none.
+ */
 let socketCheck: ((socketPath: string) => string) | null = null;
 export function checkHerdrSockets(check: (socketPath: string) => string): void { socketCheck = check; }
 export function checkedHerdrSocket(socketPath: string): string { return socketCheck?.(socketPath) ?? socketPath; }
@@ -122,6 +136,13 @@ export function herdrRpcCountingForTests(enabled: boolean): void {
   rpcCounts = enabled ? new Map() : null;
 }
 
+/**
+ * The tally's one reader: as the process exits (the server's shutdown ends in process.exit), one
+ * JSON line on stderr, the sink herdr.rpc's ConnectionDiagnostics writes to, e.g.
+ * {"time":"…","event":"herdr.rpc.counts","counts":{"pane.read":42}}. Counts and method names
+ * only, which are code-owned literals; nothing else reads them or sends them anywhere. A process
+ * that made no request (the plugin's supervisor imports this module too) writes nothing.
+ */
 if (herdrRpcCountRequested()) {
   rpcCounts = new Map();
   process.once("exit", () => {
@@ -129,6 +150,23 @@ if (herdrRpcCountRequested()) {
   });
 }
 
+/**
+ * The most bytes one herdr line may hold before its newline, checked before anything is decoded.
+ * herdr's schema sets no finite maximum for a reply (`PaneReadResult.text` is an unbounded string,
+ * `PaneReadParams.lines` a uint32, and a snapshot grows with every pane), so these are the bridge's
+ * supported ceilings, not herdr's. Sizing evidence: the largest ANSI pane fixture
+ * (server/fixtures/opencode-autocomplete-2.0.32-ansi-third-selected.ansi, 40 rows) is 10,466 bytes,
+ * 12,742 once JSON-escaped (about 319 bytes a row); the bridge's largest fixed read is 400 recent rows
+ * (server/codex.ts), about 128 KB at that rate. A schema-complete snapshot of 25 workspaces, 200 tabs
+ * and 2,000 panes, with every pane's agent and every tab's layout, is 3,598,115 bytes of JSON; its
+ * reply line adds 58 bytes of envelope, the request id and the newline, 3,598,174 bytes plus the id
+ * (under 3,598,200; about 1,800 bytes a pane; server/herdr/seam.test.ts builds it and checks this sum).
+ * Twice each of those stays far below the floors, so the floors stand: 64 MiB for pane.read,
+ * pane.selection.read (any range of the same history pane.read reads) and session.snapshot
+ * (server/herdr/seam.test.ts answers each at exactly that size), 16 MiB for every other reply and
+ * for each line of an event stream. A subscription has no lifetime total: only each of its lines
+ * is bounded.
+ */
 export const LARGE_REPLY_BYTES = 64 * 1024 * 1024;
 export const LINE_BYTES = 16 * 1024 * 1024;
 const LARGE_REPLY_METHODS = new Set(["pane.read", "pane.selection.read", "session.snapshot"]);
@@ -228,6 +266,15 @@ export function herdrRpc<M extends HerdrMethod>(
   timeoutMs?: number,
   guard?: () => boolean,
 ): Promise<HerdrMethods[M]["result"]>;
+/**
+ * Untyped fallback for a method `HerdrMethods` does not list yet. Outside server/herdr/ only
+ * tests, scripts and the files in HERDR_RPC_ALLOWED (server/conventions.test.ts) may call it;
+ * server code adds a typed wrapper here instead. It rejects a typed method only when `M` is
+ * inferred from a literal: with an explicit result type (`herdrRpc<T>("pane.process_info", …)`)
+ * or a method typed as plain `string`, `M` is `string` and any params compile. Closing that
+ * needs this fallback under its own name, left to the follow-up PR that moves the
+ * HERDR_RPC_ALLOWED files to the wrappers once their open PRs land.
+ */
 export function herdrRpc<T = unknown, M extends string = string>(
   method: UntypedHerdrMethod<M>,
   params: Record<string, unknown>,
@@ -245,7 +292,7 @@ export async function herdrRpc(
   if (rpcCounts) rpcCounts.set(method, (rpcCounts.get(method) ?? 0) + 1);
   const id = nextId();
   const started = performance.now();
-  const key = JSON.stringify([socketPath, method]);
+  const key = JSON.stringify([socketPath, method]); // private bookkeeping only; never logged
   let connectedAt: number | undefined;
   pendingRpcs++;
   const fields = () => ({
@@ -278,6 +325,9 @@ export async function herdrRpc(
         timeoutMs,
       );
 
+      // A reply that breaks the protocol fails this request alone, as `bad_frame`: it says nothing
+      // about whether herdr is running. The message names the method, the reason and the size,
+      // never the reply's text.
       const invalid = (reason: string, bytes: number) =>
         finish(() => reject(new HerdrError("bad_frame", `herdr sent an invalid reply to ${method} (${reason}, ${bytes} bytes)`)));
 
@@ -319,6 +369,8 @@ export async function herdrRpc(
           }
           written += accepted;
         } catch (error) {
+          // A connected failure must not be mistaken for proof that no request was sent:
+          // prompt answers treat connect_failed as permission to retry the same asking.
           finish(() => reject(new HerdrError("socket_error", (error as Error)?.message ?? "herdr socket error")));
         }
       };
@@ -380,6 +432,7 @@ export function herdrMayListen(socketPath: string = herdrSocketPath()): Promise<
   });
 }
 
+/** Discovery offers only a socket this account actually connected to, never a permission error. */
 export async function herdrAcceptsConnection(socketPath: string): Promise<boolean> {
   try {
     const socket = await Bun.connect({ unix: socketAddress(socketPath), socket: { data() {} } });
@@ -675,6 +728,7 @@ export interface PaneReadOptions {
 
 export async function paneRead(options: PaneReadOptions, socketPath?: string): Promise<PaneReadResult> {
   const { paneId, source = "visible", format = "text", lines, stripAnsi, timeoutMs } = options;
+  // Escape sequences must survive for xterm.js, so an ansi read defaults to strip_ansi:false.
   const strip = stripAnsi ?? format !== "ansi";
   // Recent text reads can scroll an idle agent's TUI to harvest history. ANSI reads
   // only snapshot stored rows, so automatic polling must convert those to text locally.
@@ -869,6 +923,7 @@ export async function paneSwapWith(paneId: string, targetPaneId: string, socketP
     if (result.swap.changed && focusedPaneId && focusedPaneId !== paneId) {
       try {
         if ((await sessionSnapshot(socket)).focused_pane_id === paneId) {
+          // Already inside the focus queue: do not enqueue recursively.
           await herdrRpc("pane.focus", { pane_id: focusedPaneId }, socket);
         }
       } catch (error) {
@@ -919,6 +974,7 @@ export async function paneMoveBeside(paneId: string, targetPaneId: string, side:
       if (!wanted) return;
       try {
         const at = (await sessionSnapshot(socket)).focused_pane_id;
+        // Already inside the focus queue: do not enqueue recursively.
         if (at !== wanted && took(at)) {
           await herdrRpc("pane.focus", { pane_id: wanted }, socket);
           if (hold?.moved.has(wanted)) refocused = true;
@@ -1084,6 +1140,8 @@ export function subscribeEvents(
     try {
       handlers.onError?.(new HerdrError("bad_frame", `herdr sent an invalid events.subscribe frame (${reason}, ${bytes} bytes)`));
     } finally {
+      // a throwing onError must still end the socket and report the close, or a subscriber that
+      // reopens on close never does
       try {
         socket?.end();
       } catch {

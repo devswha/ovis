@@ -10,12 +10,25 @@ export const MAX_DIRECTORY_ENTRIES = 500;
 /** The name limit on every common filesystem. */
 const MAX_NAME_BYTES = 255;
 
+/**
+ * `path` in the dialog's syntax (absolute, `~`, `~/…`, empty for home), resolved against `base` or the server's own
+ * folder. null for a network share of another host on a Windows PC (windows-share.ts): the file viewer lists a
+ * path it found no file at, which a link can name. `rules`: this system's; a test passes Windows' own.
+ */
 export function resolveFolder(path: string, home: string, base?: string, rules: Pick<PlatformPath, "resolve" | "sep"> = { resolve, sep }): string | null {
   const trimmed = path.trim();
   const folder = trimmed === "" || trimmed === "~" ? home : trimmed.startsWith("~/") ? rules.resolve(home, trimmed.slice(2)) : base !== undefined ? rules.resolve(base, trimmed) : rules.resolve(trimmed);
   return rules.sep === "\\" && otherHostsShare(folder, [base === undefined ? null : rules.resolve(base), rules.resolve(home), rules.resolve(".")]) ? null : folder;
 }
 
+/**
+ * `value` as an absolute path (`~` expanded); null for a network share of another host on a Windows PC
+ * (windows-share.ts). A folder a route reads can be an address's: the New workspace dialog asks for a folder's
+ * skills by itself, with the folder `?new=workspace&cwd=…` named. `own`: the folder of the pane the request names,
+ * whose share is the PC's own as the home folder's, the server's own folder's and every pane's is; "chosen" for a
+ * folder the user typed or picked and sees before anything is read (a create request), which is how a share
+ * becomes a pane's. `rules` and `home`: this system's; a test passes Windows' own.
+ */
 export function expandedPath(value: string, own: ReadonlyArray<string | null> | "chosen" = [], rules: Pick<PlatformPath, "resolve" | "sep"> = { resolve, sep }, home = homedir()): string | null {
   const expanded = value === "~" ? home : value.startsWith("~/") ? rules.resolve(home, value.slice(2)) : rules.resolve(value);
   return own !== "chosen" && rules.sep === "\\" && otherHostsShare(expanded, [...own, rules.resolve(home), rules.resolve(".")]) ? null : expanded;

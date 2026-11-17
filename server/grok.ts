@@ -115,6 +115,8 @@ export function grokProjection(path: string, stat: { dev: number; ino: number; s
   indexes.delete(path); indexes.set(path, index);
   if (indexes.size > 16) indexes.delete(indexes.keys().next().value!);
   if (index.failed) throw new GrokUnavailable();
+  // the file a page read is bound to, never another a folder swapped in around this open puts there; and,
+  // bound or not, the file `stat` saw: another file's bytes never mark this one's index failed
   const fd = openBound(path);
   const opened = fstatSync(fd);
   if (opened.dev !== stat.dev || opened.ino !== stat.ino) { closeSync(fd); throw new GrokUnavailable(); }
@@ -277,6 +279,7 @@ export function grokToolOutput(path: string, ref: string): string | null {
       if (outputRef(path, id) !== ref) continue;
       const length = call.owner.end - call.owner.start;
       if (length > 64 * 1024 * 1024) return null;
+      // the file a lookup is bound to (readBound), never another a folder swapped in around this open puts there
       const fd = openBound(path);
       try {
         const bytes = Buffer.alloc(length);

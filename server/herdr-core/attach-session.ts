@@ -143,6 +143,11 @@ export class CoreAttachSession {
     });
   }
 
+  /**
+   * `automatic`: the viewer's terminal made these bytes itself (a query's answer), nobody typed them.
+   * The tag comes from a client, so it holds only for what a reply looks like: escape sequences with
+   * no line break. Anything else (a command and its Enter) goes as typing, whatever the client says.
+   */
   write(data: string, automatic = false): boolean {
     if (this.closed) return false;
     automatic &&= /^\x1b[^\r\n]*$/.test(data);

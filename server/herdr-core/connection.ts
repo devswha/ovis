@@ -311,6 +311,7 @@ export class HcConnection {
     if (this.line && !this.line.dead) return this.line;
     const transport = this.spawn();
     const { promise: hello, resolve: helloDone, reject: helloFailed } = Promise.withResolvers<HelloInfo>();
+    // a hello nobody awaited yet must not surface as an unhandled rejection
     hello.catch(() => {});
     const line: Line = { transport, hello, pending: new Map(), channels: new Map(), early: new Map(), abandoned: new Set(), heardAt: performance.now(), dead: false };
     this.line = line;

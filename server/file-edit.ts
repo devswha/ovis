@@ -7,6 +7,26 @@ import type { Access } from "./access.ts";
 import { copyFileAttributes } from "./file-attributes.ts";
 import { openAuthorized, ownedFolders, release, resolveFilePath } from "./file-view.ts";
 
+/**
+ * Editing a text file from the file viewer (#771): a Markdown note or a JSON file an agent wrote,
+ * changed from a phone with no terminal to open an editor in. Reading a file reaches whatever this
+ * server's user can read (file-view.ts); writing reaches less: one existing text file under the
+ * pane's folder, for a device that drives this PC (`textEditAllowed`).
+ *
+ * A save is written to a new file in the same folder, given the file's mode and group, and renamed
+ * over it, so a reader sees the old text or the new, never half of it. What is replaced must be the
+ * file that was read: its SHA-256 (`revision`) is checked once before the new file is written and
+ * again right before the rename, and a file changed since it was read is not written (409). On
+ * Linux every step after the file was proven to lie in the pane's folder goes through a descriptor
+ * of its folder (`/proc/self/fd/N/<name>`), so a folder on the way swapped for a link meanwhile
+ * cannot send the rename anywhere else; on macOS the folders from the pane's folder down must be
+ * this user's own and writable by nobody else (`ownedFolders`), checked right before the rename.
+ * Other platforms do not save yet. The file's extended attributes and access list are carried over
+ * to the new file (file-attributes.ts); one whose access list cannot be is not saved. A read runs on a file thread (`file-pool.ts` `text-read`). A save
+ * runs on the server's own thread, synchronously: two saves never interleave, and a save is over
+ * when it is answered, never still running after a timeout. It is at most 1 MiB written to the
+ * disk the file was just read from; a disk that stalls during it holds the server for that long.
+ */
 
 export class TextEditRefused extends Error {
   constructor(readonly status: number, readonly code: string, message: string, readonly revision?: string) { super(message); }
@@ -16,6 +36,12 @@ export const textSaveHooks: { platform?: NodeJS.Platform; beforeRename?: () => v
 
 const platform = (): NodeJS.Platform => textSaveHooks.platform ?? process.platform;
 
+/**
+ * Who may read a file to edit it and save it: a device that drives this PC, never a watching one, a
+ * Portal visitor (even one given drive) or a window of an open LAN install, which signed in as
+ * nobody. The connection server reaching this PC with its bridge token (an SSH PC) has checked its
+ * own caller already; that token opens only this PC's own route, never a PC behind it.
+ */
 export function textEditAllowed(access: Access, bridgeAuthorized: boolean, proxied: boolean): boolean {
   if (access.level === "full") return access.role === "drive" && access.via !== "portal" && access.via !== "open";
   return bridgeAuthorized && !proxied;
@@ -35,6 +61,7 @@ const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[
 
 const sha256 = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
 
+/** The pane's folder as it resolves: never a filesystem's root, and never inside `.git`. */
 function sandbox(cwd: string): string {
   if (platform() !== "linux" && platform() !== "darwin") throw new TextEditRefused(501, "unsupported_platform", "Saving files from the app is not available on this PC yet");
   let root: string;

@@ -18,7 +18,8 @@ const piStats = (line: string): boolean => /\d+(?:\.\d+)?%\/\d/.test(line) && !/
 const piFolder = (line: string): boolean => /^(?:[A-Za-z]:[\\/]|[~\/])/.test(line);
 /**
  * An extension's `ctx.ui.setStatus` line, which pi draws under its folder and stats lines (one line,
- * truncated, never wrapped). On Windows no foreground process tells a live pi from the shell under its last screen.
+ * truncated, never wrapped). Only directly under them, and never a composer's or a shell's prompt. Not on
+ * Windows, where no foreground process tells a live pi from the shell under its last screen.
  */
 const piStatus = (lines: string[], at: number): boolean => process.platform !== "win32" && at >= 2 && !piStats(lines[at] ?? "")
   && !PROMPT_LINE_RE.test(lines[at]!.trim()) && piStats(lines[at - 1] ?? "") && piFolder(lines[at - 2] ?? "");
@@ -36,6 +37,7 @@ export function isPiQuestionnaireScreen(screen: string): boolean {
     || /Entertosubmit•Esc(?:tocancel)?$/.test(tail);
 }
 
+// Bound synchronous work before splitting, stripping escapes or reconstructing any frame.
 export const MAX_QUESTIONNAIRE_SCREEN_CHARS = 64 * 1024;
 const MAX_QUESTIONNAIRE_SCREEN_LINES = 512;
 
@@ -228,7 +230,8 @@ export const readers: readonly DialogReader[] = ["pi-questionnaire-question", "p
   parse: () => null,
 }));
 
-/** pi's editor word wrapping trims whitespace at row ends. */
+/** Editor word wrapping trims whitespace at row ends. Match every visible character in
+ * order, permitting only that invisible whitespace between wrapped rows, never within one. */
 export function piQuestionnaireInputMatches(shown: ParsedPrompt, draft: string): boolean {
   const rows = shown.piQuestionnaireInputRows;
   if (!rows?.length) return false;

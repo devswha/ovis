@@ -19,6 +19,10 @@ export interface ReaderContext {
 
 export const SCREEN_READ_AGENTS: ReadonlySet<string> = new Set(["claude", "omp", "codex", "omo", "pi", "gjc", "hermes", "cmd", "opencode", "letta", ""]);
 
+/**
+ * A picker of its own that has an agent's input while herdr may report it at rest (agentPickerOwnsScreen), for agents
+ * no reader knows: a chat message would pick a row, so it is refused, and the fallback card answers the picker.
+ */
 export function agentPickerWaits(agent: string, screen: string): boolean {
   return !SCREEN_READ_AGENTS.has(agent) && agentPickerOwnsScreen(screen);
 }

@@ -21,6 +21,11 @@ export function finishHerdrIdentity(path = herdrSocketPath(), platform = process
   } catch { return null; }
 }
 
+/**
+ * A snapshot's `herdr_lifetime`: a digest of the identity above, so a browser can tell a herdr that
+ * replaced the last one (and gives its pane IDs out again) without learning the socket's inode or a
+ * Windows pid. Unlike the finish epoch it is the same for every server that reads the same herdr.
+ */
 export function herdrLifetime(identity: string): string {
   return createHash("sha256").update(`herdr-lifetime:${identity}`).digest("hex").slice(0, 32);
 }

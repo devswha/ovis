@@ -306,12 +306,20 @@ function parseOmpQuestion(screen: string): ParsedPrompt | null {
  *
  * The keys are the user's bindings, drawn in the theme's symbol preset: words (`Ctrl+Enter`, `Esc`),
  * keycaps (`⌃⏎`, `⎋`) or Nerd Font icons; the ascii preset also draws the box in `+-|`. A countdown
- * adds `(Ns)` to the title. Details taller than the panel scroll, and a draft in the composer turns Enter into
- * "deny and send".
+ * adds `(Ns)` to the title. Not read: details taller than the panel, which scroll (the card would show
+ * part of the call), and a draft in the composer, which turns Enter into "deny and send"; the terminal
+ * answers those. A narrow pane cuts 18.13's hint: read only while the approve keys are still whole, since omp
+ * takes them before any other key (bound to Enter, the select on Deny would approve). Deny is then answered
+ * by moving to it, while fewer details than omp scrolls at show that none are hidden.
  *
  * omp cuts a detail at the panel's edge or past its length (`[…120ch elided…]`) and summarizes a multi-line one
- * (`… +2 lines in the tool call`, or 18.13's one row ending ` …`); ast_edit shows `+N more ops` (its first rewrite
- * only). omp keeps redrawing the transcript above the panel (a running tool's elapsed time) while it waits.
+ * (`… +2 lines in the tool call`, or 18.13's one row ending ` …`): two calls could then draw the same panel, and
+ * a card read for one would answer the other. So is ast_edit's `+N more ops` (its first rewrite only): none of
+ * them is a card. Not the screen above it either: omp keeps redrawing the transcript there (a running tool's
+ * elapsed time) while it waits.
+ * Known limit: some tools never show their whole call (edit names only the files, lsp and debug the action and
+ * target), so two calls to them draw the same panel. A card read for the first answers the second only when
+ * the first was answered in the terminal and the second drawn before the card was read again.
  */
 const OMP_DETAIL_CUT_RE = /…|\bin the tool call$|(?:^|· )\+\d+ more ops?(?: ·|$)/;
 /** a key may hold a space: the Nerd Font preset joins a modifier icon to its key with one (`\u{f0634} O`, Ctrl+O on macOS) */
@@ -352,7 +360,7 @@ const OMP_COMPOSERS: readonly { rows: readonly (RegExp | null)[]; prompt: number
   // pi: the prompt between two rules, then the status
   { rows: [OMP_RULE, /^[▏|]?$/u, OMP_RULE, null], prompt: 1 },
   { rows: [OMP_RULE, /^[▏|]?$/u, OMP_RULE], prompt: 1 },
-  // borderless
+  // borderless: never without its status, as a bare `❯` is also a shell's prompt
   { rows: [OMP_PROMPT, null], prompt: 0 },
   // field (its right cap left off with IME-safe layout), then rail: one filled row, a gap, the status
   { rows: [/^▐(?: +(?:[▏|] *)?▌| [▏|])?$/u, /^$/u, null], prompt: 0 },

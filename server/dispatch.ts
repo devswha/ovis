@@ -128,7 +128,16 @@ export interface ServerContext {
   readonly peer: { kind: "socket" } | { kind: "relay"; device: DeviceMatch; sessionId: string; serverId: string; key: string };
   readonly services: RequestServices;
   readonly relayBodyBudget?: EventStreamBudget;
+  /**
+   * The request came in on the machine profile's owner socket (`<state folder>/serve.sock`): set by the
+   * server for that listener alone, never read from the request. Only there is a local owner of the profile.
+   */
   readonly ownerSocket?: boolean;
+  /**
+   * The request came to the opt-in LAN HTTPS listener (server/lan-https.ts), from a private IPv4 peer:
+   * it gets in only with the token or a paired device, never as an open install, by the bridge token,
+   * and its wrong tokens share one budget with every other peer there.
+   */
   readonly lanHttps?: boolean;
 }
 
@@ -148,9 +157,17 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   const url = new URL(request.url);
   let { pathname } = url;
   const relayPeer = ctx.peer.kind === "relay" ? ctx.peer.device : undefined;
+  // the machine profile on TCP: its liveness for every caller; no credential or header of the request is read
   if (options.profile === "machine" && relayPeer === undefined && ctx.ownerSocket !== true) return machineTcpAnswer(request, pathname);
   const bridgeAuthorized = options.profile !== "machine" && relayPeer === undefined && ctx.lanHttps !== true && isAuthenticated(request, bridgeToken);
+  // the connection server that reaches this one as its PC reads its update status and asks for the
+  // update on offer: an Ovis run on this PC by itself is updated through its own updater, never
+  // replaced (server/machines.ts ownOffer). An install still names the offered revision and the
+  // custom header (update-api.ts), and whoever holds the token already drives every pane here. Only those two
+  // requests, each by its own method and with no query: the token opens nothing else of these routes (#2054)
   const bridgeUpdatePath = url.search === "" && (pathname === "/api/updates" ? request.method === "GET" : (pathname === "/api/updates/install" || pathname === "/api/updates/cancel") && request.method === "POST");
+  // the same server runs the move to herdr-core here for the person on its side (docs/runtime-move.md,
+  // "On another PC"); each move route still asks for the app's own header and no query (updateRequestAllowed)
   const bridgeMovePath = RUNTIME_MOVE_ROUTE.test(pathname);
   const bridgePath = pathname === "/api/bridge" || pathname === "/api/session" || pathname === SESSION_HISTORY_PATH || pathname === SESSION_RESUME_PATH || pathname === "/api/agents" || pathname === "/api/agent-catalog" || pathname === INSTALL_PATH || pathname === SIGN_IN_PATH || pathname === "/api/agent/rename" || pathname === "/api/agent/commands" || pathname === "/api/integrations" || (pathname === "/api/system" && request.method === "GET") || pathname === "/api/usage/statusline" || pathname === "/api/plugins/actions" || pathname === "/api/plugin/action" || pathname.startsWith("/api/pane/") || pathname.startsWith("/api/workspace/") || pathname.startsWith("/api/worktree/") || pathname.startsWith("/api/tab/") || pathname === "/api/layout/ratio" || pathname.startsWith("/api/fs/") || pathname === "/ws" || bridgeUpdatePath || bridgeMovePath;
   const ip = relayPeer === undefined ? ctx.requestIP(request) : null;
@@ -160,14 +177,22 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   const tailscaleLogin = relayPeer === undefined ? request.headers.get("tailscale-user-login") : null;
   const forwardedFor = relayPeer === undefined ? request.headers.get("x-forwarded-for") : null;
   const requestHost = request.headers.get("host");
+  // the guessing budget of the address that asks (auth.ts): a token presented while it waits is not compared
+  // on the LAN listener `via lan-https` puts every peer in one shared budget too (auth.ts sharedKey)
   const client = relayPeer !== undefined ? `relay:${relayPeer.id}` : ctx.lanHttps === true && ip !== null ? `${ip.address} via lan-https` : authClient(ip?.address ?? null, request.headers);
   const presented = relayPeer === undefined ? presentedToken(request, token, client) : null;
+  // counted at once, before any await below lets a concurrent guess pass the same check. Every
+  // wrong token counts, a paired watch device's too (a right one would upgrade it to drive);
+  // the connection server's own bridge token does not
   if (presented === "wrong" && !bridgeAuthorized) recordPresentedTokenFailure(client);
   const tokenMatched = presented === "match";
   let pairedDevice: DeviceMatch | null;
   try {
+    // a script's `Authorization: Device` header stands for the cookie a browser holds (#2744)
+    // the machine profile reads no device cookie: it lets in no device but through the relay
     pairedDevice = relayPeer ?? (options.profile === "machine" ? null : devices.match(deviceAuthorizationValue(request) ?? deviceCookieValue(parseCookies(request.headers.get("cookie")))));
   } catch (error) {
+    // First-cookie confirmation is an authorization write, not best-effort telemetry.
     return errorResponse(error);
   }
   const requestShape = { loopback, forwarded, funnel, tailscaleLogin, forwardedFor, serveOnly };
@@ -176,6 +201,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     ? await identityOf(token === "" && pairedDevice === null && isServeOwnerRequest(requestShape) && apiPath, requestHost,
       token === "" && pairedDevice === null && loopback && tailscaleLogin !== null && !funnel && inTailnet(forwardedFor) && apiPath)
     : { owner: null, tagged: false, soleLogin: null, dnsName: null, tailnetIp: null };
+  // Portal reaches this server over loopback, never the LAN listener: its proof is not a way in there
   const portalProven = relayPeer === undefined && ctx.lanHttps !== true && (options.portal?.vouches(request.headers.get("x-portal-proof") ?? null) ?? false);
   const access = options.profile === "machine" ? decideMachineAccess({ relayPeer, ownerSocket: ctx.ownerSocket === true, host: requestHost, forwarded: machineForwardingHeaders(request.headers) }) : decideAccess({
     relayPeer,
@@ -217,15 +243,29 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     return jsonResponse({ error: { code: "invalid_origin", message: "Use controls from this app" } }, 403);
   }
   if (pathname.startsWith("/api/") && nonCanonicalPath(pathname)) return jsonResponse({ error: { code: "not_found", message: "not found" } }, 404);
+  // What a watching device must not reach, spelled out rather than inferred from the
+  // method: file contents (those files include credentials) and a directory listing
+  // (names and sizes are the shape of a repository the terminals never print), plus
+  // every mutation except the two below.
   const fileRead = /^\/api\/(?:machines\/[^/]+\/)?fs\//.test(pathname);
   const directoryListing = /^\/api\/(?:machines\/[^/]+\/)?workspace\/directories$/.test(pathname);
+  // Signing a device's own alerts in is a preference of that device, so `watch` keeps
+  // it. The endpoint it registers is https-only (server/push.ts), and that is the
+  // protection: a watch device's subscription is delivered every status change anyway.
+  // /api/push/test stays with a session that can drive only because it is a mutation; /api/push/status
+  // is a POST only to keep the subscription out of the address, and answers the device about its own.
+  // A watch device may report its own connection metadata, never terminal input or file data.
   const ownPreferences = pathname === "/api/auth" || pathname === "/api/push/subscribe" || pathname === "/api/push/status" || pathname === "/api/connection-diagnostics";
+  // a repository's changes are file contents too: the patch of a credential file is that file; its
+  // history (commit messages, branch names) is read the same way
   const repositoryDiff = /^\/api\/(?:machines\/[^/]+\/)?workspace\/(?:diff|git)\//.test(pathname);
   const pullRequest = /^\/api\/(?:machines\/[^/]+\/)?workspace\/pr(?:\/|$)/.test(pathname);
   const sessionHistory = /^\/api\/(?:machines\/[^/]+\/)?sessions\/history$/.test(pathname);
   const commandRows = /^\/api\/(?:machines\/[^/]+\/)?(?:agent|pane)\/commands$/.test(pathname);
   const paneFiles = /^\/api\/(?:machines\/[^/]+\/)?pane\/(?:files|docs)$/.test(pathname);
   const pluginRun = /^\/api\/(?:machines\/[^/]+\/)?plugin\/action$/.test(pathname);
+  // a repository's checkouts are its folders' paths and branches, those not open in herdr too; the worktree
+  // dialog that lists them is a drive feature, and the sidebar names a branch only for a driving device (#2250)
   const worktreeList = /^\/api\/(?:machines\/[^/]+\/)?worktree\/(?:list|inventory)$/.test(pathname);
   const pairingDigits = pathname === "/api/relay/pairings";
   if (readOnly && (fileRead || directoryListing || repositoryDiff || pullRequest || sessionHistory || commandRows || paneFiles || pluginRun || worktreeList || pairingDigits || mutating && !ownPreferences)) {
@@ -237,6 +277,11 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     setRequestRoute("drive-refusal");
     return jsonResponse({ error: { code: "drive_only", message: "Only a device that drives this PC can edit its files" } }, 403);
   }
+  // Portal visitors use the same watch checks above as paired watch devices. Even a Portal
+  // identity explicitly given drive in local state cannot use these controls to leave access
+  // behind: device changes (including redeeming a pairing code), relay controls (a relay offer
+  // carries a pairing code), push subscriptions and their status, and Portal controls require
+  // the owner's app credential.
   const standingAccess = mutating && (
     pathname.startsWith("/api/portal/")
     || pathname.startsWith("/api/devices/")
@@ -245,6 +290,9 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     || (request.method === "POST" && (pathname === "/api/push/subscribe" || pathname === "/api/push/status"))
     || pathname === "/api/alerts/webhook" || pathname === "/api/alerts/webhook/test"
   );
+  // pairing without a code ends in an approval only a window that hears of it can give (relay-pairings below):
+  // an ungated LAN window never does, so it neither makes such a link nor answers one
+  // the account's members are standing access, like devices: never a Portal visitor's or an open LAN window's
   if (access.level === "full" && (access.via === "open" || access.via === "portal") && pathname.startsWith("/api/account/")) {
     setRequestRoute("owner-refusal");
     return jsonResponse({ error: { code: "owner_only", message: "Manage the account from this PC itself, or from a paired device." } }, 403);
@@ -258,14 +306,24 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     setRequestRoute("open-refusal");
     return jsonResponse({ error: { code: "owner_only", message: "Pair without a code from this PC itself, or from a paired device: an open LAN window is not told when a phone waits for approval." } }, 403);
   }
+  // the owner's other PCs answer this PC's own Tailscale login (server/tailnet-pcs.ts): an open LAN window, a Portal
+  // visitor or a device on the relay must not borrow it to pair this PC with them
   if (pathname === "/api/machines/tailnet" && access.level === "full" && (access.via === "open" || access.via === "portal" || access.via === "relay")) {
     setRequestRoute("owner-refusal");
     return jsonResponse({ error: { code: "owner_only", message: "Add PCs from your Tailscale on this PC itself, or from a device paired with it directly." } }, 403);
   }
+  // Another PC of the account is paired with this PC's server by a window direct to this PC that drives it (docs/account.md,
+  // "Adding a PC of your account"): a device on the relay, a Portal visitor or an open LAN window must not have this PC
+  // pair itself with whatever PC they name; a watching device is refused in machine-api.ts (read_only)
   if (pathname.startsWith("/api/machines/relay/account/") && access.level === "full" && (access.via === "open" || access.via === "portal" || access.via === "relay")) {
     setRequestRoute("owner-refusal");
     return jsonResponse({ error: { code: "owner_only", message: "Add PCs of your account on this PC itself, or from a device paired with it directly." } }, 403);
   }
+  // The SSH tab's list (hosts of this PC's ssh config with their user@hostname, and its Tailscale login's PCs) goes
+  // only to clients that may drive this PC with full access: this PC itself, its access token, a device paired with
+  // it directly to drive, and another PC on the owner's Tailscale login. Each of those can already open a terminal
+  // here and read ~/.ssh/config, so the list tells them nothing new. An open LAN window, a Portal visitor and a
+  // device on the relay are refused here; a watching device is refused in machine-api.ts (read_only).
   if (pathname === "/api/machines/ssh-candidates" && access.level === "full" && (access.via === "open" || access.via === "portal" || access.via === "relay")) {
     setRequestRoute("owner-refusal");
     return jsonResponse({ error: { code: "owner_only", message: "See the PCs this PC knows on this PC itself, or from a device paired with it directly." } }, 403);
@@ -276,7 +334,12 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     return jsonResponse({ error: { code: "owner_only", message: "A visitor signed in through Portal cannot pair devices, subscribe to alerts or control Portal or the relay here. Use the access token or a paired device." } }, 403);
   }
 
-  // Bun closes a socket at its default 10 s idle cutoff, and API reads can chain several bounded 10 s Herdr RPCs.
+  // API reads can chain several bounded 10 s Herdr RPCs. Give the handler time to return
+  // its JSON result or timeout instead of Bun closing the socket at its default 10 s idle
+  // cutoff. Static files keep their default; streaming and long-operation routes override
+  // this finite budget below, after access and origin checks have passed. Only a signed-in
+  // request gets it: the routes open without sign-in (health, auth, pairing) keep the default,
+  // so an unauthenticated client cannot hold idle sockets for a minute.
   if (pathname.startsWith("/api/") && authenticated) ctx.timeout(request, 60);
 
   if (options.localFiles === false && OTHER_MACHINE_FILES.test(pathname)) {
@@ -287,6 +350,8 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   if (pathname === "/api/bridge") {
     setRequestRoute(pathname);
     const discover = url.searchParams.get("discover") === "herdr";
+    // discovery is the owner's (a paired driving device, their Tailscale login, this PC) or the bridge token's, on a
+    // tokenless installation too; the identity alone stays the bridge token's there
     if (discover && !bridgeAuthorized && !ownerAccess(access)) return jsonResponse({ error: { code: "forbidden", message: "Only the owner can discover this PC's sessions" } }, 403);
     if (token === "" && !bridgeAuthorized && !discover) return unauthorizedJson();
     try {
@@ -388,6 +453,9 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   if (pathname === "/api/auth") {
     setRequestRoute(pathname);
     if (relayPeer !== undefined) return jsonResponse({ error: { code: "device_key_required", message: "Relay access uses a paired device key" } }, 403);
+    // signing out also ends the page media this browser was given (by its device, else by its address)
+    // a browser can hold the token and a device cookie at once, and its renders are then the
+    // client's: signing out ends both kinds
     if (request.method === "DELETE" && authenticated) {
       if (pairedDevice !== null) forgetPageMedia({ device: pairedDevice.id });
       forgetPageMedia({ client });
@@ -405,6 +473,8 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     } catch (error) { return errorResponse(error); }
   }
 
+  // installing an update on this PC (Ovis or herdr; a check installs too where OVIS_AUTO_UPDATE=1) is the owner's, as changing its PCs is (machine-api.ts): from any device
+  // he signed in or paired himself. The connection server's bridge token asks its own install by revision (bridgeUpdatePath)
   if (request.method === "POST" && (pathname === "/api/updates/install" || pathname === "/api/updates/cancel" || pathname === "/api/updates/check" || pathname === "/api/herdr/update") && !ownerAccess(access) && !(bridgeAuthorized && bridgeUpdatePath)) {
     setRequestRoute(pathname);
     return jsonResponse({ error: { code: "forbidden", message: "Only the owner's own signed-in or paired devices can update this PC, from this app's own page." } }, 403);
@@ -463,6 +533,9 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     const auth: HealthAuth = access.level === "full"
       ? { required: false, authenticated: true, via: access.via, role: access.role, ...(access.via === "token" && bearerMatches(request, token) ? { bearer: true as const } : {}), ...(access.portal ? { portal: access.portal } : {}) }
       : { required: true, authenticated, ...(authenticated ? {} : { reason: access.reason }) };
+    // this server is open to the network with no token and nothing paired, told to a client
+    // that got in and to nobody else: naming it to an anonymous caller would be
+    // reconnaissance, not help. Nothing here changes who is let in (server/access.ts).
     const directCarriers = ctx.services.relay.status().direct?.carriers ?? [];
     const lan_exposure = access.level !== "full" ? undefined
       : lanExposed({ hostname, tokenConfigured: token !== "", gated: devices.gated }) ? { host: hostname } : undefined;
@@ -471,6 +544,12 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     const direct_exposure = access.level !== "full" || lan_exposure || directCarriers.length === 0 ? undefined
       : { host: new URL(directCarriers[0]!.replace(/^ws:/, "http:")).hostname };
     const exposure = { ...(lan_exposure ? { lan_exposure } : {}), ...(direct_exposure ? { direct_exposure } : {}) };
+    // what protects this server, for a client that got in (a watching one too) and nobody else;
+    // per request, so never stored. The ingress is this request's, proven or `unknown`.
+    // Portal's proof says how the request came even when the token or a paired device signed it in.
+    // A Portal with no sign-in has no proof to send: a request from this PC in the shape it forwards
+    // (X-Forwarded-Proto https) to an address it serves is all there is. Another program here could
+    // send the same and would only mislabel its own answer; nothing here lets anyone in
     const portalForwarded = portalProven || (loopback && request.headers.get("x-forwarded-proto") === "https" && (options.portal?.serves(requestHost) ?? false));
     const ingress = relayPeer !== undefined ? "relay" : portalForwarded ? "portal" : observedIngress({ ...requestShape, ...identity, peerKnown: ip !== null, forwardingHeaders: forwardingHeaders(request.headers) });
     const security: SecuritySummary | undefined = access.level === "full" ? {
@@ -483,6 +562,9 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     const securityHeaders: Record<string, string> = security ? { "cache-control": "no-store" } : {};
     const relay = access.level === "full" ? { relay: ctx.services.relay.status() } : {};
     const serverId = access.level === "full" && access.via !== "open" ? ctx.services.relay.serverId() : undefined;
+    // what this PC has of the Herdr app's runtime, for Settings: never waited for, no path in it.
+    // Only a driving owner is told: a session name can name a project, which a watching device, a
+    // stranger on an open install or a Portal visitor (who may not switch it) has no need to read
     const owner = access.level === "full" && access.role === "drive" && access.via !== "open" && access.via !== "portal";
     const herdr_runtime = owner || bridgeAuthorized ? options.runtimeService?.facts() : undefined;
     if (options.profile === "machine") {
@@ -511,6 +593,8 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     setRequestRoute(pathname);
     if (request.method !== "POST") return badRequest("method_not_allowed", "use POST");
     if (!updateRequestAllowed(request)) return jsonResponse({ error: { code: "forbidden", message: "a runtime switch must come from this app's own page" } }, 403);
+    // only a driving owner, never a watching device, a stranger on an open install or a Portal visitor
+    // (the move's own boundary, moveDriver below)
     if (!(access.level === "full" && access.role === "drive" && access.via !== "open" && access.via !== "portal")) return jsonResponse({ error: { code: "forbidden", message: "only a device that drives this PC can switch its runtime" } }, 403);
     if (!options.runtimeService) return jsonResponse({ error: { code: "runtime_locked", message: "this server cannot switch its runtime" } }, 409);
     let body: unknown;
@@ -520,6 +604,9 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     return answer.ok ? jsonResponse({ accepted: true }, 202) : jsonResponse({ error: { code: answer.code, message: answer.message } }, answer.status);
   }
 
+  // who may move this PC's runtime: a driving owner, or the connection server holding the bridge token,
+  // which already drives every pane here. A Portal visitor never, whatever its role. A relay device that
+  // drives may: a connection server reaches a PC added through the relay as one
   const moveDriver = bridgeAuthorized || access.level === "full" && access.role === "drive" && access.via !== "open" && access.via !== "portal";
 
   if (pathname === `${RUNTIME_MOVE_PATH}/install`) {

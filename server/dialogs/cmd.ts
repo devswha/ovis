@@ -87,6 +87,9 @@ function parseCmdQuestion(screen: string): ParsedPrompt | null {
       if (/Do you want to .+\?/i.test(cleaned) || /needs to (execute|run|approve|create|edit|write|delete)/i.test(cleaned)) { question = cleaned; break; }
     }
   }
+  // the body: what the agent wants to do (the command, the file), every line of the dialog between
+  // its title and the rows but the question, so a command shown above the question is in the card's
+  // id too: a command replaced under the card makes it stale instead of approving the new one
   const bodyLines = firstRowIndex >= 0 ? lines.slice(titleIndex + 1, firstRowIndex) : [];
   const body = bodyLines.map(cleanLine).filter((line) => line && line !== question && !isDivider(line) && !/ctrl\+e/i.test(line)).join("\n") || null;
   const dialog = lines.slice(0, firstRowIndex).join("\n");
@@ -108,6 +111,9 @@ function parseCmdQuestion(screen: string): ParsedPrompt | null {
 export const readers: readonly DialogReader[] = [
   {
     id: "cmd-question", agents: ["cmd"], priority: 10,
+    // the cursor is read off the screen, so it is re-read before the Enter: a cursor the user
+    // moved in the terminal since the card was drawn would otherwise be answered from a
+    // position the chat never saw
     reread: "before-commit", list: "none",
     parse: (screen) => {
       const parsed = parseCmdQuestion(screen);

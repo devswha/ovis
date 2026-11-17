@@ -197,6 +197,8 @@ const CODEX_MODEL_NOTE_LINES = 2;
 
 const CODEX_MODEL_TAIL_LINES = 30;
 
+// Key names a list hint can display, including remapped keys. Restrict the key field so
+// ordinary words before a real footer cannot become a fictitious key name after joining lines.
 // A chord's parts are joined by `+` in a footer (`alt+x`, Codex 0.167) and by `-` in its keymap and config (`ctrl-g`).
 const CODEX_LIST_KEY_HINT = String.raw`(?:(?:ctrl|alt|shift|cmd|super)[+-])*(?:enter|return|tab|space|esc|escape|backspace|delete|insert|home|end|pageup|pagedown|up|down|left|right|f\d{1,2}|[a-z0-9])`;
 
