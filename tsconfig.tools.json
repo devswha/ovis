@@ -6,6 +6,7 @@
   "references": [{ "path": "./shared/vendor/paseo-e2ee" }],
   "include": ["scripts", "integrations", "site", "app/scripts"],
   "exclude": [
+    "scripts/*.tmp.ts",
     "scripts/agent-lock-demo-regression.ts",
     "scripts/agents-sign-in-demo-regression.ts",
     "scripts/agy-chat-browser-qa.ts",

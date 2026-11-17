@@ -1217,9 +1217,10 @@ The [CI workflow](../.github/workflows/ci.yml) runs on every PR and `main` push:
 
 - **Fast checks**: frozen dependency install, then `bun run check fast`: workflow syntax
   (checksum-pinned actionlint), generated type freshness, application and tools typechecks
-  (`tsconfig.tools.json`: every file under `scripts/`, `integrations/`, `site/` and `app/scripts/`
-  but the ones its `exclude` lists, which still have type errors; that list may only shrink, and a
-  new file is checked without being named), build, and
+  (`tsconfig.tools.json`: every TypeScript file under `scripts/`, `integrations/`, `site/` and
+  `app/scripts/` but the ones its `exclude` lists: files with type errors, files that import one or
+  lean on its declarations, and untracked `scripts/*.tmp.ts` probes; that list may only shrink, and
+  a new file is checked without being named), build, and
   `bun run test:unit`. This suite does not start herdr. Its ratchets (fixed sleeps, that exclude
   list) compare with the pull request's base or the commit before a push, which the job fetches
   first (`RATCHET_BASE`); one that cannot read its base fails.

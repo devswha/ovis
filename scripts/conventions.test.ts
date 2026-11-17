@@ -203,7 +203,10 @@ describe("fixed sleeps", () => {
 describe("the tools typecheck", () => {
   // A ratchet: tsconfig.tools.json checks every file under scripts/, integrations/, site/ and app/scripts/ but the ones
   // its "exclude" lists, which had type errors when the list was made, or import or lean on a declaration of one that
-  // had. A new file is checked without being named anywhere, and the list may only shrink.
+  // had, and the untracked scripts/*.tmp.ts probes .gitignore allows. A new file is checked without being named
+  // anywhere, and the list may only shrink.
+  const ROOTS = ["scripts", "integrations", "site", "app/scripts"];
+  const config = JSON.parse(read("tsconfig.tools.json")) as { include?: unknown; files?: unknown; compilerOptions?: unknown };
   const excluded = (json: string): string[] | null => {
     const list = (JSON.parse(json) as { exclude?: unknown }).exclude;
     return Array.isArray(list) ? list as string[] : null;
@@ -220,7 +223,7 @@ describe("the tools typecheck", () => {
     if (base === null || before === null) return;
     const renamed = gitIn(repo, "diff", "--name-status", "-M", "--diff-filter=R", base);
     const renames = new Map(renamed.stdout.split("\n").map((line) => line.split("\t")).filter((parts) => parts.length === 3).map(([, from, to]) => [to!, from!]));
-    fail(added(now, before, renames), "The exclude list of tsconfig.tools.json may only shrink: fix the type errors `bun run typecheck` reports in these files instead of excluding them. A renamed file takes its entry along under the new path.");
+    fail(added(now, before, renames), "The exclude list of tsconfig.tools.json may only shrink: fix the type errors `bun run typecheck` reports in these files instead of excluding them. A renamed file (renamed with `git mv`, or with the rename staged, so git sees it) takes its entry along under the new path.");
   });
 
   it("tells a new entry from a renamed file's, whatever the list's length", () => {
@@ -232,8 +235,19 @@ describe("the tools typecheck", () => {
     expect(added(["scripts/a.ts"], ["scripts/a.ts", "scripts/b.ts"], renames)).toEqual([]);
   });
 
+  it("checks every root, with nothing beside the exclude list taking a file out", () => {
+    expect(config.include, `tsconfig.tools.json checks the folders ${ROOTS.join(", ")} whole: keep them all in "include".`).toEqual(ROOTS);
+    expect(config.files, "tsconfig.tools.json names no files: a file under its roots is checked without being listed.").toBeUndefined();
+    expect(config.compilerOptions, "tsconfig.tools.json loosens nothing of tsconfig.json: it only adds noEmit.").toEqual({ noEmit: true });
+    // one glob per root: Bun.Glob reads no slash inside braces
+    const sources = ROOTS.flatMap((root) => files(`${root}/**/*.{ts,tsx}`)).filter((file) => !file.endsWith(".tmp.ts"));
+    expect(sources.length).toBeGreaterThan(400);
+    fail(sources.filter((file) => /^\s*\/\/\s*@ts-nocheck\b/m.test(read(file))),
+      "Fix the type errors in these files instead of `// @ts-nocheck`: a file under the tools typecheck's roots is checked, or listed in its exclude list until it is fixed.");
+  });
+
   it("excludes only files that exist", () => {
-    fail(now.filter((file) => !existsSync(join(repo, file))),
+    fail(now.filter((file) => !file.includes("*") && !existsSync(join(repo, file))),
       "Remove these entries from the exclude list of tsconfig.tools.json: the files are gone. A renamed file that still has type errors keeps its entry under the new path.");
   });
 });
