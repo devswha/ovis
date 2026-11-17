@@ -223,7 +223,10 @@
           "ended": null
         }
       },
-      "needs_replay": 2
+      "needs_replay": {
+        "seq": 2,
+        "hash": "c38c2decff03bb712152946cd07f62ca0efbf80d330a0836a1e9a77beaf79f28"
+      }
     },
     "stops": {
       "seq": 2,
