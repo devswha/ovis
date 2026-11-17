@@ -22,8 +22,11 @@ import { GITHUB_HOSTED_LABELS, parseWorkflow, root, topLevelTerms, unreadWorkflo
 //   REVIEWED_ACTIONS at its exact reference. It fails closed on any other form, whatever that form would evaluate to.
 // GitHub reads keys and contexts without regard to case where this test reads them exactly, so: a matrix axis is resolved
 // case-insensitively over the matrix and its include entries; a key the tests read written in another case, and sibling
-// keys that differ only in case, fail; a permission value other than read, none or read-all counts as write; an action
-// is recognised by its name in any case, but a runner label and an action reference pass only as the exact listed string.
+// keys that differ only in case, fail, and so does a key with a character outside ASCII (which GitHub and JavaScript may
+// fold differently); such a character inside an expression counts as a secret reference; a permission value other than
+// read, none or read-all counts as write; an action is recognised by its path as GitHub normalises it (split on / and \\,
+// empty and . pieces dropped, any case), but a runner label and an action reference pass only as the exact listed
+// string. A Pages run is found by a job that can write Pages as well as by the deploy and upload actions.
 // It reads runner labels, actions and their inputs only: it does not inspect shell commands or scripts for cache access.
 // That GitHub gives a job asking only for `ubuntu-24.04` or `ubuntu-latest` to its own runners, even when a self-registered
 // runner carries that label, was observed by a trial on 2026-11-17 (14 of 14 jobs); it is not documented by GitHub. The
@@ -61,8 +64,16 @@ type Workflows = Record<string, AnyWorkflow>;
 const events = (on: unknown): Record<string, { inputs?: Record<string, { type?: string; default?: unknown }> } | null> =>
   (typeof on === "string" ? { [on]: null } : Array.isArray(on) ? Object.fromEntries(on.map((event: string) => [event, null])) : (on as Record<string, null>));
 const calledFile = (job: AnyJob): string | undefined => /^\.\/\.github\/workflows\/(.+\.yml)$/.exec(job.uses ?? "")?.[1];
-/** An action's identity, compared as GitHub does, without regard to case; the reviewed lists stay exact, so another case is still refused in a covered run. */
-const action = (uses: string): string => uses.replace(/@.*/, "").toLowerCase();
+/**
+ * An action's identity as GitHub resolves it: the path before `@` split on `/` and `\\`, empty and `.` pieces dropped,
+ * without regard to case (actions/runner's WorkflowTemplateConverter). The reviewed lists stay the exact strings, so any
+ * other spelling is still refused in a covered run once the run is found.
+ */
+const action = (uses: string): string => {
+  const path = uses.replace(/@.*/, "");
+  const pieces = path.split(/[\\/]/).filter((piece) => piece !== "" && piece !== ".").map((piece) => piece.toLowerCase());
+  return `${path.startsWith("./") ? "./" : ""}${pieces.join("/")}`;
+};
 /** The write scopes a permissions value grants: anything but an exact read-only form (`read-all`, `{}`, a scope's `read` or `none`) counts as write, so `Write`, `WRITE-ALL`, a typo or an expression do. */
 const writes = (permissions: Permissions): string[] => {
   const value: unknown = permissions;
@@ -320,11 +331,20 @@ function setupCiCacheProblems(steps: AnyStep[]): string[] {
     .map((step) => `setup-ci ${step.name ?? step.uses}: if ${JSON.stringify(step.if ?? null)} has no top-level && inputs.cache == 'save' or 'restore' term, so it can run under cache: none`);
 }
 
-/** The workflows whose runs contain a job deploying Pages. */
+/** Whether a job may write Pages: a `pages` write scope, `write-all`, or anything the test counts as write for every scope. */
+const writesPages = (scopes: string[]): boolean =>
+  scopes.some((scope) => scope.toLowerCase().startsWith("pages:") || scope === "write-all" || scope.startsWith("default permissions") || scope.startsWith("permissions "));
+
+/**
+ * The workflows whose runs contain a job that deploys Pages, found two ways so neither rests on the other: a job that can
+ * write Pages (a deployment cannot work without that permission, however it deploys: an action, a wrapper, an API call),
+ * and a job that uses deploy-pages or upload-pages-artifact under any spelling GitHub resolves to them.
+ */
 function pagesRoots(workflows: Workflows): string[] {
-  return [...new Set(Object.entries(workflows).flatMap(([file, workflow]) =>
-    Object.values(workflow.jobs).some((job) => (job.steps ?? []).some((step) => step.uses !== undefined && action(step.uses) === "actions/deploy-pages")) ? runRoots(workflows, file) : [],
-  ))];
+  const deploys = (file: string, job: AnyJob): boolean =>
+    writesPages(writeScopes(workflows, file, job)) ||
+    (job.steps ?? []).some((step) => step.uses !== undefined && ["actions/deploy-pages", "actions/upload-pages-artifact"].includes(action(step.uses)));
+  return [...new Set(Object.entries(workflows).flatMap(([file, workflow]) => (Object.values(workflow.jobs).some((job) => deploys(file, job)) ? runRoots(workflows, file) : [])))].sort();
 }
 
 /** The problems of every run that contains a job deploying Pages; each of `deploying` must still have such a job, or the check would pass on nothing. */
@@ -662,6 +682,12 @@ describe("a run that deploys Pages is GitHub-hosted and cacheless as a whole", (
     ["finds a separate Pages workflow whose deploy action is written in another case, and refuses its self-hosted sibling and that reference", { "other.yml": { on: { push: {} }, permissions: { contents: "read" }, jobs: { other: { "runs-on": "self-hosted" }, deploy: { ...DEPLOY, steps: [{ uses: "Actions/Deploy-Pages@368f82528645a54fb793d4d04e342629a3f51346" }] } } } }, [`other.yml: other.yml other: runs-on "self-hosted" ${RUNS_ON}`, "other.yml: other.yml deploy: uses Actions/Deploy-Pages@368f82528645a54fb793d4d04e342629a3f51346, which is not a reviewed action reference"]],
     ["refuses a cache action written in another case, and reads it as a cache step", pages(HOSTED_JOB, { hosted_only: true }, { "runs-on": HOSTED_ONLY, steps: [{ uses: "ACTIONS/CACHE@55cc8345863c7cc4c66a329aec7e433d2d1c52a9", if: "always()" }] }), [`${CHECK}: uses ACTIONS/CACHE@55cc8345863c7cc4c66a329aec7e433d2d1c52a9, which is not a reviewed action reference`, `${CHECK}: actions/cache if "always()" ${NO_TERM}`]],
     ["refuses the local setup action's path in another case", pages({ ...HOSTED_JOB, steps: [{ uses: "./.github/actions/Setup-CI", with: { cache: "none" } }] }, { hosted_only: true }, HOSTED_JOB), [`${SIBLING}: uses ./.github/actions/Setup-CI, which is not a reviewed action reference`]],
+    ...["actions//deploy-pages", "actions/deploy-pages/", "actions\\deploy-pages", "/actions/deploy-pages", "actions/deploy-pages/."].map((spelling): [string, Workflows, string[]] => {
+      const uses = `${spelling}@368f82528645a54fb793d4d04e342629a3f51346`;
+      return [`finds a separate workflow that deploys through ${JSON.stringify(spelling)}, without the pages permission, and refuses its self-hosted sibling and that reference`, { "other.yml": { on: { push: {} }, permissions: { contents: "read" }, jobs: { other: { "runs-on": "self-hosted" }, deploy: { "runs-on": "ubuntu-24.04", steps: [{ uses }] } } } }, [`other.yml: other.yml other: runs-on "self-hosted" ${RUNS_ON}`, `other.yml: other.yml deploy: uses ${uses}, which is not a reviewed action reference`]];
+    }),
+    ["finds a workflow that deploys through a local action wrapping deploy-pages, by its pages permission", { "other.yml": { on: { push: {} }, permissions: { contents: "read" }, jobs: { other: { "runs-on": "self-hosted" }, deploy: { ...DEPLOY, steps: [{ uses: "./.github/actions/deploy-site" }] } } } }, [`other.yml: other.yml other: runs-on "self-hosted" ${RUNS_ON}`, "other.yml: other.yml deploy: uses ./.github/actions/deploy-site, which is not a reviewed action reference"]],
+    ["finds a workflow that deploys with no action at all, by its pages permission", { "other.yml": { on: { push: {} }, permissions: { contents: "read" }, jobs: { other: { "runs-on": "self-hosted" }, deploy: { ...DEPLOY, steps: [{ run: "curl -X POST https://api.github.com/repos/o/r/pages/deployments" }] } } } }, [`other.yml: other.yml other: runs-on "self-hosted" ${RUNS_ON}`]],
     ["refuses the hosted_only form followed by a second expression", pages(HOSTED_JOB, { hosted_only: true }, { "runs-on": "${{ inputs.hosted_only && 'ubuntu-24.04' || 'x' }}${{ '-evil' }}" }), [`${CHECK}: runs-on "\${{ inputs.hosted_only && 'ubuntu-24.04' || 'x' }}\${{ '-evil' }}" ${RUNS_ON}`]],
     ["refuses the hosted_only form followed by text", pages(HOSTED_JOB, { hosted_only: true }, { "runs-on": "${{ inputs.hosted_only && 'ubuntu-24.04' || 'x' }}-evil" }), [`${CHECK}: runs-on "\${{ inputs.hosted_only && 'ubuntu-24.04' || 'x' }}-evil" ${RUNS_ON}`]],
     ["refuses setup-ci's hosted_only form followed by a second expression", pages(HOSTED_JOB, { hosted_only: true }, { "runs-on": HOSTED_ONLY, steps: [{ uses: "./.github/actions/setup-ci", with: { cache: "${{ inputs.hosted_only && 'none' || 'save' }}${{ '' }}" } }] }), [`${CHECK}: setup-ci cache "\${{ inputs.hosted_only && 'none' || 'save' }}\${{ '' }}" is neither none nor the hosted_only form under a call that passes hosted_only: true`]],
@@ -691,6 +717,12 @@ describe("a run that deploys Pages is GitHub-hosted and cacheless as a whole", (
       expect(pagesProblems(workflows)).toEqual(problems);
     });
   }
+
+  test("does not take a workflow with contents: write only for a Pages run; the privileged-job rule still holds it", () => {
+    const workflows: Workflows = { "x.yml": { on: { push: {} }, permissions: { contents: "read" }, jobs: { other: { "runs-on": "self-hosted" }, publish: { "runs-on": LIGHT, permissions: { contents: "write" } } } } };
+    expect(pagesRoots(workflows)).toEqual([]);
+    expect(privilegeProblems(workflows)).toEqual([`x.yml publish: runs-on ${JSON.stringify(LIGHT)} with contents: write`]);
+  });
 
   test("fails when the workflow that deploys Pages no longer has its deploy step, instead of checking nothing", () => {
     const workflows = pages(HOSTED_JOB, { hosted_only: true }, HOSTED_JOB);
