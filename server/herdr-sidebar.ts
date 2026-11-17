@@ -52,6 +52,11 @@ function normalizeConfigBom(text: string): string {
   }).join("\n");
 }
 
+/**
+ * herdr's config.toml at `path`, parsed, or null when it is no regular file of a config's size, cannot
+ * be read whole, or is no TOML. The opened file is checked too: a FIFO swapped in after a stat must not
+ * block the server. A file that grew while being read is not taken (a later read takes it whole).
+ */
 export function readHerdrConfig(path: string): unknown {
   let fd: number | undefined;
   try {
@@ -128,6 +133,13 @@ function hiddenEverywhere(specs: PaneTokenSpec[], name: string, value: unknown):
   return places.length > 0 && places.every(({ rules }) => rules?.find((rule) => paneTokenRuleMatches(rule, value))?.hide === true);
 }
 
+/**
+ * The PCs as browsers are told them (#1349): without the token values herdr's rows hide wherever
+ * they name them, so no roster, streamed or polled, holds a value the user chose to hide, whatever
+ * rows a browser holds when it lands. A row's tokens are its pane's, else its agent's, under its
+ * pane's agent, else its agent record's (src/lib/sidebarAgents.ts, src/components/AgentSidebar.tsx).
+ * The machines are copied where a value leaves, never changed: the manager keeps them.
+ */
 export function withoutHiddenTokens(layout: AgentRowTokens | null, machines: Machine[]): Machine[] {
   if (layout === null) return machines;
   return machines.map((machine) => {
@@ -137,6 +149,13 @@ export function withoutHiddenTokens(layout: AgentRowTokens | null, machines: Mac
   });
 }
 
+/**
+ * One PC's snapshot as a browser is told it, wherever it goes (#2160): the session read, the /ws
+ * snapshot frame and the relayed or proxied ones, without the token values herdr's rows hide, as
+ * withoutHiddenTokens tells the roster. Copied where a value leaves; the same object when none does.
+ * Another Ovis server reading this PC with its bridge token gets the snapshot whole: it applies its
+ * own rows, as herdr's sidebar is the client's config.
+ */
 export function snapshotWithoutHiddenTokens<S extends Pick<SessionSnapshot, "panes" | "agents">>(layout: AgentRowTokens | null, snapshot: S): S {
   if (layout === null) return snapshot;
   const recordAgent = new Map<string, string | null | undefined>();
@@ -171,6 +190,16 @@ export function reportedTokenValues(machines: readonly Machine[]): Map<string, S
   return reported;
 }
 
+/**
+ * What browsers are told of the rows (#1349): the rows' tokens as they are, with the hide rules of
+ * each place that has them decided here for the values reported (reportedTokenValues, of one roster
+ * or of several): an `equals` rule that shows each such value the place draws, then one that hides
+ * any other (`contains: ""` matches every value). The rules' own operands (a literal no pane
+ * reports, a number's bound) stay on this PC, while a browser, an older one too, draws the same
+ * tokens for those values (shared/pane-tokens.ts paneTokenValues). A value the server has not
+ * decided, as one a browser kept from a roster told under other rows, is hidden there: a decision
+ * that lands out of step with a roster can hide a value for a moment, never show one.
+ */
 export function decidedRowTokens(layout: AgentRowTokens | null, ...reported: ReadonlyMap<string, ReadonlySet<string>>[]): AgentRowTokens | null {
   if (layout === null) return null;
   const valuesOf = (name: string): string[] => [...new Set(reported.flatMap((values) => [...values.get(name) ?? []]))];

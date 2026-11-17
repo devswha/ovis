@@ -1,3 +1,8 @@
+/**
+ * The ordinary server beside an owner's classic herdr, with no engine lifecycle authority. Its local owner is
+ * whoever connects to `<state folder>/serve.sock`: the kernel lets only this account (and root) in there. Its
+ * TCP port tells everyone that it is alive and nothing else; its devices come through the relay.
+ */
 import { closeSync, constants, type Dirent, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, rmdirSync, rmSync, statSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -16,6 +21,7 @@ export const MACHINE_DIRECT_CARRIER_ENABLED = false;
 
 export class MachineProfileError extends Error {}
 
+/** The local owner's socket in a state folder: a path the server never takes from anything but its folder. */
 export function ownerSocketPath(stateDir: string): string { return join(stateDir, "serve.sock"); }
 const SOCKET_PATH_MAX = 100;
 export function machineEngine(stateDir: string, port: number): string {
@@ -56,6 +62,17 @@ export function stateDirRefusal(stateDir: string): string | null {
       : (stats.mode & 0o7777) !== 0o700 ? `${stateDir} has mode ${(stats.mode & 0o7777).toString(8).padStart(4, "0")}, not 0700` : null);
 }
 
+/**
+ * A lease per canonical state folder, across checkouts and ports of the machine profile. Never on a
+ * folder the ordinary server uses by default, one whose path another account could change, nor one an
+ * Ovis's supervisor or an ordinary server started with the same preview holds: a second responder there
+ * would answer with that Ovis's relay key. Nothing is written before these are ruled out. The state folder
+ * is held exclusively for the life of the process (`serve.own`, which an ordinary server holds shared when
+ * it runs with OVIS_PREVIEW=fleet, and not at all without it), and its owner's socket is `serve.sock` in it.
+ * The folder is the profile's own: it was empty when the profile first held it and marked it (MARKER), as
+ * it holds nothing else. Another server's files there and no mark refuse it: a server without a hold would
+ * keep its own copy of the paired devices beside the profile's.
+ */
 export function claimServerState(told: string | undefined) {
   const own = "name a folder of its own with OVIS_STATE_DIR";
   const { legacy, next } = stateDirNames(process.env);
@@ -170,6 +187,7 @@ async function pinned(selected: string, unavailable: string): Promise<string | n
   return null;
 }
 
+/** Readiness is separate from the HTTP server's liveness and is only sent after authentication. `refusal`: why the engine serve() chose is down, null while it answers. */
 export async function machineHealth(engine: string, refusal: string | null = engine === "herdr" ? null : `${engine} is not supported for a machine yet`) {
   let reason = refusal;
   let herdr: Awaited<ReturnType<typeof ping>> | undefined;

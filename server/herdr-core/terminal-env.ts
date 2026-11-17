@@ -6,7 +6,13 @@ import { SERVER_ENV, type HcConnection } from "./connection.ts";
 type Env = Record<string, string>;
 type SourceEnv = Record<string, string | undefined>;
 
-// where the shell keeps its settings: zsh's ZDOTDIR, fish's XDG_CONFIG_HOME
+/**
+ * What the login shell is run with: the session's own variables (who, where, locale, the
+ * desktop's agents and buses) and where the shell keeps its settings (zsh's ZDOTDIR, fish's
+ * XDG_CONFIG_HOME), nothing else of this process's. A server a service or an agent's shell
+ * started carries that one's environment (NO_COLOR, TERM=dumb, tokens filtered out), which the
+ * login shell would hand back as the user's.
+ */
 const SESSION_ENV = /^(?:HOME|USER|LOGNAME|SHELL|PATH|LANG|LC_[A-Z_]+|TZ|TMPDIR|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|SSH_AUTH_SOCK|DISPLAY|WAYLAND_DISPLAY|XAUTHORITY|ZDOTDIR|XDG_CONFIG_HOME)$/;
 
 // a pane that had BUN_BE_BUN would run every Bun-compiled program (an agent's CLI, this server) as bare Bun
@@ -38,6 +44,7 @@ async function readTerminalEnv(options: TerminalEnvOptions): Promise<{ env: Env;
   if (process.platform === "win32") return { env: {}, answered: true };
   if (shell === null) return { env: { ...COLOUR }, answered: true };
   const base = Object.fromEntries(Object.entries(source).filter((entry): entry is [string, string] => entry[1] !== undefined && SESSION_ENV.test(entry[0])));
+  // in the home folder, never this server's: a folder's .env or bunfig.toml is not the user's login
   const login = await loginEnvProbe({ shell, env: { ...base, ...COLOUR }, cwd: homeFolder(base["HOME"]), timeoutMs: options.timeoutMs ?? 3000 })(new AbortController().signal);
   if (login.value === null) {
     console.warn(`[herdr-core] terminals start without the login shell's environment: ${login.reason}`);

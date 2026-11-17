@@ -105,12 +105,17 @@ function resultIn(line: Buffer, id: Buffer, ref: string): string | undefined {
 export function lettaToolOutput(path: string, ref: string, until = Number.POSITIVE_INFINITY): string | null {
   const id = Buffer.from(JSON.stringify(ref));
   let fd: number;
+  // never through a link put where the transcript was, never waiting on a FIFO
+  // nor another file than the one the lookup is bound to (openBound)
   try { fd = openBound(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0)); } catch { return null; }
   let cut = false;
   try {
     const stat = fstatSync(fd);
     if (!stat.isFile()) return null;
     const chunk = Buffer.alloc(1024 * 1024);
+    // the line still without its newline, as the pieces each read brought of it: they are joined once,
+    // when the newline comes, as joining what was read so far at every read copied a long line over and
+    // over (a 64 MiB one took about 3 s, #3326)
     let pieces: Buffer[] = [];
     for (let position = 0, got = 0; position < TOOL_OUTPUT_SCAN_BYTES; position += got) {
       if (Date.now() >= until) { cut = position < stat.size; break; }

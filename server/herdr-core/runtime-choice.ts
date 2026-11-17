@@ -30,8 +30,11 @@ export function runtimeTraces(options: TraceOptions = {}): RuntimeTraces {
   const home = options.home ?? userHome(env, platform);
   const exe = platform === "win32" ? ".exe" : "";
   const config = env["XDG_CONFIG_HOME"] || join(home, ".config");
+  // herdr's own files: its folder as herdr resolves it (herdrConfigPath: XDG_CONFIG_HOME when it is set,
+  // else %APPDATA% on Windows), and the default the server asks (herdrSocketPath)
   const appData = env["APPDATA"] || join(home, "AppData", "Roaming");
   const herdrDirs = [...new Set([dirname(herdrConfigPath({ ...env, HERDR_CONFIG_PATH: undefined }, platform, home)), platform === "win32" ? join(appData, "herdr") : join(home, ".config", "herdr")])];
+  // where herdr's installer puts it: ~/.local/bin, and %LOCALAPPDATA%\Programs\Herdr\bin on Windows
   const installDir = platform === "win32" ? join(env["LOCALAPPDATA"] || join(home, "AppData", "Local"), "Programs", "Herdr", "bin") : join(home, ".local", "bin");
   // Windows spells the key Path, and a copy of process.env keeps that spelling (as scripts/plugin.ts reads it)
   const path = env[platform === "win32" ? Object.keys(env).sort().find((key) => key.toLowerCase() === "path") ?? "PATH" : "PATH"] ?? "";

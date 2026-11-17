@@ -16,6 +16,7 @@ function binding(target: SshTarget | null): string {
   return createHash("sha256").update(JSON.stringify(target ? [target.destination, target.port ?? null, target.session || "default"] : null)).digest("hex");
 }
 
+/** Only web-owned state is stored here. A new destination cannot inherit approval or panes. */
 export class HerdrProfileState {
   private entries = new Map<string, ProfileState>();
   private dirty = false;

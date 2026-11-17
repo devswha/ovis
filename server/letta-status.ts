@@ -24,8 +24,14 @@ export function lettaTurnAfter(turn: OmoTurn, line: OmoLine): OmoTurn {
 
 export const LETTA_MESSAGES_BYTES = 4 * 1024 * 1024;
 
+/** Opened never through a link, never waiting on a FIFO. */
 const MESSAGES_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
 
+/**
+ * Whether `path` (`<store>/conversations/<key>/messages.jsonl`) is a regular file at exactly that place
+ * under its store's real path: no link for the file, its folder or any folder up to the store, so it is
+ * never another conversation's or another store's.
+ */
 function ownMessagesFile(path: string): { dev: bigint; ino: bigint } | null {
   try {
     const stat = lstatSync(path, { bigint: true });

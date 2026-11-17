@@ -1,3 +1,14 @@
+/**
+ * Installing herdr-core (`hc`) for a person who asked for it in Settings, the way its own installer
+ * does (releases.herdr.dev/core/install.sh): the release archive for this PC, checked against its
+ * SHA-256, then `herdr-core` copied into ~/.local/bin, with `hc` linked beside it only when no `hc`
+ * is there. No sudo, and nothing of herdr's TUI is touched.
+ *
+ * Unlike that installer, the version and its checksums are pinned here (the desktop app carries the
+ * same hc: app/electron/scripts/runtimes.ts), so a click never runs whatever the release server
+ * hands out that day. Nothing already installed is replaced: a `herdr-core` in ~/.local/bin, even
+ * one that does not answer, refuses the install. A failure leaves ~/.local/bin as it was.
+ */
 import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readlinkSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -22,6 +33,7 @@ export const HC_RELEASE: HcRelease = {
   },
 };
 
+/** an hc archive is about 3 MB: anything far larger is not the release */
 const ARCHIVE_LIMIT = 64 * 1024 * 1024;
 const DOWNLOAD_TIMEOUT_MS = 120_000;
 

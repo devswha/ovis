@@ -34,6 +34,19 @@ const PROBE_TIMEOUT_MS = 3_000;
 const EXIT_GRACE_MS = 500;
 const PROBE_OUTPUT_LIMIT = 64 * 1024;
 
+/**
+ * The first herdr-core found, or null. Where it looks, in order: OVIS_HC_BIN; the usual install
+ * places; this process's PATH; then the user's login shell's PATH (a server started by herdr's
+ * plugin or a service may not carry it). In each folder `herdr-core` comes before `hc`, the name
+ * the core's installer gives it, and a candidate counts only when `--version` exits 0 and says
+ * `hc …`: some window managers ship an unrelated `hc`.
+ *
+ * Asking `--version` runs the candidate as this user, so on Linux and macOS only one that no
+ * other account can have put or changed there is run (ownedByUser); an OVIS_HC_BIN path is the
+ * user's own choice and is run as named. Windows has no mode bits to read: there only an hc inside
+ * the user's profile is run (insideProfile), since any account may write a folder made at the top
+ * of a drive (C:\tools), and such folders sit on many a PATH.
+ */
 export async function findHc(options: FindHcOptions = {}): Promise<FoundHc | null> {
   const env = options.env ?? process.env;
   const platform = options.platform ?? process.platform;
@@ -44,16 +57,23 @@ export async function findHc(options: FindHcOptions = {}): Promise<FoundHc | nul
   const seen = new Set<string>();
   const harmless = platform === "win32" ? null : harmlessGroups(platform);
   const acl = aclReader({ platform, ...(options.getfacl !== undefined ? { getfacl: options.getfacl } : {}) });
-  // never an empty PATH, which a shell searches the working folder for
+  // what the candidate runs by name (`#!/usr/bin/env python3`, a wrapper's commands) comes only from
+  // PATH folders that pass the same check, resolved (a wrapper may change folder first); none passing
+  // gives the system's own, never an empty PATH, which a shell searches the working folder for. This
+  // covers the --version probe only: `hc connect` keeps the user's PATH on purpose, since a core it
+  // starts hands that environment to every pane (connection.ts)
   let probeEnv: Env | undefined;
   const checkedDirs = (dirs: string[]) => dirs.map((dir) => resolve(dir)).filter((dir) => ownedByUser(dir, harmless!, true, acl));
   const probing = () => probeEnv ??= harmless === null ? env : {
     ...env,
     PATH: [...new Set(checkedDirs(dirsOn(env["PATH"])))].join(delimiter) || checkedDirs(SYSTEM_PATH).join(delimiter) || "/nonexistent",
   };
+  // Windows' trust boundary: the profile as the OS gives it, never a HOME the environment sets
   const profile = options.home ?? (env["USERPROFILE"] || homedir());
   const pick = async (candidates: string[], named = false): Promise<FoundHc | null> => {
     for (const candidate of candidates) {
+      // absolute: a terminal attach runs it from another folder (server/core/terminal-process.ts),
+      // and what is run is what was checked, whatever folder the server is in
       const bin = resolve(candidate);
       if (seen.has(bin)) continue;
       seen.add(bin);
@@ -101,6 +121,15 @@ const SYSTEM_PATH = ["/usr/bin", "/bin"];
 /** the most links followed to reach one candidate, as the kernel allows (Linux's MAXSYMLINKS) */
 const MAX_LINKS = 40;
 
+/**
+ * Whether nothing at `path` (absolute) can be another account's doing (POSIX): every folder, link
+ * and the file itself that reaching it walks through, from `/`, belongs to this user or root, so
+ * the check and the run that follows see the same file. The file and the folder holding it are
+ * writable by nobody else; a folder on the way may be when it is sticky (/tmp), where nobody can
+ * rename or replace an entry they do not own. Group write counts as nobody else's only for a
+ * group `harmless` names, and no ACL may grant write either (`acl`, aclReader). With
+ * `asFolder`, the path is a folder held to the same rule as a file's.
+ */
 export function ownedByUser(path: string, harmless: (gid: number, path: string) => boolean, asFolder = false, acl: AclReader = aclReader()): boolean {
   return trustRefusal(path, harmless, asFolder, acl) === null;
 }
@@ -199,7 +228,13 @@ function ownGroup(): number | null {
  */
 const LOCAL_SOURCES = new Set(["files", "systemd"]);
 
-// a missing nsswitch.conf line means the C library's default, which may add members from a directory service
+/**
+ * `gid` when it is `user`'s private group, from /etc/group and /etc/passwd: named after them, with
+ * no other member, and no other account's primary group; else null. Only when nsswitch.conf has a
+ * passwd and a group line and every account line takes local files alone: a group a directory
+ * service could add a member to (a missing line means the C library's default, which may) is not
+ * taken on trust, nor one whose passwd could not be read.
+ */
 export function privateGroup(user: string, gid: number, groups: string, passwd: string, nsswitch: string): number | null {
   const databases = new Set<string>();
   for (const line of nsswitch.split("\n")) {
@@ -220,6 +255,7 @@ export function privateGroup(user: string, gid: number, groups: string, passwd: 
   return others ? null : gid;
 }
 
+/** how long reading one ACL may take: one that does not answer counts as granting */
 const ACL_READ_TIMEOUT_MS = 2_000;
 const MAC_ACL_TTL_MS = 60_000;
 const macAcls = new Map<string, { at: number; grants: boolean }>();
@@ -229,6 +265,14 @@ export interface AclReader {
   grantsWrite(path: string, uid: number, harmless: (gid: number, path: string) => boolean): boolean;
 }
 
+/**
+ * Reads ACLs, each path once. On Linux (only asked when the group bits allow write) from
+ * `getfacl`: a named user other than this one or root, or a named group or the owning group
+ * `harmless` does not name, holding write that the mask lets through (linuxAclGrantsWrite). Without
+ * getfacl, `ls -ld` says whether the path has an ACL at all: with none the group bits are the
+ * owning group's own, already checked; one that cannot be read counts as granting. On macOS from
+ * `ls -lde` (macAclGrantsWrite). Whatever cannot be read, or does not answer in time, grants.
+ */
 export function aclReader(options: { platform?: NodeJS.Platform; getfacl?: string | null } = {}): AclReader {
   const darwin = (options.platform ?? process.platform) === "darwin";
   const cache = new Map<string, boolean>();
@@ -287,7 +331,11 @@ export function linuxAclGrantsWrite(acl: string, uid: number, harmless: (gid: nu
 
 const MAC_WRITE_RIGHTS = new Set(["write", "append", "add_file", "add_subdirectory", "delete", "delete_child", "writeattr", "writeextattr", "writesecurity", "chown"]);
 
-// a macOS ACL principal may hold spaces (`group:Domain Users`)
+/**
+ * A macOS `ls -lde` listing: whether an ACL entry may let anybody but `user` write, add, delete or
+ * take over. A principal may hold spaces (`group:Domain Users`); an entry not read as
+ * `<principal> [inherited] allow|deny <rights>` that names a write right counts as allowing it.
+ */
 export function macAclGrantsWrite(listing: string, user: string): boolean {
   return listing.split("\n").some((line) => {
     const body = /^\s*\d+:\s+(.*?)\s*$/.exec(line)?.[1];
@@ -330,6 +378,11 @@ async function loginShellPath(env: Env, platform: NodeJS.Platform): Promise<stri
   return (await loginPathProbe({ shell, env, timeoutMs: PROBE_TIMEOUT_MS })(new AbortController().signal)).path;
 }
 
+/**
+ * stdout of a command that exits 0 within `timeoutMs` and says no more than the limit, else null.
+ * It runs in a process group of its own, killed once the answer is in: something it left behind
+ * holding stdout is read for at most EXIT_GRACE_MS after the exit, never waited on.
+ */
 async function probe(argv: string[], env: Env, timeoutMs: number): Promise<string | null> {
   let child: ReturnType<typeof Bun.spawn<"ignore", "pipe", "ignore">>;
   try {
@@ -417,6 +470,7 @@ function runtimeDir(env: Env, options: CoreSocketOptions): string | null {
 }
 
 function configuredSocket(config: string): string | null {
+  // read as herdr's own config is: a regular file of a config's size, never a FIFO a health poll would block on
   const parsed = readHerdrConfig(config);
   const socket = parsed !== null && typeof parsed === "object" ? (parsed as Record<string, unknown>)["socket"] : undefined;
   return typeof socket === "string" && socket !== "" ? socket : null;
@@ -431,6 +485,11 @@ const FIND_TTL_MS = 5 * 60_000;
 let found: { at: number; hc: FoundHc | null } | null = null;
 let finding: Promise<FoundHc | null> | null = null;
 
+/**
+ * Looks for hc again for Settings (one look at a time) and keeps the answer for herdrCoreFacts.
+ * It never runs the login shell: its profile could run any command, `hc connect` included, from a
+ * health request on a PC that never chose herdr-core. Only startRuntime looks there (findHc).
+ */
 export function discoverHc(options: Omit<FindHcOptions, "loginShellPath"> = {}): Promise<FoundHc | null> {
   finding ??= findHc({ ...options, loginShellPath: async () => null }).then((hc) => {
     found = { at: Date.now(), hc };
@@ -448,6 +507,7 @@ export function herdrCoreFacts(): HerdrCoreFacts | undefined {
   if (finding === null && (found === null || Date.now() - found.at > FIND_TTL_MS)) void discoverHc();
   if (found === null) return undefined;
   const socket = coreSocket();
+  // hc takes only a plain folder name for a session; anything else is not told, so no path can be
   return { version: found.hc?.version ?? null, session: plainSession(socket.session), running: socket.running };
 }
 

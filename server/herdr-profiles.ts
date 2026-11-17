@@ -15,7 +15,8 @@ const run = promisify(execFile);
 function profileTarget(target: string, session: string): SshTarget | null {
   try {
     const selectedSession = session === "default" || session === "" ? {} : { session };
-    // Herdr also accepts SSH URIs; URL would lowercase the SSH alias
+    // Herdr also accepts SSH URIs. Keep the SSH alias verbatim (URL would lowercase it),
+    // and split only the explicit port; credentials, paths and encoded options are refused.
     if (target.startsWith("ssh://")) {
       const match = /^ssh:\/\/((?:[a-zA-Z0-9_.-]+@)?(?:\[[a-fA-F0-9:]+\]|[a-zA-Z0-9_.-]+))(?::([0-9]+))?$/.exec(target);
       if (!match) return null;
@@ -44,7 +45,8 @@ export function samePort(a: SshTarget["port"], b: SshTarget["port"]): boolean {
 }
 
 export function sameSshSession(a: SshTarget, b: SshTarget): boolean {
-  // An omitted port is resolved by OpenSSH config, and need not be 22.
+  // An omitted port is resolved by OpenSSH config, and need not be 22. Do not guess
+  // that two aliases or an implicit and explicit port name the same destination.
   return a.destination === b.destination && samePort(a.port, b.port) && (a.session || "default") === (b.session || "default");
 }
 
@@ -55,6 +57,8 @@ export async function readHerdrProfiles(): Promise<HerdrMachineProfile[]> {
     });
     return parseHerdrProfiles(stdout);
   } catch {
+    // CLI stderr can include local paths. Keep the discovery diagnostic bounded and actionable;
+    // manual setup remains usable with old/missing herdr or an unreadable catalog.
     throw new Error("Could not read saved herdr machines. Check herdr machine list --json on this PC, or enter an SSH address manually.");
   }
 }

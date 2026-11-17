@@ -27,6 +27,13 @@ const CORE_ENV = /^(?:HC_.*|HOME|USERPROFILE|APPDATA|LOCALAPPDATA|XDG_RUNTIME_DI
 const PROGRAM_ENV = /^(?:PATH|PATHEXT|LANG|LC_.*|TMPDIR|TEMP|TMP|SystemRoot|SYSTEMROOT|WINDIR|ComSpec|COMSPEC)$/;
 const READY_MS = 30_000;
 
+/**
+ * Starts a machine's server: this server's own code, in a process of its own, serving herdr's API from
+ * that machine's terminals over this PC's core (machine-scope.ts). It runs with an empty home folder
+ * of its own and none of this server's settings: the agents' files and processes here are not that
+ * machine's, so no transcript of this PC can be taken for one of its panes. Its state lives under
+ * `stateDir`; it ends with this server (it holds the stdin this one keeps open).
+ */
 export async function startMachineBridge(machine: Pick<HcMachine, "id" | "name">, stateDir: string): Promise<MachineBridge> {
   const dir = join(stateDir, "hc-machines", machine.id);
   const home = join(dir, "home");

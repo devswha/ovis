@@ -1,3 +1,14 @@
+/**
+ * An opt-in HTTPS listener for clients on the same network (#1525): a phone on the PC's Wi-Fi reaches
+ * it directly instead of through a tunnel, without the token or a device cookie crossing the LAN in
+ * the clear. Nothing here runs unless OVIS_LAN_HTTPS_PORT is set.
+ *
+ * It binds the PC's private IPv4 interface addresses (never 0.0.0.0 unless OVIS_LAN_HTTPS_HOST says
+ * so) and answers private IPv4 peers only. Who gets in is narrower than on the main listener
+ * (dispatch.ts `lanHttps`): the token or a paired device, never "this computer" or an open install.
+ * Its certificate is the operator's own (a local CA's, OVIS_LAN_HTTPS_CERT/KEY) or a self-signed one
+ * made here and kept in the state dir.
+ */
 import { createPrivateKey, generateKeyPairSync, randomBytes, sign, X509Certificate } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { BlockList, isIP } from "node:net";
@@ -10,6 +21,7 @@ const SUBJECT_ALT_NAME_OID = "2.5.29.17";
 
 export interface LanHttpsConfig {
   readonly port: number;
+  /** one address to bind instead of every private interface address; `0.0.0.0` only when written */
   readonly host?: string;
   readonly certFile?: string;
   readonly keyFile?: string;
@@ -38,6 +50,7 @@ export function lanHttpsConfig(env: Record<string, string | undefined>): LanHttp
 const privateIpv4 = new BlockList();
 for (const [network, prefix] of [["10.0.0.0", 8], ["172.16.0.0", 12], ["192.168.0.0", 16], ["169.254.0.0", 16]] as const) privateIpv4.addSubnet(network, prefix, "ipv4");
 
+/** A peer on a private IPv4 network (RFC 1918 or link-local); never loopback, a tailnet or CGNAT address, a public or an IPv6 one. */
 export function privateLanPeer(address: string | null | undefined): boolean {
   const plain = address?.startsWith("::ffff:") ? address.slice("::ffff:".length) : address ?? "";
   return isIP(plain) === 4 && privateIpv4.check(plain, "ipv4");

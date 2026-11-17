@@ -47,6 +47,11 @@ export function sameOrigin(facts: SightingFacts): boolean {
   return facts.origin ? facts.sameAttachment && facts.member : !facts.attached;
 }
 
+/**
+ * The checks made of what a connection saw, again right before herdr or the pty is written to. They
+ * differ on purpose and are not merged: each is the condition its input path always had. The
+ * connection's own part (it may type, its role is the one it had) is checked beside them.
+ */
 export const typingGuards = {
   herdrTyping: (facts: SightingFacts): boolean => facts.sameClaim && sameOrigin(facts),
   queuedTyping: (facts: SightingFacts): boolean => facts.sameAttachment && facts.samePty && facts.sameClaim && facts.member

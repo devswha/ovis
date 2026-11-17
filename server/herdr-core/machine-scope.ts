@@ -4,9 +4,15 @@ import { isRecord } from "./snapshot.ts";
 import { EVENT_LINE_BYTES } from "./adapter.ts";
 
 /**
- * The core lists and reports another machine's terminals as `lab/t3` beside its own `t3`. hc takes a
- * machine's permanent id (`<id>/t3`) as it takes its name; a name can be given to another machine
- * (`hc machine rename`), the id cannot. hc still lists and reports terminals by name.
+ * herdr-core seen from one of the other machines its core reaches (`hc machine add lab`), for the
+ * server that shows that machine as a PC of its own (machine-entry.ts). The core lists and reports
+ * that machine's terminals as `lab/t3` beside its own `t3`, and reads its documents with `on`; through
+ * this connection they are that machine's own again: only `lab/…` terminals, without the prefix, and
+ * its own documents, so the adapter and the attach run unchanged, as they would on that machine.
+ * Every address goes back to hc under the machine's permanent id (`<id>/t3`, which hc takes as it
+ * takes the name), and a new terminal or document is made `on` that id: a name can be given to
+ * another machine (`hc machine rename`), the id cannot, so no call reaches another machine. hc still
+ * lists and reports terminals by name: each call first checks the name still names this id.
  */
 
 export class MachineScopedConnection extends HcConnection {

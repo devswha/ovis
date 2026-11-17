@@ -1,6 +1,13 @@
 /**
  * Kimi Code keeps one append-only wire log per agent session:
  * `~/.kimi-code/sessions/wd_<dir>_<hash>/<session>/agents/<agent>/wire.jsonl`.
+ * This file reads the main agent's log into conversation turns for the chat view.
+ *
+ * The pane's session is proven, never guessed: a session lock the CLI wrote for one of the
+ * pane's own processes (`~/.kimi-code/locks/sessions/<id>.lock`, held from the session's first
+ * write while it works), else, on Linux, the main wire log one of them holds open; an idle Kimi
+ * keeps the session its same process proved last. With no such proof, or with two sessions, the
+ * chat falls back to the terminal: no picking by creation time or newest mtime, on any OS.
  */
 import { closeSync, openSync, opendirSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";

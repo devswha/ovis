@@ -293,6 +293,7 @@ async function folderClaims(folder: string, own: string | null, bound: { agent: 
     const hold = async (at: string, flags: number): Promise<FileHandle> => { const handle = await open(at, flags); held.push(handle); return handle; };
     let record: FileHandle;
     if (peerRecordReach.procFd) {
+      // the folder itself, then its .letta and the record inside the ones held: each opened through the one before, never by its path
       const peer = await hold(real, FOLDER_FLAGS);
       if (deviceInode(await peer.stat({ bigint: true })) !== before.at(-2)) return true;
       const hidden = await hold(join(FD_DIR, `${peer.fd}`, ".letta"), FOLDER_FLAGS);
@@ -311,6 +312,7 @@ async function folderClaims(folder: string, own: string | null, bound: { agent: 
     if (!readable) return true;
     const after = await record.stat({ bigint: true });
     if (bytesRead !== buffer.length || after.size !== found.size || after.mtimeNs !== found.mtimeNs) return true;
+    // an equal size and time do not prove the same bytes (a coarse mtime, or one put back): read it again, and any change claims
     const again = Buffer.alloc(buffer.length + 1);
     const reread = await record.read(again, 0, again.length, 0);
     if (reread.bytesRead !== bytesRead || !again.subarray(0, bytesRead).equals(buffer)) return true;

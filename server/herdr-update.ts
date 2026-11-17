@@ -21,6 +21,7 @@ import { capabilities } from "./runtime/capabilities.ts";
 import { jsonResponse } from "./http.ts";
 import { updateRequestAllowed } from "./update-api.ts";
 
+/** a download of herdr's binary (about 30 MB) on a slow link, then the handoff */
 const UPDATE_TIMEOUT_MS = 10 * 60_000;
 const STATUS_TIMEOUT_MS = 5_000;
 const STATUS_TRIES = 5;
@@ -85,6 +86,7 @@ export class HerdrUpdater {
   constructor(private readonly options: HerdrUpdaterOptions = {}) {}
 
   private get supported(): boolean {
+    // on herdr-core, HERDR_SOCKET names this server's own adapter, and the Herdr app's core updates on its own
     return (this.options.platform ?? process.platform) !== "win32" && !(this.options.coreServed ?? (() => capabilities().runtime !== "herdr"))();
   }
 
@@ -105,6 +107,7 @@ export class HerdrUpdater {
     } catch (error) {
       return { code: null, output: `herdr could not be started: ${error instanceof Error ? error.message : String(error)}`, stdout: "" };
     }
+    // read as it comes: a process herdr left behind that still holds the pipes must not hold the answer
     const read = (stream: ReadableStream<Uint8Array>) => {
       const reader = stream.getReader();
       const decoder = new TextDecoder();

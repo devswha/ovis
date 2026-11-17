@@ -76,7 +76,11 @@ import { lanHttpsCertificate, lanHttpsConfig, privateLanAddresses, privateLanPee
 
 
 export const SUBMIT_DELAY_MS = 120;
-/** herdr holds a lone ESC typed through the attach pty ~150ms (measured) to tell it from an Alt+key. */
+/**
+ * herdr holds a lone ESC typed through the attach pty ~150ms (measured) to tell it from
+ * an Alt+key: a composer message waits this long after the pane's last keystroke, so a
+ * Stop tapped just before Send still reaches the pane first.
+ */
 export const TYPED_SETTLE_MS = 300;
 export const KEY_SETTLE_MS = 40;
 export const SUBMIT_DEADLINE_MS = 45_000;
@@ -84,7 +88,12 @@ const DRAFT_CLEAR_WAIT_MS = 1_500;
 const DRAFT_CLEAR_POLL_MS = 50;
 
 
-/** Bun.serve answers a body over this with its own empty 413, before any route runs. */
+/**
+ * What Bun.serve admits before a route runs (64 MiB). The ~55.9 MB body of a 40 MiB file is under it,
+ * so the attachment route answers it with its JSON reason. The browser refuses a file over
+ * MAX_ATTACHMENT_BYTES before it uploads (src/lib/api.ts), so only a non-browser client that sends
+ * more than this can still see Bun's own empty 413.
+ */
 const BUN_BODY_CEILING = 64 * 1024 * 1024;
 
 export function herdrCoreInstaller(): HcInstaller {
@@ -156,6 +165,7 @@ export function createServer(
     pcUpdateTimings?: { pollMs?: number; startMs?: number; checkMs?: number; offerMs?: number };
     tailnetPcs?: TailnetPcsOptions;
     sshCandidates?: SshCandidatesOptions;
+    /** a bridge this app starts on a PC (server/remote-entry.ts): its token is the credential its connection server holds, and no browser reaches it, so its snapshots go whole (#2160) */
     bridgeOnly?: boolean;
     localFiles?: boolean;
     herdrProfiles?: () => Promise<HerdrMachineProfile[]>;
@@ -204,7 +214,9 @@ export function createServer(
   const orderSequence = new OrderSequence(bootId);
   const hostname = options.hostname ?? process.env["HOST"] ?? "127.0.0.1";
   const ipv6Loopback = (options.ipv6Loopback ?? process.env["OVIS_IPV6_LOOPBACK"] === "1") && hostname === "127.0.0.1";
+  /** Empty token = gate disabled; every route then behaves exactly as it did before auth existed. */
   const token = options.token ?? process.env["OVIS_TOKEN"] ?? "";
+  /** paired devices (server/devices.ts) and the PC's Tailscale login: the two ways in besides the token and this PC itself */
   const ovisRelay = options.relay ?? new RelayService({ stateDir, accountService: passAccountService(options.accountService?.url), ...(options.accountService?.fetch ? { accountFetch: options.accountService.fetch } : {}) });
   const merge = options.siblingStateDir ? mergeSiblingState(stateDir, options.siblingStateDir) : null;
   let accountBlocked: string | null = null;
@@ -264,6 +276,7 @@ export function createServer(
     return grantPath ? tailnet.freshIdentity(host) : loginPath ? tailnet.loginIdentity() : tailnet.identity();
   };
   const serveOnly = options.tailscaleServeOnly ?? process.env["OVIS_TAILSCALE_SERVE_ONLY"] === "1";
+  /** what lets Portal open an address: this server's own values, never a request's */
   const portalGuards = () => ({ tokenSet: token !== "", serveOnly });
 
   const shellAgents = options.shellAgents ?? new ShellAgentLocator({ probe: null });
@@ -288,6 +301,9 @@ export function createServer(
   const openCodeState = new OpenCodePromptState();
   const draftTimer = setInterval(() => openCodeState.prune(), 60_000);
   draftTimer.unref();
+  // a snapshot as a browser is told it, wherever it goes: without the token values herdr's sidebar rows hide (#2160).
+  // A bridge this app starts on a PC (`bridgeOnly`, server/remote-entry.ts) serves only its connection server, with
+  // the credential it registered as its token: that server applies its own rows, so it gets every snapshot whole.
   const shownSnapshot = <S extends SessionSnapshot>(snapshot: S): S => options.bridgeOnly ? snapshot : snapshotWithoutHiddenTokens(herdrSidebar.get(), snapshot);
   const browserSnapshot = options.profile === "machine" ? <S extends SessionSnapshot>(snapshot: S): S => machineSnapshot(shownSnapshot(snapshot)) : shownSnapshot;
   const core = createCore({ options: { ...options, stateDir, openCodeState, orderSequence, ...(options.profile === "machine" ? { herdrFailure: machineFailure } : {}), serverId: () => ovisRelay.serverId(), seenMoved: (from, to, renumber) => seen.moved(LOCAL_MACHINE, from, to, renumber) }, devices, preferences, usage, usageLogin, browserSnapshot, TYPED_SETTLE_MS, KEY_SETTLE_MS, SUBMIT_DEADLINE_MS, SUBMIT_DELAY_MS, DRAFT_CLEAR_WAIT_MS, DRAFT_CLEAR_POLL_MS });
@@ -309,6 +325,8 @@ export function createServer(
     seen.subscribe((finish, presented) => { if (presented !== "new") markSeen(finish, false); });
     seen.onPresented((finish) => markSeen(finish, true));
   }
+  // started after createCore's Node probe (server/pty/sidecar.ts), which can hold the thread up to 3 s: that wait
+  // would count against the read's own 2.5 s limit, and a read cut short leaves the owner unknown for 5 minutes
   identityOf(false, null);
   const bridgeToken = options.bridgeToken ?? randomBytes(32).toString("hex");
   const piReader = new PiSessionReader({ deadlineMs: options.piSessionDeadlineMs });
@@ -423,6 +441,7 @@ export function createServer(
         const listener = Bun.serve<SocketData>({
           hostname: address, port, maxRequestBodySize: BUN_BODY_CEILING, tls: { cert: certificate.cert, key: certificate.key },
           fetch: (request, bunServer) => privateLanPeer(bunServer.requestIP(request)?.address)
+            // the port is the main listener's: Portal and /api/access route plain http to it, never to this TLS one
             ? handleRequest(request, { ...socketContext(bunServer), get port() { return server.port; }, lanHttps: true })
             : new Response("forbidden", { status: 403 }),
           websocket: core.websocket,
@@ -438,6 +457,7 @@ export function createServer(
   }
 
   if (options.portal) {
+    // a Portal that ends on its own is started again only while this server's own token and serve-only allow it
     options.portal.authorize(portalGuards);
     let resume: Promise<void>;
     try {

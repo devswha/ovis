@@ -78,6 +78,7 @@ async function readLock(sessions: string, id: string): Promise<{ pid: number; op
   } catch { return null; } finally { await file.close(); }
 }
 
+/** Authorize the session log inside the canonical store before opening its bytes. */
 export async function authorizeKiroTranscript(path: string, sessions: string): Promise<KiroTranscript | null> {
   try {
     const root = await realpath(sessions);
@@ -96,9 +97,11 @@ export async function authorizeKiroTranscript(path: string, sessions: string): P
 }
 
 /**
- * Kiro writes `<id>.lock` = `{pid, started_at}` beside the session its `kiro-cli-chat acp` process has open
- * (a setsid child of the TUI, so herdr does not list it): written when a session opens, moved on
- * `/chat new` and `/chat <id>`, deleted on `/quit`.
+ * The session a pane's Kiro TUI has open. Kiro writes `<id>.lock` = `{pid, started_at}` beside the session its
+ * `kiro-cli-chat acp` process has open (a setsid child of the TUI, so herdr does not list it): written when a
+ * session opens, moved on `/chat new` and `/chat <id>`, deleted on `/quit`. The pane binds the one lock naming
+ * the acp child of its own foreground TUI, opened after that process started; nothing else (folder, recency)
+ * picks a session. Linux only: it needs procfs.
  */
 export async function resolveKiroTranscript(info: Processes | null | undefined): Promise<KiroTranscript> {
   if (process.platform !== "linux") return unavailable();

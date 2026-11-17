@@ -184,6 +184,12 @@ function windowsPath(path: string): boolean {
   return /^(?:[A-Za-z]:[\\/]|\\\\)/.test(path);
 }
 
+/**
+ * A folder's last name. A Windows path (a drive letter or a UNC prefix) splits at either slash and
+ * any other at `/` only, by the path's shape and not this host's platform: a server can show
+ * another machine's terminals (machine-scope.ts). A drive root has no folder: it stays as written,
+ * as the client's `folderName` keeps it, so it still reads as a place.
+ */
 function basename(path: string): string {
   if (/^(?:\\\\[?.]\\)?[A-Za-z]:[\\/]+$/.test(path)) return path;
   const parts = path.split(windowsPath(path) ? /[\\/]/ : "/").filter(Boolean);

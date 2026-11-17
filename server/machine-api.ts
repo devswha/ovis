@@ -104,6 +104,7 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
   if (!fileRead && !sameOrigin(request)) return fail("invalid_origin", "Use PC controls from this app", 403);
   if (fileRead && crossSiteFileRead(request)) return fail("cross_site", "A file is read from this app or opened in a tab, not loaded by another page", 403);
   if (!["GET", "HEAD"].includes(request.method) && request.headers.get("x-herdr-machine") !== "1") return fail("invalid_machine_request", "Use PC controls from this app", 403);
+  // an empty segment is never a route: dropping it would forward `<id>//fs/file` as `fs/file`
   if (nonCanonicalPath(url.pathname)) return fail("not_found", "not found", 404);
   const parts = url.pathname.slice("/api/machines".length).split("/").filter(Boolean);
   const managing = !["GET", "HEAD", "OPTIONS"].includes(request.method) && !(parts.length >= 2 && MACHINE_PROXY_PATH.test(parts.slice(1).join("/")));
@@ -112,6 +113,8 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
     if (!parts.length && request.method === "GET") {
       setRequestRoute("/api/machines");
       const asked = url.searchParams.getAll("verify_source_boot");
+      // as the machine events tell it, for every answer below: without the token values herdr's rows hide
+      // (withoutHiddenTokens), and without a PC's own agent_refs (wireMachine)
       const shown = () => withoutHiddenTokens(herdrSidebar?.get() ?? null, manager.list()).map((machine) => wireMachine(machine, false));
       if (asked.length === 0) {
         if (url.searchParams.get("compact_agents") !== "1") return jsonResponse({ machines: shown() } satisfies MachineRoster);
@@ -219,6 +222,7 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
     }
     if (parts[0] === "relay" && parts.length === 1 && request.method === "POST") {
       setRequestRoute("/api/machines/relay");
+      // the link holds a one-time pairing code, a secret like an SSH password
       if (!canSendSecret(request)) return fail("https_required", "A pairing link requires HTTPS or localhost", 403);
       const body: unknown = await request.json().catch(() => null);
       if (!isJsonObject(body)) return fail("invalid_body", "Expected a pairing link", 400);
@@ -226,6 +230,7 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
     }
     if (parts[0] === "relay" && parts[1] === "code" && parts.length === 2 && request.method === "POST") {
       setRequestRoute("/api/machines/relay/code");
+      // the code is a secret, and what it finds holds the other PC's one-time pairing code, which stays on this server
       if (!canSendSecret(request)) return fail("https_required", "A pairing code requires HTTPS or localhost", 403);
       const body: unknown = await request.json().catch(() => null);
       if (!isJsonObject(body)) return fail("invalid_body", "Expected a pairing code", 400);
@@ -391,6 +396,9 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
     }
     if (parts.length === 1 && request.method === "DELETE") { setRequestRoute("/api/machines/:machine_id"); manager.remove(id); return jsonResponse({ ok: true }); }
     const path = parts.slice(1).join("/");
+    // earlier sessions carry their first prompts, and a folder's command files name what is in it (the new-tab
+    // dialog's agent commands, a pane's command rows), as do the paths under a pane's folder and a plugin run's
+    // output, and a repository's checkouts: never asked for a watching device with the PC's credential
     if (readOnly && (path === "sessions/history" || path === "agent/commands" || path === "pane/commands" || path === "pane/files" || path === "pane/docs" || path === "plugin/action" || path === "worktree/list" || path === "worktree/inventory")) return fail("read_only", "this device can only watch", 403);
     const movePath = PC_MOVE_PATH.test(path);
     if (readOnly && movePath) return fail("read_only", "this device can only watch", 403);
@@ -405,6 +413,8 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
         manager.retryNow(id);
         return fail("machine_offline", "This PC is disconnected", 503);
       }
+      // Explicit header allowlist: cookies, browser Authorization, forwarded headers
+      // and remote Set-Cookie never cross this boundary. No arbitrary target URLs.
       const headers = new Headers({ authorization: `Bearer ${endpoint.token}` });
       const contentType = request.headers.get("content-type");
       if (contentType) headers.set("content-type", contentType);
@@ -422,7 +432,12 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
             const value = response.headers.get(name);
             if (value) passed.set(name, value);
           }
+          // That PC's answer opens as this app's origin, so its own policy is never what holds here.
           // A PDF is drawn by the browser's viewer (which refuses a sandbox), as the local route does;
+          // only an HTML answer asked to render is a page, named as HTML and nothing else: whatever
+          // policy that PC names, the page policy this server gives its own pages (as that PC's bridge
+          // answers, with no media address) is added after it, and of two policies the stricter holds;
+          // anything else, an SVG asked to render too, gets the local route's policy.
           const type = passed.get("content-type")?.split(";")[0]?.trim().toLowerCase();
           if (type === "application/pdf") passed.set("content-type", "application/pdf");
           else if (type === "text/html" && url.searchParams.get("render") === "1") {
@@ -433,9 +448,12 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
           return new Response(response.body, { status: response.status, headers: passed });
         } catch (error) { return transportFailure(id, path, error); }
       }
+      // A watching device gets a plan card as the PC's screen shows it, never Claude's plan file:
+      // the PC is asked for that (`plan=0`), and a PC that ignores the ask loses the file here.
       const watchedPrompt = readOnly && path === "pane/prompt";
       const target = new URL(`${endpoint.url}/api/${path}${url.search}`);
       if (watchedPrompt) target.searchParams.set("plan", "0");
+      // nor has it the PC run its shell profile again: the PC sees this server's full token, not the watch
       if (readOnly && path === "agent-catalog") target.searchParams.delete("recheck");
       const untrack = manager.trackTerminal(id, () => abort.abort());
       const moved = path === "workspace/move" && request.method === "POST" ? manager.refreshAfterMove(id) : null;
@@ -457,6 +475,8 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
           if (answer.outcomes) answer.outcomes = answer.outcomes.map(({ preview: _preview, result_text: _resultText, ...outcome }) => outcome);
           body = new TextEncoder().encode(JSON.stringify(answer));
         }
+        // a PC's session as the roster tells it, without the token values this server's rows hide (#2160)
+        // any method the PC answers with a body (its route takes them all); a HEAD's is empty
         if (path === "session" && response.ok && body && body.byteLength > 0) {
           const answer = parseJson<{ snapshot?: SessionSnapshot }>(body);
           const shown = answer.snapshot && snapshotWithoutHiddenTokens(herdrSidebar?.get() ?? null, answer.snapshot);
@@ -464,6 +484,7 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
         }
         return new Response(body, { status: response.status, headers: {
           "content-type": response.headers.get("content-type") ?? "application/json", "cache-control": "no-store", ...(etag ? { etag } : {}),
+          // whatever type that PC names, its answer never runs as this app's origin
           "x-content-type-options": "nosniff", "content-security-policy": "sandbox; default-src 'none'",
           ...(retryAfter ? { "retry-after": retryAfter } : {}), ...(serverTime ? { "x-server-time": serverTime } : {}),
         } });

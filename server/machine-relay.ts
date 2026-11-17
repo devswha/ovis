@@ -12,6 +12,10 @@ const SERVICE_RESTART_CLOSE_CODE = 1012;
 export class RelayReceiptIds {
   private readonly key = randomBytes(32);
 
+  /**
+   * Returns an opaque UUID stable for this server, PC, authenticated device and browser UUID.
+   * Invalid browser UUIDs return undefined; restarting the server invalidates derived identities.
+   */
   scope(machine: string, device: string | undefined, browser: string): string | undefined {
     if (!RECEIPT_RESUME_ID.test(browser)) return undefined;
     const digest = createHmac("sha256", this.key).update(JSON.stringify([machine, device ?? null, browser])).digest();
@@ -29,6 +33,13 @@ interface RelayClient {
   close(code?: number, reason?: string): void;
 }
 
+/**
+ * The relay's backstop against its own sockets backing up, with this PC's rule (reconcileOutput):
+ * blocked only while OUTPUT_HIGH_BYTES or more is queued, closed after OUTPUT_STALL_MS of that.
+ * A slow phone link keeps a few KB queued in userspace while output still moves, so any byte
+ * must not count. The end-to-end ACK window is enforced by the remote bridge. A stall closes
+ * with 4008 like this PC's: an overload is never auto-replayed. Returns the close code, or 0.
+ */
 export class RelayStallClock {
   private blockedAt: number | null = null;
 
@@ -56,6 +67,10 @@ export class MachineRelay {
   private stall = new RelayStallClock();
   readonly ready: Promise<void>;
 
+  /**
+   * `browserSnapshot`: the PC's snapshot frame as the browser is told it, without the token values this
+   * server's sidebar rows hide (#2160). Other frames pass as they came.
+   */
   constructor(manager: MachineManager, id: string, private readonly readOnly: boolean, private readonly browserSnapshot: (snapshot: SessionSnapshot) => SessionSnapshot,
     private readonly receiptId?: (browser: string) => string | undefined) {
     const endpoint = manager.endpoint(id);
@@ -85,6 +100,11 @@ export class MachineRelay {
     this.timer = setInterval(() => this.tick(), 100);
     this.timer.unref();
   }
+  /**
+   * A frame as the browser is told it: a frame that names `tokens` anywhere is read, whatever its key
+   * order, and a snapshot among them re-written where a value leaves; a watch-only browser's features frame
+   * leaves its `paste_dir`; the rest pass unread.
+   */
   private told(raw: string): string {
     const pasteDir = this.readOnly && raw.includes('"paste_dir"');
     if (!raw.includes('"tokens"') && !pasteDir) return raw;
@@ -119,6 +139,8 @@ export class MachineRelay {
     try {
       const message = JSON.parse(text);
       if (message?.type === "attach") {
+        // The bridge authenticates this server's shared token, not the browser's device.
+        // Only controlling clients receive a server-scoped receipt identity.
         const id = !this.readOnly && typeof message.receipt_resume_id === "string" ? this.receiptId?.(message.receipt_resume_id) : undefined;
         if (id) message.receipt_resume_id = id;
         else delete message.receipt_resume_id;

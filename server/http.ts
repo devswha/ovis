@@ -55,6 +55,10 @@ export function errorResponse(error: unknown): Response {
     return jsonResponse({ error: { code: error.code, message: error.message } }, status);
   }
   if (error instanceof FileBusyError) return jsonResponse({ error: { code: error.code, message: error.message } }, 503, { "retry-after": "1" });
+  // A system error carries absolute paths, the herdr socket and whatever a dependency
+  // throws; the client is told none of it but a handle to quote in a bug report, and the
+  // real exception is logged here beside that handle. Short enough to say out loud, long
+  // enough that nobody reads another's.
   const id = requestIdContext.getStore()?.id ?? randomBytes(6).toString("hex");
   console.error(`internal_error ${id}: ${error instanceof Error ? error.stack ?? error.message : String(error)}`);
   return jsonResponse({ error: { code: "internal_error", message: `internal error (${id})` } }, 500);
