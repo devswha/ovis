@@ -125,8 +125,8 @@ function announceFromRelay(code: AnnouncedCode): void {
  * nothing on the screen can be read and typed on another device: the relay tab's account QR code, which puts a PC in
  * the account of whoever redeems it (ConnectPhoneDialog `AccountQr`). Its offer says so to the PC
  * (`x-ovis-no-account-only`), which makes it only while it is in no account, with a code of its own that no other
- * place started; New code ends that code and asks again. `onInAccount`: the PC refused the offer because it is in an
- * account by now.
+ * place started; New code ends that code and asks again. `onInAccount`: the PC refused the offer for its account: it is
+ * in one by now, or none is named for it.
  */
 export function RelayPairing({ phone = false, compact = false, qrOnly = false, onInAccount }: { phone?: boolean; compact?: boolean; qrOnly?: boolean; onInAccount?: () => void }) {
   const t = useT();
@@ -190,8 +190,9 @@ export function RelayPairing({ phone = false, compact = false, qrOnly = false, o
       // nobody waits for it, or it was overtaken, as above: nothing to show
       if (cancelled || asked !== taken.current) return;
       setOffer(null);
-      // the PC joined an account meanwhile: no refusal to read, the tab says which account instead
-      if (reason instanceof ApiError && reason.code === "in_account" && refused.current !== undefined) {
+      // the PC makes no code for its account's sake (it joined one meanwhile, or none is named for it): no refusal to
+      // read and no New code, which would be refused again: the tab says what stands in the QR code's place
+      if (reason instanceof ApiError && (reason.code === "in_account" || reason.code === "no_account_named") && refused.current !== undefined) {
         refused.current();
         return;
       }

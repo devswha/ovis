@@ -458,7 +458,9 @@ typed and nothing is approved on the PC. Because the code admits whoever holds i
   this PC to your account first; then it can show its QR code.** to one that is signed in. The PC
   says whether an account is named in its relay state (`account_named` of `GET /api/relay`, which
   the page reads again every 15 seconds while the relay is online), and it refuses the code
-  itself (`409 no_account_named`).
+  itself (`409 no_account_named`). A press made on a relay state that said one was named when
+  none is meets that refusal: the QR code comes down with no failure to read, and the page reads the relay
+  state again at once, which brings the sentence.
 - Nothing is asked of the PC before the press. The QR code comes down, and its six-digit code is
   ended on the PC (`POST /api/devices/pair/cancel` with that code), when the dialog closes or
   another tab opens, when the page goes (a reload, a closed tab or window: the request is sent to

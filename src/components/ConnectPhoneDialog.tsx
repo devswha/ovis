@@ -516,6 +516,8 @@ const names = (strays: readonly AccountQrStray[]): string => strays.map((stray) 
  * device that scans it into the account named for it alone, and makes no code before one is named (409
  * `no_account_named`). It says so in its relay state (`account_named`), and in the button's place the part says what
  * names one: a sign-in above for a browser that is signed out, adding the PC to the account for one that is signed in.
+ * A press made while the page's relay state said otherwise (it is read every 15 seconds) is refused by the PC: the QR
+ * code comes down with no failure to read, and the relay's state is read again, which brings that sentence.
  */
 export function AccountQr({ relay, phone, active, signedIn, accountId = null, pcAccount, onPcAccount, first = false, relayControls, onPairingHeld, onRevokedAll }: {
   relay: RelayState; phone: boolean; active: boolean; signedIn: boolean;
@@ -764,16 +766,20 @@ export function AccountQr({ relay, phone, active, signedIn, accountId = null, pc
     };
   }, [watching, takeDown, look]);
 
+  const { reread } = relay;
   /**
-   * The PC refused the QR code's code: it joined an account after the press read it. Looked at now and not at the
-   * next round, so the QR code gives way to which account at once. A look that does not say so (it failed, or the PC
-   * left the account again) still takes the QR code down: it has no code.
+   * The PC refused the QR code's code for its account: it joined one after the press read it, or none is named for
+   * it. Looked at now and not at the next round, so the QR code gives way to which account at once. A look that does
+   * not say so (it failed, the PC left the account again, or no account is named) still takes the QR code down: it
+   * has no code. The relay's state is read again too: it says whether an account is named, which decides between
+   * the button and the sentence in its place.
    */
   const refusedForAccount = useCallback(() => {
     const mine = run.current;
     const down = () => { if (mine === run.current) takeDown(); };
+    reread();
     void look(mine).then((left) => { if (left !== null && left.account === null) down(); }, down);
-  }, [look, takeDown]);
+  }, [look, takeDown, reread]);
 
   // a device that pairs normally closes the dialog (Settings' device list); not while this may still have to say
   // which account the PC joined, or says it
@@ -972,7 +978,7 @@ export function RelayRoute({ relay, readOnly, phone = false, pairHere = false, s
   relay: RelayState;
   /** the QR code alone: no code to type is made (RelayPairing `qrOnly`) */
   qrOnly?: boolean;
-  /** the PC refused that QR code's code: it is in an account by now (RelayPairing `onInAccount`) */
+  /** the PC refused that QR code's code: it is in an account by now, or none is named for it (RelayPairing `onInAccount`) */
   onInAccount?: () => void;
   /** Add a connection: no state line (the switch above says it), the QR code beside the code to type, no reset (More settings has it) */
   compact?: boolean;

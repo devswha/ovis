@@ -18,7 +18,7 @@ import { QrCode } from "./QrCode.tsx";
 await mock.module("react-dom", () => ({ ...ReactDom, createPortal: (node: ReactNode) => node }));
 const { ACCOUNT_QR_HIDDEN_MS, ACCOUNT_QR_MAX_MS, CodeRoute, connectTabs, openingTab, RelayRoute, RelayTab, sameNameRelayDevice, SshTab } = await import("./ConnectPhoneDialog.tsx");
 const { ConfirmDialog } = await import("./ConfirmDialog.tsx");
-const { announcePairingCode, QR_CODE_ENDED_CHANNEL } = await import("../lib/useRelay.ts");
+const { announcePairingCode, QR_CODE_ENDED_CHANNEL, useRelay } = await import("../lib/useRelay.ts");
 const { ACCOUNT_QR_ALONE_MS, ACCOUNT_QR_LATE_MS, ACCOUNT_QR_POLL_MS, accountQrFindings, accountQrNoticeWaiting, addedBy, accountQrPending, resetAccountQrWatch, unvouched } = await import("../lib/accountQrWatch.ts");
 
 // Connect a phone on the phone itself: the QR codes wait behind Show QR code, a phone online with
@@ -27,7 +27,7 @@ const SERVER_ID = "0123456789abcdef0123456789abcdef";
 const APP = "https://app.ovis.example";
 const OFFER_URL = encodeOffer({ v: 1, server_id: SERVER_ID, server_public_key: exportPublicKey(generateKeyPair().publicKey), relay: "wss://relay.ovis.example", code: "482913", name: "Workstation" }, APP);
 const ONLINE: RelayStatus = { phase: "online", relay: "wss://relay.ovis.example", app: APP, sessions: 0, blocked: null, error: null };
-const relayState = (status: RelayStatus = ONLINE): RelayState => ({ status, unsupported: false, pending: false, request: async () => status });
+const relayState = (status: RelayStatus = ONLINE): RelayState => ({ status, unsupported: false, pending: false, request: async () => status, reread: () => {} });
 
 describe("Connect a phone on a phone", () => {
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
@@ -641,6 +641,7 @@ describe("the relay tab's QR code behind a press", () => {
       const expires_at = new Date(Date.now() + 600_000).toISOString();
       if (path === "/api/account/status") await statusGate;
       if (path === "/api/account/status") return Response.json({ account: pcAccount, unlinked: [], removals: [], adds: [], blocked: [] });
+      if (path === "/api/relay") return Response.json(ONLINE);
       if (path === "/api/devices") return Response.json({ devices });
       if (path.startsWith("/api/devices/") && init?.method === "DELETE") {
         if (!removable) return Response.json({ error: { code: "busy", message: "not now" } }, { status: 500 });
@@ -929,6 +930,37 @@ describe("the relay tab's QR code behind a press", () => {
     expect(buttons()).toEqual([]);
     await advance(ACCOUNT_QR_POLL_MS * 4);
     expect(minted()).toEqual([]);
+  });
+
+  it("when the PC refuses the press because no account is named for it, takes the QR code down with no failure and reads the relay's state again, which brings the sentence", async () => {
+    let rereads = 0;
+    // the page's relay state is up to 15 seconds old: it says an account is named, and none is
+    const stale: RelayState = { ...relayState({ ...ONLINE, account_named: true }), reread: () => { rereads += 1; } };
+    await mount({ relay: stale });
+    offerAnswer = () => Response.json({ error: { code: "no_account_named", message: "This PC is not set up for an Ovis account yet." } }, { status: 409 });
+    await press("Show the QR code");
+    await flush();
+    expect(qrCodes()).toHaveLength(0);
+    // no refusal to read, and no New code, which the PC would refuse again
+    expect(section().findAllByProps({ role: "alert" })).toHaveLength(0);
+    expect(buttons()).not.toContain("New code");
+    expect([count("/api/relay/offer"), rereads]).toEqual([1, 1]);
+    // the relay's state, read again, says no account is named: the sentence takes the button's place
+    await update({ relay: relayState({ ...ONLINE, account_named: false }) });
+    expect(text(section())).toContain("Add this PC to your account first; then it can show its QR code.");
+    expect(buttons()).toEqual([]);
+  });
+
+  it("the relay's state is read again when asked, without waiting for the poll's next round", async () => {
+    let relay: RelayState | undefined;
+    const Probe = () => { relay = useRelay(); return null; };
+    await act(async () => { renderer = create(<Probe />); });
+    await flush();
+    expect([count("/api/relay"), relay?.status?.phase]).toEqual([1, "online"]);
+    // the poll's next round is a quarter of a minute off, and no clock moves here
+    await act(async () => { relay!.reread(); });
+    await flush();
+    expect(count("/api/relay")).toBe(2);
   });
 
   it("takes the QR code down 30 minutes after the press and ends its code, leaving Show a new code", async () => {
