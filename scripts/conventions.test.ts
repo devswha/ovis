@@ -170,9 +170,9 @@ describe("the tools typecheck", () => {
     const list = (JSON.parse(json) as { exclude?: unknown }).exclude;
     return Array.isArray(list) ? list as string[] : null;
   };
-  /** The entries `now` has and `before` lacks, when `now` is the longer list: a renamed file may take its entry along. */
-  const added = (now: readonly string[], before: readonly string[]): string[] =>
-    now.length > before.length ? now.filter((file) => !before.includes(file)) : [];
+  /** The entries `now` has and `before` lacks, but a renamed file's (`renames`: new path to old), which takes its entry along. */
+  const added = (now: readonly string[], before: readonly string[], renames: ReadonlyMap<string, string>): string[] =>
+    now.filter((file) => !before.includes(file) && !before.includes(renames.get(file) ?? ""));
   const now = excluded(read("tsconfig.tools.json")) ?? [];
 
   it("excludes no more files than on origin/main", () => {
@@ -182,13 +182,18 @@ describe("the tools typecheck", () => {
     const json = git("show", `${base.stdout.trim()}:tsconfig.tools.json`);
     const before = json.status === 0 ? excluded(json.stdout) : null;
     if (before === null) return;
-    fail(added(now, before), "The exclude list of tsconfig.tools.json may only shrink: fix the type errors `bun run typecheck` reports in these files instead of excluding them. A renamed file takes its entry along under the new path.");
+    const renamed = git("diff", "--name-status", "-M", "--diff-filter=R", base.stdout.trim());
+    const renames = new Map(renamed.stdout.split("\n").map((line) => line.split("\t")).filter((parts) => parts.length === 3).map(([, from, to]) => [to!, from!]));
+    fail(added(now, before, renames), "The exclude list of tsconfig.tools.json may only shrink: fix the type errors `bun run typecheck` reports in these files instead of excluding them. A renamed file takes its entry along under the new path.");
   });
 
-  it("tells a longer exclude list from a renamed entry", () => {
-    expect(added(["scripts/a.ts", "scripts/new.ts"], ["scripts/a.ts"])).toEqual(["scripts/new.ts"]);
-    expect(added(["scripts/a.ts", "scripts/renamed.ts"], ["scripts/a.ts", "scripts/b.ts"])).toEqual([]);
-    expect(added(["scripts/a.ts"], ["scripts/a.ts", "scripts/b.ts"])).toEqual([]);
+  it("tells a new entry from a renamed file's, whatever the list's length", () => {
+    const renames = new Map([["scripts/renamed.ts", "scripts/b.ts"], ["scripts/moved.ts", "scripts/never-excluded.ts"]]);
+    expect(added(["scripts/a.ts", "scripts/new.ts"], ["scripts/a.ts"], renames)).toEqual(["scripts/new.ts"]);
+    expect(added(["scripts/a.ts", "scripts/new.ts"], ["scripts/a.ts", "scripts/b.ts"], renames)).toEqual(["scripts/new.ts"]);
+    expect(added(["scripts/a.ts", "scripts/renamed.ts"], ["scripts/a.ts", "scripts/b.ts"], renames)).toEqual([]);
+    expect(added(["scripts/a.ts", "scripts/moved.ts"], ["scripts/a.ts", "scripts/b.ts"], renames)).toEqual(["scripts/moved.ts"]);
+    expect(added(["scripts/a.ts"], ["scripts/a.ts", "scripts/b.ts"], renames)).toEqual([]);
   });
 
   it("excludes only files that exist", () => {
