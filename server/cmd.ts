@@ -47,7 +47,6 @@ export async function cmdTranscriptPath(
     && typeof session.value === "string") ? session.value : null;
   if (candidate === null) return null;
   // foreground_cwd can belong to a helper when herdr cannot read the group leader's cwd.
-  // Each cwd is only a store candidate; the reported session must validate inside it.
   for (const cwd of new Set([agent.foreground_cwd, agent.cwd])) {
     if (typeof cwd !== "string" || cwd.length === 0) continue;
     const projectDir = defaultCmdProjectDir(cwd);
@@ -68,7 +67,6 @@ let cmdCatalogCache: { path: string; mtimeMs: number; windows: Map<string, numbe
 
 const MAX_CATALOG_BYTES = 8 * 1024 * 1024;
 
-/** The catalog's text, read only as a regular file of bounded size: a FIFO there must not block the server. */
 function readCatalog(path: string): string | null {
   let fd: number | undefined;
   try {

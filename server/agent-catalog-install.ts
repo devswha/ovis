@@ -1,11 +1,3 @@
-/**
- * POST /api/agent-catalog/install and /api/agent-catalog/sign-in: an agent's official install
- * command, or its sign-in, run where the user sees it. The server picks the command from the catalog
- * by the agent's id and this PC's platform; a request never carries a command. It opens a terminal
- * tab and types the command into its shell, so every line shows and Ctrl+C stops it; nothing is run
- * in the background. What was installed is read again through GET /api/agent-catalog.
- * The dispatcher in index.ts runs the access gate first: a watching device cannot reach these.
- */
 import { homedir } from "node:os";
 import { AGENT_CATALOG, catalogPlatform, commandProblems, type AgentCatalogEntry, type AgentTabStarted, type CatalogPlatform } from "../shared/agent-catalog.ts";
 import type { AgentDetector } from "./agent-catalog-detect.ts";
@@ -26,14 +18,10 @@ async function openTab(label: string, home: string): Promise<{ paneId: string; t
   return { paneId: created.root_pane.pane_id, tabId: created.tab.tab_id, workspaceId: created.tab.workspace_id };
 }
 
-/** How long, in all, a new Windows tab's shell has to come in front before nothing is typed there. */
 const SHELL_WAIT_MS = 10_000;
-/** How long a typed install command has to show a program running in its tab before it counts as ended. */
 const INSTALL_START_MS = 120_000;
-/** The longest one install holds its agent, whatever its tab shows. */
 const INSTALL_CAP_MS = 30 * 60_000;
 
-/** Time as the install routes read it; tests drive their own. A sleep whose signal aborts never ends. */
 export interface InstallClock { now(): number; sleep(ms: number, signal?: AbortSignal): Promise<void> }
 const realClock: InstallClock = {
   now: () => Date.now(),
@@ -44,7 +32,6 @@ const realClock: InstallClock = {
 };
 
 const TIMED_OUT = Symbol("timed out");
-/** `work`'s answer, or TIMED_OUT when it has not come within `ms`; a rejection before then is passed on. */
 async function within<T>(work: Promise<T>, ms: number, clock: InstallClock): Promise<T | typeof TIMED_OUT> {
   const settled = new AbortController();
   try {
@@ -54,11 +41,6 @@ async function within<T>(work: Promise<T>, ms: number, clock: InstallClock): Pro
   }
 }
 
-/**
- * The shell running in a new pane: POSIX off Windows; on Windows the one herdr reports in front once
- * it starts, or null when herdr names neither PowerShell nor cmd.exe within `waitMs` in all, slow
- * answers included. Nothing is typed into a shell that is not known.
- */
 async function shellOf(paneId: string, platform: CatalogPlatform, waitMs: number, clock: InstallClock): Promise<PaneShell | null> {
   if (platform !== "windows") return "posix";
   const deadline = clock.now() + waitMs;
@@ -76,23 +58,16 @@ async function shellOf(paneId: string, platform: CatalogPlatform, waitMs: number
   }
 }
 
-/** Closes a tab this route opened and could not finish starting; a close that fails leaves the first error to report. */
 async function closeUnstarted(tabId: string): Promise<void> {
   await tabClose(tabId).catch(() => undefined);
 }
 
 const shellUnknown = () => conflictResponse("shell_unknown", "Ovis could not tell which shell the new tab runs, so it typed nothing there");
 
-/** The fields each route takes; any other field is refused, so a request cannot carry a command or a platform. */
 const FIELDS: Record<string, readonly string[]> = { [INSTALL_PATH]: ["agent", "alternative"], [SIGN_IN_PATH]: ["agent"] };
 
-/**
- * An install this PC has started: its tab's pane once it has one, when its command was typed (null
- * while its own request still starts it), and whether a program was seen running in its tab since.
- */
 type Running = { paneId: string | null; typedAt: number | null; seenRunning: boolean };
 
-/** Types `text` into the pane's shell and runs it: a newline on POSIX, the Enter key on Windows (see shell-agent.ts). */
 async function typeAndRun(paneId: string, text: string, shell: PaneShell): Promise<void> {
   if (shell === "posix") {
     await paneSendText(paneId, `${text}\n`);
@@ -114,10 +89,6 @@ export class AgentInstaller {
     return this.options.clock ?? realClock;
   }
 
-  /**
-   * Types into a tab just opened: `work` returns the response, or null when nothing may be typed
-   * there. The tab is closed when nothing was typed, and when `work` fails.
-   */
   async #inNewTab(tabId: string, work: () => Promise<Response | null>, refused: () => Response): Promise<Response> {
     let response: Response | null;
     try {
@@ -143,7 +114,6 @@ export class AgentInstaller {
     if (extra.length > 0) return badRequest("unknown_field", `This route does not take ${extra.join(", ")}`);
     const entry = AGENT_CATALOG.find((candidate) => candidate.id === body["agent"]);
     if (!entry) return badRequest("unknown_agent", "Name an agent from GET /api/agent-catalog");
-    // another machine of the core: this PC's commands, paths and home folder are not that machine's
     if (hcMachine() !== null) return conflictResponse("other_machine", "Install and sign in to agents from a terminal on this machine: Ovis cannot run them there for it");
     if (this.platform === null) return conflictResponse("platform_unsupported", "Ovis has no install commands for this operating system");
     try {
@@ -153,7 +123,6 @@ export class AgentInstaller {
     }
   }
 
-  /** by agent id: the install of that agent started on this PC, one at a time */
   readonly #running = new Map<string, Running>();
 
   /**
@@ -173,13 +142,6 @@ export class AgentInstaller {
     return front.length === 0 ? null : front.some((process) => process.pid !== shellPid);
   }
 
-  /**
-   * Whether an earlier install still runs. It does while its own request starts it, and while its
-   * installer runs in its tab. It ends when its tab closes, when the tab is back at its shell after
-   * the installer was seen running (success or failure alike), when no installer was seen running
-   * within INSTALL_START_MS of the command being typed, or at INSTALL_CAP_MS whatever the tab shows.
-   * Finding the agent installed never ends it: an installer may put its binary in place first.
-   */
   async #stillRunning(running: Running, platform: CatalogPlatform): Promise<boolean> {
     if (running.paneId === null || running.typedAt === null) return true;
     const paneId = running.paneId;
@@ -187,7 +149,6 @@ export class AgentInstaller {
     if (age >= (this.options.capMs ?? INSTALL_CAP_MS)) return false;
     if (!(await sessionSnapshot()).panes.some((pane) => pane.pane_id === paneId)) return false;
     const program = await this.#programRunning(paneId, platform);
-    // not readable: held, and the cap still ends it
     if (program !== false) {
       if (program) running.seenRunning = true;
       return true;
@@ -203,10 +164,8 @@ export class AgentInstaller {
       return badRequest("invalid_alternative", "alternative is the index of one of the platform's alternatives");
     }
     const method = index === undefined ? install.primary : install.alternatives[index as number]!;
-    // the catalog's own check again, right before the text is typed: a command that fails it never runs
     if (commandProblems(entry).length > 0) return conflictResponse("command_refused", "This install command is not one of the vendor's own; it was not run");
     const held = this.#running.get(entry.id);
-    // checked again after the wait: two requests that both saw an ended install do not both start one
     if (held !== undefined && (await this.#stillRunning(held, platform) || this.#running.get(entry.id) !== held)) {
       return conflictResponse("install_running", `${entry.name} is already being installed on this PC. Wait for its tab to finish, or close it.`);
     }
@@ -236,7 +195,6 @@ export class AgentInstaller {
     const dirs = entry.detect.install_dirs?.[platform] ?? [];
     const executable = await this.detector.executable(binary!, dirs, platform);
     if (executable === null) return conflictResponse("not_installed", `${entry.name} is not installed on this PC`);
-    // without a program it needs (DeepSeek Harness's dsh) its sign-in cannot start either
     for (const needed of entry.detect.needs ?? []) if ((await this.detector.executable(needed, dirs, platform)) === null) return conflictResponse("not_installed", `${entry.name} is not installed on this PC`);
     const { paneId, tabId, workspaceId } = await openTab(`Sign in to ${entry.name}`, this.home);
     return this.#inNewTab(tabId, async () => {

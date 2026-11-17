@@ -25,7 +25,6 @@ export function bridgeRegistry(): string {
   const legacy = join(homedir(), ".config", "herdr-web-ui");
   if (process.platform !== "win32") return join(legacy, "bridges");
   let junction = false;
-  // no legacy folder yet: the bridge makes it, as before
   try { junction = lstatSync(legacy).isSymbolicLink(); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   return join(junction ? resolve(dirname(legacy), readlinkSync(legacy)) : legacy, "bridges");
 }
@@ -34,13 +33,10 @@ export function socketPath(): string {
   try { return realpathSync(path); } catch { return path; }
 }
 export function descriptorPath(socket = socketPath()): string { return join(bridgeRegistry(), createHash("sha256").update(socket).digest("hex") + ".json"); }
-/** `sidecar`: whether this bridge can run the PTY sidecar; the PC list reads its terminal lens from the herdr told here. */
 export async function bridgeIdentity(sidecar = sidecarAvailable()): Promise<BridgeIdentity> {
   const socket = socketPath();
   let stat;
   try { stat = statSync(socket); } catch (error) {
-    // A herdr that is not running leaves no socket (on Windows, no marker). Said by code and
-    // without the path: the server that asked shows this to whoever is adding the PC.
     if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new HerdrError("socket_missing", "herdr's socket is missing; herdr is not running for this session");
     throw error;
   }
@@ -61,7 +57,6 @@ export function descriptorLive(descriptor: Pick<BridgeDescriptor, "pid" | "birth
   return !ownerGone(descriptor);
 }
 
-/** One reading of the descriptor file; equal readings mean nobody replaced it in between. */
 function readDescriptor(path: string): { id: string; text: string } | null {
   try {
     const stat = statSync(path);
@@ -70,20 +65,13 @@ function readDescriptor(path: string): { id: string; text: string } | null {
 }
 function liveIn(reading: { text: string } | null): boolean {
   if (!reading) return false;
-  try { return descriptorLive(JSON.parse(reading.text) as BridgeDescriptor); } catch { return false; /* unreadable descriptor: replace it */ }
+  try { return descriptorLive(JSON.parse(reading.text) as BridgeDescriptor); } catch { return false; }
 }
 
-/**
- * `registered` says whether this server's descriptor was written: it is not while another live
- * bridge holds the descriptor, when the descriptor changed while this one started, or when its
- * guard cannot be taken. `options.path` places the descriptor elsewhere and `options.sampled` runs
- * between reading the old descriptor and taking the guard; both are test seams.
- */
 export function registerBridge(port: number, token = randomBytes(32).toString("hex"), options: { path?: string; sampled?(): void } = {}): { token: string; registered: boolean; close(): void } {
   const path = options.path ?? descriptorPath();
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const unregistered = { token, registered: false, close() {} };
-  // Registration never overwrites a live bridge. Its credential remains reusable.
   const seen = readDescriptor(path);
   if (liveIn(seen)) return unregistered;
   options.sampled?.();
@@ -91,7 +79,6 @@ export function registerBridge(port: number, token = randomBytes(32).toString("h
   try {
     const registered = withOwnerGuard(path, () => {
       const now = readDescriptor(path);
-      // another bridge registered while this one started: it is the registered one
       if (now?.id !== seen?.id || now?.text !== seen?.text || liveIn(now)) return false;
       const tmp = `${path}.${process.pid}.tmp`;
       writeFileSync(tmp, JSON.stringify({ managed_remote: process.env["OVIS_REMOTE"] === "1", port, token, pid: process.pid, generation: record.generation, ...(record.birth ? { birth: record.birth } : {}), socket_path: socketPath(), bridge_protocol: BRIDGE_PROTOCOL, bundle_version: REMOTE_BUNDLE_VERSION } satisfies BridgeDescriptor), { mode: 0o600 });
@@ -101,10 +88,7 @@ export function registerBridge(port: number, token = randomBytes(32).toString("h
     });
     if (!registered) return unregistered;
   } catch (error) {
-    // a guard that could not be released (OwnerGuardReleaseFailed) fails the start: this process
-    // must not keep serving on a guard it may still hold
     if (!(error instanceof OwnerGuardUnavailable)) throw error;
-    // fails closed: this server runs unregistered and the descriptor is left as it was
     console.error(`This bridge was not registered (descriptor ${path}): ${error.message}`);
     return unregistered;
   }
@@ -116,7 +100,7 @@ export function registerBridge(port: number, token = randomBytes(32).toString("h
         withOwnerGuard(path, () => {
           let current: Partial<BridgeDescriptor> | null;
           try { current = JSON.parse(readFileSync(path, "utf8")) as Partial<BridgeDescriptor> | null; }
-          catch { return; /* already gone or unreadable: nothing of ours to remove */ }
+          catch { return; }
           if (current?.pid === process.pid && current.generation === record.generation) unlinkSync(path);
         });
       } catch (error) {
@@ -126,26 +110,14 @@ export function registerBridge(port: number, token = randomBytes(32).toString("h
   };
 }
 
-/**
- * The address a loopback relay passes connections to for a server bound to `hostname`, or null when
- * it needs none (127.0.0.1 or a wildcard already answers on 127.0.0.1; 127.0.0.2 does not) or gets
- * none: a host name is not relayed, since by the next connection it may resolve to another machine
- * and take the bridge token there. Such a server gets the app's message to set HOST=127.0.0.1.
- */
 export function relayTarget(hostname: string): string | null {
   const name = hostname.trim().toLowerCase().replace(/^\[(.*)\]$/, "$1");
   if (name === "127.0.0.1" || name === "0.0.0.0" || name === "::" || isIP(name) === 0) return null;
   return name;
 }
 
-/**
- * How far a client may get ahead of a server that is not reading before the relay cuts both off: the
- * largest request body the server reads (a picture at the attachment limit), twice over.
- */
 export const RELAY_CLIENT_AHEAD_BYTES = 2 * MAX_IMAGE_BODY_BYTES;
-/** `queue`: what this socket has not taken yet, `queued` bytes; `ending`: the other side closed, so this one ends once its queue is sent */
 interface Relayed { peer?: Socket<Relayed>; queue: Uint8Array[]; queued: number; closed?: boolean; ending?: boolean }
-/** writes `chunk` after what the socket has not taken yet (`drain` sends the rest); the bytes it holds now */
 function send(socket: Socket<Relayed>, chunk: Uint8Array): number {
   if (!socket.data.queue.length) {
     const written = Math.max(socket.write(chunk), 0);
@@ -167,7 +139,6 @@ function drain(socket: Socket<Relayed>): void {
   if (socket.data.ending) socket.end();
   else socket.data.peer?.resume();
 }
-/** ends `socket` after what it still has to send */
 function endAfterQueue(socket: Socket<Relayed> | undefined): void {
   if (!socket) return;
   socket.data.ending = true;
@@ -189,7 +160,6 @@ export function loopbackRelay(target: string, port: number): { port: number; sto
   const listener = Bun.listen<Relayed>({ hostname: "127.0.0.1", port: 0, socket: {
     open(client) {
       client.data = { queue: [], queued: 0 };
-      // read nothing from the client until the server's side is there to take it
       client.pause();
       void Bun.connect<Relayed>({ hostname: target, port, data: { queue: [], queued: 0 }, socket: {
         open(peer) {
@@ -209,11 +179,8 @@ export function loopbackRelay(target: string, port: number): { port: number; sto
       if (peer && send(peer, chunk) > RELAY_CLIENT_AHEAD_BYTES) { client.terminate(); peer.terminate(); }
     },
     drain,
-    // nothing a departed client sent still matters, and a server that reads nothing would hold the
-    // queue forever: its side goes at once (a server's own close still lets the client read the rest)
     close(client) { client.data.closed = true; client.data.peer?.terminate(); },
     error(client) { client.data.closed = true; client.data.peer?.terminate(); },
   } });
-  // stopping closes every client, and each client's close takes its server's side with it
   return { port: listener.port, stop: () => listener.stop(true) };
 }
