@@ -2764,6 +2764,9 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
     // A scroll or a failed read leaves the name unknown rather than one from an older frame, and is
     // still marked screen so the next draw can fill it. Enrich the response, never the shared page.
     const screen = await screenMetadata("agy-transcript");
+    // The screen read waits on herdr. A pane closed or bound to another session meanwhile has not
+    // this conversation, and not a model read from the screen it shows now.
+    if (!live() || rebound(paneId, transcript)) throw new ConversationUnavailable("no_session_id");
     return {
       ...answer,
       screen: true,

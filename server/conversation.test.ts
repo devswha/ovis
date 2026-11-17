@@ -4137,6 +4137,42 @@ describe("Agy native ledger through shared paging", () => {
       expect(scrolled.metadata?.reasoning_effort ?? null).toBeNull();
     } finally { snapshot.mockRestore(); store.mockRestore(); rpc.mockRestore(); read.mockRestore(); }
   });
+  it("refuses a conversation whose pane was forgotten or rebound while its status row was read", async () => {
+    const session = "00000000-0000-4000-8000-000000000001";
+    add(0, "USER_INPUT", "one");
+    const pane = { pane_id: "agy-model-closed", cwd: root, agent: "agy", agent_status: "idle" } as HerdrPane;
+    const footer = " ? for shortcuts   Gemini 3.8 Flash \u00b7 high\n";
+    const other = join(root, "other.jsonl");
+    writeFileSync(other, row(0, "USER_INPUT", "other session"));
+    const snapshot = spyOn(herdr, "sessionSnapshot").mockImplementation(async () => ({ panes: [pane], agents: [] }) as unknown as SessionSnapshot);
+    const store = spyOn(agyStore, "resolveAgyStore").mockResolvedValue({ root, session, path, pid: 2, started: "test" });
+    const rpc = spyOn(herdr, "herdrRpc").mockImplementation(async (method: string) => (method === "pane.get"
+      ? { pane: { ...pane, scroll: { offset_from_bottom: 0, max_offset_from_bottom: 10, viewport_rows: 40 } } }
+      : { process_info: { foreground_processes: [] } }) as never);
+    let during: "show" | "forget" | "rebind" = "show";
+    const read = spyOn(herdr, "paneRead").mockImplementation(async () => {
+      if (during === "forget") forgetPaneTranscriptState(pane.pane_id);
+      if (during === "rebind") {
+        store.mockResolvedValue({ root, session: "other", path: other, pid: 3, started: "other" });
+        await paneTranscript(pane.pane_id);
+      }
+      return { text: footer } as never;
+    });
+    const refused = async () => {
+      const error = await paneConversation(pane.pane_id).catch((caught: unknown) => caught);
+      expect(error).toMatchObject({ name: "ConversationUnavailable", message: "no_session_id" });
+      expect(JSON.stringify(error)).not.toContain("Gemini 3.8 Flash");
+    };
+    try {
+      expect((await paneConversation(pane.pane_id)).metadata).toMatchObject({ model: "Gemini 3.8 Flash", reasoning_effort: "high" });
+      during = "forget";
+      await refused();
+      forgetTranscriptState();
+      store.mockResolvedValue({ root, session, path, pid: 2, started: "test" });
+      during = "rebind";
+      await refused();
+    } finally { snapshot.mockRestore(); store.mockRestore(); rpc.mockRestore(); read.mockRestore(); }
+  });
   it("retries a transient mid-turn catalog race and answers 503 ConversationReadPending instead of dropping chat", async () => {
     const session = "00000000-0000-4000-8000-000000000001";
     add(0, "USER_INPUT", "one");
