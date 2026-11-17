@@ -18,6 +18,10 @@ import { StatusDot, type StatusDotState } from "./StatusDot.tsx";
 
 export const PROVIDER_NAMES: Record<AccountProvider, string> = { github: "GitHub", google: "Google", apple: "Apple" };
 
+/**
+ * The providers' own marks, as their brand rules ask for a sign-in button: GitHub's and Apple's in
+ * one colour (currentColor), Google's "G" always in its four colours, never recoloured.
+ */
 export function ProviderMark({ provider }: { readonly provider: AccountProvider }) {
   if (provider === "google") {
     return (

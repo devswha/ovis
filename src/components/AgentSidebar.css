@@ -254,6 +254,9 @@
 
 .agent-item.is-selected { --row-fill: var(--side-selected); background: var(--side-selected); }
 
+/* as a workspace row's in forced colors (Sidebar.css): a Highlight leading bar instead of the erased fill,
+   drawn inside the row, since the list scrolls and would clip anything pulled into its edge; beside the focus
+   ring, which the row's button draws over its leading edge, rather than under it */
 @media (forced-colors: active) {
   .agent-item.is-selected::before {
     position: absolute;

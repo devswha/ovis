@@ -49,6 +49,8 @@ export function afterSettled(memory: GreetingMemory, typed: boolean, history: st
   return memory.pending === pending && memory.sent === sent ? memory : { ...memory, sent, pending };
 }
 
+// Held outside any component: PaneTerminal is mounted again for each PC (App.tsx), and a look at
+// another PC's pane must not bring the greeting back. Keyed by paneStorageId(machineId, paneId).
 const remembered = new Map<string, GreetingMemory>();
 
 export function greetingMemory(owner: string): GreetingMemory {

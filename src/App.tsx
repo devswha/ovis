@@ -516,6 +516,8 @@ export function App() {
     return { machineId, workspace, cwd: workspace.worktree?.checkout_path ?? inFront?.cwd ?? null, agent: inFront?.agent ?? null, panes };
   };
 
+  // a pane hidden under the mode's list is not closed, typed into, split or zoomed by a key: the shortcuts listen on the window, past its inert slot
+  // nor is an inbox mode thread: the mode's shell has no tab row, split or pane menu to close from
   const closeOffered = selectedPane !== null && auth?.role !== "watch" && !guideShown && !inbox.shown && !inMode && !paneLocked(selectedPane.pane_id);
   const tabCloseOffered = selectedPane !== null && tabStripMounted && auth?.role !== "watch" && !guideShown && !inbox.shown && !inMode;
   const actions = useMemo<AppActions>(
@@ -730,6 +732,9 @@ export function App() {
     return keys.length === 0 ? label : `${label} (${keys.join("+")})`;
   };
   const isSheetWidth = useMediaQuery(SHEET_QUERY);
+  // a phone's open drawer is a dialog over the pane (G-003): Tab stays in it, the pane column is inert under it, Escape
+  // closes it and the focus goes back to the toggle that opened it (lib/headerSessions.ts useDrawerDialog)
+  // only once the shell is drawn: a drawer a link opens behind the access gate takes its focus when it mounts
   const drawerModal = locked === false && drawerOpen && !wideScreen;
   const { ref: drawerRef } = useDrawerDialog(drawerModal, setDrawerOpen, [peekSidebarRef]);
   usePhoneSheetBack(() => setDrawerOpen(false), drawerModal, true);
@@ -1346,6 +1351,7 @@ export function App() {
           }
           openFile({ path, paneId: diffViewing.paneId, machineId: diffViewing.machineId }, docked);
         }} keyboardActive={!settingsOpen && (viewing === null || fileDocked)} note={(() => {
+          // only the diff's own pane on its own PC takes its notes, never the one selected now
           const machine = machines.find((item) => item.id === diffViewing.machineId);
           const block = noteBlock({ paneId: diffViewing.paneId, pane: machine?.snapshot?.panes.find((pane) => pane.pane_id === diffViewing.paneId), watching: auth?.role === "watch", observing: diffPaneObserving === "watching", mounted: diffPaneObserving !== "unknown", reachable: machine?.state === "connected" });
           return { machine: machine?.name ?? diffViewing.machineId, blocked: block === null ? null : noteBlockWord(t, block) };

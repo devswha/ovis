@@ -80,6 +80,7 @@ export interface FontWidths {
 
 const PROBE_TEXT = "mmmmmmmmmmlli1WW가나다";
 const PROBE_SIZE = "32px";
+// a monospaced face can match monospace's Latin to the pixel, never serif's as well
 const PROBE_FALLBACKS = ["monospace", "serif"] as const;
 const PROBE_TOLERANCE_PX = 0.5;
 const GENERIC_FAMILIES = new Set(["monospace", "serif", "sans-serif", "cursive", "fantasy", "system-ui", "ui-monospace", "ui-serif", "ui-sans-serif", "ui-rounded", "math", "emoji", "fangsong"]);
@@ -189,6 +190,14 @@ export function chatFontStack(family: string): string | null {
 // Latin and Hangul, so a font split by unicode-range loads the faces the grid measures and shows
 const FONT_LOAD_SAMPLE = "Mg가";
 
+/**
+ * Resolves once the faces of `stack` are loaded, or failed, or the timeout passed: never rejects,
+ * since a font that cannot load falls back like a missing one. An installed font has no face to
+ * load and resolves at once. The bundled Hangul face is not waited for: it has no Latin, so it never
+ * sizes the grid, and fetching it here would fetch it on a device whose own Korean font draws the
+ * Hangul ahead of it, and hold the new font back until it came. It loads when a pane prints Korean
+ * that reaches it, and lib/terminalGlyphs.ts measures again then.
+ */
 export async function loadFontStack(stack: string, sizePx: number, timeoutMs = FONT_LOAD_TIMEOUT_MS): Promise<void> {
   const fonts = typeof document === "undefined" ? undefined : document.fonts;
   if (!fonts || typeof fonts.load !== "function") return;

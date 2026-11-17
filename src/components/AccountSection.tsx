@@ -302,6 +302,11 @@ export function AddThisPc({ relayAbove = true, service, signedInHere, onListed }
     };
     let relisting: ReturnType<typeof setTimeout> | null = null;
     const due = (): number => Math.min(RELIST_MS, Math.max(0, (mark?.listedAt ?? Date.now()) + RELIST_MS - Date.now()));
+    /**
+     * Lists the PC anew when its entry is about to leave the account's devices (which also opens the window),
+     * `RELIST_MS` after it was last listed; a listing that failed is tried again as soon as the window is.
+     * Also under a hidden page, unlike the reopening: the entry would leave the account's devices otherwise.
+     */
     const relist = (): void => {
       relisting = null;
       if (expired()) return;

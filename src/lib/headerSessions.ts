@@ -112,6 +112,16 @@ const drawerHeaderStops = (): HTMLElement[] => [...document.querySelectorAll<HTM
 
 const drawerReturnButton = (): HTMLElement | null => document.querySelector<HTMLElement>(".app-header .drawer-toggle");
 
+/**
+ * A phone's open drawer is a dialog over the pane (App.tsx gives it the role): Tab goes round its own controls
+ * and the header's toggle drawn over it (its top row), the pane column is inert under it, and the focus
+ * goes back to the header toggle that opened it when it closes. It opens with the focus on its first control
+ * that takes no typing: the filter's field would raise the keyboard on every open. Only a header control takes
+ * the focus back: a terminal the drawer was swiped open over would raise the keyboard; a focus left in the
+ * hidden drawer (or nowhere) goes to the toggle. Escape puts it away in the capture phase, so a terminal that kept the focus never receives it;
+ * a dialog, sheet or menu over the drawer, an IME composition, a search field with words in it (the sidebar's
+ * filter clears them first) and a field that keeps its own Escape (data-own-escape) go first.
+ */
 export function useDrawerDialog(open: boolean, setOpen: (open: boolean) => void, surfaceRefs: readonly MutableRefObject<HTMLElement | null>[]): { ref: (node: HTMLElement | null) => void } {
   const opener = useRef<HTMLElement | null>(null);
   const escaped = useRef(false);

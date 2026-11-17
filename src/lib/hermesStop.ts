@@ -27,6 +27,11 @@ export function hermesCtrlCTooSoon(lastCtrlCAt: number | null, now: number): boo
   return lastCtrlCAt !== null && now - lastCtrlCAt < HERMES_CTRL_C_WINDOW_MS;
 }
 
+/**
+ * Grok's cancel is Ctrl+C, which its own key row names while a turn runs (`Shift+Tab:mode  │  Ctrl+c:cancel  │ …`,
+ * Grok 1.0.77); Escape is its scrollback key, and an idle Grok's key row has no cancel. Only the screen's last
+ * written row is read, so a quoted hint above it never counts.
+ */
 export function grokCancellable(rows: readonly string[]): boolean {
   const last = [...rows].reverse().find((row) => row.trim() !== "");
   return last !== undefined && /(?:^|│)\s*Ctrl\+c:cancel\s*(?:│|$)/.test(last.trim());

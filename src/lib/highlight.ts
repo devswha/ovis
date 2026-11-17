@@ -187,6 +187,11 @@ export function extendLines(lines: Lines, tail: string): Lines {
 
 let lastHighlight: { source: string; language: string; lines: Lines } | null = null;
 
+/**
+ * `source` (normalized) highlighted at once, on the calling thread. Never throws: a highlighter
+ * error gives plain lines. The last call is remembered, so a block mounted anew with the same code
+ * is not tokenized again. Only for short code (`SYNC_HIGHLIGHT_LIMIT`) or in a worker.
+ */
 export function highlightNow(source: string, language: string): Lines {
   if (lastHighlight !== null && lastHighlight.source === source && lastHighlight.language === language) return lastHighlight.lines;
   let lines: Lines;
