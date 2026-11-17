@@ -157,7 +157,8 @@ export function flaggedJobs(answer: SuiteAnswer): Map<number, boolean> {
 /**
  * The flaky warnings of these runs' jobs, 20 check suites a GraphQL query: one REST request per passed job would spend
  * most of the Actions token's 1,000 REST requests an hour on a day's scan. A job missing from the map (a suite past 100
- * check runs, or a query a server error kept from us) has its annotations read through REST as before.
+ * check runs, or a query a server error or GraphQL's rate limit kept from us) has its annotations read through REST as
+ * before.
  */
 async function flaggedBySuite(runs: readonly Run[]): Promise<Map<number, boolean>> {
   const flagged = new Map<number, boolean>();
@@ -166,7 +167,7 @@ async function flaggedBySuite(runs: readonly Run[]): Promise<Map<number, boolean
     let text: string;
     try { text = await gh(["api", "graphql", "-f", `query=${SUITE_QUERY}`, ...ids]); }
     catch (error) {
-      if (error instanceof GhError && /HTTP 5\d\d\b/.test(error.message)) continue;
+      if (error instanceof GhError && /HTTP 5\d\d\b|rate limit/i.test(error.message)) continue;
       throw error;
     }
     for (const [job, flaky] of flaggedJobs(JSON.parse(text))) flagged.set(job, flaky);
