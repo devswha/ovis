@@ -27,6 +27,16 @@ final class SavedImage {
         return type != null && type.matches("[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}");
     }
 
+    /**
+     * The type Downloads files `name` under: the one its extension stands for in `byExtension`
+     * (Android's MimeTypeMap), so Downloads keeps the name as given, or application/octet-stream.
+     */
+    static String typeForName(String name, java.util.function.Function<String, String> byExtension) {
+        int dot = name.lastIndexOf('.');
+        String mapped = dot > 0 && dot < name.length() - 1 ? byExtension.apply(name.substring(dot + 1).toLowerCase(java.util.Locale.ROOT)) : null;
+        return isFileType(mapped) ? mapped : "application/octet-stream";
+    }
+
     static byte[] decode(String data) {
         if (data == null || data.isEmpty() || data.length() / 4 * 3 > MAX_BYTES + 3) return null;
         try {

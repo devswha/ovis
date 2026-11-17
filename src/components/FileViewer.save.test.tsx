@@ -142,3 +142,12 @@ test("in a home-screen app, Download hands the file, read before the tap, to the
   expect(reads.length).toBe(before);
   expect(await Promise.all(shared.map(async (file) => [file.name, file.type, await file.text()]))).toEqual([["notes.md", "text/markdown", TEXT]]);
 });
+
+test("in the Android app, an empty file says it could not be saved, not that it is too large", async () => {
+  const calls = androidApp(["saveImage", "saveFile"]);
+  await open({ ...NOTES, size: 0 });
+  await download();
+  expect(shown()).toContain("Couldn't save the file.");
+  expect(shown()).not.toContain("Too large");
+  expect(calls).toEqual([]);
+});

@@ -8,6 +8,7 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.SystemClock;
 import android.provider.MediaStore;
+import android.webkit.MimeTypeMap;
 import androidx.core.content.FileProvider;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
@@ -20,6 +21,7 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.UnaryOperator;
 
 /**
  * Download in the chat's image viewer and the file viewer (src/lib/saveImage.ts). The WebView has no download handler
@@ -47,21 +49,22 @@ public class SaveImagePlugin extends Plugin {
             call.reject("Only a picture can be saved.");
             return;
         }
-        save(call, type, "image");
+        save(call, name -> type, "image");
     }
 
     /**
      * Download in the file viewer (src/components/FileViewer.tsx): any file the page read, of any
-     * type, as Chrome would download it. A type that is no well-formed MIME type is saved as
-     * application/octet-stream, so Downloads keeps the name as given.
+     * type, as Chrome would download it. Its type is the one its name's extension stands for (or
+     * application/octet-stream), not the PC's: Downloads appends the extension of a type that does
+     * not match the name, so `notes.md` sent as text/plain would land as `notes.md.txt`.
      */
     @PluginMethod
     public void saveFile(PluginCall call) {
-        String type = call.getString("type");
-        save(call, SavedImage.isFileType(type) ? type : "application/octet-stream", "file");
+        MimeTypeMap types = MimeTypeMap.getSingleton();
+        save(call, name -> SavedImage.typeForName(name, types::getMimeTypeFromExtension), "file");
     }
 
-    private void save(PluginCall call, String type, String fallbackName) {
+    private void save(PluginCall call, UnaryOperator<String> typeOf, String fallbackName) {
         if (!saving.compareAndSet(false, true)) {
             call.reject("Another file is being saved.");
             return;
@@ -78,6 +81,7 @@ public class SaveImagePlugin extends Plugin {
                 return;
             }
             String name = SavedImage.fileName(call.getString("name"), fallbackName);
+            String type = typeOf.apply(name);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 toDownloads(name, type, bytes);
                 JSObject result = new JSObject();
