@@ -1,3 +1,4 @@
+/** Dictated text is only inserted at the caret; nothing here ever sends. */
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { Check, Mic, Square, X } from "lucide-react";
 
@@ -144,6 +145,7 @@ export function useDictation(options: DictationOptions): Dictation {
     const end = (): void => {
       open.current = false;
       composing.current = false;
+      // after the input event that commits the syllable, so read() already holds it
       setTimeout(() => {
         if (composing.current) return;
         const waiting = held.current.splice(0);
@@ -220,15 +222,18 @@ export function MicButton({ dictation, className = "", disabled = false }: { dic
   const { voice, connected, press } = dictation;
   const recording = voice.state === "starting" || voice.state === "recording";
   const reason = voice.unavailableReason ? errorNote(t, voice.unavailableReason) : null;
+  // a touch cannot hold the browser's recognition (below), so its label promises no hold
   const label = recording ? t("Insert dictation") : voice.engine === "browser" ? t("Dictate") : t("Dictate (hold)");
   // a pointer already acted on pointerdown, so the click that follows its release is skipped;
   // a touch tap's click has detail 0 like a keyboard's, so detail cannot tell them apart
   const pointerUpAt = useRef(-Infinity);
+  // only the pointer that pressed may release a hold: another one's pointerup (a right-click) is not it
   const holding = useRef<number | null>(null);
   // iOS lets browser speech start only from a user activation, which a touch's pointerdown is not
   // (#2343): there the tap's click starts or finishes the take, as the take stood at its pointerdown,
   // so a take that ended on its own meanwhile is not started again; a touch hold is not push-to-talk
   const tap = useRef<"start" | "finish" | null>(null);
+  // a touch hold ends with no click: its gesture is stale by the next click (Enter or Space)
   const tapUpAt = useRef(-Infinity);
   return (
     <span className={`voice-mic-wrap ${className}`} data-state={voice.state}>
@@ -242,6 +247,7 @@ export function MicButton({ dictation, className = "", disabled = false }: { dic
         disabled={disabled || !voice.available || !connected}
         onPointerDown={(event) => {
           if (event.button !== 0) return;
+          // focus and the soft keyboard stay where they are
           event.preventDefault();
           if (event.pointerType !== "mouse" && voice.engine === "browser") {
             tap.current = recording ? "finish" : "start";
@@ -283,6 +289,10 @@ function clock(totalSeconds: number): string {
   return `${Math.floor(totalSeconds / 60)}:${String(totalSeconds % 60).padStart(2, "0")}`;
 }
 
+/**
+ * Always mounted, so CSS transitions carry both ways (a cancel mid-entrance reverses) and the
+ * live region exists before it speaks.
+ */
 export function VoiceRecordingPill({ dictation, align }: { dictation: Dictation; align: "start" | "end" }) {
   const t = useT();
   const { voice, partial } = dictation;

@@ -37,6 +37,7 @@ describe("the alerts notice", () => {
     expect(render()).toContain("aria-label=\"Dismiss\"");
     await runPushAction("repair", async () => ({ result: "refused" }), () => true);
     expect(render()).toContain("This device would not make a push subscription.");
+    // in Brave, the setting that turns its push service on
     Object.defineProperty(globalThis.navigator, "brave", { configurable: true, value: {} });
     expect(render()).toContain("Turn on Use Google services for push messaging in Brave&#x27;s privacy settings");
     await runPushAction("repair", async () => ({ result: "no-worker" }), () => true);

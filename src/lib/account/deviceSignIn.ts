@@ -22,6 +22,7 @@ const DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
 /** RFC 8628 section 3.5: each slow_down adds five seconds to the interval. */
 const SLOW_DOWN_MS = 5_000;
 export const GITHUB_DEVICE_PAGE = "https://github.com/login/device";
+/** Each provider's own device page: the only address the page links to for typing the code. */
 export const DEVICE_PAGES: Readonly<Record<DeviceProvider, string>> = { github: GITHUB_DEVICE_PAGE, google: "https://www.google.com/device" };
 
 export type DeviceSignInProvider = DeviceProvider | "ovis";
@@ -31,8 +32,10 @@ export interface DeviceSignIn {
   readonly userCode: string;
   /** the provider's device page, or the service's link page, and never another address */
   readonly verificationUri: string;
+  /** the link page with this code filled in, for a QR code; null for a provider's page, or a link carrying another code */
   readonly verificationUriComplete: string | null;
   readonly expiresAt: number;
+  /** Polls until GitHub answers; the session is kept only if `signal` was not aborted by then. */
   finish(signal: AbortSignal): Promise<AccountSession>;
 }
 
@@ -44,6 +47,7 @@ export interface DeviceSignInOptions {
   readonly wait?: (ms: number, signal: AbortSignal) => Promise<void>;
   readonly lock?: AccountLock;
   readonly provider?: DeviceSignInProvider;
+  /** what this device is, for the link page's confirmation (docs/account.md, "Who is asking"); a provider's own device page takes none */
   readonly requester?: { readonly label: string; readonly os: AccountOs | null };
 }
 
@@ -57,6 +61,7 @@ function waitFor(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
+/** The provider's own device page, parsed: a service that names another address is not followed there. */
 function devicePage(value: unknown, provider: DeviceProvider): string {
   const own = new URL(DEVICE_PAGES[provider]);
   if (typeof value !== "string") return own.href;
@@ -116,6 +121,7 @@ export async function startDeviceSignIn(options: DeviceSignInOptions): Promise<D
   let verificationUri: string;
   let verificationUriComplete: string | null = null;
   if (provider === "ovis") {
+    // the link page is the service's own, exactly: an answer naming any other address is not followed
     const page = new URL("/link", options.service);
     if (body["verification_uri"] !== page.href) throw new SignInError("unsupported", "The account service named another sign-in page");
     verificationUri = page.href;
@@ -136,6 +142,7 @@ export async function startDeviceSignIn(options: DeviceSignInOptions): Promise<D
       let interval = firstInterval;
       let pause = interval;
       for (;;) {
+        // never past the code's lifetime, however long a 429 asked to wait
         await wait(Math.min(pause, Math.max(0, expiresAt - now())), signal);
         if (now() >= expiresAt) throw new SignInError("expired", "The code ran out");
         pause = interval;
@@ -151,10 +158,12 @@ export async function startDeviceSignIn(options: DeviceSignInOptions): Promise<D
         }
         if (answer.ok) {
           const session = sessionOf(await answer.json(), options.service, now());
+          // under the lock sign-out and refresh take, and never once this sign-in was cancelled
           const kept = await lock(async () => {
             if (signal.aborted) return false;
             await options.store.set("session", session);
             if (!signal.aborted) return true;
+            // cancelled while it was being written: take back exactly this session, never a newer one
             await options.store.update("session", (current) => current?.refresh_token === session.refresh_token ? undefined : current);
             return false;
           });
@@ -179,6 +188,10 @@ export async function startDeviceSignIn(options: DeviceSignInOptions): Promise<D
   };
 }
 
+/**
+ * An answer the client does not take (another page, no S256 binding, a redirect) is a failure, not a
+ * reason to fall back, so a bad answer cannot push the sign-in off the link page.
+ */
 export async function startLinkPageSignIn(options: DeviceSignInOptions, fallback: DeviceProvider): Promise<DeviceSignIn> {
   try {
     return await startDeviceSignIn({ ...options, provider: "ovis" });

@@ -9,6 +9,14 @@ import { useT } from "../lib/i18n.ts";
 import { nativeModalOver } from "../lib/useFocusTrap.ts";
 import { SettingsGroup, SettingsRow, Toggle } from "./SettingsControls.tsx";
 
+/**
+ * Showing it is what lets the server send, so it is recorded once it has been painted in a visible
+ * tab, wholly in view, with no dialog over it (and never while `enabled` is false, when it is not
+ * drawn), and the server still waits a while before the first event so the switch behind What is
+ * sent stops it.
+ */
+
+/** the counting generation the page heard, sent with its settings: the server keeps none told from before an off it did not hear */
 const heardGeneration = (status: TelemetryStatus | null | undefined): { generation?: number } =>
   status?.counts_generation === undefined ? {} : { generation: status.counts_generation };
 export function TelemetryNotice({ enabled, onOpen, inline = false }: { enabled: boolean; onOpen: () => void; inline?: boolean }) {
@@ -17,6 +25,8 @@ export function TelemetryNotice({ enabled, onOpen, inline = false }: { enabled: 
   const [closed, setClosed] = useState(false);
   const [turningOff, setTurningOff] = useState(false);
   const [offFailed, setOffFailed] = useState(false);
+  // set from the tap on Turn off: an answer to an earlier request that still says on is not taken,
+  // so it cannot tell the snapshot again behind the off
   const turnedOff = useRef(false);
   // The server keeps this browser's latest safe settings snapshot for its next count. The snapshot
   // contains no raw user-entered values or account identifiers.
@@ -26,9 +36,13 @@ export function TelemetryNotice({ enabled, onOpen, inline = false }: { enabled: 
   const settingsSnapshotRef = useRef(settingsSnapshot);
   settingsSnapshotRef.current = settingsSnapshot;
   const submittedSettingsSignature = submittedNotice;
+  // the server's word on the switch, the environment and the notice: the snapshot is told only where
+  // an event may go out, so an install that is off, blocked or has not seen the notice keeps its
+  // settings to itself.
   const [status, setStatus] = useState<TelemetryStatus | null>(null);
   const statusRef = useRef(status);
   statusRef.current = status;
+  // Turn off in any copy on this page is every copy's: the others hide and tell the server nothing more
   const [, offHeard] = useState(0);
   useEffect(() => {
     const heard = (): void => offHeard((count) => count + 1);
@@ -53,12 +67,15 @@ export function TelemetryNotice({ enabled, onOpen, inline = false }: { enabled: 
     }, (error: unknown) => console.error("telemetry status", error));
     return () => { live = false; };
   }, [enabled]);
+  // the line as drawn: it is recorded as seen only while it is in view and nothing modal covers it
   const [line, setLine] = useState<HTMLElement | null>(null);
   useEffect(() => {
     if (!shown || !enabled || line === null) return;
     let recorded = false;
     let failures = 0;
     let frame = 0;
+    // wholly inside the viewport and every scrolling box around it (a guide's body scrolled past it is not);
+    // where the page cannot tell, as drawn
     let inView = typeof IntersectionObserver === "undefined";
     // two frames after the commit the line has been painted; a hidden tab paints nothing
     const afterPaint = () => {
@@ -100,6 +117,7 @@ export function TelemetryNotice({ enabled, onOpen, inline = false }: { enabled: 
     turnedOff.current = true;
     setTurningOff(true);
     setOffFailed(false);
+    // a refusal brings the line back, even after a close, and says so: the off is never taken for granted
     changeTelemetry({ enabled: false }).then((next) => {
       setStatus(next); setClosed(true);
       noticeOff.current = true;
@@ -128,6 +146,7 @@ export function TelemetryNotice({ enabled, onOpen, inline = false }: { enabled: 
 const submittedNotice: { current: string | null } = { current: null };
 const noticeShownHere = { current: false };
 const noticeRecorded = { current: false };
+/** Counts were turned off from a copy of the line on this page: every copy hides and sends no snapshot. */
 const noticeOff = { current: false, listeners: new Set<() => void>() };
 
 function coveredByModal(node: HTMLElement): boolean {
@@ -159,6 +178,8 @@ export function TelemetryControls() {
         setStatus(null);
         return;
       }
+      // off, blocked or before the notice: the switch and the preview show the server's state, and the
+      // snapshot stays in the browser
       if (!current.enabled || current.blocked_by_env || !current.notice_seen) {
         setStatus(current);
         return;
@@ -184,6 +205,7 @@ export function TelemetryControls() {
     const request = ++statusRequest.current;
     setSaving(true);
     setError(null);
+    // turned on, the switch brings the snapshot the browser kept to itself while it was off
     changeTelemetry(enabled ? { enabled, settings: settingsSnapshotRef.current, ...heardGeneration(status) } : { enabled }).then(
       (next) => {
         if (request === statusRequest.current) setStatus(next);

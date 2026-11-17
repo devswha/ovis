@@ -7,6 +7,10 @@
 import { sameSignIn, type AccountService } from "./service.ts";
 import type { AccountSession, AccountStore } from "./store.ts";
 
+/**
+ * `session` is the sign-in the person deleted from, read when they asked: only that account is
+ * deleted, and a sign-in made meanwhile is neither deleted nor forgotten (SignedOutError).
+ */
 export async function deleteAccount(options: { service: AccountService; accountStore: AccountStore; session: AccountSession }): Promise<void> {
   await options.service.forSignIn(options.session).deleteAccount();
   // the sign-in, the key and the records were the deleted account's: a later sign-in gets a new key (a kept pairing
@@ -26,6 +30,10 @@ export function holdingSessionStore(store: AccountStore): AccountStore {
   return { ...store, set: (async (name, value) => { if (name !== "session") await store.set(name, value as never); }) as AccountStore["set"] };
 }
 
+/**
+ * Stores `again` in the place of `from`, in one update, only while `from` is the sign-in stored and `stillOn` (the
+ * delete it is for has not been called off), both asked inside that update; whether it did.
+ */
 export async function installSignInAgain(store: AccountStore, from: AccountSession, again: AccountSession, stillOn: () => boolean): Promise<boolean> {
   let installed = false;
   await store.update("session", (current) => {

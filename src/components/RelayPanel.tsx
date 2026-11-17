@@ -42,6 +42,10 @@ export function statusText(t: ReturnType<typeof useT>, status: RelayStatus): str
   }
 }
 
+/**
+ * In the app it opens as one more PC of the app's list (HerdrShell.open, labelled with the offer's
+ * name); in a browser this tab goes to the hosted shell, which pairs the phone and keeps its key there.
+ */
 export async function openOwnOffer(url: string): Promise<void> {
   if (hasNativePlugin("HerdrShell")) {
     const offer = decodeOffer(url);
@@ -117,11 +121,13 @@ export function RelayPairing({ phone = false, compact = false, qrOnly = false, o
   const again = () => setGeneration((value) => value + 1);
   const refused = useRef(onInAccount);
   refused.current = onInAccount;
+  // a six-digit code started anywhere else ends the typed code on the PC (server/relay/pair-code.ts): its words go too
   const [typedReset, setTypedReset] = useState(0);
   const [typedId, setTypedId] = useState<string | null>(null);
   const dropTyped = () => setTypedReset((value) => value + 1);
 
   useEffect(() => {
+    // Asked for together, a new six-digit code the offer starts ends the code being minted on the PC.
     if (compact && !qrOnly && generation === 0) return;
     let cancelled = false;
     const silent = quiet.current;
@@ -151,6 +157,7 @@ export function RelayPairing({ phone = false, compact = false, qrOnly = false, o
     return () => { cancelled = true; };
   }, [generation]);
 
+  // a window of this browser ended the code this QR code shows (they share the PC's one pending code): a new one
   useEffect(() => {
     if (!qrOnly || typeof BroadcastChannel === "undefined") return;
     const channel = new BroadcastChannel(QR_CODE_ENDED_CHANNEL);
@@ -203,6 +210,8 @@ export function RelayPairing({ phone = false, compact = false, qrOnly = false, o
     setState("minting");
     dropTyped();
     if (qrOnly) {
+      // the PC keeps this QR code's own code until it ends: ended here, the offer asked for next carries a new one.
+      // No code is started the way the Devices group starts one, which the PC would make on a PC in an account too
       try {
         const ended = shown.current;
         if (ended !== null && (await endPairing(ended)).cancelled) tellOtherWindowsQrCodeEnded(ended);
@@ -347,6 +356,8 @@ function CompactRelay({ qr, qrExpires, failure, reset, onMinted }: { qr: string 
   useEffect(() => {
     if (deadline === null) return;
     const ms = Date.parse(deadline) - Date.now();
+    // one that arrived already expired (the PC's clock and this one apart) says so and waits for Refresh,
+    // rather than asking again and again; one that ran out while shown is renewed
     if (ms <= 0) {
       if (code !== null) { setCode(null); setError(t("This code expired.")); }
       return;
@@ -362,10 +373,15 @@ function CompactRelay({ qr, qrExpires, failure, reset, onMinted }: { qr: string 
   );
 }
 
+/**
+ * It starts a new six-digit code, so the QR code above is asked for again (`onMinted`). The other
+ * device then shows this PC's ID to compare with the one below.
+ */
 function TypedCode({ reset, onMinted }: { reset: number; onMinted: (code: RelayCode) => void }) {
   const t = useT();
   const [code, setCode] = useState<RelayCode | null>(null);
   const request = useRef(0);
+  // one Show or Hide at a time: their requests could reach the PC out of order
   const [busy, setBusy] = useState(false);
   useEffect(() => { request.current++; setCode(null); }, [reset]);
   const [failure, setFailure] = useState<string | null>(null);
@@ -404,6 +420,7 @@ function TypedCode({ reset, onMinted }: { reset: number; onMinted: (code: RelayC
       await cancelRelayCode();
       if (mine === request.current) setCode(null);
     } catch (reason) {
+      // the code may still work on the relay: it stays on screen, with why it did not go
       if (mine === request.current) setFailure(failureText(reason));
     } finally { setBusy(false); }
   };
@@ -442,6 +459,7 @@ function CodelessLink() {
     const initiator = document.activeElement;
     try {
       const { url } = await requestRelayLink();
+      // where the browser refuses the clipboard (plain http on the LAN), the link stays on screen, selected once drawn
       if (await copyText(url)) { setLink(null); setNote({ ok: true, text: t("Copied. Open it on the phone within 10 minutes: both screens show six digits to compare, and you approve the phone here.") }); }
       else { setLink({ url, select: document.activeElement === initiator }); setNote(null); }
     } catch (reason) { setNote({ ok: false, text: failureText(reason) }); }

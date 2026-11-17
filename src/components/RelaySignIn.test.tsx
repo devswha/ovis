@@ -20,6 +20,7 @@ describe("the relay tab's Sign in", () => {
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
   let renderer: ReactTestRenderer | undefined;
   let fake: FakeAccountService;
+  /** what window.open answers: a tab, or null for a blocked popup */
   let popupBlocked: boolean;
   let opened: string[];
   let tab: FakeTab | null;
@@ -213,6 +214,7 @@ describe("the relay tab's Sign in", () => {
     const signedIn = Promise.withResolvers<void>();
     await mount(() => signedIn.resolve());
     await signIn();
+    // the tab opens in the click itself, so no popup blocker takes it
     expect(opened).toEqual(["about:blank"]);
     const page = await navigated;
     expect(page).toBe(`${SERVICE}/link?code=${userCode}`);

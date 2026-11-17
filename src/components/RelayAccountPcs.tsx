@@ -11,8 +11,10 @@ import { ApiError, checkAccountPcs, pairAccountPc, startAccountPc, type AccountP
 import { useT } from "../lib/i18n.ts";
 import { deviceOs } from "../lib/phone.ts";
 
+/** The account as this list uses it: its PCs that a device can pair with (key and relay from the directory), and the admission that vouches for this PC. */
 export interface AccountPcsSource {
   list(): Promise<readonly AccountPcEntry[] | null>;
+  /** says, under the sign-in the list was read with, that this PC's server waits at `serverId` with `key` */
   admit(serverId: string, label: string, key: string): Promise<void>;
 }
 
@@ -38,6 +40,11 @@ type Pairing = { server_id: string; digits: string | null; abort: AbortControlle
 
 const spaced = (digits: string): string => `${digits.slice(0, 3)} ${digits.slice(3)}`;
 
+/**
+ * One already in this app reads Connect; one that would pair reads Add, which has this PC's server pair with it
+ * through the relay once a member of the account approves it on another device (docs/account.md, "Adding a PC of
+ * your account"); an older or offline one says so and gets no button.
+ */
 export function RelayAccountPcs({ machines, onConnectMachine, source }: { machines: readonly Machine[]; onConnectMachine: (machine: Machine) => void; source?: AccountPcsSource }) {
   const t = useT();
   const account = useRef<AccountPcsSource | null>(null);
@@ -82,6 +89,7 @@ export function RelayAccountPcs({ machines, onConnectMachine, source }: { machin
     }
   }, [pcs, machines]);
   useEffect(() => () => { listed.current = { asked: new Set() }; }, []);
+  // closing the sheet cancels a comparison under way: that PC's server ends it, and nothing is kept
   const running = useRef<AbortController | null>(null);
   useEffect(() => () => running.current?.abort(), []);
 

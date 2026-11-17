@@ -8,6 +8,11 @@ import { replyComments, type ReplyComment } from "../lib/replyComments.ts";
 import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import "./ReplyComments.css";
 
+/**
+ * Where a selection running past a reply's last word into nothing more is read up to: a triple-click
+ * ends at the start of what follows the words (the copy row, a work block), a drag past the last
+ * word at the reply's end, over its copy row and time.
+ */
 function wordsEnd(range: Range, turn: Element): { range: Range; cut: string[] } | null {
   const words = [...turn.children].filter((child) => child.classList.contains("markdown") && range.intersectsNode(child)).at(-1);
   if (words === undefined || range.comparePoint(words, words.childNodes.length) !== 0) return null;
@@ -34,6 +39,7 @@ function wordsEnd(range: Range, turn: Element): { range: Range; cut: string[] } 
   return { range: trimmed, cut };
 }
 
+/** Drawn on the page: a copy of the selection leaves out what is not (`display: none`, hidden). */
 function drawn(element: Element | null): boolean {
   return element !== null && element.getClientRects().length > 0 && getComputedStyle(element).visibility === "visible";
 }
@@ -111,6 +117,7 @@ export function ReplyCommentAction({ scroller, storageKey, paneKey }: { scroller
   const [comment, setComment] = useState("");
   const pointer = useRef<{ x: number; y: number; touch: boolean } | null>(null);
   const dragging = useRef(false);
+  // a press on the action: a touch that clears the selection on its way down still comments on it
   const pressing = useRef(false);
   const quoteNote = useId();
   const formOpen = useRef(false);
@@ -192,6 +199,7 @@ export function ReplyCommentAction({ scroller, storageKey, paneKey }: { scroller
     quoteIntoComposer(paneKey, placed.quote);
   };
   const draft = useSyncExternalStore(composerDrafts.subscribe, () => paneKey === null ? "" : composerDrafts.read(composerDraftKey(paneKey)).text);
+  // a secret prompt stands in the composer's place (paneKey null): Comment alone, which waits for the next message
   const fits = offer !== null && paneKey !== null && quoteFits(draft, offer.quote);
   const updateComment = (value: string) => {
     setComment(value);
@@ -225,6 +233,7 @@ export function ReplyCommentAction({ scroller, storageKey, paneKey }: { scroller
   return <div className="reply-comment-layer" ref={layer}>
     {offer !== null && form === null && paneKey !== null && !fits && <p id={quoteNote} className={`selection-note${offer.top < (layer.current?.clientHeight ?? 0) / 2 ? " is-below" : ""}`} role="status">{t("Too long to quote: shorten the message or the selection.")}</p>}
     {offer !== null && form === null && <div className="selection-offer" role="group" aria-label={t("Selection")} style={{ left: offer.left, top: offer.top }}
+      // a mouse press keeps the selection; a touch's is read from the offer it showed
       onMouseDown={(event) => event.preventDefault()}
       onPointerDown={() => { pressing.current = true; }}
       onPointerCancel={() => { pressing.current = false; }}>

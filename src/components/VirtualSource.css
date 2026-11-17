@@ -1,3 +1,4 @@
+/* The host's line-height is measured once as the virtualizer's row estimate, so it is set in pixels here. */
 .virtual-source {
   flex: 1 1 auto;
   min-height: 0;

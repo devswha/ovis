@@ -276,6 +276,7 @@
   font-size: 0.87em;
 }
 
+/* a question in Codex's queue: the agent is not waiting on it, so the card says who answers what */
 .prompt-card-hint {
   color: var(--text-dim);
   font-size: var(--fs-xs);
@@ -359,6 +360,8 @@
   flex-direction: column;
 }
 
+/* the preview Claude draws for the option under its cursor (#1212), under that option and in line with
+   its label: kept as drawn, its own scroll both ways, so a mockup's columns never re-wrap */
 .prompt-card-option-preview {
   margin: 0 0 var(--space-1) calc(var(--space-3) + var(--space-5) + var(--space-2));
 }
@@ -419,6 +422,7 @@
   background: var(--bg-hover);
 }
 
+/* A device that may only watch sees them so too (is-unavailable): it cannot answer */
 .prompt-card-options[aria-busy="true"] .prompt-card-option,
 .prompt-card-options.is-unavailable .prompt-card-option {
   color: var(--text-dim);
@@ -502,6 +506,10 @@
   line-height: var(--lh-tight);
 }
 
+/* Its words are drawn from data-scope and the tag is aria-hidden, so the option's text and name
+   stay the agent's alone; a visually-hidden span beside the option carries the same words as text
+   for the option's aria-describedby (generated content on a hidden node reaches no accessibility
+   tree) (G-071) */
 .prompt-card-scope {
   margin-inline-start: var(--space-1);
   background: var(--bg-elevated);

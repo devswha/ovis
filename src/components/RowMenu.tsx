@@ -22,6 +22,7 @@ export interface RowMenuItem {
   danger?: boolean;
   current?: boolean;
   checked?: boolean;
+  /** shown with its state but not runnable here (a watching device and a shared switch): it keeps its place in the keyboard order, and a press on it leaves the menu open */
   disabled?: boolean;
   run: () => void;
   aside?: { label: string; icon: LucideIcon; run: () => void };
@@ -66,6 +67,8 @@ export function RowMenu({ anchor, point, restoreFocusTo, title, subtitle, alert,
   useSheetHistory(useMediaQuery(BACK_QUERY), onClose);
   const [place, setPlace] = useState<{ top: number; left: number; maxHeight: number } | null>(null);
   const placedAt = useRef<{ top: number; left: number } | null>(null);
+  // The press keeps the focus in the sheet: its blur would close it on the mousedown, and the mouseup
+  // after it would land on what lies behind
   const pressedScrim = useRef(false);
 
   useLayoutEffect(() => {

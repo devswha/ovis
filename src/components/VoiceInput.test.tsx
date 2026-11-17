@@ -159,6 +159,7 @@ describe("useDictation", () => {
     await act(async () => { renderer = create(<SettingsProvider><Field /></SettingsProvider>); });
     return {
       text: () => element.value,
+      /** what the browser raises: one keystroke of an IME is compositionupdate and input together */
       raise: (...types: Array<"compositionstart" | "compositionupdate" | "input" | "compositionend">) => { for (const type of types) element.dispatchEvent(new Event(type)); },
       say: (text: string, phase: VoiceText["phase"] = "raw") => { say({ text, phase, take: 1 }); },
       wait: (ms: number) => { jest.advanceTimersByTime(ms); },

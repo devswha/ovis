@@ -152,6 +152,7 @@ describe("mounted", () => {
       act(() => { jest.advanceTimersByTime(2_000); observeWaitingClock(key, new Date().toISOString(), 0, Date.now()); settleWaitingSends(key, [], Date.now(), true); });
       act(() => { visit.unmount(); });
       renderers.splice(renderers.indexOf(visit), 1);
+      // back five minutes later: the agent wrote the turn meanwhile, with no time (as Kiro does)
       jest.advanceTimersByTime(5 * 60_000);
       mount(chat());
       expect(currentWaitingSends(key).map((item) => item.unanswered)).toEqual([undefined]);

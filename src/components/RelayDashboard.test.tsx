@@ -427,6 +427,8 @@ describe("RelayDashboard frame and routes", () => {
     expect(detailsPanel.scrolledTo).toEqual([]);
     expect(scrolls).toEqual([]);
 
+    // when an unlisted pairing is forgotten and its row disappears (focus dropped to <body> as the dialog unmounted),
+    // focus moves to the next surviving row, else the previous surviving row, else the view heading when the last PC is gone
     const zed = pc("z".repeat(32), "Zed laptop", "paired", { listed: false, linked: false });
     const forgetSelect = async (id: string) => {
       await act(async () => { nameButton(id).props.onClick({ stopPropagation() {} }); });

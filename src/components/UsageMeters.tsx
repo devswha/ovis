@@ -88,6 +88,7 @@ function Provider({ usage, now, count, onLocalLogin, onFollow, watching }: { usa
         {t("Read from Claude's status line instead")}
       </button>}
       {statusline.error && <p className="usage-note is-problem" role="alert">{statusline.error}</p>}
+      {/* turned on here, the numbers come once Claude next draws its line: say so instead of leaving "expired" alone */}
       {statusline.state?.installed && usage.problem === "expired" && <p className="usage-note" role="status">{t("On. Claude's limits show once Claude Code next draws its status line.")}</p>}
       {usage.windows.map((window, index) => {
         const reset = formatResetIn(window.resets_at, now);
@@ -160,6 +161,8 @@ export function UsageMeters({ onLocalLogin, watching = false }: { /** opens a si
     if (event.relatedTarget instanceof Node && !event.currentTarget.contains(event.relatedTarget)) setOpen(false);
   };
 
+  // as many chips as the row has room for, judged by the widest chip drawn so far: it only grows,
+  // so the count only shrinks and settles, where an average of whichever chips show would swing
   const widestChip = useRef(0);
   useLayoutEffect(() => {
     const root = rootRef.current;

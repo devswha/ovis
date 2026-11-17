@@ -28,7 +28,7 @@
   right: 0;
   bottom: 0;
   left: 0;
-  z-index: var(--z-banner);
+  z-index: var(--z-banner); /* over xterm's layers, like the banners */
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   grid-template-rows: auto minmax(0, 1fr);

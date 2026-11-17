@@ -270,6 +270,10 @@
   .tab-strip-item.is-active .tab-strip-tab { padding-right: var(--space-1); }
 }
 
+/* Between the tab's focus and the button's there is an instant in which neither has it while the
+   item still has it within, and a hidden button cannot take the focus then: the fade's delay used to
+   carry it over, reduced motion has no fade, so the item's :focus-within without a focused child
+   keeps the button in view through the handoff. */
 @media (hover: hover) and (pointer: fine) and (min-width: 769px) {
   .tab-strip-menu {
     display: inline-flex;

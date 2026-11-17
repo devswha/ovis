@@ -246,6 +246,7 @@
   .relay-overview-attention-act { grid-row: 1 / span 2; grid-column: 3; }
 }
 
+/* Under 320px (e.g. 200% zoom on a 390 phone = 195 CSS px), stack strip cells to one column and give the attention reason the full row width so words never split. */
 @media (max-width: 319px) {
   .relay-overview-strip,
   .relay-overview-strip:not([data-local]),

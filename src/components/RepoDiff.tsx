@@ -34,6 +34,8 @@ export interface DiffMark {
 
 const FIND_HIGHLIGHT = "repo-diff-find";
 
+// as VirtualSource's reveal: a row is re-read after each render a scroll causes, since rows past the
+// measured ones are estimates; six passes settle every measured case with room
 const MAX_REVEAL_PASSES = 6;
 
 function VirtualizerProbe({ onInstance }: { onInstance: (instance: VirtualizerInstance | undefined) => void }) {
@@ -42,6 +44,7 @@ function VirtualizerProbe({ onInstance }: { onInstance: (instance: VirtualizerIn
   return null;
 }
 
+/** The mounted row of a logical line: split draws each side in its own column; unified draws a deletion by its old number, the rest by their new one. */
 function markRow(shadow: ShadowRoot, mark: DiffMark): HTMLElement | null {
   const split = shadow.querySelector("pre")?.getAttribute("data-diff-type") === "split";
   if (split) return shadow.querySelector<HTMLElement>(`code[data-${mark.side === "old" ? "deletions" : "additions"}] [data-line="${mark.line}"]`);
@@ -108,10 +111,16 @@ const DIFF_SHADOW_CSS = `${SHADOW_CSS}
 
 type Options = FileDiffOptions<undefined, undefined>;
 
+/** Pierre's reading of the patch: its one file, parsed strictly so a form it does not read fails here, not in a row. */
 function parseFile(text: string): FileDiffMetadata | null {
   return parsePatchFiles(text, contentKey("repo-diff", text), true)[0]?.files[0] ?? null;
 }
 
+/**
+ * The parsed diff keeps its identity while the patch and the fold are unchanged, as the virtualizer
+ * renders by identity, and its host fills the scroll root so it has a box before the first anchor
+ * pass (the contracts VirtualSource measured).
+ */
 export default function RepoDiff({ patch, style, folded, wrap, theme, colored, active = null, onUnfold, onLine, noteBlocked = null }: RepoDiffProps) {
   const t = useT();
   const onLineRef = useRef(onLine);
@@ -139,6 +148,11 @@ export default function RepoDiff({ patch, style, folded, wrap, theme, colored, a
   const hiddenByFold = useRef(false);
   hiddenByFold.current = active !== null && foldedLines !== null && !foldedLines.has(`${active.side}:${active.line}`);
   useEffect(() => { if (hiddenByFold.current) onUnfold?.(); }, [active?.side, active?.line, active?.start, active?.end, onUnfold]);
+  /**
+   * Rings the active match's row (in split, only its side's: the package's selected line spans
+   * both columns) and paints its text, when the row is mounted; the highlight is the page's one
+   * find highlight.
+   */
   const paint = useCallback((): void => {
     const mark = activeRef.current;
     const shadow = containerRef.current?.shadowRoot ?? null;
@@ -169,6 +183,7 @@ export default function RepoDiff({ patch, style, folded, wrap, theme, colored, a
     if (pending === null || file === null || !(root instanceof HTMLElement) || shadow === null) return;
     const row = markRow(shadow, pending.mark);
     if (row !== null) revealColumns(row, pending.mark);
+    // the file's height arrives with its first rows: until then there is nothing to scroll, and the next render settles
     if (root.scrollHeight <= root.clientHeight + 1) return;
     const view = root.getBoundingClientRect();
     let target: number;

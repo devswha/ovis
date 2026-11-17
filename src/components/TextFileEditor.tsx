@@ -8,6 +8,7 @@ import { useMachineApi, useMachineId } from "../lib/machineContext.tsx";
 const drafts = new Map<string, { file: EditableText; draft: string }>();
 const draftKey = (machineId: string, path: string): string => `${machineId}\u0000${path}`;
 
+/** A reload or a closed tab would lose every draft kept: while one is, the browser asks first. */
 const askBeforeUnload = (event: BeforeUnloadEvent): void => event.preventDefault();
 function keepDraft(key: string, kept: { file: EditableText; draft: string } | null): void {
   const had = drafts.size > 0;

@@ -18,6 +18,8 @@ export interface TerminalInputProps {
   onSend: (text: string) => false | Promise<true | string>;
   onEnter: () => boolean | string;
   onInsert: (text: string) => false | Promise<true | string>;
+  /** what a paste is for, read at the tap and again once the clipboard answers: the PC, pane and
+   * connection; null while the pane cannot take one. A different answer cancels the paste. */
   pasteTarget?: () => string | null;
   onPasting?: (active: boolean) => void;
   uploadFile?: (file: Blob) => Promise<string>;
@@ -29,6 +31,7 @@ export interface TerminalInputProps {
 }
 
 export interface TerminalInputHandle {
+  /** reads the clipboard for the line, from the user's own tap and for this line alone */
   paste(): void;
   focus(): boolean;
 }
@@ -39,6 +42,7 @@ const COMMIT_WAIT_MS = 300;
 interface SendAttempt {
   timer: ReturnType<typeof setTimeout> | null;
   deadline: number;
+  /** the line held text at the tap: an empty commit then sends nothing, not a bare Enter */
   textSend: boolean;
 }
 
@@ -53,6 +57,8 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
   const t = useT();
   const text = useSyncExternalStore(subscribeTerminalDraft, () => readTerminalDraft(owner));
   const setText = useCallback((value: string | ((previous: string) => string)) => {
+    // Read the owner record even after unmount: a late acknowledgement must not erase
+    // edits made in a newly mounted input for the same pane.
     const next = typeof value === "function" ? value(readTerminalDraft(owner)) : value;
     writeTerminalDraft(owner, next);
 
@@ -158,8 +164,10 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
     }
     clearPendingSend();
     setNote(null);
+    // the draft store, not the last render: a commit forced or delivered just now may not have rendered yet
     const draft = readTerminalDraft(owner);
     if (draft.length === 0) {
+      // a text Send whose word came out empty (the preedit deleted or cancelled) is not an Enter
       if (deferred && current!.textSend) return;
       const entered = onEnter();
       if (typeof entered === "string") setNote(entered);
@@ -168,6 +176,8 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
     }
     const sent = onSend(draft);
     if (sent === false) { setNote(t("Not sent: the terminal is disconnected.")); return; }
+    // a polish that lands before the acknowledgement would read as text typed meanwhile, and
+    // leave the sent command in the line
     dictation.forget();
     setTerminalDraftSending(owner, true);
     void sent.then((result) => {
@@ -185,11 +195,14 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
    */
   const insert = useCallback(() => {
     if (!connected || terminalDraftSending(owner)) return;
+    // an open composition is the keyboard's: the committed word goes, not the preedit
     if (composing.current) { setNote(t("Finish the word, then insert.")); return; }
     clearPendingSend();
     setNote(null);
     const draft = readTerminalDraft(owner);
     if (draft.length === 0) return;
+    // one line: nothing reports whether the program takes several as one paste, and a shell would
+    // run each (shared/terminal-insert.ts), so a block is said here and nothing is sent
     if (/[\r\n]/.test(draft)) { setNote(t("Insert takes one line. Send several lines, or insert them one at a time.")); return; }
     const sent = onInsert(draft);
     if (sent === false) { setNote(t("Not inserted: the terminal is disconnected.")); return; }
@@ -288,6 +301,7 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
   const uploadPaths = useCallback(async (files: Blob[]): Promise<string> => {
     const paths: string[] = [];
     for (const file of files) paths.push(await uploadFile!(file));
+    // a line break in a path (a pane's folder may hold one) would split the line and send it as Enter
     if (paths.some((path) => CONTROL_CHARACTER.test(path))) throw new Error(t("Not pasted: the file's path holds a line break, which the terminal would take as Enter."));
     return paths.map((path) => `'${path.replaceAll("'", "'\\''")}'`).join(" ") + " ";
   }, [t, uploadFile]);
@@ -327,6 +341,7 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
     pickedFor.current = null;
     const element = box.current;
     if (opened === null || files.length === 0 || element === null) return;
+    // a reconnect, another pane or an edit while the picker was up: the paths are not for this line now
     if ((pasteTarget?.() ?? null) !== opened.target || terminalDraftVersion(owner) !== opened.version) {
       setNote(t("Not pasted: the line or the terminal changed meanwhile. Paste again."));
       return;
@@ -354,6 +369,7 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
     if (waiting === null) return;
     const read: Promise<{ text: string } | { image: Blob }> = readsFiles
       ? clipboard!.read().then(async (items) => {
+        // text first, as a paste into the grid: an image copied from a page often carries its address too.
         const texts = items.filter((item) => item.types.includes("text/plain"));
         const text = (await Promise.all(texts.map(async (item) => (await item.getType("text/plain")).text()))).join("");
         if (text.length > 0) return { text };
@@ -367,6 +383,7 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
     read.then(async (clip) => {
       if (!waiting.shown()) return;
       if ("image" in clip) {
+        // nothing uploaded for a line that changed while the clipboard answered
         if (waiting.dropped()) return;
         try {
           assertAttachable(clip.image);
@@ -508,6 +525,7 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
           aria-label={t(text.length === 0 ? "Press Enter in the terminal" : "Send to the terminal")}
           title={t(text.length === 0 ? "Press Enter in the terminal" : "Send to the terminal")}
           disabled={!connected || sending}
+          // the soft keyboard stays up for the next line
           onPointerDown={(event) => event.preventDefault()}
           onClick={() => send()}
         >

@@ -21,6 +21,8 @@ export function Visualization({ path, title }: VisualizationReference) {
   return <div className="markdown-visualization">
     <div className="markdown-visualization-text">
       <span id={named} className="markdown-visualization-name">{name}</span>
+      {/* the hidden break is for a copy alone: the rich text of a selection (lib/markdownClipboard.ts) keeps no
+          line for a span, so the name and the title would run together there; the page draws them as two rows */}
       {second !== null && <><br hidden /><span className="markdown-visualization-title">{second}</span></>}
     </div>
     {open && <button type="button" className="btn btn-ghost" aria-describedby={named} onClick={() => open(path)}>{t("Open preview")}</button>}

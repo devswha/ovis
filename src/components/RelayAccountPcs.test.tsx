@@ -6,6 +6,9 @@ import type { AccountPcEntry } from "../lib/api.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { RelayAccountPcs, type AccountPcsSource } from "./RelayAccountPcs.tsx";
 
+// Add a connection → Ovis relay, signed in with this PC in the account: the account's other PCs, each with Connect
+// (already in this app), Add (it would pair) or what keeps it from pairing; Add posts the admission naming the key this
+// PC's server made, shows the digits while a member approves elsewhere, and opens the PC once it is added.
 const pc = (id: string, name: string): AccountPcEntry => ({ server_id: id.repeat(32).slice(0, 32), server_public_key: "key", relay: "wss://relay.ovis.example", name });
 const OWN = pc("0", "This PC");
 const DESK = pc("d", "Desk");

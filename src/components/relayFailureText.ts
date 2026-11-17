@@ -8,6 +8,12 @@ export function relayFailureDetail(detail: string | null | undefined): string | 
 
 export type RelayFailureFlow = "new" | "join";
 
+/**
+ * The sheet names its flow, since a refusal there has another cause and another fix than a pairing link's:
+ * "new" adds a PC by the digits typed from its screen and approved on it, "join" asks a device of the
+ * account that is connected to the PC, or the PC itself while its own Add screen waits (it decides the
+ * request there, and no account device hears it).
+ */
 export function relayFailureText(t: Translate, failure: RelayFailure, name: string, detail?: string | null, flow?: RelayFailureFlow): { title: string; copy: string; detail: string | null; retry: boolean } {
   const filtered = relayFailureDetail(detail);
   if (flow === "new") {

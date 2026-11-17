@@ -14,6 +14,7 @@ function declarationValues(css: string): string[] {
   return values;
 }
 
+/** The CSS named colors (CSS Color 4), which match in any case like the rest of CSS. */
 const NAMED_COLORS = "aliceblue antiquewhite aqua aquamarine azure beige bisque black blanchedalmond blue blueviolet brown burlywood cadetblue chartreuse chocolate coral cornflowerblue cornsilk crimson cyan darkblue darkcyan darkgoldenrod darkgray darkgreen darkgrey darkkhaki darkmagenta darkolivegreen darkorange darkorchid darkred darksalmon darkseagreen darkslateblue darkslategray darkslategrey darkturquoise darkviolet deeppink deepskyblue dimgray dimgrey dodgerblue firebrick floralwhite forestgreen fuchsia gainsboro ghostwhite gold goldenrod gray green greenyellow grey honeydew hotpink indianred indigo ivory khaki lavender lavenderblush lawngreen lemonchiffon lightblue lightcoral lightcyan lightgoldenrodyellow lightgray lightgreen lightgrey lightpink lightsalmon lightseagreen lightskyblue lightslategray lightslategrey lightsteelblue lightyellow lime limegreen linen magenta maroon mediumaquamarine mediumblue mediumorchid mediumpurple mediumseagreen mediumslateblue mediumspringgreen mediumturquoise mediumvioletred midnightblue mintcream mistyrose moccasin navajowhite navy oldlace olive olivedrab orange orangered orchid palegoldenrod palegreen paleturquoise palevioletred papayawhip peachpuff peru pink plum powderblue purple rebeccapurple red rosybrown royalblue saddlebrown salmon sandybrown seagreen seashell sienna silver skyblue slateblue slategray slategrey snow springgreen steelblue tan teal thistle tomato turquoise violet wheat white whitesmoke yellow yellowgreen".split(" ");
 const COLOR_LITERAL = new RegExp(String.raw`#[0-9a-f]{3,8}\b|\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\(|(?<![\w-])(?:${NAMED_COLORS.join("|")})(?![\w-])`, "i");
 
@@ -179,6 +180,7 @@ describe("regular expressions", () => {
   // loading there (#2534); the build does not rewrite regular expressions.
   it("use no lookbehind in the client's code", () => {
     const offenders = [...scan("src/**/*.{ts,tsx}"), ...scan("shared/**/*.ts")].filter((name) => !/\.test\./.test(name)).flatMap((file) => {
+      // read as written: comment stripping takes a `/*` in a regex class for a comment and hides what follows
       const source = read(file);
       return [...source.matchAll(/\(\?<[=!]/g)].map((match) => `${file}:${lineOf(source, match.index)}`);
     });
@@ -212,6 +214,9 @@ function declarations(source: string): Array<{ name: string; code: string }> {
 }
 
 describe("surfaces over the app", () => {
+  // A phone's Back closes what is open only when that surface holds a history entry
+  // (lib/sheetHistory.ts): a dialog, a menu or a drawer that holds none is passed over, and Back
+  // leaves the app, or goes to the pane before, with it still on the screen.
   const OWN_ENTRY: Readonly<Record<string, string>> = {
     "src/components/RepoDiffViewer.tsx#RepoDiffViewer": "src/lib/useRepoDiffViewer.ts",
     "src/components/WebPanel.tsx#WebPanel": "src/lib/useWebPanel.ts",

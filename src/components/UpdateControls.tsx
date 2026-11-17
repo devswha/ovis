@@ -225,10 +225,12 @@ export function UpdateNotice({ updates, onOpen }: { updates: UpdatesModel; onOpe
       <button type="button" className="btn" onClick={() => window.location.reload()}>{t("Reload app")}</button>
     </div>;
   }
+  // a server that cannot install by revision is sent no install: the line says to restart it
   if (failure === "restart") return <div className="update-notice is-line is-warning" role="status">
     <span>{t("Restart Ovis on this PC to update from here: the server running now cannot install exactly the release shown.")}</span>
     <a className="btn" href={RESTART_HELP} target="_blank" rel="noreferrer">{t("How to restart")}</a>
   </div>;
+  // A release that replaced the one asked for is looked at again too, never installed from here unseen.
   const install = failure === null ? offered : null;
   const changed = failure === "offer-changed";
   const offer = !failed && !changed && !attempted ? status?.latest_revision ?? null : null;

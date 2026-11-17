@@ -1,3 +1,9 @@
+/**
+ * Its dialog previews what every pane becomes and starts the move, then follows it, reading the
+ * server every two seconds only while it is open: the wait for busy panes (Cancel ends it; a shell's
+ * command can be ended there, all at once after a confirm, and an agent's pane opened), the steps,
+ * and the end.
+ */
 import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
@@ -108,6 +114,7 @@ function RuntimeMoveDialog({ answer, onAnswer, onClose, onOpenPane, follow, onSt
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [acknowledged, setAcknowledged] = useState(false);
+  // End all and move now was pressed: the list the server offered to end, asked once more before anything is ended
   const [confirming, setConfirming] = useState<MoveStopAllOffer | null>(null);
   useSheetSwipe(surface, pending ? null : onClose);
   usePhoneSheetBack(() => { if (pending) return false; onClose(); });
@@ -154,6 +161,7 @@ function RuntimeMoveDialog({ answer, onAnswer, onClose, onOpenPane, follow, onSt
   const cancel = () => act(async () => { await cancelMove(); onAnswer(await fetchMovePlan()); });
   const again = () => act(async () => { onAnswer(await fetchMovePlan()); setAcknowledged(true); });
   const stopping = status.state === "waiting" ? status.stopping ?? [] : [];
+  // the command each row shows: the server ends none that runs in its place
   const shown = (pane: MovePane): string | null => pane.verdict.kind === "busy" ? pane.verdict.command : null;
   const stop = (pane: MovePane, force: boolean) => act(async () => { await stopMovePane(pane.pane_id, shown(pane), force); onAnswer(await fetchMovePlan()); });
   const askStopAll = () => act(async () => {
@@ -161,6 +169,7 @@ function RuntimeMoveDialog({ answer, onAnswer, onClose, onOpenPane, follow, onSt
     if (offer.panes.length > 0) setConfirming(offer);
     else onAnswer(await fetchMovePlan());
   });
+  // the server ends exactly the list it offered, or refuses when the panes changed: then the person asks again
   const stopAll = (offer: MoveStopAllOffer) => act(async () => {
     setConfirming(null);
     try { await confirmStopAll(offer.token); } finally { onAnswer(await fetchMovePlan()); }

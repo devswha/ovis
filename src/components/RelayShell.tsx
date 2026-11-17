@@ -39,12 +39,16 @@ export interface RelayShellProps {
   onPair: () => void; onRetry: () => void; onCancel: () => void; onBack: () => void; onForget: () => void;
   onForgetPc?: (serverId: string) => Promise<void> | void;
   onUpdate: () => void;
+  /** pairing without a code: the digits on this screen are the ones the PC shows (`typed`: typed from the PC's screen) */
   onMatch: (typed?: string) => void;
   onSignIn?: (provider: AccountProvider) => void;
+  /** a PC of the account this device is not paired with: compare digits with it */
   onJoin?: (pc: MyPc, options?: { typed?: boolean; sheet?: "new" | "join" }) => void;
   sheetJoin?: { mode: "new" | "join"; server_id: string; returnHash?: string } | null;
+  /** that sheet's typed comparison, for a PC that shows no number: the same request goes on as a join, with this device's digits */
   onJoinInstead?: () => void;
   onSignOut?: () => void; onLeave?: () => void; onDeleteAccount?: () => void;
+  /** which sign-in the signed-in account view speaks of (AccountSession.sign_in_id): a question asked under one is dropped under the next */
   accountSignIn?: string;
   accountProviders?: readonly AccountProvider[];
   directoryRelays?: readonly { server_id: string; relay: string | null }[];
@@ -124,6 +128,7 @@ function PairQrDialog({ state, onCodeStart, onCodeSubmit, onCodeMatch, onCancel,
   );
 }
 
+/** A completed pairing owns its transport until Open PC or Cancel, including in continued scope. */
 export function ReadyCheckpoint({ open, cancel, state, retry }: { readonly open: () => void; readonly cancel: () => void; readonly state?: Extract<RelayShellState, { kind: "ready" }>; readonly retry?: () => void }) {
   const t = useT(), title = useId(), surface = useFocusTrap<HTMLDivElement>(true);
   const latestCancel = useRef(cancel); latestCancel.current = cancel;
@@ -158,6 +163,7 @@ export function RelayShell(props: RelayShellProps) {
   const signedOutOrSigningIn = account?.kind === "signed-out" || account?.kind === "signing-in";
   const view = !signedOutOrSigningIn ? null : signedOutView === "saved" && saved === 0 ? "sign-in" : signedOutView;
   const signInFirst = view === "sign-in";
+  // a sign-out found while the QR dialog is open closes it: the sign-in stays the only screen, and a later sign-in opens no stale dialog
   if (addingPc && signInFirst) setAddingPc(false);
   const name = state.kind === "confirm" || state.kind === "code-compare" ? state.offer.name ?? null
     : state.kind === "list" || state.kind === "empty" || state.kind === "code-entry" || state.kind === "code-looking" ? null : state.name;

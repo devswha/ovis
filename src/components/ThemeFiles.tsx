@@ -76,6 +76,7 @@ export function ThemeFiles({ onImported }: { onImported: (sides: readonly Mode[]
         {/* no `accept`: a phone's picker greys out a .yaml it has no type for, and what is no theme is refused with a reason anyway */}
         <input ref={picker} type="file" hidden onChange={(event) => {
           const file = event.target.files?.[0];
+          // the same file can be chosen again after a fix
           event.target.value = "";
           if (file) void add(file);
         }} />

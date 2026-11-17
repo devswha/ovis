@@ -12,6 +12,7 @@ import { nativeTransport, setTransport, type Transport } from "../lib/transport.
 const globals = ["IS_REACT_ACT_ENVIRONMENT", "window", "document", "getComputedStyle", "navigator"];
 const saved = new Map(globals.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
 let renderer: ReactTestRenderer | undefined;
+/** every request the card makes of the PC, by either way a component can ask: there must be none */
 let asked: string[] = [];
 
 beforeEach(() => {
@@ -84,6 +85,7 @@ test("where nothing can open a file, the card names it and offers no button", as
 });
 
 test("the card shows the file's own name, never the reference's title in its place, with what hides or reorders text taken out", async () => {
+  // a title that pretends to be another file, and a name with a right-to-left override in it
   const path = "/w/report\u202Efdp.html", title = "\u202Einvoice.pdf";
   await act(async () => { renderer = create(createElement(SettingsProvider, { children: createElement(OpenFileContext.Provider, { value: () => {}, children: createElement(Visualization, { path, title }) }) })); });
   const name = renderer!.root.findByProps({ className: "markdown-visualization-name" });

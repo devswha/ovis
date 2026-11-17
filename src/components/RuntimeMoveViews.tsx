@@ -28,6 +28,7 @@ interface WaitActions {
   onOpenPane: ((paneId: string) => void) | null;
 }
 
+/** An agent is never ended from here: its pane opens, and the person ends it there. */
 function PaneAction({ t, pane, stopping, pending, onStop, onOpenPane }: WaitActions & { t: Translate; pane: MovePane }) {
   const { verdict } = pane;
   if (verdict.kind === "busy" && verdict.reason === "command_running") {
@@ -78,6 +79,7 @@ export function WaitingView({ t, plan, leadId, confirming, ...actions }: WaitAct
         ? <p className="runtime-move-note">{t("End an agent marked above yourself; the move goes on by itself once nothing runs.")}</p>
         : <div className="runtime-move-confirm" role="alert">
             {confirming.length === 1 ? t("Ends 1 running command. Unsaved work may be lost.") : t("Ends {n} running commands. Unsaved work may be lost.", { n: confirming.length })}
+            {/* each pane the server's token covers, which may differ from the last poll's rows: its command and where */}
             <ul className="runtime-move-confirm-list">
               {confirming.map((covered) => {
                 const pane = plan.panes.find((entry) => entry.pane_id === covered.pane_id);

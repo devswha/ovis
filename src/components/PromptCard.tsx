@@ -30,11 +30,13 @@ export interface PromptCardProps {
   initialText?: string;
   onAnswered(toMessageBox: boolean): void;
   answered?: boolean;
+  /** an option picked by a typed message, sent only on Confirm */
   typedAnswer?: TypedAnswer | null;
   onTypedAnswerDone?(): void;
   stale?: boolean;
   screenWords?: string | null;
   context?: string | null;
+  /** this device may only watch: the PC refuses its answers, so the card offers none and sends none, and says why */
   watching?: boolean;
 }
 
@@ -65,7 +67,9 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onTextChange, init
   const folded = foldedByUser && typedAnswer?.option_index === undefined;
   const cardRef = useRef<HTMLElement | null>(null);
   const confirmRef = useRef<HTMLDivElement | null>(null);
+  // the control Enter or Space last went down on: the click that follows on it is that key's
   const keyed = useRef<EventTarget | null>(null);
+  // and the button a pointer last went down on, with what it was: a click can misname its pointer
   const down = useRef<{ target: EventTarget; pointerType: string } | null>(null);
   const shown = useRef(false);
   useEffect(() => {
@@ -85,12 +89,14 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onTextChange, init
   const answer = async (choice: Omit<PromptAnswer, "pane_id" | "prompt_id">, press?: { nativeEvent: Event; currentTarget: EventTarget }): Promise<boolean> => {
     if (pendingRef.current || watching) return false;
     pendingRef.current = true;
+    // Native OpenCode multiselect fields and pi-ask's take checks and a custom entry in one answer.
     if (sendsChecksWithText(prompt) && (choice.option_indices !== undefined || choice.custom_text !== undefined)) {
       choice = {
         option_indices: [...selected].sort((a, b) => a - b),
         ...(custom.trim() ? { custom_text: custom.trim() } : {}),
       };
     }
+    // read now: the pressed button is disabled while the answer is on its way, and loses the focus
     const fromCard = cardRef.current?.contains(document.activeElement) === true;
     const click = press?.nativeEvent as Partial<PointerEvent> | undefined;
     const origin = pressOrigin(press === undefined ? undefined : { pointerType: click?.pointerType, downType: down.current?.target === press.currentTarget ? down.current.pointerType : undefined, detail: click?.detail, keyed: keyed.current === press.currentTarget });
@@ -139,6 +145,7 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onTextChange, init
   const contextId = useId();
 
   const scopeIdBase = useId();
+  // Claude renders the menu's own pick as "Redis (Recommended)": a tag reads better than the suffix (optionName)
   const labelOf = (label: string): { text: string; recommended: boolean } => optionName(prompt, label);
   const hasChoices = prompt.options.some((_, index) => index !== prompt.custom_option_index);
   const words = promptWords(prompt, t);
@@ -174,6 +181,7 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onTextChange, init
         )}
         <span className="visually-hidden">{t("input needed")}</span>
         <h2>{words.title}</h2>
+        {/* on to the next question, this one left unanswered, as the agent's own key does (omo's Tab, Codex's →) */}
         {prompt.can_step_next && (
           <button
             type="button"
@@ -237,6 +245,7 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onTextChange, init
           })}
         </ol>
       )}
+      {/* why nothing on the card can be pressed here, for a touch screen too, where no title shows */}
       {watching && <p id={watchReasonId} className="prompt-card-hint">{watchReason}</p>}
       {navigationBlocked && <p className="prompt-card-hint">{t("Submit or clear edits before switching questions.")}</p>}
       {screenWords !== null && (
@@ -245,6 +254,7 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onTextChange, init
           <p className="prompt-card-hint">{t("From the terminal, until the agent saves this turn")}</p>
         </div>
       )}
+      {/* a Claude approval's heading is its question too: said once */}
       {prompt.question !== prompt.title && (markdown
         ? <Markdown className="prompt-card-question">{words.question}</Markdown>
         : <p className="prompt-card-question">{words.question}</p>)}
@@ -280,6 +290,8 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onTextChange, init
             if (index === prompt.custom_option_index) return null;
             const { text, recommended } = labelOf(words.label(index));
             const description = words.description(index);
+            // The same words, as text, are the option's description: in a hidden span beside the option
+            // (inside it they would join its name), which its aria-describedby names
             const scope = approvalScope(prompt, index);
             const scopeId = scope === null ? undefined : `${scopeIdBase}-${index}`;
             const scopeText = scope === null ? null : <span id={scopeId} className="visually-hidden">{scopeCue(t, scope)}</span>;
@@ -291,6 +303,7 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onTextChange, init
             );
             const number = <span className="prompt-card-number"><span aria-hidden="true">{index + 1}</span><span className="visually-hidden">{index + 1}.</span></span>;
             const described = option.description !== null ? " has-description" : "";
+            // Claude draws an option's preview for the one under its cursor only, beside its menu (#1212)
             const shown = prompt.option_preview?.option_index === index ? prompt.option_preview : null;
             const preview = shown !== null && (
               <div className="prompt-card-option-preview" role="group" aria-label={t("Preview of {option}", { option: text })}>

@@ -17,15 +17,25 @@ export async function thisPcAccount(): Promise<string | null> {
   return (await pcAccountStatus(apiFetch)).account;
 }
 
+/**
+ * The account this PC belongs to (null while it is in none), and whether it still waits for its first member's
+ * enrollment (docs/account.md, "Enrolling a PC"): until that ends, the account's other devices are not let in.
+ */
 export async function thisPcMembership(): Promise<{ readonly account: string | null; readonly enrolling: boolean }> {
   const status = await pcAccountStatus(apiFetch);
   return { account: status.account, enrolling: status.account !== null && status.enrolling === true };
 }
 
+/** Whether this PC belongs to no account yet: only such a PC offers to be added. */
 export async function thisPcInNoAccount(): Promise<boolean> {
   return await thisPcAccount() === null;
 }
 
+/**
+ * Opens this PC's approve-here pairing window again and nothing else: no directory call, so nothing is listed
+ * and no device of the account is rung. Answers the id of the PC that opened it (null when its link does not
+ * say), so a screen that resumed a wait can tell the PC is the one it waited on.
+ */
 export async function reopenAddWindow(): Promise<string | null> {
   const { url } = await openAddWindow();
   try { return decodeOffer(url)?.server_id ?? null; } catch { return null; }
@@ -35,6 +45,11 @@ export const CLOSE_ANSWER_MS = 60_000;
 
 let closing: Promise<unknown> = Promise.resolve();
 
+/**
+ * The PC closes whatever window is open when the request arrives, so one asked for after this call is asked
+ * for only once this close was answered (`openAddWindow`): a close that arrives late never closes the window
+ * of a wait that began after it.
+ */
 export function closeAddWindow(): Promise<{ readonly ok: true }> {
   const sent = closeRelayLink();
   closing = Promise.allSettled([closing, within(CLOSE_ANSWER_MS, sent)]);
@@ -70,6 +85,12 @@ export function pagePc(): string | null {
 
 const text = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 128;
 
+/**
+ * Whether the PC that answers this page is `serverId`, read from its health (GET /api/health, `web_ui.server_id`),
+ * which opens and changes nothing: a wait asks before it has a window opened or believes "added", so a PC's
+ * address that now answers for another PC gets neither. Where the health does not say (an older Ovis), the
+ * hosted app's page names the PC it reaches; with neither, nothing says which PC this is and it throws.
+ */
 export async function pcAnswers(serverId: string): Promise<boolean> {
   const told = (await fetchHealth()).web_ui?.server_id;
   const id = text(told) ? told : pagePc();
@@ -98,7 +119,7 @@ export function keepAddPcWaiting(waiting: AddPcWaiting | null): void {
   try {
     if (waiting === null) tabStorage()?.removeItem(WAITING_KEY);
     else tabStorage()?.setItem(WAITING_KEY, JSON.stringify(waiting));
-  } catch {}
+  } catch { /* a full or blocked storage: the screen only loses its resume */ }
   for (const heard of [...watchers]) heard(waiting);
 }
 
@@ -114,12 +135,18 @@ export class AddPcWaitOver extends Error {
 export interface ListedFor {
   readonly serverId: string;
   readonly account: string;
+  /** asked before the window is asked for, once it opened, and right before every write to the directory: false once the wait was stopped or replaced */
   readonly running: () => boolean;
 }
 
 export interface ListedAs {
   readonly account: string;
+  /** asked once the window opened, and right before every write to the directory and to the PC: false once the screen gave the attempt up */
   readonly running: () => boolean;
+  /**
+   * Told how far the listing came, for a screen that gives it up: `opened` once this PC opened its pairing
+   * window, `writing` right before the first write to the directory is sent (one sent cannot be taken back).
+   */
   readonly reached?: (step: "opened" | "writing") => void;
 }
 
@@ -141,11 +168,14 @@ export async function listThisPc(service: AccountService, options: { relistMs: n
   const as = options.as;
   // asked before the window: one is never opened on another PC than the wait's
   if (wait !== undefined && !await pcAnswers(wait.serverId)) throw new AddPcWaitOver("pc");
+  // stopped while that was asked: no window is asked for after Stop waiting closed it
   if (wait !== undefined && !wait.running()) throw new AddPcWaitOver("ended");
   const offer = decodeOffer((await openAddWindow()).url);
   if (offer === null) throw new Error("This PC's pairing link did not parse");
   as?.reached?.("opened");
   if (wait !== undefined && offer.server_id !== wait.serverId) throw new AddPcWaitOver("pc");
+  // given up while the window was being opened: nothing more is read or written for it
+  // (a stopped wait's listing is over at once, so whoever began it closes the late window without waiting for the directory)
   if ((as !== undefined && !as.running()) || (wait !== undefined && !wait.running())) throw new AddPcWaitOver("ended");
   const session = await service.session();
   if (wait !== undefined && session?.account !== wait.account) throw new AddPcWaitOver("sign-in");
@@ -162,7 +192,11 @@ export async function listThisPc(service: AccountService, options: { relistMs: n
   const publicKey = Array.from(importPublicKey(offer.server_public_key), (byte) => byte.toString(16).padStart(2, "0")).join("");
   running();
   await directory.putPc(offer.server_id, { label: name, public_key: publicKey, relay: offer.relay });
+  // the account this PC now asks its relay pass under (docs/relay.md, "Relay pass"); an older PC has no such route
+  // (not for a wait or an attempt that ended while the entry was written: nobody waits for this PC under it)
   if (session && runs()) {
+    // never in the way of pairing, so not awaited: a failing or hanging setup never holds the pairing wait, and the
+    // relay status says when this PC has no pass (404: an Ovis from before relay passes)
     void apiFetch("/api/account/relay-account", { method: "POST", headers: { "content-type": "application/json", "x-herdr-machine": "1" }, body: JSON.stringify({ account: session.account }) }).then(
       (named) => { if (!named.ok && named.status !== 404) console.warn("Ovis: this PC did not take the account for its relay pass", named.status); },
       (error: unknown) => console.warn("Ovis: this PC did not take the account for its relay pass", error instanceof Error ? error.name : error),

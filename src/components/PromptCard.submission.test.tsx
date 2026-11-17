@@ -264,7 +264,9 @@ describe("a device that may only watch sees the card's answers as unavailable an
       const answers = controls.filter((node) => node.type === "button");
       expect(answers.map((node) => node.props.title)).toEqual(answers.map(() => REASON));
       expect(answers.filter((node) => !String(node.props["aria-describedby"]).split(" ").includes(reason.props.id))).toEqual([]);
+      // folding the card is the device's own and stays
       expect(root().find((node) => node.props.className === "prompt-card-fold").props.disabled).toBe(false);
+      // a press that reaches a button anyway sends nothing
       for (const button of answers) await act(async () => { button.props.onClick(click); });
       expect(sent).toEqual([]);
     }, { watching: true });

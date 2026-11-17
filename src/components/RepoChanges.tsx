@@ -25,6 +25,13 @@ const PENDING: Load = { status: "pending" };
 type Refs = { status: "idle" } | { status: "pending" } | { status: "failed"; error: unknown } | { status: "ready"; listing: RepoDiffRefs };
 const NO_REFS: Refs = { status: "idle" };
 
+/**
+ * What changed in the repository the pane sits in: the working tree, the index, two commits, or
+ * the branch against a base of the reader's choosing (the working tree against the merge base of
+ * that base and HEAD, as Codex's review pane compares a branch), one file per row with its status
+ * and counts, each opened as its diff, under the folders they sit in (lib/changeTree.ts): every
+ * folder starts open, and what the reader folds stays folded across refreshes and comparisons.
+ */
 export function RepoChanges({ paneId, directory, onOpenDiff }: RepoChangesProps) {
   const t = useT();
   const locale = useLocale();
@@ -50,6 +57,7 @@ export function RepoChanges({ paneId, directory, onOpenDiff }: RepoChangesProps)
   const listId = useId();
   const baseLabelId = useId();
 
+  // Reset while rendering, so the read below never starts the last target's branch comparison here.
   const target = useMemo(() => ({ paneId, directory }), [fetchRepoDiffFiles, fetchRepoDiffRefs, paneId, directory]);
   const [shownTarget, setShownTarget] = useState(target);
   if (shownTarget !== target) {
@@ -96,6 +104,8 @@ export function RepoChanges({ paneId, directory, onOpenDiff }: RepoChangesProps)
 
   useEffect(() => {
     if (!pickerOpen) return;
+    // a click anywhere else closes it once the click is done: closing on the press would move Compare
+    // (and what is under it) away from the pointer before it is released
     const onClick = (event: MouseEvent): void => {
       const target = event.target as Node;
       if (!pickerRef.current?.contains(target) && !refsRef.current?.contains(target)) setPickerOpen(false);

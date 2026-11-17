@@ -59,6 +59,7 @@ export function UsageSignInDialog({ request, onOpenTerminal, onSignedIn, onClose
   const surface = useFocusTrap<HTMLDivElement>(true);
   const title = t("Sign in to {provider}", { provider: provider === "claude" ? "Claude Code" : PROVIDER_NAME[provider] });
 
+  // starts the login (again with `replace` once the user confirmed), after noting the sign-ins it may add to
   useEffect(() => {
     if (phase.kind !== "starting") return;
     const controller = new AbortController();
@@ -72,6 +73,7 @@ export function UsageSignInDialog({ request, onOpenTerminal, onSignedIn, onClose
       } catch (cause) {
         if (controller.signal.aborted) return;
         if (cause instanceof ApiError && cause.code === "account_confirmation_required") setPhase({ kind: "confirm" });
+        // a CLI the browser cannot follow (an old Claude Code without `auth login`, a Codex without a device code)
         else if (cause instanceof ApiError && cause.code === "follow_unsupported") setPhase({ kind: "failed", message: t("This version signs in only in its terminal. Open it to finish.") });
         else setPhase({ kind: "failed", message: cause instanceof ApiError ? cause.detail : t("Could not start account sign-in") });
       }
@@ -90,6 +92,7 @@ export function UsageSignInDialog({ request, onOpenTerminal, onSignedIn, onClose
       try {
         const next = await fetchUsageLoginPrompt(login, controller.signal);
         if (controller.signal.aborted) return;
+        // a sent code the CLI moved on from; a prompt that comes back after that asks for the code again
         if (!next.wants_code) answered.current = true;
         else if (answered.current && sentRef.current) { sentRef.current = false; setSent(false); setCodeError(t("The sign-in asked for the code again. Paste it once more.")); }
         setPrompt(next);
@@ -124,6 +127,7 @@ export function UsageSignInDialog({ request, onOpenTerminal, onSignedIn, onClose
 
   const sendCode = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault();
+    // a form inside another (Add account's): its submit is this one's alone
     event.stopPropagation();
     const input = codeInput.current;
     if (login === null || input === null || sending) return;
@@ -136,6 +140,7 @@ export function UsageSignInDialog({ request, onOpenTerminal, onSignedIn, onClose
   const copyCode = async (code: string): Promise<void> => {
     if (await copyText(code, null)) setCopied(true);
   };
+  // the private sign-in still running, if any: closing the dialog in any way stops it
   const stopFollowing = (): Promise<void> => {
     if (cancelling.current !== null) return cancelling.current;
     const running = following.current;
@@ -146,6 +151,7 @@ export function UsageSignInDialog({ request, onOpenTerminal, onSignedIn, onClose
     return cancelling.current;
   };
   useEffect(() => {
+    // the page itself going (a closed tab, a reload) stops it too: no dialog could reach it after
     const leaving = (): void => { void stopFollowing().catch(() => undefined); };
     window.addEventListener("pagehide", leaving);
     return () => { window.removeEventListener("pagehide", leaving); leaving(); };
@@ -157,6 +163,7 @@ export function UsageSignInDialog({ request, onOpenTerminal, onSignedIn, onClose
   // reads this PC's terminals can see; the user chose it
   const toTerminal = (): void => {
     setPhase({ kind: "handing-over" });
+    // the tab takes the same home: it starts once the private sign-in has let go of it
     void stopFollowing().then(() => startUsageLogin(replace && "default" in request ? { ...request, replace: true } : request))
       .then((started) => onOpenTerminal(started.pane_id))
       .catch((cause: unknown) => setPhase({ kind: "failed", message: cause instanceof ApiError ? cause.detail : t("Could not start account sign-in") }));

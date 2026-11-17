@@ -1,3 +1,4 @@
+/** The + opens a shell tab at once, as herdr's own new tab does. */
 import { useContext, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { ArrowLeft, ArrowRight, Bot, ChevronDown, Ellipsis, Folder, FolderInput, Pencil, Plus, Terminal, X } from "lucide-react";
 
@@ -62,6 +63,8 @@ export interface TabStripProps {
   inHeader?: boolean;
   sheet?: HTMLElement | null;
   onSheetClose?: () => void;
+  /** the header's row (App, from 769px): browser tabs, each with its icon (a shell's glyph when no agent) and,
+   *  unless `closable` is false (a watching device), a close */
   browserTabs?: boolean;
   closable?: boolean;
   phoneRow?: boolean;
@@ -69,12 +72,14 @@ export interface TabStripProps {
 
 const LONG_PRESS_MS = 450;
 const LONG_PRESS_SLOP = 8;
+/** the click a lifted long press still sends is the press's, not a pick; a later one (a key, a mouse) is a pick again */
 const LONG_PRESS_CLICK_MS = 600;
 
 export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNewTab, onNewTerminal, onMoveToWorkspace, paneActions, panelId = PANE_TABPANEL_ID, splitDrag = false, renameRequest = null, onRenameHandled, closeRequest = null, onCloseHandled, end, inHeader = false, sheet = null, onSheetClose, browserTabs = false, closable = true, phoneRow = false }: TabStripProps) {
   const t = useT();
   const { settings } = useSettings();
   const machineId = useMachineId();
+  // a tab holding a locked pinned agent (lib/paneLocks.ts) is closed from no button, key or click here
   const paneLocked = usePaneLocked(machineId);
   const pressPane = useContext(PanePressContext);
   const { closeTab, renameTab, moveTab } = useMachineApi();
@@ -140,6 +145,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   useLayoutEffect(() => {
     if (previousOwner.current === owner) return;
     previousOwner.current = owner;
+    // a press held across the change (an alert opening another PC) would open the previous PC's tab menu over this one's
     cancelLongPress();
     // Native IDs can repeat on another PC. A pending dialog never changes its target PC.
     setPicker(null); setEditing(null); setConfirm(null); setSent(null); setError(null);
@@ -365,6 +371,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   };
 
   const agentOf = (tab: HerdrTab): PaneInfo["agent"] => paneFor(tab)?.agent ?? panesOf(tab).find((pane) => pane.agent)?.agent ?? null;
+  // the agent's name as herdr shows it ("OmO" for omo), for the tab's spoken description
   const agentNameOf = (tab: HerdrTab): string | null => {
     const opens = paneFor(tab);
     const pane = opens?.agent ? opens : panesOf(tab).find((candidate) => candidate.agent);
@@ -421,13 +428,16 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
     if (latest.current.tabId === tab.tab_id && pane) onSelectPane(pane.pane_id);
     if (strip.current?.contains(document.activeElement) || document.activeElement === document.body) focusTab(beside.tab_id);
   };
+  // every pane of the tab by id, the ones the strip leaves out of its list (a DAG viewer's) included
   const tabLocked = (tab: HerdrTab): boolean => snapshot.panes.some((pane) => pane.tab_id === tab.tab_id && paneLocked(pane.pane_id));
+  // a lock that lands while the confirmation is open (from another browser) takes the confirmation with it
   if (confirm && tabLocked(confirm.tab)) setConfirm(null);
   const requestClose = (tab: HerdrTab): void => {
     if (tabLocked(tab)) return;
     setError(null);
     const own = snapshot.panes.filter((pane) => pane.tab_id === tab.tab_id);
     const what = own.length === 1 && own[0] ? displayPaneTitle(own[0]) : t("{n} panes", { n: own.length });
+    // a turn that waits on its background work would lose that work too
     const busy = panesOf(tab).some((pane) => { const status = paneStatus(pane as HerdrPane); return status === "working" || status === "blocked" || status === "waiting"; });
     if (tabs.length > 1 && !busy) {
       void close(tab).catch((reason: unknown) => setError(t("Close failed: {reason}", { reason: said(reason) })));
@@ -461,6 +471,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
     }
     if (event.key === "F2" && !renameOffered) return;
     if (event.key === "F2" || event.key === "Delete") {
+      // a held key is one press: the focus moves to the tab beside a closed one
       if (event.repeat) { event.preventDefault(); return; }
       const tab = tabs.find((candidate) => candidate.tab_id === buttons[index]?.dataset["tabId"]);
       if (!tab) return;
@@ -483,6 +494,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
       previousFocus: touch ? tabButton : document.activeElement instanceof HTMLElement ? document.activeElement : null, touch });
   };
 
+  // A one-pane-at-a-time canvas omits split and zoom, but must keep unzoom to free the other panes.
   const pickerItems = (tab: HerdrTab, touch: boolean): RowMenuItem[] => {
     const own = soloPanes ? panesOf(tab) : [];
     const layout = snapshot.layouts?.find((entry) => entry.tab_id === tab.tab_id);
@@ -564,6 +576,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
                   onBlur={() => setEditing(null)}
                   onKeyDown={(event) => {
                     event.stopPropagation();
+                    // an IME's Enter and Escape are the composition's, not the field's
                     if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
                     if (event.key === "Enter") saveRename(tab);
                     if (event.key === "Escape") { refocus.current = tab.tab_id; setEditing(null); }
@@ -600,6 +613,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
                     reorder.onPointerMove(event);
                   }}
                   onPointerUp={(event) => { liftLongPress(); reorder.onPointerUp(event); }}
+                  // the lift of a held press sends no mouse events or click: the focus they move would close the menu it opened
                   onTouchEnd={(event) => { if (longPress.current?.fired) event.preventDefault(); }}
                   onPointerCancel={() => { liftLongPress(); reorder.cancelDrag(); }}
                   onLostPointerCapture={reorder.cancelDrag}
@@ -624,6 +638,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
                     if (phoneRow && pressed && pressed.tabId === tab.tab_id) { openLongPress(pressed, event.currentTarget, tab, active); return; }
                     openPicker(event, tab);
                   }}
+                  // the middle button closes a tab, as it does a browser's
                   onAuxClick={(event) => { if (event.button === 1 && closable) { event.preventDefault(); requestClose(tab); } }}
                 >
                   {busyStatus(status) && statusMark(status)}

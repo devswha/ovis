@@ -45,6 +45,11 @@ export function localStateWord(check: PcStatus | null, t: Translate): string {
   return check.kind === "answered" ? t("Answers") : t("No answer");
 }
 
+/**
+ * It names the button it sits next to and the only two ways in: a connected device of the account approves, or
+ * someone types the number the PC's own screen shows. The directory cannot say whether such a device exists now
+ * (Revoke all keeps the row seen), so neither is claimed.
+ */
 export function askToJoinReason(pc: { readonly added_at: string | null; readonly join?: unknown }, t: Translate): string | null {
   if (pc.added_at === null || pc.join === undefined) return null;
   return t("Join · approve on a connected device of your account, or type the number the PC shows");

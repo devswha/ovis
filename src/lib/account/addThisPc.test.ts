@@ -121,8 +121,10 @@ test("a listing for a wait writes nothing for another PC, under another account,
     listThisPc(pc.service, { relistMs: 540_000, for: wait }).then(() => "listed", (error: unknown) => error instanceof AddPcWaitOver ? error.why : error);
   try {
     expect(await why({ serverId: "another-pc", account: "acct_1", running: () => true })).toBe("pc");
+    // which PC answers is read from its health: no window was opened on a PC that is not the wait's
     expect(pc.asked).toEqual(["/api/health"]);
     expect(await why({ serverId: pc.serverId, account: "acct_2", running: () => true })).toBe("sign-in");
+    // stopped while the directory was read: neither the old entry is deleted nor a new one put
     let running = true;
     pc.reads.push(() => { running = false; });
     expect(await why({ serverId: pc.serverId, account: "acct_1", running: () => running })).toBe("ended");
@@ -142,6 +144,7 @@ test("a listing for a wait that was stopped opens no window, and reads nothing o
   const why = async (running: () => boolean): Promise<unknown> =>
     listThisPc(pc.service, { relistMs: 540_000, for: { serverId: pc.serverId, account: "acct_1", running } }).then(() => "listed", (error: unknown) => error instanceof AddPcWaitOver ? error.why : error);
   try {
+    // stopped while the PC was asked which one it is: no window is asked for after Stop waiting
     expect(await why(() => false)).toBe("ended");
     expect(pc.asked).toEqual(["/api/health"]);
     pc.asked.length = 0;
@@ -171,8 +174,10 @@ test("which PC answers is read from its health, and from the hosted app's page w
   try {
     expect(await pcAnswers("pc-1")).toBe(true);
     expect(await pcAnswers("pc-2")).toBe(false);
+    // an Ovis that does not tell its ID: nothing says which PC this is
     health = { web_ui: { boot_id: "boot", revision: null } };
     await expect(pcAnswers("pc-1")).rejects.toThrow("did not say which PC it is");
+    // the hosted app's page names the PC it reaches
     Object.defineProperty(globalThis, "location", { configurable: true, writable: true, value: { pathname: `/s/${deriveServerId(importPublicKey(exportPublicKey(generateKeyPair().publicKey)))}/`, origin: "http://localhost" } });
     const named = pagePc();
     expect(named).not.toBeNull();

@@ -28,6 +28,7 @@ export function PushTestControls({ onEnable }: { onEnable: () => Promise<PushAct
       const result = await testDevicePush((tested) => { endpoint = tested; });
       return { result, endpoint: result === "missing" ? null : endpoint };
     } catch (error) {
+      // gone: the push service retired the endpoint; Turn alerts on again subscribes this device anew
       const code = error instanceof ApiError ? error.code : null;
       // a watching device may receive alerts but never send one: the line says so, and Send test stays unavailable
       const result: PushActionResult = code === "subscription_not_found" ? "missing" : code === "subscription_gone" ? "gone" : code === "read_only" ? "read-only" : "failed";

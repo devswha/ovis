@@ -131,6 +131,8 @@
   text-overflow: ellipsis;
 }
 
+/* a branch comparison's identity, under the repository line (after it, so its wrapping wins by order):
+   the merge base its files are read from, in the dim register of the root beside the branch */
 .repo-changes-identity {
   white-space: normal;
 }

@@ -4,6 +4,7 @@ import { dismissPushNotice, repairFailed, usePushHealth, type PushActionResult }
 
 import "./PushHealthNotice.css";
 
+/** Brave's push service is off until its own setting turns it on. */
 export function repairFailureText(t: Translate, result: PushActionResult | null): string | null {
   if (!repairFailed(result)) return null;
   if (result === "no-worker") return t("This page's service worker is not running, so it cannot make a push subscription. Reload the page, then try again.");

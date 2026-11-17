@@ -6,6 +6,10 @@ import { useT } from "../lib/i18n.ts";
 import { usageName } from "../lib/usage.ts";
 import { UsageSignInDialog } from "./UsageSignInDialog.tsx";
 
+/**
+ * Signs in again to an expired account this PC lists: the same sign-in as Add account, in a new
+ * terminal tab, but in that account's own credential home, which the server finds by its key.
+ */
 export function UsageSignInAgain({ usage, onStarted, onFollow }: {
   readonly usage: ProviderUsage;
   readonly onStarted: (paneId: string) => void;

@@ -1,3 +1,8 @@
+/**
+ * Signing in from the desktop app (app/electron/src/accountSignIn.ts): the app names the account
+ * service and carries the provider's return from the system browser over its loopback server; the
+ * page finishes the sign-in itself with the PKCE verifier it kept, as a browser tab does.
+ */
 import { beginSignIn, finishOwnSignIn } from "./signin.ts";
 import { ACCOUNT_PROVIDERS } from "./store.ts";
 import type { AccountProvider, AccountSession, AccountStore } from "./store.ts";
@@ -5,6 +10,7 @@ import type { AccountProvider, AccountSession, AccountStore } from "./store.ts";
 export interface DesktopAccountBridge {
   readonly service: string;
   readonly providers?: readonly string[];
+  /** a loopback redirect for one sign-in */
   start(): Promise<string>;
   open(url: string): Promise<string>;
 }
@@ -20,6 +26,7 @@ export function desktopProviders(bridge: DesktopAccountBridge): AccountProvider[
   return offered.length > 0 ? offered : ["github"];
 }
 
+/** `link`: adds the provider to the signed-in account (AccountService.addMethod), redeemed with its access token. */
 export async function desktopSignIn(provider: AccountProvider, bridge: DesktopAccountBridge, store: AccountStore, link?: { linkToken: string; bearer: string }): Promise<AccountSession> {
   const redirectUri = await bridge.start();
   const url = await beginSignIn(provider, { store, service: bridge.service, redirectUri, ...(link ? { linkToken: link.linkToken } : {}) });

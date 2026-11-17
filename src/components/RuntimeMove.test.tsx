@@ -83,6 +83,8 @@ describe("the move to herdr-core where herdr-core is missing", () => {
   });
 });
 
+// The dialog while the move waits for busy panes: each shell running a command can be ended there,
+// an agent only opened.
 describe("ending busy panes from the move's wait", () => {
   const panes: MovePane[] = [
     { pane_id: "p1", cwd: "/demo", name: null, verdict: { kind: "busy", reason: "command_running", agent: null, command: "top" } },
@@ -135,6 +137,7 @@ describe("ending busy panes from the move's wait", () => {
     await press(button("End all and move now"));
     expect(posts()).toEqual([{ method: "POST", path: "/api/runtime/move/stop-all", body: {} }]);
     expect(text(renderer!.root)).toContain("Ends 2 running commands. Unsaved work may be lost.");
+    // the confirm names each pane the token covers (its command and folder), not what the last poll showed
     const covered = renderer!.root.find((node) => node.props.className === "runtime-move-confirm-list").findAll((node) => node.type === "li").map(text);
     expect(covered).toEqual(["top · /demo", "python3 · /demo/site"]);
 

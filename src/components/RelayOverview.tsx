@@ -182,6 +182,7 @@ export function RelayOverview(props: RelayOverviewProps) {
     void Promise.resolve(read).then(() => landed("read"), () => landed("read"));
   };
   const providerName = mode === "account" && provider !== undefined && error === null ? PROVIDER_NAMES[provider] : null;
+  // a PC's own page signs in through a device flow, which Apple has none of: such an account is not told to sign in there with Apple
   const pcCanSignIn = provider !== undefined && (DEVICE_PROVIDERS as readonly string[]).includes(provider);
 
   const model = pcs === null ? null : dashboardModel(pcs, { label: meLabel ?? t("This device"), now, ...(pcStatus ? { status: pcStatus } : {}) }, defaultRelay);

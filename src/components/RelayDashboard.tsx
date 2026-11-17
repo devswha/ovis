@@ -28,6 +28,7 @@ export interface RelayDashboardProps {
   onSignIn?: () => void; onSignOut?: () => void; onLeave?: () => void;
   onDeleteAccount?: () => void;
   deleteError?: string;
+  /** which sign-in `account` is (its sign_in_id): Devices' questions asked under one are dropped under the next */
   signedInAs?: string;
 }
 

@@ -1,3 +1,7 @@
+/**
+ * A git worktree from a workspace's row menu, as herdr's own prefix+shift+g makes one.
+ * A checkout git has lost (prunable) is listed but not offered.
+ */
 import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent } from "react";
 import { createPortal } from "react-dom";
 import { GitBranch, X } from "lucide-react";
@@ -166,6 +170,8 @@ export function WorktreeDialog({ mode, workspace, machineName, onClose, onOpened
     if (wasAdding.current && !refreshing) { wasAdding.current = false; picker.current?.focus(); }
   }, [adding, refreshing]);
   const agentReads = useRef(latestRead());
+  // Its installer may still be editing the shell profile: until then the dialog says why and reads again
+  // (lib/latestRead.ts)
   const readingAgain = useRef<() => void>(() => undefined);
   useEffect(() => () => readingAgain.current(), []);
   const addedAgent = (kind: string): void => {

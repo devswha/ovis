@@ -116,6 +116,7 @@ describe("the PC's prompt for a device waiting for approval", () => {
   const left = (prompt: ReactTestInstance) => text(prompt.find((node) => node.props["data-testid"] === "relay-pairing-left")).trim();
 
   const SENTENCE = "{name} wants to add this PC to your account. Type {digits} on {name}, or check that {name} shows the same number, then press Approve here.";
+  /** a click a pointer made; one a key made has detail 0, the second of a double-click 2 */
   const POINTER = { detail: 1 };
   const KEY = { detail: 0 };
   const SECOND_CLICK = { detail: 2 };
@@ -130,6 +131,7 @@ describe("the PC's prompt for a device waiting for approval", () => {
   });
 
   it("keeps the whole sentence whatever the asking device calls itself", async () => {
+    // the label is the other device's to choose (shared/relay-mux.ts pairLabel limits its length only)
     for (const label of ["Hako's iPhone\u0000", "\u0000", "{digits}", "a {digits} b {name} c", "$& $1 $`"]) {
       const [prompt] = prompts(await show([request({ local_only: true, label })]));
       const drawn = sentence(prompt!);
@@ -274,6 +276,7 @@ describe("the PC's prompt for a device waiting for approval", () => {
     // prompt is outside that handler's reach, so Tab from it would go on to the page the dialog covers
     expect(takesFocus(new HTMLElement("history button", [], ["aria-modal"]) as never)).toBe(false);
     expect(takesFocus(new HTMLElement("native dialog button", [], ["dialog[open]"]) as never)).toBe(false);
+    // a frame's keys go to the page inside it
     for (const frame of ["iframe", "embed", "object"]) expect(takesFocus(inSettings(frame, [frame]) as never)).toBe(false);
     expect(takesFocus(new HTMLElement("sidebar row") as never)).toBe(false);
     expect(takesFocus(new HTMLElement("terminal", [], ["textarea"]) as never)).toBe(false);
@@ -281,6 +284,7 @@ describe("the PC's prompt for a device waiting for approval", () => {
   });
 
   it("takes nothing, and gives nothing back, when the prompt refuses the focus", async () => {
+    // under an inert pane column (a phone's open drawer) focus() does nothing
     inert = true;
     const root = await show([request()]);
     const node = nodeOf(prompts(root)[0]!);
@@ -320,6 +324,7 @@ describe("the PC's prompt for a device waiting for approval", () => {
     page.activeElement = node;
     await act(async () => { layer.props.onFocus({ relatedTarget: last, currentTarget: { contains: () => false } }); });
     await act(async () => { layer.props.onFocus({ relatedTarget: node, currentTarget: { contains: () => true } }); });
+    // approved by a key: Approve is disabled, then gone, and the browser drops the focus with a blur to nothing
     await act(async () => { layer.props.onBlur({ relatedTarget: null, currentTarget: { contains: () => false } }); });
     page.activeElement = page.body;
     await act(async () => { renderer!.unmount(); });
@@ -351,6 +356,7 @@ describe("the PC's prompt for a device waiting for approval", () => {
     expect(decided).toEqual([]);
     await act(async () => { approve().props.onClick(KEY); });
     expect(decided).toEqual([["/api/relay/pairing", { id: "p1", decision: "approve" }]]);
+    // a pointer's click waits too, but not as long: it is aimed by sight
     await act(async () => { jest.advanceTimersByTime(APPROVE_POINTER_GUARD_MS); });
     await act(async () => { prompts(root)[1]!.findAllByType("button")[0]!.props.onClick(POINTER); });
     expect(decided[1]).toEqual(["/api/relay/pairing", { id: "p2", decision: "approve" }]);
@@ -362,6 +368,8 @@ describe("the PC's prompt for a device waiting for approval", () => {
     await act(async () => { jest.advanceTimersByTime(5000); });
     await act(async () => { approveOf(prompts(root)[1]!).props.onClick(KEY); });
     expect(approved()).toEqual(["p2"]);
+    // it goes, the browser drops the focus, and the first prompt, which did not move, is handed it: a Tab and
+    // an Enter typed by habit then would press its Approve, whose own first second passed long ago
     page.activeElement = page.body;
     await act(async () => { renderer!.update(element([request()])); });
     expect(page.activeElement).toBe(nodeOf(prompts(root)[0]!));
@@ -408,11 +416,13 @@ describe("the PC's prompt for a device waiting for approval", () => {
     await act(async () => { first!.props.onClick({ ...KEY, timeStamp: ago(600) }); });
     await act(async () => { first!.props.onClick({ ...POINTER, timeStamp: ago(600) }); });
     expect(approved()).toEqual([]);
+    // the click a key makes may be stamped when it is made: the key's own press counts
     await act(async () => { second!.props.onKeyDown({ key: "Enter", repeat: false, timeStamp: ago(600) }); });
     await act(async () => { second!.props.onClick({ ...KEY, timeStamp: ago(0) }); });
     await act(async () => { second!.props.onPointerDown({ timeStamp: ago(600) }); });
     await act(async () => { second!.props.onClick({ ...POINTER, timeStamp: ago(0) }); });
     expect(approved()).toEqual([]);
+    // a press belongs to the click right after it, on its own button, and to no later one
     await act(async () => { second!.props.onClick({ ...KEY, timeStamp: ago(0) }); });
     expect(approved()).toEqual(["p2"]);
     await act(async () => { third!.props.onClick({ ...POINTER, timeStamp: ago(400) }); });
@@ -422,6 +432,7 @@ describe("the PC's prompt for a device waiting for approval", () => {
 
   it("takes an input to be at most five seconds old, and one that does not say as made now", () => {
     expect(inputAge(1000, 1600)).toBe(600);
+    // a clock of the events that runs behind the page's would refuse every approval for good
     expect(inputAge(1000, 60_000)).toBe(INPUT_AGE_MAX_MS);
     expect(inputAge(2000, 1600)).toBe(0);
     for (const none of [undefined, 0, -1, Number.NaN, "12"]) expect(inputAge(none, 1600)).toBe(0);
@@ -510,6 +521,7 @@ describe("the PC's prompt for a device waiting for approval", () => {
   it("still approves and declines through decideRelayPairing", async () => {
     const root = await show([request(), request({ id: "p2", label: "desk2", local_only: true })]);
     const [first, second] = prompts(root);
+    // declining is never held back
     await act(async () => { second!.findAllByType("button")[1]!.props.onClick(KEY); });
     await act(async () => { jest.advanceTimersByTime(APPROVE_POINTER_GUARD_MS); });
     await act(async () => { first!.findAllByType("button")[0]!.props.onClick(POINTER); });

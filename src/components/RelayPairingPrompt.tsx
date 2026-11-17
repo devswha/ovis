@@ -72,6 +72,7 @@ export function takesFocus(active: Element | null): boolean {
  * (`inputAge`).
  */
 export const APPROVE_KEY_GUARD_MS = 1000;
+/** The same for a pointer, which is aimed by sight: a click on its way to what the prompt now covers, or to the prompt that was in its place. */
 export const APPROVE_POINTER_GUARD_MS = 500;
 
 /**
@@ -125,9 +126,11 @@ export function RelayPairingPrompt({ pairings }: { pairings: readonly RelayPairi
 
   const layer = useRef<HTMLDivElement>(null);
   const prompts = useRef(new Map<string, HTMLDivElement>());
+  /** when each prompt arrived, last moved to another place in the stack or was last handed the focus: Approve's guards count from it */
   const since = useRef(new Map<string, number>());
   /** when the focus last came into each prompt from outside it: Approve's guard for keys counts from it too */
   const entered = useRef(new Map<string, number>());
+  /** the key or the pointer press on an Approve that its next click comes of, and when it was made (the event's `timeStamp`) */
   const pressed = useRef<{ id: string; key: boolean; at: number } | null>(null);
   const places = useRef(new Map<string, number>());
   const held = useRef(false);
@@ -150,11 +153,13 @@ export function RelayPairingPrompt({ pairings }: { pairings: readonly RelayPairi
     if (!node) return;
     const before = held.current ? opener.current : active instanceof HTMLElement ? active : null;
     node.focus({ preventScroll: true });
+    // refused under an inert pane column (a phone's open drawer): nothing was taken, so nothing goes back
     if (document.activeElement !== node) return;
     opener.current = before;
     held.current = true;
     // handed the focus, not walked to: the next keys may be habit (Tab, Enter), so its guard starts again
     since.current.set(next.id, at);
+    // A stack that moved for it put other prompts under the pointer, so theirs start again too
     const scrolled = layer.current?.scrollTop;
     node.scrollIntoView({ block: "nearest" });
     if (layer.current?.scrollTop !== scrolled) for (const moved of since.current.keys()) since.current.set(moved, at);
@@ -179,6 +184,7 @@ export function RelayPairingPrompt({ pairings }: { pairings: readonly RelayPairi
     const key = click.detail === 0;
     const press = pressed.current;
     pressed.current = null;
+    // aimed at whatever the first click pressed, which may be gone with this prompt in its place
     if (click.detail > 1) return;
     const arrived = since.current.get(id);
     if (arrived === undefined) return;
@@ -207,6 +213,7 @@ export function RelayPairingPrompt({ pairings }: { pairings: readonly RelayPairi
       {pairings.map((pairing, index) => {
         const deciding = busy?.id === pairing.id ? busy.decision : null;
         const digits = <strong className="relay-pairing-digits">{`${pairing.digits.slice(0, 3)} ${pairing.digits.slice(3)}`}</strong>;
+        // the device this PC is added from shows an input, not digits (AddPcSheet): its person types this PC's there
         const [before, after] = pairing.local_only
           ? aroundDigits(t("{name} wants to add this PC to your account. Type {digits} on {name}, or check that {name} shows the same number, then press Approve here."), pairing.label)
           : [`${t("{name} wants to pair through the relay. Approve it only if its screen shows", { name: pairing.label })} `, ""];

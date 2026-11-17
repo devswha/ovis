@@ -45,6 +45,8 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
   const errorRef = useRef(onError); errorRef.current = onError;
   const refreshRef = useRef<() => void>(() => {});
   const writeRef = useRef<(offset: number) => void>(() => {});
+  // Old bridges ignore unknown request fields and would scroll on an automatic search.
+  // Only a new explicit result advertises the no-jump range response contract.
   const query = interactive && search && Array.isArray(search.result.matches) && search.result.scroll !== undefined ? search.query : "";
 
   useEffect(() => {
@@ -129,7 +131,7 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
         let found: PaneFindResponse | null = null;
         if (query) {
           try { found = await api.findPane({ pane_id: paneId, query, direction: "forward", jump: false }); }
-          catch {}
+          catch { /* Moving output can invalidate search while its scroll metrics remain useful. */ }
         }
         const metrics = found?.scroll ?? await api.fetchPaneScroll(paneId);
         if (!alive || revision !== version || cols !== terminal.cols || rows !== terminal.rows) return;
@@ -141,6 +143,7 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
           scrollRef.current = metrics; metricsOutput = output; metricsAt = startedAt;
         }
         data = output === outputVersion ? found : null;
+        // also the box: a pane shown again by its visibility style, not its size, gets no ResizeObserver call
         paint();
         if (heldPage && validScroll(metrics) && (output === outputVersion || (!heldPage.strict && heldPage.at <= startedAt))) {
           const held = heldPage;
@@ -210,10 +213,15 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
       const metrics = scrollRef.current;
       if (!interactive || !alive || viewportIntent.isSearching() || !showing()) return;
       if (validScroll(metrics) && metrics.max_offset_from_bottom === 0) {
+        // keys for the program only on metrics read after its latest output: it may just have left
+        // its alternate screen, and the shell behind it has history to scroll instead
         if (metricsOutput !== outputVersion) { holdPage(direction, true); return; }
         onApplicationPage?.(direction);
         return;
       }
+      // metrics that output has overtaken and that are older than the busy cadence (the follow pace reads
+      // them up to 2 s apart): the program may have entered its alternate screen since, so read before
+      // choosing herdr's scroll over the program's page keys
       if (!fresh && validScroll(metrics) && metricsOutput !== outputVersion && Date.now() - metricsAt > SCROLL_POLL_BUSY_MS) {
         holdPage(direction, false); return;
       }
