@@ -474,8 +474,12 @@ counts as a secret reference. A trial on 2026-11-17 observed why: GitHub refuses
 case, and matrix axes or job ids that differ only in case, but reads a matrix include key `OS` as the axis
 `os` (a job then waited for a `self-hosted` runner), expression contexts and hosted labels without regard to
 case; the test resolves matrix axes the same way and refuses the rest itself. A permission value other than
-`read`, `none` or `read-all` counts as write. A Pages run is found by the `pages` write permission as well
-as by the deploy and upload actions under any spelling GitHub resolves to them. It reads runner labels, actions and
+`read`, `none` or `read-all` counts as write. A Pages run is found by the `pages` write permission, by the
+deploy and upload actions (recognised by owner/repo whatever path follows, with `.` and empty pieces
+dropped, in any case), by the `github-pages` environment, and by a job that holds `id-token: write` together
+with a secret. The limit: a deployment made with a credential from a secret by a job that shows none of
+these is not found as a Pages run; the first rule still keeps that job on a hosted runner, and the second
+pull request applies the whole-run rule to every run that publishes or signs. It reads runner labels, actions and
 their inputs; it does not inspect shell commands or scripts for cache access.
 The hosted labels on the list are the ones the covered jobs use: `ubuntu-24.04`, `ubuntu-24.04-arm`,
 `windows-latest`, `windows-2025`, `macos-15`, `macos-15-intel` and `macos-latest`. For `ubuntu-24.04` the
