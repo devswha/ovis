@@ -20,6 +20,10 @@ import { GITHUB_HOSTED_LABELS, parseWorkflow, root, topLevelTerms, unreadWorkflo
 //   `${{ inputs.hosted_only && 'none' || ... }}` under such a call; actions/cache and actions/cache/restore only with
 //   `!inputs.hosted_only` as a top-level `&&` term of their `if`, under such a call); every action is one of
 //   REVIEWED_ACTIONS at its exact reference. It fails closed on any other form, whatever that form would evaluate to.
+// GitHub reads keys and contexts without regard to case where this test reads them exactly, so: a matrix axis is resolved
+// case-insensitively over the matrix and its include entries; a key the tests read written in another case, and sibling
+// keys that differ only in case, fail; a permission value other than read, none or read-all counts as write; a runner
+// label and an action reference pass only as the exact listed string.
 // It reads runner labels, actions and their inputs only: it does not inspect shell commands or scripts for cache access.
 // That GitHub gives a job asking only for `ubuntu-24.04` or `ubuntu-latest` to its own runners, even when a self-registered
 // runner carries that label, was observed by a trial on 2026-11-17 (14 of 14 jobs); it is not documented by GitHub. The
@@ -58,8 +62,16 @@ const events = (on: unknown): Record<string, { inputs?: Record<string, { type?: 
   (typeof on === "string" ? { [on]: null } : Array.isArray(on) ? Object.fromEntries(on.map((event: string) => [event, null])) : (on as Record<string, null>));
 const calledFile = (job: AnyJob): string | undefined => /^\.\/\.github\/workflows\/(.+\.yml)$/.exec(job.uses ?? "")?.[1];
 const action = (uses: string): string => uses.replace(/@.*/, "");
-const writes = (permissions: Permissions): string[] =>
-  permissions === "write-all" ? ["write-all"] : permissions === "read-all" ? [] : Object.entries(permissions).filter(([, access]) => access === "write").map(([scope]) => `${scope}: write`);
+/** The write scopes a permissions value grants: anything but an exact read-only form (`read-all`, `{}`, a scope's `read` or `none`) counts as write, so `Write`, `WRITE-ALL`, a typo or an expression do. */
+const writes = (permissions: Permissions): string[] => {
+  const value: unknown = permissions;
+  if (value === "read-all") return [];
+  if (value === "write-all") return ["write-all"];
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return [`permissions ${JSON.stringify(value)} (counted as write)`];
+  return Object.entries(value)
+    .filter(([, access]) => access !== "read" && access !== "none")
+    .map(([scope, access]) => (access === "write" ? `${scope}: write` : `${scope}: ${JSON.stringify(access)} (counted as write)`));
+};
 
 /**
  * The write scopes `job`'s token can hold: its own permissions, else its workflow's. With neither, the repository's
@@ -95,7 +107,8 @@ function secretReferences(value: unknown, key = ""): string[] {
     return [...span.matchAll(SECRET)].map((match) => match[0].replace(/\s+/g, ""));
   }
   if (Array.isArray(value)) return value.flatMap((entry) => secretReferences(entry));
-  if (typeof value === "object" && value !== null) return Object.entries(value).flatMap(([name, entry]) => secretReferences(entry, name));
+  // a mapping's keys are scanned as well as its values: GitHub evaluates an expression in a key of `env`, say
+  if (typeof value === "object" && value !== null) return Object.entries(value).flatMap(([name, entry]) => [...secretReferences(name), ...secretReferences(entry, name)]);
   return [];
 }
 
@@ -106,21 +119,35 @@ function privileges(workflows: Workflows, file: string, job: AnyJob): string[] {
   return [...reasons, ...new Set([...secretReferences(workflows[file]!.env ?? {}), ...secretReferences(job)])];
 }
 
+/**
+ * The values `matrix.<axis>` can take. GitHub matches the axis's name case-insensitively in the matrix and in every
+ * include entry (an `OS` entry fills the `os` axis), and exclude never narrows what this lists. Null when the matrix can
+ * give anything else: the matrix, an axis or include from an expression, an include entry without the axis where the
+ * matrix has none, `include`/`exclude` in another case, or two keys of one mapping that differ only in case.
+ */
+function matrixValues(matrix: unknown, axis: string): unknown[] | null {
+  const mapping = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+  const twins = (value: Record<string, unknown>): boolean => new Set(Object.keys(value).map((key) => key.toLowerCase())).size !== Object.keys(value).length;
+  const same = (key: string): boolean => key.toLowerCase() === axis.toLowerCase();
+  if (!mapping(matrix) || twins(matrix)) return null;
+  if (Object.keys(matrix).some((key) => ["include", "exclude"].includes(key.toLowerCase()) && key !== key.toLowerCase())) return null;
+  const include = matrix.include ?? [];
+  if (!Array.isArray(include) || !include.every((entry) => mapping(entry) && !twins(entry))) return null;
+  const bases = Object.entries(matrix).filter(([key]) => key !== "include" && key !== "exclude" && same(key)).map(([, values]) => values);
+  if (!bases.every((values) => Array.isArray(values))) return null;
+  // an include entry without the axis adds a combination of its own when the matrix has no such axis to merge into
+  if (bases.length === 0 && include.some((entry) => !Object.keys(entry).some(same))) return null;
+  return [...(bases as unknown[][]).flat(), ...include.flatMap((entry) => Object.entries(entry).filter(([key]) => same(key)).map(([, value]) => value))];
+}
+
 /** Whether `job` names a hosted label literally, or a matrix axis whose every value is one. */
 function hostedLiteral(job: AnyJob): boolean {
   const runsOn = job["runs-on"];
   if (typeof runsOn !== "string") return false;
   if (GITHUB_HOSTED_LABELS.includes(runsOn)) return true;
   const axis = /^\$\{\{\s*matrix\.([\w-]+)\s*\}\}$/.exec(runsOn)?.[1];
-  const matrix = job.strategy?.matrix;
-  if (axis === undefined || typeof matrix !== "object") return false;
-  const base = matrix[axis];
-  if (base !== undefined && !Array.isArray(base)) return false;
-  const include = matrix.include ?? [];
-  // an include entry without the axis adds a combination of its own when the matrix has no such axis to merge into
-  if (base === undefined && include.some((entry) => !(axis in entry))) return false;
-  const values = [...((base as unknown[] | undefined) ?? []), ...include.filter((entry) => axis in entry).map((entry) => entry[axis])];
-  return values.length > 0 && values.every((value) => typeof value === "string" && GITHUB_HOSTED_LABELS.includes(value));
+  const values = axis === undefined ? null : matrixValues(job.strategy?.matrix, axis);
+  return values !== null && values.length > 0 && values.every((value) => typeof value === "string" && GITHUB_HOSTED_LABELS.includes(value));
 }
 
 type Pending = { file: string; job: string; runsOn: string; reasons: string[] };
@@ -172,9 +199,38 @@ function labelsOf(job: AnyJob): string[] {
   const prefixed = LABEL_FORM.exec(runsOn);
   if (prefixed !== null) return [prefixed[1]!];
   const axis = /^\$\{\{\s*matrix\.([\w-]+)\s*\}\}$/.exec(runsOn)?.[1];
-  const matrix = job.strategy?.matrix;
-  if (axis === undefined || typeof matrix !== "object") return [];
-  return [...((matrix[axis] as unknown[] | undefined) ?? []), ...(matrix.include ?? []).map((entry) => entry[axis])].filter((value): value is string => typeof value === "string");
+  return ((axis === undefined ? null : matrixValues(job.strategy?.matrix, axis)) ?? []).filter((value): value is string => typeof value === "string");
+}
+
+/**
+ * The mapping keys the workflow tests in scripts/ read, exactly as written, to decide anything (permission scopes
+ * included). GitHub reads many keys and contexts without regard to case; these tests do not.
+ */
+const READ_KEYS = [
+  "on", "jobs", "permissions", "actions", "attestations", "checks", "contents", "deployments", "discussions", "id-token", "issues", "models", "packages",
+  "pages", "pull-requests", "repository-projects", "security-events", "statuses", "runs-on", "environment", "secrets", "uses", "with", "env", "if",
+  "steps", "strategy", "matrix", "include", "exclude", "needs", "name", "run", "container", "services", "cache", "no-cache", "package-manager-cache",
+  "hosted_only", "inputs", "outputs", "runs", "default", "type", "workflow_call", "id",
+];
+
+/**
+ * Keys these tests would misread, whatever GitHub makes of them: one of READ_KEYS in another case (`Runs-On`,
+ * `Permissions`, `ID-Token`), and two sibling keys that differ only in case (job ids `build` and `Build` included). An
+ * environment variable's name is the user's own (`HOSTED_ONLY`), so only the twin rule applies under `env`.
+ */
+function keyProblems(file: string, value: unknown, path: string[] = []): string[] {
+  if (Array.isArray(value)) return value.flatMap((entry, index) => keyProblems(file, entry, [...path, String(index)]));
+  if (typeof value !== "object" || value === null) return [];
+  const keys = Object.keys(value);
+  const where = (key: string): string => `${file} ${[...path, key].join(".")}`;
+  const problems: string[] = [];
+  keys.forEach((key, index) => {
+    const read = path.at(-1) === "env" ? undefined : READ_KEYS.find((candidate) => candidate !== key && candidate.toLowerCase() === key.toLowerCase());
+    if (read !== undefined) problems.push(`${where(key)}: ${read} written in another case, which these tests read exactly`);
+    const twin = keys.slice(0, index).find((other) => other.toLowerCase() === key.toLowerCase());
+    if (twin !== undefined) problems.push(`${where(key)}: differs from its sibling ${twin} only in case`);
+  });
+  return [...problems, ...Object.entries(value).flatMap(([key, entry]) => keyProblems(file, entry, [...path, key]))];
 }
 
 /** The workflows whose own runs contain `file`'s jobs: itself when an event other than a call starts it, and its callers' roots. */
@@ -319,6 +375,11 @@ describe("jobs that hold a write permission, an environment or a secret", () => 
     ])).toEqual([".github/workflows/unsafe.yaml", ".github/workflows/Upper.YML", ".github/actions/b/action.yaml", ".github/actions/c/Action.yml"]);
   });
 
+  test("no workflow or action file writes a key these tests read in another case, or two keys that differ only in case", () => {
+    const files = [...readdirSync(dir).filter((name) => name.endsWith(".yml")).map((name) => `.github/workflows/${name}`), ".github/actions/setup-ci/action.yml"];
+    expect(files.flatMap((file) => keyProblems(file, Bun.YAML.parse(readFileSync(join(root, file), "utf8"))))).toEqual([]);
+  });
+
   test("the discovery reads a real tree: a symlinked workflow, action metadata or action folder is refused, not followed", () => {
     const base = mkdtempSync(join(tmpdir(), "privileged-jobs-"));
     scratch.push(base);
@@ -408,11 +469,45 @@ describe("jobs that hold a write permission, an environment or a secret", () => 
     ["refuses a secret after a quoted }} in the same expression", one({ "runs-on": LIGHT, env: { T: "${{ '}}' && secrets.T }}" } }), [`x.yml job: runs-on ${JSON.stringify(LIGHT)} with secrets.T`]],
     ["refuses a secret passed to a function after a quoted }}", one({ "runs-on": LIGHT, env: { T: "${{ format('}}', secrets.X) }}" } }), [`x.yml job: runs-on ${JSON.stringify(LIGHT)} with secrets.X`]],
     ["refuses a secret in a step's condition, an expression without braces", one({ "runs-on": LIGHT, steps: [{ if: "secrets.T != ''", run: "true" }] }), [`x.yml job: runs-on ${JSON.stringify(LIGHT)} with secrets.T`]],
+    ["refuses a matrix entry that names the runner axis in another case (GitHub fills os from OS)", one({ "runs-on": "${{ matrix.os }}", permissions: WRITE, strategy: { matrix: { os: ["ubuntu-24.04"], include: [{ OS: "self-hosted" }] } } }), [`x.yml job: runs-on ${JSON.stringify("${{ matrix.os }}")} with contents: write`]],
+    ["refuses two matrix axes that differ only in case", one({ "runs-on": "${{ matrix.os }}", permissions: WRITE, strategy: { matrix: { os: ["ubuntu-24.04"], OS: ["ubuntu-24.04"] } } }), [`x.yml job: runs-on ${JSON.stringify("${{ matrix.os }}")} with contents: write`]],
+    ["refuses include written in another case", one({ "runs-on": "${{ matrix.os }}", permissions: WRITE, strategy: { matrix: { os: ["ubuntu-24.04"], Include: [{ os: "self-hosted" }] } } as unknown as AnyJob["strategy"] }), [`x.yml job: runs-on ${JSON.stringify("${{ matrix.os }}")} with contents: write`]],
+    ["refuses the matrix context in another case: only the exact form is read", one({ "runs-on": "${{ MATRIX.os }}", permissions: WRITE, strategy: { matrix: { os: ["ubuntu-24.04"] } } }), [`x.yml job: runs-on ${JSON.stringify("${{ MATRIX.os }}")} with contents: write`]],
+    ["refuses the secrets context in capitals", one({ "runs-on": LIGHT, env: { T: "${{ SECRETS.T }}" } }), [`x.yml job: runs-on ${JSON.stringify(LIGHT)} with SECRETS.T`]],
+    ["refuses the secrets context in mixed case by index", one({ "runs-on": LIGHT, env: { T: "${{ Secrets['T'] }}" } }), [`x.yml job: runs-on ${JSON.stringify(LIGHT)} with Secrets['T']`]],
+    ["refuses every secret through TOJSON", one({ "runs-on": LIGHT, env: { T: "${{ TOJSON(secrets) }}" } }), [`x.yml job: runs-on ${JSON.stringify(LIGHT)} with secrets`]],
+    ["refuses a secret in an env key", one({ "runs-on": LIGHT, env: { "${{ secrets.T }}": "x" } }), [`x.yml job: runs-on ${JSON.stringify(LIGHT)} with secrets.T`]],
+    ["counts a permission value in another case as write", one({ "runs-on": LIGHT, permissions: { contents: "Write" } }), [`x.yml job: runs-on ${JSON.stringify(LIGHT)} with contents: "Write" (counted as write)`]],
+    ["counts a permission value from an expression as write", one({ "runs-on": LIGHT, permissions: { contents: "${{ inputs.access }}" } }), [`x.yml job: runs-on ${JSON.stringify(LIGHT)} with contents: "\${{ inputs.access }}" (counted as write)`]],
+    ["counts WRITE-ALL, or any permissions scalar but read-all, as write", one({ "runs-on": LIGHT, permissions: "WRITE-ALL" as Permissions }), [`x.yml job: runs-on ${JSON.stringify(LIGHT)} with permissions "WRITE-ALL" (counted as write)`]],
+    ["refuses a runs-on given as a group mapping", one({ "runs-on": { group: "g", labels: ["ubuntu-24.04"] } as unknown as string, permissions: WRITE }), ['x.yml job: runs-on {"group":"g","labels":["ubuntu-24.04"]} with contents: write']],
+    ["refuses a runs-on that YAML reads as a number", one({ "runs-on": 22.04 as unknown as string, permissions: WRITE }), ["x.yml job: runs-on 22.04 with contents: write"]],
+    ["reads a runner and permissions a YAML merge key supplies, and refuses them", { "x.yml": Bun.YAML.parse("on: push\npermissions: { contents: read }\nx-base: &base\n  runs-on: [self-hosted]\n  permissions: { contents: write }\njobs:\n  job:\n    <<: *base\n    steps: [{ run: 'true' }]\n") as AnyWorkflow }, ['x.yml job: runs-on ["self-hosted"] with contents: write']],
     ["refuses a call to another repository's workflow", one({ uses: "owner/repo/.github/workflows/deploy.yml@main", secrets: "inherit", permissions: WRITE }), ["x.yml job: calls owner/repo/.github/workflows/deploy.yml@main, which this test cannot read: only a workflow in ./.github/workflows/<name>.yml of this repository"]],
     ["refuses a full-path call to a workflow of this repository", one({ uses: "devswha/ovis/.github/workflows/ci.yml@main", permissions: WRITE }), ["x.yml job: calls devswha/ovis/.github/workflows/ci.yml@main, which this test cannot read: only a workflow in ./.github/workflows/<name>.yml of this repository"]],
     ["refuses a call to a .yaml workflow", one({ uses: "./.github/workflows/callee.yaml", secrets: "inherit" }), ["x.yml job: calls ./.github/workflows/callee.yaml, which this test cannot read: only a workflow in ./.github/workflows/<name>.yml of this repository"]],
     ["refuses a call to a workflow that is not there", one({ uses: "./.github/workflows/missing.yml" }), ["x.yml job: calls ./.github/workflows/missing.yml, which this test cannot read: only a workflow in ./.github/workflows/<name>.yml of this repository"]],
   ];
+  for (const label of ["Ubuntu-24.04", "UBUNTU-LATEST", "Self-Hosted", "ubuntu\u201124.04", "ubuntu-24.04 ", "ubuntu-24.04\u200b", "ubuntu-\uff12\uff14.04"]) {
+    test(`refuses the runner label ${JSON.stringify(label)}: only an exact listed label passes`, () => {
+      expect(privilegeProblems(one({ "runs-on": label, permissions: WRITE }))).toEqual([`x.yml job: runs-on ${JSON.stringify(label)} with contents: write`]);
+    });
+  }
+
+  const keyCases: [string, unknown, string[]][] = [
+    ["job ids that differ only in case", { jobs: { build: {}, Build: {} } }, ["x.yml jobs.Build: differs from its sibling build only in case"]],
+    ["runs-on in another case", { jobs: { a: { "Runs-On": "ubuntu-24.04" } } }, ["x.yml jobs.a.Runs-On: runs-on written in another case, which these tests read exactly"]],
+    ["a permission scope in another case", { permissions: { Contents: "read", "ID-Token": "write" } }, ["x.yml permissions.Contents: contents written in another case, which these tests read exactly", "x.yml permissions.ID-Token: id-token written in another case, which these tests read exactly"]],
+    ["permissions, environment, secrets and steps in another case", { jobs: { a: { Permissions: {}, Environment: "e", Secrets: "inherit", Steps: [] } } }, ["x.yml jobs.a.Permissions: permissions written in another case, which these tests read exactly", "x.yml jobs.a.Environment: environment written in another case, which these tests read exactly", "x.yml jobs.a.Secrets: secrets written in another case, which these tests read exactly", "x.yml jobs.a.Steps: steps written in another case, which these tests read exactly"]],
+    ["a call's input in another case", { jobs: { v: { uses: "./.github/workflows/ci.yml", with: { Hosted_Only: true } } } }, ["x.yml jobs.v.with.Hosted_Only: hosted_only written in another case, which these tests read exactly"]],
+    ["an environment variable's own name, but no twins there", { env: { HOSTED_ONLY: "x", A: "1", a: "2" } }, ["x.yml env.a: differs from its sibling A only in case"]],
+  ];
+  for (const [name, value, problems] of keyCases) {
+    test(`refuses keys these tests would misread: ${name}`, () => {
+      expect(keyProblems("x.yml", value)).toEqual(problems);
+    });
+  }
+
   for (const [name, workflows, problems] of named) {
     test(name, () => {
       expect(privilegeProblems(workflows)).toEqual(problems);
@@ -511,6 +606,11 @@ describe("a run that deploys Pages is GitHub-hosted and cacheless as a whole", (
     ["refuses a label of a hosted form that is not on the list", pages({ ...HOSTED_JOB, "runs-on": "ubuntu-99.99" }, { hosted_only: true }, HOSTED_JOB), [`${SIBLING}: runs-on "ubuntu-99.99" ${RUNS_ON}`]],
     ["refuses the hosted_only form outside a call that passes it", pages({ ...HOSTED_JOB, "runs-on": HOSTED_ONLY }, { hosted_only: true }, HOSTED_JOB), [`${SIBLING}: runs-on ${JSON.stringify(HOSTED_ONLY)} ${RUNS_ON}`]],
     ["refuses a called job whose call does not pass hosted_only", pages(HOSTED_JOB, undefined, { "runs-on": HOSTED_ONLY }), [`${CHECK}: runs-on ${JSON.stringify(HOSTED_ONLY)} ${RUNS_ON}`]],
+    ["refuses a matrix entry that names the runner axis in another case, in a Pages run", pages({ "runs-on": "${{ matrix.os }}", strategy: { matrix: { os: ["ubuntu-24.04"], include: [{ OS: "self-hosted" }] } } }, { hosted_only: true }, HOSTED_JOB), [`${SIBLING}: runs-on ${JSON.stringify("${{ matrix.os }}")} ${RUNS_ON}`]],
+    ["refuses a label in another case in a Pages run", pages({ ...HOSTED_JOB, "runs-on": "Ubuntu-24.04" }, { hosted_only: true }, HOSTED_JOB), [`${SIBLING}: runs-on "Ubuntu-24.04" ${RUNS_ON}`]],
+    ["refuses the hosted_only form with its context in another case: the reviewed form is exact", pages(HOSTED_JOB, { hosted_only: true }, { "runs-on": "${{ Inputs.Hosted_Only && 'ubuntu-24.04' || 'x' }}" }), [`${CHECK}: runs-on "\${{ Inputs.Hosted_Only && 'ubuntu-24.04' || 'x' }}" ${RUNS_ON}`]],
+    ["refuses a cache step's guard in another case", pages(HOSTED_JOB, { hosted_only: true }, cacheIf("always() && !Inputs.hosted_only")), [`${CHECK}: actions/cache if "always() && !Inputs.hosted_only" ${NO_TERM}`]],
+    ["refuses an action reference in another case", pages({ ...HOSTED_JOB, steps: [{ uses: "Actions/Checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" }] }, { hosted_only: true }, HOSTED_JOB), [`${SIBLING}: uses Actions/Checkout@3d3c42e5aac5ba805825da76410c181273ba90b1, which is not a reviewed action reference`]],
     ["refuses the hosted_only form followed by a second expression", pages(HOSTED_JOB, { hosted_only: true }, { "runs-on": "${{ inputs.hosted_only && 'ubuntu-24.04' || 'x' }}${{ '-evil' }}" }), [`${CHECK}: runs-on "\${{ inputs.hosted_only && 'ubuntu-24.04' || 'x' }}\${{ '-evil' }}" ${RUNS_ON}`]],
     ["refuses the hosted_only form followed by text", pages(HOSTED_JOB, { hosted_only: true }, { "runs-on": "${{ inputs.hosted_only && 'ubuntu-24.04' || 'x' }}-evil" }), [`${CHECK}: runs-on "\${{ inputs.hosted_only && 'ubuntu-24.04' || 'x' }}-evil" ${RUNS_ON}`]],
     ["refuses setup-ci's hosted_only form followed by a second expression", pages(HOSTED_JOB, { hosted_only: true }, { "runs-on": HOSTED_ONLY, steps: [{ uses: "./.github/actions/setup-ci", with: { cache: "${{ inputs.hosted_only && 'none' || 'save' }}${{ '' }}" } }] }), [`${CHECK}: setup-ci cache "\${{ inputs.hosted_only && 'none' || 'save' }}\${{ '' }}" is neither none nor the hosted_only form under a call that passes hosted_only: true`]],

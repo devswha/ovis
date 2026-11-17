@@ -466,8 +466,10 @@ listed label written literally, the `hosted_only` prefix under a call that passe
 setup-ci's `cache: none` (or its `hosted_only` form), cache steps whose condition has
 `!inputs.hosted_only` as a top-level `&&` term, and reviewed actions at their exact references. It
 also fails on a workflow or action file GitHub loads that does not end in `.yml` (a `.yaml` one), on a
-symlink anywhere in `.github/workflows` or `.github/actions` (never followed), and on a job that calls a
-workflow it cannot read (another repository's). It reads runner labels, actions and
+symlink anywhere in `.github/workflows` or `.github/actions` (never followed), on a job that calls a
+workflow it cannot read (another repository's), and on a key it reads written in another case or two keys
+that differ only in case (GitHub reads many of them without regard to case; a matrix axis it resolves the
+same way GitHub does). A permission value other than `read`, `none` or `read-all` counts as write. It reads runner labels, actions and
 their inputs; it does not inspect shell commands or scripts for cache access.
 The hosted labels on the list are the ones the covered jobs use: `ubuntu-24.04`, `ubuntu-24.04-arm`,
 `windows-latest`, `windows-2025`, `macos-15`, `macos-15-intel` and `macos-latest`. For `ubuntu-24.04` the

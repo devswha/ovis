@@ -1,3 +1,6 @@
+// Neither security rule (scripts/privileged-jobs-workflow.test.ts) uses this helper: it serves light-runner-workflow.test.ts
+// only. It evaluates both sides of && and || before choosing, and does not implement format()'s {{ }} escapes: do not
+// build a guard on it.
 // GitHub Actions expressions, the part of the language the workflows use, evaluated against contexts a test gives:
 // literals, context paths (case-insensitive), `!`, `==`/`!=` (strings compared ignoring case, mixed types as numbers),
 // `&&`/`||` (which return an operand, as GitHub's do), and fromJSON, toJSON, contains, startsWith, endsWith, format and
