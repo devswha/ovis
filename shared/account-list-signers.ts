@@ -9,10 +9,11 @@
  * Every function here takes what a caller hands it once, when it is called: one reader for each
  * type (plainPlace, plainRow, plainRows, plainState, plainTexts, plainMember, plainAnswer,
  * plainHeld) reads each field once, by the name its type gives it, into plain frozen data of this
- * file's own, and from then on the function reads that copy alone. So nothing decides twice: not
- * what a caller's object says at a second reading, and not what it says once a signature is being
- * awaited. Nothing is taken by a spread, which takes an object's own enumerable fields alone: a
- * field may as well be inherited, or the object's own and not enumerable.
+ * file's own, and a list of bytes into a copy of it. From then on the function reads those copies
+ * alone. So nothing decides twice: not what a caller's object says at a second reading, and not
+ * what it says once a signature is being awaited. Nothing is taken by a spread, which takes an
+ * object's own enumerable fields alone: a field may as well be inherited, or the object's own and
+ * not enumerable.
  */
 import {
   ListEntryError, entryFromText, entryHash, entryHolds, firstState, isListHash, isListKey, readBody,
@@ -56,7 +57,7 @@ export interface SignerRow {
  * carries is left out, as readSignersState leaves it out.
  */
 export interface SignersState {
-  /** The level it was made by. After an update the member replays every entry it kept by its new level. */
+  /** The level it was made by: a whole number from 1. After an update the member replays every entry it kept by its new level. */
   readonly level: number;
   /** The list id. */
   readonly list: string;
@@ -78,17 +79,18 @@ export interface ListMember {
 
 /**
  * For a member of a higher level: what the kind of an entry it reads lets in on a proof of its own,
- * as the key and the power that kind names, or null. Level 1
- * defines no such kind, so a member of level 1 passes none. A proof lets in the signer of its own
- * entry only, and only a key that was never made a signer in any way. So it is asked for an entry
- * the member reads, also while it is behind, that carries no `adds` and no `ends` and whose signer
- * has no row; it gets that entry and the state it is judged on, both as this file holds them, to
- * read while it is asked. It must not keep that state: inside one answer, or one replay, the rows
- * are copied when an entry first writes one and are written from then on, so the rows of the
- * entries after this one may be written into the object it was handed. When it names that
- * signer, the key is a signer from the next entry on, and the entry is read and is part of the list
- * for that member. In every other case the entry is one whose signer is no signer: passed over,
- * and loose.
+ * as the key and the power that kind names, or null. Level 1 defines no such kind, so a member of
+ * level 1 passes none, and is asked for none: a proof is asked only above level 1. A proof lets in
+ * the signer of its own entry only, and only a key that was never made a signer in any way. So it
+ * is asked for an entry the member reads, also while it is behind, that carries no `adds` and no
+ * `ends` and whose signer has no row; it gets a copy of that entry of its own, bytes and all, and
+ * the state the entry is judged on, to read while it is asked. Whatever it does to that copy, then
+ * or later, changes no entry that comes back. It must not keep that state: inside one answer, or
+ * one replay, the rows are copied when an entry first writes one and are written from then on, so
+ * the rows of the entries after this one may be written into the object it was handed. When it
+ * names that signer, the key is a signer from the next entry on, and the entry is read and is part
+ * of the list for that member. In every other case the entry is one whose signer is no signer:
+ * passed over, and loose.
  */
 export type KeyProof = (entry: HeldEntry, state: SignersState) => { readonly key: string; readonly power: SignerPower } | null;
 
@@ -156,9 +158,17 @@ function rowOf(signers: SignersState["signers"], key: string): SignerRow | null 
   return Object.hasOwn(signers, key) ? (signers[key] ?? null) : null;
 }
 
+const isCount = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+/** A level: a whole number from 1. The functions that make a state and readSignersState hold to this one rule, so a state that one of them gives has a level that the other takes. */
+const isLevel = (value: unknown): value is number => isCount(value) && value >= 1;
+/** A level that is no level is the caller's mistake: a RangeError, and no state is made. */
+function mustBeLevel(level: number): void {
+  if (!isLevel(level)) throw new RangeError(`A level is a whole number from 1, not ${level}`);
+}
+
 /*
  * The readers: what a caller hands in, taken once. Each reads every field of its type once, by its
- * name, into a new frozen object of this file's own.
+ * name, into a new frozen object of this file's own, and a list of bytes into a copy of it.
  */
 
 /** A place: its seq and its hash. */
@@ -177,9 +187,10 @@ function plainRows(signers: SignersState["signers"]): SignersState["signers"] {
   return Object.freeze(Object.fromEntries(rows));
 }
 
-/** A state: its six members, its footing as a place and its rows as rows. */
+/** A state: its six members, its footing as a place and its rows as rows. Its level is a level, or it is no state of this file's. */
 function plainState(state: SignersState): SignersState {
   const { level, list, footing, needs, behind, signers } = state;
+  mustBeLevel(level);
   return Object.freeze({ level, list, footing: plainPlace(footing), needs, behind, signers: plainRows(signers) });
 }
 
@@ -201,7 +212,7 @@ function plainAnswer(answer: ShownAnswer): ShownAnswer {
   return Object.freeze({ after, entries: plainTexts(entries), head: plainPlace(head) });
 }
 
-/** A held entry: its entry, every field of its body, its hash and its list id. The bytes are the same bytes: no function of this file reads them. */
+/** A held entry: its entry, every field of its body, its hash and its list id, and a copy of each list of bytes: of its body, of its signature and of the value of each field of its own. */
 function plainHeld(held: HeldEntry): HeldEntry {
   const { entry, body, hash, list } = held;
   const { body: bytes, signature } = entry;
@@ -212,7 +223,7 @@ function plainHeld(held: HeldEntry): HeldEntry {
     const field = own[at];
     if (field === undefined) continue;
     const { name, value } = field;
-    fields.push(Object.freeze({ name, value }));
+    fields.push(Object.freeze({ name, value: new Uint8Array(value) }));
   }
   const plain: { -readonly [Name in keyof EntryBody]: EntryBody[Name] } = { issued_at, kind, list: of, prev, seq, signer, v, own: Object.freeze(fields) };
   if (adds !== undefined) {
@@ -220,7 +231,7 @@ function plainHeld(held: HeldEntry): HeldEntry {
     plain.adds = Object.freeze({ key, power });
   }
   if (ends !== undefined) plain.ends = ends;
-  return Object.freeze({ entry: Object.freeze({ body: bytes, signature }), body: Object.freeze(plain), hash, list });
+  return Object.freeze({ entry: Object.freeze({ body: new Uint8Array(bytes), signature: new Uint8Array(signature) }), body: Object.freeze(plain), hash, list });
 }
 
 /** The power of a key that is a signer in this state, or null. */
@@ -242,7 +253,9 @@ function stateOfFirst({ body, hash }: HeldEntry, level: number): SignersState {
 
 /** The signers' rules: entry 0 makes its own signer the first signer, with power `full`; it is the footing at the least, and its `v` is the first that the list needs. */
 export function firstSignersState(first: HeldEntry, level: number): SignersState {
-  return stateOfFirst(plainHeld(first), level);
+  const held = plainHeld(first);
+  mustBeLevel(level);
+  return stateOfFirst(held, level);
 }
 
 /** The signers' rules for `adds` and for `ends`, both judged on the state before the entry: the code of the first clause that is not lawful (for `adds`, then for `ends`; in each the signer's power, then the key), or null. */
@@ -273,7 +286,8 @@ interface Judged {
  * What a member does with one entry that holds on this state's list, by the signers' rules. The
  * state and the entry are this file's own copies. It turns on no row but those the entry names
  * (its signer's, that of the key it adds, that of the key it ends), which it looks up before a
- * proof is asked, and it writes none. What a proof answers is read once.
+ * proof is asked, and it writes none. A proof is asked only above level 1, is handed a copy of the
+ * entry of its own (plainHeld), and what it answers is read once.
  */
 function judge(state: SignersState, held: HeldEntry, proof: KeyProof | undefined): Judged {
   const { adds, ends, seq, signer, v } = held.body;
@@ -286,7 +300,7 @@ function judge(state: SignersState, held: HeldEntry, proof: KeyProof | undefined
   if (power === null) {
     const passedOver: Judged = { outcome: { outcome: "passed_over", code: "signer_unknown", loose: true }, loose: true, needs, behind, rows: [] };
     // Nobody the member knows has vouched for it, unless a kind it reads lets this entry's own signer in on a proof, and only a key that has no row.
-    const asked = reads && adds === undefined && ends === undefined && proof !== undefined && own === null ? proof(held, state) : null;
+    const asked = reads && level > 1 && adds === undefined && ends === undefined && proof !== undefined && own === null ? proof(plainHeld(held), state) : null;
     if (asked === null) return passedOver;
     const { key, power: lets } = asked;
     if (key !== signer) return passedOver;
@@ -328,8 +342,8 @@ function stateAfter(state: SignersState, held: HeldEntry, judged: Judged, signer
  * if not, the signers after it and whether the member can read it. An entry that one of the signers
  * signed moves the footing, also when it is passed over for a field that is not lawful. It turns on
  * no row but those the entry names: its signer's, and those of the keys in `adds` and `ends`. The
- * state and the entry are taken once (plainState, plainHeld): a proof is handed those copies, and
- * the state it gives is made of them. It changes nothing it was given.
+ * state and the entry are taken once (plainState, plainHeld), and the state it gives is made of
+ * those copies. It changes nothing it was given.
  */
 export function judgeEntry(state: SignersState, held: HeldEntry, proof?: KeyProof): { readonly outcome: TakenOutcome; readonly state: SignersState } {
   const given = plainState(state);
@@ -389,7 +403,7 @@ type Fit =
   | { readonly fit: "elsewhere" }
   | { readonly fit: "no"; readonly code: ListRefusalCode };
 
-/** Whether an entry holds on the entry before it. An entry that holds is made frozen data like every held entry here: a proof is handed it, and it is read again for the entry after it. */
+/** Whether an entry holds on the entry before it. An entry that holds is made frozen data like every held entry here, with bytes of its own: it comes back to the caller and is read again for the entry after it, and a proof is handed another copy. */
 async function fits(entry: Entry, before: HeldEntry): Promise<Fit> {
   let code: ListRefusalCode;
   try {
@@ -449,8 +463,9 @@ async function fits(entry: Entry, before: HeldEntry): Promise<Fit> {
  * last entry it took, and what it dropped stays dropped. A member's own entry comes into its copy
  * only here, when the log shows it at its place, never from the answer to its post.
  *
- * A place the member does not hold for the answer to follow, or a state whose footing is not the
- * member's own entry at that place, is the caller's mistake: a RangeError, and nothing is judged.
+ * A place the member does not hold for the answer to follow, a state whose footing is not the
+ * member's own entry at that place, or one whose level is no level, is the caller's mistake: a
+ * RangeError, and nothing is judged.
  *
  * The member and the answer are taken once, when the answer arrives (plainMember, plainAnswer),
  * and nothing of either is read again. What comes back is built from those copies, so it is of
@@ -546,11 +561,13 @@ export async function shownEntries(member: ListMember, answer: ShownAnswer, proo
  * showed it anything to be stuck on: each entry holds on the one before it (docs/account-list.md,
  * "When an entry holds"), or the replay stops there, with that entry's refusal. Its result either
  * took every entry it was given, or names where it stopped. The entries, the list id and the
- * proof are taken once, when it is called.
+ * proof are taken once, when it is called. A level that is no level is the caller's mistake: a
+ * RangeError.
  */
 export async function replayEntries(entries: readonly string[], level: number, options: { readonly given?: string; readonly proof?: KeyProof } = {}): Promise<ReplayResult> {
   const [text, ...rest] = plainTexts(entries);
   const { given, proof } = options;
+  mustBeLevel(level);
   if (text === undefined) return { member: null, took: [], stopped: null };
   let before: HeldEntry;
   try {
@@ -599,7 +616,6 @@ export function signingPlace(member: ListMember, shown: ListPlace): { readonly l
   return { list, prev: footing.hash, seq: footing.seq + 1 };
 }
 
-const isCount = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** A saved row, read again, for the key that names it; null for anything that has not its form. */
@@ -615,11 +631,35 @@ function readSignerRow(key: string, value: unknown, footing: number): SignerRow 
   return Object.freeze({ power, seq, by, ended });
 }
 
-/** A saved state, read again: the state when the value has its form and agrees with itself, null for anything else. It is the reader of a value of no known type: each field is read once, and the state it gives is frozen. */
+/**
+ * Whether a saved row's `by` can be what SignerRow says it is: the signer of the entry that made the
+ * row's key a signer. Entry 0's is its own key, which readSignerRow holds it to. Null is a proof's,
+ * so above level 1 only. Any other names a key that was a signer of power `full` at the row's
+ * place: its row came in before that place with power `full`, and was not ended before it. Above
+ * level 1 that key's row may also be a later one, or the row itself: a key that a proof made a
+ * signer can be added, by another key or by itself, after it added this row's key, and its row is
+ * then the one that `adds` gave it.
+ */
+function madeByItsSigner(rows: SignersState["signers"], row: SignerRow, level: number): boolean {
+  if (row.seq === 0) return true;
+  if (row.by === null) return level > 1;
+  const signer = rowOf(rows, row.by);
+  if (signer === null) return false;
+  if (signer.seq < row.seq) return signer.power === "full" && (signer.ended === null || signer.ended >= row.seq);
+  return level > 1 && signer.by !== null;
+}
+
+/**
+ * A saved state, read again: the state when the value has its form and agrees with itself, null
+ * for anything else. It is the reader of a value of no known type: each field is read once, and
+ * the state it gives is frozen. It takes every state that a function of this file gives from
+ * entries, or from a state that it takes and an entry that holds on that state's list; and a level
+ * that it takes, those functions take.
+ */
 export function readSignersState(value: unknown): SignersState | null {
   if (!isRecord(value)) return null;
   const { level, list, footing, needs, behind, signers } = value;
-  if (!isCount(level) || level < 1 || !isCount(needs) || needs < 1) return null;
+  if (!isLevel(level) || !isCount(needs) || needs < 1) return null;
   if (typeof list !== "string" || !isListHash(list)) return null;
   if (!isRecord(footing)) return null;
   const { seq, hash } = footing;
@@ -636,7 +676,7 @@ export function readSignersState(value: unknown): SignersState | null {
   }
   const all = Object.values(rows);
   if (all.filter((row) => row.seq === 0).length !== 1) return null;
-  // A row's `by` is null or the key of a row: whoever added a key was a signer itself. So it is a key in form too, and no name that every object answers to.
-  if (all.some((row) => row.by !== null && rowOf(rows, row.by) === null)) return null;
+  // Each row's `by` is what SignerRow says it is (madeByItsSigner). So it is null or the key of a row: a key in form, and no name that every object answers to.
+  if (!all.every((row) => madeByItsSigner(rows, row, level))) return null;
   return Object.freeze({ level, list, footing: Object.freeze({ seq, hash }), needs, behind, signers: Object.freeze(rows) });
 }
