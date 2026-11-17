@@ -7,6 +7,8 @@ import { errors as browserErrors, type Browser, type Page } from "playwright-cor
 import { herdrRpc, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
 import { openSettingsPage } from "./settings-page.ts";
 import { chromePath } from "./chrome-path.ts";
+// machine events stay on SSE here: the page watches its status events on /api/machines/events
+// (the socket transport has its own checks), also when this script runs on its own
 process.env["OVIS_MACHINE_EVENTS_WS"] = "0";
 
 export async function checkAlertSound(browser: Browser, origin: string): Promise<void> {
@@ -36,6 +38,7 @@ export async function checkAlertSound(browser: Browser, origin: string): Promise
       recorded.chimeEnd = 0;
       class RecordingAudioContext {
         state = "suspended";
+        // a real context's clock runs on its own: the app tells a chime still sounding by it
         get currentTime() { return performance.now() / 1000; }
         destination = {};
         async resume() { this.state = "running"; }
@@ -58,6 +61,8 @@ export async function checkAlertSound(browser: Browser, origin: string): Promise
         }
         post.call(this, message);
       };
+      // A visible working badge can come from a roster snapshot before the collector has
+      // subscribed to these newly created panes. Observe a real status event before testing alerts.
       const statuses: Record<string, string> = {};
       const NativeEvents = window.EventSource;
       type Roster = { type: string; machines: { id: string; snapshot: { panes: { pane_id: string; agent_status: string }[] } | null }[] };
@@ -73,6 +78,8 @@ export async function checkAlertSound(browser: Browser, origin: string): Promise
             const message = payload.message;
             if (message?.type === "pane-status") {
               statuses[message.pane_id] = message.agent_status;
+              // The server reads the roster from herdr on its own, and now and then one shows a
+              // status before the event that tells of it arrives. `rosterFirst` makes it every time.
               if ((window as unknown as { rosterFirst?: boolean }).rosterFirst && roster) {
                 const ahead: Roster = { ...roster, machines: roster.machines.map((machine) => machine.id !== payload.machine_id || !machine.snapshot ? machine : { ...machine, snapshot: { ...machine.snapshot, panes: machine.snapshot.panes.map((pane) => pane.pane_id === message.pane_id ? { ...pane, agent_status: message.agent_status } : pane) } }) };
                 handler?.call(this, new MessageEvent("message", { data: JSON.stringify(ahead) }));
@@ -92,6 +99,9 @@ export async function checkAlertSound(browser: Browser, origin: string): Promise
     const chimes = (tab: Page = page) => tab.evaluate(() => [...(window as unknown as { chimes: number[] }).chimes]);
     const seen = (pane: string, status: string, tab: Page = page) => tab.locator(`.pane-item:has(.pane-select[title^="${pane} —"]) [data-status="${status}"]`).first().waitFor({ state: "attached" });
     const quiet = (tab: Page) => tab.waitForFunction(() => performance.now() / 1000 >= (window as unknown as { chimeEnd: number }).chimeEnd);
+    // The card for a waiting pane leaves by itself after a few seconds, so nothing is awaited
+    // between the report and the wait for the card. Only the pane in front, which gets no card,
+    // is followed to `blocked` in the sidebar.
     const block = async (pane: string, inFront = false) => {
       await report(pane, "working");
       await seen(pane, "working");
@@ -99,6 +109,10 @@ export async function checkAlertSound(browser: Browser, origin: string): Promise
       if (inFront) await seen(pane, "blocked");
     };
 
+    // The collector reopens its subscriptions after the pane set changes. Prime only owned
+    // fixture statuses until working arrives as an event, not merely in a polled snapshot.
+    // Each attempt waits (bounded) for its own event before reporting again, so setup does not
+    // flood the subscription it is priming.
     for (const deadline = Date.now() + 10_000; !(await page.evaluate((pane) =>
       (window as unknown as { soundStatuses: Record<string, string> }).soundStatuses[pane] === "working", otherPane));) {
       assert.ok(Date.now() < deadline, "the status subscription includes the new panes");
@@ -122,6 +136,9 @@ export async function checkAlertSound(browser: Browser, origin: string): Promise
     await report(openPane, "idle");
     await block(otherPane, true);
     await block(openPane);
+    // the pane in front was seen waiting before the other was reported, and the card drops in
+    // with the chime: by the time the card for the pane behind shows, a chime for the pane in
+    // front would have sounded already
     await page.locator(".droplet-card").waitFor({ state: "visible" });
     await page.waitForFunction(() => (window as unknown as { chimes: number[] }).chimes.length >= 2);
     assert.deepEqual(await chimes(), [660, 880], "one rising chime, for the pane not in front");
@@ -151,6 +168,8 @@ export async function checkAlertSound(browser: Browser, origin: string): Promise
     }
     await Promise.all([report(openPane, "blocked"), report(thirdPane, "blocked")]);
     for (const pane of [openPane, thirdPane]) await seen(pane, "blocked");
+    // the chime for the two is asked for, and then it has ended: a second one, for the other
+    // pane, would have been asked for while the first still sounded
     await page.waitForFunction((count) => (window as unknown as { chimes: number[] }).chimes.length >= count + 2, before);
     await quiet(page);
     assert.deepEqual((await chimes()).slice(before), [660, 880], "one chime for two panes that wait together");
@@ -177,6 +196,8 @@ export async function checkAlertSound(browser: Browser, origin: string): Promise
     const tabs = [page, second];
     const counts = () => Promise.all(tabs.map(async (tab) => (await chimes(tab)).length));
     const heard = async () => (await counts()).reduce((sum, count) => sum + count, 0);
+    // Check continuously through the safety-net deadline, not just at the first note.
+    // Time is the behaviour here: a duplicate must not arrive later in this turn.
     const noSecondChime = async (beforeCounts: number[]) => {
       await Promise.all(tabs.map(async (tab, index) => {
         const expected = (await chimes(tab)).length;
@@ -230,6 +251,7 @@ export async function checkAlertSound(browser: Browser, origin: string): Promise
     assert.deepEqual(errors, []);
   } finally {
     await context.close();
+    // closing the last pane can already have removed the workspace; any other failure is reported
     for (const workspace of workspaces) await workspaceClose(workspace).catch((error) => { if (error?.code !== "workspace_not_found") throw error; });
     rmSync(root, { recursive: true, force: true });
   }

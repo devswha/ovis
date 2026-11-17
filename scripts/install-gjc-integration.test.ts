@@ -16,6 +16,8 @@ function agentDir(): string {
 it("rejects the unsupported agent directory CLI flag", async () => {
   const root = agentDir();
 
+  // When the installer CLI receives the removed flag.
+  // HOME points at the temp root too, so a regression could never install into the real home.
   const command = Bun.spawn([process.execPath, join(import.meta.dir, "install-gjc-integration.ts"), "--agent-dir", root], {
     stdout: "ignore", stderr: "ignore", env: { ...process.env, HOME: root, USERPROFILE: root },
   });

@@ -82,6 +82,7 @@ describe("buildXtermSource", () => {
     expect(written(second).content).toContain("changedForTest");
   }, 60_000);
 
+  // through a symlink, imports resolved out of the hashed copy to the disk (macOS's tmpdir is one)
   it("reads none of xterm's package from the disk while compiling, even through a symlinked checkout", () => {
     const linked = join(mkdtempSync(join(tmpdir(), "herdr-build-xterm-link-")), "checkout");
     made.push(dirname(linked));

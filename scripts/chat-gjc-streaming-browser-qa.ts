@@ -160,6 +160,9 @@ try {
         await context.addInitScript(() => {
           localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "dark" }));
           const qa = window as unknown as { qaBytes: number; fetch: (...args: Parameters<typeof fetch>) => Promise<Response> };
+          // A transcript size counts as served once the chat has shown that very answer (its metadata
+          // object comes back through onMetadata) and React has committed after it: not when its
+          // headers arrive, nor when an answer the chat dropped was read.
           qa.qaBytes = 0;
           const sizes = new WeakMap<object, number>();
           let shown = 0;

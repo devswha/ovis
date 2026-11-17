@@ -1,3 +1,12 @@
+/**
+ * Keeps one open issue up to date with scripts/ci-flakes.ts's ranked list of the browser scripts that failed or
+ * needed a second run (.github/workflows/ci-flakes.yml runs it daily):
+ *   bun scripts/ci-flakes-issue.ts [--hours 24] [--repo owner/name] [--dry-run]
+ * The issue is the open one titled ISSUE_TITLE that ISSUE_AUTHOR (the workflow's token) opened, created when there is
+ * none: an issue anyone else opens under that title is never taken over. It writes through the REST API, never
+ * `gh issue edit`, which fails on this repository with a Projects (classic) GraphQL error. --dry-run prints what it
+ * would do and the body, and writes nothing.
+ */
 import { parseArgs } from "node:util";
 import { gh, scan, type Scan } from "./ci-flakes.ts";
 

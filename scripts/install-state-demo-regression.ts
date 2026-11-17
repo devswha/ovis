@@ -7,6 +7,15 @@ import { manifestBody } from "../server/static.ts";
 import { buildDemoApp } from "./demo-build.ts";
 import { openSettingsPage } from "./settings-page.ts";
 
+// Install app against a real install: the unmodified app over the demo's fixture
+// transport, served at the ROOT of a loopback origin so the manifest's id, start_url and scope "/"
+// are this app, installed with the browser's own PWA domain (CDP). The browser runs on a profile,
+// HOME and XDG data dir of its own, so the install's OS integration (desktop entries, icons) lands
+// in this run's directory and never in the user's; no herdr session is opened.
+// The sidebar offers no Install app at any point: it kept showing in every tab of a browser that had
+// the app installed and in browsers that never prompt. Settings → Devices and PCs → More settings → Install offers it:
+// the button while the browser holds a prompt, the steps while it holds none, Installed once it is.
+// HEADED=1 (under xvfb-run where there is no display) runs the same steps in a window.
 const root = mkdtempSync(join(tmpdir(), "herdr-install-state-demo-"));
 const app = join(root, "app");
 const profile = join(root, "profile");
@@ -151,6 +160,7 @@ try {
       await shot(related, "tab");
       console.log("PASS (c) a tab of the installed origin: getInstalledRelatedApps() has 1 entry, no sidebar Install app, Settings > Install says Installed");
 
+      // (d) after the uninstall a NEW tab is told how to install again (installedByEvent is per page)
       await send(cdp, "PWA.uninstall", { manifestId });
       const after = watch(await context.newPage());
       await after.goto(manifestId);

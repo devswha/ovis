@@ -8,6 +8,11 @@ const MENTION = "a GitHub star helps other herdr users find it";
 const QUESTION = "star it now with the GitHub account gh is signed in to? [y/N]";
 const CTRL_C = "\x03";
 const QUESTION_READ = "read -r -t 20";
+/**
+ * When a run of install.sh counts as hung: it ends in about a second alone, in many on a PC busy
+ * with other checks, and 20 seconds later when its question waits out an answer. Each test waits
+ * for the installer's own end (and for its question before typing), bounded by this.
+ */
 const RUN_ENDS_WITHIN_MS = 45_000;
 setDefaultTimeout(RUN_ENDS_WITHIN_MS + 15_000);
 
@@ -90,6 +95,7 @@ class Pc {
       const real = Bun.which(tool);
       if (!real) continue;
       if (tool !== "bash") { symlinkSync(real, join(bin, tool)); continue; }
+      // Clock both ends beside the real read, independently of the parent's output delivery.
       writeFileSync(join(bin, "bash"), `#!/bin/sh
 case "$*" in
   *"${QUESTION_READ}"*)
@@ -629,6 +635,7 @@ describe.skipIf(platform() !== "linux" || !Bun.which("script"))("install.sh at a
     expect(exitCode).toBe(0);
     expect(pc.answerRead()).toBeGreaterThan(128);
     expect(pc.stars()).toBe(0);
+    // Measure the child's read, not when this process got around to receiving its output.
     expect(readDuration).not.toBeNull();
     expect(readDuration!).toBeGreaterThanOrEqual(19_000);
     expect(readDuration!).toBeLessThan(27_000);

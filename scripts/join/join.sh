@@ -733,6 +733,7 @@ j_probe_profile() {
   [ -n "$probe_port" ] || refuse 14 "ports $J_PORTS are all in use here; nothing was changed"
   mkdir -p "$j_stage/probe/home" || refuse 14 "the temporary folder cannot be filled; nothing was changed"
   probe_sock=$j_stage/probe/state/serve.sock
+  # shellcheck disable=SC2086 # J_PROFILE_ENV and J_PREVIEW_ENV are one NAME=value word each
   env -i HOME="$j_stage/probe/home" PATH="$PATH" SHELL=/bin/sh $J_PROFILE_ENV $J_PREVIEW_ENV PORT="$probe_port" OVIS_STATE_DIR="$j_stage/probe/state" \
     OVIS_RUNTIME=herdr HERDR_SOCKET="$j_stage/probe/no-herdr.sock" OVIS_RELAY_URL="$j_relay" OVIS_ACCOUNT_SERVICE_URL="$j_account" \
     OVIS_RELAY_APP_URL="$j_app" OVIS_TELEMETRY=0 "$j_stage/bin/ovis-server" serve >"$j_stage/probe/log" 2>&1 </dev/null &

@@ -109,6 +109,8 @@ try {
       const remounted = !document.contains(old);
       if (remounted) seen.push(top());
       if (seen.length === 5) void fetch("/release-stat");
+      // ten more frames after the bytes are in, so a late move is seen too
+      // a regression that never settles fails on what it showed, not on CI's timeout
       if (seen.length > 600) { done(seen); return; }
       if (remounted && image?.complete && image.naturalWidth === 240 && document.querySelector(".image-slot.is-loading") === null) {
         if (seen.length > 10 && seen.slice(-10).every((value) => value === seen.at(-1))) { done(seen); return; }
@@ -142,8 +144,10 @@ try {
   });
   await phone.goto(`http://127.0.0.1:${server.port}/`);
   await phone.waitForFunction(() => document.querySelector<HTMLImageElement>("img.markdown-image")?.naturalWidth === 240);
+  // document loads only: the viewer's own history entry (a phone's Back closes it) is no load
   let navigations = 0;
   phone.on("request", (request) => { if (request.isNavigationRequest()) navigations++; });
+  // the sheet opens only within the tap, so Download waits until the picture's bytes are in hand
   const reading = Promise.withResolvers<void>();
   held = { promise: reading.promise, release: reading.resolve };
   const readArrived = Promise.withResolvers<void>();

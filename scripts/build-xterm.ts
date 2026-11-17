@@ -12,6 +12,7 @@ export function buildXtermSource(root: string): string {
   const cache = join(root, "node_modules/.cache/herdr-xterm");
   const manifest = join(source, "../package.json");
   const files = ts.sys.readDirectory(source, [".ts"], undefined, ["**/*"]).sort();
+  // the patch also edits xterm's public typings, which the emit type-checks against
   const typings = ts.sys.readDirectory(join(source, "../typings"), [".ts"], undefined, ["**/*"]).sort();
   const options: ts.CompilerOptions = {
     target: ts.ScriptTarget.ES2022,
@@ -82,6 +83,7 @@ export function xtermSourcePlugin(xterm: string): BunPlugin {
   };
 }
 
+/** The patched Terminal the app ships, for a test under Bun (the package's own build lacks the patch). */
 export async function patchedTerminal(root: string): Promise<typeof Terminal> {
   const source = buildXtermSource(root);
   const bundle = await Bun.build({ entrypoints: [join(source, "browser/public/Terminal.js")], plugins: [xtermSourcePlugin(source)], target: "bun" });
@@ -115,6 +117,7 @@ function removeAbandonedStaging(cache: string, now = Date.now()): void {
   }
 }
 
+/** Far longer than an emit takes (seconds), even on a loaded runner. */
 const STAGING_GRACE_MS = 10 * 60_000;
 
 function running(pid: number): boolean {

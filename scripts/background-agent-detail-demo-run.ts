@@ -159,6 +159,7 @@ export async function runBackgroundAgentDetail(part: BackgroundAgentDetailPart):
       const open = async (view: View, demo: Case = {}): Promise<{ context: BrowserContext; page: Page; errors: string[] }> => {
         const mobile = view.width === 390;
         const context = await browser.newContext({ viewport: { width: view.width, height: mobile ? 844 : 900 }, deviceScaleFactor: mobile ? 3 : 1, isMobile: mobile, hasTouch: mobile, colorScheme: view.theme, locale: view.language === "ko" ? "ko-KR" : "en-US" });
+        // the demo's other Claude pane finishes a few seconds in: its in-app alert is not this surface's
         await context.addInitScript(({ theme, language, demo }) => {
           localStorage.setItem("ovis:settings", JSON.stringify({ language, theme, alertsOn: false }));
           window.bgCase = demo;
@@ -312,6 +313,7 @@ export async function runBackgroundAgentDetail(part: BackgroundAgentDetailPart):
           await page.keyboard.press("Escape");
           await dialog(page).waitFor({ state: "detached" });
           await openDetail(page);
+          // the reopened sheet's own read (not held: the first one took the hold) has landed, so the count is the sheet's
           await dialog(page).locator('.icon-button[aria-label="Refresh"]:not(:disabled)').waitFor();
           const fresh = await events.count();
           await page.evaluate(() => window.bgRelease?.());
@@ -480,6 +482,7 @@ export async function runBackgroundAgentDetail(part: BackgroundAgentDetailPart):
       }
     } finally { await browser.close(); }
   } finally { server.stop(); }
+  // the serial lane hands every script the same evidence folder: each part's summary has a name of its own there
   const script = part === "flow" ? "scripts/background-agent-detail-demo-regression.ts" : `scripts/background-agent-${part}-demo-regression.ts`;
   if (evidence) writeFileSync(join(evidence, `background-agent-detail-${part}-summary.json`), JSON.stringify({ script, ok: results.every((result) => result.ok), results, measured: { fontSizes, selection, geometry, focusTrace, keyTrace } }, null, 2) + "\n");
   console.log(`PASS ${results.length} checks`);

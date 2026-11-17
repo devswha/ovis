@@ -26,6 +26,7 @@ function nextRoute(name: string): Promise<void> {
   });
 }
 try {
+  // the app's own xterm, as Vite aliases it: the patched source, not the package's minified build
   const xterm = buildXtermSource(join(import.meta.dir, ".."));
   const build = await Bun.build({ entrypoints: ["scripts/chat-history-fixture.tsx"], outdir: root, target: "browser", define: { "process.env.NODE_ENV": '"development"' }, plugins: [xtermSourcePlugin(xterm)] });
   assert.ok(build.success, String(build.logs));
@@ -33,17 +34,22 @@ try {
     const path = new URL(request.url).pathname;
     if (path === "/ws") return new Response(null, { status: 404 });
     if (path === "/api/connection-diagnostics") return new Response(null, { status: 204 });
+    // the terminal reads herdr's copy_on_select as it mounts
     if (path === "/api/herdr-ui") return Response.json({ copy_on_select: true } satisfies HerdrUiConfig, { headers: { "cache-control": "no-store" } });
     if (path.endsWith("/pane/commands")) return Response.json({ commands: [] });
     if (path.endsWith("/pane/omo-tasks")) return Response.json({ tasks: [], runs: [] });
+    // a desktop's composer asks whether dictation can work here before it shows the mic
     if (path === "/api/voice") return Response.json({ configured: false, source: null, ...VOICE_DEFAULTS } satisfies VoiceStatus);
     // the app checks the bridge's health; this fictional server has none. Served from the folder below, the read threw
     // ENOENT in this handler, and Bun ends the run with exit 1 after every check passed
     if (path === "/api/health") return new Response(null, { status: 404 });
+    // a count asks the server whether counting is on; this fictional server has no telemetry, and a page not answered
+    // counts nothing (src/lib/usageCounters.ts). Served from the folder, it would throw ENOENT as above
     if (path === "/api/telemetry") return new Response(null, { status: 404 });
     return path === "/" ? new Response('<html><head><link rel="stylesheet" href="/chat-history-fixture.css"></head><body><div id="root"></div><script type="module" src="/chat-history-fixture.js"></script></body></html>', { headers: { "Content-Type": "text/html" } }) : new Response(Bun.file(join(root, path.slice(1))));
   } });
   browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
+  // The fixture follows the browser's language; its text assertions below use English.
   const page = await browser.newPage({ locale: "en-US" });
   page.setDefaultTimeout(10_000);
   const errors: string[] = [];
@@ -101,6 +107,8 @@ try {
           ] },
         ] } : { source: key === "local/claude" ? "claude-transcript" : "omp-transcript", history_id: key, cursor: null, turns: [user(key === "local/claude" ? "Synthetic Claude prompt" : `history ${key}`)] } })
         : route.fulfill({ status, json: { error: { code: "unavailable", message: "conversation unavailable" } } });
+      // answered as it arrives unless its pane is held: a poll an abandoned mount left
+      // behind can then never stand in for the request an assertion waits on
       if (held.has(key)) await new Promise<void>((resolve) => {
         pending.push({ key, answer: (status) => answer(status).finally(resolve) });
         routeEvents.dispatchEvent(new Event(key));
@@ -380,6 +388,7 @@ try {
 
   const select = async (pane: string, machine: string, agent?: string) => {
     product = true;
+    // the log is cleared in the task that switches: no commit of the pane being left slips in between
     await page.evaluate(([p, m, a]) => { window.qa.commits.length = 0; window.qa.select(p!, m!, a); }, [pane, machine, agent]);
   };
   const shows = async (expected: string, forbidden: string) => {
@@ -406,6 +415,8 @@ try {
     await page.getByText("history remote-pc/a", { exact: true }).waitFor();
     held.delete("remote-pc/b");
     for (const request of pending.splice(0)) await request.answer(status);
+    // B's request has ended in the page (answered, or cancelled when B left) and two frames
+    // have passed: whatever it could change is committed
     await page.waitForFunction((count) => window.qa.answered.filter((key) => key === "remote-pc/b").length > count, ended);
     await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
     await shows("remote-pc/a", "remote-pc/b");
@@ -459,6 +470,7 @@ try {
   await page.waitForFunction(() => window.qa.answered.filter((key) => key === "local/switch").length >= 3);
   await select("switch", "local", "claude");
   await page.getByText("session C", { exact: true }).waitFor();
+  // right after one of the chat's 2 s polls, so only the read the roster change starts can show D in time
   const polled = await page.evaluate(() => window.qa.answered.filter((key) => key === "local/switch").length);
   await page.waitForFunction((count) => window.qa.answered.filter((key) => key === "local/switch").length > count, polled);
   switchSession = "D";

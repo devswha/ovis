@@ -21,6 +21,7 @@ trap finish EXIT
 run_script() {
   local started=$SECONDS code=0 evidence="${UI_EVIDENCE_DIR:-}" line
   if [ -n "${CI:-}${CHECK_DIR:-}" ]; then
+    # These evidence branches add viewport changes, assertions or font waits, not just captures.
     case "$1" in
       scripts/ui-regression.ts|scripts/ui-terminal-regression.ts|scripts/ui-ime-regression.ts|scripts/ui-access-regression.ts|scripts/ui-contexts-regression.ts|scripts/ui-contexts-layout-regression.ts|scripts/key-bar-customization-demo-regression.ts) evidence="";;
     esac

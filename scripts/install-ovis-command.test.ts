@@ -15,6 +15,7 @@ const OLD_READER_LINE = "this Ovis release would take a line typed ahead as its 
 const UPDATE_LINE = "this Ovis is from before it could add a PC to an account from its terminal: update it in Settings → Updates, then run this installer again";
 const TOKEN_LINE = "on a PC other people log in to, set OVIS_TOKEN first: without it any local user counts as this PC";
 const CTRL_C = "\x03";
+/** a run of install.sh ends in about a second alone, in many on a PC busy with other checks */
 const RUN_ENDS_WITHIN_MS = 45_000;
 setDefaultTimeout(RUN_ENDS_WITHIN_MS + 15_000);
 
@@ -192,6 +193,7 @@ class Pc {
       for await (const chunk of child.stdout) {
         out += decoder.decode(chunk, { stream: true });
         if (again !== undefined || typed === undefined || !out.includes(typed.after)) continue;
+        // Ctrl-C is a signal, and the add step's own handlers come a moment after its first words: pressed until it lands
         type(typed.text);
         again = setInterval(() => { if (!typed.once) type(typed.text); }, 100);
       }

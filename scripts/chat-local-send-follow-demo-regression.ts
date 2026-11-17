@@ -68,6 +68,8 @@ const lab = <T,>(page: Page, fn: (lab: Lab) => T | Promise<T>): Promise<T> =>
   page.evaluate(`(${fn.toString()})(window.followLab)`) as Promise<T>;
 const until = (page: Page, condition: string): Promise<unknown> => page.waitForFunction(`(() => { const lab = window.followLab; return ${condition}; })()`, undefined, WAIT);
 const frames = (page: Page): Promise<void> => page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+/** The agent took the last turn and answered it: the next send from the box goes out at once. */
+/** The chat proved its end is presented (no follow still pending in the list): a wheel now is the reader's alone. */
 const settled = (page: Page): Promise<void> => page.locator(".chat-frame[data-pane-content]").waitFor({ state: "attached", ...WAIT });
 const idle = (page: Page): Promise<unknown> => until(page, `lab.status !== "working"`);
 
@@ -76,6 +78,9 @@ const wheelUp = async (page: Page, by = 900): Promise<void> => {
   assert.ok(view !== null);
   await page.mouse.move(view.x + view.width / 2, view.y + view.height / 2);
   for (let moved = 0; moved < by; moved += 120) {
+    // Measured as the distance from the end: rows above the view that the list measures meanwhile
+    // raise scrollTop by their growth to keep the reader's rows in place, which can undo a notch's
+    // move in scrollTop but never in that distance.
     const before = (await geometry(page)).gap;
     await page.mouse.wheel(0, -120);
     await page.waitForFunction((gap) => {
@@ -221,6 +226,9 @@ try {
           step = "a sent message's bubble is painted at the end: the reader follows the end";
           await settled(page);
           await lab(page, (l) => { l.holdReads = true; });
+          // Each painted frame as its requestAnimationFrame saw it, or as a ResizeObserver callback
+          // of that frame left it (rAF, layout, ResizeObserver, paint). This observer is made after
+          // the chat's own, so it runs after them.
           await page.evaluate(() => {
             const view = document.querySelector<HTMLElement>(".chat-view")!;
             const look = () => {
@@ -324,6 +332,7 @@ try {
               const pressed = { clientX: bar.left + node.clientWidth, clientY: bar.bottom - 20 };
               node.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, buttons: 1, ...pressed }));
               const letGo = () => node.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, clientX: pressed.clientX, clientY: pressed.clientY - by }));
+              // the thumb rests past the 500 ms input window before it is dragged: no pointermove comes
               const now = performance.now.bind(performance);
               Object.defineProperty(performance, "now", { configurable: true, value: () => now() + 600 });
               node.scrollTop -= by;

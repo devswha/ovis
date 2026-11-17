@@ -31,6 +31,7 @@ try {
     return await file.exists() ? new Response(file) : new Response(null, { status: 404 });
   } });
   browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
+  // a Retina screen: scroll offsets and row edges fall between whole pixels
   const page = await (await browser.newContext({ deviceScaleFactor: 2, viewport: { width: 800, height: 700 } })).newPage();
   page.setDefaultTimeout(15_000);
   await page.goto(`http://127.0.0.1:${server.port}/`);

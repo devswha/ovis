@@ -93,6 +93,9 @@ sys.stdout.flush()
   await page.keyboard.press("ControlOrMeta+Shift+U");
   await page.keyboard.press("ControlOrMeta+Shift+D");
   await until(async () => read() === "\x1b[5~\x1b[6~\x1b[5~\x1b[5~\x1b[6~", "remapped paging actions still send plain page sequences to the application");
+  // The program quits and hands the screen back to the shell, whose history the browser does not know
+  // about until its next metrics read. A page asked for in that window must scroll that history once
+  // the read lands, never reach the shell as a key. The read is slowed to widen the window.
   await page.route((url) => url.pathname === "/api/pane/scroll", async (route) => {
     if (route.request().method() === "GET") await new Promise((resolve) => setTimeout(resolve, 600));
     await route.continue();

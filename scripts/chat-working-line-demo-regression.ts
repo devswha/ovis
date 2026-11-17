@@ -153,8 +153,12 @@ try {
       assert.ok(reopened.some((frame) => frame.footer.includes("Working…")), "the turn the agent began has its Working head under the rows");
       console.log("PASS a turn the agent begins by itself leaves the finished turn folded, with the Working head under it");
 
+      // A turn ends: its answer is drawn while herdr still says working, and the pane rests 300 ms
+      // later, as herdr's status trails the transcript (100–400 ms at the turn ends measured). No
+      // head of a next turn shows under the answer in that time.
       await page.goto(url(panes.flaky));
       await flaky.locator("[data-chat-row] .work-block-title", { hasText: "Worked for" }).last().waitFor();
+      // Claude stamps a turn by its first entry; two turns read in one poll can share that stamp
       const answeredAt = "2026-11-04T09:00:00.000Z";
       const asked: ConversationTurn = { role: "user", ts: null, parts: [{ kind: "text", text: "Count the shelves." }] };
       await addTurns(page, panes.flaky, [asked]);
@@ -162,6 +166,7 @@ try {
       await flaky.getByText("Count the shelves.", { exact: true }).waitFor();
       await painted(page);
       await record(page, panes.flaky);
+      // the pane rests 300 ms after the frame that paints the answer, timed in the page
       const rested = page.evaluate(([id, answer]) => new Promise<void>((done) => {
         const drawn = (): void => {
           if (!document.querySelector(`.pane-frame[data-layout-pane="${id}"]`)?.textContent?.includes(answer!)) { requestAnimationFrame(drawn); return; }
@@ -219,6 +224,8 @@ try {
         "no Working head stands under a turn read in already finished, after the last one's wait ran out");
       console.log("PASS a turn read in already finished, stamped like the last one, has no Working head under its answer");
 
+      // herdr's status can trail the answer by more than the head's wait (a slow PC, a busy herdr):
+      // the pane rests 1.5 s after the answer is drawn. Still no head of a next turn under it.
       const dusted: ConversationTurn = { role: "user", ts: null, parts: [{ kind: "text", text: "Dust shelf c." }] };
       await addTurns(page, panes.flaky, [...atlasTurns, dusted]);
       await status(page, panes.flaky, "working");
@@ -278,6 +285,9 @@ try {
         "no Working head stands under an answer drawn while the pane was blocked");
       console.log("PASS an answer drawn while blocked has no Working head under it when the status catches up");
 
+      // herdr rests before a read holds the turn's answer (#2550, about 1 s live): the turn stays at
+      // work until the answer is drawn, never shown ended with no answer, also over a read between
+      // that brings only more of the turn's work
       const books: ConversationTurn = { role: "user", ts: null, parts: [{ kind: "text", text: "How many books?" }] };
       const bookTurns: ConversationTurn[] = [...shelvedBefore, shelved,
         { role: "assistant", ts: "2026-11-04T09:02:00.000Z", parts: [{ kind: "text", text: "The atlas is shelved.", phase: "final_answer" }] },
@@ -313,6 +323,7 @@ try {
       await flaky.locator(".chat-activity").waitFor({ state: "detached", timeout: 5_000 });
       console.log("PASS a turn that gets no answer after herdr rests ends within the wait");
 
+      // a /clear in an empty chat reports working for a moment, with no turn: the greeting stays
       const blank = await page.evaluate(async () => {
         const response = await fetch("/api/workspace/create", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ cwd: "/home/demo/cleared", agent: { kind: "claude" } }) });
         return ((await response.json()) as { pane_id: string }).pane_id;
@@ -323,6 +334,7 @@ try {
       await page.locator(`.pane-select[title^="${blank} \u2014"][aria-current="true"]`).first().waitFor({ state: "attached" });
       await page.locator(".view-switch").getByRole("button", { name: "Chat", exact: true }).click();
       const greeting = page.locator(".pane-frame.is-current .composer-greeting");
+      // the demo's new agent works for a moment first: it is greeted once it rests
       await greeting.waitFor({ timeout: 8_000 });
       await page.locator('.pane-frame.is-current .composer-status[data-status="idle"]').waitFor({ state: "attached", timeout: 8_000 });
       await painted(page);

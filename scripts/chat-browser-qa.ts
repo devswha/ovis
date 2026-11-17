@@ -41,6 +41,8 @@ try {
   add({ type: "function_call", name: "exec_command", call_id: "c2", arguments: '{"cmd":"bun test"}' }, 4);
   add({ type: "function_call_output", call_id: "c2", output: "Process exited with code 1\n1 fail" }, 5);
   persist();
+  // A detected fixture process keeps native descriptor evidence for the rollout;
+  // the ignored path field of a manual lifecycle report is not a session binding.
   mkdirSync(join(root, "bin"));
   const executable = join(root, "bin", "codex");
   writeFileSync(executable, `#!/bin/sh\nexec 3<"$1"\nprintf '%s\\n' '${answer}'\nwhile IFS= read -r line; do :; done\n`);
@@ -49,6 +51,7 @@ try {
   workspaceId = created.workspace.workspace_id;
   const paneId = created.root_pane.pane_id;
   await herdrRpc("pane.send_text", { pane_id: paneId, text: `${executable} ${rollout}\n` });
+  // Real herdr process detection runs outside this browser check's clock.
   const deadline = Date.now() + 10_000;
   while ((await sessionSnapshot()).panes.find((pane) => pane.pane_id === paneId)?.agent !== "codex") {
     if (Date.now() >= deadline) throw new Error("owned Codex fixture process was not detected");
@@ -63,6 +66,7 @@ try {
   server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir, codexHome, tailscaleOwner: null });
   browser = await chromium.launch({ executablePath: chromePath(), headless: process.env["HEADED"] !== "1", args: ["--no-sandbox", "--host-resolver-rules=MAP clipboard.test 127.0.0.1", "--no-proxy-server"] });
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en-US" });
+  // the cookie is for clipboard.test only; the page stays plain http under that name
   await context.addCookies([{ name: DEVICE_COOKIE, value: paired.token, domain: "clipboard.test", path: "/", httpOnly: true, sameSite: "Strict" }]);
   const page = await context.newPage();
   await page.addInitScript((id) => {
@@ -203,6 +207,8 @@ try {
   await page.route("**/api/pane/conversation?*", async (route) => { requests += 1; await gate; await route.continue(); });
   await page.getByRole("textbox", { name: "Message", exact: true }).fill("true");
   await page.getByRole("button", { name: "Send message", exact: true }).click();
+  // Observe the real browser's send and timer path; this bounded negative window
+  // catches the old overlapping 2-second refresh without faking herdr/Chromium clocks.
   const readDeadline = Date.now() + 10_000;
   while (requests === 0) {
     if (Date.now() >= readDeadline) throw new Error("send refresh did not begin");
@@ -255,6 +261,7 @@ try {
   await insecureLog.getByRole("button", { name: "Copied", exact: true }).waitFor();
   assert.equal(await clipboard(), answer);
   assert.equal(await insecureLog.getByRole("button", { name: "Copied", exact: true }).evaluate((node) => node === document.activeElement), true, "fallback restores the triggering button's focus");
+  // the copy fallback's own field is appended to the body; the composer's measurement textarea is readonly for good
   assert.equal(await insecure.locator("body > textarea[readonly]").count(), 0);
   await insecureLog.getByRole("button", { name: "Copy code", exact: true }).focus();
   await insecureLog.getByRole("button", { name: "Copy code", exact: true }).click();

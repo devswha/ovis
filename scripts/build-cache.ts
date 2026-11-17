@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
+/** Raise when the entry layout or what the key covers changes: older entries then simply miss. */
 const FORMAT = "2";
 const MANIFEST = ".manifest";
 

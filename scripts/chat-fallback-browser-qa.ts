@@ -357,6 +357,8 @@ try {
   await polling.goto(`http://127.0.0.1:${server.port}/?pushes`);
   await polling.locator(".chat-terminal-fallback summary").waitFor();
   const codexReads = pollingReads;
+  // a response is in before the chat has handled it, and only then does it set the next poll: the
+  // clock moves on once the chat forwarded that read's metadata, in the same task that sets it
   const forwarded = () => polling.evaluate(() => window.chatFallbackQA.forwarded());
   const handled = (before: number) => bounded("the chat never handled the poll's read", polling.evaluate((before) => window.chatFallbackQA.until(() => window.chatFallbackQA.forwarded() > before), before));
   await polling.clock.runFor(2000);
@@ -406,11 +408,14 @@ try {
     const failed = paused.waitForResponse((response) => new URL(response.url()).pathname === "/api/pane/conversation");
     await paused.evaluate(() => window.chatFallbackQA.output());
     await failed;
+    // the response is in before the chat has handled it: the backstop is set once the failure ends
+    // the wait (setWaiting), in the same effects that stop listening to the terminal
     await bounded("the chat never stopped listening to the terminal after the failed read", paused.evaluate(() => window.chatFallbackQA.until(() => !window.chatFallbackQA.listening())));
     copilotWaiting = true; lookupTimeout = false;
     const afterFailure = reads;
     const retried = paused.waitForResponse((response) => new URL(response.url()).pathname === "/api/pane/conversation", { timeout: 5000 })
       .catch(() => assert.fail("a read that failed while waiting is retried without pane activity"));
+    // just past the 10s backstop: further on, the read's own timeout would cancel it before it answers
     await paused.clock.runFor(11_000);
     await retried;
     assert.ok(reads > afterFailure, "a read that failed while waiting is retried without pane activity");
@@ -428,6 +433,10 @@ try {
     console.log("PASS a Copilot wait keeps the turns, reads on activity only, and resumes them");
   }
   {
+    // A Codex that reported no session: the scrollback stands in with the model its live footer
+    // states, and a conversation not begun with the model its screen states. No file changes when
+    // that model does, so the terminal's output re-reads them. Pushes are on and the clock is
+    // paused, so neither the 2s poll nor the 10s backstop reads in its place.
     const screen = await browser.newPage();
     let screenReads = 0;
     screen.on("request", (request) => {

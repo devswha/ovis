@@ -76,6 +76,9 @@ const shownFiles = (scope: Locator): Promise<Shown[]> => scope.locator(".chat-to
 
 async function expandCards(scope: Locator): Promise<void> {
   await scope.getByText(REPLY).waitFor();
+  // the block folds by itself when its turn settles, which may land at any moment; a click is the
+  // reader's choice, which it keeps from then on: one click pins it, a second opens it when the
+  // first folded it
   const head = scope.locator("button.work-block-head");
   await head.waitFor();
   await head.click();
@@ -83,6 +86,8 @@ async function expandCards(scope: Locator): Promise<void> {
   await scope.locator('button.work-block-head[aria-expanded="true"]').waitFor();
   const rows = scope.locator(".work-row-head");
   await rows.first().waitFor();
+  // a single pass over the rows left the last one folded on a busy run (a click that did not take,
+  // or a row drawn again after its state was read): open whatever is folded until every file shows
   const files = scope.locator(".chat-tool-file");
   const folded = scope.locator('.work-row-head[aria-expanded="false"]');
   const lastFile = files.nth(ORDER.length - 1);
@@ -170,6 +175,9 @@ async function prepareDemo(): Promise<string> {
       return demo(input, init);
     };
   })();</script>`;
+  // The demo ends the Claude pane's turn (panes.api, the one with no folder here) 4500 ms after it
+  // loads: that timer, set while the transport loads, is kept in window.heldDemoTurns and never run,
+  // so the pane stays mid-turn through every check and capture instead of racing them.
   const hold = `<script>(() => {
     const later = window.setTimeout;
     window.heldDemoTurns = [];
@@ -216,6 +224,7 @@ createRoot(document.getElementById("root")).render(<SettingsProvider><Fixture />
   assert.ok(build.success, String(build.logs));
 }
 
+// the demo's other agents finish turns now and then: their in-app alerts stay off over the cards
 const settingsOf = (theme: string, language: string) => JSON.stringify({ language, theme, alertsOn: false });
 let shots = 0;
 const captures: string[] = [];
@@ -241,6 +250,7 @@ async function copyOf(page: Page, scope: Locator, select: (labels: Element[]) =>
   await page.evaluate(() => {
     const qa = window as unknown as { copyClaimed: boolean | null };
     qa.copyClaimed = null;
+    // on the window, after every handler of the page
     window.addEventListener("copy", (event) => { qa.copyClaimed = event.defaultPrevented; }, { once: true });
     return navigator.clipboard.writeText("");
   });

@@ -9,6 +9,10 @@ if (!Bun.isMainThread) probeWorker();
 else if (process.argv[2] === "--serve") await serve();
 else await bench();
 
+/**
+ * The prober, on its own thread: the bench's main thread takes in the file requests' bodies (half
+ * a gigabyte for one case), which would otherwise delay the probes it sends and receives.
+ */
 function probeWorker(): void {
   let timer: ReturnType<typeof setInterval> | undefined;
   let latencies: number[] = [];
@@ -17,6 +21,7 @@ function probeWorker(): void {
     if (event.data.start !== undefined) {
       const base = event.data.start;
       latencies = [];
+      // one probe at a time: a stalled server answers the one waiting, not a growing queue of them
       timer = setInterval(() => {
         if (waiting !== null) return;
         waiting = probeOnce(base).then((ms) => { latencies.push(ms); }).finally(() => { waiting = null; });
@@ -67,6 +72,7 @@ async function bench(): Promise<void> {
     symlinkSync(join(slowProject, ".claude", "commands"), join(home, ".claude", "commands"));
   }
   let lookup = 0;
+  /** a pane whose folder is `folder` under a name no lookup used before, so the 5 s listing cache never answers */
   const paneIn = (folder: string) => {
     const link = join(root, `cwd-${lookup}`);
     symlinkSync(folder, link);

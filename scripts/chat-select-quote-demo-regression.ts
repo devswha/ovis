@@ -142,6 +142,10 @@ try {
           page.setDefaultTimeout(WAIT.timeout);
           await page.goto(url);
           await page.getByText("Show a conflict banner", { exact: false }).waitFor(WAIT);
+          // the demo's Claude pane is mid-turn when it opens, and ends that turn a few seconds later
+          // (site/demo/transport.ts): the earlier reply gets its last words and the Working line goes,
+          // and the chat, following its end, moves the reply quoted from. A drag made meanwhile ends
+          // on other words, so the selections start once that turn has ended
           await page.getByText("6 tests pass.", { exact: false }).waitFor(WAIT);
           await page.locator(".chat-virtual-footer", { hasText: "Working" }).waitFor({ state: "detached", ...WAIT });
           await page.locator(".chat-frame[data-pane-content]").waitFor({ state: "attached", ...WAIT });
@@ -196,7 +200,9 @@ try {
           const message = (await submits(page)).at(-1)!;
           assert.equal(message.text, `${stacked}Go ahead.`, `${label}: the message the agent gets`);
           assert.equal(message.agent_only, true, `${label}: for an agent alone`);
+          // the demo answers the message: once its answer is in and the Working line gone, the chat stops moving under the next drag
           await page.waitForFunction((count) => (window as unknown as { quoteLab: { answers: number } }).quoteLab.answers > count, answers, WAIT);
+          // read is not drawn: the answer's row is in the page (the list keeps the rows near the end it shows), then the Working line is gone
           await page.locator(".chat-turn-agent", { hasText: "This is the demo, so nothing ran" }).last().waitFor({ state: "attached", ...WAIT });
           await page.locator(".chat-virtual-footer", { hasText: "Working" }).waitFor({ state: "detached", ...WAIT });
           await frames(page);
@@ -221,6 +227,7 @@ try {
             assert.ok(tall > 36, `${label}: a touch screen draws the offer taller than its mouse size (${tall}px)`);
             await page.evaluate(() => getSelection()?.removeAllRanges());
             await page.locator(".selection-offer").waitFor({ state: "detached", ...WAIT });
+            // between the room the mouse size needs below the selection (72px) and the room the drawn offer needs
             const gap = 72 + (tall - 36) / 2;
             const placed = await page.evaluate(([words, room]) => {
               const turn = [...document.querySelectorAll(".chat-turn-agent")].filter((row) => (row.textContent ?? "").includes(words)).at(-1)!;

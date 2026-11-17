@@ -31,6 +31,11 @@ const CASES = [
 ] as const;
 
 interface Marker { list: number; text: string; width: number; indent: number; font: string }
+/**
+ * Every marker of the transcript's lists: the text the browser draws for it, as its accessibility
+ * tree names the marker (so an item's own `value`, or the count from the list's `start`, is read as
+ * drawn, not worked out here), its width in its own font, and its list's indent.
+ */
 async function markers(page: Page, scope: Locator): Promise<Marker[]> {
   const count = await scope.locator(".markdown-list").evaluateAll((lists) => {
     let at = 0;
@@ -106,6 +111,7 @@ async function check(browser: Browser, origin: string, width: number, testCase: 
     ? { viewport: { width, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true, locale: "en-US" }
     : { viewport: { width, height: 900 }, locale: "en-US" });
   try {
+    // the demo's other agents finish turns now and then: their in-app alerts stay off over the transcript
     await context.addInitScript(([settings, pane]) => {
       localStorage.setItem("ovis:settings", settings!);
       localStorage.setItem(`ovis:view:${pane}`, "chat");

@@ -262,6 +262,7 @@ try {
           assert.equal(await page.evaluate(() => getSelection()!.toString()), selected, "a newer read keeps the selection");
           assert.equal(await pre.textContent(), pinned, "the newer read waits while the snapshot is selected");
           await page.evaluate(() => getSelection()!.removeAllRanges());
+          // measured in the frame the newer read is drawn: a later poll's own follow must not hide a missed one
           const released = await (await page.waitForFunction(() => {
             const snapshot = document.querySelector(".chat-terminal-snapshot");
             if (snapshot === null || snapshot.hasAttribute("data-newer-read")) return null;

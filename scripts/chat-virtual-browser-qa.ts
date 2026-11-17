@@ -8,6 +8,7 @@ import type {} from "./chat-virtual-fixture.tsx";
 
 const root = mkdtempSync(join(tmpdir(), "herdr-chat-virtual-"));
 const evidence = process.env.UI_EVIDENCE_DIR;
+/** CPU_THROTTLE=2 slows each page as a loaded GitHub-hosted runner is slowed (Chrome's CPU throttling) */
 const throttle = Number(process.env.CPU_THROTTLE ?? 1);
 if (!Number.isFinite(throttle) || throttle < 1) throw new Error(`CPU_THROTTLE must be a rate of 1 or more: ${process.env.CPU_THROTTLE}`);
 async function throttled(page: Page) {
@@ -91,10 +92,18 @@ async function settleBottom(page: Page) {
     return node && node.scrollHeight - node.clientHeight - node.scrollTop <= 1;
   });
 }
+/**
+ * The reader scrolls to the end until they are there. One jump from far up, with a row held (a selection or a
+ * focused button pins it), can land short: the rows it brings into view are measured after it, and on a phone's
+ * narrow rows the end then lay 6642 px further on, with nothing moving the view in the 15 s that followed (seen
+ * locally once in 18 runs, as in CI). A reader scrolls again from there, as this does each frame.
+ */
 async function readToBottom(page: Page) {
   await page.waitForFunction(() => {
     const node = document.querySelector<HTMLElement>(".chat-view");
     if (!node) return false;
+    // the rows a scroll brings in are measured a frame or more after it: the end counts once the view has stayed
+    // at it through ten frames in a row, not on the first frame that reads it there
     const atEnd = node.scrollHeight - node.clientHeight - node.scrollTop <= 1;
     const qa = window as { qaAtEnd?: number };
     if (!atEnd) { node.scrollTop = node.scrollHeight; qa.qaAtEnd = 0; return false; }
@@ -121,6 +130,8 @@ async function settled(page: Page): Promise<number> {
 async function toFollowedEnd(page: Page, jump: Locator) {
   await jump.click();
   await jump.waitFor({ state: "detached" });
+  // the list's own scroll to its end can stop short by less than the layout allowance, which the chat
+  // follows from: the reader, following now, scrolls the rest of the way
   await page.locator(".chat-view").evaluate((node) => { node.scrollTop = node.scrollHeight; });
   await settleBottom(page);
   await page.waitForFunction(() => (JSON.parse(sessionStorage.getItem("ovis:chat-positions") ?? "[]") as [string, { atEnd: boolean }][]).some(([id, place]) => id === "same-pane" && place.atEnd));
@@ -297,6 +308,7 @@ try {
           if (state.wheeled || !this.classList.contains("chat-view") || this.scrollHeight <= this.clientHeight || value !== this.scrollHeight) return;
           state.wheeled = true;
           Object.defineProperty(Element.prototype, "scrollTop", scrollTop);
+          // the wheel comes as the next task, as input does, before the frame that sends the write's scroll event
           const input = new MessageChannel();
           input.port1.onmessage = () => {
             (this.querySelector("[data-chat-row]") ?? this).dispatchEvent(new WheelEvent("wheel", { deltaY: -120, bubbles: true }));
@@ -354,6 +366,11 @@ try {
     const after = await settled(page);
     assert.ok(Math.abs(after - before) <= 1, `unfolding the newest output keeps a following reader where they were: ${before} -> ${after}`);
     console.log(`PASS ${width}: unfolding the newest tool output at the end stops following and keeps the view`);
+    // The list's own scroll to the end is not over once it has moved the view: for 100 ms more it
+    // keeps that end in view as rows change size. A reader who unfolds the output within that time
+    // reads it too, and is not scrolled past it. The output is folded again where the reader
+    // stands, which leaves the view at the end: Jump to latest then moves nothing, so no scroll
+    // event ends the list's scroll early, and the unfold comes in the frame after that scroll starts.
     await testRow.locator(".chat-tool-result-more[aria-expanded=true]").dispatchEvent("click");
     await testRow.locator(".chat-tool-result-more[aria-expanded=false]").waitFor();
     await settled(page);
@@ -463,7 +480,7 @@ try {
         const letGo = (dragged: boolean) => node.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, clientX: pressed.clientX, clientY: pressed.clientY - (dragged ? 20 : 0) }));
         // The list hands a scroll to the chat at once only while it settles a data change (its anchor
         // lock lasts 300 ms), otherwise in an animation frame it asks for first: awaiting the next
-        // frame awaits that delivery.
+        // frame awaits that delivery. A loaded runner gets here after the lock has lapsed.
         const delivered = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
         node.dispatchEvent(new Event("scroll"));
         await delivered();
@@ -482,12 +499,13 @@ try {
           const target = input.startsWith("body-") ? document.body : text;
           target.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key, shiftKey: input === "body-shift-space", isComposing: input.includes("composing"), keyCode: input.includes("229") ? 229 : 0 }));
         }
-        // a dragged thumb sends no pointermove
+        // a dragged thumb sends no pointermove: the move comes after the 500 ms input window
         const now = performance.now.bind(performance);
         if (input.startsWith("scrollbar-")) Object.defineProperty(performance, "now", { configurable: true, value: () => now() + 600 });
         node.scrollTop -= 20;
         if (input === "scrollbar-held-released-first") letGo(true);
         node.dispatchEvent(new Event("scroll"));
+        // the chat reads the clock when the scroll reaches it: the rest lasts until then
         await delivered();
         Reflect.deleteProperty(performance, "now");
         if (input === "drag") text.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
@@ -651,6 +669,10 @@ try {
     assert.ok(await page.locator(".chat-view").evaluate((node) => node.scrollWidth <= node.clientWidth), "production terminal hierarchy has no horizontal overflow");
 
     await page.evaluate(() => window.chatQa.page(-1));
+    // The reader's place is read once the list has drawn the rows the PageUp uncovered: on a loaded
+    // runner it draws them a frame or more after the scroll, and until then the view's top is blank.
+    // Those rows come in at their estimated heights and the list holds them, so the first row drawn
+    // before them is not a place it keeps.
     await page.waitForFunction(() => {
       const view = document.querySelector<HTMLElement>(".chat-view")!;
       const top = view.getBoundingClientRect().top;
@@ -769,6 +791,8 @@ try {
     const work = page.locator("[data-chat-row]").filter({ hasText: "local E1 ROW-497" });
     await work.locator(".work-block-head").click();
     await work.locator(".work-row-head").click();
+    // A click first scrolls its target into view, and rows above measured late can leave this button
+    // just below the fold: that scroll is the click's, not the output's.
     await work.locator(".chat-tool-more").scrollIntoViewIfNeeded();
     const beforeOutput = await work.evaluate((row) => row.getBoundingClientRect().top);
     await work.locator(".chat-tool-more").click();
@@ -786,6 +810,8 @@ try {
     await focusButton.evaluate((button) => button.blur());
     await page.waitForFunction(() => document.querySelector(".chat-view")?.getAttribute("data-chat-pinned") === "0");
 
+    // Make the viewport need more containers than the spare pool, so this checks
+    // restoration after actual eviction rather than a cached offscreen DOM node.
     await page.setViewportSize({ width, height: 5000 });
     await page.evaluate(() => window.chatQa.resize(5000));
     await page.locator(".chat-view").evaluate((node) => { node.scrollTop = 0; });
@@ -800,10 +826,21 @@ try {
     await shot(page, `restored-work-${width}-${theme}`);
     console.log(`PASS ${width} ${theme}: outside-row selection, focused row, disclosures and the whole output survive eviction`);
 
+    // the reload below is a reader's who follows the end: one scrolled up gets their place back
+    // (chatScrollMemory). The view at its end is not yet the chat's word that the reader follows it (a
+    // reader who opened work stays away there, and a later scroll remembers a row): Jump to latest is,
+    // and the place it remembers
     await toFollowedEnd(page, page.locator(".chat-virtual-jump"));
     await page.reload();
     await page.getByText("REVISION-102", { exact: true }).waitFor();
     await settleBottom(page);
+    // A reopened chat's list has not measured all of its transcript yet (its footer, rows drawn taller
+    // than estimated): its own scroll to the end aims short of the end the browser shows, and while
+    // that scroll is on its way it holds the view there. Neither may leave a reader who follows the
+    // end short of it, or take them for one who scrolled away. A box the list never measures makes its
+    // end lag by more than the layout allowance, drawn after the footer or, as a row drawn taller than
+    // measured reaches, past the bottom of the rows' wrapper; a view a pixel shorter has the chat
+    // follow its end and the list scroll to its own.
     const chatHeight = width === 390 ? 844 : 900;
     for (const where of ["after the footer", "past the rows"] as const) {
       await page.locator(".chat-transcript-virtual").evaluate((content, where) => {
@@ -896,6 +933,9 @@ try {
         const content = document.createElement("div"); content.className = "markdown";
         row.append(content);
         const started = performance.now(), gaps: number[] = [], painted: number[] = [], atPaint: number[] = [];
+        // This observer was made after the list's own: in each frame the row grew, it runs after the
+        // list measured it and the chat followed, after layout and before that frame is painted. What it
+        // reads is what that frame shows, whatever ran between frames.
         const observer = new ResizeObserver(() => atPaint.push(node.scrollHeight - node.clientHeight - node.scrollTop));
         observer.observe(content);
         let seq = 0, maxGrowth = 0;
@@ -903,6 +943,8 @@ try {
           if (!content.isConnected) { reject(new Error("The streaming row was unmounted")); return; }
           painted.push(node.scrollHeight - node.clientHeight - node.scrollTop);
           const elapsed = performance.now() - started;
+          // A frame the machine held up lands every change that came meanwhile at once, as a stream's
+          // backlog does: one change per frame after a stall would be the check's own burst
           while (seq < 70 && elapsed >= seq * 110) {
             seq++;
             const paragraph = document.createElement("p");
@@ -924,6 +966,12 @@ try {
         for (const gap of samples) { run = gap > 2 ? run + 1 : 0; longest = Math.max(longest, run); }
         return longest;
       };
+      // A gap is sampled right after each append, before any layout: every frame that carries a change
+      // counts behind there, whatever is painted. On a machine slow enough that several frames in a row
+      // take a change's 110 ms each, that run grows with the machine and not the follow, so it is
+      // logged. What the reader sees is counted twice: in each frame the row grew, as it is painted (a
+      // follow that lands after its measurement's frame paints every change behind), and as each next
+      // frame starts, for a run of frames left behind.
       const unlaidOut = longestRun(stream.gaps);
       const longest = longestRun(stream.painted);
       const p95 = gaps[Math.floor(gaps.length * 0.95)]!;
@@ -946,6 +994,9 @@ try {
       const rendered = await page.evaluate((total) => new Promise<{ behind: number[]; changes: number }>((resolve, reject) => {
         const node = document.querySelector(".chat-view")!;
         const row = [...node.querySelectorAll<HTMLElement>("[data-chat-row]")].sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top).at(-1)!;
+        // React commits each read between frames, so a frame callback would see the row grown and not
+        // yet laid out. This observer was made after the list's own: in the frame the row grew it runs
+        // after the list measured it and the chat followed, before that frame is painted.
         const behind: number[] = [];
         let changes = 0, height = row.getBoundingClientRect().height;
         const observer = new ResizeObserver(() => {
@@ -961,6 +1012,7 @@ try {
         let asked = 0;
         const tick = () => {
           const elapsed = performance.now() - started;
+          // a read still on its way takes the next ask with it: ask until the last paragraph lands
           if (elapsed >= asked * 110) { asked++; window.chatQa.refresh(); }
           if ([...node.querySelectorAll("p")].some((p) => p.textContent?.startsWith(`Rendered paragraph ${total}:`))) {
             observer.disconnect();

@@ -64,6 +64,7 @@ describe("rust_host_runs", () => {
 
   it("kills what a hung host started, not only the host", () => {
     const tag = `ovis-probe-child-${crypto.randomUUID()}`;
+    // no exec: the child's own command line (its path, with the tag) stays visible to pgrep while it lives
     const child = script(tag, "sleep 60");
     const forking = script("forks", `${USAGE}\n${child} & wait`);
     const hung = sh(`if rust_host_runs ${forking}; then echo RUNS; else echo REFUSED; fi`);
@@ -234,6 +235,7 @@ describe("node_link", () => {
     const userPath = join(root, "user-path");
     mkdirSync(userPath);
     if (user !== undefined) writeFileSync(join(userPath, "node"), `#!/bin/sh\necho ${user}\n`, { mode: 0o755 });
+    // node_link probes only Node on original_path: do not let the real PC's /usr/bin/node fill an absent fixture.
     const env: Record<string, string> = { NODE_DIR: join(root, "share/ovis/node"), LEGACY_NODE_DIR: join(root, "share/herdr-web-ui/node"), BIN_DIR: join(root, "bin"), CODE: join(root, "code"), installed_here: "", original_path: userPath };
     mkdirSync(join(env["CODE"]!, "server/pty"), { recursive: true });
     writeFileSync(join(env["CODE"]!, "server/pty/sidecar.ts"), finds ? 'const APP_NODE_DIRS = [".local/share/ovis/node"];' : 'Bun.which("node")');
@@ -257,6 +259,7 @@ describe("node_link", () => {
   });
 
   it("takes this checkout's own server for one that finds the app's Node itself", () => {
+    // the real server/pty/sidecar.ts, not a stand-in: a server that stops naming the app's Node must fail here
     const env = { ...pc(true, (e) => symlinkSync(join(e["NODE_DIR"]!, "bin/node"), node(e))), CODE: join(import.meta.dir, "..") };
     expect(link(env).code).toBe(0);
     expect(lstatSync(node(env), { throwIfNoEntry: false })).toBeUndefined();

@@ -1,3 +1,9 @@
+/**
+ * A remote PC's runtime: the compiled server and what runs beside it (scripts/server-artifact.ts), plus checksum-pinned
+ * Node and herdr. Every platform's bundle is assembled from the compile and verified downloads on any OS; only one built
+ * for this PC runs its PTY smoke test here. A Windows bundle is the server alone: herdr has no `terminal attach` there
+ * (no Node, no PTY), and herdr itself comes from its own installer, which setup runs (server/remote-host.ts).
+ */
 import { createHash } from "node:crypto";
 import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -74,6 +80,7 @@ try {
   } else if (!windows) {
     console.log(`${platform}: HERDR_BUNDLE_PTY_SIDECAR is not set, so this bundle has no Rust PTY host`);
   }
+  // nothing native on Windows: without Node and node-pty the server finds no PTY sidecar and mirrors panes (server/pty/sidecar.ts)
   await stageServerArtifact({ platform: serverPlatform, dir: stage, nodePty: !windows, downloads, ...(ptySidecar ? { ptySidecar: { binary: ptySidecar } } : {}) });
   const bundle = { version: REMOTE_BUNDLE_VERSION, platform, server: (JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version: string }).version, bun: Bun.version };
   if (windows) {

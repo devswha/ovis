@@ -121,6 +121,8 @@ export function isolate(base: Record<string, string | undefined>, kept: string |
     XDG_STATE_HOME: join(dir, "state"),
     OVIS_STATE_DIR: join(dir, "web-state"),
     HERDR_TEST_SESSION: session,
+    // One integration file at a time: four at once made the timing-bound contract tests fail in
+    // turn on CI's four cores. HERDR_TEST_SHARDS raises it (scripts/ci-tests.ts).
     HERDR_TEST_SHARDS: base["HERDR_TEST_SHARDS"] || "1",
   });
   return { env, dir, sessions, remove: () => { if (!kept) rmSync(dir, { recursive: true, force: true }); } };
@@ -185,6 +187,12 @@ export const MAX_RUNS_LIMIT = 8;
 export const QUEUE_TICKETS = 24;
 export const MAX_LOCK_PORT = 65535 - MAX_RUNS_LIMIT - 1 - QUEUE_TICKETS;
 
+/**
+ * How many herdr-backed runs may share this PC: CHECK_MAX_RUNS (1 to 8), else one per eight cores,
+ * at least one and at most two. On a 32-core PC two side by side stayed green; with three,
+ * machine-conflict-regression.ts lost Chromium screenshots, and with four integration tests
+ * that wait on live processes failed (measured for the PR that added slots).
+ */
 export function maxRuns(env: Record<string, string | undefined>, cores = availableParallelism()): number {
   const asked = env["CHECK_MAX_RUNS"];
   if (asked === undefined || asked === "") return Math.max(1, Math.min(2, Math.floor(cores / 8)));
@@ -211,6 +219,7 @@ export function checkoutIdentity(checkout: string, env: Record<string, string | 
   return runner ? `${runner}:${checkout}` : checkout;
 }
 
+/** The most CHECK_WAIT_SECONDS may ask for: two hours, past any CI job's timeout. */
 export const MAX_WAIT_SECONDS = 7200;
 
 export function waitSeconds(env: Record<string, string | undefined>): number {
@@ -579,6 +588,7 @@ async function claimMarker(marker: string, pid: number, checkout: string, alive:
       },
     };
   };
+  // other runs claiming and releasing at the same moment can make one attempt come back empty-handed
   for (let attempt = 0; attempt < 5; attempt++) {
     if (create(marker) !== null) return null;
     const found = state(marker);
@@ -1311,6 +1321,7 @@ export async function main(groupSeams: GroupSeams & {
         if (code === 0 && !ending) code = await run("run", todo.command, env);
       }
       else {
+        // the browser scripts serve dist/, and the fast steps have built it already
         if (!todo.fast) code = await build(env);
         if (code === 0) code = await run("lanes", [bun, "scripts/ci-lanes.ts", ...todo.lanes.map((lane) => `${lane}=${LANES[lane]}`)], env);
       }
@@ -1437,6 +1448,10 @@ export function describeGroup(outcome: GroupOutcome): string {
   return `step process group ${outcome.pgid} did not end: ${outcome.cause ?? outcome.result} (sent ${outcome.signals.join(", ")})`;
 }
 
+/**
+ * Workflow syntax, with the release CI pins. It is fetched once into node_modules/.cache; a
+ * platform the pin does not cover leaves the check to CI, and says so.
+ */
 async function actionlint(
   run: (label: string, command: string[], env: Record<string, string | undefined>, cwd?: string) => Promise<number>,
   env: Record<string, string | undefined>,

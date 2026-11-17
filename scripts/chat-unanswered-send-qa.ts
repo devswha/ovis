@@ -33,6 +33,7 @@ try {
   const created = await workspaceCreate({ cwd: root, label: "ovis-test-unanswered-send", focus: false });
   workspace = created.workspace.workspace_id;
   const pane = created.root_pane.pane_id;
+  // as server/codex.contract.test.ts binds its stand-in: the session reported, the Codex started, its rollout written
   await herdrRpc("pane.report_agent", { pane_id: pane, source: "manual", agent: "codex", state: "idle", agent_session_path: rollout });
   await herdrRpc("pane.send_text", { pane_id: pane, text: `${codex}\n` });
   for (const deadline = Date.now() + 10_000; !(await herdrRpc<{ read: { text: string } }>("pane.read", { pane_id: pane, source: "visible", format: "text" })).read.text.includes("• The fictional");) {

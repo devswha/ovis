@@ -14,6 +14,19 @@ afterEach(() => { for (const path of made.splice(0)) rmSync(path, { recursive: t
 // that a socket inside a directory made there is past the limit `isolate` enforces
 const scratchBase = existsSync("/tmp") ? realpathSync("/tmp") : tmpdir();
 const scratch = (): string => { const dir = mkdtempSync(join(scratchBase, "hwc-")); made.push(dir); return dir; };
+/**
+ * A lock base whose `count` slot ports, admission port, ticket desk and ticket ports above them
+ * nothing listens on, held for a moment to make sure, then given back. The queue's ports too:
+ * acquire() asks them, and a run waiting there (another runner's test, or a real check on a CI host)
+ * would come ahead of the test's run.
+ *
+ * Below 32768, under the ports a system hands out on its own by default: Linux gives a listener on
+ * port 0 or an outgoing connection one from 32768 up (ip_local_port_range), macOS and Windows from
+ * 49152 up. One
+ * of those taking a ticket port after the look above (another test file's server, on a CI host
+ * running files side by side) would take the place the test expects a run to take, and, listening
+ * without a word, hold every ticket lookup for the whole lookup time (#1940, #1939).
+ */
 function freePortRange(count: number): number {
   for (let attempt = 0; attempt < 50; attempt++) {
     const base = 20_000 + Math.floor(Math.random() * 12_000);
@@ -1090,6 +1103,8 @@ const processState = (pid: number): string => {
   catch (error) { return `pid ${pid}: ${(error as NodeJS.ErrnoException).code ?? "no /proc"}`; }
 };
 
+// The lock files a self-hosted runner's launcher makes for its containers (run.sh start_slots): an
+// empty file for each port of a lock range. flock(2) is called in glibc: Linux only, as the runners are.
 describe.skipIf(process.platform !== "linux")("slots in a directory (CHECK_SLOTS_DIR)", () => {
   const checkScript = fileURLToPath(new URL("./check.ts", import.meta.url));
   const slotFiles = (): { dir: string; base: number } => {
@@ -1151,6 +1166,8 @@ describe.skipIf(process.platform !== "linux")("slots in a directory (CHECK_SLOTS
   it.skipIf(!Bun.which("flock"))("reads a file another run is only looking at as held by no run, and never as its own", async () => {
     const { dir, base } = slotFiles();
     const file = join(dir, String(base));
+    // a run asking who holds the file has it shared for a moment; here, for as long as the test needs
+    // (--no-fork: the lock stays with the one process the test ends)
     const looking = Bun.spawn(["flock", "--shared", "--no-fork", file, "sh", "-c", "echo LOOKING; exec sleep 120"], { stdout: "pipe" });
     try {
       const reader = looking.stdout.getReader();
@@ -1409,6 +1426,10 @@ describe.skipIf(process.platform !== "linux")("slots in a directory (CHECK_SLOTS
 
 describe("endGroup", () => {
   it.skipIf(process.platform === "win32")("waits for a leaderless group until its descendant exits", async () => {
+    // The descendant says when SIGTERM reached it, then exits once released. Its handler can take
+    // effect after the code that installs it has run, and a SIGTERM before that kills it silently:
+    // it is ready only once the handler has caught a SIGTERM it sent itself. A timer keeps it alive
+    // (a read on the stdin it inherits sometimes let it exit on its own), and SIGUSR1 releases it.
     const descendant = 'let caught = 0; process.on("SIGTERM", () => process.stdout.write(caught++ === 0 ? `READY ${process.pid}\\n` : "TERM\\n")); process.on("SIGUSR1", () => process.exit(0)); setInterval(() => {}, 1 << 30); process.kill(process.pid, "SIGTERM");';
     const leader = `const { spawn } = require("node:child_process"); spawn(process.execPath, ["-e", ${JSON.stringify(descendant)}], { stdio: "inherit" }).unref();`;
     const parent = spawn(process.execPath, ["-e", leader], { detached: true, stdio: ["pipe", "pipe", "inherit"] });
@@ -1577,6 +1598,8 @@ describe("check CLI teardown", () => {
     const env: Record<string, string | undefined> = {
       ...process.env,
       CHECK_REPORT: ".check/report.json",
+      // slots, an admission port and a queue of its own: on the PC's (or a CI host's) shared lock
+      // range these throwaway runs would wait in line behind every real run waiting for a slot
       CHECK_LOCK_PORT: String(freePortRange(MAX_RUNS_LIMIT)),
       CHECK_MAX_RUNS: "8",
       CHECK_WAIT_SECONDS: "90",
@@ -1653,6 +1676,8 @@ describe("check CLI teardown", () => {
   it.skipIf(process.platform === "win32")("preserves interruption codes and retained teardown evidence", async () => {
     for (const [signal, code] of [["SIGTERM", 143], ["SIGINT", 130]] as const) {
       const { cwd, env, stops, report, isolated, script } = fixture(true);
+      // `read` waits on the check's stdin, which stays open: the command runs until the signal. The
+      // check echoes the command line, so the marker is spelled so that only the command prints it.
       const check = spawn(process.execPath, [script, "run", "sh", "-c", `${sessionsCommand}; echo "RE""ADY"; read line`], { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
       const exited = new Promise<number | null>((resolve) => check.once("exit", (exitCode) => resolve(exitCode)));
       let stdout = "";

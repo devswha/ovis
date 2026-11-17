@@ -28,6 +28,16 @@ bash() {
 source "$1"
 `;
 
+/**
+ * A hang guard, not a speed check: the stubbed lane still forks a few processes for every browser
+ * script, and took up to 5 s on a host at load 100 of 128 cores, where a 5 s limit killed it (#2110).
+ * Each lane test gets the guard and room to report what the lane printed. The guard ends the lane and
+ * every process under it (ending only its bash leaves the script's pipeline running), then stops
+ * reading and fails with what was printed: it never waits for the output to close, which a process
+ * the lane left behind can hold open. The lane stays in the test's own process group, which
+ * scripts/ci-tests.ts ends when the file finishes or the run is interrupted, so such a process goes
+ * with it.
+ */
 const LANE_HANG_MS = 60_000;
 const LANE_TEST_MS = LANE_HANG_MS + 10_000;
 const inheritedEnv = () => Object.fromEntries(
@@ -72,6 +82,7 @@ async function lane(fail = "", kept = false, ci = "") {
     let hung = false;
     const guard = setTimeout(() => {
       hung = true;
+      // only a lane whose bash still runs: once it has exited, its pid may name another process
       const running = child.exitCode === null && child.signalCode === null;
       void (running ? endTree(child.pid) : Promise.resolve()).finally(() => {
         for (const reader of readers) reader.cancel().catch(() => {});
@@ -103,6 +114,7 @@ describe("browser lane", () => {
     };
     const steps = Object.values(workflow.jobs).flatMap((job) => job.steps)
       .filter((step) => step.name === "Pinned ffmpeg for the relay media run");
+    // the browser lane's; the relay-skew job, which had the other, returns once a release holds server/relay/
     expect(steps).toHaveLength(1);
     for (const step of steps) {
       const dir = mkdtempSync(join(tmpdir(), "hwc-ffmpeg-step-"));

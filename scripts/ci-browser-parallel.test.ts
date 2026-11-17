@@ -28,6 +28,7 @@ function standIn(record: string): number | null {
   const match = /^(\d+) (.+)\n$/.exec(record);
   if (!match) throw new Error(`not a stand-in record: ${JSON.stringify(record)}`);
   const pid = Number(match[1]);
+  // the start last: it is what tells this process from a later one, so it is read nearest the signal
   return alive(pid) && commandLine(pid)?.join(" ") === STAND_IN.join(" ") && processStart(pid) === match[2] ? pid : null;
 }
 
@@ -360,6 +361,7 @@ TypeError: closed
     try {
       expect(standIn(records[0]!)).toBe(recorded.pid);
       for (const record of records) stopStandIn(record);
+      // a SIGKILL sent above would end them before the SIGTERM sent here
       later.kill("SIGTERM");
       other.kill("SIGTERM");
       await Promise.all([recorded.exited, later.exited, other.exited]);

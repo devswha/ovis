@@ -18,6 +18,7 @@ const PLAN = "Here is the plan for the sync rework:\n\n1. Add a `revision` colum
 const INTERIM = "The counter is wired into the replay path; next I run the metrics tests.";
 const LATER = "backfill it from updated_at";
 const FOLDED_UNDER = "wired into the replay path";
+/** the demo transport ends its opening turn on a timer of this length (site/demo/transport.ts) */
 const TURN_END_MS = 4500;
 
 const frames = (page: Page): Promise<void> => page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
@@ -38,8 +39,14 @@ const wordsBox = (page: Page, words: string) => page.evaluate((words) => {
   return { x0: rects[0]!.left + 1, y0: rects[0]!.top + rects[0]!.height / 2, x1: rects.at(-1)!.right - 1, y1: rects.at(-1)!.top + rects.at(-1)!.height / 2 };
 }, words);
 
+/**
+ * Records where the words are in every painted frame from now until `stopWatch`. A frame's reading is
+ * taken in its animation frame, and taken again by a resize observer made after the app's: what the
+ * app's own observers move before the paint (a fold's step) is read as painted, not as it was before.
+ */
 const watch = (page: Page) => page.evaluate(() => {
   const lab = window as unknown as { watched: number[]; watching: boolean; wordsRange: Range; watcher?: ResizeObserver };
+  // unrounded: a reading rounded to a tenth makes a 0.96 px step read as a whole pixel
   const top = () => lab.wordsRange.getClientRects()[0]?.top ?? Number.NaN;
   lab.watched = []; lab.watching = true;
   const step = () => {
@@ -114,6 +121,8 @@ try {
         { name: "phone-390", width: 390, height: 844, mobile: true, partway: false, words: LATER, last: false, still: false },
         { name: "desktop-1280-fold", width: 1280, height: 800, mobile: false, partway: false, words: FOLDED_UNDER, last: true, still: false },
         { name: "phone-390-fold", width: 390, height: 844, mobile: true, partway: false, words: FOLDED_UNDER, last: false, still: false },
+        // with reduced motion the block folds in one frame, as one slow frame of the slide does: the
+        // list measures a shrunk row a frame late, and moves the view itself when it does
         { name: "desktop-1280-fold-reduced-motion", width: 1280, height: 800, mobile: false, partway: false, words: FOLDED_UNDER, last: true, still: true },
       ] as const;
       for (const shape of shapes) {
@@ -155,6 +164,7 @@ try {
           const tops = await stopWatch(page);
           const shown = tops.map((top) => top.toFixed(2)).join(", ");
           assert.ok(tops.length > 2 && tops.every(Number.isFinite), `${label}: the words were watched across the selection (${shown})`);
+          // within a pixel: the view scrolls in whole pixels, and a fold's transition moves a fraction of one
           assert.ok(tops.every((top) => Math.abs(top - tops[0]!) < 1), `${label}: the words stay put while they are selected, every painted frame (tops ${shown})`);
           assert.equal(await page.evaluate(() => getSelection()?.toString() ?? ""), shape.words, `${label}: the selection holds exactly the words selected`);
 
@@ -199,6 +209,8 @@ try {
             assert.equal(await gap(), grown, `${label}: what grew below the selection is not followed under it`);
           }
           if (down) {
+            // the row above the words grows first: the hold puts the view back for it, so the chat has
+            // put the view somewhere since the selection began
             const wordsTop = () => page.evaluate(() => (window as unknown as { wordsRange: Range }).wordsRange.getClientRects()[0]!.top);
             const before = await wordsTop();
             await page.evaluate(() => {

@@ -230,6 +230,7 @@ async function run(browser: Browser, origin: string, width: number, theme: "ligh
   await away.clock.setSystemTime(await away.evaluate((slept) => Date.now() + slept, HOUR));
   await becomes("blocked");
   assert.deepEqual(await timeOf(panes.api), [], `${tag}: a wait that began while the device slept says no time`);
+  // past the roster's slowest read, so the page has one from after the sleep
   await away.clock.runFor(35_000);
   assert.deepEqual(await timeOf(panes.api), [], `${tag}: nor does it once the page has read its roster again`);
   assert.deepEqual(await timeOf(panes.web), ["3h"], `${tag}: a time herdr's counter proves stands through the sleep`);

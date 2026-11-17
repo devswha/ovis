@@ -83,6 +83,7 @@ try {
           assert.equal(await select.inputValue(), "custom");
           if (evidence) await page.screenshot({ path: join(evidence, `interface-font-custom-${width}.png`) });
 
+          // a reload steps out of Settings (lib/settingsHistory.ts): the app comes back with the choice, and the link opens the page again
           await page.reload();
           await page.locator(".conn-live").waitFor({ state: "attached" });
           assert.equal(await token(page), `"Fixture UI Font", "Hiragino Sans", ${BUILT_IN}`, "a reload keeps the typed list");

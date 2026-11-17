@@ -103,6 +103,8 @@ try {
           const order = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>(".agent-list:not(.agent-list-pinned) > li:not([hidden])")].map((item) => item.dataset["pane"] ?? (item.dataset["helpersOf"] ? "LINE" : "")));
           const at = order.indexOf(AGENT);
           assert.deepEqual(order.slice(at, at + 3), [AGENT, "LINE", BLOCKED], "agent, its helpers line, the helper in sight");
+          // the line is drawn inside the list's width, a helper's height
+          // both read in one frame: the phone's drawer may still be sliding in
           const [lineBox, helperBox] = await page.evaluate(([agent, helper]) => [
             document.querySelector(`.agent-list .agent-helpers[data-helpers-of="local:${agent}"]`)!.getBoundingClientRect().toJSON(),
             document.querySelector(`.agent-list .agent-item[data-pane="${helper}"]`)!.getBoundingClientRect().toJSON(),

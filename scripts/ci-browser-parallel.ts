@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 const repo = join(import.meta.dir, "..");
 const FAILURE_TAIL_LINES = 400;
 const HEARTBEAT_MS = 60_000;
+/** The longest run seen on a loaded CI host was about 6 minutes (security-summary, 2026-10-28). */
 const DEFAULT_SCRIPT_TIMEOUT_SECONDS = 600;
 const STOP_GRACE_MS = 5_000;
 const TIMEOUT_TAIL_LINES = 40;

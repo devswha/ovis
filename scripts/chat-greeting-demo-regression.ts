@@ -48,6 +48,7 @@ const newWorkspace = (page: Page, cwd: string): Promise<string> => page.evaluate
   return ((await response.json()) as { pane_id: string }).pane_id;
 }, cwd);
 
+/** The greeting and the composer, as one block, at the stack's vertical centre (the observer that places them answers a frame after a resize). */
 const centred = (page: Page): Promise<unknown> => page.waitForFunction(() => {
   const greeting = document.querySelector(".pane-frame.is-current .composer-greeting")?.getBoundingClientRect();
   const composer = document.querySelector(".pane-frame.is-current .composer")?.getBoundingClientRect();
@@ -70,6 +71,9 @@ try {
   const index = join(app, "index.html");
   const html = readFileSync(index, "utf8");
   assert.match(html, /<script type="module"/);
+  // The demo answers a sent message in the same task: its user turn and the agent's "working".
+  // Either alone ends a greeting. This holds a submit frame on its way out, as a slow connection
+  // would, so that the app is seen with a message sent and nothing heard back yet.
   const hold = `<script>(() => {
     const Demo = window.WebSocket;
     window.heldSubmits = null;
@@ -121,6 +125,8 @@ try {
         const pane = await newWorkspace(page, "/home/demo/new-project");
         await select(page, pane);
         const greeting = page.locator(".pane-frame.is-current .composer-greeting");
+        // the demo's new agent works for a moment first: a status at work alone leaves the greeting
+        // (#2550), and the steps below start from an agent at rest
         await greeting.waitFor({ timeout: 8_000 });
         await page.locator('.pane-frame.is-current .composer-status[data-status="idle"]').waitFor({ state: "attached", timeout: 8_000 });
         assert.equal(await greeting.locator(".composer-greeting-title").textContent(), "What should Claude do in new-project?");
@@ -162,6 +168,9 @@ try {
         await menu.waitFor({ state: "detached" });
         console.log("PASS in a short window the completion menu scrolls over the lifted composer and is not clipped");
 
+        // a stack too short for the composer and the greeting: the greeting stays out, with the
+        // chat's own empty line in its place, and comes back when there is room. 140px: with the
+        // one-line 46px header (#461) a 200px window still held the card and the greeting
         await page.setViewportSize({ width: 1440, height: 140 });
         await page.locator(".pane-frame.is-current .composer-greeting.is-out").waitFor({ state: "attached" });
         assert.equal(await page.locator(".pane-frame.is-current .composer-greeting").evaluate((node) => getComputedStyle(node).visibility), "hidden");
@@ -175,6 +184,11 @@ try {
         assert.equal(await page.locator(".pane-frame.is-current .chat-empty").count(), 0);
         console.log("PASS a pane too short for the greeting keeps the chat's empty line and a docked composer");
 
+        // The first message puts the composer back at the bottom, with no animation, before
+        // anything is heard back: the submit frame is held, so no turn and no "working" end it.
+        // A send is claimed in the pane's cross-tab Web Lock (#2369), granted in a later task; here
+        // another tab's acknowledgement holds that lock over the click, so the grant always comes
+        // after the click's frame: the greeting goes with the press, not with the grant.
         await page.evaluate(() => { (window as unknown as { heldSubmits: (() => void)[] | null }).heldSubmits = []; });
         await message.fill("Start with the README");
         await page.waitForFunction(() => Object.keys(localStorage).some((key) => key.startsWith("ovis:composer-draft:") && localStorage.getItem(key) === "Start with the README"));
@@ -260,6 +274,7 @@ try {
       const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, locale: "en-US" });
       try {
         await phone.addInitScript(settings);
+        // a soft keyboard the script raises: lib/viewport.ts reads its height (headless has none)
         await phone.addInitScript(() => {
           const keyboard = Object.assign(new EventTarget(), { height: 0 });
           Object.defineProperty(keyboard, "boundingRect", { get: () => new DOMRect(0, 0, 390, keyboard.height) });

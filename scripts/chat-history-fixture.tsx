@@ -34,6 +34,7 @@ window.fetch = (input, init) => {
     }
     return answer;
   }
+  // Deliberately ignores cancellation: late transports must still be harmless.
   return new Promise((resolve, reject) => window.qa.requests.push({ url, signal: init!.signal as AbortSignal,
     resolve: (text) => resolve(new Response(text)), reject: () => reject(new Error("late failure")) }));
 };

@@ -1,3 +1,23 @@
+/**
+ * The trial join's two lines (scripts/join/README.md), run as a person runs them, in containers: the CI runner image
+ * (an account, no service manager: the trial server runs in the background) and the systemd image built on it from
+ * scripts/join/systemd-qa.Dockerfile, as ovis-join-systemd:local when missing (systemd as PID 1, a user manager: the
+ * trial server is a user unit). The world is the repository's own test account service and Bun relay
+ * (scripts/join/test-world.ts) behind a TLS proxy with a test CA, on a docker network of the test's own with no way
+ * out. Every container is pinned to CPUs 112-127, labelled `ovis-join-qa` and removed at the end.
+ *
+ * The server in the kit is built from this checkout, which has the machine profile. The cases run with the test switch
+ * OVIS_JOIN_TEST_PLAIN_SERVER=1 on a kit made with --test-kit; the cases that need a plain server (the interlock's refusal,
+ * an open pairing gate) use one built without the machine profile (OVIS_JOIN_PLAIN_SERVER_BIN), and OVIS_JOIN_QA_REAL_PROFILE=1 runs case 1
+ * on the real profile with no switch.
+ *
+ * The person's steps that are stood in: the sign-in at the link page is the test account service's own approval call
+ * (`approveOnLinkPage`); the phone's scan of the QR code is NOT run (no scripted device client exists for it), so each
+ * join here ends at the QR code with Ctrl+C, after the account listing and the server's own answers are checked.
+ *
+ *   OVIS_JOIN_CONTAINER_QA=1 OVIS_JOIN_HERDR_BIN=<herdr 0.9> OVIS_PTY_SIDECAR_BIN=<host> [OVIS_SERVER_BIN=<server>]
+ *   [OVIS_JOIN_EVIDENCE=<dir>] bun test scripts/join/join.contract.test.ts
+ */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -108,6 +128,7 @@ const world = {
   },
 };
 
+/** the home, outside herdr's own folders (herdr writes its logs and session there by itself), and /tmp */
 const HOME_TREE = "find . \\( -path ./.config/herdr -o -path ./.local/state/herdr \\) -prune -o \\( -type f -exec sha256sum {} + \\) -o \\( ! -type f -printf '%p %y %m\\n' \\) | sort"
   // the folder line of herdr's own state folder's parent (herdr makes it when it first writes there)
   + " | grep -vx './.local/state d 755'"
@@ -126,6 +147,8 @@ interface Machine {
 function machineOf(name: string, who: Who): Machine {
   return {
     name, who,
+    // the plain server (test switch only) records itself in ~/.config/herdr-web-ui/bridges (server/bridge.ts:25-26), as
+    // the join's start settings say it does: under the switch that folder is left out of the comparison, never otherwise
     home: async () => {
       const tree = (await sh(name, HOME_TREE, who)).stdout;
       return who.env.includes(PLAIN) ? tree.split("\n").filter((line) => !line.includes("./.config/herdr-web-ui")).join("\n") : tree;
@@ -225,6 +248,7 @@ function serveAsProfile(fetch: (request: Request) => Response) {
   Bun.serve({ hostname: "127.0.0.1", port: Number(process.env.PORT), fetch });
 }`;
 
+/** a socket that listens and answers nothing, as a stand-in engine (python3: the machines have no Bun or Node) */
 const LISTEN = "import socket, sys, time; s = socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.listen(); print(\"listening\", flush=True); time.sleep(1e9)";
 
 describe.skipIf(!ready)("the trial join by one pasted line, in containers", () => {
@@ -357,6 +381,8 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
     const name = await container("ovis-join-sd", ["--privileged", "--cgroupns=host", "--tmpfs", "/run", "--tmpfs", "/run/lock", "-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
       "-v", `${HERDR}:/opt/eng/herdr:ro`, "-v", `${scratch}/certs/ca.pem:/certs/ca.pem:ro`, SYSTEMD_IMAGE]);
     const root = (script: string) => docker(["exec", "-i", "-u", "root", name, "sh", "-c", script]);
+    // no event exists for PID 1's control socket appearing (the image has no inotify tool): a bounded look for it; then
+    // systemd's own wait for the end of its start-up, which answers running or degraded
     const booted = await root("timeout 60 sh -c 'while [ ! -S /run/systemd/private ]; do sleep 0.1; done' && s=$(timeout 120 systemctl is-system-running --wait); echo $s; case $s in running | degraded) exit 0 ;; esac; exit 1");
     expect(booted.code, booted.stdout + booted.stderr).toBe(0);
     const uid = (await root("id -u ovis")).stdout.trim();
@@ -513,6 +539,8 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
     expect((await m.sh("mkdir -p ~/.config/herdr/plugins/config/devswha.ovis ~/.config/ovis ~/.claude/herdr-statusline ~/.herdr"
       + " && printf 'PORT=17998\\nOVIS_TOKEN=his-own-token\\n' | tee ~/.config/herdr/plugins/config/devswha.ovis/env > ~/.config/ovis/env"
       + " && echo '{}' > ~/.claude/settings.json && echo line > ~/.claude/herdr-statusline/status.sh && echo kept > ~/.herdr/note")).code).toBe(0);
+    // plain terminals, no agent reported: his Ovis records an agent's state changes in its own state folder
+    // (completions.json, server/core/status.ts:140) as herdr reports them, which the comparison would take for the trial's doing
     await serveHerdr(m, undefined, false);
     for (const session of ["s1", "s2", "s3", "s4", "s5"]) await serveHerdr(m, session, false);
     let ownServer: ReturnType<typeof stream> | undefined;
@@ -525,6 +553,10 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
     await startOwn();
     const HIS = "for p in .config/herdr-web-ui .config/ovis .claude/settings.json .claude/herdr-statusline .herdr .config/herdr/plugins .config/herdr/config.toml; do"
       + " [ -e \"$p\" ] && find \"$p\" -type f -exec sha256sum {} +; done | sort; echo ---units; ls ~/.config/systemd/user 2>/dev/null; echo ---cron; crontab -l 2>/dev/null";
+    // the plain server of the test switch may register itself as this socket's bridge: that is recorded, not compared
+    // his Ovis writes its record of agents' finishes (.config/ovis/completions.json, server/core/status.ts:140) by itself
+    // at its first reading of the session, whenever herdr's events lead it to read one: that one file is recorded in the
+    // evidence, not compared; every other file of his is compared byte for byte
     const his = async () => (await m.sh(HIS)).stdout.split("\n").filter((line) => !/\/bridges\//.test(line) && !line.endsWith(" .config/ovis/completions.json")).join("\n");
     const bridges = async () => (await m.sh("for f in ~/.config/herdr-web-ui/bridges/* ~/.config/ovis/bridges/*; do [ -f \"$f\" ] && { echo \"== $f\"; cat \"$f\"; echo; }; done")).stdout;
     const ownPid = async () => (await m.sh("ps -eo pid,args --no-headers | awk '$2 == \"/opt/own/ovis-server\" { print $1 }'")).stdout.trim();
@@ -1021,6 +1053,8 @@ if ((process.env.HOME ?? "").includes("/probe/") && existsSync("/var/tmp/fake-pr
     const home = await m.home();
     expect((await m.sh("touch /var/tmp/fake-probe-hangs /var/tmp/fake-probe-ignores-term")).code).toBe(0);
     const run = terminal(m.name, m.who, `( ${fakeKit.line} --yes ); echo JOIN-ENDED; exec sleep 600`);
+    // no event exists for the stand-in's start inside the probe (the image has no inotify tool): a bounded look for the
+    // file it writes as it starts
     expect((await m.sh("timeout 120 sh -c 'until [ -s /var/tmp/probe-started ]; do sleep 0.2; done'")).code).toBe(0);
     const probe = (await m.sh("cat /var/tmp/probe-started")).stdout.trim();
     expect((await m.sh(`kill -TERM $(ps -o ppid= -p ${probe})`)).code).toBe(0);

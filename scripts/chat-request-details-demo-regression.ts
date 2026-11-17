@@ -63,6 +63,7 @@ async function check(browser: Browser, origin: string, width: number, theme: "li
     : { viewport: { width, height: 900 }, locale: "en-US", colorScheme: theme });
   const name = `${width}px ${theme}${storedOff ? " with the old switch stored off" : ""}`;
   try {
+    // the demo's other agents finish turns now and then: their in-app alerts stay off over the transcript
     await context.addInitScript(([settings, pane, stored]) => {
       localStorage.setItem("ovis:settings", settings!);
       localStorage.setItem("ovis:phone-tabs", JSON.stringify("header"));

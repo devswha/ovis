@@ -77,6 +77,8 @@ function pc({ lockWait }: { lockWait?: number } = {}) {
     return { code, out: out + err };
   };
   const standIn = (name: string, script: string) => writeFileSync(join(stand, name), `#!/bin/sh\n${script}\n`, { mode: 0o755 });
+  // a PC without node (macOS out of the box, whose openssl is LibreSSL) would fetch the official Node build for every
+  // check: Bun's node:crypto stands in, so these tests never reach the network
   if (!Bun.which("node")) standIn("node", `exec "${process.execPath}" "$@"`);
   const dropStandIn = (name: string) => rmSync(join(stand, name));
   return { home, releases, key, run, start, standIn, dropStandIn, binary: join(home, ".local/share/ovis/bin/ovis-server"), ovis: join(home, ".local/share/ovis") };

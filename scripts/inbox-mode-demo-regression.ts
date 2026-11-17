@@ -20,6 +20,10 @@ declare global {
       set(paneId: string, status: AgentStatus, finish?: number): Promise<void>;
       resizes: { pane: string; cols: number; rows: number }[];
       frames: { type: string; pane: string; cols?: number; rows?: number }[];
+      /**
+       * loses the roster's event stream, and gives it back, as a browser's EventSource does while it reconnects: the
+       * demo carries the roster on its stand-in for the stream, which its own connection switch does not reach
+       */
       dropRoster(): void;
       restoreRoster(): void;
       failRoster(failing: boolean): void;
@@ -32,6 +36,9 @@ declare global {
   }
 }
 
+// Holds the demo's agents still, whatever its own timers do: Codex waits for an answer, Claude works
+// (the demo would finish it 4.5s in), the flaky-test agent is done and not looked at, the rest are idle.
+// Loaded after demo-transport.js and before the app; what it forces survives a reload.
 function installInboxFixture(): void {
   const key = "inbox-mode-regression:forced";
   const stored = sessionStorage.getItem(key);
@@ -104,6 +111,7 @@ function installInboxFixture(): void {
   const send = (body: unknown): void => {
     for (const source of sources) source.onmessage?.(new MessageEvent("message", { data: JSON.stringify(body) }));
   };
+  // the demo's socket is a class of its own that no browser event reports: each size the app asks of a pty is noted
   const DemoSocket = window.WebSocket;
   const Recorded = function (url: string | URL, protocols?: string | string[]) {
     const socket = new DemoSocket(url, protocols);
@@ -159,10 +167,16 @@ const BLOCKED_TITLE = "Guard the export button";
 const WORKING_TITLE = "Idempotent payments";
 const ABSENT = [".inbox-filters", ".inbox-chip", ".inbox-place", ".inbox-title", ".inbox-dot", ".tab-strip", ".context-tabs", ".view-switch", ".status-bar", "#drawer-toggle", "#workspace-drawer", ".sidebar-toggle", ".pane-split.is-split"];
 const PHONE = { width: 390, height: 844 };
+/** how long nothing may be sent to a pty: past the terminal's own wait for its box to settle before it fits */
 const NO_RESIZE_WAIT_MS = 1_000;
 
 const app = mkdtempSync(join(tmpdir(), "ovis-inbox-mode-"));
 const evidence = process.env["UI_EVIDENCE_DIR"];
+/**
+ * The part of the script that runs, so each part fits the browser lane's limit for one script (600 s): `themes` (this
+ * file, both themes), `panes` (scripts/inbox-mode-panes-demo-regression.ts) and `rail`
+ * (scripts/inbox-mode-rail-demo-regression.ts), each from its own browser and app.
+ */
 const part = process.env["INBOX_MODE_PART"] ?? "themes";
 if (!["themes", "panes", "rail"].includes(part)) throw new Error(`INBOX_MODE_PART is themes, panes or rail, not ${part}`);
 const errors: string[] = [];
@@ -198,6 +212,7 @@ const address = (page: Page): Promise<Address> => page.evaluate(() => {
   const query = new URL(location.href).searchParams;
   return { app: query.get("app"), pane: query.get("pane"), machine: query.get("machine") };
 });
+/** The address says `want`, for each parameter given. The app writes its address after it has drawn, so this waits for it. */
 async function addressIs(page: Page, want: Partial<Address>, what: string): Promise<void> {
   const said = await page.waitForFunction((fields) => {
     const query = new URL(location.href).searchParams;
@@ -280,6 +295,12 @@ async function openSheet(page: Page, button: string): Promise<void> {
   await page.locator(button).tap();
   await page.locator(".row-sheet").waitFor();
 }
+/**
+ * A sheet that closed is gone from the page and from the history: one closed by an item that went nowhere, or by
+ * Cancel, steps back off its own entry a moment later (lib/sheetHistory.ts). A press that pushed an entry before
+ * that step landed would put it after the sheet's, and the step would land back on the sheet's. The next press
+ * comes after the step.
+ */
 async function sheetClosed(page: Page): Promise<void> {
   await page.locator(".row-sheet").waitFor({ state: "detached" });
   await page.waitForFunction((key) => (history.state as Record<string, unknown> | null)?.[key] === undefined, SHEET_HISTORY_KEY, { timeout: 5_000 });
@@ -539,6 +560,7 @@ try {
           assert.equal(await page.locator(".inbox-filter-toggle.is-on").getAttribute("aria-label"), "Filter by state: Needs you");
           await rowCount(page, 1);
           await paneHiddenUnderList(page, "the opened pane stays mounted under the list, hidden");
+          // six rows barely scroll on an 844px phone: the scroll is kept on a shorter one, where it has room to
           await pickFilter(page, "all");
           await rowCount(page, 6);
           await page.setViewportSize({ width: 390, height: 560 });
@@ -1376,6 +1398,8 @@ try {
               return node !== null && node.querySelector("[data-chat-row]") !== null && node.clientHeight > 0 && node.scrollHeight - node.clientHeight - node.scrollTop <= 1;
             }, view, { timeout: 5_000 }).then(() => true, () => false);
             await page.locator(".app-header.is-zoned").waitFor();
+            // the demo ends the agent's turn on its own a few seconds in (the fixture holds its state): its last words are in
+            // the transcript before the list covers it, so nothing grows it while it is read
             await page.waitForFunction((selector) => document.querySelector(selector)?.textContent?.includes("6 tests pass") === true, view, { timeout: 15_000 });
             assert.ok(await atEnd(), "the classic app's chat follows its transcript's end");
             if (wide) {
@@ -1681,6 +1705,8 @@ try {
                 "connected, the rail's PC draws no dot and says so in its name and its tooltip");
             }
             assert.equal(await status.count() >= 1, true, "the status line is in the document before it has a word");
+            // the stream that feeds the roster has opened (its first roster came): only a stream that was had can be lost;
+            // a cold list draws its rows from the roster's first read, which can come before the stream opens
             await page.waitForFunction(() => window.inboxFixture.rosters > 0, undefined, { timeout: 15_000 });
             await page.evaluate(() => { window.herdrDemoLoseConnection(); window.inboxFixture.dropRoster(); });
             if (wide) {
@@ -1737,6 +1763,8 @@ try {
               near(drawn.middle, drawn.discMiddle, 0.5, "the pill stands on the round controls' centre line");
               near(drawn.centre, viewport.width / 2, 1, "the line is centred between the two top controls");
             }
+            // Connected is said for two seconds: caught in the mutation that draws it, so a slow run cannot miss it. A
+            // connection that never comes back fails the step by a deadline, and the page's observer goes either way
             const back = await page.evaluate(([zone, word]) => new Promise<{ said: string; dot: string | null; name: string | null }>((resolve, reject) => {
               const top = document.querySelector(zone!)!;
               const deadline = window.setTimeout(() => { observer.disconnect(); reject(new Error("the list never said Connected within 15 s")); }, 15_000);
@@ -1774,6 +1802,8 @@ try {
           await page.waitForFunction(() => window.inboxFixture.rosters > 0, undefined, { timeout: 15_000 });
           await page.evaluate(() => { window.herdrDemoLoseConnection(); window.inboxFixture.dropRoster(); });
           await page.locator(".thread-chip-state.is-reconnecting").waitFor();
+          // the roster's stream is lost by itself, apart from the chip's own connection, and can be told later: the
+          // rail's own word for it is waited for before the rail is read
           const told = await page.waitForFunction(() => document.querySelector(".inbox-rail .inbox-rail-pcs")?.getAttribute("aria-label") === "PC workstation · Reconnecting…", undefined, { timeout: 15_000 }).then(() => true, () => false);
           assert.ok(told, `the rail's PC says the connection is lost: it is named ${await page.locator(".inbox-rail .inbox-rail-pcs").getAttribute("aria-label")}`);
           assert.equal(await page.locator(".inbox-column .inbox-top .inbox-connection").count(), 0, "the column does not say what the thread's chip says");
@@ -1825,6 +1855,8 @@ try {
             await failure.waitFor();
             sameBox(await box(page, ".mode-inbox .inbox-retry"), ready, "Retry keeps its box once its read has failed");
             assert.equal(await page.evaluate(() => document.activeElement?.classList.contains("inbox-retry")), true, "the focus is still on Retry");
+            // the failure ends and Retry is pressed in one task: no background read can come between, and the read the
+            // press makes is counted as it is made
             const asked = await page.evaluate(() => {
               window.inboxFixture.failRoster(false);
               const before = window.inboxFixture.rosterReads;
@@ -1837,6 +1869,7 @@ try {
             const focusAt = await page.evaluate(() => { const at = document.activeElement; return at === null || at === document.body ? "the page's body" : `${at.tagName.toLowerCase()}.${String(at.className)}`; });
             assert.equal(await page.evaluate(() => document.activeElement === document.querySelector(".mode-inbox")), true, `the rows drawn, the focus is on the list: it is on ${focusAt}`);
             console.log(`PASS on ${at} a list whose load failed says so in the app's words, its read's message (${cause}) smaller under them, and one Retry, which says it is on its way in the box it had while its read is held, keeps the focus, and loads the rows with the focus on the list`);
+            // the language is shared and the demo's follows the browser's: a Korean browser is what makes the page Korean
           }, viewport, viewport.width < 769, language === "ko" ? "ko-KR" : "en-US");
         }
 
@@ -2214,6 +2247,11 @@ try {
           }, setup.viewport, coarse);
         }
 
+        // ---- a list too narrow for its top controls ----
+        // A phone on its side has a side safe area, which the rail takes out of the column: with the sidebar at its least
+        // width the list is then narrower than three 44px controls. They shrink together and stay round, never under the
+        // 24px of a pointer's least target, so none stands over another or over the rail. The safe area is the browser's
+        // own override of it (the devtools protocol), as wide as an iPhone's on its side in either of its sizes.
         for (const safe of [47, 59]) {
           await withPage(browser, base, light, "/?app=inbox", `the top controls in a list narrowed by a ${safe}px side safe area`, async (page) => {
             const session = await page.context().newCDPSession(page);
@@ -2258,6 +2296,10 @@ try {
           }, desktop, true);
         }
 
+        // A window's own controls over the row's start ask the row for what of them the rail does not already cover:
+        // nothing while they are narrower than the rail, the rest of them while they are wider, where the row's controls
+        // shrink clear of them. Only an iPad's home-screen app in a window has such controls, so the page is told of them
+        // here as lib/viewport.ts tells it there: the mark on the root and the controls' width.
         for (const [reserved, what] of [[40, "narrower than the rail"], [136, "wider than the rail"]] as const) {
           await withPage(browser, base, light, "/?app=inbox", `the top controls beside a window's own controls ${what}`, async (page) => {
             await page.evaluate(() => localStorage.setItem("ovis:sidebar-width", "240"));
@@ -2392,6 +2434,7 @@ try {
               };
               const end = document.querySelector(".inbox-rail")!.getBoundingClientRect().right;
               return {
+                // a pixel in from each corner: a point on the window's last half pixel is outside it for the browser
                 corners: [kindAt(1, 1), kindAt(1, innerHeight - 1)],
                 sides: [...document.querySelectorAll(".inbox-rail button")].map((node) => { const r = node.getBoundingClientRect(); const middle = r.top + r.height / 2; return [kindAt(1, middle), kindAt(end - 2, middle)]; }),
               };
@@ -2755,6 +2798,7 @@ try {
           ], "its six buttons are 44px, 12px from the rail's sides, 8px apart");
           const tops = await Promise.all([".inbox-search-toggle", ".inbox-filter-toggle", ".inbox-add"].map((selector) => box(page, `.mode-inbox ${selector}`)));
           for (const each of tops) assert.deepEqual([each.w, each.h, each.y], [44, 44, 12], "the list's top controls are 44px too, on the line of the rail's first button");
+          // a pixel in from each corner: a point on the window's last half pixel is outside it for the browser
           assert.deepEqual(await page.evaluate(() => [[1, 1], [1, innerHeight - 1]].map(([x, y]) => {
             const button = document.elementFromPoint(x!, y!)?.closest(".inbox-rail button");
             return button ? [...button.classList].find((name) => name.startsWith("inbox-rail-") && name !== "inbox-rail-item") ?? null : null;

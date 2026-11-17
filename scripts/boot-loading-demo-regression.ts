@@ -12,6 +12,8 @@ const evidence = process.env["UI_EVIDENCE_DIR"] || null;
 const app = mkdtempSync(join(tmpdir(), "herdr-boot-loading-"));
 
 interface Case { name: string; context: BrowserContextOptions; reducedMotion?: boolean; settings?: Record<string, string> }
+// an unsaved device boots on the OS scheme: the phone on a dark one, the desktop and the reduced-motion
+// phone on Playwright's light default; a saved light theme on a dark OS boots light all the same
 const CASES: Case[] = [
   { name: "phone", context: { ...devices["iPhone 14"], colorScheme: "dark" } },
   { name: "desktop", context: { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 } },
