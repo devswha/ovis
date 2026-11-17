@@ -2465,9 +2465,10 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
   // no longer runs.
   const screenMetadata = async (source: RecognizedConversation["source"]): Promise<ConversationMetadata> =>
     startScreenMetadata(source, await bottomViewport(paneId));
-  const notBegun = async (source: RecognizedConversation["source"], id: string, read?: ConversationMetadata): Promise<RecognizedConversation> => {
-    // what the screen states can change with the pane's output, with no file to watch: the chat re-reads on it
-    const screen = readsStartScreen(source);
+  const notBegun = async (source: RecognizedConversation["source"], id: string, read?: ConversationMetadata, fromScreen = false): Promise<RecognizedConversation> => {
+    // what the screen states can change with the pane's output, with no file to watch: the chat re-reads on it.
+    // So does an answer the screen alone decided (`fromScreen`): the pane may leave that screen with nothing reported
+    const screen = fromScreen || readsStartScreen(source);
     const metadata = read ?? (screen ? await screenMetadata(source) : { model: null, reasoning_effort: null });
     return { source, turns: [], metadata, ...(screen ? { screen: true as const } : {}), cursor: null, history_id: id, version: answerVersion(id, `${metadata.model}\0${metadata.reasoning_effort}`) };
   };
@@ -2530,7 +2531,7 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
       // an OpenCode at its home screen, which herdr reports no session for until the first prompt (#3600)
       if (pane.agent === "opencode" && pane.agent_session == null && error.message === "no_session_id" && page.before === undefined && page.since === undefined && page.from === undefined && pane.agent_status !== "working" && pane.agent_status !== "blocked") {
         const fresh = await opencodeFreshSession(pane, await bottomViewport(paneId), opencodeDb ?? opencodeDatabasePath());
-        if (fresh !== null) return await notBegun("opencode-transcript", fresh);
+        if (fresh !== null) return await notBegun("opencode-transcript", fresh, { model: null, reasoning_effort: null }, true);
       }
       throw error;
     }
