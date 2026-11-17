@@ -2,6 +2,10 @@ import { stripVTControlCharacters } from "node:util";
 
 import type { UsageLoginPromptText } from "../shared/usage-login.ts";
 
+/**
+ * A private login's PTY output as the text it shows: OSC sequences go whole (a hyperlink's hidden target
+ * would otherwise stay beside its visible text), then every other escape, and lines end in \n.
+ */
 export function screenText(raw: string): string {
   return stripVTControlCharacters(raw.replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, "")).replace(/\r\n?/g, "\n");
 }

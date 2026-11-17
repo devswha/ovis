@@ -210,6 +210,8 @@ export async function handleWorkspaceRequest(request: Request, url: URL, pathnam
       }
       let launchedPid: number | null = null;
       const launched = await agentLaunch(created.root_pane.pane_id, payload.agent, (pid) => { launchedPid = pid; }, shellAgents);
+      // the request's first message is the user's send: queued for the agent's first ready turn through the
+      // bridge's pending path (server/core/pending.ts), never typed here; an agent that did not start gets none
       const firstMessage = launched.agent_started && typeof payload.first_message === "string"
         ? await queueFirstMessage(created.root_pane.pane_id, payload.first_message, payload.agent.kind as string, requester, launchedPid).then((message): { id: string; held?: string } | ReturnType<typeof notQueued> => ({
           id: message.id,

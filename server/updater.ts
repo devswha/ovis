@@ -49,6 +49,12 @@ export const INSTALLED_BINARY_REASON = "Ovis runs here as an installed release: 
 
 export const RELEASE_FOLDER_REASON = "This server runs from an installed update's folder, not from its source checkout. Restart Ovis from its source checkout (the herdr plugin's Stop, then Start, or bun run start there) to update.";
 
+/**
+ * Whether a directory is a release this updater installed: `<state>/updates/<16 hex>/release-*`
+ * (update-state.ts, and `release-` from the install below). Such a release is a detached checkout of
+ * a tag, never a source checkout, so the branch guard's "switch to main" would send the user the
+ * wrong way.
+ */
 export function isReleaseFolder(directory: string): boolean {
   const resolved = resolve(directory);
   const parent = dirname(resolved);
@@ -150,6 +156,9 @@ function tmpPacks(packDir: string | null): Set<string> {
 
 const STALE_TMP_PACK_MS = 60 * 60_000;
 
+/** Removes the `tmp_pack_*` files that were not there before the fetch: the ones it wrote before
+ * failing, never the ones that were already there and none of the directory's other files. A
+ * removal that fails is swallowed, not to replace the fetch's own error. */
 function cleanTmpPacks(packDir: string | null, before: Set<string>): void {
   if (packDir === null) return;
   for (const name of tmpPacks(packDir)) {
@@ -353,6 +362,11 @@ export class Updater {
     this.patch({ latest_revision: target, latest_version: tagVersion(latest), checked_at, blocked_reason: block, available });
   }
 
+  /**
+   * The release's own CHANGELOG.md, as fetched with its tag: never the checkout's, which is older,
+   * and never main's, whose unreleased entries the install does not bring. A release without one
+   * (or with one that cannot be read) is offered without notes.
+   */
   private async changes(revision: string, version: string): Promise<UpdateNotes> {
     try {
       const changelog = await this.git("show", `${revision}:CHANGELOG.md`);

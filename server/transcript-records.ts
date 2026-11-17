@@ -79,6 +79,16 @@ export function piResults(message: Row, blobs?: string | null): { id: string; te
   });
 }
 
+/**
+ * The pictures among a record's content blocks, one per place a ref can quote, in order. pi holds a
+ * picture inline, by the type its bytes announce (inlineImageType: the same check the image endpoint
+ * makes); pi names the type `mimeType` where Claude names it `media_type`. omp moves a picture's bytes
+ * to the blob store `blobs` and writes `blob:sha256:<digest>` in their place: such a block takes its
+ * place by what the transcript says (ompBlobDigest), and shows as the type its stored bytes announce
+ * now (ompBlobImageType: the endpoint's check), or as nothing (`media_type` null) when they are no
+ * picture, so a blob that goes missing never moves the next picture into its place. `data` is the
+ * inline text or the blob ref.
+ */
 function piPictures(content: unknown, blobs?: string | null): { media_type: string | null; data: string }[] {
   return (Array.isArray(content) ? content : []).flatMap((value) => {
     const image = record(value);
@@ -240,6 +250,7 @@ type OmpTranscriptOptions = { images?: boolean; blobs?: string | null; callIds?:
 interface OmpParseState {
   turns: ConversationTurn[];
   pending: Map<string, Extract<ConversationPart, { kind: "tool" }>>;
+  /** The caller's map when parsing a page in stretches; previews must never write to it. */
   taskTitles: Map<string, string>;
   settled: boolean;
   wait: number | null;
@@ -408,6 +419,8 @@ function ompTranscriptParser(state: OmpParseState, images: boolean, callIds: boo
     write,
     snapshot(tail = ""): ConversationTurn[] {
       if (tail.trim()) {
+        // Clone the whole graph together: pending must point at the preview's tool parts,
+        // and neither speculative title updates nor settled boundaries may escape it.
         const preview = structuredClone(state);
         ompTranscriptParser(preview, images, callIds, blobs).write(tail);
         return preview.turns.filter((turn) => turn.parts.length > 0);

@@ -58,6 +58,8 @@ function canonicalPath(path: string): string {
 interface LoginHolder { readonly pane: string; readonly terminal: string }
 interface Launch { readonly launch: string; readonly pid: number; readonly at: number }
 /**
+ * A login the browser follows, run by the server process `pid` in a terminal of its own since `at`. Saved in
+ * a launch's shape, so an older server reads it (as a launch that soon expires) instead of refusing the file.
  * `launch` is a lock id of its own: the file can be read by any device that reads files, and the id that
  * reaches the login's prompt is never written there.
  */
@@ -99,6 +101,7 @@ const PRIVATE_MAX_MS = 30 * 60_000;
 const PRIVATE_LEASE_MS = 30_000;
 const liveLocks = new Set<string>();
 
+/** the cookie that carries one followed sign-in's secret; one per sign-in, so two dialogs never overwrite each other's */
 const signInCookie = (loginId: string): string => `ovis-sign-in-${loginId}`;
 
 const SIGN_IN_CODE = /^[A-Za-z0-9._~#-]{1,2048}$/;
@@ -463,6 +466,8 @@ export class UsageLoginService {
       if (id === "copilot" && this.env["GH_CONFIG_DIR"]) env["GH_CONFIG_DIR"] = this.env["GH_CONFIG_DIR"];
       if (id === "opencode") env["XDG_DATA_HOME"] = this.env["XDG_DATA_HOME"] || join(this.home, ".local", "share");
       if (follow && owner !== null) {
+        // a CLI the browser cannot follow: an old Claude Code without `auth login` signs in inside the agent, and
+        // a Codex without a device code answers on this PC's own localhost, out of a remote browser's reach
         if (manual || (id === "codex" && !device)) return conflictResponse("follow_unsupported", "This version signs in only in a terminal.");
         // Only CLI runtime settings, never the bridge's tokens, agent hooks or provider API keys.
         const procEnv: Record<string, string> = { ...cliEnv, ...env, BROWSER: "true" };

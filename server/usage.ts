@@ -547,6 +547,9 @@ const copilot: UsageProvider = {
     const dir = join(ctx.env["XDG_CONFIG_HOME"] || join(ctx.home, ".config"), "github-copilot");
     const tokens = [...copilotFileTokens(readText(join(dir, "apps.json"))), ...copilotFileTokens(readText(join(dir, "hosts.json"))), ...await ghTokens(ctx)];
     const editorAccounts = tokens.flatMap(({ login, editor }) => editor && login ? [login.toLowerCase()] : []);
+    // One sign-in per GitHub account. An editor sign-in can outlive its token by years: the same
+    // account's next token (the GitHub CLI's) is tried after it. A token of no known login is a
+    // sign-in of its own: it may be anyone's, and the first to answer would hide the others.
     const accounts = new Map<string, { login: string | null; tokens: string[]; editor: boolean }>();
     const seen = new Set<string>();
     let unknown = 0;
@@ -1299,6 +1302,15 @@ export interface HomeSignIn {
   readonly expiresAt: number | null;
 }
 
+/**
+ * The sign-in a Claude or Codex CLI keeps in `home`, read from there alone as that CLI writes it, never
+ * refreshed: Claude's default home or directory, each with its keychain item; Codex's default home
+ * (~/.codex, or its keychain item when that has no auth.json) or directory. Null when it holds none;
+ * "unknown" when any of its sources cannot be read (a keychain item locked or not JSON, a credential file
+ * that will not read, is too large or is not JSON), even when another source reads: then it can be told
+ * from neither none nor another sign-in. A source that reads but holds no sign-in holds none.
+ * Other homes are not looked at: their sign-ins are no login's into this one.
+ */
 export async function homeSignIn(ctx: UsageContext, provider: "claude" | "codex", home: CredentialHome): Promise<HomeSignIn | "unknown" | null> {
   let signIn: (SignIn & { source: string }) | undefined;
   const held: SignIn[] = [];

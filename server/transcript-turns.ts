@@ -7,6 +7,20 @@ import { musePrompt } from "./muse.ts";
 import { lettaPrompt } from "./letta.ts";
 import { kimiPrompt } from "./kimi.ts";
 
+/**
+ * A Claude session's branch, followed as the file is scanned. Claude Code links each record to the
+ * one before it (`parentUuid`) and never rewrites the file: a /rewind (or a send cancelled and sent
+ * again) leaves the turns it went back over in place, and the next prompt hangs from the record it
+ * went back to (null: from before the first message), not from the last one written (recorded on
+ * 2.1.304). Such a prompt forks the session: what lies between that record and the prompt is off
+ * the branch, when an answer lies there too. A send cancelled
+ * before any reply and sent again is a sibling of the same kind, and stays with the cancelled-prompt
+ * rule (pushPrompt, turnStarts): it moves no history. Only a prompt forks, or a slash command's echo
+ * (a /context sent first after a Restore hangs from the record gone back to, and the prompts after it
+ * follow it on the chain, recorded on 2.1.304), once the conversation goes on from that echo: other records off the
+ * chain (a hook's progress) hide nothing, and a parent the scan does not know (a record too long to
+ * read here) hides nothing either.
+ */
 export interface ClaudeBranch {
   last: string | null;
   ends: Map<string, number>;
@@ -109,6 +123,13 @@ export function opensTurn(source: StreamSource, line: string, blobs: string | nu
   return prompt && sent.hosts.length > 0 ? "inline" : prompt;
 }
 
+/**
+ * Where the last turn-opening Claude prompt hangs, and whether an assistant entry has
+ * answered it since. A prompt Claude Code cancelled before any reply is written again as
+ * the re-send's sibling (same parentUuid): it continues the cancelled prompt's turn rather
+ * than opening a new one, so the cancelled record never settles into a page that reparses
+ * without it — the same sibling rule parseClaudeTranscript applies to the bytes.
+ */
 export interface PromptChain { parent: string | null; answered: boolean }
 
 export function turnStarts(bytes: Buffer, source: StreamSource, chain: PromptChain = { parent: null, answered: true }, blobs: string | null = null): number[] {
