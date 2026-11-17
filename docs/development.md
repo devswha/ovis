@@ -773,7 +773,10 @@ verification file, the installers, the favicons and the demo. It writes no sitem
 on `main`, or on manual dispatches from `main`. A completed CI run only builds and deploys when it
 succeeded for a push from this repository; PR runs and forks cannot publish. It builds that CI run's
 head SHA without running validation again. Manual dispatches run reusable CI validation and the site
-build in parallel against the dispatch SHA, and deployment requires both to succeed.
+build in parallel against the dispatch SHA, and deployment requires both to succeed. Every job of the
+run, that validation's included, runs on GitHub's runners and restores no Actions cache
+([Security model](../scripts/self-hosted-runner/README.md#security-model)); a manual run takes about
+as long as a hosted CI run, about 15 minutes.
 Deployments are serialized. A `current` job, with no environment, first checks that the validated SHA
 is still the latest `main` commit: when `main` has moved on, the run deploys nothing, records no
 deployment and ends green with a notice. The deploy job checks again immediately before deploying and
@@ -1018,8 +1021,8 @@ published version with a new patch release. If publishing fails after a tag was 
 verify that tag's commit and repair its GitHub release rather than moving the tag.
 
 The hosted shell is then built and deployed in three jobs, so the Cloudflare token never shares a
-job with the build's dependencies. `shell-build` (no environment, no secrets, the dependency cache
-restored read-only) checks out the release tag, fails unless the tag points at the commit this
+job with the build's dependencies. `shell-build` (no environment, no secrets, no Actions cache
+restored) checks out the release tag, fails unless the tag points at the commit this
 release published, builds the shell (`bun run build:shell`), fails if `dist-shell/` lacks
 `index.html` or `build.json`, and uploads `dist-shell.tar.gz` and `dist-shell.tar.gz.sha256`,
 passing the tarball's SHA-256 on as a job output. `shell-deploy`, on a GitHub-hosted runner with
@@ -1213,9 +1216,16 @@ user authorization.
 The [CI workflow](../.github/workflows/ci.yml) runs on every PR and `main` push:
 
 - **Fast checks**: frozen dependency install, then `bun run check fast`: workflow syntax
-  (checksum-pinned actionlint), generated type freshness, application and critical-tools typechecks
-  (`tsconfig.tools.json`), build, and
-  `bun run test:unit`. This suite does not start herdr.
+  (checksum-pinned actionlint), generated type freshness, application and tools typechecks
+  (`tsconfig.tools.json`: every TypeScript file under `scripts/`, `integrations/`, `site/` and
+  `app/scripts/` but the ones its `exclude` lists: files with type errors, files that import one or
+  lean on its declarations, and untracked `scripts/*.tmp.ts` probes; that list may only shrink, and
+  a new file is checked without being named), build, and
+  `bun run test:unit`. This suite does not start herdr. Its ratchets (fixed sleeps, that exclude
+  list) compare with main's head for a pull request (its merge commit's first parent) or, for a
+  push to main, the newest main commit in its history whose CI run passed (none found fails the
+  job), so a waiting run a newer push replaced leaves no gap; the job fetches it first (`RATCHET_BASE`); one that cannot read
+  its base fails, and a Release or manual run compares with nothing.
 - **Integration and browser**: a summary job that fails when any of three jobs fails, each with
   checksum-pinned herdr 0.9.3, Node 22 and the lockfile's Chromium:
   - **Integration tests** runs `bun run check integration`: a build and
@@ -1301,8 +1311,12 @@ does not fail the job, and is not counted as a plain pass either: its first log 
 is a bug to fix in the script or the app, not noise: the second run only keeps one PR's merge
 from waiting on another change's race. A script that fails twice fails the job.
 One run of a script may take `BROWSER_SCRIPT_TIMEOUT_SECONDS` (default 600). A run past it is
-stopped with every process it started, prints `TIMEOUT <script>` and its last 40 log lines at
-once, is not run again and fails the lane (the summary and `summary.json` give it exit 124), so a
+stopped (SIGTERM, then SIGKILL, then SIGKILL again for what the run started meanwhile and still carries its
+mark), says what it saw (`stopped N processes`, `could NOT stop: <pid> (<program name>)` for each one it could not, the name read from its executable and never from its arguments, only a process still running at the last look, at most 20 and then `and N more`,
+and `processes started at the last moment may not be listed` when the last look still found new ones or a
+signal was refused: finding a run's processes always races with their forking; a process without the run's
+mark that outlives the script and ignores SIGTERM is no longer found, and can be counted as stopped), prints `TIMEOUT <script>`
+and its last 40 log lines at once, is not run again and fails the lane (the summary and `summary.json` give it exit 124), so a
 hang names itself instead of running into the job's `timeout-minutes`. A script that exits while
 a process it started still holds its output open is stopped the same way, as `STOPPED`; on
 Linux such a process is found through `/proc` even after its parent has exited. A job cancelled at its `timeout-minutes` with scripts still logging
@@ -1310,12 +1324,17 @@ was usually short of time, not hung: check how long `check: took a slot after` s
 The console, GitHub annotations, job summary and `summary.json` name the failing assertion and
 its first script file and line when the log contains them.
 `bun scripts/ci-flakes.ts` ranks, across the last 24 hours of `ci.yml` runs and every attempt of
-each, which script failed or passed only on a second run, and at which assertion and site. It reads
+each, which script failed or passed only on a second run, at which assertion and site, and how many
+of those job attempts were in runs of the default branch itself (the others were on other
+branches). A script the lane stopped at its time limit is listed with that limit and no site. It reads
 through `gh` and changes nothing: a failed job's log, and a passed job's only when the job carries
 the flaky warning.
 Use `--hours 30` for a different window, `--repo owner/name` to select a repository instead of
 the current one, or `--json` for counts and rows as JSON; running jobs and unavailable logs are
 counted as skipped.
+`.github/workflows/ci-flakes.yml` runs it every day through `scripts/ci-flakes-issue.ts`, which keeps
+the list in the one open issue titled "CI flakes: browser scripts that failed or needed a second
+run", rewritten each time (`--dry-run` prints the body and writes nothing).
 
 Under `CI` or with `CHECK_DIR` set, both runners create `UI_EVIDENCE_DIR` at
 `${CHECK_DIR:-.ci}/browser-evidence`. Only the existing sticky-modifier and file-viewer captures
@@ -1336,21 +1355,27 @@ pages or credentials.
 ### Self-hosted runner
 
 `ci.yml`'s Linux jobs of a push run on the maintainer PC's runners (labels
-`["self-hosted","self-hosted-ovis"]`) by default. A same-repository pull request goes there too
-while those runners have room for its six Linux jobs, and to `ubuntu-24.04` (with the browser
-checks sharded) when they do not, so neither pool queues while the other sits idle. The workflow
-token cannot list runners, so Detect changes counts room from the Actions API: the repository
-variable `CI_SELF_HOSTED_CAPACITY` (default 10, the PC's `self-hosted-ovis` runners) minus the
-queued and running jobs of every workflow that target those labels. When that count fails, the
-pull request stays hosted. Other events stay on `ubuntu-24.04`. The repository variable
+`["self-hosted","self-hosted-ovis"]`) by default. A same-repository pull request goes there too,
+and to `ubuntu-24.04` (with the browser checks sharded) only when jobs already wait for those
+runners. The workflow token cannot list runners, so Detect changes reads the queued and running
+jobs of every workflow that target those labels from the Actions API: one queued for more than
+four minutes (a browser part takes about 8 minutes there and 12.5 hosted, so a wait that long
+still wins), or one queued for more than a minute while no job that only those runners can take,
+started within the last hour, is running (no runner looks online), sends the run hosted. When the
+jobs cannot be read, the pull request stays hosted. Detect changes itself runs on those runners
+unless `CI_LIGHT_LABELS` says otherwise, so with every runner gone a run waits there instead. Other events stay on `ubuntu-24.04`. The repository variable
 `CI_SELF_HOSTED_LABELS` overrides that (labels send every same-repository pull request to the
 self-hosted runners) with another JSON array of runner labels that contains `"self-hosted"`, or with the
 JSON string `"ubuntu-24.04"` to keep every job GitHub-hosted while that PC is offline (unless
-`CI_LIGHT_LABELS`, below, holds labels: it wins for the light jobs). `release.yml`
-stays on `ubuntu-24.04` unless the variable holds labels. The variable routes:
+`CI_LIGHT_LABELS`, below, holds labels: it wins for the light jobs). The variable routes:
 
 - in `ci.yml`: Fast checks, Integration tests and both Browser regression jobs;
-- in `release.yml`: the preflight and publish jobs.
+- in `release.yml`: none: the Release run is GitHub-hosted and cacheless as a whole, the `ci.yml` it
+  runs through `release-validate.yml` (`hosted_only: true`) included
+  ([Security model](../scripts/self-hosted-runner/README.md#security-model)).
+
+`pages.yml` reads none of them: its run is GitHub-hosted and cacheless as a whole, the `ci.yml` its
+manual validation calls (`hosted_only: true`) included.
 
 `release-validate.yml`'s own three jobs are always GitHub-hosted. The one that asks about main's
 CI run may wait up to 40 minutes for that run, which needs the self-hosted runners itself. Its Fast
@@ -1359,14 +1384,12 @@ verdict runs for seconds.
 
 Light jobs, which wait longest in GitHub's hosted queue for the few seconds they run, take the
 self-hosted runners for every same-repository run: Detect changes, the herdr-core live contract and
-the Integration and browser summary in `ci.yml`, `pr-title.yml`, `remote-bundles.yml`'s Windows
-bundle, and `pages.yml`'s site build and deploy (after successful same-repository main push CI, or
-on a manual dispatch with reusable CI validation). Their `runs-on` sends a fork pull request to
+the Integration and browser summary in `ci.yml` and `pr-title.yml`. Their `runs-on` sends a fork pull request to
 `ubuntu-24.04` before it reads any variable; a push to main then takes `CI_MAIN_SELF_HOSTED_LABELS`
 when it is set (on a push or a run started from main), so main's Detect changes never waits behind pull requests; otherwise the job takes the repository variable `CI_LIGHT_LABELS`,
 else `CI_SELF_HOSTED_LABELS`, else `["self-hosted","self-hosted-ovis"]`; `"ubuntu-24.04"` in
-either variable keeps them hosted. They ignore the `self_hosted_labels` dispatch input, and
-`scripts/ci-runner-route.sh` leaves them out of the busy count, since each holds a runner for seconds. `scripts/light-runner-workflow.test.ts` fails when a job a pull
+either variable keeps them hosted. They ignore the `self_hosted_labels` dispatch input; one that
+waits for a runner counts in `scripts/ci-runner-route.sh`'s queue like any other. `scripts/light-runner-workflow.test.ts` fails when a job a pull
 request runs can reach a self-hosted runner without that guard or the route below.
 
 A push to main takes the repository variable `CI_MAIN_SELF_HOSTED_LABELS` over
@@ -1376,24 +1399,30 @@ request runs, and `"ubuntu-24.04"` keeps only main GitHub-hosted. `CI_SELF_HOSTE
 `"ubuntu-24.04"` still keeps every job hosted. Delete the variable while no reserved runner is online,
 or main's jobs wait for one.
 
-`ci.yml`'s Native macOS session identity job can run on the self-hosted Mac `eamac-ovis-mac`
-(labels `self-hosted, macOS, ARM64, self-hosted-ovis-mac`): ci.yml's own same-repository runs off
-`main` take the repository variable `CI_MAC_LABELS`, a JSON label list
-(`["self-hosted","self-hosted-ovis-mac"]`) or the JSON string `"macos-15"`; unset, the job stays on
-`macos-15`. Its `runs-on` sends a fork pull request to `macos-15` before it reads the variable. A
-release never validates there: Release validation calls ci.yml under its own name, and main's run,
-which a Release run may take instead, stays on `macos-15`. One runner takes one job at a time, so
-while the Mac is off or busy the job waits for it: delete the variable to go back to `macos-15`.
+The Apple Silicon (`macos-15`) jobs that hold no secret can run on the self-hosted Mac
+(labels `self-hosted, macOS, ARM64, self-hosted-ovis-mac`; two runners): they take the repository
+variable `CI_MAC_LABELS`, a JSON label list (`["self-hosted","self-hosted-ovis-mac"]`) or the JSON
+string `"macos-15"`; unset, they stay on `macos-15`. `ci.yml`'s Native macOS session identity job
+takes it in ci.yml's own runs, main's push runs included; its `runs-on` sends a fork pull request to
+`macos-15` before it reads the variable, and Release validation, which calls ci.yml under its own
+name with `hosted_only`, stays on `macos-15`. A Release may take main's run in place of its own, whose
+macOS job then ran on the Mac, as its Linux jobs ran on the self-hosted PC. The `macos-15` entries of
+`remote-bundles.yml`'s bundle job and `pty-sidecar.yml`'s build job take it only for a pull request
+from this repository, so the binaries a release publishes or attests are always built on GitHub's
+runners (scripts/privileged-jobs-workflow.test.ts). `desktop.yml` and `beta.yml` read the Mac
+signing secrets and stay hosted, as do `macos-15-intel` jobs. A job waits for a runner while the Mac
+is off or both runners are busy: delete the variable to go back to `macos-15`.
 The runner runs jobs as the Mac's own account, so on it `setup-ci` installs Bun under the job's temp
 folder, not that account's `~/.bun`; the prepared-image check and the host's Bun cache are for the
-self-hosted Linux runners alone. Before the variable is set, the Mac runner needs a fork refusal
-that works on macOS: `job-started.sh` finds the job's worker through `/proc`, which macOS lacks.
-Until then, only the repository's approval policy for fork pull request workflows (every outside
-contributor's run waits for a maintainer) keeps a fork's own workflow from naming the Mac's labels.
+self-hosted Linux runners alone. Each Mac runner refuses a fork's job with the same `job-started.sh`
+as the Linux runners, which finds the job's worker through `/proc` on Linux and `/bin/ps` on macOS
+([Mac runner](../scripts/self-hosted-runner/README.md#mac-runner)); the repository's approval policy for
+fork pull request workflows (every outside contributor's run waits for a maintainer) stays on as well.
 
 The other Windows and macOS jobs, the Rust PTY host job (the runner image has no Rust toolchain),
 `remote-bundles.yml`'s other jobs (Rust builds, and the SSH job's `sudo apt-get` and Docker),
-`desktop.yml`, `windows-install.yml` and `windows-terminal-qa.yml` always stay GitHub-hosted.
+`desktop.yml`, `windows-install.yml` and `windows-terminal-qa.yml` stay off the self-hosted Linux
+runners (the Mac takes the `macos-15` jobs above).
 
 In `ci.yml`, Detect changes picks the runner with `scripts/ci-runner-route.sh`. A fork pull request
 always gets `ubuntu-24.04`, whatever the variable says. Since that script runs from the pull
@@ -1402,7 +1431,8 @@ job's worker before any step, `if: always()` ones included, can run
 (`scripts/self-hosted-runner/job-started.sh`). Otherwise the `self_hosted_labels`
 workflow_dispatch input, when not empty, overrides the variable for that one manual run. A value
 that is not a non-empty array of strings containing `"self-hosted"` fails the job instead of
-falling back. `pages.yml` and `release.yml` read the variable directly.
+falling back. A call with `hosted_only: true` (`pages.yml`'s and the Release's validation) gets
+`ubuntu-24.04` before the route reads anything else.
 
 Only a `pull_request` may skip the heavy jobs as docs-only, and only when every changed file is
 under `docs/`, ends in `.md` or `.txt`, is the root `LICENSE` or sits under
@@ -1428,10 +1458,13 @@ fails on a stale image instead of downloading replacements. Rebuild the image af
 its pins; its Bun pin must match `.github/actions/setup-ci/action.yml`, and its Playwright pin
 must match `bun.lock`.
 
-The composite setup action used by `ci.yml`, `pages.yml` and `release.yml` keeps Bun's dependency
+The composite setup action (`.github/actions/setup-ci`) keeps Bun's dependency
 cache in `.ci-cache/bun`. Only GitHub-hosted jobs restore/save that cache remotely: on the measured
 self-hosted connection, downloading the archive took longer than a fresh dependency install.
 Self-hosted jobs install directly from the lockfile without transferring a remote dependency cache.
+`cache: none` restores and saves none: for every job of a run in which a job that publishes or signs takes an
+artifact, and for a job that publishes, signs or holds a secret itself (the relay deploy job, say, while the
+`ci.yml` its workflow calls keeps its caches).
 Hosted browsers use
 `.ci-cache/playwright`; self-hosted browsers come from the image. Neither cache restores a
 home-directory archive across different workspace depths. Tool/browser preparation no longer

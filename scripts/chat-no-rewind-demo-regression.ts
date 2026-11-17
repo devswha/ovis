@@ -14,7 +14,6 @@ const app = mkdtempSync(join(tmpdir(), "ovis-chat-no-rewind-demo-"));
 const evidence = process.env.UI_EVIDENCE_DIR;
 try {
   await buildDemoApp(app);
-  // the demo's hermes pane, shown as the agent under test: every pane record that names its agent says that one
   const patch = `<script>(() => {
     const fix = (value) => {
       if (!value || typeof value !== "object") return value;
@@ -66,7 +65,6 @@ try {
           await user.waitFor();
           await reply.waitFor();
           await appFaces(page);
-          // the message actions show on hover with a mouse, and always on touch
           if (!phone) await user.hover();
           await user.getByRole("button", { name: "Copy message", exact: true }).waitFor();
           if (evidence) { mkdirSync(evidence, { recursive: true }); await page.screenshot({ path: join(evidence, `chat-no-rewind-${agent}-${width}-user.png`) }); }

@@ -1,7 +1,6 @@
 /**
- * The programs the desktop app carries, pinned: herdr-core (`hc`) runs the terminals and Bun runs
- * the Ovis server. Each download is checked against the SHA-256 written here before it is used,
- * so a build never takes whatever a server hands out that day. A version bump updates these.
+ * Each download is checked against the SHA-256 written here before it is used,
+ * so a build never takes whatever a server hands out that day.
  */
 import { createHash } from "node:crypto";
 

@@ -7,8 +7,6 @@ import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 
-// All PCs deliberately reuse every herdr ID. Only this disposable demo fixture rewrites its
-// roster; the app and its bound APIs are the production client. No live session is read.
 const app = mkdtempSync(join(tmpdir(), "herdr-palette-machines-"));
 const patch = `(() => {
   const fetchDemo = window.fetch.bind(window), EventSourceDemo = window.EventSource;
@@ -124,7 +122,6 @@ try {
           await dialog.getByRole("combobox", { name: "Agent", exact: true }).click();
           await dialog.getByRole("option").filter({ hasText: "Build PC agent" }).waitFor();
           assert.equal(await dialog.getByRole("option").filter({ hasText: "Claude Code" }).count(), 0, "the visible choices come from the remote catalog, not the local catalog");
-          // the next address loads the page afresh, so the open dialog and its list are left as they are
           await page.goto(`http://127.0.0.1:${server.port}/?pane=${encodeURIComponent(panes.api)}`);
           await page.locator('.agents-sidebar .agent-select[aria-current="true"]').first().waitFor({ state: "attached" });
           await page.evaluate(() => history.pushState(null, "", "?machine=remote&new=workspace&agent=codex&name=Forward"));
@@ -140,7 +137,6 @@ try {
           await page.goBack();
           await page.goForward();
           await page.getByRole("dialog", { name: "New workspace \u00b7 Laptop", exact: true }).waitFor();
-          // a tab link to an offline PC waits for a pane; the entry after it drops it rather than opening it here
           await page.goto(`http://127.0.0.1:${server.port}/?pane=${encodeURIComponent(panes.api)}`);
           await page.locator('.agents-sidebar .agent-select[aria-current="true"]').first().waitFor({ state: "attached" });
           const here = await page.evaluate(() => location.search);
@@ -247,7 +243,6 @@ try {
         console.log("PASS switching PCs through the palette dismisses an old close confirmation even when tab IDs match");
         await page.waitForFunction(() => JSON.parse(sessionStorage.getItem("ovis:selection") ?? "{}").machine_id === "remote");
         const calls = await page.evaluate(() => (window as any).paletteMachineCalls);
-        // a pick is the browser's alone: herdr's focus on either PC stays where it is
         assert.deepEqual(calls.focus.filter((call: { machine: string }) => call.machine === "remote"), [], "selection leaves the remote PC's herdr focus alone");
         await open();
         await page.waitForFunction(() => (window as any).paletteMachineCalls.plugins.includes("remote"));

@@ -260,7 +260,6 @@ describe("metadata constraints", () => {
       const invalid = { ...welcome.payload, limits: { ...LIMITS_V1, [key]: value + 1 } };
       rejects(() => decodeFrame(wire(FrameType.WELCOME, JSON.stringify(invalid))));
     }
-    // The pre-release old HTTP window must not silently negotiate asymmetric credit.
     rejects(() => decodeFrame(wire(FrameType.WELCOME, JSON.stringify({
       ...welcome.payload, limits: { ...LIMITS_V1, http_window_bytes: 65536 },
     }))));

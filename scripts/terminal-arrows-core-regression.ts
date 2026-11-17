@@ -85,7 +85,7 @@ async function open(name: string, before: string, probeBeforeAttach = false, hol
     };
     qa.terminalArrowSentByPage = 0;
     const send = WebSocket.prototype.send;
-    WebSocket.prototype.send = function (this: WebSocket, data: string | ArrayBufferLike | Blob | ArrayBufferView) {
+    WebSocket.prototype.send = function (this: WebSocket, data: Parameters<typeof send>[0]) {
       const open = this.readyState === WebSocket.OPEN;
       const result = send.call(this, data);
       if (open && typeof data === "string") {

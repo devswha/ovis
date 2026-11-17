@@ -4,7 +4,6 @@ import { EventEmitter, once } from "node:events";
 import type { Browser } from "playwright-core";
 import { chromePath } from "./chrome-path.ts";
 
-/** Replay Safari replacement edits and assert emitted bytes, commit order and pane isolation. */
 export async function checkSafariIme(browser: Browser, origin: string, pane: string, otherPane: string): Promise<void> {
   const context = await browser.newContext({
     userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/26.6.2 Safari/605.1.15",
@@ -33,9 +32,7 @@ export async function checkSafariIme(browser: Browser, origin: string, pane: str
   const page = await context.newPage();
   const sent: Array<{ pane_id: string; text: string }> = [];
   const signals = new EventEmitter();
-  // subscribed before the action that produces it, bounded so a lost frame fails the run
   const signal = (name: string) => once(signals, name, { signal: AbortSignal.timeout(10_000) });
-  // frames as if the server sent them (a lost attachment), and frames the page did not type (a role change)
   let toPage = (_frame: object): void => {};
   let toServer = (_frame: object): void => {};
   // a liveness probe's pings, held back while set: input is refused until their pong
@@ -108,7 +105,6 @@ export async function checkSafariIme(browser: Browser, origin: string, pane: str
     assert.equal(sent.map((frame) => frame.text).join(""), expected + "\x07", label);
     assert(sent.every((frame) => frame.pane_id === owner), `input stays with its pane ${owner}: ${JSON.stringify(sent)}`);
   };
-  // the pane and the exact bytes a named assertion saw, JSON-escaped
   const report = (label: string, owner = pane) => console.log(`  ok ${label}: pane ${owner} bytes ${JSON.stringify(sent.map((frame) => frame.text).join(""))}`);
   // Dictation (and Safari's text replacement) replaces its hypothesis in place: each one an
   // insertReplacementText over the previous one, with no composition events. withKey adds the
@@ -209,7 +205,6 @@ export async function checkSafariIme(browser: Browser, origin: string, pane: str
     await check("하\x7f", "Backspace after blur finalizes an edit awaiting keydown sends one DEL");
 
     // Backspace and Delete may report their own keyCode, before or after Safari's edit.
-    // Every case runs and every failure is reported together.
     const failures: string[] = [];
     const variant = async (run: () => Promise<void>) => {
       try { await run(); } catch (error) { failures.push(error instanceof Error ? error.message : String(error)); }
@@ -282,7 +277,6 @@ export async function checkSafariIme(browser: Browser, origin: string, pane: str
     await switched;
     await check("", "pending Safari text cannot enter another pane", otherPane);
 
-    // Dictation: the hypotheses stay in the field, and the corrected phrase is sent once.
     const hypotheses = ["thi", "this", "this is", "this is a test", "This is a test."];
     for (const withKey of [false, true]) {
       await reset();
@@ -290,12 +284,10 @@ export async function checkSafariIme(browser: Browser, origin: string, pane: str
       await check("This is a test.", `dictation replacement commits one corrected phrase${withKey ? ", keydown 229 after each edit" : ""}`);
       report(`dictation replacement commits one corrected phrase${withKey ? " (keydown 229 after each edit)" : ""}`);
     }
-    // A Backspace after dictation is the user's: it edits the phrase still in the field.
     await reset(); await dictate(hypotheses, false);
     await input.press("Backspace");
     await check("This is a test", "Backspace after dictation edits the phrase, never a sent byte");
     report("Backspace after dictation edits the pending phrase");
-    // The next typed key commits the phrase ahead of itself.
     await reset(); await dictate(hypotheses, true);
     await input.press("Enter");
     await check("This is a test.\r", "dictation commits before Enter");
@@ -400,7 +392,6 @@ export async function checkSafariIme(browser: Browser, origin: string, pane: str
     await reset();
     holdPings = true;
     const pinged = signal("ping");
-    // the page asks until it pings (askUntilPing): an `online` that meets a probe still ending is ignored
     await page.evaluate(() => (window as { askUntilPing?: () => void }).askUntilPing?.());
     await pinged;
     await dictate(hypotheses, false);

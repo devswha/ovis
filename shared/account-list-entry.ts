@@ -1,35 +1,20 @@
-/**
- * The signed list's entry envelope (docs/account-list.md): how every entry is written, signed,
- * hashed and chained. A body is bytes, never JSON; nobody re-encodes an entry, so two members
- * cannot differ over its bytes. The browser, Bun and a Cloudflare Worker import this file alike:
- * it does no I/O, reads no environment and uses only WebCrypto and @noble/hashes.
- */
+/** A body is bytes, never JSON; nobody re-encodes an entry, so two members cannot differ over its bytes. */
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, concatBytes, utf8ToBytes } from "@noble/hashes/utils.js";
+import { SPKI_BYTES, SPKI_PREFIX } from "./account-records.ts";
 import { fromBase64Url, toBase64Url } from "./relay-pair-sas.ts";
 
 /** Every body starts with these bytes; they differ from `ovis-account/1` and `ovis-relay-auth/1` at the sixth byte. */
 export const LIST_BODY_PREFIX = "ovis-list/1";
 /** The entry hash is SHA-256 over these bytes and the body. */
 export const LIST_ENTRY_HASH_PREFIX = "ovis-list-entry/1";
-/** The one size limit of an entry that every member holds: its body, prefix included. */
 export const LIST_BODY_MAX = 8192;
-/** A name is at most this many bytes. */
 export const LIST_NAME_MAX = 32;
-/** A number is at most this many digits. */
 export const LIST_NUMBER_DIGITS = 15;
-/** A key's characters: the base64url of its 91 SPKI bytes. */
 export const LIST_KEY_LENGTH = 122;
-/** `r || s`. */
 export const LIST_SIGNATURE_BYTES = 64;
-/** The signature part of an entry's text. */
 export const LIST_SIGNATURE_TEXT_LENGTH = 86;
 
-/**
- * Why an entry does not hold, by the check that fails (docs/account-list.md, "When an entry holds"):
- * (1) its form, (2) its place in the chain, (3) its signature; and an entry 0 that is not the one with
- * the list id a member was given.
- */
 export type ListRefusalCode = "entry_malformed" | "chain_broken" | "signature_invalid" | "list_mismatch";
 
 export class ListEntryError extends Error {
@@ -43,7 +28,6 @@ function refuse(code: ListRefusalCode, message: string): never {
   throw new ListEntryError(code, message);
 }
 const malformed = (message: string): never => refuse("entry_malformed", message);
-/** The one size limit, judged from a size alone: before anything of that size is copied or allocated. */
 function withinLimit(size: number): void {
   if (size > LIST_BODY_MAX) malformed(`A body is at most ${LIST_BODY_MAX} bytes, not ${size}`);
 }
@@ -55,19 +39,13 @@ export interface ListField {
 
 export type SignerPower = "full" | "bound";
 
-/** A body's fields: the seven every entry carries, `adds` with `power`, `ends`, and the kind's own. */
 export interface EntryBody {
-  /** Seconds since 1970-01-01 UTC by the signer's clock. */
   readonly issued_at: number;
   readonly kind: string;
-  /** The list id; empty in entry 0. */
   readonly list: string;
-  /** The hash of the entry before; empty in entry 0. */
   readonly prev: string;
   readonly seq: number;
-  /** The signer's key. */
   readonly signer: string;
-  /** The level that first defined this kind in this form. */
   readonly v: number;
   /** The fields `adds` and `power`, which come together or not at all. */
   readonly adds?: { readonly key: string; readonly power: SignerPower };
@@ -81,52 +59,38 @@ export interface Entry {
   readonly signature: Uint8Array;
 }
 
-/** An entry that holds, with what the next entry is checked against. */
 export interface HeldEntry {
   readonly entry: Entry;
   readonly body: EntryBody;
   readonly hash: string;
-  /** The list id: this entry's hash when it is entry 0. */
   readonly list: string;
 }
 
 const HASH_PREFIX = utf8ToBytes(LIST_ENTRY_HASH_PREFIX);
-/** DER of SubjectPublicKeyInfo { id-ecPublicKey, prime256v1 } and the BIT STRING header of an uncompressed point. */
-const SPKI_PREFIX = Uint8Array.from([
-  0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x08,
-  0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x03, 0x42, 0x00, 0x04,
-]);
-const SPKI_BYTES = 91;
-/** The order n of P-256's group. */
 const P256_ORDER = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n;
-/** P-256's field prime p, and the b of its equation y² = x³ - 3x + b (mod p). */
 const P256_FIELD = 0xffffffff00000001000000000000000000000000ffffffffffffffffffffffffn;
 const P256_B = 0x5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604bn;
 const P256 = { name: "ECDSA", namedCurve: "P-256" } as const;
 const SIGN = { name: "ECDSA", hash: "SHA-256" } as const;
 const ENVELOPE_NAMES = new Set(["issued_at", "kind", "list", "prev", "seq", "signer", "v", "adds", "power", "ends"]);
-/** The longest text of a body of LIST_BODY_MAX bytes. */
 const BODY_TEXT_MAX = Math.ceil((LIST_BODY_MAX * 4) / 3);
 const NAME_FORM = new RegExp(`^[a-z][a-z_]{0,${LIST_NAME_MAX - 1}}$`);
 const NUMBER_FORM = new RegExp(`^(?:0|[1-9][0-9]{0,${LIST_NUMBER_DIGITS - 1}})$`);
 
-/** 1 to 32 bytes: the first a-z, each other a-z or `_`. */
 export function isListName(text: string): boolean {
   return NAME_FORM.test(text);
 }
 
-/** 1 to 15 digits, no sign, no leading zero. */
 export function isListNumber(text: string): boolean {
   return NUMBER_FORM.test(text);
 }
 
-/** 64 characters 0-9a-f. */
 export function isListHash(text: string): boolean {
   return /^[0-9a-f]{64}$/.test(text);
 }
 
 /** The bytes a base64url text spells when it is their one spelling (no padding); null for anything else. */
-function oneSpelling(text: string): Uint8Array | null {
+function canonicalBase64Url(text: string): Uint8Array | null {
   if (!/^[A-Za-z0-9_-]+$/.test(text) || text.length % 4 === 1) return null;
   const bytes = fromBase64Url(text);
   return toBase64Url(bytes) === text ? bytes : null;
@@ -135,16 +99,15 @@ function oneSpelling(text: string): Uint8Array | null {
 /** The 91 bytes of a key in its one spelling; null for anything else. */
 function keyBytes(text: string): Uint8Array | null {
   if (text.length !== LIST_KEY_LENGTH) return null;
-  const bytes = oneSpelling(text);
+  const bytes = canonicalBase64Url(text);
   return bytes !== null && bytes.length === SPKI_BYTES && SPKI_PREFIX.every((byte, index) => bytes[index] === byte) ? bytes : null;
 }
 
 /** A P-256 public key in its one spelling: 122 base64url characters of SPKI DER with the uncompressed point. Not checked: that the point is on the curve (isListPoint). */
-export function isListKey(text: string): boolean {
+export function isListKeyEncoding(text: string): boolean {
   return keyBytes(text) !== null;
 }
 
-/** Bytes as one big-endian number. */
 function bigOf(bytes: Uint8Array): bigint {
   return BigInt(`0x0${bytesToHex(bytes)}`);
 }
@@ -228,17 +191,14 @@ export function writeFieldsUnder(prefix: string, fields: readonly ListField[]): 
   return bytes;
 }
 
-/** The field form: a body's fields, read strictly; refuses `entry_malformed` for anything not in the one form. */
 export function readFields(body: Uint8Array): ListField[] {
   return readFieldsUnder(LIST_BODY_PREFIX, body);
 }
 
-/** The field form: the one form of these fields, in ascending order of their names; refuses `entry_malformed` for fields no body can hold. */
 export function writeFields(fields: readonly ListField[]): Uint8Array {
   return writeFieldsUnder(LIST_BODY_PREFIX, fields);
 }
 
-/** The field form and the fields every entry carries: a body read into its fields, each of the envelope's fields in its form; refuses `entry_malformed`. */
 export function readBody(body: Uint8Array): EntryBody {
   const fields = readFields(body);
   const values = new Map(fields.map((field) => [field.name, latin1(field.value)]));
@@ -248,7 +208,7 @@ export function readBody(body: Uint8Array): EntryBody {
     if (!isListNumber(value)) malformed(`${name} is a number: 1 to 15 digits, no leading zero`);
     return Number(value);
   };
-  const key = (name: string, value: string): string => (isListKey(value) ? value : malformed(`${name} is a key in its one spelling`));
+  const key = (name: string, value: string): string => (isListKeyEncoding(value) ? value : malformed(`${name} is a key in its one spelling`));
   const listOrEmpty = (name: string): string => {
     const value = text(name);
     if (value !== "" && !isListHash(value)) malformed(`${name} is a hash, or empty`);
@@ -278,7 +238,6 @@ export function readBody(body: Uint8Array): EntryBody {
   };
 }
 
-/** The field form and the fields every entry carries: the one body of these fields; refuses `entry_malformed` for fields no entry can hold, and for a field of the envelope passed through `own`. */
 export function writeBody(body: EntryBody): Uint8Array {
   const taken = body.own.find(({ name }) => ENVELOPE_NAMES.has(name));
   if (taken) malformed(`${taken.name} is a field of the envelope: it is written from its own property, never through own`);
@@ -350,9 +309,10 @@ export async function verifySignature(body: Uint8Array, signature: Uint8Array, s
  * checked against, whatever the caller does to its buffers or to that state meanwhile or later.
  */
 export async function entryHolds(shown: Entry, before: HeldEntry | null): Promise<HeldEntry> {
-  if (shown.signature.length !== LIST_SIGNATURE_BYTES) malformed(`A signature is ${LIST_SIGNATURE_BYTES} bytes`);
-  withinLimit(shown.body.length);
-  const entry: Entry = { body: new Uint8Array(shown.body), signature: new Uint8Array(shown.signature) };
+  const { body: shownBody, signature: shownSignature } = shown;
+  if (shownSignature.length !== LIST_SIGNATURE_BYTES) malformed(`A signature is ${LIST_SIGNATURE_BYTES} bytes`);
+  withinLimit(shownBody.length);
+  const entry: Entry = { body: new Uint8Array(shownBody), signature: new Uint8Array(shownSignature) };
   const chain = before === null ? null : { seq: before.body.seq, hash: before.hash, list: before.list };
   const body = readBody(entry.body);
   const n = chain === null ? 0 : chain.seq + 1;
@@ -380,7 +340,6 @@ export async function firstState(entry: Entry, givenList?: string): Promise<{ re
   return { first, signer: first.body.signer };
 }
 
-/** An entry's text (docs/account-list.md, "On the wire and in files"): base64url of the body, `.`, base64url of the signature. */
 export function entryToText(entry: Entry): string {
   return `${toBase64Url(entry.body)}.${toBase64Url(entry.signature)}`;
 }
@@ -392,7 +351,7 @@ export function entryFromText(text: string): Entry {
   const [bodyText = "", signatureText = ""] = parts;
   if (signatureText.length !== LIST_SIGNATURE_TEXT_LENGTH) malformed(`The signature part is ${LIST_SIGNATURE_TEXT_LENGTH} characters`);
   if (bodyText.length > BODY_TEXT_MAX) malformed(`A body is at most ${LIST_BODY_MAX} bytes`);
-  const body = oneSpelling(bodyText) ?? malformed("The body part is base64url in its one spelling");
-  const signature = oneSpelling(signatureText) ?? malformed("The signature part is base64url in its one spelling");
+  const body = canonicalBase64Url(bodyText) ?? malformed("The body part is base64url in its one spelling");
+  const signature = canonicalBase64Url(signatureText) ?? malformed("The signature part is base64url in its one spelling");
   return { body, signature };
 }
