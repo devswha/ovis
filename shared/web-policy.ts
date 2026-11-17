@@ -7,8 +7,9 @@ export const REVALIDATE = "no-cache";
 
 /**
  * The app's own Content-Security-Policy, sent with the shell and every static file. The file
- * viewer's own answers (`/api/fs/*`, a PDF in a frame, images in an <img>) do not pass through
- * here: `fileResponse` (file-view.ts) sends them its own, stricter `sandbox; default-src 'none'`.
+ * viewer's own answers (`/api/fs/*`) do not pass through here: `fileResponse` (file-view.ts) sends
+ * them its own, stricter `sandbox; default-src 'none'`, except a PDF, which gets no policy at all
+ * (the browser's PDF viewer refuses a sandboxed document).
  * Every directive is here for a reason, and none of them is a guess:
  *
  * - `default-src 'self'`: the fallback for anything not named below. Nothing is fetched

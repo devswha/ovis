@@ -493,9 +493,10 @@ export function readsTypedDraft(agent: string | null | undefined): boolean {
  * Whether `agent`'s input box on this screen holds text a person typed, which a pasted chat message would
  * join and its Enter send along. Only positive evidence counts: the recognizer found the box, answered
  * "draft" and reported its cells (InputRowRecognizer `typed`), and one of them is drawn as typed text is,
- * in the terminal's own colour, neither dim nor italic nor inverse. A placeholder or a suggestion (dim, grey,
- * italic), a drawn cursor, a box not found, a screen a recognizer cannot read, and an agent without one
- * all answer false: a send there goes as it always did, never refused for good on a misreading.
+ * in the terminal's own colour or one TYPED_COLOURS lists for that agent, neither dim nor italic nor
+ * inverse. A placeholder or a suggestion (dim, grey, italic), a drawn cursor, a box not found, a screen a
+ * recognizer cannot read, and an agent without one all answer false: a send there goes as it always did,
+ * never refused for good on a misreading.
  */
 export function typedDraft(agent: string | null | undefined, screen: ScreenSnapshot): boolean {
   if (!readsTypedDraft(agent)) return false;

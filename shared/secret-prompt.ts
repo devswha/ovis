@@ -1,6 +1,7 @@
 // A character cluster holding an East Asian Wide or Fullwidth character (Hangul, CJK, kana,
-// fullwidth forms) or an emoji shown as emoji takes two terminal columns; one of only combining
-// marks and zero-width characters takes none.
+// fullwidth forms) or an emoji shown as emoji by default (Emoji_Presentation) counts two terminal
+// columns; one that only U+FE0F makes an emoji (U+2600 U+FE0F, a sun) counts one. One of only
+// combining marks and zero-width characters takes none.
 const WIDE = /[\u1100-\u115f\u2329\u232a\u2e80-\u303e\u3041-\u33ff\u3400-\u4dbf\u4e00-\u9fff\ua000-\ua4cf\ua960-\ua97f\uac00-\ud7a3\uf900-\ufaff\ufe10-\ufe19\ufe30-\ufe6f\uff00-\uff60\uffe0-\uffe6\u{20000}-\u{2fffd}\u{30000}-\u{3fffd}\p{Emoji_Presentation}]/u;
 const ZERO_WIDTH = /^[\p{Mn}\p{Me}\u200b-\u200f\ufe00-\ufe0f]+$/u;
 let graphemes: Intl.Segmenter | undefined;

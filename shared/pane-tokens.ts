@@ -4,7 +4,8 @@
  * sidebar draws one where the user's `[ui.sidebar.agents]` rows name it as `$name`. The web UI's
  * agent rows follow the `$name` tokens of those rows (server/herdr-sidebar.ts reads them from the
  * herdr config.toml of the PC the browser talks to, as herdr's sidebar is the client's config,
- * remote PCs included), and draw every token a pane has where the config names none.
+ * remote PCs included). Where the config names none they draw every token a pane has, save a blank
+ * or non-text value and a `role` of `background`.
  */
 
 /**
