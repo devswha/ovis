@@ -61,8 +61,13 @@ export async function checkFollowHerdrFocus(page: Page, fixture: FollowFocusFixt
       return data;
     };
   });
-  const focusRead = (paneId: string, label: string) => until(() => page.evaluate(
-    (paneId) => (window as unknown as { __focusFramesRead?: string[] }).__focusFramesRead?.includes(paneId) === true, paneId), label);
+  // A wrong follow is only a React update scheduled in that call: the selection read here is stored
+  // by an effect after the render, so the read waits two frames and a task past the frame for both
+  const focusRead = async (paneId: string, label: string): Promise<void> => {
+    await until(() => page.evaluate(
+      (paneId) => (window as unknown as { __focusFramesRead?: string[] }).__focusFramesRead?.includes(paneId) === true, paneId), label);
+    await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 0)))));
+  };
   const tabs: string[] = [];
   let following = false;
   let releaseSplit = (): void => undefined;

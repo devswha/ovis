@@ -1561,12 +1561,13 @@ try {
       writeFileSync(path, png);
       return path;
     });
+    const answeredBefore = uploadsAnswered;
     await page.locator('input[type="file"]').setInputFiles([hugeFile, ...manyFiles]);
     // 99 real uploads, three at a time, each placing its path in the box: about 3 s on an idle
     // runner and over 20 s on a busy one. The bound is on the next answer, so an upload that stalls
     // fails here and a batch that is only slow does not
-    for (let answered = uploadsAnswered; answered < 6 + 99; answered = uploadsAnswered) {
-      await until(() => uploadsAnswered > answered, `upload ${answered - 5} of 99 answered`);
+    for (let answered = uploadsAnswered; answered < answeredBefore + 99; answered = uploadsAnswered) {
+      await until(() => uploadsAnswered > answered, `upload ${answered - answeredBefore + 1} of 99 answered`);
     }
     await until(async () => (await ready.count()) === readyBefore + 6 + 99, "the files within both limits uploaded");
     const note = page.getByRole("alert").filter({ hasText: "Too large to attach: huge.bin" });
