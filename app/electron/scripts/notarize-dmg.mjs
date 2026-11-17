@@ -15,10 +15,10 @@
  *
  * Signing takes electron-builder's own: CSC_LINK (a .p12, as a path or base64) with
  * CSC_KEY_PASSWORD, or CSC_NAME for a Developer ID Application identity already in a keychain.
- * Without an identity the build is unsigned and this does nothing; a notary key without a signed
- * dmg stops the build, and so does a signed build without one when OVIS_REQUIRE_NOTARIZATION=1
- * (a release). Only the API key notarizes: electron-builder's Apple ID or keychain profile
- * credentials stop the build rather than ship it unnotarized.
+ * Without an identity the build is unsigned. A build without the notary key goes unnotarized,
+ * unless OVIS_REQUIRE_NOTARIZATION=1 (a release), which stops it, signed or not; a notary key
+ * without a signed dmg stops the build too. Only the API key notarizes: electron-builder's Apple ID
+ * or keychain profile credentials stop the build rather than ship it unnotarized.
  */
 import { execFile } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";

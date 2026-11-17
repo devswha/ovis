@@ -356,10 +356,10 @@ namespace Ovis
         }
 
         /// <summary>
-        /// The tag the update installs: the newest release `git ls-remote --tags` lists, never older than this app. A
-        /// server that updated itself past this app keeps its version: reinstalled older, it would run the older
-        /// checkout, since its installed release is tied to the checkout it replaced. Without the list (null) there is
-        /// no tag: the app's own could be older than what runs.
+        /// The tag the update installs: the newest release `git ls-remote --tags` lists, never older than this app, so a
+        /// server that updated itself past this app to a listed release keeps its version (the server's own version is
+        /// not compared): reinstalled older, it would run the older checkout, since its installed release is tied to the
+        /// checkout it replaced. Without the list (null) there is no tag: the app's own could be older than what runs.
         /// </summary>
         public static string UpdateTag(string lsRemote, Version app)
         {

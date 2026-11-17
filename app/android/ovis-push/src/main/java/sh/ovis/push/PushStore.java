@@ -68,7 +68,7 @@ final class PushStore {
             PushKeys keys = read(prefs);
             if (keys != null) return keys;
         } catch (PushKeys.Damaged damaged) {
-            // Replace all three fields together; each PC receives them on its next app load.
+            // Replace all three fields together; each PC receives the new p256dh and auth on its next app load.
         }
         PushKeys keys = PushKeys.generate();
         Base64.Encoder encoder = Base64.getEncoder();

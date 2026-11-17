@@ -1,8 +1,8 @@
 name: Rust PTY host binaries
-# For Release and the repair run, the attest job then signs each binary's build
-# provenance (gh attestation verify --repo devswha/ovis), so an install can tell the bytes came from
-# this workflow and not only that they match the manifest beside them; a called workflow may not ask
-# for more permissions than its caller grants, so both callers grant id-token and attestations.
+# For Release, and for a repair run dispatched from the tag it builds, the attest job then signs each
+# binary's build provenance (gh attestation verify --repo devswha/ovis), so an install can tell the bytes
+# came from this workflow and not only that they match the manifest beside them; a called workflow may
+# not ask for more permissions than its caller grants, so both callers grant id-token and attestations.
 on:
   pull_request:
     paths:

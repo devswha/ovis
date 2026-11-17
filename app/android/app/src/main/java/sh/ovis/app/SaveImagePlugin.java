@@ -107,9 +107,9 @@ public class SaveImagePlugin extends Plugin {
     }
 
     /**
-     * Each picture in a folder of its own under cache/saved (res/xml/file_paths.xml shares that
-     * folder and nothing else), so the address an app was granted never shows another picture; one
-     * shared over an hour ago is removed.
+     * Each picture in a folder of its own under cache/saved (of the cache, res/xml/file_paths.xml
+     * shares only that folder), so the address an app was granted never shows another picture; the
+     * next share tries to remove those shared over an hour ago.
      */
     private void toShareSheet(PluginCall call, String name, String type, byte[] bytes) throws IOException {
         File root = new File(getContext().getCacheDir(), "saved");

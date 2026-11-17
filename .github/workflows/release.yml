@@ -109,13 +109,13 @@ jobs:
           path: ${{ runner.temp }}/server-binary/*
           if-no-files-found: error
   # The signing key reaches this job alone, on GitHub's runner. Beside it run only Bun, installed by the SHA-pinned
-  # oven-sh/setup-bun, and scripts/server-manifest.ts (Node's built-ins): none of the repository's dependencies is
-  # installed. The key is the secret OVIS_SERVER_SIGNING_KEY of the environment release-signing, which only main may
-  # use (docs/development.md, "The server binary's signing key"); no other job names that environment, and a job that
-  # deploys (production) never sees the key. Without the environment or its secret this job fails, and publish, which
-  # needs it, never runs: nothing is published unsigned. sign refuses a key whose public half is not
-  # RELEASE_PUBLIC_KEY (scripts/server-manifest.ts), the one key every installer trusts, so a key put into the secret by
-  # mistake fails the release too. In a fork the job is skipped, and so is publish.
+  # oven-sh/setup-bun, and scripts/build-server.ts with the scripts/server-manifest.ts it imports (Node's built-ins):
+  # none of the repository's dependencies is installed. The key is the secret OVIS_SERVER_SIGNING_KEY of the environment
+  # release-signing, which only main may use (docs/development.md, "The server binary's signing key"); no other job
+  # names that environment, and a job that deploys (production) never sees the key. Without the environment or its
+  # secret this job fails, and publish, which needs it, never runs: nothing is published unsigned. sign refuses a key
+  # whose public half is not RELEASE_PUBLIC_KEY (scripts/server-manifest.ts), the one key every installer trusts, so a
+  # key put into the secret by mistake fails the release too. In a fork the job is skipped, and so is publish.
   server-binary-sign:
     needs: server-binary
     if: github.repository == 'devswha/ovis' && github.ref == 'refs/heads/main'

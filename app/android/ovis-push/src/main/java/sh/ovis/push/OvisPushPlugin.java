@@ -31,7 +31,7 @@ import org.json.JSONObject;
 
 /**
  * The endpoint is the relay's, for this phone's FCM token; one per PC, as the
- * relay pins each endpoint to the first PC that pushes to it.
+ * relay pins each endpoint to the PC key it was registered with.
  */
 @CapacitorPlugin(
     name = "OvisPush",
@@ -64,9 +64,10 @@ public class OvisPushPlugin extends Plugin {
     }
 
     /**
-     * Asks for notifications (Android 13 and later), then gets this PC an endpoint, reusing a live
-     * one. `applicationServerKey`: the PC's VAPID public key (its GET /api/push), base64url, as a
-     * browser's pushManager.subscribe takes it; the relay pins the endpoint to it.
+     * Asks for notifications (Android 13 and later), then gets this PC an endpoint, reusing the saved
+     * one while its FCM token and PC key are unchanged. `applicationServerKey`: the PC's VAPID public
+     * key (its GET /api/push), base64url, as a browser's pushManager.subscribe takes it; the relay pins
+     * the endpoint to it.
      */
     @PluginMethod
     public void subscribe(PluginCall call) {

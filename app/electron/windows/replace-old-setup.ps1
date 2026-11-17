@@ -86,7 +86,7 @@ Step 'close its windows' {
     # a second download saves as Ovis (1).exe
     foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name LIKE 'Ovis%.exe'")) {
         if (IsOldSetup $process.ExecutablePath) {
-            # asked to close first, as its own close button would; ended only when it does not within 10 s
+            # asked to close first, as its own close button would; ended when that request fails or it still runs 10 s later
             $running = Get-Process -Id $process.ProcessId -ErrorAction SilentlyContinue
             if ($running -and $running.CloseMainWindow()) { Wait-Process -Id $process.ProcessId -Timeout 10 -ErrorAction SilentlyContinue }
             if (Get-Process -Id $process.ProcessId -ErrorAction SilentlyContinue) {

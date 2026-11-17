@@ -240,7 +240,8 @@ pub fn reap(pid: libc::pid_t, nohang: bool) -> Option<libc::c_int> {
 }
 
 /// A wait status as the host's exit code: the child's own code, or 128 + the signal's number when a
-/// signal ended it (as a shell reports it, and pty-host.mjs), never the 0 a caller reads as success.
+/// signal ended it (as a shell reports it, and pty-host.mjs); 0 when that signal is in `sent`, one the
+/// host itself sent to stop it.
 pub fn exit_code(status: libc::c_int, sent: &[libc::c_int]) -> i32 {
     if libc::WIFEXITED(status) {
         libc::WEXITSTATUS(status)

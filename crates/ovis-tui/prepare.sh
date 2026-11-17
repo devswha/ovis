@@ -1,7 +1,7 @@
 #!/bin/sh
 # It fetches one commit (hc-tui.pin names it) and that commit's Ghostty submodule, checks both commit
-# ids, applies every patch and commits them there, so a clean `git status` in ./upstream means the
-# tree is exactly "the pin plus our patches".
+# ids, applies every patch and commits them there, so a clean `git status` in ./upstream, at the commit
+# upstream/.ovis-prepared names, means the tree is exactly "the pin plus our patches".
 set -eu
 
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -137,8 +137,8 @@ if [ -e "$dest" ]; then
   work=$(work_in "$dest")
   [ -z "$work" ] || refuse " (made while this ran; nothing was replaced)" "$work"
 fi
-# set aside, not deleted, until the new tree is in: a run stopped between the two moves leaves no
-# half-deleted tree in its place
+# moved aside, not deleted in place: a run stopped between the two moves leaves no tree there (cleanup
+# deletes the one set aside; the next run makes it again), never a half-deleted one
 if [ -e "$dest" ]; then mv "$dest" "$old"; fi
 mv "$new" "$dest"
 rm -rf "$old"
