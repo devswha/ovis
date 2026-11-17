@@ -293,8 +293,8 @@ namespace Ovis
         /// (started from herdr or a terminal since the window looked) is left to the people using it, and a stopped one is
         /// started by the plugin's own start, which leaves a server that answers alone and waits for a start under way. A
         /// recorded process that lives but does not answer is one that start refuses when it is Ovis's: the plugin's stop
-        /// ends it first. That stop verifies the process and leaves another program's reused pid alone, which the start
-        /// then passes over, so the start runs whatever the stop said.
+        /// ends it first, and a stop that fails is shown as Restart shows it. Only a pid the stop could not verify as Ovis's
+        /// (another program reused it) is no failure: the stop leaves it alone and the start passes over it.
         /// </summary>
         public async Task Start()
         {
@@ -302,8 +302,17 @@ namespace Ovis
             await Refresh();
             if (Phase != Phase.Installed || (Status != null && Status.Running)) return;
             ClearLog();
-            Set(Phase.Working, Lang.L("Starting…", "시작하는 중…"));
-            if (plugin != null && Status != null && Status.Pid != null && await HerdrRunning()) await Stop(plugin);
+            // the words main showed for Start, which went through Restart
+            Set(Phase.Working, Lang.L("Restarting…", "다시 시작하는 중…"));
+            if (plugin != null && Status != null && Status.Pid != null && await HerdrRunning())
+            {
+                var stop = await PluginCommand(plugin, "stop", Append);
+                if (Setup.StopFailed(stop.Status, stop.Output))
+                {
+                    Fail(Lang.L("Could not stop the Ovis server.", "Ovis 서버를 멈추지 못했습니다."));
+                    return;
+                }
+            }
             await StartServer();
         }
 

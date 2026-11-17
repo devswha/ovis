@@ -217,6 +217,14 @@ namespace Ovis
                     files.Add(checkout + @"\run.ps1");
                     Equal("bun " + checkout + @"\scripts\plugin.ts status", string.Join(" ", Setup.PluginCommandLine(checkout, "status", files.Contains)));
                 }),
+                Case("Start reports a stop that failed, but not one that left another program's reused pid alone", () =>
+                {
+                    // the lines `plugin.ts stop` prints (scripts/plugin.ts)
+                    Equal(false, Setup.StopFailed(0, "stopped Ovis (pid 5472)\n"));
+                    Equal(false, Setup.StopFailed(1, "could not verify the recorded Ovis process; it was left running and its pid file was kept\n"));
+                    Equal(true, Setup.StopFailed(1, "could not stop Ovis: Access is denied.\n"));
+                    Equal(true, Setup.StopFailed(1, null));
+                }),
                 Case("the old id's plugin.ts is told the state dir herdr keeps for it, found as herdr finds it", () =>
                 {
                     var windows = new Dictionary<string, string> { { "LOCALAPPDATA", @"C:\Users\u\AppData\Local" }, { "USERPROFILE", @"C:\Users\u" } };

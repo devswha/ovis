@@ -279,6 +279,15 @@ namespace Ovis
             return (output ?? "").Split('\n').Select(line => line.Trim()).Any(line => line.StartsWith("stopped ", StringComparison.Ordinal) && line.Contains("(pid "));
         }
 
+        /// <summary>
+        /// A `plugin.ts stop` that failed in a way Start reports: every failure but the one that left alone a recorded pid
+        /// it could not verify as the Ovis server's (another program reused it), which the start then passes over.
+        /// </summary>
+        public static bool StopFailed(int status, string output)
+        {
+            return status != 0 && (output ?? "").IndexOf("could not verify the recorded Ovis process", StringComparison.Ordinal) < 0;
+        }
+
         /// <summary>The bridge health's answer is the app's own: `ok: true` with an integer `bridge_protocol` (server/index.ts).</summary>
         public static bool BridgeHealth(string json)
         {
