@@ -1,18 +1,3 @@
-/**
- * Icons and Hangul are fitted from the faces that draw them, however their late loads interleave
- * (#2064). The icon font and the Hangul face load only once a pane prints an icon or Korean, after
- * xterm and lib/terminalGlyphs.ts measured those characters with a stand-in, narrower than either
- * in WebKit (Apple SD Gothic Neo's Hangul is 0.86em, the bundled face's 1em). Each arrival set the
- * terminal's font family again in another form so that both measured anew, and two arrivals heard
- * in the same task (both Hangul weights from WebKit's cache, or an icon with Korean) undid each
- * other's change before the glyph fit looked: the family read as before, and the widths measured
- * with the stand-in stayed. An icon stayed its full em across the cell after it, and Hangul was
- * enlarged as for the stand-in and pushed the rest of its row right.
- *
- * Chromium on Linux stands in with fonts as wide as the faces, so the page gets WebKit's: the same
- * two files drawn smaller (size-adjust) behind the late faces. The promises that tell of an arrival
- * wait at a gate while both faces load, and go on together, as from a cache.
- */
 import "./test-herdr.ts";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -25,15 +10,12 @@ import { herdrRpc, workspaceClose, workspaceCreate } from "../server/herdr/clien
 import { chromePath } from "./chrome-path.ts";
 import { shownRows } from "./shown-rows.ts";
 
-// Nerd Font icons (a folder, GitHub's mark, a branch): one cell each, a whole em in the icon font
 const ICONS = ["\uf07b", "\uf113", "\ue0a0"];
 const ROWS = [
   "|abcdefghijklmn|",
   "|가나다라마바사|",
   `|${ICONS.join(" ")} abcdefghi|`,
 ];
-// the two late faces: the icon font, and the Hangul face typed ahead of the installed fonts, so that it
-// draws the Korean on every machine. JetBrains Mono Web gives every machine the same 0.6em cell
 const TERMINAL_FONT = "Ovis Hangul Mono, Late Stand-in, JetBrains Mono Web";
 const LATE_FACES = [/\/SymbolsNerdFontMono-Regular[^/]*\.woff2$/, /\/OvisHangulMono-Regular[^/]*\.woff2$/];
 // the stand-ins, as narrow as WebKit's: an icon inside its one cell, Hangul at Apple SD Gothic Neo's width
@@ -51,7 +33,6 @@ let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
 try {
-  // Given: a pane that prints Latin, Korean and icons, each row closed by a bar.
   const program = join(state, "rows.mjs");
   writeFileSync(program, `process.stdout.write(${JSON.stringify(`\x1b[2J\x1b[H${ROWS.join("\r\n")}\r\nROWS_READY\r\n`)});
 setInterval(() => {}, 1 << 30);
@@ -77,8 +58,6 @@ setInterval(() => {}, 1 << 30);
       document.fonts.add(face);
       void face.load();
     }
-    // the page hears of a face's arrival through promises (a face's own, or the font set's load):
-    // they wait at a gate, and once it opens all go on in the same task
     const nativeLoaded = Object.getOwnPropertyDescriptor(FontFace.prototype, "loaded")!.get!;
     const nativeLoad = FontFaceSet.prototype.load;
     let open = Promise.resolve();
@@ -97,7 +76,6 @@ setInterval(() => {}, 1 << 30);
   page.setDefaultTimeout(10000);
   const errors: string[] = [];
   page.on("pageerror", error => errors.push(error.message));
-  // the two faces wait until both are let go together
   const waiting = new Map<string, Route>();
   const fetched: string[] = [];
   let bothAsked: () => void = () => {};
@@ -115,7 +93,6 @@ setInterval(() => {}, 1 << 30);
   await page.goto(`http://127.0.0.1:${server.port}/?pane=${encodeURIComponent(pane)}`);
   await page.locator(".conn-live").waitFor();
   await page.locator(shownRows(), { hasText: "ROWS_READY" }).waitFor();
-  // the typed font is the terminal's (it is set once its faces loaded, or failed to in time)
   await page.waitForFunction((shown) => {
     const rows = document.querySelector(shown);
     return rows !== null && getComputedStyle(rows).fontFamily.includes("Late Stand-in");
@@ -123,10 +100,8 @@ setInterval(() => {}, 1 << 30);
   await Promise.race([asked, page.waitForTimeout(15000).then(() => {
     throw new Error(`the late faces were not both asked for: ${JSON.stringify(fetched)}`);
   })]);
-  // xterm draws the rows with the stand-ins in the frame after the font is set
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 
-  // When: both faces load, and the page hears of both in the same task.
   type Gate = { hold: () => void; open: () => void; arrived: (face: FontFace) => Promise<FontFace> };
   await page.evaluate(() => (window as unknown as { lateFacesGate: Gate }).lateFacesGate.hold());
   await Promise.all([...waiting.values()].map(route => route.continue()));
@@ -139,13 +114,11 @@ setInterval(() => {}, 1 << 30);
   });
   await page.evaluate(() => new Promise<void>((resolve) => {
     (window as unknown as { lateFacesGate: Gate }).lateFacesGate.open();
-    // a few frames: the arrival's own, then xterm's redraw
     let frames = 4;
     const tick = (): void => { frames -= 1; if (frames === 0) resolve(); else requestAnimationFrame(tick); };
     requestAnimationFrame(tick);
   }));
 
-  // Then: every icon is drawn at the size that fits its cell, and the Korean row's bar stands in the Latin row's column.
   const drawn = await page.evaluate(([icons, shown]) => {
     const rows = document.querySelector<HTMLElement>(shown)!;
     const left = rows.getBoundingClientRect().left;
@@ -171,7 +144,6 @@ setInterval(() => {}, 1 << 30);
       }
       return null;
     });
-    // xterm's run of Hangul, or libghostty's two-cell box around one syllable
     const hangul = [...rows.querySelectorAll("span")].find(span => span.textContent === "가나다라마바사") ?? rows.querySelector(".ghostty-wide");
     return { base, bars, sizes, hangulSize: hangul ? getComputedStyle(hangul).fontSize : null,
       renderer: document.querySelector<HTMLElement>(".pane-terminal")?.dataset["renderer"] ?? "xterm" };

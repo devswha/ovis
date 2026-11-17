@@ -1,10 +1,8 @@
-/** Replay a Chrome 155 trace of fcitx4 with Sogou Pinyin on Linux X11 (#1649), not a claim to automate the OS IME. */
 import assert from "node:assert/strict";
 import { EventEmitter, once } from "node:events";
 import type { Browser } from "playwright-core";
 import { chromePath } from "./chrome-path.ts";
 
-/** Replay candidate picks of an input method with no in-app preedit and assert the bytes the pane gets. */
 export async function checkLinuxIme(browser: Browser, origin: string, pane: string): Promise<void> {
   const context = await browser.newContext({
     userAgent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36",
@@ -43,10 +41,6 @@ export async function checkLinuxIme(browser: Browser, origin: string, pane: stri
     sent.length = 0;
   };
   // The input method consumes the pinyin keys: the page sees only their keyup. The key that
-  // picks a candidate keeps its own key and keyCode in keydown (not 229, isComposing false);
-  // a single-character pick then comes as a keypress whose charCode is the candidate, and the
-  // input that inserts it. "word" leaves the keypress out: a multi-character pick was not in
-  // the trace, and Chrome sends no keypress for more than one character.
   const pick = async (key: string, code: string, keyCode: number, candidate: string, shape: "single" | "word" = "single") => {
     await input.evaluate(async (element, { key, code, keyCode, candidate, shape }) => {
       const box = element as HTMLTextAreaElement;
