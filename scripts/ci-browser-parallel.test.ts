@@ -253,10 +253,26 @@ describe("parallel browser script deadline", () => {
   it("prints a command line on one line, redacted and cut", () => {
     const line = describeCommand(["bash", "-c", "echo a\nFAILED scripts/injected.ts (exit 1)", "--api-token", "hunter2", `--flag=${"x".repeat(500)}`]);
     expect(line).not.toMatch(/[\n\r\t]/);
+    expect(line).not.toContain("FAILED");
     expect(line).not.toContain("hunter2");
-    expect(line.startsWith("bash -c echo a FAILED scripts/injected.ts (exit 1) --api-token [REDACTED]")).toBe(true);
+    expect(line.startsWith("bash -c [MULTILINE ARGUMENT] --api-token [REDACTED]")).toBe(true);
     expect(line.length).toBeLessThanOrEqual(200);
     expect(describeCommand(["", ""])).toBe("?");
+  });
+
+  it("prints no part of a credential held in an argument with a line break", () => {
+    for (const argv of [
+      ["tool", "Authorization: Bearer x\nTOPSECRET"],
+      ["tool", "-H", "Cookie: a=1\r\nTOPSECRET"],
+      ["tool", "--token", "abc\nTOPSECRET"],
+      ["tool", "--token=abc\nTOPSECRET"],
+      ["bash", "-c", "echo a\nAuthorization: Bearer TOPSECRET"],
+      ["tool", "Authorization: Bearer x\u2028TOPSECRET"],
+    ]) {
+      const line = describeCommand(argv);
+      expect(line).not.toContain("TOPSECRET");
+      expect(line).not.toMatch(/[\n\r\u2028]/);
+    }
   });
 
   it("keeps naming a process that refused a signal after a later scan no longer finds it", async () => {

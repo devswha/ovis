@@ -360,12 +360,15 @@ function running(pid: number): boolean {
 const COMMAND_LIMIT = 200;
 
 /**
- * A command line as the report prints it: credentials redacted as everywhere else, control
- * characters (a newline in an argument would split the FAILED line) replaced, and cut at a length
- * a Chromium command line does not exceed by kilobytes.
+ * A command line as the report prints it: credentials redacted as everywhere else, other control
+ * characters replaced, and cut at a length a Chromium command line does not exceed by kilobytes. An
+ * argument that holds a line break is not printed at all: a newline would split the FAILED line, and
+ * sanitizeCommand reads an argument as one line, so it could leave the rest of a multi-line
+ * Authorization or Cookie value in a report that goes into a public issue.
  */
 export function describeCommand(argv: readonly string[]): string {
-  const line = sanitizeCommand(argv).join(" ").replace(/[\u0000-\u001f\u007f]+/g, " ").trim();
+  const oneLine = argv.map((argument) => (/[\r\n\v\f\u0085\u2028\u2029]/.test(argument) ? "[MULTILINE ARGUMENT]" : argument));
+  const line = sanitizeCommand(oneLine).join(" ").replace(/[\u0000-\u001f\u007f]+/g, " ").trim();
   if (line === "") return "?";
   return line.length > COMMAND_LIMIT ? `${line.slice(0, COMMAND_LIMIT - 3)}...` : line;
 }
