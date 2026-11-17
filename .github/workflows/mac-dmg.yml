@@ -94,7 +94,6 @@ jobs:
           security import "$RUNNER_TEMP/DeveloperIDG2CA.cer" -k "$keychain"
           rm -f "$RUNNER_TEMP/developer-id.p12"
           security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" >/dev/null
-          # shellcheck disable=SC2046 # keep the existing keychains, one word each
           security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
           identity=$(security find-identity -v -p codesigning "$keychain" | sed -n 's/^ *[0-9]*) [0-9A-F]* "\(Developer ID Application: [^"]*\)".*$/\1/p' | head -n 1)
           if [ -z "$identity" ]; then
