@@ -367,8 +367,9 @@ replace the workflow's values for the run, and a host without the file keeps `ci
 those CPUs, the runners and the cache builds alike, so work beside them keeps the rest. A list docker
 cannot give is refused at start (exit 2), before any slot asks for a registration token.
 
-`run.sh --cgroup-parent SLICE` (docker run's own option) starts every container it starts under that
-cgroup instead of docker's own: with docker's systemd cgroup driver, a system slice such as
+`run.sh --cgroup-parent SLICE` (docker run's own option) starts every container it starts, and the
+image build's steps, under that cgroup instead of docker's own: with docker's systemd cgroup driver
+on cgroup v2 (`docker info` says `systemd` and `2`), a system slice such as
 `ovis-ci.slice`, which sits under `ovis.slice`. Give that top slice a low CPU weight
 (`/etc/systemd/system/ovis.slice` with `[Slice]` and `CPUWeight=20`, then `systemctl daemon-reload`)
 and the jobs run at full speed while the CPU is free, but yield to the PC's own sessions (weight 100)

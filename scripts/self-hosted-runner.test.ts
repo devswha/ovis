@@ -663,6 +663,10 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
     expect(runs.filter((call) => runnerRun.test(call))).toHaveLength(2);
     for (const call of runs) expect(call).toContain("--cpuset-cpus 0-95 --cgroup-parent ovis-ci.slice ");
     expect(runRunner().calls).not.toContain("--cgroup-parent");
+    const built = runRunner({ args: ["--build", "--cgroup-parent", "ovis-ci.slice"] }).calls.split("\n").filter((call) => call.startsWith("docker build "));
+    expect(built).toHaveLength(1);
+    expect(built[0]).toStartWith("docker build --cgroup-parent ovis-ci.slice -t ");
+    expect(runRunner({ args: ["--build"] }).calls).not.toContain("--cgroup-parent");
   });
 
   it("refuses a cgroup parent docker cannot use before starting anything", () => {

@@ -144,7 +144,7 @@ SLOT_FILES=()
 for port in $(seq 41737 41770); do SLOT_FILES+=("$port"); done
 
 if [ "$BUILD" = 1 ] || ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
-  docker build -t "$IMAGE" "$SCRIPT_DIR"
+  docker build ${CGROUP_PARENT:+--cgroup-parent "$CGROUP_PARENT"} -t "$IMAGE" "$SCRIPT_DIR"
 fi
 if [ "${#PLACE_ARGS[@]}" -gt 0 ] && ! docker run --rm "${PLACE_ARGS[@]}" --network none --entrypoint true "$IMAGE" >/dev/null 2>&1; then
   echo "${PLACE_ARGS[*]}: docker cannot start a container there" >&2
