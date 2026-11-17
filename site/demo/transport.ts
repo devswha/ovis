@@ -18,8 +18,6 @@ import { PANE_SUMMARY_MAX_IDS, summaryOf, type PaneSummaries } from "../../share
 import { neighborPane } from "../../src/lib/layoutMap.ts";
 import { closeLayoutPane, moveLayoutPane, resizeLayout, setLayoutSplitRatio, splitLayout, swapLayoutPanes } from "../../src/lib/layoutTree.ts";
 import { deviceLabel } from "../../src/lib/phone.ts";
-import { PANE_VIEW_KEY_PREFIX } from "../../src/lib/settings.ts";
-import { LOCAL_MACHINE, paneStorageId } from "../../shared/machines.ts";
 import { rollupStatus } from "../../src/lib/status.ts";
 import { movedTabOrder } from "../../src/lib/tabOrder.ts";
 import { agentSkillRows, CHATS, DEMO_AGENT_CATALOG, DEMO_PUSH, PROMPT, resumedSession, SESSION_HISTORY_AGENTS, sessionHistoryRows, SPECS, type DemoSpec } from "./fixtures.ts";
@@ -2673,7 +2671,7 @@ else setTimeout(finishOpeningTurn, 4500);
 
 for (const pane of snapshot().panes) {
   if (!pane.agent) continue;
-  const key = `${PANE_VIEW_KEY_PREFIX}${paneStorageId(LOCAL_MACHINE, pane.pane_id)}`;
+  const key = `ovis:view:${pane.pane_id}`;
   try { if (window.localStorage.getItem(key) === null) window.localStorage.setItem(key, "chat"); } catch { }
 }
 
