@@ -35,6 +35,7 @@ export const FONT_LOAD_TIMEOUT_MS = 3000;
 // what could close the declaration or the style element, escape, or hide in the value
 const UNSAFE_CHARS = /[;{}<>\\\u0000-\u001f\u007f]/g;
 const QUOTES = /["']/g;
+// a name CSS reads unquoted: one identifier (non-ASCII letters included), no spaces
 const IDENTIFIER = /^-?[A-Za-z_\u0080-￿][\w\u0080-￿-]*$/;
 // unquoted, these are keywords rather than names and make the whole list invalid
 const RESERVED = new Set(["inherit", "initial", "unset", "revert", "revert-layer", "default"]);
@@ -42,6 +43,7 @@ const RESERVED = new Set(["inherit", "initial", "unset", "revert", "revert-layer
 function normalizeName(raw: string): string {
   const trimmed = raw.trim();
   const quoted = trimmed.length >= 2 && (trimmed[0] === '"' || trimmed[0] === "'") && trimmed.at(-1) === trimmed[0];
+  // a stray quote inside a name would end the CSS string early: it cannot be part of a name
   const name = (quoted ? trimmed.slice(1, -1) : trimmed).replace(QUOTES, "").replace(/\s+/g, " ").trim();
   if (name === "") return "";
   // a name the user quoted stays quoted: "monospace" is a font called monospace, not the generic

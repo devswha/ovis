@@ -1,6 +1,10 @@
 import { highlightNow, linesFromRuns, plainLines, SYNC_HIGHLIGHT_LIMIT, type Lines, type Runs } from "./highlight.ts";
 import { createOffThreadQueue, type OffThreadJob, type WorkerLike } from "./offThread.ts";
 
+/**
+ * How long a worker may take to highlight one text. Ordinary code of a megabyte takes well under a
+ * second even on a phone; past this the text is shown plain and said to be too long to highlight.
+ */
 export const HIGHLIGHT_BUDGET_MS = 2_000;
 
 const CACHE_CHARACTERS = 4 * 1024 * 1024;

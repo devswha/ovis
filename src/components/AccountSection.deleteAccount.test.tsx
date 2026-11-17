@@ -8,6 +8,9 @@ import { SettingsProvider } from "../lib/settings.ts";
 import { nativeTransport, setTransport } from "../lib/transport.ts";
 import { AccountSection } from "./AccountSection.tsx";
 
+// In the desktop app, which signs in by redirect, the same button asks before it deletes, and the service's
+// refusals are said in the person's words. On a PC's own page in a browser, whose sign-in is a device code or the
+// link page, the service refuses any delete (web_sign_in_required): the section says where to delete instead.
 const SERVICE = "https://account.ovis.example";
 const ACCOUNT = "acct_one";
 let signsInAs = ACCOUNT;
@@ -37,6 +40,7 @@ describe("deleting the account from Settings", () => {
     Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en"], userAgent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/130.0 Safari/537.36", maxTouchPoints: 0 } });
     Object.defineProperty(globalThis, "location", { configurable: true, writable: true, value: { pathname: "/", origin: "https://workstation.example.ts.net" } });
     const tab = new Map<string, string>();
+    // the desktop app's sign-in: the system browser at the provider, back to its loopback server with the code
     const bridge = {
       service: SERVICE, providers: ["github"],
       start: async () => "http://127.0.0.1:4321/callback",

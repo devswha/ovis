@@ -30,6 +30,7 @@ export function AddAgentPanel({ onReady, onOpenTerminal, onBack }: AddAgentPanel
       (catalog) => setAgents(addableAgents(catalog.agents)),
       (reason: unknown) => {
         if (abort.signal.aborted) return;
+        // a PC on an Ovis from before the catalog answers 404 for it
         setError(reason instanceof ApiError && reason.status === 404 ? { message: t("This PC's Ovis cannot install agents yet. Update it, then try again."), detail: null } : userErrorMessage(reason));
       },
     );

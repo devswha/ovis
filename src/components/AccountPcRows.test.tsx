@@ -9,6 +9,7 @@ import { SignedOutError, type AccountService } from "../lib/account/service.ts";
 import type { AccountSession } from "../lib/account/store.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 
+// the confirmation is a portal into document.body: drawn in place here, so the test renderer holds it
 await mock.module("react-dom", () => ({ ...ReactDom, createPortal: (node: ReactNode) => node }));
 const { AccountPcRows, HOSTED_APP_URL, NoAccountPcHint, removePcFromAccount, unusedPc } = await import("./AccountPcs.tsx");
 
@@ -86,6 +87,8 @@ describe("the account's PCs in a PC's own Settings", () => {
 
   it("gives the rows no action of their own, and one link under them to the hosted app's front page", async () => {
     const root = await mount(createElement(AccountPcRows, { pcs: [pc(DESK, "Desk"), pc(LAPTOP, "Laptop")], watching: false, now: NOW, remove: async () => {}, onRemoved: () => {} }));
+    // a PC's own page cannot tell whether this browser is paired with that PC at app.ovis.sh, where /s/<id>/ opens
+    // only a paired one: the link goes to the front page, which is right for every browser, and is named for it
     const links = root.findAll((node) => node.type === "a");
     expect(links.map((link) => [textOf(link), link.props.href, link.props.target, link.props.rel])).toEqual([["Open app.ovis.sh", "https://app.ovis.sh/", "_blank", "noreferrer"]]);
     expect(HOSTED_APP_URL).toBe("https://app.ovis.sh/");
@@ -132,6 +135,7 @@ describe("the account's PCs in a PC's own Settings", () => {
     const words = textOf(dialog);
     expect(words).toContain("Remove Laptop from the list?");
     expect(words).toContain("Takes Laptop off your account's list of PCs on every device.");
+    // it ends no access, now or later
     expect(words).toContain("It revokes nothing: devices paired with Laptop keep their access, and a device you later remove from your account is not removed from it.");
     expect(words).toContain("If Laptop is used again, it comes back on the list when a device of your account opens it.");
     expect(words).toContain("Until then it cannot use the Ovis relay where the relay needs an account.");

@@ -27,6 +27,13 @@ describe("AddThisPc", () => {
   const globals = ["IS_REACT_ACT_ENVIRONMENT", "window", "document", "getComputedStyle", "navigator", "location"];
   const saved = new Map<string, PropertyDescriptor | undefined>();
   let renderers: ReactTestRenderer[];
+  /**
+   * what the PC answers: its account, whether it still waits for its first member's enrollment, how the link route
+   * fails (null: it gives a link), and the route whose next request never gets an answer (null: every one is answered);
+   * its relay (`relay`, what may block it, what a start comes to), whether it has the close route, its device gate,
+   * how this browser is in (`via`: one in only through the open device gate is refused the PC's account, as
+   * server/dispatch.ts refuses it), whether it is paired and its pairing cookie sticks, and whether its health answers
+   */
   let pc: {
     account: string | null; enrolling: boolean; linkError: { status: number; code: string } | null; statusDown: boolean; offer: string; hang: string | null;
     relay: "on" | "off"; blocked: "serve_only" | null; start: "ok" | "off" | "broken"; closeMissing: boolean;
@@ -42,6 +49,7 @@ describe("AddThisPc", () => {
   let restore: (() => void)[];
   let puts: string[];
   let held: { listPcs: Promise<void> | null; putPc: Promise<void> | null; session: Promise<void> | null; link: Promise<void> | null; start: Promise<void> | null; close: Promise<void> | null };
+  /** the account service; `bound` is the account of the one sign-in it acts for (forSignIn), which refuses once another is stored */
   const service = (bound?: string): AccountService => {
     const mine = (): void => { if (bound !== undefined && signedIn !== bound) throw new SignedOutError(); };
     return {
@@ -198,6 +206,7 @@ describe("AddThisPc", () => {
     expect(links()).toBe(5);
     expect(asked.filter((request) => request.path === "/api/relay/link").every((request) => request.localOnly)).toBe(true);
     expect(directory).toEqual(["putPc"]);
+    // (and the screen read once, before its offer, what this browser may do on the PC, then before every reopen which PC answers)
     expect(new Set(asked.map((request) => request.path))).toEqual(new Set(["/api/account/status", "/api/health", "/api/relay/link", "/api/account/relay-account"]));
     expect(asked.filter((request) => request.path === "/api/health").length).toBe(5);
     expect(asked.filter((request) => request.path === "/api/account/relay-account").length).toBe(1);
@@ -249,6 +258,7 @@ describe("AddThisPc", () => {
     expect(links()).toBe(1);
     expect(asked.filter((request) => request.path === "/api/relay/link")[0]!.localOnly).toBe(true);
     expect(directory).toEqual([]);
+    // the reload starts no new thirty minutes: the wait ends when the press's would have
     await advance(10 * 60_000);
     expect(words(renderer)).toContain("This PC stopped waiting after 30 minutes.");
   });
@@ -313,6 +323,7 @@ describe("AddThisPc", () => {
     const renderer = await mount();
     expect(buttons(renderer)).toEqual(["Add this PC to my account"]);
     expect(tab.has(MARKER)).toBe(false);
+    // which PC answers was read from its health, which opens nothing
     expect(links()).toBe(0);
     await advance(RELIST_MS + REOPEN_MS);
     expect(links()).toBe(0);
@@ -328,6 +339,7 @@ describe("AddThisPc", () => {
     expect(tab.has(MARKER)).toBe(false);
     expect(links()).toBe(1);
     expect(directory).toEqual([]);
+    // that request opened a window on the other PC, where no screen waits: closed again, after it was opened
     const windows = asked.filter((request) => request.path === "/api/relay/link" || request.path === "/api/relay/link/close").map((request) => request.path);
     expect(windows).toEqual(["/api/relay/link", "/api/relay/link/close"]);
     await advance(RELIST_MS + REOPEN_MS);
@@ -542,6 +554,7 @@ describe("AddThisPc", () => {
     expect(puts).toEqual([`${ACCOUNT}/${SERVER}`]);
     expect(links()).toBe(1);
     expect(JSON.parse(tab.get(MARKER)!)).toEqual({ name: "desk", until: at + WAITING_MS, serverId: SERVER, account: ACCOUNT, listedAt: at });
+    // the wait is the pressed one's: reopened, approve-here only, and the relay was never asked to start
     await advance(REOPEN_MS);
     expect(links()).toBe(2);
     expect(asked.filter((request) => request.path === "/api/relay/link").every((request) => request.localOnly)).toBe(true);
@@ -702,6 +715,7 @@ describe("AddThisPc", () => {
     pc.relay = "off";
     pc.gate = "open";
     const renderer = await mount(ACCOUNT);
+    // the PC refuses such a browser its account, so the button is never offered to one: this one came to be in that way since
     pc.via = "open";
     await press(renderer, "Turn on the relay and add this PC");
     const paths = asked.map((request) => request.path);
@@ -1109,6 +1123,7 @@ describe("AddThisPc", () => {
     expect(words(renderer)).toContain("This PC is in your account. Your other devices can open it now.");
     expect(directory.length).toBe(before);
 
+    // the same after Stop waiting, and under another sign-in it is not called yours
     pc.account = null;
     const other = await waitingFrom();
     await press(other, "Stop waiting");
@@ -1127,6 +1142,7 @@ describe("AddThisPc", () => {
     release();
     await settle();
     expect(puts).toEqual([`${ACCOUNT}/${SERVER}`]);
+    // the next reopen finds the other sign-in and ends the wait
     await advance(REOPEN_MS);
     expect(buttons(renderer)).toEqual(["Add this PC to my account"]);
     expect(puts).toEqual([`${ACCOUNT}/${SERVER}`]);
@@ -1392,6 +1408,7 @@ describe("AddThisPc", () => {
     expect(links()).toBe(2);
     await press(renderer, "Stop waiting");
     expect(closes()).toBe(1);
+    // the reopen reaches the PC after the close, and opens a window nobody waits on: closed again
     release();
     await settle();
     expect(closes()).toBe(2);
@@ -1421,6 +1438,7 @@ describe("AddThisPc", () => {
     await advance(2 * REOPEN_MS);
     await press(renderer, "Stop waiting");
     expect(closes()).toBe(1);
+    // it reaches the PC after the close, and opens a window nobody waits on: closed again
     release();
     await settle();
     expect(links()).toBe(2);
@@ -1439,6 +1457,7 @@ describe("AddThisPc", () => {
     expect(links()).toBe(2);
     await press(renderer, "Stop waiting");
     expect(closes()).toBe(1);
+    // the request reaches the PC after the close and opens a window nobody waits on, and the directory gives no answer
     hold("listPcs");
     release();
     await settle();
@@ -1455,6 +1474,7 @@ describe("AddThisPc", () => {
     const release = hold("close");
     await press(renderer, "Stop waiting");
     expect(closes()).toBe(1);
+    // the close is still on its way: a window asked for now could be the one it closes
     await press(renderer, "Add this PC to my account");
     expect(links()).toBe(1);
     expect(directory).toEqual(["putPc"]);

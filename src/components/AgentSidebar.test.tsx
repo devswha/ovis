@@ -71,6 +71,7 @@ describe("AgentSidebar phone sheet live row", () => {
       },
     } });
     Object.defineProperty(globalThis, "document", { configurable: true, value: {
+      // Portals use the test renderer's host container, not a DOM renderer.
       body: { nodeType: 1, children: [], createNodeMock: () => null },
       documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } },
       querySelector: () => null,
@@ -506,6 +507,7 @@ describe("AgentSidebar fold memory", () => {
         panes: machine.snapshot.panes.map((pane) => pane.pane_id === paneId ? { ...pane, agent_status: "blocked" as const, agent_kind: "permission", agent_message: "Allow bash?" } : pane),
       },
     }));
+    // the menu places itself by its button's box and its own size; a portal's elements take their node from its container
     const node = { isConnected: true, offsetWidth: 220, offsetHeight: 120, focus() {}, contains: () => false, querySelector: () => null, closest: () => null, getBoundingClientRect: () => ({ top: 40, bottom: 64, left: 260, right: 284 }) };
     Object.assign(document.body, { createNodeMock: () => node });
     await act(async () => {
@@ -519,6 +521,7 @@ describe("AgentSidebar fold memory", () => {
     expect(renderer!.root.findAllByProps({ role: "dialog" })).toHaveLength(0);
     const reason = renderer!.root.findByProps({ role: "menu" }).findByProps({ className: "row-menu-alert" });
     expect(reason.children).toEqual(["Needs permission: Allow bash?"]);
+    // And the menu is described by it: a screen reader inside a menu reads its items, and nothing between them.
     expect(reason.props.id).toEqual(expect.any(String));
     expect(renderer!.root.findByProps({ role: "menu" }).props["aria-describedby"]).toBe(reason.props.id);
     await act(async () => { renderer!.root.findByProps({ "data-machine": "local", "data-pane": "w1E:p1" }).findByProps({ className: "sidebar-row-action row-menu-toggle" }).props.onClick({ currentTarget: node }); });
@@ -639,6 +642,8 @@ describe("AgentSidebar fold memory", () => {
     jest.useFakeTimers();
     jest.setSystemTime(new Date(start));
     try {
+      // When the page loads, as the app does with no roster yet: nothing is looked at, so nothing the device keeps is
+      // touched (a look at no PC would mark every stamp as its PC's having left the roster, for other tabs to read).
       const seeded = kept();
       await act(async () => { renderer = create(page([])); });
       expect(kept()).toEqual(seeded);

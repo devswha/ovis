@@ -4,6 +4,11 @@ import { fallbackHue, fallbackInitial } from "../lib/agentMark.ts";
 import { AGENT_SVG_MARKS } from "./agentSvgMarks.ts";
 import "./AgentMark.css";
 
+/**
+ * Provider marks for the agents herdr names, ported from chatmux's llm-logo-provider set (same owner,
+ * same visual language).
+ */
+
 export interface AgentMarkProps {
   agent: string;
   size?: number;

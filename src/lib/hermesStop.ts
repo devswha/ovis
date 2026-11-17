@@ -12,6 +12,7 @@
 export function hermesInterruptible(rows: readonly string[]): boolean {
   for (let index = rows.length - 1; index >= 0; index--) {
     const row = rows[index]!;
+    // the row's first `❯` is the prompt: one after it is text typed into the input
     const at = row.indexOf("❯");
     if (at < 0) continue;
     const input = row.slice(at + 1).trim();
@@ -23,6 +24,10 @@ export function hermesInterruptible(rows: readonly string[]): boolean {
 /** Hermes force-quits the classic CLI on a second Ctrl+C within this window of the first. */
 export const HERMES_CTRL_C_WINDOW_MS = 2000;
 
+/**
+ * True while a Ctrl+C sent at `lastCtrlCAt` is still inside Hermes' force-quit window. Status
+ * flicker or a quick new turn resets the per-turn guard, so the time of the last Ctrl+C decides.
+ */
 export function hermesCtrlCTooSoon(lastCtrlCAt: number | null, now: number): boolean {
   return lastCtrlCAt !== null && now - lastCtrlCAt < HERMES_CTRL_C_WINDOW_MS;
 }

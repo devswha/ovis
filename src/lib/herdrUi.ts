@@ -11,6 +11,7 @@ let known: boolean | null = null;
 let keys: HerdrKeys | null = null;
 let loading: Promise<void> | null = null;
 
+/** Whether letting go of a drag copies: herdr's copy_on_select, off until it is known. */
 export function copyOnSelect(): boolean {
   return known === true;
 }
@@ -19,6 +20,7 @@ export function herdrUiKnown(): boolean {
   return known !== null;
 }
 
+/** herdr's `[keys]` prefix bindings as the last read answered them (lib/herdrKeys.ts); null before one, or from an older server. */
 export function herdrKeys(): HerdrKeys | null {
   return keys;
 }
@@ -30,6 +32,7 @@ function readKeys(value: unknown): HerdrKeys | null {
   const strings = (list: unknown): list is string[] => Array.isArray(list) && list.every((key) => typeof key === "string");
   const read = bindings as Record<string, unknown>;
   if (!HERDR_PREFIX_ACTIONS.every((action) => strings(read[action]))) return null;
+  // a server from before prefix lists sends its one prefix
   return {
     prefix,
     prefixes: strings(prefixes) && prefixes.length > 0 ? prefixes : [prefix],
@@ -39,6 +42,8 @@ function readKeys(value: unknown): HerdrKeys | null {
 
 export function loadHerdrUi(read: (url: string, init?: RequestInit) => Promise<Response> = apiFetch): Promise<void> {
   if (loading !== null) return loading;
+  // a transport that throws at once is a refused read: the attempt below then still waits a turn, so
+  // its `finally` clears `loading` after it is set rather than before (which kept it cached for good)
   let request: Promise<Response>;
   try { request = read("/api/herdr-ui", { cache: "no-store" }); } catch (error) { request = Promise.reject(error); }
   loading = (async () => {

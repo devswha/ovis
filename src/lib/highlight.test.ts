@@ -161,6 +161,8 @@ describe("extendLines", () => {
 });
 
 describe("SYNC_HIGHLIGHT_LIMIT", () => {
+  // what is highlighted while the page draws must stay quick in the worst shapes measured: runs the
+  // tokenizer rescans to the end (an unterminated string of escapes, a line of dashes in YAML)
   it.each([
     ["json", "\"\\"], ["yaml", "--"], ["css", "\"\\"], ["python", "\"\\"], ["vue", "<a "], ["markdown", "[["], ["ts", "x=/[/"],
   ])("keeps %s of %j well under a frame's budget", (language, unit) => {

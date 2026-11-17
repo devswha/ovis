@@ -41,6 +41,7 @@ it("asks an account service that did not answer again, sooner first, until it an
 it("reads the limits for the sign-in the section shows, and none once another account signed in", async () => {
   const session = (account: string): AccountSession => ({ service: "https://account.test", account, provider: "github", access_token: `at_${account}`, refresh_token: `rt_${account}`, expires_at: Date.now() + 3_600_000, sign_in_id: account });
   const store = memoryAccountStore();
+  // the service answers for whichever account the token belongs to
   const fetch = async (_input: RequestInfo | URL, init?: RequestInit) => {
     const account = new Headers(init?.headers).get("authorization")?.replace("Bearer at_", "") ?? "";
     return Response.json({ plan: `plan of ${account}`, pcs_max: 3 });
@@ -76,6 +77,7 @@ it("reads the PCs and sign-in methods for the sign-in the section shows, and non
       ? Response.json({ pcs: [{ server_id: "ab".repeat(16), label: `PC of ${owner}`, added_at: "2026-11-01T00:00:00.000Z", last_seen_at: null }] })
       : Response.json({ identities: [] });
   };
+  // stored before the reads: nothing is asked with the other account's token
   {
     const store = memoryAccountStore();
     const asked: string[] = [];
@@ -88,6 +90,7 @@ it("reads the PCs and sign-in methods for the sign-in the section shows, and non
     expect(await accountListsOf(service, shown)).toBeNull();
     expect(asked).toEqual([]);
   }
+  // stored while the answers were on their way: account A's lists are dropped
   {
     const store = memoryAccountStore();
     const shown = session("acct_a");

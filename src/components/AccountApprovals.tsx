@@ -1,3 +1,8 @@
+/**
+ * An approval tells this PC first, which lets the device in here; then this device signs the `add`
+ * for the account's other PCs and leaves the PCs it checked itself with this PC as the new device's
+ * introduction (lib/account/join.ts).
+ */
 import { useEffect, useState } from "react";
 
 import { accountLabel, type AccountAsker } from "../../shared/account-asker.ts";
@@ -12,6 +17,10 @@ import { serverIdOfPath } from "../lib/shellMode.ts";
 import { getTransport } from "../lib/transport.ts";
 import { AccountApprovalPrompt } from "./AccountApprovalPrompt.tsx";
 
+/**
+ * Whether a request rests on an admission, so its card says who is asking and its approval checks that admission
+ * (approveJoin): an account join, or another PC of the account vouched for. Any other request is answered on the PC only.
+ */
 export const restsOnAdmission = (request: RemotePairingRequest | undefined): boolean => request?.intent === "account" || request?.vouched === true;
 
 export function AccountApprovals({ pairings }: { pairings: readonly RemotePairingRequest[] }) {
@@ -22,6 +31,7 @@ export function AccountApprovals({ pairings }: { pairings: readonly RemotePairin
   // who is asking, as the account service saw the device ring at this PC (never as the PC says);
   // until it is known an account join cannot be approved (AccountApprovalPrompt `asker` undefined)
   const [asker, setAsker] = useState<{ id: string; asker: AccountAsker; admission: Admission | null } | null>(null);
+  // read again when the device asked anew with other details after the card was drawn
   const [reads, setReads] = useState(0);
   const checked = restsOnAdmission(request);
   const joiningId = checked ? request!.id : null;
@@ -30,6 +40,7 @@ export function AccountApprovals({ pairings }: { pairings: readonly RemotePairin
     if (joiningId === null || joiningKey === undefined || serverId === null) return;
     let live = true;
     void (async () => {
+      // nothing found, signed out or no answer: the card says the place is unknown rather than leave the line out
       let found: { asker: AccountAsker; admission: Admission | null } = { asker: { os: null, country: null, city: null }, admission: null };
       try {
         const service = new AccountService({ store: indexedAccountStore });
@@ -71,6 +82,7 @@ export function AccountApprovals({ pairings }: { pairings: readonly RemotePairin
     if (!checked || (session === undefined && request.intent === "account")) { await decideRelayPairing(request.id, "approve", digits); return; }
     const transport = getTransport();
     try {
+      // what the card showed, or null when it showed no admission: approveJoin takes no other
       const shown = asker?.id === request.id ? asker.admission : null;
       await approveJoin({
         request, digits, through: serverId, service, shown,
@@ -84,6 +96,7 @@ export function AccountApprovals({ pairings }: { pairings: readonly RemotePairin
     } catch (error) {
       if (error instanceof UnverifiedJoinError) throw new Error(t("Could not verify this device. It was declined: approve only a device you are signing in yourself."));
       if (error instanceof AdmissionChangedError) {
+        // Approve waits again until the new details are read (and the card's pick is cleared with them)
         setAsker(null);
         setReads((count) => count + 1);
         throw new Error(t("This device asked again with other details. Check them, then pick the number again."));
@@ -93,6 +106,7 @@ export function AccountApprovals({ pairings }: { pairings: readonly RemotePairin
   };
 
   const known = asker?.id === request.id ? asker : null;
+  // an account join shows the name the device gave the account service; a request for this PC only has no admission
   const shown = { ...request, label: known?.admission?.label ?? (accountLabel(request.label) || t("Device")) };
   return <AccountApprovalPrompt key={request.id} request={shown} pcName={where.pcName} pcCount={where.pcCount}
     asker={checked ? known?.asker : null} onDecide={decide} />;

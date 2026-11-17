@@ -1,5 +1,13 @@
 import type { ConversationPart, GoalWaitSources } from "../../shared/protocol.ts";
 
+/**
+ * omo's goal (`create_goal` / `update_goal` / `get_goal`) as the chat shows it on the turn. Each
+ * call answers with the goal as it now stands, `{"goal": {objective, status, tokensUsed,
+ * timeUsedSeconds, blockedReason?}}`, or `{"goal": null}` when there is none. An answer cut
+ * for length (a long objective) loses its JSON: a `create_goal` still has its objective in the
+ * call, and is active by definition; an `update_goal` without its answer says nothing usable.
+ */
+
 export type GoalStatus = "active" | "paused" | "blocked" | "complete" | "budget_limited";
 
 export interface GoalState {
@@ -57,6 +65,7 @@ export function formatGoalTime(seconds: number): string {
 
 type GoalWait = Extract<ConversationPart, { kind: "goal_wait" }>;
 
+/** OmO writes `resumed` as its goal continues: a wait this long past due outlived the OmO that wrote it. */
 const GOAL_WAIT_GRACE_MS = 60_000;
 
 export function goalWaitUntil(wait: GoalWait): number {

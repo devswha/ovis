@@ -62,6 +62,7 @@ it("counts the waiting sessions other than the selected pane, on every connected
     { machineId: "local", panes: [pane("a", "idle"), pane("b", "blocked")], status: raw },
     { machineId: "work", panes: [pane("b", "blocked"), pane("d", "working")], status: raw },
   ];
+  // the selected pane waits: it is the one left out, and only on its own PC (two PCs may reuse a pane id)
   expect(waitingElsewhere(rosters, { machineId: "local", paneId: "b" })).toBe(1);
   expect(waitingElsewhere(rosters, { machineId: "work", paneId: "b" })).toBe(1);
   expect(waitingElsewhere(rosters, { machineId: "local", paneId: "a" })).toBe(2);

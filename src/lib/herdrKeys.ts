@@ -14,6 +14,11 @@ import { useT } from "./i18n.ts";
 import { useSettings } from "./settings.ts";
 import { isAppShortcut, isRecordingShortcut, shortcutEventKey, type ShortcutEventLike } from "./shortcuts.ts";
 
+/**
+ * Letters and digits are read by position where the layout types something else (shortcutEventKey: a
+ * Korean or Cyrillic letter, a digit with Shift); punctuation by the character typed, so `?` is
+ * Shift+/ on a US keyboard and whatever types it elsewhere.
+ */
 export function chordMatches(chord: HerdrChord, event: ShortcutEventLike): boolean {
   if (chord.hyper || event.ctrlKey !== chord.ctrl || event.altKey !== chord.alt || event.metaKey !== chord.meta) return false;
   if (/^[a-z0-9]$/.test(chord.key)) return event.shiftKey === chord.shift && shortcutEventKey(event) === chord.key;

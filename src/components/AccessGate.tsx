@@ -12,10 +12,15 @@ import { userErrorMessage, type UserError } from "../lib/userError.ts";
 
 export interface AccessGateProps {
   reason: AccessRefusal | null;
+  /** the unconsumed address code to display; automatic submission must claim it first */
   initialCode: string;
+  /** claim the address code before sending it, even if the request fails; empty means already consumed */
   consumePairCode: () => string;
+  /** a successful pairing was followed by a health check that still refused this browser */
   pairingUnconfirmed: boolean;
+  /** notify a caller tracking whether the successful pairing survives the next health check */
   onPaired?: () => void;
+  /** Fires once the server set a cookie: the shell can mount, and every later fetch and the WebSocket carry it. */
   onUnlocked: () => void;
 }
 
@@ -55,6 +60,7 @@ export function AccessGate({ reason, initialCode, consumePairCode, pairingUnconf
   useEffect(() => {
     if (!scanned.current) return;
     scanned.current = false;
+    // the address code goes once: a failed attempt leaves an empty field, not a spent code to send again
     setCode("");
     const value = consumePairCode();
     if (value) void pair(value);

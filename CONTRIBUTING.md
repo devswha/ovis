@@ -134,7 +134,8 @@ the context does not make it clear. The dialog that makes a workspace is
   do product names (herdr, Tailscale, Codex, Claude Code, GitHub). A part file follows its language's
   base file.
   - Korean: labels and buttons are nouns or ~하기, sentences use 합니다체. Fixed terms: 패널,
-    워크스페이스, 에이전트, 터미널, 채팅, 페어링, 기기 ("this device" is 이 기기).
+    워크스페이스, 에이전트, 터미널, 채팅, 페어링, 기기 ("this device" is 이 기기, "every device" is
+    모든 기기).
   - Japanese: labels are short nouns or verbs, sentences use です・ます調. Fixed terms: ペイン,
     ワークスペース, エージェント, ターミナル, チャット, ペアリング, デバイス, セッション, 入力欄, キー
     (SSH key; 秘密鍵 for a private key), デフォルト (not 既定); "this device" is このデバイス. GitHub

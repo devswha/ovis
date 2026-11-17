@@ -33,6 +33,7 @@ export function addPcPhase(pc: MyPc, state: RelayShellState): AddPcPhase {
 
 function activeStepIndex(mode: "new" | "join", phase: AddPcPhase, failure: RelayFailure | null): number {
   if (phase === "ready") return 3;
+  // the relay turns a new device away only once both people confirmed the digits: the steps before it went right
   if (phase === "approving" || (phase === "failed" && (failure === "pair-declined" || failure === "new-devices-refused"))) return 2;
   if (mode === "new" || phase === "compare" || phase === "wrong") return 1;
   return 0;
@@ -48,7 +49,16 @@ export interface AddPcSheetProps {
   mode: AddPcSheetMode; pc: MyPc | null; state: RelayShellState;
   onJoin: (pc: MyPc, options?: { typed?: boolean }) => void; onPair: () => void; onMatch: (typed?: string) => void;
   onRetry?: () => void; onOpenPc?: () => void; onCancel: () => void; onClose: () => void; onPairByQr: () => void;
+  /**
+   * A new PC's second way: the directory cannot tell a PC whose screen waits to be added from one already put in the
+   * account by a QR code before its first mailbox pull, so the start offers the join sheet beside the typed number, and
+   * a typed comparison whose PC shows no number turns into a join (this device then shows its digits).
+   */
   onAskToJoin?: () => void;
+  /**
+   * A listed PC's other way in from Join: the directory cannot tell a PC in the account from one seen there once that
+   * waits on its own screen again (Revoke all, then listed again), so the join start keeps the typed number beside it.
+   */
   onTypeNumber?: () => void;
 }
 
@@ -115,9 +125,12 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
       ? phase === "start" && onAskToJoin
         ? t("Type the number {name} shows on its own screen after you start Add, then approve there. If {name} is already in your account, ask to join instead.", { name })
         : t("Type the number {name} shows on its own screen, then approve there.", { name })
+      // a device connected to the PC hears its join request (docs/account.md "Who may admit a device"), or the PC itself
+      // while its own Add screen waits; an instruction, not a claim: the directory cannot say which, so both are named
       : t("Approve this device on a device of your account connected to {name}, or on {name} if it shows this request.", { name });
     switch (phase) {
       case "start":
+        // a join is heard only by a device with the PC open, so that comes before the press
         if (mode !== "new") body = <><p className="relay-shell-copy">{t("First open {name} in Ovis on a device that already uses it (your phone, for example) and keep it open. Then choose Ask to join.", { name })}</p>{onTypeNumber && <p className="relay-shell-copy">{t("If {name} is waiting on its own screen to be added, type its number here instead.", { name })}</p>}</>;
         if (mode !== "new" && onTypeNumber) {
           const type = <button key="type" type="button" className="btn" data-action="type-number" onClick={onTypeNumber}>{t("Type the number")}</button>;
@@ -156,6 +169,7 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
               {onAskToJoin && <p className="relay-shell-detail">{t("{name} shows no number? Ask to join instead.", { name })}</p>}
             </form>
           );
+          // a PC not waiting on its own screen shows no number: the same request goes on as a join, with this device's digits
           const ask = onAskToJoin && <button key="ask" type="button" className="btn" data-action="ask-to-join" onClick={onAskToJoin}>{t("Ask to join")}</button>;
           actions = pairActions(ask ? (phone ? [ask, cancel] : [cancel, ask]) : cancel, <button key="primary" type="submit" form={`${id}-digits-form`} className="btn btn-primary" data-sheet-primary disabled={pendingTyped} aria-busy={pendingTyped ? true : undefined}>{t("Add this PC")}</button>);
         } else {

@@ -272,6 +272,7 @@ export function App() {
   const paneActionsRef = useRef<((target: HerdrPane, options?: { counted?: boolean }) => RowMenuItem[]) | null>(null);
   const paneLocked = usePaneLocked(selectedMachineId);
   const { filesOpen, setFilesOpen, filesDocked, filesCovered, revealFiles, viewing, openFile, closeFile, hideFile, leaveFile, restoreFile, fileFromPop, forgetLeftFiles, diffViewing, openDiff, closeDiff, releaseDiff, presentation, fileDocked, webPage, closeWebPage, openWebPage, openDiffFile, reportFileKind, toggleFilePresentation, viewFile } = useFilePanels({ settings, filePanelAvailable, selectedPaneId, selectedMachineId });
+  // a diff's line notes go to its own pane: none while this window only watches that pane
   const diffPaneObserving = usePaneObserving(diffViewing?.paneId ? paneStorageId(diffViewing.machineId, diffViewing.paneId) : null);
   const { settingsOpen, setSettingsOpen, settingsLinkPage, setSettingsLinkPage, settingsLinkSection, setSettingsLinkSection, settingsPage, settingsSection, setSettingsSection, closeSettings, onSettingsPage } = useSettingsDialog(initialLink);
   const { newSessionOpen, setNewSessionOpen, newPrefill, setNewPrefill, newFields, setNewFields, pendingCreate, newSessionPending, newTab, setNewTab, sessionHistory, setSessionHistory, worktreeFor, setWorktreeFor } = useNewSessionState({ initialLink, watching: auth?.role === "watch" });
@@ -279,6 +280,7 @@ export function App() {
   const { notifications, setNotifications, pushOn, setPushOn, pushOnRef } = useNotificationState();
   const { receive: receivePreferences, saveError: settingsSaveError, paused: settingsSavePaused, retrying: settingsSaveRetrying, retry: retrySettingsSave, resubscribed: preferencesResubscribed, disconnected: preferencesDisconnected, closed: preferencesClosed } = usePreferencesSync(locked === false);
   const tabLabelWatching = auth?.role === "watch";
+  // a file is edited only from a browser that drives this PC, as the server checks too (server/file-edit.ts)
   const fileEditable = auth?.role === "drive" && auth.via !== "portal" && auth.via !== "open";
   useEffect(() => {
     setTabLabelLearning(settings.autoTabNames, tabLabelWatching);
@@ -307,6 +309,7 @@ export function App() {
 
   const { dropIn, chime, onRoster, onPaneStatus, onPaneExited } = useAlertSignals({ settings, selectionRef, drawerOpenRef: inbox.coveredRef, splitRef, splitShownRef, machinesRef, alertsRef, alertsOnRef, pushOnRef, statusRef, turnStartRef, lastTurnRef, alertSoundRef });
 
+  // herdr moved a pane under a new ID, from anywhere (the server's pane-moved): followPaneMove below, called at the event
   useRosterEvents({ onPaneMoved: (machineId, from, to) => followPaneMove(machineId, from, to), machineSessions, locked, onRosterStream, receivePreferencesRef, snapshotRequests, recovery, onRoster, reorderCoordinator, setMachines, rosterIn, setMachineRosterLoaded, machinesRef, onPaneStatus, onPaneExited, followFocusRef, selectionRef, splitShownRef, splitRef, pendingLink, selectionHint, setSelectedPaneId, setNotificationViewTarget, setTerminalPeek, setAutoSelected, scheduleRefetch, preferencesResubscribedRef, preferencesDisconnectedRef, preferencesClosedRef, dropIn, chime, setPairedNotices, setRelayPairings, setRemotePairings, setRemovedNotices, getTakeNotificationTargetRef: () => takeNotificationTargetRef });
 
   const handleServerMessage = useServerMessageHandler(setOutputStopped);
@@ -316,6 +319,7 @@ export function App() {
   const setupGuide = useSetupGuide({
     enabled: locked === false,
     workspaces: machineRosterLoaded && localSnapshot !== null ? localSnapshot.workspaces.length : null,
+    // undefined holds the decision until the access facts and this device's role are in: a failed read decides nothing
     pairingGate: security.state === "loading" || security.state === "error" || auth === null ? undefined : security.state === "known" ? security.summary.pairing_gate : null,
     watching: auth?.role === "watch",
     showUsage: settings.showUsage,
@@ -392,6 +396,7 @@ export function App() {
     } catch {
       throw new Error(t("Could not sign out. Try again."));
     } finally {
+      // The response may have been lost after the cookie was cleared.
       if (!reload) await loadHealth();
     }
     if (reload) window.location.reload();
@@ -425,6 +430,7 @@ export function App() {
     }).catch((err: unknown) => { moveRefused(err); void load(); });
   };
 
+  // Nothing is sent: held text waits for its Send or Discard
   const followPaneMove = (machineId: string, from: string, to: string): void => {
     carryMovedPane(machineId, from, to);
     updateSettings(({ lockedAgents, agentGroupOf }) => ({
@@ -456,6 +462,8 @@ export function App() {
   const selectedTitle = selectedPane ? displayPaneTitle(selectedPane) : null;
   const tabPanelLabel = paneTabPanelLabel(snapshot, selectedPane, t);
   const selectedAgent = selectedPane?.agent ?? null;
+  // a herdr not heard from yet (or a server that predates the flag) counts as attach-capable; a failed
+  // health read keeps this PC's last answer (lib/healthPresentation.ts)
   const terminalAttach = targetHerdr?.terminal_attach !== false || targetHerdr?.terminal_mirror === true;
   const attachOn = (machineId: string): boolean => { const herdr = herdrOn(machineId); return herdr?.terminal_attach !== false || herdr?.terminal_mirror === true; };
 
@@ -505,6 +513,7 @@ export function App() {
   const newTabTarget = (target?: { machineId: string; workspaceId: string }) => {
     const machineId = target?.machineId ?? selectionRef.current.machineId;
     const roster = machinesRef.current.find((m) => m.id === machineId)?.snapshot;
+    // pane ids repeat across PCs: the selected pane counts only on the PC the tab is for
     const selectedPaneId = selectionRef.current.machineId === machineId ? selectionRef.current.paneId : null;
     const workspaceId = target?.workspaceId ?? roster?.panes.find((pane) => pane.pane_id === selectedPaneId)?.workspace_id;
     const workspace = roster?.workspaces.find((candidate) => candidate.workspace_id === workspaceId);
@@ -612,6 +621,8 @@ export function App() {
         try {
           const moved = await moveTabToWorkspace(tabId, workspaceId, machineId);
           if (from === null) return;
+          // the pane changed its ID with its workspace: what was kept under the old one, and the view showing it,
+          // go with it; the server's pane-moved for the same move finds nothing left to carry
           followPaneMove(machineId, from, moved.pane_id);
         } catch (err) {
           if (notice) moveRefused(err);
@@ -684,6 +695,8 @@ export function App() {
       enableNotifications: bell.run === enableNotifications ? () => void enableNotifications() : null,
       refresh: () => void load(),
       openFiles: selectedPaneId !== null ? () => { setDrawerOpen(false); revealFiles(); } : null,
+      // the page is this PC's whichever PC is selected: the browser reaches it under the app's own host,
+      // which in the hosted shell is not the PC (and its frame-src frames no other port)
       openLocalPage: settings.webLinks === "panel" && shellMode() !== "relay" ? (url) => { setDrawerOpen(false); openWebPage(url, false, LOCAL_MACHINE); } : null,
       searchConversation: selectedSearchable && selectedPaneId !== null ? () => requestSearch(split ? split.active : soloSlot, selectedMachineId, selectedPaneId) : null,
       ...layoutActions({ selectedPaneId: inbox.shown || inMode ? null : selectedPaneId, offer: appLayout, paneSplits: !selectedPane?.own_tab, selection: selectionRef, roster: snapshotRef, load, selectPane, layoutRefused }),
@@ -797,10 +810,14 @@ export function App() {
     : [...modeLeadItems, ...modeThreadItems.map((item, index) => index === 0 ? { ...item, divider: true } : item), ...modeEndItems];
 
   const chatShown = !inbox.shown && showsChat(selectedPane, view);
+  // From 769px with one pane in view the header is one row, a browser's tab strip: the workspace's tabs and +,
+  // then the lens switch, Files and More (styles.css .header-tabs, THIRD_PARTY_NOTICES.md).
   const phoneTabRow = tabsInHeader && !inbox.shown && !inMode;
   const workspaceTabCount = selectedPane ? snapshot?.tabs.filter((tab) => tab.workspace_id === selectedPane.workspace_id).length ?? 0 : 0;
   const classicStripInHeader = (wideScreen ? !splitOn && !tabsInHeader : tabsInHeader) && !guideShown && snapshot !== null && selectedPane !== null && selectedWorkspace !== null;
   const stripInHeader = classicStripInHeader && !inMode;
+  // from 769px with a mouse the pane column ends in the Herdr app's status bar: where the pane is, its branch,
+  // the connection.
   const statusBarShown = wideScreen && keyboardLikely && selectedPane !== null && crumb !== null && !guideShown && !inMode;
   const waitingDot = waitingInMore && !statusBarShown && !inboxWide;
   const openNewOn = (id: string): void => { setNewSessionMachineId(id); setNewTab(null); setNewSessionOpen(true); setDrawerOpen(false); };
@@ -811,6 +828,9 @@ export function App() {
   const tabRoom = inMode && !inboxWide && !inbox.shown && selectedPane !== null && !chatShown && !tabRowHidden(cramped, workspaceTabCount, tabsInHeader);
 
   if (locked === null) {
+    // the auth state is unknown until /api/health or /api/session answers (ten seconds when
+    // herdr is down): show the shell without the terminal, and so without a WebSocket,
+    // instead of a blank page.
     if (inMode) return <InboxConnecting wide={inboxWide} sidebarWidth={sidebarWidth} />;
     return (
       <div className="app">
@@ -1104,6 +1124,7 @@ export function App() {
         {setupGuide.guide === null && <FirstStartHints active={locked === false} />}
         {setupGuide.guide !== null && <MachineContext.Provider value="local"><SetupGuide auth={auth} security={security} onEnableAlerts={enableNotifications} settingsOpen={settingsOpen} pushOn={pushOn} notifications={notifications} hidden={setupGuide.paused} state={setupGuide.guide} dispatch={setupGuide.dispatch} onClose={setupGuide.close} onOpenSettings={(page) => { setSettingsLinkPage(page); setSettingsOpen(true); }}
           onOpenTelemetry={() => { setSettingsLinkPage("about"); setSettingsLinkSection("telemetry"); setSettingsOpen(true); }}
+          // the tab was just made: picked before the roster has it, the pick would be released as a closed pane
           onOpenTerminal={(paneId) => { const at = picks.current; const latest = setupGuide.ticket(); void load().finally(() => { if (latest() && picks.current === at) selectTarget("local", paneId, "terminal"); }); }}
           onStarting={setupGuide.voidTickets}
           onPaired={() => void loadHealth()}
@@ -1332,6 +1353,7 @@ export function App() {
       {machineDialog && <MachineDialog updateRemote={updateRemote} machine={machineDialog === "new" ? undefined : machineDialog} preset={machineDialog === "new" ? addPcPreset ?? undefined : undefined} onClose={closeMachineDialog} onConnected={(id) => { closeMachineDialog(); selectTarget(id, null); void load(); }} />}
       <Droplet onOpen={(machineId, paneId) => {
         if (!machinesRef.current.find((m) => m.id === machineId)?.snapshot?.panes.some((p) => p.pane_id === paneId)) return;
+        // Files lists the pane it was opened on, and would open its paths on the new one
         setFilesOpen(false);
         selectTargetRef.current(machineId, paneId);
       }} />
@@ -1342,6 +1364,7 @@ export function App() {
           try {
             if (await openDiffFile({ path, paneId: diffViewing.paneId, machineId: diffViewing.machineId })) { if (!filesDocked) setFilesOpen(false); return; }
           } catch {
+            // A rejected traversal does not tell us which entry is current: keep Files and the diff.
             return;
           }
           const docked = filePanelAvailable && openPresentation(path, settings.fileOpen) === "panel";

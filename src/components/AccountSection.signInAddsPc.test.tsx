@@ -12,6 +12,8 @@ import { SettingsProvider } from "../lib/settings.ts";
 import { nativeTransport, setTransport } from "../lib/transport.ts";
 import { AccountSection } from "./AccountSection.tsx";
 
+// Signing in on a PC's own page adds the PC in the same step (docs/account.md, "Adding a PC"): the sign-in
+// that finishes on this screen lists the PC and waits; one that was already there only offers the button.
 const SERVICE = "https://account.ovis.example";
 const ACCOUNT = "acct_one";
 const MARKER = "ovis-add-pc-waiting";
@@ -139,6 +141,7 @@ describe("signing in on a PC's own page", () => {
     expect((await indexedAccountStore.get("session"))?.account).toBe(ACCOUNT);
     expect(text(renderer!.root)).toContain("Signed in. Adding this PC to your account…");
     expect(text(renderer!.root)).toContain("choose Add on desk.");
+    // listed once in the account's directory, behind a window only this PC approves; the relay was not asked to start
     expect(links()).toEqual([{ path: "/api/relay/link", localOnly: true }]);
     expect(asked.some((request) => request.path === "/api/relay/start")).toBe(false);
     expect((await new AccountService({ store: indexedAccountStore }).listPcs()).map((pc) => pc.server_id)).toEqual([SERVER]);
@@ -170,6 +173,7 @@ describe("signing in on a PC's own page", () => {
     await press("Stop waiting");
     await until(() => buttons().includes("Remove GitHub"));
 
+    // later than the service takes a sign-in for recent: removing a method asks for a sign-in again
     ahead = 11 * 60_000;
     await press("Remove GitHub");
     await until(() => buttons().includes("Sign in again"));

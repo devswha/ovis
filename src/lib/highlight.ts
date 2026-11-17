@@ -49,6 +49,10 @@ export interface Token {
 
 export type Lines = Token[][];
 
+/**
+ * A tokenized text as runs over its source: run `i` is `lengths[i]` characters in the role
+ * `ROLES[roles[i]]` (0 is plain). Typed arrays, so a worker hands them over without copying.
+ */
 export interface Runs {
   lengths: Uint32Array;
   roles: Uint8Array;
@@ -82,6 +86,8 @@ const highlighter = createHighlighter({
 });
 const REGISTERED = new Set(highlighter.listLanguages());
 
+// a fence word or a file extension to its registered language, beyond the aliases TanStack knows
+// itself (javascript, typescript, bash, sh, zsh, yml, py, md, xml, golang, patch, docker, …)
 const LANGUAGE_ALIASES: Record<string, string> = {
   mts: "ts", cts: "ts",
   c: "cpp", h: "cpp",
@@ -92,6 +98,8 @@ const LANGUAGE_ALIASES: Record<string, string> = {
   ksh: "shell", fish: "shell",
 };
 
+// plain text is no language: a request for one must come out as `null`, or a long .txt would be
+// reported "too long to highlight"
 const PLAIN_TEXT = new Set(["plaintext", "text", "txt"]);
 
 function languageForWord(word: string): string | null {

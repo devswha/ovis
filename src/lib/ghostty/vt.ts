@@ -1,3 +1,10 @@
+/**
+ * A thin wrapper over libghostty-vt compiled to WebAssembly (ghostty-vt.wasm, MIT; built by
+ * scripts/ghostty-vt/build.sh with the Kitty graphics protocol turned on).
+ *
+ * Raw cells are read a row at a time and decoded with the bit layout the module reports in
+ * ghostty_type_json(), so a row costs one wasm call plus a few per style change.
+ */
 
 interface Bits { lsb: number; width: number; arms?: Record<string, { bits: Record<string, Bits> } | null> }
 interface TypeLayout { types: Record<string, { fields?: Record<string, { offset: number }>; bits?: Record<string, Bits> }> }
@@ -48,8 +55,10 @@ export interface GhosttyRun {
 
 export interface GhosttyCursor { visible: boolean; x: number; y: number; style: number }
 
+/** A Kitty image on screen, in viewport cells and CSS pixels, as the render state places it. */
 export interface GhosttyImage {
   id: number;
+  /** changes whenever the image's pixels do: part of a decoded image's cache key */
   generation: number;
   /** 0 below the cell backgrounds, 1 below the text, 2 above it */
   layer: number;
@@ -81,8 +90,13 @@ const ROW_DATA_CELLS = 3, ROW_DATA_CELLS_RAW = 5;
 const CELLS_STYLE = 2, CELLS_BG = 5, CELLS_FG = 6, CELLS_GRAPHEMES_UTF8 = 9;
 const OPT_COLOR_FOREGROUND = 11, OPT_COLOR_BACKGROUND = 12, OPT_COLOR_CURSOR = 13, OPT_COLOR_PALETTE = 14;
 const OPT_KITTY_IMAGE_STORAGE_LIMIT = 15, OPT_SCROLLBACK_MAX_LINES = 28, OPT_MODE = 34;
+/** DEC private mode 2027 as ghostty_mode_new(2027, false) encodes it */
 const MODE_GRAPHEME_CLUSTER = 2027;
 const CSI_GROUND = 0, CSI_ESC = 1, CSI_BRACKET = 2, CSI_PRIVATE = 3, CSI_OTHER = 4, CSI_STRING = 5;
+/**
+ * Whether a code point joins the emoji before it into one cell: ZWJ, the emoji- and text-presentation
+ * selectors, skin tones, the keycap mark, tags (subdivision flags) and regional indicators (country flags).
+ */
 const joinsEmoji = (codepoint: number): boolean =>
   codepoint === 0x200d || codepoint === 0xfe0f || codepoint === 0xfe0e || codepoint === 0x20e3
   || (codepoint >= 0x1f3fb && codepoint <= 0x1f3ff) || (codepoint >= 0xe0020 && codepoint <= 0xe007f)
@@ -96,6 +110,7 @@ const KITTY_WIDTH = 3, KITTY_HEIGHT = 4, KITTY_FORMAT = 5, KITTY_DATA_PTR = 7, K
 const FORMAT_RGB = 0, FORMAT_RGBA = 1, FORMAT_GRAY_ALPHA = 3, FORMAT_GRAY = 4;
 const WIDE_WIDE = 1, WIDE_SPACER_TAIL = 2, WIDE_SPACER_HEAD = 3;
 const CONTENT_CODEPOINT_GRAPHEME = 1, CONTENT_BG_PALETTE = 2, CONTENT_BG_RGB = 3;
+/** decoded pictures one terminal keeps; every terminal on the page shares the module's one memory */
 const IMAGE_STORAGE_BYTES = 64n * 1024n * 1024n;
 
 let modulePromise: Promise<{ exports: Exports; layout: TypeLayout }> | null = null;
@@ -266,6 +281,7 @@ export class GhosttyVt {
           this.csi = byte === 0x5b ? CSI_BRACKET : byte === 0x5d || byte === 0x50 || byte === 0x5f || byte === 0x5e || byte === 0x58 ? CSI_STRING : CSI_GROUND;
           continue;
         case CSI_BRACKET:
+          // another CSI (a style, a cursor move) is skipped to its final byte: its parameters print nothing
           this.csi = byte === 0x3f ? CSI_PRIVATE : byte >= 0x40 && byte <= 0x7e ? CSI_GROUND : CSI_OTHER;
           this.param = 0;
           this.sawGraphemeMode = false;
@@ -309,6 +325,7 @@ export class GhosttyVt {
     this.rows = rows;
   }
 
+  /** lines of history above the screen; 0 keeps none */
   setScrollback(lines: number): void {
     this.view().setUint32(this.scratch, lines, true);
     this.check(this.x.ghostty_terminal_set(this.terminal, OPT_SCROLLBACK_MAX_LINES, this.scratch), "scrollback");
@@ -338,6 +355,7 @@ export class GhosttyVt {
     setColor(OPT_COLOR_FOREGROUND, colors.foreground);
     setColor(OPT_COLOR_BACKGROUND, colors.background);
     setColor(OPT_COLOR_CURSOR, colors.cursor);
+    // the 256-colour palette: the 16 named ones from the theme, the cube and greys as xterm computes them
     const palette = this.scratch + 128;
     for (let index = 0; index < 256; index++) {
       let value: [number, number, number];
@@ -379,6 +397,7 @@ export class GhosttyVt {
     dv.setUint32(cellsSlot, this.cells, true);
     const { codepoint: cpB, content_tag: tagB, wide: wideB, style_id: styleB } = this.bit;
     const field = (lo: number, hi: number, b: Bits): number => {
+      // a 64-bit cell read as two 32-bit halves; a field may straddle them (style_id does)
       const mask = b.width >= 32 ? 0xffffffff : (1 << b.width) - 1;
       if (b.lsb >= 32) return (hi >>> (b.lsb - 32)) & mask;
       if (b.lsb + b.width <= 32) return (lo >>> b.lsb) & mask;

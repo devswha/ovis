@@ -6,6 +6,7 @@ export interface BlankChat {
   transcript: boolean;
   turns: number;
   older: boolean;
+  /** turns a /tree left behind: they are listed where the conversation would start */
   abandoned: number;
   prompt: boolean;
   agent: string | null;
@@ -69,6 +70,12 @@ export interface GreetingState {
   folder: string;
 }
 
+/**
+ * Whether the greeting shows. A message sent takes it away at once, before the server answers
+ * for it and before the transcript holds the turn; an agent asking is not asked what it should do.
+ * A status at work alone leaves it: a /clear reports one for a moment with no turn (#2550), and a
+ * turn begun elsewhere ends it once a read holds that turn.
+ */
 export function showsGreeting(state: GreetingState): boolean {
   return state.memory.blank && !state.memory.sent && state.memory.pending === 0
     && state.agentStatus !== "blocked"
@@ -94,6 +101,10 @@ export function composerLift(stackHeight: number, composerHeight: number, greeti
   return 0 - Math.round(spare / 2);
 }
 
+/**
+ * Whether the stack holds the composer and the greeting above it. Where it does not (a phone on
+ * its side with the keyboard up), the greeting would run out of the pane's top: it stays out.
+ */
 export function greetingFits(stackHeight: number, composerHeight: number, greetingHeight: number): boolean {
   return stackHeight - composerHeight - greetingHeight >= 0;
 }

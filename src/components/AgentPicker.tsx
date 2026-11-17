@@ -23,6 +23,7 @@ export function rememberAgent(kind: string): void {
   try {
     window.localStorage.setItem(LAST_AGENT_KEY, kind);
   } catch {
+    /* private mode: the choice simply is not remembered */
   }
 }
 
@@ -41,6 +42,9 @@ function OptionMark({ kind }: { kind: string }) {
   return kind ? <AgentMark agent={kind} size={16} /> : <span className="agent-picker-shell"><Terminal aria-hidden="true" /></span>;
 }
 
+/**
+ * A select whose rows carry each agent's mark: a native <option> cannot hold an icon.
+ */
 export const AgentPicker = forwardRef<HTMLButtonElement, AgentPickerProps>(function AgentPicker({ agents, value, shell = true, disabled, labelledBy, hints = {}, addAgent, onChange }, ref) {
   const listId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -59,9 +63,12 @@ export const AgentPicker = forwardRef<HTMLButtonElement, AgentPickerProps>(funct
       if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
     };
     const onMove = (event: Event): void => {
+      // Only an ancestor's scroll can move the anchor; text inputs scroll too.
       if (event.type === "resize" || (event.target instanceof Node && rootRef.current !== null && event.target.contains(rootRef.current))) setOpen(false);
     };
-    // Safari leaves the focus off a button a click opened, so the focus may be on the body here
+    // The open list takes Escape wherever the focus is in its own dialog (Safari leaves it off a
+    // button a click opened): it closes the list, not the dialog, which leaves this Escape to the
+    // list.
     const onEscape = (event: globalThis.KeyboardEvent): void => {
       if (event.key !== "Escape") return;
       const root = rootRef.current;
@@ -94,6 +101,7 @@ export const AgentPicker = forwardRef<HTMLButtonElement, AgentPickerProps>(funct
     const option = document.getElementById(`${listId}-${active}`);
     const menu = option?.parentElement;
     if (!option || !menu) return;
+    // Scroll only the list; moving its modal would close the anchored picker.
     const optionBounds = option.getBoundingClientRect();
     const menuBounds = menu.getBoundingClientRect();
     if (optionBounds.top < menuBounds.top) menu.scrollTop -= menuBounds.top - optionBounds.top;
@@ -118,6 +126,7 @@ export const AgentPicker = forwardRef<HTMLButtonElement, AgentPickerProps>(funct
   const choose = (index: number): void => {
     setOpen(false);
     if (index === addIndex) addAgent!.onSelect();
+    // the Add row can go while the list is open (the device turned into a watching one): its index is then no row
     else if (options[index] !== undefined) onChange(options[index].kind);
   };
 
@@ -131,6 +140,8 @@ export const AgentPicker = forwardRef<HTMLButtonElement, AgentPickerProps>(funct
       return;
     }
     if (event.key === "Tab") {
+      // a select-only combobox takes the row it is on as focus moves on, as a native select does;
+      // leaving the Add row opens nothing
       if (active === addIndex) setOpen(false);
       else choose(active);
     } else if (event.key === "ArrowDown") {

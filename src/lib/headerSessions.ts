@@ -129,6 +129,9 @@ export function useDrawerDialog(open: boolean, setOpen: (open: boolean) => void,
   useLayoutEffect(() => {
     if (open) { opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; escaped.current = false; wasOpen.current = true; }
   }, [open]);
+  // The trap's own return runs inside the commit, which React undoes while the drawer stays in the document (it is
+  // hidden, not unmounted): the focus goes back after the commit instead, to the header control that opened the drawer,
+  // or to the toggle when Escape closed one a tap or a swipe opened, or the focus was left in the hidden drawer or nowhere.
   const surface = useFocusTrap<HTMLElement>(open, { shouldRestore: () => false, leadingStops: drawerHeaderStops, startOnSurface: true });
   useEffect(() => {
     if (open || !wasOpen.current) return;

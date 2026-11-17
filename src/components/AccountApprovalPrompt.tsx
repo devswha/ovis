@@ -23,12 +23,20 @@ export interface AccountApprovalPromptProps {
   request: RemotePairingRequest;
   pcName: string;
   pcCount: number;
+  /**
+   * What the account service saw of the device asking (GET /v1/admissions): undefined while it is
+   * read, when Approve waits for it; null for a request for this PC only, which has none.
+   */
   asker: Asker | null | undefined;
   onDecide: (decision: "approve" | "decline", digits?: string) => Promise<void>;
 }
 
 const grouped = (digits: string): string => `${digits.slice(0, 3)} ${digits.slice(3)}`;
 
+/**
+ * Who is asking (docs/account.md): the system the device sent and the place the account service saw
+ * its request come from, against a phished device code. An unknown place says so.
+ */
 export function AccountAsker({ asker, language }: { asker: Asker; language: string }) {
   const t = useT();
   const place = placeName(language, asker);
@@ -51,6 +59,7 @@ export function AccountApprovalCard({ request, pcName, pcCount, asker, onDecide 
   const [picked, setPicked] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // who-is-asking is read again (the device asked anew): a number picked against the old details goes
   const [readFor, setReadFor] = useState(asker);
   if (readFor !== asker) {
     setReadFor(asker);
@@ -64,6 +73,8 @@ export function AccountApprovalCard({ request, pcName, pcCount, asker, onDecide 
     catch (reason: unknown) { setError(reason instanceof Error ? reason.message : String(reason)); setBusy(false); }
   };
 
+  // Back answers nothing: the request shows by itself, and a Back meant for what was on the screen a
+  // moment before must neither deny it nor close what lies under it.
   usePhoneSheetBack(() => false);
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
@@ -82,6 +93,7 @@ export function AccountApprovalCard({ request, pcName, pcCount, asker, onDecide 
         <h2 className="account-approval-title" id={`${id}-title`}>{t("Add {device}?", { device: asObject })}</h2>
         <p className="account-approval-via">{request.intent === "account" ? t("Through {pc} · joins your {n} PCs", { pc: pcName, n: pcCount }) : t("Only for {pc}", { pc: pcName })}</p>
         {asker != null && <AccountAsker asker={asker} language={resolvedLanguage} />}
+        {/* the name and the system are the device's own word, the place only its network's: said, so neither reads as checked */}
         {asker != null && <p className="account-approval-hint">{t("The name and system are what the device says. The place is where its network connects from.")}</p>}
         <p className="account-approval-ask" id={`${id}-ask`}>{t("Pick the number on {device}", { device: request.label })}</p>
         <div className="account-approval-choices" role="radiogroup" aria-labelledby={`${id}-ask`}>

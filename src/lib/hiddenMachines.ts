@@ -1,3 +1,8 @@
+/**
+ * Nothing goes to the server: a hidden PC stays connected, its agents keep running, and a link or an
+ * alert to one of its panes still opens that pane.
+ */
+
 import { useEffect, useMemo, useRef, useSyncExternalStore, type RefObject } from "react";
 
 interface HasId { id: string }

@@ -398,6 +398,8 @@ const BASE: Record<string, string> = {
   "Copy details": "詳細をコピー",
   "This pane can't be shown.": "このペインを表示できません。",
   "The sidebar can't be shown.": "サイドバーを表示できません。",
+  // t3code ports (a)
+  // t3code ports (d)
   "Change PC": "PCを切り替え",
   "Forget this PC": "このPCを削除",
   "Selected": "選択中",
