@@ -112,6 +112,7 @@ it.skipIf(!wildcardIncludesRead)("never lists a folder a wildcard Include reache
 it.skipIf(!wildcardIncludesRead)("never lists a folder swapped for a link out of the home folder after it was checked", async () => {
   const { home, ssh, outside } = homeAndOutside({ "conf.d/own/hosts": "Host own\n", config: "Include conf.d/*/*\n" });
   const folder = join(ssh, "conf.d", "own");
+  // swapped once its parent is opened: the folder itself is opened through that parent, never looked up by path
   const restore = swapAfterFirstLook(join(ssh, "conf.d"), () => { renameSync(folder, join(ssh, "own.old")); symlinkSync(outside, folder); });
   try {
     const candidates = await sshCandidates({ sshDir: ssh, home, readStatus: async () => null });

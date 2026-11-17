@@ -229,6 +229,7 @@ function discover(ctx: AgentCommandContext): SlashCommand[] {
   const hermesHome = resolveHermesHome(ctx.home, environ);
   const expand = (entry: string): string => entry.replace(/\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g, (token, braced: string | undefined, bare: string | undefined) => env.get(braced ?? bare ?? "") ?? token).replace(/^~(?=\/|$)/, ctx.home);
   const path = (entry: string): string => canonical(resolve(hermesHome, expand(entry)));
+  // Only skills and quick_commands are consumed; no credentials or unrelated settings escape.
   const config = yaml(join(hermesHome, "config.yaml"));
   const settings = plainObject(config.skills);
   const root = projectRoot(ctx.cwd, ctx.home);

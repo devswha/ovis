@@ -3,6 +3,12 @@ import { dirname, join } from "node:path";
 import { CONTEXT_STALE_MS, contextDirectorySafe, contextFilename, contextProfile, readContextFile } from "./statusline-context.ts";
 
 /**
+ * The limits Claude Code hands its status line, kept by the wrapper that
+ * server/statusline-install.ts installs when the user turns it on in Settings. Read here instead of asking
+ * Anthropic: these are the numbers Claude's own line draws from, they need no token, and they
+ * never leave the machine — the usage endpoint answers
+ * 403 from some networks, where this file still holds the numbers.
+ *
  * The capture keeps only these fields (as Claude Code 2.1.308 writes them), and adds
  * `_herdr.account`, the account of the CLI that drew it:
  *   rate_limits.five_hour  { used_percentage, resets_at }   resets_at in epoch SECONDS

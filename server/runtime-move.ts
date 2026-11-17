@@ -59,6 +59,10 @@ export function tabTree(layout: PaneLayoutSnapshot | undefined, paneIds: readonl
   return rest.reduce<MoveNode>((tree, pane, index) => ({ split: "right", ratio: (index + 1) / (index + 2), first: tree, second: { pane } }), { pane: first! });
 }
 
+/**
+ * The pane's folder, or null when it cannot be entered any more (herdr names a deleted one
+ * "<path> (deleted)"): a shell started there fails, and with it the whole move; null starts it home.
+ */
 function enterable(cwd: string | null | undefined): string | null {
   if (!cwd) return null;
   try { return statSync(cwd).isDirectory() ? cwd : null; } catch { return null; }
@@ -87,6 +91,7 @@ async function verdictOf(pane: PaneInfo, facts: MoveFacts, claimed: Set<string>,
     return { kind: "shell" };
   }
   if (pane.agent_status === "blocked") return { kind: "busy", reason: "agent_waiting", agent, command: null };
+  // unknown is not idle: only an agent herdr says is done with its turn is ended
   if (pane.agent_status !== "idle" && pane.agent_status !== "done") return { kind: "busy", reason: "agent_working", agent, command: null };
   if (facts.holdsPending(pane.pane_id)) return { kind: "busy", reason: "agent_working", agent, command: null };
   if (!Object.hasOwn(EXIT_COMMANDS, agent)) return { kind: "needs_you", agent };
@@ -124,8 +129,11 @@ export async function planMove(snapshot: SessionSnapshot, facts: MoveFacts): Pro
 
 export function moveUnavailable(serving: RuntimeName, facts: HerdrRuntimeFacts | undefined, platform: NodeJS.Platform = process.platform): MoveUnavailable | null {
   if (serving !== "herdr") return "not_herdr";
+  // Windows switches to herdr-core in Settings, but the move ends panes through Unix process groups
+  // and its lock refuses Windows (runtime-move-lock.ts): as locked there as before Settings switched
   if (!facts || facts.locked !== null || platform === "win32") return "runtime_locked";
   if (facts.switch_to !== "herdr-core") return "no_herdr_core";
+  // the Herdr app arranges a core it runs in a document of its own, which Ovis never writes
   if (facts.app_installed) return "herdr_app";
   return null;
 }

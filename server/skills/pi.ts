@@ -78,6 +78,7 @@ function agentDirectory(home: string, env: readonly string[] | null, serverEnv: 
   return dir === "~" || dir.startsWith("~/") ? join(home, dir.slice(2)) : dir;
 }
 
+/** Saved decisions in trust.json: an absolute path mapped to true/false, or a list of trusted paths. */
 function savedDecisions(value: unknown, into = new Map<string, boolean>()): Map<string, boolean> {
   if (Array.isArray(value)) {
     for (const entry of value) if (typeof entry === "string" && isAbsolute(entry)) into.set(canonical(entry), true);
@@ -92,6 +93,7 @@ function savedDecisions(value: unknown, into = new Map<string, boolean>()): Map<
   return into;
 }
 
+/** pi's order without an interactive prompt: the closest saved decision, else defaultProjectTrust. */
 function projectTrusted(agentDir: string, settings: Record<string, unknown>, cwd: string): boolean {
   const decisions = savedDecisions(readJson(join(agentDir, "trust.json")));
   for (let directory = canonical(cwd); ; directory = dirname(directory)) {

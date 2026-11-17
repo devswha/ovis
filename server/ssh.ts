@@ -17,6 +17,12 @@ const WINDOWS = process.platform === "win32";
 const SSH_DIR_ROOT = WINDOWS ? tmpdir() : "/tmp";
 const SSH_DIR_PREFIX = "herdr-ssh-";
 
+/**
+ * Removes the empty connection folders an earlier server left behind: a connection that was
+ * created and never started or closed, before the folder came only with start(). Thousands of
+ * them fill a tmpfs /tmp's inodes. Only an empty folder older than `maxAgeMs` goes: a started
+ * connection's folder holds its sockets, and rmdir refuses a folder that is not empty.
+ */
 export async function sweepSshDirs(root = SSH_DIR_ROOT, maxAgeMs = 60 * 60_000, now = Date.now()): Promise<number> {
   let removed = 0;
   let names: string[];
@@ -43,6 +49,7 @@ function sshPath(path: string): string { return WINDOWS ? path.replaceAll("\\", 
 
 export interface SshClient {
   ssh: string; sftp: string; keygen: string;
+  /** Git for Windows' build, found where its installer put it, which does not read Windows' ssh-agent service */
   git?: true;
 }
 
@@ -81,6 +88,7 @@ export function sshClient({ env = process.env, platform = process.platform, exis
     };
     return { ssh, sftp: sibling("sftp", plain.sftp), keygen: sibling("ssh-keygen", plain.keygen) };
   };
+  // a value pasted with its quotes; it is a path, never evaluated by a shell
   const override = env["OVIS_SSH"]?.trim().replace(/^"(.*)"$/, "$1");
   if (override) return beside(override.includes("/") || override.includes("\\") ? override : which(override) ?? override);
   if (platform !== "win32") return plain;
@@ -112,6 +120,7 @@ function gitInstallPath(): string | null {
   if (gitInstall !== undefined) return gitInstall;
   gitInstall = null;
   if (!WINDOWS) return gitInstall;
+  // reg.exe by its full path: a reg.exe earlier on PATH must not answer
   const reg = join(process.env["SystemRoot"] ?? "C:\\Windows", "System32", "reg.exe");
   const result = Bun.spawnSync([reg, "query", "HKLM\\SOFTWARE\\GitForWindows", "/v", "InstallPath"], { windowsHide: true, stdin: "ignore", stdout: "pipe", stderr: "ignore", timeout: 3000 });
   gitInstall = /InstallPath\s+REG_SZ\s+(.+)/.exec(result.stdout?.toString() ?? "")?.[1]?.trim() || null;
@@ -188,6 +197,7 @@ export class SshConnection {
   private askPath = "";
   private askHelper = "";
   private askToken = randomBytes(32).toString("hex");
+  /** direct mode: answers typed during start(), kept once start() authenticated with them */
   private typed = new Map<string, string>();
   private answers = new Map<string, string>();
   private stderr = "";
@@ -261,11 +271,13 @@ export class SshConnection {
         socket.pause();
         try {
           const request = JSON.parse(data) as { token?: unknown; prompt?: unknown };
+          // anyone on this PC may open a named pipe; only our own helper has the token
           if (!this.trusted(request.token)) throw new Error("Unknown askpass client");
           const prompt = String(request.prompt);
           const hostKey = /fingerprint|continue connecting/i.test(prompt);
           let answer = hostKey ? undefined : this.answers.get(prompt);
           if (answer === undefined) {
+            // once connected, nothing asks the user again: a new prompt is an auth that failed
             if (this.started) throw new Error("SSH asked again after connecting");
             if (!challenge) throw new Error("SSH authentication required; reconnect from PC settings");
             if (!hostKey) this.usedSecret = true;
@@ -351,6 +363,11 @@ export class SshConnection {
       return { code, stderr };
     } finally { clearTimeout(timer); this.children.delete(proc); }
   }
+  /**
+   * The server's key, read by a connection that offers no authentication at all, shown in the
+   * dialog, and trusted only on a yes. The connections after it check strictly against it, so
+   * a server that shows another key to them is refused, not asked about.
+   */
   private async learnHostKey(challenge: (prompt: string, hostKey: boolean) => Promise<string>): Promise<void> {
     const file = join(this.dir, "learned_hosts");
     rmSync(file, { force: true });
@@ -370,6 +387,7 @@ export class SshConnection {
   }
   async run(script: string, input?: Uint8Array | StreamInput, timeout = 90_000, maxOutput?: number): Promise<string> {
     if (this.closed) throw new Error("SSH connection closed");
+    // BatchMode prevents an expired master from unexpectedly opening a new password prompt.
     return this.exec([...(this.multiplexed ? [...this.base(), "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes"] : this.direct()), "-T", this.target.destination, "sh -c " + shellQuote(script)], input, timeout, maxOutput);
   }
   /**

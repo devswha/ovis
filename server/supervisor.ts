@@ -14,6 +14,12 @@ import { profileFolderRefusal } from "./profile-marker.ts";
 import { runCommand, updateChannel, Updater, type Release } from "./updater.ts";
 
 const RUST_HOST_RETRY_MS = 6 * 60 * 60_000;
+/**
+ * How long a stopping supervisor waits for its Rust PTY host try to end: the try's 2 s SIGTERM grace,
+ * then 5 s after its group's SIGKILL. A descendant that left the group, or one the kernel cannot kill
+ * yet (D state), may keep the try's pipes open for good; the supervisor still exits, or the plugin
+ * could never start it again.
+ */
 const RUST_HOST_STOP_MS = 7_000;
 
 function installMissingRustHost(directory: string, signal: AbortSignal): Promise<void> | null {
@@ -63,6 +69,8 @@ export async function runSupervisor(root = ROOT) {
   const socketPath = resolve(herdrSocketPath());
   const stateDir = updateStateDir(root, port, appStateDir);
   mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+  // A crash or a forced Windows shutdown skips lock cleanup, and the old PID may belong to
+  // someone else by now: the lock records the owner's birth, so only a provably gone owner is replaced.
   const lock = acquireOwnerDirectory(join(stateDir, "supervisor.lock"), {
     running: "A managed server is already running for this checkout and port.",
     starting: "Another server is starting. Try again.",
@@ -137,7 +145,7 @@ export async function runSupervisor(root = ROOT) {
             return;
           }
         }
-      } catch {}
+      } catch { /* wait for this exact bridge, never mistake another port owner for it */ }
       await Bun.sleep(100);
     }
     await stopChild();
@@ -179,6 +187,7 @@ export async function runSupervisor(root = ROOT) {
   const updater = new Updater({ root, stateDir, autoUpdate: process.env["OVIS_AUTO_UPDATE"] === "1", publish,
     channel: () => updateChannel(process.env, appStateDir),
     pluginCheckout: pluginRoot !== undefined && resolve(pluginRoot) === root,
+    // the herdr plugin's launcher runs this compiled server from its checkout's .ovis/server: herdr updates it
     pluginBinary: pluginBinaryOf(process.env["OVIS_PLUGIN_CHECKOUT"], COMPILED),
     installedBinary: installedBinaryAt(root, COMPILED),
     notice: process.env["OVIS_SUPERVISOR_FALLBACK"]

@@ -228,6 +228,7 @@ describe("WebSocket insert", () => {
         socket.send({ type: "insert", id: request, pane_id: shell.pane, text });
         expect(await socket.result(request)).toMatchObject({ ok: false, code: "unsafe_multiline" });
       }
+      // a paste marker with no line break is an escape like any other
       const marked = id();
       socket.send({ type: "insert", id: marked, pane_id: shell.pane, text: `one${paste("two")}` });
       expect(await socket.result(marked)).toMatchObject({ ok: false, code: "invalid_insert_text" });
@@ -239,6 +240,7 @@ describe("WebSocket insert", () => {
   }, 30_000);
 
   it("refuses a block of lines, markers and all, where the program turned bracketed paste off", async () => {
+    // the program said ESC[?2004l itself: the client's own paste markers do not make the block safe
     const bare = await recorder("paste-off", "off");
     const socket = await Socket.connect();
     try {
@@ -299,6 +301,7 @@ describe("WebSocket insert", () => {
       const outside = id();
       outsider.send({ type: "insert", id: outside, pane_id: shell.pane, text: "outside" });
       expect(await outsider.result(outside)).toMatchObject({ ok: false, code: "not_attached" });
+      // the live screen ends in a password prompt: pasted text is never typed into it
       const screen = mockScreen(shell.pane, "$ sudo ls\n[sudo] password for me:");
       const secret = id();
       socket.send({ type: "insert", id: secret, pane_id: shell.pane, text: "hunter2" });
@@ -397,6 +400,7 @@ describe("a herdr without terminal attach (Windows)", () => {
       const bare = id();
       socket.send({ type: "insert", id: bare, pane_id: mirrored.pane, text: "one\rtwo" });
       expect(await socket.result(bare)).toMatchObject({ ok: false, code: "unsafe_multiline" });
+      // an agent herdr names is no proof the program turned bracketed paste on: still refused, nothing shaped
       await herdrRpc("pane.report_agent", { pane_id: mirrored.pane, source: "manual", agent: "claude", state: "idle" });
       const agent = id();
       socket.send({ type: "insert", id: agent, pane_id: mirrored.pane, text: "one\rtwo" });

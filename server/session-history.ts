@@ -1,3 +1,23 @@
+/**
+ * Bounded by the #1147 rules: at most the first 64 KiB of non-Pi files is read. Pi alone uses the
+ * asynchronous bounded streaming reader in pi-session-metadata.ts (its work/deadline policy
+ * is documented there), to find late names and prompts without retaining history. At most 65536 directory
+ * entries are walked per listing (taken or passed over) and at most 16384 lstats time the entries
+ * taken (a session file one, a Grok session folder three), and the entries taken are all ordered by
+ * time before any is checked, so the newest of them are checked first whatever the readdir order (a
+ * folder past those bounds is seen as far as its readdir order reaches); at most
+ * 400 checks are made per listing, a
+ * check being one session file's resolution with its stat (spent whatever the resolution finds),
+ * or one resolution or stat of a store, a folder or a database; at most 50 rows are returned, and
+ * every path is resolved
+ * (realpath) and refused when it lands outside the agent's store, nested subagent files
+ * included: only a store's own session files are listed, never a file a link makes look like
+ * one. SQLite stores are opened read-only and asked for at most 50 sessions, their text cut in
+ * the query. Nothing here starts an agent or loads a whole transcript into memory.
+ *
+ * A row's first message is prompt text: the route returns it only to a connection that may
+ * drive (session-history-routes.ts), and it is never logged.
+ */
 import { constants as sqliteConstants, Database } from "bun:sqlite";
 import { closeSync, constants, fstat, fstatSync, lstatSync, opendirSync, open, openSync, readSync, realpathSync, statSync, type BigIntStats, type Dir, type Dirent, type Stats } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -246,6 +266,11 @@ class Budget {
     try { return this.lstatOf(path).mtimeMs; } catch { return null; }
   }
 
+  /**
+   * Whether two cwds are one folder, as codex.ts sameDirectory decides, with its Windows file-ID
+   * check (bigint: two 64-bit IDs can round to one number) taken from this budget.
+   */
+  /** The canonical form of a path (Windows long names), as one counted stat; the path itself when it cannot say. */
   canonical(path: string, realpath: (path: string) => string): string {
     if (this.exhausted) return path;
     this.used++;
@@ -254,6 +279,7 @@ class Budget {
 
   sameFolder(left: string, right: string): boolean {
     if (directoryKey(left) === directoryKey(right)) return true;
+    // one Windows folder in two spellings needs no file IDs; the letter case still does (#587)
     if (this.platform === "win32" && windowsFolder(left) === windowsFolder(right)) return true;
     if (this.platform !== "win32" || this.used + 2 > MAX_STATS) return false;
     this.used += 2;
@@ -718,11 +744,15 @@ function openDatabase(budget: Budget, real: string, fd: number, checked: { dev: 
   const wal = readSync(fd, header, 0, 20, 0) === 20 && header[18] === 2 && header[19] === 2;
   const logged = wal && liveLog(budget, real);
   const immutable = mayBeImmutable && wal && !logged;
+  // macOS looks for a store's -wal or -journal beside /dev/fd/N, where there is none: only an immutable
+  // read, which reads neither, opens the descriptor there
   const descriptor = process.platform === "linux" || (process.platform === "darwin" && immutable) ? `/dev/fd/${fd}` : null;
   const flags = sqliteConstants.SQLITE_OPEN_READONLY | sqliteConstants.SQLITE_OPEN_URI;
   if (descriptor !== null) {
     const db = new Database(immutable ? `file:${descriptor}?immutable=1` : descriptor, flags);
     budget.onOpened(real, immutable, db);
+    // Linux resolves /dev/fd/N to the path that names the descriptor's file and opens that: the path
+    // must still be the checked file once SQLite has it (part of the database's one check)
     const again = budget.identity(real, true);
     if (!again?.isFile || again.dev !== checked.dev || again.ino !== checked.ino) { db.close(); return null; }
     return { db, immutable };

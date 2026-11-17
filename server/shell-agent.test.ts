@@ -21,6 +21,7 @@ it("writes the line each shell runs as a command, not as a string", () => {
   expect(shellCommandLine("powershell", exe, ["--resume", "a b"])).toBe("& 'C:\\Users\\o''brien\\AppData\\Local\\gjc\\gjc.exe' '--resume' 'a b'");
   expect(shellCommandLine("cmd", "C:\\gjc\\gjc.exe", ["a b"])).toBe('"C:\\gjc\\gjc.exe" "a b"');
   expect(shellCommandLine("posix", "/usr/local/bin/gjc", ["it's"])).toBe("'/usr/local/bin/gjc' 'it'\\''s'");
+  // a trailing backslash must not escape the closing quote for the program that parses it
   expect(shellCommandLine("cmd", "C:\\gjc\\gjc.exe", ["C:\\work\\", "--resume"])).toBe('"C:\\gjc\\gjc.exe" "C:\\work\\\\" "--resume"');
   expect(() => shellCommandLine("cmd", "C:\\gjc\\gjc.exe", ["%PATH%"])).toThrow();
   expect(() => shellCommandLine("cmd", "C:\\gjc\\gjc.exe", ['say "hi"'])).toThrow();
@@ -28,23 +29,31 @@ it("writes the line each shell runs as a command, not as a string", () => {
 
 it("gives a native program its arguments through Windows PowerShell 5.1 as they were, and none 5.1 would split or PowerShell 7 might change", () => {
   expect(powershellNativeArgs("powershell", ['say "hi"', "", "C:\\dir with space\\", "trail\\", "x y\\\\", 'a\\"b', "it's", "a\u00a0b\\", "a\ufeffb\\"])).toEqual([
+    // 5.1 escapes no quote for the program's own parser, and drops an empty argument
     'say \\"hi\\"',
     '""',
+    // the backslash ending an argument 5.1 quotes would escape the quote it closes it with; unquoted, it is read as it is
     "C:\\dir with space\\\\",
     "trail\\",
     "x y\\\\\\\\",
+    // the backslashes before a quote are doubled, and one more escapes it
     'a\\\\\\"b',
     "it's",
     "a\u00a0b\\\\",
     "a\ufeffb\\",
   ]);
   expect(shellCommandLine("powershell", "codex", powershellNativeArgs("powershell", ["--", 'fix the "x" bug']))).toBe(`& 'codex' '--' 'fix the \\"x\\" bug'`);
+  // 5.1 counts the escaped quotes too: whitespace only after an odd number of them goes unquoted, and the argument arrives split
   for (const arg of ['"fix the bug"', 'x="a b"', 'a"b c']) expect(() => powershellNativeArgs("powershell", [arg])).toThrow();
   expect(powershellNativeArgs("powershell", ['"a b" c', 'say "hi"'])).toEqual(['\\"a b\\" c', 'say \\"hi\\"']);
+  // PowerShell 7 escapes them itself from 7.3, and passes them as 5.1 does before that
   expect(powershellNativeArgs("pwsh", ["--model", "a b", "trail\\", "it's"])).toEqual(["--model", "a b", "trail\\", "it's"]);
   for (const arg of ['say "hi"', "", "C:\\dir with space\\"]) expect(() => powershellNativeArgs("pwsh", [arg])).toThrow();
+  // cmd reads an agent's arguments again when PowerShell finds it as a .cmd file: `&` there runs the rest
   for (const program of ["powershell", "pwsh"] as const) {
     for (const arg of ['fix "a&echo ran&b" now', "a&b", "x|y", "a<b", "a>b", "^caret", "%PATH%", "a b %OS%", "a & !OS!", "up ^ caret"]) expect(() => powershellNativeArgs(program, [arg])).toThrow();
+    // unless PowerShell puts it in quotes, for a space, where cmd reads & | < > as text
+    // (live-verified, 5.1.26100 and 7.6 to an npm-style .cmd shim): a profile folder named R&D (#3084)
     const settings = "C:\\Users\\R&D\\AppData\\Local\\ovis\\claude settings\\a.json";
     const quoted = [settings, "fix A & B", "x | y", "a < b > c"];
     expect(powershellNativeArgs(program, quoted)).toEqual(quoted);
@@ -76,6 +85,8 @@ it("finds what runs under a pane's shell in the process table", () => {
   ]);
   expect(under.some(isGjcProcess)).toBe(true);
   expect(descendantProcesses(table, 41948).map((entry) => entry.pid)).toEqual([12156, 700]);
+  // Windows keeps a dead parent's number on its children: one that started before the process now
+  // holding that number is not its child, and nor is anything below it
   const reused = [
     { pid: 50, parent: 0, path: null, commandLine: "shell", started: 1000 },
     { pid: 51, parent: 50, path: null, commandLine: "child", started: 1001 },
@@ -442,6 +453,7 @@ it("says why the login shell gave no PATH once each time the reason changes", as
     expect(results).toEqual([null, null, null, null, f.gjc, f.gjc, null, null, null, null]);
     const said = warn.mock.calls.map(([line]) => ["reason-a", "reason-b", "reason-c"].filter((reason) => String(line).includes(reason)));
     expect(said).toEqual([["reason-a"], ["reason-b"], ["reason-b"], ["reason-c"]]);
+    // the PATH itself is never logged
     for (const [line] of warn.mock.calls) expect(String(line)).not.toContain(f.loginBin);
   } finally {
     warn.mockRestore();

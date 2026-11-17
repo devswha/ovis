@@ -11,6 +11,7 @@ import { COUNTS_SETTLE_MS, handleTelemetryRequest, installMethod, Telemetry, tel
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
+/** a fixture receiver: never the real ACTIVE_URL */
 const TEST_ACTIVE_URL = "https://telemetry.test/v1/active";
 const TEST_COUNTS_URL = "https://telemetry.test/v1/counts";
 
@@ -1252,6 +1253,7 @@ describe("another server on the same state directory", () => {
         const after: string[] = [];
         for (let line = await writer.next(); line !== "DONE"; line = await writer.next()) after.push(line);
         expect(await writer.child.exited).toBe(0);
+        // the other server's write lands after the opt-out: it must not turn the counts back on
         expect(after).toEqual([]);
         expect(telemetry.status().enabled).toBe(false);
         expect(setup({ stateDir }).telemetry.status().enabled).toBe(false);

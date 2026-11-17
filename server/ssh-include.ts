@@ -44,6 +44,7 @@ async function readHandle(fd: number, cap: number): Promise<string | "folder" | 
   return buffer.subarray(0, bytesRead).toString("utf8");
 }
 
+/** A regular file's text when it is at most `cap` bytes; opened without blocking, so a FIFO never holds the list */
 export async function readCapped(path: string, cap: number): Promise<string | null> {
   let handle: FileHandle | undefined;
   try {
@@ -102,6 +103,7 @@ async function listInside(dir: Entry, roots: readonly string[], budget: Budget):
     let names: Listing = null;
     try {
       if ((await fstatOf(folder.fd)).isDirectory()) names = entriesOf(folder.fd, getdentsCall, budget);
+      // still inside the home or ssh folder once listed, or what the listing gave is not trusted
       if (Array.isArray(names) && !(await openedInside(folder.fd, dir.path, roots).catch(() => false))) names = "unread";
     } catch (error) { await folder.close(); throw error; }
     if (openAtCall() !== null && Array.isArray(names)) return { names, held: folder };
@@ -125,6 +127,14 @@ async function listInside(dir: Entry, roots: readonly string[], budget: Budget):
 
 const under = ({ path, base }: Entry, name: string): Entry => ({ path: `${path}${sep}${name}`, ...(base ? { base: { fd: base.fd, rest: `${base.rest}/${name}` } } : {}) });
 
+/**
+ * The files an Include pattern names: relative to `sshDir` as ssh reads the user config, `~` for the home folder. A
+ * wildcard is walked one component at a time from the folder before it, each folder listed only when it is inside the
+ * home or ssh folder; matches keep the spelling the pattern gives them and glob(3)'s order. A file ssh would read that is
+ * left unread (out of those folders, past a budget, behind a pattern not matched exactly here, `~user`, a `%` token or
+ * `${VAR}`, not a regular file of at most the size cap) comes back as null, so what it might set stays unknown; a file
+ * that is not there is nothing, as for ssh. A file reached through a folder listed by path comes back `unclaimed`.
+ */
 export function includer(sshDir: string, home: string): (pattern: string) => Promise<Included[]> {
   const roots = Promise.all([sshDir, home].map((root) => realpath(root).catch(() => null)));
   const budget: Budget = { files: MAX_INCLUDED_FILES, bytes: MAX_INCLUDED_BYTES, entries: MAX_SCANNED_ENTRIES, steps: MAX_MATCH_STEPS };

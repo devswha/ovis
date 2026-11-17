@@ -1288,6 +1288,7 @@ describe("WebSocket submit", () => {
       shown = claudeInputScreen("❯ chat message");
       socket.send({ type: "submit", id: 41, pane_id: agent.pane, text: "second message", payload: "second message" });
       expect(await socket.result(41)).toMatchObject({ ok: true });
+      // each Esc asks the sender's right again right before herdr is written to
       expect(sendKeys.mock.calls).toEqual([[agent.pane, ["esc"], undefined, expect.any(Function)], [agent.pane, ["esc"], undefined, expect.any(Function)]]);
       expect(prompt).toHaveBeenLastCalledWith(agent.pane, "second message", undefined, expect.any(Function));
       expect(sendText).not.toHaveBeenCalled();
@@ -2111,7 +2112,7 @@ describe("typing without terminal attach, at the edges", () => {
           expect(keys).toHaveBeenLastCalledWith(pane, Array(secret.length).fill("Backspace"));
           await originalSend(pane, "X");
           await originalKeys(pane, ["Enter"]);
-          expect(await completed).toBe("58");
+          expect(await completed).toBe("58"); // only X; no residual secret bytes
         }
       } finally {
         gate.resolve();

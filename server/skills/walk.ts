@@ -62,6 +62,7 @@ function openRegular(path: string): number {
   return fd;
 }
 
+/** A config file read whole, only when it is a regular file of at most `maxBytes`; throws otherwise (a FIFO is never waited on). */
 export function readConfigText(path: string, maxBytes = 1024 * 1024): string {
   const fd = openRegular(path);
   try {
@@ -331,6 +332,10 @@ export function piTemplates(root: string, source: SlashCommand["source"]): Slash
 }
 
 
+/**
+ * The nearest repository boundary wins; the home directory is never a project ancestor. Windows
+ * names one folder in any letter case, so there the boundary is compared case-insensitively.
+ */
 export function ancestorsToRepoRoot(cwd: string, rawHome = userHome(), platform: NodeJS.Platform = process.platform): string[] {
   const start = resolve(cwd);
   const home = rawHome ? resolve(rawHome) : null;

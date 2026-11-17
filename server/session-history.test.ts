@@ -58,6 +58,7 @@ function install(agent: SessionHistoryAgent, home: string): void {
   }
 }
 
+/** Whether this machine lets a test make symlinks (Windows needs Developer Mode or elevation). */
 function canSymlink(): boolean {
   const probe = join(root, "probe-link");
   try { symlinkSync(root, probe, "dir"); rmSync(probe); return true; }
@@ -71,6 +72,7 @@ const piStore = (home: string) => join(home, ".pi", "agent", "sessions", FOLDERS
 
 describe("listSessions", () => {
   for (const agent of SESSION_HISTORY_AGENTS) {
+    // Command Code's slug keeps a Windows drive's colon, which no Windows folder name may hold
     it.skipIf(agent === "cmd" && WINDOWS)(`lists ${agent}'s own sessions of the folder, newest first, with its resume command`, async () => {
       const home = newHome();
       install(agent, home);
@@ -319,6 +321,8 @@ describe("listSessions", () => {
     expect(rows).toEqual([]);
   });
 
+  // a session file is one check (its resolution with its stat). On Windows a session of another
+  // folder also spends two on its folder's file IDs, so this many of them would use the budget there
   it.skipIf(WINDOWS)("lists a folder's older Codex rollouts behind about 300 newer rollouts of other folders", () => {
     const home = newHome();
     const rollout = (day: string, n: number, at: number, cwd: string) => {
@@ -1106,6 +1110,7 @@ describe("listSessions", () => {
   for (const [agent, store] of [["omp", ".omp"], ["gjc", ".gjc"]] as const) {
     it.skipIf(!SYMLINKS || WINDOWS)(`lists ${agent}'s session recorded under the canonical folder of a cwd reached through a link`, () => {
       const home = newHome();
+      // macOS's /var -> /private/var: the pane names the link, the agent records the folder it resolves to
       const privateVar = join(root, `private-${homes}`, "var");
       mkdirSync(join(privateVar, "project"), { recursive: true });
       const link = join(root, `var-${homes}`);
@@ -1191,6 +1196,7 @@ describe("GET /api/sessions/history", () => {
     mkdirSync(folder, { recursive: true });
     writeFileSync(join(folder, `${id}.jsonl`), `${JSON.stringify({ type: "user", cwd: CWD, sessionId: id, timestamp: "2026-10-01T09:00:00.000Z", message: { role: "user", content: prompt } })}\n`);
   };
+  /** A started user process standing for a pane's Claude, with the environment given (macOS hides system binaries' environments). */
   const claudeStandIn = async (env: Record<string, string | undefined>) => {
     const child = Bun.spawn([process.execPath, "-e", "process.stdin.resume(); console.log('ready')"], { env, stdin: "pipe", stdout: "pipe" });
     await child.stdout.getReader().read();
@@ -1374,6 +1380,8 @@ describe("GET /api/sessions/history", () => {
         const response = await fetch(`http://127.0.0.1:${server.port}/api/sessions/resume`, { method: "POST", body });
         expect([response.status, ((await response.json()) as { error?: { code: string } }).error?.code, closed]).toEqual([409, "launch_store_unknown", ["t-new"]]);
       } finally { server.stop(true); }
+      // one budget, asked once, covering busy-shell retries (10 s), one agentStart (60 s) and the store
+      // check (15 s), within the most Bun takes (255 s)
       expect(asked).toEqual([RESUME_BUDGET_S]);
       expect(RESUME_BUDGET_S).toBeGreaterThanOrEqual(10 + 60 + 15);
       expect(RESUME_BUDGET_S).toBeLessThanOrEqual(255);
@@ -1418,6 +1426,8 @@ describe("GET /api/sessions/history", () => {
     });
 
     it("closes a macOS resume whose Claude only looks exported to the listed store, and keeps one that writes there", async () => {
+      // macOS: NOTE="example CLAUDE_CONFIG_DIR=<store>" reads as an export in `ps -E`; the environment as the
+      // kernel keeps it (sysctl) says nothing is exported, so that Claude writes ~/.claude
       const home = newHome();
       const alternate = join(home, "alternate-store");
       claudeStore(alternate, ID(1), "alternate store prompt");
@@ -1445,6 +1455,8 @@ describe("GET /api/sessions/history", () => {
   });
 
   describe("a Windows pane's Claude", () => {
+    // herdr names only the pane's shell on Windows: Claude is found under shell_pid in the process
+    // table, and its store by its live PID record. These run anywhere, with the table handed in.
     const SHELL = 10;
     const PID = 4242;
     const STARTED = 1_791_384_794_216;

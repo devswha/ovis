@@ -13,6 +13,7 @@ export const COUNTS_URL = "https://herdr-web-ui-telemetry.devswha.workers.dev/v1
 const FILE = "telemetry.json";
 const OFF_FILE = "telemetry-off";
 const LOCK_FILE = "telemetry.lock";
+/** how long a server waits for another's lock before it skips its write (an off never waits: it goes without the lock) */
 const LOCK_WAIT_MS = 200;
 const LOCK_STALE_MS = 5_000;
 const LOCK_MAX_HOLD_MS = 5 * 60_000;
@@ -256,6 +257,8 @@ function readSaved(file: string, offFile: string): Saved | null {
   try {
     const value: unknown = JSON.parse(readFileSync(file, "utf8"));
     if (!isJsonObject(value) || typeof value["install_id"] !== "string" || value["install_id"] === "") return null;
+    // a switch an older build turned off is copied into OFF_FILE whenever it is read, so no late write of FILE can turn it
+    // on; a read that cannot write it now still reads off, and the next read tries again
     if (value["enabled"] === false && !offMarked(offFile)) {
       try { writeFileSync(offFile, "", { mode: 0o600 }); } catch {}
     }
@@ -370,6 +373,8 @@ export class Telemetry {
 
   private persist(): void {
     mkdirSync(this.options.stateDir, { recursive: true, mode: 0o700 });
+    // an off another server wrote since this one read the file: what this one holds is from before it, so it is not
+    // written back, and the counter is never lowered
     const onDisk = readSaved(this.file, this.offFile);
     if (onDisk && onDisk.forgotten > this.saved.forgotten) {
       this.saved.forgotten = onDisk.forgotten;
@@ -524,6 +529,7 @@ export class Telemetry {
     this.saved.forgotten += 1;
   }
 
+  /** Whether a browser visit is recorded at all: never while the switch is off or the environment forbids sending. */
   counting(): boolean {
     if (!this.writable) return false;
     this.refresh();
@@ -534,6 +540,10 @@ export class Telemetry {
     return this.counting() && this.saved.notice_seen_at !== null;
   }
 
+  /**
+   * Counts one prompt answer, alert delivered or alert tapped in today's usage; never while usage
+   * is not counted. It sends nothing by itself: the day's next visit (or a later day's) carries it.
+   */
   tally(kind: TelemetryUsageCount): void {    this.locked(() => {
       if (!this.countingUsage()) return;
       const day = utcDay(this.now());
@@ -550,6 +560,11 @@ export class Telemetry {
     }, () => this.skipped(`the ${kind} count`));
   }
 
+  /**
+   * Adds what a browser used in one width to today's counts (each to TELEMETRY_COUNT_MAX) under the running
+   * version; never while usage is not counted (off, blocked, or the current notice not shown), so nothing
+   * pressed before the notice is kept. It sends nothing by itself.
+   */
   tallyCounts(change: TelemetryCountsChange): void {    this.locked(() => {
       if (!this.countsOn() || !this.countingUsage()) return;
       if (change.generation !== this.saved.forgotten) return;
@@ -758,6 +773,12 @@ export class Telemetry {
     })();
   }
 
+  /**
+   * Delivers every recorded day whose harnesses were not delivered yet, oldest first, no sooner
+   * than NOTICE_GRACE_MS after the notice; never records a day. A failure is logged and tried
+   * again at the next visit or change. Today's usage as it stands goes only with its first message or
+   * from a `visit`, USAGE_RESEND_MS after it last went on the wire; any other message carries what went.
+   */
   private flushActive(visit = false): Promise<void> {
     if (!this.writable) return Promise.resolve();
     const pruned = this.locked(() => {

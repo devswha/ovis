@@ -1,3 +1,11 @@
+/**
+ * Settings → Connect a device → PCs on your Tailscale: other PCs of this PC's own Tailscale login whose Ovis
+ * already lets this PC drive it, each added through the relay with one tap. Adding one asks that PC, over the
+ * tailnet, for the code it would show under Connect a device, and spends it here as a typed code would
+ * (MachineManager.addTailnet). Nothing new is trusted: the other PC answers only because `tailscale serve`
+ * names this PC's login as its owner's (server/access.ts), the access that already drives it. The tailnet
+ * itself admits nobody, and no account membership comes from it.
+ */
 import { HTTPS_PORTS, tailscaleBinary } from "./tailscale.ts";
 
 const PROBE_MS = 2500;
@@ -87,6 +95,7 @@ export class TailnetPcs {
     this.origin = options.origin ?? httpsOrigin;
   }
 
+  /** this PC's login drives that Ovis as its owner: what `tailscale serve` says, never an open LAN window; herdr there may be stopped */
   private static drivable(health: Health): boolean {
     return health.auth?.authenticated === true && health.auth.via === "tailscale" && health.auth.role === "drive";
   }
@@ -137,6 +146,10 @@ export class TailnetPcs {
     return held !== undefined && Date.now() - held.at <= FOUND_MS ? held.name : null;
   }
 
+  /**
+   * The code that PC would show under Connect a device, asked of it as its owner (server/relay/routes.ts
+   * /api/relay/code). Its trust is checked again first, Tailscale's word before the PC's: the list may be minutes old.
+   */
   async code(url: string, added: ReadonlySet<string>): Promise<{ code: string; server_id: string }> {
     const held = this.found.get(url);
     const peers = tailnetPeers(await this.readStatus());
@@ -154,6 +167,8 @@ export class TailnetPcs {
     }
     const body = await boundedJson(response) as { code?: unknown; server_id?: unknown; error?: { code?: unknown } } | null;
     if (!response.ok || typeof body?.code !== "string" || typeof body.server_id !== "string") {
+      // that PC's own words never reach the person. Its health named its relay ID, so it is a current Ovis: a 404 or
+      // 405 here comes from something in between, not from its version
       const refusal = body?.error?.code;
       if (refusal === "relay_off") throw new TailnetPcError("relay_off", "Turn the relay on on that PC first, under Add a connection.");
       if (refusal === "relay_offline") throw new TailnetPcError("relay_offline", "That PC's relay cannot be reached right now. Try again in a moment.");

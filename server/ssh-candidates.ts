@@ -1,3 +1,9 @@
+/**
+ * Settings → Devices and PCs → Add a connection → SSH: the PCs this PC's server could reach over SSH, for one
+ * tap to open Add PC with the address filled in. Two sources, both read only, neither connected to:
+ * the hosts named in its own account's ssh config, and the other PCs of its own Tailscale login (reached by
+ * their MagicDNS name, over SSH like any other address, never through the relay).
+ */
 import { isIP } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -42,6 +48,13 @@ async function listCandidates(options: SshCandidatesOptions): Promise<SshCandida
   const [config, status] = await Promise.all([readCapped(join(sshDir, "config"), MAX_FILE_BYTES), (options.readStatus ?? readTailscaleStatus)()]);
   const hosts = config === null ? [] : await sshConfigHosts(config, includer(sshDir, options.home ?? homedir()));
   const peers = tailnetPeers(status);
+  // a config host is the Tailscale PC it reaches: its HostName when it sets one, else its alias, as ssh resolves it.
+  // Then that row stands for it. An address, or the addresses a name resolves to, decide: all of them (of the
+  // AddressFamily ssh uses) that PC's, else none (answers naming two PCs, or a PC and an address off the tailnet, claim
+  // nothing), and a name whose lookup fails or is late claims none. A name is looked up as written (`box.example.`
+  // stays absolute). A proxied host's name is resolved at the far end, wherever that leads, and an undetermined one may
+  // go elsewhere, so neither claims a PC. An alias alone never claims a PC its HostName leads away from: one kept from
+  // before a rename names a PC it no longer reaches
   const claimable = peers.length === 0 ? [] : hosts.filter((host) => host.proxied !== true && host.undetermined !== true);
   const names = [...new Set(claimable.map(({ alias, hostname }) => hostname ?? alias).filter((name) => isIP(name) === 0))];
   const resolved = await resolveWithin(names, { resolve: options.resolve ?? systemResolve, timeoutMs: options.resolveTimeoutMs ?? RESOLVE_TIMEOUT_MS });

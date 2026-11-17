@@ -1,3 +1,14 @@
+/**
+ * Paired devices (devices.json) are an authorization record, so both dirs end with the same one:
+ * a release before this one that ever reads either finds every device and a closed gate. Devices are
+ * merged by id against the ids both held after the last merge (state-merge.json, kept in both dirs):
+ * one only one side holds is new there and is kept, unless the last merge had it, which means it was
+ * revoked on the other side since, and it stays revoked. The first merge has nothing to compare with
+ * and keeps every device. The gate is closed from the earliest evidence either side holds, so a merge
+ * never opens it. A registry or merge record that cannot be read fails closed: the store stays gated
+ * and pairs nothing (devices.ts), neither registry is written, and a dir without a registry gets a
+ * closed, empty one marked incomplete: its missing devices are never read as revoked.
+ */
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, realpathSync, rmSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -54,6 +65,13 @@ const endpointHash = (endpoint: string): string => createHash("sha256").update(e
 const earliest = (values: (string | null | undefined)[]): string | null =>
   values.filter((value): value is string => typeof value === "string").sort()[0] ?? null;
 
+/**
+ * Merges two registries by device id; `base` holds the ids both had after the last merge (null:
+ * none happened). A device one side dropped since then stays dropped; one only one side added is
+ * kept. A device both hold keeps this side's credential and label, the narrower role, its first
+ * creation and its last sighting. A missing registry (`null`) says nothing was dropped there, nor
+ * does an incomplete one (`incomplete`: written where a registry was missing, devices.ts placeholder).
+ */
 export function mergeRegistries(own: Registry | null, other: Registry | null,
   bases: { own: ReadonlySet<string> | null; other: ReadonlySet<string> | null },
   incomplete: { own: boolean; other: boolean } = { own: false, other: false }): Registry {
@@ -69,6 +87,7 @@ export function mergeRegistries(own: Registry | null, other: Registry | null,
       devices.push(device);
       continue;
     }
+    // the credential is chosen apart from the rest: whichever is kept, the role is never widened
     if (twin.token_hash !== device.token_hash) console.error(`Paired device ${device.id} has another credential in the other state dir; the one in use is kept`);
     devices.push({
       ...device,
@@ -76,6 +95,8 @@ export function mergeRegistries(own: Registry | null, other: Registry | null,
       created_at: earliest([device.created_at, twin.created_at])!,
       last_seen_at: [device.last_seen_at, twin.last_seen_at].filter((seen): seen is string => seen !== null).sort().at(-1) ?? null,
       ...(device.account_add === undefined && twin.account_add !== undefined ? { account_add: twin.account_add } : {}),
+      // a link done in the other dir moved the row to the account key (docs/account.md); an older copy must not undo it
+      // the later link wins: an unlinked copy, or one linked earlier, takes the other's account key
       ...(twin.account !== undefined && (device.account === undefined || (twin.linked_at ?? "") > (device.linked_at ?? ""))
         ? { relay_public_key: twin.relay_public_key, account: twin.account, ...(twin.added_by === undefined ? {} : { added_by: twin.added_by }), ...(twin.linked_at === undefined ? {} : { linked_at: twin.linked_at }), ...(twin.link_moved_key === undefined ? {} : { link_moved_key: twin.link_moved_key }) } : {}),
     });
@@ -368,6 +389,7 @@ function mergePush(active: string, sibling: string, base: MergeRecord | null, st
     const before = base?.push[realpath(sibling)] ?? [];
     const recorded = (done: Subscription[]) => ({ [realpath(sibling)]: [...new Set([...before, ...done.map((subscription) => endpointHash(subscription.endpoint))])] });
     if (theirs.length === 0) return { record: recorded([]), taken: 0 };
+    // the key each of their subscriptions was made for: one they took over keeps its own
     const theirExtra = new Map<string, Vapid>();
     const extraFile = readPushFile(join(sibling, PUSH_EXTRA_KEYS)) as { keys?: unknown } | undefined;
     for (const entry of Array.isArray(extraFile?.keys) ? extraFile.keys as { endpoints?: unknown }[] : []) {
@@ -378,6 +400,7 @@ function mergePush(active: string, sibling: string, base: MergeRecord | null, st
     const mine = subscriptionsIn(readPushFile(join(active, "push-subscriptions.json")));
     const myFile = readPushFile(join(active, "vapid.json"));
     let myKey = vapidIn(myFile);
+    // push.ts never replaces a damaged key file (every subscription made for it would go): neither does this
     if (myFile !== undefined && myKey === null) throw new Error(`${join(active, "vapid.json")} is malformed`);
     let retired: string[] = [];
     try {
@@ -392,6 +415,7 @@ function mergePush(active: string, sibling: string, base: MergeRecord | null, st
     const record = recorded(theirs.filter((subscription) => settled(subscription) || taken.includes(subscription)));
     if (taken.length === 0) return { record, taken: 0 };
     if (myKey === null && theirKey !== null) {
+      // this dir has signed nothing yet: the other dir's key becomes its own
       writePrivateState(join(active, "vapid.json"), theirKey);
       myKey = theirKey;
     }

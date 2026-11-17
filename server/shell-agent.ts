@@ -31,6 +31,7 @@ const WINDOWS_SHELL_AGENTS = new Set(["omo", "gjc"]);
 
 export function isShellAgentKind(kind: string): boolean { return Object.hasOwn(SHELL_AGENTS, kind); }
 
+/** Where this server finds `kind` on its own PATH; the pane's shell is herdr's child and may carry another PATH. */
 export function shellAgentExecutable(kind: string, platform: string = process.platform, path: string = process.env["PATH"] ?? ""): string | null {
   if (platform === "win32" && !WINDOWS_SHELL_AGENTS.has(kind)) return null;
   return Bun.which(kind, { PATH: path });
@@ -258,6 +259,7 @@ export class ShellAgentLocator {
   } = {}) {
     this.#platform = options.platform ?? process.platform;
     this.#servicePath = options.servicePath ?? (() => process.env["PATH"] ?? "");
+    // Windows keeps its own PATH and allowlist: no Unix login shell is asked there
     const shell = this.#platform === "win32" || options.probe !== undefined ? null : loginShell();
     this.#probe = this.#platform === "win32" ? null : options.probe !== undefined ? options.probe : shell === null ? null : defaultAgentPathProbe(shell);
     this.#ttlMs = options.ttlMs ?? 60_000;
@@ -402,6 +404,13 @@ export function powershellNativeArgs(program: "powershell" | "pwsh", args: reado
 interface ProcessInfo { process_info?: { shell_pid?: number; foreground_processes?: { pid: number; argv?: string[]; cwd?: string }[] } }
 const processInfo = (paneId: string) => herdrRpc<ProcessInfo>("pane.process_info", { pane_id: paneId }).catch(() => null);
 
+/**
+ * Types the agent's absolute path and args into the pane's shell and resolves once
+ * `kind` is its foreground process, with that process's pid; null on Windows, where it is
+ * found among the shell's descendants and not in front. The path comes from the same
+ * `locator` `/api/agents` asked, so the offer and the start agree whatever the pane shell's
+ * PATH says.
+ */
 export async function startShellAgent(kind: string, paneId: string, args: string[] = [], options: { command?: string; timeoutMs?: number; locator?: ShellAgentLocator } = {}): Promise<number | null> {
   const isProcess = SHELL_AGENTS[kind];
   if (!isProcess) throw new Error(`${kind} is not a shell-started agent`);

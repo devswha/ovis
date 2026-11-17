@@ -3,6 +3,11 @@ import { chmodSync, closeSync, constants, copyFileSync, fsyncSync, linkSync, mkd
 import { syncDirectory } from "./private-state.ts";
 import { basename, dirname } from "node:path";
 
+/**
+ * A shared state document as it is on disk (preferences.json, seen.json): absent, JSON for its
+ * store to check, or bytes that are not JSON. A read that fails otherwise (permissions, a
+ * directory in its place) throws: an unreadable file is not an absent one.
+ */
 export type StateDocument = { kind: "missing" } | { kind: "json"; value: unknown } | { kind: "malformed" };
 
 export function readStateDocument(path: string): StateDocument {
@@ -17,6 +22,14 @@ export function readStateDocument(path: string): StateDocument {
 
 export const damagedCopy = (path: string): string => `${path}.bad`;
 
+/**
+ * Moves a document that is not JSON out of the way at once, bytes untouched, to
+ * `<path>.corrupt-<time>` (0600, as damagedCopy's), so its store can start empty instead of
+ * refusing to start. Each one keeps a name of its own: these documents (machines.json,
+ * herdr-profile-state.json) hold what cannot be recomputed, so an earlier damaged copy is never
+ * replaced. Returns the new path; throws, leaving `path` as it was, when the file cannot be moved,
+ * saying why so a start that stops on it can be understood from its log.
+ */
 export function setAsideDamaged(path: string, now = new Date()): string {
   // no ':' in a Windows file name
   const name = `${path}.corrupt-${now.toISOString().replace(/[:.]/g, "-")}`;
@@ -100,5 +113,6 @@ export function writeStateDocument(path: string, text: string, keepDamaged: bool
     try { rmSync(temporary, { force: true }); } catch {}
     throw error;
   }
+  // records the rename (best effort, none on Windows): the new document is in place either way
   syncDirectory(dirname(path), process.platform);
 }

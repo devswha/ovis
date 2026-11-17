@@ -11,6 +11,8 @@ import type { PushService } from "./push.ts";
 import { forwardSaysReady, refusalHint, SshConnection, sshClient, sshVerboseLine, sweepSshDirs } from "./ssh.ts";
 import { posixHost, type HostInspection } from "./remote-host.ts";
 
+// The direct mode Windows uses (its OpenSSH has no connection sharing), run here against a
+// stand-in ssh. Windows itself runs it against real hosts; this sh stand-in needs a POSIX shell.
 const FAKE_SSH = String.raw`#!/bin/sh
 printf '%s\n' "$*" >> "$FAKE_DIR/calls"
 kh=""; batch=""; learn=""; config=""; tunnel=""; forward=""; verbose=""; prev=""; last=""
@@ -179,6 +181,7 @@ describe.skipIf(process.platform === "win32")("SSH without connection sharing", 
     expect(prompts).toEqual([{ prompt: "Enter passphrase for key 'k': ", hostKey: false }]);
     expect(ssh.usedSecret).toBe(true);
     expect(calls().filter((line) => line.endsWith("sh -c 'true'")).every((line) => line.includes("BatchMode=no"))).toBe(true);
+    // a keyboard-interactive prompt is the server's text, and cmd would parse it as a command line
     expect(calls().filter((line) => !line.includes("PreferredAuthentications=none") && !line.includes(" -G ")).every((line) => line.includes("KbdInteractiveAuthentication=no"))).toBe(true);
   });
 
@@ -221,6 +224,7 @@ describe.skipIf(process.platform === "win32")("SSH without connection sharing", 
       expect(prompts[0]!.hostKey).toBe(true);
       expect(prompts[0]!.prompt).toContain(`ED25519 key fingerprint is ${key.fingerprint}.`);
       expect(readFileSync(join(state, "known_hosts"), "utf8")).toContain(key.line);
+      // the learning connection offered no authentication at all
       expect(calls().find((line) => line.includes("PreferredAuthentications=none"))).toContain("IdentityAgent=none");
     });
 
@@ -255,6 +259,8 @@ describe.skipIf(process.platform === "win32")("SSH without connection sharing", 
       expect(ssh.connected()).toBe(false);
     });
 
+    // freePort() closes the port it found before ssh binds it, and another process on this PC may
+    // take it in between: the bridge's token must never reach that process.
     it("ends a forward still waiting for ssh at once when the connection closes, though a child holds ssh's stderr", async () => {
       const { root, ssh, ask } = fixture({ FAKE_HOLD_STDERR: "1" });
       await ssh.start(ask("unused"));
@@ -347,6 +353,8 @@ describe("sweeping connection folders an earlier server left", () => {
 });
 
 describe("which ssh says a forward is bound", () => {
+  // Windows' own OpenSSH writes no -v line to a pipe: forward() must not wait for one from it, or every
+  // Windows connect without Git for Windows times out after 25 s
   it("waits for the word from Git for Windows' ssh and from OpenSSH outside Windows, never from Windows' own", () => {
     expect(forwardSaysReady({ git: true }, "win32")).toBe(true);
     expect(forwardSaysReady({}, "win32")).toBe(false);

@@ -84,6 +84,9 @@ export function herdrSource(holdsPending: (paneId: string) => boolean, inputEmpt
     },
     holdsPending,
     inputEmpty,
+    // in the pane's input lane, behind anything typed or sent through Ovis before it and ahead of anything
+    // after, checked again there: a message queued or text typed meanwhile stops it. herdr then pastes it
+    // and its Enter, and refuses while the agent waits for an answer
     sendExit: (paneId, agent, command) => lane(paneId, async () => {
       if (holdsPending(paneId)) throw new Error("a message waits for the pane");
       if (await inputEmpty(paneId, agent) !== true) throw new Error("text is in the input box");
@@ -108,6 +111,7 @@ export async function coreDestination(stateDir: string, id: string): Promise<Mov
   return {
     appArranged: async () => { const doc = await hc.call("doc.get", { name: LAYOUT_DOC }); return doc.value !== null && doc.value !== undefined; },
     createWorkspace: async (move, cwd, name) => {
+      // a pane whose folder is gone starts home: never in another pane's folder, which hc would hand down
       const made = await workspaceCreate({ cwd: cwd ?? homedir(), label: name, move }, socket);
       return { workspaceId: made.workspace.workspace_id, tabId: made.tab.tab_id, paneId: made.root_pane.pane_id };
     },
@@ -132,6 +136,8 @@ export async function coreDestination(stateDir: string, id: string): Promise<Mov
       }
     },
     confirmResumed: async (paneId, sessionId) => {
+      // the process naming the conversation in its arguments, the same one still up 3 s later: an agent that
+      // refuses an id (gone, another store) quits within that once it has come up
       let seen: { pid: number; at: number } | null = null;
       for (const deadline = Date.now() + 20_000; Date.now() < deadline;) {
         const info = await paneProcessInfo(paneId, socket).catch(() => undefined);
@@ -161,6 +167,7 @@ export async function coreDestination(stateDir: string, id: string): Promise<Mov
   };
 }
 
+/** This server's own process group where the system tells it (Linux /proc), else null. */
 function procGroup(): number | null {
   try {
     // after the command name's closing parenthesis: state, ppid, pgrp
@@ -300,6 +307,7 @@ export function moveService(options: MoveServiceOptions): MoveService {
     if (!stillWaiting(wait)) return "not_waiting";
     if (!force) {
       const sent = await options.lane(paneId, async (): Promise<"not_waiting" | "not_running" | "changed" | null> => {
+        // keys typed into the pty just before still on their way: Ctrl+C must not overtake them
         await options.settleAfterTyping(paneId);
         const last = await facts.processInfo(paneId);
         const now = commandGroup(last);
@@ -319,6 +327,8 @@ export function moveService(options: MoveServiceOptions): MoveService {
     const tried = tries.get(paneId);
     if (tried && (tried.group !== front.group || tried.shell !== front.shell)) tries.delete(paneId);
     if (!tried || tried.group !== front.group || tried.shell !== front.shell || Date.now() - tried.at < FORCE_AFTER_MS) return "not_tried";
+    // herdr's ids must be this PC's: the shell's terminal here must report that group in front, read
+    // last, or Ovis and herdr see different pid spaces (a container) and nothing is signalled
     const local = await deps.terminalGroup(front.shell);
     if (local !== front.group) return "not_local";
     if (!stillWaiting(wait)) return "not_waiting";
@@ -396,6 +406,7 @@ export function moveService(options: MoveServiceOptions): MoveService {
       if (starting || running || status.state === "moving" || status.state === "waiting") return "already_moving";
       starting = true;
       try {
+        // a new start after a move a stopped server left: the person has seen it; it is set aside, never deleted
         if (status.state === "interrupted" || status.state === "rolled_back") { setAsideJournal(options.stateDir, options.port); status = { state: "idle" }; }
         const current = await plan();
         if (current.revision !== revision) return "plan_changed";
@@ -429,6 +440,7 @@ export function moveService(options: MoveServiceOptions): MoveService {
     },
     cancel: () => {
       if (status.state === "interrupted") {
+        // set aside, never deleted: it names the agents and terminals the person may still want back
         setAsideJournal(options.stateDir, options.port);
         status = { state: "idle" };
         return;

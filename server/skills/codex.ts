@@ -43,6 +43,8 @@ export function adminSkillsRoot(platform: string, env: readonly string[] | null,
 function manifestName(root: string): string | null {
   for (const manifest of MANIFESTS) {
     try {
+      // bounded and regular files only: the walk climbs above the skill roots, where a FIFO named
+      // like a manifest would otherwise block the server
       const fields = plainObject(JSON.parse(readSkillText(join(root, manifest))));
       // a root plugin.json counts only when it carries no foreign $schema (plugin_namespace.rs)
       if (manifest === "plugin.json" && !(typeof fields.$schema === "string" && fields.$schema.startsWith("https://agent-plugins.org/schemas/"))) continue;

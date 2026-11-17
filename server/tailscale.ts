@@ -1,3 +1,9 @@
+/**
+ * What Tailscale on this PC can already do for a phone, read-only: `tailscale status --json` and
+ * `tailscale serve status --json`, never `serve`, `up` or anything else that changes the tailnet.
+ * The Settings → Phone panel turns the answer into the address that already works, or the one
+ * command the user still has to run on this PC.
+ */
 import { existsSync } from "node:fs";
 import type { RemoteAccess, TailscaleAccess } from "../shared/protocol.ts";
 import { addressesNode } from "./access.ts";
@@ -50,6 +56,12 @@ function httpsUrl(host: string, port: number): string {
   return `https://${host}${port === 443 ? "" : `:${port}`}`;
 }
 
+/**
+ * The HTTPS ports a new `tailscale serve` may take, in order: the usual ones while the variable is
+ * unset, only the port it names when it is set, and none when it names no port. A port the user
+ * chose is never traded for another, since a phone's installed app stays on the address it was
+ * installed from.
+ */
 export function httpsPorts(value: string | undefined): readonly number[] {
   const text = value?.trim() ?? "";
   if (text === "") return HTTPS_PORTS;
@@ -123,8 +135,13 @@ export function parseTailscaleOwner(status: string | null): string | null {
 }
 
 /**
- * A tagged node is the one case `tailscale serve` deliberately states no person for, and a tailnet
- * can hold many of those, which is why a proxied request with no login is otherwise a stranger.
+ * The one login `tailscale status --json` proves owns every node of this tailnet, with none of them
+ * tagged, or null. A tagged node is the one case `tailscale serve` deliberately states no person
+ * for, and a tailnet can hold many of those, which is why a proxied request with no login is
+ * otherwise a stranger. Where Tailscale says there is no tagged node and no second login, the
+ * owner's own devices are all a tailnet request can come from. A second login, a single tag
+ * anywhere, a node whose owner the status does not name, or a status it could not read answer
+ * null: the proof has to be positive, never the benefit of the doubt.
  */
 export function parseSoleTailnetLogin(status: string | null): string | null {
   return readSoleLogin(status).login;
@@ -169,12 +186,26 @@ const cliStatus = async (): Promise<string | null> => {
   return binary === null ? null : run(binary, ["status", "--json"]);
 };
 
+/**
+ * What `tailscale status --json` says about this PC and its tailnet, read through `readStatus` and
+ * kept five minutes. `identity` answers every reader that does not grant from the cache, refreshing
+ * a stale value in the background, so those readers never wait on the tailscale CLI; the first
+ * lookup is what `createServer` starts. `freshIdentity` is the owner's grant path, the one reader
+ * that waits for a read, shared with any read already in flight.
+ */
 export class TailnetIdentitySource {
   private cache: (TailnetIdentity & { at: number; settled: boolean; ownerKnown: boolean }) | null = null;
   private reading: Promise<void> | null = null;
 
   constructor(private readonly readStatus: () => Promise<string | null> = cliStatus) {}
 
+  /**
+   * A read that failed, or one whose status leaves the sole-login question open, keeps what the
+   * last read said about this PC, withdraws the sole-login proof, and marks the cache unsettled,
+   * so the next grant-path request reads again at once instead of waiting out the TTL. A status
+   * that states the answer for good - one login's tailnet, or a tag or a second login against it
+   * - stands for the TTL. Readers that do not grant keep the TTL as before.
+   */
   private async read(): Promise<void> {
     const status = await this.readStatus();
     if (status === null) {
@@ -223,6 +254,13 @@ export class TailnetIdentitySource {
     };
   }
 
+  /**
+   * `identity` for a request that states a Tailscale login. Until a read has named this PC's own
+   * login (or found its node tagged), this waits for a read, shared and bounded like
+   * `freshIdentity`: a server started at boot asks before tailscaled has logged in, and that
+   * answer must not stand for five minutes against the owner's own devices. A new read starts at
+   * most every `LOGIN_RETRY_MS`, so requests cannot keep the tailscale CLI spawning.
+   */
   async loginIdentity(): Promise<TailnetIdentity> {
     if (this.cache !== null && this.cache.ownerKnown) return this.identity();
     if (this.reading === null && this.cache !== null && Date.now() - this.cache.at < LOGIN_RETRY_MS) return this.identity();
@@ -230,6 +268,13 @@ export class TailnetIdentitySource {
     return this.identity();
   }
 
+  /**
+   * `identity` for a request the owner's sole-login proof would admit. A cache that already says
+   * a node is tagged, that the tailnet is not one login's, or that this Host is not this PC's name
+   * answers at once and grants nothing. Otherwise this waits for one status read, shared with any
+   * read in flight and bounded by the read's own timeout, so the grant never rests on a warm cache.
+   * A read that fails, or leaves the question open, grants nothing and is read again next request.
+   */
   async freshIdentity(host: string | null): Promise<TailnetIdentity> {
     const cached = this.identity();
     if (this.cache !== null && this.cache.settled && (this.cache.soleLogin === null || !addressesNode({ host, dnsName: this.cache.dnsName, tailnetIp: this.cache.tailnetIp }))) return cached;

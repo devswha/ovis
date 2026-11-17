@@ -59,6 +59,7 @@ export function removeContextFile(path: string, profile: string, olderThan = Inf
   try {
     contextFs.linkSync(quarantine, path);
   } catch {
+    // Includes EEXIST, and directories (which cannot be hard linked). Never replace the original.
     for (let attempt = 0; attempt < 4; attempt++) {
       const recovery = contextJoin(directory, `statusline-context-recovery-${attempt === 0 ? id : contextUUID()}`);
       try {
@@ -119,7 +120,7 @@ export function publishContext(directory: string, profile: string, capture: { se
       contextFs.linkSync(pending, target);
     }
     if (fresh) pruneContextFiles(directory, profile, Date.now());
-  } catch {}
+  } catch { /* Context is optional; never interrupt quota capture or the original status line. */ }
   finally {
     if (created) contextFs.unlinkSync(pending);
   }

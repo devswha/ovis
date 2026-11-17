@@ -85,6 +85,7 @@ function herdrProxy(path: string, upstream: string) {
   return { log, control, stop: () => listener.stop(true) };
 }
 
+/** A no-echo stand-in: it records only a digest and byte count, never the entered value. */
 function standIn(root: string): { script: string; resultFile: string } {
   const resultFile = join(root, "result.json");
   const script = join(root, "ask.cjs");
@@ -295,12 +296,14 @@ it("secret frames validate prompts and authority, never queue, and type one no-e
       expect(heldSeen.find((frame) => frame.type === "secret-result")).toMatchObject({ ok: false, code: "input_not_ready" });
       expect(existsSync(resultFile)).toBe(false);
     } finally { heldSocket.close(); heldServer.stop(); }
+    // A dead sidecar must not acknowledge bytes that it could not accept.
     const rejectedWrite = spyOn(PtySession.prototype, "write").mockReturnValue(false);
     try {
       secret(9);
       expect(await result(9)).toMatchObject({ ok: false, code: "input_not_ready" });
       expect(existsSync(resultFile)).toBe(false);
     } finally { rejectedWrite.mockRestore(); }
+    // One prompt check is in flight: another secret must be refused, never held.
     secret(5); secret(6);
     expect((await result(6)).code).toBe("pane_busy");
     expect((await result(5)).ok).toBe(true);

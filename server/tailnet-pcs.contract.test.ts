@@ -110,6 +110,7 @@ it("adds a PC of the same Tailscale login through the relay with one tap, after 
   expect(listed.status).toBe(200);
   const { pcs } = await listed.json() as Found;
   expect(pcs).toEqual([{ name: "pc-b", url: serveUrl, relay: "online", outdated: false }]);
+  // a node of another login is never asked anything
   expect(probed).toEqual(["pc-b.tail.ts.net"]);
 
   expect((await ask("POST", { url: "http://127.0.0.1:9" })).status).toBe(404);

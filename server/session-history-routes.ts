@@ -54,12 +54,17 @@ const herdrPaneProcesses = (paneId: string): Promise<PaneProcesses | undefined> 
 const launchKeepsAbsence = async (options: StoreOptions): Promise<boolean> =>
   (await (options.launchSource ?? defaultLaunchSource)()).state === "absent";
 
+/** herdr's server hands a new tab its environment; on herdr-core the core process does, not this server. */
 async function defaultLaunchSource(): Promise<ClaudeSource> {
   if (capabilities().spawner === "server") return herdrLaunchSource(herdrSocketPath());
   const status = await coreConnection().call("server.status", {}).catch(() => null);
   return typeof status?.pid === "number" ? processLaunchSource(status.pid) : { state: "unreadable" };
 }
 
+/**
+ * A workspace's folder: its worktree checkout when herdr names one, else the folder of its
+ * first tab's first pane, where herdr opens a new tab.
+ */
 export function workspaceFolder(snapshot: Snapshot, workspaceId: string): string | null {
   const workspace = snapshot.workspaces.find((entry) => entry.workspace_id === workspaceId);
   if (!workspace) return null;
@@ -122,6 +127,10 @@ async function startedStore(paneId: string, listedDir: string, options: StoreOpt
   }
 }
 
+/**
+ * Whether a started Claude came up on the listed store: the same key, or, where its store was found
+ * by its Windows PID record (which cannot say how the store was chosen), the same folder.
+ */
 const sameStore = (landed: { key: string; place: string; chosen: boolean }, listed: { key: string; place: string }) =>
   landed.key === listed.key || (!landed.chosen && landed.place === listed.place);
 
@@ -178,6 +187,13 @@ function reportsSession(pane: Snapshot["panes"][number], id: string): boolean {
   return session.kind === "id" ? session.value === id : session.kind === "path" && (session.value.split(/[/\\]/).pop() ?? "") === `${id}.jsonl`;
 }
 
+/**
+ * How long a resume's request is kept open, in seconds from its start (holdOpen). The resume answers
+ * by RESUME_ANSWER_MS, before Bun would drop it with nothing said: herdr's calls each have a limit,
+ * but enough of them (the start of its Claude: 10 s of retries of a shell not up yet, then one
+ * agent.start of up to 60 s; the check of the store it came up on; reads around them) add up past any
+ * one budget. Bun takes at most 255; the PC proxy waits 165 s (machine-api.ts slowMachinePath).
+ */
 export const RESUME_BUDGET_S = 150;
 const RESUME_ANSWER_MS = (RESUME_BUDGET_S - 10) * 1000;
 const timedOut = () => refuse(504, "resume_timed_out", "the resume took too long, so it was stopped; a tab it started is closed once its start ends");

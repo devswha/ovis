@@ -1,3 +1,15 @@
+/**
+ * Linux is read from /proc (memory is total minus MemAvailable, so the file cache never reads as
+ * "used"). macOS memory is read from `vm_stat` as Activity Monitor's "Memory Used" (`os` counts the
+ * file cache as used there). Everywhere else gets what Node's `os` can say, and the fields it cannot
+ * say are null: a number that was not measured is never shown as zero.
+ *
+ * Limits worth knowing. In a container without lxcfs, /proc and `os` describe the host, not the
+ * container's cgroup limits. libuv leaves iowait, softirq and steal out of the CPU times, so a VM
+ * with a lot of steal reads a little lower than `top`. A disk that does not answer (a stuck network
+ * mount) is left out after DISK_CAP_MS and is never asked again while the first ask is pending.
+ */
+
 import { readFile, stat, statfs } from "node:fs/promises";
 import { cpus, freemem, homedir, loadavg, platform as osPlatform, totalmem, uptime } from "node:os";
 import { parse as parsePath, resolve } from "node:path";

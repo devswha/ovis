@@ -157,6 +157,7 @@ const bundledDescriptions: Readonly<Record<string, string>> = {
 
 const readSettings = (path: string): Record<string, unknown> => {
   try {
+    // bounded and regular files only: a FIFO or a link to /dev/zero committed as settings must not block the server
     const value: unknown = JSON.parse(readSkillText(path));
     return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
   } catch { return {}; }

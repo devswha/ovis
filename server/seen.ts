@@ -20,6 +20,7 @@ export class SeenStore {
       const disk = this.readDisk();
       if (disk) for (const [k, v] of disk.finishes) this.finishes.set(k, v);
     } catch (error) {
+      // a missing file is a server that has recorded nothing yet; an unreadable one is not, and is never written over
       console.error(`Cannot read ${this.path} (${(error as NodeJS.ErrnoException).code ?? "error"}); read finishes start empty and are not saved until it can be read`);
     }
   }

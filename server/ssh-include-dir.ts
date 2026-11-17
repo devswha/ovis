@@ -16,6 +16,7 @@ export function glibcGetdents(): Getdents | null {
   try { return dlopen("libc.so.6", { getdents64: { args: [FFIType.i32, FFIType.ptr, FFIType.u64], returns: FFIType.i64 } }).symbols.getdents64; } catch { return null; }
 }
 
+/** glibc's openat; null without glibc (macOS, Windows, a Linux with musl) */
 export function glibcOpenAt(): OpenAt | null {
   if (process.platform !== "linux") return null;
   let calls;

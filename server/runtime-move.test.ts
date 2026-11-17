@@ -20,6 +20,7 @@ describe("moveUnavailable", () => {
   it("offers no move on Windows, where Settings still switches to herdr-core", () => {
     const facts = { serving: "herdr", source: "detected", tui: { installed: true, running: true }, app_installed: false, switch_to: "herdr-core", locked: null } as const;
     expect(moveUnavailable("herdr", facts, "linux")).toBeNull();
+    // the move ends panes through Unix process groups, and its lock refuses Windows (runtime-move-lock.ts)
     expect(moveUnavailable("herdr", facts, "win32")).toBe("runtime_locked");
   });
 });
@@ -92,6 +93,7 @@ describe("planMove", () => {
   });
 
   it("starts a pane whose folder is gone in the home folder, not in a folder that cannot be entered", async () => {
+    // herdr names a deleted folder "<path> (deleted)"; a shell started there fails, and with it the whole move
     const plan = await planMove(snapshot([pane("gone", { cwd: "/no/such/folder (deleted)" }), pane("here", { cwd: process.cwd() })]), facts);
     expect(plan.panes.map((entry) => [entry.pane_id, entry.cwd])).toEqual([["gone", null], ["here", process.cwd()]]);
   });

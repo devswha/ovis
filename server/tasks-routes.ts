@@ -24,6 +24,8 @@ export async function handleTasksRequest(request: Request, url: URL, pathname: s
     const paneId = url.searchParams.get("pane_id");
     if (!paneId) return badRequest("missing_pane_id", "pane_id query parameter is required");
     const server_time = new Date().toISOString();
+    // Its transcript is found here if the background lookup has not got to it yet
+    // (for a second at most: a slow herdr answers with what is known, and the next ask has the rest)
     if (omo.sessionOf(paneId) === null && claudeAgents.sessionOf(paneId) === null && opencodeAgents.sessionOf(paneId) === null) {
       await within(1000, (async () => {
         const begun = opencodeAgents.beginRead();

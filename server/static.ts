@@ -13,6 +13,7 @@ import { ASSETS } from "./entries.ts";
 
 export { accountServiceOrigin, DEFAULT_ACCOUNT_SERVICE, IMMUTABLE_CACHE, REVALIDATE, shellContentSecurityPolicy };
 
+// A URL's pathname is not a file path: on Windows it is `/C:/...`, and spaces come percent-encoded.
 const DIST_DIR = join(ASSETS, "dist");
 
 const MIME: Record<string, string> = {
@@ -113,6 +114,11 @@ export function renameShell(html: string, name: string): string {
   return html.replace(APPLE_TITLE, (_, start: string, end: string) => `${start}${content}${end}`);
 }
 
+/**
+ * The shell with the account service its own pages sign in to (`ovis-pc-account-service`, read by
+ * src/lib/account/service.ts): the very origin `connect-src` admits, so the two never disagree, and
+ * none when the account is off. The hosted shell's `ovis-account-service` is another meta.
+ */
 export function accountShell(html: string): string {
   const origin = accountServiceOrigin();
   return origin === null ? html : html.replace("</head>", `<meta name="ovis-pc-account-service" content="${origin}" />\n</head>`);
@@ -151,6 +157,8 @@ export async function serveStatic(pathname: string, acceptEncoding?: string | nu
   if (candidate.startsWith(DIST_DIR) && relative !== "/" && existsSync(candidate)) {
     const file = Bun.file(candidate);
     if ((await file.exists()) && !(await file.stat()).isDirectory()) {
+      // Only immutable JS/CSS/WebAssembly get build-time sidecars (scripts/compressed-assets.ts).
+      // Never compress user/API data, the service worker, or the shell on a request's hot path.
       if (pathname.startsWith("/assets/") && /\.(?:js|css|wasm)$/.test(pathname)) {
         for (const encoding of encodings(acceptEncoding)) {
           const body = encoding === "identity" ? file : Bun.file(`${candidate}.${encoding === "br" ? "br" : "gz"}`);
