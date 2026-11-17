@@ -1,8 +1,3 @@
-/**
- * Simplified Chinese for the settings keys of Settings → Phone & devices → Access: the rest of the settings part
- * (./settings.zh.ts), kept apart so each file stays short. Both files are the one settings part,
- * so a key lives in only one of them; its header lists the settings files and the register.
- */
 export const SETTINGS_ACCESS_ZH: Record<string, string> = {
   "Access": "访问",
   "Connected to this PC": "已连接到此电脑的设备",

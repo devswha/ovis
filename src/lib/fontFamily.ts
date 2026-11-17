@@ -1,30 +1,6 @@
-/**
- * The terminal and chat font families the user types in Settings: a comma-separated list in
- * fallback order, like VS Code's `editor.fontFamily`. The list goes in front of the built-in
- * fonts, never in place of them, so a typo or a font missing on this device falls back as if
- * nothing had been typed.
- */
-
-// Symbols Nerd Font Mono is the app's own (PaneTerminal.css) and covers only the private use
-// area, so it never sizes a cell: it draws the Nerd Font icons a prompt or `ls` replacement
-// prints, which no system font has and Safari will not take from a font the user installed.
-// It stays first, ahead of a chosen font too, so the icons draw even when that font has none.
-// The chrome's code stack (--font-mono, lib/typography.ts) opens with it for the same reason
 export const SYMBOLS_FONT = '"Symbols Nerd Font Mono"';
-// Ovis Hangul Mono is the app's own too (PaneTerminal.css): D2Coding's Hangul under a name of its
-// own, with no Latin in its range, so it never sizes a cell (xterm measures `W`). It stands after
-// the Korean coding fonts a device may have and before the generic monospace: Hangul that Menlo,
-// Consolas or a phone's monospace lacks is drawn in a coding face beside the Latin, the same on
-// every device, instead of the system's proportional Apple SD Gothic Neo or Malgun Gothic. In Ovis
-// for Mac's window it is the Hangul left when measurableFontStack drops an installed D2Coding.
 export const HANGUL_FAMILY = "Ovis Hangul Mono";
 const HANGUL_FONT = `"${HANGUL_FAMILY}"`;
-// JetBrains Mono Web is the app's own Latin (fonts/fonts.css, regular and bold), first among the
-// text fonts: every device draws the terminal in the same face, so Chrome, Safari, Ovis for Mac,
-// Windows, Linux and a phone show the same cell, row and grid. The installed fonts after it stood
-// first before and differed by device (Menlo, Consolas, Noto Sans Mono CJK KR, or a JetBrains Mono
-// that Chrome draws and Safari and Ovis for Mac's canvas cannot see); they draw only if the face
-// does not load. A font typed in Settings still goes ahead of it.
 export const MONO_FAMILY = "JetBrains Mono Web";
 const MONO_FONT = `"${MONO_FAMILY}"`;
 // xterm sizes every cell from the first matching font, so a proportional one (Malgun Gothic)
@@ -33,18 +9,14 @@ const TERMINAL_TEXT_FONTS =
   `${MONO_FONT}, "JetBrains Mono", "Fira Code", "D2Coding", Menlo, Monaco, "Cascadia Mono", Consolas, "Noto Sans Mono CJK KR", ${HANGUL_FONT}, monospace, "Malgun Gothic"`;
 export const TERMINAL_FONT_STACK = `${SYMBOLS_FONT}, ${TERMINAL_TEXT_FONTS}`;
 
-/** the chat's own stack: --font-ui in src/styles.css */
 const CHAT_FONT_STACK = "var(--font-ui)";
 
 export const FONT_FAMILY_MAX_CHARS = 200;
 
-/** How long a font change waits for its faces before the grid is measured with whatever loaded. */
 export const FONT_LOAD_TIMEOUT_MS = 3000;
 
-// what could close the declaration or the style element, escape, or hide in the value
 const UNSAFE_CHARS = /[;{}<>\\\u0000-\u001f\u007f]/g;
 const QUOTES = /["']/g;
-// a name CSS reads unquoted: one identifier (non-ASCII letters included), no spaces
 const IDENTIFIER = /^-?[A-Za-z_\u0080-￿][\w\u0080-￿-]*$/;
 // unquoted, these are keywords rather than names and make the whole list invalid
 const RESERVED = new Set(["inherit", "initial", "unset", "revert", "revert-layer", "default"]);
@@ -52,19 +24,12 @@ const RESERVED = new Set(["inherit", "initial", "unset", "revert", "revert-layer
 function normalizeName(raw: string): string {
   const trimmed = raw.trim();
   const quoted = trimmed.length >= 2 && (trimmed[0] === '"' || trimmed[0] === "'") && trimmed.at(-1) === trimmed[0];
-  // a stray quote inside a name would end the CSS string early: it cannot be part of a name
   const name = (quoted ? trimmed.slice(1, -1) : trimmed).replace(QUOTES, "").replace(/\s+/g, " ").trim();
   if (name === "") return "";
   // a name the user quoted stays quoted: "monospace" is a font called monospace, not the generic
   return quoted || !IDENTIFIER.test(name) || RESERVED.has(name.toLowerCase()) ? `"${name}"` : name;
 }
 
-/**
- * A typed family list as a CSS `font-family` value: composed (NFC), unsafe characters dropped,
- * each name trimmed, empty ones removed, names CSS cannot read bare quoted. Names past the length
- * limit are dropped whole, so a cut never leaves an open quote. Anything that is not a string is
- * no list at all.
- */
 export function sanitizeFontFamily(value: unknown): string {
   if (typeof value !== "string") return "";
   // composed: a name copied from a macOS file name can arrive decomposed (NFD), and the browser
@@ -79,29 +44,24 @@ export function sanitizeFontFamily(value: unknown): string {
   return family;
 }
 
-/** The xterm `fontFamily`: the icon font, the user's list, then the built-in text fonts. */
 export function terminalFontStack(family: string): string {
   const chosen = sanitizeFontFamily(family);
   return chosen === "" ? TERMINAL_FONT_STACK : `${SYMBOLS_FONT}, ${chosen}, ${TERMINAL_TEXT_FONTS}`;
 }
 
-/** The width of PROBE_TEXT in a `font-family` list: as the page draws it, and as a canvas measures it. */
 export interface FontWidths {
   drawn(family: string): number;
   measured(family: string): number;
 }
 
-// narrow and wide Latin, a digit and Hangul: any text face changes the width of some of them
 const PROBE_TEXT = "mmmmmmmmmmlli1WW가나다";
 const PROBE_SIZE = "32px";
-// a monospaced face can match monospace's Latin to the pixel, never serif's as well
 const PROBE_FALLBACKS = ["monospace", "serif"] as const;
 const PROBE_TOLERANCE_PX = 0.5;
 const GENERIC_FAMILIES = new Set(["monospace", "serif", "sans-serif", "cursive", "fantasy", "system-ui", "ui-monospace", "ui-serif", "ui-sans-serif", "ui-rounded", "math", "emoji", "fangsong"]);
 
 let pageWidths: FontWidths | undefined;
 
-/** This page's measurements, each made once: null without a document to measure in. */
 function browserFontWidths(): FontWidths | null {
   if (pageWidths) return pageWidths;
   const context = typeof document === "undefined" ? null : document.createElement("canvas").getContext("2d");
@@ -170,7 +130,6 @@ export function openingFontStack(stack: string, fonts: Pick<FontFaceSet, "check"
   return fonts.check(`13px ${MONO_FONT}`, "M") ? stack : stack.split(",").map((name) => name.trim()).filter((name) => name !== MONO_FONT).join(", ");
 }
 
-/** Settles once, when a terminal's first font is set: the face it was waited for within loadFontStack's bound, or the fallback. */
 export interface FontSettled {
   readonly done: boolean;
   readonly settled: Promise<void>;
@@ -195,11 +154,9 @@ export async function monoFaceArrived(sizePx: number): Promise<void> {
   try {
     await fonts.load(`${sizePx}px ${MONO_FONT}`, "M");
   } catch {
-    /* a face that fails leaves the fallback, as measured */
   }
 }
 
-/** The chat body's `font-family`, or null to keep the UI font. */
 export function chatFontStack(family: string): string | null {
   const chosen = sanitizeFontFamily(family);
   return chosen === "" ? null : `${chosen}, ${CHAT_FONT_STACK}`;
@@ -208,14 +165,6 @@ export function chatFontStack(family: string): string | null {
 // Latin and Hangul, so a font split by unicode-range loads the faces the grid measures and shows
 const FONT_LOAD_SAMPLE = "Mg가";
 
-/**
- * Resolves once the faces of `stack` are loaded, or failed, or the timeout passed: never rejects,
- * since a font that cannot load falls back like a missing one. An installed font has no face to
- * load and resolves at once. The bundled Hangul face is not waited for: it has no Latin, so it never
- * sizes the grid, and fetching it here would fetch it on a device whose own Korean font draws the
- * Hangul ahead of it, and hold the new font back until it came. It loads when a pane prints Korean
- * that reaches it, and lib/terminalGlyphs.ts measures again then.
- */
 export async function loadFontStack(stack: string, sizePx: number, timeoutMs = FONT_LOAD_TIMEOUT_MS): Promise<void> {
   const fonts = typeof document === "undefined" ? undefined : document.fonts;
   if (!fonts || typeof fonts.load !== "function") return;
@@ -228,7 +177,6 @@ export async function loadFontStack(stack: string, sizePx: number, timeoutMs = F
       new Promise<void>((resolve) => { timer = setTimeout(resolve, timeoutMs); }),
     ]);
   } catch {
-    /* the grid is measured with the fallback, as for a font that is not installed */
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }

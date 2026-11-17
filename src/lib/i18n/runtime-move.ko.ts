@@ -1,8 +1,3 @@
-/**
- * Korean for the keys only the move to herdr-core uses:
- * components/RuntimeMove.tsx, components/RuntimeMoveViews.tsx, lib/runtimeMove.ts.
- * Register and fixed terms follow ../i18n.ko.ts; a key another feature also uses goes there.
- */
 export const RUNTIME_MOVE_KO: Record<string, string> = {
   "Move everything to herdr-core": "herdr-core로 전부 옮기기",
   "Install herdr-core and move everything": "herdr-core 설치하고 전부 옮기기",

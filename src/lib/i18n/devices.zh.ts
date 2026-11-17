@@ -1,11 +1,3 @@
-/**
- * Simplified Chinese for the keys only the devices files use:
- * components/DevicesPanel.tsx (with VIA), components/ConnectPhoneDialog.tsx, components/RelaySignIn.tsx, components/PhonePanel.tsx, components/PortalPanel.tsx,
- * components/PortalAuth.tsx, components/PortalInvite.tsx, components/RelayPanel.tsx,
- * components/PushTestControls.tsx, components/AccessGate.tsx, components/LanExposureNotice.tsx,
- * components/InstallHint.tsx, lib/install.ts, lib/installHint.ts, lib/portalAuth.ts, and shared/portal.ts (PORTAL_AUTH_PROBLEMS).
- * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
- */
 export const DEVICES_ZH: Record<string, string> = {
   "Anyone who can reach {host} on your network can type into every pane: no access token is set and no device is paired yet.": "同一网络上任何能访问 {host} 的人都可以在每个窗格中输入：尚未设置访问 Token，也还没有配对任何设备。",
   "Tap the Share button, then Add to Home Screen.": "点按“共享”按钮，然后选择“添加到主屏幕”。",

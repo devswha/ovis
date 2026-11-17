@@ -1,8 +1,3 @@
-/**
- * Chinese for the keys only the agent setup files use: components/AgentSetupCard.tsx,
- * components/AddAgentPanel.tsx, components/AgentTile.tsx, components/AgentsSettings.tsx.
- * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
- */
 export const SETUP_ZH: Record<string, string> = {
   "Set up {agent}": "设置 {agent}",
   "Uses the official installer, on this PC.": "用官方安装程序安装到这台电脑。",

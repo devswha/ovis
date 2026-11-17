@@ -1,8 +1,3 @@
-/**
- * Korean for the settings keys of Settings → Chat → Composer's optional buttons and chips (and their one row of chips), of Settings → Agents → Other agents herdr knows, of Settings → Chat → Compaction and failed requests, of Settings → Terminal → Codex panes, of Settings → Appearance → Background workspaces apart, and of Settings → Shortcuts → herdr prefix keys: the rest of the
- * settings part (./settings.ko.ts), kept apart so each file stays short. Both files are the one settings part,
- * so a key lives in only one of them; its header lists the settings files and the register.
- */
 export const SETTINGS_COMPOSER_KO: Record<string, string> = {
   "Paste and send button": "붙여넣고 보내기 버튼",
   "A button in the empty message box sends the text copied on this device as a message.": "빈 입력창의 버튼으로 이 기기에서 복사한 글을 메시지로 보냅니다.",

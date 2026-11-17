@@ -1,7 +1,3 @@
-/**
- * Simplified Chinese for the keys only the hosted relay shell uses: components/RelayShell.tsx.
- * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
- */
 export const RELAY_ZH: Record<string, string> = {
   "Your PCs": "我的电脑",
   "Unnamed PC": "未命名的电脑",

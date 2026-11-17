@@ -1,8 +1,3 @@
-/*
- * A device asking to join the account (AccountApprovalPrompt.tsx): the modal's card, its content
- * centred, the three numbers as large as the pairing digits so the pick is a look, not a read.
- */
-
 .account-approval {
   width: min(100%, var(--relay-signin-w));
   padding: var(--space-6);
@@ -44,7 +39,6 @@
   margin-bottom: var(--space-1);
 }
 
-/* who is asking: what the account service saw, the line a phished request gives itself away on */
 .account-approval-asker {
   display: flex;
   align-items: center;
@@ -131,7 +125,6 @@
   color: var(--text-dim);
 }
 
-/* a device asking to join is answered over everything, Connect a device included (it is where one is often asked for) */
 .modal-scrim:has(> .account-approval) {
   z-index: var(--z-palette);
 }

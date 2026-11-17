@@ -85,8 +85,6 @@ describe("approving a device that asks to join the account", () => {
   });
 });
 
-// another PC of the account vouched for (pair-intent-pc-vouched) is asked as "pair this PC", so nothing is signed for it,
-// yet its card says who is asking and its approval checks the admission, as an account join's does
 describe("which requests rest on an admission", () => {
   const request = (extra: Partial<RemotePairingRequest>): RemotePairingRequest => ({ id: "r1", label: "Ovis on Desk", intent: "pc", choices: ["111111", "222222", "333333"], expires_at: "", key: "k", ...extra });
   it("an account join and another PC of the account vouched for do; any other request for this PC does not", () => {

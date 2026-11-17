@@ -24,7 +24,6 @@ describe("herdr's binding syntax", () => {
     expect(parseHerdrBinding("cmd+shift+tab")?.chord).toMatchObject({ meta: true, shift: true, key: "Tab" });
     expect(parseHerdrBinding("f12")?.chord.key).toBe("F12");
     expect(parseHerdrBinding("prefix+alt+1..9")).toMatchObject({ prefixed: true, range: true, chord: { alt: true } });
-    // a literal plus: alone, or after the last separator
     expect(parseHerdrBinding("+")).toMatchObject({ prefixed: false, chord: { ctrl: false, key: "+" } });
     expect(parseHerdrBinding("ctrl++")).toMatchObject({ prefixed: false, chord: { ctrl: true, key: "+" } });
     expect(parseHerdrBinding("prefix++")).toMatchObject({ prefixed: true, chord: { key: "+" } });

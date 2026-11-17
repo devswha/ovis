@@ -1,9 +1,3 @@
-/**
- * Korean for the keys only the sidebar files use:
- * components/Sidebar.tsx, components/AgentSidebar.tsx, components/SidebarResizer.tsx,
- * components/SidebarSplit.tsx, components/InboxList.tsx, lib/inboxRow.ts.
- * Register and fixed terms follow ../i18n.ko.ts; a key another feature also uses goes there.
- */
 export const SIDEBAR_KO: Record<string, string> = {
   "Pin agent": "에이전트 고정",
   "Unpin agent": "에이전트 고정 해제",

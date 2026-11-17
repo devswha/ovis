@@ -1,9 +1,3 @@
-/**
- * Simplified Chinese for the keys only the sidebar files use:
- * components/Sidebar.tsx, components/AgentSidebar.tsx, components/SidebarResizer.tsx,
- * components/SidebarSplit.tsx, components/InboxList.tsx, lib/inboxRow.ts.
- * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
- */
 export const SIDEBAR_ZH: Record<string, string> = {
   "Pin agent": "固定 Agent",
   "Unpin agent": "取消固定 Agent",

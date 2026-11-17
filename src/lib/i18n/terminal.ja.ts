@@ -1,10 +1,3 @@
-/**
- * Japanese for the keys only the terminal files use:
- * components/PaneTerminal.tsx, components/PaneCanvas.tsx, components/KeyBar.tsx (with ARROWS and
- * KEY_SPOKEN_NAMES), components/FindBar.tsx, components/TerminalViewportTools.tsx,
- * components/SplitDropPreview.tsx, components/TabStrip.tsx, lib/terminalLabel.ts, lib/tabName.ts.
- * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
- */
 export const TERMINAL_JA: Record<string, string> = {
   "Searching…": "検索中…",
   "Pane changed. Search again.": "ペインの内容が変わりました。再検索してください。",

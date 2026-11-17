@@ -11,33 +11,19 @@ import { userErrorMessage, type UserError } from "../lib/userError.ts";
 
 
 export interface AccessGateProps {
-  /** why the server refused this browser, when it said */
   reason: AccessRefusal | null;
-  /** the unconsumed address code to display; automatic submission must claim it first */
   initialCode: string;
-  /** claim the address code before sending it, even if the request fails; empty means already consumed */
   consumePairCode: () => string;
-  /** a successful pairing was followed by a health check that still refused this browser */
   pairingUnconfirmed: boolean;
-  /** notify a caller tracking whether the successful pairing survives the next health check */
   onPaired?: () => void;
-  /** Fires once the server set a cookie: the shell can mount, and every later fetch and the WebSocket carry it. */
   onUnlocked: () => void;
 }
 
-/**
- * Sign-in screen rendered instead of the shell while the server does not know this
- * browser. Pairing is the usual way in: a six-digit code the owner started on the PC
- * (Settings → Devices), typed once, or carried by the QR code's address. The shared
- * token stays as the other way. Nothing is stored here: the server answers with an
- * HttpOnly cookie either way.
- */
 export function AccessGate({ reason, initialCode, consumePairCode, pairingUnconfirmed, onPaired, onUnlocked }: AccessGateProps) {
   const t = useT();
   const codeRef = useRef<HTMLInputElement | null>(null);
   const tokenRef = useRef<HTMLInputElement | null>(null);
   const [code, setCode] = useState(initialCode);
-  // the token lives in its field alone, read at submit and cleared once it unlocked (src/AGENTS.md, G-108)
   const [submitting, setSubmitting] = useState<"code" | "token" | null>(null);
   const [error, setError] = useState<UserError | null>(null);
   const [codeShort, setCodeShort] = useState(false);
@@ -58,15 +44,13 @@ export function AccessGate({ reason, initialCode, consumePairCode, pairingUnconf
     }
   };
 
-  // a scanned QR code brings the code along: no typing on the phone
   useEffect(() => {
     if (!scanned.current) return;
     scanned.current = false;
-    // the address code goes once: a failed attempt leaves an empty field, not a spent code to send again
     setCode("");
     const value = consumePairCode();
     if (value) void pair(value);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   const submitCode = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault();
@@ -96,7 +80,6 @@ export function AccessGate({ reason, initialCode, consumePairCode, pairingUnconf
     <main className="access-gate-screen">
       <div className="access-gate" data-testid="token-gate">
         <img src="/icons/icon-192.png?v=sheep1" alt="" width="44" height="44" className="access-gate-mark" />
-        {/* the title names the task on this screen, not the app (G-140); the mark above carries the brand */}
         <h1 id="access-gate-title" className="access-gate-title">
           {t(reason === "token_required" ? "Unlock" : "Pair this device")}
         </h1>
@@ -153,7 +136,6 @@ export function AccessGate({ reason, initialCode, consumePairCode, pairingUnconf
         {error !== null && (
           <p id="access-gate-error" className="access-gate-error" role="alert">{error.message}{error.detail !== null && <><br /><code>{error.detail}</code></>}</p>
         )}
-        {/* in the iOS app (app/) this page is all there is: the way back to its list of PCs */}
         {inNativeApp() && (
           <p className="access-gate-copy"><button type="button" className="btn" onClick={() => void changePc()}>{t("Change PC")}</button></p>
         )}

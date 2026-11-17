@@ -7,12 +7,10 @@ import { nativeModalOver } from "../lib/useFocusTrap.ts";
 import { AgentMark } from "./AgentMark.tsx";
 import "./AgentPicker.css";
 
-/** The shell entry is a program name like the agents beside it, so it stays in English. */
 const SHELL_LABEL = "Shell";
 
 const LAST_AGENT_KEY = "ovis:new-session-agent";
 
-/** The agent the last creation dialog started; "" is a plain shell. */
 export function rememberedAgent(): string {
   try {
     return window.localStorage.getItem(LAST_AGENT_KEY) ?? "";
@@ -25,21 +23,16 @@ export function rememberAgent(kind: string): void {
   try {
     window.localStorage.setItem(LAST_AGENT_KEY, kind);
   } catch {
-    /* private mode: the choice simply is not remembered */
   }
 }
 
 export interface AgentPickerProps {
   agents: AgentKind[];
-  /** the chosen kind; "" is a plain shell */
   value: string;
-  /** whether a plain shell leads the list (the default); false lists the agents alone, so `agents` holds at least one */
   shell?: boolean;
   disabled?: boolean;
   labelledBy: string;
-  /** a word beside an agent's row on what its launch takes (NewSessionDialog: model, effort); rows without one say nothing */
   hints?: Readonly<Record<string, string>>;
-  /** a last row that picks no agent but opens the setup of one this PC does not have yet */
   addAgent?: { label: string; onSelect: () => void };
   onChange: (kind: string) => void;
 }
@@ -48,22 +41,16 @@ function OptionMark({ kind }: { kind: string }) {
   return kind ? <AgentMark agent={kind} size={16} /> : <span className="agent-picker-shell"><Terminal aria-hidden="true" /></span>;
 }
 
-/**
- * A select whose rows carry each agent's mark: a native <option> cannot hold an icon.
- * The marks are the inline SVGs the sidebar already renders, so the list costs nothing extra.
- */
 export const AgentPicker = forwardRef<HTMLButtonElement, AgentPickerProps>(function AgentPicker({ agents, value, shell = true, disabled, labelledBy, hints = {}, addAgent, onChange }, ref) {
   const listId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
-  // Back closes the list, as Escape does, not the dialog it is in
   usePhoneSheetBack(() => setOpen(false), open);
   const [place, setPlace] = useState<CSSProperties>({});
   const options: AgentKind[] = shell ? [{ kind: "", label: SHELL_LABEL }, ...agents] : agents;
   const selectedIndex = Math.max(0, options.findIndex((option) => option.kind === value));
   const selected = options[selectedIndex]!;
-  // the Add row comes after the agents, at index options.length, and is never the value
   const addIndex = addAgent ? options.length : null;
 
   useEffect(() => {
@@ -72,12 +59,9 @@ export const AgentPicker = forwardRef<HTMLButtonElement, AgentPickerProps>(funct
       if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
     };
     const onMove = (event: Event): void => {
-      // Only an ancestor's scroll can move the anchor; text inputs scroll too.
       if (event.type === "resize" || (event.target instanceof Node && rootRef.current !== null && event.target.contains(rootRef.current))) setOpen(false);
     };
-    // The open list takes Escape wherever the focus is in its own dialog (Safari leaves it off a
-    // button a click opened): it closes the list, not the dialog, which leaves this Escape to the
-    // list. An overlay opened over the dialog (the palette, a native modal) keeps its own Escape.
+    // Safari leaves the focus off a button a click opened, so the focus may be on the body here
     const onEscape = (event: globalThis.KeyboardEvent): void => {
       if (event.key !== "Escape") return;
       const root = rootRef.current;
@@ -110,7 +94,6 @@ export const AgentPicker = forwardRef<HTMLButtonElement, AgentPickerProps>(funct
     const option = document.getElementById(`${listId}-${active}`);
     const menu = option?.parentElement;
     if (!option || !menu) return;
-    // Scroll only the list; moving its modal would close the anchored picker.
     const optionBounds = option.getBoundingClientRect();
     const menuBounds = menu.getBoundingClientRect();
     if (optionBounds.top < menuBounds.top) menu.scrollTop -= menuBounds.top - optionBounds.top;
@@ -118,7 +101,6 @@ export const AgentPicker = forwardRef<HTMLButtonElement, AgentPickerProps>(funct
   }, [open, active, listId]);
 
   const show = (): void => {
-    // fixed to the trigger, so the modal body's scroll box does not clip the list
     const rect = rootRef.current!.getBoundingClientRect();
     const below = window.innerHeight - rect.bottom - 16;
     const up = below < 160 && rect.top > below;
@@ -136,7 +118,6 @@ export const AgentPicker = forwardRef<HTMLButtonElement, AgentPickerProps>(funct
   const choose = (index: number): void => {
     setOpen(false);
     if (index === addIndex) addAgent!.onSelect();
-    // the Add row can go while the list is open (the device turned into a watching one): its index is then no row
     else if (options[index] !== undefined) onChange(options[index].kind);
   };
 
@@ -150,8 +131,6 @@ export const AgentPicker = forwardRef<HTMLButtonElement, AgentPickerProps>(funct
       return;
     }
     if (event.key === "Tab") {
-      // a select-only combobox takes the row it is on as focus moves on, as a native select does;
-      // leaving the Add row opens nothing
       if (active === addIndex) setOpen(false);
       else choose(active);
     } else if (event.key === "ArrowDown") {

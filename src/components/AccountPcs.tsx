@@ -1,4 +1,3 @@
-// the list's rows are the relay shell's (.relay-shell-pc*), also in Settings, where RelayShell.tsx is not loaded
 import "./RelayShell.css";
 import "./AccountPcs.css";
 
@@ -19,10 +18,6 @@ import { StatusDot, type StatusDotState } from "./StatusDot.tsx";
 
 export const PROVIDER_NAMES: Record<AccountProvider, string> = { github: "GitHub", google: "Google", apple: "Apple" };
 
-/**
- * The providers' own marks, as their brand rules ask for a sign-in button: GitHub's and Apple's in
- * one colour (currentColor), Google's "G" always in its four colours, never recoloured.
- */
 export function ProviderMark({ provider }: { readonly provider: AccountProvider }) {
   if (provider === "google") {
     return (
@@ -55,11 +50,6 @@ function providerLabel(provider: AccountProvider, t: ReturnType<typeof useT>): s
   }
 }
 
-/**
- * Sign in with GitHub, Google or Apple: equal neutral outlined buttons at 44px with the brand mark
- * at a fixed --space-4 inset and the label centered. When a sign-in is under way, the tapped
- * button swaps its brand mark for a spinner in the same 18px slot, keeps its box and disables peers.
- */
 export function AccountSignIn({
   onSignIn,
   error,
@@ -71,7 +61,6 @@ export function AccountSignIn({
 }: {
   readonly onSignIn: (provider: AccountProvider) => void;
   readonly error: string | null;
-  /** something that went as asked and left the person signed out (the account was deleted): said plainly, with nothing to try again */
   readonly notice?: string | null;
   readonly providers?: readonly AccountProvider[];
   readonly busy?: boolean;
@@ -130,13 +119,11 @@ export function AccountSignIn({
   );
 }
 
-/** One line at the sign-in column's foot: what the account service sees. */
 export function AccountFinePrint() {
   const t = useT();
   return <p className="account-fineprint">{t("The account only lists your PCs. Sessions stay end-to-end encrypted.")}</p>;
 }
 
-/** A PC's state in a word or two, as the dashboard's rows and counts say it beside its dot. */
 export function pcStateWord(state: MyPcState, t: ReturnType<typeof useT>): string {
   switch (state) {
     case "paired": return t("Ready");
@@ -148,74 +135,38 @@ export function pcStateWord(state: MyPcState, t: ReturnType<typeof useT>): strin
 
 export function accountPcStateText(pc: MyPc, t: ReturnType<typeof useT>): string {
   switch (pc.state) {
-    // a pairing from before the account: removing this device through the account does not reach it yet
     case "paired": return pc.linked ? pcStateWord("paired", t) : t("Ready · not in the account yet");
     case "offline": return t("Offline · {when}", { when: lastSeen(pc.last_seen_at) });
     default: return pcStateWord(pc.state, t);
   }
 }
 
-/**
- * A PC of the account in a PC's own Settings list. That page holds no relay pairing, so it cannot
- * tell whether a listed PC still waits for an approval: it says the PC is in the account, and keeps
- * only what the directory itself knows (offline, an update needed).
- */
 export function listedPcStateText(pc: MyPc, t: ReturnType<typeof useT>): string {
   return pc.state === "needs-approval" && !pc.paired ? t("In your account") : accountPcStateText(pc, t);
 }
 
-/**
- * The hosted app's front page, where a browser signed in to the account sees its PCs: it opens the
- * ones it is paired with there and asks the others for an approval. A PC's own page links here and
- * not to one PC's address (`/s/<id>/`): that address opens only in a browser already paired with
- * that PC on the hosted app's origin, which this page cannot know, and shows any other browser a
- * pairing screen that names no PC. Sign-in is offered on the global app only (docs/account.md).
- */
 export const HOSTED_APP_URL = `${GLOBAL_APP}/`;
 
-/** How long the account must not have heard from a PC before its row offers Remove: the life of a relay pass (docs/relay.md, "Relay pass"). */
 export const UNUSED_AFTER_MS = 48 * 60 * 60_000;
 
-/**
- * Whether the account has not heard from a listed PC for two days (its last mailbox pull, or its
- * listing when it never pulled): only such a PC is offered for removal. One in use is listed again
- * by the next device of the account that opens it (`enrollOwned` in accountController.ts) and by
- * its own waiting Add this PC screen, so removing it would not last, and would cost it the relay
- * meanwhile. A PC whose dates are missing or do not parse is not offered.
- */
 export function unusedPc(pc: Pick<MyPc, "last_seen_at" | "added_at">, now: number): boolean {
   const heard = Date.parse(pc.last_seen_at ?? pc.added_at ?? "");
   return Number.isFinite(heard) && now - heard > UNUSED_AFTER_MS;
 }
 
-/**
- * Takes a PC out of `account`'s directory, as the sign-in whose list the page shows: when another
- * sign-in (or none) took its place meanwhile (another tab), nothing is removed from that one's list.
- */
 export async function removePcFromAccount(service: Pick<AccountService, "session" | "forSignIn">, account: string, serverId: string): Promise<void> {
   const session = await service.session();
   if (session === undefined || session.account !== account) throw new SignedOutError();
   await service.forSignIn(session).deletePc(serverId);
 }
 
-/**
- * The account's PCs this app has not added, as rows of a PC's own Settings list (`.devices-list`),
- * and under them one link to the hosted app, where a browser opens them (`HOSTED_APP_URL`).
- * A PC the account has not heard from for two days (`unusedPc`: reinstalled, given away, never
- * enrolled) can be taken off the list; the confirm says that this revokes nothing and that the PC
- * is listed again if it is used again. A watching device is offered no removal.
- * `remove` takes the PC out of the account's directory; `onRemoved` then reads the list again, also
- * when the removal was refused because the sign-in ended (the page then shows who is signed in now).
- */
 export function AccountPcRows({ pcs, watching, remove, onRemoved, now = Date.now() }: {
   readonly pcs: readonly MyPc[]; readonly watching: boolean;
   readonly remove: (serverId: string) => Promise<void>; readonly onRemoved: () => void;
-  /** the time the rows are drawn at; the clock's when left out */
   readonly now?: number;
 }) {
   const t = useT();
   const [removing, setRemoving] = useState<MyPc | null>(null);
-  /** the list's group, which takes the focus once a removed row is gone with its button */
   const group = useRef<HTMLElement | null>(null);
   return (
     <>
@@ -246,15 +197,11 @@ export function AccountPcRows({ pcs, watching, remove, onRemoved, now = Date.now
           onConfirm={async () => {
             try { await remove(removing.server_id); } catch (error) {
               console.warn("Ovis: the PC was not removed from the account", error instanceof Error ? error.name : error);
-              // the sign-in ended or another took its place (revoked elsewhere, another tab): no retry can succeed, and
-              // these rows are no longer this browser's account. The page reads the stored sign-in again and says so.
               if (error instanceof SignedOutError) { setRemoving(null); onRemoved(); group.current?.focus(); return; }
-              // the dialog shows what it is thrown: the service's own words say nothing a person can act on
               throw new Error(t("{name} could not be removed. Try again.", { name: removing.name }));
             }
             setRemoving(null);
             onRemoved();
-            // the row and its button go with the list read again: the focus would drop to the page
             group.current?.focus();
           }} />
       )}
@@ -262,7 +209,6 @@ export function AccountPcRows({ pcs, watching, remove, onRemoved, now = Date.now
   );
 }
 
-/** Signed in, and the account lists no PC: says so, and why a PC added under another sign-in is not here. */
 export function NoAccountPcHint({ provider }: { readonly provider: AccountProvider }) {
   const t = useT();
   return <p className="settings-hint account-no-pc" role="note">{t("No PC in this account yet. Signed in with {provider}: each way of signing in is a separate Ovis account until you link them.", { provider: PROVIDER_NAMES[provider] })}</p>;
@@ -277,7 +223,6 @@ function statusDotOf(state: MyPcState): StatusDotState {
   }
 }
 
-/** How a saved PC answered the latest check (pcStatus.ts): its way and round trip, or why it did not. */
 export function PcStatusLine({ status, lastSeenAt = null }: { readonly status: PcStatus; readonly lastSeenAt?: string | null }) {
   const t = useT();
   if (status.kind === "answered") return <ConnectionLine state={{ kind: "answered", route: status.route, ...(status.relay === undefined ? {} : { relay: status.relay }), rttMs: status.rttMs }} />;
@@ -286,7 +231,6 @@ export function PcStatusLine({ status, lastSeenAt = null }: { readonly status: P
     reason={status.reason === "pc" ? t("The PC is off, or Ovis is not running on it.") : t("The relay did not answer. Check this device's network.")} />;
 }
 
-/** Check now, beside a list of PCs: probes each saved one again. */
 export function CheckPcsButton({ status, onCheck }: { readonly status: ReadonlyMap<string, PcStatus>; readonly onCheck: () => void }) {
   const t = useT();
   const checking = [...status.values()].some((one) => one.kind === "checking");
@@ -305,7 +249,6 @@ export function CheckPcsButton({ status, onCheck }: { readonly status: ReadonlyM
   );
 }
 
-/** The account's PCs: a paired one opens and says how it answered the latest check; the others say what they wait for. */
 export function AccountPcList({ pcs, onJoin, status }: { readonly pcs: readonly MyPc[]; readonly onJoin?: (pc: MyPc) => void; readonly status?: ReadonlyMap<string, PcStatus> }) {
   const t = useT();
   return (

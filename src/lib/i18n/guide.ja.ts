@@ -1,7 +1,3 @@
-/**
- * Japanese for the keys only components/SetupGuide.tsx (the first-run setup guide) uses.
- * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
- */
 export const GUIDE_JA: Record<string, string> = {
   "Look again": "もう一度確認",
   "Use Tailscale or Wi-Fi instead": "代わりに Tailscale か Wi-Fi を使う",

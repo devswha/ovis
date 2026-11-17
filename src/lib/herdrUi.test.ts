@@ -9,7 +9,6 @@ describe("herdr's copy_on_select in the browser", () => {
   afterEach(() => { forgetHerdrUi(); setTransport(nativeTransport); });
 
   it("loads the PC preference through the selected relay transport, not the shell host", async () => {
-    // Given
     const globalFetch = spyOn(globalThis, "fetch").mockRejectedValue(new Error("the static shell has no API"));
     const calls: { input: RequestInfo | URL; init?: RequestInit }[] = [];
     setTransport({
@@ -17,9 +16,7 @@ describe("herdr's copy_on_select in the browser", () => {
       fetch: async (input, init) => { calls.push({ input, init }); return Response.json({ copy_on_select: true }); },
     });
     try {
-      // When
       await loadHerdrUi();
-      // Then
       expect(globalFetch).not.toHaveBeenCalled();
       expect(calls).toHaveLength(1);
       expect(calls[0]?.input).toBe("/api/herdr-ui");
@@ -40,7 +37,6 @@ describe("herdr's copy_on_select in the browser", () => {
     const keys = { ...resolveHerdrKeys(undefined), prefix: "ctrl+a", prefixes: ["ctrl+a", "ctrl+b"] };
     await loadHerdrUi(answer(200, { copy_on_select: true, keys }));
     expect(herdrKeys()).toEqual(keys);
-    // a server from before prefix lists sends its one prefix
     await loadHerdrUi(answer(200, { copy_on_select: true, keys: { prefix: "ctrl+a", bindings: keys.bindings } }));
     expect(herdrKeys()?.prefixes).toEqual(["ctrl+a"]);
     await loadHerdrUi(answer(200, { copy_on_select: true, keys: { prefix: "ctrl+a", bindings: { ...keys.bindings, zoom: "prefix+z" } } }));

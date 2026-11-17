@@ -1,7 +1,3 @@
-/**
- * Korean for the keys only the hosted relay shell uses: components/RelayShell.tsx.
- * Register and fixed terms follow ../i18n.ko.ts; a key another feature also uses goes there.
- */
 export const RELAY_KO: Record<string, string> = {
   "Your PCs": "내 PC",
   "Unnamed PC": "이름 없는 PC",

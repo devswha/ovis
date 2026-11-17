@@ -1,8 +1,3 @@
-/**
- * Japanese for the settings keys of Settings → Chat → Composer's optional buttons and chips (and their one row of chips), of Settings → Agents → Other agents herdr knows, of Settings → Chat → Compaction and failed requests, of Settings → Terminal → Codex panes, of Settings → Appearance → Background workspaces apart, and of Settings → Shortcuts → herdr prefix keys: the rest of the
- * settings part (./settings.ja.ts), kept apart so each file stays short. Both files are the one settings part,
- * so a key lives in only one of them; its header lists the settings files and the register.
- */
 export const SETTINGS_COMPOSER_JA: Record<string, string> = {
   "Paste and send button": "貼り付けて送信ボタン",
   "A button in the empty message box sends the text copied on this device as a message.": "空の入力欄のボタンで、このデバイスでコピーしたテキストをメッセージとして送ります。",

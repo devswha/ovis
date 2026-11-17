@@ -1,11 +1,3 @@
-/**
- * Japanese for the keys only the devices files use:
- * components/DevicesPanel.tsx (with VIA), components/ConnectPhoneDialog.tsx, components/RelaySignIn.tsx, components/PhonePanel.tsx, components/PortalPanel.tsx,
- * components/PortalAuth.tsx, components/PortalInvite.tsx, components/RelayPanel.tsx,
- * components/PushTestControls.tsx, components/AccessGate.tsx, components/LanExposureNotice.tsx,
- * components/InstallHint.tsx, lib/install.ts, lib/installHint.ts, lib/portalAuth.ts, and shared/portal.ts (PORTAL_AUTH_PROBLEMS).
- * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
- */
 export const DEVICES_JA: Record<string, string> = {
   "Anyone who can reach {host} on your network can type into every pane: no access token is set and no device is paired yet.": "同じネットワークで {host} に届く人なら誰でも、すべてのペインに入力できます。アクセストークンは設定されておらず、ペアリング済みのデバイスもまだありません。",
   "Tap the Share button, then Add to Home Screen.": "共有ボタンをタップし、「ホーム画面に追加」を選択してください。",

@@ -1,7 +1,3 @@
-/**
- * Chinese for the keys only components/SetupGuide.tsx (the first-run setup guide) uses.
- * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
- */
 export const GUIDE_ZH: Record<string, string> = {
   "Look again": "重新检查",
   "Use Tailscale or Wi-Fi instead": "改用 Tailscale 或 Wi-Fi",
