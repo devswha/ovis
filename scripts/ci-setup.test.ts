@@ -4,6 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { topLevelTerms } from "./shell-workflow-rules.ts";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const action = Bun.YAML.parse(readFileSync(join(root, ".github/actions/setup-ci/action.yml"), "utf8")) as {
@@ -178,8 +179,9 @@ describe("CI cache contract", () => {
     const save = action.runs.steps.find((step) => step.name === "Cache Bun dependencies")!;
     const restore = action.runs.steps.find((step) => step.name === "Restore Bun dependencies (read-only)")!;
     expect(action.inputs.cache!.default).toBe("save");
-    expect(save.if).toContain("inputs.cache != 'restore'");
-    expect(restore.if).toContain("inputs.cache == 'restore'");
+    // a top-level && term: a mode comparison inside an || would let the step run under any mode
+    expect(topLevelTerms(save.if!)).toContain("inputs.cache == 'save'");
+    expect(topLevelTerms(restore.if!)).toContain("inputs.cache == 'restore'");
     expect(actionName(restore.uses!)).toBe("actions/cache/restore");
     expect(restore.with).toEqual(save.with);
     const canary = Bun.YAML.parse(readFileSync(join(root, ".github/workflows/omp-question-compat.yml"), "utf8")) as {

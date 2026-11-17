@@ -281,7 +281,7 @@ online. The repository variable overrides the choice:
 
 ```sh
 gh variable set CI_SELF_HOSTED_LABELS --body '"ubuntu-24.04"'   # PC offline: everything GitHub-hosted
-gh variable set CI_SELF_HOSTED_LABELS --body '["self-hosted","self-hosted-ovis"]'   # every pull request, pages.yml and release.yml too
+gh variable set CI_SELF_HOSTED_LABELS --body '["self-hosted","self-hosted-ovis"]'   # every pull request and release.yml too
 gh variable delete CI_SELF_HOSTED_LABELS   # back to the default
 gh variable set CI_SELF_HOSTED_CAPACITY --body 10   # self-hosted-ovis runners online
 ```
@@ -412,7 +412,7 @@ vm-runner.sh supervise                              # forever: one container per
   the Linux jobs go to `ovis-vm` (never to a fork's run); delete it once #3808 is in to move Fast checks too.
 - Routing: `gh variable set CI_LINUX_SELF_HOSTED_LABELS --body '["self-hosted","ovis-vm"]'` moves ci.yml's Linux jobs
   of pull requests and branch pushes to them (main keeps `CI_MAIN_SELF_HOSTED_LABELS`; tag pushes, manual runs and
-  the workflows that call ci.yml, such as release-validate, pages and relay-deploy, keep `CI_SELF_HOSTED_LABELS`). With `ovis-vm` the browser scripts run as five jobs. A manual run takes
+  the workflows that call ci.yml, such as release-validate and relay-deploy, keep `CI_SELF_HOSTED_LABELS`; pages.yml's call is always hosted). With `ovis-vm` the browser scripts run as five jobs. A manual run takes
   `self_hosted_labels`. `gh variable delete CI_LINUX_SELF_HOSTED_LABELS` moves them back.
 - The VM's per-host caps (`CHECK_HOST_*`, 3 browser workers, 3 test shards) keep a job inside 4 vCPUs. A VM that
   sleeps or drops mid-job loses that job (GitHub fails it once the runner stops answering); keep the VMs awake.
@@ -444,6 +444,27 @@ GitHub names as trusted (above), each under the run that built it, which is the 
 restore it: a trusted run's build never reaches another run, main's included. A job can write its
 own outbox (on disk, as its workspace is) and the 16 MiB locks volume, so at worst it makes the jobs
 waiting on a key wait up to five minutes and build themselves.
+
+Anyone who holds a runner registration token can register a runner under any label, and that runner
+then takes the jobs that ask for the label. So a job that holds a write permission (`id-token: write`
+too), an environment or a secret runs on GitHub-hosted runners only: its `runs-on` names a hosted
+label from a fixed list (`ubuntu-24.04`, say) literally, never a self-hosted label or a variable,
+input, job output or matrix value that could carry one, whatever the routing variables above say.
+The Pages run is GitHub-hosted as a whole, and restores no Actions cache: every job of a run can
+write the run's artifacts with its own token, deploy publishes the run's `github-pages` artifact
+by its name, and any job of a main run can write a cache that later runs restore. Its build,
+`current` and deploy jobs name `ubuntu-24.04`, and its manual validation calls `ci.yml` with
+`hosted_only: true`, which puts every job of that call on a hosted label and turns its caches off;
+`ci.yml`'s own runs and its other callers leave it unset and run as before.
+`scripts/privileged-jobs-workflow.test.ts` holds both rules to exact forms and fails on any other: a
+listed label written literally, the `hosted_only` prefix under a call that passes `hosted_only: true`,
+setup-ci's `cache: none` (or its `hosted_only` form), cache steps whose condition has
+`!inputs.hosted_only` as a top-level `&&` term, and reviewed actions at their exact references. It reads
+runner labels, actions and their inputs; it does not inspect shell commands or scripts for cache access.
+It rests on one observed fact: a job that asks only for a hosted label (`ubuntu-24.04`, `ubuntu-latest`)
+runs on GitHub's own runners even while a self-registered runner carrying that label is online and
+idle; only a job that also asks for `self-hosted` reaches such a runner. That was observed by a trial on
+2026-11-17 (14 of 14 jobs); it is not documented by GitHub.
 
 ### Mac runner
 

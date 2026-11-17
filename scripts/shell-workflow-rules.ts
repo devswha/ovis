@@ -9,6 +9,31 @@ export interface Job { needs?: string | string[]; if?: string; env?: Record<stri
 export interface Workflow { on: Record<string, unknown>; env?: Record<string, string>; permissions?: Record<string, string>; jobs: Record<string, Job> }
 
 export const root = join(dirname(new URL(import.meta.url).pathname), "..");
+/** The terms of a condition's top-level `&&`, or none when its top level is an `||`: a term inside `||` does not hold alone. */
+export function topLevelTerms(condition: string): string[] {
+  const text = condition.trim().replace(/^\$\{\{([\s\S]*)\}\}$/, "$1").trim();
+  const terms: string[] = [];
+  let depth = 0;
+  let quoted = false;
+  let start = 0;
+  for (let at = 0; at < text.length; at++) {
+    const char = text[at]!;
+    if (char === "'") quoted = !quoted;
+    if (quoted) continue;
+    if (char === "(" || char === "[") depth++;
+    if (char === ")" || char === "]") depth--;
+    if (depth === 0 && text.startsWith("||", at)) return [];
+    if (depth === 0 && text.startsWith("&&", at)) {
+      terms.push(text.slice(start, at).trim());
+      start = at + 2;
+      at++;
+    }
+  }
+  return [...terms, text.slice(start).trim()];
+}
+
+/** The GitHub-hosted runner labels the workflows may name for a job that must never reach a self-hosted runner. */
+export const GITHUB_HOSTED_LABELS = ["ubuntu-24.04", "ubuntu-24.04-arm", "windows-latest", "windows-2025", "macos-15", "macos-15-intel", "macos-latest"];
 export const parseWorkflow = (path: string): Workflow => Bun.YAML.parse(readFileSync(path, "utf8")) as Workflow;
 
 /** The only actions a job holding the Cloudflare token may use, each at its full commit SHA. */
