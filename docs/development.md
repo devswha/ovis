@@ -1397,7 +1397,7 @@ request runs, and `"ubuntu-24.04"` keeps only main GitHub-hosted. `CI_SELF_HOSTE
 `"ubuntu-24.04"` still keeps every job hosted. Delete the variable while no reserved runner is online,
 or main's jobs wait for one.
 
-The Apple Silicon (`macos-15`) jobs that hold no secret can run on the self-hosted Mac `eamac`
+The Apple Silicon (`macos-15`) jobs that hold no secret can run on the self-hosted Mac
 (labels `self-hosted, macOS, ARM64, self-hosted-ovis-mac`; two runners): they take the repository
 variable `CI_MAC_LABELS`, a JSON label list (`["self-hosted","self-hosted-ovis-mac"]`) or the JSON
 string `"macos-15"`; unset, they stay on `macos-15`. `ci.yml`'s Native macOS session identity job
