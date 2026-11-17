@@ -201,7 +201,7 @@ describe("the Add-a-PC sheet", () => {
     await click("Ask to join");
     expect(calls.joins).toEqual([[pc]]);
     await update(props("join", pc, { kind: "compare", name: "desk2", digits: "123456", confirmed: false }));
-    expect(all()).toContain("A device connected to desk2 shows three numbers: pick this one there.");
+    expect(all()).toContain("A device connected to desk2 shows three numbers: pick this one there, or approve on desk2 if it shows this request.");
     const digits = renderer!.root.findByProps({ className: "relay-shell-digits" });
     expect(text(digits)).toBe("123 456");
     expect(digits.props["aria-label"]).toBe("1 2 3 4 5 6");
@@ -211,11 +211,12 @@ describe("the Add-a-PC sheet", () => {
     expect(calls.matches).toEqual([[]]);
     await update(props("join", pc, { kind: "compare", name: "desk2", digits: "123456", confirmed: true }));
     expect(steps()).toEqual(["done", "done", "running", "todo"]);
-    expect(all()).toContain("Waiting for an account member to approve this device within 90 seconds…");
+    expect(all()).toContain("Waiting for an account member or desk2 to approve this device within 90 seconds…");
+    expect(all()).toContain("On a device of your account that is connected to desk2, or on desk2 itself");
     await update(props("join", pc, { kind: "failed", failure: "pair-declined", name: "desk2", detail: null }));
     expect(steps()).toEqual(["done", "done", "failed", "todo"]);
     expect(all()).not.toContain("Work MacBook");
-    // a join is never approved on the PC and has no link to open again: the refusal names the device that approves
+    // a join has no link to open again: the refusal names the device that approves
     expect(text(renderer!.root.findByProps({ className: "add-pc-problem" }))).toBe("No device of your account approved this one");
     expect(all()).toContain("Nobody picked the number within 90 seconds, or it was denied. Open desk2 in Ovis on a device that already uses it, keep it open, then try again. If it keeps failing, pair this device with a QR or code from desk2.");
     expect(all()).not.toContain("Open the link again");
@@ -387,13 +388,21 @@ describe("the Add-a-PC sheet", () => {
     expect(calls).toMatchObject({ closes: 1, cancels: 0 });
   });
 
-  it("keeps a second way on a new PC's sheet for one that shows no number: Ask to join takes the join sheet", async () => {
+  it("keeps a second way on a new PC's sheet and on the join sheet based on whether the PC waits to be added, not a number before Add starts", async () => {
     let asked = 0;
     await mount({ ...props("new", pcOf(), LIST), onAskToJoin: () => { asked += 1; } });
+    expect(text(renderer!.root.findByProps({ className: "add-pc-sub" }))).toBe("Type the number desk2 shows on its own screen after you start Add, then approve there. If desk2 is already in your account, ask to join instead.");
     expect(renderer!.root.findByType("footer").findAll((n) => n.type === "button").map(text)).toEqual(["Cancel", "Ask to join", "Add this PC"]);
     await click("Ask to join");
     expect(asked).toBe(1);
     expect(calls.joins).toEqual([]);
+
+    let typed = 0;
+    await update({ ...props("join", pcOf(), LIST), onTypeNumber: () => { typed += 1; } });
+    expect(all()).toContain("If desk2 is waiting on its own screen to be added, type its number here instead.");
+    expect(renderer!.root.findByType("footer").findAll((n) => n.type === "button").map(text)).toEqual(["Cancel", "Type the number", "Ask to join"]);
+    await click("Type the number");
+    expect(typed).toBe(1);
   });
 
   it("places the primary action first in DOM order on phone sheets and second on desktop across sheet phases", async () => {

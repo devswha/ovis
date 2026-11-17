@@ -101,7 +101,7 @@ export function RelayPcDetails({
       ? t("Update Ovis on it")
       : pc.state === "needs-approval"
         ? fresh
-          ? t("{name} is new in your account. Choose Add: type the number it shows on its own screen, or ask to join if it shows none.", { name: pc.name })
+          ? t("{name} is new in your account. Choose Add to see a six-digit number on its screen and type it here, or ask to join if it is already in your account.", { name: pc.name })
           : joinReason ?? t("{name} has not approved this device yet.", { name: pc.name })
         : null;
 

@@ -283,6 +283,7 @@ describe("RelayPcDetails", () => {
 
     await act(async () => { renderer?.unmount(); });
     await mount({ pc: listed(null), now: NOW, onClose: none, onOpenSheet: (_pc, mode) => { opened.push(mode); } });
+    expect(textOf(rootOf(renderer))).toContain("Home server is new in your account. Choose Add to see a six-digit number on its screen and type it here, or ask to join if it is already in your account.");
     await act(async () => { buttonOf("Add")[0]?.props.onClick(); });
     expect(opened).toEqual(["join", "new"]);
   });
