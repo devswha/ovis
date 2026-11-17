@@ -210,7 +210,7 @@ describe("the signers", () => {
       shared.power = "bound";
     }).toThrow(TypeError);
     expect([JSON.stringify(before), after.signers[phone.key]]).toEqual([kept, rowBy("full", addPhone, owner)]);
-    // So through an answer: the member it was given shares its rows with the member it gives, and neither can be written.
+    // Through an answer the member it gives has rows of its own, copies of those it was given: they are frozen as well.
     const shown = await shownEntries(await memberOf(base), answer(addInvite, [out]));
     expect(Object.values(shown.member.state.signers).map((row) => Object.isFrozen(row))).toEqual([true, true, true, true]);
   });
@@ -1057,6 +1057,21 @@ describe("going back", () => {
       const result = await whileVerifying(() => change(given), () => shownEntries(given.member, given.answer));
       expect([what, result]).toEqual([what, unchanged]);
     }
+  });
+
+  test("a member's rows are read once, frozen ones too: a row whose power reads otherwise while a signature is checked is taken as it first read", async () => {
+    const byWatch = await on(addInvite, watch, { kind: "device", adds: [late, "full"] });
+    const member = await memberOf(base);
+    const unchanged = await shownEntries(member, answer(addInvite, [byWatch]));
+    expect(unchanged.took.map((taken) => taken.outcome)).toEqual([passedOver("signer_not_allowed")]);
+    // The watch's row as a frozen object whose power is read from what the caller holds: bound when the answer arrives.
+    const live: { power: SignerPower } = { power: "bound" };
+    const row = Object.freeze(Object.defineProperty(rowBy("bound", addWatch, owner), "power", { get: () => live.power, enumerable: true }));
+    const given = { entries: member.entries, state: { ...member.state, signers: { ...member.state.signers, [watch.key]: row } } };
+    expect([Object.isFrozen(row), signerPower(given.state, watch.key)]).toEqual([true, "bound"]);
+    // The runtime verifies the watch's entry, and the row says full before the runtime answers.
+    const result = await whileVerifying(() => { live.power = "full"; }, () => shownEntries(given, answer(addInvite, [byWatch])));
+    expect(result).toEqual(unchanged);
   });
 
   test("an answer that follows a place the member does not hold is the caller's mistake", async () => {

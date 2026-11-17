@@ -343,10 +343,11 @@ async function fits(entry: Entry, before: HeldEntry): Promise<Fit> {
  * A place the member does not hold for the answer to follow, or a state whose footing is not the
  * member's own entry at that place, is the caller's mistake: a RangeError, and nothing is judged.
  *
- * The member and the answer are read once, before a signature is awaited: the member's entries,
- * its state and its rows, and the answer's entries and its head are copied (a frozen row is kept
- * as it is). What comes back is built from those copies alone, so it is of the member and of the
- * answer as they were handed over, whatever the caller does to either meanwhile or later.
+ * The member and the answer are read once, before a signature is awaited: the member's entries
+ * and its state, each row by its four fields (a frozen row too: a field that is read through an
+ * accessor may read otherwise later), and the answer's entries and its head are copied. What
+ * comes back is built from those copies alone, so it is of the member and of the answer as they
+ * were handed over, whatever the caller does to either meanwhile or later.
  */
 export async function shownEntries(member: ListMember, answer: ShownAnswer, proof?: KeyProof): Promise<ShownResult> {
   const { after } = answer;
@@ -354,7 +355,7 @@ export async function shownEntries(member: ListMember, answer: ShownAnswer, proo
   const shown = [...answer.entries];
   const entries = [...member.entries];
   const handed = { ...member.state };
-  let rows: Rows | null = Object.fromEntries(Object.entries(handed.signers).map(([key, row]) => [key, Object.isFrozen(row) ? row : Object.freeze({ ...row })]));
+  let rows: Rows | null = Object.fromEntries(Object.entries(handed.signers).map(([key, { power, seq, by, ended }]) => [key, Object.freeze({ power, seq, by, ended })]));
   /** The footing is read from here wherever it is asked for: it moves with each entry that the member takes and that is not loose, also inside this answer. */
   let state: SignersState = { ...handed, footing: { ...handed.footing }, signers: rows };
   const { list } = state;
