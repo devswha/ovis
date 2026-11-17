@@ -54,9 +54,9 @@ function workflowEntries(base: string): [string, Dirent][] {
   return [...top, ...actions];
 }
 
-/** Every regular file at the top of .github/workflows and under .github/actions, as paths from `base`. */
-export function workflowAndActionFiles(base = root): string[] {
-  return workflowEntries(base).filter(([, entry]) => entry.isFile()).map(([path]) => path).sort();
+/** Every regular file at the top of .github/workflows and under .github/actions, as paths from the repository's root. */
+export function workflowAndActionFiles(): string[] {
+  return workflowEntries(root).filter(([, entry]) => entry.isFile()).map(([path]) => path).sort();
 }
 
 /** Why the workflow tests cannot be sure they read every workflow and action: a symlink there (never followed), or a file GitHub loads under another spelling. */

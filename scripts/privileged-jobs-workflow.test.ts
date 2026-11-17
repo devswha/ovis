@@ -81,14 +81,18 @@ function writeScopes(workflows: Workflows, file: string, job: AnyJob): string[] 
 }
 
 /**
- * The secrets-context references `value` makes where GitHub evaluates expressions: inside `${{ }}` in any string (a `run:`
- * script's included), and in a whole `if:` value, which is an expression without braces. A bare word elsewhere (a step's
- * name) is prose, not a reference. Each reference once, in the order the job makes them.
+ * The secrets-context references `value` makes where GitHub evaluates expressions: in a string with `${{`, everything from
+ * its first `${{` to its last `}}` (a `run:` script's included), and a whole brace-free `if:` value, which is an
+ * expression. The span is greedy so that a `}}` inside a quoted string (`${{ format('}}', secrets.X) }}`) cannot end it
+ * early; prose between two expressions of one value then counts too, which errs on the safe side. A string without `${{`
+ * (a step's name) is prose, not a reference. Each reference once, in the order the job makes them.
  */
 function secretReferences(value: unknown, key = ""): string[] {
   if (typeof value === "string") {
-    const expressions = key === "if" ? [value] : [...value.matchAll(/\$\{\{([\s\S]*?)\}\}/g)].map((match) => match[1]!);
-    return expressions.flatMap((expression) => [...expression.matchAll(SECRET)].map((match) => match[0].replace(/\s+/g, "")));
+    const start = value.indexOf("${{");
+    const end = value.lastIndexOf("}}");
+    const span = start >= 0 ? value.slice(start + 3, end > start ? end : value.length) : key === "if" ? value : "";
+    return [...span.matchAll(SECRET)].map((match) => match[0].replace(/\s+/g, ""));
   }
   if (Array.isArray(value)) return value.flatMap((entry) => secretReferences(entry));
   if (typeof value === "object" && value !== null) return Object.entries(value).flatMap(([name, entry]) => secretReferences(entry, name));
@@ -401,6 +405,8 @@ describe("jobs that hold a write permission, an environment or a secret", () => 
     ["refuses a called job that reads a secret its caller passes by name", called({ secrets: { T: "${{ secrets.T }}" } }, { "runs-on": VARIABLE, permissions: { contents: "read" }, env: { T: "${{ secrets.T }}" } }), [`called.yml job: runs-on ${JSON.stringify(VARIABLE)} with secrets.T`]],
     ["does not count a step's name that says secrets: prose, not a reference", one({ "runs-on": LIGHT, steps: [{ name: "Check the signing secrets", run: "echo the secrets are set" }] }), []],
     ["refuses a secret a run script reads through an expression", one({ "runs-on": LIGHT, steps: [{ run: 'echo "${{ secrets.T }}"' }] }), [`x.yml job: runs-on ${JSON.stringify(LIGHT)} with secrets.T`]],
+    ["refuses a secret after a quoted }} in the same expression", one({ "runs-on": LIGHT, env: { T: "${{ '}}' && secrets.T }}" } }), [`x.yml job: runs-on ${JSON.stringify(LIGHT)} with secrets.T`]],
+    ["refuses a secret passed to a function after a quoted }}", one({ "runs-on": LIGHT, env: { T: "${{ format('}}', secrets.X) }}" } }), [`x.yml job: runs-on ${JSON.stringify(LIGHT)} with secrets.X`]],
     ["refuses a secret in a step's condition, an expression without braces", one({ "runs-on": LIGHT, steps: [{ if: "secrets.T != ''", run: "true" }] }), [`x.yml job: runs-on ${JSON.stringify(LIGHT)} with secrets.T`]],
     ["refuses a call to another repository's workflow", one({ uses: "owner/repo/.github/workflows/deploy.yml@main", secrets: "inherit", permissions: WRITE }), ["x.yml job: calls owner/repo/.github/workflows/deploy.yml@main, which this test cannot read: only a workflow in ./.github/workflows/<name>.yml of this repository"]],
     ["refuses a full-path call to a workflow of this repository", one({ uses: "devswha/ovis/.github/workflows/ci.yml@main", permissions: WRITE }), ["x.yml job: calls devswha/ovis/.github/workflows/ci.yml@main, which this test cannot read: only a workflow in ./.github/workflows/<name>.yml of this repository"]],

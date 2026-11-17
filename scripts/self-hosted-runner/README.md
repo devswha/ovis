@@ -465,8 +465,9 @@ by its name, and any job of a main run can write a cache that later runs restore
 listed label written literally, the `hosted_only` prefix under a call that passes `hosted_only: true`,
 setup-ci's `cache: none` (or its `hosted_only` form), cache steps whose condition has
 `!inputs.hosted_only` as a top-level `&&` term, and reviewed actions at their exact references. It
-also fails on a workflow or action file GitHub loads that does not end in `.yml` (a `.yaml` one), and on
-a job that calls a workflow it cannot read (another repository's). It reads runner labels, actions and
+also fails on a workflow or action file GitHub loads that does not end in `.yml` (a `.yaml` one), on a
+symlink anywhere in `.github/workflows` or `.github/actions` (never followed), and on a job that calls a
+workflow it cannot read (another repository's). It reads runner labels, actions and
 their inputs; it does not inspect shell commands or scripts for cache access.
 The hosted labels on the list are the ones the covered jobs use: `ubuntu-24.04`, `ubuntu-24.04-arm`,
 `windows-latest`, `windows-2025`, `macos-15`, `macos-15-intel` and `macos-latest`. For `ubuntu-24.04` the
