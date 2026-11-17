@@ -35,6 +35,7 @@ describe("pending message ownership", () => {
       now += 10 * 60 * 1000 + 1;
       expect(shown(page)).toEqual([["asked", "held", false, true, null]]);
       expect(shown(new PendingMessageStore(() => port))).toEqual([["asked", "held", false, true, null]]);
+      // the old connection's answer coming late, with no connection left to prove it, changes nothing
       page.accept("p", requested("asked"), null);
       expect(shown(page)).toEqual([["asked", "held", false, true, null]]);
       expect(page.begin("p", "asked")).toBe(true);
@@ -55,6 +56,7 @@ describe("pending message ownership", () => {
     const port = storage(), page = new PendingMessageStore(() => port);
     page.publish("p", [requested("going"), requested("gone")], [], "first");
     page.suspendScope("first");
+    // Send now left the page and the connection dropped before any answer: it may have been typed
     expect(page.begin("p", "going")).toBe(true);
     expect(page.unconfirm("p", "going")).toBe(true);
     page.fail("p", "going", { code: "disconnected", message: "The connection closed before the send was confirmed" }, true, 0);
@@ -86,6 +88,7 @@ describe("pending message ownership", () => {
     port.setItem("ovis:pending:pc-b:later", JSON.stringify({ messages: [message("later")] }));
     page.refresh("pc-b:later");
     expect(state("pc-b:later")).toEqual(["held"]);
+    // saved, a receipt's copy is uncertain whichever connection brought it
     expect(new PendingMessageStore(() => port).read("pc-b:pane").map((row) => row.state)).toEqual(["uncertain"]);
     page.suspendScope("B-new");
     expect(state("pc-b:pane")).toEqual(["uncertain"]);
@@ -110,6 +113,7 @@ describe("pending message ownership", () => {
     expect(page.read("p")[0]?.error).toEqual(refused);
     expect(new PendingMessageStore(() => port).read("p").map(({ id, state, heldByRequest }) => [id, state, heldByRequest ?? false]))
       .toEqual([["asked", "held", true], ["going", "uncertain", true], ["other", "uncertain", false]]);
+    // one this page discarded is not held again by the older tab's stale copy
     page.removeCopy("p", "asked");
     port.setItem("ovis:pending:p", JSON.stringify({ version: 1, messages: [{ ...requested("asked"), error: refused }] }));
     page.refresh("p");
@@ -123,6 +127,7 @@ describe("pending message ownership", () => {
     const states = (store: PendingMessageStore) => store.read("p").map(({ id, state }) => [id, state]);
     expect(states(page)).toEqual([["queued", "uncertain"], ["faulted", "uncertain"], ["asked", "held"]]);
     expect(states(new PendingMessageStore(() => port))).toEqual([["queued", "uncertain"], ["faulted", "uncertain"], ["asked", "held"]]);
+    // the bridge's held receipt proves the other two untyped, on this page only and until its end
     page.publish("p", [], frameRemovals(heldFrame({ queued: 60_000, faulted: 60_000, asked: 60_000 })), "second");
     expect(page.read("p").map(({ id, state, heldUntil }) => [id, state, heldUntil !== undefined])).toEqual([["queued", "held", true], ["faulted", "held", true], ["asked", "held", false]]);
     expect(states(new PendingMessageStore(() => port))).toEqual([["queued", "uncertain"], ["faulted", "uncertain"], ["asked", "held"]]);
@@ -140,6 +145,7 @@ describe("pending message ownership", () => {
     before.suspendScope("old");
     const store = new PendingMessageStore(() => port);
     store.accept("p", message("live", "sending", "same"), "other");
+    // a plain receipt for a saved copy proves nothing about it
     store.publish("p", [], [{ id: "unproved", outcome: "sent" }], "new");
     expect(store.read("p").map((row) => row.id)).toEqual(["delivered", "unproved", "live"]);
     store.publish("p", [], [{ id: "delivered", outcome: "sent", resumed: true }, { id: "live", outcome: "sent", resumed: true }], "new");
@@ -148,6 +154,7 @@ describe("pending message ownership", () => {
     store.refresh("p");
     store.accept("p", message("delivered", "sending", "same"), "late");
     expect(store.read("p").map((row) => row.id)).toEqual(["live"]);
+    // another pane's receipt settles nothing here
     store.publish("other", [], [{ id: "live", outcome: "sent", resumed: true }], "new");
     expect(store.read("p").map((row) => row.id)).toEqual(["live"]);
   });
@@ -170,6 +177,8 @@ describe("pending message ownership", () => {
     expect(before.read("p").map(({ id, state, serverOwned }) => [id, state, serverOwned])).toEqual([
       ["queued", "held", false], ["unproved", "uncertain", false],
     ]);
+    // The receipt's proof is this page's alone: saved, the copy is uncertain until a new receipt proves it after a reload.
+    // An early resumed held receipt recovers a copy saved later by another tab.
     const reloaded = new PendingMessageStore(() => port);
     expect(reloaded.read("p").map(({ id, state, serverOwned }) => [id, state, serverOwned])).toEqual([
       ["queued", "uncertain", false], ["unproved", "uncertain", false],
@@ -179,6 +188,7 @@ describe("pending message ownership", () => {
     expect(before.read("p").map(({ id, state, serverOwned }) => [id, state, serverOwned])).toEqual([
       ["queued", "held", false], ["early", "held", false],
     ]);
+    // Once a held copy's explicit resend starts, a duplicate resumed held receipt never clears its unconfirmed mark.
     expect(before.begin("p", "queued")).toBe(true);
     expect(before.unconfirm("p", "queued")).toBe(true);
     before.publish("p", [], [{ id: "queued", outcome: "held", resumed: true, until: Date.now() + 60_000 }], "new");
@@ -282,6 +292,7 @@ describe("pending message ownership", () => {
       expect(tab.read("p")[0]!.state).toBe("uncertain");
       tab.publish("p", [], frameRemovals(heldFrame({ slept: 600_000 })), "new");
       expect(tab.read("p")[1]!.state).toBe("held");
+      // the device sleeps eleven minutes: the forward-only clock stood still, the wall clock did not
       wall += 660_000;
       expect(tab.read("p")[1]!.state).toBe("uncertain");
     } finally { clock.mockRestore(); }
@@ -322,6 +333,7 @@ describe("pending message ownership", () => {
     expect(ids({ held: ["held"] })).toEqual([]);
     expect(ids({ ...heldFrame({ held: 1_000 }), held_ms: "1000" })).toEqual([]);
     for (const ms of [Number.NaN, Infinity, 0, -1, 10 * 60 * 1000 + 1, "1000"]) expect(ids({ ...heldFrame({ held: 1_000 }), held_ms: { held: ms } })).toEqual([]);
+    // no end on the PC's clock, or no clock to reckon it by (a bridge that names neither): no proof
     const { held_until: _until, ...noEnd } = heldFrame({ held: 1_000 });
     const { server_time: _time, ...noClock } = heldFrame({ held: 1_000 });
     expect(ids(noEnd)).toEqual([]);
@@ -370,6 +382,7 @@ describe("pending message ownership", () => {
     expect(tab.read("p").map(({ id, state }) => [id, state])).toEqual([["x", "uncertain"], ["early", "uncertain"]]);
     tab.publish("p", [], frameRemovals(heldFrame({ x: 60_000 })), "c3");
     expect(tab.read("p").map(({ id, state }) => [id, state])).toEqual([["x", "held"], ["early", "uncertain"]]);
+    // a Send now that leaves while the connection drops, refused with nothing typed: not held again without a new receipt
     expect(tab.begin("p", "x")).toBe(true);
     expect(tab.unconfirm("p", "x")).toBe(true);
     tab.suspendScope("c3");
@@ -414,6 +427,7 @@ describe("pending message ownership", () => {
     expect(reloaded.read("p").map((row) => row.id)).toEqual(["pi:two", "held"]);
     reloaded.publish("other", [], [{ id: "pi:two", outcome: "consumed" }], "new");
     expect(reloaded.read("p")).toHaveLength(2);
+    // A stale tab's subsequent storage event or acceptance cannot resurrect a consumed ID.
     port.setItem("ovis:pending:p", JSON.stringify({ messages: [receipt] }));
     reloaded.refresh("p");
     expect(reloaded.read("p")).toEqual([]);
@@ -656,6 +670,7 @@ describe("pending message ownership", () => {
     live.accept("pc:pane", waiting, "connection-1");
     const restored = new PendingMessageStore(() => port);
     expect(restored.read("pc:pane")[0]).toMatchObject({ id: "pi:1", state: "uncertain", serverOwned: false, error: { code: "transcript_unconfirmed" } });
+    // Only an explicitly owner-scoped server snapshot may restore live confirmation authority.
     restored.publish("pc:pane", [waiting], [], "connection-2");
     expect(restored.read("pc:pane")[0]).toMatchObject({ state: "uncertain", serverOwned: true, error: { code: "pi_transcript_pending" } });
     restored.publish("pc:pane", [], [{ id: "pi:1", outcome: "consumed" }], "connection-2");
@@ -670,6 +685,7 @@ describe("pending message ownership", () => {
   });
 });
 
+// #511: a saved copy of a message for an agent alone stays one across a reload
 it("keeps a saved row's agent_only across a reload", () => {
   const port = storage(), first = new PendingMessageStore(() => port);
   first.accept("p", { ...message("only", "held", "> q\nc"), agent_only: true }, null);

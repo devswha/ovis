@@ -25,6 +25,10 @@ export const DRAFT_TTL_MS = 24 * 60 * 60 * 1000;
 
 interface StoredDraft extends InputDraft { at: number }
 
+/**
+ * The draft a stored record restores, or the empty one: malformed and expired records read as
+ * nothing held, so a hand-edited or stale entry cannot put text back on screen.
+ */
 export function restoreDraft(raw: string | null, now: number): InputDraft {
   if (raw === null) return EMPTY_DRAFT;
   let value: unknown;
@@ -41,10 +45,13 @@ function isPrintableChar(data: string): boolean {
   return data.length > 0 && !/[\x00-\x1f\x7f-\x9f]/u.test(data);
 }
 
+/** xterm's bracketed paste: the pasted text between the frames, which is what the user gave. */
 const BRACKETED_PASTE = /^\x1b\[200~([\s\S]*)\x1b\[201~$/;
 
+/** Backspace as the terminal sends it: DEL, or BS for Ctrl+H; Ctrl+Backspace's Ctrl+W erases a word. */
 const ERASE = /^[\x7f\b\x17]+/;
 
+/** A typed Enter, or the line breaks of a paste: CRLF, CR or LF, a run of them read as one. */
 const LINE_BREAKS = /[\r\n]+/g;
 
 /**
@@ -67,10 +74,12 @@ export function applyToDraft(draft: InputDraft, data: string): InputDraft {
   let next = draft;
   const erase = pasted === undefined ? ERASE.exec(text)?.[0].length ?? 0 : 0;
   if (erase > 0) {
+    // code points, not UTF-16 units: one Backspace never leaves half of an emoji behind
     if (!draft.truncated) {
       const points = Array.from(draft.text);
       for (const key of text.slice(0, erase)) {
         if (key !== "\x17") { points.pop(); continue; }
+        // a word as a shell's Ctrl+W takes it: the blanks before the cursor, then the word before them
         while (points.length > 0 && /\s/u.test(points.at(-1)!)) points.pop();
         while (points.length > 0 && !/\s/u.test(points.at(-1)!)) points.pop();
       }

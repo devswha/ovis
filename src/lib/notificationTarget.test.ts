@@ -207,6 +207,7 @@ describe("desktop link delivery", () => {
     return { subscribe, open: (query: string) => open(query) };
   }
   const place = (fields: Partial<AppLink>): AppLink => ({ machine: "local", workspace: null, workspaceSlug: null, pane: null, view: null, settings: null, ...fields });
+  // workspace 3 is "alpha"; herdr handed pane t3 to workspace 4 ("beta"), and t1 is alpha's
   const roster = [{
     id: "local",
     state: "connected",

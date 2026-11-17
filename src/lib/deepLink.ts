@@ -29,9 +29,11 @@ export interface CreateDraft {
   kind: "workspace" | "tab";
   cwd: string | null;
   name: string | null;
+  /** an agent kind herdr names (the dialog keeps it only when herdr offers it); "" is a shell */
   agent: string | null;
 }
 
+/** what a link may put in the dialog's fields: no more than a person would type */
 const FIELD_MAX = { cwd: 1024, name: 120 } as const;
 const AGENT_KIND = /^[a-z0-9][a-z0-9._-]{0,39}$/;
 
@@ -141,6 +143,11 @@ export function workspacePane(snapshot: Pick<SessionSnapshot, "workspaces" | "pa
 
 export type LinkNote = "pane-closed" | "workspace-closed" | "machine-missing";
 
+/**
+ * The workspace is the id's when the slug still names it
+ * (or the link has none); when another open workspace has the slug and this one does not, the id
+ * was handed out again and the slug's workspace is the one meant.
+ */
 export function resolveLink(snapshot: Pick<SessionSnapshot, "workspaces" | "panes" | "layouts">, named: Pick<AppLink, "workspace" | "workspaceSlug" | "pane">): { pane: string | null; workspace: string | null; note: LinkNote | null } {
   const link = withRosterId(snapshot, named);
   const byId = link.workspace ? snapshot.workspaces.find((candidate) => candidate.workspace_id === link.workspace) : undefined;

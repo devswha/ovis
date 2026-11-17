@@ -11,6 +11,19 @@ function place(slot: HTMLElement, box: Box, origin: { left: number; top: number 
   for (const name of HELD) if (at[name] !== "") slot.style.setProperty(name, at[name]);
 }
 
+/**
+ * Shown again, the slot gets back what its style held only where that still is the hold's value: the commit that
+ * shows a thread clears a split slot's rectangle before the hold lets go, and what React wrote then stands.
+ *
+ * The box is written as the commit that covers the pane is made, before anything lays the page out again (an
+ * insertion effect: the list's own layout effects read the page as it opens, a scroll put back, a focus given). Laid
+ * out for a moment at the size the area gives it once the bars are gone, a transcript at its end would be cut short
+ * there and stand short of it once the box is held, and its chat would take that move for the reader's and draw
+ * Jump to latest. The room a header over
+ * the pane took of it as it was shown (--header-over) is held with the box: under the list the page gives it none,
+ * and a transcript at its end, losing that room at its top while hidden, would be moved twice (by the browser, and by
+ * the chat's list holding its rows in place) and stand short of its end when the row shows it again.
+ */
 export function useKeptPaneBoxes(area: RefObject<HTMLElement | null>, covered: boolean): void {
   const boxes = useRef(new WeakMap<Element, Box>());
   const bySlot = useRef(new Map<string, Box>());

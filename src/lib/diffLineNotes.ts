@@ -12,6 +12,7 @@ export interface DiffNoteCapture {
   line: DiffFindLine;
 }
 
+/** A fence of backticks longer than the longest run in `text` (at least three): no line of it can close the fence. */
 export function codeFence(text: string): string {
   // counted in a loop: a line of a megabyte holds more runs than a spread into Math.max takes in V8
   let longest = 0;
@@ -52,6 +53,11 @@ const KIND_WORD = { addition: "added", deletion: "removed", context: "unchanged"
  */
 const named = (text: string): string => JSON.stringify(text).replace(/[\u2028\u2029\u0085]/g, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
 
+/**
+ * The quote the note goes with: where the line is (the path, PC and repository as JSON strings),
+ * what was compared, and the line's text in a fence. A line of whitespace alone would lose it to the
+ * message's quote lines, so it is written as a JSON string, and the quote says so.
+ */
 export function diffNoteQuote(capture: DiffNoteCapture): string {
   const { line } = capture;
   // U+0085 is no whitespace to trim(), though a viewer may break a line at it
@@ -80,11 +86,16 @@ export function noteOverflows(waiting: readonly ReplyComment[], draft: string, q
 
 export type NoteBlock = "no-pane" | "pc-offline" | "pane-gone" | "watching" | "pane-not-open" | "observing" | "no-agent";
 
+/**
+ * Why the diff's own pane cannot take a note, or null when it can. Only that pane ever does: never
+ * one on another PC, nor whichever is selected now.
+ */
 export function noteBlock({ paneId, pane, watching, observing = false, mounted = true, reachable = true }: { paneId: string | null; reachable?: boolean; mounted?: boolean; pane: { agent?: string | null; agent_status: AgentStatus } | undefined; watching: boolean; observing?: boolean }): NoteBlock | null {
   if (paneId === null) return "no-pane";
   if (!reachable) return "pc-offline";
   if (pane === undefined) return "pane-gone";
   if (watching) return "watching";
+  // a pane this window shows no terminal of: whether it may type there is not known yet
   if (!mounted) return "pane-not-open";
   if (observing) return "observing";
   if (pane.agent === null || pane.agent === undefined || pane.agent === "") return "no-agent";

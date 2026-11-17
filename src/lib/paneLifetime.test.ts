@@ -156,6 +156,7 @@ describe("pane state per herdr lifetime", () => {
     leaving.carry();
     expect(storage.getItem(DRAFT)).toBeNull();
 
+    // back on the PC, whose server still names no herdr: nothing proves it is the herdr the text was typed under
     const back = page(storage);
     const drafts = new ComposerDraftStore(() => back.paneStorage);
     back.onRetire((machineId) => drafts.forget(machineId));
@@ -181,6 +182,7 @@ describe("pane state per herdr lifetime", () => {
     leaving.observe([pc("local", undefined, [pane("w1:p1", "claude on repo-a")])], title);
     leaving.paneStorage.setItem(DRAFT, "rm -rf build and redeploy repo-a");
     leaving.carry();
+    // herdr restarted meanwhile: w1:p1 is another program now, and the snapshot still names no herdr
     const back = page(storage);
     const drafts = new ComposerDraftStore(() => back.paneStorage);
     back.onRetire((machineId) => drafts.forget(machineId));
@@ -228,6 +230,7 @@ describe("pane state per herdr lifetime", () => {
     ahead.observe([pc("local", "herdr-b")], title);
     ahead.observe([pc("local", "herdr-c")], title);
     ahead.paneStorage.setItem(DRAFT, "for herdr-c's pane");
+    // still drawing herdr-a's panes, the page behind neither reads nor writes herdr-c's state
     behind.observe([pc("local", "herdr-a")], title);
     expect(behind.paneStorage.getItem(DRAFT)).toBeNull();
     behind.paneStorage.setItem(DRAFT, "typed while behind");
@@ -350,6 +353,7 @@ describe("pane state per herdr lifetime", () => {
     storage.refuse = null;
     pending.keepUnconfirmed("w1:p1", "second");
     expect(lifetimes.unsent()).toEqual([]);
+    // the row is saved now: an Undo in an open Recover unsent text would offer its words a second time
     expect(lifetimes.undoable()).toEqual([]);
     const reloaded = page(storage);
     reloaded.observe([pc("local", "herdr-a")], title);
@@ -402,15 +406,18 @@ describe("pane state per herdr lifetime", () => {
     const lifetimes = page(storage);
     lifetimes.observe([pc("local", "herdr-a")], title);
     lifetimes.paneStorage.setItem(DRAFT, "for herdr a's pane");
+    // a read that could not prove its herdr: its panes may be a replacement's under the same IDs
     lifetimes.observe([pc("local", undefined)], title);
     expect(lifetimes.paneStorage.getItem(DRAFT)).toBeNull();
     lifetimes.paneStorage.setItem("ovis:terminal-line:w1:p1", "typed meanwhile");
     expect(storage.getItem(DRAFT)).toBe("for herdr a's pane");
     expect(storage.getItem("ovis:terminal-line:w1:p1")).toBeNull();
+    // herdr a named again: its own text is back, and what was typed with no proof of the panes' herdr is not adopted
     lifetimes.observe([pc("local", "herdr-a")], title);
     expect(lifetimes.paneStorage.getItem(DRAFT)).toBe("for herdr a's pane");
     expect(lifetimes.paneStorage.getItem("ovis:terminal-line:w1:p1")).toBeNull();
     expect(lifetimes.unsent().map(({ text }) => text)).toEqual(["typed meanwhile"]);
+    // unproven again, then another herdr named: neither the stored text nor what was typed meanwhile reaches its panes
     lifetimes.observe([pc("local", undefined)], title);
     lifetimes.paneStorage.setItem("ovis:terminal-line:w1:p2", "typed while unproven");
     lifetimes.observe([pc("local", "herdr-b")], title);
@@ -573,6 +580,7 @@ describe("pane state per herdr lifetime", () => {
   });
 });
 
+// #511: a herdr restart keeps a message for an agent alone for recovery as one, edited or queued
 it("keeps the agent-only flag of a retired draft and of each retired queued message", () => {
   const storage = new MemoryStorage();
   const lifetimes = page(storage);

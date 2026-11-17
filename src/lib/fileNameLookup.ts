@@ -5,6 +5,11 @@ import { ApiError } from "./api.ts";
 import { fileLineTarget } from "./filePaths.ts";
 import { useMachineApi, useMachineId } from "./machineContext.tsx";
 
+/**
+ * A bare name in a code span (`README.md`) looks like a file by its shape alone, and so do a
+ * systemd unit (`user-1000.slice`), a host or a config key: no list of names tells them apart, and
+ * a list of suffixes would hide real files of that kind.
+ */
 export interface FileNameLookup {
   known(name: string): boolean | undefined;
   ask(name: string): Promise<boolean>;
@@ -15,6 +20,7 @@ export const FileNameLookupContext = createContext<FileNameLookup | null>(null);
 const KEPT_MS = 60_000;
 const KEPT = 500;
 const RUNNING = 4;
+/** a name not answered by then, waiting included, keeps its link; its request keeps its slot until it ends, so a PC that stopped answering is never asked more */
 const ANSWER_MS = 10_000;
 
 interface Kept { at: number; turn: unknown; found: Promise<boolean>; answer?: boolean }
@@ -83,6 +89,7 @@ export function useFileNameLookup(paneId: string, cwd: string | null, turn: unkn
   const machineId = useMachineId();
   const { fetchFileInfo, fetchDirectories } = useMachineApi();
   return useMemo(() => createFileNameLookup(`${machineId}\0${paneId}\0${cwd ?? ""}`, turn, (name) => fetchFileInfo(name, paneId),
+    // a remote PC's bridge would list its own folder for a relative one, so the viewer lists none there (FileViewer)
     machineId === LOCAL_MACHINE ? (name) => fetchDirectories(name, false, true, paneId) : null),
   [machineId, paneId, cwd, turn, fetchFileInfo, fetchDirectories]);
 }

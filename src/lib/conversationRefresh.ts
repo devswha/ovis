@@ -68,6 +68,10 @@ export class ConversationRefresh {
     return promise;
   }
 
+  /**
+   * The connection came back. A newest read sent before it may wait on a connection that died
+   * silently until its deadline, holding every push behind it: it is given up and the pane read now.
+   */
   restart(): void {
     if (this.read === null) return;
     this.current?.abort(new DOMException("The read was replaced after a reconnect.", "AbortError"));

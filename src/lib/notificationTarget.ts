@@ -23,6 +23,12 @@ export function machineMissing(roster: readonly { id: string }[], machineId: str
   return roster.length > 0 && !roster.some((machine) => machine.id === machineId);
 }
 
+/**
+ * Whether a PC named at roster `since` (the count of rosters the server had sent then) is gone:
+ * only a roster the server sent after that can say so. The list in hand when a link or a
+ * selection was made may predate the PC (a tab resumed before its roster refreshed, a PC just
+ * added), and a list rebuilt from it (a pane's status) is no newer. `since` null: nothing waits.
+ */
 export function machineGone(roster: readonly { id: string }[], rosterSeq: number, since: number | null, machineId: string): boolean {
   return since !== null && rosterSeq > since && machineMissing(roster, machineId);
 }
@@ -38,6 +44,11 @@ export function notificationLanding(roster: readonly RosterMachine[], target: No
 
 type LinkRoster = { id: string; state?: string; snapshot?: Pick<SessionSnapshot, "workspaces" | "panes" | "layouts"> | null };
 
+/**
+ * Anything else selects no pane yet: the link waits as the
+ * address's does, settled once its PC is connected with its roster in, with its note
+ * (lib/useSelection.ts), since an offline PC's cached roster may list a pane that has closed.
+ */
 export function linkLanding(roster: readonly LinkRoster[], link: AppLink): { kind: "select"; pane: string } | { kind: "wait"; stale: boolean } {
   const machine = roster.find((candidate) => candidate.id === link.machine);
   const landed = machine?.state === "connected" && machine.snapshot ? resolveLink(machine.snapshot, link) : null;
@@ -103,6 +114,8 @@ export function notificationTargets(source?: MessageSource, links?: DesktopLinks
   };
 }
 
+// Browser messages can arrive after document loading but before React's effect.
+// Install this listener while App's module loads, before creating its root.
 export const onNotificationTarget = notificationTargets(
   typeof navigator !== "undefined" && "serviceWorker" in navigator ? navigator.serviceWorker : undefined,
   desktopLinks(),

@@ -9,6 +9,7 @@ class FakeSource {
   onmessage: ((event: MessageEvent<string>) => void) | null = null;
   constructor(readonly url: string) {}
   open(): void { this.readyState = 1; this.onopen?.(); }
+  /** lost; the browser reconnects it */
   lose(): void { this.readyState = 0; this.onerror?.(); }
   /** a non-200 answer (a proxy's 502): the browser never reconnects it */
   refuse(): void { this.readyState = 2; this.onerror?.(); }
@@ -51,6 +52,7 @@ describe("the app's event stream", () => {
   it("opens a new stream after the browser gave up on one (a proxy's 502 while the server restarts), and tells it apart from a loss", () => {
     const stop = keepEventStream("/api/machines/events", handlers, open);
     last().open();
+    // the restart: the browser's reconnect gets a 502 and the stream stays closed
     last().lose();
     last().refuse();
     expect(seen).toEqual(["opened", "lost", "closed"]);

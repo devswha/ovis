@@ -30,6 +30,12 @@ export function clockOffsetMs(serverTime: string | null, receivedAt: number): nu
 
 export interface TaskCallItem { title: string; agent: string | null; prompt: string }
 
+/**
+ * The tasks one `task` call starts: OmO's single call (`task_summary`, `description`, `prompt`,
+ * `subagent_type` or `category`) or batch (`tasks`, each item taking the call's agent unless it
+ * names its own), and omp's batch (`agent`, items with `description` and `assignment`). Null when
+ * the input is no such call.
+ */
 export function taskCallItems(input: Record<string, unknown>): TaskCallItem[] | null {
   const str = (row: Record<string, unknown>, ...keys: string[]): string | null => {
     for (const key of keys) { const value = row[key]; if (typeof value === "string" && value.trim().length > 0) return value.trim(); }
@@ -49,6 +55,12 @@ export function taskCallItems(input: Record<string, unknown>): TaskCallItem[] | 
   return items.length > 0 ? items : null;
 }
 
+/**
+ * OmO's agents often frame theirs in bare section tags on
+ * lines of their own (`<analysis>` … `</analysis>`, `<next_steps>`): an opening tag becomes the
+ * section's name in bold, a closing one goes. Tags inside a code block, and any line with more
+ * on it than the tag, are the answer's own and stay.
+ */
 export function taskResultMarkdown(text: string): string {
   let fenced = false;
   const lines: string[] = [];

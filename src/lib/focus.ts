@@ -1,3 +1,6 @@
+/**
+ * Runs a frame later, once React has taken the vanished control out of the document.
+ */
 export function focusWorkspaceListToggle(when: "always" | "lost" = "always"): void {
   window.requestAnimationFrame(() => {
     if (when === "lost" && document.activeElement !== null && document.activeElement !== document.body) return;

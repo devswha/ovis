@@ -43,5 +43,6 @@ export function storeFilePanelWidth(width: number | null): void {
     if (width === null) window.localStorage.removeItem(KEY);
     else window.localStorage.setItem(KEY, String(clampFilePanelWidth(width)));
   } catch {
+    /* private mode: the width simply is not remembered */
   }
 }

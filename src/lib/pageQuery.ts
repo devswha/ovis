@@ -10,6 +10,8 @@ import { shellMode, type ShellMode } from "./shellMode.ts";
 
 export function pageSearch(location: { search: string; hash: string } = window.location, mode: ShellMode = shellMode()): string {
   if (mode !== "relay") return location.search;
+  // an address from before the fragment carried it (a link, or an older entry of the history) is
+  // still read, its query first; boot.ts moves it into the fragment (moveQueryToFragment)
   if (location.search.length > 1) return location.search;
   // a pairing link pasted over the app is the shell's to ask about (lib/relay/shell.tsx), never the page's state
   return location.hash.length > 1 && !location.hash.startsWith("#offer=") ? `?${location.hash.slice(1)}` : "";
@@ -30,6 +32,11 @@ export function reloadOnPlainClick(event: LinkClick, page: Reloadable = window, 
   page.location.reload();
 }
 
+/**
+ * An address of the hosted shell with a query left from an older build, the load's own or an
+ * entry Back or Forward lands on: the query moves into the fragment, so a reload or the page's
+ * next request does not carry it again.
+ */
 export function moveQueryToFragment(page: { location: { pathname: string; search: string }; history: { state: unknown; replaceState(data: unknown, unused: string, url: string): void } }): boolean {
   if (page.location.search.length <= 1) return false;
   page.history.replaceState(page.history.state, "", `${page.location.pathname}#${page.location.search.slice(1)}`);

@@ -1,3 +1,9 @@
+/**
+ * A command the transcript keeps no
+ * turn for (Claude's /btw, an informational command) gets a provisional sent row of its own, placed
+ * by send time; a later user turn matching the text takes the chip over and the row goes, so nothing
+ * shows twice.
+ */
 import type { CommandOutcome, ConversationTurn } from "../../shared/protocol.ts";
 import { sameMessage } from "./compose.ts";
 import type { Translate } from "./i18n.ts";
@@ -27,6 +33,7 @@ export function outcomeLabel(t: Translate, chip: OutcomeChip): string {
   }
 }
 
+/** Why the command went as plain text, when the agent did not attach a skill it names (OpenCode v2); null otherwise. */
 export function outcomeNote(t: Translate, outcome: CommandOutcome): string | null {
   const skills = outcome.unattached_skills ?? [];
   if (skills.length === 0) return null;
@@ -62,6 +69,7 @@ export interface OutcomeRowOptions {
 const SEND_SKEW_MS = 2_000;
 
 function turnText(turn: ConversationTurn): string {
+  // a bash-mode command was sent as `!` and the command
   return turn.parts.flatMap((part) => part.kind === "text" ? [part.text] : part.kind === "shell" ? [`!${part.command}`] : []).join("\n\n");
 }
 
@@ -124,6 +132,13 @@ export function moveCommand(outcomes: readonly CommandOutcome[], move: HistoryMo
     ?? changes(outcomes).find((outcome) => Date.parse(outcome.created_at) <= move.seenAt + SEND_SKEW_MS) ?? null;
 }
 
+/**
+ * The outcomes of a conversation the chat moved to, without the sends to the one it left. `made` is the
+ * send that made the move (moveCommand). Every send before it, by the server's send times, is the old
+ * conversation's, also one a later poll lists first, except after a /resume: a send whose turn the
+ * resumed conversation recorded before the /resume was sent there. /clear, /new and /reset start an
+ * empty conversation, which records none of them.
+ */
 export function afterMove(outcomes: readonly CommandOutcome[], move: HistoryMove, made: CommandOutcome | null, turns: readonly ConversationTurn[]): readonly CommandOutcome[] {
   if (made === null) return outcomes === move.held ? [] : outcomes;
   const at = Date.parse(made.created_at);

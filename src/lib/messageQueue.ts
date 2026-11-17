@@ -31,6 +31,7 @@ export class MessageQueueStore {
   }
   constructor(private storage: () => QueueStorage = () => paneLifetimes.paneStorage) {}
 
+  /** Another herdr took the PC's pane IDs: its queues are read again from where they now are. */
   forget(machineId: string): void {
     for (const [owner, messages] of [...this.queues]) {
       const pane = paneStateKey(`ovis:queue:${owner}`);
@@ -58,7 +59,7 @@ export class MessageQueueStore {
     const cached = this.queues.get(owner);
     if (cached) return cached;
     let raw: string | null = null;
-    try { raw = this.storage().getItem(`ovis:queue:${owner}`); } catch {}
+    try { raw = this.storage().getItem(`ovis:queue:${owner}`); } catch { /* private mode */ }
     let messages: HeldMessage[] = raw ? [{ id: newId(), text: raw }] : [];
     try {
       const data = JSON.parse(raw ?? "null");
@@ -104,6 +105,7 @@ export class MessageQueueStore {
   }
 }
 
+// Machine switches remount the terminal; outstanding sends must share the same owner cache.
 export const messageQueues = new MessageQueueStore();
 paneLifetimes.onRetire((machineId) => messageQueues.forget(machineId));
 

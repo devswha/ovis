@@ -40,6 +40,7 @@ describe("modelLabel", () => {
       "claude-sonnet-5-05", "claude-opus-05-5", "claude-opus-05", "claude-opus-0-5", "claude-opus-0", "claude-opus-5-00", "anthropic/claude-sonnet-5-05",
       "gpt-05.6", "gpt-5.06", "gpt-05", "gpt-0", "gpt-0.5", "gpt-05.6-sol", "gpt-5.06-sol",
       "glm-05.3", "glm-5.03", "glm-05", "glm-0",
+      // a minor of 0 is the vendor's form only for Anthropic: the others write the bare major
       "gpt-5.0", "gpt-5.0-sol", "glm-5.0",
     ]) expect(modelLabel(id)).toEqual({ text: id, named: false });
     expect(modelLabel("claude-opus-4-0")).toEqual({ text: "Opus 4.0", named: true });
@@ -57,6 +58,9 @@ describe("modelLabel", () => {
     ]) expect(modelLabel(id)).toEqual({ text: id, named: false });
   });
 
+  // The accepted consequence of naming by the vendor's id syntax and not from a list of released
+  // versions: a well-formed id is named even where no such model exists, so that a new model
+  // needs no change here. This is by design; do not turn it into a list.
   test("names a well-formed id of a version nobody released", () => {
     expect(modelLabel("claude-opus-9-9")).toEqual({ text: "Opus 9.9", named: true });
     expect(modelLabel("claude-mythos-12")).toEqual({ text: "Mythos 12", named: true });

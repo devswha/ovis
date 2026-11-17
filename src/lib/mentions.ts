@@ -1,5 +1,6 @@
 export type ActiveTrigger = {
   kind: "slash" | "file";
+  /** `$`: a skill token (`$name` for Codex, `$skill:name` for omo); absent for `/` */
   prefix?: "$";
   query: string;
   start: number;
@@ -16,6 +17,11 @@ function tokenEnd(text: string, from: number, part: RegExp = /\S/u): number {
 }
 const SKILL_CHAR = /[\p{L}\p{N}_-]/u;
 
+/**
+ * With `skills`, `$skill` also completes (Codex's syntax).
+ * With `atSkills` the pane's `@` skills (OpenCode v2) are listed with the files, so a bare `@`
+ * opens the menu too; otherwise a file needs at least one query character.
+ */
 export function activeTrigger(text: string, caret: number, options: { skills?: boolean; namespaced?: boolean; atSkills?: boolean } = {}): ActiveTrigger | null {
   if (!Number.isInteger(caret) || caret < 0 || caret > text.length) return null;
 

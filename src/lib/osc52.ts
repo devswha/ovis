@@ -18,6 +18,7 @@ export function parseOsc52(payload: string): string | null {
   if (separator < 0) return null;
   const encoded = payload.slice(separator + 1);
   if (encoded === "" || encoded === "?") return null;
+  // cheap pre-check on the encoded length before allocating the decode buffer
   if (encoded.length > ((MAX_OSC52_BYTES / 3) | 0) * 4 + 4) return null;
   let bytes: Uint8Array;
   try {

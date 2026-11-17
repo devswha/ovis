@@ -1,3 +1,4 @@
+/** Text shows its first part: this also bounds parsing and highlighting in the viewer. */
 export const TEXT_PREVIEW_BYTES = 256 * 1024;
 
 export const SOURCE_PREVIEW_BYTES = 8 * 1024 * 1024;
@@ -32,6 +33,7 @@ export async function readFilePreviewText(response: Response, limit: number, opt
   const range = response.status === 206 ? /^bytes 0-(\d+)\/(\d+)$/.exec(response.headers.get("content-range") ?? "") : null;
   if (response.status === 206 && (!range || Number(range[1]) >= Number(range[2]))) { discard(); throw new Error("Invalid file range."); }
   const reader = response.body?.getReader();
+  // a 206 names the file's whole size, so a cut there can say how much is shown
   const total = range ? { total: Number(range[2]) } : {};
   const budgeted = (result: FilePreviewText, by: "bytes" | "lines" | "time"): FilePreviewText =>
     maxLines === undefined ? result : { ...result, ...(result.truncated ? { truncatedBy: by } : {}), lines: countLines(result.text) };
@@ -62,6 +64,7 @@ export async function readFilePreviewText(response: Response, limit: number, opt
       let slice = value.subarray(0, remaining);
       let by: "bytes" | "lines" = "bytes";
       if (maxLines !== undefined) {
+        // count newline bytes in place: a multi-million-line body is never split into line strings
         for (let at = slice.indexOf(10); at >= 0; at = slice.indexOf(10, at + 1)) {
           if (++lineCount >= maxLines) { slice = slice.subarray(0, at + 1); by = "lines"; break; }
         }
@@ -70,6 +73,7 @@ export async function readFilePreviewText(response: Response, limit: number, opt
       bytes += slice.byteLength;
       if (by === "lines" || bytes >= limit) {
         let more = value.byteLength > slice.byteLength || (range !== null && Number(range[2]) > bytes);
+        // a 200 that ends exactly at the budget is the whole file: look for one more chunk before calling it cut
         if (!more && range === null) {
           const next = await Promise.race([reader.read(), interruption]);
           if (stopped) throw stopped;

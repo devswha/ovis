@@ -1,4 +1,8 @@
-// Folder browsing inside the command palette, adapted from T3 Code's palette browse mode.
+/**
+ * Folder browsing inside the command palette (adapted from T3 Code's palette browse mode): a query
+ * that starts as a path does (`~`, `/`, `C:\`) lists the folders of the PC instead of panes.
+ */
+
 import { sidebarPinKey } from "./sidebarPins.ts";
 
 export interface FolderQuery {
@@ -14,6 +18,7 @@ export function folderQuery(query: string): FolderQuery | null {
   const cut = path.lastIndexOf("/");
   if (cut < 0) return { directory: path, filter: "" };
   let directory = path.slice(0, cut + 1);
+  // `~/` is home and `C:/` a drive's root: only a deeper folder loses its trailing slash
   if (directory === "~/") directory = "~";
   else if (directory !== "/" && !/^[A-Za-z]:\/$/u.test(directory)) directory = directory.replace(/\/+$/u, "") || "/";
   return { directory, filter: path.slice(cut + 1) };

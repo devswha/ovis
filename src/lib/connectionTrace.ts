@@ -26,8 +26,10 @@ function traceId(): string | null {
 
 const live = new Set<ConnectionTrace>();
 
+/** A sign-in on this page lifts the pause a 401 put on reporting; a 403/404 stays disabled. */
 export function resumeConnectionTraces(): void { for (const trace of live) trace.resume(); }
 
+/** A bounded breadcrumb trail, not telemetry: only incidents are sent to this app's own server. */
 export class ConnectionTrace {
   private readonly id = traceId();
   private readonly events: ClientConnectionEvent[] = [];
@@ -39,12 +41,14 @@ export class ConnectionTrace {
   private posting = false;
   private disabled = false;
   private unauthorized = false;
+  // Bumped by each sign-in, so a 401 answering a report sent before it cannot pause reporting again.
   private signIn = 0;
   private stopped = false;
   private nextPost = -Infinity;
   private readonly target: "local" | "remote";
 
   constructor(url: string, private context: () => Context, private post: Post | null = browserPost(), private now: () => number = Date.now) {
+    // Retain neither the URL nor machine/host names.
     live.add(this);
     try { const machine = new URL(url).searchParams.get("machine_id"); this.target = machine && machine !== "local" ? "remote" : "local"; }
     catch { this.target = "local"; }
@@ -72,6 +76,8 @@ export class ConnectionTrace {
         this.incidentContext = this.events.slice(-16);
         this.following = [];
       } else if (this.incident > this.reported) {
+        // Keep the trigger even if healthy ping/pong traffic overwrites the recent ring while
+        // a report is throttled or offline.
         this.following.push(event);
         if (this.following.length > 4) this.following.shift();
         while (this.incidentContext.length + this.following.length > 16) this.incidentContext.shift();

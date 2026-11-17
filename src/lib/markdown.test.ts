@@ -447,6 +447,20 @@ const threadClock = ((): (() => number) | null => {
 })();
 
 describe("text no one wrote by hand", () => {
+  // what an agent prints, or a changelog holds, is not always prose: the page parses it while it
+  // draws, so a line that takes seconds freezes the tab, and one that nests without end crashes it
+  /**
+   * What `parse` makes of `text(size)`, having checked that it reads in linear time: ten times the
+   * text takes under thirty times as long (linear is ten, a search of the rest of the line from
+   * every character a hundred). A budget in milliseconds failed on GitHub's runners with nothing
+   * slower in the parser, so this counts the CPU time this thread spent, which a busy runner does
+   * not stretch as it does the clock (the process's time also counts the compiler's and the garbage
+   * collector's threads, and reached 32 on a busy runner, #2084). Small and large are timed in
+   * turn, up to five rounds, and the fastest of each are compared: being preempted or slowed only
+   * adds time, so the fastest run is the one closest to the parser's own work. A count of the
+   * parser's steps would not see what some of these cases guard against, a regular expression
+   * backtracking in one call.
+   */
   const linear = <T,>(text: (size: number) => string, size: number, parse: (text: string) => T): T => {
     const small = text(size / 10);
     const large = text(size);
@@ -457,6 +471,8 @@ describe("text no one wrote by hand", () => {
       const { user, system } = process.cpuUsage();
       return (user + system) / 1000;
     };
+    // a parse of microseconds is timed over as many runs as take two milliseconds; twenty where the
+    // process's clock may count in steps of milliseconds, so no run of the small text reads none
     const shortest = threadClock === null ? 20 : 2;
     let runs = 1;
     const timed = (input: string): number => {
@@ -524,6 +540,8 @@ describe("text no one wrote by hand", () => {
 
   it("looks once for the end of a formula that never closes", () => {
     const indexOf = String.prototype.indexOf;
+    // characters the closer searches read, not how many there are: one search per opener over the
+    // rest of the text is as many calls as one per line, but reads the text over and over
     let scanned = 0;
     let expectedMaximum = 0;
     const closer = spyOn(String.prototype, "indexOf").mockImplementation(function (this: string, search, position) {
@@ -564,6 +582,8 @@ describe("text no one wrote by hand", () => {
       /[^ \t]/g, /["\n]/g, /['\n]/g, /[()\n]/g,
       /_(?![\p{L}\p{N}\p{M}_])/gu,
       /__(?![\p{L}\p{N}\p{M}_])/gu,
+      // Only the single-underscore token can succeed in the last fixture; trying the bold
+      // alternative first would rescan the whole suffix at every `__`.
       /_(?=\S)[^\n]*?\S_(?![\p{L}\p{N}\p{M}_])/yu,
       /\*\*[^*\n]+\*\*/y,
     ].map((pattern) => pattern.toString()));
@@ -578,6 +598,7 @@ describe("text no one wrote by hand", () => {
         }
         const start = this.lastIndex;
         const match = exec.call(this, input);
+        // Count the span searched, not calls: failed searches consume the remaining suffix.
         scanned += Math.max(0, (match === null ? input.length : match.index + match[0].length) - start);
         return match;
       });
@@ -591,6 +612,7 @@ describe("text no one wrote by hand", () => {
       expect(scanned).toBeLessThanOrEqual(10 * text.length);
       return nodes;
     };
+    // a megabyte of each took from one minute to four: every one was searched from to the line's end
     for (const part of ["[a", "\\(", "_a ", "__a ", "a$", ":codex-file-citation{"]) {
       const line = (length: number): string => part.repeat(Math.ceil(length / part.length));
       for (const length of [20_000, 200_000]) {
@@ -721,6 +743,7 @@ describe("numbered lists as agents write them", () => {
     expect(html).toContain('<li value="1"><span>a</span></li><li value="12"><span>b</span></li>');
     expect(html).toMatch(/--markdown-list-digits:2/);
     expect(render("1. a\n2. b")).not.toContain("value=");
+    // past a 32-bit integer the browser ignores `start` and `value`: such a list counts up from 1, as before
     expect(numbers("3000000000. a\n1. b")).toEqual([null, null]);
     expect(render("1. a\n100000000000000000000. b")).not.toContain("value=");
   });
@@ -733,6 +756,7 @@ describe("numbered lists as agents write them", () => {
     expect(digits("0. a")).toBeNull();
     expect(digits("- a\n- b")).toBeNull();
     expect(render("100. a\n    1. b")).toMatch(/--markdown-list-digits:3[^>]*><li><span>a<\/span><ol class="markdown-list"><li>/);
+    // past a 32-bit integer the browser counts from 1, so that start sets no wider indent
     expect(digits("2147483647. a")).toBe("10");
     expect(digits("100000000000000000000. a")).toBeNull();
   });

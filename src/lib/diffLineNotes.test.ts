@@ -84,6 +84,7 @@ describe("diff line notes", () => {
     const sent = messageWithComments([{ id: "a", quote, comment: "trailing tab" }], "");
     const unquoted = sent.split("\n").slice(0, -1).map((line) => line.replace(/^> ?/, "")).join("\n");
     expect(parts(unquoted).text).toBe(" \t  ");
+    // a line of the separators some viewers break at counts as whitespace too, and goes escaped
     for (const odd of ["\u0085", "\u0085\u2028 "]) {
       const patchOdd = ["--- a/x", "+++ b/x", "@@ -0,0 +1,1 @@", `+${odd}`, ""].join("\n");
       const quoteOdd = diffNoteQuote({ ...capture(patchOdd, { side: "new", line: 1 }), path: "x" });
@@ -139,6 +140,7 @@ describe("diff line notes", () => {
     expect(noteBlock({ paneId: "p1", pane: undefined, watching: false, reachable: false })).toBe("pc-offline");
     expect(noteBlock({ paneId: "p1", pane: agent, watching: true })).toBe("watching");
     expect(noteBlock({ paneId: "p1", pane: agent, watching: false, observing: true })).toBe("observing");
+    // a pane this window has not mounted: whether it may type there is not known, so no note
     expect(noteBlock({ paneId: "p1", pane: agent, watching: false, mounted: false })).toBe("pane-not-open");
     expect(noteBlock({ paneId: "p1", pane: { agent: null, agent_status: "unknown" }, watching: false })).toBe("no-agent");
   });

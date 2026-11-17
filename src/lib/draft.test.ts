@@ -4,6 +4,7 @@ import { applyToDraft, draftIsEmpty, DRAFT_TTL_MS, EMPTY_DRAFT, holdBefore, rest
 describe("holdBefore", () => {
   it("holds typing a connection lost unconfirmed ahead of what was typed after it, each chunk folded as typed (#2587)", () => {
     expect(holdBefore(["ls", "s", "\x7f", " -la"], EMPTY_DRAFT)).toEqual({ text: "ls -la", truncated: false, leftOut: false });
+    // Ctrl+Backspace's Ctrl+W erased a word before the disconnect (#3415)
     expect(holdBefore(["echo alpha", "\x17", "beta"], EMPTY_DRAFT)).toEqual({ text: "echo beta", truncated: false, leftOut: false });
     expect(holdBefore(["echo", "\r"], { text: "hi", truncated: false, leftOut: false })).toEqual({ text: "echo hi", truncated: false, leftOut: true });
   });
@@ -34,6 +35,7 @@ describe("applyToDraft", () => {
     expect(applyToDraft({ text: "a😀", truncated: false, leftOut: false }, "\x7f").text).toBe("a");
     expect(applyToDraft({ text: "한글", truncated: false, leftOut: false }, "\x7f").text).toBe("한");
     expect(applyToDraft({ text: "abc", truncated: false, leftOut: false }, "\x7f\x7f").text).toBe("a");
+    // deletions and the text that replaces them in one chunk, as an autocorrect may send
     expect(applyToDraft({ text: "teh", truncated: false, leftOut: false }, "\x7f\x7f\x7fthe").text).toBe("the");
   });
 
@@ -95,6 +97,7 @@ describe("applyToDraft", () => {
   });
 
   it("holds nothing for escape sequences, arrows and control codes: there is nothing to send or to tell", () => {
+    // also what xterm answers a program by itself: a cursor position, a focus or a mouse report
     for (const special of ["\u001b[A", "\u0003", "\u001b", "\t", "\u001b[12;40R", "\u001b[I", "\u001b[<35;10;5M"]) {
       const draft = applyToDraft(EMPTY_DRAFT, special);
       expect(draft).toBe(EMPTY_DRAFT);

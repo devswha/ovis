@@ -100,6 +100,7 @@ describe("what a health answer says about direct", () => {
     expect(directHostOf(null)).toBeUndefined();
     expect(directHostOf({ auth: signedIn, direct_exposure: { host: "192.168.0.10" } })).toBe("192.168.0.10");
     expect(directHostOf({ auth: signedIn })).toBeNull();
+    // a signed-out answer never names exposure, so it says nothing about direct
     expect(directHostOf({ auth: { required: true, authenticated: false } })).toBeUndefined();
     expect(directHostOf({ auth: signedIn, lan_exposure: { host: "0.0.0.0" } })).toBeNull();
     expect(directHostOf({ auth: signedIn, lan_exposure: { host: "10.0.0.7", direct: true } })).toBe("10.0.0.7");

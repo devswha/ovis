@@ -7,11 +7,11 @@ export function hintsPending(storage: HintsStorage): boolean {
 }
 
 export function armHints(storage: HintsStorage): void {
-  try { if (storage.getItem(FIRST_HINTS_KEY) === null) storage.setItem(FIRST_HINTS_KEY, "pending"); } catch {}
+  try { if (storage.getItem(FIRST_HINTS_KEY) === null) storage.setItem(FIRST_HINTS_KEY, "pending"); } catch { /* private mode: no hints */ }
 }
 
 export function finishHints(storage: HintsStorage): void {
-  try { storage.setItem(FIRST_HINTS_KEY, "done"); } catch {}
+  try { storage.setItem(FIRST_HINTS_KEY, "done"); } catch { /* private mode */ }
 }
 
 export const SETUP_ROW_KEY = "ovis:setup-row";
@@ -21,11 +21,11 @@ export function setupRowState(storage: Pick<Storage, "getItem">): "on" | "hidden
 }
 
 export function setupRowOn(storage: HintsStorage): void {
-  try { if (storage.getItem(SETUP_ROW_KEY) === null) storage.setItem(SETUP_ROW_KEY, "on"); } catch {}
+  try { if (storage.getItem(SETUP_ROW_KEY) === null) storage.setItem(SETUP_ROW_KEY, "on"); } catch { /* private mode: no row */ }
 }
 
 export function hideSetupRow(storage: HintsStorage): void {
-  try { storage.setItem(SETUP_ROW_KEY, "hidden"); } catch {}
+  try { storage.setItem(SETUP_ROW_KEY, "hidden"); } catch { /* private mode: hidden for this page */ }
 }
 
 /** This browser's storage, or null where it is blocked: reading `window.localStorage` itself throws there (Safari with cookies blocked, a sandboxed frame). */
@@ -33,4 +33,5 @@ export function browserStorage(): Storage | null {
   try { return window.localStorage; } catch { return null; }
 }
 
+/** This browser's user pressed Continue on the setup guide's agent step: only then may the guide read the plan usage. */
 export const USAGE_ARMED_KEY = "ovis:setup-usage-armed";

@@ -3,6 +3,10 @@
  * name and the sixteen Base16 seeds of a dark side, a light side or both; the app derives every
  * colour it draws from them (themeDerive.ts). No code or CSS is read from a file, and what is
  * kept is only what this module parsed: colours as `#rrggbb` and a short name.
+ *
+ * Two shapes are read: the app's own JSON (`{ "name", "dark": { base00 … base0F }, "light": { … } }`)
+ * and a Base16 scheme as its projects publish it (YAML or JSON, one side), so the schemes that
+ * exist can be imported as they are.
  */
 import { lab, luminance, rgb } from "./colorMath.ts";
 import { LIGHT_ANSI_ROLES } from "./themeRoles.ts";
@@ -12,6 +16,7 @@ import type { DrawnTheme, Mode, TerminalColors, ThemeId } from "./themes.ts";
 
 export const MAX_CUSTOM_THEMES = 12;
 export const MAX_THEME_NAME = 40;
+/** A theme file is a few hundred bytes; one far past that is not one. */
 export const MAX_THEME_FILE_BYTES = 64 * 1024;
 
 export interface CustomTheme {
@@ -43,6 +48,12 @@ const UNSEEN = /[\p{Cf}\p{Default_Ignorable_Code_Point}\u2800]/gu;
  */
 const SHAPING = /[\u200c\u200d\ufe0f]/u;
 
+/**
+ * A name as it is kept: one line, at most MAX_THEME_NAME characters, in one spelling (NFC), without
+ * control characters, without the marks that reorder the text around it, and without what draws
+ * nothing, except the joiners and the emoji selector a name can need: a name from someone else's
+ * file is drawn in Settings as it was written.
+ */
 function cleanName(value: unknown): string {
   if (typeof value !== "string") return "";
   // the unseen marks go first: a letter and its accent they stood between then join as one
@@ -51,6 +62,11 @@ function cleanName(value: unknown): string {
   return nameKey(name) === "" ? "" : name;
 }
 
+/**
+ * What two names are compared by: the name without anything unseen, the joiners and the selector
+ * included, in one spelling. Names that look the same have one key, so an import folds them, and
+ * the kept name still draws as its file wrote it.
+ */
 export function nameKey(name: string): string {
   return name.replace(UNSEEN, "").normalize("NFC").replace(/\s+/g, " ").trim();
 }
@@ -100,6 +116,7 @@ function themeOf(name: string, dark: Base16 | undefined, light: Base16 | undefin
 
 const derivations = new Map<string, ReturnType<typeof deriveTheme>>();
 
+/** What the seeds draw (themeDerive.ts), worked out once: a derivation takes a few milliseconds and its seeds do not change. */
 function derived(seeds: Base16): ReturnType<typeof deriveTheme> {
   const key = canonical(seeds);
   let held = derivations.get(key);
@@ -110,6 +127,12 @@ function derived(seeds: Base16): ReturnType<typeof deriveTheme> {
   return held;
 }
 
+/**
+ * The side a block is, by the colours the file wrote: light text on a darker ground is dark, and a
+ * block whose text is its ground's own colour goes by how light that ground is. Never by what the
+ * colours become once they are made to read (themeDerive.ts): a faint dark block whose text ends
+ * up darker than its ground is still the file's dark side.
+ */
 const kindOf = (seeds: Base16): Mode => {
   const [ground, text] = [luminance(rgb(seeds.base00)), luminance(rgb(seeds.base05))];
   return (ground === text ? lab(rgb(seeds.base00))[0] < 0.5 : ground < text) ? "dark" : "light";
@@ -146,6 +169,12 @@ function scalar(text: string): string {
   return value;
 }
 
+/**
+ * Every step is linear in
+ * the line, and a long line is skipped. A scheme is one side: null for a file that holds more
+ * than one (a colour named twice, or a `dark:` or `light:` block of its own), whose lines would
+ * otherwise run together into one block.
+ */
 function readSchemeLines(text: string): Record<string, unknown> | null {
   const palette: Record<string, string> = {};
   const scheme: Record<string, unknown> = { palette };
@@ -177,6 +206,8 @@ export function readThemeFile(file: string, fallbackName = ""): ThemeFileResult 
   const text = file.startsWith("\ufeff") ? file.slice(1) : file;
   let parsed: unknown;
   try { parsed = JSON.parse(text); } catch {
+    // JSON in everything but a slip (a trailing comma, a comment, unquoted keys) is said to be that. The line
+    // reader would take some of its lines for a scheme's and import half of it, or find none and say "no colors".
     if (/^\s*(\{|\/\/|\/\*)/.test(text)) return { error: "not-json" };
     parsed = readSchemeLines(text);
     if (parsed === null) return { error: "two-sides" };
@@ -207,6 +238,7 @@ function storedSeeds(block: unknown): Base16 | undefined {
   return BASE16_KEYS.every((key) => found[key] !== undefined) ? Object.fromEntries(BASE16_KEYS.map((key) => [key, found[key]])) as unknown as Base16 : undefined;
 }
 
+/** The imported themes of a stored record or a shared document: only what readThemeFile could have made is kept. */
 export function sanitizeCustomThemes(raw: unknown): CustomThemes {
   if (!isObject(raw) || !Array.isArray(raw["themes"])) return NO_CUSTOM_THEMES;
   const themes: CustomTheme[] = [];

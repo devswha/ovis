@@ -1,6 +1,10 @@
 import { useSyncExternalStore } from "react";
 import type { WorkspaceBranch } from "./worktreeBranches.ts";
 
+/**
+ * The roster stays the one reader of the git inventory:
+ * a second reader per pane would ask every repository twice.
+ */
 export const DETACHED = "\0detached";
 
 const published = new Map<string, ReadonlyMap<string, string>>();

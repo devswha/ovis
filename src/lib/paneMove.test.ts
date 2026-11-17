@@ -16,6 +16,7 @@ it("carries the chat draft, the held terminal input and the picked lens to the p
   data.set("ovis:terminal-draft:w1:p1", JSON.stringify({ text: "echo held", at: 1 }));
   data.set("ovis:view:w1:p1", "terminal");
   data.set("ovis:reply-comments:w1:p1", JSON.stringify([{ id: "c1", quote: "q", comment: "c" }]));
+  // another pane's state, and the same pane ID on another PC, stay where they are
   data.set("ovis:view:w1:p2", "chat");
   drafts.set("ovis:composer-draft:remote:pc:w1%3Ap1", "other PC");
   carryPaneState("local", "w1:p1", "w2:p4", drafts, storage, comments);
@@ -245,6 +246,7 @@ it("takes the view of a pane moved elsewhere to its new ID in any slot, and noth
   expect(movedView({ machineId: "pc", paneId: "w1:p1" }, split, "pc", "w1:p1", "w2:p1"))
     .toEqual({ selection: "w2:p1", split: { panes: { b: { machineId: "pc", paneId: "w2:p1" }, c: { machineId: "pc", paneId: "w4:p1" } }, active: "a" } });
   expect(movedView({ machineId: "pc", paneId: "w9:p1" }, split, "pc", "w8:p1", "w2:p1")).toEqual({ selection: null, split: null });
+  // the same pane ID on another PC is another pane
   expect(movedView({ machineId: "other", paneId: "w1:p1" }, null, "pc", "w1:p1", "w2:p1")).toEqual({ selection: null, split: null });
   expect(movedView({ machineId: "pc", paneId: "w3:p1" }, null, "pc", "w1:p1", "w2:p1")).toEqual({ selection: null, split: null });
 });

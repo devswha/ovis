@@ -48,6 +48,7 @@ describe("file paths in chat text", () => {
   });
 
   it("starts a path once in a run of plus signs, not at every one", () => {
+    // each `+` is a character a path may hold: tried from every one of them, a line of 48,000 takes half a second
     const start = performance.now();
     expect(splitFilePaths("+".repeat(48_000))).toEqual(["+".repeat(48_000)]);
     expect(splitFilePaths("+/".repeat(24_000))).toHaveLength(1);

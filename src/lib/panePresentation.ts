@@ -8,9 +8,11 @@ export const PANE_COVER_SELECTOR = '[role="dialog"],[role="alertdialog"],[aria-m
 
 type ConversationProof = { source: ConversationResponse["source"] | undefined; history_id?: string; turns: readonly ConversationTurn[] };
 
+/** These Claude notices and an OmO goal's wait do not start another model turn. Runtime wakes and real prompts do. */
 const passive = (turn: ConversationTurn | undefined): boolean => turn?.role === "user" && turn.parts.length > 0
   && turn.parts.every((part) => part.kind === "goal_wait" || part.kind === "notice" && (part.source === "informational" || part.source === "local-command"));
 const compaction = (turn: ConversationTurn | undefined): boolean => turn?.role === "user" && turn.parts.length > 0 && turn.parts.every((part) => part.kind === "compact");
+/** `/compact`, with or without its instructions, as Claude Code records the command typed */
 const compactCommand = (turn: ConversationTurn | undefined): boolean => turn?.role === "user" && turn.parts.length === 1
   && turn.parts[0]!.kind === "text" && /^\/compact(?:\s|$)/u.test(turn.parts[0]!.text.trim());
 
@@ -20,6 +22,11 @@ function commanded(conversation: ConversationProof, index: number): number | nul
   return compactCommand(conversation.turns[before]) ? before : null;
 }
 
+/**
+ * Where the newest final answer is, past what starts no model turn after it: the notices above, a compaction the user
+ * asked for (its `/compact` and its summary, #3675), and one Claude Code ran by itself (at rest it leaves the finish as
+ * it was). Only the first proves a finish of its own (compactionsAfter).
+ */
 function finalAnswerIndex(conversation: ConversationProof): number {
   let index = conversation.turns.length - 1;
   while (index >= 0) {
@@ -59,6 +66,8 @@ function compactionsAfter(conversation: ConversationProof, turn: ConversationTur
 function answerIdentity(conversation: ConversationProof, compacted?: ConversationTurn | null): string | undefined {
   const turn = finalAnswer(conversation);
   if (!turn) return undefined;
+  // A compaction after the answer (Claude Code's /compact) is a finish of its own: the proof is dated from it, so the
+  // finish it brings is not refused as the answer's earlier one (#3675)
   if (compacted === undefined) compacted = compactionsAfter(conversation, turn).at(-1);
   return JSON.stringify([conversation.source, conversation.history_id, compacted?.ts ?? turn.end_ts ?? turn.ts, turnRevision({
     role: turn.role, ts: turn.ts, parts: [...turn.parts.filter((part) => part.kind === "text" && part.phase === "final_answer"),
@@ -90,6 +99,7 @@ export class ConversationFinishEvidence {
 
   accept(scope: string, id: number, conversation: ConversationProof, before?: ConversationProof): boolean {
     if (id <= 0 || id < (this.observed.get(scope) ?? 0)) return false;
+    // A later stale lower event must not bind a newer transcript to the older finish.
     this.observe(scope, id);
     const answer = answerIdentity(conversation);
     if (!answer) return false;
@@ -107,10 +117,14 @@ export class ConversationFinishEvidence {
         return typeof started === "string" && started !== "" && previous !== undefined && previous.identity === current?.identity;
       }
       if (answer === known.answer) return false;
+      // a proof that rests on a compaction proves only the finish right after the one its answer, or a compaction
+      // before it, was seen at (or one seen from the terminal, which keeps no answer): the compaction's own. A later
+      // finish may be another task's, whose turn is not in this transcript yet (#3675)
       const answered = answerIdentity(conversation, null);
       if (answer !== answered) {
         const turn = finalAnswer(conversation)!;
         const proving = compactionsAfter(conversation, turn).at(-1);
+        // a proof by any other compaction of the answer, one Claude Code ran by itself included: an earlier version saved those
         const before = allCompactionsAfter(conversation, turn).filter((later) => later !== proving).map((later) => answerIdentity(conversation, later));
         if (id !== known.id + 1 || (known.answer !== undefined && known.answer !== answered && !before.includes(known.answer))) return false;
       }
@@ -118,6 +132,10 @@ export class ConversationFinishEvidence {
         if (!previous || !current || current.identity === previous.identity || current.time <= previous.time) return false;
       }
     }
+    // The transcript ends in a final answer even when finishes were skipped or no answer
+    // was saved. Bind it to this finish, not an earlier baseline that may never advance.
+    // A 304 for another presentation key is not a new proof. A first independently read
+    // completion establishes the baseline; subsequent IDs must advance that baseline.
     if (conversation === before) return false;
     this.latest.delete(scope);
     this.latest.set(scope, { id, answer });

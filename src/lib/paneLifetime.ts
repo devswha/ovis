@@ -22,6 +22,7 @@ import { serverIdOfPath } from "./shellMode.ts";
  * typed under, whose pane IDs another herdr may have given out again meanwhile.
  */
 export type UnsentKind = "message" | "line" | "held" | "pending";
+/** `agent_only`: a message box's draft that was for an agent alone (#511), which goes back into a box as one */
 export interface UnsentText { id: string; machine_id: string; pane_id: string; pane_title?: string; kind: UnsentKind; text: string; at: number; agent_only?: true }
 
 export const CARD_TEXT_PREFIX = "ovis:card-text:";
@@ -35,12 +36,14 @@ const KINDS: readonly (readonly [string, UnsentKind])[] = [
 ];
 const LEASE_PREFIX = "ovis:composer-sending:";
 const VIEW_PREFIX = "ovis:view:";
+/** a message box's agent-only mark (lib/composerDraft.ts), which goes with its draft */
 const AGENT_ONLY_PREFIX = "ovis:composer-agent-only:";
 const RECORD_PREFIX = "ovis:pane-lifetime:";
 const RETIRED_PREFIX = "ovis:pane-lifetimes-retired:";
 const RETIRED_KEPT = 16;
 export const UNSENT_PREFIX = "ovis:unsent:";
 export const PAGE_LEAVING_EVENT = "ovis-page-leaving";
+/** the pane state a replaced page kept in memory, by key (carry); a relay PC's shares the hosted shell's origin, so it is its own */
 const carriedKey = (): string => `ovis:pane-carried:${typeof location === "undefined" ? "" : serverIdOfPath(location.pathname) ?? ""}`;
 type PaneStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
@@ -85,6 +88,10 @@ function storedText(key: string, value: string | null): string | null {
 
 interface Unsent { text: string; agentOnly: boolean }
 
+/**
+ * The text a stored pane-state value holds: held input keeps only its printable text, a message list each
+ * message's.
+ */
 function texts(kind: UnsentKind, value: string | null, now: number, marked = false): Unsent[] {
   if (kind === "held") return [{ text: restoreDraft(value, now).text, agentOnly: false }];
   if (kind !== "pending") return [{ text: value ?? "", agentOnly: marked }];
@@ -133,6 +140,7 @@ export class PaneLifetimes {
 
   generation(machineId: string): string | null | undefined { return this.generations.get(machineId); }
 
+  /** Whether this page keeps the PC's pane state in storage: its herdr is proven, and the stored state is that herdr's. */
   stored(machineId: string): boolean {
     const lifetime = this.generations.get(machineId);
     if (typeof lifetime !== "string") return false;
@@ -179,6 +187,14 @@ export class PaneLifetimes {
     if (key === null || key.startsWith(UNSENT_PREFIX)) this.notify();
   }
 
+  /**
+   * Only the page
+   * that saw the stored herdr go retires the stored state; a page that is behind another tab
+   * leaves it alone, and keeps its own state in memory until it catches up. A snapshot that names
+   * no herdr after one was proven proves neither: the panes it draws get none of the stored state,
+   * which stays where it is until a snapshot names a herdr again, and what is typed meanwhile goes
+   * to recovery then.
+   */
   observe(machines: readonly Pick<Machine, "id" | "snapshot">[], title?: (pane: HerdrPane) => string): void {
     const changed: string[] = [];
     for (const machine of machines) {
@@ -194,6 +210,8 @@ export class PaneLifetimes {
       const proven = this.proven.get(machine.id);
       const first = !this.generations.has(machine.id);
       if (first || this.generations.get(machine.id) !== next) {
+        // what the page kept for the panes it drew until now goes to recovery: typed while no read
+        // proved their herdr, even the same herdr named again proves nothing about it
         this.retireMemory(machine.id, titles);
         if (next !== null && proven !== undefined && proven !== next) this.outlived.set(machine.id, new Set([...this.outlived.get(machine.id) ?? [], proven].slice(-RETIRED_KEPT)));
         this.generations.set(machine.id, next);
@@ -223,11 +241,14 @@ export class PaneLifetimes {
       if (record === next) return;
       let retired: string[] = [];
       try { const list: unknown = JSON.parse(storage.getItem(RETIRED_PREFIX + machineId) ?? "[]"); if (Array.isArray(list)) retired = list.filter((item): item is string => typeof item === "string"); } catch {}
+      // a herdr the stored state already outlived: this page is behind another tab, and leaves that state alone
       if (retired.includes(next)) return;
       if (record !== null) {
         this.retireStored(storage, machineId, titles);
         storage.setItem(RETIRED_PREFIX + machineId, JSON.stringify([...retired.filter((item) => item !== record), record].slice(-RETIRED_KEPT)));
       } else {
+        // no record: the text was stored before lifetimes were (an earlier release), for a herdr
+        // nothing proves is this one. It goes to recovery; a lens is no text, and stays
         this.retireStored(storage, machineId, new Map(), true);
       }
       storage.setItem(RECORD_PREFIX + machineId, next);
@@ -263,6 +284,13 @@ export class PaneLifetimes {
     }
   }
 
+  /**
+   * The app is replacing this page (PAGE_LEAVING_EVENT): the pane state it keeps in memory alone waits
+   * in storage for the next page of this address (takeCarried), with any an earlier page left there.
+   * Nothing of it is sent. Storage that refuses it leaves it with this page, as before. Two pages of one
+   * origin would overwrite each other's carry for the same pane: the Android app, the only one to send
+   * the event, shows one page at a time.
+   */
   carry(): void {
     if (this.memory.size === 0) return;
     try {
@@ -287,6 +315,7 @@ export class PaneLifetimes {
     } catch { return false; }
   }
 
+  /** Carried pane state without held input past its age (lib/draft.ts DRAFT_TTL_MS), which is not kept in storage. */
   private live(entries: readonly (readonly [string, string])[]): [string, string][] {
     return entries.filter(([key, value]) => paneStateKey(key)?.kind !== "held" || restoreDraft(value, this.now()).text !== "").map(([key, value]) => [key, value]);
   }
@@ -314,6 +343,10 @@ export class PaneLifetimes {
     }
   }
 
+  /**
+   * `own`: a record of its own, never one already kept for the same words, so whoever discards it
+   * takes no other tab's or earlier page's copy with it.
+   */
   keep(machineId: string, paneId: string, kind: UnsentKind, text: string, own = false, agentOnly = false): string | null {
     let storage: Storage | null = null;
     try { storage = this.storage(); } catch {}

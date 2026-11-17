@@ -1,3 +1,13 @@
+/**
+ * The composer sends "one message", but the pane's
+ * program defines what a safe submission is, so the payload follows the pane's own
+ * bracketed-paste mode (term.modes.bracketedPasteMode):
+ * - mode on (agent TUIs): the text goes out as ONE bracketed paste - newlines stay
+ *   literal inside the message - and a bare CR submits it, exactly like paste+Enter.
+ * - mode off (plain shell): classic paste semantics - every newline submits its own
+ *   line, and the trailing CR runs the last one.
+ */
+
 import { withoutTrailingBreaks } from "../../shared/launch-rules.ts";
 import type { AgentStatus, CommandForm, ConversationTurn, SlashCommand } from "../../shared/protocol.ts";
 import { skillSyntax } from "../../shared/skill-syntax.ts";
@@ -7,6 +17,7 @@ import type { ActiveTrigger } from "./mentions.ts";
 import { AGENT_INPUT_DRAFT_MESSAGE, CLAUDE_FOLDED_DRAFT_MESSAGE, GROK_QUEUED_MESSAGE, grokQueuedAhead, NO_AGENT_MESSAGE, submitNotTyped } from "../../shared/submit-outcome.ts";
 export { submitNotTyped } from "../../shared/submit-outcome.ts";
 
+/** This cap keeps one composer message inside a single WS frame. */
 export const MAX_COMPOSER_CHARS = 20_000;
 
 const PASTE_START = "\u001b[200~";
@@ -49,6 +60,10 @@ export function insertNote(code: string, message: string): string {
   return t("Not inserted: {message}", { message });
 }
 
+/**
+ * An action whose frame never left (`not_transmitted`) proves only that a held row was not sent: a queued row may still
+ * be typed by its turn's end, since the bridge keeps its lease until it notices the connection is gone.
+ */
 export function pendingActionUncertain(code: string, state: string): boolean {
   if (code === "not_transmitted") return state !== "held";
   return code === "pending_not_found" || !submitNotTyped(code);
@@ -90,6 +105,7 @@ export function endsWithTurn(turns: readonly ConversationTurn[], turn: TurnIdent
   return turn !== null && last?.role === "user" && last.ts === turn.ts && userText(last) === turn.text;
 }
 
+/** Agent names in this server refusal are JSON strings, so custom names cannot confuse the fields. */
 export function openCodeAgentChange(message: string): { from: string; to: string } | null {
   const match = /^Tab switched OpenCode's agent from ("(?:[^"\\]|\\.)*") to ("(?:[^"\\]|\\.)*")\. Nothing more was typed\.$/u.exec(message);
   if (!match) return null;
@@ -110,6 +126,11 @@ export function openCodeRefusalNote(code: string, message: string, tt: (text: st
   return null;
 }
 
+/**
+ * The note for a Send now a working Grok kept in its queue (server/core/grok-queue.ts sendGrokQueuedNow), on the row it
+ * leaves uncertain: the message is in Grok's queue, not "not sent", and the row offers no Send now that would queue it
+ * twice.
+ */
 export function grokQueueNote(code: string, message: string, tt: (text: string, vars?: Vars) => string = t): string | null {
   if (code !== "submit_changed") return null;
   const ahead = grokQueuedAhead(message);
@@ -128,11 +149,14 @@ export function submitNote(code: string, message: string, agent?: string | null)
   if (code === "held_input") return t("Not sent: send or discard the held input first.");
   if (code === "input_draft" && agent === "hermes") return t("Not sent: Hermes' input in the terminal is not empty. Send or clear it there, then send this message.");
   if (code === "input_draft" && message === CLAUDE_FOLDED_DRAFT_MESSAGE) return t("Not sent: Claude Code's input box in the terminal holds a paste or image it folded, whose lines are not shown here, so it cannot be sent over. Send or clear it there, then send this message.");
+  // any other agent's box, refused only over text typed there (server/core/composer.ts freeAgentInput); its message
+  // names it also where the pane is labelled Claude Code (an OmO with its Claude SDK child)
   if (code === "input_draft" && (message === AGENT_INPUT_DRAFT_MESSAGE || (agent != null && agent !== "claude"))) return t("Not sent: the agent's input box in the terminal holds text typed there. Send or clear it there, then send this message.");
   if (code === "input_draft") return t("Not sent: Claude Code's input box in the terminal is not empty. Send or clear it there, then send this message.");
   if (code === "rewind_dialog_open") return t("Not sent: Claude Code's rewind dialog is open in the terminal. Finish or close it there (Esc), then send this message.");
   if (code === "pending_input_unsupported") return t("Update this PC to send messages in the next turn. Your draft stayed here.");
   if (code === "pending_hold_unsupported") return t("Update this PC to hold messages. Your draft stayed here.");
+  // #511: a message with comments on a reply goes only to an agent
   if (code === "agent_only_unsupported") return t("Update this PC to send comments on a reply. Your message and comments stayed here.");
   if (code === "agent_not_ready" && message === NO_AGENT_MESSAGE) return t("Not sent: no agent is running in this pane. Your message stayed here.");
   if (code === "submit_timeout") return t("Not sent: it waited too long behind an earlier message, and nothing was typed. Send it again.");
@@ -146,10 +170,22 @@ export function submitNote(code: string, message: string, agent?: string | null)
   return t("Not sent: {message}", { message });
 }
 
+/**
+ * How a stored image is referenced in the prompt: the agent TUI reads the file from
+ * its path, so the mention is plain text the user can still edit before sending.
+ */
 export function imageMention(path: string): string {
   return `@${path} `;
 }
 
+/**
+ * Where an attached file's mention goes: at the start of the message, after a leading `/command`
+ * (it must stay first to be one), and after the mentions of files picked before it in the same
+ * batch that are still there, so a batch reads in pick order however its uploads finish. The mention goes in
+ * whole, with its separating space, or not at all (`length` 0): a cut `@path` would name a file
+ * that does not exist, so the caller keeps the attachment waiting until there is room; `missing`
+ * says how many characters the message is short of it.
+ */
 export function insertLeadingMention(
   text: string,
   mention: string,
@@ -167,8 +203,14 @@ export function insertLeadingMention(
   return { text: before + snippet + text.slice(at), at, length: snippet.length };
 }
 
+/** Ready states affect the held-message hint only; sending always requires a user action. */
 export const QUEUE_READY_STATUS: Readonly<Partial<Record<string, true>>> = { done: true, idle: true };
 
+/**
+ * The agent's own menu hides an `agent-hidden` row (Claude's agents,
+ * heapdump, setup-bedrock), and this one mirrors it: never listed, and typed by hand it is sent
+ * like any other text.
+ */
 export function commandListed(command: SlashCommand): boolean {
   return command.visibility !== "agent-hidden";
 }
@@ -178,11 +220,20 @@ export function namesHiddenCommand(commands: readonly SlashCommand[], query: str
   return word !== "" && commands.some((command) => !commandListed(command) && command.name.toLowerCase().startsWith(word));
 }
 
+/**
+ * A command the agent runs in the terminal, which the chat can start but cannot finish: the
+ * catalog says so (`visibility: "terminal"`, or a bare form whose interaction is the terminal,
+ * as pi's and omp's `/tree` browser or Claude's `/config` screen).
+ */
 export function terminalCommand(command: SlashCommand): boolean {
   if (!commandListed(command)) return false;
   return command.visibility === "terminal" || (command.forms ?? []).some((form) => form.match === "bare" && form.interaction === "terminal");
 }
 
+/**
+ * A stray argument to a command that takes none is still that
+ * command typed (`/tree w13:p2` opens the tree), so the bare form answers for it too.
+ */
 function typedForm(command: SlashCommand, argument: string): CommandForm | undefined {
   const forms = command.forms ?? [];
   const bare = forms.find((form) => form.match === "bare");
@@ -193,6 +244,10 @@ function typedForm(command: SlashCommand, argument: string): CommandForm | undef
     ?? bare;
 }
 
+/**
+ * The form it was typed in decides where the catalog tells forms apart: `/model` may open a dialog
+ * while `/model sonnet` needs nothing, and only `/resume list` may need the terminal.
+ */
 export function typedTerminalCommand(commands: readonly SlashCommand[], text: string): SlashCommand | null {
   const match = /^([/$])([^\s/$]\S*)(?:\s+([\s\S]*))?$/u.exec(text.trim());
   if (match === null) return null;
@@ -204,10 +259,12 @@ export function typedTerminalCommand(commands: readonly SlashCommand[], text: st
   return typedForm(command, argument.trim())?.interaction === "terminal" ? command : null;
 }
 
+/** The pane's `@` skills (OpenCode v2 attachments), listed in the `@` menu beside the files; none for other panes. */
 export function atSkillCommands(commands: readonly SlashCommand[]): SlashCommand[] {
   return commands.filter((command) => command.trigger === "@" && commandListed(command));
 }
 
+/** What picking an `@` skill inserts: `@` and its name, the skill id OpenCode expects (the row's `id` is its file's path). */
 export function atSkillReplacement(command: SlashCommand): string {
   return `@${command.name} `;
 }
@@ -369,6 +426,9 @@ export function slashCommandReplacement(command: SlashCommand, agent: string | n
   return `${prefix}${command.name} `;
 }
 
+/**
+ * Away from line starts, `prefixOnly` excludes fuzzy matches that could rewrite paths such as `/tmp`.
+ */
 export function rankSlashCommands(
   commands: readonly SlashCommand[],
   query: string,

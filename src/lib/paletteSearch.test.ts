@@ -153,6 +153,7 @@ describe("groupByWorkspace", () => {
   });
 
   it("follows the workspaces' order for an unsearched list, as a move in the roster leaves it", () => {
+    // workspace.move reorders the workspaces alone; the panes keep the order they came in
     const moved = [workspaces[1]!, workspaces[0]!];
     expect(groupByWorkspace(roster, moved).map((section) => [section.workspaceId, ids(section.panes)])).toEqual([
       ["w2", ["b1"]],

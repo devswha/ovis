@@ -120,6 +120,7 @@ describe("seedStatuses", () => {
     seedStatuses(known, roster(["p1", "idle"], ["p2", "idle"]));
     known.set("p1", "working");
     known.set("p2", "working");
+    // the roster is read from herdr on its own and can show a change before its event arrives
     seedStatuses(known, roster(["p1", "blocked"], ["p2", "done"]));
     expect(shouldNotifyStatus(known.get("p1"), "blocked")).toBe(true);
     expect(shouldNotifyStatus(known.get("p2"), "done")).toBe(true);
@@ -154,6 +155,7 @@ describe("seedStatuses", () => {
     seedStatuses(known, [...roster(["p1", "working"], ["p2", "idle"]), { id: "pc:2", snapshot: { panes: [{ pane_id: "p1", agent_status: "working" as AgentStatus }] } }], turns, 1_000);
     turns.lasted.set("p2", 500);
     expect([...turns.started.keys()].sort()).toEqual(["p1", remote].sort());
+    // p1 and p2 closed here (no pane-exited is sent for a closed pane); pc:2 is offline for now
     seedStatuses(known, [{ id: "local", snapshot: { panes: [] } }, { id: "pc:2", snapshot: null }], turns, 2_000);
     expect([...turns.started.keys()]).toEqual([remote]);
     expect(turns.lasted.size).toBe(0);

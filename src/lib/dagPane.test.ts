@@ -13,6 +13,7 @@ describe("isDagViewerPane", () => {
     expect(isDagViewerPane(pane("p", "t1", { label: "DAG · 01a10998" }))).toBeTrue();
     expect(isDagViewerPane(omo)).toBeFalse();
     expect(isDagViewerPane(pane("p", "t1", { label: "DAG notes", terminal_title: "OmO DAG viewer" }))).toBeFalse();
+    // the label is the plugin's prefix and the title its exact words, not the other way round
     expect(isDagViewerPane(pane("p", "t1", { label: "OmO DAG" }))).toBeFalse();
     expect(isDagViewerPane(pane("p", "t1", { terminal_title: "DAG · 01a10998" }))).toBeFalse();
   });

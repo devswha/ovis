@@ -17,7 +17,14 @@ export { alertPcAllowed, alertStatus, alertsAllow, paneAlertsMuted, shouldNotify
 
 export type NotificationState = "unsupported" | "default" | "granted" | "denied";
 
+/** The app's permission, the newest of its push plugin's answers (`askApp`); the page cannot read it synchronously. */
 let appPermission: NotificationState = "default";
+/**
+ * Orders the plugin's answers, so an out-of-date one never replaces a newer one. A check counts from
+ * when it was asked: what it read can be older than an answer that overtakes it (the page came back
+ * into view as the user tapped Alerts, and the check answers after the tap's request). A request
+ * counts from when its answer came, as the user gave it then.
+ */
 let turns = 0;
 let answeredTurn = 0;
 
@@ -42,6 +49,7 @@ async function askApp(method: "checkPermissions" | "requestPermissions"): Promis
   return appPermission;
 }
 
+/** The app's permission read anew from its push plugin, as the phone's Settings can change it while the page is away; elsewhere notificationState(). */
 export async function refreshNotificationState(): Promise<NotificationState> {
   return hasNativePlugin(PUSH_PLUGIN) ? askApp("checkPermissions") : notificationState();
 }
@@ -74,7 +82,7 @@ async function show(paneId: string, title: string, body: string, onClick?: () =>
         try {
           return await registration.getNotifications({ tag });
         } catch {
-          return [];
+          return []; // an older browser without getNotifications: the alert still shows
         }
       };
       const alertIdOf = (alert: Notification) => (alert.data as { alert_id?: string } | null)?.alert_id;
@@ -94,6 +102,7 @@ async function show(paneId: string, title: string, body: string, onClick?: () =>
   }
 }
 
+/** The page can show its own notifications here: a browser's, not the phone app's web view (the app shows only the server's pushes). */
 export function pageNotifications(): boolean {
   return !hasNativePlugin(PUSH_PLUGIN) && typeof globalThis.Notification !== "undefined";
 }

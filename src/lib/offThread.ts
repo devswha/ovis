@@ -20,6 +20,11 @@ interface Entry<Q, R> {
   resolve: (result: R | null) => void;
 }
 
+/**
+ * A job gets `budgetMs` from its start: past it the worker is ended (a tokenizer stuck in a quadratic
+ * input cannot be interrupted any other way), the job gives `null`, and the next job starts a new
+ * worker.
+ */
 export function createOffThreadQueue<Q, R>(spawn: () => WorkerLike, budgetMs: number): (request: Q, transfer?: Transferable[]) => OffThreadJob<R> {
   let worker: WorkerLike | null = null;
   let running: (Entry<Q, R> & { timer: ReturnType<typeof setTimeout> }) | null = null;

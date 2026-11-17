@@ -17,6 +17,12 @@ export function readerFromSearch(search: string): ReaderTarget | null {
   return { machine: query.get("machine") || "local", path };
 }
 
+/**
+ * A PC's own server loads a new page for
+ * every address it is sent to; in the hosted shell an address that changes only the fragment
+ * (pasted, or Back and Forward) loads nothing, so one that turns the page into the other, or puts
+ * the reader on another PC, loads it.
+ */
 export function reloadWhenReaderChanges(loaded: ReaderTarget | null, page: { addEventListener(type: "hashchange", listener: () => void): void; location: { search: string; hash: string; reload(): void } } = window, mode: ShellMode = shellMode()): void {
   if (mode !== "relay") return;
   page.addEventListener("hashchange", () => {
@@ -25,6 +31,10 @@ export function reloadWhenReaderChanges(loaded: ReaderTarget | null, page: { add
   });
 }
 
+/**
+ * Above a `~/` document's home the `..` is kept (`~/../x.md`): only the PC knows where
+ * its home is, and it expands the path.
+ */
 export function resolveFromDocument(document: string, target: string): string {
   if (/^(?:[\\/]|~\/|[A-Za-z]:[\\/])/.test(target)) return target;
   const folder = document.replace(/\\/g, "/").split("/").slice(0, -1);

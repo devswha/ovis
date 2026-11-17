@@ -175,13 +175,17 @@ describe("readThemeFile", () => {
     expect(read.name.length).toBeLessThanOrEqual(MAX_THEME_NAME);
     expect(read.name).not.toMatch(/[\n\u0007\u2028]/);
     expect(read.name.startsWith("Evil name")).toBe(true);
+    // a mark that would draw the rest of the line backwards is dropped, in a file and in a stored list
     expect(theme(JSON.stringify({ name: "ab\u202ecd\u2066ef\u200f", base00: "#000000", base05: "#ffffff" })).name).toBe("abcdef");
     expect(sanitizeCustomThemes({ themes: [{ ...read, name: "x\u202ey" }], dark: null, light: null }).themes[0]!.name).toBe("xy");
+    // nothing unseen is kept (a soft hyphen, a zero-width space, a word joiner, a tag, a blank Braille cell),
+    // and one spelling of an accented letter
     const named = (name: string): string => theme(JSON.stringify({ name, base00: "#000000", base05: "#ffffff" })).name;
     for (const unseen of ["\u200b", "\u00ad", "\u2060", "\u{e0001}", "\u034f", "\u3164", "\u2800", "\ufe00"]) expect(named(`Lamp${unseen}light${unseen}`), unseen.codePointAt(0)!.toString(16)).toBe("Lamplight");
     expect(named("Rose\u0301 Pine")).toBe("Ros\u00e9 Pine");
     expect(named("Ros\u00e9 Pine")).toBe("Ros\u00e9 Pine");
     for (const written of ["Night \u{1f469}\u200d\u{1f4bb}", "Love \u2764\ufe0f", "\u0634\u0628\u200c\u062a\u0627\u0628", "\u0915\u094d\u200d\u0937"]) expect(named(written), written).toBe(written);
+    // and is compared without them, so two names that look the same are one name
     for (const unseen of ["\u200c", "\u200d", "\ufe0f"]) {
       expect(named(`Lamp${unseen}light`)).toBe(`Lamp${unseen}light`);
       expect(nameKey(named(`Lamp${unseen}light`))).toBe("Lamplight");
@@ -225,6 +229,7 @@ describe("the kept list", () => {
     const replaced = withTheme(one, other, "dark")!;
     expect(replaced.themes).toEqual([other]);
     expect(replaced.dark).toBe(first.id);
+    // the row is the block's, not the id's: a list from elsewhere that reuses an id is not drawn in the old colours
     expect(customRow(first, "dark").bg).toBe("#181613");
     expect(customRow(other, "dark").bg).toBe("#1b2b34");
     expect(customRow(other, "dark").id).toBe(customRow(first, "dark").id);

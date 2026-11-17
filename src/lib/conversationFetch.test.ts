@@ -208,6 +208,7 @@ describe("conversation read started by a press", () => {
     expect(sent[1]!.etag).toBeNull();
   });
 
+  /** A press held past its read's answer (a click lasts 50-150 ms): the answer is in the cache before the chat mounts. */
   async function heldPast(paneId: string, before?: ConversationResponse): Promise<void> {
     for (let turn = 0; turn < 50 && peekPaneConversation(paneId, "local", 10) === before; turn++) await new Promise((resolve) => setTimeout(resolve, 0));
   }
@@ -233,6 +234,7 @@ describe("conversation read started by a press", () => {
     await heldPast("press:again", earlier);
     const { drawn, read } = await mount("press:again");
     expect(sent).toHaveLength(2);
+    // the very object drawn would tell the chat nothing was read: no presentation read, no finish proved
     expect(read).not.toBe(drawn);
     expect(read).toEqual(drawn!);
   });
@@ -1047,6 +1049,7 @@ describe("conversation invalidation refresh", () => {
     refreshClock();
     const refresh = pushedRefresh();
     const reads: ReturnType<typeof Promise.withResolvers<void>>[] = [];
+    // a read ends when its screen goes, as fetch does when its signal aborts
     refresh.setRead((signal) => {
       const read = Promise.withResolvers<void>();
       signal.addEventListener("abort", () => read.resolve(), { once: true });

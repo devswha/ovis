@@ -1,3 +1,13 @@
+/*
+ * Only at the drawer's
+ * width (<=768px, styles.css) and only for a mostly horizontal stroke, so the terminal's
+ * one-finger scrolling and the transcript's vertical scrolling keep working.
+ *
+ * While the finger is down the drawer is under it, as an iPhone's is: it moves with the
+ * stroke rather than playing a slide of its own, and where it is let go, and how fast, decide
+ * whether it stays open (`drawerSettles`).
+ */
+
 export const EDGE_PX = 24;
 export const SWIPE_PX = 56;
 const SLOP_PX = 10;
@@ -23,6 +33,7 @@ export function drawerSettles(shown: number, width: number, speed: number): bool
 
 const MODAL = "[aria-modal='true']:not(#workspace-drawer), dialog[open]";
 
+/** Something under the finger scrolled sideways, a code block or a table: a swipe right scrolls it back. */
 function scrolledAside(target: EventTarget | null): boolean {
   for (let node = target as HTMLElement | null; node; node = node.parentElement) {
     if (node.scrollLeft > 0 && node.scrollWidth > node.clientWidth) return true;
@@ -30,6 +41,7 @@ function scrolledAside(target: EventTarget | null): boolean {
   return false;
 }
 
+/** A finger on a text field edits its text: a sideways stroke there moves the caret or the selection. */
 function editable(target: EventTarget | null): boolean {
   for (let node = target as HTMLElement | null; node; node = node.parentElement) {
     if (node.isContentEditable === true || /^(?:INPUT|TEXTAREA|SELECT)$/.test(node.tagName ?? "")) return true;
@@ -37,6 +49,7 @@ function editable(target: EventTarget | null): boolean {
   return false;
 }
 
+/** Text is selected (the transcript's, a long press in the gutter): a stroke drags its handles. */
 function selecting(): boolean {
   const selection = document.getSelection?.() ?? null;
   return selection !== null && !selection.isCollapsed;
@@ -68,6 +81,8 @@ export function watchDrawerSwipe(isOpen: () => boolean, setOpen: (open: boolean)
     if (!narrow.matches) { onEnd(); return; }
     if (!done && selecting()) { onEnd(); return; }
     const verdict = done ? "claim" : swipeVerdict(start.open, start.x, touch.clientX - start.x, touch.clientY - start.y);
+    // Until the drawer moves, a stroke that turns to
+    // scrolling goes back to the page, so the terminal's one-finger scroll is not held up
     if (!claimed && verdict === "pending") return;
     if (verdict === "ignore") { onEnd(); return; }
     claimed = true;
@@ -86,6 +101,7 @@ export function watchDrawerSwipe(isOpen: () => boolean, setOpen: (open: boolean)
       const drawer = document.getElementById?.("workspace-drawer") ?? null;
       if (drawer === null) return;
       const scrim = document.querySelector<HTMLElement>(".scrim");
+      // a flick may lift after one move: its speed so far is measured from where the finger came down
       const speed = at > start.at ? (x - start.x) / (at - start.at) : 0;
       follow = { drawer, scrim, width: drawer.getBoundingClientRect().width, shown: 0, x, at, speed };
       drawer.style.transition = "none";

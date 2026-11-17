@@ -46,6 +46,8 @@ it("looks past a compaction's summary and its notices to the answer before them 
   const answered = { source: "claude-transcript", history_id: "session", turns: [
     { role: "assistant", ts: "2026-10-19T00:00:00Z", end_ts: "2026-10-19T00:00:05Z", parts: [{ kind: "text", text: "Finished", phase: "final_answer" }] },
   ] } satisfies Parameters<typeof conversationFinishPresented>[0];
+  // as server/claude-transcript.ts parses what Claude Code records for /compact typed at rest (server/core/status.test.ts):
+  // the command, then the summary; the command's echo and output lines are dropped
   const compacted = { ...answered, turns: [...answered.turns,
     { role: "user", ts: "2026-10-19T00:59:57Z", parts: [{ kind: "text", text: "/compact" }] },
     { role: "user", ts: "2026-10-19T01:00:00Z", parts: [{ kind: "compact", text: "Summary of the earlier session" }] },
@@ -89,6 +91,8 @@ it("looks past a compaction's summary and its notices to the answer before them 
     { role: "user", ts: "2026-10-19T03:00:00Z", parts: [{ kind: "text", text: "Next request" }] }] } satisfies Parameters<typeof conversationFinishPresented>[0];
   expect(conversationFinishPresented(prompted)).toBe(false);
   expect(new ConversationFinishEvidence().accept("compact-prompted", 40, prompted)).toBe(false);
+  // a compaction no /compact asked for (Claude Code's own; at rest it keeps the finish id, server/core/status.test.ts)
+  // leaves the answer before it presented and proving its own finish, and proves no finish of its own
   const idle = { ...answered, turns: [...answered.turns,
     { role: "user", ts: "2026-10-19T01:00:00Z", parts: [{ kind: "compact", text: "Summary of the earlier session" }] }] } satisfies Parameters<typeof conversationFinishPresented>[0];
   expect(conversationFinishPresented(idle)).toBe(true);
@@ -103,6 +107,7 @@ it("looks past a compaction's summary and its notices to the answer before them 
   const sequence = new ConversationFinishEvidence();
   expect(sequence.accept("compact-idle-then", 40, idle)).toBe(true);
   expect(sequence.accept("compact-idle-then", 41, idleThenCommanded)).toBe(true);
+  // the other agents record no command: each compaction of theirs proves its finish, as with #3690
   const opencode = { ...answered, source: "opencode-transcript" as const };
   const opencodeCompacted = { ...opencode, turns: [...opencode.turns, idle.turns[1]!] };
   const otherAgent = new ConversationFinishEvidence();

@@ -112,6 +112,8 @@ describe("$ skills", () => {
   });
 });
 
+// OpenCode v2 skills are `@skill-id` attachments: a pane whose rows carry the `@` trigger lists
+// them in the `@` menu beside the files, and picking one inserts the id OpenCode expects
 describe("@ skills", () => {
   const pdf: SlashCommand = { name: "pdf-tools", description: "Extracts text from PDFs", source: "skill", origin: "user", trigger: "@", id: "pdf-tools" };
   const docs: SlashCommand = { name: "docs-release", description: "Writes release notes", source: "skill", origin: "project", trigger: "@" };

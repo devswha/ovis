@@ -31,6 +31,12 @@ export function dropletAllows(prefs: AlertPrefs, status: AgentStatus, worked: nu
   return worked === null || worked >= LONG_TURN_MS;
 }
 
+/**
+ * The server reads
+ * the roster from herdr on its own, so a roster can show a change before the event that tells
+ * of it arrives. A change that is news (shouldNotifyStatus) is therefore left to its event:
+ * taken from the roster, the event would be no change and the alert would be lost.
+ */
 export function seedStatuses(
   known: Map<string, AgentStatus>,
   machines: readonly { id: string; snapshot?: { panes: readonly { pane_id: string; agent_status: AgentStatus }[] } | null }[],
@@ -38,6 +44,7 @@ export function seedStatuses(
   now = Date.now(),
 ): void {
   const listed = new Set<string>();
+  // turns of a pane gone from a PC's roster go with it: a pane closed sends no pane-exited to clear them
   const read = new Set(machines.filter((machine) => machine.snapshot).map((machine) => machine.id));
   for (const machine of machines) for (const pane of machine.snapshot?.panes ?? []) {
     const key = paneStorageId(machine.id, pane.pane_id);
@@ -81,6 +88,10 @@ export interface PressSample {
   t: number;
 }
 
+/**
+ * The vertical speed at release (px per ms, up is negative), over the samples of the last
+ * FLICK_WINDOW_MS only. Measured over the whole press, a hold before a flick reads as slow.
+ */
 export function flickVelocity(samples: readonly PressSample[], y: number, now: number): number {
   const from = samples.find((sample) => now - sample.t <= FLICK_WINDOW_MS);
   return from ? (y - from.y) / Math.max(1, now - from.t) : 0;

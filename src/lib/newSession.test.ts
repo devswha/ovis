@@ -30,6 +30,7 @@ describe("newSessionLaunch", () => {
     expect(newSessionLaunch({ agent: "omp", model: "gpt-5", effort: "", prompt: "" }, plain)).toEqual({ fault: "model" });
     expect(newSessionLaunch({ agent: "omp", model: "", effort: "high", prompt: "" }, plain)).toEqual({ fault: "effort" });
     expect(newSessionLaunch({ agent: "codex", model: "", effort: "ultracode", prompt: "" }, plain)).toEqual({ fault: "effort" });
+    // Ultracode is no level of Claude Code's effort list, and no agent but Claude Code takes the switch
     expect(newSessionLaunch({ agent: "claude", model: "", effort: "ultracode", prompt: "" }, plain)).toEqual({ fault: "effort" });
     expect(newSessionLaunch({ agent: "codex", model: "", effort: "", ultracode: true, prompt: "go" }, plain)).toEqual({ fault: "ultracode" });
     expect(newSessionLaunch({ agent: "", model: "", effort: "", prompt: "a shell runs no agent" }, plain)).toEqual({ fault: "prompt" });

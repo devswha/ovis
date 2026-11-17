@@ -1,3 +1,11 @@
+/**
+ * What the new workspace and tab dialogs start (#774, #1311): the agent of the create request for
+ * the dialog's fields, with its launch arguments (lib/agentLaunchMode.ts), and where the first
+ * message goes. Codex takes it as its own positional argument behind the end-of-options separator;
+ * any other agent gets it as the request's `first_message`, which the bridge queues for the agent's
+ * first ready turn through its pending path (server/core/pending.ts). Either way the request is the
+ * one send: nothing is typed by this page afterwards.
+ */
 import type { CreateTabRequest, CreateWorkspaceRequest, WorkspaceCreated } from "../../shared/protocol.ts";
 import type { ClaudeLaunchMode, CodexLaunchMode } from "./agentLaunchMode.ts";
 import { firstPromptDelivery, launchAgent, launchCapabilities, launchChoiceFault } from "./agentLaunchMode.ts";
@@ -41,6 +49,10 @@ export interface NewSessionTarget {
   name: string;
 }
 
+/**
+ * The create request for a launch. `first_message` only when there is one, with `connection`, this page's
+ * connection to the PC (MachineSession.connection), as the one that may type it on its own.
+ */
 export function createRequest(target: NewSessionTarget, launch: Exclude<NewSessionLaunch, { fault: unknown }>, connection: string | null): CreateWorkspaceRequest | CreateTabRequest {
   const text = firstMessageOf(launch);
   const message = text === null ? {} : { first_message: text, ...(connection === null ? {} : { first_message_connection: connection }) };

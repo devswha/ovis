@@ -44,6 +44,11 @@ export function assignAgentGroup(groupOf: Readonly<Record<string, string>>, key:
   return next;
 }
 
+/**
+ * The grouped keys that may stay with the next change: those whose pane a loaded PC still has (any
+ * pane, not only an agent row: a new session's agent may not have started yet), and every key of a
+ * PC still loading or hidden on this device, which cannot say its panes are gone.
+ */
 export function liveGroupKeys(groupOf: Readonly<Record<string, string>>, machines: readonly { id: string; snapshot: { panes: readonly { pane_id: string }[] } | null }[], hidden: readonly string[]): ReadonlySet<string> {
   const live = new Set(machines.flatMap((machine) => machine.snapshot?.panes.map((pane) => sidebarPinKey(machine.id, pane.pane_id)) ?? []));
   return new Set(pruneSidebarPins(Object.keys(groupOf), live, machines, hidden));
@@ -62,6 +67,7 @@ export function removeAgentGroup(names: readonly string[], groupOf: Readonly<Rec
   return { names: names.filter((held) => held !== name), groupOf: Object.fromEntries(Object.entries(groupOf).filter(([, held]) => held !== name)) };
 }
 
+/** The groups after herdr moved a pane under a new ID (#1503): its group goes with it. */
 export function movedAgentGroup(groupOf: Readonly<Record<string, string>>, machineId: string, from: string, to: string): Readonly<Record<string, string>> {
   const before = sidebarPinKey(machineId, from), after = sidebarPinKey(machineId, to);
   const name = groupOf[before];
@@ -99,13 +105,13 @@ export function rememberFolderAgentGroup(machineId: string, folder: string | nul
   const held = Object.entries(readFolderGroups()).filter(([kept]) => kept !== key);
   if (name !== null) held.push([key, name]);
   try { window.localStorage.setItem(FOLDER_GROUPS_KEY, JSON.stringify(Object.fromEntries(held.slice(-MAX_FOLDER_GROUPS)))); }
-  catch {}
+  catch { /* storage denied: the next opening starts with no group */ }
 }
 
 export function renameDeviceAgentGroup(from: string, to: string | null): void {
   const folders = Object.entries(readFolderGroups()).flatMap(([key, name]): [string, string][] => name !== from ? [[key, name]] : to === null ? [] : [[key, to]]);
   try { window.localStorage.setItem(FOLDER_GROUPS_KEY, JSON.stringify(Object.fromEntries(folders))); }
-  catch {}
+  catch { /* storage denied: the folders start on no group */ }
   saveFoldedAgentGroups(loadFoldedAgentGroups().flatMap((name) => name !== from ? [name] : to === null ? [] : [to]));
 }
 
@@ -120,5 +126,5 @@ export function loadFoldedAgentGroups(): string[] {
 
 export function saveFoldedAgentGroups(names: readonly string[]): void {
   try { window.localStorage.setItem(FOLDS_KEY, JSON.stringify(names)); }
-  catch {}
+  catch { /* private mode: this page keeps it */ }
 }

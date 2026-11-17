@@ -1,5 +1,9 @@
 import type { SplitTarget } from "./split.ts";
 
+/**
+ * A tab dragged out of its strip (useTabReorder): the strip holds the pointer, so the pane area
+ * never sees the drag.
+ */
 export interface PaneDrag {
   target: SplitTarget;
   point: { x: number; y: number } | null;

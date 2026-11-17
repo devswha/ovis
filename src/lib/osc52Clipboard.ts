@@ -19,6 +19,10 @@ export interface Osc52Reservation {
   readonly pending: boolean;
 }
 
+/**
+ * Starts a clipboard write during the user's click; null where the clipboard API cannot take a
+ * pending item (plain HTTP, an old browser).
+ */
 export function reserveOsc52Copy(
   timeoutMs = OSC52_RESERVATION_MS,
   access: ClipboardAccess = { clipboard: globalThis.navigator?.clipboard, ClipboardItem: globalThis.ClipboardItem },

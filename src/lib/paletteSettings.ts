@@ -9,6 +9,11 @@ export interface SettingsPageEntry {
   aliases: string;
 }
 
+/**
+ * After the pages come the groups a setting is looked for by but whose page's words do not say it,
+ * as Zed's settings search lands on the setting: each is found by its heading and the labels of the
+ * settings it holds, a touch screen's and a desktop's alike.
+ */
 export function settingsPageEntries(t: Translate): SettingsPageEntry[] {
   return [
     { id: "appearance", label: t("Appearance"), aliases: t("theme themes palette dark light mode colors density language sidebar logos") },
@@ -72,6 +77,11 @@ function normalize(text: string): string {
   return text.toLocaleLowerCase().replace(/\s+/g, " ").trim();
 }
 
+/**
+ * Rows a query finds, best first. A title that holds every word of the query is a strong match
+ * (the whole title, then its start, then anywhere in it); a row found only through its aliases is a
+ * weak match and comes after every strong one, as T3 Code sorts a secondary hit last.
+ */
 export function rankByTitle<T>(query: string, rows: readonly SearchableRow<T>[]): T[] {
   const needle = normalize(query);
   if (needle === "") return rows.map((row) => row.item);
@@ -94,6 +104,11 @@ export interface SettingsPageRequest {
   section?: string;
 }
 
+/**
+ * The page the palette asked Settings to open. The dialog mounts per opening and reads it when it
+ * mounts; it clears it once it has, and the palette clears it on its own opening, so a request the
+ * dialog never saw cannot steer a later opening.
+ */
 let requested: SettingsPageRequest | null = null;
 
 export function requestSettingsPage(request: SettingsPageRequest | null): void {

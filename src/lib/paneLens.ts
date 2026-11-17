@@ -7,6 +7,10 @@ export function defaultLens(hasAgent: boolean | null, defaultView: DefaultView, 
   return hasAgent !== false && coarse ? "chat" : "terminal";
 }
 
+/**
+ * An agent that starts in a shell, or one that exits, leaves the pane on the
+ * lens it was showing: re-deriving it turned a split's terminal into a chat while it was in use.
+ */
 export class PaneLenses {
   private readonly settled = new Map<string, PaneView>();
   constructor(private readonly defaultView: DefaultView) {}

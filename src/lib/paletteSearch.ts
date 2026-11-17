@@ -23,6 +23,7 @@ export interface PaletteQuery {
   text: string;
 }
 
+/** A query that starts with `>` searches the actions alone, as T3 Code's palette reads that prefix. */
 export function parseQuery(query: string): PaletteQuery {
   const trimmed = query.trimStart();
   if (trimmed.startsWith(">")) return { actionsOnly: true, text: trimmed.slice(1).trim() };
@@ -164,6 +165,7 @@ export interface PaletteSection {
   panes: HerdrPane[];
 }
 
+/** One section per workspace, as herdr's Goto picker lists its rows. */
 export function groupByWorkspace(panes: readonly HerdrPane[], workspaces: readonly WorkspaceInfo[], ranked = false): PaletteSection[] {
   const byId = new Map(workspaces.map((workspace) => [workspace.workspace_id, workspace]));
   const sections = new Map<string, PaletteSection>();

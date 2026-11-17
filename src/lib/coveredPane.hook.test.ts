@@ -141,6 +141,7 @@ describe("useKeptPaneBoxes", () => {
     expect(first.kept()).toEqual({ position: "absolute", left: "0px", top: "42px", width: "560px", height: "830px" });
     expect(second.kept()).toEqual({ position: "absolute", left: "560px", top: "42px", width: "560px", height: "830px" });
 
+    // When they are shown again as the classic split, React leaves their style alone: each has its own rectangle back.
     await draw(false);
     expect([first.kept(), Object.fromEntries(first.properties)]).toEqual([null, rectangle("0%")]);
     expect([second.kept(), Object.fromEntries(second.properties)]).toEqual([null, rectangle("50%")]);
@@ -155,6 +156,7 @@ describe("useKeptPaneBoxes", () => {
     areaBox = { left: 320, top: 0, width: 1120, height: 900 };
     await draw(true);
 
+    // When a row's thread is drawn: in that commit React clears the slot's rectangle before the hold lets go.
     for (const side of Object.keys(rectangle)) slot.style.removeProperty(side);
     await draw(false);
 

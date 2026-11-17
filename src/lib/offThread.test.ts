@@ -144,6 +144,8 @@ describe("highlightOffThread", () => {
     expect(highlightKnown(source, "yaml")?.tooLong).toBe(true);
   }, HIGHLIGHT_BUDGET_MS + 5_000);
   it("remembers giving up on a text whose view left while it ran", async () => {
+    // a view that unmounts (or a StrictMode remount) cancels the running job: it still ran, so the
+    // next view of the text must not spend another budget on it
     const source = "-".repeat(200_001);
     const job = highlightOffThread(source, "yaml");
     expect(job.cancel()).toBe(false);

@@ -23,6 +23,7 @@ export function carryPaneState(machineId: string, from: string, to: string, draf
   comments: ReplyCommentStore = replyComments): void {
   const before = paneStorageId(machineId, from);
   const after = paneStorageId(machineId, to);
+  // Inside the old ID's send lock, so no tab's send claims them half moved (#2369)
   underSendLock(`ovis:composer-draft:${before}`, () => {
     const draft = `ovis:composer-draft:${before}`;
     const lease = sendLease(storage(), draft);
@@ -42,9 +43,11 @@ export function carryPaneState(machineId: string, from: string, to: string, draf
     writeTerminalDraft(after, line);
     writeTerminalDraft(before, "");
   }
+  // through the herdr fence (lib/paneLifetime.ts): a PC whose herdr is not proven keeps them in this page
   for (const prefix of CARRIED) {
     try {
       const value = storage().getItem(prefix + before);
+      // a key the new ID holds already is that pane's own
       if (value === null || storage().getItem(prefix + after) !== null) continue;
       storage().setItem(prefix + after, value);
       storage().removeItem(prefix + before);
@@ -52,6 +55,12 @@ export function carryPaneState(machineId: string, from: string, to: string, draf
   }
 }
 
+/**
+ * Everything this browser keeps under a pane's ID, carried when herdr moved the pane under a new one, wherever
+ * the move was made (the server's `pane-moved`, #1503): what carryPaneState carries, the pane's pending-message
+ * rows (held as they were: nothing is sent), its place in the chat and its sidebar pin. Safe to run again for the same move (each
+ * tab hears it, the moving one also from its own request): what was carried is not under the old ID any more.
+ */
 export function carryMovedPane(machineId: string, from: string, to: string): void {
   if (from === to) return;
   carryPaneState(machineId, from, to);

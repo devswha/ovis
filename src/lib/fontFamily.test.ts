@@ -7,6 +7,7 @@ import { chatFontStack, type FontWidths, HANGUL_FAMILY, loadFontStack, measurabl
 // woff2's known table tags, by the index its table directory writes for them
 const WOFF2_TAGS = ["cmap", "head", "hhea", "hmtx", "maxp", "name", "OS/2", "post", "cvt ", "fpgm", "glyf", "loca", "prep", "CFF ", "VORG", "EBDT", "EBLC", "gasp", "hdmx", "kern", "LTSH", "PCLT", "VDMX", "vhea", "vmtx", "BASE", "GDEF", "GPOS", "GSUB"];
 
+/** The code points a woff2 file maps to a glyph (its format 4 cmaps), as inclusive ranges. */
 function cmapRanges(file: Buffer): [number, number][] {
   const view = new DataView(file.buffer, file.byteOffset, file.byteLength);
   expect(view.getUint32(0)).toBe(0x774f4632); // "wOF2"
@@ -83,6 +84,7 @@ describe("terminal font stack", () => {
     const named = TERMINAL_FONT_STACK.split(",").map((name) => name.trim().replace(/["']/g, ""));
     expect(named.slice(0, 2)).toEqual(["Symbols Nerd Font Mono", MONO_FAMILY]);
     expect(named).not.toContain("Pretendard Variable");
+    // both weights, from the bundled files alone: a local() copy is a font Ovis for Mac's canvas cannot measure
     const faces = [...sheets.matchAll(/@font-face\s*\{([^}]*)\}/g)].map((match) => match[1]!).filter((face) => face.includes(`"${MONO_FAMILY}"`));
     expect(faces.map((face) => /font-weight:\s*(\d+)/.exec(face)?.[1])).toEqual(["400", "700"]);
     for (const face of faces) {

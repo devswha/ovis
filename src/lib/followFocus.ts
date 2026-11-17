@@ -21,6 +21,7 @@ export function followsHerdrFocus(input: {
   selection: { machineId: string; paneId: string | null };
   splitOthers: readonly SplitTarget[];
   linkPending: boolean;
+  /** this device is in use: following would drop the keyboard, close what is open or leave an unsent message (#1470) */
   busy: boolean;
   ownMove: boolean;
 }): boolean {
@@ -36,6 +37,11 @@ const ownMoves = new Map<string, number>();
  */
 export const OWN_MOVE_HOLD_MS = 10_000;
 
+/**
+ * A request from this device that moves herdr's focus (a split that opens its new pane): herdr's
+ * pane-focused frame may come before the answer, and following it would open the pane as an
+ * automatic pick, with no keyboard and no Back entry, before the caller opens it as its own (#1470).
+ */
 export function movingHerdrFocus<T>(machineId: string, request: Promise<T>): Promise<T> {
   ownMoves.set(machineId, (ownMoves.get(machineId) ?? 0) + 1);
   let held = true;
@@ -54,6 +60,11 @@ export function movingHerdrFocusOn(machineId: string): boolean {
   return ownMoves.has(machineId);
 }
 
+/**
+ * A dialog is open over the pane, or the keyboard is in a text field (the composer, the input line,
+ * the terminal's own): following herdr's focus would close the dialog or drop the keyboard
+ * mid-sentence.
+ */
 export function deviceBusy(doc: Pick<Document, "activeElement" | "querySelector"> = document): boolean {
   if (doc.querySelector('[aria-modal="true"], dialog[open]') !== null) return true;
   const active = doc.activeElement;
@@ -72,11 +83,15 @@ const draftsHere: PaneDrafts = {
   line: (owner) => readTerminalDraft(owner),
   held: (owner) => {
     let raw: string | null = null;
-    try { raw = paneLifetimes.paneStorage.getItem(`ovis:terminal-draft:${owner}`); } catch {}
+    try { raw = paneLifetimes.paneStorage.getItem(`ovis:terminal-draft:${owner}`); } catch { /* private mode */ }
     return restoreDraft(raw, Date.now()).text;
   },
 };
 
+/**
+ * The pane this device has open holds an unsent message in any of its drafts: following would
+ * leave it behind, so the pane stays until it is sent or cleared.
+ */
 export function unsentDraft(selection: { machineId: string; paneId: string | null }, drafts: PaneDrafts = draftsHere): boolean {
   if (selection.paneId === null) return false;
   const owner = paneStorageId(selection.machineId, selection.paneId);
