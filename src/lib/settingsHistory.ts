@@ -139,6 +139,7 @@ function reconcile(): void {
       openedOver = anchor;
       const marks = { [LOST_KEY]: true, ...(anchor === undefined ? {} : { [ANCHOR_KEY]: anchor }) };
       base = { ...unmarked, ...marks };
+      // from the entry as the sheet left it, without its mark: with it, the entry is the sheet's again
       const current: unknown = window.history.state;
       writeState("replaceState", { ...(current !== null && typeof current === "object" ? current : {}), ...marks });
     }
@@ -154,7 +155,8 @@ export function recordSettings(levels: readonly SettingsLevel[]): void {
 }
 
 /**
- * Asked rather than
+ * Whether this load began on an entry Settings left, which it steps out of, or on one above them
+ * (a preview opened over Settings), which it keeps with Settings closed. Asked rather than
  * read from the history by whoever opens Settings from the address: the step lands when the
  * browser gets to it, before or after the app first draws, and either address may name Settings.
  */
@@ -210,6 +212,7 @@ if (typeof window !== "undefined") {
     for (const listener of [...listeners]) listener(entry, own);
     if (own) reconcile();
   });
+  // a reload keeps the history and not the dialog: step out of the entries it left
   const left = settingsEntry(window.history.state);
   if (left !== null) { loadedOnSettings = true; rewind(left.depth); }
   else if (typeof fieldOf(window.history.state, ABOVE_KEY) === "string") {

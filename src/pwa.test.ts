@@ -79,6 +79,7 @@ function serviceWorker(stored: Record<string, Record<string, string | Kept>>, so
     const response = request.mode === "navigate" ? page()
       : !network.gone.has(keyOf(request)) ? new Response(`network ${keyOf(request)}`)
       : network.goneAs === "shell" ? page() : new Response(null, { status: 404 });
+    // a same-origin answer, which is all the worker keeps
     Object.defineProperty(response, "type", { value: "basic" });
     return response;
   };
@@ -386,6 +387,7 @@ describe("a PC's worker in the hosted shell", () => {
     postMessage(data) { this.told.push(data); }, focus: async () => undefined,
   });
 
+  /** public/sw.js registered at `/s/<ID>/`, with `windows` open on the origin (every PC's). */
   function scoped(windows: Window[]) {
     const listeners = new Map<string, (event: unknown) => void>();
     const opened: string[] = [];

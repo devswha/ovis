@@ -90,6 +90,7 @@ export interface ComposerProps {
   metadata?: ConversationMetadata | null;
   answerHint?: string | null;
   waitingAnswer?: { confirm(): Promise<boolean | string>; cancel(): void } | null;
+  /** what the agent suggests typing next (the grey text in Claude's, gjc's or omp's empty input): the placeholder, taken with Tab */
   suggestion?: string | null;
   restored?: string | null;
   greeting?: ReactNode;
@@ -239,6 +240,7 @@ export function Composer({
   const { text, sending } = useSyncExternalStore(composerDrafts.subscribe, () => composerDrafts.read(draftKey));
   const draftKeyRef = useRef(draftKey);
   draftKeyRef.current = draftKey;
+  // each time the terminal disconnects: a send that waited for the lock goes only on the connection it was pressed on (#2369)
   const drops = useRef(0);
   const wasConnected = useRef(connected);
   if (wasConnected.current !== connected) { if (!connected) drops.current++; wasConnected.current = connected; }
@@ -277,6 +279,7 @@ export function Composer({
   textRef.current = text;
   caretRef.current = caret;
   const syntax = skillSyntax(agent);
+  /** the pane's `@` skills (OpenCode v2), listed with the files; a pane without them keeps the file menu alone */
   const atSkills = useMemo(() => atSkillCommands(commands), [commands]);
   const trigger = useMemo(() => activeTrigger(text, caret, { skills: syntax.skillTriggers.includes("$"), namespaced: syntax.namespaced, atSkills: atSkills.length > 0 }), [atSkills, syntax, caret, text]);
   const terminalTyped = useMemo(() => typedTerminalCommand(commands, text), [commands, text]);
@@ -463,6 +466,8 @@ export function Composer({
   const filesFailedShown = !menuDismissed && trigger?.kind === "file" && filesFailed && files.length === 0 && !menuOpen;
   const slashUnmatched = !menuDismissed && trigger?.kind === "slash" && trigger.query !== "" && choices.length === 0 && triggerCommands.length > 0
     && !namesHiddenCommand(commands, trigger.query);
+  // clamped as the list is drawn, not by an effect after it: a Tab or Enter typed before that
+  // effect's render found no row at the old index and did nothing
   const choiceIds = choices.map((choice) => typeof choice === "string" ? `file:${choice}` : `${choice.source}:${choice.name}`);
   const activeItemId = resolveComposerMenuActiveItemId({
     items: choiceIds.map((id) => ({ id })),
@@ -506,6 +511,8 @@ export function Composer({
 
   const pasteCutNote = useRef<string | null>(null);
 
+  // the box clamps at its cap without a word: the cap is said once, as it is reached, through the
+  // polite region (the status line shows it; a line that appears with its words is not announced)
   const wasFull = useRef(false);
   useEffect(() => {
     const full = composerFull(text.length, MAX_COMPOSER_CHARS);
@@ -518,6 +525,8 @@ export function Composer({
     const clampedCaret = Math.min(nextCaret, MAX_COMPOSER_CHARS);
     textRef.current = limitedText;
     caretRef.current = clampedCaret;
+    // committed now and the caret placed in the same task: a placement deferred to the next frame
+    // would land on whatever was typed or selected meanwhile, behind a key typed right after a completion
     flushSync(() => {
       setText(limitedText);
       setCaret(clampedCaret);
@@ -712,14 +721,19 @@ export function Composer({
         return next;
       });
     } else {
+      // removing a path that had no room leaves the text as it was, so the paths waiting behind it
+      // would wait for the next edit: try them now
       placeWaitingMentions();
     }
   }, [placeWaitingMentions]);
 
+  /** `clearDraft`: the terminal draft a DraftRefusal named, which the user asked to clear and send over;
+   * `sendAnyway`: the user saw the box a DraftRefusal showed and sends over it; `now`: Ctrl+Enter; `hold`: Alt+Enter. */
   const send = useCallback((clearDraft?: string, sendAnyway = false, now = false, hold = false): boolean => {
     if (composingRef.current) return false;
     if (viewOnly || !connected || uploading || roomless || sending || (text.trim().length === 0 && carried.length === 0)) return false;
     if (terminalTyped?.name === "resume" && onOpenHistory) { setMenuDismissed(true); onOpenHistory(); return true; }
+    // the pick alone, unchanged: its space only closed the menu here, and OpenCode would send `/new ` as a prompt
     const picked = carried.length === 0 && text === barePick.current && /^\/\S+ $/u.test(text);
     const message = carried.length > 0 ? messageWithComments(carried, text) : picked ? text.trimEnd() : text;
     if (message.length > MAX_COMPOSER_CHARS) { setNote(t("Too long with the comments: remove a comment or shorten the message.")); return false; }
@@ -817,6 +831,7 @@ export function Composer({
     }, left);
   }, [t]);
   const sendTapped = useCallback(() => {
+    // only a tap on a live connection waits for the commit: the wait ends with that connection
     if (!composingRef.current || !connected) { clearCommitWait(); send(); return; }
     clearCommitWait();
     const tapped = { timer: null, deadline: Date.now() + COMMIT_WAIT_MS };
@@ -877,6 +892,7 @@ export function Composer({
    */
   const [pasteReading, setPasteReading] = useState(false);
   const pasteReadingRef = useRef(false);
+  /** each change of the box's text: a read that answers after any edit (typed and cleared too) sends nothing */
   const textEdits = useRef({ text, count: 0 });
   if (textEdits.current.text !== text) textEdits.current = { text, count: textEdits.current.count + 1 };
   const pasted = useRef<{ key: string; text: string } | null>(null);
@@ -984,6 +1000,8 @@ export function Composer({
           return;
         }
       }
+      // Claude Code's own key for this during a turn: Ctrl+Enter sends now. Not Cmd on a Mac, and only while
+      // Enter sends: with it off, Mod+Enter is the plain send (#2596)
       const sendNow = enterSends && event.key === "Enter" && event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey;
       if (!shouldSend && !sendNow && !hold) return;
       event.preventDefault();
@@ -997,6 +1015,7 @@ export function Composer({
       const box = event.currentTarget;
       const over = pasteOverflow(box.value, box.selectionStart, box.selectionEnd, event.clipboardData.getData("text"), MAX_COMPOSER_CHARS);
       if (over > 0) {
+        // the box cuts the paste itself; the change event it fires would clear a note, so this one is kept for it
         const cut = t("{count} characters of the paste did not fit: a message holds {max}.", { count: formatChars(over), max: formatChars(MAX_COMPOSER_CHARS) });
         pasteCutNote.current = cut;
         setNote(cut);

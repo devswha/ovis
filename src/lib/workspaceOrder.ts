@@ -64,6 +64,10 @@ export function worktreeGroups<W extends GroupedWorkspace>(ordered: readonly W[]
   return top.map((workspace) => ({ workspace, children: childrenOf.get(workspace.workspace_id) ?? [] }));
 }
 
+/**
+ * A workspace a launcher tagged `role=background` (`herdr workspace report-metadata --token`, any case),
+ * as a pane is tagged for the Agents list's background part (shared/pane-tokens.ts). herdr's fact, never a guess.
+ */
 export function isBackgroundWorkspace(workspace: { tokens?: Record<string, unknown> }): boolean {
   return isBackgroundRole(workspace.tokens?.[ROLE_TOKEN]);
 }

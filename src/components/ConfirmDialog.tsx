@@ -1,3 +1,7 @@
+/**
+ * A yes-or-no question before something that cannot be undone. Cancel takes the focus, so Enter
+ * answers no; Escape and the scrim answer no as well, and Tab stays between the two buttons.
+ */
 import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
@@ -36,6 +40,7 @@ export function ConfirmDialog({ title, body, confirmLabel, onConfirm, escalation
   useEffect(() => { if (pending) surface.current?.focus(); }, [pending]);
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
+      // a native modal over it (Add PC, from the palette) takes its own Escape
       if (event.key !== "Escape" || nativeModalOver(surface.current)) return;
       event.stopPropagation();
       event.preventDefault();

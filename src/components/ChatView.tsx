@@ -6,6 +6,8 @@ import {
 } from "lucide-react";
 
 import "./ChatView.css";
+// the timeline's styles stay in the entry: its chunk loads apart (chatTimelineLoader.ts), but
+// .chat-frame and the loading state are drawn before it arrives
 import "./ChatTimeline.css";
 
 import { AgentMark } from "./AgentMark.tsx";
@@ -150,9 +152,18 @@ const ANSWER_STATUS_LAG_MS = 800;
  */
 const ANSWER_READ_WAIT_MS = 2_000;
 const PROMPT_STALE_READS = 2;
+/** The prompt each pane's chat last read (by paneStorageId): a chat drawn again (back from the
+ * Terminal lens) shows its card before paint, as it shows its turns, while its first read revalidates
+ * it. Only while herdr still says the pane waits, and for the session it was read in: one answered in
+ * the terminal, or asked by the pane's session before, is not drawn again. Another herdr's pane IDs
+ * forget it (lib/paneLifetime.ts). */
 const lastPrompts = new Map<string, { machineId: string; session: string | null; prompt: InteractivePrompt }>();
 interface CardText { machineId: string; paneId: string; session: string | null; promptId: string; text: string }
 const cardTexts = new Map<string, CardText>();
+/** The card's text is in the pane's stored state too (`ovis:card-text:<paneStorageId>`, lib/paneLifetime.ts),
+ * so a reload draws it in the card again as the composer draws its draft. Like a draft, it is the herdr's
+ * the storage names: a replaced herdr's goes to Recover unsent text, and a tab behind another keeps its own
+ * in its memory, never over the current herdr's. */
 function storeCardText(key: string, typed: CardText | null): void {
   try {
     if (typed === null) paneLifetimes.paneStorage.removeItem(CARD_TEXT_PREFIX + key);
@@ -176,6 +187,8 @@ function heldCardTextFor(key: string): CardText | undefined {
 }
 paneLifetimes.onRetire((machineId) => {
   for (const [key, kept] of lastPrompts) if (kept.machineId === machineId) lastPrompts.delete(key);
+  // typed for the herdr that went: recovery offers it (its stored copy went there already), the new
+  // herdr's pane under that ID never gets it, and what the storage holds now is the new herdr's
   for (const [key, typed] of cardTexts) {
     if (typed.machineId !== machineId) continue;
     cardTexts.delete(key);
@@ -479,6 +492,7 @@ function ImageGallery({ images, className }: { images: GalleryImage[]; className
   </div>;
 }
 
+/** Images a tool returned (pi reads a picture into the result), shown whole in the opened row. */
 function ToolImages({ paneId, part }: { paneId: string; part: ToolPartType }) {
   const t = useT();
   const machineId = useMachineId();
@@ -937,6 +951,7 @@ interface TurnProps {
   foldWork?: boolean;
   requestDetails?: boolean;
   skills?: SkillMatcher | null;
+  /** omo only: the user's own `$skill:x` and the `[skill: x]` omo leaves where one stood are chipped too */
   userSkills?: SkillMatcher | null;
   outcome?: CommandOutcome | null;
   outcomeActions?: OutcomeActions | null;
@@ -972,6 +987,8 @@ function TaskResultRow({ task }: { task: OmoTaskResult }) {
   </ChatDetails>;
 }
 
+/** A Claude agent team's teammate reporting back: who, and what it said on request. Idle is that it
+ *  is free again, not a verdict on its task. */
 function TeammateMessageRow({ message, stateKey }: { message: TeammateMessage; stateKey: string }) {
   const t = useT();
   const [opened, setOpened] = useChatRowToggle(`teammate-loaded:${stateKey}`, false);
@@ -1112,6 +1129,7 @@ export const Turn = memo(function Turn({ paneId, turn, rowKey, live, waiting, sh
   if (turn.role === "user") {
     if (outcome !== null && terminalOnlyOutcome(outcome, outcomeActions)) return <TerminalCommandRow outcome={outcome} actions={outcomeActions} />;
     const text = userText(turn);
+    // a teammate's delivery is recorded as a user prompt, but nobody typed it here
     const teammateParts = teammateMessageParts(text);
     if (teammateParts !== null) return <section className="chat-turn chat-teammate-messages" aria-label={t("Claude teammate messages")}>
       {teammateParts.map((part, index) => part.kind === "teammate"
@@ -1362,6 +1380,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   const heldCardText = heldCardTextFor(paneStorageId(machineId, paneId));
   const trackCardText = (promptId: string, lifetime: string | null | undefined, text: string, cardGone = false): void => {
     const key = paneStorageId(machineId, paneId);
+    // typed for a herdr that has gone since: recovery offers it, the pane that took its ID never gets it
     if (paneLifetimes.generation(machineId) !== lifetime) {
       if (text.trim() !== "") paneLifetimes.keep(machineId, paneId, "message", text);
       return;
@@ -1445,6 +1464,11 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   const newestFailed = useRef(false);
   const stopRestore = useRef<(() => void) | null>(null);
   const [pollKey, setPollKey] = useState(0);
+  /**
+   * The assistant turn that was last when a message went out, with the turns it was read from.
+   * It holds only while those turns are unchanged: once the transcript moves at all, the status
+   * applies again (a slash command Claude logs as no user turn continues the very same turn).
+   */
   const [sentOver, setSentOver] = useState<{ turn: ConversationTurn; page: ConversationTurn[] } | null>(null);
   const [cancelledAtSend, setCancelledAtSend] = useState<TurnIdentity | null>(null);
   const lastStopped = useRef<TurnIdentity | null>(null);
@@ -1590,6 +1614,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
         try {
           conversation = await fetchPaneConversation(paneId, page);
         } catch (cause) {
+          // a new session or a Codex backtrack replaced the transcript the older pages came from
           if (!(cause instanceof ApiError) || cause.status !== 409) throw cause;
           if (cancelled || generation !== olderGeneration.current) return;
           try {
@@ -1618,6 +1643,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
           if (cancelled || generation !== olderGeneration.current) return;
         }
         if (history.current !== conversation.history_id) {
+          // the same turns under a new ID (gjc rewrote its file): the rows, what the reader opened and
+          // where they read stay, so it is no navigation.
           const continued = olderCount.current === 0 && history.current !== undefined && conversation.history_id !== undefined
             && continuesHistory(lastAnswer.current, conversation);
           if (continued) {
@@ -1802,6 +1829,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   const blocked = agentStatus === "blocked";
   useEffect(() => {
     const promptKey = paneStorageId(machineId, paneId);
+    // (the same question asked by another session is another question: its card does not get the text)
     const keepCardText = (shown: string | null, session: string | null): void => {
       const typed = cardTexts.get(promptKey);
       if (typed === undefined || (typed.promptId === shown && typed.session === session)) return;
@@ -1825,6 +1853,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
         if (!cancelled) {
           failedPromptReads.current = 0;
           setPromptStale(false);
+          // a read begun under a herdr that has gone since draws no card and keeps nothing for the new one
           if (paneLifetimes.generation(machineId) === lifetime) {
             keepCardText(next.prompt?.id ?? null, session);
             setPrompt((current) => polledPrompt(current, next.prompt));
@@ -1844,6 +1873,9 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
           }
         }
       }
+      // a read that failed (a network error, a server hiccup) says nothing about the screen: the card,
+      // the suggestion and the restored send stay as they are until the next read answers. Reads that
+      // keep failing let the card say so (#1335): answering stays safe, the server re-reads first
       catch { if (!cancelled) { failedPromptReads.current += 1; if (failedPromptReads.current >= PROMPT_STALE_READS) setPromptStale(true); } }
       finally { if (!cancelled) timer = window.setTimeout(() => void readPrompt(), quick ? BLOCKED_PROMPT_READ_MS : PROMPT_POLL_MS); }
     };
@@ -1858,6 +1890,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
 
   useEffect(() => () => { onSuggestionRef.current?.(paneId, null); onRestoredRef.current?.(paneId, null); }, [paneId]);
 
+  // away from the page, the prompt is not read: it can be answered in the terminal and asked
+  // again unseen, so a typed pick waiting for Confirm does not outlive the page being hidden
   useEffect(() => {
     if (!visible) onPendingAnswerDone?.(paneId);
   }, [visible, onPendingAnswerDone, paneId]);
@@ -1989,6 +2023,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
         }
         pointer = null; pointerDragAt.current = -Infinity; scrollbarPress.current = null; return;
       }
+      // a press released where this page saw no pointerup has no button down by the next pointer
+      // event, and a new press is a new gesture
       if (event instanceof PointerEvent && (event.type === "pointerdown" || event.buttons === 0)) scrollbarPress.current = null;
       if (node === null || !(event.target instanceof Node) || !node.contains(event.target)) return;
       if (event instanceof WheelEvent && event.deltaY < 0) readingUp();
@@ -2047,11 +2083,18 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     const rowBefore = lastRowOffset.current;
     lastRowOffset.current = row;
     const shrunkAbove = row !== null && rowBefore?.key === row.key ? Math.max(0, rowBefore.offset - row.offset) : 0;
+    // the transcript got shorter: at its end the browser moves the view up with it
     const shrunk = Math.max(0, lastScrollHeight.current - node.scrollHeight);
     lastScrollHeight.current = node.scrollHeight;
     const viewShrank = node.clientHeight < lastClientHeight.current;
     lastClientHeight.current = node.clientHeight;
+    // Without input, a move up while the transcript got shorter is the layout's, however far: the
+    // list holding the rows and the browser keeping the view inside the transcript can both move it
+    // for one shrink.
     const shrankUnderView = shrunkAbove > READER_ALLOWANCE_PX || shrunk > READER_ALLOWANCE_PX;
+    // Under a selection in progress the hold keeps the view where it puts it (ChatTimeline), and the
+    // browser can trim it a pixel from there as the transcript shrinks under it: without the
+    // reader's input, landing a pixel above where the chat put it is the layout's.
     const below = placedAt.current === null ? null : placedAt.current - node.scrollTop;
     const trimmed = selecting.current && below !== null && below > 0 && below <= READER_ALLOWANCE_PX && up <= READER_ALLOWANCE_PX;
     const heldInPlace = scrollingUp && !byReader && (shrankUnderView || viewShrank || distanceFromBottom <= LAYOUT_ALLOWANCE_PX || trimmed);
@@ -2061,6 +2104,9 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       pagingAway.current = true;
       dropPendingListScroll(timeline.current);
     }
+    // The list's own move down can stop short too: the browser holds it at the transcript's height
+    // before the list has grown it, and once grown no row changes to follow (a long chat's first
+    // open).
     const stoppedShort = scrollingDown && !byReader && timeline.current !== null && !listEndPadded(node);
     if ((heldInPlace || stoppedShort) && stickToBottom.current && !pagingAway.current && !manualLayout.current && !selecting.current && distanceFromBottom > LAYOUT_ALLOWANCE_PX) {
       // the list's scroll lands a frame later: the frame painted next is at the end already

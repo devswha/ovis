@@ -131,6 +131,7 @@ describe("notification clicks", () => {
       return requests.map((request) => [request.url, request.init.method ?? "GET", request.init.body ?? null, (request.init.headers as Record<string, string> | undefined)?.["x-herdr-update"] ?? null]);
     };
     const asked = ["/api/telemetry", "GET", null, null];
+    // signed out, off, blocked by the environment or before the notice: asked, never told
     expect(await tap("w1:p1")).toEqual([asked]);
     for (const counts of [{ enabled: false, blocked_by_env: false, notice_seen: true }, { enabled: true, blocked_by_env: true, notice_seen: true }, { enabled: true, blocked_by_env: false, notice_seen: false }]) {
       status = Response.json(counts);
@@ -580,6 +581,7 @@ describe("answer buttons (#2916)", () => {
     const local = worker();
     await local.push(alert);
     expect(local.shown[0]!.options.actions).toEqual([{ action: "answer-0", title: "Allow once" }, { action: "answer-1", title: "Deny" }]);
+    // the hosted shell's worker cannot reach its PC (only a window holds the relay channel): no buttons there
     const hosted = worker(undefined, `https://app.ovis.test/s/${"a".repeat(32)}/`);
     await hosted.push(alert);
     expect(hosted.shown[0]!.options.actions).toBeUndefined();

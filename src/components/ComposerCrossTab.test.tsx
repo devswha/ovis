@@ -13,11 +13,13 @@ const pane = "cross-tab-pane", draftKey = `ovis:composer-draft:${pane}`, lockNam
 const globals = ["window", "document", "navigator", "requestAnimationFrame", "cancelAnimationFrame", "IS_REACT_ACT_ENVIRONMENT"];
 const saved = new Map<string, PropertyDescriptor | undefined>();
 let renderer: ReactTestRenderer | undefined;
+/** the storage every tab of the origin shares */
 let data: Map<string, string>;
 let refuseLocks = false;
 let onRead: ((key: string) => void) | null = null;
 const leaseKey = `ovis:composer-sending:${draftKey}`;
 
+/** Web Locks as the browser grants them: one holder per name, the others queued in order. */
 function locks(): { request(name: string, run: () => unknown): Promise<unknown> } {
   if (refuseLocks) return { request: () => Promise.reject(new DOMException("denied", "SecurityError")) };
   const tails = new Map<string, Promise<unknown>>();

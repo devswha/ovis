@@ -10,6 +10,10 @@ export function resolveWorkspaceRoot(start: string, home: string): string | null
   return root === "" ? null : root;
 }
 
+/**
+ * A Windows drive or UNC folder is not guessed at, a UNC one written with forward slashes
+ * (`//server/share`) included.
+ */
 export function toolPathRoot(cwd: string | null | undefined): string | null {
   if (cwd == null || !cwd.startsWith("/") || cwd.startsWith("//")) return null;
   const root = cwd.replace(/\/+$/, "");

@@ -39,6 +39,7 @@
   height: var(--icon-size);
 }
 
+/* herdr's Goto picker filters as chips: All, then each state in its badge colours, each with its count. */
 .palette-filters {
   display: flex;
   flex: 0 0 auto;
@@ -282,6 +283,7 @@
   text-align: center;
 }
 
+/* where the picked row goes: its workspace and tab, and its path, as herdr's picker says under its list */
 .palette-footer {
   display: flex;
   flex: 0 0 auto;

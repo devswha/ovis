@@ -128,6 +128,7 @@ describe("a Claude row bound to its store", () => {
   const reporting = (paneId: string) => pane({ pane_id: paneId, agent: "claude", agent_session: { agent: "claude", kind: "id", source: "herdr:claude", value: id } });
 
   it("same UUID in another store is not Open", () => {
+    // p2 reports the id, but the list was read from p1's store: p2 may be another account's session
     const panes = [pane({ pane_id: "p1", agent: "claude" }), reporting("p2")];
     expect(paneShowingSession(panes, "w1", "claude", id)?.pane_id).toBe("p2");
     expect(paneShowingRow(panes, "w1", "claude", claudeRow(ALTERNATE, "p1"))).toBeUndefined();
@@ -139,6 +140,7 @@ describe("a Claude row bound to its store", () => {
 
   it("resumes through the store-bound route only, never the argv-only tab request", () => {
     expect(claudeResumeRequest(claudeRow(ALTERNATE), "w1")).toEqual({ workspace_id: "w1", pane_id: "p1", agent: "claude", session_id: id, store_key: ALTERNATE });
+    // an older bridge's row (no source) has no Resume at all: neither route
     expect(claudeResumeRequest(claudeRow(null), "w1")).toBeNull();
     expect(resumeTabRequest(claudeRow(null), "w1", "/home/u/work")).toBeNull();
     expect(resumeTabRequest(claudeRow(ALTERNATE), "w1", "/home/u/work")).toBeNull();

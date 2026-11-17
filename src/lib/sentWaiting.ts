@@ -34,6 +34,11 @@ export const WAITING_SEND_MS = 60_000;
  */
 export const WAITING_HINT_MS = 5_000;
 
+/**
+ * Only what the terminal is known to do to a sent message: CRLF line ends, a space closing a final
+ * @mention (server/core/composer.ts closeMention), whitespace at the ends of lines and around it.
+ * Spaces inside a line stay: "change a b" and "change ab" are two messages.
+ */
 const said = (text: string): string => text.replace(/\r\n?/gu, "\n").split("\n").map((line) => line.trimEnd()).join("\n").trim();
 
 const becomesTurn = (text: string): boolean => !/^\s*[/!]/u.test(text);
@@ -55,6 +60,9 @@ function newerThanSend(send: WaitingSend, at: number, key: string, answeredAt: n
   const coarse = at % 1000 === 0 ? 1000 : 0;
   if (after === null) {
     if (at >= send.at) return true;
+    // Known limits, both needing the same words twice in one second before the chat's first read: an
+    // older one whose answer the transcript never kept (stopped while thinking), or a read asked for
+    // before the older one was answered, lets the bubble go a moment before its own turn shows
     return coarse > 0 && at + coarse > send.at && (last || answeredAt >= at + coarse);
   }
   if (after.keys.has(key)) return false;
@@ -111,6 +119,10 @@ function userTurns(turns: readonly Turn[]): { turn: Turn; key: string; answeredA
   });
 }
 
+/**
+ * What the pane's chat holds now; take it before submitting, as `at` is. `now`: this browser's
+ * monotonic clock (performance.now), which a wall clock step does not move; `wall` its wall clock.
+ */
 export function waitingBaseline(key: string, now = performance.now(), wall = Date.now()): WaitingBaseline | null {
   const turns = shown.get(key);
   if (turns === undefined) return null;
@@ -319,7 +331,7 @@ export function forgetWaitingBaseline(key: string): void {
 }
 
 /**
- * Only a
+ * A connection loss drops provisional bubbles, but does not invalidate a chat's loaded turns. Only a
  * PC whose snapshots name their herdr keeps them: an older bridge's replacement would reuse its pane
  * ids unnoticed, so its baselines go with the connection.
  */
@@ -340,6 +352,8 @@ export function clearMachineWaitingSends(machineId: string): void {
 // sends never reach the new panes, so a PC's waiting lines go with its herdr
 export function forgetMachineWaitingSends(machineId: string): void {
   listedPanes.delete(machineId);
+  // the sends read back after a reload stay: they are shown under the herdr they were kept under alone, once the
+  // page knows it (adoptRestored), whatever the connection did before
   let held = false;
   for (const key of [...waiting.keys(), ...shown.keys(), ...clocks.keys()]) if (key.startsWith(`${machineId}:`) && releasePane(key)) held = true;
   if (!held) return;
@@ -350,6 +364,7 @@ export function forgetMachineWaitingSends(machineId: string): void {
 export function pruneWaitingSends(machines: readonly Machine[]): void {
   for (const machine of machines) {
     if (machine.state !== "connected" || machine.snapshot === null) continue;
+    // a roster read from a herdr this page already left (paneLifetimes skipped it) proves no pane closed
     const lifetime = machine.snapshot.herdr_lifetime;
     if (lifetime !== undefined && lifetime !== paneLifetimes.generation(machine.id)) continue;
     const open = new Set(machine.snapshot.panes.map((pane) => waitingKey(machine.id, pane.pane_id)));

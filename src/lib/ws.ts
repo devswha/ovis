@@ -31,8 +31,13 @@ const CONNECT_TIMEOUT_MAX_MS = 30_000;
 const STABLE_CONNECTION_MS = 10_000;
 /**
  * Liveness (feature "ping"): a socket can read OPEN while its TCP path is gone (a phone moved from
- * Wi-Fi to cellular, a NAT entry expired while it slept) and no close event comes for minutes. Only the pong of a ping in
- * flight answers it: a frame buffered before the sleep proves nothing. A deadline that fires
+ * Wi-Fi to cellular, a NAT entry expired while it slept) and no close event comes for minutes. The
+ * client pings when the page comes back, the network changes, or nothing arrived for
+ * IDLE_PROBE_MS while the page is visible (checked every IDLE_CHECK_MS). Only the pong of a ping in
+ * flight answers it: a frame buffered before the sleep proves nothing. With no pong by
+ * PROBE_TIMEOUT_MS it pings once more, and drops the socket when that one is not answered either;
+ * each probe that ends in a drop doubles the next one's deadline up to PROBE_TIMEOUT_MAX_MS, so a
+ * slow link (a relayed tailnet, a remote PC) is not dropped over and over. A deadline that fires
  * PROBE_OVERDUE_MS late was frozen with the page, not waiting: the probe starts over.
  */
 const PROBE_TIMEOUT_MS = 3_000;
@@ -67,8 +72,17 @@ export function backoffDelay(retries: number): number {
 }
 
 /**
- * `connected` and the input checks still read the socket itself:
+ * Where the connection stands. `connected` and the input checks still read the socket itself:
  * a frozen page's socket can turn CLOSED before any event updates this.
+ * - idle: connect() was never called
+ * - connecting: an attempt has not opened yet
+ * - open: open, and no liveness probe in flight
+ * - probing: open, a ping sent and its pong not back yet; terminal input is refused (it goes to the
+ *   held draft) and submits, pending actions and secrets wait for the answer before they are sent
+ * - waiting: no socket, a reconnect waits out its backoff
+ * - stopped: output stopped (4008); only an attach reconnects (PaneTerminal attaches again on its
+ *   own once when the stop came while the page was hidden, see stoppedWhileHidden)
+ * - closed: close() was called
  */
 export type ConnectionState = "idle" | "connecting" | "open" | "probing" | "waiting" | "stopped" | "closed";
 
@@ -100,6 +114,7 @@ export class HerdrSocket {
   private readonly disconnectHandlers = new Set<() => void>();
   private readonly beforeReplayHandlers = new Set<() => void>();
   private featuresKnown = false;
+  /** `terminal-history` from this connection's latest features frame (trusted or not) or snapshot: it says how to draw, not what to send */
   private terminalHistory = false;
   private machineEventsOffered: boolean | null = null;
   private readonly outputSeen = new Set<string>();
@@ -108,10 +123,23 @@ export class HerdrSocket {
   private roleChanges = 0;
   private readonly attached = new Map<string, AttachState>();
   private readonly watched = new Map<string, { cols: number; rows: number }>();
+  /**
+   * Per pane, the server views this connection ended or replaced (an unwatch, a watch over a running
+   * one) whose own end can still be on its way: each may have ended before the server read the
+   * frame. `fence` is a ping sent after the last of them: its pong (or a later one) proves every such
+   * end has arrived, and any end after it is the current view's own.
+   */
   private readonly superseded = new Map<string, { ends: number; fence: number | null }>();
+  /**
+   * Per pane, typing sent on this connection that no pong has confirmed yet, in the order sent (see
+   * awaitReceipt): `fence` is the id of the first ping sent after it, whose pong (or a later one) proves
+   * the server read it. `id`: sent with its input to a bridge listing "input-receipt", whose input-result
+   * alone confirms it (a pong only proves the bridge read it, not that the pane took it).
+   */
   private readonly unconfirmed = new Map<string, { text: string; fence: number; id?: number }[]>();
   /** per pane, keys sent as a password and not confirmed yet, nothing of them kept: as `unconfirmed`, an `id` waits for its input-result, a `fence` alone for a pong */
   private readonly unconfirmedSecrets = new Map<string, { fence: number; id?: number }[]>();
+  /** per pane, how many of those connections ended with, until the pane's terminal says one may not have arrived, with the herdr that pane belonged to (as lostInput) */
   private readonly lostSecrets = new Map<string, { lifetime: string | undefined | null; count: number }>();
   private nextInput = 1;
   private inputFence: number | null = null;
@@ -120,6 +148,7 @@ export class HerdrSocket {
    * that pane belonged to (`lifetime`, null when unproven): pane IDs are given out again by a replaced herdr
    */
   private readonly lostInput = new Map<string, { lifetime: string | undefined | null; typed: string[] }>();
+  /** the herdr this connection proved by a trusted features frame or its snapshot (`herdr_lifetime`); null until then */
   private lifetime: string | undefined | null = null;
   private readonly conversationWanted = new Set<string>();
   private retries = 0;
@@ -202,9 +231,11 @@ export class HerdrSocket {
   private features = new Set<ServerFeature>();
   private featuresSeen: Promise<void> = Promise.resolve();
   private markFeatures: () => void = () => {};
+  /** whether a `features` frame may say what this connection's bridge takes before its snapshot; see trustFeatures */
   private featuresTrusted: (frame: Extract<ServerMessage, { type: "features" }>) => boolean = () => false;
   private nextSubmit = 1;
   private readonly submits = new Map<number, (result: SubmitResult) => void>();
+  /** Receipts match the operation and captured target on this connection, never an ID alone. */
   private readonly requests = new Map<number, { type: "submit" | "pending-action" | "secret" | "insert"; paneId: string; queued?: boolean; pendingId?: string }>();
 
   private readonly trace: ConnectionTrace;
@@ -232,6 +263,11 @@ export class HerdrSocket {
     return this.socket?.readyState === SOCKET_OPEN;
   }
 
+  /**
+   * What a wait on the pane's input saw: this connection, its role and the pane's readiness, each
+   * counted at every change. Something that waited (a clipboard read) compares it before it writes:
+   * a readiness or a role that went and came back meanwhile, or a reconnect, is another lease.
+   */
   inputLease(paneId: string): string {
     return `${this.connectionEpoch}:${this.roleChanges}:${this.leaseChanges.get(paneId) ?? 0}`;
   }
@@ -250,7 +286,8 @@ export class HerdrSocket {
 
   /**
    * The output stopped while the page was hidden or within SHOWN_GRACE_MS of being shown again: a
-   * frozen page sent no ACKs, so the device was put away rather than too slow.
+   * frozen page sent no ACKs, so the device was put away rather than too slow. The page attaches
+   * again once when it is back in use; a stop while it stays in use is final (no reconnect loop).
    */
   get stoppedWhileHidden(): boolean {
     return this.stopped && this.stoppedHidden;
@@ -262,11 +299,15 @@ export class HerdrSocket {
     if (this.socket && (this.socket.readyState === SOCKET_OPEN || this.socket.readyState === SOCKET_CONNECTING)) {
       return;
     }
+    // A socket still CLOSING (or CLOSED before its close event ran) is replaced: end it first, so its
+    // probe, its waiting submits and the disconnect handlers settle now rather than never (its
+    // close event would find it replaced). A late 4008 from it still stops output.
     const previous = this.socket;
     if (previous) {
       this.endConnection();
       this.endedEarly.add(previous);
     }
+    // a backoff retry still waiting would only open a second attempt later, past whatever ends this one
     if (this.reconnectTimer !== null) window.clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
     const socket = getTransport().openSocket(this.url);
@@ -369,6 +410,9 @@ export class HerdrSocket {
         for (const [paneId, lost] of this.lostInput) if (lost.lifetime !== this.lifetime) this.lostInput.delete(paneId);
         for (const [paneId, lost] of this.lostSecrets) if (lost.lifetime !== this.lifetime) this.lostSecrets.delete(paneId);
         this.pingKnown = this.features.has("ping");
+        // a probe sent before these features (running or paused), on ping support remembered from an
+        // earlier connection: this bridge does not answer pings (an older one after a reconnect), so
+        // its connection is trusted as before rather than dropped at the deadline or left paused
         if (!this.pingKnown && this.probing) this.endProbe();
         if (!this.features.has("input-receipt")) for (const typed of [...this.unconfirmed.values(), ...this.unconfirmedSecrets.values()]) for (const entry of typed) if (entry.id !== undefined) { delete entry.id; entry.fence = this.nextPing; }
         if (this.features.has("ping")) this.fenceInput();
@@ -391,6 +435,11 @@ export class HerdrSocket {
       }
       if (message.type === "error" && message.code === "attach_held") this.trace.record("input_held", {}, true);
       if (message.type === "watch-end") {
+        // Before the fence's pong, the end may be a superseded view's, sent before the server read the
+        // frame that ended it: it names no view. Start the current view again rather than drop it, so
+        // the next unwatch still reaches the server; once every superseded view could have ended, an
+        // end is this view's own. Each superseded view skips one end, and the re-send adds none: a
+        // view the server cannot start ends again at once, and that end reaches the page.
         const grid = this.watched.get(message.pane_id);
         const stale = this.superseded.get(message.pane_id);
         if (stale) {
@@ -415,6 +464,8 @@ export class HerdrSocket {
             ...(!message.draft && typeof message.box === "string" ? { box: message.box } : {}) });
       }
       if (message.type === "pending-messages") {
+        // The owner-only live queue is also an acceptance receipt if its submit ACK
+        // was lost. A reconnect's empty list never implies that an old item was sent.
         for (const pending of message.messages) {
           const request = this.requests.get(pending.request_id);
           if (request?.type !== "submit" || !request.queued || request.paneId !== message.pane_id) continue;
@@ -519,7 +570,8 @@ export class HerdrSocket {
   }
 
   /**
-   * Until the pong comes back, terminal
+   * Pings an open connection whose bridge listed "ping" in its last snapshot (an older one is
+   * never asked, and its connection is trusted as before). Until the pong comes back, terminal
    * input is refused, so typing goes to the held draft rather than into a socket that may be
    * dead, and submits wait (see probeSettled()); with no pong after two pings (see
    * PROBE_TIMEOUT_MS) the socket is dropped and a new one connects at once.
@@ -695,6 +747,8 @@ export class HerdrSocket {
 
   private send(message: ClientMessage): void {
     if (this.connected) this.rawSend(message);
+    // Role/attach/geometry already live in state. Replaying both that state and
+    // a queue used to attach twice and duplicate the initial terminal replay.
   }
 
   private emit(message: ServerMessage): void {
@@ -789,6 +843,10 @@ export class HerdrSocket {
     this.send({ type: "detach", pane_id: paneId });
   }
 
+  /**
+   * Views the pane read-only at this grid, leaving its size to herdr's own window; replayed after
+   * a reconnect's snapshot. False when the server cannot (no "watch" in its snapshot): the tab stays paused.
+   */
   watch(paneId: string, cols: number, rows: number): boolean {
     if (!this.canWatch()) return false;
     const running = this.watched.has(paneId);
@@ -800,6 +858,7 @@ export class HerdrSocket {
     return true;
   }
 
+  /** Before the features are known, a watch waits for capability discovery rather than acquiring an attach. */
   canWatch(): boolean {
     return !this.featuresKnown || this.features.has("watch");
   }
@@ -833,6 +892,8 @@ export class HerdrSocket {
     // a pane this tab let go of (PaneTerminal's release) is sized by whoever holds it: the server
     // would apply the resize to their attach
     if (!state) return;
+    // skip only redundant resizes of OUR OWN geometry: a force resize re-asserts
+    // it after another client resized the shared pty (see PaneTerminal refit)
     if (!force && !state.keepSize && state.cols === cols && state.rows === rows) return;
     state.cols = cols;
     state.rows = rows;
@@ -845,6 +906,7 @@ export class HerdrSocket {
     return this.features.has("conversation-search");
   }
 
+  /** Whether this connection may take a held pane from another web bridge: a server that knows how, and not observing. */
   canTakeOver(): boolean {
     return this.connected && this.mode === "interact" && this.features.has("take-over");
   }
@@ -884,6 +946,7 @@ export class HerdrSocket {
     if (this.connected) this.rawSend({ type: "presence", active });
   }
 
+  /** Sets the connection's role. Not queued: the role replays before the attaches on reconnect. */
   setMode(mode: ClientRole): void {
     this.mode = mode;
     this.roleChanges += 1;
@@ -961,6 +1024,7 @@ export class HerdrSocket {
     }
   }
 
+  /** How many keys sent to this pane as a password the last connections ended with before the server confirmed them; given once. */
   takeUnconfirmedSecrets(paneId: string): number {
     // as takeUnconfirmedInput: a new connection that has not proved its herdr yet may be another herdr's
     if (this.socket !== null && this.lifetime === null) return 0;
@@ -981,8 +1045,11 @@ export class HerdrSocket {
    * Types a composer message and submits it, straight to the socket: a Ctrl armed on the
    * terminal key bar must not turn a one-letter message into a control key. Queue delivery
    * requires "pending-input": it never falls back to an immediate send.
-   * `holdOnly`: a hold that must never go on its own (the composer's Alt+Enter): refused, not queued, where the bridge cannot hold
    */
+  /** `typed`: from the terminal's input line, typed into the pane like the keyboard (see ClientMessage).
+   * `clearDraft`: an immediate send over the draft an input_draft refusal named (ClientMessage `clear_draft`)
+   * `sendAnyway`: an immediate send after a refusal that showed the box (ClientMessage `send_anyway`)
+   * `holdOnly`: a hold that must never go on its own (the composer's Alt+Enter): refused, not queued, where the bridge cannot hold */
   submit(paneId: string, text: string, payload: string, typed = false, delivery: SubmitDelivery = "immediate", clearDraft?: string, sendAnyway = false, resendId?: string, generation?: number, agentOnly = false, holdOnly = false): Promise<SubmitResult> | null {
     const socket = this.socket;
     if (!this.connected || socket === null || this.mode === "observe") return null;
@@ -1013,6 +1080,7 @@ export class HerdrSocket {
     })();
   }
 
+  /** Explicitly steer or discard one server-owned pending item. Never queued or replayed. */
   pendingAction(paneId: string, pendingId: string, action: "steer" | "discard", generation?: number, withdrawalOnly = false): Promise<SubmitResult> | null {
     const socket = this.socket;
     if (!this.connected || socket === null || this.mode === "observe") return null;
@@ -1030,6 +1098,13 @@ export class HerdrSocket {
     return this.connected && this.mode === "interact" && this.features.has("terminal-insert");
   }
 
+  /**
+   * Types the terminal's input line into the pane without Enter, straight to the socket, and
+   * settles once the bridge says herdr has the bytes (insert-result): never on the frame leaving.
+   * `text` is one line of the draft, as written (shared/terminal-insert.ts). A bridge without
+   * "terminal-insert" gets nothing at all: no input or submit stands in for it. null when offline
+   * or observing; a connection that drops settles it as not confirmed, and nothing is tried again.
+   */
   insert(paneId: string, text: string): Promise<SubmitResult> | null {
     const socket = this.socket;
     if (!this.connected || socket === null || this.mode === "observe") return null;
@@ -1048,6 +1123,7 @@ export class HerdrSocket {
     })();
   }
 
+  /** Only an acknowledgement callback is retained, never a frame to resend. */
   private submitRequest(message: Extract<ClientMessage, { type: "submit" | "pending-action" | "insert" }>): Promise<SubmitResult> {
     const id = message.id;
     this.requests.set(id, { type: message.type, paneId: message.pane_id, ...(message.type === "submit" ? { queued: message.delivery === "queue" || message.delivery === "hold" } : message.type === "pending-action" ? { pendingId: message.pending_id } : {}) });
@@ -1084,9 +1160,14 @@ export class HerdrSocket {
    * said what it takes, and it does not take that prompt. Nothing on such a bridge checks that the prompt is still there.
    */
   typesSecret(prompt: string): boolean {
+    // not a bridge from before `submit`, which is told to update instead (sendSecret)
     return this.featuresKnown && this.features.has("submit") && !this.takesPrompt(prompt);
   }
 
+  /**
+   * Whether this bridge takes a `secret` at `prompt`: one every bridge with masked input reads, or one of a set of
+   * prompts it lists. `secret-prompts-2` is #3566's set, `secret-prompts-3` everything shared/secret-prompt.ts reads now.
+   */
   private takesPrompt(prompt: string): boolean {
     const set = promptSet(prompt);
     return set === 1 || this.features.has("secret-prompts-3") || (set === 2 && this.features.has("secret-prompts-2"));
@@ -1105,8 +1186,11 @@ export class HerdrSocket {
   sendSecret(paneId: string, prompt: string, secret: string, shown: () => boolean): Promise<SubmitResult> | null {
     const socket = this.socket;
     if (!this.connected || socket === null || this.mode === "observe") return null;
+    // the pane's input as it was when the field was sent, as insert reads it
     const lease = this.inputLease(paneId);
     return (async (): Promise<SubmitResult> => {
+      // right after a reconnect the terminal's output can arrive before the frame that says
+      // whether the server takes masked input: wait for it, as a submit does
       await Promise.race([this.featuresSeen, new Promise((resolve) => window.setTimeout(resolve, FEATURES_WAIT_MS))]);
       if (!(await this.probeSettled(socket))) { secret = ""; return DISCONNECTED; }
       if (promptSet(prompt) !== 1) {

@@ -16,6 +16,10 @@ export type LineState =
 
 const GLYPH: Record<LineState["kind"], StatusDotState> = { connected: "ready", answered: "ready", checking: "checking", offline: "offline" };
 
+/**
+ * One row's connection: state first, then the way and the round trip, as Tailscale's status reads
+ * ("active; direct"). The way is about speed only: every way carries the same end-to-end channel.
+ */
 export function ConnectionLine({ state, reason = null }: { state: LineState; reason?: string | null }) {
   const t = useT();
   const route = (route: DeviceRoute, relay: string | undefined): string => route === "lan" ? t("Same Wi-Fi, direct")

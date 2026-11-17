@@ -1,4 +1,6 @@
+// first: every module below may call a built-in older browsers lack (lib/builtins.ts)
 import "./lib/builtins.ts";
+// then: every module below may read browser storage as it loads
 import "./lib/legacyStorage.ts";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
@@ -36,7 +38,8 @@ window.addEventListener("error", (event) => {
 window.addEventListener("unhandledrejection", (event) => console.error("Ovis: unhandled rejection", event.reason));
 
 // A render error the parts below do not catch would unmount the whole tree and leave the page
-// blank, and an installed web app has no reload button: AppCrash offers one.
+// blank, and an installed web app has no reload button: AppCrash offers one. It sits outside
+// SettingsProvider, which may be what threw.
 function renderApp(): Root {
   const root = createRoot(mount);
   root.render(
@@ -52,5 +55,8 @@ function renderApp(): Root {
   return root;
 }
 
+// the hosted shell (app.ovis.sh) reaches its PC through the relay: it pairs or picks the PC first,
+// sets the transport, and only then mounts the app; the build a PC serves has no such meta and
+// mounts the app as before
 if (shellMode() === "relay") bootRelayShell(mount, renderApp);
 else renderApp();

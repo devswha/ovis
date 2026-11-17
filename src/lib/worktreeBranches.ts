@@ -32,6 +32,7 @@ interface CheckoutIdentity { repoKey: string; checkoutPath: string }
 interface StoredBranch extends WorkspaceBranch { repoKey: string | null }
 export interface WorktreeRepository { repoKey: string; workspaceId: string }
 
+/** Compare API checkout paths without changing meaningful spaces or POSIX backslashes. */
 export function normalizeCheckoutPath(path: string): string {
   const windows = /^[a-z]:[\\/]/i.test(path) || path.startsWith("\\\\");
   const separators = windows ? path.replace(/\\/g, "/").replace(/^([a-z]):/i, (_, drive: string) => `${drive.toUpperCase()}:`) : path;
@@ -98,6 +99,7 @@ export class WorkspaceBranchCache {
   rememberOpened(opened: WorktreeOpened): void {
     this.invalidate();
     if (opened.branch == null) {
+      // The response has no detached flag. Await the inventory before calling it detached.
       this.records.delete(opened.workspace_id);
       return;
     }

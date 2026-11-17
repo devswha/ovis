@@ -21,6 +21,7 @@ export function guideStep(state: GuideState, event: GuideEvent): GuideState {
   return event.type === "moved" && state.at !== undefined ? REOPENED : state;
 }
 
+/** Plan usage turns on by itself for a signed-in account on a first run only: a reopened guide leaves the user's choice alone. */
 export function turnsUsageOn(state: GuideState): boolean {
   return state.reopened !== true;
 }
@@ -64,7 +65,8 @@ export function agentRows(catalog: readonly AgentCatalogRow[] | null, ready: rea
  * Which way the guide's Connect your phone box leads with: the Ovis relay where it is offered here (a
  * server with the route, a direct page, not the hosted shell), this browser may control it (not a
  * watching device, not a Portal visitor: the server refuses both) and nothing blocks it (a serve-only
- * install, an unreadable identity); else the other ways (phoneBoxMode).
+ * install, an unreadable identity); else the other ways (phoneBoxMode). It waits for the relay's first
+ * answer, so a page on the PC's loopback is not sent to Settings before the relay could lead.
  */
 export function phoneWay(relay: { unsupported: boolean; status: Pick<RelayStatus, "blocked"> | null }, shell: boolean, auth: HealthAuth | null): "wait" | "relay" | "other" {
   if (shell || relay.unsupported) return "other";
@@ -80,6 +82,10 @@ export function phoneBoxOpensFirst(state: GuideState, onThisPc: boolean): boolea
   return state.reopened !== true && onThisPc;
 }
 
+/**
+ * Whether the box stays open: one that came open by itself leads with the relay only, so where the
+ * relay cannot lead it closes again rather than sending the page to Settings → Phone untapped.
+ */
 export function phoneBoxStays(opening: PhoneBoxOpening, way: "wait" | "relay" | "other", led: boolean): boolean {
   return opening === "tap" || led || way !== "other";
 }
@@ -146,6 +152,10 @@ export function readSignedIn<T>(read: () => Promise<T>, found: (answer: T) => vo
   return () => { live = false; cancelRetry(); };
 }
 
+/**
+ * The agents this PC is signed in to, from its plan usage: one whose sign-in expired is not counted, nor an account
+ * known only from another tool's record of it, which is that tool's sign-in and not the agent's.
+ */
 export function signedInAgents(providers: readonly ProviderUsage[]): string[] {
   return [...new Set(providers.filter((usage) => usage.problem !== "expired" && isSignIn(usage)).map((usage) => usage.id))];
 }
@@ -168,6 +178,7 @@ export interface FreshFacts {
   savedSettings: boolean;
   sharedRevision: number | null;
   pairingGate: "open" | "closed" | "unavailable" | null;
+  /** a watching device sets nothing up */
   watching: boolean;
 }
 
@@ -219,6 +230,7 @@ export function otherDevice(devices: readonly PairedDevice[]): string | null {
 export interface SetupFacts {
   workspace: boolean;
   phone: boolean;
+  /** this browser's alerts are on and the browser allows them, or the page can have none (plain http): nothing to set */
   alerts: boolean;
 }
 
@@ -233,6 +245,10 @@ export function setupLeft(facts: SetupFacts): SetupLeft {
   return { done: parts.filter(Boolean).length, total: parts.length, at: !facts.workspace ? "agent" : !facts.phone || !facts.alerts ? "phone" : null };
 }
 
+/**
+ * Whether Turn on alerts left this device without alerts: anything but a confirmed push, except in the desktop app,
+ * where only a refused permission does (its own notifications need no push subscription).
+ */
 export function alertsFailed(result: string, desktop: boolean): boolean {
   if (result === "sent") return false;
   return desktop ? result === "permission" : true;
@@ -243,6 +259,7 @@ export type AlertsHere = "on" | "off" | "checking" | "unavailable";
 export interface AlertsFacts {
   alertsOn: boolean;
   notifications: NotificationState;
+  /** the desktop app: its own notifications need no push */
   desktop: boolean;
   pushSupported: boolean;
   pushOn: boolean;

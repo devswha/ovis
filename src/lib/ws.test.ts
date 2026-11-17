@@ -556,12 +556,15 @@ it("sends a secret entered before the reconnect's snapshot arrived, once the sna
 it("types a secret for a prompt only a newer bridge takes as direct input to a bridge that does not say it takes it", async () => {
   const git = "Password for 'https://alice@github.com':";
   const typed = (socket: FakeSocket) => socket.sent.filter((frame) => frame.type === "input");
+  // the value, then Enter in a frame of its own, neither with an id
   const asTyped = [{ type: "input", pane_id: "w1:p1", text: "hunter2" }, { type: "input", pane_id: "w1:p1", text: "\r" }];
+  // a bridge with masked input but not the wider prompts, and one with neither: both would refuse the `secret`
   for (const features of [["submit", "secret-input"], ["submit"]]) {
     const { client, socket } = liveClient(features);
     expect(await client.sendSecret("w1:p1", git, "hunter2", () => true)).toEqual({ ok: true });
     expect(secrets(socket)).toEqual([]);
     expect(typed(socket)).toEqual(asTyped);
+    // a prompt every bridge takes still goes as a `secret` where masked input is known
     const earlier = client.sendSecret("w1:p1", "Password:", "hunter2", () => true);
     if (features.includes("secret-input")) {
       for (let turn = 0; turn < 10 && secrets(socket).length === 0; turn++) await Promise.resolve();
@@ -585,6 +588,7 @@ it("types a secret for a prompt only a newer bridge takes as direct input to a b
   expect(await first.client.sendSecret("w1:p1", git, "hunter2", () => true)).toMatchObject({ ok: false, code: "unsupported" });
   expect(typed(first.socket)).toEqual([]);
   first.client.close();
+  // a pane that takes no typing: nothing goes out, and the field says to check the terminal
   const idle = new HerdrSocket("ws://test/ws");
   idle.connect();
   const idleSocket = FakeSocket.last;
@@ -664,6 +668,7 @@ it("types no secret behind a send of this page that the pane has not answered, a
 it("sends a secret for a prompt of the wider set as a secret to a bridge that takes it", async () => {
   const git = "Password for 'https://alice@github.com':";
   const { client, socket } = liveClient(["submit", "secret-input", "secret-prompts-2"]);
+  // the field says when its value would be typed, unchecked: to a bridge that said what it takes, at a prompt it does not
   expect(client.typesSecret(git)).toBe(false);
   const older = liveClient(["submit", "secret-input"]);
   expect([older.client.typesSecret(git), older.client.typesSecret("Password:")]).toEqual([true, false]);
@@ -673,6 +678,8 @@ it("sends a secret for a prompt of the wider set as a secret to a bridge that ta
   FakeSocket.last.open();
   expect(unknown.typesSecret(git)).toBe(false);
   unknown.close();
+  // a prompt that came after secret-prompts-2 shipped: a bridge that lists only that would answer invalid_secret,
+  // so it is typed there, and sent as a secret to one that lists secret-prompts-3
   const mysql = "Enter password:";
   const second = liveClient(["submit", "secret-input", "secret-prompts-2"]);
   expect([second.client.typesSecret(mysql), second.client.typesSecret(git)]).toEqual([true, false]);
@@ -1173,6 +1180,7 @@ it("keeps a pane's scrollback in the browser only for a server that says it has 
   } finally { off(); client.close(); }
 });
 
+// #2664 review: an untrusted features frame lowered the scrollback, and history replayed before the snapshot was cut
 it("keeps a pane's scrollback on from a features frame it does not trust yet", () => {
   const client = new HerdrSocket("ws://test/ws");
   client.trustFeatures(() => false);
@@ -1735,6 +1743,7 @@ it("holds typing the socket took when its connection ends before the server conf
 it("counts keys sent as a password that a connection ended with before the server confirmed them, keeping nothing of them", () => {
   const { client, socket } = liveClient(["submit", "ping"]);
   try {
+    // a bridge without receipts: a ping fences a password as it fences typing
     expect(client.sendInput("w1:p1", "a", false, false, true)).toBe(true);
     expect(submissions(socket)).toEqual([{ type: "input", pane_id: "w1:p1", text: "a" }]);
     expect(pings(socket)).toEqual([{ type: "ping", id: 1 }]);
@@ -1742,6 +1751,7 @@ it("counts keys sent as a password that a connection ended with before the serve
     expect(client.sendInput("w1:p1", "b", false, false, true)).toBe(true);
     expect(pings(socket)).toEqual([{ type: "ping", id: 1 }, { type: "ping", id: 2 }]);
     socket.disconnect();
+    // "a" was confirmed by its pong, "b" was not: one key may not have arrived, and neither is held
     expect(client.takeUnconfirmedSecrets("w1:p1")).toBe(1);
     expect(client.takeUnconfirmedInput("w1:p1")).toEqual([]);
     expect(client.takeUnconfirmedSecrets("w1:p1")).toBe(0);
@@ -1894,6 +1904,7 @@ it("confirms a key sent as a password by its receipt, not by a pong, where the b
     socket.receive({ type: "pong", id: 1 });
     socket.receive({ type: "input-result", id: 1, pane_id: "w1:p1", ok: true });
     socket.disconnect();
+    // "a" was taken, "b" only read: one key may not have arrived, and neither is held
     expect(client.takeUnconfirmedSecrets("w1:p1")).toBe(1);
     expect(client.takeUnconfirmedInput("w1:p1")).toEqual([]);
   } finally {
@@ -1934,6 +1945,7 @@ it("never says a key sent as a password on one herdr may not have arrived to a p
     client.wake();
     const again = FakeSocket.last;
     again.open();
+    // a new connection that has not said which herdr it reads keeps the count back
     expect(client.takeUnconfirmedSecrets("w1:p1")).toBe(0);
     return { client, again };
   };
@@ -2835,6 +2847,7 @@ it("an observing connection and a liveness probe never carry an insert", async (
   } finally { client.close(); }
 });
 
+// #511: a message for an agent alone goes only to a bridge that refuses it where no agent runs
 it("refuses an agent-only message on a bridge without agent-only, and names it where the bridge has it", async () => {
   for (const features of [["submit"], ["submit", "agent-only"]]) {
     const client = new HerdrSocket("ws://test/ws");

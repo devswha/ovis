@@ -1,6 +1,7 @@
 import type { SessionHistoryAgent, SessionHistoryResponse } from "../../shared/protocol.ts";
 import { ApiError } from "./api.ts";
 
+// Match the file_busy skill-list policy: five pauses, with Retry-After capped at one minute.
 const BUSY_RETRY_MS = [1_000, 2_000, 5_000, 15_000, 30_000] as const;
 
 export async function readSessionHistory(

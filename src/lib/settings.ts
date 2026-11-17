@@ -26,6 +26,7 @@ export const AGENT_GROUP_SORTS = ["wait", "recent", "name"] as const;
 export type AgentGroupSort = (typeof AGENT_GROUP_SORTS)[number];
 export type AgentMarks = "color" | "mono";
 export type UsageCount = "used" | "left";
+/** the limit a plan meter shows: the plan's week, or its short session (5 hours on Claude and Codex) */
 export type UsageGlance = "week" | "session";
 export type Palette = ThemeId;
 export type ChatWidth = "narrow" | "default" | "wide" | "full";
@@ -34,6 +35,10 @@ export type VoiceButton = "auto" | "on" | "off";
 export const VOICE_BUTTONS: readonly VoiceButton[] = ["auto", "on", "off"];
 export type VoiceEngineChoice = "auto" | "browser" | "server";
 export const VOICE_ENGINES: readonly VoiceEngineChoice[] = ["auto", "browser", "server"];
+/**
+ * The languages dictation can be set to, as BCP 47 tags (SpeechRecognition.lang; the transcribe
+ * route takes the first subtag).
+ */
 export const DICTATION_LANGUAGES = [
   "ar-SA", "cs-CZ", "da-DK", "de-DE", "el-GR", "en-GB", "en-US", "es-ES", "fi-FI", "fr-FR", "he-IL", "hi-IN",
   "hu-HU", "id-ID", "it-IT", "ja-JP", "ko-KR", "nb-NO", "nl-NL", "pl-PL", "pt-BR", "pt-PT", "ro-RO", "ru-RU",
@@ -72,7 +77,9 @@ export interface Settings {
   agentGroupSort: AgentGroupSort;
   agentMarks: AgentMarks;
   agentLocks: boolean;
+  /** Settings -> Experimental -> OpenCode: subagent ends from their session: the server ends an OpenCode subagent where its parent session's record does (server/opencode-subagents.ts); off, by its own rows */
   opencodeParentEnds: boolean;
+  /** Settings -> Experimental -> OMP on macOS herdr-core: the server reads an omp pane's chat from the session its omp holds open, through lsof (server/omp.ts ompHeldOpen); off, the chat there falls back to the terminal */
   ompHeldFiles: boolean;
   restoreReplacedServer: boolean;
   lockedAgents: string[];
@@ -95,12 +102,18 @@ export interface Settings {
    *  Stored under this key, not 0.4.1's `terminalOsc52`: settings are saved whole, so a `false` there
    *  was written by any change at all, not chosen, and is ignored. */
   paneClipboard: boolean;
-  /** Only herdr-core
-   *  passes them on: herdr redraws a pane from its own grid, which keeps no pictures. */
+  /** draw the pictures a pane program prints as sixel or iTerm2 inline images (lib/terminalImages.ts). Only herdr-core
+   *  passes them on: herdr redraws a pane from its own grid, which keeps no pictures. null, not chosen: on where the
+   *  pane's server keeps the terminal's history (herdr-core), off on herdr; a choice made on this device stays. */
   terminalImages: boolean | null;
   terminalAttachButton: boolean;
   terminalKeyboardOnRequest: boolean;
   terminalFoldKeyBar: boolean;
+  /** a pane whose grid this device does not size and is wider than this screen (a mirrored pane: a Windows
+   *  PC, no terminal attach; an attached pane it only watches, or holds under the keyboard, at the grid
+   *  another device gave the pty) is drawn folded to the screen's width (lib/terminalFold.ts); false draws
+   *  the grid at its original width, panned sideways. The name and its `ovis:mirror-wrap` key are kept from
+   *  when only mirrors folded, so a choice made then still holds. */
   terminalMirrorWrap: boolean | null;
   /** a desktop tab out of use for a moment detaches its pane (PaneTerminal's release) and only watches it, so herdr's own
    *  window keeps the pane at its size; paused where the server cannot watch. */
@@ -121,11 +134,17 @@ export interface Settings {
   uiFontSize: number | null;
   uiFontFamily: string;
   chatWidth: ChatWidth;
+  /** true: Enter sends in the composer, Shift+Enter breaks the line; false: Ctrl/Cmd+Enter sends. Chosen in
+   *  Settings for this device; null until then: Return breaks the line on a touch screen, as in the ChatGPT and
+   *  Claude apps, and Enter sends elsewhere (enterSendsOn). Kept in a key of its own (ENTER_SENDS_STORAGE_KEY) */
   enterSends: boolean | null;
   autoSendQueued: boolean;
+  /** true: a tab herdr still names by its number shows a few words of its first message (lib/tabLabels.ts); false keeps tabs as they are */
   autoTabNames: boolean;
   composerArtifacts: boolean;
   composerPasteSend: boolean;
+  /** the Side conversations chip in an OMP pane's composer, listing what was asked and answered with `/btw`; off until
+   *  chosen, so the composer's row stays minimal */
   composerBtw: boolean;
   /** on a touch screen, a chip above the message box offers the prompt the agent suggests next.
    * Not `showSuggestionChip`: that key was on by default until 0.4.9 and is still stored on phones */
@@ -138,6 +157,7 @@ export interface Settings {
   alertsOn: boolean;
   alertInput: boolean;
   alertDone: DoneAlerts;
+  /** an open tab chimes for the same alerts (lib/alertSound.ts), heard also when a Focus silences notifications; off until chosen */
   alertSound: boolean;
   quickReplies: string[];
   showQuickReplies: boolean;
@@ -162,18 +182,25 @@ export interface Settings {
   filesPanel: boolean;
   webLinks: WebLinkTarget;
   reuseExternalLinkTab: boolean;
+  /** the mode a Claude Code started from the new workspace, tab and worktree dialogs runs in (lib/agentLaunchMode.ts); default adds no flag */
   claudeLaunchMode: ClaudeLaunchMode;
+  /** the same for Codex: a sandbox and approval preset */
   codexLaunchMode: CodexLaunchMode;
+  /** the model (`--model`) a Claude Code started from those dialogs is filled in with; "" is its own (lib/agentLaunchMode.ts launchDefaults) */
   claudeLaunchModel: string;
+  /** the same for its effort level (`--effort`) */
   claudeLaunchEffort: (typeof CLAUDE_EFFORTS)[number] | "";
+  /** the same for Codex's model (`--model`) */
   codexLaunchModel: string;
+  /** and Codex's effort (`-c model_reasoning_effort=`) */
   codexLaunchEffort: (typeof CODEX_EFFORTS)[number] | "";
 }
 
 export const DIFF_STYLES = ["unified", "split"] as const;
 export type DiffStyle = (typeof DIFF_STYLES)[number];
 
-/** Raw custom text, key combinations and account keys are never copied. */
+/** Raw custom text, key combinations and account keys are never copied. Requiring every other
+ * Settings field in the projection makes a new field require an explicit collection decision. */
 type TelemetrySourceSettings = Omit<Settings,
   "keyBarExtras" | "keyBarItems" | "keyBarExpanded" | "shortcutOverrides" | "herdrPrefixKeys" | "terminalFontFamily" | "chatFontFamily" | "uiFontFamily"
   | "quickReplies" | "agentLocks" | "lockedAgents" | "opencodeParentEnds" | "ompHeldFiles" | "restoreReplacedServer" | "agentNamedGroups" | "agentGroupNames" | "agentGroupOf" | "usageOrder" | "usageHidden" | "fileOpen" | "filesPanel" | "webLinks" | "reuseExternalLinkTab" | "claudeLaunchMode" | "codexLaunchMode"
@@ -186,13 +213,15 @@ function differsFromDefault(value: unknown, defaultValue: unknown): boolean {
   return JSON.stringify(value) !== JSON.stringify(defaultValue);
 }
 
-/** Text and account-key values are only used for safe summaries. */
+/** Full allowlisted snapshot. Text and account-key values are only used for safe summaries. */
 export function telemetrySettingsSnapshot(settings: Settings): TelemetrySettings & TelemetrySourceSettings {
   return {
     terminalInputMode: settings.terminalInputMode,
     theme: settings.theme,
     density: settings.density,
     sidebarRows: settings.sidebarRows,
+    // Waiting first is herdr's workspace order with the waiting agents lifted: reported as that order, so the
+    // receiver's schema (shared/telemetry.ts, changed only with its deploy) keeps accepting the snapshot
     agentOrder: settings.agentOrder === "waiting" ? "workspace" : settings.agentOrder,
     agentMarks: settings.agentMarks,
     statusIndicators: settings.statusIndicators,
@@ -848,6 +877,7 @@ export function loadSettings(): Settings {
     customThemes: readCustomThemes() };
 }
 
+/** false where storage refused the write (private mode, a full quota) */
 export function saveSettings(settings: Settings): boolean {
   const mirrored = sanitizeSettings(settings);
   try {
@@ -889,6 +919,7 @@ export function saveSettings(settings: Settings): boolean {
     window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({ ...main, enterSends: main.enterSends ?? true }));
     return true;
   } catch {
+    /* private mode: preferences last for the session */
     return false;
   }
 }
@@ -907,6 +938,7 @@ export function terminalTheme(theme: ResolvedTheme, palette: Palette = "amber"):
   return { ...terminalColors(palette, theme) };
 }
 
+/** `<meta name="theme-color">` follows the panel surface so the PWA title bar matches. */
 export function themeColor(theme: ResolvedTheme, palette: Palette = "amber"): string {
   return themeTableColor(palette, theme);
 }
@@ -915,6 +947,9 @@ export function applyToDocument(settings: Settings, entry: DrawnTheme, language:
   const root = document.documentElement;
   root.lang = LOCALE_TAGS[language];
   applyThemeEntry(root, entry);
+  // the boot script's background (src/theme-bootstrap.ts) holds the row's surface until the stylesheet's theme
+  // blocks own it; a stylesheet that never loaded leaves the page to it, kept on the row drawn now
+  // (an imported row sets --bg itself, so there the stylesheet is told by a token only it sets)
   if (getComputedStyle(root).getPropertyValue(entry.vars === undefined ? "--bg" : "--pdf-page").trim() !== "") root.style.removeProperty("background-color");
   else root.style.backgroundColor = entry.bg;
   root.dataset["density"] = settings.density;
@@ -987,6 +1022,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener("languagechange", onChange);
   }, []);
   const resolvedLanguage = resolveLanguage(settings.language, browserLanguages);
+  // helpers outside React read this during the same render, so it is set before the children render
   setCurrentLanguage(resolvedLanguage);
 
   useEffect(() => {
@@ -1038,6 +1074,7 @@ export function forgetPaneViews(given?: Pick<Storage, "length" | "key" | "remove
     }
     for (const key of keys) storage.removeItem(key);
   } catch {
+    /* private mode: there is nothing remembered to forget */
   }
   return keys.length;
 }

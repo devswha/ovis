@@ -9,6 +9,7 @@ import { sheetStep } from "./historyKeys.ts";
 let originalWindow: PropertyDescriptor | undefined;
 let originalNavigator: PropertyDescriptor | undefined;
 
+/** A history with the browser's key for each entry (kept by a replace, new with a push), the Navigation API's way onto one, and taps. */
 function fakeBrowser() {
   let keys = 0;
   const entries: Array<{ state: unknown; href: string; key: string }> = [{ state: null, href: "/?pane=a", key: "k0" }];
@@ -401,6 +402,7 @@ describe("a phone's sheet where Back skips an entry made with no tap", () => {
     h.back(); await settled();
     const entry = fake.key();
     const leave = enter(() => false);
+    // the browser drops the way back onto C, as when the user's second Back overtakes it
     fake.drop(true);
     h.back(); await settled();
     fake.drop(false);

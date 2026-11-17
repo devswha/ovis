@@ -9,9 +9,16 @@
   background: var(--bg-panel);
 }
 
-/* It holds nothing but the card (PromptCard.css) and takes no room without one, but it stays
-   rendered: it is the live region a card is announced from, and a region that appears together
-   with its card is not read. */
+/* The prompt card's place (PaneTerminal.tsx): over the input card and under the held messages,
+   on the same column as both. Like the held list it is a sibling of the composer with no gutter
+   of its own. It holds nothing but the card (PromptCard.css) and takes no room without one, but
+   it stays rendered: it is the live region a card is announced from, and a region that appears
+   together with its card is not read. A stack too short for the whole card squeezes it, and the
+   card scrolls.
+   The card's text is the chat's (Settings → Chat font size, Chat font), as it was inside the
+   transcript: the dock scales the type tokens and its card uses them under their own names
+   (ChatView.css does the same for the transcript, on two elements for the same reason: a token
+   cannot be redefined from itself on one). */
 .prompt-dock {
   flex: 0 1 auto;
   min-height: 0;
@@ -45,6 +52,7 @@
   margin-top: var(--space-2);
 }
 
+/* the soft keyboard covers the home indicator: the box sits just above the keyboard */
 [data-keyboard] .composer {
   padding-bottom: var(--space-2);
 }
@@ -141,6 +149,8 @@
   row-gap: 0;
 }
 
+/* data-hint is the sentence's presence, not a measurement, so this layout never feeds back into
+   the fit that measures the row */
 .composer-surface[data-compact]:has(> .composer-status[data-hint]) {
   grid-template-areas:
     "attachments attachments attachments"
@@ -277,6 +287,7 @@
   stroke: var(--border);
 }
 
+/* on the pill's fill --border would be the fill itself in two palettes: the track stays a ring. */
 .composer-status:not([data-model="out"]) .composer-pill:not(.is-bare) .composer-context-track {
   stroke: var(--border-strong);
 }
@@ -669,6 +680,9 @@
   flex-direction: column;
 }
 
+/* the menu's close, in its top corner over whatever row scrolls under it; the first row (or group
+   heading) leaves it room, so at rest it covers nothing. With a mouse it is a pointer target tall,
+   no taller than the heading beside it, so its hit box never reaches the first option (G-025) */
 .composer-menu-close {
   position: sticky;
   top: 0;
@@ -710,6 +724,8 @@
   outline-offset: calc(-1 * var(--ring-offset));
 }
 
+/* a finger: the close is a touch target tall, and the first group heading reserves that height so
+   the close covers the heading alone, never the first option under it (G-025) */
 @media (pointer: coarse) {
   .composer-menu-close {
     width: var(--touch-target);
@@ -981,6 +997,8 @@
     padding: var(--space-1) var(--space-3) 0;
   }
 
+  /* A phone fits neither half of a pi command's row, and pi writes explanations twice as long as
+     the line is wide, so the description takes a line to itself and wraps onto more. */
   .composer-menu .menu-item {
     flex-wrap: wrap;
     align-items: flex-start;
@@ -1007,8 +1025,11 @@
     min-height: calc(var(--touch-target) + var(--space-1));
   }
 
-  /* The box reaches --space-3 past the tile's top and right edges and no further: that is the
-     strip's own padding on a phone, and past it the strip's scroll box would clip the target */
+  /* a finger's remove: the box is a square touch target (a round one loses its corners), drawn as
+     the same --chip-h circle on the tile's corner as with a mouse (the ::after, in the box's top
+     right corner, the glyph centred on it), so the filename under it stays uncovered (G-025). The
+     box reaches --space-3 past the tile's top and right edges and no further: that is the strip's
+     own padding on a phone, and past it the strip's scroll box would clip the target */
   .composer-attachment button {
     top: calc(-1 * var(--space-3));
     right: calc(-1 * var(--space-3));
@@ -1187,6 +1208,8 @@
   border-top: var(--hairline) solid var(--border);
 }
 
+/* the message is still a box to edit: it shows as one only while it is being edited. It is as
+   tall as its text, up to four lines (rows= from its line breaks where field-sizing is missing) */
 .composer-queue-text {
   min-height: 0;
   max-height: calc(4lh + 2 * var(--space-1));

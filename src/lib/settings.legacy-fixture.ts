@@ -150,5 +150,6 @@ export function saveSettings(settings: Settings): void {
   try {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
   } catch {
+    /* private mode: preferences last for the session */
   }
 }

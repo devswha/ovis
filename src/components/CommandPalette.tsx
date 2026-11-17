@@ -181,6 +181,8 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
   const [recentFolders, setRecentFolders] = useState<string[]>([]);
   const pins = useSyncExternalStore(subscribeSidebarPins, currentSidebarPins);
   const inputRef = useRef<HTMLInputElement>(null);
+  // a pane picked here is where the keyboard goes: giving it back to the opener (a sibling pane
+  // still mounted in the split) would select that pane again (PaneCanvas onFocusCapture)
   const navigated = useRef(false);
   useLayoutEffect(() => { if (open) navigated.current = false; }, [open]);
   const surface = useFocusTrap<HTMLElement>(open, { initialFocus: inputRef, shouldRestore: () => !navigated.current });
@@ -260,6 +262,8 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
     inputRef.current?.focus();
   }, [home]);
 
+  // A layout effect: the rows of the last opening are drawn again at once, and a tap on one must find
+  // this opening's state, not a run left over from the last one nor a claim this effect is about to end.
   useLayoutEffect(() => {
     const claims = owner.current!;
     claims.end();
@@ -313,6 +317,7 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
     ] satisfies PaletteAction[] : []),
     ...(historyHere ? [{ id: "session-history", label: t("Earlier sessions…"), icon: History, run: () => actions.openSessionHistory() }] satisfies PaletteAction[] : []),
     ...(selectedPaneId !== null && tabShown && renameOffered && !inboxMode ? [{ id: "rename-tab", label: t("Rename tab"), icon: Pencil, shortcut: "rename-tab", run: actions.renameTab }] satisfies PaletteAction[] : []),
+    // herdr's prefix+v and prefix+-: the new pane is opened here only when asked, as herdr's --focus
     ...(splitPane ? [
       { id: "split-right", label: t("Split pane right"), icon: Columns2, shortcut: "split-right", run: () => splitPane("right") },
       { id: "split-down", label: t("Split pane down"), icon: Rows2, shortcut: "split-down", run: () => splitPane("down") },
@@ -364,6 +369,9 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
   const counts = useMemo(() => statusCounts(allPanes), [allPanes]);
   const { actionsOnly, text } = parseQuery(query);
 
+  // herdr's Goto picker: a row per pane under its workspace; `>` keeps the actions alone (T3 Code's
+  // palette); a status filter is about panes, so it leaves the actions out, the plugins' with them;
+  // the panes went to last lead an unsearched, unfiltered list
   const sections = useMemo<PaletteSectionView[]>(() => {
     const list: PaletteSectionView[] = [];
     if (folder !== null) {
@@ -437,6 +445,9 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
     resultsRef.current?.querySelector<HTMLElement>('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
   }, [open, activeIndex, query, itemCount]);
 
+  // The first row's focus event tells the pick only when the focus moves: a letter pressed on the
+  // first row itself fires none, and a pick left on no row would go by its place to a pane that
+  // enters before that row while the keyboard stays on it. So the pick is told here.
   useLayoutEffect(() => {
     if (!open || rowFocusRequest === 0) return;
     const first = document.getElementById("palette-item-0");
@@ -449,6 +460,9 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
     first.focus();
   }, [rowFocusRequest]);
 
+  // A picked row that stayed tells its place again; one that left hands the pick to the row now at its
+  // place, counted over the rows before it that stayed (its old place would be one row too low once a
+  // row before it had left earlier, or left with it).
   // A row that leaves the list while the focus is on it (its pane's status changed under a
   // filter) would leave the focus on the page body, where no palette key reaches: the row at the
   // pick's place takes it, the search when none is left. A row that stays keeps its element, and
@@ -557,6 +571,8 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
       activate(activeIndex);
     }
   };
+  // herdr's picker keys, over the list and the chips but never in the search field: b, w, i, d and a
+  // set the filter, `/` goes back to the search; arrows walk the rows and the sections by focus
   const onSurfaceKeyDown = (event: ReactKeyboardEvent<HTMLElement>): void => {
     const target = event.target as HTMLElement;
     if (event.defaultPrevented || target === inputRef.current || event.ctrlKey || event.metaKey || event.altKey) return;
@@ -594,6 +610,7 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
   };
   const onChipClick = (event: ReactMouseEvent<HTMLButtonElement>, next: PaletteStatusFilter): void => {
     applyFilter(next);
+    // a mouse goes back to typing; a finger would open the keyboard
     if (event.detail > 0 && !touch) inputRef.current?.focus();
   };
 
@@ -730,6 +747,7 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
             <p className="palette-empty">
               <button type="button" className="btn" onClick={(event) => {
                 setBrowseAttempt((attempt) => attempt + 1);
+                // the button goes while the listing is asked again: a key or a mouse goes back to the search, a finger keeps its keyboard down
                 if (event.detail === 0 || !touch) inputRef.current?.focus();
               }}>{t("Try again")}</button>
             </p>

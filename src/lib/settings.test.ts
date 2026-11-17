@@ -1245,6 +1245,8 @@ describe("palette", () => {
   });
 
   it("parts every entry's control edges from its surfaces: --border differs from --bg-elevated, --bg-input and --border-strong", () => {
+    // the herdr mapping sets --bg-elevated, --bg-input and --border from one token, which hid select wells and row
+    // dividers; every legacy entry already differs, so no entry is excepted here
     const failures: string[] = [];
     for (const { id, mode, key } of entries) {
       checked(failures, () => {

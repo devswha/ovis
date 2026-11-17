@@ -1660,12 +1660,15 @@
   --avatar-size: 26px;
 }
 
+/* after the density block on purpose: same specificity, and a finger gets a full row in either density */
 @media (pointer: coarse) {
   :root {
     --table-row-h: var(--touch-target);
   }
 }
 
+/* after the density block on purpose: same specificity, and from 769px both densities share one
+   header height */
 @media (min-width: 769px) {
   :root {
     --header-h: var(--header-h-wide);
@@ -1768,6 +1771,10 @@ body {
   }
 }
 
+/* The UI language is <html lang> (lib/settings.ts applyToDocument). Set on body alone so that every
+   text inherits it once and no descendant sets it again: Korean keeps each word whole (keep-all
+   breaks at spaces and punctuation only, never "시도하 / 세요."), Japanese and Chinese take strict
+   kinsoku (no line starts with 。」 or a small kana). English keeps the browser's defaults. */
 html:lang(ko) body {
   word-break: keep-all;
 }
@@ -1787,6 +1794,10 @@ html:lang(ko) :is(.composer-text, .composer-measure, .terminal-input-text)::plac
   word-break: keep-all;
 }
 
+/* What is typed in the message box is a message: Korean keeps its words whole there too, as the
+   transcript and the inline suggestion over the box do (#3374). Its measuring copy breaks the same
+   way, so the box grows to the lines drawn; a path or a command still breaks through the box's own
+   overflow-wrap: anywhere. */
 html:lang(ko) :is(.composer-text, .composer-measure) {
   word-break: keep-all;
 }
@@ -1837,6 +1848,8 @@ button {
 
 .app {
   --sidebar-shown-w: min(var(--sidebar-user-w, var(--sidebar-w)), 50vw);
+  /* the docked file panel's width (FileViewer.css): the one its edge was dragged to (--file-panel-user-w,
+     written by App), else min(42vw, 560px). The panel yields first to leave 320px for the pane. */
   --file-panel-shown-w: min(max(320px, min(var(--file-panel-user-w, min(42vw, 560px)), 60vw)), calc(100vw - var(--sidebar-shown-w) - 320px));
   display: flex;
   flex-direction: column;
@@ -1890,6 +1903,8 @@ button {
   --sidebar-shown-w: 0px;
 }
 
+/* Settings → Show the sidebar on hover (lib/sidebarPeek.ts): the collapsed sidebar over the pane, under the
+   header, at the width it has when open; the pane keeps its width, so no pty is resized */
 .app.sidebar-collapsed .sidebar.is-peek {
   display: flex;
   position: fixed;
@@ -2053,6 +2068,8 @@ button {
   opacity: 0.88;
 }
 
+/* the chat's composer takes the home-indicator inset itself (Composer.css): kept here as
+   well, it stacked under the composer's own padding as a band of another colour */
 .terminal-host:has(.composer) {
   padding-bottom: 0;
 }
@@ -2443,9 +2460,12 @@ button {
   color: var(--text-strong);
 }
 
-/* drawn as a
+/* From 769px with one pane in view the workspace's tabs are the header's row (App.tsx), drawn as a
    browser's tab strip (Chrome; sizes after the Herdr app's tab bar, herdr-app defaults/mods/tabs,
-   Apache-2.0, THIRD_PARTY_NOTICES.md) */
+   Apache-2.0, THIRD_PARTY_NOTICES.md): the row is tinted with the accent, each tab is its agent's
+   mark (a shell's glyph) and its name, tabs at rest are parted by short rules and share the width
+   evenly, and the open tab takes the pane's own surface with rounded top corners, so it runs on into
+   the pane under it. + follows the last tab; the tools sit at the far end as pills. */
 .app-header.is-zoned.has-tab-row {
   /* the Herdr app's tab bar: the sidebar's own surface, a hairline under it, tabs as pills on it */
   --strip-tint: var(--bg-panel);
@@ -2524,6 +2544,8 @@ button {
   gap: var(--space-1);
   min-width: 0;
   height: 100%;
+  /* the open tab's name is drawn semibold (--fw-selected): the strip's widest fixture name still fits
+     the tab's --tab-max-w beside its 24px menu and close */
   padding: 0 var(--space-half) 0 var(--space-1-5);
   overflow: hidden;
   color: var(--text-dim);
@@ -2625,6 +2647,7 @@ button {
   box-shadow: none;
 }
 
+/* as wide as lib/tabOverflow.ts TAB_MORE_WIDTH reserves, with its gap */
 .header-tabs .tab-strip-more {
   display: inline-flex;
   align-items: center;
@@ -2918,6 +2941,7 @@ button {
   margin-top: var(--space-1);
 }
 
+/* A phone keeps the --bg-panel bar and its rule: the installed app's theme-color matches it. */
 @media (min-width: 769px) {
   .app-header.is-zoned {
     background: var(--term-bg);
@@ -3210,6 +3234,9 @@ button {
   background: var(--status-working-tint);
 }
 
+/* RUN is the one state that moves: a dot breathes before the word, the word holds still. It breathes
+   as the sidebar's RUN dot does (Sidebar.css sidebar-breathe: the same cadence and steps), down to
+   the floor that keeps its darkest step at 3:1, so one state keeps one motion on every surface */
 .badge-working::before {
   content: "";
   width: 5px;

@@ -63,6 +63,7 @@ async function resendRestored(restored: string): Promise<unknown[]> {
   return calls.map((call) => call[3]);
 }
 
+// #511: a comment message Claude put back on a cancel keeps its agent-only rule when it is edited and sent again
 it("sends a restored message with a `> ` quote line only to an agent", async () => {
   expect(await resendRestored("> backup.txt\nKeep this backup")).toEqual([true]);
 });

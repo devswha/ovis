@@ -11,7 +11,8 @@
  * Claude keeps one store per CLAUDE_CONFIG_DIR, and two stores can hold the same session id: a Claude
  * row is the session in the store its list was read from (`resume.source`), and is resumed through
  * POST /api/sessions/resume, which starts it in that store or answers with the pane already showing
- * it there.
+ * it there. A pane reporting the same id is that row's only when it is the source pane itself;
+ * another may be on another store. A Claude row without a source offers no Resume.
  */
 import type { CreateTabRequest, HerdrPane, SessionHistoryAgent, SessionHistoryRow, SessionResumeRequest } from "../../shared/protocol.ts";
 import { formatChatTimestamp } from "./chatTimestamp.ts";
@@ -63,6 +64,10 @@ export function paneShowingSession(panes: readonly HerdrPane[], workspaceId: str
   });
 }
 
+/**
+ * The pane of the workspace that shows the row's session. For Claude only the source pane counts:
+ * the same id in another pane may be another store's session (the server decides those on Resume).
+ */
 export function paneShowingRow(panes: readonly HerdrPane[], workspaceId: string, agent: SessionHistoryAgent, row: SessionHistoryRow): HerdrPane | undefined {
   if (agent !== "claude") return paneShowingSession(panes, workspaceId, agent, row.id);
   const source = row.resume?.source;
@@ -95,6 +100,10 @@ export interface RecentResume {
   ran?: boolean;
 }
 export const RECENT_RESUME_MS = 2 * 60_000;
+/**
+ * A pane still listed without a session keeps it however long ago the Resume was: time alone never
+ * brings Resume back for a pane that is there.
+ */
 export function recentResumeEnded(record: RecentResume, panes: readonly HerdrPane[] | undefined, now: number): boolean {
   if (panes === undefined) return false;
   const pane = panes.find((candidate) => candidate.pane_id === record.paneId);
@@ -123,12 +132,17 @@ export function sessionRowTime(row: Pick<SessionHistoryRow, "startedAt" | "updat
   return { label: updated.label, title: started === null ? updated.full : t("Started {started} · last active {updated}", { started: started.full, updated: updated.full }) };
 }
 
+/**
+ * POST /api/tab/create for the row: its argv's first word is the agent kind, the rest its arguments;
+ * null without a verified resume, and for Claude, whose Resume is bound to its store (claudeResumeRequest).
+ */
 export function resumeTabRequest(row: SessionHistoryRow, workspaceId: string, cwd: string | null): CreateTabRequest | null {
   const [kind, ...args] = row.resume?.argv ?? [];
   if (!kind || kind === "claude") return null;
   return { workspace_id: workspaceId, cwd, label: null, agent: { kind, args } };
 }
 
+/** One task at a time: `run` refuses (null) while an earlier task has not settled, so a double click starts one agent. */
 export function inFlightGuard(): { busy: () => boolean; run: <T>(task: () => Promise<T>) => Promise<T> | null } {
   let inFlight: Promise<unknown> | null = null;
   return {

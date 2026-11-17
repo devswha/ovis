@@ -17,6 +17,7 @@ const COMMANDS: SlashCommand[] = [
   { name: "new", description: "a built-in without an argument", source: "builtin" },
   { name: "rename", description: "a built-in with an argument", source: "builtin" },
   { name: "hello", description: "a project command", source: "project" },
+  // a server command OpenCode's catalog marks builtin, which its own menu only types
   { name: "review", description: "a server command", source: "builtin" },
 ];
 let renderer: ReactTestRenderer | undefined;
@@ -83,6 +84,7 @@ it("sends a picked OpenCode built-in that takes no argument without the pick's s
 });
 
 it.each([
+  // OpenCode's own menu only types these with their space, which lets Enter send them
   ["an OpenCode project command", "opencode", "/hel", "/hello "],
   ["an OpenCode built-in that takes an argument", "opencode", "/ren", "/rename "],
   ["an OpenCode server command marked builtin", "opencode", "/rev", "/review "],
