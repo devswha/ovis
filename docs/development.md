@@ -1319,6 +1319,9 @@ the flaky warning.
 Use `--hours 30` for a different window, `--repo owner/name` to select a repository instead of
 the current one, or `--json` for counts and rows as JSON; running jobs and unavailable logs are
 counted as skipped.
+`.github/workflows/ci-flakes.yml` runs it every day through `scripts/ci-flakes-issue.ts`, which keeps
+the list in the one open issue titled "CI flakes: browser scripts that failed or needed a second
+run", rewritten each time (`--dry-run` prints the body and writes nothing).
 
 Under `CI` or with `CHECK_DIR` set, both runners create `UI_EVIDENCE_DIR` at
 `${CHECK_DIR:-.ci}/browser-evidence`. Only the existing sticky-modifier and file-viewer captures

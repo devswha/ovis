@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { aggregateFailures, parseLaneLog } from "./ci-flakes.ts";
+import { aggregateFailures, flaggedJobs, parseLaneLog } from "./ci-flakes.ts";
 
 describe("Browser lane log parsing", () => {
   it("reads a pre-retry final failure", () => {
@@ -47,5 +47,17 @@ describe("Failure ranking", () => {
     expect(rows.map((row) => [row.site, row.failed, row.flaky, row.runId, row.branch])).toEqual([
       ["scripts/ui-regression.ts:10", 1, 1, 3, "new"], [null, 1, 0, 4, "other"],
     ]);
+  });
+});
+
+describe("Flaky warnings read from check suites", () => {
+  it("flags each job by its warning, and leaves out a job whose warning may be past the annotations read", () => {
+    const run = (databaseId: number, titles: (string | null)[], totalCount = titles.length) => ({ databaseId, annotations: { totalCount, nodes: titles.map((title) => ({ title })) } });
+    const flagged = flaggedJobs({ data: { nodes: [
+      { checkRuns: { nodes: [run(1, ["Flaky browser script: scripts/ui-regression.ts"]), run(2, [null, "Node.js 20 is deprecated"])] } },
+      null,
+      { checkRuns: { nodes: [run(3, ["Something else"], 20), run(4, ["Something else", "Flaky browser script: scripts/a.ts"], 20)] } },
+    ] } });
+    expect([...flagged].sort(([a], [b]) => a - b)).toEqual([[1, true], [2, false], [4, true]]);
   });
 });
