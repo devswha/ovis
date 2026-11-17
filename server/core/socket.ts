@@ -43,7 +43,7 @@ function watchablePane(paneId: unknown): paneId is string {
   return typeof paneId === "string" && paneId.length <= 256 && paneId.trim() !== "" && !paneId.trim().startsWith("-") && !/[\u0000-\u001f\u007f]/.test(paneId);
 }
 
-export function createSocket({ clients, present, stopped, admit, setRole, watchable, terminalHistory, watchPane, unwatchPane, end, holdPending, attachments, clientSnapshot, herdrLifetime, browserSnapshot, countVisit, drainOutput, frames, herdrFailure }: {
+export function createSocket({ clients, present, stopped, admit, setRole, watchable, terminalHistory, terminalModes, watchPane, unwatchPane, end, holdPending, attachments, clientSnapshot, herdrLifetime, browserSnapshot, countVisit, drainOutput, frames, herdrFailure }: {
   /** how a failed herdr call is worded in an error frame (the machine profile's), unset elsewhere */
   herdrFailure?: HerdrFailureView;
   clients: Set<Client>;
@@ -58,6 +58,8 @@ export function createSocket({ clients, present, stopped, admit, setRole, watcha
   watchable: () => boolean;
   /** whether attaches replay the pane's scrollback for the client to keep (`terminal-history`) */
   terminalHistory: () => boolean;
+  /** whether attaches carry the program's modes, so the client types a plain arrow as its terminal encodes it (`terminal-modes`) */
+  terminalModes: () => boolean;
   watchPane: (client: Client, paneId: string, geometry: { cols: number; rows: number }) => void;
   unwatchPane: (client: Client, paneId: string) => void;
   end: (client: Client, reason: "closed") => void;
@@ -162,6 +164,7 @@ export function createSocket({ clients, present, stopped, admit, setRole, watcha
       // without "watch" a tab out of use stays attached or pauses, and a reconnect attaches at once
       const features: ServerFeature[] = watchable() ? [...SERVER_FEATURES] : SERVER_FEATURES.filter((feature) => feature !== "watch");
       if (terminalHistory()) features.push("terminal-history");
+      if (terminalModes()) features.push("terminal-modes");
       if (client.data.machineEvents) features.push("machine-events");
       // a folder OVIS_PASTE_DIR names lets the page read an upload's path whole through it (#2771); a
       // watch-only connection, which may list no folder, is not told where it is

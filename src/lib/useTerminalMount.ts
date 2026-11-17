@@ -1709,7 +1709,10 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       host.addEventListener("keydown", onCommandArrow);
       // a key, a chord or text for the pane: sent now, or, when the pane cannot take it, told or held for review
       const sendTyped = (current: string, typed: Typed): void => {
-        if (typed.keys !== null && socket.sendKeys(current, typed.keys)) return;
+        // A plain arrow is typed as xterm encoded it where the attach carries the program's modes (herdr-core's
+        // `terminal-modes`): named, it would go around the attach to hc's terminal.keys, which waits until nobody
+        // has typed for ~3 s, after the letters typed before it. A chord stays named everywhere.
+        if (typed.keys !== null && (typed.chord || !socket.typesArrows()) && socket.sendKeys(current, typed.keys)) return;
         if (!typed.chord && !holdPendingTextRef.current && socket.sendInput(current, typed.input, typed.stop, typed.automatic === true, typed.secret)) return;
         retainTyped(current, typed, false);
       };
@@ -1817,7 +1820,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         // herdr's attach stream never tells xterm that the program asked for application cursor
         // keys (DECCKM), so xterm's `ESC [ A` misses in less, git log and other full-screen
         // programs. herdr encodes a named key in the program's own mode (#621). A key the socket
-        // cannot take now goes the way typing does below, as an arrow always did.
+        // cannot take now goes the way typing does below, as an arrow always did. hc's attach does
+        // tell xterm, and there sendTyped types the arrow as xterm encoded it.
         const arrow = chord === null && !pasting && !composingRef.current && !compositionCommitPendingRef.current && key?.startsWith("Arrow")
           ? terminalChord(key, NO_STICKY_MODIFIERS) : null;
         const typed: Typed = { input, keys: arrow !== null ? [arrow] : chord !== null ? [chord] : null, chord: chord !== null, stop: stopKey && input === "\u001b", secret, ...(automatic ? { automatic } : {}) };

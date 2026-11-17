@@ -207,6 +207,7 @@ const MANUAL_BROWSER_SCRIPTS = [
   "scripts/machines-browser-qa.ts", // an SSH_TEST_KEEP=1 fixture (docs/remote-pcs.md)
   "scripts/output-browser-qa.ts", // docs/terminal-flow-control.md
   "scripts/skill-activity-browser-qa.ts", // docs/chat-skill-activity.md
+  "scripts/terminal-arrows-core-regression.ts", // a real hc (OVIS_TEST_HC_BIN), which no browser lane installs
   "scripts/terminal-file-links-regression.ts",
   "scripts/update-browser-qa.ts", // a private Git remote and install (docs/app-updates.md)
   "scripts/windows-lens-browser-qa.ts",
