@@ -39,7 +39,7 @@ export const RELAY_KO: Record<string, string> = {
   "The update did not finish.": "업데이트가 끝나지 않았습니다.",
   "Does {name} show this number?": "{name}에도 이 숫자가 보이나요?",
   "It was declined on the PC, or not approved within 90 seconds. Open the link again to compare new numbers.": "PC에서 거절했거나 90초 안에 승인하지 않았습니다. 링크를 다시 열어 새 숫자를 비교하세요.",
-  "It was declined on {name}, or not approved there within 90 seconds. Try again, then press Approve on {name}.": "{name}에서 거절했거나 90초 안에 승인하지 않았습니다. 다시 시도한 뒤 {name}에서 ‘승인’을 누르세요.",
+  "It was declined on {name}, or not approved within 90 seconds. Try again and press Approve on {name}. If {name} showed no number, ask to join instead.": "{name}에서 거절했거나 90초 안에 승인하지 않았습니다. 다시 시도한 뒤 {name}에서 승인을 누르세요. {name} 화면에 숫자가 없었다면 대신 참여를 요청하세요.",
   "Nobody approved it within 90 seconds, or it was denied. Try again, and approve it on a device of your account that is connected to {name} (keep {name} open in Ovis there), or on {name} itself if it shows this request. If it keeps failing, pair this device with a QR or code from {name}.": "90초 안에 아무도 승인하지 않았거나 거부되었습니다. 다시 시도한 뒤 {name}에 연결된 내 계정의 기기(그 기기의 Ovis에서 {name} 화면을 열어 두세요)에서 승인하거나, 이 요청이 나오면 {name}에서 직접 승인하세요. 계속 실패하면 {name}의 QR 코드나 코드로 이 기기를 연결하세요.",
   "Not a valid key": "올바른 키가 아닙니다",
   "ID this link names": "이 링크가 가리키는 ID",

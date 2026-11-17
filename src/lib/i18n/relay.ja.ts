@@ -39,7 +39,7 @@ export const RELAY_JA: Record<string, string> = {
   "The update did not finish.": "更新が完了しませんでした。",
   "Does {name} show this number?": "{name} にもこの数字が表示されていますか?",
   "It was declined on the PC, or not approved within 90 seconds. Open the link again to compare new numbers.": "PC で拒否されたか、90 秒以内に承認されませんでした。リンクをもう一度開いて新しい数字を比べてください。",
-  "It was declined on {name}, or not approved there within 90 seconds. Try again, then press Approve on {name}.": "{name} で拒否されたか、90 秒以内に承認されませんでした。もう一度試してから、{name} で「承認」を押してください。",
+  "It was declined on {name}, or not approved within 90 seconds. Try again and press Approve on {name}. If {name} showed no number, ask to join instead.": "{name} で拒否されたか、90 秒以内に承認されませんでした。もう一度試し、{name} で「承認」を押してください。{name} に番号が表示されていなかった場合は、代わりに参加をリクエストしてください。",
   "Nobody approved it within 90 seconds, or it was denied. Try again, and approve it on a device of your account that is connected to {name} (keep {name} open in Ovis there), or on {name} itself if it shows this request. If it keeps failing, pair this device with a QR or code from {name}.": "90 秒以内に誰も承認しなかったか、拒否されました。もう一度試し、{name} に接続しているアカウントのデバイス（そのデバイスの Ovis で {name} を開いたままにしてください）で承認するか、このリクエストが表示されていれば {name} 自体で承認してください。それでも失敗する場合は、{name} の QR コードまたはコードでこのデバイスをペアリングしてください。",
   "Not a valid key": "有効な鍵ではありません",
   "ID this link names": "このリンクが示すID",

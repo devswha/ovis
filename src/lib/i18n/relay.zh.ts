@@ -39,7 +39,7 @@ export const RELAY_ZH: Record<string, string> = {
   "The update did not finish.": "更新未完成。",
   "Does {name} show this number?": "{name} 上也显示这个数字吗?",
   "It was declined on the PC, or not approved within 90 seconds. Open the link again to compare new numbers.": "PC 上已拒绝，或未在 90 秒内批准。请重新打开链接，比对新的数字。",
-  "It was declined on {name}, or not approved there within 90 seconds. Try again, then press Approve on {name}.": "{name} 上已拒绝，或未在 90 秒内在那里批准。请重试，然后在 {name} 上按“批准”。",
+  "It was declined on {name}, or not approved within 90 seconds. Try again and press Approve on {name}. If {name} showed no number, ask to join instead.": "{name} 上已拒绝，或未在 90 秒内批准。请重试，然后在 {name} 上按“批准”。如果 {name} 没有显示数字，请改为请求加入。",
   "Nobody approved it within 90 seconds, or it was denied. Try again, and approve it on a device of your account that is connected to {name} (keep {name} open in Ovis there), or on {name} itself if it shows this request. If it keeps failing, pair this device with a QR or code from {name}.": "90 秒内没有人批准，或请求被拒绝。请重试，并在已连接到 {name} 的账户设备上批准（在那台设备上用 Ovis 打开 {name} 并保持打开）；如果 {name} 本身显示了此请求，也可以直接在那里批准。如果一直失败，请使用 {name} 上的二维码或代码配对此设备。",
   "Not a valid key": "不是有效的密钥",
   "ID this link names": "此链接指明的 ID",

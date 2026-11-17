@@ -4,6 +4,7 @@ import * as ReactDom from "react-dom";
 import { renderToStaticMarkup } from "react-dom/server";
 import { create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 
+import { translate } from "../lib/i18n.ts";
 import { dashboardModel, type DashboardPc } from "../lib/relay/dashboard.ts";
 import type { PcStatus } from "../lib/relay/pcStatus.ts";
 import { SettingsProvider } from "../lib/settings.ts";
@@ -11,6 +12,10 @@ import { SettingsProvider } from "../lib/settings.ts";
 await mock.module("react-dom", () => ({ ...ReactDom, createPortal: (node: ReactNode) => node }));
 const { RelayPcDetails } = await import("./RelayPcDetails.tsx");
 import type { RelayPcDetailsProps } from "./RelayPcDetails.tsx";
+import { askToJoinReason } from "./relayPcState.tsx";
+
+// the Join reason as the code words it (askToJoinReason), compared with what each marked element shows
+const joinReason = askToJoinReason({ added_at: new Date(0).toISOString(), join: { server_public_key: "k", relay: "wss://relay.ovis.sh" } }, (key, vars) => translate("en", key, vars))!;
 
 const NOW = Date.parse("2026-11-08T12:00:00Z");
 const GLOBAL = "wss://relay.ovis.sh";
@@ -283,7 +288,7 @@ describe("RelayPcDetails", () => {
 
     await act(async () => { renderer?.unmount(); });
     await mount({ pc: listed(null), now: NOW, onClose: none, onOpenSheet: (_pc, mode) => { opened.push(mode); } });
-    expect(textOf(rootOf(renderer))).toContain("Home server is new in your account. Choose Add to see a six-digit number on its screen and type it here, or ask to join if it is already in your account.");
+    expect(textOf(rootOf(renderer))).toContain("Home server is new in your account. Choose Add.");
     await act(async () => { buttonOf("Add")[0]?.props.onClick(); });
     expect(opened).toEqual(["join", "new"]);
   });
@@ -293,7 +298,7 @@ describe("RelayPcDetails", () => {
     const approval = renderHtml({ pc: makeRow({ state: "needs-approval", paired: false, linked: false, join: { server_public_key: "k", relay: GLOBAL } }), onClose: none, onOpenSheet: none });
     expect(stateOf(approval)).toBe("Needs approval");
     // a listed PC past its ten minutes says how this device gets in, in the table's and the overview's words
-    expect(approval).toContain('<small class="relay-pc-details-sub" data-reason="join">');
+    expect(/<small class="relay-pc-details-sub" data-reason="join">([^<]*)<\/small>/.exec(approval)?.[1]).toBe(joinReason);
     expect(approval).not.toContain("Add window closed");
     const update = renderHtml({ pc: makeRow({ state: "needs-update" }), onClose: none });
     expect(stateOf(update)).toBe("Needs update");

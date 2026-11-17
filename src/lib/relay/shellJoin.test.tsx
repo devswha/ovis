@@ -16,7 +16,11 @@ describe("explicit dashboard pairing consent", () => {
   beforeEach(() => { browser = createShellTestPage(); browser.setVisibility("hidden"); });
   afterEach(() => { setTransport(nativeTransport); browser.dispose(); });
 
-  it.each(["new", "join"] as const)("starts the %s sheet's comparison after one confirmation", async (mode) => {
+  /**
+   * A shell that opened the dashboard's sheet for one PC and arrived on its page: the PC asks to compare 123456, and
+   * `approved` settles once the comparison is approved (the opening then ends, as no pairing finishes here)
+   */
+  const arrive = async (mode: "new" | "join") => {
     const identity = generateKeyPair();
     const pc: MyPc = {
       server_id: deriveServerId(identity.publicKey), name: "Desk", state: "needs-approval",
@@ -35,7 +39,7 @@ describe("explicit dashboard pairing consent", () => {
       get: async () => undefined, list: async () => [], remove: async () => {},
       update: async () => { throw new TypeError("Pairing has not been approved by the PC"); },
     };
-    const compared = Promise.withResolvers<void>();
+    const compared = Promise.withResolvers<void>(), approved = Promise.withResolvers<void>();
     const mount: RelayShellMount = {
       container: Object.create(null), entryUrl: "https://app.ovis.sh/", shellVersion: "1.0.0",
       store, label: "Phone", accountStore: memoryAccountStore(), accountService: "https://account.ovis.sh",
@@ -48,26 +52,43 @@ describe("explicit dashboard pairing consent", () => {
         const pending = options.compare("123456");
         compared.resolve();
         await pending;
-        throw new TypeError("The test must not approve the comparison");
+        approved.resolve();
+        throw new TypeError("The test ends the pairing after the comparison");
       },
     };
     await mountRelayShell(mount);
     const join = current().onJoin;
     if (!join) throw new TypeError("Account pairing action is missing");
-
     join(pc, { sheet: mode, typed: mode === "new" });
     const path = paths[0];
     if (!path) throw new TypeError("The selected PC did not receive a scoped navigation");
-    await mountRelayShell({ ...mount, entryUrl: new URL(path, mount.entryUrl).href });
-
-    expect(current().state.kind).not.toBe("confirm");
+    const scoped = { ...mount, entryUrl: new URL(path, mount.entryUrl).href };
+    await mountRelayShell(scoped);
     await compared.promise;
+    return { pc, current, approved: approved.promise, again: () => mountRelayShell(scoped) };
+  };
+
+  it.each(["new", "join"] as const)("starts the %s sheet's comparison after one confirmation", async (mode) => {
+    const { pc, current, again } = await arrive(mode);
     const state = current().state;
     expect(state).toMatchObject({ kind: "compare", confirmed: false });
     expect(state.kind === "compare" && state.typed === true).toBe(mode === "new");
     expect(current().sheetJoin).toMatchObject({ mode, server_id: pc.server_id });
     current().onCancel();
-    await mountRelayShell({ ...mount, entryUrl: new URL(path, mount.entryUrl).href });
+    await again();
     expect(current().state.kind).toBe("confirm");
+  });
+
+  it("turns a typed comparison into the join sheet's when the PC shows no number: this device's digits show and their match approves the same request", async () => {
+    const { pc, current, approved } = await arrive("new");
+    expect(current().state).toMatchObject({ kind: "compare", digits: "", typed: true });
+    current().onJoinInstead?.();
+    expect(current().state).toEqual({ kind: "compare", name: "Desk", digits: "123456", confirmed: false, challenge: 1 });
+    expect(current().sheetJoin).toMatchObject({ mode: "join", server_id: pc.server_id });
+    expect(browser.sessionStore.has("ovis-typed-join")).toBe(false);
+    expect(JSON.parse(browser.sessionStore.get("ovis-add-pc-sheet") ?? "null")).toMatchObject({ mode: "join", server_id: pc.server_id });
+    current().onMatch();
+    expect(current().state).toMatchObject({ kind: "compare", digits: "123456", confirmed: true });
+    await approved;
   });
 });

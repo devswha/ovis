@@ -3,10 +3,15 @@ import { act, createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 
+import { translate } from "../lib/i18n.ts";
 import { dashboardModel, type DashboardFilter, type DashboardPc } from "../lib/relay/dashboard.ts";
 import type { PcStatus } from "../lib/relay/pcStatus.ts";
 import { SettingsProvider } from "../lib/settings.ts";
+import { askToJoinReason } from "./relayPcState.tsx";
 import { RelayPcTable, type RelayPcTableProps } from "./RelayPcTable.tsx";
+
+// the Join reason as the code words it (askToJoinReason), compared with what each marked element shows
+const joinReason = askToJoinReason({ added_at: new Date(0).toISOString(), join: { server_public_key: "k", relay: "wss://relay.ovis.sh" } }, (key, vars) => translate("en", key, vars))!;
 
 const NOW = Date.parse("2026-11-08T12:00:00Z");
 const GLOBAL = "wss://relay.ovis.sh";
@@ -492,14 +497,14 @@ describe("RelayPcTable", () => {
     const html = renderHtml(buildProps());
     const joinRow = new RegExp(`<tr[^>]*data-pc-id="${IDS.join}"[\\s\\S]*?<\\/tr>`).exec(html)?.[0] ?? "";
     // the cell holds the state word alone; the Join reason rides in its title, named by data-reason
-    expect(joinRow).toMatch(/<span class="relay-pc-state-word" title="Needs approval · [^"]+" data-reason="join">Needs approval<\/span>/);
+    expect(joinRow).toContain(`<span class="relay-pc-state-word" title="Needs approval · ${joinReason}" data-reason="join">Needs approval</span>`);
     expect(joinRow).not.toContain("relay-pc-probe-line");
     phoneMatches = true;
     await mount(buildProps());
     const joinPhone = rootOf(renderer).find((n) => n.type === "li" && n.props["data-pc-id"] === IDS.join);
     // the phone row keeps the reason as its own line under the state word that names it
     expect(joinPhone.find((n) => n.props.className === "relay-pc-state-word").props["data-reason"]).toBe("join");
-    expect(joinPhone.findAll((n) => n.type === "p" && n.props.className === "relay-pc-probe-line")).toHaveLength(1);
+    expect(joinPhone.findAll((n) => n.type === "p" && n.props.className === "relay-pc-probe-line").map(textOf)).toEqual([joinReason]);
   });
 
   it("names the specific state in the State cell (Needs approval, Needs update, Offline · when, Ready) with the full text in a title, while the filter chip keeps Needs you", () => {

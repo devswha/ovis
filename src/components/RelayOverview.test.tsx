@@ -5,10 +5,12 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 
 import { NEW_PC_MS } from "../lib/account/myPcs.ts";
+import { translate } from "../lib/i18n.ts";
 import { dashboardModel, dashboardPcs, type DashboardFilter, type DashboardPc } from "../lib/relay/dashboard.ts";
 import type { PcStatus } from "../lib/relay/pcStatus.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { CHECK_AGAIN_BUSY_MS, COPIED_MS, relayLatencyMs, RelayOverview, WINDOWS_INSTALLER_COMMAND, type RelayOverviewProps } from "./RelayOverview.tsx";
+import { askToJoinReason } from "./relayPcState.tsx";
 import { INSTALLER_COMMAND } from "./RelayShellScreens.tsx";
 
 const NOW = Date.parse("2026-11-08T12:00:00Z");
@@ -29,6 +31,9 @@ function makePc(server_id: string, name: string, state: DashboardPc["state"], ex
     ...extra,
   };
 }
+
+// the Join reason as the code words it (askToJoinReason), compared with what each marked element shows
+const joinReason = askToJoinReason({ added_at: new Date(0).toISOString(), join: { server_public_key: "k", relay: "wss://relay.ovis.sh" } }, (key, vars) => translate("en", key, vars))!;
 
 function f4Pcs(): DashboardPc[] {
   return [
@@ -343,7 +348,7 @@ describe("RelayOverview", () => {
     const section = /<section class="relay-overview-attention-section"[\s\S]*?<\/section>/.exec(html)?.[0] ?? "";
     // the Join reason is drawn once, as the caption, and no row repeats it
     expect(section.match(/data-reason="join"/g)).toHaveLength(1);
-    expect(section).toContain('<p class="relay-overview-attention-caption" data-reason="join">');
+    expect(/<p class="relay-overview-attention-caption" data-reason="join">([^<]*)<\/p>/.exec(section)?.[1]).toBe(joinReason);
     // PF-1: the shared reason and View all share one head row above the list, so the head costs the table no second line
     expect(section).toMatch(/<div class="relay-overview-attention-head"><p class="relay-overview-attention-caption"[^>]*>[^<]+<\/p><button[^>]*data-action="view-all-attention"[^>]*>[^<]+<\/button><\/div><ol class="relay-overview-attention">/);
     const rows = [...section.matchAll(/<span class="relay-overview-attention-name"[^>]*>([^<]+)<\/span><span class="relay-overview-attention-why">([^<]+)<\/span>/g)].map(([, name, why]) => [name, why]);
@@ -408,7 +413,7 @@ describe("RelayOverview", () => {
       targetVersion: "1.9",
     });
     expect(html).toContain("new · 8 min left");
-    expect(html).toContain('<span class="relay-overview-attention-why" data-reason="join">');
+    expect(/<span class="relay-overview-attention-why" data-reason="join">([^<]*)<\/span>/.exec(html)?.[1]).toBe(joinReason);
     expect(html).toContain("update to 1.9");
 
     // a listed PC whose directory row gives no route to join by has no Join button, so its reason names none
@@ -519,7 +524,7 @@ describe("RelayOverview", () => {
     expect(empty.findAll((node) => node.type === "li").map(textOf)).toEqual([
       `Install Ovis on the PC.On macOS or Linux:${INSTALLER_COMMAND}CopyOn Windows, in PowerShell:${WINDOWS_INSTALLER_COMMAND}Copy`,
       "On that PC, open Settings → Devices and PCs → Account and sign in with the same Google account as on this device.",
-      "Choose Add this PC to my account there. It then shows here with Add, or with Join if it was in your account before: then choose Join and Type the number.",
+      "Choose Add this PC to my account there. It then shows here.",
     ]);
     expect(empty.findAll((node) => node.type === "code").map(textOf)).toEqual([INSTALLER_COMMAND, WINDOWS_INSTALLER_COMMAND]);
     expect(textOf(empty.find((node) => node.props["data-empty-provider"] === ""))).toBe("Signed in with Google. GitHub and Google are separate Ovis accounts until you link them, so a PC signed in the other way is not listed here.");
