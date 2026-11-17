@@ -64,6 +64,11 @@ export function minimumContrast(roles: ThemeRoles, role: Role, value = roles[rol
 const AA_ROLES: readonly Role[] = ["text", "text-dim", "status-working", "status-blocked", "status-done",
   "syntax-function", "syntax-keyword", "syntax-string", "syntax-number", "syntax-type", "syntax-variable", "syntax-meta"];
 
+/**
+ * Search nearest passing quantized L, then bisect its boundary. Only initially AA-failing
+ * foregrounds move. Chroma relaxation is bounded at 5%; gamut clipping matches repair.mjs.
+ * Failure is explicit: no success-looking partial proposal is printed.
+ */
 export function proposeTheme(id: HerdrThemeId): { roles: ThemeRoles; moved: { role: Role; value: string; dE: number; reason: string }[] } {
   const mapped = mapTheme(id), roles = { ...mapped }, mode = KIND[id];
   for (const role of AA_ROLES) {
@@ -92,6 +97,7 @@ export function proposeTheme(id: HerdrThemeId): { roles: ThemeRoles; moved: { ro
     if (repaired === undefined) throw new Error(`${id}/${mode} ${role}: cannot reach 4.6 within 5% chroma reduction`);
     roles[role] = repaired;
   }
+  // Defaults dependent on repaired foregrounds must travel with those foregrounds.
   for (const [role, derive] of Object.entries(ROLE_DEFAULTS)) roles[role as keyof typeof ROLE_DEFAULTS] = derive(roles, mode);
   const moved = Object.keys(ROLES).flatMap((role) => {
     const key = role as Role, value = roles[key], from = mapped[key];

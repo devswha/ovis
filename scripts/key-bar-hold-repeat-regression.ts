@@ -11,6 +11,7 @@ import { buildDemoApp } from "./demo-build.ts";
 const app = mkdtempSync(join(tmpdir(), "herdr-key-bar-hold-repeat-"));
 const evidence = process.env.UI_EVIDENCE_DIR;
 const HOLD_MS = KEY_REPEAT_DELAY_MS + 10 * KEY_REPEAT_INTERVAL_MS;
+// These waits measure a gesture or give unwanted sends time to appear, not app readiness.
 const NO_SEND_WAIT_MS = 4 * KEY_REPEAT_INTERVAL_MS;
 const keyBarItems: KeyBarItem[] = [
   { type: "key", key: "Escape" },
@@ -62,6 +63,8 @@ try {
   const index = join(app, "index.html");
   const html = readFileSync(index, "utf8");
   assert.match(html, /<script type="module"/);
+  // The demo replaces WebSocket itself. Install this synchronous send recorder after the
+  // transport and before the app, so release checks cannot race delayed WS frame reporting.
   const record = `<script>(() => {
     const Demo = window.WebSocket;
     window.keyBarFrames = [];
@@ -123,6 +126,7 @@ try {
         assert.deepEqual(sentKeys(await framesSince(page, before)), ["left"], "a touch tap sends one Left, never two");
         console.log("PASS touch tap Left sends exactly one key");
 
+        // 2. Count individual keys, not frames: a future transport may batch several keys.
         before = (await framesOf(page)).length;
         const release = await hold(page, cdp, left, HOLD_MS);
         const repeats = leftKeys(await framesSince(page, before));
@@ -142,6 +146,8 @@ try {
         assert.deepEqual(sentKeys(await framesSince(page, before)), ["left"], "a short hold remains exactly one click");
         console.log("PASS a hold shorter than the repeat delay sends exactly one key on release");
 
+        // 4. The seeded layout really overflows. Keep native CDP panning enabled: synthetically
+        // dispatching pointermove would test cancellation but could not prove the row scrolls.
         await bar.evaluate((row) => { row.scrollLeft = 0; });
         await settled(page);
         const scroll = await bar.evaluate((row) => ({ left: row.scrollLeft, width: row.clientWidth, content: row.scrollWidth }));

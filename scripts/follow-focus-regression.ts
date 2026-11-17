@@ -1,3 +1,8 @@
+/**
+ * first (#1470). Imported by ui-regression.ts, with Settings closed, on a page with its
+ * rewriteMachinesFrames init script; it ends on the pane selected when it began and with the
+ * setting off, also when it fails.
+ */
 import assert from "node:assert/strict";
 import type { Page } from "playwright-core";
 import { herdrRpc, tabClose } from "../server/herdr/client.ts";
@@ -20,6 +25,7 @@ export async function checkFollowHerdrFocus(page: Page, fixture: FollowFocusFixt
   const selectedPaneId = () => page.evaluate(() => JSON.parse(sessionStorage.getItem("ovis:selection") ?? "null")?.pane_id as string | undefined);
   const shownTab = () => page.locator(".tab-strip").getByRole("tab", { selected: true }).textContent();
   const follow = async (on: boolean): Promise<void> => {
+    // Settings may still be open when a check that stopped partway turns the setting back off
     if (!(await page.locator(".settings-dialog").isVisible())) await page.keyboard.press("ControlOrMeta+Shift+Comma");
     await openSettingsPage(page, "Terminal");
     const choice = page.getByRole("group", { name: "herdr window", exact: true }).getByRole("button", { name: on ? "Follow its focus" : "Separate", exact: true });
@@ -35,6 +41,8 @@ export async function checkFollowHerdrFocus(page: Page, fixture: FollowFocusFixt
   // herdr sends its focus on a connection of its own, apart from its tab and pane events
   // (server/collector.ts), so a tab listed here says nothing of the focus frame for it, which may
   // come later.
+  // The pane-focused frames the page's roster reads are recorded as it reads them
+  // (ui-regression.ts rewriteMachinesFrames), and it decides on each one in that same call.
   await page.evaluate(() => {
     const read: string[] = [];
     (window as unknown as { __focusFramesRead?: string[] }).__focusFramesRead = read;
@@ -45,6 +53,8 @@ export async function checkFollowHerdrFocus(page: Page, fixture: FollowFocusFixt
       return data;
     };
   });
+  // A wrong follow is only a React update scheduled in that call: the selection read here is stored
+  // by an effect after the render, so the read waits two frames and a task past the frame for both
   const focusRead = async (paneId: string, label: string): Promise<void> => {
     await until(() => page.evaluate(
       (paneId) => (window as unknown as { __focusFramesRead?: string[] }).__focusFramesRead?.includes(paneId) === true, paneId), label);
@@ -57,10 +67,12 @@ export async function checkFollowHerdrFocus(page: Page, fixture: FollowFocusFixt
     const ignored = await focusedTab("follow focus off");
     tabs.push(ignored.tab.tab_id);
     await focusRead(ignored.root_pane.pane_id, "herdr's focus frame for the tab opened while off is read");
+    // a wrong follow is only a scheduled render when the frame is read, and no later step would show it
     // fixed wait: the selection gets the time to move before it is read
     await page.waitForTimeout(NO_FOLLOW_WAIT_MS);
     assert.equal(await selectedPaneId(), before, "a device that did not ask to follow herdr's focus keeps its pane");
 
+    // the cleanup below owns the setting from here on, even if turning it on stops halfway
     following = true;
     await follow(true);
     await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());

@@ -128,7 +128,11 @@ process.stdout.write(Array.from({ length: 400 }, (_, n) => "history " + n + "\\r
       : waitOutput(pane, "WHEEL_RECEIVED");
     await page.mouse.wheel(0, -120);
     if (delayed) await page.mouse.wheel(0, -120);
+    // The initial metrics read is deliberately held until the wheel has been handled.
+    // Its intent must survive that read rather than disappearing on a fresh terminal.
     await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())));
+    // The held response cannot arrive until release: start its timeout here, not before
+    // navigation and terminal startup, and subscribe before allowing it to continue.
     const releasedMetrics = delayed
       ? page.waitForResponse(response => response.url().includes("/pane/scroll?"))
       : metrics;
@@ -147,6 +151,7 @@ process.stdout.write(Array.from({ length: 400 }, (_, n) => "history " + n + "\\r
       const scrollResponse = (offset: number) => page.waitForResponse(async response => {
         if (!response.url().endsWith("/pane/scroll") || response.request().method() !== "POST") return false;
         const body = await bodyOf(response);
+        // a scroll's answer holds where it went: one without it (an error's answer) fails the wait
         return body !== undefined && body.scroll!.offset_from_bottom === offset;
       });
       const lineWheel = async (deltaY: number, offset: number, events = 1) => {
@@ -159,6 +164,7 @@ process.stdout.write(Array.from({ length: 400 }, (_, n) => "history " + n + "\\r
       await lineWheel(-1, after.offset_from_bottom + 3);
       await lineWheel(-1, after.max_offset_from_bottom, Math.ceil(after.max_offset_from_bottom / 3) + 2);
       await lineWheel(1, 0, Math.ceil(after.max_offset_from_bottom / 3) + 2);
+      // a metrics read may answer `{ scroll: null }` (no scroll info yet), hence `?.` on the two size waits
       const resizedMetrics = page.waitForResponse(async response => {
         if (!response.url().includes("/pane/scroll?")) return false;
         const body = await bodyOf(response);
@@ -170,6 +176,7 @@ process.stdout.write(Array.from({ length: 400 }, (_, n) => "history " + n + "\\r
         return screen && screen.getBoundingClientRect().width <= innerWidth;
       });
       await resizedMetrics;
+      // the reflow at the phone's width can leave the view off the end: the touch starts from the end
       await lineWheel(1, 0, Math.ceil(after.max_offset_from_bottom / 3) + 2);
       const mobile = await screen.boundingBox();
       assert.ok(mobile);
@@ -181,6 +188,9 @@ process.stdout.write(Array.from({ length: 400 }, (_, n) => "history " + n + "\\r
       const rowHeight = mobile.height / mobileScroll.viewport_rows;
       const travel = rowHeight * 3 * 2;
       await page.screenshot({ path: join(evidence, "mobile-before-touch.png") });
+      // touch follows the finger: two three-line steps, never multiplied by the wheel speed. The finger is held
+      // still before the lift, by the events' own timestamps however late they arrive, so the drag ends where it
+      // is: a lift while it moves would glide on (lib/touchFling.ts) and scroll under the wheels that follow
       const touched = scrollResponse(6);
       console.log("touch expects", 6, { mobile, rowHeight, travel });
       const lift = Date.now() / 1000;
@@ -208,6 +218,8 @@ process.stdout.write(Array.from({ length: 400 }, (_, n) => "history " + n + "\\r
       await Promise.race([settled.promise, new Promise<never>((_resolve, reject) => {
         AbortSignal.timeout(10000).addEventListener("abort", () => reject(new Error("question settlement status did not arrive")), { once: true });
       })]);
+      // the frame is heard before the page has drawn it: the wheel decides by what the pane was last drawn with
+      // (PaneTerminal's wheelStateRef), so it goes once the tab's own mark shows the question settled
       await page.locator('.tab-strip-item.is-active .tab-strip-dot[data-status="working"]').waitFor();
       const backToApp = waitOutput(pane, "WHEEL_RECEIVED");
       const desktop = await screen.boundingBox();

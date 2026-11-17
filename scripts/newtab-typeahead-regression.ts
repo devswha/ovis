@@ -32,7 +32,12 @@ async function until(check: () => boolean | Promise<boolean>, label: string): Pr
   }
 }
 
-/** Awaited before the page's goto: an init script runs only in documents loaded after it is installed. */
+/**
+ * What the page sends a pane, as the browser's frame events report it (they can come later than the shell's output on a
+ * busy machine), and how many input and keys frames have been heard in all: the page counts what it sends itself
+ * (sentByPage), so a check can wait until everything sent so far, an unexpected extra frame included, has been heard.
+ * Awaited before the page's goto: an init script runs only in documents loaded after it is installed.
+ */
 async function watch(page: Page): Promise<{ sent: Sent[]; ready: Set<string>; heard: { count: number } }> {
   const sent: Sent[] = [];
   const ready = new Set<string>();
@@ -97,6 +102,7 @@ async function typeAhead(browser: Browser, origin: string, item: Case): Promise<
   const workspaceId = created.workspace.workspace_id;
   const first = created.root_pane.pane_id;
   const context = await browser.newContext({ viewport: item.viewport, hasTouch: item.touch === true, isMobile: item.touch === true, locale: "en-US" });
+  // the away case clicks the sidebar's Filter field, which is off until chosen (Settings → Sidebar filter)
   await context.addInitScript(() => { localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "terminal", alertsOn: false })); localStorage.setItem("ovis:sidebar-filter-shown", "true"); localStorage.setItem("ovis:phone-tabs", JSON.stringify("header")); });
   try {
     const page = await context.newPage();
@@ -127,8 +133,12 @@ async function typeAhead(browser: Browser, origin: string, item: Case): Promise<
         throw new Error(`${(error as Error).message}; sent to it: ${JSON.stringify(textOf(sent, second!))}, held for review: ${held > 0}, its last lines: ${JSON.stringify((await lines()).filter(Boolean).slice(-4))}`);
       });
       if (item.sent !== undefined) {
+        // the shell's line is read through herdr, the page's frames through the browser's own events, which can come
+        // later on a busy machine: what the page sent is read once every frame it has sent by now has been heard
         const expected = item.sent;
+        // everything the page has sent by now is heard first, an extra frame included, so the comparison sees it
         const sentByPage = await page.evaluate(() => (window as unknown as { sentByPage?: number }).sentByPage);
+        // without the counter the wait below could never end: say so at once
         assert.ok(typeof sentByPage === "number", `${item.name}: the page has no frame counter (window.sentByPage is ${String(sentByPage)}): watch() must install it before the page loads`);
         await until(() => heard.count >= sentByPage, `${item.name}: the page's frames for the new tab are all heard`).catch((error: unknown) => {
           throw new Error(`${(error as Error).message}; expected ${JSON.stringify(expected)}, heard ${JSON.stringify(textOf(sent, second!))}`);
@@ -161,6 +171,9 @@ const typed = (text: string, delay = 0) => async (page: Page): Promise<void> => 
 const CASES: Case[] = [
   { name: "plus", way: "plus", viewport: desktop, type: typed("echo ahead-plus"), ran: "ahead-plus", sent: "echo ahead-plus\r" },
   { name: "sheet", way: "sheet", viewport: phone, type: typed("echo ahead-sheet"), ran: "ahead-sheet", sent: "echo ahead-sheet\r" },
+  // herdr's answer waits for the keys: on a touch screen a tab that came before the first key leaves the keyboard
+  // where it was (no on-screen keyboard unasked, useTerminalMount's takeKeyboard), so keys typed after it are no
+  // longer typed ahead, and touch-midway is the case for a tab that comes while they are typed
   { name: "touch", way: "sheet", viewport: phone, touch: true, holdCreate: true, type: typed("echo ahead-touch"), ran: "ahead-touch", sent: "echo ahead-touch\r" },
   {
     name: "touch-midway", way: "sheet", viewport: phone, touch: true, holdCreate: true, ran: "ahead-midway", sent: "echo ahead-midway\r",

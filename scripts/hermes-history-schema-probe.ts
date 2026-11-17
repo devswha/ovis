@@ -4,6 +4,8 @@
  *
  * The repository keeps its answers in server/fixtures/hermes-history/ (`--out .../evidence.json
  * --fixture .../state.sql`).
+ *
+ * Everything in the store is made up; nothing is read from a real ~/.hermes.
  */
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -44,6 +46,8 @@ function definition(file: string, start: RegExp): { file: string; line: number; 
 
 const CWD = "/work/project";
 const OTHER_CWD = "/elsewhere";
+// The rows, oldest first. Each is made by the call Hermes's own code makes for that kind of row
+// (cited per kind below); the probe then pins their times so the fixture is the same every run.
 const PYTHON = String.raw`
 import json, sqlite3, sys
 from pathlib import Path
@@ -242,6 +246,7 @@ try {
     && row.cwd === CWD && row.listed_in_cwd && row.resume_opens === row.id);
   const evidence = {
     hermes: {
+      // the user's home left out: the evidence is committed
       dir: hermesDir.replace(homedir(), "~"),
       commit: git("rev-parse", "HEAD"),
       describe: git("describe", "--tags", "--long"),

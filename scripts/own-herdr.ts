@@ -1,6 +1,12 @@
 import { join } from "node:path";
 import { isolate } from "./check.ts";
 
+/**
+ * Runs `run` on a herdr session, config and state of its own, and stops that session after: a browser script
+ * that runs beside another in the lane (BROWSER_WORKERS) then shares no session, workspace label or socket with
+ * it, though both inherit the lane's one `check run` session. `what` names the run in its errors. Call it before
+ * anything imports scripts/test-herdr.ts, which starts the session the environment names.
+ */
 export async function runOnOwnHerdr(what: string, run: () => Promise<unknown>): Promise<void> {
   if (process.env.HERDR_TEST_LIVE === "1") throw new Error(`Cannot run live ${what} with HERDR_TEST_LIVE=1`);
   if (process.env.HERDR_TEST_MODE === "unit") throw new Error(`HERDR_TEST_MODE=unit cannot run live ${what}`);
@@ -8,6 +14,7 @@ export async function runOnOwnHerdr(what: string, run: () => Promise<unknown>): 
   const herdr = process.env.OVIS_HERDR_BIN || Bun.which("herdr");
   if (!herdr) throw new Error(`${what} require OVIS_HERDR_BIN or a herdr binary on PATH`);
 
+  // CHECK_DIR belongs to the caller: never reuse its config, socket or state files.
   const isolation = isolate({ ...process.env, CHECK_DIR: undefined });
   for (const name of Object.keys(process.env)) {
     if (!(name in isolation.env)) delete process.env[name];
@@ -16,6 +23,7 @@ export async function runOnOwnHerdr(what: string, run: () => Promise<unknown>): 
   const configRoot = isolation.env.XDG_CONFIG_HOME!;
   const session = isolation.env.HERDR_TEST_SESSION!;
   const socket = join(isolation.sessions, session, "herdr.sock");
+  // Pre-point lazy imports at our socket, even before test-herdr's bootstrap has completed.
   process.env.HERDR_SOCKET = socket;
   process.env.OVIS_HERDR_BIN = herdr;
 

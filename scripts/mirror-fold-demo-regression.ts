@@ -55,6 +55,7 @@ function installFoldFixture(screen: string, cols: number, rows: number, fixedPan
     socket.push = (frame) => {
       if (frame.pane_id !== fixedPane) push(frame);
       else if (frame.type === "pane-geometry") push({ ...frame, cols, rows, ...(fixed ? { fixed: true } : {}) });
+      // the demo's own recording would draw over the fixture's screen
       else if (frame.type === "pty-data" && frame.fixture !== "fold") return;
       else if (frame.type === "pty-data") {
         const { fixture: _, ...output } = frame;
@@ -97,6 +98,7 @@ for (let index = 1; index <= ROWS; index++) {
   else screenRows.push(row(index, `R${String(index).padStart(2, "0")} the quick brown fox `));
 }
 for (const text of screenRows) assert.equal(cellWidth(plain(text)), COLS, `a fixture row is the grid's width: ${plain(text)}`);
+// what server/mirror.ts sends for a whole screen: line wrap off while the rows are drawn
 const frameOf = (rows: string[]): string => `\x1b[?25l\x1b[0m\x1b[H\x1b[2J\x1b[?7l${rows.join("\r\n")}\x1b[0m\x1b[?7h`;
 const SCREEN = frameOf(screenRows);
 const tuiRows = Array.from({ length: ROWS }, (_, index) => index === 0 ? `┌${"─".repeat(COLS - 2)}┐`
@@ -167,7 +169,9 @@ const foldState = (page: Page, folded: boolean): Promise<unknown> => page.waitFo
   const host = document.querySelector(".pane-frame.is-current .pane-terminal");
   return host !== null && host.hasAttribute("data-folded") === want && (!want || host.querySelector(".terminal-fold-row") !== null);
 }, folded);
+// kept in a key of its own (lib/settings.ts MIRROR_WRAP_STORAGE_KEY), out of an older tab's whole-record save
 const savedWrap = (page: Page): Promise<unknown> => page.evaluate(() => JSON.parse(localStorage.getItem("ovis:mirror-wrap") ?? "null"));
+/** Every row's END marker inside the pane's visible width, waited for: the view settles a frame or a resize after it is drawn. */
 const rowsWhole = async (page: Page, label: string): Promise<Visible> => {
   let seen = await visibleMarkers(page);
   for (const deadline = Date.now() + 10_000; seen.cut.length > 0 && Date.now() < deadline;) {
@@ -178,6 +182,8 @@ const rowsWhole = async (page: Page, label: string): Promise<Visible> => {
   return seen;
 };
 const choose = async (page: Page, label: string, phone: boolean): Promise<void> => {
+  // a phone layout is waited for, not sampled: just after a resize from a desktop-wide window the header
+  // still holds the desktop's tab row, which the phone layout then takes away
   if (phone) {
     await page.locator(".app-header .header-tabs-sheet").waitFor();
     await page.locator(".header-more-button").click();
@@ -197,6 +203,12 @@ const choose = async (page: Page, label: string, phone: boolean): Promise<void> 
   }
   await item.click();
 };
+/**
+ * Taps a character of `text` in the folded row that holds it (`at`: its index in `text`, `-1` the last one),
+ * three quarters across the glyph, where the caret lies after it. The point is measured against the row and
+ * Playwright clicks the row there once it holds still, so the view scrolling between measuring and tapping
+ * (a late resize settling, the rows following the cursor) cannot move the tap off the glyph.
+ */
 const tapFolded = async (page: Page, text: string, at: number): Promise<void> => {
   const row = page.locator(".pane-frame.is-current .terminal-fold-row").filter({ hasText: text }).first();
   const position = await row.evaluate((node, { text, at }) => {
@@ -280,6 +292,7 @@ const SETTINGS = { language: "en", defaultView: "terminal", terminalInputMode: "
 
 async function open(browser: Browser, origin: string, viewport: { width: number; height: number }, phone: boolean, query = ""): Promise<{ page: Page; errors: string[]; close: () => Promise<void> }> {
   const context = await browser.newContext({ viewport, isMobile: phone, hasTouch: phone, locale: "en-US" });
+  // fixed metrics: the 120-column grid fits a 1440px desktop and no phone
   await context.addInitScript((settings) => {
     if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", JSON.stringify(settings));
     localStorage.setItem("ovis:phone-tabs", JSON.stringify("header"));
@@ -287,6 +300,7 @@ async function open(browser: Browser, origin: string, viewport: { width: number;
   await context.addInitScript(() => {
     const seen = { taps: [] as string[], anchors: [] as string[] };
     (window as unknown as { foldSeen: typeof seen }).foldSeen = seen;
+    // the app opens a web link with a detached anchor's click (lib/terminalFileLinks.ts openWebLink), which no listener sees
     const anchorClick = HTMLAnchorElement.prototype.click;
     HTMLAnchorElement.prototype.click = function (this: HTMLAnchorElement) { seen.anchors.push(this.href); anchorClick.call(this); };
     document.addEventListener("click", (event) => {
@@ -295,6 +309,7 @@ async function open(browser: Browser, origin: string, viewport: { width: number;
       else seen.taps.push(`${target?.className ?? "?"} @${Math.round(event.clientX)},${Math.round(event.clientY)}`);
     }, true);
   });
+  // a link the fold opens lands here, not on the internet
   await context.route(/^https:\/\/example\.(com|org)\//, (route) => route.fulfill({ status: 200, contentType: "text/plain", body: "fold link" }));
   const page = await context.newPage();
   page.setDefaultTimeout(10_000);

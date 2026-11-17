@@ -44,6 +44,7 @@ const heldOf = (page: Page): Promise<Held> => page.evaluate(() => {
 });
 
 const select = async (page: Page, pane: string): Promise<void> => {
+  // the same row click the sidebar gets, without moving the focus the way a real click would
   const row = page.locator(`.pane-select[title^="${pane} —"]`).first();
   await row.waitFor({ state: "attached" });
   await row.evaluate((node: HTMLElement) => node.click());
@@ -60,6 +61,8 @@ try {
   const index = join(app, "index.html");
   const html = readFileSync(index, "utf8");
   assert.match(html, /<script type="module"/);
+  // The demo takes every message. This answers a submit as a pane that refused it would, so that
+  // a held row is seen with its "Not sent" line.
   const refuse = `<script>(() => {
     const Demo = window.WebSocket;
     window.refuseSubmits = false;
@@ -98,6 +101,8 @@ try {
         const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, locale: "en-US", hasTouch: touch });
         await context.addInitScript((queues) => {
           localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" }));
+          // the rows were kept under the demo's herdr (site/demo/transport.ts): with no record they would
+          // be an earlier release's, whose herdr nothing proves, and go to Recover unsent text
           localStorage.setItem("ovis:pane-lifetime:local", "demo-local");
           for (const [owner, value] of Object.entries(queues)) localStorage.setItem(`ovis:queue:${owner}`, value);
         }, seed);
@@ -240,6 +245,7 @@ try {
       }
 
       {
+        // watch-only access (the bridge says so before the socket answers in observe mode): a held message offers no Send now
         const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, locale: "en-US" });
         try {
           await context.addInitScript((queue) => {

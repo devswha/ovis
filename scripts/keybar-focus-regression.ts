@@ -39,6 +39,9 @@ export async function checkKeyBarKeepsKeyboardDown(browser: Browser, origin: str
         await page.locator(shownRows()).first().waitFor();
         await page.waitForFunction((shown) => document.querySelector(shown)?.textContent?.includes("$") ?? false, shownRows());
         if (mode === "line") await page.locator(".terminal-input").waitFor();
+        // a command typed but not run: only the key bar's Enter runs it. Its echo does not hold the
+        // joined marker, so the marker drawn proves the shell took the Enter (a count of prompts
+        // does not: with no scrollback, a new prompt can push an old one off the screen)
         const nonce = randomUUID().replaceAll("-", "").slice(0, 12);
         const marker = `KB_${nonce}`;
         // C-g, then C-u: the last context's Escape tap can leave readline holding a Meta prefix, which

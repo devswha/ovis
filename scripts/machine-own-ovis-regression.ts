@@ -82,6 +82,8 @@ try {
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   await page.screenshot({ path: `${shots}/failed-mobile.png` });
   await page.setViewportSize({ width: 1280, height: 900 });
+  // the drawer, opened at the phone's width, held a history entry: widened, it steps off it, and a
+  // reload asked for before that step lands is dropped (net::ERR_ABORTED)
   await sheetEntryLeft(page);
 
   roster = [local, refused(null)];
@@ -101,6 +103,7 @@ try {
   await page.locator(".update-notice").getByText("QA remote's own Ovis needs an update on that PC.", { exact: true }).waitFor({ timeout: 10_000 });
   await page.getByRole("button", { name: "Open workspace list", exact: true }).click();
   await card.getByRole("button", { name: "Copy address", exact: true }).waitFor();
+  // the drawer slides in: the picture is taken once it has (the status dot's pulse never ends)
   await page.waitForFunction(() => document.getAnimations().every((animation) => !(animation instanceof CSSTransition) || animation.playState !== "running"));
   assert.equal(await card.evaluate((element) => { const box = element.getBoundingClientRect(); return box.left >= 0 && box.right <= innerWidth; }), true, "the card lies inside the phone's width");
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
@@ -156,6 +159,7 @@ try {
     assert.equal(await page.locator(".update-notice").getByRole("button", { name: "Choose", exact: true }).count(), 1);
   }
   await page.setViewportSize({ width: 1280, height: 900 });
+  // widened with the drawer open, as above: the reload waits for the drawer's entry to be left
   await sheetEntryLeft(page);
   roster = [local, { ...offered, action_required: "choose_herdr", remote_ovis: null, target: { ...offered.target!, own_ovis: "/home/qa/.config/ovis/herdr-core.sock" },
     error: "Start Ovis on that PC, or start a new herdr here", found_ovis: [], found_herdr_sessions: [] }];

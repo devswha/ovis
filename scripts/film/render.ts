@@ -12,6 +12,13 @@
  * that the UI text needs more; the site draws its own static grain over the stage.
  * and the poster site/media/ovis-film.jpg (the frame at 34.40 s).
  *
+ * Decisions (see timeline.ts for the numbers): every take is 2x, so no desktop framing is tighter
+ * than 960 CSS px (the brief's 3x macro framings are re-blocked at <= 2.0 output px per CSS px);
+ * continuity comes from capture.ts's `story` staging: S1/S2 use R12 (the first task running), S3 R2,
+ * S4/S5 R10, S9-S11 the "after" takes, S12 R13 (the next ask running); the hero loop is R11 (the demo's
+ * own opening state, recorded 1280x1064 so nothing scrolls under the plan bar). Grain is ffmpeg's
+ * luma noise (deterministic seed): temporal in the master, static in the web file and the loop.
+ *
  * After a re-capture, re-check what was measured by hand on the frames: the S8 status/Pushed times
  * (R3_DONE… in timeline.ts), the per-shot camera anchors (fx/fy/ax/ay) and the type positions against
  * the new layout (`stills` at --scale 1 at every type entry). Pulse phases and every mark/cue-based
@@ -33,6 +40,7 @@ const LOOP_JPG = join(REPO, "site/media/chat-loop.jpg");
 const LOOP_GIF = join(REPO, "docs/media/chat-loop.gif");
 const MARK = join(REPO, "_film/brand/mark-paper.png");
 const POSTER_T = 34.4;
+/** grain: ffmpeg temporal luma noise; strength tuned against the 20 MB cap */
 const GRAIN = Number(process.env["FILM_GRAIN"] ?? 3);
 const CRF = Number(process.env["FILM_CRF"] ?? 19);
 const COLOR = ["-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv"];
@@ -153,6 +161,7 @@ async function deliver(lossless: string): Promise<void> {
   mkdirSync(join(REPO, "site/media"), { recursive: true });
   await ffmpeg(["-i", lossless, "-vf", `${TO_YUV},format=yuv420p`, "-c:v", "libx264", "-profile:v", "high", "-preset", "veryslow", "-crf", String(CRF), "-g", "120", "-r", String(FPS), ...COLOR, "-an", "-movflags", "+faststart", FILM_MP4]);
   if (statSync(FILM_MP4).size > 20e6) console.warn(`film is ${mb(FILM_MP4)}: over the 20 MB cap, raise FILM_CRF`);
+  // the poster from the lossless render (grain-free, like the web file), not from the delivery encode
   await poster(lossless, POSTER_T, FILM_JPG, 85, 250_000, 0);
   console.log(`film ${FILM_MP4} ${mb(FILM_MP4)}\nposter ${FILM_JPG} ${mb(FILM_JPG)}`);
 }
@@ -165,11 +174,17 @@ async function poster(src: string, t: number, out: string, quality: number, cap:
   }
 }
 
+/**
+ * The path is closed, so the file may start anywhere on it: output frame i is path frame (i + s) mod n,
+ * rotated in whole frames (a float modulo can land a hair under 6.4 s and repeat a frame at the wrap).
+ * The path's own seam (6.4 s -> 0) then sits inside the file at frame n - s; `check` measures it.
+ */
 const loopShift = (): number => Math.round(opt("start", LOOP_START) * LOOP_FPS);
 
 async function loop(): Promise<void> {
   const n = Math.round(LOOP_LEN * LOOP_FPS), s = loopShift();
   const lossless = await renderAll("loop", (i) => loopFrame(((i + s) % n) / LOOP_FPS), LOOP_FPS, 0, n, opt("workers", 12), 1);
+  // static grain (no temporal flag: one fixed noise field), so the seam stays invisible
   const vf = `${TO_YUV},format=yuv420p,noise=c0s=${GRAIN}:c0f=u`;
   mkdirSync(join(REPO, "site/media"), { recursive: true });
   mkdirSync(join(REPO, "docs/media"), { recursive: true });

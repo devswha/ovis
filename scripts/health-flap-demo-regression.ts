@@ -151,6 +151,7 @@ export async function headerAfter(page: Page, pill: "stale" | "offline" | "none"
     await page.waitForFunction((pill) => {
       const stale = document.querySelector(".header-meta .pill-stale") !== null;
       const offline = document.querySelector(".header-meta .pill-offline") !== null;
+      // a stale wait also ends on an offline pill, so a header that says offline at once fails on what it says
       return pill === "stale" ? stale || offline : pill === "offline" ? offline : !stale && !offline;
     }, pill, { timeout: 10_000 });
   } catch (error) {

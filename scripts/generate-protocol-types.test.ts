@@ -5,6 +5,7 @@ import { join } from "node:path";
 const ROOT = join(import.meta.dir, "..");
 const GENERATOR = join(ROOT, "scripts", "generate-protocol-types.ts");
 const GENERATED = join(ROOT, "shared", "herdr-api.generated.ts");
+// in this file, not beside the hc generator's tests: these rewrite both outputs, so they must not run alongside another file doing so
 const HC_GENERATED = join(ROOT, "server", "herdr-core", "hc-api.generated.ts");
 
 async function runGenerator(args: string[]): Promise<{ exitCode: number; stdout: string; stderr: string }> {

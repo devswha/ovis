@@ -11,6 +11,7 @@ const screenshotDir = process.env.HERDR_KEYS_SCREENSHOT_DIR;
 if (screenshotDir) mkdirSync(screenshotDir, { recursive: true });
 const app = mkdtempSync(join(tmpdir(), "herdr-prefix-keys-demo-"));
 
+/** Two frames after a key: whatever it was going to open has rendered by then. */
 async function settled(page: Page): Promise<void> {
   await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
 }

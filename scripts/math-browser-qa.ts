@@ -36,11 +36,13 @@ try {
   server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch(request) {
     const path = new URL(request.url).pathname;
     if (path.endsWith("/pane/commands")) return Response.json({ commands: [] });
+    // each page answers the conversation itself; one asked while the browser closes reaches here
     if (path.endsWith("/pane/conversation")) return Response.json(conversation);
     return new Response(Bun.file(join(output, path === "/" ? "index.html" : path.slice(1))));
   } });
 
   browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
+  // The notice and button locators are English; do not inherit the host's system language.
   const page = await browser.newPage({ viewport: { width: 1200, height: 800 }, locale: "en-US" });
   const errors: string[] = [];
   const scripts: string[] = [];
@@ -163,6 +165,8 @@ try {
   write("Later: \\(z^2\\)\n\nAnd: \\(w^2\\)\n\nAgain: \\(v^2\\)");
   await unstyled.evaluate(() => window.qa.refresh());
   await unstyled.getByText("Again:").waitFor();
+  // a retry asks for the script as the new expressions mount, before a request the page sends
+  // after them: once that one is answered, every request of the retry has been seen
   await unstyled.evaluate(() => fetch("/index.html").then((response) => response.text()));
   assert.deepEqual(katexAfter, [], "a later expression does not load KaTeX without its stylesheet");
   assert.equal(await unstyled.locator(".katex").count(), 0, "math is not drawn without its stylesheet");

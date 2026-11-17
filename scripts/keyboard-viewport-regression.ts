@@ -9,6 +9,9 @@ import { chromium, type Browser, type Page } from "playwright-core";
 import { chromePath } from "./chrome-path.ts";
 
 async function checkState(page: Page, visible: boolean, height: number, inset: number, correction = false): Promise<void> {
+  // The page's clock is paused: this lets only the timers already due run (the zero timer a blur leaves), so the
+  // state read is the one the event itself left. A wait that should not be there (lib/viewport.ts holds only an
+  // iPad's shrink without a keyboard) shows as a stale state; a case that must wait runs the clock itself.
   await page.clock.runFor(1);
   const state = await page.evaluate((visible) => {
     const composer = document.querySelector(".composer")!;
@@ -279,6 +282,8 @@ try {
   }
   // Page zoom scales the layout (125% of an 1180x820 screen lays out 944x656) and leaves the screen's own size, so
   // the iPad is told by its screen.
+  // Each case reads the shell right after the load, with no clock: the first sync
+  // of a page never waits for a shrink
   const landscape = { width: 1180, height: 820 };
   const ipad = { width: 820, height: 1180 }; // iOS reports the screen as it is in portrait, whichever way it is held
   for (const [name, size, screen, visual, scale, pinched, standalone, fits] of [
@@ -453,6 +458,7 @@ try {
         Object.defineProperty(window.screen, "orientation", { configurable: true, value: { type: portrait ? "portrait-primary" : "landscape-primary" } });
         const originalMatchMedia = window.matchMedia.bind(window);
         window.matchMedia = (query) => query === "(display-mode: standalone)" ? ({ matches: standalone } as MediaQueryList) : originalMatchMedia(query);
+        // what lib/viewport.ts asks to tell iPadOS 26 from the ones before it, whatever this Chromium supports
         const supports = CSS.supports.bind(CSS);
         CSS.supports = ((...args: [string, string?]) => args[0] === "anchor-name: --a" ? os26 : supports(...(args as [string]))) as typeof CSS.supports;
       }, { width, scale, portrait, standalone, ipad, os26 });

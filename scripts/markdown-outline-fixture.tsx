@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import "../src/styles.css";
+// the app always has the chat's CSS (PaneTerminal imports ChatView), which styles a code block's wrapper
 import "../src/components/ChatView.css";
 import { FileViewer } from "../src/components/FileViewer.tsx";
 import { SettingsProvider } from "../src/lib/settings.ts";
@@ -9,6 +10,7 @@ import { SettingsProvider } from "../src/lib/settings.ts";
 declare global { interface Window { outlineQA: { keyboard: (active: boolean) => void } } }
 
 function Fixture() {
+  // the app turns the viewer's keys off while Settings is open over it
   const [keyboardActive, setKeyboardActive] = useState(true);
   window.outlineQA = { keyboard: (active) => flushSync(() => setKeyboardActive(active)) };
   const docked = new URLSearchParams(location.search).has("docked");

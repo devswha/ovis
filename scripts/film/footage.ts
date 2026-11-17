@@ -1,3 +1,7 @@
+/**
+ * take's first frame. Screencast takes (R*) paint 20-45 fps, so a moment shows the last frame
+ * painted at or before it; stepped takes (S*) are exact 60 fps (frame i at i/60).
+ */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 

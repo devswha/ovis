@@ -37,6 +37,7 @@ describe.skipIf(process.platform !== "linux" || process.arch !== "x64")("kit lin
   test("the line parses pasted into sh, dash, bash and zsh, and so does the program it hands to sh", () => {
     const { server, pty, at } = programs();
     const { line } = makeKit({ server, pty, out: join(at, "kit"), ...origins });
+    // the pasting shell parses the line; the program inside it is parsed by sh with -n, and nothing is run
     const parseOnly = line.replace(/^sh -c /, "sh -n -c ");
     for (const shell of ["sh", "dash", "bash", "zsh"].filter((name) => Bun.which(name) !== null)) {
       for (const text of [line, parseOnly]) {
@@ -59,6 +60,7 @@ describe.skipIf(process.platform !== "linux" || process.arch !== "x64")("kit lin
     mkdirSync(dir, { recursive: true });
     if (!existsSync(join(dir, "join.sh"))) writeFileSync(join(dir, "join.sh"), script);
     const line = joinLine({ ...origins, url: `file://${dir}` }, createHash("sha256").update(script).digest("hex"), "0".repeat(64));
+    // `exec`: the pasting shell becomes the line's own sh, so `child` is the shell that holds the trap
     const child = spawn("sh", ["-c", `exec ${line}`], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, TMPDIR: tmp, PATH: `${path}${process.env["PATH"] ?? ""}` } });
     let out = "";
     child.stdout.on("data", (chunk) => { out += chunk; });
@@ -75,9 +77,11 @@ describe.skipIf(process.platform !== "linux" || process.arch !== "x64")("kit lin
 
   test("the line removes its temporary folder when INT reaches it while join.sh downloads, and exits 130", async () => {
     const { at, tmp } = scratch();
+    // a join.sh that is a FIFO: the download waits on it until a writer comes
     mkdirSync(join(at, "kit"));
     expect(Bun.spawnSync(["mkfifo", join(at, "kit", "join.sh")]).exitCode).toBe(0);
     const { child, ended } = pasted(join(at, "kit"), "never read", tmp);
+    // opened for writing once curl has opened it for reading: the line is in its download, its trap set
     const writer = await open(join(at, "kit", "join.sh"), "w");
     await writer.write("#!/bin/sh\n");
     expect(readdirSync(tmp)).toHaveLength(1);
@@ -200,6 +204,7 @@ describe.skipIf(process.platform !== "linux" || process.arch !== "x64")("kit lin
     const before = readdirSync(repo).sort();
     expect(() => makeKit({ server, pty, out: repo, ...origins })).toThrow(KitError);
     expect(readdirSync(repo).sort()).toEqual(before);
+    // an empty folder inside the checkout: only the checkout's own guard can refuse it
     const inside = mkdtempSync(join(repo, ".kit-test-"));
     dirs.push(inside);
     expect(() => makeKit({ server, pty, out: inside, ...origins })).toThrow(KitError);

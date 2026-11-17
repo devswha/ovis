@@ -60,6 +60,7 @@ const patch = `(() => {
 let origin = "";
 const pane = encodeURIComponent(panes.web);
 const workGroup = (page: Page) => page.locator('section.machine-group[aria-label="PC Work PC"]');
+// a screenshot waits for the drawer and the sheet to finish moving, so it shows where they come to rest
 const still = (page: Page): Promise<unknown> => page.waitForFunction(() => document.getAnimations().every((animation) => animation.playState !== "running"));
 const selection = (page: Page): Promise<string | null> => page.evaluate(() => JSON.parse(localStorage.getItem("ovis:selection") ?? "null")?.machine_id ?? null);
 
@@ -71,6 +72,7 @@ async function open(browser: Browser, width: number, query: string, options: Ope
   const context = await browser.newContext({ viewport: { width, height: phone ? 844 : 900 }, locale: "en-US", hasTouch: phone, isMobile: phone, colorScheme: options.theme ?? "light" });
   await context.addInitScript(({ roster, theme, hidden }) => {
     if (roster !== null) Object.assign(window, { hidePcRoster: roster });
+    // seeded once per page, so a reload keeps what the page itself stored
     if (sessionStorage.getItem("hide-pc-seeded") !== null) return;
     sessionStorage.setItem("hide-pc-seeded", "1");
     if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", JSON.stringify(theme === null ? { language: "en" } : { language: "en", theme }));
@@ -87,6 +89,7 @@ async function open(browser: Browser, width: number, query: string, options: Ope
 const pcsHead = (page: Page) => page.locator(".pcs-sidebar > :not(.machine-list)");
 const storedHidden = (page: Page): Promise<unknown> => page.evaluate(() => JSON.parse(localStorage.getItem("ovis:hidden-pcs") ?? "null"));
 const group = (page: Page, name: string) => page.locator(`section.machine-group[aria-label="PC ${name}"]`);
+// the demo's timeline raises a finish droplet at its own moment; the shots are of the sidebar
 const NO_DROPLET = ".droplet { visibility: hidden !important; }";
 
 async function sidebar(page: Page, phone: boolean): Promise<void> {
@@ -142,6 +145,8 @@ try {
 
           await page.keyboard.press("Escape");
           await dialog.waitFor({ state: "detached" });
+          // closing Settings steps back over its history entries, onto the one that named Work PC's pane:
+          // once it has landed, the address says the pane picked meanwhile, not Work PC's
           await page.waitForFunction(() => !(history.state !== null && typeof history.state === "object" && "ovis:settings" in history.state) && !location.search.includes("machine=work"));
           await page.locator(".machine-context-name").first().waitFor({ state: "attached" });
           assert.equal(await selection(page), "local", "the selection stays off the hidden PC after Settings closes");

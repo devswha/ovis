@@ -90,6 +90,7 @@ async function select(page: Page, pane: string): Promise<void> {
   await page.locator(`.agent-item[data-pane="${pane}"].is-selected`).waitFor();
 }
 
+/** The selected pane's actions: a lone pane keeps them in its tab's ⋯, shown once the pointer is over the strip. */
 async function openPaneMenu(page: Page): Promise<void> {
   await page.locator(".tab-strip").hover();
   await page.locator(".tab-strip-item.is-active .tab-strip-menu").click();
@@ -171,6 +172,7 @@ try {
   await startHerdr();
   for (const pane of [one, two]) await reportAgent(pane);
 
+  // the page has seen the new herdr once its pane state names another lifetime (a roster away, 5 s apart)
   await page.waitForFunction((was) => { const now = localStorage.getItem("ovis:pane-lifetime:local"); return now !== null && now !== was; },
     before["ovis:pane-lifetime:local"] ?? null, { timeout: 60_000 });
   await page.waitForFunction(() => document.querySelector(".view-switch button[aria-pressed='true']")?.getAttribute("title")?.startsWith("Live terminal") === true,

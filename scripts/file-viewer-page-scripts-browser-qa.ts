@@ -61,6 +61,7 @@ try {
   const composer = page.locator("#composer");
   const messages = (kind: string) => page.evaluate((kind) => window.pageScriptsQa.messages.filter((each) => each["probe"] === kind).map((each) => String(each["key"] ?? "")), kind);
   const forget = () => page.evaluate(() => { window.pageScriptsQa.messages.length = 0; });
+  /** the colour the page draws in the middle of its frame: what a frame without scripts shows can only be seen in a picture of it */
   const drawn = async (): Promise<number[]> => {
     const box = (await frame.boundingBox())!;
     return pngPixel(await page.screenshot(), Math.round(box.x + box.width / 2), Math.round(box.y + box.height / 2));

@@ -13,6 +13,7 @@ const prose = "A paragraph long enough to wrap over a few lines of the preview, 
 const table = ["| Name | Value |", "| --- | --- |", ...Array.from({ length: 12 }, (_, index) => `| row ${index + 1} | value ${index + 1} |`)].join("\n");
 const code = ["```ts", ...Array.from({ length: 12 }, (_, index) => `const line${index + 1} = ${index + 1};`), "```"].join("\n");
 const mermaid = ["```mermaid", "flowchart TD", "  A[Start] --> B[Read]", "  B --> C[Write]", "  C --> D[Done]", "```"].join("\n");
+// absolute: the fixture's document path (guide.md) has no folder to resolve a relative one against
 const image = "![x](/missing.png)";
 const markdown = ["# Guide", prose, table, code, mermaid, image, ...Array.from({ length: SECTIONS }, (_, index) => [
   `## Section ${index + 1}`, prose, prose, "### Notes", prose,
@@ -37,6 +38,7 @@ async function open(width: number, height: number, { outline, theme = "dark", do
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto(`http://127.0.0.1:${server!.port}/${docked ? "?docked" : ""}`);
   await page.locator(".file-viewer-markdown > h3").nth(ENTRIES - 1).waitFor();
+  // the diagram is drawn once its chunk loads and the image gives up: both change the document's height
   await page.locator(".markdown-mermaid svg").waitFor();
   await page.locator(".image-slot.is-failed").waitFor();
   await sheetsSettled(page);
@@ -263,6 +265,8 @@ try {
       const before = await page.locator(".file-viewer-body").evaluate((body, selector) => {
         const box = document.querySelector<HTMLElement>(selector)!;
         body.scrollTop += box.getBoundingClientRect().top - body.getBoundingClientRect().top - 40;
+        // the stroke's fling ends past its start; the next stroke waits for it, or the fling still
+        // moving the document would carry it off the box
         const done = body.scrollTop + 60;
         body.dataset["flung"] = "";
         const ended = () => { if (body.scrollTop < done) return; body.dataset["flung"] = "yes"; body.removeEventListener("scrollend", ended); };

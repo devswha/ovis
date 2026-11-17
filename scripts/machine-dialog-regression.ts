@@ -64,6 +64,8 @@ try {
           });
           await page.goto(`http://127.0.0.1:${server.port}/`);
           const dialog = page.getByRole("dialog", { name: "Add PC", exact: true });
+          // a phone's dialog holds a history entry and steps off it a moment after it closes: a reload asked
+          // for before that step lands is dropped by it (net::ERR_ABORTED)
           const reload = async (): Promise<void> => { if (await dialog.count() === 0) await sheetEntryLeft(page); await page.reload(); };
           const destination = dialog.getByRole("textbox", { name: "SSH alias or user@address", exact: true });
           await destination.fill("fixture-only");
@@ -123,6 +125,7 @@ try {
             const shots = join(process.env.UI_EVIDENCE_DIR || join(repo, "evidence"), "found-herdr"); mkdirSync(shots, { recursive: true });
             for (const theme of ["light", "dark"]) {
               await page.evaluate((theme) => { document.documentElement.dataset.theme = theme; }, theme);
+              // the picture is taken once the buttons' colours have settled, not mid-transition
               await page.waitForFunction(() => document.getAnimations().every((animation) => !(animation instanceof CSSTransition) || animation.playState !== "running"));
               await page.screenshot({ path: join(shots, `choice-${width}-${theme}.png`) });
             }

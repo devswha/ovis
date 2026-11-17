@@ -2,8 +2,13 @@
  * - Chrome gets the brand fonts (Pretendard Variable, JetBrains Mono) as local fonts through its own
  *   fontconfig, downloaded once to _film/fonts: the app names them first but ships no webfont, and a
  *   local font is there before xterm measures its cells.
+ * - filmHold (every page; holds nothing until armed): a setTimeout with an armed delay waits for
+ *   `__herdrFilm.release()`. 4500 ms = the demo's end of the Claude turn (R11-R13 keep it running),
+ *   2400 ms = the demo's chat answer (R10 holds it until the plan reaches 3/3). The app uses neither delay.
  * - Scale: FILM_SCALE (default 2) sets R10/R11's device scale factor. 3x was tried and the screencast
  *   painted ~13 fps (the brief asks for 40), so every take is 2x (crop limit: >= 960 CSS px of width).
+ * - R5 keeps the pointer off the terminal: the recorded screen turns on mouse reporting (?1003h) and the
+ *   pretend shell would echo the reports as text; the take fails if any reach the terminal.
  *
  *   bun run build:site && bun scripts/film/capture.ts [stills] [rec] [stepped] [R1 R1b … S1 … | still names]
  *
@@ -108,6 +113,13 @@ interface Open {
   terminalFont?: number;
 }
 
+/**
+ * Runs in the page before the demo transport: a setTimeout whose delay is armed is kept instead of
+ * scheduled, until `__herdrFilm.release()` runs it. The demo schedules its scripted events with
+ * fixed delays (the Claude turn ends at 4500 ms, a chat answer comes 2400 ms after sending) and the
+ * app uses neither, so arming one holds exactly that event: a turn stays running as long as a take
+ * needs. `caught()` counts what was held, per delay, for the take's notes.
+ */
 function filmHold(initial: number[]): void {
   const native = window.setTimeout.bind(window);
   const armed = new Set<number>(initial);
@@ -177,6 +189,9 @@ function fetchMods(options: { api: string; message: string; todo: boolean; real:
     const answered = { role: "assistant", ts: nice.ts, end_ts: later(nice.ts, 9), parts: streamed() };
     const after = [...done, nice, answered];
     if (stage === "after") return after;
+    // the same turn without its plan updates (same header: a TodoWrite is not an edit), so no plan bar
+    // is pinned: on a phone scroll the bar's uncovered strip and the "jump to latest" button over it
+    // (app layout, reported) would sit on every frame
     if (stage === "after-plain") return [...done, nice, { ...answered, parts: answered.parts.filter((part: any) => part.name !== "TodoWrite") }];
     const asked = { role: "user", ts: later(nice.ts, 40), parts: [{ kind: "text", text: "Document the Idempotency-Key header in docs/api.md." }] };
     const working = { role: "assistant", ts: later(nice.ts, 42), parts: [
@@ -194,6 +209,7 @@ function fetchMods(options: { api: string; message: string; todo: boolean; real:
   };
   const edit = (body: any, api: boolean): void => {
     let turns: any[] = body.turns ?? [];
+    // replaces the chat wholesale on every poll: the demo's own end of the running turn never shows
     if (options.story && api) turns = story(turns, options.story);
     if (options.real && api) {
       const first = turns.findIndex((turn) => turn.role === "user" && textOf(turn) === options.message);
@@ -206,6 +222,8 @@ function fetchMods(options: { api: string; message: string; todo: boolean; real:
       }
     }
     if (options.stream && api) {
+      // the answer is held (filmHold 2400): the turn in progress, revealed step by step as the
+      // seconds since sending pass, so each step lands on the chat's own 2 s poll
       const last = turns[turns.length - 1];
       if (last?.role === "user" && textOf(last) === options.message && last.ts) {
         const since = (Date.now() - Date.parse(last.ts)) / 1000;
@@ -231,6 +249,7 @@ function fetchMods(options: { api: string; message: string; todo: boolean; real:
       }
     }
     if (options.worked) {
+      // an answer the demo writes in one go has ts === end_ts: "Worked for 0s"; it took the demo's 2.6 s
       for (const turn of turns) if (turn.role === "assistant" && turn.ts && turn.ts === turn.end_ts) turn.ts = new Date(Date.parse(turn.end_ts) - 2600).toISOString();
     }
     body.turns = turns;
@@ -244,6 +263,7 @@ function fetchMods(options: { api: string; message: string; todo: boolean; real:
     edit(body, url.searchParams.get("pane_id") === options.api);
     return new Response(JSON.stringify(body), { status: response.status, headers: response.headers });
   };
+  // the transport keeps the native fetch for everything else, so hand it the native one to bind
   Object.defineProperty(window, "fetch", { configurable: true, get: () => (inner ? wrapped : native), set: (value) => { inner = value; } });
 }
 
@@ -297,6 +317,7 @@ async function easedScroll(page: Page, selector: string, to: number | "bottom", 
     const log: string[] = [];
     const el = document.querySelector(selector)!;
     const from = el.scrollTop;
+    // fixed at the start: a turn that settles its height mid-way must not pull the scroll back
     const target = to === "bottom" ? el.scrollHeight - el.clientHeight : to;
     let last = from;
     const ease = (s: number) => (s < 0.5 ? 4 * s * s * s : 1 - (-2 * s + 2) ** 3 / 2);
@@ -475,6 +496,7 @@ async function writeRecording(name: string, recording: Recording, marks: Marks, 
   return { file: `${name}.mp4`, kind: "recording", shows: "", resolution: `${w}x${h} (${recording.width}x${recording.height} @${scale}x), ${FPS} fps (screencast painted ${paintFps(files)})`, duration: Math.round(duration * 100) / 100, marks: markList };
 }
 
+/** screencast paint rate while something moves: median frames/s over intervals under 250 ms (a still page paints nothing) */
 function paintFps(files: { t: number }[]): string {
   const gaps = files.slice(1).map((f, i) => f.t - files[i]!.t).filter((g) => g > 0 && g < 0.25).sort((a, b) => a - b);
   if (gaps.length === 0) return "n/a";
@@ -518,6 +540,10 @@ async function chatToEnd(page: Page): Promise<void> {
   await Bun.sleep(300);
 }
 
+/**
+ * Where the status dots' 1.6 s pulse is (CSS `pulse`, opacity 1 -> 0.35 at 50% -> 1): a mark per
+ * dot "pulse <class> <ms into its cycle>", so a cut can start on a trough (800 ms into a cycle).
+ */
 async function markPulse(page: Page, marks: Marks): Promise<number> {
   const dots = await page.evaluate(() => document.getAnimations().filter((a: any) => a.animationName === "pulse").map((a: any) => ({
     what: String((a.effect?.target as Element | null)?.className ?? "?").split(" ")[0] ?? "?", ms: Math.round(Number(a.currentTime) % 1600),
@@ -526,6 +552,7 @@ async function markPulse(page: Page, marks: Marks): Promise<number> {
   return dots.find((dot) => /working|dot/.test(dot.what))?.ms ?? dots[0]?.ms ?? 0;
 }
 
+/** Waits until the dots' next trough (all pulse dots of a page mounted together share a phase). */
 async function toTrough(page: Page): Promise<void> {
   const ms = await page.evaluate(() => {
     const a: any = document.getAnimations().find((x: any) => x.animationName === "pulse");

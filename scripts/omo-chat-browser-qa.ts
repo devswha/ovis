@@ -139,6 +139,8 @@ try {
   const snapshotPanes = (await sessionSnapshot()).panes;
   assert.ok([paneA, paneB, paneL, paneN].every((id) => snapshotPanes.find((pane) => pane.pane_id === id)?.cwd === paneCwd), "all fixture panes share the cwd after their launch commands");
 
+  // tailscaleOwner null: the plain-HTTP page below reaches the server under a name that is not
+  // loopback, which a PC running Tailscale would otherwise send to pairing
   server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: join(root, "server-state"), tailscaleOwner: null });
   const port = server.port;
   const conversation = async (paneId: string): Promise<{ status: number; body: Conversation }> => {

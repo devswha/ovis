@@ -1,8 +1,16 @@
 #!/usr/bin/env bun
 /**
+ * Generate src/lib/confusables.generated.ts: the letters, marks and digits Unicode's confusables.txt (UTS #39,
+ * for the Unicode version generate-case-folding.ts pins) draws like one ASCII letter or digit, Cyrillic `о` and
+ * Greek `ο` like `o`, `0` like `O`. src/lib/promptAnswer.ts puts them in an option name's skeleton, so two rows
+ * that look alike across scripts name neither (#2233). Only that subset: a confusion between two non-Latin
+ * letters, or one drawn like several letters (`m` and `rn`), is not in the table.
+ *
  *   bun run scripts/generate-confusables.ts                   # download the pinned confusables.txt, write the table
  *   bun run scripts/generate-confusables.ts --source <file>   # read a local copy of that file instead
  *   bun run scripts/generate-confusables.ts --check           # fail if the committed table is stale; never writes
+ *
+ * With a newer UNICODE_VERSION, set SOURCE_SHA256 to the digest of that version's reviewed confusables.txt.
  */
 import { join } from "node:path";
 

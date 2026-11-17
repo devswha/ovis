@@ -55,6 +55,8 @@ const patch = `(() => {
 
 let origin = "";
 const group = (page: Page, name: string) => page.locator(`section.machine-group[aria-label="PC ${name}"]`);
+// a screenshot waits for the drawer and the sheet to finish moving, so it shows where they come to rest (a
+// pulse that never ends is not a move)
 const still = (page: Page): Promise<unknown> => page.waitForFunction(() => document.getAnimations().every((animation) => animation.playState !== "running" || animation.effect?.getComputedTiming().iterations === Infinity));
 const asks = (page: Page): Promise<{ local: number; work: number; lab: number }> => page.evaluate(() => (window as unknown as { __systemAsks: { local: number; work: number; lab: number } }).__systemAsks);
 const total = async (page: Page): Promise<number> => { const n = await asks(page); return n.local + n.work + n.lab; };
@@ -69,6 +71,7 @@ async function open(browser: Browser, width: number, theme: "dark" | "light" = "
   const page = await context.newPage();
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
+  // the poll's 5 s waits run on this clock, so "no ask while hidden" is told by moving it, not by waiting
   await page.clock.install();
   await page.goto(`${origin}/`);
   await page.locator(".conn-live").waitFor({ state: "attached" });

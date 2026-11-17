@@ -97,6 +97,8 @@ try {
   assert.equal(machine.action_required, "connect");
   assert.equal(machine.state, "disconnected");
   assert.ok(!existsSync(join(state, "ssh")), "discovery must not even create SSH state");
+  // Inject a config only for this process. Occupied local ports make any accidental
+  // config forwarding fail; the remote forward must never listen either.
   const config = process.env.HERDR_SSH_QA_CONFIG!;
   writeFileSync(config, `Host herdr-profile-fixture\n  HostName 127.0.0.1\n  User fixture\nHost *\n  LocalForward 127.0.0.1:${server.port} 127.0.0.1:80\n  DynamicForward 127.0.0.1:${server.port}\n  RemoteForward 127.0.0.1:18080 127.0.0.1:80\n`);
   await connect(machine);
@@ -119,6 +121,7 @@ try {
   await until(async () => frames, (f) => f.some((m) => m.type === "pty-data"), "terminal paint");
   ws.send(JSON.stringify({ type: "resize", pane_id: created.pane_id, cols: 90, rows: 28 }));
   await until(async () => frames, (f) => f.some((m) => m.type === "pane-geometry" && m.cols === 90 && m.rows === 28), "terminal resize");
+  // The marker is absent from the echoed command, so only executed input can satisfy the read.
   ws.send(JSON.stringify({ type: "input", pane_id: created.pane_id, text: "printf 'profile-%s-ok\\n' input\r" }));
   await until(async () => api<{ read: { text: string } }>(path + `/pane/read?pane_id=${encodeURIComponent(created.pane_id)}&source=recent&format=text`), (v) => v.read.text.includes("profile-input-ok"), "terminal input");
   ws.close();

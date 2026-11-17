@@ -225,6 +225,8 @@ describe("ovis.sh structured data", () => {
 
   it("repeats the visible FAQ word for word", () => {
     const page = html(HOME);
+    // each item on its own, from its opening tag to the next </details>, so one item off the shape
+    // is named instead of being read together with the next
     const shape = /^<details class="faq-item"[^>]*>\s*<summary>\s*<span>([\s\S]*?)<\/span>[\s\S]*?<\/summary>\s*<div class="faq-answer">([\s\S]*?)<\/div>\s*<\/details>$/;
     const parsed = page.split("<details class=\"faq-item\"").slice(1)
       .map((rest) => `<details class="faq-item"${rest.split("</details>")[0]}</details>`)
@@ -321,6 +323,8 @@ describe("ovis-site/_redirects", () => {
 });
 
 describe("ovis.sh download links", () => {
+  // The names a release attaches: the desktop app's builds, which .github/workflows/desktop.yml checks
+  // for by name before it uploads them, and the older apps' Ovis.dmg and Ovis.exe.
   const desktopYml = read(".github/workflows/desktop.yml");
   const checked = /for name in (latest-linux\.yml [\s\S]*?); do/.exec(desktopYml)?.[1] ?? "";
   const desktop = checked.replace(/\\\n/g, " ").split(/\s+/).filter((name) => /^Ovis-[\w-]+\.(dmg|exe|deb|AppImage)$/.test(name));

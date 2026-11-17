@@ -36,6 +36,8 @@ let server: ReturnType<typeof Bun.serve> | null = null;
 try {
   await buildDemoApp(app);
   const index = join(app, "index.html");
+  // the built-ins go after the demo's transport, which needs randomUUID as it loads, and before the
+  // app: a file of the page's own, as the Content-Security-Policy allows no inline script
   writeFileSync(join(app, "old-browser.js"), `{
     const owners = { Promise, AbortSignal, "Crypto.prototype": Crypto.prototype };
     for (const path of window.oldBrowserLacks.gone) {

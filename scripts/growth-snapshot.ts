@@ -1,5 +1,9 @@
 /**
  *   bun scripts/growth-snapshot.ts --out <dir> [--repo owner/name]
+ *
+ * stargazer's star date. Writes <dir>/snapshot-<day>.json and <dir>/stars-by-day.csv. The traffic
+ * endpoints need push access to the repository; GitHub keeps them for 14 days only, which is why
+ * they are saved every week.
  */
 import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";

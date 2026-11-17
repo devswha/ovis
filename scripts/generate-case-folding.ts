@@ -7,6 +7,9 @@
  *   bun run scripts/generate-case-folding.ts                   # download the pinned CaseFolding.txt, write the table
  *   bun run scripts/generate-case-folding.ts --source <file>   # read a local copy of that file instead
  *   bun run scripts/generate-case-folding.ts --check           # fail if the committed table is stale; never writes
+ *
+ * Raise UNICODE_VERSION to move to a newer Unicode, set SOURCE_SHA256 to the digest of that version's
+ * CaseFolding.txt once its contents are reviewed, then run the script and commit both files.
  */
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";

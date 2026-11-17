@@ -14,6 +14,7 @@ const stateDir = mkdtempSync(join(tmpdir(), "herdr-profile-browser-"));
 const evidence = process.env.EVIDENCE_DIR;
 if (evidence) mkdirSync(evidence, { recursive: true });
 const workspace = await workspaceCreate({ label: "ovis-test-profile-inheritance", cwd: stateDir, focus: false });
+// Discovery must not connect. Explicit setup uses a closed loopback port, never a user’s machine.
 const profile: HerdrMachineProfile = { id: "browser-fixture", label: "Build machine", enabled: true, target: { destination: "127.0.0.1", port: 1, session: "project-agents" } };
 let profiles = [profile];
 const server = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", tailscaleOwner: null, herdrProfiles: async () => profiles });

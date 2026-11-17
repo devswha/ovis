@@ -44,6 +44,8 @@ function installMirrorFixture(): void {
     const push = socket.push.bind(socket);
     socket.push = (frame) => {
       if (frame.type === "pane-geometry") push({ ...frame, fixed: true });
+      // The demo shell's timed recording must not move the fixture's cursor between
+      // a deliberate local pan and the frame under test.
       else if (frame.type === "pty-data" && typeof frame.data === "string") {
         if (frame.fixture !== "mirror") return;
         const { fixture: _, ...output } = frame;
@@ -105,6 +107,7 @@ try {
             catch (cause) {
               const diagnosticsMs = 1000;
               let timer: ReturnType<typeof setTimeout> | undefined;
+              // This deadline runs outside the renderer: the timed-out page may not answer.
               const deadline = new Promise<string>((resolve) => {
                 timer = setTimeout(() => resolve(`unavailable (page did not answer within ${diagnosticsMs} ms)`), diagnosticsMs);
               });
@@ -148,6 +151,7 @@ try {
           const terminal = page.locator(".pane-frame.is-current .pane-terminal");
           const box = await terminal.boundingBox();
           assert.ok(box);
+          // the 40-row grid must fit its pane here, or the wheel pans it locally instead (taller fonts need the height)
           assert.ok(await terminal.evaluate((node) => node.scrollHeight <= node.clientHeight + 1), "the desktop grid fits its pane");
           await page.mouse.move(box.x + box.width / 2, box.y + box.height / 3);
           await page.mouse.wheel(0, -120);
@@ -179,6 +183,7 @@ try {
             await settled(page);
             assert.deepEqual((await state(page)).inputs, [], "touch also leaves unknown applications alone");
           }
+          // a quick swipe glides on after the lift (lib/touchFling.ts): the next gestures start once it has stopped
           await page.waitForFunction(() => document.querySelector("[data-touch-fling]") === null, undefined, { polling: 50, timeout: 15_000 });
           await settled(page);
 
@@ -186,6 +191,7 @@ try {
             await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
             if (dx !== 0 || dy !== 0) {
               await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: x + dx, y: y + dy }] });
+              // held still before the lift, so the drag ends where it is: a lift while it moves would glide on (lib/touchFling.ts)
               const moved = await page.evaluate(() => performance.now());
               await page.waitForFunction(([at, still]) => performance.now() - at > still, [moved, FLING_STOPPED_MS * 2] as const, { polling: 10 });
             }
@@ -211,6 +217,8 @@ try {
           }), pane);
           await waitForStep("local pan start frame rendered", () => page.waitForFunction((rows) => document.querySelector(rows)?.textContent?.includes("LOCAL-PAN-START"), shownRows()));
           await terminal.evaluate((node: HTMLElement) => { node.style.height = "200px"; node.style.maxHeight = "200px"; node.style.flex = "none"; node.scrollTop = 80; });
+          // ResizeObserver follows the cursor after its resize debounce, not after two paint frames.
+          // Wait for that adjustment before placing the grid between its local edges for the wheel.
           await waitForStep("resize follows cursor away from scrollTop 80", () => page.waitForFunction(() => document.querySelector<HTMLElement>(".pane-frame.is-current .pane-terminal")!.scrollTop !== 80));
           await terminal.evaluate((node) => { node.scrollTop = 80; });
           assert.equal(await terminal.evaluate((node) => node.scrollTop), 80, "the oversized grid starts between its local edges");

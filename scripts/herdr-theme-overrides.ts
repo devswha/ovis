@@ -1,3 +1,4 @@
+/** Explicit reviewed deviations from mapTheme. Add alongside the CSS edit, never generate. */
 import { normalizeThemeValue, parseThemeBlocks } from "../src/lib/themeCss.ts";
 import { ROLES, SUPPORTED_ENTRIES } from "../src/lib/themes.ts";
 import { LIGHT_ANSI_ROLES } from "../src/lib/themeRoles.ts";

@@ -24,6 +24,7 @@ import { ompStoreLayout } from "../server/omp.ts";
 import { createOmpProcessProbe } from "../server/omp-process.ts";
 
 const STARTUP_MS = 30_000;
+/** The bridge's 1 s helper bound is for a live pane; a loaded host may need longer to answer here. */
 const ompProcessMemory = createOmpProcessProbe({ timeoutMs: 15_000 });
 const UNSUPPORTED = new Set(["relative PI_CODING_AGENT_DIR", "relative session-dir", "relative cwd and relative session-dir"]);
 const omp = Bun.which("omp");
@@ -71,6 +72,7 @@ async function observe(spec: Case, index: number): Promise<Observed> {
   let output = "";
   let settled!: () => void;
   const ready = new Promise<void>((resolve) => { settled = resolve; });
+  // subscribed before the spawn: every chunk of omp's output rechecks for its breadcrumb
   const child = Bun.spawn([omp!, ...spec.args.map(fill)], {
     cwd: project, env,
     terminal: { cols: 120, rows: 40, data(_terminal, data) { output += new TextDecoder().decode(data); if (breadcrumbs(caseRoot).length > 0) settled(); } },
@@ -83,6 +85,7 @@ async function observe(spec: Case, index: number): Promise<Observed> {
       new Promise<string>((resolve) => { timer = setTimeout(() => resolve("no breadcrumb before the startup deadline"), STARTUP_MS); }),
     ]);
     clearTimeout(timer);
+    // the helper refuses a process in disk sleep, where omp sits while it pages its binary in
     let memory = await ompProcessMemory(child.pid, true);
     for (const deadline = Date.now() + 15_000; memory === null && child.exitCode === null && Date.now() < deadline;) {
       await Bun.sleep(100);

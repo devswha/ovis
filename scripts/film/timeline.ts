@@ -1,3 +1,8 @@
+/**
+ * Source times come from the takes' marks.json and cues.json (never the brief's older numbers).
+ * Every take is 2x, so no framing shows fewer than 960 CSS px of a desktop take's width
+ * (k <= 2.0 output px per CSS px; checked per frame, with perspective, by `magnification`).
+ */
 import { box, clamp, drift, ease, lerp, local, magnification, path, place, type Cam, type Kind } from "./camera.ts";
 import { cue, frameAt, frameUrl, mark, pointerAt, pressesAt, take, trough, type Take } from "./footage.ts";
 import type { FrameDesc, ObjDesc, TypeDesc } from "./stage.ts";
@@ -42,6 +47,11 @@ const R10_DONE = mark(R10, "status DONE"), R10_ANSWER = mark(R10, "answer lands"
 const R6_TAP = cue(R6, "tap", 2).t;
 const R4_OPEN = mark(R4, "palette opens"), R4_ENTER = mark(R4, "Enter");
 const R5_CLICK = cue(R5, "down", 0).t;
+/**
+ * S8's two screens, measured on the frames (status word RUN -> DONE, then the "Pushed" turn painted;
+ * the demo's 2.6 s answer plus each client's own 2 s chat poll): desk R3 DONE 6.400, Pushed 7.433;
+ * phone R6 DONE 6.683, Pushed 8.483. Re-measure after a re-capture of R3/R6.
+ */
 const R3_DONE = 6.4, R3_PUSHED = 7.433, R6_DONE = 6.683, R6_PUSHED = 8.483;
 
 const HIDE = () => 0;
@@ -51,6 +61,7 @@ function grouped(cam: (t: number) => Cam, s: (t: number) => number, cx: number, 
   return (t) => { const c = cam(t), k = s(t); return { ...c, k: c.k * k, ax: cx + (c.ax - cx) * k, ay: cy + (c.ay - cy) * k }; };
 }
 
+/** S1 starts 0.8 s before a RUN-dot trough, so the dot brightens into beats 2 and 4 (1.6, 3.2) */
 const S1_SRC = trough(R12, 1.2) - 0.8;
 const S12_SRC = trough(R13, 0.9);
 
@@ -138,6 +149,8 @@ CARD_PHONE.y = PHONE_CARD_Y;
   const [cx, cy] = pl.project(...local("window", s6.k, CARD_DESK.x, CARD_DESK.y));
   const phoneEnd = { k: 1.02, ax: 1250, ay: 540 };
   const endCard = { ax: phoneEnd.ax + (CARD_PHONE.x - 195) * phoneEnd.k, ay: phoneEnd.ay + (CARD_PHONE.y - 422) * phoneEnd.k };
+  // phone: 1:1 from the tap; the static wait between its DONE and its Pushed turn (only the chat's
+  // poll) runs 1.35x so both screens flip within 0.1 s and the Pushed lines land ~0.4 s apart
   const R6_DONE_OUT = 29.6 + (R6_DONE - R6_TAP);
   const r6map: Anchors = [[28.0, 3.1], [29.6 - (R6_TAP - 3.1), 3.1], [29.6, R6_TAP], [R6_DONE_OUT, R6_DONE], [R6_DONE_OUT + (R6_PUSHED - R6_DONE) / 1.35, R6_PUSHED], [35.2, R6_PUSHED + 35.2 - (R6_DONE_OUT + (R6_PUSHED - R6_DONE) / 1.35)]];
   const r3off = R6_DONE_OUT - 0.08 - R3_DONE;
@@ -192,6 +205,7 @@ SHOTS.push(
       id: "r5", kind: "window", take: R5.name, t0: 38.4, t1: 42.4,
       map: [[38.4, R5_CLICK - 0.8], [42.4, R5_CLICK + 3.2]],
       cursor: (t) => clamp((t - 38.4) / 0.3) * clamp((39.9 + 0.3 - t) / 0.3),
+      // S9's camera carries on across the splice (R4 ends and R5 starts on the same gjc chat: an invisible join)
       cam: path([
         { t: 38.4, cam: { k: 1.14, fx: 640, fy: 300, ax: 960, ay: 380, rx: 0, ry: 0, d: 2200 } },
         { t: 39.4, cam: { k: 1.15 }, curve: drift },
@@ -227,6 +241,7 @@ SHOTS.push(
         { t: 49.6, cam: { k: 0.69, ax: 1270, ay: 560, rx: 10, ry: -18 } },
         { t: 52.0, cam: { k: 0.67 }, curve: drift },
       ]),
+      // dims to 20% over 51.2-51.8, then fades out (not to black: a black slab would show on the stage)
       dim: (t) => 0.8 * ease(clamp((t - 51.2) / 0.6)),
       opacity: (t) => 1 - drift(clamp((t - 51.6) / 0.4)),
       pool: 1,
@@ -363,15 +378,29 @@ export function report(): string[] {
 export const LOOP_FPS = 30;
 export const LOOP_LEN = 6.4;
 export const LOOP_L = mark(R11, "L");
+/**
+ * Where the delivered loop starts inside its closed 6.4 s path (render.ts rotates the frames; the seam
+ * moves inside the file, where it was checked). 2.4 s = the second status pulse's peak, 0.8 s after the
+ * expand click: the first "Worked for 2m 36s" is open with its rows, Working… and the plan bar below,
+ * the pointer on the header. So the poster, the first frame and the GIF's first frame are the busy
+ * moment, not the folded chat; the fold click comes 1.6 s in.
+ */
 export const LOOP_START = 2.4;
 
 export function loopFrame(t: number): FrameDesc {
   const w = (2 * Math.PI * t) / LOOP_LEN;
+  // the brief's scale 0.84 +- 0.02, relative: R11 is 1280x1064 (so its chat fits with the block open),
+  // so the window is ~60% of the frame wide instead of ~78%, to keep all of it inside 1080 px.
+  // Angles: the brief's 9°/-9° (±1.5°/±3°) were eased to 5°/-5° (±1°/±2°): the site shows this window
+  // 1200-1350 px wide as the hero, where the steeper angle skewed the UI text and dropped the window's
+  // top-left corner ~40 px; the path keeps its depth and sway and stays closed. ay 546 lifts it 6 px.
   const k = (0.87 / 0.84) * (0.84 + 0.02 * Math.sin(w));
   const cam: Cam = { k, fx: 640, fy: 532, ax: 960, ay: 546, rx: 5 + 1 * Math.sin(w + Math.PI / 2), ry: -5 + 2 * Math.sin(w), d: 2400 };
   const layer: Layer = { id: "loop", kind: "window", take: R11.name, t0: 0, t1: LOOP_LEN, map: [[0, LOOP_L], [LOOP_LEN, LOOP_L + LOOP_LEN]], cam: () => cam, cursor: () => 1, pool: 1 };
   return {
     t, fade: 0, reveal: null, lamp: 1, pools: [pool(layer, cam, 1)], objs: [objDesc(layer, t, cam).obj],
+    // the page shows this window at up to ~1.3x as the hero: a lighter screen falloff and half the room's
+    // vignette keep the UI legible (the site's stage draws its own vignette around the video)
     scrim: { left: 0, bottom: 0 }, type: [], keys: null, end: null, vignette: 0.5, falloff: 0.35,
   };
 }

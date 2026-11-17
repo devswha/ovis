@@ -258,6 +258,7 @@ try {
         assert.deepEqual(sent.map(({ body: { first_message_connection: _, ...body } }) => body), [{ workspace_id: "w1C", cwd: "/home/demo/checkout-api", label: null, agent: { kind: "claude", args: ["--model", "opus", "--effort", "high", "--settings", "{\"ultracode\":true}"] }, first_message: "Plan the config file" }], "Ultracode is one --settings object after the effort it keeps; the message is the request's first_message, never an argument of Claude Code's");
         const bubble = page.locator(".pane-frame.is-current .pending-message-bubble", { hasText: "Plan the config file" });
         await bubble.waitFor();
+        // shot at once: the demo's agent rests 1.5 s after the start, and the bubble goes with it
         await page.screenshot({ path: join(evidence, "desktop-dark-claude-pending-bubble.png") });
         assert.equal(await page.getByRole("textbox", { name: "Message", exact: true }).inputValue(), "", "nothing is put in the box");
         const turn = page.locator(".pane-frame.is-current .chat-turn", { hasText: "Plan the config file" });
@@ -305,6 +306,8 @@ try {
         await dialog.waitFor({ state: "detached" });
         await page.locator(".pane-frame.is-current .pending-message-bubble", { hasText: "Reconnect me" }).waitFor();
         await page.evaluate(() => (window as unknown as QaWindow).qaDrop());
+        // a drop the connection is back from within the reconnect grace is not said (src/lib/reconnectGrace.ts): the
+        // socket opened after the drop is what shows the reconnect
         await page.waitForFunction(() => (window as unknown as QaWindow).qaSockets.some((socket) => socket.readyState === WebSocket.OPEN));
         await page.locator(".conn-live").waitFor({ state: "attached" });
         const turn = page.locator(".pane-frame.is-current .chat-turn", { hasText: "Reconnect me" });

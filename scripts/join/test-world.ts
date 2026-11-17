@@ -11,6 +11,7 @@ const relay = startBunRelay({ port: 8787, hostname: bind, limits: { perAddressPe
 const account = Bun.serve({
   hostname: bind, port: 9080, idleTimeout: 60,
   fetch(incoming) {
+    // the fake names its link page from the request's origin: the proxy's, which the machine used
     const url = new URL(incoming.url);
     return service.fetch(new Request(new URL(`${url.pathname}${url.search}`, "https://account.join.test:9443"), incoming));
   },

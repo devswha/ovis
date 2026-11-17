@@ -63,6 +63,7 @@ interface Setup { android: boolean; share?: boolean; language?: string }
 async function open(browser: Browser, origin: string, url: string, setup: Setup, ready = ".chat-turn-agent .markdown a"): Promise<{ context: BrowserContext; page: Page; errors: string[] }> {
   const context = await browser.newContext({ viewport: { width: 390, height: 664 }, screen: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true, locale: "en-US" });
   await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin });
+  // the address a link opens: answered here, so nothing leaves the machine
   await context.route(/^https:\/\/(datatracker\.ietf\.org|github\.com)\//, (route) => route.fulfill({ status: 200, contentType: "text/html", body: "<title>opened</title>" }));
   await context.addInitScript(([paneId, { android, share, language }]) => {
     localStorage.setItem(`ovis:view:${paneId}`, "chat");
@@ -92,6 +93,7 @@ const longPress = (page: Page, selector: string, text: string, pointerType = "to
   return !under.dispatchEvent(new PointerEvent("contextmenu", { bubbles: true, cancelable: true, composed: true, pointerType: type, isPrimary: true, clientX: x, clientY: y }));
 }, [selector, text, pointerType] as const);
 
+/** The sheet as it rests: its slide-in (sheet-in, styles.css) has ended, so a capture shows all of it. */
 const sheetAtRest = (page: Page): Promise<void> => page.locator(".row-sheet").evaluate((node) => Promise.all(node.getAnimations().map((animation) => animation.finished)).then(() => undefined));
 
 const sheetItems = (page: Page): Promise<string[]> => page.locator(".row-sheet .row-sheet-item .row-sheet-label").allTextContents();
