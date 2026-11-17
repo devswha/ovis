@@ -100,6 +100,11 @@ function ratchetBase(env: Record<string, string | undefined> = process.env, cwd:
   return base.status === 0 ? base.stdout.trim() : null;
 }
 
+/** The files git sees renamed since `base` (committed, or staged as `git mv` does), each new path with its old one. */
+const renamesSince = (base: string): Map<string, string> =>
+  new Map(gitIn(repo, "diff", "--name-status", "-M", "--diff-filter=R", base).stdout.split("\n")
+    .map((line) => line.split("\t")).filter((parts) => parts.length === 3).map(([, from, to]) => [to!, from!]));
+
 /** `file` as it was at `base`, or null when it was not there. */
 const atBase = (base: string, file: string): string | null => {
   const shown = gitIn(repo, "show", `${base}:${file}`);
@@ -132,19 +137,22 @@ describe("fixed sleeps", () => {
   // and a file that is not listed has none.
   const baseline = JSON.parse(read("scripts/fixed-sleeps.json")) as Record<string, number>;
 
-  /** scripts/fixed-sleeps.json at the ratchets' base, or null with no base. */
-  const committed = (): Record<string, number> | null => {
+  /** scripts/fixed-sleeps.json at the ratchets' base, with the renames since, or null with no base. */
+  const committed = (): { counts: Record<string, number>; renames: Map<string, string> } | null => {
     const base = ratchetBase();
     const json = base === null ? null : atBase(base, "scripts/fixed-sleeps.json");
-    return json === null ? null : JSON.parse(json) as Record<string, number>;
+    return base === null || json === null ? null : { counts: JSON.parse(json) as Record<string, number>, renames: renamesSince(base) };
   };
 
   it("never raises scripts/fixed-sleeps.json above the one on origin/main", () => {
-    const before = committed();
-    if (before === null) return;
+    const at = committed();
+    if (at === null) return;
+    const before = at.counts;
+    /** A file's count at the base, under its old path when git sees it renamed. */
+    const was = (file: string): number => before[file] ?? before[at.renames.get(file) ?? ""] ?? 0;
     const total = (counts: Record<string, number>) => Object.values(counts).reduce((sum, count) => sum + count, 0);
     fail([
-      ...Object.entries(baseline).filter(([file, count]) => count > (before[file] ?? 0)).map(([file, count]) => `${file}: ${count}, origin/main has ${before[file] ?? 0}`),
+      ...Object.entries(baseline).filter(([file, count]) => count > was(file)).map(([file, count]) => `${file}: ${count}, origin/main has ${was(file)}`),
       ...total(baseline) > total(before) ? [`total: ${total(baseline)}, origin/main has ${total(before)}`] : [],
     ], "scripts/fixed-sleeps.json may only shrink: take the new fixed sleep out of the code instead (see the message of the test above for how). A renamed file takes its entry along with the same count, which keeps the total.");
   });
@@ -206,7 +214,7 @@ describe("the tools typecheck", () => {
   // had, and the untracked scripts/*.tmp.ts probes .gitignore allows. A new file is checked without being named
   // anywhere, and the list may only shrink.
   const ROOTS = ["scripts", "integrations", "site", "app/scripts"];
-  const config = JSON.parse(read("tsconfig.tools.json")) as { include?: unknown; files?: unknown; compilerOptions?: unknown };
+  const config = JSON.parse(read("tsconfig.tools.json")) as { extends?: unknown; include?: unknown; files?: unknown; compilerOptions?: unknown };
   const excluded = (json: string): string[] | null => {
     const list = (JSON.parse(json) as { exclude?: unknown }).exclude;
     return Array.isArray(list) ? list as string[] : null;
@@ -221,9 +229,7 @@ describe("the tools typecheck", () => {
     const json = base === null ? null : atBase(base, "tsconfig.tools.json");
     const before = json === null ? null : excluded(json);
     if (base === null || before === null) return;
-    const renamed = gitIn(repo, "diff", "--name-status", "-M", "--diff-filter=R", base);
-    const renames = new Map(renamed.stdout.split("\n").map((line) => line.split("\t")).filter((parts) => parts.length === 3).map(([, from, to]) => [to!, from!]));
-    fail(added(now, before, renames), "The exclude list of tsconfig.tools.json may only shrink: fix the type errors `bun run typecheck` reports in these files instead of excluding them. A renamed file (renamed with `git mv`, or with the rename staged, so git sees it) takes its entry along under the new path.");
+    fail(added(now, before, renamesSince(base)), "The exclude list of tsconfig.tools.json may only shrink: fix the type errors `bun run typecheck` reports in these files instead of excluding them. A renamed file (renamed with `git mv`, or with the rename staged, so git sees it) takes its entry along under the new path.");
   });
 
   it("tells a new entry from a renamed file's, whatever the list's length", () => {
@@ -238,11 +244,13 @@ describe("the tools typecheck", () => {
   it("checks every root, with nothing beside the exclude list taking a file out", () => {
     expect(config.include, `tsconfig.tools.json checks the folders ${ROOTS.join(", ")} whole: keep them all in "include".`).toEqual(ROOTS);
     expect(config.files, "tsconfig.tools.json names no files: a file under its roots is checked without being listed.").toBeUndefined();
-    expect(config.compilerOptions, "tsconfig.tools.json loosens nothing of tsconfig.json: it only adds noEmit.").toEqual({ noEmit: true });
-    // one glob per root: Bun.Glob reads no slash inside braces
+    expect([config.extends, config.compilerOptions], "tsconfig.tools.json loosens nothing of tsconfig.json: it extends it and only adds noEmit.").toEqual(["./tsconfig.json", { noEmit: true }]);
+    expect(gitIn(repo, "ls-files", "scripts/*.tmp.ts").stdout.trim(), "A tracked scripts/*.tmp.ts is not typechecked: that name is for untracked probes, so give a script another name.").toBe("");
+    // one glob per root: Bun.Glob reads no slash inside braces; the untracked probes are not checked
     const sources = ROOTS.flatMap((root) => files(`${root}/**/*.{ts,tsx}`)).filter((file) => !file.endsWith(".tmp.ts"));
     expect(sources.length).toBeGreaterThan(400);
-    fail(sources.filter((file) => /^\s*\/\/\s*@ts-nocheck\b/m.test(read(file))),
+    // the directive in a line comment of any number of slashes, or a block comment
+    fail(sources.filter((file) => /^\s*(?:\/\/+|\/\*+)\s*@ts-nocheck\b/m.test(read(file))),
       "Fix the type errors in these files instead of `// @ts-nocheck`: a file under the tools typecheck's roots is checked, or listed in its exclude list until it is fixed.");
   });
 
