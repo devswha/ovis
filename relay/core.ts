@@ -139,7 +139,10 @@ export interface SocketRequest {
 export interface RateLimiter { limit(options: { key: string }): Promise<{ success: boolean }> }
 export interface Limiters {
   perAddress: RateLimiter;
-  /** asked with one key for all addresses, only once an address's own limit (or a PC's) lets it through */
+  /**
+   * asked with one key for all addresses: once an address's own limit lets a socket through or, past it, before a
+   * PC's pass signature is checked and before perPc, so a forged pass, or one perPc refuses, takes a place too
+   */
   global: RateLimiter;
   /**
    * keyed by server_id: a budget of its own for a PC socket whose relay pass holds, once its address's is spent,
