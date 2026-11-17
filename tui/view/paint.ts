@@ -85,7 +85,12 @@ export interface Frame {
 export interface PainterOptions {
   /** the host answered DECRQM 2026 at start: each frame is bracketed by `CSI ?2026h` and `CSI ?2026l` */
   sync: boolean;
+  /** what the host shows (tui/host `colorDepth`): on a 256-colour host an RGB colour is written as its nearest palette index */
+  colors?: ColorDepth;
 }
+
+/** the colours a host shows: RGB as written, or the 256 of its palette */
+export type ColorDepth = "truecolor" | "256";
 
 const ESC = "\x1b";
 const CAN = "\x18";
@@ -94,14 +99,27 @@ const CONTROL = /[\u0000-\u001f\u007f-\u009f]/gu;
 
 const SHAPES: Record<CursorShape, [blink: number, steady: number]> = { block: [1, 2], underline: [3, 4], bar: [5, 6] };
 
-function colorSgr(color: WrittenColor, base: 30 | 40): string {
-  if (typeof color !== "number") return `${base + 8};2;${color[0]};${color[1]};${color[2]}`;
+/** the six levels of each channel in the xterm-256 colour cube (indexes 16-231) */
+const CUBE = [0, 95, 135, 175, 215, 255];
+
+/** The xterm-256 index nearest to an RGB colour: the nearest cube colour or grey (232-255), by squared distance. */
+export function nearest256([r, g, b]: readonly [number, number, number]): number {
+  const level = (value: number) => CUBE.reduce((best, step, at) => Math.abs(step - value) < Math.abs(CUBE[best]! - value) ? at : best, 0);
+  const [cr, cg, cb] = [level(r), level(g), level(b)];
+  const grey = Math.max(0, Math.min(23, Math.round(((r + g + b) / 3 - 8) / 10)));
+  const distance = (x: number, y: number, z: number) => (x - r) ** 2 + (y - g) ** 2 + (z - b) ** 2;
+  const g8 = 8 + grey * 10;
+  return distance(CUBE[cr]!, CUBE[cg]!, CUBE[cb]!) <= distance(g8, g8, g8) ? 16 + 36 * cr + 6 * cg + cb : 232 + grey;
+}
+
+function colorSgr(color: WrittenColor, base: 30 | 40, colors: ColorDepth): string {
+  if (typeof color !== "number") return colors === "256" ? `${base + 8};5;${nearest256(color)}` : `${base + 8};2;${color[0]};${color[1]};${color[2]}`;
   if (color < 8) return `${base + color}`;
   if (color < 16) return `${base + 60 + color - 8}`;
   return `${base + 8};5;${color}`;
 }
 
-function sgrOf(style: Style): string {
+function sgrOf(style: Style, colors: ColorDepth): string {
   const codes = ["0"];
   const { flags } = style;
   if (flags & STYLE_BOLD) codes.push("1");
@@ -115,8 +133,8 @@ function sgrOf(style: Style): string {
   if (flags & STYLE_INVISIBLE) codes.push("8");
   if (flags & STYLE_STRIKE) codes.push("9");
   if (flags & STYLE_OVERLINE) codes.push("53");
-  if (style.fg !== null) codes.push(colorSgr(style.fg, 30));
-  if (style.bg !== null) codes.push(colorSgr(style.bg, 40));
+  if (style.fg !== null) codes.push(colorSgr(style.fg, 30, colors));
+  if (style.bg !== null) codes.push(colorSgr(style.bg, 40, colors));
   return `${ESC}[${codes.join(";")}m`;
 }
 
@@ -396,7 +414,7 @@ export class Painter {
         if (at !== col) out += cup(row, col);
         const style = next.style[i]!;
         if (style !== sgr) {
-          out += sgrOf(this.styles.get(style));
+          out += sgrOf(this.styles.get(style), this.options.colors ?? "truecolor");
           sgr = style;
         }
         const text = next.text[i]!;
