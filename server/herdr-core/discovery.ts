@@ -317,6 +317,7 @@ export function aclReader(options: { platform?: NodeJS.Platform; getfacl?: strin
     }
     if (getfacl === undefined) getfacl = Bun.which("getfacl", { PATH: SYSTEM_PATH.join(delimiter) });
     if (getfacl === null) {
+      // `ls -ld` marks a path that has an ACL with a `+` after its mode
       const listing = read(["/bin/ls", "-ld", "--", path]);
       return listing === null || /^\S{10}\+/.test(listing);
     }
