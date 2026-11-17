@@ -13,7 +13,7 @@ export const DASHBOARD_JA: Record<string, string> = {
   "First open {name} in Ovis on a device that already uses it (your phone, for example) and keep it open. Then choose Ask to join.": "まず、この PC をすでに使っているデバイス(スマートフォンなど)の Ovis で {name} を開いたままにします。それから「参加を申請」を選びます。",
   "If {name} is waiting on its own screen to be added, type its number here instead.": "{name} が自身の画面で追加を待っている場合は、代わりにここでその番号を入力してください。",
   "Type the number": "番号を入力",
-  "{name} shows no number? Ask to join instead.": "{name} に番号が表示されていませんか？ 代わりに参加をリクエストしてください。",
+  "{name} shows no number? Ask to join instead.": "{name} に番号が表示されていませんか？ 代わりに参加を申請してください。",
   "A new number is shown on {name} because the previous number changed.": "前の番号が変わったため、{name} に新しい番号が表示されています。",
   "Pick this number where you approve this device.": "このデバイスを承認する画面で、この番号を選んでください。",
   "Nothing was added. Try again to compare a new number, and type the one {name} shows.": "何も追加されていません。もう一度試して新しい番号を比べ、{name} に表示された番号を入力してください。",
