@@ -217,11 +217,9 @@ export function usePreferencesSync(enabled: boolean): PreferencesSync {
     if (off.current || (loadedRef.current && remote.revision <= revision.current)) return;
     const before = carried.current;
     carried.current = null;
-    if (before && !loadedRef.current && remote.revision <= before.revision) {
-      for (const [key, value] of Object.entries(before.settings)) {
-        if (same(latest.current.settings[key as SharedSettingKey], value)) delete base.current.settings[key as SharedSettingKey];
-      }
-    }
+    // a change the page before this one sent on its way out, where the server holds nothing newer than that page
+    // knew: the request may have been lost, so each value still here as it went is this page's edit and goes again
+    const resent: Shared = before && !loadedRef.current && remote.revision <= before.revision ? before.settings : {};
     revision.current = Math.max(revision.current, remote.revision);
     const kept = stored.current;
     const startedOver = kept !== null && (remote.revision < kept.revision || (kept.stateId !== undefined && remote.state_id !== undefined && remote.state_id !== kept.stateId));
@@ -232,17 +230,27 @@ export function usePreferencesSync(enabled: boolean): PreferencesSync {
     const flying = inFlight.current;
     const force = readOnly.current;
     const lastRefused = refused.current;
-    const take = (from: Local) => takePreferences(previous, from, remote, flying, force, lastRefused);
+    const take = (from: Local) => {
+      const ours = (Object.keys(resent) as SharedSettingKey[]).filter((key) => same(from.settings[key], resent[key]));
+      const judged = ours.length === 0 ? previous : { ...previous, settings: Object.fromEntries(Object.entries(previous.settings).filter(([key]) => !ours.includes(key as SharedSettingKey))) };
+      return takePreferences(judged, from, remote, flying, force, lastRefused);
+    };
     const taken = take(local);
     base.current = !loadedRef.current && remote.pins === undefined ? { ...taken.base, pins: null } : taken.base;
     saveSharedPins(base.current.pins === null ? null : { pins: [...base.current.pins], revision: remote.revision, ...(remote.state_id === undefined ? {} : { stateId: remote.state_id }) });
     latest.current = { settings: local.settings, pins: taken.pins ?? local.pins, muted: taken.muted === undefined ? local.muted : taken.muted, tabLabels: taken.tabLabels ?? local.tabLabels };
-    if (Object.keys(remote.settings).length > 0) update((_stored, own) => {
+    if (Object.keys(remote.settings).length > 0 || Object.keys(resent).length > 0) update((_stored, own) => {
       // judged where React applies it, after every edit and document queued before it, as if each had been drawn;
       // update runs this once (`made`), so StrictMode's second run of the updater does not judge again
-      const { patch } = take({ ...local, settings: own });
-      latest.current.settings = sanitizeSettings({ ...own, ...patch });
-      return patch;
+      const judged = take({ ...local, settings: own });
+      // a resent key the document does not hold stays out of the baseline only while this tab still holds it as it went
+      for (const key of Object.keys(resent) as SharedSettingKey[]) {
+        if (key in remote.settings || !same(base.current.settings[key], taken.base.settings[key])) continue;
+        if (key in judged.base.settings) base.current.settings[key] = judged.base.settings[key];
+        else delete base.current.settings[key];
+      }
+      latest.current.settings = sanitizeSettings({ ...own, ...judged.patch });
+      return judged.patch;
     });
     if (taken.pins !== null) setSidebarPins(taken.pins);
     if (taken.muted !== undefined) setPaneMutes(taken.muted);

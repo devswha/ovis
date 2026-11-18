@@ -20,6 +20,7 @@ describe("preferences sync real send path", () => {
   let records: Map<string, string>;
   let oldServer: boolean;
   let releaseAnswer: (() => Promise<void>) | undefined;
+  let releaseGet: (() => Promise<void>) | undefined;
   let renderers: ReactTestRenderer[];
   let clients: Client[];
   let revisions: number[];
@@ -89,6 +90,7 @@ describe("preferences sync real send path", () => {
     store = new PreferenceStore(dir);
     oldServer = false;
     releaseAnswer = undefined;
+    releaseGet = undefined;
     renderers = [];
     clients = [];
     revisions = [];
@@ -106,7 +108,10 @@ describe("preferences sync real send path", () => {
       for (const client of clients) client.receive(oldServer ? dropNewKeys(doc) : doc);
     });
     const fetchPreferences = async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-      if (init?.method !== "PUT") return Response.json(oldServer ? dropNewKeys(store.get()) : store.get());
+      if (init?.method !== "PUT") {
+        if (releaseGet) await releaseGet();
+        return Response.json(oldServer ? dropNewKeys(store.get()) : store.get());
+      }
       bodies.push(JSON.parse(String(init.body)));
       keepalives.push(init.keepalive === true);
       if (refuse !== null || refusing !== null) {
@@ -520,6 +525,61 @@ describe("preferences sync real send path", () => {
     expect(reloaded.settings.darkTheme).toBe("gruvbox");
     await send();
     expect(store.get().settings.darkTheme).toBe("gruvbox");
+  });
+
+  it.each([
+    ["holds that setting", "drawn", true, true],
+    ["holds that setting", "not drawn yet", true, false],
+    ["lacks that setting", "drawn", false, true],
+    ["lacks that setting", "not drawn yet", false, false],
+  ] as const)("a reloaded page whose first document %s sends its carried change again after a return to it, %s", async (_doc, _name, held, drawn) => {
+    store.set({ settings: held ? { darkTheme: "catppuccin" } : { showThinking: true } });
+    const client = await open();
+    await act(async () => { client.update({ darkTheme: "tokyo-night" }); });
+    refusing = () => Promise.reject(new TypeError("Failed to fetch"));
+    await act(async () => { pageEvents.dispatchEvent(new Event("pagehide")); });
+    await act(async () => { renderers.pop()!.unmount(); });
+    clients.length = 0;
+    refusing = null;
+    const gate = Promise.withResolvers<void>();
+    releaseGet = () => gate.promise;
+    const reloaded = await open(JSON.parse(records.get("ovis:settings")!), true);
+    await act(async () => { reloaded.update({ darkTheme: "gruvbox" }); });
+    if (drawn) await act(async () => { reloaded.update({ darkTheme: "tokyo-night" }); });
+
+    const absorbed = nextAbsorbed();
+    await act(async () => {
+      if (!drawn) reloaded.update({ darkTheme: "tokyo-night" });
+      gate.resolve();
+      await absorbed;
+    });
+    releaseGet = undefined;
+
+    expect(reloaded.settings.darkTheme).toBe("tokyo-night");
+    await windows(3);
+    expect(sent.map((body) => body.settings.darkTheme)).toEqual(["tokyo-night"]);
+    expect(store.get().settings.darkTheme).toBe("tokyo-night");
+  });
+
+  it.each([["drawn", true], ["not drawn yet", false]] as const)("a first page that returns to its own value before the first document, %s, takes the server's value and sends nothing", async (_name, drawn) => {
+    store.set({ settings: { darkTheme: "catppuccin" } });
+    const gate = Promise.withResolvers<void>();
+    releaseGet = () => gate.promise;
+    const client = await open({ ...DEFAULT_SETTINGS, darkTheme: "tokyo-night" });
+    await act(async () => { client.update({ darkTheme: "gruvbox" }); });
+    if (drawn) await act(async () => { client.update({ darkTheme: "tokyo-night" }); });
+
+    const absorbed = nextAbsorbed();
+    await act(async () => {
+      if (!drawn) client.update({ darkTheme: "tokyo-night" });
+      gate.resolve();
+      await absorbed;
+    });
+    releaseGet = undefined;
+
+    expect(client.settings.darkTheme).toBe("catppuccin");
+    await windows(3);
+    expect(sent).toEqual([]);
   });
 
   it("keeps pins and a mute this tab has not drawn yet when another browser's document lands, and sends them", async () => {
