@@ -12,7 +12,7 @@ import type { AgentStatus } from "../shared/protocol.ts";
 import { SHEET_HISTORY_KEY } from "../src/lib/historyKeys.ts";
 import { KO } from "../src/lib/i18n.ko.ts";
 import { serveDemo } from "./demo-server.ts";
-import { RELEASE_AFTER_MS, RESIZE_SETTLE_MS, VIEW_HOLD_MS } from "../src/lib/paneTerminalShared.ts";
+import type { TerminalTimerTestWindow } from "../src/lib/paneTerminalShared.ts";
 
 declare global {
   interface Window {
@@ -45,7 +45,7 @@ declare global {
 // Holds the demo's agents still, whatever its own timers do: Codex waits for an answer, Claude works
 // (the demo would finish it 4.5s in), the flaky-test agent is done and not looked at, the rest are idle.
 // Loaded after demo-transport.js and before the app; what it forces survives a reload.
-function installInboxFixture(resizeSettleMs: number, releaseAfterMs: number, viewHoldMs: number): void {
+function installInboxFixture(): void {
   const key = "inbox-mode-regression:forced";
   const stored = sessionStorage.getItem(key);
   const state: { epoch: string; forced: Record<string, { status: AgentStatus; finish: number }> } = stored ? JSON.parse(stored) : {
@@ -155,28 +155,15 @@ function installInboxFixture(resizeSettleMs: number, releaseAfterMs: number, vie
   for (const name of ["CONNECTING", "OPEN", "CLOSING", "CLOSED"] as const) Object.defineProperty(Recorded, name, { value: DemoSocket[name] });
   window.WebSocket = Recorded;
 
-  // Track fits, delayed releases, and queued view changes through execution or cancellation.
+  // The app marks fits, delayed releases and view holds at their source. Hidden terminal
+  // viewports also schedule one-second polls; those must not keep the quiet check waiting.
   const pendingTerminalTimers = new Set<number>();
-  let observingTerminal = false;
-  const NativeObserver = window.ResizeObserver;
-  window.ResizeObserver = class extends NativeObserver {
-    constructor(callback: ResizeObserverCallback) {
-      super((entries, observer) => {
-        observingTerminal = entries.some(({ target }) => target.classList.contains("pane-terminal"));
-        try { callback(entries, observer); }
-        finally { observingTerminal = false; }
-      });
-    }
-  };
-  const timers: Window = window;
-  const setTimer = timers.setTimeout.bind(window);
+  const timers: TerminalTimerTestWindow = window;
   const clearTimer = timers.clearTimeout.bind(window);
-  timers.setTimeout = (handler: TimerHandler, delay?: number, ...args: unknown[]) => {
-    const tracked = (observingTerminal && delay === resizeSettleMs) || delay === releaseAfterMs || delay === viewHoldMs;
-    if (!tracked || typeof handler !== "function") return setTimer(handler, delay, ...args);
-    const id = setTimer(function (this: Window) {
+  timers.__herdrTestTerminalTimeout = (run, delay) => {
+    const id = timers.setTimeout(() => {
       pendingTerminalTimers.delete(id);
-      handler.apply(this, args);
+      run();
     }, delay);
     pendingTerminalTimers.add(id);
     return id;
@@ -463,7 +450,7 @@ async function withPage(browser: Browser, base: string, settings: Settings, path
 try {
   await buildDemoApp(app);
   const index = join(app, "index.html");
-  writeFileSync(join(app, "inbox-fixture.js"), `(${installInboxFixture.toString()})(${RESIZE_SETTLE_MS}, ${RELEASE_AFTER_MS}, ${VIEW_HOLD_MS});`);
+  writeFileSync(join(app, "inbox-fixture.js"), `(${installInboxFixture.toString()})();`);
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, '<script src="./demo-transport.js"></script>\n    <script src="./inbox-fixture.js"></script>\n    <script type="module"'));
   const server = serveDemo(app, { prefix: "/" });
   const base = `http://127.0.0.1:${server.port}`;
