@@ -504,22 +504,30 @@ export async function processClaudeConfigDir(
  * The store of a Claude the pane's processes cannot show (#3931): a sandbox wrapper such as
  * `bwrap --new-session` runs it in a session of its own, outside the pane's job. herdr's agent hint,
  * HERDR_AGENT=claude, marks the foreground processes the wrapper put in front of it, and their
- * CLAUDE_CONFIG_DIR is the store they hand Claude, read as a Claude process's own (Linux only). Null
+ * CLAUDE_CONFIG_DIR is the store they hand Claude, read as a Claude process's own (Linux only). Only
+ * the whole foreground job counts, so `processes` is herdr's list, never herdr-core's leader alone. Null
  * when none carries the hint or it names the default store; AmbiguousClaudeStore when they name more than
- * one or one cannot be read in full: a guess could be another account's store.
+ * one, or one carries it and another live one cannot be read: a guess could be another account's store.
  */
 export async function hintedClaudeConfigDir(processes: readonly { pid?: number | null }[], proc = "/proc"): Promise<string | null> {
   if (process.platform !== "linux") return null;
   const reads: { pid: number; read: SourceRead }[] = [];
+  let unread: number | null = null;
   for (const { pid } of processes) {
     if (typeof pid !== "number") continue;
     let environ = "";
-    try { environ = await readFile(join(proc, String(pid), "environ"), "utf8"); } catch { /* gone, or not ours: no hint proven */ }
+    try { environ = await readFile(join(proc, String(pid), "environ"), "utf8"); } catch { /* read as empty */ }
+    // read empty: gone, or not ours to read, which may hide the hint and another store
+    if (environ === "") {
+      if (processAlive(pid)) unread ??= pid;
+      continue;
+    }
     if (!environ.split("\0").includes("HERDR_AGENT=claude")) continue;
     reads.push({ pid, read: await environSource(environ) });
   }
   const first = reads[0];
   if (first === undefined) return null;
+  if (unread !== null) throw new AmbiguousClaudeStore(unread);
   const differs = reads.find(({ read }) => read.source.state === "unreadable" || JSON.stringify(read) !== JSON.stringify(first.read));
   if (differs !== undefined) throw new AmbiguousClaudeStore(differs.pid);
   return first.read.legacy;

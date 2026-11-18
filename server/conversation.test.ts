@@ -4437,7 +4437,7 @@ describe.skipIf(process.platform !== "linux")("a Claude a sandbox wrapper runs o
   const SESSION = "6d1f2e3a-4b5c-4d6e-8f70-81a2b3c4d5e6";
 
   /** Wrapper stand-ins, one per store, each with the hint and that store in its environment, waiting on the test's stdin. */
-  async function wrapped(stores: string[], reported: string | null) {
+  async function wrapped(stores: string[], reported: string | null, runtime = served.HERDR) {
     const home = mkdtempSync(join(tmpdir(), "claude-wrapped-"));
     const cwd = join(home, "work");
     const store = join(home, "project-store");
@@ -4457,9 +4457,11 @@ describe.skipIf(process.platform !== "linux")("a Claude a sandbox wrapper runs o
     const rpc = spyOn(herdr, "herdrRpc").mockImplementation((async (method: string) => method === "agent.get"
       ? { agent: reported === null ? {} : { agent_session: { agent: "claude", source: "herdr:claude", kind: "id", value: reported } } }
       : { process_info: { pane_id: "w1:p1", shell_pid: 1, foreground_processes: wrappers.map((wrapper) => ({ pid: wrapper.pid, name: "bash", argv: ["bash", "/opt/sandbox/claude-wrapped"] })) } }) as unknown as typeof herdr.herdrRpc);
+    const serving = spyOn(served, "capabilities").mockReturnValue(runtime);
     try {
       return { found: (await claudePaneSession({ pane_id: "w1:p1", cwd, foreground_cwd: cwd } as HerdrPane))?.path ?? null, transcript };
     } finally {
+      serving.mockRestore();
       rpc.mockRestore();
       for (const wrapper of wrappers) wrapper.kill("SIGKILL");
       if (previousHome === undefined) delete process.env["HOME"]; else process.env["HOME"] = previousHome;
@@ -4479,6 +4481,10 @@ describe.skipIf(process.platform !== "linux")("a Claude a sandbox wrapper runs o
 
   it("binds none when herdr has no session reported: the wrapper is no Claude whose PID record could say", async () => {
     expect((await wrapped(["project-store"], null)).found).toBeNull();
+  });
+
+  it("takes no hint on herdr-core, which names the job's leader alone: a process below it may name another store", async () => {
+    expect((await wrapped(["project-store"], SESSION, HERDR_CORE)).found).toBeNull();
   });
 });
 

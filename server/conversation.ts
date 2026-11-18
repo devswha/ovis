@@ -1608,9 +1608,10 @@ async function claudeTranscriptPath(paneId: string, cwds: readonly (string | nul
   const only = processes.length === 1 ? processes[0] : undefined;
   let processDir: string | null = null;
   try {
-    // no Claude in front: a wrapper's hint may name its store, and the session is then only the one reported (#3931)
+    // no Claude in the whole job herdr names: a wrapper's hint may name its store, and the session is then only the
+    // one reported (#3931). herdr-core names the leader alone, and an empty jobClaude may be two Claudes: no hint there
     processDir = only ? await processClaudeConfigDir(only.pid, only.argv ?? [only.argv0 ?? only.name ?? ""], home)
-      : processes.length === 0 ? await hintedClaudeConfigDir(facts?.foreground_processes ?? []) : null;
+      : processes.length === 0 && capabilities().foreground === "job" ? await hintedClaudeConfigDir(facts?.foreground_processes ?? []) : null;
   } catch (error) {
     // two stores claim the process: ~/.claude would be a guess, maybe another account's session (#586)
     if (error instanceof AmbiguousClaudeStore) throw new ConversationUnavailable("no_session_id");
