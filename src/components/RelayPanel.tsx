@@ -153,6 +153,7 @@ export function RelayPairing({ phone = false, compact = false, qrOnly = false, o
     // Asked for together, a new six-digit code the offer starts ends the code being minted on the PC.
     if (compact && !qrOnly && generation === 0) return;
     let cancelled = false;
+    let finishing: number | undefined;
     const asked = taken.current;
     const silent = quiet.current;
     quiet.current = false;
@@ -181,6 +182,13 @@ export function RelayPairing({ phone = false, compact = false, qrOnly = false, o
       // nobody waits for it, or it was overtaken, as above: nothing to show
       if (cancelled || asked !== taken.current) return;
       setOffer(null);
+      // a device that paired with the code as it ran out may still link, and a new code would end its pairing: this QR
+      // code goes on getting one, and asks again once the time the PC named is over
+      if (qrOnly && reason instanceof ApiError && reason.code === "pairing_finishing") {
+        // fixed wait: the device's time to link, as the PC named it (retry-after)
+        finishing = window.setTimeout(again, reason.retryAfterMs ?? 1000);
+        return;
+      }
       if (reason instanceof ApiError && (reason.code === "in_account" || reason.code === "no_account_named") && refused.current !== undefined) {
         refused.current();
         return;
@@ -188,7 +196,7 @@ export function RelayPairing({ phone = false, compact = false, qrOnly = false, o
       setFailure(failureText(reason));
       setState("failed");
     });
-    return () => { cancelled = true; };
+    return () => { cancelled = true; window.clearTimeout(finishing); };
   }, [generation, qrOnly]);
 
   // a window of this browser ended the code this QR code shows (they share the PC's one pending code): a new one

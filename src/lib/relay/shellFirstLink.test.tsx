@@ -11,7 +11,7 @@ import { translate, type Vars } from "../i18n.ts";
 import { nativeTransport, setTransport } from "../transport.ts";
 import type { RelayDevice, ShellDeviceStore, SavedDevice } from "./device.ts";
 import { ADMISSION_WAIT_MS, LINK_RETRY_MAX_MS } from "./accountController.ts";
-import { mountRelayShell } from "./shell.tsx";
+import { ACCOUNT_STEPS_WAIT_MS, mountRelayShell } from "./shell.tsx";
 import { createShellTestPage } from "./shell.test.tsx";
 import { RelayTransport, type RelayTransportOptions } from "./transport.ts";
 
@@ -93,6 +93,14 @@ describe("the admission before a first link", () => {
     readonly admission?: () => Response | "unanswered";
     /** the PC's answers to POST /api/account/link, one per link sent, the last one again; by default it takes it, as a PC that asks the account service nothing does */
     readonly links?: readonly (() => Response)[];
+    /** the version the PC runs (the shell's is 1.0.0) */
+    readonly pcVersion?: string;
+    /** another tab saves a newer pairing of this PC right after the PAIR was admitted */
+    readonly replaceAfterPair?: boolean;
+    /** the first read of the saved record once an admission was answered answers what was saved then, when the test releases it */
+    readonly holdMarkedRead?: boolean;
+    /** the first link waits until the test releases it */
+    readonly holdFirstLink?: boolean;
   }
 
   async function pairing(options: Options = {}) {
@@ -109,11 +117,22 @@ describe("the admission before a first link", () => {
     const readHeld = Promise.withResolvers<void>(), readRelease = Promise.withResolvers<void>();
     const secondPostHeld = Promise.withResolvers<void>(), secondPostRelease = Promise.withResolvers<void>();
     let readsHeld = 0;
+    const markedReadHeld = Promise.withResolvers<void>(), markedReadRelease = Promise.withResolvers<void>();
+    let markedReadsHeld = 0;
+    const linkHeld = Promise.withResolvers<void>(), linkRelease = Promise.withResolvers<void>();
+    let linksHeld = 0;
+    let reloads = 0;
     // another tab's write that commits just before this tab's own delete of the record
     const replaceFirst = (id: string): void => { if (options.replaceAtForget && devices.get(id)?.device_id === NEWER_ID) devices.set(id, newer); };
     const store: ShellDeviceStore = {
       get: async (id) => {
         if (options.holdReadAfterPair && events.includes("pair") && readsHeld++ === 0) { readHeld.resolve(); await readRelease.promise; }
+        if (options.holdMarkedRead && events.includes("admission answered") && markedReadsHeld++ === 0) {
+          const then = devices.get(id);
+          markedReadHeld.resolve();
+          await markedReadRelease.promise;
+          return then;
+        }
         return devices.get(id);
       },
       list: async () => [...devices.values()],
@@ -151,10 +170,14 @@ describe("the admission before a first link", () => {
     const opened: Admitted[] = [];
     class Admitted extends RelayTransport {
       closed = false;
+      /** the row the PC admitted this session as */
+      row: string | null | undefined;
       override close() { this.closed = true; super.close(); changed(); }
-      override get server() { return { version: "1.0.0", relayProtocol: RELAY_PROTOCOL, features: [ACCOUNT_FEATURE] }; }
+      override get server() { return { version: options.pcVersion ?? "1.0.0", relayProtocol: RELAY_PROTOCOL, features: [ACCOUNT_FEATURE] }; }
+      override get deviceId() { return this.row; }
       override async renew() {}
       override async fetch(path: string, init?: RequestInit) {
+        if (path === "/api/account/link" && options.holdFirstLink && linksHeld++ === 0) { linkHeld.resolve(); await linkRelease.promise; }
         try { return this.answer(path, init); } finally { changed(); }
       }
       answer(path: string, init?: RequestInit) {
@@ -184,6 +207,8 @@ describe("the admission before a first link", () => {
     const current = (): RelayShellProps => { if (!props) throw new TypeError("Shell not rendered"); return props; };
     const listedPc = { server_id: offer.server_id, label: "Desk", added_at: "2026-11-01T00:00:00Z", last_seen_at: null };
     if (options.typedConfirmed) sessionStorage.setItem("ovis-confirmed-pc", offer.server_id);
+    // the tab's memory of the reloads it made for a newer PC (skew.ts reloadOnce)
+    if (options.pcVersion !== undefined) (window as unknown as { sessionStorage: Storage }).sessionStorage = sessionStorage;
     await mountRelayShell({
       container: Object.create(null), entryUrl: options.reopen ? `https://app.ovis.sh/s/${offer.server_id}/` : encodeOffer(offer, "https://app.ovis.sh"), shellVersion: "1.0.0", store, accountStore,
       accountService: "https://account.ovis.sh",
@@ -224,16 +249,21 @@ describe("the admission before a first link", () => {
         return answer;
       },
       createRoot: () => ({ render, unmount() {} }), renderApp: () => { apps++; changed(); return { render() {}, unmount() {} }; },
+      reload: async () => { reloads++; changed(); },
       pendingPush: { get: async () => undefined, clear: async () => {} }, navigate() {}, checkPc: async () => ({ kind: "offline", reason: "relay" }),
       // a pairing (the offer carries the code) saves a new row's record for this device in place of any, as PAIR does;
       // a sign-in with what is saved is refused once the PC ended the row
       open: async (opening, transportOptions: RelayTransportOptions = {}) => {
         opens++;
+        // as a transport does, an attempt that ended opens nothing
+        transportOptions.signal?.throwIfAborted();
         if (opening.code !== undefined) { events.push("pair"); devices.set(offer.server_id, { ...older, device_id: NEWER_ID }); }
         else if (ended !== undefined && devices.get(offer.server_id)?.device_id === ended) throw new MuxProtocolError("auth_failed", "the PC ended this row");
         else devices.set(offer.server_id, devices.get(offer.server_id) ?? older);
         if (transportOptions.onFatal) fatal.push(transportOptions.onFatal);
-        const transport = new Admitted(offer); transports.push(transport); opened.push(transport); changed(); return transport;
+        const transport = new Admitted(offer); transport.row = devices.get(offer.server_id)?.device_id;
+        if (options.replaceAfterPair && opening.code !== undefined) devices.set(offer.server_id, newer);
+        transports.push(transport); opened.push(transport); changed(); return transport;
       },
     });
     const press = (): void => { events.push("pressed"); current().onPair(); };
@@ -251,7 +281,8 @@ describe("the admission before a first link", () => {
     /** every session the attempt opened is closed: it is over, and nothing more of it reaches the PC */
     const over = (): Promise<void> => until(() => opened.length > 0 && opened.every((transport) => transport.closed));
     const enrollment = async (): Promise<string | undefined> => ((await store.get(offer.server_id)) as SavedDevice | undefined)?.account_enrollment?.state;
-    return { current, press, switchAccount, armed, over, enrollment, directoryReads: () => directoryReads, readHeld: readHeld.promise, releaseRead: () => readRelease.resolve(), secondPostHeld: secondPostHeld.promise, releaseSecondPost: () => secondPostRelease.resolve(), events, pcEvents, posted, quiet, sent, failure, endRow, admissionGate, store, offer, apps: () => apps, opens: () => opens, postSignal: () => postSignal };
+    return { current, press, switchAccount, armed, over, enrollment, directoryReads: () => directoryReads, reloads: () => reloads,
+      markedReadHeld: markedReadHeld.promise, releaseMarkedRead: () => markedReadRelease.resolve(), linkHeld: linkHeld.promise, releaseLink: () => linkRelease.resolve(), readHeld: readHeld.promise, releaseRead: () => readRelease.resolve(), secondPostHeld: secondPostHeld.promise, releaseSecondPost: () => secondPostRelease.resolve(), events, pcEvents, posted, quiet, sent, failure, endRow, admissionGate, store, offer, apps: () => apps, opens: () => opens, postSignal: () => postSignal };
   }
 
   for (const [what, options, expected] of [
@@ -616,6 +647,58 @@ describe("the admission before a first link", () => {
     run.admissionGate.resolve();
     await until(() => run.current().state.kind === "failed");
     expect((await run.store.get(run.offer.server_id))?.device_id).toBe(REPLACED_ID);
+  });
+
+  it("keeps a newer pairing another tab saved right after the PAIR when the refused row's record is forgotten: the row is the one the PC admitted", async () => {
+    const run = await pairing({ mark: true, listed: true, replaceAfterPair: true, links: [() => Response.json({ error: { code: "unverified_device" } }, { status: 403 })] });
+    run.admissionGate.resolve();
+    await until(() => run.current().state.kind === "failed");
+    expect(run.failure()).toBe("unverified-device");
+    expect((await run.store.get(run.offer.server_id))?.device_id).toBe(REPLACED_ID);
+  });
+
+  it("with the mark, keeps the connecting screen and its Cancel while the first link waits for the time the PC named, and opens the PC once it passes", async () => {
+    const run = await pairing({ mark: true, listed: true, hold: true, links: [() => Response.json({ error: { code: "account_unavailable" } }, { status: 503, headers: { "retry-after": "15" } }), () => Response.json({})] });
+    jest.useFakeTimers();
+    run.press();
+    run.admissionGate.resolve();
+    await run.armed(LINK_RETRY_MAX_MS, 1);
+    jest.advanceTimersByTime(ACCOUNT_STEPS_WAIT_MS);
+    expect([run.apps(), run.current().state.kind]).toEqual([0, "connecting"]);
+    await until(() => run.apps() === 1);
+    expect(run.sent).toHaveLength(2);
+  });
+
+  it("with the mark, does not reload for a newer PC before a re-pair's first link is answered, and keeps the older record when that link is refused", async () => {
+    const run = await pairing({ mark: true, saved: true, listed: true, pcVersion: "1.1.0", links: [() => Response.json({ error: { code: "unverified_device" } }, { status: 403 })] });
+    run.admissionGate.resolve();
+    await until(() => run.reloads() > 0 || run.apps() > 0);
+    // the link went out from this page, whose refusal restored the older record: the reload comes with the PC's
+    // admission of that record, which a newer shell then opens
+    expect(run.sent).toHaveLength(1);
+    expect((await run.store.get(run.offer.server_id))?.device_id).toBe(OLDER_ID);
+  });
+
+  it("with the mark, a pairing cancelled while its saved record was read leaves the next pairing's refusal its own: a Forget made meanwhile stands", async () => {
+    const run = await pairing({ mark: true, saved: true, listed: true, holdMarkedRead: true, holdFirstLink: true, links: [() => Response.json({ error: { code: "unverified_device" } }, { status: 403 })] });
+    run.admissionGate.resolve();
+    await run.markedReadHeld;
+    // another tab forgets the PC, and the same link is opened again here: the first attempt ends, and the second pairs
+    await run.store.remove(run.offer.server_id);
+    const link = new URL(encodeOffer(run.offer, "https://app.ovis.sh"));
+    Object.assign(window.location, { href: link.href, hash: link.hash });
+    window.dispatchEvent(new Event("hashchange"));
+    await until(() => run.current().state.kind === "confirm" && (run.current().state as { account?: string }).account !== "checking");
+    run.press();
+    await run.linkHeld;
+    // the first attempt's read answers now, with the record saved before the Forget
+    run.releaseMarkedRead();
+    // fixed wait: one turn of the event loop, for whatever the first attempt still does after its read
+    await new Promise((resolve) => { setTimeout(resolve, 0); });
+    run.releaseLink();
+    await until(() => run.current().state.kind === "failed" || run.apps() > 0);
+    expect([run.failure(), run.apps()]).toEqual(["unverified-device", 0]);
+    expect(await run.store.get(run.offer.server_id)).toBeUndefined();
   });
 
   it("with the mark, ends the changed key's admission when the person cancels while it is out, and sends no link", async () => {

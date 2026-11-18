@@ -101,6 +101,18 @@ export class PairingGoneError extends Error {
   }
 }
 
+/**
+ * The relay tab's code is past its ten minutes while a device that paired with it in time may still link: no new code
+ * is made, since one would end that device's pairing. `retryAfter`: the seconds until the last such device's time to
+ * link is over.
+ */
+export class PairingFinishingError extends Error {
+  readonly code = "pairing_finishing";
+  constructor(readonly retryAfter: number) {
+    super("A device that paired with this PC's code is still linking; a new code follows once it is done.");
+  }
+}
+
 /** Canonical base64url SPKI containing a public P-256 key, never private key material. */
 function isRelayPublicKey(value: unknown): value is string {
   if (typeof value !== "string" || value.length > 256 || !/^[A-Za-z0-9_-]+$/.test(value)) return false;
@@ -661,10 +673,18 @@ export class DeviceStore {
     if (by !== null) this.assertHolder(by);
     if (this.account() !== null) throw new PcInAccountError();
     const active = this.activePairing(now);
+    const pending = this.pending;
     // never a code made for one account: the device that pairs with this one is taken into the account named for the PC
-    if (active !== null && this.pending?.noAccountOnly === true && this.pending.named === undefined && this.pending.issuedUnder === issuedUnder) {
-      if (by !== null) this.pending.holders.add(by);
+    const carried = pending?.noAccountOnly === true && pending.named === undefined && pending.issuedUnder === issuedUnder;
+    if (active !== null && carried) {
+      if (by !== null) pending.holders.add(by);
       return active;
+    }
+    // past its ten minutes, the code stays while a device that paired with it in time may still link (expirePending)
+    if (carried && this.codeOver(pending, now)) {
+      this.expirePending();
+      const rows = [...this.pending === pending ? pending.waiting?.rows.values() ?? [] : []];
+      if (rows.length > 0) throw new PairingFinishingError(Math.max(1, Math.ceil(Math.max(...rows.map((row) => row.pairedAt + PAIRING_LINK_MS - this.clock.now())) / 1000)));
     }
     return this.startPairing(now, { remote: false, startedBy: null, memberRequired: false, noAccountOnly: true, by, ...(issuedUnder === undefined ? {} : { issuedUnder }) });
   }
@@ -994,11 +1014,14 @@ export class DeviceStore {
     if (!row || !waiting || row.key !== link.oldKey || this.account() !== null || this.removedByAccount(link.key)) return null;
     const now = Date.now();
     const at = new Date(now).toISOString();
+    // the removal of a key the row keeps, by this PC (removedByAccount refused the account's above)
+    const removedAt = link.key === link.oldKey ? this.tombstones.find((t) => t.key === link.key)?.removed_at : undefined;
     const device: StoredDevice = {
       id: row.id, label: row.label, role: "drive", token_hash: hash(randomBytes(32).toString("hex")), relay_public_key: link.key,
-      // made at this write, not at its pairing: a row that keeps a key this PC removed is newer than that removal,
-      // so a stop before the tombstone is cleared leaves a row that the next start keeps (finishInterruptedWrites)
-      created_at: at, last_seen_at: at, account: link.account, linked_at: at, link_moved_key: link.key !== link.oldKey, joined_by: vouched ? "service" : "code",
+      // made at this write, not at its pairing, and after that removal even on a wall clock set back since: the row
+      // is newer than the removal, so a stop before the tombstone is cleared leaves a row that the next start keeps
+      // (finishInterruptedWrites)
+      created_at: removedAt !== undefined && removedAt >= at ? new Date(Date.parse(removedAt) + 1).toISOString() : at, last_seen_at: at, account: link.account, linked_at: at, link_moved_key: link.key !== link.oldKey, joined_by: vouched ? "service" : "code",
     };
     // no waiting row from here on: the end of its code, which this write brings, takes the rows that still wait
     waiting.rows.delete(row.id);

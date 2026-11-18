@@ -256,6 +256,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       if (!attempt.paired) {
         const marked = attempt.offer.code !== undefined && attempt.offer.admission === 1;
         const saved = marked ? await store.get(attempt.offer.server_id) : undefined;
+        // a Cancel, or another link, while the record was read: what a refused link restores is the newer attempt's
+        if (controller.signal.aborted) return;
         if (marked) markedPairings.set(attempt.offer.server_id, saved?.device_id != null ? { older: saved } : {});
         else markedPairings.delete(attempt.offer.server_id);
       }
@@ -296,10 +298,9 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     // nor to the account of another sign-in than the one the confirm named: only its id crosses the reload
     keepConfirmedSignIn(attempt.signIn ? { server_id: attempt.offer.server_id, sign_in_id: attempt.signIn.sign_in_id ?? null } : null);
     if (controller.signal.aborted) { opened.close(); return; }
-    // the row this pairing made: only it may be replaced by an older record, or forgotten
-    if (!attempt.paired) attempt.row = (await store.get(attempt.offer.server_id))?.device_id ?? null;
-    // a Cancel while the record was read: this attempt owns nothing any more
-    if (controller.signal.aborted) { opened.close(); return; }
+    // the row the PC admitted this session as, which its channel saved: only it may be replaced by an older record, or
+    // forgotten. Not read from the store again, where another tab may have saved a newer pairing of this PC since
+    attempt.row = opened.deviceId ?? null;
     opening = null;
     comparison = null;
     // the PC admitted this phone: a pairing code is spent, and every later attempt (Try again on
@@ -392,6 +393,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   };
   const updates = createUpdateFlow(mount.shellVersion ?? __APP_VERSION__, {
     show, failed, reload: mount.reload ?? (() => reloadPage(entry.serverId)),
+    // a marked pairing's first link has not passed: the record a refusal restores is kept in this page only
+    holdsReload: (attempt) => markedPairings.has(attempt.offer.server_id),
     accepted: (opened, attempt) => {
       if (transport !== opened) return;
       if (attempt.retryEnrollment) { last = attempt; show({ kind: "ready", name: attempt.offer.name ?? null, server_id: attempt.offer.server_id, enrollment: attempt.accountEnrollment ? "pending" : "local" }); enroll(opened, attempt); return; }
@@ -413,8 +416,10 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
           if (steps.signal.aborted || transport !== opened || last !== attempt || app !== null) return;
           enterApp(opened, attempt);
         };
+        // a marked pairing's row can do nothing but link until its first link passes: its connecting screen and its
+        // Cancel stay until that link is answered (settled, or a refusal said) or the attempt ends
         // fixed wait: a PC that takes longer than this over the account's steps is opened without them
-        waited = setTimeout(enter, ACCOUNT_STEPS_WAIT_MS);
+        if (!markedPairings.has(attempt.offer.server_id)) waited = setTimeout(enter, ACCOUNT_STEPS_WAIT_MS);
         enroll(opened, attempt, enter, steps.signal);
         return;
       }

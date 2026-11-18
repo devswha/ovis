@@ -1002,6 +1002,24 @@ describe("the relay tab's QR code behind a press", () => {
     expect(buttons()).toEqual([]);
   });
 
+  it("while a device that paired with the code as it ran out may still link, shows no failure and asks for the next code once the wait the PC named is over", async () => {
+    await mount();
+    let answers = 0;
+    offerAnswer = () => ++answers === 1
+      ? Response.json({ error: { code: "pairing_finishing", message: "A device that paired with this PC's code is still linking." } }, { status: 409, headers: { "retry-after": "20" } })
+      : Response.json({ url: OFFER_URL, expires_at: new Date(Date.now() + 600_000).toISOString() });
+    await press("Show the QR code");
+    await flush();
+    expect(qrCodes()).toHaveLength(0);
+    expect(section().findAllByProps({ role: "alert" })).toHaveLength(0);
+    expect(count("/api/relay/offer")).toBe(1);
+    await advance(19_000);
+    expect(count("/api/relay/offer")).toBe(1);
+    await advance(1_000);
+    expect(count("/api/relay/offer")).toBe(2);
+    expect(qrCodes()).toHaveLength(1);
+  });
+
   it("the relay's state is read again when asked, without waiting for the poll's next round", async () => {
     let relay: RelayState | undefined;
     const Probe = () => { relay = useRelay(); return null; };

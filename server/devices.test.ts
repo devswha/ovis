@@ -1,9 +1,10 @@
-import { afterAll, describe, expect, it, spyOn } from "bun:test";
+import { afterAll, describe, expect, it, setSystemTime, spyOn } from "bun:test";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DevicePairedEvent } from "../shared/protocol.ts";
-import { DeviceGoneError, DeviceStore, handleDeviceRequest, newStreamKey, normalizeLabel, PairingRateLimitedError, PcInAccountError, readDeviceRegistry, sameBrowser, streamCookie, streamKeys } from "./devices.ts";
+import { CODE_TTL_MS, DeviceGoneError, DeviceStore, handleDeviceRequest, newStreamKey, normalizeLabel, PAIRING_LINK_MS, PairingFinishingError, PairingRateLimitedError, PcInAccountError, readDeviceRegistry, sameBrowser, streamCookie, streamKeys } from "./devices.ts";
+import { TestClock } from "./relay/test-helpers.ts";
 import { privateStateFs } from "./private-state.ts";
 import { isTaggedNode, parseTailscaleOwner } from "./tailscale.ts";
 
@@ -803,6 +804,50 @@ describe("a pairing code made only for a PC in no account", () => {
     expect(store.linkAccountKey(phone.id, key, key, "acct_1")).not.toBeNull();
     expect(store.account()).toBe("acct_1");
     expect(() => store.pairingForNoAccount()).toThrow(PcInAccountError);
+  });
+
+  it("is not replaced past its ten minutes while a device that paired with it in time may still link, and is once none may", async () => {
+    for (const links of [true, false]) {
+      const store = new DeviceStore(mkdtempSync(join(dir, "no-account-code-finishing-")));
+      const clock = new TestClock();
+      store.useClock(clock);
+      const made = Date.now();
+      const qr = store.pairingForNoAccount(null, made);
+      const key = (await relayKeys()).publicKeySpki;
+      const phone = store.pairRelay(qr.code, "Phone", key)!.device;
+      clock.advance(5_000);
+      // the QR code's ten minutes are over and the page asks for its next code: the phone has 25 s left to link
+      let finishing: unknown;
+      try { store.pairingForNoAccount(null, made + CODE_TTL_MS + 1); } catch (error) { finishing = error; }
+      expect(finishing).toBeInstanceOf(PairingFinishingError);
+      expect((finishing as PairingFinishingError).retryAfter).toBe(25);
+      if (links) {
+        expect(store.linkAccountKey(phone.id, key, key, "acct_1")).not.toBeNull();
+        expect(() => store.pairingForNoAccount(null, made + CODE_TTL_MS + 2)).toThrow(PcInAccountError);
+      } else {
+        clock.advance(PAIRING_LINK_MS);
+        const next = store.pairingForNoAccount(null, made + CODE_TTL_MS + 2);
+        expect(next.code).toMatch(/^\d{6}$/);
+        expect(store.activePairing(made + CODE_TTL_MS + 2)).toEqual(next);
+      }
+    }
+  });
+
+  it("keeps a device that links with a key this PC removed after a restart, also when the clock was set back and the removal could not be cleared", async () => {
+    const stateDir = mkdtempSync(join(dir, "no-account-code-clock-back-"));
+    const store = new DeviceStore(stateDir);
+    const key = (await relayKeys()).publicKeySpki;
+    const first = store.pairRelay(store.startPairing().code, "Phone", key)!.device;
+    expect(store.revoke(first.id)).toBe(true);
+    // the same phone pairs with the relay tab's code and links with the key it paired with
+    const phone = store.pairRelay(store.pairingForNoAccount().code, "Phone", key)!.device;
+    Reflect.set(store, "clearTombstone", () => { throw new Error("disk full"); });
+    const logged = spyOn(console, "error").mockImplementation(() => {});
+    setSystemTime(new Date(Date.now() - 60_000));
+    try { expect(store.linkAccountKey(phone.id, key, key, "acct_1")).not.toBeNull(); } finally { setSystemTime(); logged.mockRestore(); }
+    const restarted = new DeviceStore(stateDir);
+    expect(restarted.list(null).map((device) => device.id)).toEqual([phone.id]);
+    expect(restarted.isTombstoned(key)).toBe(false);
   });
 
   it("leaves a code made any other way pending when the PC joins an account", async () => {

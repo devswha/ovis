@@ -1,4 +1,4 @@
-import { DeviceGoneError, DeviceReadOnlyError, PairingGoneError, PcInAccountError } from "../devices.ts";
+import { DeviceGoneError, DeviceReadOnlyError, PairingFinishingError, PairingGoneError, PcInAccountError } from "../devices.ts";
 import { MachineCodeForAccountError } from "../machine-profile.ts";
 import { errorResponse, jsonResponse, readJsonObject, setRequestRoute } from "../http.ts";
 import type { ServerContext } from "../dispatch.ts";
@@ -156,6 +156,8 @@ export async function handleRelayRequest(request: Request, pathname: string, con
     if (error instanceof PcInAccountError) return fail(error.code, error.message, 409);
     // the code an offer named is no longer pending: none is started in its place, and the one pending stays
     if (error instanceof PairingGoneError) return fail(error.code, error.message, 409);
+    // a device that paired with the relay tab's code may still link: the QR code asks again once its time is over
+    if (error instanceof PairingFinishingError) return jsonResponse({ error: { code: error.code, message: error.message } }, 409, { "cache-control": "no-store", "retry-after": String(error.retryAfter) });
     // no account was named for this PC: its page asks for the sign-in first, and for this code only once one is named
     if (error instanceof NoAccountNamedError) return fail(error.code, error.message, 409);
     // such a code lets a device in only on its account's word, which a PC with no account service cannot ask for
