@@ -805,30 +805,52 @@ describe("the devices status lists apart", () => {
     } finally { await older.server.stop(true); }
   });
 
-  it("are never asked for with the token over TCP: the app's answer that did not let the command in is the one request, and status says so", async () => {
-    // fetch is replaced inside the command, so nothing listens: its first answer is the app's and lets nothing in, and
-    // whatever answers the same address next would be handed the token (an earlier status asked again with it)
+  /**
+   * `status` with fetch replaced inside the command, so nothing listens: each request gets the next of `answers` (the
+   * last one again once they run out). What it printed, and each request's path and authorization.
+   */
+  async function statusAnswering(answers: readonly Record<string, unknown>[], token: string): Promise<{ out: string; asked: string }> {
     writeFileSync(join(configDir, ".env"), "PORT=9\n");
     const asked = join(scratch, "asked");
+    rmSync(asked, { force: true });
     const plugin = JSON.stringify(join(ROOT, "scripts", "plugin.ts"));
-    const answers = [{ ...APP_HEALTH, auth: { required: true, authenticated: false } }, { ...APP_HEALTH, account_devices: GROUPS }];
     const child = Bun.spawn([process.execPath, "-e", `import { appendFileSync } from "node:fs";
 const answers = ${JSON.stringify(answers)};
 globalThis.fetch = async (input, init) => {
   const request = new Request(input, init);
   appendFileSync(${JSON.stringify(asked)}, \`\${new URL(request.url).pathname} \${request.headers.get("authorization") ?? "none"}\\n\`);
-  return Response.json(answers.shift() ?? answers.at(-1));
+  return Response.json(answers.length > 1 ? answers.shift() : answers[0]);
 };
 process.argv = [process.execPath, ${plugin}, "status"];
 const { runPlugin } = await import(${plugin});
-await runPlugin();`], { cwd: ROOT, stdout: "pipe", stderr: "pipe", env: launchEnv({ HOST: "127.0.0.1", HERDR_PLUGIN_CONFIG_DIR: configDir, OVIS_STATE_DIR: join(scratch, "app-state"), OVIS_TOKEN: "the-token" }) });
+await runPlugin();`], { cwd: ROOT, stdout: "pipe", stderr: "pipe", env: launchEnv({ HOST: "127.0.0.1", HERDR_PLUGIN_CONFIG_DIR: configDir, OVIS_STATE_DIR: join(scratch, "app-state"), OVIS_TOKEN: token }) });
     const [out, err, exitCode] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
     expect(exitCode, err).toBe(0);
-    expect(readFileSync(asked, "utf8")).toBe("/api/health none\n");
     expect(out.split("\n")[0]).toBe("running http://127.0.0.1:9");
+    return { out, asked: readFileSync(asked, "utf8") };
+  }
+  const notice = (out: string) => out.split("\n").filter((line) => line.startsWith("account devices: "));
+
+  it("are never asked for with the token over TCP: the app's answer that did not let the command in is the one request, and status says so", async () => {
+    // its first answer is the app's and lets nothing in, and whatever answers the same address next would be handed the
+    // token (an earlier status asked again with it)
+    const { out, asked } = await statusAnswering([{ ...APP_HEALTH, auth: { required: true, authenticated: false, reason: "token_required" } }, { ...APP_HEALTH, account_devices: GROUPS }], "the-token");
+    expect(asked).toBe("/api/health none\n");
     expect(lines(out)).toEqual([]);
-    expect(out).toContain("account devices: not shown");
+    expect(notice(out)).toHaveLength(1);
+    expect(notice(out)[0]).toContain("token");
     expect(out).not.toContain("the-token");
+  });
+
+  it("name the token as the reason they are not shown only when the app asks for it", async () => {
+    // a PC that wants this device paired, with no token set, and an open LAN that lets the command in but is not its owner
+    for (const auth of [{ required: true, authenticated: false, reason: "pairing_required" }, { required: false, authenticated: true, via: "open", role: "drive" }]) {
+      const { out, asked } = await statusAnswering([{ ...APP_HEALTH, auth }], "");
+      expect(asked).toBe("/api/health none\n");
+      expect(lines(out)).toEqual([]);
+      expect(notice(out)).toHaveLength(1);
+      expect(notice(out)[0]).not.toContain("token");
+    }
   });
 });
 

@@ -91,9 +91,11 @@ where both copies are in the same account, the key is chosen as before and the m
 it: `word` (or a value the PC does not know) on either copy is kept, and otherwise the kept
 copy's mark, or the other's. A row that became a member before this has none, and neither has one
 an account member's `add` or approval let in: neither is listed. An approval is a remote one, or
-a code a member started through the relay (`member_approved` on the row, with the member in
-`added_by`); a code a device outside the account started names its starter in `added_by` and
-approves nothing. A value the PC
+a code a member started through the relay while a member, and still a member when the code is
+used (`member_approved_in` on the row names that account, with the member in `added_by`). It
+counts only for a link into that same account: any other link is on the device's own word. A code
+a device outside the account started names its starter in `added_by` and approves nothing, even
+when the starter joins the account before the code is used. A value the PC
 does not know is kept as it is and counts as `word`. Nothing changes who gets in: the mark only
 shows the owner which members joined on their own word.
 
@@ -103,7 +105,7 @@ one of the two at most, so a device that links on its own word moves from `unlin
 owner both groups with their names (`account_devices`), and `ovis status` prints them when the
 answer it gets without a token carries them: on a machine profile's owner socket, or over TCP when
 the app lets the command in without one. It sends no token over TCP for them, and otherwise says
-the groups are not shown. Its first line counts relay devices only: a browser paired on the PC's
+the groups are not shown, naming the token only when the app asks for it. Its first line counts relay devices only: a browser paired on the PC's
 own address is outside the account too, and **Settings → Devices** lists it.
 
 ## Records

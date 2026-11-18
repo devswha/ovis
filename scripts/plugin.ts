@@ -321,9 +321,9 @@ async function pairingParts(): Promise<{ qr: (text: string) => string; decodeOff
  * TCP port with liveness only. There the answer also counts without `herdr` when it carries `machine_profile` with
  * `runtime_down` (server/machine-profile.ts machineHealth): the profile runs, and `engineDown` is its reason while its
  * engine does not answer ("" with none given). Over TCP `engineDown` is always null. `devices`: the groups the answer
- * lists to its owner (accountDevicesOf); `authenticated`: whether the request got in.
+ * lists to its owner (accountDevicesOf); `tokenRequired`: the app let the request in only with its token.
  */
-async function appHealth(): Promise<{ readonly engineDown: string | null; readonly devices: AccountDevices | null; readonly authenticated: boolean } | null> {
+async function appHealth(): Promise<{ readonly engineDown: string | null; readonly devices: AccountDevices | null; readonly tokenRequired: boolean } | null> {
   // the door the request goes to and the answer is judged by: decided once, and kept for the command once it passes
   const door = serverDoor();
   if (machineProfile && door === null) return null;
@@ -340,7 +340,7 @@ async function appHealth(): Promise<{ readonly engineDown: string | null; readon
     commandDoor = door;
     return {
       engineDown: engine?.runtime_down === true ? (typeof engine.reason === "string" ? engine.reason : "") : null,
-      devices: accountDevicesOf(body), authenticated: (body.auth as { authenticated: boolean }).authenticated,
+      devices: accountDevicesOf(body), tokenRequired: (body.auth as { reason?: unknown }).reason === "token_required",
     };
   } catch {
     return null;
@@ -1302,8 +1302,12 @@ async function status(): Promise<number> {
     // relay rows only: a browser paired on the PC's own address is outside the account too, and listed in Settings → Devices
     process.stdout.write(deviceLine("relay devices outside the account", devices.unlinked));
     process.stdout.write(deviceLine("devices that joined the account on their own word", devices.own_word));
-  } else if (answer?.authenticated === false) {
-    process.stdout.write("account devices: not shown, as Ovis lets this command in only with a token, which status does not send over TCP\n");
+  } else if (answer !== null) {
+    // the answer of an app that is not its owner's (a token, a pairing or the owner's login needed, the open LAN), or of a
+    // release from before the groups: only the token is something to name
+    process.stdout.write(answer.tokenRequired
+      ? "account devices: not shown, as Ovis lets this command in only with a token, which status does not send over TCP\n"
+      : "account devices: not shown, as the app's answer to this command does not list them\n");
   }
   const version = runningVersion();
   if (version !== null) process.stdout.write(`version: ${version}\n`);

@@ -139,14 +139,16 @@ export interface StoredDevice {
   /** the signed `add` that let this row in, as received: /api/account/status lists it for a client to hand on */
   account_add?: unknown;
   /**
-   * true when an account member approved the pairing that made the row (a remote approval, or a code a member started):
-   * `added_by` names that member. Absent when `added_by` names a starter that was no member then, and on every other row.
+   * the account whose member approved the pairing that made the row, as it stood then: a remote approval, or a code a
+   * member started (and still was a member of that account when the code was used); `added_by` names that member.
+   * Absent when `added_by` names a starter that was no member then, and on every other row. Only a link into this same
+   * account counts as the member's (linkAccountKey): any other is on the device's own word.
    */
-  member_approved?: true;
+  member_approved_in?: string;
   /**
    * how a `link` made the row a member (docs/account.md, "How a device joined"): set once, by the link that took it from
    * no account into one, and kept by every later link. Absent on a row that became a member before this was recorded,
-   * and on one an account member's signature (`add`) or approval (`member_approved`) stands behind. A value this PC does
+   * and on one an account member's signature (`add`) or approval (`member_approved_in`, for that account) stands behind. A value this PC does
    * not know is kept as it is and counts as `word`.
    */
   joined_by?: JoinedBy;
@@ -404,7 +406,7 @@ export class DeviceStore {
    * `expires`: the wall-clock end of its ten minutes, which its `expires_at` shows; `deadline`: the same end on the
    * store's clock, which only moves forward; `over`: set the first time either says its ten minutes are over (codeOver)
    */
-  private pending: { code: string; id: string; expires: number; deadline: number; over?: true; attempts: number; lanAttempts?: number; remote: boolean; startedBy: string | null; memberRequired: boolean; open?: boolean; noAccountOnly?: boolean; holders: Set<string>; waiting?: WaitingRows; named?: { readonly account: string } } | null = null;
+  private pending: { code: string; id: string; expires: number; deadline: number; over?: true; attempts: number; lanAttempts?: number; remote: boolean; startedBy: string | null; approvedIn?: string; memberRequired: boolean; open?: boolean; noAccountOnly?: boolean; holders: Set<string>; waiting?: WaitingRows; named?: { readonly account: string } } | null = null;
   /** How the latest codes made for an account ended, newest last: ENDED_ACCOUNT_CODES at most, in memory only. */
   private endedAccountCodes: Extract<AccountPairingState, { state: "ended" }>[] = [];
   /** What a row that waits to link, and the redemption of a code, is bounded on (useClock). */
@@ -636,7 +638,10 @@ export class DeviceStore {
     // the code this one replaces takes the rows that waited under it along
     this.voidPending("replaced");
     this.pending = {
-      code, id: randomBytes(16).toString("hex"), expires: now + CODE_TTL_MS, deadline: this.clock.now() + CODE_TTL_MS, attempts: 0, ...how, holders: new Set([by, how.startedBy].filter((id): id is string => id !== null)),
+      code, id: randomBytes(16).toString("hex"), expires: now + CODE_TTL_MS, deadline: this.clock.now() + CODE_TTL_MS, attempts: 0, ...how,
+      // the account its starter approves the pairing for, judged as the code is made: a starter that joins later approved nothing
+      ...(how.startedBy !== null && this.approverAccount(how.startedBy) !== null ? { approvedIn: this.approverAccount(how.startedBy)! } : {}),
+      holders: new Set([by, how.startedBy].filter((id): id is string => id !== null)),
       ...(how.noAccountOnly === true ? { waiting: { usesLeft: PAIRING_USES, rows: new Map<string, ProvisionalRow>() } } : {}),
       ...(how.noAccountOnly === true && account !== undefined ? { named: { account } } : {}),
     };
@@ -1057,7 +1062,9 @@ export class DeviceStore {
     // pairing, so a tombstone that comes back (a sibling dir, a stop before it is cleared) takes it only if newer
     const undoesRevoke = remote && accountless && this.isTombstoned(publicKey);
     if (admit && this.isNewKey(publicKey) && !admit()) return null;
-    const paired = this.enrollRelay(label, publicKey, now, true, undoesRevoke ? undefined : startedBy ?? undefined);
+    // the starter's approval stands only while it is still a member of the account it approved for
+    const approvedIn = startedBy !== null && this.pending?.approvedIn !== undefined && this.approverAccount(startedBy) === this.pending.approvedIn ? this.pending.approvedIn : undefined;
+    const paired = this.enrollRelay(label, publicKey, now, true, undoesRevoke ? {} : { addedBy: startedBy ?? undefined, approvedIn });
     if (!remote || accountless) this.clearTombstone(publicKey);
     return paired;
   }
@@ -1119,7 +1126,7 @@ export class DeviceStore {
     if (approval.id !== undefined && this.has(approval.id)) { this.noteRelayFailure(approval.path, now); return null; }
     if (admit && this.isNewKey(publicKey) && !admit()) return null;
     // no code was used, so one still showing on the PC keeps working
-    const paired = this.enrollRelay(label, publicKey, now, false, approval.addedBy, approval.id);
+    const paired = this.enrollRelay(label, publicKey, now, false, { addedBy: approval.addedBy, approvedIn: approval.addedBy === undefined ? undefined : this.approverAccount(approval.addedBy) ?? undefined }, approval.id);
     // written after the row, so a stop between the two leaves a row newer than its tombstone (finishInterruptedWrites)
     if (approval.addedBy === undefined) this.clearTombstone(publicKey);
     return paired;
@@ -1162,7 +1169,12 @@ export class DeviceStore {
     return device !== undefined && device.role === "drive" && device.account !== undefined && device.relay_public_key !== undefined && !this.stale(device);
   }
 
-  private enrollRelay(label: string, publicKey: string, now: number, codeSpent: boolean, addedBy?: string, id = randomBytes(8).toString("hex")): { device: DeviceMatch } {
+  /** The account `id` may approve a pairing for (isAccountApprover), or null. */
+  private approverAccount(id: string): string | null {
+    return this.isAccountApprover(id) ? this.devices.find((d) => d.id === id)?.account ?? null : null;
+  }
+
+  private enrollRelay(label: string, publicKey: string, now: number, codeSpent: boolean, { addedBy, approvedIn }: { addedBy?: string | undefined; approvedIn?: string | undefined }, id = randomBytes(8).toString("hex")): { device: DeviceMatch } {
     const device: StoredDevice = {
       id, label: normalizeLabel(label, "Device"), role: "drive",
       token_hash: hash(randomBytes(32).toString("hex")), relay_public_key: publicKey,
@@ -1170,7 +1182,7 @@ export class DeviceStore {
       created_at: new Date(now).toISOString(), last_seen_at: new Date(now).toISOString(),
       ...(addedBy === undefined ? {} : { added_by: addedBy }),
       // what a later link reads to tell a member's approval from a code a device outside the account started
-      ...(addedBy !== undefined && this.isAccountApprover(addedBy) ? { member_approved: true as const } : {}),
+      ...(addedBy !== undefined && approvedIn !== undefined ? { member_approved_in: approvedIn } : {}),
     };
     this.enroll(device, now, [], codeSpent);
     return { device: { id: device.id, label: device.label, role: device.role } };
@@ -1509,9 +1521,10 @@ export class DeviceStore {
     if (!device) return this.promote(deviceId, { oldKey, key, account }, sessionId);
     // once moved, moved: a later link that keeps the key does not make it the key paired here
     const moved = key !== oldKey || device.link_moved_key === true;
-    // the link that takes a row from no account into one, with no member's approval behind it, is on the device's own
-    // word: a code started by a device outside the account names its starter in `added_by`, and approves nothing
-    const ownWord = device.account === undefined && device.member_approved !== true;
+    // the link that takes a row from no account into one is on the device's own word unless a member of that same
+    // account approved its pairing: a code started by a device outside the account names its starter in `added_by` and
+    // approves nothing, and an approval for another account does not carry over
+    const ownWord = device.account === undefined && device.member_approved_in !== account;
     const updated: StoredDevice = { ...device, relay_public_key: key, account, linked_at: new Date().toISOString(), link_moved_key: moved, ...(ownWord ? { joined_by: "word" as const } : {}) };
     const next = this.devices.map((d) => d === device ? updated : d);
     this.save(next);

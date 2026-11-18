@@ -414,6 +414,13 @@ describe("paired devices of the install's other state dir", () => {
     const unmarked = row({ relay_public_key: "k2", linked_at: "2026-11-15T02:00:00.000Z" });
     expect(merged(code, unmarked)).toMatchObject({ relay_public_key: "k2", joined_by: "code" });
     expect(merged(unmarked, code)).toMatchObject({ relay_public_key: "k2", joined_by: "code" });
+    // a mark this PC does not know, null included, counts as the device's own word against a vouched one, in either order
+    for (const odd of [null, "something else"] as unknown as StoredDevice["joined_by"][]) {
+      const unknown = row({ linked_at: "2026-11-15T01:00:00.000Z", joined_by: odd });
+      const vouched = row({ relay_public_key: "k2", linked_at: "2026-11-15T02:00:00.000Z", joined_by: "code" });
+      expect(merged(unknown, vouched)).toMatchObject({ relay_public_key: "k2", joined_by: odd });
+      expect(merged(vouched, unknown)).toMatchObject({ relay_public_key: "k2", joined_by: odd });
+    }
   });
 
   it("change nothing more when merged again with nothing new", () => {
