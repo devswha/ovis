@@ -889,8 +889,9 @@ it("takes the caller on its socket as the local owner, and a cookie there adds n
   }
   expect((await owner(stateDir, "/api/devices")).status).toBe(200);
   expect((await owner(stateDir, "/api/account/status")).status).toBe(200);
-  // a change from the command line with its origin is judged for what it asks (the relay is off), not for who asks
-  const offer = await owner(stateDir, "/api/relay/offer", { method: "POST", headers: { origin: "http://localhost", "x-herdr-update": "1" } });
+  // a change from the command line with its origin is judged for what it asks (a code for an account while the relay
+  // is off), not for who asks
+  const offer = await owner(stateDir, "/api/relay/offer", { method: "POST", headers: { origin: "http://localhost", "x-herdr-update": "1", "x-ovis-expect-account": "acct_owner" } });
   expect([offer.status, (await offer.json() as { error: { code: string } }).error.code]).toEqual([409, "relay_off"]);
 });
 

@@ -52,6 +52,12 @@ export async function handleRelayRequest(request: Request, pathname: string, con
   const account = pathname === "/api/relay/offer" || pathname === "/api/relay/code" ? request.headers.get("x-ovis-expect-account") : null;
   const invalidAccount = () => fail("invalid_account", "x-ovis-expect-account names no account id.", 400);
   try {
+    // a machine makes a code for an account only (MachineCodeForAccountError), answered before the relay's state is
+    // read: the same answer while the relay reconnects, so the command line takes back nothing and a code pending stays
+    if (account === null && (pathname === "/api/relay/offer" || pathname === "/api/relay/code") && context.services.options.profile === "machine") {
+      setRequestRoute(pathname);
+      throw new MachineCodeForAccountError();
+    }
     switch (pathname) {
       case "/api/relay/start": {
         setRequestRoute("/api/relay/start");

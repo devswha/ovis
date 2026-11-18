@@ -1205,6 +1205,29 @@ it.each(["an ordinary server", "the machine profile"])("pairing codes on %s in n
   }
 });
 
+it("machine profile refuses a code for no account while its relay reconnects, and the code pending for an account stays", async () => {
+  const clock = new TestClock();
+  const f = await machineFixture({}, { clock, random: () => 0.5, pairCodeRelay: "wss://pair.test" });
+  await f.start();
+  const devices = f.app.context.services.devices;
+  const named = await f.request("/offer", "POST", true, { "x-ovis-expect-account": "acct_owner" });
+  expect(named.status).toBe(200);
+  const pending = decodeOffer((await named.json() as { url: string }).url)!.code;
+  expect(devices.activePairing()?.code).toBe(pending);
+  const lost = f.controlLost;
+  await f.localRelay.stop();
+  await bounded(lost);
+  expect(f.service.status().phase).toBe("error");
+  // the answer is the profile's, whatever the relay's state: the command line takes nothing back after it
+  const answers: [string, number, string | undefined][] = [];
+  for (const path of ["/code", "/offer"]) {
+    const response = await f.request(path, "POST");
+    answers.push([path, response.status, await errorCode(response)]);
+  }
+  expect(answers).toEqual([["/code", 409, "machine_profile"], ["/offer", 409, "machine_profile"]]);
+  expect(devices.activePairing()?.code).toBe(pending);
+});
+
 it("machine profile takes a device in with a code made for its account: the device links itself into that account", async () => {
   const f = await machineFixture();
   await f.start();
