@@ -176,6 +176,12 @@ export interface LinkRefused { refused: LinkRefusal; message?: string; retryAfte
 /** What a device reads when its link names another account than the one this PC was set up for: the way out is on the PC. */
 const SET_UP_FOR_ANOTHER_ACCOUNT = "This PC was set up for another Ovis account than the one this device is signed in to. To add it to this device's account instead, run `ovis add` on the PC again and sign in there with that account.";
 
+/**
+ * As SET_UP_FOR_ANOTHER_ACCOUNT, for a device that waited to link: naming another account on the PC ends the code it
+ * paired with (RelayService.setRelayAccount), so it pairs again with the code shown after that.
+ */
+const SET_UP_FOR_ANOTHER_ACCOUNT_WAITING = "This PC was set up for another Ovis account than the one this device is signed in to. To add it to this device's account instead, run `ovis add` on the PC again and sign in there with that account; then scan its new QR code.";
+
 /** What a device that waited to link reads when the code it paired with was made for another account. */
 const CODE_FOR_ANOTHER_ACCOUNT = "This PC's pairing code was made for another Ovis account than the one this device is signed in to. Sign in to that account on this device, then pair again.";
 
@@ -223,7 +229,7 @@ function look(store: DeviceStore, link: LinkRecord, deviceId: string, arrival: L
   const expected = account === null ? codeFor ?? rules.setUpFor?.() ?? null : null;
   if (expected !== null && expected !== link.account) {
     if (waits) store.turnAway(deviceId, "account_mismatch", link.account);
-    return { refused: "account_mismatch", message: codeFor !== null ? CODE_FOR_ANOTHER_ACCOUNT : SET_UP_FOR_ANOTHER_ACCOUNT };
+    return { refused: "account_mismatch", message: codeFor !== null ? CODE_FOR_ANOTHER_ACCOUNT : waits ? SET_UP_FOR_ANOTHER_ACCOUNT_WAITING : SET_UP_FOR_ANOTHER_ACCOUNT };
   }
   // A row that waits to link is taken into the account this PC was set up for and into no other: with none named it
   // is refused the same way, and goes at once

@@ -505,6 +505,8 @@ names another account is refused 409 `account_mismatch`, whichever code its devi
 and the answer says to run `ovis add` on the PC again, which names the account its owner is
 signed in to now. A device that waited to link goes with that refusal; a device that was paired
 keeps what it had; the code is not ended, so the device of the named account still pairs with it.
+Naming another account in place of the one named ends the relay tab's code and every device that
+waits under it (a first naming ends nothing), so a waiting device scans the code shown after it.
 A device that waits to link is taken into no other account, so with none named it is refused the
 same way, and the relay tab's QR code is made only once one is named
 ([Who may admit a device](#who-may-admit-a-device)).

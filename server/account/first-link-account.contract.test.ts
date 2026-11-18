@@ -55,7 +55,7 @@ test("on a PC set up for an account, a paired device whose first link names anot
   expect(await f.status()).toMatchObject({ account: "acct_owner", members: 1, unlinked: [] });
 });
 
-test("a PC set up for an account its owner no longer uses says what to run on it; once that has named the account in use, the same device joins", async () => {
+test("a PC set up for an account its owner no longer uses says what to run on it; once that has named the account in use, the device joins with the code shown then", async () => {
   const f = await pc();
   await setUpFor(f, "acct_before");
   const code = await f.tabCode();
@@ -64,9 +64,13 @@ test("a PC set up for an account its owner no longer uses says what to run on it
   expect([refused.status, refused.body.error?.code]).toEqual([409, "account_mismatch"]);
   // the way out is a command on the PC, and the answer names it
   expect(refused.body.error?.message).toContain("ovis add");
-  // `ovis add`, run again by an owner signed in to the account in use, names it
+  // `ovis add`, run again by an owner signed in to the account in use, names it: the code made while the other was
+  // named ends with that, and the device scans the one shown now
   await setUpFor(f, "acct_now");
-  const again = await signedInWith(f, code, first.key);
+  expect(f.devices.activePairing()).toBeNull();
+  const fresh = await f.tabCode();
+  expect(fresh).not.toBe(code);
+  const again = await signedInWith(f, fresh, first.key);
   await vouchFor(f, "acct_now", first.key);
   expect((await sendLink(again.session, await linkRecord(again.id, "acct_now", first.key))).status).toBe(200);
   expect(await f.status()).toMatchObject({ account: "acct_now", members: 1 });
