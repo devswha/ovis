@@ -545,6 +545,46 @@ describe("history scrolls by every wheel line while the view's own writes are sl
     expect(herdr.offset).toBe(80);
   });
 
+  it("leaves held lines against a later line's direction to the read, so the view first moves the way of that line", async () => {
+    const herdr = fakeHerdr(300);
+    herdr.set({ offset: 50 });
+    const view = await mount(herdr);
+    await view.answerReads();
+    await view.at(10); await view.wheelEvent(3); await view.output();
+    await view.at(100); await view.wheelEvent(3);
+    await view.at(310); await view.wheelEvent(3);
+    await view.at(320); await view.wheelEvent(3);
+    await view.at(350); await view.answerWrite(); await view.output();
+    await view.at(400); await view.answerWrite(); await view.output();
+    // When: a line down on fresh metrics, with two lines up held
+    await view.at(450); await view.wheelEvent(-3);
+    await view.at(500); await view.answerWrite();
+    // Then: down first (53), and the held lines after the read (59), as on main
+    expect(herdr.offset).toBe(53);
+    await view.answerAll(1500);
+    expect(herdr.offset).toBe(59);
+  });
+
+  it("leaves held lines to the read while a write is out, so its failure cannot drop them", async () => {
+    const herdr = fakeHerdr(300);
+    herdr.set({ offset: 50 });
+    const view = await mount(herdr);
+    await view.answerReads();
+    await view.at(10); await view.wheelEvent(3); await view.output();
+    await view.at(100); await view.wheelEvent(3);
+    await view.at(310); await view.wheelEvent(3);
+    await view.at(350); await view.answerWrite(); await view.output();
+    await view.at(400); await view.answerWrite(); await view.output();
+    // When: a PageDown's write out, a line on fresh metrics queued behind it, and that write fails
+    await view.at(450); await view.page(1);
+    await view.at(460); await view.wheelEvent(3);
+    await view.at(500); await view.failWrite();
+    await view.answerAll(1500);
+    // Then: the queued line is gone with the failure, as on main, and the held line still applies after the read
+    expect(view.errors).toHaveLength(1);
+    expect({ end: herdr.offset, writes: herdr.targets }).toEqual({ end: 59, writes: [53, 56, 33, 59] });
+  });
+
   it("gives a page key to the program when main does, after a wheel whose held lines reached the bottom", async () => {
     const herdr = fakeHerdr(100);
     herdr.set({ offset: 20 });

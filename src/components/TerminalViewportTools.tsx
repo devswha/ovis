@@ -237,12 +237,14 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
         // lines held on stale metrics go out with a line these metrics are fresh enough for: the read that would release
         // them waits while the wheel's own writes run back to back, past the hold. The hold stays, empty, so the poll and
         // that read (and its write) come as they would have: page keys keep their timing. They wait for that read as
-        // before behind a held page, which it hands out first, and past the top these metrics know: the history may have
-        // grown since. At the bottom they stop, as the wheel would have.
+        // before behind a held page, which it hands out first; past the top these metrics know (the history may have
+        // grown since); against this line's direction; and behind a write still out, whose failure drops what is queued
+        // after it. At the bottom they stop, as the wheel would have.
         const from = previewRef.current ?? metrics.offset_from_bottom;
         const top = metrics.max_offset_from_bottom;
         let held = 0;
-        if (heldLines && !heldPage && Date.now() - heldLines.at < HELD_PAGE_MS && from + heldLines.lines <= top && from + heldLines.lines + lines <= top) {
+        if (heldLines && !heldPage && !writing && heldLines.lines * lines >= 0 && Date.now() - heldLines.at < HELD_PAGE_MS
+          && from + heldLines.lines <= top && from + heldLines.lines + lines <= top) {
           held = heldLines.lines;
           heldLines = { lines: 0, at: heldLines.at };
         }
