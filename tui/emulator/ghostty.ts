@@ -2,6 +2,7 @@ import wasmFile from "../../shared/ghostty/ghostty-vt.wasm" with { type: "file" 
 import { GhosttyEngine, GhosttyModule } from "../../shared/ghostty/engine.ts";
 import { TERMINAL_HISTORY_LINES } from "../../shared/terminal-flow.ts";
 import type { EngineEvents } from "../../shared/ghostty/engine.ts";
+import { GraphicsQueries } from "./graphics.ts";
 import type { Emulator, EmulatorError, EmulatorLoader, EmulatorOptions, EmulatorResult } from "./index.ts";
 
 /** The smallest pane the engine is asked for. */
@@ -90,6 +91,7 @@ class GhosttyEmulator implements Emulator {
   failure: EmulatorError | null = null;
   private module: GhosttyModule | null;
   private engine: GhosttyEngine | null;
+  private readonly graphics = new GraphicsQueries();
   private disposed = false;
   /** whether a call of this emulator is running; at most one is, since a nested call is refused */
   private running = false;
@@ -98,7 +100,7 @@ class GhosttyEmulator implements Emulator {
    * `make` builds the engine on the caller's handlers, each looked up when the engine calls it and skipped once the emulator is
    * disposed (also in the rest of the call that disposed it)
    */
-  constructor(module: GhosttyModule, events: EngineEvents, make: (events: EngineEvents) => GhosttyEngine) {
+  constructor(module: GhosttyModule, private readonly events: EngineEvents, make: (events: EngineEvents) => GhosttyEngine) {
     this.module = module;
     this.engine = make({
       onReply: (bytes) => {
@@ -175,12 +177,18 @@ class GhosttyEmulator implements Emulator {
     this.module = null;
   }
 
-  write: Emulator["write"] = (bytes) => this.call((engine) => engine.write(bytes));
+  write: Emulator["write"] = (bytes) => this.call((engine) => {
+    engine.write(bytes);
+    this.graphics.feed(bytes, (reply) => { if (!this.disposed) this.events.onReply?.(reply); });
+  });
 
   resize: Emulator["resize"] = (cols, rows, cellW, cellH) =>
     this.call((engine) => engine.resize(cols, rows, cellW, cellH), () => badSize(cols, rows) ?? badCell(cellW, cellH));
 
-  reset: Emulator["reset"] = () => this.call((engine) => engine.reset());
+  reset: Emulator["reset"] = () => this.call((engine) => {
+    engine.reset();
+    this.graphics.reset();
+  });
   frame: Emulator["frame"] = (draw) => this.call((engine) => engine.frame(this.live(draw), "written"));
   frameAll: Emulator["frameAll"] = (draw) => this.call((engine) => engine.frameAll(this.live(draw), "written"));
   cursorState: Emulator["cursorState"] = () => this.call((engine) => engine.cursorState());

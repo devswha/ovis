@@ -98,6 +98,18 @@ async function pane(loader: ReturnType<typeof countingLoader>["loader"], cols = 
 }
 
 describe("emulator per pane", () => {
+  it("refuses only complete Kitty graphics queries and exposes no payload in the grid", async () => {
+    const { emulator, replies } = await pane(countingLoader().loader);
+    const query = "\x1b_Ga=q,i=42,t=d,f=24,s=1,v=1;AAAA\x1b\\";
+    emulator.write(bytesOf(`before${query.slice(0, -1)}`));
+    expect(replies).toEqual([]);
+    emulator.write(bytesOf("\\after"));
+    expect(replies).toEqual(["\x1b_Gi=42;ENOTSUP:graphics are not supported\x1b\\"]);
+    emulator.write(bytesOf("\x1b_Ga=q,i=13;AB\x18\x1b\\\x1b_Ga=T,i=14;AAAA\x1b\\\x1b_Ga=q,i=15,q=2;AA\x1b\\"));
+    expect(replies).toHaveLength(1);
+    expect(rowText(emulator, 0)).toBe("beforeafter");
+  });
+
   it("shares no state between two emulators", async () => {
     const { loader } = countingLoader();
     const a = await pane(loader);
@@ -121,7 +133,7 @@ describe("emulator per pane", () => {
     emulator.write(bytesOf("\u{1F468}\u200D\u{1F469}\u200D\u{1F467}x\x1b[6n"));
     expect(replies).toEqual(["\x1b[1;4R"]);
     replies.length = 0;
-    emulator.write(bytesOf("\x1b_Gi=1,a=q;AAAA\x1b\\"));
+    emulator.write(bytesOf("\x1b_Gi=1,a=T,t=d,f=24,s=1,v=1;AAAA\x1b\\"));
     expect(replies).toEqual([]);
   });
 
