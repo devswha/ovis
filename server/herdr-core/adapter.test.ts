@@ -1271,17 +1271,25 @@ describe("herdr-core adapter, agents", () => {
 
   // hc 0.1.21 runs a template's `command:` as `sh -c "<line>"`: dash stays in front and the agent is its child (#4052)
   it.skipIf(process.platform !== "linux" && process.platform !== "darwin")("names the program a template's shell runs below it, and nothing below any other program in front", async () => {
-    const line = "sleep 30; true";
-    const shell = Bun.spawn(["sh", "-c", line], { stdout: "ignore", stderr: "ignore" });
+    const line = "cat; true";
+    const shell = Bun.spawn(["sh", "-c", line], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });
     try {
+      // cat echoing a line proves the shell's child has become cat: a forked child not yet exec'd is still named sh
+      shell.stdin.write("started\n");
+      await shell.stdin.flush();
+      const output = shell.stdout.getReader();
+      let echoed = "";
+      while (!echoed.includes("started\n")) {
+        const { done, value } = await output.read();
+        if (done) throw new Error(`the template's shell ended before its child echoed, after ${JSON.stringify(echoed)}`);
+        echoed += new TextDecoder().decode(value);
+      }
       const { socket } = await posix([
         terminal("t1", { pid: shell.pid, argv: ["sh", "-c", line], foreground: { pid: shell.pid, name: "sh", argv: ["sh", "-c", line] } }),
         terminal("t2", { pid: shell.pid, argv: ["agent"], foreground: { pid: shell.pid, name: "agent", argv: ["agent"] } }),
       ]);
-      let info = await paneProcessInfo("t1", socket);
-      // until the shell has started its child
-      for (let tries = 0; (info?.foreground_processes?.length ?? 0) < 2 && tries < 100; tries++) { await Bun.sleep(20); info = await paneProcessInfo("t1", socket); }
-      expect(info?.foreground_processes?.map(({ name, argv }) => [name, argv])).toEqual([["sh", ["sh", "-c", line]], ["sleep", ["sleep", "30"]]]);
+      const info = await paneProcessInfo("t1", socket);
+      expect(info?.foreground_processes?.map(({ name, argv }) => [name, argv])).toEqual([["sh", ["sh", "-c", line]], ["cat", ["cat"]]]);
       expect((await paneProcessInfo("t2", socket))?.foreground_processes?.map(({ name }) => name)).toEqual(["agent"]);
     } finally { shell.kill("SIGKILL"); }
   });
