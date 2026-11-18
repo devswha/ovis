@@ -1,5 +1,5 @@
 ### Fixed
-- Keys and wheel scrolls sent to a terminal just before its page is hidden or its pane is left are
-  no longer lost. They were answered as taken and then dropped, often all but the first of a quick
-  burst, because the pane's connection to herdr was cut before herdr had read them; it now ends
-  only once herdr has them, or after 2 seconds.
+- On Unix, when the last viewer explicitly detaches from a herdr terminal, the attach now has up
+  to 2 seconds to deliver keys and wheel scrolls it already accepted. Windows attaches still
+  close immediately, as do attaches with a pending lone Ctrl+B or whose viewer's connection is
+  closed or revoked.

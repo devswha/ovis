@@ -89,8 +89,14 @@ it("pauses a pane whose output waits behind a large frame queued after its attac
   }
 });
 
-for (const own of [true, false]) {
-  it(`${own ? "delivers the letter and wheel reports a viewer was answered for, in order, before its own detach lets the attach go, and takes nothing after it" : "ends the attach at once, with what it had not passed on, when its last viewer's connection is taken out"} (#4174)`, async () => {
+for (const [how, name] of [
+  ["detach", "delivers the letter and wheel reports a viewer was answered for, in order, before its own detach lets the attach go, and takes nothing after it"],
+  ["disconnect", "ends the attach at once, with what it had not passed on, when its last viewer's connection is taken out"],
+  ["remove during drain", "kills a draining attach at once when its last viewer's connection is removed"],
+  ["force close during drain", "kills a draining attach at once when its pane attachment is forced closed"],
+  ["shutdown during drain", "kills a draining attach at once when the server closes all attachments"],
+] as const) {
+  it(`${name} (#4174)`, async () => {
     const passed: string[] = [];
     const gate = Promise.withResolvers<void>();
     const gone = Promise.withResolvers<void>();
@@ -112,8 +118,16 @@ for (const own of [true, false]) {
           void gate.promise.then(() => { if (running) passed.push(data); });
           return true;
         },
-        kill() { taking = running = false; passed.push("gone"); gone.resolve(); },
-        leave() { taking = false; void gate.promise.then(() => { passed.push("gone"); gone.resolve(); }); },
+        kill() {
+          if (!running) return;
+          taking = running = false; passed.push("gone"); gone.resolve();
+        },
+        leave() {
+          taking = false;
+          void gate.promise.then(() => {
+            if (running) { running = false; passed.push("gone"); gone.resolve(); }
+          });
+        },
       } as unknown as Extract<PaneAttachment, { kind: "pty" }>["process"],
     };
     const clients = new Set([client]);
@@ -130,17 +144,25 @@ for (const own of [true, false]) {
       await registry.terminalFrames.attach(client, { type: "attach", pane_id: "p", cols: 80, rows: 24, keep_size: true });
       const typed = ["a", ...Array.from({ length: 6 }, (_, wheel) => `\x1b[<64;10;${wheel + 1}M`)];
       typed.forEach((text, id) => inputFrames.input(client, { type: "input", pane_id: "p", text, id }));
-      if (own) registry.terminalFrames.detach(client, { type: "detach", pane_id: "p" });
-      else registry.detachClaimed(client);
+      if (how === "disconnect") registry.detachClaimed(client);
+      else registry.terminalFrames.detach(client, { type: "detach", pane_id: "p" });
       inputFrames.input(client, { type: "input", pane_id: "p", text: "b", id: typed.length });
+      if (how !== "disconnect") expect(passed).toEqual([]);
+      if (how === "remove during drain") {
+        clients.delete(client);
+        registry.detachClaimed(client);
+      }
+      if (how === "force close during drain") registry.closeAttachment("p");
+      if (how === "shutdown during drain") registry.closeAttachments();
+      if (how !== "detach") expect(passed).toEqual(["gone"]);
       gate.resolve();
       await gone.promise;
-      expect(passed).toEqual(own ? [...typed, "gone"] : ["gone"]);
+      expect(passed).toEqual(how === "detach" ? [...typed, "gone"] : ["gone"]);
       expect(told.filter((frame) => frame.type === "input-result")).toEqual([
         ...typed.map((_, id) => ({ type: "input-result" as const, id, pane_id: "p", ok: true })),
         { type: "input-result" as const, id: typed.length, pane_id: "p", ok: false, code: "input_not_ready" },
       ]);
-    } finally { registry.conversations.stop(); }
+    } finally { gate.resolve(); registry.conversations.stop(); }
   });
 }
 

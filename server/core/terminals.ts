@@ -6,7 +6,7 @@ import { CoreAttachSession } from "../herdr-core/attach-session.ts";
 import { type SightingFacts, sightingFacts } from "../input-guard.ts";
 import { OUTPUT_HARD_BYTES, OUTPUT_HIGH_BYTES, OUTPUT_STALL_MS, OutputWindow, wireBytes } from "../output-window.ts";
 import { backlog, type Client, connectionOf, send } from "./connections.ts";
-import { ATTACH_HELD_MESSAGE, createSpawnAttachment, type PaneAttachment } from "./terminal-process.ts";
+import { ATTACH_HELD_MESSAGE, createSpawnAttachment, type PaneAttachment, type PtyAttachment } from "./terminal-process.ts";
 
 const DETACHED_CONVERSATION_WATCHES = 32;
 
@@ -56,6 +56,8 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
   const pendingAttachments = new Map<string, Promise<PaneAttachment>>();
   // herdr releases its exclusive attach slot only after the old process exits.
   const retiringAttachments = new Map<string, Promise<void>>();
+  // A viewer that gave up its claim still owns any input its attach is draining.
+  const drainingAttachments = new Map<string, { readonly owner: Client; readonly process: PtyAttachment["process"] }>();
 
   function follows(client: Client, paneId: string): boolean {
     return !connectionOf(client).closing && client.readyState === WebSocket.OPEN
@@ -128,11 +130,18 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
   const { spawnAttachment } = createSpawnAttachment({ herdrFailure: options.herdrFailure, attachments, retiringAttachments, terminalAttach, isStopped: stopped, closeAttachment, broadcast, sendOutput, reconcileOutput, holdPendingPane, inputReady, holdFor, heldRetry, retryFor, relookupFor });
 
   /**
-   * `left`: its last viewer left on its own. What that viewer typed and was answered for may still be on its way
+   * `leftBy`: its last viewer left on its own. What that viewer typed and was answered for may still be on its way
    * through the attach, which a kill would end with it unread, so the attach is asked to leave by itself, after all
    * of it. Nothing more is written to it either way, and the next attach waits for its exit as after a kill.
    */
-  function closeAttachment(paneId: string, left = false): void {
+  function closeAttachment(paneId: string, leftBy?: Client): void {
+    if (!leftBy) {
+      const draining = drainingAttachments.get(paneId);
+      if (draining) {
+        drainingAttachments.delete(paneId);
+        draining.process.kill();
+      }
+    }
     const attachment = attachments.get(paneId);
     if (!attachment) return;
     for (const member of attachment.clients) holdPending(member, paneId);
@@ -148,13 +157,23 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
     for (const member of attachment.clients) member.data.conversationInterests.delete(paneId);
     for (const member of attachment.clients) member.data.output.delete(paneId);
     releaseConversation(paneId);
+    // Only a ready attach this bridge holds took any typing.
+    const draining = leftBy && attachment.kind === "pty" && attachment.ready && !attachment.held
+      ? { owner: leftBy, process: attachment.process } : undefined;
     const retired = attachment.process.exited.finally(() => {
       if (retiringAttachments.get(paneId) === retired) retiringAttachments.delete(paneId);
+      if (draining && drainingAttachments.get(paneId) === draining) drainingAttachments.delete(paneId);
     });
     retiringAttachments.set(paneId, retired);
-    // only a ready attach this bridge holds took any typing
-    if (left && attachment.kind === "pty" && attachment.ready && !attachment.held) attachment.process.leave();
-    else attachment.process.kill();
+    if (draining) {
+      drainingAttachments.set(paneId, draining);
+      draining.process.leave();
+    } else attachment.process.kill();
+  }
+
+  function closeAttachments(): void {
+    for (const paneId of attachments.keys()) closeAttachment(paneId);
+    for (const paneId of drainingAttachments.keys()) closeAttachment(paneId);
   }
 
   /**
@@ -163,6 +182,7 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
    */
   function paneMoved(from: string, to: string): void {
     if (from === to) return;
+    if (drainingAttachments.has(from)) closeAttachment(from);
     const retire = (): Promise<void> | undefined => {
       if (attachments.has(from)) {
         broadcast(from, { type: "pty-exit", pane_id: from, code: null });
@@ -247,17 +267,20 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
     releaseConversation(paneId);
     const attachment = attachments.get(paneId);
     if (!attachment) return;
-    attachment.clients.delete(client);
+    const wasAttached = attachment.clients.delete(client);
     attachment.stalled.delete(client);
     attachment.grids.delete(client);
     if (attachment.kind === "mirror") attachment.unscreened.delete(client);
     if (attachment.driver === client) attachment.driver = undefined;
-    if (attachment.clients.size === 0) closeAttachment(paneId, own);
+    if (attachment.clients.size === 0) closeAttachment(paneId, own && wasAttached ? client : undefined);
     else reconcileOutput(paneId);
   }
 
   function detachClaimed(client: Client): void {
     for (const paneId of client.data.attached.keys()) detach(paneId, client);
+    for (const [paneId, draining] of drainingAttachments) {
+      if (draining.owner === client) closeAttachment(paneId);
+    }
   }
 
   function dropClaims(client: Client): void {
@@ -479,5 +502,5 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
   };
 
   const views: ReadonlyMap<string, AttachmentView> = attachments;
-  return { attachments: views, conversations, reconcileOutput, closeAttachment, paneMoved, detachClaimed, dropClaims, sight, poke, drainOutput, terminalFrames };
+  return { attachments: views, conversations, reconcileOutput, closeAttachment, closeAttachments, paneMoved, detachClaimed, dropClaims, sight, poke, drainOutput, terminalFrames };
 }
