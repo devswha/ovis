@@ -25,8 +25,8 @@ export class MachineProfileError extends Error {}
 /**
  * The profile makes a pairing code only for an account (POST /api/relay/offer and POST /api/relay/code with
  * `x-ovis-expect-account`), for every caller: a device that pairs with any other code would be on this machine in no
- * account. Refused in server/relay/routes.ts before the relay's state is read, so nothing is made and the code pending
- * stays as it was, whatever that state. POST /api/devices/pair/start is one of the routes
+ * account. Refused by RelayService.offer and pairCode, and by server/relay/routes.ts before the relay's state is read,
+ * so nothing is made and the code pending stays as it was, whatever that state. POST /api/devices/pair/start is one of the routes
  * the profile refuses (machineRouteRestricted).
  */
 export class MachineCodeForAccountError extends Error {

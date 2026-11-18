@@ -32,6 +32,7 @@ import { unitHerdrOnly } from "../../scripts/test-herdr.ts";
 import { FakeAccountService } from "../../shared/account-service-fake.ts";
 import { newRecordId, signAccountRecord } from "../../shared/account-records.ts";
 import { herdrRpc, workspaceClose, workspaceCreate } from "../herdr/client.ts";
+import { MachineCodeForAccountError } from "../machine-profile.ts";
 
 const cleanup: (() => void | Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -1226,6 +1227,19 @@ it("machine profile refuses a code for no account while its relay reconnects, an
   }
   expect(answers).toEqual([["/code", 409, "machine_profile"], ["/offer", 409, "machine_profile"]]);
   expect(devices.activePairing()?.code).toBe(pending);
+});
+
+it("machine profile: the relay service itself makes no code and no offer for no account, whoever calls it", async () => {
+  const f = await machineFixture({}, { pairCodeRelay: "wss://pair.test" });
+  await f.start();
+  const devices = f.app.context.services.devices;
+  const pending = devices.startPairing().code;
+  let started = 0;
+  devices.onPairingStarted(() => { started++; });
+  expect(() => f.service.offer()).toThrow(MachineCodeForAccountError);
+  expect(() => f.service.offer(null, { noAccountOnly: true })).toThrow(MachineCodeForAccountError);
+  await expect(f.service.pairCode()).rejects.toBeInstanceOf(MachineCodeForAccountError);
+  expect([started, devices.activePairing()?.code]).toEqual([0, pending]);
 });
 
 it("machine profile takes a device in with a code made for its account: the device links itself into that account", async () => {
