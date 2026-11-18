@@ -1,9 +1,10 @@
 ### Changed
 - A signed-in device that opens a QR code marked as one whose PC checks new devices with the Ovis
-  account now has the account check it before it pairs. It asks the account to do so without telling
-  the account's other devices; the account decides, and each such add counts toward the account's
-  limit on adds. When the account does not confirm it, or does not list the PC, nothing is paired, the
-  code is not used, and the screen says what to do. Every other QR code pairs as before.
+  account now, once Add and pair is pressed, lists the PC in its account if needed and has the account
+  check it before it pairs. It asks the account to do so without telling the account's other devices;
+  the account decides, and each such add counts toward the account's limit on adds. When the account
+  does not confirm it, nothing is paired, the code is not used, and the screen says what to do. Every
+  other QR code pairs as before.
 - Add a connection → Ovis relay also lists the PC in the signed-in account beside its QR code when the
   PC made that code for this account and the account does not list the PC yet; the listing never
   holds the code up.

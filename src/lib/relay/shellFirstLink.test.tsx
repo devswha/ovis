@@ -59,6 +59,8 @@ describe("the admission before a first link", () => {
     readonly replaceAtRestore?: boolean;
     /** another tab saves a newer pairing of this PC just as this tab begins to forget it */
     readonly replaceAtForget?: boolean;
+    /** the second admission (the changed key's) waits until the test releases it */
+    readonly holdSecondPost?: boolean;
     /** the first read of the saved record after the PAIR waits until the test releases it */
     readonly holdReadAfterPair?: boolean;
     /** the PC ends the new row's sessions just before it answers the first link, so that end arrives first */
@@ -91,6 +93,7 @@ describe("the admission before a first link", () => {
     const devices = new Map<string, RelayDevice>(options.saved || options.reopen ? [[offer.server_id, older]] : []);
     const newer: RelayDevice = { ...older, device_id: REPLACED_ID };
     const readHeld = Promise.withResolvers<void>(), readRelease = Promise.withResolvers<void>();
+    const secondPostHeld = Promise.withResolvers<void>(), secondPostRelease = Promise.withResolvers<void>();
     let readsHeld = 0;
     // another tab's write that commits just before this tab's own delete of the record
     const replaceFirst = (id: string): void => { if (options.replaceAtForget && devices.get(id)?.device_id === NEWER_ID) devices.set(id, newer); };
@@ -180,6 +183,7 @@ describe("the admission before a first link", () => {
         quiet.push(body.quiet === true);
         postSignal = init.signal ?? undefined;
         if (options.neverAnswers === "admission") return hung();
+        if (options.holdSecondPost && posted.length === 2) { secondPostHeld.resolve(); await secondPostRelease.promise; }
         await admissionGate.promise;
         const answer = options.admission?.() ?? (listed ? Response.json({ id: "adm-1" }) : Response.json({ error: { code: "unknown_pc", message: "List PCs of this account only" } }, { status: 400 }));
         if (answer === "unanswered") throw new TypeError("Failed to fetch");
@@ -211,11 +215,11 @@ describe("the admission before a first link", () => {
     /** the PC ends the row: every session of it ends `auth_revoked`, and a later sign-in with it is refused */
     const endRow = (): void => { ended = devices.get(offer.server_id)?.device_id; for (const end of fatal.splice(0)) end(new MuxProtocolError("auth_revoked", "the PC ended this row")); };
     const switchAccount = (): Promise<void> => accountStore.set("session", sessionOf("acct-other"));
-    return { current, press, switchAccount, readHeld: readHeld.promise, releaseRead: () => readRelease.resolve(), events, pcEvents, posted, quiet, sent, failure, endRow, admissionGate, store, offer, apps: () => apps, opens: () => opens, postSignal: () => postSignal };
+    return { current, press, switchAccount, readHeld: readHeld.promise, releaseRead: () => readRelease.resolve(), secondPostHeld: secondPostHeld.promise, releaseSecondPost: () => secondPostRelease.resolve(), events, pcEvents, posted, quiet, sent, failure, endRow, admissionGate, store, offer, apps: () => apps, opens: () => opens, postSignal: () => postSignal };
   }
 
   for (const [what, options, expected] of [
-    ["a PC the account lists under the QR code's key", { listed: true }, ["admission Bearer access-acct-test", "admission answered", "pair", "link"]],
+    ["a PC the account does not list yet", {}, ["list Bearer access-acct-test", "admission Bearer access-acct-test", "admission answered", "pair", "link"]],
     ["a PC this device has a pairing with that is not linked, which the account lists", { saved: true, listed: true }, ["admission Bearer access-acct-test", "admission answered", "pair", "link"]],
     // a marked PAIR makes a new row on the PC, whatever this device saved: the saved record decides nothing
     ["a PC this device's saved pairing says it is a member of already", { saved: true, member: true, listed: true }, ["admission Bearer access-acct-test", "admission answered", "pair", "link"]],
@@ -446,15 +450,26 @@ describe("the admission before a first link", () => {
     expect((await run.store.get(run.offer.server_id))?.device_id).toBe(OLDER_ID);
   });
 
-  // the mark comes with the QR code, which nothing signs: it makes the device post its admission, and nothing more. The
-  // account service checks that the account lists the PC, and the PC decides; the device never skips the post for it
-  it("with the mark, posts the admission for a PC the account does not list, lists nothing, and pairs nothing once it is refused", async () => {
+  // the mark comes with the QR code, which nothing signs: it only chooses the confirm. The person's press of Add and pair
+  // on that confirm, which names the PC and the account, lists a PC the account does not list yet; then the admission
+  // goes, then the PAIR
+  it("with the mark, lists a PC the account does not list once Add and pair is pressed, then posts, pairs and links", async () => {
     const run = await pairing({ mark: true });
     run.admissionGate.resolve();
-    await until(() => run.current().state.kind === "failed");
-    expect(run.failure()).toBe("account-unlisted");
-    expect(run.posted).toHaveLength(1);
-    expect(run.events.filter((event) => event.startsWith("list"))).toEqual([]);
+    await until(() => run.apps() === 1 && run.sent.length === 1);
+    // the enrollment lists the PC again once the link passed, as for any pairing; these are the steps before it
+    expect(run.events.filter((event) => event !== "pressed").slice(0, 5)).toEqual(["list Bearer access-acct-test", "admission Bearer access-acct-test", "admission answered", "pair", "link"]);
+    expect(run.events.indexOf("pressed")).toBeLessThan(run.events.indexOf("list Bearer access-acct-test"));
+    expect(run.failure()).toBeNull();
+  });
+
+  it("with the mark, lists nothing and posts nothing while Add and pair is not pressed", async () => {
+    const run = await pairing({ mark: true, hold: true });
+    run.admissionGate.resolve();
+    for (let step = 0; step < 400; step++) await turn();
+    expect(run.current().state.kind).toBe("confirm");
+    expect(run.events.filter((event) => event.startsWith("list") || event.startsWith("admission"))).toEqual([]);
+    expect(run.posted).toEqual([]);
     expect(run.opens()).toBe(0);
   });
 
@@ -551,5 +566,17 @@ describe("the admission before a first link", () => {
     run.admissionGate.resolve();
     await until(() => run.current().state.kind === "failed");
     expect((await run.store.get(run.offer.server_id))?.device_id).toBe(REPLACED_ID);
+  });
+
+  it("with the mark, ends the changed key's admission when the person cancels while it is out, and sends no link", async () => {
+    const run = await pairing({ mark: true, listed: true, keyChanges: true, holdSecondPost: true });
+    run.admissionGate.resolve();
+    await run.secondPostHeld;
+    run.current().onCancel();
+    expect(run.postSignal()?.aborted).toBe(true);
+    run.releaseSecondPost();
+    for (let step = 0; step < 400; step++) await turn();
+    expect(run.sent).toEqual([]);
+    expect(run.apps()).toBe(0);
   });
 });

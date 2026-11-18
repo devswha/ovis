@@ -367,19 +367,34 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     vouched.delete(offer.server_id);
     // a code that carries the mark: its PC takes the device only once the account service holds its admission, so the
     // admission is posted, and answered, before the pairing; a failure stops here, where nothing has reached the PC and
-    // the code keeps its uses. Nothing signs the mark, so it chooses nothing but this one post, which the person asked
-    // for by pressing: the account service checks that the account lists the PC, and the PC decides. Nothing else is
-    // written to the account on the strength of the QR code. Only a new PC's code carries the mark, so its admission
-    // asks to be taken quietly; the account service decides whether it is
+    // the code keeps its uses. Nothing signs the mark, so it only chooses the screen: the person's own press of Add and
+    // pair, on the confirm that named this PC and this account (`consent`), is what lists the PC in the account when it
+    // does not list it yet, and nothing is listed without that press. The account service and the PC decide the rest.
+    // Only a new PC's code carries the mark, so its admission asks to be taken quietly; the account service decides
+    // whether it is
     if (offer.code !== undefined && offer.admission === 1) {
       if (session === undefined || key === undefined) throw new AdmissionRefusedError("sign-in");
       // whatever this device saved for the PC: a marked code's PAIR always makes a new row there, whose link the PC
       // checks with the account service. The post ends at its bound or at the person's Cancel, the request itself and
       // not only the wait for it (the wait for the account's lock included): a slow service rings nobody after the
       // person was told
-      const bound = AbortSignal.any([signal, AbortSignal.timeout(ADMISSION_WAIT_MS)]);
+      const directory = account.forSignIn(session);
+      const bounded = (): AbortSignal => AbortSignal.any([signal, AbortSignal.timeout(ADMISSION_WAIT_MS)]);
+      if (consent !== undefined) {
+        try {
+          if (!(await directory.listPcs(bounded())).some((pc) => pc.server_id === offer.server_id)) {
+            const publicKey = Array.from(importPublicKey(offer.server_public_key), (byte) => byte.toString(16).padStart(2, "0")).join("");
+            await directory.putPc(offer.server_id, { label: (offer.name ?? offer.server_id.slice(0, 8)).slice(0, 48), public_key: publicKey, relay: offer.relay }, bounded());
+          }
+        } catch (error) {
+          if (error instanceof SignedOutError) throw new ConsentChangedError();
+          signal.throwIfAborted();
+          console.warn("Ovis: this PC could not be listed in the account before pairing", error instanceof AccountServiceError ? error.code : error instanceof Error ? error.name : error);
+          throw new AdmissionRefusedError(error instanceof AccountServiceError && error.status === 429 ? "busy" : error instanceof AccountServiceError && error.status < 500 ? "refused" : "unanswered");
+        }
+      }
       try {
-        await account.forSignIn(session).postAdmission(offer.server_id, label.slice(0, 48), key.public_spki, deviceOs(navigator.userAgent, navigator.maxTouchPoints ?? 0), bound, { quiet: true });
+        await directory.postAdmission(offer.server_id, label.slice(0, 48), key.public_spki, deviceOs(navigator.userAgent, navigator.maxTouchPoints ?? 0), bounded(), { quiet: true });
       } catch (error) {
         // the sign-in the person said yes under is no longer the stored one: nothing more goes out, and the question is
         // asked again (shell.tsx)
@@ -485,8 +500,9 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
         if (posted !== undefined && posted !== key.public_spki) {
           signal?.throwIfAborted();
           try {
-            await account.forSignIn(session).postAdmission(serverId, label.slice(0, 48), key.public_spki, deviceOs(navigator.userAgent, navigator.maxTouchPoints ?? 0), AbortSignal.timeout(ADMISSION_WAIT_MS), { quiet: true });
+            await account.forSignIn(session).postAdmission(serverId, label.slice(0, 48), key.public_spki, deviceOs(navigator.userAgent, navigator.maxTouchPoints ?? 0), signal ? AbortSignal.any([signal, AbortSignal.timeout(ADMISSION_WAIT_MS)]) : AbortSignal.timeout(ADMISSION_WAIT_MS), { quiet: true });
           } catch (error) {
+            signal?.throwIfAborted();
             console.warn("Ovis: the account service did not take the admission of the new key", error instanceof AccountServiceError ? error.code : error instanceof Error ? error.name : error);
             throw new AdmissionRefusedError("new-key");
           }
