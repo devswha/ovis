@@ -24,6 +24,10 @@ async function until(holds: () => boolean, what: string): Promise<void> {
 }
 const UNTIL_SIGNED_MIN_NS = 3_000_000_000n;
 
+async function settleSigned(): Promise<void> {
+  for (let turn = 0; turn < 2_000; turn++) await crypto.subtle.digest("SHA-256", new Uint8Array(1));
+}
+
 async function untilSigned(holds: () => boolean, what: string): Promise<void> {
   const deadline = process.hrtime.bigint() + UNTIL_SIGNED_MIN_NS;
   for (let turn = 0; turn < 2_000 || process.hrtime.bigint() < deadline; turn++) { if (holds()) return; await crypto.subtle.digest("SHA-256", new Uint8Array(1)); }
@@ -663,7 +667,7 @@ describe("the hosted shell's front page", () => {
         const before = { written: written.length, asked };
         await page(`https://app.ovis.sh/s/${offer.server_id}/`);
         await until(() => apps === 1, "the app");
-        await untilSigned(() => false, "the enrollment, were one begun").catch(() => undefined);
+        await settleSigned();
         expect(prepared).toHaveLength(2);
         if (then === "the same") {
           expect(prepared[1]?.accountKey).toBeDefined();
@@ -724,7 +728,7 @@ describe("the hosted shell's front page", () => {
         await accountStore.set("session", sessionOf("b"));
         await page(`https://app.ovis.sh/s/${offer.server_id}/`);
         await until(() => apps === 1, "the app");
-        await untilSigned(() => false, "the enrollment, were one begun").catch(() => undefined);
+        await settleSigned();
         expect(prepared).toHaveLength(2);
         expect(prepared[1]?.accountKey).toBeUndefined();
         expect(asked).toBe(before.asked);
