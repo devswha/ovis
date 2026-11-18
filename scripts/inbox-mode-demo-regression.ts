@@ -12,11 +12,14 @@ import type { AgentStatus } from "../shared/protocol.ts";
 import { SHEET_HISTORY_KEY } from "../src/lib/historyKeys.ts";
 import { KO } from "../src/lib/i18n.ko.ts";
 import { serveDemo } from "./demo-server.ts";
+import { RESIZE_SETTLE_MS } from "../src/lib/paneTerminalShared.ts";
 
 declare global {
   interface Window {
     inboxFixture: {
       rosters: number;
+      readonly rosterOpen: boolean;
+      readonly pendingFits: number;
       publish(): Promise<void>;
       /** sets a pane's state as herdr would: its pane-status event, then the roster */
       set(paneId: string, status: AgentStatus, finish?: number): Promise<void>;
@@ -41,7 +44,7 @@ declare global {
 // Holds the demo's agents still, whatever its own timers do: Codex waits for an answer, Claude works
 // (the demo would finish it 4.5s in), the flaky-test agent is done and not looked at, the rest are idle.
 // Loaded after demo-transport.js and before the app; what it forces survives a reload.
-function installInboxFixture(): void {
+function installInboxFixture(resizeSettleMs: number): void {
   const key = "inbox-mode-regression:forced";
   const stored = sessionStorage.getItem(key);
   const state: { epoch: string; forced: Record<string, { status: AgentStatus; finish: number }> } = stored ? JSON.parse(stored) : {
@@ -74,6 +77,8 @@ function installInboxFixture(): void {
     return machines;
   };
   const sources = new Set<EventSource>();
+  const opened = new Set<EventSource>();
+  let rosterDropped = false;
   let rosterFails = new URLSearchParams(location.search).get("inbox_fail") === "roster";
   let rosterHeld: (() => void)[] | null = null;
   const fetchDemo = window.fetch;
@@ -92,9 +97,21 @@ function installInboxFixture(): void {
     constructor(url: string | URL, init?: EventSourceInit) {
       super(url, init);
       sources.add(this);
+      const close = this.close.bind(this);
+      this.close = () => { sources.delete(this); opened.delete(this); close(); };
+      let onOpen: EventSource["onopen"] = null;
+      Object.defineProperty(this, "onopen", {
+        get: () => (event: Event) => {
+          if (rosterDropped) return;
+          opened.add(this);
+          onOpen?.call(this, event);
+        },
+        set: (handler: EventSource["onopen"]) => { onOpen = handler; },
+      });
       let receive: EventSource["onmessage"] = null;
       Object.defineProperty(this, "onmessage", {
         get: () => (event: MessageEvent<string>) => {
+          if (rosterDropped) return;
           const body = JSON.parse(event.data);
           if (body.type === "machines" && rosterFails) return;
           if (body.type === "machines") { body.machines = patch(body.machines); window.inboxFixture.rosters++; }
@@ -108,7 +125,6 @@ function installInboxFixture(): void {
         set: (handler: EventSource["onmessage"]) => { receive = handler; },
       });
     }
-    close(): void { sources.delete(this); super.close(); }
   };
   const send = (body: unknown): void => {
     for (const source of sources) source.onmessage?.(new MessageEvent("message", { data: JSON.stringify(body) }));
@@ -130,8 +146,41 @@ function installInboxFixture(): void {
   } as unknown as typeof WebSocket;
   for (const name of ["CONNECTING", "OPEN", "CLOSING", "CLOSED"] as const) Object.defineProperty(Recorded, name, { value: DemoSocket[name] });
   window.WebSocket = Recorded;
+
+  // The terminal's ResizeObserver debounces its fit, including decisions to send nothing.
+  // Track those callbacks through execution or cancellation instead of waiting out the debounce.
+  const pendingFits = new Set<number>();
+  let observingTerminal = false;
+  const NativeObserver = window.ResizeObserver;
+  window.ResizeObserver = class extends NativeObserver {
+    constructor(callback: ResizeObserverCallback) {
+      super((entries, observer) => {
+        observingTerminal = entries.some(({ target }) => target.classList.contains("pane-terminal"));
+        try { callback(entries, observer); }
+        finally { observingTerminal = false; }
+      });
+    }
+  };
+  const timers: Window = window;
+  const setTimer = timers.setTimeout.bind(window);
+  const clearTimer = timers.clearTimeout.bind(window);
+  timers.setTimeout = (handler: TimerHandler, delay?: number, ...args: unknown[]) => {
+    if (!observingTerminal || delay !== resizeSettleMs || typeof handler !== "function") return setTimer(handler, delay, ...args);
+    const id = setTimer(() => {
+      pendingFits.delete(id);
+      handler(...args);
+    }, delay);
+    pendingFits.add(id);
+    return id;
+  };
+  timers.clearTimeout = (id) => {
+    if (id !== undefined) pendingFits.delete(id);
+    clearTimer(id);
+  };
   window.inboxFixture = {
     rosters: 0,
+    get rosterOpen() { return opened.size > 0; },
+    get pendingFits() { return pendingFits.size; },
     resizes: [],
     frames: [],
     async publish() {
@@ -145,9 +194,12 @@ function installInboxFixture(): void {
       await this.publish();
     },
     dropRoster() {
-      for (const source of sources) { Object.assign(source, { readyState: 0 }); source.onerror?.(new Event("error")); }
+      rosterDropped = true;
+      for (const source of opened) { Object.assign(source, { readyState: 0 }); source.onerror?.(new Event("error")); }
+      opened.clear();
     },
     restoreRoster() {
+      rosterDropped = false;
       for (const source of sources) { Object.assign(source, { readyState: 1 }); source.onopen?.(new Event("open")); }
     },
     failRoster(failing) { rosterFails = failing; },
@@ -170,9 +222,6 @@ const BLOCKED_TITLE = "Guard the export button";
 const WORKING_TITLE = "Idempotent payments";
 const ABSENT = [".inbox-filters", ".inbox-chip", ".inbox-place", ".inbox-title", ".inbox-dot", ".tab-strip", ".context-tabs", ".view-switch", ".status-bar", "#drawer-toggle", "#workspace-drawer", ".sidebar-toggle", ".pane-split.is-split"];
 const PHONE = { width: 390, height: 844 };
-/** how long nothing may be sent to a pty: past the terminal's own wait for its box to settle before it fits */
-const NO_RESIZE_WAIT_MS = 1_000;
-
 const app = mkdtempSync(join(tmpdir(), "ovis-inbox-mode-"));
 const evidence = process.env["UI_EVIDENCE_DIR"];
 /**
@@ -225,6 +274,23 @@ async function addressIs(page: Page, want: Partial<Address>, what: string): Prom
 }
 const historyLength = (page: Page): Promise<number> => page.evaluate(() => history.length);
 const frames = (page: Page) => page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
+async function terminalSettled(page: Page, attached?: number): Promise<void> {
+  if (attached !== undefined) {
+    await page.waitForFunction((count) => {
+      const drawn = [...document.querySelectorAll("[data-layout-pane]")].filter((node) => (node.querySelector(".xterm-screen")?.getBoundingClientRect().width ?? 0) > 0);
+      return drawn.length >= count && drawn.every((node) => {
+        const frame = window.inboxFixture.frames.filter((frame) => frame.pane === node.getAttribute("data-layout-pane") && ["attach", "detach"].includes(frame.type)).at(-1);
+        return frame?.type === "attach" && (frame.cols ?? 0) > 0 && (frame.rows ?? 0) > 0;
+      });
+    }, attached, { timeout: 15_000 });
+  }
+  // Deliver the current layout to the app's observers before looking for pending fits.
+  await page.evaluate(() => new Promise<void>((resolve) => {
+    const observer = new ResizeObserver(() => { observer.disconnect(); resolve(); });
+    observer.observe(document.documentElement);
+  }));
+  await page.waitForFunction(() => window.inboxFixture.pendingFits === 0, undefined, { timeout: 5_000 });
+}
 const row = (page: Page, pane: string, machine = "local") => page.locator(`.mode-inbox .inbox-item[data-machine="${machine}"][data-pane="${pane}"] .inbox-row`);
 const near = (got: number, want: number, by: number, what: string): void => assert.ok(Math.abs(got - want) <= by, `${what}: ${got}, wanted ${want} within ${by}`);
 const sameBox = (got: Box, want: Box, what: string): void => {
@@ -384,7 +450,7 @@ async function withPage(browser: Browser, base: string, settings: Settings, path
 try {
   await buildDemoApp(app);
   const index = join(app, "index.html");
-  writeFileSync(join(app, "inbox-fixture.js"), `(${installInboxFixture.toString()})();`);
+  writeFileSync(join(app, "inbox-fixture.js"), `(${installInboxFixture.toString()})(${RESIZE_SETTLE_MS});`);
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, '<script src="./demo-transport.js"></script>\n    <script src="./inbox-fixture.js"></script>\n    <script type="module"'));
   const server = serveDemo(app, { prefix: "/" });
   const base = `http://127.0.0.1:${server.port}`;
@@ -696,11 +762,12 @@ try {
           await mark.tap();
           await listScreen(page);
           await rowCount(page, 6);
+          await page.locator("#workspace-drawer, .scrim.is-open").waitFor({ state: "detached" });
+          await page.waitForFunction(() => Boolean(document.elementFromPoint(4, 420)?.closest(".mode-inbox")), undefined, { timeout: 5_000 });
           const cdp = await page.context().newCDPSession(page);
           await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: 4, y: 420 }] });
           for (let x = 24; x <= 304; x += 40) await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: 422 }] });
           await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-          await frames(page);
           assert.equal(await page.locator("#workspace-drawer, .scrim.is-open").count(), 0, "a swipe from the edge opens no drawer in the mode");
           await page.locator(".mode-inbox").waitFor();
           pass(13, "the open drawer's head is the Ovis mark, named Open agent inbox, which opens the list, and its foot has no row for it; in the mode a swipe from the left edge opens no drawer");
@@ -1058,8 +1125,7 @@ try {
             await page.locator(".app-header.is-zoned").waitFor();
             const classic = await terminalBox(page);
             if (setup.path.endsWith("sidebar=hidden")) assert.equal(classic.x, 0, "the classic sidebar is collapsed: the pane begins at the window's edge");
-            // fixed wait: the page's own first sizing of the pane has gone out
-            await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+            await terminalSettled(page, 1);
             const before = (await sized()).length;
 
             if (wide) {
@@ -1071,8 +1137,7 @@ try {
             } else await enterFromMore(page);
             await rowCount(page, 6);
             await paneHiddenUnderList(page, "the pane is mounted under the list, hidden");
-            // fixed wait: no size may be sent for the pane under the list
-            await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+            await terminalSettled(page);
             assert.deepEqual((await sized()).slice(before), [], "the list over the pane sends its pty no size");
             sameBox(await box(page, terminal), classic, "under the list the terminal keeps the box it had");
 
@@ -1084,8 +1149,7 @@ try {
             await page.locator(".mode-inbox").waitFor({ state: "detached" });
             await page.locator(".app-header.is-zoned").waitFor();
             if (!wide) await sheetClosed(page);
-            // fixed wait: no size may be sent for the pane shown again in the box it had
-            await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+            await terminalSettled(page);
             assert.deepEqual((await sized()).slice(before), [], "leaving the mode sends the pane's pty no size");
             sameBox(await terminalBox(page), classic, "back in the classic app the terminal has the box it had");
             console.log(`PASS the mode sizes no terminal on ${setup.name}: entered and left with the pane showing its terminal (${Math.round(classic.w)} by ${Math.round(classic.h)}), its pty is sent no size and its box stays`);
@@ -1115,8 +1179,7 @@ try {
               await page.getByRole("option", { name: "Split pane right", exact: true }).click();
             }
             await page.waitForFunction((count) => [...document.querySelectorAll("[data-layout-pane] .xterm-screen")].filter((screen) => screen.getBoundingClientRect().width > 0).length === count, setup.panes, { timeout: 15_000 });
-            // fixed wait: the new pane's own attach and first sizing have gone out
-            await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+            await terminalSettled(page, setup.panes);
             const classic = await screens();
             const panes = Object.keys(classic);
             assert.equal(panes.length, setup.panes, `classic draws the split's ${setup.panes} terminals: ${panes.join(", ")}`);
@@ -1127,15 +1190,13 @@ try {
             await rowCount(page, 6);
             await paneHiddenUnderList(page, "the split's panes are mounted under the list, hidden");
             assert.deepEqual(Object.keys(await screens()).sort(), [...panes].sort(), "every pane of the split is still mounted under the list");
-            // fixed wait: nothing may be sent for a pane under the list
-            await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+            await terminalSettled(page);
             assert.deepEqual((await frames()).slice(before), [], "entering the mode detaches no terminal, attaches none and sends no size or release");
 
             await page.locator(".inbox-rail .inbox-rail-exit").click();
             await page.locator(".mode-inbox").waitFor({ state: "detached" });
             await page.locator(".app-header.is-zoned").waitFor();
-            // fixed wait: nothing may be sent for a split shown again as it was
-            await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+            await terminalSettled(page);
             assert.deepEqual((await frames()).slice(before), [], "leaving the mode from the list detaches no terminal, attaches none and sends no size or release");
             const after = await screens();
             for (const pane of panes) sameBox(after[pane] ?? { x: -1, y: -1, w: -1, h: -1, right: -1, bottom: -1 }, classic[pane]!, `the split's pane ${pane} has the box, and the grid, it had`);
@@ -1149,8 +1210,7 @@ try {
           await page.getByRole("searchbox", { name: "Search panes and actions", exact: true }).fill("Split pane right");
           await page.getByRole("option", { name: "Split pane right", exact: true }).click();
           await page.waitForFunction(() => [...document.querySelectorAll("[data-layout-pane] .xterm-screen")].filter((screen) => screen.getBoundingClientRect().width > 0).length === 2, undefined, { timeout: 15_000 });
-          // fixed wait: the new pane's own attach and first sizing have gone out
-          await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+          await terminalSettled(page, 2);
           const other = await page.evaluate((working) => [...document.querySelectorAll("[data-layout-pane]")].map((frame) => frame.getAttribute("data-layout-pane")).find((pane) => pane !== null && pane !== working) ?? "", WORKING);
           const held = (await page.evaluate(() => window.inboxFixture.frames.slice())).filter((frame) => frame.pane === other && (frame.type === "attach" || frame.type === "resize")).at(-1);
           assert.ok(other !== "" && held !== undefined, `the tab's other pane (${other}) holds the pty's size in classic`);
@@ -1162,14 +1222,13 @@ try {
           await page.locator('.thread-top .lens-toggle[data-view="terminal"]').waitFor();
           await page.goBack();
           await page.locator(".inbox-unchosen").waitFor();
-          // fixed wait: what the thread and the list's return send has gone out
-          await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+          await terminalSettled(page);
           const before = await page.evaluate(() => window.inboxFixture.frames.length);
           await page.locator(".inbox-rail .inbox-rail-exit").click();
           await page.locator(".mode-inbox").waitFor({ state: "detached" });
           await page.locator(".app-header.is-zoned").waitFor();
-          // fixed wait: the panes shown again have asked for what they ask for
-          await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+          await page.waitForFunction(({ before, other }) => window.inboxFixture.frames.slice(before).some((frame) => frame.type === "resize" && frame.pane === other), { before, other }, { timeout: 5_000 }).catch(() => {});
+          await terminalSettled(page);
           const sent = (await page.evaluate((count) => window.inboxFixture.frames.slice(count), before)).filter((frame) => frame.pane === other);
           assert.deepEqual(sent, [{ type: "resize", pane: other, cols: held!.cols, rows: held!.rows }], `leaving, the tab's other pane asks once for the grid it held before the mode (${held!.cols} by ${held!.rows})`);
           console.log(`PASS a tab herdr split through a thread's terminal and Back: Back to Ovis gives the tab's other pane (${other}) its hold back at ${held!.cols} by ${held!.rows}, asked once`);
@@ -1180,8 +1239,7 @@ try {
           await page.reload();
           await page.locator(".app-header.is-zoned").waitFor();
           await page.waitForFunction(() => document.querySelectorAll(".pane-slot").length === 2, undefined, { timeout: 15_000 });
-          // fixed wait: the halves' own attach and first sizing have gone out
-          await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+          await terminalSettled(page, 2);
           const half = await page.evaluate((pane) => window.inboxFixture.frames.filter((frame) => frame.pane === pane && (frame.type === "attach" || frame.type === "resize")).at(-1)!, WORKING);
           await page.locator(OVIS_MARK).click();
           await page.locator(".inbox-column .mode-inbox").waitFor();
@@ -1218,8 +1276,7 @@ try {
           await area.dispatchEvent("drop", { dataTransfer: data, ...right });
           await data.dispose();
           await page.waitForFunction(() => document.querySelectorAll(".pane-slot").length === 2, undefined, { timeout: 15_000 });
-          // fixed wait: the halves' own attach and first sizing have gone out
-          await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+          await terminalSettled(page, 2);
           const classicBoxes = new Map<string, Box>();
           for (const slot of ["a", "b"]) classicBoxes.set(slot, await box(page, `.pane-slot[data-slot="${slot}"]`));
           const classicHalves = await halves();
@@ -1237,8 +1294,7 @@ try {
           await page.locator(".inbox-rail .inbox-rail-exit").click();
           await page.locator(".mode-inbox").waitFor({ state: "detached" });
           await page.locator(".app-header.is-zoned").waitFor();
-          // fixed wait: no size or release may be sent for the split shown again
-          await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+          await terminalSettled(page);
           const sent = (await page.evaluate((count) => window.inboxFixture.frames.slice(count), before)).filter((frame) => frame.type === "resize" || frame.type === "release-size");
           assert.deepEqual(sent, [], "after the Back, nothing sends a size or a release");
           assert.deepEqual(await halves(), classicHalves, "each half shows its own pane, as before the mode, and holds no other");
@@ -1252,16 +1308,14 @@ try {
           const sizedAfter = async (count: number, what: string): Promise<Window["inboxFixture"]["resizes"]> => {
             const came = await page.waitForFunction((sent) => window.inboxFixture.resizes.length > sent, count, { timeout: 10_000 }).then(() => true, () => false);
             assert.ok(came, `${what}: no size was sent to the pane's pty`);
-            // fixed wait: no second size may follow the one that came
-            await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+            await terminalSettled(page);
             return (await sized()).slice(count);
           };
           const screenWidth = (): Promise<number> => page.locator(".terminal-stack:not(.is-chat) .pane-terminal .xterm-screen").evaluate((node) => node.getBoundingClientRect().width);
           await page.locator(".app-header.is-zoned").waitFor();
           const classic = await terminalBox(page);
           assert.equal(classic.x, 0, "the classic sidebar is collapsed: the pane begins at the window's edge");
-          // fixed wait: the page's own first sizing of the pane has gone out
-          await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+          await terminalSettled(page, 1);
           const atLoad = await sized();
           const loaded = await page.evaluate((pane) => window.inboxFixture.frames.filter((frame) => frame.pane === pane && (frame.type === "attach" || frame.type === "resize")).at(-1) ?? null, BLOCKED);
           assert.ok(loaded?.cols !== undefined && loaded.rows !== undefined, "the classic app attached the pane with its grid as the page loaded");
@@ -1275,13 +1329,11 @@ try {
           await page.locator(".inbox-column .mode-inbox").waitFor();
           await rowCount(page, 6);
           await paneHiddenUnderList(page, "the pane is mounted under the list, hidden");
-          // fixed wait: no size may be sent for the pane under the list
-          await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+          await terminalSettled(page);
           assert.deepEqual((await sized()).slice(before), [], "the list over the pane sends its pty no size");
           await row(page, BLOCKED).click();
           await page.locator(".thread-chip").waitFor();
-          // fixed wait: no size may be sent for a thread that shows its chat
-          await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+          await terminalSettled(page);
           assert.deepEqual((await sized()).slice(before), [], "a thread opened on its chat sends its pty no size");
 
           await page.locator(".thread-top .lens-toggle").click();
@@ -1362,8 +1414,7 @@ try {
             await page.locator("#inbox-back").waitFor();
             const inThread = (coarse: boolean) => coarse ? document.activeElement?.id === "inbox-back" : document.activeElement?.classList.contains("composer-text") === true;
             const landed = await page.waitForFunction(inThread, touch, { timeout: 5_000 }).then(() => true, () => false);
-            // fixed wait: nothing takes the focus away again
-            await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+            await page.locator(".chat-frame[data-pane-content]").waitFor({ state: "attached", timeout: 5_000 });
             const at = await page.evaluate(() => `${document.activeElement?.tagName.toLowerCase()}#${document.activeElement?.id}.${document.activeElement?.className}`);
             assert.ok(landed && await page.evaluate(inThread, touch), `the focus is on ${touch ? "the thread's Back" : "the composer"} and stays: it is on ${at}`);
             console.log(`PASS entered from the classic app at ${viewport.width} under a ${pointer} pointer, Enter on the row of the pane classic showed puts the focus on ${touch ? "the thread's Back" : "the composer"}`);
@@ -1431,8 +1482,7 @@ try {
               if (pane !== WORKING) continue;
               opened += 1;
               const reached = await atEnd();
-              // fixed wait: nothing moves the transcript or draws a control for its end later
-              await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+               await page.locator(".chat-frame[data-pane-content]").waitFor({ state: "attached", timeout: 5_000 });
               const shown = await transcript();
               assert.ok(reached && shown !== null && shown.short <= 1 && shown.controls.length === 0, `opened by ${act} (${opened}), the thread's transcript is at its end with no Jump to latest: ${JSON.stringify(shown)}`);
             }
@@ -1704,9 +1754,7 @@ try {
                 "connected, the rail's PC draws no dot and says so in its name and its tooltip");
             }
             assert.equal(await status.count() >= 1, true, "the status line is in the document before it has a word");
-            // the stream that feeds the roster has opened (its first roster came): only a stream that was had can be lost;
-            // a cold list draws its rows from the roster's first read, which can come before the stream opens
-            await page.waitForFunction(() => window.inboxFixture.rosters > 0, undefined, { timeout: 15_000 });
+             await page.waitForFunction(() => window.inboxFixture.rosterOpen, undefined, { timeout: 15_000 });
             await page.evaluate(() => { window.herdrDemoLoseConnection(); window.inboxFixture.dropRoster(); });
             if (wide) {
               await dot.waitFor();
@@ -1798,7 +1846,7 @@ try {
           await rowCount(page, 6);
           await row(page, WORKING).click();
           await page.locator(".thread-chip").waitFor();
-          await page.waitForFunction(() => window.inboxFixture.rosters > 0, undefined, { timeout: 15_000 });
+           await page.waitForFunction(() => window.inboxFixture.rosterOpen, undefined, { timeout: 15_000 });
           await page.evaluate(() => { window.herdrDemoLoseConnection(); window.inboxFixture.dropRoster(); });
           await page.locator(".thread-chip-state.is-reconnecting").waitFor();
           // the roster's stream is lost by itself, apart from the chip's own connection, and can be told later: the
@@ -1936,8 +1984,7 @@ try {
         await withPage(browser, base, light, `/?pane=${encodeURIComponent(WORKING)}&view=terminal`, "the Ovis mark at the top left enters the mode", async (page) => {
           await page.locator(".app-header.is-zoned").waitFor();
           const classic = await terminalBox(page);
-          // fixed wait: the page's own first sizing of the pane has gone out
-          await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+          await terminalSettled(page, 1);
           const sent = async (since: number): Promise<Window["inboxFixture"]["frames"]> => (await page.evaluate(() => window.inboxFixture.frames.slice())).slice(since)
             .filter((frame) => frame.type === "attach" || frame.type === "detach" || frame.type === "resize" || frame.type === "release-size");
           const before = await page.evaluate(() => window.inboxFixture.frames.length);
@@ -1952,16 +1999,14 @@ try {
           await addressIs(page, { app: "inbox", pane: null }, "a click on the Ovis mark enters the mode on its list");
           assert.equal(await historyLength(page), entries + 1, "entering is one entry");
           assert.equal(await page.locator('.mode-inbox .inbox-row[aria-current="true"]').count(), 0, "no row is open: the pane showed its terminal");
-          // fixed wait: nothing may be sent for any pane on the way in
-          await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+          await terminalSettled(page);
           assert.deepEqual(await sent(before), [], "entering from a pane on its terminal sends no attach, detach, size or release");
           await page.locator(".inbox-rail .inbox-rail-exit").click();
           await page.locator(".app-header.is-zoned").waitFor();
           await page.locator('.view-switch .lens-option.is-terminal[aria-pressed="true"]').waitFor();
           await addressIs(page, { app: null, pane: WORKING }, "Back to Ovis shows the pane the classic app was on");
           sameBox(await terminalBox(page), classic, "back in the classic app the terminal has the box it had");
-          // fixed wait: nothing may be sent for the pane shown again as it was
-          await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+          await terminalSettled(page);
           assert.deepEqual(await sent(before), [], "Back to Ovis sends no attach, detach, size or release");
           const again = await historyLength(page);
           await mark.focus();
@@ -2001,8 +2046,7 @@ try {
           await addressIs(page, { app: "inbox", pane: WORKING }, "entering opens the thread of the pane the classic app was on");
           await page.locator(".thread-chip").waitFor();
           assert.ok(await draftIs(draftX), `the thread has the draft typed in the classic app: it has "${await composer.inputValue()}"`);
-          // fixed wait: no size or release may be sent for a pane on the way in
-          await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+          await terminalSettled(page);
           assert.deepEqual((await page.evaluate((count) => window.inboxFixture.frames.slice(count), framesBefore)).filter((frame) => frame.type === "resize" || frame.type === "release-size"), [],
             "entering on the pane's chat sends no size or release");
 
@@ -2088,8 +2132,7 @@ try {
             await addressIs(page, { app: null, pane: setup.pane }, "the classic app is on the pane");
             if (!setup.name.startsWith("a terminal")) await chatOn.waitFor();
             await page.waitForFunction(() => [...document.querySelectorAll(".xterm-screen")].some((screen) => screen.getBoundingClientRect().width > 0), undefined, { timeout: 15_000 });
-            // fixed wait: the staging's own attaches and sizes have gone out
-            await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+            await terminalSettled(page, 1);
             const classic = await drawnScreens(page);
             const before = await page.evaluate(() => window.inboxFixture.frames.length);
 
@@ -2098,13 +2141,11 @@ try {
             await page.locator(".inbox-unchosen").waitFor();
             await addressIs(page, { app: "inbox", pane: null }, "the way in opens the list");
             assert.equal(await page.locator('.mode-inbox .inbox-row[aria-current="true"]').count(), 0, "no row is open");
-            // fixed wait: nothing may be sent for a pane under the list
-            await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+            await terminalSettled(page);
             await page.locator(".inbox-rail .inbox-rail-exit").click();
             await page.locator(".mode-inbox").waitFor({ state: "detached" });
             await page.locator(".app-header.is-zoned").waitFor();
-            // fixed wait: nothing may be sent for the panes shown again as they were
-            await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+            await terminalSettled(page);
             assert.deepEqual(await page.evaluate((count) => window.inboxFixture.frames.slice(count), before), [], "from before the way in through Back to Ovis no attach, detach, size or release is sent for any pane");
             await addressIs(page, { app: null, pane: setup.pane }, "Back to Ovis shows the pane it was on");
             if (setup.name.startsWith("a terminal")) await page.locator(`.terminal-stack.is-chat.is-peek[data-pane-owner="${FLAKY}"]`).waitFor({ timeout: 5_000 });
@@ -2183,8 +2224,7 @@ try {
             await page.locator(".app-header.is-zoned").waitFor();
             const classic = { sidebar: await box(page, "#workspace-drawer"), pane: await box(page, ".pane-column"), terminal: await terminalBox(page) };
             assert.deepEqual([classic.sidebar.x, classic.sidebar.w], [0, setup.width], `the classic sidebar is ${setup.width}px wide`);
-            // fixed wait: the page's own first sizing of the pane has gone out
-            await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+            await terminalSettled(page, 1);
             const before = (await sent()).length;
 
             await enter();
@@ -2226,8 +2266,7 @@ try {
             assert.deepEqual(reached, [roomy ? "inbox-search-input" : "inbox-search-toggle", "inbox-filter-toggle", "inbox-add"], "Tab goes from the rail's last button through the top row");
 
             await leave();
-            // fixed wait: no size may be sent for the pane shown again in the box it had
-            await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+            await terminalSettled(page);
             assert.deepEqual((await sent()).slice(before), [], "the way in and the way out from the list send no attach, detach, size or release");
             sameBox(await terminalBox(page), classic.terminal, "left from the list, the terminal has the box it had");
 
@@ -2239,15 +2278,13 @@ try {
             const thread = await terminalBox(page);
             near(thread.x, classic.terminal.x, 1, "the thread's terminal begins where classic's does");
             near(thread.w, classic.terminal.w, 1, "the thread's terminal is as wide as classic's"); near(thread.h, classic.terminal.h, 1, "the thread's terminal is as tall as classic's");
-            // fixed wait: what showing the terminal asks of its pty has gone out
-            await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+            await terminalSettled(page);
             const shown = (await sent()).length;
 
             await leave();
             await addressIs(page, { app: null, pane: WORKING }, "the rail's mark opens the thread's pane in the classic app");
             sameBox(await terminalBox(page), classic.terminal, "left from the thread, the terminal has the box it had");
-            // fixed wait: no size may be sent for the terminal shown again where it was
-            await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+            await terminalSettled(page);
             assert.deepEqual((await sent()).slice(shown), [], "leaving by the rail's mark from a thread that shows its terminal sends no attach, detach, size or release");
             console.log(`PASS with the sidebar ${setup.name} (${column.w}px) under ${pointer} the mode's column is the classic sidebar's and the pane the classic shell's (${pane.w}px from ${pane.x}); the rail (${top.rail.w}px) is cut out of it, and the list's three ${control}px top controls are whole inside the ${Math.round(top.list.w)}px it leaves, hit at their middles and reached by Tab, nothing scrolling sideways; the way in and out from the list sends nothing for the pane, a thread's terminal is classic's size (${Math.round(thread.w)} by ${Math.round(thread.h)}), and leaving by the rail's mark while it is shown sends no attach, detach, size or release`);
           }, setup.viewport, coarse);
@@ -2835,7 +2872,7 @@ try {
           };
           await named("PCs, 2 of 2 connected", "with two PCs the button says how many are connected");
           assert.equal(await dot.count(), 0, "connected, no dot is drawn, for one PC or for several");
-          await page.waitForFunction(() => window.inboxFixture.rosters > 0, undefined, { timeout: 15_000 });
+          await page.waitForFunction(() => window.inboxFixture.rosterOpen, undefined, { timeout: 15_000 });
           await page.evaluate(() => { window.herdrDemoLoseConnection(); window.inboxFixture.dropRoster(); });
           await named("PCs · Reconnecting…", "lost, the button says so of the PCs");
           await pc.locator(".inbox-rail-dot.is-reconnecting").waitFor();
