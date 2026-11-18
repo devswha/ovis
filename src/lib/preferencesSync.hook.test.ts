@@ -13,9 +13,6 @@ import { currentPaneMutes, setPaneMutes } from "./paneMutes.ts";
 import { usePreferencesSync } from "./preferencesSync.ts";
 import type { UserError } from "./userError.ts";
 
-const deadlineTimer = globalThis.setTimeout;
-const clearDeadline = globalThis.clearTimeout;
-
 describe("preferences sync real send path", () => {
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
   let dir: string;
@@ -179,11 +176,24 @@ describe("preferences sync real send path", () => {
   async function windows(count = 1): Promise<void> {
     for (let index = 0; index < count; index++) await act(async () => { jest.advanceTimersByTime(600); });
   }
-  function nextAnswer(): Promise<void> {
+  // bun's fake timers stop every timer and clock, a setTimeout kept from before them too, so a wait is bounded in
+  // turns of the event loop: what is waited for here follows from promises alone, before the loop turns once
+  function bounded(message: string, listen: (arrived: () => void) => () => void): Promise<void> {
     return new Promise((resolve, reject) => {
-      const timer = deadlineTimer(() => { answerListeners.delete(done); reject(new Error("preferences answer did not arrive")); }, 2_000);
-      const done = () => { clearDeadline(timer); answerListeners.delete(done); resolve(); };
-      answerListeners.add(done);
+      let turns = 0;
+      let waiting = true;
+      const stop = listen(() => { waiting = false; stop(); resolve(); });
+      const turn = (): void => {
+        if (!waiting) return;
+        if (++turns > 100) { stop(); reject(new Error(message)); } else setImmediate(turn);
+      };
+      setImmediate(turn);
+    });
+  }
+  function nextAnswer(): Promise<void> {
+    return bounded("preferences answer did not arrive", (arrived) => {
+      answerListeners.add(arrived);
+      return () => answerListeners.delete(arrived);
     });
   }
   async function send(): Promise<void> {
@@ -391,23 +401,46 @@ describe("preferences sync real send path", () => {
     await act(async () => { client.update({ darkTheme: "tokyo-night" }); });
     await windows();
     // the answer is taken in once its pins are stored; React draws nothing before this act ends
-    const absorbed = Promise.withResolvers<void>();
     const storage = window.localStorage;
-    const { setItem, removeItem } = storage;
-    const told = (key: string): void => { if (key === "ovis:sidebar-pins-shared") absorbed.resolve(); };
-    storage.setItem = (key, value) => { setItem(key, value); told(key); };
-    storage.removeItem = (key) => { removeItem(key); told(key); };
+    const absorbed = bounded("the answer's pins were not stored", (arrived) => {
+      const { setItem, removeItem } = storage;
+      const told = (key: string): void => { if (key === "ovis:sidebar-pins-shared") arrived(); };
+      storage.setItem = (key, value) => { setItem(key, value); told(key); };
+      storage.removeItem = (key) => { removeItem(key); told(key); };
+      return () => { storage.setItem = setItem; storage.removeItem = removeItem; };
+    });
     await act(async () => {
       client.update({ darkTheme: "gruvbox" });
       gate.resolve();
-      await absorbed.promise;
+      await absorbed;
     });
-    storage.setItem = setItem;
-    storage.removeItem = removeItem;
     releaseAnswer = undefined;
     expect(client.settings.darkTheme).toBe("gruvbox");
     await send();
     expect(store.get().settings.darkTheme).toBe("gruvbox");
+  });
+
+  it("a tab takes a save's value from the server while the tab that sent it has already stored a newer pick", async () => {
+    const gate = Promise.withResolvers<void>();
+    releaseAnswer = () => gate.promise;
+    const a = await open();
+    const b = await open();
+    // a's event stream brings the save after b's next pick, as a real one does
+    clients.splice(clients.indexOf(a), 1);
+    await act(async () => { b.update({ darkTheme: "catppuccin" }); });
+    await windows();
+    await act(async () => { b.update({ darkTheme: "gruvbox" }); });
+    const answered = nextAnswer();
+    await act(async () => { gate.resolve(); await answered; });
+    releaseAnswer = undefined;
+    clients.push(a);
+
+    await act(async () => { a.receive(store.get()); });
+    await windows(3);
+
+    expect(store.get().settings.darkTheme).toBe("gruvbox");
+    expect(sent.map((body) => body.settings.darkTheme)).toEqual(["catppuccin", "gruvbox"]);
+    expect([a.settings.darkTheme, b.settings.darkTheme]).toEqual(["gruvbox", "gruvbox"]);
   });
 
   it("says in plain words that the server cannot save, and clears it once the retried change lands", async () => {

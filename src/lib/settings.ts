@@ -978,7 +978,8 @@ interface SettingsContextValue {
   resolvedTheme: ResolvedTheme;
   resolvedEntry: DrawnTheme;
   resolvedLanguage: Language;
-  update: (patch: Partial<Settings> | ((current: Settings) => Partial<Settings>)) => void;
+  /** a function is handed what is stored now (another tab's saved change included), then this tab's own settings, an edit not drawn yet included */
+  update: (patch: Partial<Settings> | ((current: Settings, own: Settings) => Partial<Settings>)) => void;
 }
 
 const SettingsContext = createContext<SettingsContextValue | null>(null);
@@ -1029,7 +1030,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     applyToDocument(settings, resolvedEntry, resolvedLanguage);
   }, [settings, resolvedEntry, resolvedLanguage]);
 
-  const update = useCallback((patch: Partial<Settings> | ((current: Settings) => Partial<Settings>)) => {
+  const update = useCallback((patch: Partial<Settings> | ((current: Settings, own: Settings) => Partial<Settings>)) => {
     // StrictMode runs the updater twice on the same state: the first run's save must not change what the second one reads
     let made: Partial<Settings> | undefined;
     setSettings((current) => {
@@ -1044,7 +1045,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       };
       const latest = (): Settings => !readable() ? current
         : sanitizeSettings({ ...loadSettings(), ...Object.fromEntries(Object.entries(current).filter(([key, value]) => differs(key, value, stored.current))) });
-      const next = sanitizeSettings({ ...current, ...(typeof patch === "function" ? made ??= patch(latest()) : patch) });
+      const next = sanitizeSettings({ ...current, ...(typeof patch === "function" ? made ??= patch(latest(), current) : patch) });
       const changed = Object.fromEntries(Object.entries(next).filter(([key, value]) => differs(key, value, current) || differs(key, value, stored.current)));
       if (saveSettings(sanitizeSettings({ ...loadSettings(), ...changed }))) stored.current = next;
       return next;
