@@ -436,6 +436,36 @@ it("makes the relay tab's QR code only for a PC in no account, and takes it back
   expect(await codeOf(await ask(false))).toMatch(/^\d{6}$/);
 });
 
+/** A device paired with the relay tab's QR code made for `account`: a row that waits to link, and whether its sessions were ended. */
+async function waitingUnderTabCode(f: Awaited<ReturnType<typeof fixture>>, account: string) {
+  const devices = f.app.context.services.devices;
+  expect(f.service.setRelayAccount(account)).toBe(true);
+  const code = decodeOffer(f.service.offer(null, { noAccountOnly: true }).url)!.code!;
+  const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  const row = devices.pairRelay(code, "Phone", Buffer.from(await crypto.subtle.exportKey("spki", keys.publicKey)).toString("base64url"))!.device;
+  let ended = false;
+  devices.onRevoke(row.id, () => { ended = true; });
+  expect([devices.activePairing()?.code, devices.provisionalStands(row.id)]).toEqual([code, true]);
+  return { code, row, ended: () => ended };
+}
+
+it("ends the relay tab's QR code, and the rows that wait to link under it, when another account is named for the PC", async () => {
+  const f = await fixture();
+  await f.start();
+  const devices = f.app.context.services.devices;
+  const { code, row, ended } = await waitingUnderTabCode(f, "acct_a");
+  // the same account named again (the add-me screen repeats it) changes nothing
+  expect(f.service.setRelayAccount("acct_a")).toBe(true);
+  expect([devices.activePairing()?.code, devices.provisionalStands(row.id), ended()]).toEqual([code, true, false]);
+  // a device that paired under the code made while acct_a was named is never taken into acct_b
+  expect(f.service.setRelayAccount("acct_b")).toBe(true);
+  expect([devices.activePairing(), devices.provisionalStands(row.id), ended()]).toEqual([null, false, true]);
+  // the QR code asked for again is a new one, for the account named now
+  const again = f.service.offer(null, { noAccountOnly: true });
+  expect([again.account, decodeOffer(again.url)?.code === code]).toEqual(["acct_b", false]);
+});
+
+
 it("names the PC in the relay offer as Ovis lists it", async () => {
   const f = await fixture();
   await f.start();

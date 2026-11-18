@@ -718,6 +718,15 @@ export class DeviceStore {
   }
 
   /**
+   * Ends the relay tab's code (pairingForNoAccount) and the rows that wait to link under it, as endPairing does; a code
+   * made for an account, or another code, stays. False when that code is not the one pending.
+   */
+  endNoAccountPairing(): boolean {
+    if (this.pending?.noAccountOnly !== true || this.pending.named !== undefined) return false;
+    return this.endPairing();
+  }
+
+  /**
    * The account that the code a waiting row paired with was made for (startAccountPairing), also once that code's ten
    * minutes are over: the row is held to it until it links or goes. Null for the relay tab's code, and for a row that
    * does not wait to link.

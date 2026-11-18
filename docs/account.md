@@ -206,7 +206,8 @@ One rule for every way in: a pairing code, comparing digits, and joining through
   else a fresh one, never a code another place started (which may be on a screen as digits). That
   code ends when the PC gets its first member, however it does (a `link` over any pairing, the
   one a sign-in on the PC opens included): left pending, it would admit one more device after the
-  PC joined. An offer asked for without the header is what it was, on any PC: the first-run
+  PC joined. It also ends, with every device that waits to link under it, when another account is
+  named for the PC. An offer asked for without the header is what it was, on any PC: the first-run
   guide's QR code, the relay tab where the page has no account, a phone's **Use the relay** and
   `bun scripts/plugin.ts pair` keep it, without those guards, and a signed-in device that redeems
   such a code on a PC in no account links itself the same way. It never carries the code of an
@@ -1262,7 +1263,8 @@ with "continue only if you started this on your own PC".
   key ([The account's word](#the-accounts-word)). Without one, a device that already drives a PC in
   no account can still link it into an account it names, on its own word: `ovis status` lists such
   members ([How a device joined](#how-a-device-joined)), and every admission is announced on every
-  device connected to the PC.
+  device connected to the PC; that link only changes the membership of a device paired before, and
+  is not announced as a new pairing.
 - **A PC the directory names under a familiar name.** Whoever holds a sign-in to the account can
   list a PC of their own in the directory (device-code phishing, [Who is asking](#who-is-asking)). **Add** on
   its row in the relay tab pairs A with that PC, whose owner approves it there: A's machine list then
