@@ -702,7 +702,7 @@ function buildOverlays(width: number, height: number, state: ModelState, world: 
     case "menu":
       return { overlays: [...overlays, menuPart(width, height, top, state, world, colors)], input: "overlay" };
     case "agents":
-      return { overlays: [...overlays, agentListPart(width, height, top, world, colors)], input: "overlay" };
+      return { overlays: [agentListPart(width, height, top, world, state.notices, colors)], input: "overlay" };
   }
 }
 
@@ -758,15 +758,23 @@ function pickerPart(width: number, height: number, picker: Extract<Overlay, { ki
  * The full-screen agent list: every agent in its section, numbered as the digit keys go to them, the workspace each is
  * in at the right, a window of rows around the cursor. A row is a click target that goes to that agent.
  */
-function agentListPart(width: number, height: number, list: Extract<Overlay, { kind: "agents" }>, world: CoreView, colors: Colors): Part {
+function agentListPart(width: number, height: number, list: Extract<Overlay, { kind: "agents" }>, world: CoreView, notices: ModelState["notices"], colors: Colors): Part {
   const rect: Rect = { x: 0, y: 0, width, height };
   const lines = agentLines(world.agents);
   const cursor = list.agents[list.cursor];
+  const alert = notices.filter((notice) => Object.hasOwn(ALERT_GLYPHS, notice.code)).at(-1);
   return {
     key: "overlay:agents", rect, version: 0,
     draw(canvas) {
       const inner = overlayFrame(canvas, rect, STRINGS.agentListTitle, OVERLAYS.agents.closeKeys, colors);
       if (inner.width <= 0 || inner.height <= 0) return;
+      // The full-screen list covers the toast and mode bar. Its bottom border can show the
+      // latest agent alert without taking a list row or covering the keyboard hints.
+      if (alert) {
+        const text = ` ${ALERT_GLYPHS[alert.code]} ${STRINGS.noticeText(alert.code, alert.data)} `;
+        printFit(canvas, inner.x + 1, inner.y + inner.height, text, Math.max(0, inner.width - 2),
+          canvas.style({ fg: colors.notice, bg: colors.bgElevated, flags: STYLE_BOLD }), true);
+      }
       const dim = canvas.style({ fg: colors.textDim, bg: colors.bgElevated });
       printFit(canvas, inner.x + 1, inner.y, STRINGS.agentListHint, Math.max(0, inner.width - 2), dim, true);
       const rows = inner.height - 1;

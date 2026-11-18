@@ -329,6 +329,41 @@ describe("read state through herdr.seen (UB Q7)", () => {
     expect(alertNotices(run)).toEqual([]);
   }, TEST_MS);
 
+  for (const [cols, rows] of [[120, 40], [45, 10]] as const) {
+    it(`an alert shows over the open agent list at ${cols} columns`, async () => {
+      const run = await Run.start({ core: twoAgents(), cols, rows });
+      runs.push(run);
+      await run.live();
+      await run.advance(1);
+      await run.keys("ctrl+b,a");
+      await run.advance(20);
+      const footer = () => run.grid()[rows - 1]!;
+      const line = (text: string) => `+- ${text} ${"-".repeat(cols - text.length - 5)}+`;
+      const selection = () => run.grid().find((row) => row.startsWith("|>"))?.slice(9, 12);
+      expect(footer()).toBe(`+${"-".repeat(cols - 2)}+`);
+      expect(selection()).toBe("one");
+
+      run.core.reportStatus("t2", { state: "blocked", app: "claude" });
+      await run.advance(20);
+      expect(footer()).toBe(line("! Needs you: two"));
+      const hint = "1-9 or Enter: go to · u: mark unread";
+      expect(run.grid()[1]?.slice(2, 2 + hint.length)).toBe(hint);
+      expect(selection()).toBe("one");
+
+      await endTurn(run, "t2");
+      expect(footer()).toBe(line("* Done: two"));
+      expect(selection()).toBe("one");
+      run.loop.dispatch({ type: "notice", code: "nothing_waiting", calm: true, at: run.clock.current });
+      await run.advance(20);
+      expect(footer()).toBe(line("* Done: two"));
+      await run.advance(NOTICE_SHOW_MS + 1);
+      expect(footer()).toBe(`+${"-".repeat(cols - 2)}+`);
+      expect(run.loop.report().mode.overlays).toEqual(["agents"]);
+      await run.keys("enter");
+      expect(focused(run.loop.model().world, run.loop.model().focus).pane?.id).toBe("t1");
+    }, TEST_MS);
+  }
+
   it("a host's own replies are not a person: on a host that never reports focus they write nothing, a key does", async () => {
     const run = await started(twoAgents());
     await endTurn(run, "t1");
