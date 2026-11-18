@@ -34,9 +34,25 @@ const layout = (page: Page) => page.evaluate(() => {
   return { height: view.clientHeight, scrollTop: view.scrollTop, composer: document.querySelector(".composer")!.getBoundingClientRect().top };
 });
 
-const rangeOf = (page: Page, phrase: string, fromAsk = false) => page.evaluate(([words, ask]) => {
-  const rows = [...document.querySelectorAll(".chat-turn-agent")];
-  const turn = rows[rows.length - 1]!;
+// clearing a selection lets the virtual timeline take its scroll back, which can still be moving a few frames later
+// on a loaded runner: the layout to compare with is the one that holds across two frames
+const settledLayout = (page: Page) => page.evaluate(async (timeout) => {
+  const read = () => {
+    const view = document.querySelector<HTMLElement>(".chat-view")!;
+    return { height: view.clientHeight, scrollTop: view.scrollTop, composer: document.querySelector(".composer")!.getBoundingClientRect().top };
+  };
+  const deadline = performance.now() + timeout;
+  let previous = JSON.stringify(read());
+  while (performance.now() < deadline) {
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    const now = read();
+    if (JSON.stringify(now) === previous) return now;
+    previous = JSON.stringify(now);
+  }
+  throw new Error(`the chat kept moving after the selection was cleared: ${previous}`);
+}, WAIT.timeout);
+
+const selectRange = (page: Page, phrase: string, mouse: boolean, fromAsk?: string) => page.evaluate(async ({ words, ask, drag, timeout }) => {
   const textNodes = (root: Node): Text[] => { const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT); const nodes: Text[] = []; for (let node = walker.nextNode(); node; node = walker.nextNode()) nodes.push(node as Text); return nodes; };
   const find = (nodes: Text[], target: string): [Text, number, Text, number] => {
     const all = nodes.map((node) => node.data).join("");
@@ -45,45 +61,51 @@ const rangeOf = (page: Page, phrase: string, fromAsk = false) => page.evaluate((
     const point = (offset: number): [Text, number] => { let left = offset; for (const node of nodes) { if (left <= node.data.length) return [node, left]; left -= node.data.length; } throw new Error("offset"); };
     return [...point(at), ...point(at + target.length)];
   };
-  const [wordsNode, wordsAt, endText, end] = find(textNodes(turn), words);
-  const user = ask === null ? null : [...document.querySelectorAll(".chat-turn-user")].find((node) => node.textContent?.includes(ask))!;
-  const [startNode, startAt] = user === null ? [wordsNode, wordsAt] : find(textNodes(user), ask!);
-  const range = document.createRange();
-  range.setStart(startNode, startAt);
-  range.setEnd(endText, end);
-  const rects = [...range.getClientRects()].filter((rect) => rect.width > 0);
-  return { x0: rects[0]!.left + 1, y0: rects[0]!.top + rects[0]!.height / 2, x1: rects.at(-1)!.right - 1, y1: rects.at(-1)!.top + rects.at(-1)!.height / 2 };
-}, [phrase, fromAsk ? ASK : null] as const);
+  const deadline = performance.now() + timeout;
+  let previous = "";
+  // Clearing a selection releases the virtual timeline's scroll anchor. Use the range
+  // only once the current reply's endpoints are hittable and stop moving across renders.
+  while (performance.now() < deadline) {
+    const turn = [...document.querySelectorAll(".chat-turn-agent")].find((node) => node.textContent?.includes("Show a conflict banner"));
+    const start = ask === undefined ? turn : [...document.querySelectorAll(".chat-turn-user")].find((node) => node.textContent?.includes(ask));
+    if (turn && start) {
+      const [wordsNode, wordsAt, endText, end] = find(textNodes(turn), words);
+      const [startNode, startAt] = ask === undefined ? [wordsNode, wordsAt] : find(textNodes(start), ask);
+      const range = document.createRange();
+      range.setStart(startNode, startAt);
+      range.setEnd(endText, end);
+      if (!drag) {
+        const selection = getSelection();
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+        return null;
+      }
+      const rects = [...range.getClientRects()].filter((rect) => rect.width > 0);
+      const first = rects[0], last = rects.at(-1);
+      if (first && last) {
+        const point = { x0: first.left + 1, y0: first.top + first.height / 2, x1: last.right - 1, y1: last.top + last.height / 2 };
+        const hit = start.contains(document.elementFromPoint(point.x0, point.y0)) && turn.contains(document.elementFromPoint(point.x1, point.y1));
+        const layout = JSON.stringify(point);
+        if (hit && layout === previous) return point;
+        previous = hit ? layout : "";
+      }
+    }
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  }
+  throw new Error(`the range for "${words}" did not settle inside the reply`);
+}, { words: phrase, ask: fromAsk, drag: mouse, ...WAIT });
 
 async function select(page: Page, phrase: string, mouse: boolean, fromAsk = false): Promise<void> {
-  if (mouse) {
-    const box = await rangeOf(page, phrase, fromAsk);
+  const box = await selectRange(page, phrase, mouse, fromAsk ? ASK : undefined);
+  if (box !== null) {
     await page.mouse.move(box.x0, box.y0);
     await page.mouse.down();
     await page.mouse.move((box.x0 + box.x1) / 2, (box.y0 + box.y1) / 2, { steps: 4 });
     await page.mouse.move(box.x1, box.y1, { steps: 4 });
     await page.mouse.up();
-  } else {
-    await page.evaluate(([words, ask]) => {
-      const rows = [...document.querySelectorAll(".chat-turn-agent")];
-      const turn = rows[rows.length - 1]!;
-      const textNodes = (root: Node): Text[] => { const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT); const nodes: Text[] = []; for (let node = walker.nextNode(); node; node = walker.nextNode()) nodes.push(node as Text); return nodes; };
-      const point = (nodes: Text[], offset: number): [Text, number] => { let left = offset; for (const node of nodes) { if (left <= node.data.length) return [node, left]; left -= node.data.length; } throw new Error("offset"); };
-      const nodes = textNodes(turn);
-      const all = nodes.map((node) => node.data).join("");
-      const at = all.indexOf(words);
-      const range = document.createRange();
-      if (ask !== null) {
-        const user = [...document.querySelectorAll(".chat-turn-user")].find((node) => node.textContent?.includes(ask))!;
-        const userNodes = textNodes(user);
-        range.setStart(...point(userNodes, userNodes.map((node) => node.data).join("").indexOf(ask)));
-      } else range.setStart(...point(nodes, at));
-      range.setEnd(...point(nodes, at + words.length));
-      getSelection()!.removeAllRanges();
-      getSelection()!.addRange(range);
-    }, [phrase, fromAsk ? ASK : null] as const);
   }
-  await frames(page);
+  if (fromAsk) await frames(page);
+  else assert.equal((await page.evaluate(() => getSelection()?.toString() ?? "")).trim(), phrase, "the gesture selected the intended quote");
 }
 
 async function comment(page: Page, phrase: string, text: string, mouse: boolean, count: number): Promise<void> {
@@ -190,9 +212,8 @@ try {
           assert.ok((await page.evaluate(() => getSelection()?.toString() ?? "")).includes("backfill it from"), `${label}: the crossing selection holds`);
           assert.equal(await page.locator(".reply-comment-offer").count(), 0, `${label}: no Comment across a user message`);
           await page.evaluate(() => getSelection()?.removeAllRanges());
-          await frames(page);
 
-          const before = await layout(page);
+          const before = await settledLayout(page);
           await select(page, FIRST.quote, !shape.mobile);
           await page.locator(".reply-comment-offer").waitFor(WAIT);
           await frames(page);
@@ -207,9 +228,10 @@ try {
           await shot("2-write");
           if (shape.mobile) assert.ok(await page.locator(".reply-comment-form.is-docked").count() === 1, `${label}: the form docks over the message box`);
           await page.getByRole("textbox", { name: "Comment", exact: true }).press("Control+Enter");
+          await page.locator(".reply-comment-form").waitFor({ state: "detached", ...WAIT });
           await page.locator(".reply-comments-open", { hasText: "1 comment on the reply" }).waitFor(WAIT);
-          await frames(page);
           assert.equal(await page.evaluate(() => getSelection()?.isCollapsed ?? true), true, `${label}: saving clears the selection`);
+          await page.locator(".chat-frame[data-pane-content]").waitFor({ state: "attached", ...WAIT });
 
           await comment(page, SECOND.quote, SECOND.comment, !shape.mobile, 2);
           await page.locator(".reply-comments-open").click();
