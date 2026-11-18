@@ -6,7 +6,7 @@ import type { ConversationTurn } from "../shared/protocol.ts";
 import { forgetTranscriptState, HistoryChanged, liveTurnCacheUsage, transcriptPage } from "./conversation.ts";
 
 const SOURCES = ["omp-transcript", "omo-transcript", "gjc-transcript", "claude-transcript"] as const;
-type Source = typeof SOURCES[number];
+type Source = typeof SOURCES[number] | "pi-transcript" | "cmd-transcript";
 const roots: string[] = [];
 const jsonl = (...entries: unknown[]) => entries.map(entry => JSON.stringify(entry) + "\n").join("");
 const fixture = (text: string) => {
@@ -154,6 +154,69 @@ for (const source of ["omp-transcript", "omo-transcript", "gjc-transcript"] as c
     }
   });
 }
+
+// pi and Command Code keep a tree: a record names its parent, and the chat reads the branch ending
+// at the last record written
+const tree = () => {
+  let parent: string | null = null;
+  let next = 0;
+  return (entry: object, parentId: string | null = parent) => {
+    parent = `e${next++}`;
+    return JSON.stringify({ id: parent, parentId, ...entry }) + "\n";
+  };
+};
+
+for (const source of ["pi-transcript", "cmd-transcript"] as const) {
+  test(`${source}: a read after an append parses the appended record, not the whole live task again`, () => {
+    const record = tree();
+    const work = Array.from({ length: 50 }, (_, i) => [call(source, `call-${i}`), result(source, `call-${i}`, `output ${i}`)]).flat();
+    const path = fixture([prompt(source, "Run every check"), ...work].map(entry => record(entry)).join(""));
+    transcriptPage(source, path);
+    appendFileSync(path, record(answer(source, "All checks passed")));
+    const parse = spyOn(JSON, "parse");
+    try {
+      const grown = transcriptPage(source, path);
+      expect(textParts(grown.turns)).toEqual(["Run every check", "All checks passed"]);
+      expect(toolParts(grown.turns)).toHaveLength(50);
+      expect(parse.mock.calls.length).toBeLessThan(20);
+    } finally {
+      parse.mockRestore();
+    }
+    forgetTranscriptState();
+    expect(textParts(transcriptPage(source, path).turns)).toEqual(["Run every check", "All checks passed"]);
+  });
+
+  test(`${source}: a branch move inside the live task drops what the old branch answered`, () => {
+    const record = tree();
+    const path = fixture(record(prompt(source, "Start")) + record(call(source, "one")) + record(result(source, "one", "first try")));
+    transcriptPage(source, path);
+    appendFileSync(path, record(answer(source, "abandoned answer")));
+    expect(textParts(transcriptPage(source, path).turns)).toEqual(["Start", "abandoned answer"]);
+    appendFileSync(path, record(answer(source, "branch answer"), "e2"));
+    const moved = transcriptPage(source, path);
+    expect(textParts(moved.turns)).toEqual(["Start", "branch answer"]);
+    forgetTranscriptState();
+    expect(transcriptPage(source, path).turns).toEqual(moved.turns);
+  });
+}
+
+test("pi-transcript: a live task's context window follows the agent dir it is read with", () => {
+  const dirs = [100_000, 200_000].map((window) => {
+    const dir = mkdtempSync(join(tmpdir(), "herdr-native-incremental-agent-"));
+    roots.push(dir);
+    writeFileSync(join(dir, "models.json"), JSON.stringify({ providers: { lwsa: { models: [{ id: "qwen-test", contextWindow: window }] } } }));
+    return dir;
+  });
+  const record = tree();
+  const used = { type: "message", message: { role: "assistant", model: "qwen-test", provider: "lwsa", usage: { totalTokens: 50_000 }, content: [{ type: "text", text: "Working" }] } };
+  const path = fixture(record(prompt("pi-transcript", "Start")) + record(used));
+  const read = (dir: string) => transcriptPage("pi-transcript", path, {}, undefined, dir).metadata.context;
+  expect(read(dirs[0]!)).toEqual({ used: 50_000, window: 100_000 });
+  expect(read(dirs[1]!)).toEqual({ used: 50_000, window: 200_000 });
+  appendFileSync(path, record(answer("pi-transcript", "Done")));
+  expect(read(dirs[1]!)).toEqual({ used: 50_000, window: 200_000 });
+  expect(read(dirs[0]!)).toEqual({ used: 50_000, window: 100_000 });
+});
 
 const parses = (read: () => unknown) => {
   const parse = spyOn(JSON, "parse");

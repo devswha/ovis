@@ -1076,7 +1076,9 @@ function turnBlobs(stream: TranscriptStream, source: StreamSource): string | nul
   return source === "omp-transcript" && live !== undefined ? ompBlobStore(live) : null;
 }
 
-type IncrementalSource = "codex-transcript" | "omp-transcript" | "omo-transcript" | "gjc-transcript" | "claude-transcript";
+type IncrementalSource = "codex-transcript" | "omp-transcript" | "omo-transcript" | "gjc-transcript" | "claude-transcript" | "pi-transcript" | "cmd-transcript";
+const incremental = (source: RecognizedConversation["source"]): source is IncrementalSource => source === "codex-transcript" || source === "omp-transcript"
+  || source === "omo-transcript" || source === "gjc-transcript" || source === "claude-transcript" || source === "pi-transcript" || source === "cmd-transcript";
 
 interface LiveTranscriptTurn {
   source: IncrementalSource;
@@ -1089,17 +1091,20 @@ interface LiveTranscriptTurn {
   contentHash?: string;
   parser: TranscriptParser;
   metadata: ConversationMetadata;
+  /** the catalogs a pi window was looked up in: another dir answers another window */
+  piAgentDir?: string | null;
   subagents?: { ids: Set<string>; details: Map<string, SubagentDetail> };
 }
 const liveTranscriptTurns = new Map<string, LiveTranscriptTurn>();
 const LIVE_TURN_ENTRIES = 8;
 const LIVE_TURN_BYTES = 2 * TRANSCRIPT_WINDOW_BYTES;
-const liveTurnBudget = (source: IncrementalSource) => source === "omo-transcript" || source === "gjc-transcript" ? "omo-gjc" : "codex-omp-claude";
+const liveTurnBudget = (source: IncrementalSource) => source === "omo-transcript" || source === "gjc-transcript" ? "omo-gjc"
+  : source === "pi-transcript" || source === "cmd-transcript" ? "pi-cmd" : "codex-omp-claude";
 
 function incrementalLiveTurn(path: string, stream: TranscriptStream, source: IncrementalSource, start: number, before: SettledTurns): { turns: ConversationTurn[]; metadata: ConversationMetadata } {
   let cached = liveTranscriptTurns.get(path);
   if (cached && (cached.source !== source || cached.id !== stream.id || cached.start !== start
-    || cached.pageStart !== before.start || cached.prefixBoundary !== before.tail || cached.scanned > stream.length
+    || cached.pageStart !== before.start || cached.prefixBoundary !== before.tail || cached.piAgentDir !== before.piAgentDir || cached.scanned > stream.length
     || bytesBefore(stream, cached.scanned) !== cached.boundary)) cached = undefined;
 
   let details: Map<string, SubagentDetail> | undefined;
@@ -1131,7 +1136,7 @@ function incrementalLiveTurn(path: string, stream: TranscriptStream, source: Inc
       : source === "claude-transcript" ? createClaudeTranscriptParser({ subagents: subagents!.details, noticed: new Set(before.noticed) })
       : createOmpTranscriptParser(ompReading(source, path, new Map(before.taskTitles)));
     cached = { source, id: stream.id, start, pageStart: before.start, prefixBoundary: before.tail, scanned: start,
-      boundary: bytesBefore(stream, start), parser, metadata: before.metadata, subagents };
+      boundary: bytesBefore(stream, start), parser, metadata: before.metadata, piAgentDir: before.piAgentDir, subagents };
   }
   const bytes = currentBytes ? currentBytes.subarray(cached.scanned - start) : readStream(stream, cached.scanned, stream.length);
   const complete = bytes.lastIndexOf(0x0a) + 1;
@@ -1149,7 +1154,7 @@ function incrementalLiveTurn(path: string, stream: TranscriptStream, source: Inc
   }
   if (complete > 0) {
     cached.parser.write(text);
-    cached.metadata = parseConversationMetadata(text, source, cached.metadata);
+    cached.metadata = parseConversationMetadata(text, source, cached.metadata, cached.piAgentDir);
     cached.scanned += complete;
     cached.boundary = bytesBefore(stream, cached.scanned);
   }
@@ -1165,7 +1170,7 @@ function incrementalLiveTurn(path: string, stream: TranscriptStream, source: Inc
     entries -= 1;
     retained -= turn.scanned - turn.start;
   }
-  return { turns: cached.parser.snapshot(tail), metadata: parseConversationMetadata(tail, source, cached.metadata) };
+  return { turns: cached.parser.snapshot(tail), metadata: parseConversationMetadata(tail, source, cached.metadata, cached.piAgentDir) };
 }
 
 function metadataHead(path: string, stream: TranscriptStream, source: RecognizedConversation["source"], start: number): string {
@@ -1215,7 +1220,7 @@ function liveTurns(path: string, stream: TranscriptStream, source: RecognizedCon
   }
   settled.observedEnd = stream.length;
   rememberPage(settledTurns, key, settled, 8);
-  if (source === "codex-transcript" || source === "omp-transcript" || source === "omo-transcript" || source === "gjc-transcript" || source === "claude-transcript") {
+  if (incremental(source)) {
     const live = incrementalLiveTurn(path, stream, source, last, settled);
     return { turns: [...settled.turns, ...live.turns], metadata: live.metadata };
   }
@@ -1233,7 +1238,7 @@ export function piPageCacheUsage(): { pages: number; settled: number; withinBudg
 /** Retention diagnostics only: the live tasks folded between reads, by path, never their contents. */
 export function liveTurnCacheUsage(): { paths: string[]; withinBudget: boolean } {
   const turns = [...liveTranscriptTurns.values()];
-  const withinBudget = (["codex-omp-claude", "omo-gjc"] as const).every((name) => {
+  const withinBudget = (["codex-omp-claude", "omo-gjc", "pi-cmd"] as const).every((name) => {
     const budget = turns.filter((turn) => liveTurnBudget(turn.source) === name);
     return budget.length <= LIVE_TURN_ENTRIES && budget.reduce((sum, turn) => sum + turn.scanned - turn.start, 0) <= LIVE_TURN_BYTES;
   });
