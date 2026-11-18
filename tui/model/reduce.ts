@@ -9,7 +9,6 @@
  */
 import type { HerdrAction } from "../../shared/herdr-keys.ts";
 import type { InputEvent } from "../input/decode.ts";
-import { NARROW_COLUMNS } from "../view/geometry.ts";
 import { CATALOGUE_BY_ID } from "./catalogue.ts";
 import { clearDeadline, type Deadlines, NO_DEADLINES, NOTICE_SHOW_MS, NOTICES_KEPT, setDeadline } from "./deadlines.ts";
 import type { Effect, KeyInput, MouseInput, OverlayChoice, PaneInput, PasteInput, Seen, TextInput } from "./effects.ts";
@@ -18,6 +17,7 @@ import { boundIn, buildKeymap, charChords, isPrefix, type KeyAction, type Keymap
 import { keptCursor, menuEntries } from "./menu.ts";
 import { agentChoice, field, menuChoice, type Overlay, type OverlayAnswer, overlayInput, type OverlayInput, overlayTarget, pickerChoice } from "./overlays.ts";
 import { pickerPlaces, placeKey } from "./picker.ts";
+import { NARROW_COLUMNS } from "./screen-size.ts";
 import { restoredFocus, type SavedView, type ViewProblem } from "./view-file.ts";
 
 export type ModeState =
