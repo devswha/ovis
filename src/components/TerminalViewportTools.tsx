@@ -233,8 +233,14 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
       if (!interactive || !alive || viewportIntent.isSearching() || !showing()) return;
       const metrics = scrollRef.current;
       const stale = !fresh && metricsOutput !== outputVersion && Date.now() - metricsAt > SCROLL_POLL_BUSY_MS;
-      if (validScroll(metrics) && !stale) writeRef.current((previewRef.current ?? metrics.offset_from_bottom) + lines);
-      else {
+      if (validScroll(metrics) && !stale) {
+        // lines held on stale metrics go out with a line these metrics are fresh enough for: the read that would release
+        // them waits while the wheel's own writes run back to back, past the hold. Behind a held page they still wait for
+        // that read, which hands the page out first.
+        let held = 0;
+        if (heldLines && !heldPage) { held = Date.now() - heldLines.at < HELD_PAGE_MS ? heldLines.lines : 0; heldLines = null; }
+        writeRef.current((previewRef.current ?? metrics.offset_from_bottom) + held + lines);
+      } else {
         heldLines = { lines: (heldLines && Date.now() - heldLines.at < HELD_PAGE_MS ? heldLines.lines : 0) + lines, at: Date.now() };
         dirty = true; idle = 0; schedule(0);
       }
