@@ -5,8 +5,8 @@ import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { forgetTranscriptState, MAX_PAGE_PROMPTS, TRANSCRIPT_WINDOW_BYTES, transcriptPage, transcriptToolOutput } from "./conversation.ts";
-import { kimiWireForPane, parseKimiTranscript } from "./kimi.ts";
-import { processStartedAt } from "./process-start.ts";
+import { kimiWireForPane, kimiWireForWindowsProcesses, parseKimiTranscript } from "./kimi.ts";
+import type { ProcessRow } from "./windows-processes.ts";
 import { TOOL_OUTPUT_CHARS } from "./tool-output.ts";
 import { turnStarts } from "./transcript-turns.ts";
 
@@ -22,8 +22,14 @@ function kimiHome(...sessions: string[]): { home: string; wire: (id: string) => 
   mkdirSync(locks, { recursive: true });
   return { home, wire, lock: (id, body) => writeFileSync(join(locks, `${id}.lock`), typeof body === "string" ? body : JSON.stringify(body)) };
 }
+const TEST_PROCESS_START = 1_000;
+const testProcessIdentity = {
+  startUpperBound: (pid: number) => pid === process.pid ? TEST_PROCESS_START : null,
+  program: (pid: number) => pid === process.pid ? String(TEST_PROCESS_START) : null,
+};
+const kimiWireForTestPane = (paneId: string, pids: number[], home: string) => kimiWireForPane(paneId, pids, home, testProcessIdentity);
 let panes = 0;
-const kimiWireForProcesses = (pids: number[], home: string) => kimiWireForPane(`w1:p${++panes}`, pids, home);
+const kimiWireForProcesses = (pids: number[], home: string) => kimiWireForTestPane(`w1:p${++panes}`, pids, home);
 const liveLock = (pid = process.pid) => ({ version: 1, token: `${pid}:x`, pid, hostname: hostname(), startedAt: Date.now(), clientIdentity: "kimi_code_cli" });
 
 const WIRE = [
@@ -154,41 +160,66 @@ it("finds a locked session in a managed workspace's store too", () => {
   expect(kimiWireForProcesses([process.pid], home)).toBe(path);
 });
 
+function windowsKimiRows(pid = process.pid, started = Date.now() - 10_000): ProcessRow[] {
+  return [
+    { pid: 10_000, parent: 0, path: "C:\\Windows\\PowerShell\\powershell.exe", commandLine: "powershell.exe", started: started - 1_000 },
+    { pid, parent: 10_000, path: "C:\\Tools\\kimi.exe", commandLine: "kimi.exe", started },
+  ];
+}
+
+it("binds a Windows pane's Kimi descendant and keeps its session while that process is idle", () => {
+  const { home, wire, lock } = kimiHome("session_a");
+  const rows = windowsKimiRows();
+  const started = rows[1]!.started!;
+  lock("session_a", { ...liveLock(), startedAt: started + 1 });
+  expect(kimiWireForWindowsProcesses("win:p1", 10_000, rows, home)).toBe(wire("session_a"));
+  rmSync(join(home, ".kimi-code", "locks", "sessions", "session_a.lock"));
+  expect(kimiWireForWindowsProcesses("win:p1", 10_000, rows, home)).toBe(wire("session_a"));
+});
+
+it("refuses a Windows lock from before the process started and a pane without Kimi", () => {
+  const { home, lock } = kimiHome("session_a");
+  const rows = windowsKimiRows();
+  lock("session_a", { ...liveLock(), startedAt: rows[1]!.started! - 1 });
+  expect(kimiWireForWindowsProcesses("win:p2", 10_000, rows, home)).toBeNull();
+  expect(kimiWireForWindowsProcesses("win:p3", 10_000, [rows[0]!], home)).toBeNull();
+});
+
 it("keeps an idle Kimi's last session while the same process runs in the pane, and only then", () => {
   const { home, wire, lock } = kimiHome("session_a", "session_b");
   const locks = join(home, ".kimi-code", "locks", "sessions");
   lock("session_a", liveLock());
-  expect(kimiWireForPane("w9:p1", [process.pid], home)).toBe(wire("session_a"));
+  expect(kimiWireForTestPane("w9:p1", [process.pid], home)).toBe(wire("session_a"));
   // the CLI lets go of its lock seconds after a turn ends: the same process still shows its session
   rmSync(join(locks, "session_a.lock"));
-  expect(kimiWireForPane("w9:p1", [process.pid], home)).toBe(wire("session_a"));
-  expect(kimiWireForPane("w9:p2", [process.pid], home)).toBeNull();
-  expect(kimiWireForPane("w9:p1", [process.pid + 1_000_000], home)).toBeNull();
-  expect(kimiWireForPane("w9:p1", [process.pid], home)).toBeNull();
+  expect(kimiWireForTestPane("w9:p1", [process.pid], home)).toBe(wire("session_a"));
+  expect(kimiWireForTestPane("w9:p2", [process.pid], home)).toBeNull();
+  expect(kimiWireForTestPane("w9:p1", [process.pid + 1_000_000], home)).toBeNull();
+  expect(kimiWireForTestPane("w9:p1", [process.pid], home)).toBeNull();
   lock("session_a", liveLock());
-  expect(kimiWireForPane("w9:p3", [process.pid], home)).toBe(wire("session_a"));
+  expect(kimiWireForTestPane("w9:p3", [process.pid], home)).toBe(wire("session_a"));
   rmSync(join(locks, "session_a.lock"));
   lock("session_a", { ...liveLock(), pid: process.ppid });
-  expect(kimiWireForPane("w9:p3", [process.pid], home)).toBeNull();
+  expect(kimiWireForTestPane("w9:p3", [process.pid], home)).toBeNull();
   rmSync(join(locks, "session_a.lock"));
   lock("session_a", liveLock());
-  expect(kimiWireForPane("w9:p1", [process.pid], home)).toBe(wire("session_a"));
+  expect(kimiWireForTestPane("w9:p1", [process.pid], home)).toBe(wire("session_a"));
   rmSync(join(locks, "session_a.lock"));
   lock("session_b", liveLock());
-  expect(kimiWireForPane("w9:p1", [process.pid], home)).toBe(wire("session_b"));
+  expect(kimiWireForTestPane("w9:p1", [process.pid], home)).toBe(wire("session_b"));
 });
 
 it("lets go of an idle Kimi's session once the folder starts another", () => {
   const { home, wire, lock } = kimiHome("session_a");
   lock("session_a", liveLock());
-  expect(kimiWireForPane("w8:p1", [process.pid], home)).toBe(wire("session_a"));
+  expect(kimiWireForTestPane("w8:p1", [process.pid], home)).toBe(wire("session_a"));
   rmSync(join(home, ".kimi-code", "locks", "sessions", "session_a.lock"));
-  expect(kimiWireForPane("w8:p1", [process.pid], home)).toBe(wire("session_a"));
+  expect(kimiWireForTestPane("w8:p1", [process.pid], home)).toBe(wire("session_a"));
   // `/new` while idle: the new session has no lock yet
   const later = new Date(Date.now() + 5_000);
   mkdirSync(join(wire("session_a"), "..", "..", "..", "..", "session_b"));
   utimesSync(join(wire("session_a"), "..", "..", "..", ".."), later, later);
-  expect(kimiWireForPane("w8:p1", [process.pid], home)).toBeNull();
+  expect(kimiWireForTestPane("w8:p1", [process.pid], home)).toBeNull();
 });
 
 it("lets go of an idle Kimi's session once the user switches to another one with /sessions or /resume", () => {
@@ -199,16 +230,16 @@ it("lets go of an idle Kimi's session once the user switches to another one with
   mkdirSync(join(history, ".."), { recursive: true });
   writeFileSync(history, jsonl([{ content: "hello" }]));
   lock("session_a", liveLock());
-  expect(kimiWireForPane("w7:p1", [process.pid], home)).toBe(wire("session_a"));
+  expect(kimiWireForTestPane("w7:p1", [process.pid], home)).toBe(wire("session_a"));
   rmSync(join(home, ".kimi-code", "locks", "sessions", "session_a.lock"));
   appendFileSync(history, jsonl([{ content: "/help" }, { content: "a prompt not sent yet" }]));
-  expect(kimiWireForPane("w7:p1", [process.pid], home)).toBe(wire("session_a"));
+  expect(kimiWireForTestPane("w7:p1", [process.pid], home)).toBe(wire("session_a"));
   // picking an existing session writes nothing to the store and takes no lock until its next prompt
   appendFileSync(history, jsonl([{ content: "/resume session_b" }]));
-  expect(kimiWireForPane("w7:p1", [process.pid], home)).toBeNull();
-  expect(kimiWireForPane("w7:p1", [process.pid], home)).toBeNull();
+  expect(kimiWireForTestPane("w7:p1", [process.pid], home)).toBeNull();
+  expect(kimiWireForTestPane("w7:p1", [process.pid], home)).toBeNull();
   lock("session_b", liveLock());
-  expect(kimiWireForPane("w7:p1", [process.pid], home)).toBe(wire("session_b"));
+  expect(kimiWireForTestPane("w7:p1", [process.pid], home)).toBe(wire("session_b"));
 });
 
 it("sees a switch typed while the old lock lingers, or written in two pieces", () => {
@@ -220,35 +251,35 @@ it("sees a switch typed while the old lock lingers, or written in two pieces", (
   writeFileSync(history, jsonl([{ content: "hello" }]));
   const lockA = join(home, ".kimi-code", "locks", "sessions", "session_a.lock");
   lock("session_a", liveLock());
-  expect(kimiWireForPane("w6:p1", [process.pid], home)).toBe(wire("session_a"));
+  expect(kimiWireForTestPane("w6:p1", [process.pid], home)).toBe(wire("session_a"));
   appendFileSync(history, jsonl([{ content: "/sessions" }]));
   const typed = new Date(Date.now() + 500);
   utimesSync(history, typed, typed);
   const writing = new Date(Date.now() + 1_000);
   utimesSync(wire("session_a"), writing, writing);
-  expect(kimiWireForPane("w6:p1", [process.pid], home)).toBe(wire("session_a"));
+  expect(kimiWireForTestPane("w6:p1", [process.pid], home)).toBe(wire("session_a"));
   appendFileSync(history, jsonl([{ content: "/sessions" }]));
   const typedAgain = new Date(Date.now() + 1_500);
   utimesSync(history, typedAgain, typedAgain);
-  expect(kimiWireForPane("w6:p1", [process.pid], home)).toBeNull();
+  expect(kimiWireForTestPane("w6:p1", [process.pid], home)).toBeNull();
   rmSync(lockA);
-  expect(kimiWireForPane("w6:p1", [process.pid], home)).toBeNull();
+  expect(kimiWireForTestPane("w6:p1", [process.pid], home)).toBeNull();
   lock("session_a", { ...liveLock(), startedAt: Date.now() + 1_000 });
-  expect(kimiWireForPane("w6:p1", [process.pid], home)).toBe(wire("session_a"));
+  expect(kimiWireForTestPane("w6:p1", [process.pid], home)).toBe(wire("session_a"));
   rmSync(lockA);
-  expect(kimiWireForPane("w6:p1", [process.pid], home)).toBe(wire("session_a"));
+  expect(kimiWireForTestPane("w6:p1", [process.pid], home)).toBe(wire("session_a"));
   appendFileSync(history, '{"content":"/resu');
-  expect(kimiWireForPane("w6:p1", [process.pid], home)).toBe(wire("session_a"));
+  expect(kimiWireForTestPane("w6:p1", [process.pid], home)).toBe(wire("session_a"));
   appendFileSync(history, 'me session_b"}\n');
-  expect(kimiWireForPane("w6:p1", [process.pid], home)).toBeNull();
+  expect(kimiWireForTestPane("w6:p1", [process.pid], home)).toBeNull();
   lock("session_a", { ...liveLock(), startedAt: Date.now() + 2_000 });
-  expect(kimiWireForPane("w6:p1", [process.pid], home)).toBe(wire("session_a"));
+  expect(kimiWireForTestPane("w6:p1", [process.pid], home)).toBe(wire("session_a"));
   appendFileSync(history, jsonl([{ content: "/sessions" }, { content: "x".repeat(1024 * 1024) }]));
   const later = new Date(Date.now() + 3_000);
   utimesSync(history, later, later);
-  expect(kimiWireForPane("w6:p1", [process.pid], home)).toBeNull();
+  expect(kimiWireForTestPane("w6:p1", [process.pid], home)).toBeNull();
   rmSync(lockA);
-  expect(kimiWireForPane("w6:p1", [process.pid], home)).toBeNull();
+  expect(kimiWireForTestPane("w6:p1", [process.pid], home)).toBeNull();
 });
 
 it.skipIf(process.platform === "win32" || process.getuid?.() === 0)("holds an idle Kimi's session only while its folder's history can be read", () => {
@@ -259,10 +290,10 @@ it.skipIf(process.platform === "win32" || process.getuid?.() === 0)("holds an id
   mkdirSync(join(history, ".."), { recursive: true });
   writeFileSync(history, "");
   lock("session_a", liveLock());
-  expect(kimiWireForPane("w5:p1", [process.pid], home)).toBe(wire("session_a"));
+  expect(kimiWireForTestPane("w5:p1", [process.pid], home)).toBe(wire("session_a"));
   rmSync(join(home, ".kimi-code", "locks", "sessions", "session_a.lock"));
   chmodSync(history, 0o000);
-  try { expect(kimiWireForPane("w5:p1", [process.pid], home)).toBeNull(); } finally { chmodSync(history, 0o600); }
+  try { expect(kimiWireForTestPane("w5:p1", [process.pid], home)).toBeNull(); } finally { chmodSync(history, 0o600); }
 });
 
 it("ignores a lock a crashed process left behind, another host's and a broken one", () => {
@@ -274,11 +305,11 @@ it("ignores a lock a crashed process left behind, another host's and a broken on
   expect(kimiWireForProcesses([process.pid], home)).toBeNull();
 });
 
-it.skipIf(process.platform !== "linux" && process.platform !== "darwin")("ignores a lock dated where its process may not have started yet", () => {
+it("ignores a lock dated where its process may not have started yet", () => {
   const { home, lock } = kimiHome("session_old");
   // the earliest the process may have started (Linux's btime is whole seconds): a lock a dead
   // process wrote then could be one its reused pid never wrote
-  lock("session_old", { ...liveLock(), startedAt: processStartedAt(process.pid)! });
+  lock("session_old", { ...liveLock(), startedAt: TEST_PROCESS_START - 1 });
   expect(kimiWireForProcesses([process.pid], home)).toBeNull();
 });
 
