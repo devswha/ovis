@@ -2108,13 +2108,21 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
     return { source, turns: [], metadata, ...(screen ? { screen: true as const } : {}), cursor: null, history_id: id, version: answerVersion(id, `${metadata.model}\0${metadata.reasoning_effort}`) };
   };
 
-  const onNotStarted = (error: ConversationNotStarted): Promise<RecognizedConversation> => {
+  const onNotStarted = async (error: ConversationNotStarted): Promise<RecognizedConversation> => {
     if (writtenSessions.has(`${error.source}\0${error.identity}`)) throw new ConversationUnavailable("transcript_missing");
     if (page.before !== undefined || page.since !== undefined || page.from !== undefined) throw new HistoryChanged();
     // Claude writes its file with the first message, so at work with none it has no turn yet: a
     // /clear reports working for a moment (#2550)
     const status = snapshot.panes.find((pane) => pane.pane_id === paneId)?.agent_status;
     if ((status === "working" && error.source !== "claude-transcript" && error.source !== "agy-transcript") || status === "blocked") throw error;
+    if (error.source === "agy-transcript") {
+      // The status-row read waits on herdr: a pane agy moved to another conversation meanwhile has
+      // not this greeting, and not the model its screen shows now.
+      const metadata = await screenMetadata("agy-transcript");
+      const pane = snapshot.panes.find((candidate) => candidate.pane_id === paneId);
+      if (pane === undefined || (await resolveAgyStore(pane))?.path !== error.identity) throw new ConversationUnavailable("no_session_path");
+      return notBegun(error.source, `unwritten:${error.sessionId}`, metadata);
+    }
     return notBegun(error.source, `unwritten:${error.sessionId}`);
   };
 
@@ -2147,8 +2155,10 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
         if (screen.model !== null) throw new ConversationUnavailable(error.message, screen);
       }
       if (pane.agent === "agy" && error.message === "no_session_path" && page.before === undefined && page.since === undefined && page.from === undefined && pane.agent_status !== "working" && pane.agent_status !== "blocked") {
-        const fresh = await agyFreshSession(pane, await bottomViewport(paneId));
-        if (fresh !== null) return await notBegun("agy-transcript", fresh);
+        // the model comes from the frame proven to be the unused start screen, not a later read
+        const text = await bottomViewport(paneId);
+        const fresh = await agyFreshSession(pane, text);
+        if (fresh !== null) return await notBegun("agy-transcript", fresh, startScreenMetadata("agy-transcript", text));
       }
       // an OpenCode at its home screen, which herdr reports no session for until the first prompt (#3600)
       if (pane.agent === "opencode" && pane.agent_session == null && error.message === "no_session_id" && page.before === undefined && page.since === undefined && page.from === undefined && pane.agent_status !== "working" && pane.agent_status !== "blocked") {
