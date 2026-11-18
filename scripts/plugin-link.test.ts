@@ -274,6 +274,22 @@ describe("ovis link, on the PC itself", () => {
     }
   });
 
+  it("--code takes nothing back when neither the code nor the QR code was made: the pairing pending stays", async () => {
+    for (const refusal of [{ code: "machine_profile", message: "A machine takes devices through its account." }, { code: "relay_offline", message: "The relay is not reachable." }]) {
+      const local = localPc((request, path) => {
+        if (path === "/api/relay" && request.method === "GET") return Response.json({ phase: "online", blocked: null });
+        if (path === "/api/relay/code" || path === "/api/relay/offer") return Response.json({ error: refusal }, { status: 409 });
+        if (path === "/api/devices/pair/cancel" || path === "/api/relay/code/cancel") return Response.json({ ok: true });
+        return undefined;
+      });
+      const out: string[] = [];
+      expect(await link(["--code"], { origin: ORIGIN, headers: {}, fetch: local.fetch, out: (text) => out.push(text), signal: new AbortController().signal, lines: answers(), accountService: SERVICE })).toBe(1);
+      const posts = local.calls.filter((call) => call.method === "POST").map((call) => call.path);
+      expect([refusal.code, posts]).toEqual([refusal.code, refusal.code === "machine_profile" ? ["/api/relay/code"] : ["/api/relay/code", "/api/relay/offer"]]);
+      expect(out.join("")).not.toContain("Stopped");
+    }
+  });
+
   /** `link` against a PC that a phone adds once the PC is signed in; `approve` plays the person finishing the sign-in shown. */
   async function linkToAccount(options: { args?: string[]; prepare?: (service: FakeAccountService) => void; approve: (service: FakeAccountService, code: string) => void; enforcing?: boolean }) {
     const pc = identity();

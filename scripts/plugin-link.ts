@@ -737,30 +737,32 @@ async function linkWithCode(options: LinkOptions, api: Api): Promise<number> {
   const now = options.now ?? Date.now;
   const wait = options.wait ?? waitFor;
   await relayOnline(options, api);
+  // a code or a QR code was made: from then on there is something to take back. A refusal of both made nothing, and
+  // leaves whatever is pending alone
   let asked = false;
   // the six-digit code the QR code last carried: only that pairing is taken back, not one started since
   let shown: string | null = null;
-  // a machine profile made no code: there is nothing to take back
-  let machine = false;
   try {
     for (;;) {
-      asked = true;
-      // until this round's offer names its code, the pending pairing is the one this round asks for
-      shown = null;
       // the code first: it starts a new pairing, which the offer then carries (RelayPanel CompactRelay);
       // the offer comes whether the code did or not, since its QR code still pairs
       let code: { code: string; expires_at: string; server_id: string } | null = null;
       let refused = "";
       let offer: { url: string; expires_at: string };
       try {
-        try { code = await api<{ code: string; expires_at: string; server_id: string }>("POST", "/api/relay/code"); } catch (error) {
+        try {
+          code = await api<{ code: string; expires_at: string; server_id: string }>("POST", "/api/relay/code");
+          // until this round's offer names its code, the pending pairing is the one this code started
+          shown = null;
+          asked = true;
+        } catch (error) {
           if (!(error instanceof LocalError) || onMachine(error)) throw error;
           refused = error.message;
         }
         offer = await api<{ url: string; expires_at: string }>("POST", "/api/relay/offer");
+        asked = true;
       } catch (error) {
         if (!onMachine(error)) throw error;
-        machine = true;
         out(`This PC runs the machine profile, which takes devices through its Ovis account, not with a code. Run ${cli(options)} add to add this machine to your Ovis account; every device of that account can then use it.\n`);
         return 1;
       }
@@ -785,7 +787,7 @@ async function linkWithCode(options: LinkOptions, api: Api): Promise<number> {
   } catch (error) {
     if (!signal.aborted) throw error;
   } finally {
-    if (asked && !machine) await takeBack(api, out, shown);
+    if (asked) await takeBack(api, out, shown);
   }
   return 0;
 }
