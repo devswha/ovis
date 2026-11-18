@@ -262,10 +262,9 @@ named for the PC (`relay-account`). A link that names another account is refused
 `account_mismatch`; the device goes at once. The code stays for the device of the right account
 only while it can still pair one: with its five pairings spent, or its ten minutes over, it ends
 as the last device that waits under it goes. A link into that account makes the device a member,
-and the PC joins the account. "That account" is the account id the link names, in a link signed
-with the device's own key: the PC matches that id and cannot tell whether the device holds the
-account ([What this does not protect against](#what-this-does-not-protect-against), a device
-that names an account it does not hold).
+and the PC joins the account. "That account" is the account id in the device's link, which the
+device signs with its own key: the PC checks the signature and that the id is the one the code
+was made for.
 
 The answers carry today's fields and two more:
 
@@ -303,8 +302,8 @@ answers 200:
 ```
 
 `live`: it is the code pending. Once its ten minutes are over it pairs no new device (they are
-also counted on a clock that only moves forward, so setting the PC's clock back gives the code
-no time back), but a device
+also counted on a clock that only moves forward, and once either clock says they are over they
+stay over, so changing the PC's clock gives the code no time back), but a device
 that paired with it in time still has its own 30 seconds to link, and the code reads `live` until
 that device has linked or its time is over. `unknown`: this PC knows no such code; it keeps the
 eight that ended last, in memory. `ended.why` is one of:

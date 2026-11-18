@@ -370,9 +370,9 @@ export class DeviceStore {
    * `waiting`: what such a code holds, the devices that paired with it through the relay and have not linked;
    * `named`: such a code made for one account (startAccountPairing), whose waiting devices are taken into it alone;
    * `expires`: the wall-clock end of its ten minutes, which its `expires_at` shows; `deadline`: the same end on the
-   * store's clock, which only moves forward (codeOver)
+   * store's clock, which only moves forward; `over`: set the first time either says its ten minutes are over (codeOver)
    */
-  private pending: { code: string; expires: number; deadline: number; attempts: number; lanAttempts?: number; remote: boolean; startedBy: string | null; memberRequired: boolean; open?: boolean; noAccountOnly?: boolean; holders: Set<string>; waiting?: WaitingRows; named?: { readonly id: string; readonly account: string } } | null = null;
+  private pending: { code: string; expires: number; deadline: number; over?: true; attempts: number; lanAttempts?: number; remote: boolean; startedBy: string | null; memberRequired: boolean; open?: boolean; noAccountOnly?: boolean; holders: Set<string>; waiting?: WaitingRows; named?: { readonly id: string; readonly account: string } } | null = null;
   /** How the latest codes made for an account ended, newest last: ENDED_ACCOUNT_CODES at most, in memory only. */
   private endedAccountCodes: Extract<AccountPairingState, { state: "ended" }>[] = [];
   /** What a row that waits to link, and the redemption of a code, is bounded on (useClock). */
@@ -728,12 +728,14 @@ export class DeviceStore {
   }
 
   /**
-   * Whether the code pending is past its ten minutes: by the wall clock `now`, or by the store's clock, which only
-   * moves forward. A wall clock set back gives no time back, so a code kept past its ten minutes for the devices that
-   * paired with it in time (expirePending) never pairs a new one.
+   * Whether the code pending is past its ten minutes: from the first time the wall clock `now`, or the store's clock,
+   * which only moves forward, said so. A clock set back or forward and back again gives no time back, so a code kept
+   * past its ten minutes for the devices that paired with it in time (expirePending) never pairs a new one. Those
+   * devices keep their own time to link, on the store's clock.
    */
-  private codeOver(pending: { expires: number; deadline: number }, now: number): boolean {
-    return now > pending.expires || this.clock.now() > pending.deadline;
+  private codeOver(pending: { expires: number; deadline: number; over?: true }, now: number): boolean {
+    if (now > pending.expires || this.clock.now() > pending.deadline) pending.over = true;
+    return pending.over === true;
   }
 
   /**

@@ -141,6 +141,25 @@ test("a code kept past its ten minutes for a device that paired with it in time 
   } finally { wall.mockRestore(); }
 });
 
+test("a code that the wall clock once put past its ten minutes pairs no new device when that clock is set back, while the device that paired in time still links", async () => {
+  const f = await pc();
+  const offer = await forAccount(f, "acct_owner");
+  const code = codeOf(offer);
+  const expires = Date.parse(String(offer.body.expires_at));
+  // the device of the account pairs in time; the store's clock stays well inside the code's ten minutes
+  const owner = await signedInWith(f, code);
+  const wall = spyOn(Date, "now").mockReturnValue(expires + 1);
+  try {
+    expect(await pair(f, code, await phone())).toMatchObject({ error: "auth_failed" });
+    // the wall clock is set back to before the code's expiry: the code stays past its ten minutes
+    wall.mockReturnValue(expires - 60_000);
+    expect(await pair(f, code, await phone())).toMatchObject({ error: "auth_failed" });
+    // the device that paired in time still links in its own seconds
+    expect((await sendLink(owner.session, await linkRecord(owner.id, "acct_owner", owner.key))).status).toBe(200);
+    expect(await f.status()).toMatchObject({ account: "acct_owner", members: 1 });
+  } finally { wall.mockRestore(); }
+});
+
 test("a code whose ten minutes are over ends expired once the last device that paired with it in time has had its seconds", async () => {
   const f = await pc();
   const offer = await forAccount(f, "acct_owner");
