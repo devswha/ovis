@@ -812,22 +812,29 @@ async function linkWithCode(options: LinkOptions, api: Api): Promise<number> {
 async function takeBack(api: Api, out: (text: string) => void, mine: Mine): Promise<void> {
   const ended = await endCode(api, mine);
   if (ended === "both") out("Stopped: the code and the QR code no longer work.\n");
+  else if (ended === "gone") out("Stopped: the code had already ended on this PC.\n");
   else if (ended === "typed") out("Stopped: the code no longer works. The QR code works until it runs out, as this Ovis cannot take it back.\n");
-  else out(`Stopped, but the code could not be taken back (${ended.failed}): it works until it runs out.\n`);
+  else out(`Stopped, but taking the code back was not confirmed (${ended.failed}): it may work until it runs out.\n`);
 }
 
-/** Ends the pairing `mine` names (takeBack): `both` the code and its QR code, `typed` the typed code alone, or why neither. */
-async function endCode(api: Api, mine: Mine): Promise<"both" | "typed" | { readonly failed: string }> {
+/**
+ * Ends the pairing `mine` names (takeBack): `both` the code and its QR code; `gone` nothing, as it had already ended
+ * (`cancelled: false`); `typed` the typed code alone, at an Ovis from before /api/devices/pair/cancel; else why it
+ * is not confirmed that anything ended.
+ */
+async function endCode(api: Api, mine: Mine): Promise<"both" | "gone" | "typed" | { readonly failed: string }> {
   const signal = AbortSignal.timeout(5_000);
   try {
-    await api("POST", "/api/devices/pair/cancel", { signal, body: mine });
-    return "both";
+    const answer = await api<{ cancelled?: boolean }>("POST", "/api/devices/pair/cancel", { signal, body: mine });
+    return answer.cancelled === false ? "gone" : "both";
   } catch (error) {
-    if (error instanceof LocalError && error.status === 404) {
-      await api("POST", "/api/relay/code/cancel", { signal }).catch(() => undefined);
+    try {
+      if (!(error instanceof LocalError && error.status === 404)) throw error;
+      await api("POST", "/api/relay/code/cancel", { signal });
       return "typed";
+    } catch (failure) {
+      return { failed: failure instanceof Error ? failure.message : String(failure) };
     }
-    return { failed: error instanceof Error ? error.message : String(error) };
   }
 }
 
@@ -1035,7 +1042,7 @@ async function addByQr(options: LinkOptions, api: Api, joining: Joining): Promis
   // taken back (`retract`) and the devices nobody kept are removed (`sweep`), and only then is the screen left
   // (`leave`) and anything said, by a write that may fail (`tell`)
   const tell = (text: string): void => { try { say(text); } catch { /* nobody is there to read it */ } };
-  /** Takes the code back from the PC, and says nothing: `both`, `typed` or why not (endCode); null when none is out. */
+  /** Takes the code back from the PC, and says nothing: `both`, `gone`, `typed` or why not (endCode); null when none is out. */
   const retract = async (): Promise<Awaited<ReturnType<typeof endCode>> | null> => {
     card = null;
     if (mine === null) return null;
@@ -1051,13 +1058,16 @@ async function addByQr(options: LinkOptions, api: Api, joining: Joining): Promis
     }
     if (ended === null) return;
     if (ended === "both") { if (!used) tell("The code and the QR code no longer work.\n"); }
+    else if (ended === "gone") { if (!used) tell("The code had already ended on this PC.\n"); }
     else if (ended === "typed") tell("The code no longer works. The QR code works until it runs out, as this Ovis cannot take it back.\n");
-    else tell(`The code could not be taken back (${ended.failed}): it works until it runs out.\n`);
+    else tell(`Taking the code back was not confirmed (${ended.failed}): it may work until it runs out.\n`);
   };
   /** The code back from the PC, then off the screen: once a device got in (`used`), or however the run ends. */
   const end = async (used: boolean): Promise<void> => leave(await retract(), used);
   /** A refusal that started no code (NO_CODE_STARTED), in a sentence of its own when this command sent what was refused. */
-  const refusal = (error: LocalError): LocalError => error.code !== "invalid_account" ? error
+  const refusal = (error: LocalError): LocalError => error.code === "pairing_gone"
+    ? new LocalError(`Another pairing code was made on this PC (in Settings, by ${cli(options)} pair, or by another run) after this run's: it is left as it is, and no QR code is shown. Run ${cli(options)} add again.`, error.status, error.code)
+    : error.code !== "invalid_account" ? error
     : new LocalError(`The Ovis on this PC did not take the id of the account you signed in to (${shortId(joining.signedIn)}) for its code (${error.message})`, error.status, error.code);
   const mint = async (): Promise<void> => {
     minted++;
@@ -1074,20 +1084,11 @@ async function addByQr(options: LinkOptions, api: Api, joining: Joining): Promis
     // from an Ovis that names none is told only by the QR code that carries it
     const made = typed?.pairing?.id;
     if (made !== undefined) mine = { id: made };
-    // the QR code carries this round's typed code while it is pending, else a fresh one: never a code another run,
-    // Settings or `ovis pair` made (`x-ovis-pairing`)
-    const offerFor = (want: string) => api<{ url: string; expires_at: string } & ForAccount>("POST", "/api/relay/offer", { headers: { ...forAccount.headers, "x-ovis-pairing": want } });
+    // the QR code carries this round's typed code, named by its id, else a fresh one (`x-ovis-pairing`). An id no
+    // longer pending (another run, Settings or `ovis pair` made a code since) is refused, and nothing is started
     let offer: { url: string; expires_at: string } & ForAccount;
     try {
-      offer = await offerFor(made ?? "new");
-      // An Ovis from before that header carries the code pending, which Settings or `ovis pair` may have shown as
-      // digits to type. With no typed code this round, that pairing ends by its six digits and a fresh one is asked
-      // for, so the QR code carries digits of its own. An Ovis from before /api/devices/pair/cancel keeps it
-      const carried = decodeOffer(offer.url)?.code;
-      if (offer.pairing === undefined && typed === null && carried !== undefined
-        && await api("POST", "/api/devices/pair/cancel", { body: { code: carried } }).then(() => true, (failure: unknown) => { if (!(failure instanceof LocalError)) throw failure; return false; })) {
-        offer = await offerFor("new");
-      }
+      offer = await api<{ url: string; expires_at: string } & ForAccount>("POST", "/api/relay/offer", { headers: { ...forAccount.headers, "x-ovis-pairing": made ?? "new" } });
     } catch (error) {
       if (!(error instanceof LocalError)) throw error;
       // the offer started nothing of its own: this round's typed code, or the code shown before, is what stays to take back
@@ -1095,7 +1096,11 @@ async function addByQr(options: LinkOptions, api: Api, joining: Joining): Promis
     }
     const decoded = decodeOffer(offer.url);
     if (decoded === null) throw new LocalError("The relay's pairing link did not parse.");
-    // the QR code's code is this run's: by its id, or by its six digits from an Ovis that names none
+    // The QR code's code is shown and taken back only when the PC's answer names it as the code asked for: this round's
+    // typed code, or with none a fresh one. Any other is left as it is. An Ovis from before ids names none and ignores
+    // the header: its code is shown with OLDER_PC, and taken back by its six digits
+    const own = offer.pairing === undefined ? made === undefined : made === undefined || offer.pairing.id === made;
+    if (!own) throw new LocalError(`This PC's QR code carries a code made elsewhere (in Settings, by ${cli(options)} pair, or by another run): it is not shown, and is left as it is. Run ${cli(options)} add again.`);
     mine = mineOf(decoded.code, offer.pairing?.id) ?? mine;
     offered = true;
     // the QR code's code is the one the PC made for the account that signed in, or, from an Ovis before that, a code
@@ -1107,11 +1112,6 @@ async function addByQr(options: LinkOptions, api: Api, joining: Joining): Promis
       }
     }
     pinned = offer.pairing?.id ?? null;
-    // a typed code that is not the QR code's own (the offer started a code of its own) works no more: it is not shown
-    if (typed !== null && tied && typed.pairing?.id !== pinned) {
-      typed = null;
-      refused = "it ended as the QR code was made";
-    }
     if (!tied && !older && joining.plain) {
       older = true;
       say(`${OLDER_PC}\n`);
@@ -1478,8 +1478,9 @@ async function addByQr(options: LinkOptions, api: Api, joining: Joining): Promis
           codeless = null;
         } catch (error) {
           // a server that is restarting, or whose relay is not back online yet (409), gives a code in a moment: asked
-          // again with the next look, as one of the same three codes
-          if (signal.aborted || !(error instanceof AwayError || (error instanceof LocalError && error.status === 409))) throw error;
+          // again with the next look, as one of the same three codes. Not once another code was made since this run's
+          // (`pairing_gone`): a new code would replace that one
+          if (signal.aborted || !(error instanceof AwayError || (error instanceof LocalError && error.status === 409 && error.code !== "pairing_gone"))) throw error;
           minted--;
           // this PC joined an account meanwhile (`in_account`): the next look finds it there, and asks for no code
           if (!(error instanceof LocalError && error.code === "in_account")) {

@@ -134,7 +134,7 @@ test("a code ovis add left behind, killed before it could take it back, still ad
   add.die();
   add.stop.abort();
   expect(await bounded(add.run)).toBe(1);
-  expect(add.text()).toContain("The code could not be taken back");
+  expect(add.text()).toContain("Taking the code back was not confirmed");
   expect(add.pc.devices.activePairing()?.code).toBe(add.code);
   const signedOut = await signedInWith(add.pc, add.code);
   expect((await ask(signedOut.session, "/api/devices")).body.error?.code).toBe("link_required");

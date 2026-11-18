@@ -2017,14 +2017,14 @@ describe("ovis link, on the PC itself", () => {
     expect(stuck.out.at(-1)).toBe("Stopped. Run ovis add again to add this PC. Hako's iPhone could not be removed (/api/devices/00000000000000a1: this device can only watch): revoke it in Settings → Devices and PCs on this PC.\n");
   });
 
-  it("takes the code back when the run fails, and says when it could not be", async () => {
+  it("takes the code back when the run fails, and says when that was not confirmed", async () => {
     const { code, out, cancels } = await scanning({
       refuse: (path, codes) => path === "/api/account/status" && codes > 0 ? Response.json({ error: { code: "internal_error", message: "internal error (y)" } }, { status: 500 }) : undefined,
       cancel: () => Response.json({ error: { code: "internal_error", message: "internal error (x)" } }, { status: 500 }),
     });
     expect(code).toBe(1);
     expect(cancels).toEqual([{ code: "100001" }]);
-    expect(out.slice(-3, -1)).toEqual([OFF, "The code could not be taken back (/api/devices/pair/cancel: internal error (x)): it works until it runs out.\n"]);
+    expect(out.slice(-3, -1)).toEqual([OFF, "Taking the code back was not confirmed (/api/devices/pair/cancel: internal error (x)): it may work until it runs out.\n"]);
     expect(out.at(-1)).toContain("Could not link this PC");
   });
 
@@ -2580,17 +2580,16 @@ describe("ovis link, on the PC itself", () => {
     expect(code).toBe(0);
   });
 
-  it("ends a code pending from elsewhere before its QR code when the relay takes no typed code, so the QR code carries digits of its own", async () => {
+  it("at an Ovis from before ids, ends no code before its QR code when the relay takes no typed code, and takes back the QR code's as the run ends", async () => {
     const { code, text, cancels, offers, paths } = await scanning({
       refuse: (path) => path === "/api/relay/code" ? Response.json({ error: { code: "code_unavailable", message: "Pairing with a typed code works through Ovis's relay only; scan the QR code instead." } }, { status: 409 }) : undefined,
       step: (state, looks) => { if (looks === 1) { state.account = "acct_1"; state.devices = [OLD, MEMBER]; } },
     });
     expect(code).toBe(0);
     expect(text).toContain("No code to type this time");
-    // what the first offer carried (pending from Settings or ovis pair, which showed its six digits) went by its six
-    // digits, and a second offer carries a code of its own, which is then taken back by its own digits
-    expect(cancels).toEqual([{ code: "100001" }, { code: "100002" }]);
-    expect(offers).toEqual(["100001", "100002"]);
+    // one offer, and its code is taken back by its six digits only as the run ends
+    expect(cancels).toEqual([{ code: "100001" }]);
+    expect(offers).toEqual(["100001"]);
     const order = ["POST /api/relay/code", "POST /api/relay/offer", "POST /api/devices/pair/cancel"].map((call) => paths.indexOf(call));
     expect(order).toEqual([...order].sort((a, b) => a - b));
   });
@@ -3047,10 +3046,14 @@ describe("ovis link, on the PC itself", () => {
     expect(invalid.offers).toEqual([]);
   });
 
-  it("shows no code to type that is not the one its QR code carries", async () => {
-    const { text } = await scanning({ tied: { typedId: "p0" }, step: joins });
-    expect(text).toContain("No code to type this time (it ended as the QR code was made). The QR code expires in 10:00.");
+  it("shows no QR code that is not the code to type it made, and takes back only its own", async () => {
+    const { code, text, cancels } = await scanning({ tied: { typedId: "p0" }, step: joins });
+    expect(code).toBe(1);
+    expect(text).toContain("This PC's QR code carries a code made elsewhere");
     expect(text).not.toContain("ABCD-EFGH-J1");
+    expect(text).not.toContain("Scan this QR code");
+    // the QR code's code (p1) is left as it is
+    expect(cancels).toEqual([{ id: "p0" }]);
   });
 
   it("takes back by its id the code to type it made when its QR code was refused, and ends no other code", async () => {
@@ -3061,6 +3064,18 @@ describe("ovis link, on the PC itself", () => {
     expect(code).toBe(1);
     expect(offers).toEqual([]);
     expect(cancels).toEqual([{ id: "p1" }]);
+  });
+
+  it("stops when another code was made since its code to type: no new code that would replace that one, and only its own is taken back", async () => {
+    const { code, text, cancels, offers, paths } = await scanning({
+      tied: TIED,
+      refuse: (path) => path === "/api/relay/offer" ? Response.json({ error: { code: "pairing_gone", message: "The code this offer names is no longer the one pending on this PC; no new code was made." } }, { status: 409 }) : undefined,
+    });
+    expect(code).toBe(1);
+    expect(offers).toEqual([]);
+    expect(paths.filter((call) => call === "POST /api/relay/code")).toHaveLength(1);
+    expect(cancels).toEqual([{ id: "p1" }]);
+    expect(text).toContain("Another pairing code was made on this PC");
   });
 
   it("makes no new code while its code still holds a device that paired with it in time, and renews it once that device's time is over", async () => {
