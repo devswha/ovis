@@ -30,6 +30,7 @@ import { bounded, deferred, TestClock } from "./test-helpers.ts";
 import { relayClock } from "./session.ts";
 import { unitHerdrOnly } from "../../scripts/test-herdr.ts";
 import { FakeAccountService } from "../../shared/account-service-fake.ts";
+import { newRecordId, signAccountRecord } from "../../shared/account-records.ts";
 import { herdrRpc, workspaceClose, workspaceCreate } from "../herdr/client.ts";
 
 const cleanup: (() => void | Promise<void>)[] = [];
@@ -97,11 +98,14 @@ async function fixture(serveOnly?: boolean, options: Partial<RelayServiceOptions
     get controlLost() { return controlLost.promise; },
     opened, heard, warmOpened: warmOpened.map((entry) => entry.promise),
     get base() { return `http://127.0.0.1:${app.port}`; },
-    async request(path = "", method = "GET", guarded = true) {
+    async request(path = "", method = "GET", guarded = true, headers: Record<string, string> = {}) {
       const guard: Record<string, string> = guarded ? { "x-herdr-update": "1" } : {};
-      // the machine profile's local owner is the caller on its socket in the state folder
-      if (appOptions.profile === "machine") return fetch("http://localhost/api/relay" + path, { method, unix: join(stateDir, "serve.sock"), headers: { origin: "http://localhost", ...guard } });
-      return fetch(this.base + "/api/relay" + path, { method, headers: { origin: this.base, ...guard } });
+      return this.local("/api/relay" + path, { method, headers: { ...guard, ...headers } });
+    },
+    /** A call from this PC itself. The machine profile's local owner is the caller on its socket in the state folder. */
+    local(path: string, init: { method?: string; headers?: Record<string, string> } = {}) {
+      if (appOptions.profile === "machine") return fetch("http://localhost" + path, { method: init.method, unix: join(stateDir, "serve.sock"), headers: { origin: "http://localhost", ...init.headers } });
+      return fetch(this.base + path, { method: init.method, headers: { origin: this.base, ...init.headers } });
     },
     async start() {
       const response = await this.request("/start", "POST");
@@ -209,8 +213,10 @@ async function client(f: Awaited<ReturnType<typeof fixture>>, offer: RelayOffer,
   return {
     device: { id: principal.device_id, keys }, error: error.promise, goaway: goaway.promise, closed: closed.promise, mux: engine,
     close: () => channel.close(),
-    async http(target: string, init: Partial<Omit<HttpRequest, "target" | "device_id">> = {}) {
+    /** `body`: sent as the request's body, which `init.body` then says is a stream */
+    async http(target: string, init: Partial<Omit<HttpRequest, "target" | "device_id">> = {}, body?: string) {
       const stream = engine.openHttp({ target, method: "GET", headers: [], body: "none", ...init });
+      if (body !== undefined) void stream.sendBody(new Blob([body]).stream()).catch(() => {});
       const response = deferred<Response>();
       stream.onHeaders = ({ status, headers }) => response.resolve(new Response(stream.noBody ? null : stream.body, {
         status, headers: headers.map(([name, value]) => [name, value]),
@@ -1145,12 +1151,80 @@ it("end to end: the hosted app's code screen finds the PC through the relay and 
   expect(f.app.context.services.devices.list(null).some((device) => device.via_relay)).toBe(true);
 });
 
-/** The same device protocol, with the ordinary server constrained to one local engine. */
-function machineFixture(appOptions: NonNullable<Parameters<typeof createServer>[0]> = {}, relayOptions: Partial<RelayServiceOptions> = {}) {
+/**
+ * The same device protocol, with the ordinary server constrained to one local engine. Its owner makes a code only for
+ * an account (the test below), so `offer` is the QR code of a code started in its device store, as a device already
+ * on the machine once paired with.
+ */
+async function machineFixture(appOptions: NonNullable<Parameters<typeof createServer>[0]> = {}, relayOptions: Partial<RelayServiceOptions> = {}) {
   const account = new FakeAccountService();
   const options = { profile: "machine" as const, accountService: { url: "https://account.test", fetch: account.fetch }, ...appOptions };
-  return fixture(false, { accountService: "https://account.test", accountFetch: account.fetch, ...relayOptions }, options);
+  const f = await fixture(false, { accountService: "https://account.test", accountFetch: account.fetch, ...relayOptions }, options);
+  return Object.assign(f, {
+    async offer(): Promise<RelayOffer> {
+      const identity = loadRelayIdentity(f.stateDir);
+      return { v: 1, server_id: identity.server_id, server_public_key: identity.public_key, relay: `wss://127.0.0.1:${f.localRelay.port}`,
+        code: f.app.context.services.devices.startPairing().code };
+    },
+  });
 }
+
+const errorCode = async (response: Response) => (await response.json() as { error?: { code: string } }).error?.code;
+
+it.each(["an ordinary server", "the machine profile"])("pairing codes on %s in no account: a machine makes one only for an account, an ordinary server as today", async (kind) => {
+  const machine = kind === "the machine profile";
+  const f = machine ? await machineFixture({}, { pairCodeRelay: "wss://pair.test" }) : await fixture(false, { pairCodeRelay: "wss://pair.test" });
+  await f.start();
+  const devices = f.app.context.services.devices;
+  const peer = await client(f, await f.offer());
+  const pending = devices.startPairing().code;
+  let started = 0;
+  devices.onPairingStarted(() => { started++; });
+  const plain = { "x-ovis-no-account-only": "1" };
+  const answers: [string, number, string | undefined][] = [];
+  for (const [path, headers] of [["/offer", {}], ["/offer", plain], ["/code", {}], ["/code", plain]] as const) {
+    const response = await f.request(path, "POST", true, headers);
+    answers.push([`${path} ${JSON.stringify(headers)}`, response.status, await errorCode(response)]);
+  }
+  const local = await f.local("/api/devices/pair/start", { method: "POST", headers: { "x-herdr-machine": "1" } });
+  answers.push(["pair/start on this PC", local.status, await errorCode(local)]);
+  const relayed = await peer.http("/api/devices/pair/start", { method: "POST", headers: [["x-herdr-machine", "1"]] });
+  answers.push(["pair/start through the relay", relayed.status, await errorCode(relayed)]);
+  if (machine) {
+    expect(answers).toEqual(answers.map(([call]) => [call, 409, "machine_profile"]));
+    // nothing was made, and the code pending stays as it was
+    expect([started, devices.activePairing()?.code]).toEqual([0, pending]);
+  } else {
+    expect(answers).toEqual([['/offer {}', 200, undefined], ['/offer {"x-ovis-no-account-only":"1"}', 409, "no_account_named"], ['/code {}', 200, undefined],
+      ['/code {"x-ovis-no-account-only":"1"}', 200, undefined], ["pair/start on this PC", 200, undefined], ["pair/start through the relay", 200, undefined]]);
+  }
+  // a code for an account is made as on any PC
+  for (const path of ["/offer", "/code"]) {
+    const named = await f.request(path, "POST", true, { "x-ovis-expect-account": "acct_owner" });
+    expect([path, named.status, (await named.json() as { expect_account?: string }).expect_account]).toEqual([path, 200, "acct_owner"]);
+  }
+});
+
+it("machine profile takes a device in with a code made for its account: the device links itself into that account", async () => {
+  const f = await machineFixture();
+  await f.start();
+  const devices = f.app.context.services.devices;
+  // the call `ovis add` makes on the machine's socket
+  const made = await f.request("/offer", "POST", true, { "x-ovis-expect-account": "acct_owner" });
+  expect(made.status).toBe(200);
+  const offer = decodeOffer((await made.json() as { url: string }).url)!;
+  const paired = await client(f, offer);
+  expect(devices.list(null)).toEqual([]);
+  const session = await client(f, offer, false, paired.device);
+  const key = Buffer.from(await crypto.subtle.exportKey("spki", paired.device.keys.publicKey)).toString("base64url");
+  const record = await signAccountRecord({ v: 1, kind: "link", account: "acct_owner", key, server_id: offer.server_id, device_id: paired.device.id,
+    old_key: key, issued_at: new Date().toISOString(), id: newRecordId(), signer: key }, paired.device.keys.privateKey);
+  const linked = await session.http("/api/account/link", { method: "POST", headers: [["content-type", "application/json"], ["x-herdr-machine", "1"]], body: "stream" },
+    JSON.stringify({ record }));
+  expect(linked.status).toBe(200);
+  expect(devices.account()).toBe("acct_owner");
+  expect(devices.list(null).map((device) => device.id)).toEqual([paired.device.id]);
+});
 
 it.each(["missing HTTP", "missing WS", "wrong"])("machine profile refuses %s proof over the real relay", async (scenario) => {
   const f = await machineFixture();

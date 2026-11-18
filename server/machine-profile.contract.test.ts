@@ -723,7 +723,7 @@ const restricted = [
   "/api/herdr/update", "/api/runtime", "/api/runtime/move", "/api/runtime/move/install",
   "/api/runtime/move/stop", "/api/runtime/move/stop-all", "/api/runtime/move/start", "/api/runtime/move/cancel",
   "/api/portal", "/api/portal/start", "/api/relay/direct", "/api/machines", "/api/machines/ssh-candidates",
-  "/api/fleet/machines", "/api/fleet/invites", "/api/fleet/restore/confirm", "/api/bridge",
+  "/api/fleet/machines", "/api/fleet/invites", "/api/fleet/restore/confirm", "/api/bridge", "/api/devices/pair/start",
 ];
 it.each(restricted)("refuses %s even to an owner in the machine profile", async (path) => {
   const stateDir = scratch();

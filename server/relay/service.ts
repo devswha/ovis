@@ -1,4 +1,4 @@
-import { MACHINE_DIRECT_CARRIER_ENABLED } from "../machine-profile.ts";
+import { MACHINE_DIRECT_CARRIER_ENABLED, MachineCodeForAccountError } from "../machine-profile.ts";
 import { existsSync, readFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
@@ -572,10 +572,12 @@ export class RelayService {
   /**
    * A code to type on the device being paired (server/relay/pair-code.ts), replacing any showing; null
    * when this PC's relay has none (it is not Ovis's own). `account`: the code is made for it (DeviceStore.startAccountPairing),
-   * and a PC in an account refuses that before the relay is asked (PcInAccountError).
+   * and a PC in an account refuses that before the relay is asked (PcInAccountError). The machine profile makes no
+   * code without it (MachineCodeForAccountError).
    */
   async pairCode(by: string | null = null, account?: string): Promise<({ code: string; expires_at: string; server_id: string } & Partial<AccountPairing>) | null> {
     if (!this.enabled || !this.identity || !this.services || this.blocked) throw new Error("Start the relay before pairing.");
+    if (account === undefined && this.services.options.profile === "machine") throw new MachineCodeForAccountError();
     if (account !== undefined && this.services.devices.account() !== null) throw new PcInAccountError();
     const relay = this.options.pairCodeRelay ?? (this.relay === GLOBAL_RELAY ? GLOBAL_RELAY : null);
     if (relay === null) return null;
@@ -598,10 +600,12 @@ export class RelayService {
    * named for this PC and into no other, so none is made while no account is named either (NoAccountNamedError):
    * no code is started, and the one pending stays as it was.
    * `account`: the offer's code is made for that account (DeviceStore.pairingForAccount), whatever account was named
-   * for this PC, and the answer says so; `noAccountOnly` is not asked with it.
+   * for this PC, and the answer says so; `noAccountOnly` is not asked with it. The machine profile makes no offer
+   * without it (MachineCodeForAccountError), and the code pending stays as it was.
    */
   offer(by: string | null = null, options: { noAccountOnly?: boolean; account?: string } = {}): { url: string; expires_at: string } & Partial<AccountPairing> {
     if (!this.enabled || !this.identity || !this.services || this.blocked) throw new Error("Start the relay before pairing.");
+    if (options.account === undefined && this.services.options.profile === "machine") throw new MachineCodeForAccountError();
     const devices = this.services.devices;
     // a PC that is in an account says so itself (pairingForNoAccount)
     if (options.noAccountOnly && devices.account() === null && this.savedRelayAccount() === null) throw new NoAccountNamedError();

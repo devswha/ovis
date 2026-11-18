@@ -1,4 +1,5 @@
 import { DeviceGoneError, DeviceReadOnlyError, PcInAccountError } from "../devices.ts";
+import { MachineCodeForAccountError } from "../machine-profile.ts";
 import { errorResponse, jsonResponse, readJsonObject, setRequestRoute } from "../http.ts";
 import type { ServerContext } from "../dispatch.ts";
 import { updateRequestAllowed } from "../update-api.ts";
@@ -145,6 +146,8 @@ export async function handleRelayRequest(request: Request, pathname: string, con
     if (error instanceof PcInAccountError) return fail(error.code, error.message, 409);
     // no account was named for this PC: its page asks for the sign-in first, and for this code only once one is named
     if (error instanceof NoAccountNamedError) return fail(error.code, error.message, 409);
+    // a machine makes a code for an account only: its command line says how a device is added there
+    if (error instanceof MachineCodeForAccountError) return fail(error.code, error.message, 409);
     return errorResponse(error);
   }
 }

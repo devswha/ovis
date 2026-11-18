@@ -22,6 +22,19 @@ export const MACHINE_DIRECT_CARRIER_ENABLED = false;
 
 export class MachineProfileError extends Error {}
 
+/**
+ * The profile makes a pairing code only for an account (POST /api/relay/offer and POST /api/relay/code with
+ * `x-ovis-expect-account`), for every caller: a device that pairs with any other code would be on this machine in no
+ * account. Nothing is made, and the code pending stays as it was. POST /api/devices/pair/start is one of the routes
+ * the profile refuses (machineRouteRestricted).
+ */
+export class MachineCodeForAccountError extends Error {
+  readonly code = "machine_profile";
+  constructor() {
+    super("This machine takes new devices through its account: add one with `ovis add`.");
+  }
+}
+
 /** The local owner's socket in a state folder: a path the server never takes from anything but its folder. */
 export function ownerSocketPath(stateDir: string): string { return join(stateDir, "serve.sock"); }
 /** The longest socket path served: a longer one Bun would listen on, while curl's --unix-socket cannot reach it. */
@@ -265,7 +278,7 @@ export async function machineReadError(error: unknown, engine: string, refusal: 
  */
 export function machineRouteRestricted(path: string, method: string): boolean {
   if (path === "/api/machines" && method === "GET") return false;
-  return /^\/api\/(?:herdr\/update$|runtime(?:\/|$)|portal(?:\/|$)|fleet(?:\/|$)|machines(?:\/|$)|bridge$|devices\/pair$)/.test(path)
+  return /^\/api\/(?:herdr\/update$|runtime(?:\/|$)|portal(?:\/|$)|fleet(?:\/|$)|machines(?:\/|$)|bridge$|devices\/pair(?:\/start)?$)/.test(path)
     || path === "/api/relay/direct" && !MACHINE_DIRECT_CARRIER_ENABLED;
 }
 
