@@ -20,7 +20,6 @@ const actionName = (uses: string) => uses.slice(0, uses.lastIndexOf("@"));
 // every workflow and action GitHub loads; a `.yaml` file or another spelling fails the test below instead of being skipped
 const actionFiles = workflowAndActionFiles().filter((path) => (path.startsWith(".github/workflows/") && path.endsWith(".yml")) || path.endsWith("/action.yml"));
 
-/** What is wrong with the action references of one workflow or composite action, step by step. */
 function auditActions(file: string, text: string) {
   const doc = Bun.YAML.parse(text) as Workflow;
   const problems: string[] = [];
@@ -107,7 +106,6 @@ describe.skipIf(process.platform === "win32")("prepared CI tools", () => {
   }
 });
 
-/** Runs scripts/ci-seed-bun-cache.sh with the host's cache at `seed` (when it is given) and the job's at `<dir>/w/.ci-cache/bun`. */
 function seedBunCache(prepare: (seed: string) => void = () => {}) {
   const dir = mkdtempSync(join(tmpdir(), "ci-seed-bun-"));
   const seed = join(dir, "host/bun/current");

@@ -7,9 +7,6 @@
  *   in, and the dialog names the account. Open terminal is there until it ends.
  * - Codex's Add account → On this PC → Start sign-in follows the login in the browser: its device page
  *   on auth.openai.com and its one-time code, then the account it signed in.
- * - The setup guide offers Sign in under its tiles for an installed Claude Code without an account.
- *
- * With UI_EVIDENCE_DIR, each step is captured under agents-sign-in/.
  */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -63,7 +60,6 @@ try {
       };
       const press = (locator: ReturnType<Page["locator"]>) => width === 390 ? locator.tap() : locator.click();
       try {
-        // Claude Code's first sign-in, from its Agents row
         await page.goto(`${root}&settings=agents`);
         const claude = page.locator(".agents-item[data-agent='claude']");
         await claude.waitFor();
@@ -92,7 +88,6 @@ try {
         await dialog.waitFor({ state: "detached" });
         console.log(`PASS Claude Code signs in from its Agents row: its page on claude.com, the pasted code, the account named (${at})`);
 
-        // Codex's Add account → On this PC, followed in the browser
         const codex = page.locator(".agents-item[data-agent='codex']");
         await press(codex.locator(".agents-toggle"));
         await press(codex.getByRole("button", { name: "Add account", exact: true }));
@@ -108,12 +103,9 @@ try {
         await follow.getByText("Signed in as codex@example.test.", { exact: true }).waitFor();
         await shot("4-codex-signed-in");
         await press(follow.getByRole("button", { name: "Done", exact: true }));
-        // Done ends the whole Add account flow: no dialog is left behind
         await page.locator(".usage-account-dialog").first().waitFor({ state: "detached" });
         console.log(`PASS Codex's Add account follows its device code in the browser, then names the account (${at})`);
 
-        // Sign in again on a shut row: the dialog lives on the page, so a click into it toggles no row
-        // and the end of the expiry it was opened for does not take it away
         // the dialog that just closed steps off its history entry first: a page load asked for before that is dropped
         await sheetEntryLeft(page);
         await page.goto(`${root}&demo_usage=refused&settings=agents`);

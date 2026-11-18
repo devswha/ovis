@@ -1,7 +1,5 @@
 name: Shell preview
-# Deploys the hosted shell built from main to the `preview` branch of the Pages project ovis-app,
-# https://preview.ovis-app.pages.dev/, so the relay can be tried from a phone before a release. Run by
-# hand from main only; the deploy waits in the `production` environment for the maintainer's approval,
+# Run by hand from main only; the deploy waits in the `production` environment for the maintainer's approval,
 # and never touches https://app.ovis.sh/ (the production branch, `main`, which only release.yml deploys).
 # As in release.yml, shell-build holds no secret and shell-deploy runs no repository code.
 on:

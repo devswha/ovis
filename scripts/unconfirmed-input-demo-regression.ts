@@ -21,16 +21,12 @@ const PREFIX = "/herdr-web-ui/demo/app/";
 
 interface Frame { type: string; text?: string }
 type QaWindow = Window & {
-  /** frames the demo server read */
   delivered: Frame[];
-  /** frames that left the page but never reached the server */
   swallowed: Frame[];
-  /** while true, sends are accepted and lost */
   blackhole: boolean;
   recordedSockets: WebSocket[];
 };
 
-/** The demo's socket, with a switch that loses what is sent while the socket still reads OPEN. */
 const LOSSY = `<script>(() => {
   const Demo = window.WebSocket;
   window.delivered = [];
@@ -62,17 +58,14 @@ async function open(page: Page, origin: string): Promise<void> {
   await page.clock.install();
   await page.goto(`${origin}?pane=${encodeURIComponent(panes.shell)}&view=terminal`);
   await page.locator(".conn-live").waitFor({ state: "attached" });
-  // the rows the pane shows: libghostty's once its module loads, when xterm's are hidden (shown-rows.ts)
   await page.locator(shownRows(".pane-frame:not(.is-hidden)")).first().waitFor();
   await page.waitForFunction(() => !document.querySelector<HTMLTextAreaElement>(".pane-frame:not(.is-hidden) .xterm-helper-textarea")?.disabled);
   await page.locator(".pane-frame:not(.is-hidden) .xterm-helper-textarea").focus();
 }
 
-/** Types `text` into a socket that loses it, then drops the connection with the reconnect held back. */
 async function typeThenDrop(page: Page, text: string): Promise<{ held: string | null; swallowed: string }> {
   await page.evaluate(() => { (window as unknown as QaWindow).blackhole = true; });
   await page.keyboard.type(text);
-  // the reconnect waits until the clock resumes, so the offline banner can be read
   await page.clock.pauseAt(await page.evaluate(() => Date.now()) + 1_000);
   await page.evaluate(() => { (window as unknown as QaWindow).recordedSockets.at(-1)!.close(); });
   await page.locator(".pane-frame:not(.is-hidden) .terminal-banner-warning").waitFor();
@@ -99,7 +92,6 @@ try {
   } });
   const origin = `http://127.0.0.1:${server.port}${PREFIX}`;
   const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
-  /** One fresh page: `text` typed into a socket that loses it, the drop, then the reconnect. */
   const scenario = async (text: string): Promise<{ held: string | null; swallowed: string; resent: string; stored: string[] }> => {
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en-US" });
     try {

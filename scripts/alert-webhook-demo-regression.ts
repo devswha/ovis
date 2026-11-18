@@ -3,8 +3,6 @@
  * webhook saved, its URL gone from the field and shown only masked, a test sent, Telegram asking for a
  * chat id too, and Off removing the destination; at 390 and 1280, light and dark. Nothing is posted
  * anywhere: the demo keeps the destination in the page.
- *
- * UI_EVIDENCE_DIR: alert-webhook-<390|1280>-<light|dark>.png.
  */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";

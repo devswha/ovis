@@ -5,8 +5,6 @@
  * the menu item before that, and a dismissal or an install keeps it away after a reload. The
  * installed iPhone app and a desktop browser never show it. No prompt reaches a real browser; all
  * files and HTTP traffic stay in this disposable, loopback-only app, and no herdr session is opened.
- *
- * UI_EVIDENCE_DIR: install-hint-<390|1440>-<light|dark>[-ko]-<state>.png and manifest.json.
  */
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -113,7 +111,6 @@ async function run(browser: Browser, origin: string, theme: Theme, language: Lan
       assert.deepEqual([...errors, ...again.errors], []);
     }
 
-    // ---- the iPhone home-screen app: nothing to say --------------------------------------------
     {
       const { page, errors } = await open(IPHONE, { standalone: true });
       assert.equal(await hint(page).count(), 0, `${tag}: the installed iPhone app shows no line`);
@@ -148,7 +145,6 @@ async function run(browser: Browser, origin: string, theme: Theme, language: Lan
       assert.deepEqual([...errors, ...again.errors], []);
     }
 
-    // ---- a desktop browser: never ----------------------------------------------------------------
     {
       const { page, errors } = await open(DESKTOP_UA, { desktop: true });
       await offerPrompt(page);

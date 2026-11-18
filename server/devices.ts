@@ -81,11 +81,9 @@ export interface StoredDevice {
   relay_public_key?: string;
   created_at: string;
   last_seen_at: string | null;
-  /** the account this row is a member of (docs/account.md, "Account members"); absent for a device outside any account */
   account?: string;
   /** the account member on this PC that approved it from another device; absent when this PC or a code admitted it */
   added_by?: string;
-  /** when a `link` last moved the row to its key: of two copies of a row (state-merge.ts), the later link wins */
   linked_at?: string;
   /**
    * whether a `link` gave the row a key other than the one it was paired with here; false when every link kept
@@ -109,7 +107,6 @@ export type PairingFailurePath = PairingPath | "lan";
 interface UnconfirmedFirstPair {
   device: StoredDevice;
   expires: number;
-  /** the stream keys of the browser that asked for it (`streamKeys`), told with its enrollment so that browser's streams skip it */
   origin: readonly string[];
 }
 
@@ -120,11 +117,10 @@ interface UnconfirmedFirstPair {
  * cookies instead of the second overwriting the first: every later request of that browser,
  * the pairing included, carries every key any of its streams was opened with.
  */
-/** keys read from one request; issuance happens only when a request carries none, so a browser holds only as many as answers raced */
 const STREAM_KEYS_MAX = 8;
 const STREAM_KEY = /^[0-9a-f]{32}$/;
 
-/** The browser's stream keys, in the order it sent them. Malformed names or values are ignored, never refused. */
+/** Malformed names or values are ignored, never refused. */
 export function streamKeys(request: Request): string[] {
   const keys: string[] = [];
   for (const [name, value] of parseCookies(request.headers.get("cookie"))) {
@@ -149,7 +145,6 @@ export function streamCookie(key: string, secure: boolean): string {
   return `${STREAM_COOKIE_PREFIX}${key}=1; Path=/; HttpOnly; SameSite=Strict; Max-Age=${COOKIE_MAX_AGE_SECONDS}${secure ? "; Secure" : ""}`;
 }
 
-/** whether two sets of stream keys name the same browser */
 export function sameBrowser(a: readonly string[], b: readonly string[]): boolean {
   return a.some((key) => b.includes(key));
 }
@@ -159,7 +154,6 @@ export interface PairingCode {
   expires_at: string;
 }
 
-/** What a request's device cookie resolved to. */
 export interface DeviceMatch {
   id: string;
   label: string;
@@ -183,7 +177,6 @@ export function isDeviceRole(value: unknown): value is DeviceRole {
 }
 
 /**
- * A devices.json as it is on disk: absent, a valid registry, or one that cannot be read or is not valid.
  * `placeholder`: written only to close the gate where there was no registry (state-merge.ts); it says
  * nothing about which devices were revoked. The store's next save drops the mark.
  */
@@ -221,7 +214,6 @@ export interface AccountTombstone { key: string; account: string; record_id: str
 /** Signed removals kept per tombstone: one per signer, so a PC where only a later signer is a member can still apply one. */
 export const TOMBSTONE_RECORDS_MAX = 8;
 
-/** `records` with `more` added, one per signer, the earliest kept. */
 function withRecords(records: readonly unknown[] | undefined, more: readonly unknown[]): unknown[] | undefined {
   const signer = (record: unknown) => isJsonObject(record) ? record.signer : undefined;
   const kept = [...records ?? []];
@@ -255,7 +247,6 @@ export function mergeAccountTombstones(active: string, sibling: string): string 
   // the active dir's own unreadable file stops its store anyway; a sibling's must too, or its removals are lost
   if (read[1] === null) return `Cannot read ${paths[1]}: account records are refused until it is restored or fixed.`;
   if (read[0] === null) return null;
-  // revokes either dir made while its file could not be read (DeviceStore.tombstone) count as well
   const pending = [active, sibling].flatMap((dir) => readTombstones(join(dir, "account-tombstones.pending.json")) ?? []);
   const merged = new Map<string, AccountTombstone>();
   for (const tombstone of [...read.flatMap((list) => list ?? []), ...pending]) {
@@ -265,7 +256,6 @@ export function mergeAccountTombstones(active: string, sibling: string): string 
     const local = (t: AccountTombstone) => t.record_id === "local";
     const winner = local(kept) && !local(tombstone) ? tombstone : !local(kept) && local(tombstone) ? kept : tombstone.removed_at > kept.removed_at ? tombstone : kept;
     const removedAt = tombstone.removed_at > kept.removed_at ? tombstone.removed_at : kept.removed_at;
-    // a revoke on the PC holds no removal: the account's signed ones of both dirs stay with the key
     const records = local(winner) ? undefined : withRecords(winner.records, [...kept.records ?? [], ...tombstone.records ?? []]);
     const { records: _records, ...rest } = winner;
     merged.set(tombstone.key, { ...rest, removed_at: removedAt, ...(records ? { records } : {}) });
@@ -310,7 +300,6 @@ export class DeviceStore {
   private unconfirmedFirstPairs: UnconfirmedFirstPair[] = [];
   private readonly path: string;
   private readonly revocations = new Map<string, Set<() => void>>();
-  /** Sessions of a row, told when a `link` moves it to another key (onLinked). */
   private readonly relinks = new Map<string, Set<(sessionId: string) => void>>();
   private readonly revokeAllListeners = new Set<() => void>();
   private readonly gateListeners = new Set<() => void>();
@@ -336,7 +325,6 @@ export class DeviceStore {
     this.tombstonePath = join(stateDir, "account-tombstones.json");
     this.pendingTombstonePath = join(stateDir, "account-tombstones.pending.json");
     const tombstones = readTombstones(this.tombstonePath);
-    // revokes made while the main file could not be read (tombstone()): kept apart, folded back in below
     const pending = readTombstones(this.pendingTombstonePath) ?? [];
     if (accountBlocked !== null) this.accountError = accountBlocked;
     if (tombstones === null) {
@@ -389,7 +377,6 @@ export class DeviceStore {
 
   /** A row whose key was removed at or after the row was made: revoked, whether or not its own write happened yet. */
   private stale(device: StoredDevice): boolean {
-    // a row that is no pairing of its key here goes whatever its time, as removeAccountKey takes it
     return device.relay_public_key !== undefined
       && this.tombstones.some((t) => t.key === device.relay_public_key && (!pairedHere(device) || t.removed_at >= device.created_at));
   }
@@ -430,7 +417,6 @@ export class DeviceStore {
     this.unconfirmedFirstPairs = [];
   }
 
-  /** Hears of a `link` moving row `id` to another key, with the id of the session that sent it. */
   onLinked(id: string, listener: (sessionId: string) => void): () => void {
     const listeners = this.relinks.get(id) ?? new Set<(sessionId: string) => void>();
     listeners.add(listener);
@@ -455,8 +441,7 @@ export class DeviceStore {
 
   /**
    * Hears of every durable enrollment: a gated pairing, or a first-pair cookie confirmed. Never an
-   * unconfirmed credential, a last-seen write or a failed one. Each announcement carries its own
-   * `event_id`, so a browser that hears it twice shows it once.
+   * unconfirmed credential, a last-seen write or a failed one.
    */
   onPaired(listener: (event: DevicePairedEvent, origin: readonly string[]) => void): () => void {
     this.pairings.add(listener);
@@ -466,7 +451,6 @@ export class DeviceStore {
   /**
    * After the registry write that made `device` durable, and only then. `enrolledAt` is that write's
    * moment, not the credential's issue: a first-pair cookie confirmed later is enrolled when it returns.
-   * `origin` holds the stream keys of the browser that asked for the pairing (`streamKeys`), empty if it had none.
    */
   private announce(device: StoredDevice, enrolledAt: number, origin: readonly string[]): void {
     const approver = device.added_by === undefined ? undefined : this.devices.find((d) => d.id === device.added_by);
@@ -500,7 +484,6 @@ export class DeviceStore {
     return () => { this.codeStarts.delete(listener); };
   }
 
-  /** The current code when it can still be used, without changing its attempts or expiry. */
   activePairing(now = Date.now()): PairingCode | null {
     const pending = this.pending;
     if (pending === null || now > pending.expires || pending.attempts >= CODE_ATTEMPTS) return null;
@@ -574,7 +557,6 @@ export class DeviceStore {
     return true;
   }
 
-  /** `{ token }` when the code is right; null when it is wrong, spent or expired. */
   pair(code: string, label: string, role: DeviceRole, now = Date.now(), origin: readonly string[] = [], localCodeOnly = false): { token: string; device: DeviceMatch } | null {
     this.assertWritable();
     this.pruneUnconfirmedFirstPairs(now);
@@ -668,14 +650,12 @@ export class DeviceStore {
     return paired;
   }
 
-  /** Throws while relay pairing on `path` is paused after too many failures there. */
   assertRelayPairing(path: PairingFailurePath = "code", now = Date.now()): void {
     this.assertWritable();
     const { blockedUntil } = this.relayFailures[path];
     if (now < blockedUntil) throw new PairingRateLimitedError(Math.ceil((blockedUntil - now) / 1000));
   }
 
-  /** A relay pairing that did not end in a device: a wrong code, or a comparison declined, abandoned, mispicked or timed out. */
   noteRelayFailure(path: PairingFailurePath = "code", now = Date.now()): void {
     const count = this.relayFailures[path];
     count.at = count.at.filter((at) => now - at < PAIRING_WINDOW_MS);
@@ -695,10 +675,8 @@ export class DeviceStore {
     if (approval.addedBy !== undefined && !this.isAccountApprover(approval.addedBy)) { this.noteRelayFailure(approval.path, now); return null; }
     // only this PC lets a key removed through the account back in
     if (approval.addedBy !== undefined && (this.accountError !== null || this.isTombstoned(publicKey))) { this.noteRelayFailure(approval.path, now); return null; }
-    // the id an approver was told is the one the row takes; a row already holding it (the same key) is not made twice
     if (approval.id !== undefined && this.has(approval.id)) { this.noteRelayFailure(approval.path, now); return null; }
     if (admit && this.isNewKey(publicKey) && !admit()) return null;
-    // no code was used, so one still showing on the PC keeps working
     const paired = this.enrollRelay(label, publicKey, now, false, approval.addedBy, approval.id);
     // written after the row, so a stop between the two leaves a row newer than its tombstone (finishInterruptedWrites)
     if (approval.addedBy === undefined) this.clearTombstone(publicKey);
@@ -718,12 +696,10 @@ export class DeviceStore {
    */
   private isNewKey(key: string): boolean { return !this.hasKey(key); }
 
-  /** The account of this PC's members (docs/account.md: a PC belongs to at most one), or null. */
   account(): string | null {
     return this.devices.find((d) => d.account !== undefined)?.account ?? null;
   }
 
-  /** Whether the row is a member of `account`, as GET /api/devices tells it (`account` on its row). */
   isMemberOf(id: string, account: string): boolean {
     return this.devices.some((d) => d.id === id && d.account === account && d.relay_public_key !== undefined);
   }
@@ -733,7 +709,6 @@ export class DeviceStore {
     return sessionKey !== "" && this.relayKeyOf(id) === sessionKey && this.isAccountApprover(id);
   }
 
-  /** Whether any drive account member could approve a join. */
   hasAccountApprover(): boolean { return this.devices.some((d) => this.isAccountApprover(d.id)); }
 
   /** A drive account member: the only device that may approve a pairing or start a code through the relay (docs/account.md). */
@@ -776,7 +751,6 @@ export class DeviceStore {
     }
   }
 
-  /** The device a cookie token belongs to, noting when it was last seen (at most once a minute on disk). */
   match(token: string | undefined, now = Date.now()): DeviceMatch | null {
     this.pruneUnconfirmedFirstPairs(now);
     if (!token) return null;
@@ -810,10 +784,8 @@ export class DeviceStore {
     return null;
   }
 
-  /** Notes when a device was last seen, at most once a minute on disk. */
   private noteSeen(device: StoredDevice, now: number): void {
     const seen = device.last_seen_at === null ? 0 : Date.parse(device.last_seen_at);
-    // A blocked registry stays as it is on disk until the server restarts.
     if (this.error !== null || now - seen < LAST_SEEN_WRITE_MS) return;
     try {
       const next = this.devices.map((d) => d === device ? { ...d, last_seen_at: new Date(now).toISOString() } : d);
@@ -874,15 +846,6 @@ export class DeviceStore {
   }
 
   /**
-   * Every paired device loses its access in one durable write, the caller's own included; the
-   * ids it returns are for the cleanup that follows (push subscriptions, page media). The write
-   * comes first and alone: until it succeeds nothing changes, and if it throws, the registry,
-   * every credential and every listener stay as they were. After it, the pending code and every
-   * unconfirmed first-pair credential are void as well, and every revoked device's streams close.
-   * The gate stays closed, with a timestamp even when nothing was ever confirmed (only first-pair
-   * candidates existed): revoking must never reopen the LAN, not even after a restart.
-   */
-  /**
    * Told on every revokeAll, after the empty registry is saved: a relay pairing by comparing digits
    * that is still under way (server/relay/session.ts) ends there, approved or not, so no device is
    * made from a comparison the owner's "revoke all" came after.
@@ -892,6 +855,15 @@ export class DeviceStore {
     return () => { this.revokeAllListeners.delete(listener); };
   }
 
+  /**
+   * Every paired device loses its access in one durable write, the caller's own included; the
+   * ids it returns are for the cleanup that follows (push subscriptions, page media). The write
+   * comes first and alone: until it succeeds nothing changes, and if it throws, the registry,
+   * every credential and every listener stay as they were. After it, the pending code and every
+   * unconfirmed first-pair credential are void as well, and every revoked device's streams close.
+   * The gate stays closed, with a timestamp even when nothing was ever confirmed (only first-pair
+   * candidates existed): revoking must never reopen the LAN, not even after a restart.
+   */
   revokeAll(): string[] {
     this.assertWritable();
     this.tombstone(this.devices, Date.now());
@@ -940,7 +912,6 @@ export class DeviceStore {
     return device ? { id: device.id, label: device.label, role: device.role } : null;
   }
 
-  /** Members, and the relay rows a member's removal does not reach. */
   accountRows(): { members: number; unlinked: string[] } {
     return {
       members: this.devices.filter((d) => d.account !== undefined).length,
@@ -997,16 +968,12 @@ export class DeviceStore {
 
   hasKey(key: string): boolean { return this.devices.some((d) => d.relay_public_key === key && !this.stale(d)); }
 
-  /** Whether `key` is a P-256 key devices.json accepts (readDeviceRegistry checks every row's). */
   acceptsRelayKey(key: string): boolean { return isRelayPublicKey(key); }
 
-  /** Whether a row an account member added (an `add` or a remote approval) holds `key`: what an introduction is for. */
   wasAddedByMember(key: string): boolean { return this.devices.some((d) => d.relay_public_key === key && d.added_by !== undefined && !this.stale(d)); }
 
-  /** Whether a row other than `id` holds `key`. */
   keyHeldByOther(key: string, id: string): boolean { return this.devices.some((d) => d.relay_public_key === key && d.id !== id); }
 
-  /** The key the row `id` signs in with through the relay. */
   relayKeyOf(id: string): string | undefined { return this.devices.find((d) => d.id === id)?.relay_public_key; }
 
   /** An `add` that verified: a new member row, announced like any other enrollment. Never for a tombstoned key. */
@@ -1028,7 +995,6 @@ export class DeviceStore {
   /**
    * A `remove` that verified: the tombstone is written first, so a crash between the two writes
    * leaves the key refused; then every row holding the key is revoked, closing its sessions.
-   * Returns whether anything changed.
    */
   removeAccountKey(key: string, account: string, record: { id: string; issuedAt: string; by?: { device_id: string; label: string }; signed?: RemoveRecord }, now = Date.now()): boolean {
     this.assertAccountWritable();
@@ -1061,13 +1027,11 @@ export class DeviceStore {
     this.assertAccountWritable();
     const device = this.devices.find((d) => d.id === deviceId && d.relay_public_key === oldKey);
     if (!device) return null;
-    // once moved, moved: a later link that keeps the key does not make it the key paired here
     const moved = key !== oldKey || device.link_moved_key === true;
     const updated: StoredDevice = { ...device, relay_public_key: key, account, linked_at: new Date().toISOString(), link_moved_key: moved };
     const next = this.devices.map((d) => d === device ? updated : d);
     this.save(next);
     this.devices = next;
-    // the PC's first member, however it got here: the QR code that was to bring one is taken back
     this.endNoAccountCode();
     for (const listener of [...this.relinks.get(deviceId) ?? []]) listener(sessionId);
     return this.list(null).find((d) => d.id === deviceId) ?? null;
@@ -1104,6 +1068,13 @@ export class DeviceStore {
   }
 }
 
+export interface DeviceConnections {
+  list(): Map<string, DeviceConnection>;
+  check(timeoutMs: number): Promise<void>;
+}
+
+const CHECK_MS = 3_000;
+
 /**
  * /api/devices*. Pairing itself is public, like /api/auth: it is how a device gets in. The
  * rest reaches here only through the gate in index.ts, and anything that changes the list
@@ -1111,16 +1082,6 @@ export class DeviceStore {
  * `onRevoked` is told the id of every device a request revoked, once the registry says so: the
  * cleanup that follows (push subscriptions, page media) works from those ids, never from the path.
  */
-/** The devices' encrypted sessions up now (RelayService.connections), named in GET /api/devices. */
-export interface DeviceConnections {
-  list(): Map<string, DeviceConnection>;
-  check(timeoutMs: number): Promise<void>;
-}
-
-/** How long GET /api/devices?check=1 waits for the sessions' answers: one that is slower keeps its last round trip. */
-const CHECK_MS = 3_000;
-
-/** `relayKey`: the key a relayed session proved (empty when it never signed in with one), null off the relay. */
 export async function handleDeviceRequest(request: Request, pathname: string, store: DeviceStore, access: Access, relayKey: string | null, onRevoked?: (ids: string[]) => void, lanHttps = false, connections?: DeviceConnections): Promise<Response> {
   if (store.error !== null) return jsonResponse({ error: { code: "device_store_unavailable", message: access.level === "full" ? store.error : "Device pairing is unavailable; ask the owner to check Settings → Devices on the host." } }, 503);
   const json = async (): Promise<Record<string, unknown> | Response> => {
@@ -1167,7 +1128,6 @@ export async function handleDeviceRequest(request: Request, pathname: string, st
     // how the other devices are connected, and pinging them all, is for a caller that may manage them:
     // not a watching device, nor a Portal visitor, who see the list as before
     const manager = drive && access.via !== "portal";
-    // `?check=1` ("Check now"): every session's round trip is measured before the answer, within CHECK_MS
     if (manager && connections && new URL(request.url).searchParams.get("check") === "1") await connections.check(CHECK_MS);
     const live = manager ? connections?.list() ?? new Map<string, DeviceConnection>() : new Map<string, DeviceConnection>();
     const devices = store.list(access.level === "full" ? access.device?.id ?? null : null, drive)
@@ -1194,7 +1154,6 @@ export async function handleDeviceRequest(request: Request, pathname: string, st
       return jsonResponse(store.startPairing(Date.now(), { remote, startedBy, memberRequired: remote && store.account() !== null, by, ...(open ? { open } : {}) }), 200, { "cache-control": "no-store" });
     } catch (error) {
       if (error instanceof PairingRateLimitedError) return jsonResponse({ error: { code: error.code, message: error.message } }, 429, { "retry-after": String(error.retryAfter), "cache-control": "no-store" });
-      // revoked since this request was let in: answered as its next request will be
       if (error instanceof DeviceGoneError) return jsonResponse({ error: { code: error.code, message: error.message } }, 401, { "cache-control": "no-store" });
       throw error;
     }
@@ -1206,7 +1165,6 @@ export async function handleDeviceRequest(request: Request, pathname: string, st
     if (access.level === "full" && access.via === "relay" && store.account() !== null && !(access.device && store.isAccountApproverSession(access.device.id, relayKey ?? ""))) {
       return jsonResponse({ error: { code: "account_required", message: "End a pairing on this PC, or from a device linked to your account" } }, 403);
     }
-    // `{ code }` names the pairing the caller showed (link --code); without it, whatever is pending ends
     const text = await request.text();
     let body: unknown = {};
     try { if (text.trim() !== "") body = JSON.parse(text); } catch { return badRequest("invalid_json", "request body must be JSON"); }

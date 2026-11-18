@@ -1,4 +1,3 @@
-/** Mouse and phone scrolling on fixed mirror grids; no herdr, Pi install or user state. */
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -22,7 +21,6 @@ interface MirrorFixture {
 declare global { interface Window { mirrorFixture: MirrorFixture } }
 type FixtureWindow = Window;
 
-/** The demo already owns metadata and auth. Only its mirror geometry/scroll seam is replaced. */
 function installMirrorFixture(): void {
   const state: MirrorFixture = { inputs: [], offsets: [], reads: 0, offset: 0, sockets: [] };
   (window as FixtureWindow).mirrorFixture = state;
@@ -46,8 +44,6 @@ function installMirrorFixture(): void {
     const push = socket.push.bind(socket);
     socket.push = (frame) => {
       if (frame.type === "pane-geometry") push({ ...frame, fixed: true });
-      // The demo shell's timed recording must not move the fixture's cursor between
-      // a deliberate local pan and the frame under test.
       else if (frame.type === "pty-data" && typeof frame.data === "string") {
         if (frame.fixture !== "mirror") return;
         const { fixture: _, ...output } = frame;
@@ -187,7 +183,6 @@ try {
             await settled(page);
             assert.deepEqual((await state(page)).inputs, [], "touch also leaves unknown applications alone");
           }
-          // a quick swipe glides on after the lift (lib/touchFling.ts): the next gestures start once it has stopped
           await page.waitForFunction(() => document.querySelector("[data-touch-fling]") === null, undefined, { polling: 50, timeout: 15_000 });
           await settled(page);
 
@@ -195,7 +190,6 @@ try {
             await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
             if (dx !== 0 || dy !== 0) {
               await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: x + dx, y: y + dy }] });
-              // held still before the lift, so the drag ends where it is: a lift while it moves would glide on (lib/touchFling.ts)
               const moved = await page.evaluate(() => performance.now());
               await page.waitForFunction(([at, still]) => performance.now() - at > still, [moved, FLING_STOPPED_MS * 2] as const, { polling: 10 });
             }
@@ -216,7 +210,6 @@ try {
           await assertNoTouchScroll(0, shortMove, "below-half-step vertical move");
           await cdp.detach();
 
-          // A fixed grid taller than the phone still reveals its clipped rows locally first.
           await page.evaluate((paneId) => (window as FixtureWindow).mirrorFixture.sockets.at(-1)!.push({
             type: "pty-data", fixture: "mirror", pane_id: paneId, data: "\x1b[40;1H\x1b[2KLOCAL-PAN-START",
           }), pane);
