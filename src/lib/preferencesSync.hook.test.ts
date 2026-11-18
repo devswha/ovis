@@ -196,6 +196,17 @@ describe("preferences sync real send path", () => {
       return () => answerListeners.delete(arrived);
     });
   }
+  function nextAbsorbed(): Promise<void> {
+    // the answer is taken in once its pins are stored; React draws nothing before this act ends
+    const storage = window.localStorage;
+    return bounded("the answer's pins were not stored", (arrived) => {
+      const { setItem, removeItem } = storage;
+      const told = (key: string): void => { if (key === "ovis:sidebar-pins-shared") arrived(); };
+      storage.setItem = (key, value) => { setItem(key, value); told(key); };
+      storage.removeItem = (key) => { removeItem(key); told(key); };
+      return () => { storage.setItem = setItem; storage.removeItem = removeItem; };
+    });
+  }
   async function send(): Promise<void> {
     const answered = nextAnswer();
     await act(async () => { jest.advanceTimersByTime(600); await answered; });
@@ -400,15 +411,7 @@ describe("preferences sync real send path", () => {
     const client = await open();
     await act(async () => { client.update({ darkTheme: "tokyo-night" }); });
     await windows();
-    // the answer is taken in once its pins are stored; React draws nothing before this act ends
-    const storage = window.localStorage;
-    const absorbed = bounded("the answer's pins were not stored", (arrived) => {
-      const { setItem, removeItem } = storage;
-      const told = (key: string): void => { if (key === "ovis:sidebar-pins-shared") arrived(); };
-      storage.setItem = (key, value) => { setItem(key, value); told(key); };
-      storage.removeItem = (key) => { removeItem(key); told(key); };
-      return () => { storage.setItem = setItem; storage.removeItem = removeItem; };
-    });
+    const absorbed = nextAbsorbed();
     await act(async () => {
       client.update({ darkTheme: "gruvbox" });
       gate.resolve();
@@ -417,6 +420,31 @@ describe("preferences sync real send path", () => {
     releaseAnswer = undefined;
     expect(client.settings.darkTheme).toBe("gruvbox");
     await send();
+    expect(store.get().settings.darkTheme).toBe("gruvbox");
+  });
+
+  it("keeps and sends an unrendered pick that matches the save answer when a newer stream value is held", async () => {
+    const gate = Promise.withResolvers<void>();
+    releaseAnswer = () => gate.promise;
+    const client = await open();
+    // this tab first hears about gruvbox in the answer to its unrelated PUT
+    clients.pop();
+    store.set({ settings: { darkTheme: "gruvbox" } });
+    clients.push(client);
+    await act(async () => { client.update({ showThinking: true }); });
+    await windows();
+    await act(async () => { store.set({ settings: { darkTheme: "tokyo-night" } }); });
+
+    const absorbed = nextAbsorbed();
+    await act(async () => {
+      client.update({ darkTheme: "gruvbox" });
+      gate.resolve();
+      await absorbed;
+    });
+    releaseAnswer = undefined;
+    expect(client.settings.darkTheme).toBe("gruvbox");
+    await windows();
+    expect(sent.map((body) => body.settings.darkTheme)).toEqual([undefined, "gruvbox"]);
     expect(store.get().settings.darkTheme).toBe("gruvbox");
   });
 
@@ -782,6 +810,23 @@ describe("preferences sync real send path", () => {
     expect(answers).toBe(1);
     expect(client.saveError).toBeNull();
     expect(store.get().settings.darkTheme).toBe("tokyo-night");
+  });
+
+  it("takes the server's value on a read-only device even when a local pick has not rendered", async () => {
+    const client = await open();
+    refuse = Response.json({ error: { code: "forbidden" } }, { status: 403 });
+    await act(async () => { client.update({ showThinking: true }); });
+    await send();
+    expect(refusals).toBe(1);
+
+    await act(async () => {
+      client.update({ darkTheme: "gruvbox" });
+      store.set({ settings: { darkTheme: "tokyo-night" } });
+    });
+
+    expect(client.settings.darkTheme).toBe("tokyo-night");
+    await windows();
+    expect(bodies).toHaveLength(1);
   });
 
   it("Retry never bypasses a watching device or an older server", async () => {

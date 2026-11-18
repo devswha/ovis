@@ -226,15 +226,27 @@ export function usePreferencesSync(enabled: boolean): PreferencesSync {
     const kept = stored.current;
     const startedOver = kept !== null && (remote.revision < kept.revision || (kept.stateId !== undefined && remote.state_id !== undefined && remote.state_id !== kept.stateId));
     if (!loadedRef.current && startedOver) base.current = { ...base.current, pins: null };
-    const judged = latest.current.settings;
-    const taken = takePreferences(base.current, latest.current, remote, inFlight.current, readOnly.current, refused.current);
+    const local = latest.current;
+    const previous = base.current;
+    const flying = inFlight.current;
+    const force = readOnly.current;
+    const lastRefused = refused.current;
+    const take = (from: Local) => takePreferences(previous, from, remote, flying, force, lastRefused);
+    const taken = take(local);
     base.current = !loadedRef.current && remote.pins === undefined ? { ...taken.base, pins: null } : taken.base;
     saveSharedPins(base.current.pins === null ? null : { pins: [...base.current.pins], revision: remote.revision, ...(remote.state_id === undefined ? {} : { stateId: remote.state_id }) });
-    latest.current = { settings: sanitizeSettings({ ...latest.current.settings, ...taken.patch }), pins: taken.pins ?? latest.current.pins, muted: taken.muted === undefined ? latest.current.muted : taken.muted, tabLabels: taken.tabLabels ?? latest.current.tabLabels };
-    // what was judged is the last render's: an edit this tab made since (an import, a pick) waits for its render, and
-    // the document's value must not land over it; that edit then goes as the next change. This tab's own settings say
-    // whether it made one: what another tab stored is no edit here, and this tab would send its old value over it
-    if (Object.keys(taken.patch).length > 0) update((_stored, own) => Object.fromEntries(Object.entries(taken.patch).filter(([key]) => same(own[key as keyof Settings], judged[key as keyof Settings]))));
+    latest.current = { settings: local.settings, pins: taken.pins ?? local.pins, muted: taken.muted === undefined ? local.muted : taken.muted, tabLabels: taken.tabLabels ?? local.tabLabels };
+    if (Object.keys(remote.settings).length > 0) update((_stored, own) => {
+      // A held document can queue behind the answer before either renders. Judge it against the
+      // settings the tab actually took from earlier documents, and keep its own newer edits unless it cannot send.
+      const judged = latest.current.settings;
+      const patch = judged === local.settings ? taken.patch : take({ ...local, settings: judged }).patch;
+      const accepted = force ? patch : Object.fromEntries(SHARED_SETTING_KEYS
+        .filter((key) => key in patch && same(own[key], judged[key]))
+        .map((key) => [key, patch[key]]));
+      if (Object.keys(accepted).length > 0) latest.current.settings = sanitizeSettings({ ...judged, ...accepted });
+      return accepted;
+    });
     if (taken.pins !== null) setSidebarPins(taken.pins);
     if (taken.muted !== undefined) setPaneMutes(taken.muted);
     if (taken.tabLabels !== null) setTabLabels(taken.tabLabels);
