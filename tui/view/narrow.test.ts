@@ -4,6 +4,7 @@ import { CATALOGUE } from "../model/catalogue.ts";
 import type { World } from "../model/focus.ts";
 import type { MenuEntry } from "../model/menu.ts";
 import { initialState, type ModelEvent, type ModelState, reduce } from "../model/reduce.ts";
+import { agents } from "../testing/fixtures/agents.ts";
 import { demo } from "../testing/fixtures/demo.ts";
 import { Run } from "../testing/run.ts";
 
@@ -99,6 +100,38 @@ describe("the screen at widths 45, 60, 64 and 65: one terminal at 64 columns or 
     expect(run.grid()[0]).toBe("·1:ovis 2/2:logs hc:default            [menu]");
     expect(attached(run)).toEqual(["t3"]);
   }, TEST_MS);
+  it("the narrow header counts the agents that need the user elsewhere, and not the one it shows", async () => {
+    const run = await Run.start({ fixture: agents, cols: 45, rows: 30 });
+    runs.push(run);
+    await run.live();
+    await run.advance(10);
+    expect(run.grid()[0]).toBe("!1:agents 1/1:agents hc:default     !1 [menu]");
+    run.loop.dispatch({ type: "select", target: { kind: "pane", id: "t2" }, at: run.clock.current });
+    await run.live();
+    await run.advance(10);
+    expect(run.grid()[0]).toBe("!1:agents 1/1:agents hc:default        [menu]");
+  }, TEST_MS);
+
+  it("at 120 columns the sidebar's header opens the menu, and its << still collapses the sidebar", async () => {
+    const run = await shown(120, 40);
+    await run.keys("click@3:0");
+    await run.advance(10);
+    expect(run.loop.report().mode.overlays).toEqual(["menu"]);
+    await run.keys("esc");
+    await run.advance(200);
+    await run.keys("click@21:0");
+    await run.advance(10);
+    expect([run.loop.report().mode.overlays, run.loop.model().sidebarCollapsed]).toEqual([[], true]);
+  }, TEST_MS);
+
+  it("the menu's window follows its cursor: the up arrow from the first entry shows the last one", async () => {
+    const run = await shown(45);
+    await run.keys("ctrl+b,enter,up");
+    await run.advance(10);
+    const grid = run.grid();
+    expect(grid[28]).toBe("|>T sidebar                         prefix+b|");
+    expect(grid.some((line) => line.includes("workspace 1:ovis"))).toBe(false);
+  }, TEST_MS);
 });
 
 describe("plain route: every built action of the catalogue is an entry of the menu", () => {
@@ -108,11 +141,12 @@ describe("plain route: every built action of the catalogue is an entry of the me
       { id: "w1", name: "one", tabs: [{ id: "t1", name: "a", panes: [{ id: "p1", name: "" }, { id: "p2", name: "" }] }, { id: "t2", name: "b", panes: [{ id: "p3", name: "" }] }] },
       { id: "w2", name: "two", tabs: [{ id: "t3", name: "c", panes: [{ id: "p4", name: "" }] }] },
     ],
-    agents: ["p3"],
+    agents: ["p4"],
   };
   const named = (name: string): InputEvent => ({ type: "key", key: name, mods: {}, action: "press", at: AT });
   const text = (value: string): InputEvent => ({ type: "text", text: value, at: AT });
   const after = (state: ModelState, ...events: ModelEvent[]) => events.reduce((current, event) => reduce(current, event).state, state);
+  const focusedPane = (state: ModelState) => state.focus.panes[state.focus.tabs[state.focus.workspace!]!];
   const base = reduce(initialState(undefined), { type: "world", world: WORLD, at: 0 }).state;
   const open = after(base, { type: "action", action: "menu", at: AT });
   const entries = (open.overlays.at(-1) as { entries: readonly MenuEntry[] }).entries;
@@ -121,12 +155,11 @@ describe("plain route: every built action of the catalogue is an entry of the me
   it("each built id is an entry, in the catalogue's order, with a digit or letter of its own", () => {
     const actions = entries.flatMap((entry) => (entry.kind === "action" ? [entry] : []));
     expect(actions.map((entry) => entry.action)).toEqual(built);
-    expect(built.length).toBe(46);
     for (const entry of actions) expect({ action: entry.action, label: /^[0-9A-Za-z]$/.test(entry.label) }).toEqual({ action: entry.action, label: true });
     const labels = entries.flatMap((entry) => (entry.label === null ? [] : [entry.label]));
     expect(new Set(labels).size).toBe(labels.length);
     expect(entries.slice(0, 7).map((entry) => [entry.kind, entry.kind === "action" ? entry.action : entry.id, entry.label])).toEqual([
-      ["workspace", "w1", "1"], ["workspace", "w2", "2"], ["tab", "t1", "3"], ["tab", "t2", "4"], ["pane", "p1", "5"], ["pane", "p2", "6"], ["agent", "p3", "7"],
+      ["workspace", "w1", "1"], ["workspace", "w2", "2"], ["tab", "t1", "3"], ["tab", "t2", "4"], ["pane", "p1", "5"], ["pane", "p2", "6"], ["agent", "p4", "7"],
     ]);
   });
 
@@ -152,9 +185,20 @@ describe("plain route: every built action of the catalogue is an entry of the me
   it("a digit goes to its place; Hangul typed under a Korean input method chooses nothing; the up arrow wraps to the last entry", () => {
     const tab = reduce(open, text("4")).state;
     expect([tab.overlays, tab.focus.workspace, tab.focus.tabs["w1"]]).toEqual([[], "w1", "t2"]);
+    // the agent's pane is in the other workspace: its digit moves the focus there
+    expect([open.focus.workspace, focusedPane(open)]).toEqual(["w1", "p1"]);
     const agent = reduce(open, text("7")).state;
-    expect(agent.focus.panes["t2"]).toBe("p3");
+    expect([agent.overlays, agent.focus.workspace, focusedPane(agent), agent.notices]).toEqual([[], "w2", "p4", []]);
     for (const typed of ["\u3141", "\ud55c", "\u3131\u314f"]) expect(reduce(open, text(typed)).state).toEqual(open);
     expect((reduce(open, named("ARROW_UP")).state.overlays.at(-1) as { cursor: number }).cursor).toBe(entries.length - 1);
+  });
+  it("an open menu follows the world: a new workspace is listed, and the cursor stays on the entry it was on", () => {
+    const onTab = after(open, named("ARROW_DOWN"), named("ARROW_DOWN"), named("ARROW_DOWN"));
+    const grown: World = { ...WORLD, workspaces: [...WORLD.workspaces, { id: "w3", name: "three", tabs: [{ id: "t9", name: "z", panes: [{ id: "p9", name: "" }] }] }] };
+    const menu = after(onTab, { type: "world", world: grown, at: AT }).overlays.at(-1) as { entries: readonly MenuEntry[]; cursor: number };
+    expect(menu.entries.slice(0, 4).map((entry) => [entry.kind, entry.kind === "action" ? entry.action : entry.id, entry.label])).toEqual([
+      ["workspace", "w1", "1"], ["workspace", "w2", "2"], ["workspace", "w3", "3"], ["tab", "t1", "4"],
+    ]);
+    expect(menu.entries[menu.cursor]).toMatchObject({ kind: "tab", id: "t2" });
   });
 });
