@@ -21,7 +21,10 @@ describe("an agent's launch arguments", () => {
     expect(launchArgsFault("claude", ["--effort", "ultra"])).toContain("--effort");
     expect(launchArgsFault("codex", ["-c", "model_reasoning_effort=ultra", "-m", "gpt-6.1"])).toBeNull();
     expect(launchArgsFault("codex", ["-c", "model_reasoning_effort=ultracode"])).toContain("model_reasoning_effort");
-    // other agents' arguments are theirs: only control characters are refused there
+    // DeepSeek Harness's levels, in both spellings
+    expect(launchArgsFault("dsh-tui", ["--effort", "off"])).toBeNull();
+    expect(launchArgsFault("dsh-tui", ["--effort=max"])).toBeNull();
+    expect(launchArgsFault("dsh-tui", ["--effort", "xhigh"])).toBe("agent.args --effort must be one of off, low, high, max");
     expect(launchArgsFault("omp", ["--model", "two words"])).toBeNull();
   });
   it("still takes Claude Code's --effort ultracode, which the dialog no longer lists as a level", () => {
@@ -31,19 +34,16 @@ describe("an agent's launch arguments", () => {
     expect(launchArgsFault("claude", ["--effort", "ultra"])).toBe("agent.args --effort must be one of low, medium, high, xhigh, max, ultracode");
   });
   it("passes Ultracode's --settings as the agent's own flag, after an effort or on its own", () => {
-    // the one settings object the dialog's switch passes: Ultracode on, nothing else
     expect(JSON.parse(CLAUDE_ULTRACODE_SETTINGS)).toEqual({ ultracode: true });
     expect(launchArgsFault("claude", ["--effort", "medium", "--settings", CLAUDE_ULTRACODE_SETTINGS])).toBeNull();
     expect(launchArgsFault("claude", ["--permission-mode", "plan", "--model", "opus", "--effort", "high", "--settings", "{\"ultracode\":true}"])).toBeNull();
     expect(launchArgsFault("claude", ["--settings", "{\"ultracode\":true}"])).toBeNull();
-    // the effort beside it is still checked
     expect(launchArgsFault("claude", ["--effort", "INVALID", "--settings", "{\"ultracode\":true}"])).toContain("--effort");
   });
 });
 
 describe("every spelling the CLIs accept for a model or an effort", () => {
   it.each([
-    // [kind, args, the fault's flag, or null when the launch is fine]
     ["codex", ["-m", "two words"], "--model"],
     ["codex", ["-mtwo words"], "--model"],
     ["codex", ["-m=two words"], "--model"],

@@ -36,6 +36,7 @@ import org.json.JSONObject;
  */
 final class PCStore {
     private static final String PREFS = "herdr";
+    private static final String JS_TRIM_WHITESPACE = "[\\s\\p{Z}\\uFEFF]";
 
     /** The address to open instead of the bare origin until a PC page loads: a pairing link keeps its code through Try again. In memory only, as it can hold that code. */
     static String pendingStart;
@@ -56,7 +57,6 @@ final class PCStore {
         return appScope(data) == null ? null : data;
     }
 
-    /** The scope key (`https://app.ovis.sh/s/<server_id>/`) of a PC's link on the hosted shell, or null. */
     static String appScope(String link) {
         URI uri;
         try {
@@ -67,6 +67,112 @@ final class PCStore {
         boolean hostedShell = "https".equalsIgnoreCase(uri.getScheme()) && "app.ovis.sh".equalsIgnoreCase(uri.getHost()) && (uri.getPort() == -1 || uri.getPort() == 443);
         Matcher scope = PC_SCOPE.matcher(uri.getRawPath() == null ? "" : uri.getRawPath());
         return hostedShell && scope.matches() ? "https://app.ovis.sh/s/" + scope.group(1) + "/" : null;
+    }
+
+    private static final Pattern SERVER_ID = Pattern.compile("[0-9a-f]{32}");
+
+    /**
+     * The PC is the one the alert's endpoint was made for (`origin`, the push module's key for it) when
+     * that origin is a saved PC; a relay PC, which shares the hosted shell's origin with every other, is
+     * named by its relay ID (`serverId`) instead. Its pane rides in the scope's fragment there, as the
+     * hosted shell's host never hears it.
+     */
+    static String[] alertLink(List<String> saved, String origin, String serverId, String machine, String workspace, String pane) {
+        if (pane == null || pane.isEmpty()) return null;
+        String query = "machine=" + encoded(machine == null || machine.isEmpty() ? "local" : machine)
+            + (workspace == null || workspace.isEmpty() ? "" : "&ws=" + encoded(workspace))
+            + "&pane=" + encoded(pane) + "&view=chat";
+        String key = origin(origin);
+        // the hosted shell's own origin is every relay PC's, and "Your PCs" when that is saved: never the PC itself
+        if (key != null && saved.contains(key) && !scoped(key) && !sameOrigin(key, "https://app.ovis.sh")) return new String[] { key, key + "/?" + query };
+        if (serverId != null && SERVER_ID.matcher(serverId).matches()) {
+            String scope = "https://app.ovis.sh/s/" + serverId + "/";
+            if (saved.contains(scope) && (key == null || sameOrigin(key, scope))) return new String[] { scope, scope + "#" + query };
+        }
+        return null;
+    }
+
+    static final class AlertTap {
+        final String pc;
+        final String address;
+        final String selection;
+
+        private AlertTap(String pc, String address, String selection) {
+            this.pc = pc;
+            this.address = address;
+            this.selection = selection;
+        }
+    }
+
+    static AlertTap alertTap(List<String> saved, String current, String shown, String origin, String serverId, String machine, String workspace, String pane) {
+        String[] link = alertLink(saved, origin, serverId, machine, workspace, pane);
+        if (link == null) return null;
+        if (!link[0].equals(current) || shown == null || !belongs(shown, current) || !appPage(shown, current)) return new AlertTap(link[0], link[1], null);
+        try {
+            JSONObject selection = new JSONObject()
+                .put("type", "select-pane")
+                .put("pane_id", pane)
+                .put("machine_id", machine == null || machine.isEmpty() ? "local" : machine)
+                .put("view", "chat");
+            if (workspace != null && !workspace.isEmpty()) selection.put("workspace_id", workspace);
+            return new AlertTap(link[0], null, selection.toString());
+        } catch (JSONException never) {
+            throw new IllegalStateException(never);
+        }
+    }
+
+    static boolean appPage(String url, String key) {
+        URI uri;
+        try {
+            uri = new URI(url);
+        } catch (URISyntaxException notAnAddress) {
+            return false;
+        }
+        String path = uri.getRawPath() == null ? "" : uri.getRawPath();
+        if (path.startsWith("/api/") || path.equals("/ws")) return false;
+        String last = path.substring(path.lastIndexOf('/') + 1);
+        if (last.contains(".") && !last.equals("index.html")) return false;
+        String search = uri.getRawQuery();
+        String fragment = uri.getRawFragment();
+        boolean fromFragment = scoped(key) && (search == null || search.isEmpty()) && fragment != null && !fragment.isEmpty();
+        String read = queryValue(fromFragment ? fragment : search, "read");
+        return read == null || read.replaceAll(JS_TRIM_WHITESPACE, "").isEmpty();
+    }
+
+    /** The first value of `name` in `query` (a raw query, `?` optional), decoded as URLSearchParams decodes it, or null. */
+    private static String queryValue(String query, String name) {
+        if (query == null) return null;
+        for (String pair : (query.startsWith("?") ? query.substring(1) : query).split("&")) {
+            int equals = pair.indexOf('=');
+            if (formDecoded(equals < 0 ? pair : pair.substring(0, equals)).equals(name)) return formDecoded(equals < 0 ? "" : pair.substring(equals + 1));
+        }
+        return null;
+    }
+
+    private static String formDecoded(String text) {
+        String spaced = text.replace('+', ' ');
+        String decoded = percentDecoded(spaced);
+        return decoded == null ? spaced : decoded;
+    }
+
+    /**
+     * The script MainActivity runs in the open page with an AlertTap's `selection`, which goes in as a
+     * JSON value, never as code. It is dispatched on the page's window as "ovis-select-pane"
+     * (SELECT_PANE_EVENT in src/lib/notificationTarget.ts), which a page on plain http, with no
+     * navigator.serviceWorker, hears too; that page cancels it.
+     */
+    static String selectionScript(String selection) {
+        return "(() => { const data = " + selection + "; "
+            + "if (window.dispatchEvent(new MessageEvent('ovis-select-pane', { data, cancelable: true }))) { "
+            + "const worker = navigator.serviceWorker; if (worker) worker.dispatchEvent(new MessageEvent('message', { data })); } })()";
+    }
+
+    private static String encoded(String text) {
+        try {
+            return java.net.URLEncoder.encode(text, "UTF-8").replace("+", "%20");
+        } catch (java.io.UnsupportedEncodingException never) {
+            throw new IllegalStateException(never);
+        }
     }
 
     /**
@@ -80,51 +186,36 @@ final class PCStore {
         return uri.getRawQuery() == null && (fragment == null || fragment.isEmpty() || fragment.startsWith("offer="));
     }
 
-    /** Why the PC's page failed, for the error page: WebView's reason, or the HTTP status it answered. */
     static volatile String failure;
 
-    /** What kind of failure that was, when the app itself found it: "timeout" (no answer in ANSWER_SECONDS) or "not-ovis"; else null. */
     static volatile String failureKind;
 
-    /** Sets the failure the error page shows, and its kind (failureKind), which may be null. */
     static void fail(String reason, String kind) {
         failure = reason;
         failureKind = kind;
     }
 
-    /** How long the app waits for an address to answer, from Open on the connect screen to the PC's first page (MainActivity's cover), as the iOS app's cover waits. */
     static final int ANSWER_SECONDS = 20;
 
-    /**
-     * When (SystemClock.elapsedRealtime) the open being checked on the connect screen runs out of
-     * ANSWER_SECONDS, which MainActivity's cover takes over so the check and the first page share one
-     * limit; 0 for an open that started in the activity.
-     */
     static volatile long answerBy;
 
-    /** The least the first page gets after a check that used most of the limit: an Ovis that answered is given time to send its page. */
     static final long PAGE_FLOOR_MS = 5000;
 
     /** Redirects in a row that made another origin the PC (MainActivity), so two servers that redirect to each other stop. */
     static volatile int redirects;
 
-    /** Redirects in a row the app follows, in the WebView and in ovisOrigin; past it the error page says so. */
     static final int MAX_REDIRECTS = 5;
 
-    /** How long ovisOrigin waits for each answer. */
     private static final int PROBE_TIMEOUT_MS = 5000;
 
-    /** How long ovisOrigin may take in all, its redirects included: the screen stays blank meanwhile. */
     static final long PROBE_BUDGET_MS = 10000;
 
     /** More than /api/health ever answers. */
     private static final int PROBE_MAX_BYTES = 64 * 1024;
 
-    /** The bridge protocols this app knows, the `bridge_protocol` /api/health?scope=bridge names (BRIDGE_PROTOCOL in shared/machines.ts). */
     static final int MIN_BRIDGE_PROTOCOL = 1;
     static final int MAX_BRIDGE_PROTOCOL = 1;
 
-    /** JSON's null, which a Map cannot tell from a missing name. */
     static final Object JSON_NULL = new Object();
 
     /** Ends a probe's request at its deadline: read timeouts alone let a server that trickles go on. */
@@ -140,19 +231,12 @@ final class PCStore {
         return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
     }
 
-    /**
-     * PCs opened before, the latest first, each by its key: the origin of a PC opened at its own
-     * address, or the scope of one opened through the Ovis relay (`https://app.ovis.sh/s/<server_id>/`),
-     * as every relay PC shares the hosted shell's origin. Entries saved before relay PCs are origins
-     * and stay as they are.
-     */
     static List<String> saved(Context context) {
         List<String> list = new ArrayList<>();
         try {
             JSONArray array = new JSONArray(prefs(context).getString("saved", "[]"));
             for (int i = 0; i < array.length(); i++) list.add(array.getString(i));
         } catch (org.json.JSONException ignored) {
-            // a damaged list starts empty again
         }
         return list;
     }
@@ -161,7 +245,6 @@ final class PCStore {
         prefs(context).edit().putString("saved", new JSONArray(list).toString()).apply();
     }
 
-    /** Labels of saved PCs by key, from a relay pairing offer's name. */
     static JSONObject names(Context context) {
         try {
             return new JSONObject(prefs(context).getString("names", "{}"));
@@ -181,7 +264,6 @@ final class PCStore {
         prefs(context).edit().putString("names", names.toString()).apply();
     }
 
-    /** The PC the app opens at launch, a key (see saved); null shows the connect screen. */
     static String current(Context context) {
         return prefs(context).getString("current", null);
     }
@@ -190,18 +272,15 @@ final class PCStore {
         prefs(context).edit().putString("current", origin).apply();
     }
 
-    /** The PC opened last, even after Change PC, for the pages that name it. */
     static String last(Context context) {
         return prefs(context).getString("last", null);
     }
 
-    /** Makes the PC `key` the one to open; it joins the saved PCs only once a page of it loads (remember). */
     static void open(Context context, String key, String start) {
         prefs(context).edit().putString("current", key).putString("last", key).apply();
         pendingStart = start;
     }
 
-    /** Puts the PC `key` first in the saved PCs: a page of it has loaded, so an address that never answered is not kept. */
     static synchronized void remember(Context context, String key) {
         List<String> list = saved(context);
         list.remove(key);
@@ -209,16 +288,13 @@ final class PCStore {
         setSaved(context, list);
     }
 
-    /** Counts forgets, and when each PC was forgotten last, so a check that began before a forget does not save that PC again. */
     private static long forgets;
     private static final Map<String, Long> forgottenAt = new java.util.HashMap<>();
 
-    /** The forget count now, for rememberUnlessForgotten. */
     static synchronized long forgetCount() {
         return forgets;
     }
 
-    /** remember, unless the PC `key` was forgotten after the count `since` (forgetCount) was taken. */
     static synchronized void rememberUnlessForgotten(Context context, String key, long since) {
         Long at = forgottenAt.get(key);
         if (at == null || at <= since) remember(context, key);
@@ -236,10 +312,6 @@ final class PCStore {
         edit.apply();
     }
 
-    /**
-     * The key of a PC opened through the Ovis relay: `scope`, when it is an http or https origin with a
-     * path ending in `/` and `url` is on that origin within that path; null otherwise.
-     */
     static String scopeKey(String scope, String url) {
         String origin = origin(scope);
         String path = rawPath(scope);
@@ -261,19 +333,11 @@ final class PCStore {
         return path != null && cleanPath(scope) != null && scope.endsWith("/") && (path.endsWith("/") ? path : path + "/").startsWith(scope);
     }
 
-    /** Whether the PC `key` is a scope (a relay PC on the hosted app) rather than a whole origin. */
     static boolean scoped(String key) {
         String scope = rawPath(key);
         return !scope.isEmpty() && !scope.equals("/");
     }
 
-    /**
-     * Whether Back is the page's to take: the page shown (`here`) is a page of `place` (a PC's key,
-     * or the app's own origin before one is chosen), and so is the entry behind it (`before`), where
-     * the page keeps what Back returns to: the state under a sheet or a dialog, the pane before. The
-     * first page of the place, a sign-in in front of a PC and the app's error page over a PC that
-     * did not answer have no such entry: there Back leaves the app.
-     */
     static boolean pageTakesBack(String here, String before, String place) {
         return here != null && before != null && belongs(here, place) && belongs(before, place);
     }
@@ -297,7 +361,6 @@ final class PCStore {
         return path;
     }
 
-    /** `text` with its percent escapes read as UTF-8, or null for a malformed escape or malformed UTF-8. */
     private static String percentDecoded(String text) {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         for (int i = 0; i < text.length(); i++) {
@@ -324,7 +387,6 @@ final class PCStore {
         }
     }
 
-    /** The path, query and fragment the PC `key` opens at: a pairing link's on the PC's origin, else the PC's scope or root. */
     static String startPath(String start, String key) {
         String origin = origin(key);
         if (start == null || origin == null || !origin.equals(origin(start))) {
@@ -344,12 +406,10 @@ final class PCStore {
     }
 
     /**
-     * The origin of the Ovis server that `target` leads to, or null. Asks `/api/health?scope=bridge`,
+     * Asks `/api/health?scope=bridge`,
      * which Ovis answers to anyone so a client can find its gate, and follows at most MAX_REDIRECTS
      * redirects of that request: a sign-in page, another site, a loop or no answer is not Ovis. Only
-     * such an origin may become the PC, the one origin that gets Capacitor's bridge. Gives up after
-     * about `budgetMs` (PROBE_BUDGET_MS), however slowly the answers come, and adds each origin it asks,
-     * in order, to `path`. Blocks: never call it on the main thread.
+     * such an origin may become the PC, the one origin that gets Capacitor's bridge.
      */
     static String ovisOrigin(String target, long budgetMs, List<String> path) {
         long deadline = System.nanoTime() + budgetMs * 1_000_000L;
@@ -387,7 +447,6 @@ final class PCStore {
         return null;
     }
 
-    /** Whether `answer` is /api/health?scope=bridge as Ovis gives it: `ok` true, an `auth` object and a bridge protocol this app knows. */
     static boolean answersAsOvis(Object answer) {
         if (!(answer instanceof Map)) return false;
         Map<?, ?> health = (Map<?, ?>) answer;
@@ -398,10 +457,6 @@ final class PCStore {
             && ((BigInteger) version).compareTo(BigInteger.valueOf(MAX_BRIDGE_PROTOCOL)) <= 0;
     }
 
-    /**
-     * The connect screen's opens while they are checked (HerdrShellPlugin.open): each gets a ticket,
-     * and only the latest one, not cancelled since, may still open its PC. Lock it to act on a ticket.
-     */
     static final class Openings {
         private int last;
 
@@ -409,7 +464,6 @@ final class PCStore {
             return ++last;
         }
 
-        /** Cancel, or the screen gone: no open started before this goes on. */
         synchronized void cancel() {
             last++;
         }
@@ -419,17 +473,8 @@ final class PCStore {
         }
     }
 
-    /** What check found an address to be. */
     static final class Check {
-        /**
-         * "ovis" (an Ovis server, of any version, or the hosted app), "in-front" (its /api/health
-         * redirected: a sign-in in front of the PC or another address, which the WebView then judges),
-         * "unsure" (an answer that does not tell, such as 403 or 502, which the WebView then judges),
-         * "not-ovis" (a web server whose page loads while its /api/health is not Ovis's), or why no
-         * answer came: "refused", "timeout", "unknown-host" or "no-answer".
-         */
         final String kind;
-        /** The answer that was not Ovis ("HTTP 404"), or the error when no answer came; null otherwise. */
         final String detail;
 
         Check(String kind, String detail) {
@@ -437,7 +482,6 @@ final class PCStore {
             this.detail = detail;
         }
 
-        /** Whether the app opens the address: it is Ovis, or something in front of it decides. */
         boolean opens() {
             return kind.equals("ovis") || kind.equals("in-front") || kind.equals("unsure");
         }
@@ -452,7 +496,6 @@ final class PCStore {
      * /api/health: its page says what it is (`<meta name="ovis-shell">`, scripts/shell-build.ts), on
      * the answer itself where every path serves it, else on `url`'s own page (its path only, never a
      * pairing link's code). `cookies` (the WebView's for the origin, or null) go with both requests.
-     * Gives up after `budgetMs` in all. Blocks: never call it on the main thread.
      */
     static Check check(String url, String cookies, long budgetMs) {
         String origin = origin(url);
@@ -476,12 +519,10 @@ final class PCStore {
             return new Check("unsure", null);
         }
         if (page.status == 200 && hostedApp(page.body)) return new Check("ovis", null);
-        // a page that loads without being Ovis, beside a health answer that is not Ovis's
         if (page.status == 200) return new Check("not-ovis", health.status == 200 ? null : "HTTP " + health.status);
         return new Check("unsure", "HTTP " + health.status);
     }
 
-    /** Whether `body` is /api/health as any Ovis server gives it: a JSON object with `ok` true and an `auth` object. */
     static boolean answersAsServer(String body) {
         Object answer;
         try {
@@ -494,7 +535,6 @@ final class PCStore {
 
     private static final Pattern SHELL_META = Pattern.compile("<meta\\s+name=\"ovis-shell\"", Pattern.CASE_INSENSITIVE);
 
-    /** Whether `body` is the hosted app's page. */
     static boolean hostedApp(String body) {
         return SHELL_META.matcher(body).find();
     }
@@ -505,7 +545,6 @@ final class PCStore {
         return path.isEmpty() ? "/" : path;
     }
 
-    /** Why no answer came: the connection refused, no answer before the deadline, a name not found, or anything else. */
     static String failureKind(IOException failed, long deadline) {
         if (failed instanceof java.net.UnknownHostException) return "unknown-host";
         if (failed instanceof java.net.SocketTimeoutException || System.nanoTime() >= deadline) return "timeout";
@@ -530,7 +569,6 @@ final class PCStore {
         }
     }
 
-    /** A GET of `url`, its redirects not followed, and the first PROBE_MAX_BYTES of its body; ended at `deadline`. */
     private static Answer fetch(String url, String cookies, long deadline) throws IOException {
         // rounded up, so the disconnect comes at the deadline or after it, and failureKind reads it as a timeout
         long left = (deadline - System.nanoTime() + 999_999L) / 1_000_000L;
@@ -826,20 +864,17 @@ final class PCStore {
 
     /**
      * Whether two http(s) addresses are on one origin: scheme, host and port, the scheme's default port
-     * (80, 443) the same as none, as a browser compares them. False when either is not an http(s)
-     * address. Capacitor's own "stays in the WebView" test compares scheme and host only, so another
-     * port on the PC's host passes it.
+     * (80, 443) the same as none, as a browser compares them. Capacitor's own "stays in the WebView" test
+     * compares scheme and host only, so another port on the PC's host passes it.
      */
     static boolean sameOrigin(String a, String b) {
         String first = normalizedOrigin(a);
         return first != null && first.equals(normalizedOrigin(b));
     }
 
-    /** origin() of an http(s) address with the scheme's default port (443, 80) dropped, or null. */
     private static String normalizedOrigin(String text) {
         String origin = origin(text);
         if (origin == null) return null;
-        // origin() keeps an explicit port as written: drop the scheme's default one
         return origin.replaceFirst("^(https://.*):443$", "$1").replaceFirst("^(http://.*):80$", "$1");
     }
 

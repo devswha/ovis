@@ -3,7 +3,7 @@ import { chmodSync, existsSync, statSync, mkdirSync, mkdtempSync, readFileSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isAbsolute, relative } from "node:path";
-import { aclReader, coreSocket, discoverHc, findHc, harmlessGroups, macAclGrantsWrite, ownedByUser, plainSession, privateGroup, trustRefusal } from "./discovery.ts";
+import { aclReader, coreSocket, discoverHc, findHc, harmlessGroups, macAclGrantsWrite, ownedByUser, plainSession, privateGroup, PROBE_TIMEOUT_MS, trustRefusal } from "./discovery.ts";
 
 const unix = process.platform !== "win32";
 let cleanup = () => {};
@@ -20,7 +20,6 @@ function scratch(): { root: string; log: string } {
   return { root, log: join(root, "argv.log") };
 }
 
-/** a stand-in executable that logs every argument list it is run with, then says `output` */
 function fake(dir: string, name: string, output: string, log: string, exit = 0): string {
   mkdirSync(dir, { recursive: true, mode: 0o755 });
   const path = join(dir, name);
@@ -28,7 +27,6 @@ function fake(dir: string, name: string, output: string, log: string, exit = 0):
   return path;
 }
 
-/** a stand-in whose whole script is `body`, logging its argument lists */
 function script(dir: string, name: string, body: string, log: string): string {
   mkdirSync(dir, { recursive: true, mode: 0o755 });
   const path = join(dir, name);
@@ -50,7 +48,6 @@ it.skipIf(!unix)("looks in OVIS_HC_BIN, the usual places, the PATH, then the log
     env, home: root, loginShellPath: async () => login, usualDirs: [join(root, "usual")],
   });
   expect(await findHc(options({ OVIS_HC_BIN: named, PATH: join(root, "path") }, join(root, "login")))).toEqual({ bin: named, version: "0.1.20" });
-  // the usual place wins over the PATH: what an earlier PATH folder holds is not asked first
   expect(await findHc(options({ PATH: join(root, "path") }, join(root, "login")))).toEqual({ bin: usual, version: "0.1.17" });
   rmSync(usual);
   expect(await findHc(options({ PATH: join(root, "path") }, join(root, "login")))).toEqual({ bin: onPath, version: "0.1.19" });
@@ -58,7 +55,6 @@ it.skipIf(!unix)("looks in OVIS_HC_BIN, the usual places, the PATH, then the log
   expect(await findHc(options({ PATH: join(root, "empty") }, null))).toBeNull();
 });
 
-/** a stand-in that leaves `marker` behind when it is run at all */
 function planted(dir: string, mode: number, marker: string): void {
   mkdirSync(dir, { recursive: true, mode: 0o755 });
   writeFileSync(join(dir, "hc"), `#!/bin/sh\n: > '${marker}'\nprintf 'hc 0.1.99\\n'\n`, { mode: 0o755 });
@@ -189,7 +185,6 @@ it.skipIf(process.platform !== "linux" || setfacl === null)("without getfacl, tr
   // an ACL there, even one that only reads, cannot be read without getfacl
   expect(Bun.spawnSync([setfacl!, "-m", "u:nobody:r-x", join(root, "bin")]).exitCode).toBe(0);
   expect(ownedByUser(bin, ownGroup, false, noGetfacl())).toBe(false);
-  // gone again: trusted again
   expect(Bun.spawnSync([setfacl!, "-b", join(root, "bin")]).exitCode).toBe(0);
   expect(ownedByUser(bin, ownGroup, false, noGetfacl())).toBe(true);
 });
@@ -209,7 +204,6 @@ it.skipIf(process.platform !== "linux")("on Windows runs only an hc inside the u
   symlinkSync(outside, join(home, "tools"));
   expect(await win(join(home, "tools"))).toBeNull();
   expect(existsSync(marker)).toBe(false);
-  // one in the profile (scoop's shims, cargo) is run, after a refused one on the PATH
   planted(join(home, "scoop"), 0o755, join(root, "ran-home"));
   writeFileSync(join(home, "scoop", "hc.exe"), readFileSync(join(home, "scoop", "hc")), { mode: 0o755 });
   expect((await win([outside, join(home, "scoop")].join(";")))?.version).toBe("0.1.99");
@@ -275,7 +269,6 @@ it.skipIf(!unix)("gives the probe only absolute, checked PATH folders, never an 
 it.skipIf(!unix)("runs a candidate with only the PATH folders that pass the same check", async () => {
   const { root, log } = scratch();
   const marker = join(root, "ran");
-  // a user-owned wrapper that runs a helper by name
   const real = script(join(root, "real"), "hc", "helper\nprintf 'hc 0.1.17\\n'", log);
   mkdirSync(join(root, "open"), { mode: 0o755 });
   writeFileSync(join(root, "open", "helper"), `#!/bin/sh\n: > '${marker}'\n`, { mode: 0o755 });
@@ -304,7 +297,6 @@ it.skipIf(!unix)("passes over an hc that is not herdr-core's, and one that fails
     home: root, loginShellPath: async () => join(root, "login"), usualDirs: [],
   });
   expect(found).toEqual({ bin: real, version: "0.1.17" });
-  // nothing that answers otherwise is ever taken
   expect(await findHc({ env: { PATH: join(root, "wm") }, home: root, loginShellPath: async () => null, usualDirs: [] })).toBeNull();
 });
 
@@ -365,7 +357,6 @@ it.skipIf(!unix)("does not wait on what a candidate left holding its output, and
   const found = await findHc({ env: { PATH: join(root, "bin") }, home: root, loginShellPath: async () => null, usualDirs: [], timeoutMs: 10_000 });
   expect(found?.version).toBe("0.1.17");
   const left = Number(readFileSync(pidFile, "utf8"));
-  // the group was killed once the answer was in: signalling the leftover now finds nothing
   let alive = true;
   for (let attempt = 0; attempt < 50 && alive; attempt++) {
     try { process.kill(left, 0); await Bun.sleep(20); } catch { alive = false; }
@@ -373,12 +364,17 @@ it.skipIf(!unix)("does not wait on what a candidate left holding its output, and
   expect(alive).toBe(false);
 });
 
+
 it.skipIf(!unix)("passes over a candidate that does not answer in time", async () => {
   const { root, log } = scratch();
   script(join(root, "slow"), "hc", "exec /bin/sleep 30", log);
   const real = fake(join(root, "real"), "hc", "hc 0.1.17", log);
-  expect(await findHc({ env: { PATH: [join(root, "slow"), join(root, "real")].join(":") }, home: root, loginShellPath: async () => null, usualDirs: [], timeoutMs: 200 })).toEqual({ bin: real, version: "0.1.17" });
-});
+  // the product's own deadline, not a shorter one: it also bounds the candidate that does answer, which a starved
+  // runner can take hundreds of ms just to start
+  expect(await findHc({ env: { PATH: [join(root, "slow"), join(root, "real")].join(":") }, home: root, loginShellPath: async () => null, usualDirs: [] })).toEqual({ bin: real, version: "0.1.17" });
+  expect(runs(log)).toEqual(["--version", "--version"]);
+  // two probes in a row and as long again for the rest: a late answer fails on the assertion, not the runner's timeout
+}, 3 * PROBE_TIMEOUT_MS);
 
 it.skipIf(!unix)("waits for a candidate that closed its output to exit, within the time it is given", async () => {
   const { root, log } = scratch();

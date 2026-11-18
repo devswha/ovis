@@ -7,8 +7,8 @@
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { readFileSync } from "node:fs";
 import { writePrivateState } from "../private-state.ts";
-import { DEFAULT_ACCOUNT_SERVICE } from "../static.ts";
-import { ACCOUNT_RECORDS_MAX, isAccountKey } from "../../shared/account-records.ts";
+import { accountServiceOff, DEFAULT_ACCOUNT_SERVICE } from "../../shared/web-policy.ts";
+import { ACCOUNT_RECORDS_MAX, isAccountKeyEncoding } from "../../shared/account-records.ts";
 import { importPublicKey, importSecretKey } from "../../shared/relay-e2ee.ts";
 import { answerServerChallenge } from "../../shared/relay-server-proof.ts";
 import type { DeviceStore } from "../devices.ts";
@@ -25,16 +25,13 @@ const ASKED_PULL_MS = 10_000;
 export const SIGN_IN_PULL_MS = 60_000;
 /** The same after such a pull could not read the mailbox (the service was down, or did not answer): it found nothing out. */
 export const SIGN_IN_PULL_RETRY_MS = ASKED_PULL_MS;
-/** How long such a sign-in waits for the pull at most; the pull itself goes on. */
 export const SIGN_IN_WAIT_MS = 5_000;
 
 function scope(account: string, serverId: string, key: string): string {
   return `${account}\0${serverId}\0${key}`;
 }
-/** Pages one pull reads at most; the rest waits for the next pull. */
 const MAX_PAGES = 20;
 
-/** The account service was turned off on purpose (OVIS_ACCOUNT_SERVICE_URL=off): no mailbox exists, unlike one that is only unusable. */
 export class AccountServiceOff extends Error {
   constructor() {
     super("The account service is turned off (OVIS_ACCOUNT_SERVICE_URL=off)");
@@ -42,7 +39,6 @@ export class AccountServiceOff extends Error {
   }
 }
 
-/** The account service a relay pass is asked of: none when it is turned off, the reason when its address cannot be used. */
 export function passAccountService(value?: string): string | Error | undefined {
   try { return accountServiceUrl(value); } catch (error) {
     if (error instanceof AccountServiceOff) return undefined;
@@ -51,7 +47,7 @@ export function passAccountService(value?: string): string | Error | undefined {
 }
 
 export function accountServiceUrl(value = process.env["OVIS_ACCOUNT_SERVICE_URL"] ?? DEFAULT_ACCOUNT_SERVICE): string {
-  if (value.trim().toLowerCase() === "off") throw new AccountServiceOff();
+  if (accountServiceOff(value)) throw new AccountServiceOff();
   const url = new URL(value);
   const loopback = url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "[::1]";
   if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) throw new Error("The account service must be https");
@@ -65,7 +61,6 @@ export function accountServiceUrl(value = process.env["OVIS_ACCOUNT_SERVICE_URL"
  */
 export const PENDING_MAX = 1000;
 
-/** Refusals that keep a record waiting instead of dropping it. */
 const WAITING = new Set(["signer_not_member", "enrolling", "removal_pending"]);
 
 const waits = (outcome: RecordOutcome | undefined): boolean => outcome?.outcome === "refused" && WAITING.has(outcome.code);
@@ -87,26 +82,19 @@ function removedKey(record: unknown): string | null {
 }
 
 export interface AccountMailboxOptions {
-  /** Where records waiting on their signer are kept between pulls; tests leave it out and keep them in memory. */
   readonly pendingPath?: string;
   readonly devices: DeviceStore;
-  /** This PC's relay identity, when it has one; its `server_id` names the mailbox. */
   readonly identity: () => RelayIdentity | undefined;
-  /** The account service's origin, or why none can be used (a bad OVIS_ACCOUNT_SERVICE_URL), shown as the mailbox's error. */
   readonly service: string | Error;
   readonly fetch?: (request: Request) => Promise<Response>;
-  /** The enrollment barrier and held keys (holds.ts); none in tests that do not need them. */
   readonly holds?: AccountHolds;
 }
 
 export class AccountMailbox {
   lastPullAt: string | null = null;
-  /** The admissions the last pull saw, by account, PC and waiting device's key (`scope`): when each was made. */
   private admissions = new Map<string, number>();
   private lastAskedPull = Number.NEGATIVE_INFINITY;
-  /** From when a refused sign-in may start a pull again. */
   private nextSignInPull = Number.NEGATIVE_INFINITY;
-  /** When a pull last read the mailbox to its end without an error, and for which account and relay identity (`scope`). */
   private drainedAt: number | null = null;
   private drainedScope: string | null = null;
   error: string | null = null;
@@ -114,7 +102,6 @@ export class AccountMailbox {
   private pulling: Promise<number> | undefined;
 
   private pending: unknown[];
-  /** The waiting records a pull took out of `pending` to retry, until it puts them back. */
   private draining: unknown[] = [];
   /** Why the waiting records cannot be read: no add applies and nothing is pulled until it is fixed. */
   private readonly pendingError: string | null;
@@ -147,7 +134,6 @@ export class AccountMailbox {
 
   private waiting(): unknown[] { return [...this.draining, ...this.pending]; }
 
-  /** Pulls now unless a pull is under way; how many records changed something. Never throws. */
   pull(): Promise<number> {
     this.pulling ??= this.exclusively(() => this.drain()).finally(() => { this.pulling = undefined; });
     return this.pulling;
@@ -208,7 +194,6 @@ export class AccountMailbox {
       if (now < this.nextSignInPull) return;
       this.nextSignInPull = now + SIGN_IN_PULL_MS;
       pull = this.pull();
-      // whenever it ends, also after this sign-in stopped waiting for it
       void pull.then(() => {
         if (this.error !== null) this.nextSignInPull = Math.min(this.nextSignInPull, now + SIGN_IN_PULL_RETRY_MS);
       }, () => undefined);
@@ -225,7 +210,6 @@ export class AccountMailbox {
    * (docs/account.md, "PC API"); true with no account service at all, as there is no mailbox to read.
    */
   async freshen(): Promise<boolean> {
-    // with no account service there is no mailbox, so nothing can wait unread in one
     if (this.options.service instanceof AccountServiceOff) return this.pendingError === null;
     const asked = Date.now();
     // a pull under way may have read the mailbox before this request: the answer waits for one that starts after it,
@@ -239,7 +223,6 @@ export class AccountMailbox {
     return this.error === null && current !== null && this.drainedScope === current;
   }
 
-  /** Retries what waits now, after an enrollment let new members in, instead of on the next pull. */
   settle(): Promise<number> {
     return this.exclusively(() => this.settleNow());
   }
@@ -259,14 +242,12 @@ export class AccountMailbox {
     }
   }
 
-  /** Until a pass applies nothing more, so a chain of adds read in any order still reaches the remove at its end. */
   private async retry(early: unknown[], serverId: string): Promise<number> {
     let applied = 0;
     for (let progress = true; progress && early.length;) {
       progress = false;
       for (let start = 0; start < early.length;) {
         const batch = early.slice(start, start + ACCOUNT_RECORDS_MAX);
-        // a record leaves the list only once its outcome is known: a failure here keeps every one of them
         const outcomes = await applyAccountRecords(this.options.devices, batch, serverId, Date.now(), this.gates());
         const keep = batch.filter((_record, index) => waits(outcomes[index]));
         applied += outcomes.filter(({ outcome }) => outcome === "applied").length;
@@ -327,24 +308,20 @@ export class AccountMailbox {
     if (this.pendingError !== null) { this.error = this.pendingError; return 0; }
     let applied = 0;
     let ack: number | null = null;
-    // waiting on a signer, the barrier or a remove: a later add, in this pull or a later one, may let it apply
     const early: unknown[] = this.pending.splice(0);
     this.draining = early;
     const retry = async () => { applied += await this.retry(early, identity.server_id); };
     /** On disk before any page that put a record here is acknowledged, so a stop never loses one. */
-    // with any a client relayed meanwhile (wait), which this.pending holds until the pull ends
     const save = () => {
       this.trim(early);
       if (this.options.pendingPath) writePrivateState(this.options.pendingPath, [...early, ...this.pending]);
     };
     let complete = false;
-    // a pull that stops short or fails leaves no earlier whole read standing
     this.drainedAt = null;
     try {
       const admissions = new Map<string, number>();
       await retry();
       for (let page = 0; ; page++) {
-        // past the last page read, one more call only acknowledges it; what it returns waits for the next pull
         const { entries, waiting } = await this.page(identity, account, ack);
         for (const admission of waiting) admissions.set(scope(account, identity.server_id, admission.key), Date.parse(admission.at));
         if (entries.length === 0) { complete = true; break; }
@@ -361,13 +338,11 @@ export class AccountMailbox {
           applied += outcomes.filter(({ outcome }) => outcome === "applied").length;
           outcomes.forEach((outcome, index) => { if (waits(outcome)) keep(batch[index]); });
         }
-        // before this page is acknowledged (with the next request), retry what waited on a signer, and keep the rest on disk
         await retry();
         save();
         // every record read is acknowledged, refused ones too, so a refused one cannot hold the rest back
         ack = Math.max(...entries.map(({ seq }) => seq));
       }
-      // still waiting: kept for later pulls, within PENDING_MAX (trim)
       save();
       this.pending = [...early, ...this.pending];
       this.draining = [];
@@ -377,18 +352,13 @@ export class AccountMailbox {
       if (complete) { this.drainedAt = Date.now(); this.drainedScope = scope(account, identity.server_id, ""); }
     } catch (error) {
       this.error = error instanceof Error ? error.message : String(error);
-      try { save(); } catch { /* the pull's own error is the one to show; what waits stays in memory */ }
+      try { save(); } catch {}
       this.pending = [...early, ...this.pending];
       this.draining = [];
     }
     return applied;
   }
 
-  /**
-   * Keeps `early` and what was relayed meanwhile within PENDING_MAX: adds go first, oldest first. A
-   * waiting remove dropped is evidence lost, so then every add is held back for good (holds.ts) rather
-   * than let one in that this remove would have kept out; removes keep flowing either way.
-   */
   private trim(early: unknown[]): void {
     let over = early.length + this.pending.length - PENDING_MAX;
     for (let index = 0; over > 0 && index < early.length;) {
@@ -421,7 +391,7 @@ export class AccountMailbox {
     }
     const admissions = Array.isArray(mailbox.admissions) ? mailbox.admissions : [];
     const waiting = admissions.filter((a): a is { key: string; at: string } => typeof a === "object" && a !== null
-      && isAccountKey((a as { key?: unknown }).key) && typeof (a as { at?: unknown }).at === "string" && !Number.isNaN(Date.parse((a as { at: string }).at)));
+      && isAccountKeyEncoding((a as { key?: unknown }).key) && typeof (a as { at?: unknown }).at === "string" && !Number.isNaN(Date.parse((a as { at: string }).at)));
     return { entries: records as { seq: number; record: unknown }[], waiting };
   }
 }
