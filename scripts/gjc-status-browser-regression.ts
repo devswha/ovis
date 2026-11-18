@@ -124,7 +124,14 @@ async function settled(paneId: string, status: Status, start?: number): Promise<
   if (start !== undefined) await until(() => frames.slice(start).some((frame) =>
     frame.type === "pane-status" && frame.pane_id === paneId && frame.agent_status === status), `${scenario}: pushed ${status}`);
   await until(async () => (await httpSnapshot()).panes.find((item) => item.pane_id === paneId)?.agent_status === status, `${scenario}: HTTP ${status}`);
-  await until(() => agentRow(paneId).locator(`.badge[data-status="${drawn(paneId, status)}"]`).isVisible(), `${scenario}: browser ${drawn(paneId, status)}`);
+  await until(() => agentRow(paneId).locator(`.badge[data-status="${drawn(paneId, status)}"]`).isVisible(), `${scenario}: browser ${drawn(paneId, status)}`).catch(async (error: Error) => {
+    const state = await page?.evaluate((id) => ({
+      badge: document.querySelector(`.agent-item[data-pane="${id}"] .badge`)?.getAttribute("data-status") ?? null,
+      content: document.querySelector(".chat-frame[data-pane-content]")?.getAttribute("data-pane-content") ?? null,
+      selected: new URLSearchParams(location.search).get("pane"),
+    }), paneId).catch(() => null);
+    throw new Error(`${error.message}; the page showed ${JSON.stringify(state)}`, { cause: error });
+  });
   await rawWorking(paneId);
 }
 async function checkpoint(name: string): Promise<void> {
