@@ -718,8 +718,9 @@ export class DeviceStore {
   }
 
   /**
-   * The account that the code a waiting row paired with was made for (startAccountPairing); null for a code made for
-   * none, and for a row that does not wait to link.
+   * The account that the code a waiting row paired with was made for (startAccountPairing), also once that code's ten
+   * minutes are over: the row is held to it until it links or goes. Null for the relay tab's code, and for a row that
+   * does not wait to link.
    */
   waitingFor(id: string): string | null {
     return this.pending?.waiting?.rows.has(id) === true ? this.pending.named?.account ?? null : null;

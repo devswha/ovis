@@ -213,9 +213,10 @@ function look(store: DeviceStore, link: LinkRecord, deviceId: string, arrival: L
   // A PC in no account that its signed-in owner set up for one (POST /api/account/relay-account, as `ovis add` sends
   // it before it shows its code) takes its first member from that account. A link that names another is refused: a
   // row that waits to link goes at once, and a device keeps what it had. The refusal ends no code by itself, but a
-  // code with no pairing left, or past its ten minutes, ends as the last row that waits under it goes. A row that
-  // waits under a code made for an account is held to that account id alone: the id its own signed link names. While
-  // a code made for an account lives, every link is held to that account alone
+  // code with no pairing left, or past its ten minutes, ends as the last row that waits under it goes. While a code
+  // made for an account lives, every link is held to that account alone. A row that waits to link is held to the code
+  // it paired with, by the account id its own signed link names, until it links or goes, also once that code's ten
+  // minutes are over
   const codeFor = waits ? store.waitingFor(deviceId) : account === null && arrival.pinned !== null ? store.pinnedFor(arrival.pinned) : null;
   const expected = account === null ? codeFor ?? rules.setUpFor?.() ?? null : null;
   if (expected !== null && expected !== link.account) {
@@ -228,8 +229,9 @@ function look(store: DeviceStore, link: LinkRecord, deviceId: string, arrival: L
     store.turnAway(deviceId, "account_mismatch", link.account);
     return { refused: "account_mismatch", message: SET_UP_FOR_NO_ACCOUNT };
   }
-  // while such a code lives, the account it is for must vouch for the key of every link (docs/account.md, "The account's word")
-  return { waits, expected, vouching: arrival.pinned !== null && expected !== null };
+  // while such a code lives, the account it is for must vouch for the key of every link, and always for the link of a
+  // row that paired with one (docs/account.md, "The account's word")
+  return { waits, expected, vouching: (waits || arrival.pinned !== null) && expected !== null };
 }
 
 /**

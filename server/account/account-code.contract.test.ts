@@ -114,6 +114,8 @@ for (const between of ["nothing", "a read of the code", "a pairing that came too
       if (between === "a read of the code") expect(await state(f, idOf(offer))).toMatchObject({ state: "live" });
       // the code pairs no new device once its ten minutes are over
       if (between === "a pairing that came too late") expect(await pair(f, codeOf(offer), await phone())).toMatchObject({ error: "auth_failed" });
+      // its account vouched for it (docs/account.md, "The account's word")
+      await vouchFor(f, "acct_owner", owner.key);
       f.clock.advance(PAIRING_LINK_MS - 1);
       expect((await sendLink(owner.session, await linkRecord(owner.id, "acct_owner", owner.key))).status).toBe(200);
       expect(await f.status()).toMatchObject({ account: "acct_owner", members: 1 });
@@ -137,7 +139,8 @@ test("a code kept past its ten minutes for a device that paired with it in time 
     // the wall clock is set back to before the code's expiry: the code is past its ten minutes all the same
     wall.mockReturnValue(expires - 60_000);
     expect(await pair(f, code, await phone())).toMatchObject({ error: "auth_failed" });
-    // the device that paired in time still links in its own seconds
+    // the device that paired in time still links in its own seconds, on its account's word (docs/account.md, "The account's word")
+    await vouchFor(f, "acct_owner", owner.key);
     expect((await sendLink(owner.session, await linkRecord(owner.id, "acct_owner", owner.key))).status).toBe(200);
     expect(await f.status()).toMatchObject({ account: "acct_owner", members: 1 });
   } finally { wall.mockRestore(); }
@@ -156,7 +159,8 @@ test("a code that the wall clock once put past its ten minutes pairs no new devi
     // the wall clock is set back to before the code's expiry: the code stays past its ten minutes
     wall.mockReturnValue(expires - 60_000);
     expect(await pair(f, code, await phone())).toMatchObject({ error: "auth_failed" });
-    // the device that paired in time still links in its own seconds
+    // the device that paired in time still links in its own seconds, on its account's word (docs/account.md, "The account's word")
+    await vouchFor(f, "acct_owner", owner.key);
     expect((await sendLink(owner.session, await linkRecord(owner.id, "acct_owner", owner.key))).status).toBe(200);
     expect(await f.status()).toMatchObject({ account: "acct_owner", members: 1 });
   } finally { wall.mockRestore(); }

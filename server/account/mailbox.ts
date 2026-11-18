@@ -31,6 +31,8 @@ export const SIGN_IN_WAIT_MS = 5_000;
 export const VOUCH_READ_GAP_MS = ASKED_PULL_MS;
 /** How long one such read has for its two calls together. */
 export const VOUCH_READ_MS = 5_000;
+/** The longest wait a 429 of the account service holds such reads back: one answer never shuts QR adds for long. */
+export const VOUCH_RETRY_MAX_MS = 60_000;
 
 /**
  * The account service's word on a link's key (AccountMailbox.vouch): whether it holds an admission for it, or that it
@@ -316,7 +318,7 @@ export class AccountMailbox {
       if (response.status === 429) {
         // a wait it names holds every read back that long; without one, the next read starts VOUCH_READ_GAP_MS after this one
         const wait = retryAfterSeconds(response.headers.get("retry-after"));
-        if (wait !== null) this.vouchNextAt = Math.max(this.vouchNextAt, clock.now() + wait * 1000);
+        if (wait !== null) this.vouchNextAt = Math.max(this.vouchNextAt, clock.now() + Math.min(wait * 1000, VOUCH_RETRY_MAX_MS));
       }
       if (!response.ok) throw new Error(`The account service answered ${response.status} to ${path}`);
       return await response.json() as Record<string, unknown>;

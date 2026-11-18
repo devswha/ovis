@@ -395,7 +395,9 @@ account service holds an admission at most 10 minutes old, by its own clock, for
 at this PC, posted by a sign-in of the account the code is for (`POST /v1/admissions`). It is asked
 about the key the device holds once linked, not the one it paired with. This holds for every link
 made while such a code lives, from a device that already drove this PC too, and such a link is held
-to that code's account as well (409 `account_mismatch` otherwise).
+to that code's account as well (409 `account_mismatch` otherwise). A device that paired with such a code is held to
+it until it links or goes, also once the code's ten minutes are over: its link is judged against the
+account service and held to the account the code was made for.
 
 - **The mark.** The offer of such a code carries `"admission": 1`, in the QR link and in the offer
   a typed code delivers; no other offer does. An app that knows it posts the device's admission
@@ -417,9 +419,9 @@ to that code's account as well (409 `account_mismatch` otherwise).
   ended, so the account's own device still pairs with it.
 - **No answer, or 429:** 503 `account_unavailable` with `retry-after` in seconds: when this PC may
   ask again. The device and the code stay, and the device sends the same link again after that
-  time. A 429 that names a wait holds every read back that long; a link that no read can judge
-  within its 15 seconds is answered at once, without a call. A 429 with no wait counts as the
-  usual 10 seconds.
+  time. A 429 that names a wait holds every read back that long, a minute at most; a link that no
+  read can judge within its 15 seconds is answered at once, without a call. A 429 with no wait
+  counts as the usual 10 seconds.
 - **A code that ended or changed meanwhile:** a device that already drove the PC gets 409
   `pairing_ended` when the code alive as its link arrived is not the one alive when it is
   judged; nothing changes for it.

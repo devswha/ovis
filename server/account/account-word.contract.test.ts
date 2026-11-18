@@ -4,15 +4,16 @@
  * sleeps: the clock the waits are counted on is moved by hand, the test account service's calls are counted or held,
  * and every wait is for the event its line names, bounded.
  */
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, setSystemTime, test } from "bun:test";
 import { decodeOffer } from "../../shared/relay-offer.ts";
 import { PAIRING_LINK_MS } from "../devices.ts";
 import { bounded, TestClock } from "../relay/test-helpers.ts";
-import { VOUCH_READ_GAP_MS, VOUCH_READ_MS } from "./mailbox.ts";
+import { VOUCH_READ_GAP_MS, VOUCH_READ_MS, VOUCH_RETRY_MAX_MS } from "./mailbox.ts";
 import { ask, ended, linkRecord, memberRow, nextAsk, pairingPc, phone, sendLink, setUpFor, signedInWith, untilNextRead, vouchFor, type Answer, type Pc } from "./pairing.test-helpers.ts";
 
 const pcs: Pc[] = [];
 afterEach(async () => {
+  setSystemTime();
   for (const pc of pcs.splice(0)) await pc.close();
 });
 
@@ -378,4 +379,75 @@ test("an offer asked for with neither header pairs and links as before: no admis
   expect((await sendLink(device.session, await linkRecord(device.id, "acct_any", key))).status).toBe(200);
   expect(service.calls).toEqual([]);
   expect(f.stored().map((row) => [row.account, row.joined_by])).toEqual([["acct_any", "word"]]);
+});
+
+/** The wall clock moved to `ms` before the code's ten minutes end (negative: after), as a code's end is read on it. */
+const codeAt = (made: number, ms: number) => setSystemTime(new Date(made + 10 * 60_000 - ms));
+
+for (const kind of ["a code made for an account", "the relay tab's code"] as const) {
+  test(`a device that pairs with ${kind} just before its ten minutes end and links just after is still held to the account's word: refused without it, and it goes`, async () => {
+    const service = serviceCalls();
+    const f = await pc({ accountFetch: service.fetch });
+    await setUpFor(f, "acct_owner");
+    const made = Date.now();
+    const offer = kind === "a code made for an account" ? await forAccount(f, "acct_owner")
+      : await f.local("/api/relay/offer", { method: "POST", headers: { "x-herdr-update": "1", "x-ovis-no-account-only": "1" } });
+    codeAt(made, 500);
+    const late = await signedInWith(f, codeOf(offer));
+    codeAt(made, -500);
+    expect(refusal(await sendLink(late.session, await linkRecord(late.id, "acct_owner", late.key)))).toEqual([403, "unverified_device"]);
+    expect(service.calls).toEqual(["/v1/pc/challenge", "/v1/pc/mailbox"]);
+    expect(await ended(late.session)).toBe("auth_revoked");
+    expect(f.stored()).toEqual([]);
+    expect(await f.status()).toMatchObject({ account: null, members: 0 });
+    if (kind === "a code made for an account") {
+      expect(await state(f, idOf(offer))).toMatchObject({ state: "ended", ended: { why: "expired" }, turned_away: [{ id: late.id, why: "unverified" }] });
+    }
+  });
+
+  test(`a device that pairs with ${kind} just before its ten minutes end, and that its account vouched for, finishes its link after them`, async () => {
+    const f = await pc();
+    await setUpFor(f, "acct_owner");
+    const made = Date.now();
+    const offer = kind === "a code made for an account" ? await forAccount(f, "acct_owner")
+      : await f.local("/api/relay/offer", { method: "POST", headers: { "x-herdr-update": "1", "x-ovis-no-account-only": "1" } });
+    const key = await phone();
+    codeAt(made, 500);
+    await vouchFor(f, "acct_owner", key);
+    const late = await signedInWith(f, codeOf(offer), key);
+    codeAt(made, -500);
+    expect((await sendLink(late.session, await linkRecord(late.id, "acct_owner", key))).status).toBe(200);
+    expect(f.stored().map((device) => [device.id, device.account, device.joined_by])).toEqual([[late.id, "acct_owner", "service"]]);
+  });
+}
+
+test("a device that pairs with a code made for one account on a PC set up for another, and links into that other just after the code ends, is refused and goes", async () => {
+  const f = await pc();
+  await setUpFor(f, "acct_y");
+  const made = Date.now();
+  const code = codeOf(await forAccount(f, "acct_x"));
+  codeAt(made, 500);
+  const late = await signedInWith(f, code);
+  codeAt(made, -500);
+  expect(refusal(await sendLink(late.session, await linkRecord(late.id, "acct_y", late.key)))).toEqual([409, "account_mismatch"]);
+  expect(await ended(late.session)).toBe("auth_revoked");
+  expect(f.stored()).toEqual([]);
+  expect(await f.status()).toMatchObject({ account: null, members: 0 });
+});
+
+test("a 429 that names a wait longer than a minute holds the account service's reads back for a minute only", async () => {
+  const service = serviceCalls();
+  const f = await pc({ accountFetch: service.fetch });
+  const code = codeOf(await forAccount(f, "acct_owner"));
+  const device = await signedInWith(f, code);
+  service.set((request) => new URL(request.url).pathname === "/v1/pc/mailbox" ? tooMany("999999999") : undefined);
+  const held = await sendLink(device.session, await linkRecord(device.id, "acct_owner", device.key));
+  expect([...refusal(held), held.headers.get("retry-after")]).toEqual([503, "account_unavailable", String(VOUCH_RETRY_MAX_MS / 1000)]);
+  expect(f.app.context.services.accountMailbox.serviceRetryMs()).toBe(VOUCH_RETRY_MAX_MS);
+  service.set(undefined);
+  const key = await phone();
+  await vouchFor(f, "acct_owner", key);
+  const owner = await signedInWith(f, code, key);
+  expect((await sendLink(owner.session, await linkRecord(owner.id, "acct_owner", key))).status).toBe(200);
+  expect(service.count("/v1/pc/challenge")).toBe(2);
 });
