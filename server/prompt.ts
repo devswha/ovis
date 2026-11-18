@@ -1932,7 +1932,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
             case "pi-questionnaire-question":
               return shown?.id === parsed.id && shown.selectedIndex === parsed.customMenuIndex && piQuestionnaireInputMatches(shown, draft);
             case "pi-ask-question":
-              return shown?.id === parsed.id && shown.selectedIndex === parsed.customMenuIndex && shown.piAskTyping === true;
+              return shown?.id === parsed.id && shown.selectedIndex === parsed.customMenuIndex && shown.piAskTyping === true && shown.piAskDraft === draft;
             case "agy-question":
               return agyCustomEditorMatches(screen, parsed, ticks, draft);
             case "fallback-gjc-menu":

@@ -130,15 +130,21 @@ test("Pi ask answer route refuses a question replaced during navigation", async 
   });
 }, 4_000);
 
-test.each(["editor stays open", "editor closes during the look"])("Pi ask submits typed text only if the %s", async state => {
+test.each(["editor stays open", "editor closes during the look", "editor never shows the text"])("Pi ask submits typed text only if the %s", async state => {
   await withPane(fixtures.single, async pane => {
     const card = await pane.card();
     let moves = 0;
-    pane.onSent = key => { if (key === "down") pane.screen = ++moves === 1 ? fixtures["single-second"] : fixtures["single-custom-empty"]; };
+    const shows = state !== "editor never shows the text";
+    pane.onSent = key => {
+      if (key === "down") pane.screen = ++moves === 1 ? fixtures["single-second"] : fixtures["single-custom-empty"];
+      // pi shows what is typed on the Other row (#3999: an Enter on an empty row would submit nothing)
+      if (key === "text:typed answer" && shows) pane.screen = fixtures["single-custom-empty"].replace(/(^❯ 3\.).*$/m, "$1 typed answer");
+    };
     const closes = state === "editor closes during the look";
     const beforeKey = async () => { if (closes && pane.sent.at(-1) === "text:typed answer") pane.screen = "> unsent draft"; };
-    expect(await pane.answer(card.id, { custom_text: "typed answer" }, undefined, { beforeKey })).toBe(closes ? 409 : 200);
-    expect(pane.sent).toEqual(["down", "down", "ctrl+u", "text:typed answer", ...(closes ? [] : ["enter"])]);
+    const submits = state === "editor stays open";
+    expect(await pane.answer(card.id, { custom_text: "typed answer" }, undefined, { beforeKey })).toBe(submits ? 200 : 409);
+    expect(pane.sent).toEqual(["down", "down", "ctrl+u", "text:typed answer", ...(submits ? ["enter"] : [])]);
   });
 });
 

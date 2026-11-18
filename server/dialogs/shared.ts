@@ -137,6 +137,8 @@ export type ParsedPrompt = InteractivePrompt & {
   claudeTabs?: { identity: string; index: number };
   piAskUser?: PiAskUserForm;
   piAskTyping?: true;
+  /** what pi-ask's open Other editor holds, as its row shows it */
+  piAskDraft?: string;
   piQuestionnaireInput?: string;
   piQuestionnaireInputRows?: string[];
   /** omp says it cut the question (server/omp-ask.ts): it fills the panel's four rows and the footer offers to expand it */
