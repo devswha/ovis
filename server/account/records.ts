@@ -166,6 +166,9 @@ export interface LinkRefused { refused: LinkRefusal; message?: string }
 /** What a device reads when its link names another account than the one this PC was set up for: the way out is on the PC. */
 const SET_UP_FOR_ANOTHER_ACCOUNT = "This PC was set up for another Ovis account than the one this device is signed in to. To add it to this device's account instead, run `ovis add` on the PC again and sign in there with that account.";
 
+/** What a device that waited to link reads when the code it paired with was made for another account. */
+const CODE_FOR_ANOTHER_ACCOUNT = "This PC's pairing code was made for another Ovis account than the one this device is signed in to. Sign in to that account on this device, then pair again.";
+
 /** What a device that waited to link reads when no account was named for this PC: the way on is on the PC too. */
 const SET_UP_FOR_NO_ACCOUNT = "This PC is not set up for an Ovis account yet. Sign in on the PC and add it to your account, or run `ovis add` there; then scan its QR code again.";
 
@@ -194,11 +197,13 @@ export async function applyLink(store: DeviceStore, value: unknown, session: { d
   if (account !== null && account !== link.account) return { refused: "account_mismatch" };
   // A PC in no account that its signed-in owner set up for one (POST /api/account/relay-account, as `ovis add` sends
   // it before it shows its code) takes its first member from that account. A link that names another is refused: a
-  // row that waits to link goes at once, a device keeps what it had, and no code is ended
-  const expected = account === null ? rules.setUpFor?.() ?? null : null;
+  // row that waits to link goes at once, a device keeps what it had, and no code is ended. A row that waits under a
+  // code made for an account is held to that account alone
+  const codeFor = waits ? store.waitingFor(deviceId) : null;
+  const expected = account === null ? codeFor ?? rules.setUpFor?.() ?? null : null;
   if (expected !== null && expected !== link.account) {
     if (waits) store.turnAway(deviceId);
-    return { refused: "account_mismatch", message: SET_UP_FOR_ANOTHER_ACCOUNT };
+    return { refused: "account_mismatch", message: codeFor !== null ? CODE_FOR_ANOTHER_ACCOUNT : SET_UP_FOR_ANOTHER_ACCOUNT };
   }
   // A row that waits to link is taken into the account this PC was set up for and into no other: with none named it
   // is refused the same way, and goes at once

@@ -1108,6 +1108,24 @@ it("a new six-digit code takes the typed code off the relay", async () => {
   expect(await typeCode(f, minted.code)).toEqual({ close: PAIR_CLOSE.NO_HOST });
 });
 
+it("a typed code made for an account: its answer names the account and the code, the offer for that account carries the same code, and the device that types it waits to link", async () => {
+  const f = await fixture(false, { pairCodeRelay: "wss://pair.test" });
+  await f.start();
+  const ask = (path: string, account?: string) => fetch(`${f.base}/api/relay${path}`, { method: "POST", headers: { origin: f.base, "x-herdr-update": "1", ...(account ? { "x-ovis-expect-account": account } : {}) } });
+  // without the header the answer is what it always was
+  expect(Object.keys(await mintCode(f)).sort()).toEqual(["code", "expires_at", "server_id"]);
+  const minted = await (await ask("/code", "acct_owner")).json() as { code: string; expect_account: string; pairing: { id: string } };
+  expect(minted.expect_account).toBe("acct_owner");
+  const devices = f.app.context.services.devices;
+  const offered = await (await ask("/offer", "acct_owner")).json() as { url: string; expect_account: string; pairing: { id: string } };
+  expect([decodeOffer(offered.url)?.code, offered.pairing.id]).toEqual([devices.activePairing()!.code, minted.pairing.id]);
+  const typed = validateOffer(JSON.parse((await typeCode(f, minted.code)).offer!));
+  expect(typed.code).toBe(devices.activePairing()!.code);
+  const paired = await client(f, typed);
+  expect(devices.list(null)).toEqual([]);
+  expect((await paired.http("/api/health")).status).toBe(403);
+});
+
 it("a relay that is not Ovis's own has no codes to type", async () => {
   const f = await fixture();
   await f.start();

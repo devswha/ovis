@@ -281,6 +281,11 @@ account: until then it reads its own account status and sends its link, and noth
 `link_required`), and one that has not linked after 30 seconds is gone. An offer asked for without
 the header never carries that code: with it pending, the offer starts a code of its own, which
 replaces it.
+An offer or a typed code (`POST /api/relay/code`) asked for with the header
+`x-ovis-expect-account: <account id>` is such a code made for that one account: a device that
+pairs with it is taken into that account alone, the answer repeats the account and names the
+code, and `POST /api/relay/offer/keep` reads by that name whether the code is still pending and how
+it ended ([account.md](account.md#a-code-made-for-an-account)).
 
 **A start that fails.** If a start fails before the PC's relay link exists, the switch stays
 off and the panel shows **The relay did not start: …** with the reason and **Try again**. Nothing

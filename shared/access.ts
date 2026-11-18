@@ -123,6 +123,31 @@ export interface PairingCode {
   readonly expires_at: string;
 }
 
+/**
+ * What POST /api/relay/code and POST /api/relay/offer add to their answer for a code made for an account
+ * (`x-ovis-expect-account`; docs/account.md, "A code made for an account"). An older PC answers neither field.
+ */
+export interface AccountPairing {
+  /** the account the call named: only a device that links itself into it becomes a device of this PC */
+  readonly expect_account: string;
+  /** `id` names the code for POST /api/relay/offer/keep */
+  readonly pairing: { readonly id: string };
+}
+
+/** Why a code made for an account ended. */
+export type AccountPairingEnd = "joined" | "overused" | "expired" | "replaced" | "cancelled" | "revoked" | "guessed";
+
+/**
+ * POST /api/relay/offer/keep { id }: whether a code made for an account is still the pending one, and how it ended.
+ * `joined` names the device that linked itself into the account with this code, when one did. `unknown`: the PC
+ * knows no such code (it restarted, or the code ended long ago).
+ */
+export type AccountPairingState =
+  | { readonly state: "live"; readonly id: string; readonly expect_account: string; readonly expires_at: string }
+  | { readonly state: "ended"; readonly id: string; readonly expect_account: string; readonly ended: { readonly why: AccountPairingEnd; readonly at: string };
+    readonly joined?: { readonly device_id: string; readonly label: string } }
+  | { readonly state: "unknown" };
+
 /** GET /api/access: how a phone can reach this server, as far as the server can tell (Settings → Phone). */
 export interface RemoteAccess {
   /** the port this server listens on; the tailscale command names it */

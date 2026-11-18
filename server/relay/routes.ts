@@ -2,7 +2,7 @@ import { DeviceGoneError, PcInAccountError } from "../devices.ts";
 import { errorResponse, jsonResponse, readJsonObject, setRequestRoute } from "../http.ts";
 import type { ServerContext } from "../dispatch.ts";
 import { updateRequestAllowed } from "../update-api.ts";
-import { NoAccountNamedError } from "./service.ts";
+import { ACCOUNT_ID, NoAccountNamedError } from "./service.ts";
 
 /**
  * Drive authority and the outer origin gate are shared with Portal in dispatch.ts. `caller`: the paired device
@@ -46,6 +46,10 @@ export async function handleRelayRequest(request: Request, pathname: string, con
   if (!updateRequestAllowed(request)) return fail("invalid_relay_request", "Use the relay controls from this app.", 403);
   // A relayed session would hold the relay it runs on; Portal visitors are refused in dispatch.ts (owner_only).
   if (context.peer.kind === "relay") return fail("local_required", "Control the relay from a direct connection to this PC.", 403);
+  // the account this PC is to join, named by the call that makes the code (docs/account.md, "A code made for an
+  // account"): a device that pairs with it is taken into that account alone. A header, as the two below
+  const account = pathname === "/api/relay/offer" || pathname === "/api/relay/code" ? request.headers.get("x-ovis-expect-account") : null;
+  const invalidAccount = () => fail("invalid_account", "x-ovis-expect-account names no account id.", 400);
   try {
     switch (pathname) {
       case "/api/relay/start": {
@@ -65,12 +69,22 @@ export async function handleRelayRequest(request: Request, pathname: string, con
         // the relay tab's QR code says what it is for (a header, as x-ovis-local-only below): it puts a PC in no
         // account into the account named for it, so a PC that is in one makes none (409 in_account), and neither
         // does one that no account was named for (409 no_account_named)
-        return reply(service.offer(caller, { noAccountOnly: request.headers.get("x-ovis-no-account-only") === "1" }));
+        if (account !== null && !ACCOUNT_ID.test(account)) return invalidAccount();
+        return reply(service.offer(caller, account !== null ? { account } : { noAccountOnly: request.headers.get("x-ovis-no-account-only") === "1" }));
+      case "/api/relay/offer/keep": {
+        setRequestRoute("/api/relay/offer/keep");
+        // whatever the relay's state: a code made for an account is read by the id its answer gave
+        const body = await readJsonObject(request);
+        if (body instanceof Response) return body;
+        if (typeof body.id !== "string") return fail("invalid_body", "Send the pairing's id.", 400);
+        return reply(context.services.devices.accountPairingState(body.id));
+      }
       case "/api/relay/code": {
         setRequestRoute("/api/relay/code");
         if (service.status().phase === "off" || service.status().blocked) return fail("relay_off", "Start the relay before pairing.", 409);
         if (service.status().phase === "error") return fail("relay_offline", "The relay is not reachable; wait until it is online before pairing.", 409);
-        const code = await service.pairCode(caller);
+        if (account !== null && !ACCOUNT_ID.test(account)) return invalidAccount();
+        const code = await service.pairCode(caller, account ?? undefined);
         if (code === null) return fail("code_unavailable", "Pairing with a typed code works through Ovis's relay only; scan the QR code instead.", 409);
         return reply(code);
       }

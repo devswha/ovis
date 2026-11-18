@@ -200,6 +200,8 @@ One rule for every way in: a pairing code, comparing digits, and joining through
   it, and removing a key on the PC (**Revoke**, **Revoke all**, an account's `remove`) takes the
   devices that wait with that key. A signed-in app joins as before: the account steps it takes
   after pairing are exactly those two calls.
+- **A code can name the account it is for** ([A code made for an account](#a-code-made-for-an-account)):
+  its devices wait to link in the same way, and only a link into that account makes one a device.
 - **Every admission is announced** on every device connected to the PC: the new device's name and who
   approved it.
 
@@ -241,6 +243,68 @@ PC only, share the 20 failures in 10 minutes described under [Who gets in](relay
 Comparisons that ask to join the account have their own 20, and so do other PCs of the account
 vouched for ([Adding a PC of your account](#adding-a-pc-of-your-account)), so a flood of either
 cannot pause pairing by QR code or code, or the other.
+
+## A code made for an account
+
+The call that makes a pairing code can name the account the PC is to join: `POST /api/relay/offer`
+and `POST /api/relay/code` take the header
+
+```
+x-ovis-expect-account: <account id>      (1 to 64 of A-Z a-z 0-9 _ -)
+```
+
+from the callers they take today (drive access, on a direct connection). The code is the relay
+tab's kind ([Who may admit a device](#who-may-admit-a-device)): made only while the PC is in no
+account, redeemed through the relay only, five pairings, and a device that pairs with it waits to
+link, makes its two calls and is gone after 30 seconds if it has not linked. One thing differs:
+such a device is taken into the account the header named and into no other, whatever account was
+named for the PC (`relay-account`). A link that names another account is refused 409
+`account_mismatch`; the device goes at once, and the code stays for the device of the right
+account. A link into that account makes the device a member, and the PC joins the account.
+
+The answers carry today's fields and two more:
+
+```json
+POST /api/relay/code  -> { "code": "ABCDE-FGHJK", "expires_at": "…", "server_id": "…", "expect_account": "acct_1", "pairing": { "id": "<32 hex>" } }
+POST /api/relay/offer -> { "url": "https://app.ovis.sh/s/<server_id>/#offer=…", "expires_at": "…", "expect_account": "acct_1", "pairing": { "id": "<32 hex>" } }
+```
+
+`expect_account` repeats the account the call named; a PC from before this answers with neither
+field, and a call without the header gets today's code and today's answer. `POST /api/relay/code`
+with the header makes a new code, as it does without. `POST /api/relay/offer` with the header
+carries the code pending when that was made for the same account (the typed code's, say), with
+the same `pairing.id`; otherwise it starts a code of its own. An offer without the header, the
+relay tab's offer included, never carries such a code: it starts its own, which replaces it.
+
+The refusals, in this order: 409 `relay_off` and `relay_offline` as ever; 400 `invalid_account`
+when the header names no account id; 409 `in_account` when the PC is in an account; then 409
+`code_unavailable` for a typed code on a relay that takes none. A refused call starts no code and
+leaves the one pending as it was.
+
+`POST /api/relay/offer/keep` `{ "id": "<pairing.id>" }` (the same callers and guard) reads such a
+code by its id, whatever the relay's state. A body without an `id` answers 400 `invalid_body`;
+every other answer is 200:
+
+```json
+{ "state": "live", "id": "…", "expect_account": "acct_1", "expires_at": "…" }
+{ "state": "ended", "id": "…", "expect_account": "acct_1", "ended": { "why": "joined", "at": "…" }, "joined": { "device_id": "…", "label": "…" } }
+{ "state": "unknown" }
+```
+
+`live`: it is the code pending. `unknown`: this PC knows no such code; it keeps the eight that
+ended last, in memory. `ended.why` is one of:
+
+| `why` | when |
+|---|---|
+| `joined` | the PC joined an account; `joined` names the device when it was one of this code's |
+| `overused` | its five pairings are spent and no device waits under it |
+| `expired` | its ten minutes are over |
+| `replaced` | another code was made |
+| `cancelled` | it was taken back (`POST /api/devices/pair/cancel`), or ended otherwise |
+| `revoked` | a device that held it was revoked, or every device was (**Revoke all**) |
+| `guessed` | five wrong codes |
+
+A `label` is the device's own word, and no proof of whose device it is.
 
 ## Negotiation
 

@@ -7,7 +7,8 @@ import { encodeOffer } from "../../shared/relay-offer.ts";
 import type { RelayOffer } from "../../shared/relay-offer.ts";
 import { parseRelayPass, relayPassAdmitsNewSessions } from "../../shared/relay-pass.ts";
 import { GLOBAL_RELAY, REGIONAL_RELAYS } from "../../shared/relay-regions.ts";
-import type { RelayErrorCode, RelayStatus } from "../../shared/protocol.ts";
+import type { AccountPairing, RelayErrorCode, RelayStatus } from "../../shared/protocol.ts";
+import { PcInAccountError } from "../devices.ts";
 import type { RequestServices } from "../dispatch.ts";
 import { isJsonObject } from "../http.ts";
 import { writePrivateState } from "../private-state.ts";
@@ -25,7 +26,7 @@ import { RelayPassKeeper, type RelayPassClock } from "./pass.ts";
 import type { RelayPassNotice } from "./link.ts";
 
 /** An account id as the account service gives it (docs/account.md, Records). */
-const ACCOUNT_ID = /^[A-Za-z0-9_-]{1,64}$/;
+export const ACCOUNT_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
 /**
  * No account was named for this PC (RelayService.setRelayAccount), so no code is made for the relay tab's QR code
@@ -570,16 +571,18 @@ export class RelayService {
 
   /**
    * A code to type on the device being paired (server/relay/pair-code.ts), replacing any showing; null
-   * when this PC's relay has none (it is not Ovis's own).
+   * when this PC's relay has none (it is not Ovis's own). `account`: the code is made for it (DeviceStore.startAccountPairing),
+   * and a PC in an account refuses that before the relay is asked (PcInAccountError).
    */
-  async pairCode(by: string | null = null): Promise<{ code: string; expires_at: string; server_id: string } | null> {
+  async pairCode(by: string | null = null, account?: string): Promise<({ code: string; expires_at: string; server_id: string } & Partial<AccountPairing>) | null> {
     if (!this.enabled || !this.identity || !this.services || this.blocked) throw new Error("Start the relay before pairing.");
+    if (account !== undefined && this.services.devices.account() !== null) throw new PcInAccountError();
     const relay = this.options.pairCodeRelay ?? (this.relay === GLOBAL_RELAY ? GLOBAL_RELAY : null);
     if (relay === null) return null;
     // the typed code's host carries a pass as the links do: only one its own service's passes go to this relay
     this.pairCodes ??= new RelayPairCodes({ relay, devices: this.services.devices, offer: (code) => this.offerFor(code), identity: () => this.identity!, connect: this.options.connect,
       pass: () => this.passFor(relay) });
-    return { ...await this.pairCodes.mint(by), server_id: this.identity.server_id };
+    return { ...await this.pairCodes.mint(by, account), server_id: this.identity.server_id };
   }
 
   /** Takes the code showing off the relay. */
@@ -594,19 +597,22 @@ export class RelayService {
    * offer carries that code (DeviceStore.pairingForOffer). A device that pairs with it is taken into the account
    * named for this PC and into no other, so none is made while no account is named either (NoAccountNamedError):
    * no code is started, and the one pending stays as it was.
+   * `account`: the offer's code is made for that account (DeviceStore.pairingForAccount), whatever account was named
+   * for this PC, and the answer says so; `noAccountOnly` is not asked with it.
    */
-  offer(by: string | null = null, options: { noAccountOnly?: boolean } = {}): { url: string; expires_at: string } {
+  offer(by: string | null = null, options: { noAccountOnly?: boolean; account?: string } = {}): { url: string; expires_at: string } & Partial<AccountPairing> {
     if (!this.enabled || !this.identity || !this.services || this.blocked) throw new Error("Start the relay before pairing.");
     const devices = this.services.devices;
     // a PC that is in an account says so itself (pairingForNoAccount)
     if (options.noAccountOnly && devices.account() === null && this.savedRelayAccount() === null) throw new NoAccountNamedError();
-    const pairing = options.noAccountOnly ? devices.pairingForNoAccount(by) : devices.pairingForOffer(by);
+    const { code, expires_at, ...named } = options.account !== undefined ? devices.pairingForAccount(options.account, by)
+      : options.noAccountOnly ? devices.pairingForNoAccount(by) : devices.pairingForOffer(by);
     // before the code leaves this PC: a device revoked by now is handed none (DeviceGoneError)
     if (by !== null) devices.holdPairing(by);
     return {
       url: encodeOffer({ v: 1, server_id: this.identity.server_id, server_public_key: this.identity.public_key,
-        relay: this.advertised, code: pairing.code, ...offerName() }, this.app),
-      expires_at: pairing.expires_at,
+        relay: this.advertised, code, ...offerName() }, this.app),
+      expires_at, ...named,
     };
   }
 

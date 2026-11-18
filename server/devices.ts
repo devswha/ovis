@@ -14,7 +14,7 @@ import { createHash, createPublicKey, randomBytes, randomInt, timingSafeEqual } 
 import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { AccountRecordError, parseAccountRecord, type AddRecord, type RemoveRecord } from "../shared/account-records.ts";
-import { type DevicePairedEvent, type DeviceRemovedEvent, type DevicePairToken, type DeviceRole, type DevicesRevokedAll, type PairedDevice, type DeviceConnection, STREAM_COOKIE_PREFIX } from "../shared/protocol.ts";
+import { type AccountPairing, type AccountPairingEnd, type AccountPairingState, type DevicePairedEvent, type DeviceRemovedEvent, type DevicePairToken, type DeviceRole, type DevicesRevokedAll, type PairedDevice, type DeviceConnection, STREAM_COOKIE_PREFIX } from "../shared/protocol.ts";
 import type { MuxClock } from "../shared/relay-mux-engine.ts";
 import type { Access } from "./access.ts";
 import { CLEAR_LEGACY_DEVICE_COOKIE, COOKIE_MAX_AGE_SECONDS, DEVICE_COOKIE_CLEARED, deviceCookie, isSecureRequest, noContent, parseCookies } from "./auth.ts";
@@ -34,6 +34,8 @@ export const PAIRING_LINK_MS = 30_000;
 export const PAIRING_USES = 5;
 /** The links one waiting row may send; the next turns it away. */
 const WAITING_LINKS = 5;
+/** Codes made for an account that ended, kept for a read of how they ended (accountPairingState): the latest ones. */
+const ENDED_ACCOUNT_CODES = 8;
 
 /** A clock that only moves forward, never the PC's wall clock: what a waiting row's time is counted on (DeviceStore.useClock). */
 const MONOTONIC: MuxClock = {
@@ -328,6 +330,8 @@ interface ProvisionalRow {
 interface WaitingRows {
   usesLeft: number;
   readonly rows: Map<string, ProvisionalRow>;
+  /** set while the link of one of its rows is written (promote): the device the code's end names */
+  joined?: { readonly device_id: string; readonly label: string };
 }
 
 /**
@@ -351,9 +355,12 @@ export class DeviceStore {
   /**
    * `open`: started by a request the open LAN alone let in (access.ts `via: "open"`), so it ends when the gate closes;
    * `noAccountOnly`: made to put this PC in an account (pairingForNoAccount), so it ends when the PC is in one;
-   * `waiting`: what such a code holds, the devices that paired with it through the relay and have not linked
+   * `waiting`: what such a code holds, the devices that paired with it through the relay and have not linked;
+   * `named`: such a code made for one account (startAccountPairing), whose waiting devices are taken into it alone
    */
-  private pending: { code: string; expires: number; attempts: number; lanAttempts?: number; remote: boolean; startedBy: string | null; memberRequired: boolean; open?: boolean; noAccountOnly?: boolean; holders: Set<string>; waiting?: WaitingRows } | null = null;
+  private pending: { code: string; expires: number; attempts: number; lanAttempts?: number; remote: boolean; startedBy: string | null; memberRequired: boolean; open?: boolean; noAccountOnly?: boolean; holders: Set<string>; waiting?: WaitingRows; named?: { readonly id: string; readonly account: string } } | null = null;
+  /** How the latest codes made for an account ended, newest last: ENDED_ACCOUNT_CODES at most, in memory only. */
+  private endedAccountCodes: Extract<AccountPairingState, { state: "ended" }>[] = [];
   /** What a row that waits to link is bounded on (useClock). */
   private clock: MuxClock = MONOTONIC;
   private codeIssues: number[] = [];
@@ -570,9 +577,9 @@ export class DeviceStore {
    * (null for this PC itself), which holds it from then on. One that is paired no more by now starts nothing
    * (DeviceGoneError), and the code pending stays as it was.
    */
-  startPairing(now = Date.now(), from: { remote: boolean; startedBy: string | null; memberRequired: boolean; open?: boolean; noAccountOnly?: boolean; by?: string | null } = { remote: false, startedBy: null, memberRequired: false }): PairingCode {
+  startPairing(now = Date.now(), from: { remote: boolean; startedBy: string | null; memberRequired: boolean; open?: boolean; noAccountOnly?: boolean; by?: string | null; account?: string } = { remote: false, startedBy: null, memberRequired: false }): PairingCode {
     this.assertWritable();
-    const { by = null, ...how } = from;
+    const { by = null, account, ...how } = from;
     for (const id of [by, how.startedBy]) if (id !== null && !this.has(id)) throw new DeviceGoneError();
     this.pruneUnconfirmedFirstPairs(now);
     this.codeIssues = this.codeIssues.filter((at) => now - at < PAIRING_WINDOW_MS);
@@ -580,10 +587,11 @@ export class DeviceStore {
     this.codeIssues.push(now);
     const code = String(randomInt(0, 1_000_000)).padStart(6, "0");
     // the code this one replaces takes the rows that waited under it along
-    this.voidPending();
+    this.voidPending("replaced");
     this.pending = {
       code, expires: now + CODE_TTL_MS, attempts: 0, ...how, holders: new Set([by, how.startedBy].filter((id): id is string => id !== null)),
       ...(how.noAccountOnly === true ? { waiting: { usesLeft: PAIRING_USES, rows: new Map<string, ProvisionalRow>() } } : {}),
+      ...(how.noAccountOnly === true && account !== undefined ? { named: { id: randomBytes(16).toString("hex"), account } } : {}),
     };
     const started = { code, expires_at: new Date(this.pending.expires).toISOString() };
     for (const listener of this.codeStarts) listener();
@@ -604,11 +612,63 @@ export class DeviceStore {
     if (by !== null && !this.has(by)) throw new DeviceGoneError();
     if (this.account() !== null) throw new PcInAccountError();
     const active = this.activePairing(now);
-    if (active !== null && this.pending?.noAccountOnly === true) {
+    // never a code made for one account: the device that pairs with this one is taken into the account named for the PC
+    if (active !== null && this.pending?.noAccountOnly === true && this.pending.named === undefined) {
       if (by !== null) this.pending.holders.add(by);
       return active;
     }
     return this.startPairing(now, { remote: false, startedBy: null, memberRequired: false, noAccountOnly: true, by });
+  }
+
+  /**
+   * The code of an offer asked for with `x-ovis-expect-account: <account>` (docs/account.md, "A code made for an
+   * account"): the code pending when that was made for the same account, else a fresh one (startAccountPairing).
+   * `by` as in startPairing.
+   */
+  pairingForAccount(account: string, by: string | null = null, now = Date.now()): PairingCode & AccountPairing {
+    if (by !== null && !this.has(by)) throw new DeviceGoneError();
+    // a code made for an account ends when the PC joins one (endNoAccountCode): one still pending is for a PC in none
+    const active = this.activePairing(now);
+    const named = this.pending?.named;
+    if (active !== null && named?.account === account) {
+      if (by !== null) this.pending?.holders.add(by);
+      return { ...active, expect_account: named.account, pairing: { id: named.id } };
+    }
+    return this.startAccountPairing(account, by, now);
+  }
+
+  /**
+   * A fresh code made for `account`, replacing any code pending. It is the code of the QR code that puts this PC in
+   * an account (pairingForNoAccount), with one difference: a device that pairs with it and waits to link is taken
+   * into `account` alone, whatever account was named for this PC (server/account/records.ts applyLink). So it is made
+   * only while the PC is in no account (PcInAccountError otherwise, and the code pending stays as it was). Its id
+   * names it for a read of its state (accountPairingState). `by` as in startPairing.
+   */
+  startAccountPairing(account: string, by: string | null = null, now = Date.now()): PairingCode & AccountPairing {
+    if (this.account() !== null) throw new PcInAccountError();
+    const started = this.startPairing(now, { remote: false, startedBy: null, memberRequired: false, noAccountOnly: true, by, account });
+    return { ...started, expect_account: account, pairing: { id: this.pending!.named!.id } };
+  }
+
+  /**
+   * The account that the code a waiting row paired with was made for (startAccountPairing); null for a code made for
+   * none, and for a row that does not wait to link.
+   */
+  waitingFor(id: string): string | null {
+    return this.pending?.waiting?.rows.has(id) === true ? this.pending.named?.account ?? null : null;
+  }
+
+  /**
+   * Whether the code made for an account that `id` names is still the pending one, and how it ended. A code whose ten
+   * minutes are over has ended at this read, whether or not anything used it since.
+   */
+  accountPairingState(id: string, now = Date.now()): AccountPairingState {
+    const pending = this.pending;
+    if (pending?.named?.id === id) {
+      if (now <= pending.expires) return { state: "live", id, expect_account: pending.named.account, expires_at: new Date(pending.expires).toISOString() };
+      this.voidPending("expired");
+    }
+    return this.endedAccountCodes.find((ended) => ended.id === id) ?? { state: "unknown" };
   }
 
   /**
@@ -628,7 +688,7 @@ export class DeviceStore {
    * next would be paired with a PC that has members, with nobody approving and nobody asked.
    */
   private endNoAccountCode(): void {
-    if (this.pending?.noAccountOnly === true && this.account() !== null) this.endPairing();
+    if (this.pending?.noAccountOnly === true && this.account() !== null) this.endPairing(undefined, "joined");
   }
 
   /**
@@ -643,10 +703,11 @@ export class DeviceStore {
   /**
    * Takes the pending six-digit code back, and the typed relay code bound to it: nothing it was shown as pairs any more.
    * With `code`, only when that is the code pending, so a caller never ends a pairing started after its own; false when it did not.
+   * `why`: what a code made for an account is remembered to have ended by.
    */
-  endPairing(code?: string): boolean {
+  endPairing(code?: string, why: AccountPairingEnd = "cancelled"): boolean {
     if (code !== undefined && (this.pending === null || !same(code, this.pending.code))) return false;
-    this.voidPending();
+    this.voidPending(why);
     for (const listener of this.codeStarts) listener();
     return true;
   }
@@ -659,10 +720,19 @@ export class DeviceStore {
     this.clock = clock;
   }
 
-  /** Drops the code pending, with nobody told; the rows that waited to link under it go with it. */
-  private voidPending(): void {
+  /**
+   * Drops the code pending, with nobody told; the rows that waited to link under it go with it. A code made for an
+   * account is remembered as ended by `why` (accountPairingState).
+   */
+  private voidPending(why: AccountPairingEnd = "cancelled"): void {
     const waiting = this.pending?.waiting;
+    const named = this.pending?.named;
     this.pending = null;
+    if (named) {
+      const joined = why === "joined" ? waiting?.joined : undefined;
+      this.endedAccountCodes = [...this.endedAccountCodes, { state: "ended" as const, id: named.id, expect_account: named.account, ended: { why, at: new Date().toISOString() }, ...(joined ? { joined } : {}) }]
+        .slice(-ENDED_ACCOUNT_CODES);
+    }
     if (waiting) for (const row of [...waiting.rows.values()]) this.dropProvisional(waiting, row);
   }
 
@@ -677,7 +747,7 @@ export class DeviceStore {
     const listeners = this.revocations.get(row.id);
     this.revocations.delete(row.id);
     for (const close of listeners ?? []) close(true);
-    if (this.pending?.waiting === waiting && waiting.usesLeft === 0 && waiting.rows.size === 0) this.endPairing();
+    if (this.pending?.waiting === waiting && waiting.usesLeft === 0 && waiting.rows.size === 0) this.endPairing(undefined, "overused");
   }
 
   /**
@@ -774,9 +844,12 @@ export class DeviceStore {
     };
     // no waiting row from here on: the end of its code, which this write brings, takes the rows that still wait
     waiting.rows.delete(row.id);
+    // the end of its code, which this write brings, names the device it brought in
+    waiting.joined = { device_id: row.id, label: row.label };
     try { this.enroll(device, now, [], false); }
     catch (error) {
       waiting.rows.set(row.id, row);
+      delete waiting.joined;
       throw error;
     }
     row.cancel();
@@ -821,9 +894,9 @@ export class DeviceStore {
    */
   private checkPairingCode(code: string, now: number, lan = false): boolean {
     const pending = this.pending;
-    if (pending === null || now > pending.expires) { this.voidPending(); return false; }
+    if (pending === null || now > pending.expires) { this.voidPending("expired"); return false; }
     // made for a PC in no account, and the PC is in one: it ended as the PC joined (endNoAccountCode), and pairs nobody
-    if (pending.noAccountOnly === true && this.account() !== null) { this.endPairing(); return false; }
+    if (pending.noAccountOnly === true && this.account() !== null) { this.endPairing(undefined, "joined"); return false; }
     if (lan) {
       if ((pending.lanAttempts ?? 0) >= CODE_ATTEMPTS) return false;
       if (same(code.replace(/\D/g, ""), pending.code)) return true;
@@ -832,7 +905,7 @@ export class DeviceStore {
     }
     if (!same(code.replace(/\D/g, ""), pending.code)) {
       pending.attempts += 1;
-      if (pending.attempts >= CODE_ATTEMPTS) this.voidPending();
+      if (pending.attempts >= CODE_ATTEMPTS) this.voidPending("guessed");
       return false;
     }
     return true;
@@ -1118,7 +1191,7 @@ export class DeviceStore {
     this.gateClosedAt = gate;
     // A code the device started or was handed goes with it. Whoever it passed the code to would otherwise pair after
     // it was removed, on a PC in no account with nobody approving (a member's code already needs its member)
-    if (this.pending?.holders.has(id)) this.endPairing();
+    if (this.pending?.holders.has(id)) this.endPairing(undefined, "revoked");
     const listeners = this.revocations.get(id);
     this.revocations.delete(id);
     for (const close of listeners ?? []) close();
@@ -1154,7 +1227,7 @@ export class DeviceStore {
     const revoked = this.devices.map((device) => device.id);
     this.devices = [];
     this.gateClosedAt = gate;
-    this.voidPending();
+    this.voidPending("revoked");
     this.unconfirmedFirstPairs = [];
     const listeners = [...this.revocations.values()];
     this.revocations.clear();
