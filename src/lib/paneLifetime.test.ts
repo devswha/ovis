@@ -207,6 +207,21 @@ describe("pane state per herdr lifetime", () => {
     expect(back.unsent().map(({ pane_id, kind, text }) => ({ pane_id, kind, text }))).toEqual([{ pane_id: "w1:p1", kind: "pending", text: "deploy the fix" }]);
   });
 
+  it("keeps two held messages with the same text as two recovery items (#3990)", () => {
+    const storage = new MemoryStorage();
+    const lifetimes = page(storage);
+    // A PC naming no herdr keeps pending rows in memory; two distinct messages can carry the same text.
+    lifetimes.observe([pc("local", undefined)], title);
+    storage.setItem("ovis:pending:w1:p1", JSON.stringify({ version: 1, messages: [{ id: "one", text: "yes" }, { id: "two", text: "yes" }] }));
+    storage.setItem("ovis:queue:w1:p1", "carry this too");
+    // The next herdr takes over: both pending rows are archived in one pass.
+    lifetimes.observe([pc("local", "herdr-a")], title);
+
+    // Both rows come back, one recovery record per message, not one for the shared text.
+    expect(storage.getItem("ovis:pending:w1:p1")).toBeNull();
+    expect(lifetimes.unsent().filter((item) => item.kind === "pending" && item.text === "yes")).toHaveLength(2);
+  });
+
   it("keeps no held input past its age in the carry, when the page leaves or when the next one takes it", () => {
     const storage = new MemoryStorage();
     const carried = (): string => storage.getItem("ovis:pane-carried:") ?? "";

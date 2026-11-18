@@ -358,12 +358,17 @@ export class PaneLifetimes {
   private archive(storage: Storage | null, machineId: string, paneId: string, kind: UnsentKind, values: readonly Unsent[], titles: ReadonlyMap<string, string>, own = false): string[] {
     const title = titles.get(paneId);
     const ids: string[] = [];
+    // Snapshot the records this call may reuse, and consume a match once (#3990).
+    // Re-reading unsent() per value let two same-text rows of one pane find the
+    // same earlier record, so only one recovery item survived the archive.
+    const reusable = own ? [] : [...this.unsent()];
     for (const { text, agentOnly } of values) {
       if (text.trim() === "") continue;
       // the input line's key is never written down, by an earlier release's storage either (#2523)
       if (kind === "line" && looksLikeKey(text)) continue;
-      const same = own ? undefined : this.unsent().find((item) => item.machine_id === machineId && item.pane_id === paneId && item.kind === kind && item.text === text && (item.agent_only === true) === agentOnly);
-      if (same !== undefined) { ids.push(same.id); continue; }
+      const match = reusable.findIndex((item) => item.machine_id === machineId && item.pane_id === paneId && item.kind === kind && item.text === text && (item.agent_only === true) === agentOnly);
+      const same = match === -1 ? undefined : reusable[match];
+      if (same !== undefined) { reusable.splice(match, 1); ids.push(same.id); continue; }
       const record: UnsentText = { id: this.newId(), machine_id: machineId, pane_id: paneId, ...(title && title !== paneId ? { pane_title: title } : {}), kind, text, at: this.now(), ...(agentOnly ? { agent_only: true as const } : {}) };
       const { id, ...stored } = record;
       try {
