@@ -92,13 +92,14 @@ to change. Also read [server/AGENTS.md](server/AGENTS.md) and [src/AGENTS.md](sr
   worktree and its branch.
 - After a merge, the session that merged also closes the herdr worktree workspace the PR came
   from (the one checked out on the PR's branch, under `~/.herdr/worktrees/herdr-web-ui/`), only
-  when all hold: no pane in it has an agent `working`, `git status` there is clean, and the branch's tip
-  is the PR's head commit (`gh pr view --json headRefOid`), so nothing was added after it. Close
-  it with `herdr worktree remove --workspace <id>`, never `git worktree remove`, so the
-  workspace leaves with its checkout. herdr keeps the branch: then `git branch -D` it (a squash
-  merge leaves it unmerged to git; GitHub already deletes the remote one). A workspace that
-  fails a check stays, and the merge report names it and why. A session never removes the
-  worktree it runs in.
+  when all hold: no pane in it has an agent `working`, `git status` there is clean, and the
+  branch's tip is the PR's head commit (`gh pr view --json headRefOid`), so nothing was added
+  after it. Close it with `herdr worktree remove --workspace <id>`, never `git worktree remove`,
+  so the workspace leaves with its checkout. herdr keeps the branch: then `git branch -D` it (a
+  squash merge leaves it unmerged to git; GitHub already deletes the remote one). A workspace
+  that fails a check stays, and the merge report names it and why. A session never removes the
+  worktree it runs in: one that merged from the PR's own workspace leaves it, names it in its
+  report, and the maintainer or another session closes it under the same checks.
 - Everything written to git and GitHub (commits, branches, PRs, reviews, issues, changelog
   fragments) is in English.
 - Never push a `v*` tag by hand: installed updaters act on tags alone.
