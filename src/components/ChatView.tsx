@@ -82,10 +82,7 @@ import { commandScreenClosed, sentOutcome, type TerminalPeek } from "../lib/term
 const SCROLL_INPUT_MS = 500;
 // How far the reader's own upward move may leave the end and still follow: only endpoint rounding.
 const READER_ALLOWANCE_PX = 1;
-// How far an upward move without the reader's input may leave the end and still follow: a composer
-// growing a few lines shrinks the view before the correction to the end lands. A scroll that sends
-// no input this page sees (a screen reader's, a Firefox scrollbar's) leaves the end only past it, and
-// only over a transcript that did not shrink under it (onScroll, #2042).
+// Layout can leave a reader near enough to the end to resume following.
 const LAYOUT_ALLOWANCE_PX = 48;
 const LARGEST_PAGE = 50;
 const ChatPaneContext = createContext<string | null>(null);
@@ -1431,10 +1428,6 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   const pagingAway = useRef(false);
   const openedAway = useRef(false);
   const lastScrollTop = useRef(0);
-  const placedAt = useRef<number | null>(null);
-  const lastRowOffset = useRef<{ key: string; offset: number } | null>(null);
-  const lastScrollHeight = useRef(0);
-  const lastClientHeight = useRef(0);
   const scrollInputAt = useRef(-Infinity);
   const pointerDragAt = useRef(-Infinity);
   const scrollInputRead = useRef(-Infinity);
@@ -1442,7 +1435,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   // transcript moved up since. No pointermove comes while its thumb is dragged.
   const scrollbarPress = useRef<{ y: number; movedUp: boolean } | null>(null);
   const onScrollRef = useRef<() => void>(() => undefined);
-  const followed = useCallback((top: number) => { lastScrollTop.current = top; placedAt.current = top; }, []);
+  const followed = useCallback((top: number) => { lastScrollTop.current = top; }, []);
   const signature = useRef("");
   const [older, setOlder] = useState<ConversationTurn[]>([]);
   const olderCount = useRef(0);
@@ -1530,7 +1523,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     stopRestore.current?.();
     restoring.current = readChatPosition(paneStorageId(machineId, paneId)) ?? null;
     history.current = undefined; setHistoryId(undefined); enteredMoves.current = null; shownAt.current = Date.now();
-    pagingAway.current = false; stickToBottom.current = true; lastRowOffset.current = null; lastScrollHeight.current = 0; signature.current = ""; setState(EMPTY_STATE); setNewMessages(false); setAway(false); setLoaded(false); setError(null); setErrorStatus(null); setFailures(0); setPrompt(agentStatus === "blocked" ? keptPrompt(lastPrompts.get(paneStorageId(machineId, paneId)), agentSession) : null); setAbandoned(null); setRestored(null); setOutcomes([]); setScreenRead(false);
+    pagingAway.current = false; stickToBottom.current = true; signature.current = ""; setState(EMPTY_STATE); setNewMessages(false); setAway(false); setLoaded(false); setError(null); setErrorStatus(null); setFailures(0); setPrompt(agentStatus === "blocked" ? keptPrompt(lastPrompts.get(paneStorageId(machineId, paneId)), agentSession) : null); setAbandoned(null); setRestored(null); setOutcomes([]); setScreenRead(false);
     dropOlder();
     lastAnswer.current = null;
     setSentOver(null);
@@ -1666,7 +1659,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
           }
           generation = olderGeneration.current;
           history.current = conversation.history_id; setHistoryId(conversation.history_id);
-          if (!continued) { pagingAway.current = false; stickToBottom.current = true; lastRowOffset.current = null; lastScrollHeight.current = 0; setNewMessages(false); setAway(false); }
+          if (!continued) { pagingAway.current = false; stickToBottom.current = true; setNewMessages(false); setAway(false); }
         }
         if (conversation === lastAnswer.current) { setStale(false); setError(null); setErrorStatus(null); setFailures(0); setReadPresentation(proved ? readKey : undefined); return; }
         const previous = lastAnswer.current;
@@ -2066,7 +2059,6 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     const distanceFromBottom = node.scrollHeight - node.clientHeight - node.scrollTop;
     const scrollingDown = node.scrollTop > lastScrollTop.current;
     const scrollingUp = node.scrollTop < lastScrollTop.current;
-    const up = lastScrollTop.current - node.scrollTop;
     lastScrollTop.current = node.scrollTop;
     if (scrollingUp) {
       if (scrollbarPress.current !== null) scrollbarPress.current.movedUp = true;
@@ -2075,46 +2067,25 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     }
     const byReader = performance.now() - scrollInputAt.current < SCROLL_INPUT_MS;
     const allowance = byReader ? READER_ALLOWANCE_PX : LAYOUT_ALLOWANCE_PX;
-    if (scrollingUp && byReader) navigated();
-    const lastKey = timelineRows.at(-1)?.key;
-    const lastRow = lastKey === undefined ? null : node.querySelector<HTMLElement>(`[data-chat-row="${CSS.escape(lastKey)}"]`);
-    const row = lastKey === undefined || lastRow === null ? null
-      : { key: lastKey, offset: lastRow.getBoundingClientRect().top - node.getBoundingClientRect().top + node.scrollTop };
-    const rowBefore = lastRowOffset.current;
-    lastRowOffset.current = row;
-    const shrunkAbove = row !== null && rowBefore?.key === row.key ? Math.max(0, rowBefore.offset - row.offset) : 0;
-    // the transcript got shorter: at its end the browser moves the view up with it
-    const shrunk = Math.max(0, lastScrollHeight.current - node.scrollHeight);
-    lastScrollHeight.current = node.scrollHeight;
-    const viewShrank = node.clientHeight < lastClientHeight.current;
-    lastClientHeight.current = node.clientHeight;
-    // Without input, a move up while the transcript got shorter is the layout's, however far: the
-    // list holding the rows and the browser keeping the view inside the transcript can both move it
-    // for one shrink.
-    const shrankUnderView = shrunkAbove > READER_ALLOWANCE_PX || shrunk > READER_ALLOWANCE_PX;
-    // Under a selection in progress the hold keeps the view where it puts it (ChatTimeline), and the
-    // browser can trim it a pixel from there as the transcript shrinks under it: without the
-    // reader's input, landing a pixel above where the chat put it is the layout's.
-    const below = placedAt.current === null ? null : placedAt.current - node.scrollTop;
-    const trimmed = selecting.current && below !== null && below > 0 && below <= READER_ALLOWANCE_PX && up <= READER_ALLOWANCE_PX;
-    const heldInPlace = scrollingUp && !byReader && (shrankUnderView || viewShrank || distanceFromBottom <= LAYOUT_ALLOWANCE_PX || trimmed);
-    const leftEnd = scrollingUp && !heldInPlace;
+    const readingUp = scrollingUp && byReader;
+    if (readingUp) navigated();
     if ((!pagingAway.current || scrollingDown) && distanceFromBottom <= 1) pagingAway.current = false;
-    if (leftEnd && distanceFromBottom > allowance && stickToBottom.current) {
+    if (readingUp && distanceFromBottom > READER_ALLOWANCE_PX && stickToBottom.current) {
       pagingAway.current = true;
       dropPendingListScroll(timeline.current);
     }
-    // The list's own move down can stop short too: the browser holds it at the transcript's height
-    // before the list has grown it, and once grown no row changes to follow (a long chat's first
-    // open).
-    const stoppedShort = scrollingDown && !byReader && timeline.current !== null && !listEndPadded(node);
-    if ((heldInPlace || stoppedShort) && stickToBottom.current && !pagingAway.current && !manualLayout.current && !selecting.current && distanceFromBottom > LAYOUT_ALLOWANCE_PX) {
-      // the list's scroll lands a frame later: the frame painted next is at the end already
-      if (stoppedShort) node.scrollTop = node.scrollHeight;
-      if (timeline.current) timeline.current.scrollToEnd({ animated: false });
-      else node.scrollTo({ top: node.scrollHeight, behavior: "instant" });
+    // A list correction can move either way and stop short of the DOM's end. A held scrollbar
+    // thumb may not send any pointermove, so let pointerup resolve that gesture before correcting.
+    const layoutMoved = !byReader && (scrollingUp || (scrollingDown && timeline.current !== null));
+    if (layoutMoved && stickToBottom.current && !pagingAway.current && !manualLayout.current && !selecting.current
+      && scrollbarPress.current === null && distanceFromBottom > READER_ALLOWANCE_PX) {
+      if (!listEndPadded(node)) {
+        node.scrollTop = node.scrollHeight;
+        followed(node.scrollTop);
+      }
+      else if (scrollingUp && distanceFromBottom > LAYOUT_ALLOWANCE_PX) timeline.current?.scrollToEnd({ animated: false });
     }
-    if (!stickToBottom.current || leftEnd || pagingAway.current) {
+    if (!stickToBottom.current || readingUp || pagingAway.current) {
       const following = !pagingAway.current && distanceFromBottom <= allowance;
       if (following && !stickToBottom.current) manualLayout.current = false;
       stickToBottom.current = following;

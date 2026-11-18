@@ -1,9 +1,11 @@
+import { LegendList } from "@legendapp/list/react";
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { act, createElement } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 
 import { SettingsProvider } from "../lib/settings.ts";
 import { ChatView } from "./ChatView.tsx";
+import { loadChatTimeline } from "./chatTimelineLoader.ts";
 
 class Scroller extends EventTarget {
   clientHeight = 758;
@@ -136,3 +138,35 @@ test.each(["wheel", "touch", "key", "scrollbar", "layout", "returned"] as const)
     expect(renderer.root.findAllByProps({ "aria-label": "Jump to latest" })).toHaveLength(follows ? 0 : 1);
   },
 );
+
+test("a late virtual list correction keeps following, but an upward wheel leaves the end", async () => {
+  await loadChatTimeline();
+  fetchSpy.mockImplementation(Object.assign(async () => Response.json({ source: "grok-transcript", turns: [] }),
+    { preconnect: globalThis.fetch.preconnect }));
+  scroller.scrollTop = scroller.scrollHeight;
+  await act(async () => {
+    renderer = create(createElement(SettingsProvider, null, createElement(ChatView, {
+      paneId: "late-list-correction", refreshKey: 0, connected: true, ended: false, agent: null, agentStatus: "idle",
+    })), { createNodeMock: ({ props }) => typeof props === "object" && props !== null && "className" in props && props.className === "chat-view chat-view-virtual" ? scroller : new Scroller() });
+  });
+  if (renderer === undefined) throw new Error("Chat did not mount");
+  const list = renderer.root.findByType(LegendList);
+  const scroll = (): void => { list.props.onScroll(); };
+  act(scroll);
+  expect(scroller.scrollTop).toBe(1242);
+
+  // The virtual list re-anchors after measuring, with no net change in scroll height.
+  act(() => { scroller.scrollTop -= 61; scroll(); });
+  expect(renderer.root.findAllByProps({ "aria-label": "Jump to latest" })).toHaveLength(0);
+  expect(scroller.scrollTop).toBe(1242);
+
+  act(() => {
+    const wheel = new Wheel("wheel");
+    Object.defineProperty(wheel, "target", { value: scroller });
+    events.dispatchEvent(wheel);
+    scroller.scrollTop -= 61;
+    scroll();
+  });
+  expect(renderer.root.findAllByProps({ "aria-label": "Jump to latest" })).toHaveLength(1);
+  expect(scroller.scrollTop).toBe(1181);
+});

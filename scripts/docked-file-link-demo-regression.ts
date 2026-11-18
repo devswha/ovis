@@ -95,16 +95,16 @@ try {
       await page.evaluate(() => { (window as unknown as { pressClicks: unknown[] }).pressClicks.length = 0; });
     };
 
-    // The chat follows its end while its pane is laid out again beside the docked file, and a scroll
-    // that no reader's input made is the layout's to it: it goes back to its end, and the link with
-    // it. A press aimed at where the link was scrolled to then lands on another row, or outside the
-    // window, where it selects no pane. Jump to latest says the chat follows its end no more: from
-    // then on the link stays where it is scrolled to.
+    // Bring the link into view as a reader. Jump to latest confirms the next layout won't move it
+    // back under the composer before the test presses it.
     const inView = async ({ chatFrame }: Opened, link: Locator) => {
       const away = chatFrame.locator(".chat-virtual-jump");
       const deadline = Date.now() + 10_000;
       for (;;) {
-        await link.scrollIntoViewIfNeeded();
+        await link.evaluate((element) => {
+          element.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -1 }));
+          element.scrollIntoView({ block: "center" });
+        });
         await away.waitFor({ timeout: 250 }).catch(() => {});
         const rests = (await away.isVisible()) && await link.evaluate((element) => {
           const box = element.getBoundingClientRect();

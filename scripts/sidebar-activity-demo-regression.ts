@@ -742,7 +742,10 @@ try {
           const log = page.getByRole("log");
           const room = await log.evaluate((node) => [node.scrollHeight, node.clientHeight, node.className, document.querySelectorAll(".chat-turn").length]);
           assert.ok((room[0] as number) - (room[1] as number) > 200, `the fixture chat must be long enough to scroll away: ${JSON.stringify(room)}`);
-          await log.evaluate((node) => { node.scrollTop = 0; });
+          await log.evaluate((node) => {
+            node.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -node.scrollTop }));
+            node.scrollTop = 0;
+          });
           await page.getByRole("button", { name: "Jump to latest", exact: true }).waitFor();
           if (arrival === "restore") {
             const height = await log.evaluate((node) => node.scrollHeight * 3 + 2000);
