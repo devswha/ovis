@@ -553,7 +553,8 @@ for arg; do case "$arg" in /*) [ -z "$(find "$arg" -maxdepth "$depth" -name fore
       ...(options.addrs ? { RUNNER_TEST_ADDRS: options.addrs.join("\n") } : {}),
       ...(options.routeGet ? { RUNNER_TEST_ROUTE_GET: options.routeGet } : {}),
       ...(options.networkBlock !== undefined ? { OVIS_CI_NETWORK_BLOCK: options.networkBlock } : {}),
-      ...(options.selinux ? { RUNNER_TEST_SELINUX: options.selinux } : {}),
+      // never what the shell running the tests exports: SELinux is off unless a test turns it on
+      RUNNER_TEST_SELINUX: options.selinux ?? "",
       RUNNER_TEST_DEFAULT_BRANCH: options.defaultBranch ?? "main",
       RUNNER_TEST_BRANCHES: (options.branches ?? ["main"]).join(" "),
       XDG_CACHE_HOME: options.cacheHome ?? join(tempDir, "cache"),
