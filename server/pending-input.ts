@@ -53,14 +53,16 @@ type Removed = { id: string; outcome: "sent" | "discarded" | "dismissed" };
  * `joined`: until then a ready status may be the end of the turn a Send now's Enter joined, or of one that ended just
  * before that Enter landed and started a turn of its own. `lenient`: such a ready came, and the wait is for that own
  * turn's start; one that never shows ends the wait without holding the queue, as the Enter joined the turn that ended.
+ * `since`: when the Enter was committed.
  */
-interface TurnGate { by: string; committed: boolean; sawWorking: boolean; completed: boolean; deadline: number | null; restart?: "interruption" | "working"; joined?: number; lenient?: true }
+interface TurnGate { by: string; committed: boolean; sawWorking: boolean; completed: boolean; deadline: number | null; restart?: "interruption" | "working"; joined?: number; lenient?: true; since?: number }
 const ready = (status: AgentStatus | undefined) => status === "idle" || status === "done";
 const kind = (status: AgentStatus | undefined) => ready(status) ? "ready" : status;
 export const PENDING_START_TIMEOUT_MS = 10_000;
 export const MAX_PENDING_PER_OWNER = 32;
 export const MAX_PENDING_PER_PANE = 1;
 const MAX_PENDING_TOTAL = 256;
+const MAX_READINGS_AHEAD = 4;
 const MAX_PENDING_DISPOSITIONS = 1024;
 const MAX_PENDING_CHARS = 20_000;
 const CLOSED_RETENTION_MS = 60_000;
@@ -266,10 +268,10 @@ export class PendingInputs<Owner, Lease> {
     // an earlier Send now's Codex restart not yet seen to start keeps its wait: a working read before it is the turn Escape ends
     const restarting = earlier?.committed && !earlier.completed && earlier.by !== by && earlier.restart !== undefined ? earlier : undefined;
     let gate: TurnGate;
-    if (restartingWorkingTurn) gate = { by, committed: true, sawWorking: false, completed: false, deadline: now + this.startTimeoutMs, restart: "interruption" };
-    else if (restarting) gate = { ...restarting, by };
-    else if (steeringWorkingTurn) gate = { by, committed: true, sawWorking: true, completed: false, deadline: null, joined: now + this.startTimeoutMs };
-    else gate = { by, committed: true, sawWorking: false, completed: false, deadline: now + this.startTimeoutMs };
+    if (restartingWorkingTurn) gate = { by, committed: true, sawWorking: false, completed: false, deadline: now + this.startTimeoutMs, restart: "interruption", since: now };
+    else if (restarting) gate = { ...restarting, by, since: now };
+    else if (steeringWorkingTurn) gate = { by, committed: true, sawWorking: true, completed: false, deadline: null, joined: now + this.startTimeoutMs, since: now };
+    else gate = { by, committed: true, sawWorking: false, completed: false, deadline: now + this.startTimeoutMs, since: now };
     this.gates.set(item.paneId, gate);
   }
 
@@ -313,22 +315,24 @@ export class PendingInputs<Owner, Lease> {
   }
 
   /**
-   * A reconcile's snapshot (status.ts onBaseline), for a pane with no event since it was asked for: when herdr read it, against
-   * an Enter or an event still on its way, is not known.
+   * A reconcile's snapshot (status.ts onBaseline) of a pane with no event since it was asked for, at `askedAt`: one asked for
+   * before the Enter whose turn is awaited may be older than that turn, and is only the pane's status.
    */
-  baseline(paneId: string, status: AgentStatus): void {
-    if (kind(status) !== kind(this.statuses.get(paneId))) this.ahead.set(paneId, [...this.unexpired(paneId), { status, at: this.now() }]);
-    this.unconfirmed(paneId, status);
+  baseline(paneId: string, status: AgentStatus, askedAt: number): void {
+    const since = this.gates.get(paneId)?.since;
+    if (since === undefined || askedAt > since) { this.status(paneId, status); return; }
+    this.events.set(paneId, this.mark(paneId) + 1);
+    this.statuses.set(paneId, status);
   }
 
   /**
-   * A status that says nothing of a turn an Enter started (an event older than a snapshot's reading, or a baseline): still the
-   * pane's status, and a wait that may have missed its turn by it ends by the start timeout, holding what is queued.
+   * An event older than a snapshot's reading: still the pane's status, but nothing of a turn an Enter started. A wait
+   * that may have missed its turn's start by it ends by the start timeout, holding what is queued.
    */
   private unconfirmed(paneId: string, status: AgentStatus): void {
     this.statuses.set(paneId, status);
     const gate = this.gates.get(paneId);
-    if (!gate?.committed || gate.completed) return;
+    if (!gate?.committed || gate.completed || gate.sawWorking) return;
     gate.deadline ??= this.now() + this.startTimeoutMs;
     delete gate.lenient;
   }
@@ -337,7 +341,10 @@ export class PendingInputs<Owner, Lease> {
   observe(paneId: string, status: AgentStatus, mark: number, herdrReading = true): void {
     if (this.mark(paneId) !== mark) return;
     // ahead of what herdr's events told so far (nothing yet, too: an earlier turn's events may still be on their way)
-    if (herdrReading && kind(status) !== kind(this.statuses.get(paneId))) this.ahead.set(paneId, [...this.unexpired(paneId), { status, at: this.now() }]);
+    // herdr's events trail its snapshots by a change or two: the oldest readings go first
+    if (herdrReading && kind(status) !== kind(this.statuses.get(paneId))) {
+      this.ahead.set(paneId, [...this.unexpired(paneId), { status, at: this.now() }].slice(-MAX_READINGS_AHEAD));
+    }
     this.apply(paneId, status);
   }
 

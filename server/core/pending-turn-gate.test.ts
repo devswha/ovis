@@ -238,6 +238,27 @@ describe("the queue's turn gate (#4118)", () => {
     } finally { collector.stop(); }
   });
 
+  it("keeps the queue behind a running turn, held by nothing, when a reconcile reads that turn however long it runs", () => {
+    let clock = 0;
+    const pending = new PendingInputs<string, null>(() => {}, () => clock, 10);
+    const identity = { agent: "codex", terminalId: "p", session: null };
+    pending.status("p", "working");
+    const x = pending.enqueue("a", "p", 1, "X", null, identity);
+    const y = pending.enqueue("a", "p", 2, "Y", null, identity);
+    pending.status("p", "idle");
+    expect(pending.claim(x, true)).toBe(true);
+    pending.committing(x);
+    pending.settle(x);
+    pending.status("p", "working");
+    clock = 5;
+    pending.baseline("p", "working", 5);
+    clock = 60;
+    expect(pending.expire()).toEqual([]);
+    expect(y.message.state).toBe("queued");
+    pending.status("p", "idle");
+    expect(pending.next("p")).toBe(y);
+  });
+
   it("ends a Send now's wait without holding the queue when no turn of its own starts after the ready that came right behind it", () => {
     let clock = 0;
     const pending = new PendingInputs<string, null>(() => {}, () => clock, 10);

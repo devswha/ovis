@@ -777,7 +777,6 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
         }
         throw error;
       };
-      let enterMark = pending.mark(paneId);
       let beforeEnter = await pendingContext(owner, paneId, lease, identity, true, agentOnly).catch(enterRefused);
       if (automatic && (beforeEnter.working || queueHeld(paneId, false))) enterRefused(new HerdrError("pending_wait", "The agent started another turn before this queued message could be committed"));
       authorizePending(owner, paneId, lease);
@@ -785,7 +784,6 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       const beforeCapturePid = beforeEnter.identity.processPid;
       const piAnchor = piTracked ? await preparePiReceipt(paneId, beforeEnter.identity).catch(() => null) : undefined;
       if (piAnchor !== undefined) {
-        enterMark = pending.mark(paneId);
         beforeEnter = await pendingContext(owner, paneId, lease, identity, true, agentOnly).catch(enterRefused);
         if (automatic && (beforeEnter.working || queueHeld(paneId, false))) enterRefused(new HerdrError("pending_wait", "The agent started another turn before this queued message could be committed"));
         await stillInFront(paneId, beforeCapturePid, identity, agentOnly).catch(enterRefused);
@@ -803,8 +801,6 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       if (resumed()) refuseResumed();
       authorizePending(owner, paneId, lease);
       const steering = !automatic && beforeEnter.working;
-      // the last read before the Enter may be ahead of herdr's events: those still on their way say nothing of its turn
-      pending.observe(paneId, beforeEnter.pane.agent_status, enterMark);
       committing(steering);
       // Claude Code queues what Enter commits during a turn; Ctrl+Enter sends it now (#737). herdr
       // encodes the key as the pane asked, and as a plain CR for a program that asked for nothing.
