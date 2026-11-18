@@ -197,8 +197,10 @@ export async function applyLink(store: DeviceStore, value: unknown, session: { d
   if (account !== null && account !== link.account) return { refused: "account_mismatch" };
   // A PC in no account that its signed-in owner set up for one (POST /api/account/relay-account, as `ovis add` sends
   // it before it shows its code) takes its first member from that account. A link that names another is refused: a
-  // row that waits to link goes at once, a device keeps what it had, and no code is ended. A row that waits under a
-  // code made for an account is held to that account alone
+  // row that waits to link goes at once, and a device keeps what it had. The refusal ends no code by itself, but a
+  // code with no pairing left, or past its ten minutes, ends as the last row that waits under it goes. A row that
+  // waits under a code made for an account is held to that account id alone: the id its own signed link names, which
+  // this PC matches and cannot prove the device holds (docs/account.md, "What this does not protect against")
   const codeFor = waits ? store.waitingFor(deviceId) : null;
   const expected = account === null ? codeFor ?? rules.setUpFor?.() ?? null : null;
   if (expected !== null && expected !== link.account) {

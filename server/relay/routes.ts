@@ -1,4 +1,4 @@
-import { DeviceGoneError, PcInAccountError } from "../devices.ts";
+import { DeviceGoneError, DeviceReadOnlyError, PcInAccountError } from "../devices.ts";
 import { errorResponse, jsonResponse, readJsonObject, setRequestRoute } from "../http.ts";
 import type { ServerContext } from "../dispatch.ts";
 import { updateRequestAllowed } from "../update-api.ts";
@@ -139,6 +139,8 @@ export async function handleRelayRequest(request: Request, pathname: string, con
   } catch (error) {
     // the device that asked for an offer or a code was revoked while its request was on its way: it is handed none
     if (error instanceof DeviceGoneError) return fail(error.code, error.message, 401);
+    // or made one that only watches meanwhile: it is handed none either
+    if (error instanceof DeviceReadOnlyError) return fail(error.code, error.message, 403);
     // the PC joined an account since the page read it: the page asks nothing more and says how a device is added there
     if (error instanceof PcInAccountError) return fail(error.code, error.message, 409);
     // no account was named for this PC: its page asks for the sign-in first, and for this code only once one is named

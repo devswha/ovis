@@ -259,8 +259,13 @@ account, redeemed through the relay only, five pairings, and a device that pairs
 link, makes its two calls and is gone after 30 seconds if it has not linked. One thing differs:
 such a device is taken into the account the header named and into no other, whatever account was
 named for the PC (`relay-account`). A link that names another account is refused 409
-`account_mismatch`; the device goes at once, and the code stays for the device of the right
-account. A link into that account makes the device a member, and the PC joins the account.
+`account_mismatch`; the device goes at once. The code stays for the device of the right account
+only while it can still pair one: with its five pairings spent, or its ten minutes over, it ends
+as the last device that waits under it goes. A link into that account makes the device a member,
+and the PC joins the account. "That account" is the account id the link names, in a link signed
+with the device's own key: the PC matches that id and cannot tell whether the device holds the
+account ([What this does not protect against](#what-this-does-not-protect-against), a device
+that names an account it does not hold).
 
 The answers carry today's fields and two more:
 
@@ -278,12 +283,18 @@ relay tab's offer included, never carries such a code: it starts its own, which 
 
 The refusals, in this order: 409 `relay_off` and `relay_offline` as ever; 400 `invalid_account`
 when the header names no account id; 409 `in_account` when the PC is in an account; then 409
-`code_unavailable` for a typed code on a relay that takes none. A refused call starts no code and
+`code_unavailable` for a typed code on a relay that takes none. A device whose call waited (on
+the relay, for a typed code) and that was removed meanwhile is refused 401 `unauthorized`, and one
+made a device that only watches is refused 403 `read_only`. A refused call starts no code and
 leaves the one pending as it was.
 
 `POST /api/relay/offer/keep` `{ "id": "<pairing.id>" }` (the same callers and guard) reads such a
-code by its id, whatever the relay's state. A body without an `id` answers 400 `invalid_body`;
-every other answer is 200:
+code by its id, whatever the relay's state. Any caller the route takes may read any code whose
+id it has: this PC itself, or a device with drive access on a direct connection, whether or not
+it made the code. A body without an `id` answers 400 `invalid_body`; a device removed, or made
+one that only watches, while its read was on its way is refused 401 `unauthorized` or 403
+`read_only`, and the guard's own refusals stand. A valid read from a caller the route takes
+answers 200:
 
 ```json
 { "state": "live", "id": "…", "expect_account": "acct_1", "expires_at": "…" }
@@ -291,7 +302,9 @@ every other answer is 200:
 { "state": "unknown" }
 ```
 
-`live`: it is the code pending. Once its ten minutes are over it pairs no new device, but a device
+`live`: it is the code pending. Once its ten minutes are over it pairs no new device (they are
+also counted on a clock that only moves forward, so setting the PC's clock back gives the code
+no time back), but a device
 that paired with it in time still has its own 30 seconds to link, and the code reads `live` until
 that device has linked or its time is over. `unknown`: this PC knows no such code; it keeps the
 eight that ended last, in memory. `ended.why` is one of:

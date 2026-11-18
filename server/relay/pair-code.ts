@@ -126,7 +126,9 @@ export class RelayPairCodes {
       }
       let pairing: { code: string; expires_at: string } & Partial<AccountPairing>;
       this.binding = true;
-      // `by`: the paired device that asked for the code, which holds the six digits behind it (DeviceStore.revoke)
+      // `by`: the paired device that asked for the code, which holds the six digits behind it (DeviceStore.revoke). It
+      // is checked again here, after the wait on the relay: one removed or made one that only watches meanwhile gets
+      // no code (DeviceGoneError, DeviceReadOnlyError), and the nameplate is let go
       try {
         pairing = account === undefined ? devices.startPairing(Date.now(), { remote: false, startedBy: null, memberRequired: false, by })
           : devices.startAccountPairing(account, by);

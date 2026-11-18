@@ -6,7 +6,7 @@
  */
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { decodeOffer } from "../../shared/relay-offer.ts";
-import { PAIRING_LINK_MS, PAIRING_USES } from "../devices.ts";
+import { CODE_TTL_MS, PAIRING_LINK_MS, PAIRING_USES } from "../devices.ts";
 import { handleRelayRequest } from "../relay/routes.ts";
 import { TestClock } from "../relay/test-helpers.ts";
 import { ask, ended, linkRecord, memberRow, pair, pairingPc, phone, sendLink, setUpFor, signedInWith, signIn, type Answer, type Pc } from "./pairing.test-helpers.ts";
@@ -119,6 +119,27 @@ for (const between of ["nothing", "a read of the code", "a pairing that came too
     } finally { (Date.now as unknown as { mockRestore(): void }).mockRestore(); }
   });
 }
+
+test("a code kept past its ten minutes for a device that paired with it in time pairs no new device when the wall clock is set back", async () => {
+  const f = await pc();
+  const offer = await forAccount(f, "acct_owner");
+  const code = codeOf(offer);
+  const expires = Date.parse(String(offer.body.expires_at));
+  // the device of the account pairs a second before the code's ten minutes are over, on the store's clock
+  f.clock.advance(CODE_TTL_MS - 1000);
+  const owner = await signedInWith(f, code);
+  f.clock.advance(2000);
+  const wall = spyOn(Date, "now").mockReturnValue(expires + 1);
+  try {
+    expect(await pair(f, code, await phone())).toMatchObject({ error: "auth_failed" });
+    // the wall clock is set back to before the code's expiry: the code is past its ten minutes all the same
+    wall.mockReturnValue(expires - 60_000);
+    expect(await pair(f, code, await phone())).toMatchObject({ error: "auth_failed" });
+    // the device that paired in time still links in its own seconds
+    expect((await sendLink(owner.session, await linkRecord(owner.id, "acct_owner", owner.key))).status).toBe(200);
+    expect(await f.status()).toMatchObject({ account: "acct_owner", members: 1 });
+  } finally { wall.mockRestore(); }
+});
 
 test("a code whose ten minutes are over ends expired once the last device that paired with it in time has had its seconds", async () => {
   const f = await pc();

@@ -22,7 +22,8 @@ import { badRequest, isJsonObject, jsonResponse, setRequestRoute } from "./http.
 import { sameOrigin } from "./machine-security.ts";
 import { writePrivateState } from "./private-state.ts";
 
-const CODE_TTL_MS = 10 * 60_000;
+/** How long a pairing code pairs new devices. */
+export const CODE_TTL_MS = 10 * 60_000;
 const CODE_ATTEMPTS = 5;
 const LAST_SEEN_WRITE_MS = 60_000;
 const UNCONFIRMED_FIRST_PAIR_LIMIT = 8;
@@ -64,6 +65,17 @@ export class DeviceGoneError extends Error {
   readonly code = "unauthorized";
   constructor() {
     super("this device is no longer paired");
+  }
+}
+
+/**
+ * The paired device a request came from may only watch by now: it was made one while the request was on its way (a
+ * relay round trip). It gets no pairing code either: holding one is a driver's right.
+ */
+export class DeviceReadOnlyError extends Error {
+  readonly code = "read_only";
+  constructor() {
+    super("this device can only watch");
   }
 }
 
@@ -356,12 +368,14 @@ export class DeviceStore {
    * `open`: started by a request the open LAN alone let in (access.ts `via: "open"`), so it ends when the gate closes;
    * `noAccountOnly`: made to put this PC in an account (pairingForNoAccount), so it ends when the PC is in one;
    * `waiting`: what such a code holds, the devices that paired with it through the relay and have not linked;
-   * `named`: such a code made for one account (startAccountPairing), whose waiting devices are taken into it alone
+   * `named`: such a code made for one account (startAccountPairing), whose waiting devices are taken into it alone;
+   * `expires`: the wall-clock end of its ten minutes, which its `expires_at` shows; `deadline`: the same end on the
+   * store's clock, which only moves forward (codeOver)
    */
-  private pending: { code: string; expires: number; attempts: number; lanAttempts?: number; remote: boolean; startedBy: string | null; memberRequired: boolean; open?: boolean; noAccountOnly?: boolean; holders: Set<string>; waiting?: WaitingRows; named?: { readonly id: string; readonly account: string } } | null = null;
+  private pending: { code: string; expires: number; deadline: number; attempts: number; lanAttempts?: number; remote: boolean; startedBy: string | null; memberRequired: boolean; open?: boolean; noAccountOnly?: boolean; holders: Set<string>; waiting?: WaitingRows; named?: { readonly id: string; readonly account: string } } | null = null;
   /** How the latest codes made for an account ended, newest last: ENDED_ACCOUNT_CODES at most, in memory only. */
   private endedAccountCodes: Extract<AccountPairingState, { state: "ended" }>[] = [];
-  /** What a row that waits to link is bounded on (useClock). */
+  /** What a row that waits to link, and the redemption of a code, is bounded on (useClock). */
   private clock: MuxClock = MONOTONIC;
   private codeIssues: number[] = [];
   private readonly relayFailures: Record<PairingFailurePath, { at: number[]; blockedUntil: number }> = {
@@ -568,19 +582,20 @@ export class DeviceStore {
   /** The current code when it can still be used, without changing its attempts or expiry. */
   activePairing(now = Date.now()): PairingCode | null {
     const pending = this.pending;
-    if (pending === null || now > pending.expires || pending.attempts >= CODE_ATTEMPTS) return null;
+    if (pending === null || this.codeOver(pending, now) || pending.attempts >= CODE_ATTEMPTS) return null;
     return { code: pending.code, expires_at: new Date(pending.expires).toISOString() };
   }
 
   /**
    * A fresh six-digit code, replacing any code still pending. `by`: the paired device whose request started it
-   * (null for this PC itself), which holds it from then on. One that is paired no more by now starts nothing
-   * (DeviceGoneError), and the code pending stays as it was.
+   * (null for this PC itself), which holds it from then on. One that is paired no more by now, or may only watch by
+   * now, starts nothing (assertHolder), and the code pending stays as it was.
    */
   startPairing(now = Date.now(), from: { remote: boolean; startedBy: string | null; memberRequired: boolean; open?: boolean; noAccountOnly?: boolean; by?: string | null; account?: string } = { remote: false, startedBy: null, memberRequired: false }): PairingCode {
     this.assertWritable();
     const { by = null, account, ...how } = from;
-    for (const id of [by, how.startedBy]) if (id !== null && !this.has(id)) throw new DeviceGoneError();
+    if (by !== null) this.assertHolder(by);
+    if (how.startedBy !== null && !this.has(how.startedBy)) throw new DeviceGoneError();
     this.pruneUnconfirmedFirstPairs(now);
     this.codeIssues = this.codeIssues.filter((at) => now - at < PAIRING_WINDOW_MS);
     if (this.codeIssues.length >= 10) throw new PairingRateLimitedError(Math.ceil(((this.codeIssues[0] ?? now) + PAIRING_WINDOW_MS - now) / 1000));
@@ -589,7 +604,7 @@ export class DeviceStore {
     // the code this one replaces takes the rows that waited under it along
     this.voidPending("replaced");
     this.pending = {
-      code, expires: now + CODE_TTL_MS, attempts: 0, ...how, holders: new Set([by, how.startedBy].filter((id): id is string => id !== null)),
+      code, expires: now + CODE_TTL_MS, deadline: this.clock.now() + CODE_TTL_MS, attempts: 0, ...how, holders: new Set([by, how.startedBy].filter((id): id is string => id !== null)),
       ...(how.noAccountOnly === true ? { waiting: { usesLeft: PAIRING_USES, rows: new Map<string, ProvisionalRow>() } } : {}),
       ...(how.noAccountOnly === true && account !== undefined ? { named: { id: randomBytes(16).toString("hex"), account } } : {}),
     };
@@ -609,7 +624,7 @@ export class DeviceStore {
    * the relay only (pair). `by` as in startPairing.
    */
   pairingForNoAccount(by: string | null = null, now = Date.now()): PairingCode {
-    if (by !== null && !this.has(by)) throw new DeviceGoneError();
+    if (by !== null) this.assertHolder(by);
     if (this.account() !== null) throw new PcInAccountError();
     const active = this.activePairing(now);
     // never a code made for one account: the device that pairs with this one is taken into the account named for the PC
@@ -626,7 +641,7 @@ export class DeviceStore {
    * `by` as in startPairing.
    */
   pairingForAccount(account: string, by: string | null = null, now = Date.now()): PairingCode & AccountPairing {
-    if (by !== null && !this.has(by)) throw new DeviceGoneError();
+    if (by !== null) this.assertHolder(by);
     // a code made for an account ends when the PC joins one (endNoAccountCode): one still pending is for a PC in none
     const active = this.activePairing(now);
     const named = this.pending?.named;
@@ -666,7 +681,7 @@ export class DeviceStore {
   accountPairingState(id: string, now = Date.now()): AccountPairingState {
     const pending = this.pending;
     if (pending?.named?.id === id) {
-      if (now > pending.expires) this.expirePending();
+      if (this.codeOver(pending, now)) this.expirePending();
       if (this.pending === pending) return { state: "live", id, expect_account: pending.named.account, expires_at: new Date(pending.expires).toISOString() };
     }
     return this.endedAccountCodes.find((ended) => ended.id === id) ?? { state: "unknown" };
@@ -694,11 +709,31 @@ export class DeviceStore {
 
   /**
    * The paired device `id` is handed the code pending (a relay offer it asked for carries it): it holds it too.
-   * Called before the code leaves this PC: a device that is paired no more by now is handed nothing (DeviceGoneError).
+   * Called before the code leaves this PC: a device that is paired no more, or may only watch, by now is handed
+   * nothing (assertHolder).
    */
   holdPairing(id: string): void {
-    if (!this.has(id)) throw new DeviceGoneError();
+    this.assertHolder(id);
     this.pending?.holders.add(id);
+  }
+
+  /**
+   * The paired device `id` may still hold a pairing code: checked right before one is started or handed to it, since
+   * its request may have waited (on the relay, say) while it was removed (DeviceGoneError) or made one that only
+   * watches (DeviceReadOnlyError).
+   */
+  private assertHolder(id: string): void {
+    if (!this.has(id)) throw new DeviceGoneError();
+    if (!this.canDrive(id)) throw new DeviceReadOnlyError();
+  }
+
+  /**
+   * Whether the code pending is past its ten minutes: by the wall clock `now`, or by the store's clock, which only
+   * moves forward. A wall clock set back gives no time back, so a code kept past its ten minutes for the devices that
+   * paired with it in time (expirePending) never pairs a new one.
+   */
+  private codeOver(pending: { expires: number; deadline: number }, now: number): boolean {
+    return now > pending.expires || this.clock.now() > pending.deadline;
   }
 
   /**
@@ -714,8 +749,9 @@ export class DeviceStore {
   }
 
   /**
-   * The clock a row that waits to link is bounded on. It only moves forward (performance.now by default), so the
-   * PC's wall clock decides none of those bounds. A test hands in one it moves by hand.
+   * The clock a row that waits to link is bounded on, and a code's redemption with it (codeOver). It only moves
+   * forward (performance.now by default), so a PC's wall clock set back extends none of those bounds. A test hands in
+   * one it moves by hand.
    */
   useClock(clock: MuxClock): void {
     this.clock = clock;
@@ -762,7 +798,7 @@ export class DeviceStore {
     for (const close of listeners ?? []) close(true);
     if (this.pending?.waiting !== waiting || waiting.rows.size > 0) return;
     if (waiting.usesLeft === 0) this.endPairing(undefined, "overused");
-    else if (Date.now() > this.pending.expires) this.endPairing(undefined, "expired");
+    else if (this.codeOver(this.pending, Date.now())) this.endPairing(undefined, "expired");
   }
 
   /**
@@ -911,7 +947,7 @@ export class DeviceStore {
     const pending = this.pending;
     if (pending === null) return false;
     // the devices that paired with it in time still have their own time to link (expirePending)
-    if (now > pending.expires) { this.expirePending(); return false; }
+    if (this.codeOver(pending, now)) { this.expirePending(); return false; }
     // made for a PC in no account, and the PC is in one: it ended as the PC joined (endNoAccountCode), and pairs nobody
     if (pending.noAccountOnly === true && this.account() !== null) { this.endPairing(undefined, "joined"); return false; }
     if (lan) {

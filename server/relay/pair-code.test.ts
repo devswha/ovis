@@ -80,6 +80,26 @@ it("gives no code to a device that was revoked while its code waited on the rela
   } finally { done(); }
 });
 
+it("gives no code, plain or made for an account, to a device made one that only watches while its code waited on the relay", async () => {
+  const { pairCodes, sockets, devices, done } = codes();
+  try {
+    const paired = devices.pair(devices.startPairing().code, "Laptop", "drive")!;
+    devices.match(paired.token);
+    const laptop = paired.device.id;
+    for (const [index, account] of [undefined, "acct_owner"].entries()) {
+      const minted = pairCodes.mint(laptop, account).catch((error: unknown) => error);
+      devices.update(laptop, { role: "watch" });
+      sockets[index]!.relay(JSON.stringify({ type: "waiting" }));
+      const refused = await minted;
+      expect([account, refused instanceof Error, (refused as { code?: unknown }).code]).toEqual([account, true, "read_only"]);
+      expect(devices.activePairing()).toBeNull();
+      expect(pairCodes.showing).toBeNull();
+      expect(sockets.filter((socket) => !socket.closed).map((socket) => socket.url)).toEqual([]);
+      devices.update(laptop, { role: "drive" });
+    }
+  } finally { done(); }
+});
+
 it("keeps its nameplate on the relay with keepalives while no device comes", async () => {
   const { pairCodes, sockets, done } = codes(10);
   try {
