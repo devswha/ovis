@@ -10,6 +10,7 @@ import type { CoreChange } from "../../server/herdr-core/core-model.ts";
 import type { LayoutNode, PaneDirection } from "../../server/herdr-core/layout-doc.ts";
 import { neighbour, OVIS_LAYOUT_DOC } from "../../server/herdr-core/layout-doc.ts";
 import { buildSnapshot, coreHost, type FirstTurn, type HcTerminal, isRecord, LAYOUT_DOC } from "../../server/herdr-core/snapshot.ts";
+import { nestHelpers, sidebarAgents } from "../../shared/agent-roster.ts";
 import { type AgentGroup, groupAgentRows, knownStatus, type KnownStatus, rollupStatus } from "../../shared/attention.ts";
 import type { AgentStatus, PaneLayoutSnapshot } from "../../shared/herdr-api.generated.ts";
 import { folderName } from "../../shared/pane-title.ts";
@@ -108,22 +109,20 @@ export function jumpOrder(rows: readonly Pick<AgentRowView, "paneId" | "status">
 function buildAgents(snapshot: ReturnType<typeof buildSnapshot>, panes: ReadonlyMap<string, PaneSummary>, seqs: ReadonlyMap<string, number>): AgentRowView[] {
   const workspaces = new Map(snapshot.workspaces.map((workspace) => [workspace.workspace_id, workspace.label]));
   const workspaceOf = new Map(snapshot.panes.map((pane) => [pane.pane_id, workspaces.get(pane.workspace_id) ?? ""]));
-  interface Row {
-    machine: { id: string };
-    entry: { pane: { pane_id: string; parent_pane_id?: string; agent_status: AgentStatus } };
-    id: string;
-    summary: PaneSummary;
-  }
-  const rows: Row[] = [];
-  for (const [id, summary] of panes) {
-    if (!summary.agent?.trim()) continue;
-    rows.push({
-      machine: { id: "local" },
-      entry: { pane: { pane_id: id, ...(summary.parentId === undefined ? {} : { parent_pane_id: summary.parentId }), agent_status: summary.status } },
-      id,
-      summary,
-    });
-  }
+  // the browser's rows (shared/agent-roster.ts), read from the snapshot as the screen shows it: with the agent and the
+  // state the core model told since the last read
+  const shown = {
+    ...snapshot,
+    panes: snapshot.panes.map((pane) => {
+      const summary = panes.get(pane.pane_id);
+      return summary ? { ...pane, agent_status: summary.status, agent: summary.agent ?? undefined } : pane;
+    }),
+  };
+  const rows = nestHelpers(sidebarAgents(shown)).flatMap((entry) => {
+    const summary = panes.get(entry.pane.pane_id);
+    return summary ? [{ machine: { id: "local" }, entry, id: entry.pane.pane_id, summary }] : [];
+  });
+  type Row = (typeof rows)[number];
   const agentIds = new Set(rows.map((row) => row.id));
   return groupAgentRows<Row>(rows, {
     sort: "wait",
@@ -188,6 +187,8 @@ export class CoreWorld {
   /** the screen's own recency (UB Q7: each client keeps its own): when it saw each terminal's shown state begin */
   private readonly since = new Map<string, { status: AgentStatus; at: number }>();
   private changes = 0;
+  /** a view with terminals was dated: what turns up after it is newer than all of it */
+  private dated = false;
   private wanted = false;
   private reading: CoreRead | null = null;
   private shown: CoreView = EMPTY;
@@ -308,11 +309,16 @@ export class CoreWorld {
       status: rollupStatus(snapshot.panes.filter((pane) => pane.workspace_id === workspace.workspace_id).map((pane) => panes.get(pane.pane_id)?.status)),
     });
     for (const address of this.since.keys()) if (!panes.has(address)) this.since.delete(address);
+    // what is first seen in this view dates from it: every terminal of the first snapshot alike; one that turns up later
+    // (a reconnect, a `missed` snapshot, a read) from a step after every change seen before, so it never stands ahead of
+    // an agent already waiting. A change of state dates from a step of its own.
+    let fresh: number | null = null;
     for (const [address, { status }] of panes) {
       const was = this.since.get(address);
-      // a state seen first (every one of the first snapshot) dates from now; a change, from one step later
-      if (was?.status !== status) this.since.set(address, { status, at: was === undefined ? this.changes : ++this.changes });
+      if (was === undefined) this.since.set(address, { status, at: fresh ??= this.dated ? ++this.changes : this.changes });
+      else if (was.status !== status) this.since.set(address, { status, at: ++this.changes });
     }
+    if (panes.size > 0) this.dated = true;
     const since = new Map([...this.since].map(([address, { at }]) => [address, at]));
     const agents = buildAgents(snapshot, panes, since);
     this.shown = {

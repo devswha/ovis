@@ -15,7 +15,11 @@ type PlaceKind = "workspace" | "tab" | "pane" | "agent";
 /** One line of the menu: a place (its id; an agent's and a pane's is the pane's) or an action; `label` the key that chooses it. */
 export type MenuEntry =
   | { readonly kind: PlaceKind; readonly id: string; readonly label: string | null }
-  | { readonly kind: "action"; readonly action: HerdrAction; readonly label: string };
+  | { readonly kind: "action"; readonly action: MenuAction; readonly label: string };
+
+/** What a menu entry runs: a built action of herdr's catalogue, or the screen's full-screen agent list (it has no key of
+ * its own when the config holds `prefix+a`, so the list and its mark unread stay reachable here). */
+export type MenuAction = HerdrAction | "agents";
 
 /** The keys of the first places, in order: digits, which every keyboard types and no input method composes. */
 const PLACE_LABELS = [..."1234567890"];
@@ -35,7 +39,7 @@ export function menuEntries(world: World, focus: Focus): MenuEntry[] {
   const actions = CATALOGUE.filter((entry) => entry.status === "built");
   return [
     ...places.map((place, at): MenuEntry => ({ ...place, label: PLACE_LABELS[at] ?? null })),
-    ...actions.map(({ id }, at): MenuEntry => ({ kind: "action", action: id, label: ACTION_LABELS[at]! })),
+    ...[...actions.map(({ id }) => id), "agents" as const].map((action, at): MenuEntry => ({ kind: "action", action, label: ACTION_LABELS[at]! })),
   ];
 }
 
@@ -49,7 +53,7 @@ export function keptCursor(before: readonly MenuEntry[], cursor: number, next: r
 }
 
 /** The actions that need a number say which place: the menu moves its cursor to the first place of that kind instead. */
-const NUMBERED: Readonly<Partial<Record<HerdrAction, PlaceKind>>> = { switch_workspace: "workspace", switch_tab: "tab", focus_agent: "agent" };
+const NUMBERED: Readonly<Partial<Record<MenuAction, PlaceKind>>> = { switch_workspace: "workspace", switch_tab: "tab", focus_agent: "agent" };
 
 /** What choosing entry `at` does: the cursor moves (the menu stays open), or the menu closes with its choice. */
 export function chooseEntry(entries: readonly MenuEntry[], at: number): { cursor: number } | { choice: OverlayChoice } | null {

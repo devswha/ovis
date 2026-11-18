@@ -3,6 +3,7 @@ import { tuiEnv } from "../../scripts/plugin-tui.ts";
 import { HcConnection } from "../../server/herdr-core/connection.ts";
 import type { CoreChange } from "../../server/herdr-core/core-model.ts";
 import { FakeHcCore } from "../../server/herdr-core/core.fake.ts";
+import { OVIS_LAYOUT_DOC } from "../../server/herdr-core/layout-doc.ts";
 import { PANE_NAME_LABEL, SPACE_LABEL, TAB_LABEL, TAB_NAME_LABEL, WORKSPACE_NAME_LABEL } from "../../server/herdr-core/snapshot.ts";
 import type { AgentStatus } from "../../shared/herdr-api.generated.ts";
 import { Run } from "../testing/run.ts";
@@ -292,14 +293,26 @@ describe("read state through herdr.seen (UB Q7)", () => {
     // a finish in a pane not looked at alerts once; none for the pane being looked at
     await endTurn(run, "t2");
     expect(alertNotices(run)).toEqual([["agent_done", "two", true]]);
+    expect(run.grid().some((row) => row.includes("* Done: two"))).toBe(true);
     await endTurn(run, "t1");
     expect(alertNotices(run)).toEqual([["agent_done", "two", true]]);
+    // another client reads t2, then marks it unread once that notice is gone: t2 shows done again, but no turn ended,
+    // so no Done
+    await run.advance(NOTICE_SHOW_MS + 1);
+    const otherClient = new HcConnection(() => run.core.transport());
+    await otherClient.call("terminal.label", { terminal: "t2", labels: { [SEEN]: "1" } });
+    await run.advance(20);
+    expect(run.grid().some((row) => row.includes("- two /"))).toBe(true);
+    await otherClient.call("terminal.label", { terminal: "t2", labels: { [SEEN]: "0" } });
+    otherClient.close();
+    await run.advance(20);
+    expect(run.grid().some((row) => row.includes("* two /"))).toBe(true);
+    expect(alertNotices(run)).toEqual([]);
     // into blocked
     run.core.reportStatus("t2", { state: "blocked", app: "claude" });
     await run.advance(20);
-    expect(alertNotices(run)).toEqual([["agent_done", "two", true], ["agent_blocked", "two", true]]);
+    expect(alertNotices(run)).toEqual([["agent_blocked", "two", true]]);
     expect(run.grid().some((row) => row.includes("! Needs you: two"))).toBe(true);
-    expect(run.grid().some((row) => row.includes("* Done: two"))).toBe(true);
     // a reconnect sets the baseline again: what changed while the line was down alerts nothing
     await run.advance(NOTICE_SHOW_MS + 1);
     expect(alertNotices(run)).toEqual([]);
@@ -313,5 +326,40 @@ describe("read state through herdr.seen (UB Q7)", () => {
     await run.live();
     expect(run.loop.link.state.kind).toBe("Online");
     expect(alertNotices(run)).toEqual([]);
+  }, TEST_MS);
+
+  it("a host's own replies are not a person: on a host that never reports focus they write nothing, a key does", async () => {
+    const run = await started(twoAgents());
+    await endTurn(run, "t1");
+    // the host's own sequences read after the turn: a colour reply and a sequence nobody knows
+    run.type("\x1b]11;rgb:1111/2222/3333\x1b\\");
+    run.type("\x1b[99;99~");
+    await run.advance(20);
+    expect(run.loop.report().actions.filter((action) => action.startsWith("read:")).slice(-2)).toEqual(["read:reply", "read:unknown"]);
+    expect(seenWrites(run)).toEqual([]);
+    await run.keys("x");
+    await run.advance(20);
+    expect(seenWrites(run)).toEqual([{ terminal: "t1", seen: "1" }]);
+  }, TEST_MS);
+
+  it("a pane another client's zoom covers is not drawn, so not looked at: its turn is not marked", async () => {
+    const run = await started(twoAgents());
+    await hostFocus(run, FOCUS_IN);
+    await select(run, "t2");
+    await endTurn(run, "t2");
+    expect(seenWrites(run)).toEqual([{ terminal: "t2", seen: "1" }]);
+    // another client zooms t1: t2 stays focused here, attached and covered
+    const otherClient = new HcConnection(() => run.core.transport());
+    const doc = (zoomed: string | null) => ({ schema: 1, workspaces: [{ id: "w", tabs: [{ id: "t", root: { split: "right", ratio: 0.5, first: { leaf: "t1" }, second: { leaf: "t2" } }, zoomed }] }] });
+    const { version } = await otherClient.call("doc.set", { name: OVIS_LAYOUT_DOC, value: doc("t1"), version: run.core.docs.get(OVIS_LAYOUT_DOC)?.version ?? 0 });
+    await run.advance(100);
+    expect(run.loop.panes.view("t2")?.covered).toBe(true);
+    await endTurn(run, "t2");
+    expect(seenWrites(run)).toEqual([{ terminal: "t2", seen: "1" }]);
+    // the zoom ends: t2 is drawn again and comes into view
+    await otherClient.call("doc.set", { name: OVIS_LAYOUT_DOC, value: doc(null), version });
+    otherClient.close();
+    await run.advance(1_000);
+    expect(seenWrites(run)).toEqual([{ terminal: "t2", seen: "1" }, { terminal: "t2", seen: "2" }]);
   }, TEST_MS);
 });
