@@ -12,7 +12,7 @@ type Processes = { foreground_processes?: { pid?: number; argv?: unknown }[] };
 const unavailable = (): never => { throw new ConversationUnavailable("kiro_transcript_unavailable"); };
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-/** More live sessions than this in one store is no answer, rather than an unbounded scan. */
+/** More session lock files than this in one store, stale ones too, is no answer, rather than an unbounded scan. */
 const MAX_LOCKS = 256;
 const LOCK_BYTES = 4096;
 
