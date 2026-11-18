@@ -211,8 +211,8 @@
 .fork-github-row-mark.is-pending { color: var(--status-working); }
 /* changes asked for, the one review word a row shows */
 .fork-github-row-review.is-failing { color: var(--status-blocked); }
-/* a draft: its title dimmed, as the sidebar dims what is not under way */
-.fork-github-row.is-draft .fork-github-row-title { color: var(--text-dim); }
+/* a draft: the whole row faded, as the agent inbox fades an offline one (InboxList.css) */
+.fork-github-row.is-draft .fork-github-summary { opacity: 0.55; }
 
 /* a stack's fold: the +N of a folded workspace (Sidebar.css), level with the title */
 .fork-github-stack-fold {
