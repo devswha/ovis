@@ -235,8 +235,10 @@ async function tabRowShown(page: Page): Promise<void> {
         box: [strip.getBoundingClientRect().width, strip.getBoundingClientRect().height],
       })),
       alerts: [...document.querySelectorAll('[role="alert"]')].map((alert) => alert.textContent?.trim()),
-    }));
-    throw new Error(`${error.message}\nthe tab row's inputs: ${JSON.stringify(seen)}`);
+    })).catch(() => null);
+    // a page that is gone gives no snapshot: the wait's own error is the failure then
+    if (seen === null) throw error;
+    throw new Error(`${error.message}\nthe tab row's inputs: ${JSON.stringify(seen)}`, { cause: error });
   });
 }
 
