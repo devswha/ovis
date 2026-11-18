@@ -10,7 +10,8 @@ export interface MoveSource {
   holdsPending: (paneId: string) => boolean;
   inputEmpty: (paneId: string, agent: string) => Promise<boolean | null>;
   /** sends the command as a message to the agent (herdr's agent.prompt: pasted, then Enter) */
-  sendExit: (paneId: string, agent: string, command: string) => Promise<void>;
+  /** Types the exit, or answers why it typed nothing. It throws only when it cannot say whether the keys went out. */
+  sendExit: (paneId: string, agent: string, session: string | null, command: string) => Promise<"sent" | "agent_busy" | "input_left" | "plan_changed" | `failed: ${string}`>;
   runsConversation: (agent: string, session: string) => Promise<boolean>;
   start: (paneId: string, argv: readonly string[]) => Promise<void>;
 }
@@ -117,20 +118,27 @@ export async function runMove(stateDir: string, port: number, id: string, plan: 
       step("ending_agents", index, agents.length);
       const verdict = pane.verdict;
       const now = await source.pane(pane.pane_id);
+      // an agent that took work since the plan is not typed into; sendExit reads the agent, its
+      // conversation and its input box once more as the last thing before the keys
       if (!now || now.agent !== verdict.agent || (now.status !== "idle" && now.status !== "done") || source.holdsPending(pane.pane_id)) throw new MoveAbort("agent_busy");
+      // the conversation shown is the one ended: one switched to since would be reopened as the wrong one
       if (verdict.kind === "resume" && now.session !== verdict.session_id) throw new MoveAbort("plan_changed");
+      // only into an input box read empty: unreadable is not empty
       if (await source.inputEmpty(pane.pane_id, verdict.agent) !== true) throw new MoveAbort("input_left");
       const command = EXIT_COMMANDS[verdict.agent];
       if (command === undefined) throw new MoveAbort("no_exit_command");
       journal.ended.push({ pane_id: pane.pane_id, agent: verdict.agent, argv: verdict.kind === "resume" ? verdict.argv : [verdict.agent], session: verdict.kind === "resume" ? verdict.session_id : null });
       save();
-      await source.sendExit(pane.pane_id, verdict.agent, command);
+      const exit = await source.sendExit(pane.pane_id, verdict.agent, verdict.kind === "resume" ? verdict.session_id : null, command);
+      // refused, so nothing was typed: it was not ended and a rollback has nothing to put back there
+      if (exit !== "sent") { journal.ended.pop(); throw new MoveAbort(exit); }
       let gone = false;
       for (const deadline = Date.now() + exitMs; Date.now() < deadline;) {
         const after = await source.pane(pane.pane_id);
         // ended only once herdr names no agent AND the shell is in front again: a report lost while the
         // process still runs would otherwise let one conversation run twice
         if (after && after.agent === null && after.shellInFront === true) { gone = true; break; }
+        // it took the command as work, or turned to a question: nothing more is typed into it
         // only while herdr still names it: a pane with no agent reports `unknown`, which is no work
         if (after && after.agent !== null && after.status !== "idle" && after.status !== "done") throw new MoveAbort("agent_busy");
         await pause(200);
@@ -177,6 +185,7 @@ export async function runMove(stateDir: string, port: number, id: string, plan: 
       step("starting_agents", index, starts.length);
       const target = placed.get(pane.pane_id)!;
       await destination.start(target, pane.verdict.kind === "resume" ? pane.verdict.argv : [pane.verdict.agent]);
+      // a process that came up is not yet the conversation: it may have refused the id and quit
       if (pane.verdict.kind === "resume" && !(await destination.confirmResumed(target, pane.verdict.session_id))) throw new MoveAbort("resume_unconfirmed");
     }
     journal.state = "switching";
@@ -187,6 +196,7 @@ export async function runMove(stateDir: string, port: number, id: string, plan: 
   } catch (error) {
     journal.reason = error instanceof MoveAbort ? error.message : `failed: ${error instanceof Error ? error.message : String(error)}`;
     journal.state = "rolling_back";
+    // a journal that cannot be written (the reason we are here, maybe) never stops the rollback
     try { save(); } catch {}
     await rollBack(journal, source, destination, id, pause, options.settleMs ?? 5_000);
     journal.state = "rolled_back";
@@ -202,6 +212,8 @@ async function rollBack(journal: MoveJournal, source: MoveSource, destination: M
   let destinationClear = true;
   try { await destination.endMove(id); } catch { destinationClear = false; }
   for (const entry of journal.ended) {
+    // a copy on herdr-core not proven gone, an agent back in the pane, or the conversation running in
+    // another pane: starting it again could run one conversation twice, so it is left to the person
     if (!destinationClear) { journal.left.push({ pane_id: entry.pane_id, agent: entry.agent, why: "herdr_core_not_cleared" }); continue; }
     try {
       let now = await source.pane(entry.pane_id);
