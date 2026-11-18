@@ -672,6 +672,9 @@ export class RelayService {
     try {
       // a window opened for the old key's link does not carry over to the new key
       this.approvals.closeWindow();
+      // nor does a code its offers carried: it ends, and the rows that wait to link under it, so an approval asked
+      // under the old identity writes no member after the new one
+      services.devices.endPairing();
       await this.disconnect();
       for (const device of services.devices.list(null)) if (device.via_relay) services.devices.revoke(device.id);
       this.identity = rotateRelayIdentity(this.options.stateDir);

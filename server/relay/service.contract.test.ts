@@ -465,6 +465,15 @@ it("ends the relay tab's QR code, and the rows that wait to link under it, when 
   expect([again.account, decodeOffer(again.url)?.code === code]).toEqual(["acct_b", false]);
 });
 
+it("ends the code pending, and the rows that wait to link under it, when it resets the relay identity", async () => {
+  const f = await fixture();
+  await f.start();
+  const devices = f.app.context.services.devices;
+  const { row, ended } = await waitingUnderTabCode(f, "acct_a");
+  await f.service.resetIdentity();
+  // an approval asked under the old identity has no row left to write a member for
+  expect([devices.activePairing(), devices.provisionalStands(row.id), ended()]).toEqual([null, false, true]);
+});
 
 it("names the PC in the relay offer as Ovis lists it", async () => {
   const f = await fixture();
