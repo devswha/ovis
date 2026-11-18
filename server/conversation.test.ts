@@ -4444,25 +4444,27 @@ describe.skipIf(process.platform !== "linux")("a Claude a sandbox wrapper runs o
     const transcript = join(store, "projects", claudeProjectDir(cwd), `${SESSION}.jsonl`);
     mkdirSync(join(transcript, ".."), { recursive: true });
     writeFileSync(transcript, "");
-    const wrappers = await Promise.all(stores.map(async (dir) => {
-      mkdirSync(join(home, dir), { recursive: true });
-      const wrapper = Bun.spawn(["bash", "-c", "echo; read -r line"], { env: { PATH: process.env["PATH"] ?? "", HOME: home, HERDR_AGENT: "claude", CLAUDE_CONFIG_DIR: join(home, dir) }, stdin: "pipe", stdout: "pipe", stderr: "ignore" });
-      if ((await wrapper.stdout.getReader().read()).done) throw new Error("the wrapper stand-in ended early");
-      return wrapper;
-    }));
+    const wrappers: ReturnType<typeof Bun.spawn>[] = [];
+    const restores: (() => void)[] = [];
     const previousHome = process.env["HOME"];
     const previousDir = process.env["CLAUDE_CONFIG_DIR"];
-    process.env["HOME"] = home;
-    delete process.env["CLAUDE_CONFIG_DIR"];
-    const rpc = spyOn(herdr, "herdrRpc").mockImplementation((async (method: string) => method === "agent.get"
-      ? { agent: reported === null ? {} : { agent_session: { agent: "claude", source: "herdr:claude", kind: "id", value: reported } } }
-      : { process_info: { pane_id: "w1:p1", shell_pid: 1, foreground_processes: wrappers.map((wrapper) => ({ pid: wrapper.pid, name: "bash", argv: ["bash", "/opt/sandbox/claude-wrapped"] })) } }) as unknown as typeof herdr.herdrRpc);
-    const serving = spyOn(served, "capabilities").mockReturnValue(runtime);
     try {
+      for (const dir of stores) {
+        mkdirSync(join(home, dir), { recursive: true });
+        wrappers.push(Bun.spawn(["bash", "-c", "echo; read -r line"], { env: { PATH: process.env["PATH"] ?? "", HOME: home, HERDR_AGENT: "claude", CLAUDE_CONFIG_DIR: join(home, dir) }, stdin: "pipe", stdout: "pipe", stderr: "ignore" }));
+      }
+      for (const wrapper of wrappers) if ((await (wrapper.stdout as ReadableStream<Uint8Array>).getReader().read()).done) throw new Error("the wrapper stand-in ended early");
+      process.env["HOME"] = home;
+      delete process.env["CLAUDE_CONFIG_DIR"];
+      const rpc = spyOn(herdr, "herdrRpc").mockImplementation((async (method: string) => method === "agent.get"
+        ? { agent: reported === null ? {} : { agent_session: { agent: "claude", source: "herdr:claude", kind: "id", value: reported } } }
+        : { process_info: { pane_id: "w1:p1", shell_pid: 1, foreground_processes: wrappers.map((wrapper) => ({ pid: wrapper.pid, name: "bash", argv: ["bash", "/opt/sandbox/claude-wrapped"] })) } }) as unknown as typeof herdr.herdrRpc);
+      restores.push(() => rpc.mockRestore());
+      const serving = spyOn(served, "capabilities").mockReturnValue(runtime);
+      restores.push(() => serving.mockRestore());
       return { found: (await claudePaneSession({ pane_id: "w1:p1", cwd, foreground_cwd: cwd } as HerdrPane))?.path ?? null, transcript };
     } finally {
-      serving.mockRestore();
-      rpc.mockRestore();
+      for (const restore of restores.reverse()) restore();
       for (const wrapper of wrappers) wrapper.kill("SIGKILL");
       if (previousHome === undefined) delete process.env["HOME"]; else process.env["HOME"] = previousHome;
       if (previousDir !== undefined) process.env["CLAUDE_CONFIG_DIR"] = previousDir;
