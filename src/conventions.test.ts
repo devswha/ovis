@@ -32,8 +32,13 @@ function selectors(css: string): string[] {
   return preludes.filter((prelude) => !prelude.startsWith("@")).flatMap((prelude) => splitTopLevel(prelude, /,/)).map((selector) => selector.replace(/\s+/g, " ").trim());
 }
 
+/** `:ha\s(` is `:has(` to the browser. */
+function unescapeCss(text: string): string {
+  return text.replace(/\\([0-9a-f]{1,6})\s?|\\(.)/gi, (_, hex: string | undefined, char: string) => hex !== undefined ? String.fromCodePoint(parseInt(hex, 16)) : char);
+}
+
 function hasPseudo(selector: string): boolean {
-  return /:has\(/i.test(selector.replace(CSS_STRING, "\"\""));
+  return /:has\(/i.test(unescapeCss(selector.replace(CSS_STRING, "\"\"")));
 }
 
 /** Splits on `separator` outside parentheses, brackets, strings and escapes. */
@@ -59,7 +64,7 @@ function splitTopLevel(text: string, separator: RegExp): string[] {
  * alternative of an :is() or :where() in it. :not(), :has() and other pseudo-classes name nothing.
  */
 function subjectNamesElements(selector: string): boolean {
-  const compound = (splitTopLevel(selector, /[\s>+~]/).at(-1) ?? "").replace(CSS_STRING, "\"\"");
+  const compound = unescapeCss((splitTopLevel(selector, /[\s>+~]/).at(-1) ?? "").replace(CSS_STRING, "\"\""));
   const lists: string[] = [];
   let own = "";
   for (let at = 0; at < compound.length;) {
@@ -112,8 +117,8 @@ describe("component CSS", () => {
     expect(selectors("/* .a:has(b) > * {} */ .a:has(> .b) > :not(.c), .d > button { x: y } @media (width < 1px) { .e:has(.f) { x: y } }"))
       .toEqual([".a:has(> .b) > :not(.c)", ".d > button", ".e:has(.f)"]);
     expect(selectors(".a:has([data-note=\";\"]) > * { x: y } .b::after { content: \"}\" }")).toEqual([".a:has([data-note=\";\"]) > *", ".b::after"]);
-    expect([".a:HAS(.b) > *", "[data-selector=\":has(foo)\"] > *", ".a:not(:has(.b)) > *"].map(hasPseudo)).toEqual([true, false, true]);
-    expect([".a:has(> .b) > :not(.c)", ".a:has(.b) > *", ".a:has(.b) :is(:hover)", ".a:has(.b)>::before", ".a:has(.b) > :not(:is(.c))", ".a:has(.b) > :is(.c, *)", ".a:has(.b) > :where(.c > *)", ".a:has(.b) > :IS(.c, *)", ".a:has(.b) > [data-x]"].filter(subjectNamesElements)).toEqual([]);
+    expect([".a:HAS(.b) > *", "[data-selector=\":has(foo)\"] > *", ".a:not(:has(.b)) > *", ".a:ha\\s(.b) > *"].map(hasPseudo)).toEqual([true, false, true, true]);
+    expect([".a:has(> .b) > :not(.c)", ".a:has(.b) > *", ".a:has(.b) :is(:hover)", ".a:has(.b)>::before", ".a:has(.b) > :not(:is(.c))", ".a:has(.b) > :is(.c, *)", ".a:has(.b) > :where(.c > *)", ".a:has(.b) > :IS(.c, *)", ".a:has(.b) > [data-x]", ".a:has(.b) > :n\\ot(.c)"].filter(subjectNamesElements)).toEqual([]);
     expect([".a:has(.b) > button", ".a:has(.b) > :not(.c).d", ".a:not(:has(.b)) .c", ".a:has(> .b)", "#a:has(.b) > :is(.c, .d)", ".a:has(.b) > :where(li)", ".a:has(.b) > .c[data-label=\"row 1\"]", ".a:has(.b) > :is(.c .d, e > f)", ".a:has(.b) > :is(.c, *).d", ".a:has(.b) > .é", ".a:has(.b) > [data-x=\":is(*)\"].c"].filter((selector) => !subjectNamesElements(selector))).toEqual([]);
   });
 
