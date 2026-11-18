@@ -2,7 +2,6 @@ import { closeSync, constants, type Dir, fstatSync, lstatSync, opendirSync, open
 import { basename, dirname, join, sep } from "node:path";
 import { commandHistory, resetCommandHistory, sameHistory, vouchedEnds, watchCommandHistory, type CommandEnd, type HistoryEvidence, type HistoryVersion } from "./claude-command-history.ts";
 import type { HerdrPane, OmoTask, PaneBackgroundAgentDetail } from "../shared/protocol.ts";
-import { unwrapPastes } from "./claude-transcript.ts";
 import { hcNotes } from "./transcript-records.ts";
 
 /**
@@ -288,7 +287,8 @@ function prompted(entry: Row): boolean {
   const content = row(entry["message"])?.["content"];
   const textOnly = !Array.isArray(content) || content.every((block) => row(block)?.["type"] === "text");
   const text = textOnly ? blocksIn(entry).join("\n") : "";
-  if (text.includes("<hc") && hcNotes(text.includes("<pasted_content") ? unwrapPastes(text) : text) !== null) return false;
+  // the chat takes Claude's paste wrapper off (unwrapPastes); a prompt that is only notes is the same without its tags
+  if (text.includes("<hc") && hcNotes(text.replace(/<\/?pasted_content id="[^"\r\n]{1,64}">/g, "")) !== null) return false;
   if (Array.isArray(content) && content.some((block) => row(block)?.["type"] === "tool_result")) return false;
   const origin = entry["origin"];
   const kind = typeof origin === "string" ? origin : row(origin)?.["kind"];

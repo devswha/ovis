@@ -32,8 +32,8 @@ export function isContextClear(value: unknown, source: string): boolean {
 export function hcNotes(text: string): Extract<ConversationPart, { kind: "notice" }>[] | null {
   const notes: Extract<ConversationPart, { kind: "notice" }>[] = [];
   let depth = 0, open = 0, attributes = "", after = 0;
-  for (const tag of text.matchAll(/<hc(\s[^<>]*)?>|<\/hc\s*>/g)) {
-    if (tag[0][1] === "/") {
+  for (const tag of text.matchAll(/<(\/?)hc(\s[^<>]*)?>/g)) {
+    if (tag[1]) {
       if (--depth < 0) return null;
       if (depth > 0) continue;
       const body = text.slice(open, tag.index).trim();
@@ -44,7 +44,7 @@ export function hcNotes(text: string): Extract<ConversationPart, { kind: "notice
     } else {
       if (depth++ > 0) continue;
       if (text.slice(after, tag.index).trim() !== "") return null;
-      attributes = tag[1] ?? "";
+      attributes = tag[2] ?? "";
       open = tag.index + tag[0].length;
     }
   }
