@@ -1308,7 +1308,7 @@ A script that fails is run a second time (`BROWSER_RETRY=0` turns that off). One
 is not counted as a plain pass: its first log is kept as `<script>.attempt-1.log` and printed,
 `summary.json` lists it under `flaky`, and on GitHub it gets an annotation and a line in the job
 summary. It fails the job unless `QUARANTINE` in `scripts/ci-browser-quarantine.ts` lists it with
-the issue that tracks its race and an end date not yet past (UTC, the date itself included): then
+an issue about it and an end date not yet past (UTC, the date itself included): then
 the summary marks it `~` and the annotation is a warning. Otherwise the summary marks it `!`,
 `summary.json` also lists it under `notQuarantined`, and the error names the two ways out: fix the
 race, or add the entry. A flaky script is a bug to fix in the script or the app, not noise: the

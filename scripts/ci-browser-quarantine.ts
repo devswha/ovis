@@ -1,6 +1,6 @@
 /**
  * Browser scripts whose pass on the lane's second run still counts as a pass, each until its end
- * date (inclusive, UTC) and with the issue that tracks its race. Any other script that fails and
+ * date (inclusive, UTC) and with an issue about it. Any other script that fails and
  * then passes when run again fails the lane (scripts/ci-browser-parallel.ts). An entry ends at most
  * QUARANTINE_MAX_DAYS ahead; once a script has stopped flaking, its entry goes.
  */

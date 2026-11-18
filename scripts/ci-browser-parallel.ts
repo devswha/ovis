@@ -148,8 +148,8 @@ export function quarantineStatus(script: string, list: Readonly<Record<string, Q
 
 export function quarantineNote(status: QuarantineStatus): string {
   if (status.state === "quarantined") return `It is quarantined until ${status.entry.until} (#${status.entry.issue}), so it does not fail the lane.`;
-  const ended = status.state === "ended" ? `Its quarantine ended on ${status.entry.until}, so it fails the lane` : "It is not quarantined, so it fails the lane";
-  return `${ended}: fix the race in the script or the app, or give it an entry in QUARANTINE in scripts/ci-browser-quarantine.ts with the issue that tracks it and an end date at most ${QUARANTINE_MAX_DAYS} days ahead.`;
+  if (status.state === "ended") return `Its quarantine ran out after ${status.entry.until}, so it fails the lane: fix the race in the script or the app, or move its end date in QUARANTINE in scripts/ci-browser-quarantine.ts, at most ${QUARANTINE_MAX_DAYS} days ahead.`;
+  return `It is not quarantined, so it fails the lane: fix the race in the script or the app, or give it an entry in QUARANTINE in scripts/ci-browser-quarantine.ts with an issue about it and an end date at most ${QUARANTINE_MAX_DAYS} days ahead.`;
 }
 
 class ChromiumSetupError extends Error {

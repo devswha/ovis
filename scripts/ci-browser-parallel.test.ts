@@ -544,7 +544,7 @@ describe("browser flake quarantine", () => {
       expect(quarantineNote(status)).toContain("fails the lane");
       expect(quarantineNote(status)).toContain("scripts/ci-browser-quarantine.ts");
     }
-    expect(quarantineNote({ state: "ended", entry })).toContain("ended on 2026-12-02");
+    expect(quarantineNote({ state: "ended", entry })).toContain("ran out after 2026-12-02");
   });
 
   it("lists only scripts the lane runs, each with its issue and an end date at most the limit ahead", () => {
@@ -553,7 +553,7 @@ describe("browser flake quarantine", () => {
     const limit = new Date(Date.parse(`${today}T00:00:00Z`) + QUARANTINE_MAX_DAYS * 86_400_000).toISOString().slice(0, 10);
     const wrong = Object.entries(QUARANTINE).flatMap(([script, { until, issue }]) => [
       ...(lane.includes(script) ? [] : [`${script}: not in scripts/ci-browser.sh`]),
-      ...(/^\d{4}-\d\d-\d\d$/.test(until) && new Date(`${until}T00:00:00Z`).toISOString().startsWith(until) ? [] : [`${script}: until "${until}" is not a YYYY-MM-DD date`]),
+      ...(/^\d{4}-\d\d-\d\d$/.test(until) && !Number.isNaN(Date.parse(`${until}T00:00:00Z`)) && new Date(`${until}T00:00:00Z`).toISOString().startsWith(until) ? [] : [`${script}: until "${until}" is not a YYYY-MM-DD date`]),
       ...(until <= limit ? [] : [`${script}: until ${until} is more than ${QUARANTINE_MAX_DAYS} days ahead (${limit} at most)`]),
       ...(Number.isInteger(issue) && issue > 0 ? [] : [`${script}: issue ${issue} is not an issue number`]),
     ]);
@@ -571,7 +571,7 @@ describe("browser flake quarantine", () => {
     try {
       const child = Bun.spawn([process.execPath, "scripts/ci-browser-parallel.ts"], {
         cwd: join(import.meta.dir, ".."),
-        env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, BROWSER_SCRIPTS: script, CHECK_DIR: dir, GITHUB_ACTIONS: "", GITHUB_STEP_SUMMARY: "" },
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, BROWSER_SCRIPTS: script, BROWSER_EXCLUDE: "", BROWSER_SHARD: "", BROWSER_RETRY: "", CHECK_DIR: dir, GITHUB_ACTIONS: "", GITHUB_STEP_SUMMARY: "" },
         stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 15_000,
       });
       const [text, , code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
