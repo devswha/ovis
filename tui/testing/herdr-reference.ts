@@ -122,17 +122,44 @@ try {
       ["herdr", args, env],
       ["Ovis", [...SOURCE_OVIS, "tui"], { ...entryEnv(core, hc), HERDR_TEST_SESSION: SESSION }],
     ] as const) {
-      const run = entryPty(entry, vars, cols, rows);
+      // Start the quiet interval over whenever a chunk of a paint arrives.
+      let outputArrived: (() => void) | undefined;
+      const run = entryPty(entry, vars, cols, rows, { onData: () => outputArrived?.() });
+      const settledGrid = async (complete: (grid: string) => boolean = () => true) => {
+        for (;;) {
+          const grid = await quietGrid();
+          if (complete(grid.text)) return grid.text;
+          await run.until(new RegExp(`^[\\s\\S]{${grid.bytes + 1}}`), `${name}: the rest of the frame`);
+        }
+      };
+      const quietGrid = async () => {
+        let quiet: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await Promise.race([
+            new Promise<void>((resolve) => {
+              outputArrived = () => { clearTimeout(quiet); quiet = setTimeout(resolve, 40); };
+              outputArrived();
+            }),
+            run.exited.then(() => { throw new Error(`${name} exited before the frame settled`); }),
+          ]);
+        } finally {
+          outputArrived = undefined;
+          clearTimeout(quiet);
+        }
+        const bytes = run.output().length;
+        return { bytes, text: await visibleGrid(run, cols, rows) };
+      };
       await run.until(new RegExp(name === "Ovis" ? `${BOTH}[\\s\\S]*\\x1b\\[\\?25h\\x1b\\[\\?2026l` : BOTH), `${name}: both pane markers`);
-      const grid = await visibleGrid(run, cols, rows);
-      for (const pane of PANES) if (!grid.includes(`${pane}-READY`)) throw new Error(`${name} ${cols}x${rows} missing ${pane}\n${grid}`);
+      const splitBottom = name === "herdr" ? /└─+┘└─+┘/ : /\+-+\+\+-+\+/;
+      const grid = await settledGrid((text) => PANES.every((pane) => text.includes(`${pane}-READY`)) &&
+        splitBottom.test(text.split("\n")[name === "herdr" ? rows - 1 : rows - 2] ?? ""));
       console.log(`\n=== ${name} ${cols}x${rows} ===\n${grid.trimEnd()}`);
       if (cols === 80) {
         const from = run.output().length;
         run.type("\x02?");
         await fresh(run, from, name === "herdr" ? "scroll j/k/" : "close: esc");
         if (name === "Ovis") await fresh(run, from, "\x1b[?2026l");
-        console.log(`\n=== ${name} help ${cols}x${rows} ===\n${(await visibleGrid(run, cols, rows)).trimEnd()}`);
+        console.log(`\n=== ${name} help ${cols}x${rows} ===\n${(await settledGrid()).trimEnd()}`);
         const leavingHelp = run.output().length;
         run.type("\x1b");
         await fresh(run, leavingHelp, "LEFT-READY");
