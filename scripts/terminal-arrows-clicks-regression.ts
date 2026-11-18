@@ -1,4 +1,3 @@
-/** Arrows and clicks reach a full-screen program: browser → WS → herdr → a raw-mode PTY that logs its stdin (#621). */
 import "./test-herdr.ts";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, existsSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
@@ -31,9 +30,7 @@ interface Session {
   page: Page;
   pane: string;
   frames: Array<{ type: string; text?: string; keys?: string[] }>;
-  /** what the program in the pane has read since the last call */
   received: () => string;
-  /** a point of the grid, in page pixels from its top left corner */
   point: (x: number, y: number) => Promise<{ x: number; y: number }>;
   close: () => Promise<void>;
 }
@@ -47,16 +44,8 @@ async function mouseReporting(s: Session): Promise<void> {
   await s.page.locator(".xterm.enable-mouse-events").waitFor();
 }
 
-/** the letter `mark` types: no step below types it otherwise */
 const MARK = "z";
 
-/**
- * Proves what an action sent, nothing included, without waiting a set time for what must not come:
- * types a letter after it and waits until the program has read the letter and its frame is reported.
- * Anything the action sent went out first, on the same socket and through the same pty (or, on a
- * mirror, the same queue of herdr writes), so the program read it first and its frame came first.
- * `frames` are the ones reported from index `from` up to the mark's.
- */
 async function mark(s: Session, label: string, from = s.frames.length): Promise<{ read: string; frames: Session["frames"] }> {
   await s.page.locator(".xterm-helper-textarea").focus();
   await s.page.keyboard.press(MARK);
@@ -68,7 +57,6 @@ async function mark(s: Session, label: string, from = s.frames.length): Promise<
   return { read: read.slice(0, -MARK.length), frames: s.frames.slice(from, at()) };
 }
 
-/** A pane of its own running the stdin logger after `modes` were set, shown in a desktop browser; herdr reports `agent` in it. */
 async function open(browser: Browser, server: ReturnType<typeof createServer>, name: string, modes: string, agent?: string): Promise<Session> {
   const cwd = join(root, name);
   mkdirSync(cwd);
@@ -91,7 +79,6 @@ async function open(browser: Browser, server: ReturnType<typeof createServer>, n
   let ready = false;
   page.on("websocket", (socket) => {
     socket.on("framesent", ({ payload }) => {
-      // `id` is the per-connection receipt number ("input-receipt"), not what was sent
       const { id: _receipt, ...message } = JSON.parse(String(payload));
       if (message.pane_id === pane && (message.type === "input" || message.type === "keys")) frames.push(message);
     });
@@ -152,8 +139,6 @@ try {
     await s.close();
   }
 
-  // 2. Normal cursor mode (a shell's line editor), and typing around an arrow keeps its order:
-  // the arrow goes through herdr, the letters would otherwise overtake it on the pty.
   {
     const s = await open(browser, attached, "normal", "\\033[?1049h");
     const input = s.page.locator(".xterm-helper-textarea");
@@ -174,10 +159,8 @@ try {
       await until(() => (got += s.received()).length >= round * 5 + 5, "an arrow and the letter after it received");
     }
     assert.equal(got, "a\x1b[Db".repeat(5), "an arrow between two letters arrives between them");
-    // Diagnostic only: a letter, an arrow and a letter pressed at once, where only the settle margin
-    // keeps the arrow behind the first letter. Logged, not asserted. The first letter goes through the
-    // attach pty and the rest may go through herdr, so no mark typed after them can vouch for it: all
-    // five bytes are read, in whatever order, before the next step.
+    // The first letter goes through the attach pty and the rest may go through herdr, so no mark typed after
+    // them can vouch for it: all five bytes are read, in whatever order, before the next step.
     let together = "";
     await s.page.keyboard.press("a");
     await s.page.keyboard.press("ArrowLeft");
@@ -190,8 +173,6 @@ try {
     await s.page.keyboard.press("ArrowUp");
     await until(() => (got += s.received()).length >= 4, "ArrowUp received");
     assert.equal(got, "\x1b\x1b[A", "an arrow after an Escape arrives after it");
-    // Ctrl+arrow and Shift+arrow were never plain arrows: they keep the path they had. The earlier
-    // keys' frames, which Playwright may report late, are all reported once a mark's is.
     assert.equal((await mark(s, "the keys before Ctrl+ArrowLeft")).read, "", "nothing more after the Escape and ArrowUp");
     const before = s.frames.length;
     await s.page.keyboard.press("Control+ArrowLeft");
@@ -207,8 +188,6 @@ try {
     assert.equal((await mark(s, "Alt+ArrowLeft", altBefore)).read, altLeft, "Alt+ArrowLeft moves a word");
 
     // A held arrow: keyboard autorepeat (~30/s) with letters typed between some of the repeats.
-    // Every key must arrive in order within the bounded delivery wait below. The repeat after a
-    // letter waits for the letter to be read, as the arrow after a letter does above.
     // Keep the autorepeat pacing; shared-runner latency is diagnostic, not a correctness threshold.
     const tokens: Array<{ text: string; sent: number; arrived?: number }> = [];
     let buffer = "";
@@ -223,7 +202,6 @@ try {
     }, 2);
     const REPEAT_MS = 33;
     try {
-      // ArrowDown stays down: each further keydown is an autorepeat; a letter is typed between some repeats
       let due = performance.now();
       for (let i = 0; i < 60; i += 1) {
         // fixed wait: the autorepeat rate is the input under test
@@ -252,9 +230,6 @@ try {
     const at = (q: number) => latencies[Math.min(latencies.length - 1, Math.floor(q * latencies.length))]!;
     console.log(`held arrow (60 keys at ${REPEAT_MS} ms, letters between): key to program p50 ${at(0.5).toFixed(1)} ms, p95 ${at(0.95).toFixed(1)} ms, max ${latencies.at(-1)!.toFixed(1)} ms`);
 
-    // Repeats far faster than herdr answers: 200 keydowns in one burst. They arrive complete and in
-    // order, a letter between them included, and the keys still waiting join one RPC instead of each
-    // queueing its own, so the burst drains in about as long as a few RPCs take.
     let burst = "";
     const burstStart = performance.now();
     await s.page.locator(".xterm-helper-textarea").evaluate((element) => {
@@ -278,7 +253,6 @@ try {
     await s.close();
   }
 
-  // 3. A click reaches a program that reads the mouse; a drag and a modifier-click still select.
   {
     const s = await open(browser, attached, "mouse", "\\033[?1049h\\033[?1000h\\033[?1006hhttps://example.test/621 notes.md\\r\\n");
     writeFileSync(join(root, "mouse", "notes.md"), "# Notes\n");
@@ -294,7 +268,6 @@ try {
     assert.equal((got.match(/\x1b\[<0;\d+;\d+m/g) ?? []).length, 1, "one release for one click");
     if (evidence) await s.page.screenshot({ path: join(evidence, "click-mouse-reporting.png") });
 
-    // a link opens and is not clicked in the program as well
     await s.page.evaluate(() => {
       const opened: unknown[] = [];
       (window as unknown as { opened: unknown[] }).opened = opened;
@@ -309,9 +282,8 @@ try {
     // in a new tab, as a chat link: window.open with a features string ("noopener" too) opens a popup window
     assert.deepEqual(await s.page.evaluate(() => (window as unknown as { opened: unknown[] }).opened), [["link", "https://example.test/621", "_blank", "noopener noreferrer"]], "and opens the link once, in a new tab with no opener or referrer");
 
-    // A bare file name follows the same rule, for its own click only (#1168). herdr's attach reports
-    // the mouse for every pane, so nothing tells a program that wants Cmd/Ctrl+click from a shell:
-    // a plain click on the name is the program's, as on any text, and Cmd+click (Ctrl+click off a
+    // herdr's attach reports the mouse for every pane, so nothing tells a program that wants Cmd/Ctrl+click
+    // from a shell: a plain click on the name is the program's, as on any text, and Cmd+click (Ctrl+click off a
     // Mac), the key that draws the name as a link, opens it and sends the program no button.
     const name = await s.page.evaluate((shown) => {
       const row = document.querySelector(shown)!;
@@ -360,7 +332,6 @@ try {
       await until(() => /\x1b\[<16;\d+;\d+M[\s\S]*\x1b\[<16;\d+;\d+m/.test(got += s.received()), "Ctrl+click received with Ctrl");
     }
 
-    // a later click still arrives at its own cell: none of the above left a drag behind
     const second = await s.point(400, 200);
     got = "";
     await s.page.mouse.click(second.x, second.y);
@@ -368,8 +339,6 @@ try {
     const later = click.exec(got)!;
     assert.ok(Number(later[1]) > Number(first[1]) && Number(later[2]) > Number(first[2]), "at its own cell, right of and below the first");
 
-    // the top right cell, under a lone pane's floating head: a program's control there (Claude Code's
-    // diff panel close) takes the click, not the head around the hidden ellipsis
     const grid = (await s.page.locator(".xterm-screen").boundingBox())!;
     got = "";
     await s.page.mouse.click(grid.x + grid.width - 3, grid.y + 3);
@@ -378,7 +347,6 @@ try {
     assert.equal(corner[2], "1", "on the top row");
     assert.ok(Number(corner[1]) > Number(later[1]), "in the rightmost column");
 
-    // a drag is a selection, as before: no button report, and the dragged cells are selected
     const to = await s.point(300, 70);
     await s.page.mouse.move(at.x, at.y);
     await s.page.mouse.down();
@@ -388,7 +356,6 @@ try {
     await until(async () => (await s.page.locator(".xterm-selection div").count()) > 0, "a drag selects");
     assert.doesNotMatch((await mark(s, "a drag")).read, /\x1b\[<0;/, "a drag sends the program no button");
 
-    // the selection modifier held by the user: a click that asks for selection is not the program's
     await s.page.keyboard.down("Shift");
     await s.page.mouse.click(at.x, at.y);
     await s.page.keyboard.up("Shift");
@@ -401,12 +368,10 @@ try {
   // its own, as a click is, and the selection modifier still asks for the selection here.
   {
     const s = await open(browser, attached, "opencode", "\\033[?1049h\\033[?1000h\\033[?1002h\\033[?1006hchat column text | side panel\\r\\n", "opencode");
-    // the page knows the pane's agent once its row is in the sidebar
     await s.page.locator(`.agent-item[data-pane="${s.pane}"]`).waitFor();
     await mouseReporting(s);
     const from = await s.point(20, 6);
     const to = await s.point(300, 60);
-    /** a press where the pointer already is, dragged to `end` */
     const dragFromHere = async (start: { x: number; y: number }, end: { x: number; y: number }): Promise<void> => {
       await s.page.mouse.down();
       await s.page.mouse.move((start.x + end.x) / 2, (start.y + end.y) / 2, { steps: 4 });
@@ -424,7 +389,6 @@ try {
     assert.equal(await s.page.locator(".xterm-selection div").count(), 0, "a plain drag selects nothing here");
     if (evidence) await s.page.screenshot({ path: join(evidence, "opencode-plain-drag.png") });
 
-    // the selection modifier held by the user: the drag selects here and the program reads no button
     assert.equal((await mark(s, "the plain drag")).read, "", "nothing more after the plain drag");
     const selecting = await s.page.evaluate(() => /Mac/.test(navigator.platform)) ? "Alt" : "Shift";
     got = "";
@@ -434,9 +398,8 @@ try {
     await until(async () => (await s.page.locator(".xterm-selection div").count()) > 0, `${selecting}+drag selects`);
     if (evidence) await s.page.screenshot({ path: join(evidence, "opencode-modifier-drag.png") });
 
-    // a plain drag over that selection is the program's again and the highlight goes. Nothing reaches
-    // xterm in between: a key, or a buttonless move (a hover report), would clear the selection first,
-    // so the press is where the modifier drag let go. The mark after it shows the modifier drag sent nothing.
+    // Nothing reaches xterm in between: a key, or a buttonless move (a hover report), would clear the
+    // selection first, so the press is where the modifier drag let go.
     assert.ok((await s.page.locator(".xterm-selection div").count()) > 0, "the selection is still up when the plain drag starts");
     await dragFromHere(to, from);
     await until(() => drag.test(got += s.received()), () => `a plain drag after a selection received (read ${JSON.stringify(got)})`);
@@ -447,8 +410,6 @@ try {
     await s.close();
   }
 
-  // 5. A mirrored pane: arrows are named keys there too, and a click sends nothing, since the
-  // browser was never told the program reads the mouse and herdr has no pty to report it to.
   {
     const s = await open(browser, mirrored, "mirror", "\\033[?1049h\\033[?1h\\033[?1000h\\033[?1006h");
     const input = s.page.locator(".xterm-helper-textarea");

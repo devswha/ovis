@@ -19,11 +19,6 @@ import com.getcapacitor.annotation.Permission;
 import com.getcapacitor.annotation.PermissionCallback;
 import java.util.function.Consumer;
 
-/**
- * What the app's own pages (app/web) and the client's Change PC (src/lib/nativeApp.ts) ask of the
- * app: open a PC, forget one, go back to the connect screen. The iOS twin is HerdrShellPlugin.swift.
- * On Android it also shows the client's alerts, as the WebView has no Web Notifications.
- */
 @CapacitorPlugin(name = "HerdrShell", permissions = @Permission(strings = { Manifest.permission.POST_NOTIFICATIONS }, alias = "notifications"))
 public class HerdrShellPlugin extends Plugin {
     // the channel and icon of push alerts (ovis-push), so both kinds look the same
@@ -148,7 +143,6 @@ public class HerdrShellPlugin extends Plugin {
         LiveCallService.setMuted(call.getBoolean("muted", false));
         call.resolve();
     }
-    /** Opens still being checked: one cancelled, replaced or outlived by its activity does nothing when its check comes back. */
     private final PCStore.Openings openings = new PCStore.Openings();
     @PluginMethod
     public void getState(PluginCall call) {
@@ -165,14 +159,7 @@ public class HerdrShellPlugin extends Plugin {
         call.resolve(state);
     }
 
-    /**
-     * url: an http or https address, the first page (a pairing link's code or a relay pairing offer's
-     * fragment included). Its origin is remembered, or `scope` for a PC opened through the Ovis relay
-     * (`https://app.ovis.sh/s/<server_id>/`, labelled `name`). With `check`, an address typed, scanned
-     * or picked from the list is first asked whether it is Ovis (PCStore.check), for at most
-     * ANSWER_SECONDS: when it is not, or does not answer, the call is refused with the check's kind as
-     * its code and its detail as its message, and the connect screen stays.
-     */
+    /** url: an http or https address, the first page (a pairing link's code or a relay pairing offer's fragment included). */
     @PluginMethod
     public void open(PluginCall call) {
         String text = call.getString("url");
@@ -197,7 +184,6 @@ public class HerdrShellPlugin extends Plugin {
         }
         String pc = key;
         String cookies = android.webkit.CookieManager.getInstance().getCookie(PCStore.origin(text));
-        // one limit from Open to the PC's first page: the cover gets what the check left (PCStore.answerBy)
         long answerBy = android.os.SystemClock.elapsedRealtime() + PCStore.ANSWER_SECONDS * 1000L;
         new Thread(() -> {
             PCStore.Check found = PCStore.check(text, cookies, PCStore.ANSWER_SECONDS * 1000L);
@@ -206,10 +192,6 @@ public class HerdrShellPlugin extends Plugin {
         }, "ovis-check").start();
     }
 
-    /**
-     * Opens the PC `key`, unless another open or a cancelOpen came after this one (`mine`), with the
-     * first page due by `answerBy` (0: ANSWER_SECONDS from the new activity). Any thread.
-     */
     private void openChecked(PluginCall call, String key, String text, String name, int mine, long answerBy) {
         synchronized (openings) {
             android.app.Activity activity = getActivity();
@@ -224,7 +206,6 @@ public class HerdrShellPlugin extends Plugin {
             PCStore.answerBy = answerBy;
         }
         call.resolve();
-        // a Cancel that lands before the switch still wins: the connect screen stays, opening nothing at the next start
         android.app.Activity activity = getActivity();
         activity.runOnUiThread(() -> {
             synchronized (openings) {
@@ -238,14 +219,12 @@ public class HerdrShellPlugin extends Plugin {
         });
     }
 
-    /** The connect screen's Cancel: an open still being checked does not go on. */
     @PluginMethod
     public void cancelOpen(PluginCall call) {
         openings.cancel();
         call.resolve();
     }
 
-    /** The connect screen is gone (Back, or the system ended it): an open still being checked does not start the app again. */
     @Override
     protected void handleOnDestroy() {
         openings.cancel();
@@ -253,15 +232,18 @@ public class HerdrShellPlugin extends Plugin {
         super.handleOnDestroy();
     }
 
+    private boolean showingConnectScreen() {
+        return getBridge().getServerUrl() == null;
+    }
+
     /**
-     * The app link the app was opened with (MainActivity), once, or "": the connect screen opens it
-     * as it would a scanned QR code. A PC's page has the bridge too: an activity showing a PC (its
+     * A PC's page has the bridge too: an activity showing a PC (its
      * server URL is the PC's) never hands the link out, as it may hold another PC's pairing code.
      */
     @PluginMethod
     public void takeLink(PluginCall call) {
         String link = null;
-        if (getBridge().getServerUrl() == null) {
+        if (showingConnectScreen()) {
             link = PCStore.link;
             PCStore.link = null;
         }
@@ -277,7 +259,6 @@ public class HerdrShellPlugin extends Plugin {
         call.resolve();
     }
 
-    /** Back to the connect screen; the PC stays in the list. */
     @PluginMethod
     public void disconnect(PluginCall call) {
         PCStore.setCurrent(getContext(), null);
@@ -285,7 +266,6 @@ public class HerdrShellPlugin extends Plugin {
         reopen(null);
     }
 
-    /** Opens this window's PC again from its first page. */
     @PluginMethod
     public void retry(PluginCall call) {
         PCStore.fail(null, null);

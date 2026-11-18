@@ -20,7 +20,6 @@ type PaneStatusMessage = Extract<ServerMessage, { type: "pane-status" }>;
 type PaneExitedMessage = Extract<ServerMessage, { type: "pane-exited" }>;
 type TakeNotificationTargetRef = RefObject<(target: NotificationTarget) => unknown>;
 
-// the alerts take a pane waiting on its turn's background work for working (shared/notify-policy.ts)
 const alerting = (list: Machine[]) => list.map((machine) => ({
   id: machine.id,
   snapshot: machine.snapshot && { panes: machine.snapshot.panes.map((pane) => ({ pane_id: pane.pane_id, agent_status: alertStatus(pane.agent_status, (pane as HerdrPane).background_wait) })) },
@@ -42,15 +41,12 @@ export interface AlertSignalsParams {
   alertSoundRef: RefObject<boolean>;
 }
 
-/** The in-app alert and the alert sound, and what the event stream does with a status change. */
 export function useAlertSignals({ settings, selectionRef, drawerOpenRef, splitRef, splitShownRef, machinesRef, alertsRef, alertsOnRef, pushOnRef, statusRef, turnStartRef, lastTurnRef, alertSoundRef }: AlertSignalsParams) {
   // a pane on the mute list, or (fork) a sub-agent while sub-agents are muted, is told on no channel
   const muteHelpersRef = useRef(settings.muteSubAgents);
   muteHelpersRef.current = settings.muteSubAgents;
   const paneMuted = useCallback((machineId: string, paneId: string, pane: HerdrPane | undefined): boolean =>
     paneAlertsMuted(currentPaneMutes(), machineId, paneId) || helperAlertsMuted(muteHelpersRef.current, pane), []);
-  // In-app alerts (components/Droplet.tsx): only while the app is on screen - a hidden app has
-  // its system notifications - and never for the pane already open in front of the user.
   const dropIn = useCallback((machine: Machine, pane: HerdrPane, kind: DropletKind) => {
     if (!alertsOnRef.current || document.visibilityState !== "visible") return;
     const open = selectionRef.current;
@@ -72,8 +68,6 @@ export function useAlertSignals({ settings, selectionRef, drawerOpenRef, splitRe
   const alertTurns = useRef<ReturnType<typeof createAlertTurnPlayer> | null>(null);
   useEffect(() => {
     const player = createAlertTurnPlayer({
-      // a chime waits its turn among the tabs, and then maybe behind another chime: a mute made
-      // meanwhile still silences it (asked here, and again on each mute change while it waits)
       play: (kind, key) => {
         const [machineId, paneId] = JSON.parse(key) as [string, string];
         const wanted = () => alertsOnRef.current && alertSoundRef.current && !paneAlertsMuted(currentPaneMutes(), machineId, paneId);
@@ -102,7 +96,6 @@ export function useAlertSignals({ settings, selectionRef, drawerOpenRef, splitRe
     return () => { for (const event of events) window.removeEventListener(event, unlock, true); };
   }, [settings.alertSound]);
   const onRoster = useCallback((machines: Machine[]) => {
-    // a PC turned off by name is turned off by its relay ID too once the roster names it (#2876)
     const { pcsOff } = readAlertFilters();
     const keyed = keyedAlertPcs(pcsOff, machines);
     if (keyed !== pcsOff) updateAlertFilters({ pcsOff: keyed });
@@ -116,7 +109,6 @@ export function useAlertSignals({ settings, selectionRef, drawerOpenRef, splitRe
     const pane = machine.snapshot?.panes.find((p) => p.pane_id === message.pane_id);
     const worked = trackTurn(turnStartRef.current, key, previous, status, Date.now());
     if (worked !== null) lastTurnRef.current.set(key, worked);
-    // a muted pane (lib/paneMutes.ts), or one on a PC this device turned off, is tracked as every other, and told on no channel
     const muted = paneMuted(machine.id, message.pane_id, pane) || !alertPcAllowed(alertsRef.current, pcAlertKey(machine), machine.name);
     if (pane && !muted && shouldNotifyStatus(previous, status) && dropletAllows(alertsRef.current, status, worked, pane.agent_kind)) {
       const kind = status === "blocked" ? "blocked" : "done";

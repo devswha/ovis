@@ -6,6 +6,7 @@ import { chromium } from "playwright-core";
 import type { SessionSnapshot } from "../shared/protocol.ts";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
+import { serveDemo } from "./demo-server.ts";
 import { chromePath } from "./chrome-path.ts";
 
 /** All metadata is synthetic and confined to this disposable demo, never a live session. */
@@ -42,12 +43,7 @@ try {
   writeFileSync(transportPath, transport.replace("function readSnapshot(machine) {", `function readSnapshot(machine) { (${fixture.toString()})(machine.snapshot, ${JSON.stringify([panes.api, panes.web, panes.flaky, panes.omp, panes.cli, panes.hermes, panes.shell])});`));
   const index = join(app, "index.html");
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, '<script src="./demo-transport.js"></script>\n<script type="module"'));
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = decodeURIComponent(new URL(request.url).pathname).replace(/^\/herdr-web-ui\/demo\/app\//, "");
-    if (path.split("/").includes("..") || path.includes("\\")) return new Response(null, { status: 400 });
-    const file = Bun.file(join(app, path || "index.html"));
-    return await file.exists() ? new Response(file) : new Response(null, { status: 404 });
-  } });
+  const server = serveDemo(app);
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     try {

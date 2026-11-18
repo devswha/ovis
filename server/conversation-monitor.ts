@@ -29,7 +29,6 @@ function fileIdentity(path: string): string {
   } catch { return "missing"; }
 }
 
-/** The message pi is writing, as the turn its line reads as; null when there is none or it cannot be read. */
 function liveTurn(path: string): ConversationTurn | null {
   try {
     const turn = parseOmpTranscript(readFileSync(path, "utf8"), 1).at(-1);
@@ -37,8 +36,6 @@ function liveTurn(path: string): ConversationTurn | null {
   } catch { return null; }
 }
 
-/** One server-local stat loop, one resolution per interested pane, never a turn parser. SQLite includes its WAL.
- * The one parse is pi's live message: a single line, read only when its file changed. */
 export class ConversationMonitor {
   private readonly panes = new Map<string, WatchedConversation>();
   private readonly salt = randomUUID();
@@ -105,7 +102,6 @@ export class ConversationMonitor {
     const catalog = transcript.source === "agy-transcript" ? agyDatabasePath(transcript.path) : null;
     const catalogIdentity = catalog === null ? "" : `${fileIdentity(catalog)}:${fileIdentity(`${catalog}-wal`)}`;
     const observed = `${transcript.source}\0${transcript.path}\0${session}\0${cwd}\0${identity}\0${wal}\0${catalogIdentity}`;
-    // Resolve once immediately on disappearance, not on every missing-file stat.
     if (identity === "missing" && observed !== state.observed) state.nextResolve = 0;
     this.publish(paneId, state, observed);
     if (transcript.source === "pi-transcript") {
@@ -159,8 +155,6 @@ export class ConversationMonitor {
     state.resolving = true;
     let present = false;
     try {
-      // Concurrent panes share the fresh snapshot. Existing native resolvers retain their
-      // process/session evidence; no store is searched by transcript modification time.
       this.snapshot ??= sessionSnapshot().finally(() => { this.snapshot = null; });
       const snapshot = await this.snapshot;
       if (this.panes.get(paneId) !== state) return;

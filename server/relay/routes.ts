@@ -50,7 +50,6 @@ export async function handleRelayRequest(request: Request, pathname: string, con
       case "/api/relay/start": {
         setRequestRoute("/api/relay/start");
         const status = service.start();
-        // an existing link in "error" is retrying, not a failed start; a start that left no link failed
         return reply(status, status.blocked ? 409 : !service.linked ? 500 : 200);
       }
       case "/api/relay/stop":
@@ -59,7 +58,6 @@ export async function handleRelayRequest(request: Request, pathname: string, con
       case "/api/relay/offer":
         setRequestRoute("/api/relay/offer");
         if (service.status().phase === "off" || service.status().blocked) return fail("relay_off", "Start the relay before pairing.", 409);
-        // While connecting, a client the offer reaches waits at the relay for this PC; in error nothing may answer it.
         if (service.status().phase === "error") return fail("relay_offline", "The relay is not reachable; wait until it is online before pairing.", 409);
         // the relay tab's QR code says what it is for (a header, as x-ovis-local-only below): it puts a PC in no
         // account into the account of whoever scans it, so a PC that is in one makes none (409 in_account)

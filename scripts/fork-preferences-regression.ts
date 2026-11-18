@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { chromium, type Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
+import { serveDemo } from "./demo-server.ts";
 import { chromePath } from "./chrome-path.ts";
 
 const openDrawer = async (page: Page) => {
@@ -18,12 +19,7 @@ try {
   await buildDemoApp(app);
   const index = join(app, "index.html");
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, '<script src="./demo-transport.js"></script><script type="module"'));
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname.replace(/^\/herdr-web-ui\/demo\/app\//, "");
-    if (path.split("/").includes("..") || path.includes("\\")) return new Response(null, { status: 400 });
-    const file = Bun.file(join(app, !path || path.endsWith("/") ? `${path}index.html` : path));
-    return await file.exists() ? new Response(file) : new Response(null, { status: 404 });
-  } });
+  const server = serveDemo(app);
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     try {

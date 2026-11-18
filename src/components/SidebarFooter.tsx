@@ -20,7 +20,7 @@ export function SidebarFooter({ start, watching = false, onSettings, onUsageLogi
   return <footer className="sidebar-footer">
     {start}
     {/* no Install app here: a page knows it is installed only in the app's own window, so a row kept
-        showing in every tab. Settings → Phone & devices → Install offers it (SettingsDialog). */}
+        showing in every tab. */}
     <div className="sidebar-footer-row">
       <button className="btn btn-ghost sidebar-footer-action sidebar-footer-settings" aria-label={t("Settings")} title={t("Settings (⌘⇧,)")} onClick={onSettings}><Settings aria-hidden="true" /></button>
       <UsageMeters watching={watching} onLocalLogin={watching ? undefined : onUsageLogin} />
