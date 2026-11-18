@@ -31,7 +31,10 @@ async function openWithClock(page: Page, url: string): Promise<void> {
   try {
     await page.goto(url, { waitUntil: "commit" });
     await page.clock.install();
-    await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
+    // install() lets the clock run in real time and pauseAt() is a later round trip, so the target must stay ahead of
+    // the clock through a stall between them (pauseAt rejects a target in the past); 10 s is far below the minute the
+    // "<1m" checks allow
+    await page.clock.pauseAt(await page.evaluate(() => Date.now() + 10_000));
   } finally {
     resolve();
   }
