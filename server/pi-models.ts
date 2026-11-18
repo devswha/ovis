@@ -195,19 +195,28 @@ export function piAgentDir(env: NodeJS.ProcessEnv = process.env): string {
   return typeof dir === "string" && dir.length > 0 ? (dir === "~" || dir.startsWith("~/") ? join(homedir(), dir.slice(2)) : dir) : join(homedir(), ".pi", "agent");
 }
 
+const CATALOGS: { name: string; parse: (p: unknown) => Catalog | null }[] = [
+  { name: "models.json", parse: modelsJsonCatalog },
+  { name: "commandcode-models.json", parse: commandCodeCatalog },
+  { name: "models-store.json", parse: modelsStoreCatalog },
+];
+
+/** The catalogs as they are now: a window resolved under another version may be another number. */
+export function piCatalogVersion(agentDir = piAgentDir()): string {
+  return CATALOGS.map(({ name }) => {
+    const stat = statSync(join(agentDir, name), { throwIfNoEntry: false });
+    return stat === undefined ? "-" : `${stat.mtimeMs}:${stat.size}`;
+  }).join("|");
+}
+
 /**
  * The window a model runs in, by the provider that served it. Both parts are asked for:
  * two providers can offer the same model id at different windows, and a session records
  * which of them answered. Consults every on-disk catalog pi keeps, in order.
  */
 export function piContextWindow(model: string, provider: string | null, agentDir = piAgentDir()): number | null {
-  const files: { path: string; parse: (p: unknown) => Catalog | null }[] = [
-    { path: join(agentDir, "models.json"), parse: modelsJsonCatalog },
-    { path: join(agentDir, "commandcode-models.json"), parse: commandCodeCatalog },
-    { path: join(agentDir, "models-store.json"), parse: modelsStoreCatalog },
-  ];
-  for (const file of files) {
-    const catalog = readCatalog(file.path, file.parse);
+  for (const file of CATALOGS) {
+    const catalog = readCatalog(join(agentDir, file.name), file.parse);
     if (catalog === null) continue;
     // an exact provider match only: a model id a second provider also serves, at another
     // window, must not borrow the first one's number

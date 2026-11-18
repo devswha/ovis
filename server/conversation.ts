@@ -72,6 +72,7 @@ import { COPILOT_IMAGE_REF, copilotImage, copilotOffsetOutput, copilotOutput, co
 import { copilotApiTranscript, copilotExplicitResume, copilotHandoffSession, copilotProcessSession, copilotTranscriptFile, copilotUnwrittenSession, openCopilotFile, readCopilotProcessSession } from "./copilot-store.ts";
 import { forgetCopilotForeground, readCopilotForeground } from "./copilot-foreground.ts";
 import { claudeSetting, parseConversationMetadata } from "./conversation-metadata.ts";
+import { piCatalogVersion } from "./pi-models.ts";
 import { answerVersion, bindFile, boundSteps, checkBoundFile, ConversationNotStarted, ConversationReadPending, ConversationUnavailable, copilotRecoverable, type FileIdentity, openBound, readBound, type ConversationPage, HistoryChanged, type RecognizedConversation, type StreamSource, TRANSCRIPT_WINDOW_BYTES } from "./conversation-shared.ts";
 import { forgetHermesTranscriptState, hermesConversationPage, hermesToolOutput, hermesTranscriptForPane } from "./hermes.ts";
 
@@ -881,6 +882,8 @@ interface SettledTurns {
   inherited: Map<string, string>;
   observedEnd: number;
   piAgentDir?: string | null;
+  /** the version of that dir's catalogs the windows were resolved in (pi only) */
+  catalogs?: string;
 }
 const settledTurns = new Map<string, SettledTurns>();
 
@@ -1091,8 +1094,9 @@ interface LiveTranscriptTurn {
   contentHash?: string;
   parser: TranscriptParser;
   metadata: ConversationMetadata;
-  /** the catalogs a pi window was looked up in: another dir answers another window */
+  /** the catalogs a pi window was looked up in: another dir, or an edited catalog, answers another window */
   piAgentDir?: string | null;
+  catalogs?: string;
   subagents?: { ids: Set<string>; details: Map<string, SubagentDetail> };
 }
 const liveTranscriptTurns = new Map<string, LiveTranscriptTurn>();
@@ -1104,7 +1108,7 @@ const liveTurnBudget = (source: IncrementalSource) => source === "omo-transcript
 function incrementalLiveTurn(path: string, stream: TranscriptStream, source: IncrementalSource, start: number, before: SettledTurns): { turns: ConversationTurn[]; metadata: ConversationMetadata } {
   let cached = liveTranscriptTurns.get(path);
   if (cached && (cached.source !== source || cached.id !== stream.id || cached.start !== start
-    || cached.pageStart !== before.start || cached.prefixBoundary !== before.tail || cached.piAgentDir !== before.piAgentDir || cached.scanned > stream.length
+    || cached.pageStart !== before.start || cached.prefixBoundary !== before.tail || cached.piAgentDir !== before.piAgentDir || cached.catalogs !== before.catalogs || cached.scanned > stream.length
     || bytesBefore(stream, cached.scanned) !== cached.boundary)) cached = undefined;
 
   let details: Map<string, SubagentDetail> | undefined;
@@ -1136,7 +1140,7 @@ function incrementalLiveTurn(path: string, stream: TranscriptStream, source: Inc
       : source === "claude-transcript" ? createClaudeTranscriptParser({ subagents: subagents!.details, noticed: new Set(before.noticed) })
       : createOmpTranscriptParser(ompReading(source, path, new Map(before.taskTitles)));
     cached = { source, id: stream.id, start, pageStart: before.start, prefixBoundary: before.tail, scanned: start,
-      boundary: bytesBefore(stream, start), parser, metadata: before.metadata, piAgentDir: before.piAgentDir, subagents };
+      boundary: bytesBefore(stream, start), parser, metadata: before.metadata, piAgentDir: before.piAgentDir, catalogs: before.catalogs, subagents };
   }
   const bytes = currentBytes ? currentBytes.subarray(cached.scanned - start) : readStream(stream, cached.scanned, stream.length);
   const complete = bytes.lastIndexOf(0x0a) + 1;
@@ -1198,8 +1202,9 @@ function metadataHead(path: string, stream: TranscriptStream, source: Recognized
 function liveTurns(path: string, stream: TranscriptStream, source: RecognizedConversation["source"], start: number, starts: number[], piAgentDir?: string | null): { turns: ConversationTurn[]; metadata: ConversationMetadata } {
   const last = Math.max(start, starts[starts.length - 1] ?? start);
   const key = `${path}\0${start}`;
+  const catalogs = source === "pi-transcript" && piAgentDir !== null ? piCatalogVersion(piAgentDir) : undefined;
   let settled = settledTurns.get(key);
-  if (!settled || settled.id !== stream.id || settled.end > last || bytesBefore(stream, settled.end) !== settled.tail || settled.piAgentDir !== piAgentDir) {
+  if (!settled || settled.id !== stream.id || settled.end > last || bytesBefore(stream, settled.end) !== settled.tail || settled.piAgentDir !== piAgentDir || settled.catalogs !== catalogs) {
     const head = start > stream.floor ? metadataHead(path, stream, source, start) : "";
     let kept: SettledTurns | undefined;
     for (const [other, page] of settledTurns) {
@@ -1212,7 +1217,7 @@ function liveTurns(path: string, stream: TranscriptStream, source: RecognizedCon
       if (to > from) parseTurns(source, path, readStream(stream, from, to).toString("utf8"), inherited, undefined, from);
     }
     settled = { source, id: stream.id, start, end: start, turns: [], metadata: parseConversationMetadata(`${head}
-`, source, undefined, piAgentDir), tail: bytesBefore(stream, start), taskTitles: new Map(inherited), noticed: new Set(), inherited, observedEnd: stream.length, piAgentDir };
+`, source, undefined, piAgentDir), tail: bytesBefore(stream, start), taskTitles: new Map(inherited), noticed: new Set(), inherited, observedEnd: stream.length, piAgentDir, catalogs };
   }
   if (settled.end < last) {
     const text = readStream(stream, settled.end, last).toString("utf8");

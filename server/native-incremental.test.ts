@@ -218,6 +218,25 @@ test("pi-transcript: a live task's context window follows the agent dir it is re
   expect(read(dirs[0]!)).toEqual({ used: 50_000, window: 100_000 });
 });
 
+test("pi-transcript: a live task's context window follows an edited catalog and a provider named before the append", () => {
+  const dir = mkdtempSync(join(tmpdir(), "herdr-native-incremental-agent-"));
+  roots.push(dir);
+  const catalog = (window: number) => writeFileSync(join(dir, "models.json"), JSON.stringify({ providers: { lwsa: { models: [{ id: "qwen-test", contextWindow: window }] } } }));
+  catalog(100_000);
+  const record = tree();
+  const path = fixture(record({ type: "model_change", provider: "lwsa", modelId: "qwen-test" }) + record(prompt("pi-transcript", "Start")));
+  const read = () => transcriptPage("pi-transcript", path, {}, undefined, dir).metadata.context;
+  read();
+  appendFileSync(path, record({ type: "message", message: { role: "assistant", model: "qwen-test", usage: { totalTokens: 50_000 }, content: [{ type: "text", text: "Working" }] } }));
+  expect(read()).toEqual({ used: 50_000, window: 100_000 });
+  catalog(1_000_000);
+  appendFileSync(path, record(answer("pi-transcript", "Still working")));
+  const warm = read();
+  expect(warm).toEqual({ used: 50_000, window: 1_000_000 });
+  forgetTranscriptState();
+  expect(read()).toEqual(warm);
+});
+
 const parses = (read: () => unknown) => {
   const parse = spyOn(JSON, "parse");
   try {

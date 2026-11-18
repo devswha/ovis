@@ -121,8 +121,9 @@ export function parseConversationMetadata(text: string, source: ConversationResp
   // Muse names its model, but no effort or context window; most of its lines are skipped unparsed
   if (source === "muse-transcript") return { ...metadata, model: museModel(text, metadata.model) };
   // pi states the provider on the same records that state usage, so the window is asked for
-  // from what this line says rather than remembered across sources
-  let piProvider: string | null = null;
+  // from what this line says rather than remembered across sources; a fold that continues an
+  // earlier one starts from the provider that one named
+  let piProvider: string | null = metadata.provider ?? null;
   // the catalogs cannot change within one fold, so each model is looked up (and its files
   // stat'ed) once, not once per answer
   const piWindows = new Map<string, number | null>();
