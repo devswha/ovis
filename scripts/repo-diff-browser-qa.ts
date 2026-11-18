@@ -269,6 +269,8 @@ async function openChange(page: Page, path: string): Promise<void> {
   await page.locator(".repo-diff-viewer").waitFor();
 }
 async function closeDiff(page: Page): Promise<void> {
+  // a press on the viewer while it still rises lands where its Close was, and the viewer stays open
+  await page.waitForFunction(() => document.querySelector(".repo-diff-viewer")?.getAnimations().length === 0);
   await page.getByRole("button", { name: "Close diff", exact: true }).click();
   await page.locator(".repo-diff-viewer").waitFor({ state: "detached" });
 }
