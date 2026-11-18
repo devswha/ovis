@@ -1945,12 +1945,18 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
           const write = async (): Promise<void> => {
             const first = !move && !committed;
             if (!move) committed = true;
+            // asked again right before herdr writes: a question known to have ended since the last read takes no committing
+            // key (a move keeps its own cancellation boundaries)
+            const asked = (): boolean => asks() && !request.signal.aborted;
+            const guard = move ? undefined : asked;
             try {
-              if (step.keys) await paneSendKeys(body.pane_id, step.keys);
-              else if (step.text !== undefined) await paneSendText(body.pane_id, step.text);
+              if (step.keys) await paneSendKeys(body.pane_id, step.keys, undefined, guard);
+              else if (step.text !== undefined) await paneSendText(body.pane_id, step.text, undefined, guard);
             } catch (error) {
               // herdr was never reached, or the write was cancelled, so nothing was pressed: the card is still to be answered
               if (first && error instanceof HerdrError && (error.code === "connect_failed" || error.code === "cancelled")) committed = false;
+              // the question ended while the write was on its way: nothing was pressed, and the card has changed
+              if (!move && error instanceof HerdrError && error.code === "cancelled" && !asked()) throw new KeyRefused();
               throw error;
             }
           };
