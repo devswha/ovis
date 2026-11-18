@@ -79,16 +79,28 @@ function shownBy(error: Error): string {
   const fields = Object.getOwnPropertyNames(error).map((name) => String((error as unknown as Record<string, unknown>)[name]));
   return [error.name, error.message, String(error.stack ?? ""), String(error.cause ?? ""), JSON.stringify({ ...error }), ...fields].join("\n");
 }
+/** JSON.parse as it was when this file loaded: a test that spies on JSON.parse does not count the leak check's own calls. */
+const parseJson = JSON.parse.bind(JSON) as (text: string) => unknown;
+/** A JSON string token's value, unescaped; its text after the opening quote (and before a closing one) when it is malformed. */
+function unescaped(token: string): string {
+  try {
+    const value = parseJson(token);
+    if (typeof value === "string") return value;
+  } catch {
+    // A malformed fixture: scan the text as it stands.
+  }
+  return token.length > 1 && token.endsWith('"') ? token.slice(1, -1) : token.slice(1);
+}
 /**
- * The line after its prefix, each secret, service and list the line holds (decoded from it) and each fixture key: an
- * error may show no 12 characters of any.
+ * The line after its prefix, each secret, service and list the line holds (whole JSON strings, decoded from it and
+ * unescaped) and each fixture key: an error may show no 12 characters of any.
  */
 function privateTexts(line: string, keys: Readonly<Record<string, KeyPair>> = {}): [string, string][] {
   const prefixAt = line.indexOf(JOIN_LINE_PREFIX);
   const payload = prefixAt >= 0 ? line.slice(prefixAt + JOIN_LINE_PREFIX.length) : line;
   const decoded = Buffer.from(payload.slice(payload.lastIndexOf(":") + 1), "base64url").toString("utf8");
-  const members = [...decoded.matchAll(/"(secret|service|list)"\s*:\s*"([^"]*)"/g)]
-    .map((match, index): [string, string] => [`${match[1]} ${index}`, match[2] ?? ""]);
+  const members = [...decoded.matchAll(/"(secret|service|list)"\s*:\s*("(?:[^"\\]|\\.)*"?)/g)]
+    .map((match, index): [string, string] => [`${match[1]} ${index}`, unescaped(match[2] ?? "")]);
   return [["payload", payload], ...members, ...Object.entries(keys).map(([name, pair]): [string, string] => [name, pair.pkcs8])];
 }
 /** Where an error shows 12 characters of a private text, every window tried one character apart (each distinct one once); empty when it shows none. */
@@ -339,18 +351,36 @@ describe("a line's bounded length", () => {
     const key = await importInvite(true);
     const exportKey = spyOn(crypto.subtle, "exportKey");
     const btoa = spyOn(globalThis, "btoa");
+    // Every URL the writer builds: it parses a service only with `new URL`.
+    const RealURL = globalThis.URL;
+    let parsed = 0;
+    globalThis.URL = class extends RealURL {
+      constructor(...args: ConstructorParameters<typeof URL>) {
+        parsed++;
+        super(...args);
+      }
+    };
+    const run = async (service: string) => {
+      exportKey.mockClear();
+      btoa.mockClear();
+      parsed = 0;
+      let calls = { exportKey: -1, btoa: -1, parsed: -1 };
+      const reason = await writerReason(service, LIST, key, () => {
+        calls = { exportKey: exportKey.mock.calls.length, btoa: btoa.mock.calls.length, parsed };
+      });
+      return { service: service.slice(0, 12), reason, calls };
+    };
     try {
+      // The control: a service of a usual length is parsed, so the count sees parsing.
+      const control = await run(SERVICE);
+      expect(control.reason).toBe("none");
+      expect(control.calls.parsed).toBeGreaterThan(0);
       // The second is no https origin either: a writer that parsed it first would refuse it as `service`.
       for (const service of [`https://${"a".repeat(2048)}.test`, `http://${"a".repeat(2048)}.test`]) {
-        exportKey.mockClear();
-        btoa.mockClear();
-        let calls = { exportKey: -1, btoa: -1 };
-        const reason = await writerReason(service, LIST, key, () => {
-          calls = { exportKey: exportKey.mock.calls.length, btoa: btoa.mock.calls.length };
-        });
-        expect({ service: service.slice(0, 12), reason, calls }).toEqual({ service: service.slice(0, 12), reason: "length", calls: { exportKey: 0, btoa: 0 } });
+        expect(await run(service)).toEqual({ service: service.slice(0, 12), reason: "length", calls: { exportKey: 0, btoa: 0, parsed: 0 } });
       }
     } finally {
+      globalThis.URL = RealURL;
       exportKey.mockRestore();
       btoa.mockRestore();
     }
