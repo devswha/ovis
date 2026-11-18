@@ -7,7 +7,7 @@ import { ghAccounts, originRepository, parsePullRequests, PullRequestError, runG
 // Service.qml / omarchy-github-fetch. No code copied. Every signed-in account is read, each with its own
 // token (`gh auth token --user`), never by switching gh's active account.
 const FIELDS = `number title url headRefName isDraft isCrossRepository updatedAt author { login }
-  repository { nameWithOwner } reviewDecision stackEntry { position stack { size } }
+  repository { nameWithOwner } reviewDecision stackEntry { position stack { id size } }
   commits(last:1) { nodes { commit { statusCheckRollup { state } } } }`;
 const REVIEWED = `headRefOid viewerLatestReview { commit { oid } }`;
 const REPOSITORY = /^[\w.-]+\/[\w.-]+$/;
@@ -51,7 +51,7 @@ export function parseGithubPulls(output: string): GithubPulls {
     if (!teamOnly || typeof data?.viewer?.login !== "string") throw unreadable();
     const viewer: string = data.viewer.login;
     const rowOf = (value: unknown): GithubPull => {
-      const row = value as { number: number; url: string; repository?: { nameWithOwner?: unknown }; stackEntry?: { position?: unknown; stack?: { size?: unknown } } | null; commits?: { nodes?: { commit?: { statusCheckRollup?: { state?: string } | null } }[] } };
+      const row = value as { number: number; url: string; repository?: { nameWithOwner?: unknown }; stackEntry?: { position?: unknown; stack?: { id?: unknown; size?: unknown } } | null; commits?: { nodes?: { commit?: { statusCheckRollup?: { state?: string } | null } }[] } };
       const repository = row?.repository?.nameWithOwner;
       if (typeof repository !== "string" || !REPOSITORY.test(repository) || !Number.isSafeInteger(row.number) || row.number < 1 || row.url !== `https://github.com/${repository}/pull/${row.number}`) throw unreadable();
       // The aggregate covers every check, including contexts beyond GitHub's first page.
@@ -60,7 +60,7 @@ export function parseGithubPulls(output: string): GithubPulls {
       if (!entry) throw unreadable();
       const { position, stack } = row.stackEntry ?? {};
       const size = stack?.size;
-      return { ...entry, repository, account: viewer, ...(Number.isSafeInteger(position) && Number.isSafeInteger(size) && (size as number) > 1 ? { stack: { position: position as number, size: size as number } } : {}) };
+      return { ...entry, repository, account: viewer, ...(typeof stack?.id === "string" && Number.isSafeInteger(position) && Number.isSafeInteger(size) && (size as number) > 1 ? { stack: { id: stack.id, position: position as number, size: size as number } } : {}) };
     };
     const group = (nodes: unknown, keep: (value: Record<string, unknown>) => boolean = () => true, extra: Partial<GithubPull> = {}): GithubPull[] => {
       if (!Array.isArray(nodes)) throw unreadable();

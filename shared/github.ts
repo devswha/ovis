@@ -8,8 +8,8 @@ export interface GithubPull extends PullRequestEntry {
   workspace_id?: string;
   /** reviewed by that account, then changed: commits came after its latest review */
   updated_since_review?: boolean;
-  /** its place in the stack it is part of, 1 at the bottom */
-  stack?: { position: number; size: number };
+  /** the stack it is part of (GitHub's id for it) and its place there, 1 at the bottom */
+  stack?: { id: string; position: number; size: number };
 }
 export interface GithubPulls {
   /** every gh account on github.com that was read */

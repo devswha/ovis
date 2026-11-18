@@ -13,6 +13,21 @@ export function githubGroups(listing: GithubPulls, selected: string) {
   return { selected, repos: [...counts].sort(([a], [b]) => a.localeCompare(b)), review: filter(listing.review), yours: filter(listing.yours), team: filter(team) };
 }
 
+/** A section's rows with each stack as one: its top pull request, where the stack's latest one is, and the rest of it
+    under that, top down. A pull request on its own has nothing under it. */
+export function githubStacks(rows: readonly GithubPull[]): { pr: GithubPull; below: GithubPull[] }[] {
+  const stacks = new Map<string, GithubPull[]>();
+  for (const pr of rows) if (pr.stack) stacks.set(pr.stack.id, [...stacks.get(pr.stack.id) ?? [], pr]);
+  const shown = new Set<string>();
+  return rows.flatMap((pr) => {
+    if (!pr.stack) return [{ pr, below: [] }];
+    if (shown.has(pr.stack.id)) return [];
+    shown.add(pr.stack.id);
+    const [top, ...below] = [...stacks.get(pr.stack.id)!].sort((a, b) => b.stack!.position - a.stack!.position);
+    return [{ pr: top!, below }];
+  });
+}
+
 const REPO_KEY = "ovis:fork-github-repo";
 export function loadGithubRepo(): string {
   try { return window.localStorage.getItem(REPO_KEY) ?? ""; } catch { return ""; }

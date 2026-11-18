@@ -125,11 +125,18 @@
   list-style: none;
 }
 
-/* a row: its state (open or draft), the title up to two lines, and its CI's mark at the end; where and when under
-   the title */
+/* a row: the title up to two lines, with its CI's mark at the end while it fails or runs; where and when under it.
+   A stack's top row has the fold (+N) beside it. */
+.fork-github-row {
+  display: flex;
+  align-items: flex-start;
+}
+
 .fork-github-summary {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  flex: 1 1 auto;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: start;
   column-gap: var(--space-3);
   row-gap: var(--space-1);
@@ -180,7 +187,7 @@
 
 /* the agent inbox's row sizes: its name's and its words', a step smaller on a wide screen (InboxList.css) */
 .fork-github-row-sub {
-  grid-column: 2 / -1;
+  grid-column: 1 / -1;
   color: var(--text-dim);
   font-size: var(--fs-row-sub);
   line-height: var(--lh-base);
@@ -189,28 +196,47 @@
 .mode-inbox.is-wide .fork-github-row-title { font-size: var(--fs-md); }
 .mode-inbox.is-wide .fork-github-row-sub { font-size: var(--fs-sm); }
 
-.fork-github-row-state,
 .fork-github-row-mark {
   display: inline-flex;
   /* level with the title's first line */
   padding-top: 0.1em;
 }
 
-.fork-github-row-state svg,
 .fork-github-row-mark svg {
   width: var(--icon-size-sm);
   height: var(--icon-size-sm);
 }
 
-.fork-github-row-mark.is-passing { color: var(--status-done); }
 .fork-github-row-mark.is-failing { color: var(--status-blocked); }
 .fork-github-row-mark.is-pending { color: var(--status-working); }
-.fork-github-row-mark.is-dim { color: var(--text-dim); }
-.fork-github-row-state.is-passing { color: var(--status-done); }
-.fork-github-row-state.is-dim { color: var(--text-dim); }
-/* the review, only when it says something */
-.fork-github-row-review.is-passing { color: var(--status-done); }
+/* changes asked for, the one review word a row shows */
 .fork-github-row-review.is-failing { color: var(--status-blocked); }
+/* a draft: its title dimmed, as the sidebar dims what is not under way */
+.fork-github-row.is-draft .fork-github-row-title { color: var(--text-dim); }
+
+/* a stack's fold: the +N of a folded workspace (Sidebar.css), level with the title */
+.fork-github-stack-fold {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--control-h);
+  min-height: var(--control-h);
+  margin-top: var(--space-1);
+  padding: 0 var(--space-1-5);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-md);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.fork-github-stack-fold svg { width: var(--icon-size-sm); height: var(--icon-size-sm); }
+@media (hover: hover) { .fork-github-stack-fold:hover { background: var(--side-hover); color: var(--text); } }
+/* the rest of an open stack, top down, under its top row */
+.fork-github-stack-below { margin-inline-start: var(--space-4); margin-top: var(--space-half); }
 /* a PR reviewed by you that got new commits since */
 .fork-github-row-updated { color: var(--status-working); }
 
@@ -260,5 +286,3 @@
 .app:has(.status-bar) .fork-github-foot > .fork-foot-waiting { display: none; }
 
 /* a stacked pull request's place in its stack, 1 at the bottom: the sub line's one colored word */
-.fork-github-row-stack { display: inline-flex; align-items: center; gap: 2px; margin-inline-end: var(--space-1-5); color: var(--accent); font-variant-numeric: tabular-nums; }
-.fork-github-row-stack svg { width: 1em; height: 1em; flex: none; }

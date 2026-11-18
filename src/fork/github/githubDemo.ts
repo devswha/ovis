@@ -17,8 +17,9 @@ export function demoGithubPulls(workspaces: WorkspaceInfo[]): GithubPulls {
       row("cli-tools", { number: 88, title: "Validate the config file before starting", branch: "fix/config-validation", checks: "failing", review: "review_required", author: "sam" }),
     ],
     yours: [
-      { ...row("checkout-api", { number: 142, title: "Retry the export when the connection drops", branch: "feat/export-guard", checks: "passing", review: "approved" }), stack: { position: 2, size: 2 } },
+      { ...row("checkout-api", { number: 142, title: "Retry the export when the connection drops", branch: "feat/export-guard", checks: "passing", review: "approved" }), stack: { id: "demo-export", position: 2, size: 2 } },
       row("cli-tools", { number: 139, title: "Add the retry flag to the CLI", branch: "feat/retry-flag", checks: "pending", review: "none", draft: true }),
+      { ...row("checkout-api", { number: 140, title: "Keep the export's progress between tries", branch: "feat/export-progress", checks: "passing", review: "none" }), stack: { id: "demo-export", position: 1, size: 2 } },
     ],
     team: [
       row("checkout-api", { number: 145, title: "Cache the tax tables per region", branch: "perf/tax-cache", checks: "passing", review: "review_required", author: "lee" }),
