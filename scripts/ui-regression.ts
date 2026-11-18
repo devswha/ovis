@@ -882,6 +882,7 @@ try {
     assert.equal(await alertsState(page), "On in the app");
     assert.equal(await alertsOffMarked(page), false, "alerts that are on leave the More button unmarked");
     await context.grantPermissions(["notifications"], { origin });
+    await page.waitForFunction(() => Notification.permission === "granted");
     await runMoreItem(page, "Alerts");
     await until(async () => await alertsState(page) !== "On in the app", "the item's tap takes the permission");
     assert.match(await alertsState(page), /^On[ ,]/);

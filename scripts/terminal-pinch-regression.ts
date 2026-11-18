@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { chromium } from "playwright-core";
 import { createServer } from "../server/index.ts";
 import { FLING_STOPPED_MS } from "../src/lib/touchFling.ts";
+import { TOUCH_WHEEL_REPORTS_PER_FRAME } from "../src/lib/touchWheelPacer.ts";
 import { workspaceCreate, workspaceClose } from "../server/herdr/client.ts";
 import { UsageService } from "../server/usage.ts";
 import { chromePath } from "./chrome-path.ts";
@@ -25,11 +26,19 @@ export async function checkTerminalPinch(browser: Browser, origin: string, paneI
   await context.addInitScript(({ paneId }) => {
     if (!localStorage.getItem("ovis:settings")) localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" }));
     localStorage.setItem(`ovis:view:${paneId}`, "terminal");
-    const touchWindow = window as Window & { wheels_: number; wheelModes_: number[]; remaining_: number[] };
+    const touchWindow = window as Window & { wheels_: number; wheelModes_: number[]; remaining_: number[]; lastMove_: { at: number; y: number } | null; touchEnds_: number };
     touchWindow.wheels_ = 0;
     touchWindow.wheelModes_ = [];
     touchWindow.remaining_ = [];
+    touchWindow.lastMove_ = null;
+    touchWindow.touchEnds_ = 0;
+    document.addEventListener("touchstart", () => { touchWindow.lastMove_ = null; }, { capture: true });
+    document.addEventListener("touchmove", (event) => {
+      const finger = event.touches[0];
+      if (event.touches.length === 1 && finger) touchWindow.lastMove_ = { at: event.timeStamp, y: finger.clientY };
+    }, { capture: true });
     document.addEventListener("touchend", (event) => {
+      touchWindow.touchEnds_++;
       touchWindow.remaining_ = Array.from(event.touches, (touch) => touch.identifier);
     }, { capture: true });
     document.addEventListener("wheel", (event) => {
@@ -69,6 +78,7 @@ export async function checkTerminalPinch(browser: Browser, origin: string, paneI
       cell: document.querySelector(".pane-terminal .xterm-screen")!.getBoundingClientRect().height
         / document.querySelectorAll(".pane-terminal .xterm-rows > div").length,
       remaining: (window as Window & { remaining_: number[] }).remaining_,
+      touchEnds: (window as Window & { touchEnds_: number }).touchEnds_,
       scale: visualViewport!.scale,
       focused: document.hasFocus(),
     }));
@@ -95,10 +105,12 @@ export async function checkTerminalPinch(browser: Browser, origin: string, paneI
     // a wheel report per three rows of travel: 150 px is more than that even at the largest cell the 22 px font makes;
     // the drag ends at cy, where a following pinch puts this finger, so that jump is no vertical travel
     const dragOne = async (): Promise<void> => {
+      const before = (await probe()).wheels;
       await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: cx, y: cy - 150, id: 1 }] });
       for (let step = 1; step <= 5; step++) {
         await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: cx, y: cy - 150 + 150 * step / 5, id: 1 }] });
       }
+      await page.waitForFunction((count) => (window as Window & { wheels_: number }).wheels_ > count, before, { timeout: 10_000 });
     };
 
     const swipe = async (distance: number, moves: number): Promise<number> => {
@@ -109,19 +121,24 @@ export async function checkTerminalPinch(browser: Browser, origin: string, paneI
       }
       // the finger holds still before it lifts, so the swipe ends where it is: a lift while it moves fast
       // would glide on (lib/touchFling.ts), which terminal-touch-burst-run.ts measures apart
-      const lastMove = await page.evaluate(() => performance.now());
-      await page.waitForFunction(([at, still]) => performance.now() - at > still, [lastMove, FLING_STOPPED_MS * 2] as const, { polling: 10 });
+      const end = cy + distance / 2;
+      await page.waitForFunction(([y, still]) => {
+        const last = (window as Window & { lastMove_?: { at: number; y: number } | null }).lastMove_;
+        return last != null && Math.abs(last.y - y) < 1 && performance.now() - last.at > still;
+      }, [end, FLING_STOPPED_MS] as const, { timeout: 10_000 });
       await release();
-      await page.evaluate(() => new Promise<void>((resolve) => {
-        const sent = () => (window as Window & { wheels_: number }).wheels_;
-        let last = sent();
-        const check = (): void => {
-          const now = sent();
-          if (now === last) resolve();
-          else { last = now; requestAnimationFrame(check); }
+      await page.waitForFunction((count) => (window as Window & { touchEnds_: number }).touchEnds_ > count
+        && !document.querySelector("[data-touch-fling]"), before.touchEnds, { timeout: 10_000 });
+      // Lift can enqueue the partial wheel. Bound the drain by the number of
+      // frames the pacer needs for this distance, plus the frame we joined.
+      const reports = Math.ceil(distance / (3 * before.cell));
+      await page.evaluate((frames) => new Promise<void>((resolve) => {
+        const next = (left: number): void => {
+          if (left === 0) resolve();
+          else requestAnimationFrame(() => next(left - 1));
         };
-        requestAnimationFrame(check);
-      }));
+        next(frames);
+      }), Math.ceil(reports / TOUCH_WHEEL_REPORTS_PER_FRAME) + 1);
       const after = await probe();
       assert(after.wheelModes.slice(before.wheelModes.length).every((mode) => mode === 1),
         `a ${moves}-move swipe sends line-mode wheels only`);
