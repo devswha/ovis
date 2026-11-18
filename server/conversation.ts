@@ -1079,9 +1079,9 @@ function turnBlobs(stream: TranscriptStream, source: StreamSource): string | nul
   return source === "omp-transcript" && live !== undefined ? ompBlobStore(live) : null;
 }
 
-type IncrementalSource = "codex-transcript" | "omp-transcript" | "omo-transcript" | "gjc-transcript" | "claude-transcript" | "pi-transcript" | "cmd-transcript";
-const incremental = (source: RecognizedConversation["source"]): source is IncrementalSource => source === "codex-transcript" || source === "omp-transcript"
-  || source === "omo-transcript" || source === "gjc-transcript" || source === "claude-transcript" || source === "pi-transcript" || source === "cmd-transcript";
+const INCREMENTAL_SOURCES = ["codex-transcript", "omp-transcript", "omo-transcript", "gjc-transcript", "claude-transcript", "pi-transcript", "cmd-transcript"] as const;
+type IncrementalSource = typeof INCREMENTAL_SOURCES[number];
+const incremental = (source: RecognizedConversation["source"]): source is IncrementalSource => (INCREMENTAL_SOURCES as readonly string[]).includes(source);
 
 interface LiveTranscriptTurn {
   source: IncrementalSource;
