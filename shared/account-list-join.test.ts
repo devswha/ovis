@@ -46,16 +46,17 @@ const encode = (json: string) => `${JOIN_LINE_PREFIX}${toBase64Url(new TextEncod
 const lineWith = (secret: string, service = SERVICE) => encode(`{"v":1,"service":"${service}","list":"${LIST}","secret":"${secret}"}`);
 const secretOf = (line: string) => (JSON.parse(new TextDecoder().decode(fromBase64Url(line.slice(JOIN_LINE_PREFIX.length)))) as { secret: string }).secret;
 /**
- * The writer's refusal reason, or "none", once the refusal is checked to show nothing of the good line, the fixture keys
- * or the private value `d` the key exports (as the runtime answers at that moment).
+ * The writer's refusal reason, or "none", once the refusal is checked to show nothing of the service and list it was
+ * given, the good line, the fixture keys or the private value `d` the key exports (as the runtime answers at that
+ * moment). `settled` runs as soon as the writer is done, before this exports anything itself.
  */
-async function writerReason(key: CryptoKey, run: () => Promise<unknown>): Promise<JoinLineReason | "none"> {
+async function writerReason(service: string, list: string, key: CryptoKey, settled?: () => void): Promise<JoinLineReason | "none"> {
   try {
-    await run();
+    await writeJoinLine(service, list, key).finally(settled);
   } catch (error) {
     if (!(error instanceof JoinLineError)) throw error;
     const d = key.extractable ? ((await crypto.subtle.exportKey("jwk", key)).d ?? "") : "";
-    expectNothingShown(error, [...privateTexts(good?.line ?? "", good?.keys), ["d", d]]);
+    expectNothingShown(error, [...privateTexts(good?.line ?? "", good?.keys), ["d", d], ["service", service], ["list", list]]);
     return error.reason;
   }
   return "none";
@@ -171,13 +172,34 @@ describe("writing a line", () => {
 
   test("the writer refuses what no line may hold", async () => {
     const key = await importInvite(true);
-    expect(await writerReason(key, () => writeJoinLine("http://accounts.ovis.test", LIST, key))).toBe("service");
-    expect(await writerReason(key, () => writeJoinLine(`${SERVICE}/`, LIST, key))).toBe("service");
-    expect(await writerReason(key, () => writeJoinLine(SERVICE, LIST.slice(1), key))).toBe("list");
+    expect(await writerReason("http://accounts.ovis.test", LIST, key)).toBe("service");
+    expect(await writerReason(`${SERVICE}/`, LIST, key)).toBe("service");
+    expect(await writerReason(SERVICE, LIST.slice(1), key)).toBe("list");
     const sealed = await importInvite(false);
-    expect(await writerReason(sealed, () => writeJoinLine(SERVICE, LIST, sealed))).toBe("not_extractable");
+    expect(await writerReason(SERVICE, LIST, sealed)).toBe("not_extractable");
     const p384 = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-384" }, true, ["sign"]);
-    expect(await writerReason(p384.privateKey, () => writeJoinLine(SERVICE, LIST, p384.privateKey))).toBe("secret");
+    expect(await writerReason(SERVICE, LIST, p384.privateKey)).toBe("secret");
+  });
+
+  test("the writer refuses a key whose JWK parts are not 32 bytes each in their one spelling", async () => {
+    const key = await importInvite(true);
+    const jwk = await crypto.subtle.exportKey("jwk", key);
+    const d = fromBase64Url(jwk.d ?? "");
+    // x with a padding bit set in its last character: the same 32 bytes, in a second spelling.
+    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const x = jwk.x ?? "";
+    const nonCanonical = `${x.slice(0, -1)}${alphabet[alphabet.indexOf(x.slice(-1)) ^ 1]}`;
+    for (const other of [{ d: toBase64Url(d.subarray(1)) }, { d: toBase64Url(Uint8Array.from([1, ...d])) }, { x: nonCanonical }, { y: undefined }]) {
+      const exportKey = spyOn(crypto.subtle, "exportKey").mockImplementation((async (): Promise<JsonWebKey | ArrayBuffer> => ({ ...jwk, ...other })) as typeof crypto.subtle.exportKey);
+      try {
+        expect({ other, reason: await writerReason(SERVICE, LIST, key) }).toEqual({ other, reason: "secret" });
+      } finally {
+        exportKey.mockRestore();
+      }
+    }
+    // A public key: its JWK has no d.
+    const pair = await crypto.subtle.generateKey(P256, true, ["sign", "verify"]);
+    expect(await writerReason(SERVICE, LIST, pair.publicKey)).toBe("secret");
   });
 
   test("the writer refuses a key of another type or curve even when its parts are 32 bytes each", async () => {
@@ -186,7 +208,7 @@ describe("writing a line", () => {
     for (const other of [{ crv: "P-384" }, { crv: "secp256k1" }, { kty: "OKP" }]) {
       const exportKey = spyOn(crypto.subtle, "exportKey").mockImplementation((async (): Promise<JsonWebKey | ArrayBuffer> => ({ ...jwk, ...other })) as typeof crypto.subtle.exportKey);
       try {
-        expect({ other, reason: await writerReason(key, () => writeJoinLine(SERVICE, LIST, key)) }).toEqual({ other, reason: "secret" });
+        expect({ other, reason: await writerReason(SERVICE, LIST, key) }).toEqual({ other, reason: "secret" });
       } finally {
         exportKey.mockRestore();
       }
@@ -293,9 +315,20 @@ describe("a line's bounded length", () => {
     expect(line.length).toBe(JOIN_LINE_MAX_CHARS);
     expect((await readJoinLine(line)).service).toBe(longest);
     const longer = `https://${"a".repeat(457)}.test`;
-    expect(await writerReason(key, () => writeJoinLine(longer, LIST, key))).toBe("length");
+    expect(await writerReason(longer, LIST, key)).toBe("length");
     expect(lineWith(secretOf(good.line), longer).length).toBeGreaterThan(JOIN_LINE_MAX_CHARS);
     expect((await refusal(lineWith(secretOf(good.line), longer)))?.reason).toBe("length");
+  });
+
+  test("an origin that fits the early bound but not once JSON escapes it is refused by the writer, as the reader would", async () => {
+    const key = await importInvite(true);
+    const quoted = `https://${"a".repeat(455)}".test`;
+    expect(isServiceOrigin(quoted)).toBe(true);
+    expect(quoted.length).toBe(469);
+    const escaped = encode(`{"v":1,"service":${JSON.stringify(quoted)},"list":"${LIST}","secret":"${secretOf(good.line)}"}`);
+    expect(escaped.length).toBeGreaterThan(JOIN_LINE_MAX_CHARS);
+    expect((await refusal(escaped))?.reason).toBe("length");
+    expect(await writerReason(quoted, LIST, key)).toBe("length");
   });
 
   test("a service too long for any line is refused by the writer before the key is exported or anything is encoded", async () => {
@@ -304,9 +337,9 @@ describe("a line's bounded length", () => {
     const btoa = spyOn(globalThis, "btoa");
     let calls = { exportKey: -1, btoa: -1 };
     try {
-      const reason = await writerReason(key, () => writeJoinLine(`https://${"a".repeat(2048)}.test`, LIST, key).finally(() => {
+      const reason = await writerReason(`https://${"a".repeat(2048)}.test`, LIST, key, () => {
         calls = { exportKey: exportKey.mock.calls.length, btoa: btoa.mock.calls.length };
-      }));
+      });
       expect(reason).toBe("length");
       expect(calls).toEqual({ exportKey: 0, btoa: 0 });
     } finally {
@@ -364,7 +397,7 @@ describe("the secret's private value", () => {
     const jwk = await crypto.subtle.exportKey("jwk", key);
     const exportKey = spyOn(crypto.subtle, "exportKey").mockImplementation((async (): Promise<JsonWebKey | ArrayBuffer> => ({ ...jwk, d: toBase64Url(new Uint8Array(32)) })) as typeof crypto.subtle.exportKey);
     try {
-      expect(await writerReason(key, () => writeJoinLine(SERVICE, LIST, key))).toBe("scalar");
+      expect(await writerReason(SERVICE, LIST, key)).toBe("scalar");
     } finally {
       exportKey.mockRestore();
     }

@@ -112,8 +112,9 @@ function lineText(service: string, list: string, secret: string): string {
 
 /**
  * The longest service a line has room for (469): the base64url of n bytes fits JOIN_LINE_MAX_CHARS after the prefix
- * exactly when n is at most 3/4 of that room, and the JSON holds the list id and the secret besides the service. An
- * origin's serialization is ASCII and needs no JSON escape, so its length alone says whether its line fits.
+ * exactly when n is at most 3/4 of that room, and the JSON holds the list id and the secret besides the service. A
+ * longer service never fits, so the writer refuses it before anything else. A shorter one may still not fit once JSON
+ * escapes it (a host may hold `"`): the writer measures the line it built too.
  */
 const SERVICE_MAX_CHARS = Math.floor(((JOIN_LINE_MAX_CHARS - JOIN_LINE_PREFIX.length) * 3) / 4) - lineJson("", "", "").length - 64 - SECRET_CHARS;
 
@@ -136,8 +137,8 @@ function jwkPart(value: string | undefined): Uint8Array {
 /**
  * The line for an invite: the service's origin, the list id and the invite's private key, which must
  * be extractable. The secret's 138 bytes are built here from the key's JWK, never taken from an
- * engine's PKCS8 export, so every runtime writes the same line. A service too long for a line of at most
- * JOIN_LINE_MAX_CHARS is refused before it is parsed, the key exported or anything encoded. Refuses `line_malformed`; any other
+ * engine's PKCS8 export, so every runtime writes the same line, and no line longer than JOIN_LINE_MAX_CHARS. A service
+ * too long for any such line is refused before it is parsed, the key exported or anything encoded. Refuses `line_malformed`; any other
  * failure of WebCrypto is a fault and goes up as the runtime threw it.
  */
 export async function writeJoinLine(service: string, list: string, privateKey: CryptoKey): Promise<string> {
@@ -155,7 +156,9 @@ export async function writeJoinLine(service: string, list: string, privateKey: C
   if (jwk.kty !== "EC" || jwk.crv !== "P-256") refuse("secret", "The secret is not a P-256 private key");
   const d = jwkPart(jwk.d);
   if (!scalarInRange(d)) refuse("scalar", "The secret's private value is not from 1 to n-1 of P-256");
-  return lineText(service, list, toBase64Url(secretBytes(d, jwkPart(jwk.x), jwkPart(jwk.y))));
+  const line = lineText(service, list, toBase64Url(secretBytes(d, jwkPart(jwk.x), jwkPart(jwk.y))));
+  if (line.length > JOIN_LINE_MAX_CHARS) refuse("length", `A join line is at most ${JOIN_LINE_MAX_CHARS} characters`);
+  return line;
 }
 
 /**
