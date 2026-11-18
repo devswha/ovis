@@ -509,6 +509,32 @@ describe("preferences sync real send path", () => {
     expect([a.settings.darkTheme, b.settings.darkTheme]).toEqual(["gruvbox", "gruvbox"]);
   });
 
+  it("a save answered after its page's settings tree is gone leaves what another tab stored since", async () => {
+    const gate = Promise.withResolvers<void>();
+    releaseAnswer = () => gate.promise;
+    const client = await open();
+    await act(async () => { client.update({ darkTheme: "tokyo-night" }); });
+    await windows();
+    await act(async () => { store.set({ settings: { darkTheme: "catppuccin" } }); });
+    await act(async () => { renderers.pop()!.unmount(); });
+    clients.length = 0;
+
+    let pick: (patch: Partial<Settings>) => void = () => { throw new Error("not mounted"); };
+    function OtherTab() {
+      pick = useSettings().update;
+      return null;
+    }
+    await act(async () => { renderers.push(create(createElement(SettingsProvider, null, createElement(OtherTab)))); });
+    await act(async () => { pick({ darkTheme: "gruvbox" }); });
+    const storedTheme = (): unknown => JSON.parse(records.get("ovis:settings")!).darkTheme;
+    expect(storedTheme()).toBe("gruvbox");
+
+    const absorbed = nextAbsorbed();
+    await act(async () => { gate.resolve(); await absorbed; });
+    releaseAnswer = undefined;
+    expect(storedTheme()).toBe("gruvbox");
+  });
+
   it("a return to the value on its way, not drawn yet, gives way to a newer save held behind the answer, as it does once drawn", async () => {
     const gate = Promise.withResolvers<void>();
     releaseAnswer = () => gate.promise;
@@ -1238,6 +1264,30 @@ describe("preferences sync real send path", () => {
     await act(async () => { store.set({ settings: { darkTheme: "catppuccin" } }); });
     await longWait();
     expect([client.settings.darkTheme, store.get().settings.darkTheme]).toEqual(["gruvbox", "gruvbox"]);
+  });
+
+  it.each([["drawn", true], ["not drawn yet", false]] as const)("a refused pin and mute taken back, %s, and then made again are new edits: they show no save error and go over a list another browser saves next", async (_name, drawn) => {
+    store.set({ settings: {}, pins: ["local:w1:p1"] });
+    const client = await open();
+    refuse = unwritable();
+    await act(async () => { setSidebarPins(["local:w1:p1", "local:w1:p2"]); setPaneMutes(["w1:p1"]); });
+    await send();
+    expect(client.saveError).not.toBeNull();
+
+    const takeBack = (): void => { setSidebarPins(["local:w1:p1"]); setPaneMutes([]); };
+    if (drawn) await act(async () => { takeBack(); });
+    await act(async () => {
+      if (!drawn) takeBack();
+      setSidebarPins(["local:w1:p1", "local:w1:p2"]);
+      setPaneMutes(["w1:p1"]);
+    });
+    expect(client.saveError).toBeNull();
+
+    await act(async () => { store.set({ settings: {}, pins: ["local:w1:p9"], muted_panes: ["w1:p9"] }); });
+    await longWait();
+    expect(store.get().pins).toEqual(["local:w1:p1", "local:w1:p2"]);
+    expect([...store.get().muted_panes!].sort()).toEqual(["w1:p1", "w1:p9"]);
+    expect([currentSidebarPins(), [...currentPaneMutes()!].sort()]).toEqual([["local:w1:p1", "local:w1:p2"], ["w1:p1", "w1:p9"]]);
   });
 
   it.each([["drawn", true], ["not drawn yet", false]] as const)("a refused pick that gives way to a newer save, %s, leaves no save error over the edit made next", async (_name, drawn) => {
