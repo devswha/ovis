@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, it, jest, mock, setSystemTime, spyOn } from "bun:test";
+import { Terminal } from "@xterm/xterm";
 import { OUTPUT_HARD_BYTES, OUTPUT_HIGH_BYTES, OUTPUT_JOIN_BYTES_PER_SECOND, OUTPUT_STALL_MS, ReplayBuffer } from "../output-window.ts";
 import { connectionData, send } from "./connections.ts";
 import type { PaneAttachment } from "./terminal-process.ts";
@@ -269,6 +270,7 @@ async function resizableAttach() {
   mock.module("../herdr-core/attach-session.ts", () => ({
     CoreAttachSession: class {
       readonly exited = Promise.withResolvers<void>().promise;
+      readonly replayPrefix = coreAttach.CLEAR_JOINER_HISTORY;
       constructor(options: CoreAttachOptions) { coreAttaches.push(options); }
       kill() {}
       pause() {}
@@ -316,6 +318,15 @@ async function resizableAttach() {
     ready: (): boolean => frames.some((frame) => frame.type === "input-ready" && frame.ready !== false),
     painted: (): string => frames.flatMap((frame) => frame.type === "pty-data" ? [frame.data] : []).join(""),
     resize: (cols: number, rows: number) => registry.terminalFrames.resize(client, { type: "resize", pane_id: "p", cols, rows }),
+    join: async (keepSize: boolean) => {
+      const received: ServerMessage[] = [];
+      const joiner = {
+        data: connectionData({ deviceId: undefined, readOnly: false }), readyState: WebSocket.OPEN,
+        getBufferedAmount: () => 0, send(raw: string) { received.push(JSON.parse(raw)); return raw.length; }, close() {},
+      };
+      await registry.terminalFrames.attach(joiner, { type: "attach", pane_id: "p", cols: 40, rows: 24, keep_size: keepSize });
+      return received;
+    },
     [Symbol.dispose]() {
       jest.useRealTimers();
       registry.closeAttachment("p");
@@ -433,6 +444,50 @@ it("attaches with herdr's own command where OVIS_RUNTIME names herdr-core but no
     else process.env["OVIS_RUNTIME"] = previous;
   }
 });
+
+for (const scenario of ["kept join before redraw", "kept join during redraw", "join that drives a new size"] as const) {
+  it(`replays core history without a stale row after resize (${scenario}, #4136)`, async () => {
+    serveRuntime(HERDR_CORE);
+    try {
+      using pane = await resizableAttach();
+      const first = "HISTORY\r\n".repeat(26) + "\x1b[2J\x1b[HBLOCK-1\r\n" + "=".repeat(79) + "\r\nSTATUS-1";
+      pane.attach.onData(first);
+      const kept = scenario !== "join that drives a new size";
+      const partial = scenario === "kept join during redraw";
+      const redraw = "\x1b[2A\r\x1b[2KBLOCK-2";
+      if (partial) {
+        await pane.resize(60, 24);
+        pane.attach.onData(redraw.slice(0, 3)); // resize while a cursor-up sequence is open
+      }
+      if (kept) await pane.resize(40, 24);
+      if (partial) {
+        pane.attach.onData(redraw.slice(3));
+        await pane.resize(40, 24); // a same-size request must leave the painted part of the redraw
+      }
+      const frames = await pane.join(kept);
+      const rest = "\r\n\x1b[2K" + "=".repeat(39) + "\r\n\x1b[2KSTATUS-2";
+      pane.attach.onData((partial ? "" : redraw) + rest);
+      expect(pane.painted()).toBe(first + redraw + rest);
+      jest.useRealTimers(); // xterm schedules its parser; wait for each write callback
+      const term = new Terminal({ cols: kept ? 80 : 40, rows: 24, scrollback: 100, allowProposedApi: true });
+      try {
+        for (const frame of frames) {
+          if (frame.type === "pane-geometry") term.resize(frame.cols, frame.rows);
+          if (frame.type === "pty-data") await new Promise<void>((resolve) => term.write(frame.data, resolve));
+        }
+        const buffer = term.buffer.active;
+        const lines = Array.from({ length: buffer.length }, (_, i) => buffer.getLine(i)?.translateToString(true));
+        expect(lines.slice(buffer.baseY).filter((row) => /BLOCK|STATUS/.test(row ?? ""))).toEqual(["BLOCK-2", "STATUS-2"]);
+        // the frame drawn for the old grid moved into the history, not lost
+        expect(lines.slice(0, buffer.baseY)).toEqual(["HISTORY", "HISTORY", "HISTORY", "BLOCK-1", "=".repeat(40), "=".repeat(39), "STATUS-1"]);
+      } finally {
+        term.dispose();
+      }
+    } finally {
+      serveRuntime(null);
+    }
+  });
+}
 
 for (const ordering of ["a resize back to the start size", "a redraw later than the hold", "a screen queued from before a round trip"] as const) {
   it(`keeps a resized attach held until herdr draws the current grid: ${ordering}`, async () => {

@@ -117,6 +117,26 @@ const PRIVATE_MODES = /\x1b\[\?([\d;]+)([hl])/g;
 const MODIFY_OTHER_KEYS = /\x1b\[>(4(?:;(\d*))?)?([mn])/g;
 const INCOMPLETE_CSI = /^\x1b(\[[\x30-\x3f]*[\x20-\x2f]*)?$/;
 
+// Each alternative captures its terminator if it reached one. A trailing ESC in a
+// control string may be the first half of ST.
+const VT_SEQUENCE = new RegExp([
+  /(?:\x1b\]|\x9d)[^\x07\x18\x1a\x1b\x9c]*(\x1b\\|[\x07\x18\x1a\x9c])?(?:\x1b$)?/.source,
+  /(?:\x1b[PX^_]|\x90|\x98|\x9e|\x9f)[^\x18\x1a\x1b\x9c]*(\x1b\\|[\x18\x1a\x9c])?(?:\x1b$)?/.source,
+  /(?:\x1b\[|\x9b)[\x00-\x17\x19\x1c-\x3f\x7f]*([\x40-\x7e])?/.source,
+  /\x1b[\x00-\x17\x19\x1c-\x2f\x7f]*([\x30-\x7e])?/.source,
+].join("|"), "g");
+
+/**
+ * A resize can land between reads of one VT sequence. Insert the screen erase before that
+ * sequence so a joiner still parses it whole (and an ongoing redraw runs after the erase).
+ */
+function screenEraseOffset(text: string, resize: number): number {
+  for (const match of text.slice(0, resize).matchAll(VT_SEQUENCE)) {
+    if (match.index + match[0].length === resize && match.slice(1).every((end) => end === undefined)) return match.index;
+  }
+  return resize;
+}
+
 /**
  * `herdr terminal attach` switches the alternate screen and mouse reporting on once,
  * at the start of the stream. A busy pane pushes that start out of the tail, and a
@@ -127,6 +147,7 @@ const INCOMPLETE_CSI = /^\x1b(\[[\x30-\x3f]*[\x20-\x2f]*)?$/;
  */
 export class ReplayBuffer {
   private tail = "";
+  private resizeOffset = 0;
   /** order matters: 1016l after 1006h leaves xterm's mouse encoding at the default */
   private readonly modes = new Map<string, "h" | "l">();
   private modifyOtherKeys = 0;
@@ -158,13 +179,28 @@ export class ReplayBuffer {
       }
     }
     for (const [, resource, level, final] of cut.matchAll(MODIFY_OTHER_KEYS)) this.modifyOtherKeys = resource && final === "m" ? Number(level || 0) : 0;
+    this.resizeOffset = Math.max(0, this.resizeOffset - cut.length);
     this.tail = bytes.subarray(start).toString("utf8");
   }
 
-  text(): string {
+  /** The current screen now belongs to a different grid; live output is forwarded unchanged. */
+  resized(): void {
+    this.resizeOffset = this.tail.length;
+  }
+
+  /**
+   * `join`: the replay for a joiner whose grid has `rows` rows. What was drawn before the last resize (or all of it,
+   * when the joiner `resizes` the pty to its own grid next) was drawn for another grid: a relative redraw after it would
+   * land in the wrong rows. There the joiner's screen down to the cursor is scrolled into its history, so nothing is
+   * lost, and the cursor goes back to its row for that redraw.
+   */
+  text(join?: { rows: number; resizes: boolean }): string {
     if (!this.tail) return "";
     const keys = this.modifyOtherKeys > 0 ? `\x1b[>4;${this.modifyOtherKeys}m` : "";
-    return [...this.modes].map(([mode, state]) => `\x1b[?${mode}${state}`).join("") + keys + this.tail;
+    const resize = !join ? 0 : join.resizes ? this.tail.length : this.resizeOffset;
+    const at = resize ? screenEraseOffset(this.tail, resize) : 0;
+    const tail = join && resize ? this.tail.slice(0, at) + `\x1b7${"\n".repeat(join.rows)}\x1b8` + this.tail.slice(at) : this.tail;
+    return [...this.modes].map(([mode, state]) => `\x1b[?${mode}${state}`).join("") + keys + tail;
   }
 
   get alternateScreen(): boolean {

@@ -210,6 +210,7 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
     attachment.rows = rows;
     attachment.resizes = (attachment.resizes ?? 0) + 1;
     attachment.resizedTo = [...(attachment.resizedTo ?? []).slice(-15), `${cols}x${rows}`];
+    if ("replayPrefix" in attachment.process) attachment.replay.resized();
     attachment.process.resize(cols, rows);
     // herdr redraws the whole screen for a new size: a repaint still waiting would send it twice
     clearTimeout(attachment.repaint);
@@ -338,10 +339,14 @@ export function createTerminalRegistry({ options, clients, stopped, terminalAtta
       // a mirrored screen is drawn for the pane's own grid: the client takes that size
       // before the screen, or the rows would wrap in a grid of another width
       if (attachment.kind === "mirror") send(client, { type: "pane-geometry", pane_id: message.pane_id, cols: attachment.cols, rows: attachment.rows, fixed: true });
-      // so is a herdr-core pty's screen, for a client that does not size it: its replay is the program's bytes for this grid
+      // a non-driving herdr-core joiner takes the pty's current grid before reading its replay
       const drives = connectionOf(client).mode === "interact" && !claim.keepSize;
       if (attachment.kind !== "mirror" && !drives) send(client, { type: "pane-geometry", pane_id: message.pane_id, cols: attachment.cols, rows: attachment.rows });
-      const tail = attachment.kind === "mirror" ? attachment.process.current ?? "" : attachment.replay.text();
+      // a herdr-core replay is the program's bytes as they came, some drawn for an older grid
+      const core = attachment.kind === "pty" && "replayPrefix" in attachment.process;
+      const resizes = drives && (attachment.cols !== geometry.cols || attachment.rows !== geometry.rows);
+      const tail = attachment.kind === "mirror" ? attachment.process.current ?? ""
+        : attachment.replay.text(core ? { rows: drives ? geometry.rows : attachment.rows, resizes } : undefined);
       // a herdr-core joiner keeps the history it already holds: a tail that lost the attach's clear would double
       // it. A tail on the alternate screen gets the clear where it leaves that screen (leaving it first would blank
       // what the tail restores there), so the main-screen lines after it land once
