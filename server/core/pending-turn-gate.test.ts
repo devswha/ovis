@@ -383,6 +383,22 @@ describe("the queue's turn gate (#4118)", () => {
     expect(pending.next("p")).toBeNull();
   });
 
+  it("takes a reconcile's ready asked for after the Enter but before a later reading of the turn as no end of that turn", () => {
+    let clock = 0;
+    const pending = new PendingInputs<string, null>(() => {}, () => clock, 10);
+    const identity = { agent: "codex", terminalId: "p", session: null };
+    pending.status("p", "idle");
+    const x = pending.enqueue("a", "p", 1, "X", null, identity);
+    pending.enqueue("a", "p", 2, "Y", null, identity);
+    expect(pending.claim(x, true)).toBe(true);
+    pending.committing(x);
+    pending.settle(x);
+    clock = 2;
+    pending.observe("p", "working", pending.mark("p"));
+    pending.baseline("p", "idle", 1);
+    expect(pending.next("p")).toBeNull();
+  });
+
   it("ends a Send now's wait without holding the queue when no turn of its own starts after the ready that came right behind it", () => {
     let clock = 0;
     const pending = new PendingInputs<string, null>(() => {}, () => clock, 10);

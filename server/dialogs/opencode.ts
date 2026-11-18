@@ -68,7 +68,9 @@ function readOpenCodeV1Question(screen: string, answer?: TypedEditorAnswer): Par
     if (option) {
       if (Number(option[1]) !== options.length + 1) return null;
       options.push({ label: option[2]!.trim(), description: null });
-      if (answer && options.length - 1 === answer.prompt.customMenuIndex && text === `${options.length}. ${CUSTOM_LABEL}`) {
+      if (answer && options.length - 1 === answer.prompt.customMenuIndex) {
+        // the custom row read for a typed answer is its editor, or the answer is not where it was typed
+        if (option[2]!.trim() !== CUSTOM_LABEL) return null;
         // The textarea sits below Other, with the description indent. At its six-row limit
         // the visible rows no longer prove the full value; the placeholder isn't a value either.
         const field = body.slice(index + 1);

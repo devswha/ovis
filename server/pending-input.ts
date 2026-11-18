@@ -80,6 +80,8 @@ export class PendingInputs<Owner, Lease> {
   private readonly gates = new Map<string, TurnGate>();
   /** statuses a snapshot showed ahead of herdr's events, with when: the event that tells each is older than that snapshot */
   private readonly ahead = new Map<string, { status: AgentStatus; at: number }[]>();
+  /** when a status of the pane was last taken, from an event or a read */
+  private readonly readAt = new Map<string, number>();
   private readonly waits = new Map<string, NonNullable<PendingMessage["waiting"]>>();
   private readonly closed = new Map<Owner, number>();
   private readonly movedInFlight = new WeakSet<PendingRecord<Owner, Lease>>();
@@ -330,6 +332,7 @@ export class PendingInputs<Owner, Lease> {
 
   status(paneId: string, status: AgentStatus): void {
     this.events.set(paneId, this.mark(paneId) + 1);
+    this.readAt.set(paneId, this.now());
     if (this.overtaken(paneId, status)) this.unconfirmed(paneId, status); else this.apply(paneId, status);
   }
 
@@ -341,7 +344,8 @@ export class PendingInputs<Owner, Lease> {
    */
   baseline(paneId: string, status: AgentStatus, askedAt: number): void {
     const since = this.gates.get(paneId)?.since;
-    if (since === undefined || askedAt > since) this.observe(paneId, status, this.mark(paneId), this.statuses.has(paneId));
+    // asked before a reading already taken, it is older than that reading too
+    if (since === undefined || askedAt > Math.max(since, this.readAt.get(paneId) ?? -Infinity)) this.observe(paneId, status, this.mark(paneId), this.statuses.has(paneId));
     else this.statuses.set(paneId, status);
     // a submit's read under way across it is older than this status, as across an event
     this.events.set(paneId, this.mark(paneId) + 1);
@@ -362,6 +366,7 @@ export class PendingInputs<Owner, Lease> {
   /** `herdrReading`: `status` is herdr's own reading of the pane, which an event of herdr's tells too */
   observe(paneId: string, status: AgentStatus, mark: number, herdrReading = true): void {
     if (this.mark(paneId) !== mark) return;
+    this.readAt.set(paneId, this.now());
     // ahead of what herdr's events told so far (nothing yet, too: an earlier turn's events may still be on their way)
     // herdr's events trail its snapshots by a change or two: the oldest readings go first
     if (herdrReading && kind(status) !== kind(this.statuses.get(paneId))) {
@@ -391,7 +396,7 @@ export class PendingInputs<Owner, Lease> {
       || [...this.records.values()].some((item) => item.paneId === paneId && (item.inFlight || item.message.state === "queued"));
   }
 
-  forget(paneId: string): void { this.statuses.delete(paneId); this.events.delete(paneId); this.gates.delete(paneId); this.waits.delete(paneId); this.ahead.delete(paneId); }
+  forget(paneId: string): void { this.statuses.delete(paneId); this.events.delete(paneId); this.gates.delete(paneId); this.waits.delete(paneId); this.ahead.delete(paneId); this.readAt.delete(paneId); }
 
   private apply(paneId: string, status: AgentStatus): void {
     this.statuses.set(paneId, status);

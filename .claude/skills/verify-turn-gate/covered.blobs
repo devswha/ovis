@@ -1,6 +1,6 @@
-64ba56d27056412dc343dc20f311484db81d2978 server/pending-input.ts
+63eeae0ca28d9283c94405e2ef5d92acca6adacd server/pending-input.ts
 e8eb975684e11f5c2f846db85190117e356c9ca8 server/core/pending.ts
-468e1d36d21fa7b18262cfba22b060fda30b3a63 server/core/status.ts
+86bbfa990b886b7b104e2c66bc3be93b34a0480d server/core/status.ts
 216f61a058ef1d025cea604836677518b288a701 server/core/server-core.ts
 38e5c7d18c5173c4b35a769017eca482d4613c30 server/core/input.ts
 428ddebe18e5f3b4bbc42b161bb215dfbf5bca80 server/codex-steering.ts

@@ -702,7 +702,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
         // A fast mirrored client may queue before the collector's first baseline. A
         // known ready baseline can schedule a fresh guarded check even when the tracker
         // still remembers working; an unknown baseline never supplies that permission.
-        const status = pane.agent_status === "idle" || pane.agent_status === "done" ? pane.agent_status : completions.current(pane.pane_id) ?? pane.agent_status;
+        // A snapshot reading the agent at work says so itself: the tracker's older ready is no turn evidence.
+        const status = pane.agent_status === "idle" || pane.agent_status === "done" || pane.agent_status === "working" ? pane.agent_status : completions.current(pane.pane_id) ?? pane.agent_status;
         pending.baseline(pane.pane_id, queueStatus(pane.pane_id, status), askedAt); drainPending(pane.pane_id);
       }
     },
