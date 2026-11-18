@@ -1558,7 +1558,7 @@ describe("claudeSessionTempDir", () => {
 
 // a sandbox wrapper's hint names the store of the Claude it runs outside the pane's job (#3931)
 describe.skipIf(process.platform !== "linux")("hintedClaudeConfigDir", () => {
-  it("takes the store the hinted processes name, and none beside a live process whose environment it cannot read", async () => {
+  it("takes the store the hinted processes name, and none while a live process's environment cannot be read", async () => {
     const root = mkdtempSync(join(tmpdir(), "claude-hint-"));
     try {
       const store = join(root, "store");
@@ -1572,7 +1572,8 @@ describe.skipIf(process.platform !== "linux")("hintedClaudeConfigDir", () => {
       expect(await hintedClaudeConfigDir([{ pid: hinted }, { pid: gone.pid }], proc)).toBe(store);
       // this test's own process is alive and has no environ in the fake /proc: it may carry another store
       await expect(hintedClaudeConfigDir([{ pid: hinted }, { pid: process.pid }], proc)).rejects.toBeInstanceOf(AmbiguousClaudeStore);
-      expect(await hintedClaudeConfigDir([{ pid: process.pid }], proc)).toBeNull();
+      await expect(hintedClaudeConfigDir([{ pid: process.pid }], proc)).rejects.toBeInstanceOf(AmbiguousClaudeStore);
+      expect(await hintedClaudeConfigDir([{ pid: gone.pid }], proc)).toBeNull();
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });

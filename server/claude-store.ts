@@ -507,7 +507,8 @@ export async function processClaudeConfigDir(
  * CLAUDE_CONFIG_DIR is the store they hand Claude, read as a Claude process's own (Linux only). Only
  * the whole foreground job counts, so `processes` is herdr's list, never herdr-core's leader alone. Null
  * when none carries the hint or it names the default store; AmbiguousClaudeStore when they name more than
- * one, or one carries it and another live one cannot be read: a guess could be another account's store.
+ * one, or a live one cannot be read, which may carry the hint and another store: a guess could be another
+ * account's store.
  */
 export async function hintedClaudeConfigDir(processes: readonly { pid?: number | null }[], proc = "/proc"): Promise<string | null> {
   if (process.platform !== "linux") return null;
@@ -525,9 +526,9 @@ export async function hintedClaudeConfigDir(processes: readonly { pid?: number |
     if (!environ.split("\0").includes("HERDR_AGENT=claude")) continue;
     reads.push({ pid, read: await environSource(environ) });
   }
+  if (unread !== null) throw new AmbiguousClaudeStore(unread);
   const first = reads[0];
   if (first === undefined) return null;
-  if (unread !== null) throw new AmbiguousClaudeStore(unread);
   const differs = reads.find(({ read }) => read.source.state === "unreadable" || JSON.stringify(read) !== JSON.stringify(first.read));
   if (differs !== undefined) throw new AmbiguousClaudeStore(differs.pid);
   return first.read.legacy;
