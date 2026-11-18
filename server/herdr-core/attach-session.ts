@@ -19,7 +19,7 @@ export const CLEAR_HISTORY = "\x1b[?1049l\x1b[3J\x1b[H\x1b[2J";
  */
 export const CLEAR_JOINER_HISTORY = "\x1b[?1049l\x1b[3J";
 /** One unmodified cursor or Home/End key, in either cursor mode's form. */
-const CURSOR_KEY = /^\x1b[[O]([ABCDHF])$/;
+export const CURSOR_KEY = /^\x1b[[O]([ABCDHF])$/;
 
 type Display = { fg?: string; bg?: string; cursor?: string; cell?: [number, number] };
 
