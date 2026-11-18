@@ -10,6 +10,7 @@ import { UsageService } from "../server/usage.ts";
 import { chromePath } from "./chrome-path.ts";
 import { shownRow, shownRows } from "./shown-rows.ts";
 import { pickTab } from "./tab-pick.ts";
+import { terminalGrid } from "./terminal-grid.ts";
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), "ovis-switch-resize-")));
 const evidence = process.env["UI_EVIDENCE_DIR"];
@@ -27,8 +28,7 @@ const server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDi
 const browsers: Browser[] = [];
 let workspace: string | null = null;
 
-type Viewer = { page: Page; sent: { type: string; pane_id?: string }[]; close: () => Promise<void> };
-async function viewer(width: number, pane: string, panes: string[]): Promise<Viewer> {
+async function viewer(width: number, pane: string, panes: string[]) {
   // Separate browsers: each viewer keeps its own window focus, as two devices do.
   const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
   browsers.push(browser);
@@ -43,9 +43,10 @@ async function viewer(width: number, pane: string, panes: string[]): Promise<Vie
   page.on("websocket", (ws) => ws.on("framesent", ({ payload }) => { sent.push(JSON.parse(String(payload))); }));
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  await page.goto(`http://127.0.0.1:${server.port}/?pane=${encodeURIComponent(pane)}`);
+  const waitForGrid = terminalGrid(page, pane);
+  const [grid] = await Promise.all([waitForGrid(15_000), page.goto(`http://127.0.0.1:${server.port}/?pane=${encodeURIComponent(pane)}`)]);
   await page.locator(`[data-layout-pane="${pane}"] [data-pane-content]`).waitFor();
-  return { page, sent, close: async () => { assert.deepEqual(errors, [], "no browser errors"); await context.close(); } };
+  return { page, sent, grid, waitForGrid, close: async () => { assert.deepEqual(errors, [], "no browser errors"); await context.close(); } };
 }
 const rows = (page: Page, pane: string): Promise<string[]> => page.locator(shownRow(`[data-layout-pane="${pane}"]`))
   .evaluateAll((divs) => divs.map((div) => (div.textContent ?? "").replace(/\s+$/, "")));
@@ -73,12 +74,11 @@ try {
   for (const [cachedWidth, driverWidth] of [[1280, 390], [390, 1280]] as const) {
     const round = `${cachedWidth}-${driverWidth}`;
     const cached = await viewer(cachedWidth, target, panes);
-    await paneSendText(target, `sh ${draw} before-${round}\n`);
-    await shows(cached.page, target, `DRAWN-before-${round}`);
+    await Promise.all([shows(cached.page, target, `DRAWN-before-${round}`), paneSendText(target, `sh ${draw} before-${round}\n`)]);
     await select(cached.page, panes[1]!);
     const driver = await viewer(driverWidth, target, panes);
-    await paneSendText(target, `sh ${draw} hidden-${round}\n`);
-    await shows(driver.page, target, `DRAWN-hidden-${round}`);
+    const marker = `DRAWN-hidden-${round}`;
+    await Promise.all([shows(driver.page, target, marker), paneSendText(target, `sh ${draw} hidden-${round}\n`)]);
     await driver.close();
     await cached.page.evaluate(({ pane, row }) => {
       const frames: string[][] = [];
@@ -98,9 +98,19 @@ try {
         requestAnimationFrame(grab);
       }, { once: true, capture: true });
     }, { pane: target, row: shownRow() });
-    await select(cached.page, target);
+    // Starting the reference attach earlier can snapshot the replay for the driver's grid.
+    // Capture the return from pointerdown as before, but open the reference after the
+    // cached device has taken back its grid and parsed herdr's live whole-screen redraw.
+    const [returnedGrid] = await Promise.all([cached.waitForGrid(15_000, true), select(cached.page, target)]);
     const truth = await viewer(cachedWidth, target, panes);
-    const expected = await rows(truth.page, target);
+    assert.deepEqual(truth.grid, returnedGrid, `${round}: both viewers use the same grid`);
+    const painted = await truth.page.waitForFunction(({ row, count, marker }) => {
+      const lines = [...document.querySelectorAll(row)].map(div => (div.textContent ?? "").replace(/\s+$/, ""));
+      return lines.length === count && lines.some(line => line.includes(marker)) ? lines : null;
+    }, { row: shownRow(`[data-layout-pane="${target}"]`), count: truth.grid.rows, marker }, { timeout: 15_000 });
+    const expected = await painted.jsonValue();
+    await painted.dispose();
+    assert.ok(expected);
     const settled = await cached.page.evaluate(async (expected) => {
       const state = (window as unknown as { switchState: { frames: string[][]; expected?: string; matched: Promise<void> } }).switchState;
       state.expected = expected;
