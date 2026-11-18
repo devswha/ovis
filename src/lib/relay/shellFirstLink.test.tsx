@@ -9,7 +9,8 @@ import { relayFailureText } from "../../components/relayFailureText.ts";
 import { memoryAccountStore } from "../account/store.ts";
 import { translate, type Vars } from "../i18n.ts";
 import { nativeTransport, setTransport } from "../transport.ts";
-import type { RelayDevice, RelayDeviceStore } from "./device.ts";
+import type { RelayDevice, RelayDeviceStore, SavedDevice } from "./device.ts";
+import { ADMISSION_WAIT_MS, LINK_RETRY_MAX_MS } from "./accountController.ts";
 import { mountRelayShell } from "./shell.tsx";
 import { createShellTestPage } from "./shell.test.tsx";
 import { RelayTransport, type RelayTransportOptions } from "./transport.ts";
@@ -44,6 +45,22 @@ describe("the admission before a first link", () => {
     readonly reopen?: boolean;
     /** the offer carries no code: a join of a PC the account lists, by comparing digits */
     readonly codeless?: boolean;
+    /** the PC is in the account already, with this device's new row not linked yet */
+    readonly pcIn?: boolean;
+    /** the account service never answers that call, and ends it only when its signal aborts */
+    readonly neverAnswers?: "listing" | "admission";
+    /** the confirm is not pressed: the test presses it (to install fake timers first) */
+    readonly hold?: boolean;
+    /** its answer to GET /v1/pcs, by default the account's list */
+    readonly listRead?: () => Response;
+    /** the account lists the PC under another relay key than the QR code's */
+    readonly listedKey?: string;
+    /** another tab forgets this PC just as the older record is about to be written back */
+    readonly forgetAtRestore?: boolean;
+    /** the PC ends the new row's sessions just before it answers the first link, so that end arrives first */
+    readonly endRowBeforeAnswer?: boolean;
+    /** another tab signs in to another account once the first admission was answered */
+    readonly switchAfterAdmission?: boolean;
     /** the account lists the PC already */
     readonly listed?: boolean;
     /** no sign-in is stored on the device */
@@ -72,7 +89,15 @@ describe("the admission before a first link", () => {
     const devices = new Map<string, RelayDevice>(options.saved || options.reopen ? [[offer.server_id, older]] : []);
     const store: RelayDeviceStore = {
       get: async (id) => devices.get(id), list: async () => [...devices.values()], remove: async (id) => { devices.delete(id); },
-      update: async (id, change) => { const device = change(devices.get(id)); devices.set(id, device); return device; },
+      update: async (id, change) => {
+        // the write that would put the older record back: another tab's Forget commits just before it
+        if (options.forgetAtRestore && devices.get(id)?.device_id === NEWER_ID) {
+          let next: RelayDevice | undefined;
+          try { next = change(devices.get(id)); } catch { next = undefined; }
+          if (next?.device_id === OLDER_ID) devices.delete(id);
+        }
+        const device = change(devices.get(id)); devices.set(id, device); return device;
+      },
     };
     // what reached the account service and the PC, in order, with the keys each admission and link named
     const events: string[] = [];
@@ -82,18 +107,21 @@ describe("the admission before a first link", () => {
     const sent: string[] = [];
     const admissionGate = Promise.withResolvers<void>();
     let listed = options.listed === true;
+    let reads = 0;
     let postSignal: AbortSignal | undefined;
     let apps = 0, opens = 0, linked = false;
-    let ended = false;
+    // the row the PC ended, by its device id: a sign-in with that row is refused, one with another row is not
+    let ended: string | null | undefined;
     const fatal: ((error: Error) => void)[] = [];
     class Admitted extends RelayTransport {
       override get server() { return { version: "1.0.0", relayProtocol: RELAY_PROTOCOL, features: [ACCOUNT_FEATURE] }; }
       override async renew() {}
       override async fetch(path: string, init?: RequestInit) {
         switch (path) {
-          case "/api/account/status": return Response.json({ account: linked ? "acct-test" : null, unlinked: [], removals: [], enrolling: !linked });
+          case "/api/account/status": return Response.json({ account: linked || options.pcIn ? "acct-test" : null, unlinked: options.pcIn && !linked ? [NEWER_ID, OLDER_ID] : [], removals: [], enrolling: !linked && !options.pcIn });
           case "/api/account/link": {
             events.push("link");
+            if (options.endRowBeforeAnswer && sent.length === 0) endRow();
             sent.push((JSON.parse(String(init?.body)) as { record: { key: string } }).record.key);
             const answers = options.links ?? [];
             const answer = answers[Math.min(sent.length, answers.length) - 1]?.() ?? Response.json({});
@@ -113,13 +141,19 @@ describe("the admission before a first link", () => {
       render(node.props.children);
     };
     const current = (): RelayShellProps => { if (!props) throw new TypeError("Shell not rendered"); return props; };
-    const listedPc = { server_id: offer.server_id, label: "Desk", added_at: "2026-11-01T00:00:00Z", last_seen_at: null };
+    const offerKey = Array.from(identity.publicKey, (byte) => byte.toString(16).padStart(2, "0")).join("");
+    const listedPc = { server_id: offer.server_id, label: "Desk", added_at: "2026-11-01T00:00:00Z", last_seen_at: null, public_key: options.listedKey ?? offerKey, relay: offer.relay };
     await mountRelayShell({
       container: Object.create(null), entryUrl: options.reopen ? `https://app.ovis.sh/s/${offer.server_id}/` : encodeOffer(offer, "https://app.ovis.sh"), shellVersion: "1.0.0", store, accountStore,
       accountService: "https://account.ovis.sh",
       accountFetch: async (input, init) => {
         const path = new URL(String(input instanceof Request ? input.url : input)).pathname;
         const bearer = new Headers(init?.headers).get("authorization");
+        // a call that is never answered ends only by its own signal, as fetch does
+        const hung = (): Promise<Response> => new Promise((_resolve, reject) => {
+          const signal = init?.signal;
+          if (signal) signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
         if (path === `/v1/pcs/${offer.server_id}` && init?.method === "PUT") {
           events.push(`list ${bearer}`);
           const answer = options.listing?.() ?? Response.json({});
@@ -129,18 +163,23 @@ describe("the admission before a first link", () => {
         if (path !== "/v1/admissions" || init?.method !== "POST") {
           // another tab signs in to another account as the pairing reads this account's list, before its listing
           if (options.switchAccount && path === "/v1/pcs" && props?.state.kind === "connecting" && !events.includes("switched")) { await accountStore.set("session", sessionOf("acct-other")); events.push("switched"); }
-          return Response.json({ pcs: listed ? [listedPc] : [] });
+          reads++;
+          // the confirm reads the list too, with no bound: only the pairing's own read, bounded, is never answered
+          if (options.neverAnswers === "listing" && events.includes("pressed") && init?.signal) return hung();
+          return options.listRead?.() ?? Response.json({ pcs: listed ? [listedPc] : [] });
         }
         events.push(`admission ${bearer}`);
         const body = JSON.parse(String(init.body)) as { key: string; quiet?: unknown };
         posted.push(body.key);
         quiet.push(body.quiet === true);
         postSignal = init.signal ?? undefined;
+        if (options.neverAnswers === "admission") return hung();
         await admissionGate.promise;
         const answer = options.admission?.() ?? (listed ? Response.json({ id: "adm-1" }) : Response.json({ error: { code: "unknown_pc", message: "List PCs of this account only" } }, { status: 400 }));
         if (answer === "unanswered") throw new TypeError("Failed to fetch");
         events.push(answer.ok ? "admission answered" : "admission refused");
         if (options.keyChanges && posted.length === 1) await accountStore.clear(() => true);
+        if (options.switchAfterAdmission && answer.ok) await accountStore.set("session", sessionOf("acct-other"));
         return answer;
       },
       createRoot: () => ({ render, unmount() {} }), renderApp: () => { apps++; return { render() {}, unmount() {} }; },
@@ -150,26 +189,27 @@ describe("the admission before a first link", () => {
       open: async (opening, transportOptions: RelayTransportOptions = {}) => {
         opens++;
         if (opening.code !== undefined) { events.push("pair"); devices.set(offer.server_id, { ...older, device_id: NEWER_ID }); }
-        else if (ended) throw new MuxProtocolError("auth_failed", "the PC ended this row");
+        else if (ended !== undefined && devices.get(offer.server_id)?.device_id === ended) throw new MuxProtocolError("auth_failed", "the PC ended this row");
         else devices.set(offer.server_id, devices.get(offer.server_id) ?? older);
         if (transportOptions.onFatal) fatal.push(transportOptions.onFatal);
         const opened = new Admitted(offer); transports.push(opened); return opened;
       },
     });
+    const press = (): void => { events.push("pressed"); current().onPair(); };
     if (!options.reopen) {
       await until(() => current().state.kind === "confirm" && (current().state as { account?: string }).account !== "checking");
-      events.push("pressed");
-      current().onPair();
+      if (!options.hold) press();
     }
     const pcEvents = (): string[] => events.filter((event) => event === "pair" || event === "link");
     const failure = (): string | null => { const state = current().state; return state.kind === "failed" ? state.failure : null; };
     /** the PC ends the row: every session of it ends `auth_revoked`, and a later sign-in with it is refused */
-    const endRow = (): void => { ended = true; for (const end of fatal.splice(0)) end(new MuxProtocolError("auth_revoked", "the PC ended this row")); };
-    return { current, events, pcEvents, posted, quiet, sent, failure, endRow, admissionGate, store, offer, apps: () => apps, opens: () => opens, postSignal: () => postSignal };
+    const endRow = (): void => { ended = devices.get(offer.server_id)?.device_id; for (const end of fatal.splice(0)) end(new MuxProtocolError("auth_revoked", "the PC ended this row")); };
+    const switchAccount = (): Promise<void> => accountStore.set("session", sessionOf("acct-other"));
+    return { current, press, reads: () => reads, switchAccount, events, pcEvents, posted, quiet, sent, failure, endRow, admissionGate, store, offer, apps: () => apps, opens: () => opens, postSignal: () => postSignal };
   }
 
   for (const [what, options, expected] of [
-    ["a PC the account does not list yet", {}, ["list Bearer access-acct-test", "admission Bearer access-acct-test", "admission answered", "pair", "link"]],
+    ["a PC the account lists under the QR code's key", { listed: true }, ["admission Bearer access-acct-test", "admission answered", "pair", "link"]],
     ["a PC this device has a pairing with that is not linked, which the account lists", { saved: true, listed: true }, ["admission Bearer access-acct-test", "admission answered", "pair", "link"]],
     // a marked PAIR makes a new row on the PC, whatever this device saved: the saved record decides nothing
     ["a PC this device's saved pairing says it is a member of already", { saved: true, member: true, listed: true }, ["admission Bearer access-acct-test", "admission answered", "pair", "link"]],
@@ -199,12 +239,12 @@ describe("the admission before a first link", () => {
 
   for (const [what, options, failure] of [
     ["no sign-in", { signedOut: true }, "sign-in-first"],
-    ["the listing refused", { listing: () => Response.json({ error: { code: "unavailable" } }, { status: 503 }) }, "account-list-failed"],
+    ["the account's list unreadable", { listRead: () => Response.json({ error: { code: "unavailable" } }, { status: 503 }) }, "admission-unanswered"],
     ["400 unknown_pc", { listed: true, admission: () => Response.json({ error: { code: "unknown_pc" } }, { status: 400 }) }, "account-unlisted"],
-    ["429 too_many_admissions", { admission: () => Response.json({ error: { code: "too_many_admissions" } }, { status: 429 }) }, "account-busy"],
-    ["503", { admission: () => Response.json({ error: { code: "unavailable" } }, { status: 503 }) }, "admission-unanswered"],
-    ["no answer", { admission: () => "unanswered" as const }, "admission-unanswered"],
-    ["400 invalid_key", { admission: () => Response.json({ error: { code: "invalid_key" } }, { status: 400 }) }, "admission-failed"],
+    ["429 too_many_admissions", { listed: true, admission: () => Response.json({ error: { code: "too_many_admissions" } }, { status: 429 }) }, "account-busy"],
+    ["503", { listed: true, admission: () => Response.json({ error: { code: "unavailable" } }, { status: 503 }) }, "admission-unanswered"],
+    ["no answer", { listed: true, admission: () => "unanswered" as const }, "admission-unanswered"],
+    ["400 invalid_key", { listed: true, admission: () => Response.json({ error: { code: "invalid_key" } }, { status: 400 }) }, "admission-failed"],
   ] as const) {
     it(`with the mark, sends no PAIR on ${what}, and says why`, async () => {
       const run = await pairing({ mark: true, ...options });
@@ -282,17 +322,99 @@ describe("the admission before a first link", () => {
     expect(run.pcEvents().filter((event) => event === "pair")).toHaveLength(1);
   });
 
+  // a marked pairing's first link the PC turned away: the refusal is said, and the record of the row it ended goes
   for (const [code, status, failure] of [["link_required", 403, "link-required"], ["account_mismatch", 409, "account-mismatch"], ["unverified_device", 403, "unverified-device"]] as const) {
-    it(`says a new pairing's refused link (${code}) in its own words, opens no app, and keeps the pairing`, async () => {
-      const run = await pairing({ mark: true, links: [() => Response.json({ error: { code, message: "private refusal" } }, { status })] });
+    it(`says a new marked pairing's refused link (${code}) in its own words, opens no app, and forgets the row the PC ended`, async () => {
+      const run = await pairing({ mark: true, listed: true, links: [() => Response.json({ error: { code, message: "private refusal" } }, { status })] });
       run.admissionGate.resolve();
       await until(() => run.current().state.kind === "failed");
       expect(run.failure()).toBe(failure);
       expect(run.apps()).toBe(0);
-      expect(await run.store.get(run.offer.server_id)).toBeDefined();
+      expect(await run.store.get(run.offer.server_id)).toBeUndefined();
       const said = relayFailureText(t, failure, "Desk");
       expect(said.title).not.toBe(relayFailureText(t, "revoked", "Desk").title);
       expect(JSON.stringify(said)).not.toContain("private refusal");
+    });
+    // an unmarked pairing's refused link goes as before: the PC opens, and its record goes only once the PC ends the
+    // row (a PC that was set up for another account and is in none keeps it, and the device drives on)
+    it(`opens the PC as before when an unmarked pairing's link is refused ${code}, and forgets its record once the PC ends the row`, async () => {
+      const run = await pairing({ links: [() => Response.json({ error: { code } }, { status })] });
+      await until(() => run.apps() === 1 && run.sent.length === 1);
+      expect(run.failure()).toBeNull();
+      expect((await run.store.get(run.offer.server_id))?.device_id).toBe(NEWER_ID);
+      run.endRow();
+      await until(async () => await run.store.get(run.offer.server_id) === undefined);
+    });
+  }
+
+  // a PC already in an account keeps a row whose link names another account, and the device drives it as before
+  for (const mark of [false, true]) {
+    it(`opens the PC as before when a PC already in an account answers the link account_mismatch (${mark ? "marked" : "plain"} code)`, async () => {
+      const run = await pairing({ mark, pcIn: true, listed: true, links: [() => Response.json({ error: { code: "account_mismatch" } }, { status: 409 })] });
+      run.admissionGate.resolve();
+      await until(() => run.apps() === 1 && run.sent.length === 1);
+      expect(run.failure()).toBeNull();
+      expect((await run.store.get(run.offer.server_id))?.device_id).toBe(NEWER_ID);
+    });
+  }
+
+  // a hung account service holds a marked pairing no longer than its bound, and nothing reaches the PC
+  const turn = () => crypto.subtle.digest("SHA-256", new Uint8Array(1));
+  for (const [hung, failure, options] of [["listing", "admission-unanswered", {}], ["admission", "admission-unanswered", { listed: true }]] as const) {
+    it(`with the mark, stops at the bound when the account service never answers the ${hung}, and sends no PAIR`, async () => {
+      const run = await pairing({ mark: true, hold: true, neverAnswers: hung, ...options });
+      const confirmReads = run.reads();
+      jest.useFakeTimers();
+      run.press();
+      const asked = hung === "listing" ? (): boolean => run.reads() > confirmReads : (): boolean => run.posted.length === 1;
+      for (let step = 0; !asked() && step < 5_000; step++) await turn();
+      expect(asked()).toBe(true);
+      expect(run.current().state.kind).toBe("connecting");
+      jest.advanceTimersByTime(ADMISSION_WAIT_MS);
+      for (let step = 0; run.current().state.kind !== "failed" && step < 5_000; step++) await turn();
+      expect(run.failure()).toBe(failure);
+      expect(run.opens()).toBe(0);
+    });
+  }
+
+  // a PC that keeps answering account_unavailable gets the link a bounded number of times, each after a bounded wait
+  it("with the mark, sends the link five times to a PC that keeps answering account_unavailable, then records the enrollment as failed", async () => {
+    const run = await pairing({ mark: true, listed: true, hold: true, links: [() => Response.json({ error: { code: "account_unavailable" } }, { status: 503 })] });
+    jest.useFakeTimers();
+    run.press();
+    run.admissionGate.resolve();
+    let state: string | undefined;
+    for (let step = 0; state !== "failed" && step < 20_000; step++) {
+      if (step % 4 === 3) jest.advanceTimersByTime(1_000);
+      await turn();
+      state = ((await run.store.get(run.offer.server_id)) as SavedDevice | undefined)?.account_enrollment?.state;
+    }
+    expect(state).toBe("failed");
+    expect(run.sent).toHaveLength(5);
+    expect(run.pcEvents().filter((event) => event === "pair")).toHaveLength(1);
+  });
+
+  it("waits no longer than its cap before sending the link again, whatever wait the PC names", async () => {
+    const run = await pairing({ mark: true, listed: true, hold: true, links: [() => Response.json({ error: { code: "account_unavailable" } }, { status: 503, headers: { "retry-after": "3600" } }), () => Response.json({})] });
+    jest.useFakeTimers();
+    run.press();
+    run.admissionGate.resolve();
+    for (let step = 0; run.sent.length < 1 && step < 5_000; step++) await turn();
+    expect(run.sent).toHaveLength(1);
+    jest.advanceTimersByTime(LINK_RETRY_MAX_MS);
+    for (let step = 0; run.sent.length < 2 && step < 5_000; step++) await turn();
+    expect(run.sent).toHaveLength(2);
+  });
+
+  // without the mark a link goes as before: once, unless the PC named a wait
+  for (const [what, headers, expected] of [["names no wait", {}, 1], ["names a wait", { "retry-after": "1" }, 2]] as const) {
+    it(`without the mark, sends the link again only when the PC ${what}`, async () => {
+      const run = await pairing({ hold: true, links: [() => Response.json({ error: { code: "account_unavailable" } }, { status: 503, headers }), () => Response.json({})] });
+      jest.useFakeTimers();
+      run.press();
+      for (let step = 0; run.sent.length < 1 && step < 5_000; step++) await turn();
+      for (let step = 0; step < 400; step++) { if (step % 4 === 3) jest.advanceTimersByTime(1_000); await turn(); }
+      expect(run.sent).toHaveLength(expected);
     });
   }
 
@@ -317,4 +439,66 @@ describe("the admission before a first link", () => {
     await until(() => run.apps() === 1);
     expect((await run.store.get(run.offer.server_id))?.device_id).toBe(OLDER_ID);
   });
+
+  // the mark comes with the QR code, which nothing signs: for a PC the account does not list under the QR code's own key,
+  // it changes nothing, and nothing is written to the account before the PC answers
+  for (const [what, options] of [["a PC the account does not list", {}], ["a PC the account lists under another key", { listed: true, listedKey: "ab".repeat(32) }]] as const) {
+    it(`with the mark, for ${what}, lists nothing, posts nothing, and pairs as an unmarked code does`, async () => {
+      const run = await pairing({ mark: true, ...options });
+      await until(() => run.apps() === 1 && run.sent.length === 1);
+      expect(run.posted).toEqual([]);
+      // the enrollment lists the PC once its link passed, as for any unmarked code; nothing before the pairing
+      expect(run.events.slice(0, run.events.indexOf("pair")).filter((event) => event.startsWith("list") || event.startsWith("admission"))).toEqual([]);
+      expect(run.pcEvents()).toEqual(["pair", "link"]);
+    });
+  }
+
+  // another tab signs out of, or into another account than, the one the confirm named while the post is out: no PAIR
+  it("with the mark, sends no PAIR when the stored sign-in changed while the admission was out, and asks again", async () => {
+    const run = await pairing({ mark: true, listed: true, switchAfterAdmission: true });
+    run.admissionGate.resolve();
+    await until(() => run.posted.length === 1 && run.current().state.kind === "confirm" && (run.current().state as { account?: string }).account !== "checking");
+    expect(run.opens()).toBe(0);
+  });
+
+  it("with the mark, sends the link no more once the stored sign-in changed while it waited to send it again", async () => {
+    const run = await pairing({ mark: true, listed: true, hold: true, links: [() => Response.json({ error: { code: "account_unavailable" } }, { status: 503, headers: { "retry-after": "2" } }), () => Response.json({})] });
+    jest.useFakeTimers();
+    run.press();
+    run.admissionGate.resolve();
+    for (let step = 0; run.sent.length < 1 && step < 5_000; step++) await turn();
+    expect(run.sent).toHaveLength(1);
+    await run.switchAccount();
+    jest.advanceTimersByTime(LINK_RETRY_MAX_MS);
+    for (let step = 0; step < 400; step++) await turn();
+    expect(run.sent).toHaveLength(1);
+  });
+
+  // a marked re-pair whose new link is refused restores the older record only while the refused row still holds it
+  it("keeps a Forget that another tab makes as a marked re-pair's refusal is handled, and writes no older record over it", async () => {
+    const run = await pairing({ mark: true, saved: true, listed: true, forgetAtRestore: true, links: [() => Response.json({ error: { code: "unverified_device" } }, { status: 403 })] });
+    run.admissionGate.resolve();
+    await until(() => run.sent.length === 1);
+    for (let step = 0; step < 400; step++) await turn();
+    // the older record was not written back over the Forget
+    expect(await run.store.get(run.offer.server_id)).toBeUndefined();
+  });
+
+  // the PC ends the refused row's sessions as it answers: that end may arrive before the refusal itself
+  for (const saved of [true, false]) {
+    it(`handles a marked pairing's refusal that arrives after the end of its sessions (${saved ? "a re-pair" : "a new pairing"})`, async () => {
+      const run = await pairing({ mark: true, saved, listed: true, endRowBeforeAnswer: true, links: [() => Response.json({ error: { code: "unverified_device" } }, { status: 403 })] });
+      run.admissionGate.resolve();
+      if (saved) {
+        await until(() => run.apps() === 1);
+        expect((await run.store.get(run.offer.server_id))?.device_id).toBe(OLDER_ID);
+      } else {
+        await until(() => run.current().state.kind === "failed");
+        expect(run.failure()).toBe("unverified-device");
+        expect(await run.store.get(run.offer.server_id)).toBeUndefined();
+        // the PAIR and the link's own connection, and no sign-in again with the key of a row the PC turned away
+        expect(run.opens()).toBe(2);
+      }
+    });
+  }
 });

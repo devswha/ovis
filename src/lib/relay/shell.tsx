@@ -22,7 +22,8 @@ import { failureOf, forgedOffer, forgetsDevice, iosBrowserTab, keyMismatch, offe
 import type { Attempt, RelayShellMount, RelayShellState, SheetJoin } from "./shellState.ts";
 import { openRelayTransport, type RelayTransport } from "./transport.ts";
 import { offerFromCode, TypedCodeError } from "./pairCode.ts";
-import { ConsentChangedError, createAccountController } from "./accountController.ts";
+import { ADMISSION_WAIT_MS, ConsentChangedError, createAccountController } from "./accountController.ts";
+import { AccountPcError } from "../account/join.ts";
 import { refusalOf } from "./firstLink.ts";
 import { createPcSweep } from "./pcSweep.ts";
 import { createUpdateFlow, loadObservedVersions, observedVersions, reloadPage, freshShellNext, forgetSavedPc } from "./updateFlow.ts";
@@ -53,9 +54,11 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const enrolling = new Set<RelayTransport>();
   // a first link each PC refused, by its id, until a failure screen for that PC says it (linkRefused)
   const refusedLinks = new Map<string, unknown>();
-  // a saved pairing that pairs again from a marked code, whose record that PAIR replaces: kept until the new row's link
-  // passes, so a refused link leaves the device the record of the row the PC kept
-  const olderPairings = new Map<string, RelayDevice>();
+  // a marked code's pairing, by PC, until its new row's link passes: the row its PAIR made (`made`), and the record of
+  // an older pairing that PAIR replaced (`older`), so a refused link leaves the device the record of the row the PC kept
+  const markedPairings = new Map<string, { older?: RelayDevice; made?: string | null }>();
+  // a marked code's enrollment while its first link may still be on its way, by PC (failed waits for its answer)
+  const linking = new Map<string, Promise<void>>();
   const directSocket = nativeDirectSocket();
   const directTailnet = directSocket ? nativeDirectTailnet() : undefined;
   const findByCode = mount.findByCode ?? offerFromCode;
@@ -200,9 +203,18 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       await connect({ ...attempt, refreshed: true });
       return;
     }
+    // the PC ends a refused row's sessions as it answers that row's first link, and the end may come here first: a
+    // marked pairing's link still on its way is waited for, bounded, so its refusal decides what is kept
+    const inFlight = linking.get(attempt.offer.server_id);
+    if (inFlight !== undefined && refusedLinks.get(attempt.offer.server_id) === undefined) {
+      // fixed wait: a link answer that takes longer than the admission's own bound counts as none
+      await Promise.race([inFlight, new Promise<void>((resolve) => { setTimeout(resolve, ADMISSION_WAIT_MS); })]);
+      if (last !== attempt) return;
+    }
     // a first link this PC refused (linkRefused): its words say more than the end of the session that may follow it
     const refused = refusedLinks.get(attempt.offer.server_id);
-    if (refused !== undefined && reopenOlder(attempt)) { refusedLinks.delete(attempt.offer.server_id); return; }
+    const restored = refused === undefined ? "none" : await reopenOlder(attempt);
+    if (restored === "restored") { refusedLinks.delete(attempt.offer.server_id); return; }
     let failure = refusalOf(error) ?? failureOf(error, { code: attempt.code, paired: attempt.paired, compared: attempt.compared === true, codeless: attempt.codeless === true });
     if (failure === "revoked") {
       const saved = await store.get(attempt.offer.server_id);
@@ -218,9 +230,14 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       }
       if (saved?.introduced_at !== undefined && Date.now() - saved.introduced_at < INTRODUCED_GRACE_MS) failure = "not-added-yet";
     }
-    // forgotten only once the PC ended the pairing (its session ended, or a sign-in was refused): a refused link alone
-    // leaves the row the PC kept, and the device keeps its key for it
+    // forgotten once the PC ended the pairing: its session ended, a sign-in was refused, or it turned a new pairing's
+    // first link away (refusalOf: the code ended, the link was for another account than the one it was set up for, or
+    // the account did not confirm the device), which ends that row and leaves no older record to reopen
+    const made = markedPairings.get(attempt.offer.server_id)?.made;
+    markedPairings.delete(attempt.offer.server_id);
     if (forgetsDevice(failure)) await store.remove(attempt.offer.server_id).catch(() => undefined);
+    // the refused row's own record only: a Forget or a newer pairing made since (another tab) stands
+    else if (restored === "none" && refused instanceof AccountPcError && refusalOf(refused) !== null && made != null && (await store.get(attempt.offer.server_id))?.device_id === made) await store.remove(attempt.offer.server_id).catch(() => undefined);
     if (last !== attempt) return;
     refusedLinks.delete(attempt.offer.server_id);
     const mismatch = error instanceof ServerIdentityChangedError && error.saved !== undefined && error.offered !== undefined
@@ -243,9 +260,10 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       const prepared = await account.prepare(attempt.offer, controller.signal, consentOf(attempt));
       attempt.accountEnrollment = prepared.accountKey !== undefined;
       if (!attempt.paired) {
-        const saved = attempt.offer.code !== undefined && attempt.offer.admission === 1 ? await store.get(attempt.offer.server_id) : undefined;
-        if (saved?.device_id != null) olderPairings.set(attempt.offer.server_id, saved);
-        else olderPairings.delete(attempt.offer.server_id);
+        const marked = attempt.offer.code !== undefined && attempt.offer.admission === 1;
+        const saved = marked ? await store.get(attempt.offer.server_id) : undefined;
+        if (marked) markedPairings.set(attempt.offer.server_id, saved?.device_id != null ? { older: saved } : {});
+        else markedPairings.delete(attempt.offer.server_id);
       }
       opened = await open(attempt.offer, {
         store, label, signal: controller.signal,
@@ -286,6 +304,9 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     // nor to the account of another sign-in than the one the confirm named: only its id crosses the reload
     keepConfirmedSignIn(attempt.signIn ? { server_id: attempt.offer.server_id, sign_in_id: attempt.signIn.sign_in_id ?? null } : null);
     if (controller.signal.aborted) { opened.close(); return; }
+    // the row this marked pairing made: only it may be replaced by the older record, or forgotten for a refusal
+    const marked = attempt.paired ? undefined : markedPairings.get(attempt.offer.server_id);
+    if (marked !== undefined) marked.made = (await store.get(attempt.offer.server_id))?.device_id;
     opening = null;
     comparison = null;
     // the PC admitted this phone: a pairing code is spent, and every later attempt (Try again on
@@ -321,40 +342,55 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     refusedLinks.set(attempt.offer.server_id, error);
     if (app === null && last === attempt && transport === opened && shown?.kind === "connecting") {
       transport = null;
-      if (reopenOlder(attempt)) refusedLinks.delete(attempt.offer.server_id);
-      else void failed(error, attempt);
+      void failed(error, attempt);
     }
     return true;
   };
   /**
    * The record of a saved pairing that paired again from a marked code and whose new link was refused: saved again, and
-   * the PC opened with it, as it was before the scan. False when there is none.
+   * the PC opened with it, as it was before the scan. Only while the refused row's own record is the saved one, checked
+   * in the same write: a Forget or a newer pairing made since (another tab) stands ("superseded"). "none": there is none.
    */
-  const reopenOlder = (attempt: Attempt): boolean => {
-    const older = olderPairings.get(attempt.offer.server_id);
-    if (older === undefined) return false;
-    olderPairings.delete(attempt.offer.server_id);
-    // a Cancel or another link meanwhile owns the screen; a store that cannot keep the record says why
-    void store.update(older.server_id, () => older).then(
-      () => { if (last === attempt) void connect({ offer: offerOf(older), code: false, paired: true, accountEnrollment: attempt.accountEnrollment === true, ...(attempt.signIn ? { signIn: attempt.signIn } : {}) }); },
-      (error: unknown) => failed(error, attempt),
-    );
-    return true;
+  const reopenOlder = async (attempt: Attempt): Promise<"restored" | "none" | "superseded"> => {
+    const kept = markedPairings.get(attempt.offer.server_id);
+    const older = kept?.older;
+    if (older === undefined) return "none";
+    markedPairings.delete(attempt.offer.server_id);
+    let superseded = false;
+    try {
+      await store.update(older.server_id, (current) => {
+        if (current === undefined || kept?.made == null || current.device_id !== kept.made) { superseded = true; throw new DOMException("The refused pairing was replaced", "AbortError"); }
+        return older;
+      });
+    } catch (error) {
+      if (superseded) return "superseded";
+      // a store that cannot keep the record says why
+      void failed(error, attempt);
+      return "restored";
+    }
+    // a Cancel or another link meanwhile owns the screen
+    if (last === attempt) void connect({ offer: offerOf(older), code: false, paired: true, accountEnrollment: attempt.accountEnrollment === true, ...(attempt.signIn ? { signIn: attempt.signIn } : {}) });
+    return "restored";
   };
   /** `settled`: told once nothing more of the enrollment ends or renews the session (accountController.ts, EnrollOptions). */
   const enroll = (opened: RelayTransport, attempt: Attempt, settled?: () => void): void => {
     // the confirm said this device gets a key of its own: a sign-in stored since then adds nothing to its account here
     if (attempt.accountless) return;
     enrolling.add(opened);
-    void account.enroll(opened, attempt.offer.server_id, attempt.fresh === true, attempt.fresh === true && attempt.introducible === true, { consent: consentOf(attempt), ...(settled ? { settled } : {}) }).then((enrollment) => {
+    const done = account.enroll(opened, attempt.offer.server_id, attempt.fresh === true, attempt.fresh === true && attempt.introducible === true, { consent: consentOf(attempt), ...(settled ? { settled } : {}) }).then((enrollment) => {
       // the new row's link passed (or none was needed): the record it replaced is no longer kept
-      olderPairings.delete(attempt.offer.server_id);
+      markedPairings.delete(attempt.offer.server_id);
       if (app === null && last === attempt && shown?.kind === "ready") show({ ...shown, enrollment });
     }, (error: unknown) => {
       if (linkRefused(opened, attempt, error)) return;
       console.warn("Ovis: this PC did not join the account yet", error instanceof Error ? error.name : error);
       if (app === null && last === attempt && shown?.kind === "ready") show({ ...shown, enrollment: "failed" });
     }).finally(() => { enrolling.delete(opened); if (transport !== opened) opened.close(); });
+    if (attempt.fresh === true && markedPairings.has(attempt.offer.server_id)) {
+      const settledLink = done.then(() => undefined, () => undefined);
+      linking.set(attempt.offer.server_id, settledLink);
+      void settledLink.then(() => { if (linking.get(attempt.offer.server_id) === settledLink) linking.delete(attempt.offer.server_id); });
+    }
   };
   const updates = createUpdateFlow(mount.shellVersion ?? __APP_VERSION__, {
     show, failed, reload: mount.reload ?? (() => reloadPage(entry.serverId)),

@@ -248,7 +248,7 @@ export class RelayService {
   status(): RelayStatus {
     return { phase: this.phase, relay: this.advertised, app: this.app,
       sessions: (this.link?.sessions ?? 0) + (this.regionalLink?.sessions ?? 0) + (this.directCarrier?.sessions ?? 0),
-      blocked: this.blocked, error: this.error, error_code: this.exactErrorCode(), account_named: this.savedRelayAccount() !== null,
+      blocked: this.blocked, error: this.error, error_code: this.exactErrorCode(), account_named: this.savedRelayAccount() !== null, named_account: this.savedRelayAccount(),
       ...(this.options.direct ? { direct: { on: this.directEnabled(), carriers: this.directCarrier?.advertised(true) ?? [] } } : {}),
       ...(this.passKeeper ? { pass: { state: this.passState(this.passKeeper), relay: this.passNotice?.state ?? null, enforce_at: this.passNotice?.enforce_at ?? null, refused: this.passRefused,
         // a relay that refuses this PC for its pass enforces them, whatever it last said in a `sync`

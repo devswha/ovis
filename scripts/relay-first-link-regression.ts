@@ -5,9 +5,10 @@
  *
  * - The hosted shell (dist-shell/, served as Cloudflare Pages serves it, routed in for https://app.ovis.sh), signed in,
  *   opens QR codes' links for PCs its account does not list. A plain code (no mark): Add and pair posts nothing and
- *   goes on to the relay, as before. A code with the mark `admission: 1`: Add and pair lists the PC and has the
- *   admission taken, asked to be quiet, before the first relay connection opens; when the account service refuses
- *   it (429), it stops before any relay connection and says why. No PC stands behind the relay here, so a pairing
+ *   goes on to the relay, as before. A code with the mark `admission: 1` of a PC the account does not list: the same,
+ *   with nothing written. Of a PC its owner listed: Pair has the admission taken, asked to be quiet, before the first
+ *   relay connection opens; when the account service refuses it (429), it stops before any relay connection and says
+ *   why. No PC stands behind the relay here, so a pairing
  *   that goes on ends there.
  * - A PC's own page (createServer, its relay on a local Bun relay), signed in, in no account, with the account named
  *   for it as `ovis add` names it but the PC not listed in the account: Show the QR code draws the code and, beside
@@ -46,6 +47,8 @@ const evidence = process.env["UI_EVIDENCE_DIR"] || null;
 const cleanup: (() => unknown)[] = [];
 // whether each admission the account service was sent asked to be quiet
 const quiet: boolean[] = [];
+// every admission the account service holds, the quiet ones too: those go in a list of their own (shared/account-service-fake.ts)
+const admissionsHeld = () => fake.admissions().length + fake.quietAdmissions().length;
 const fake = new FakeAccountService();
 const token = fake.issueToken(ACCOUNT);
 
@@ -104,7 +107,7 @@ async function shellAt(browser: Browser, site: string, size: (typeof WIDTHS)[num
   });
   // each relay connection the shell opens, with how many admissions the account service held as it opened
   const sockets: number[] = [];
-  await context.routeWebSocket(/^wss:\/\/relay\.test\//, (ws) => { sockets.push(fake.admissions().length); ws.close(); });
+  await context.routeWebSocket(/^wss:\/\/relay\.test\//, (ws) => { sockets.push(admissionsHeld()); ws.close(); });
   const page = await context.newPage();
   page.setDefaultTimeout(20_000);
   const errors: string[] = [];
@@ -112,40 +115,52 @@ async function shellAt(browser: Browser, site: string, size: (typeof WIDTHS)[num
   await page.goto(`${APP}/`, { waitUntil: "domcontentloaded" });
   await signIn(page);
   /** Opens a new PC's QR code link, `marked` or not, presses Add and pair, and waits past the connecting screen; answers the PC's id. */
-  const add = async (marked: boolean, name: string): Promise<string> => {
+  const add = async (marked: boolean, name: string, owned = false): Promise<string> => {
     const identity = generateKeyPair();
     const serverId = deriveServerId(identity.publicKey);
     const offer = { v: 1 as const, server_id: serverId, server_public_key: exportPublicKey(identity.publicKey), relay: "wss://relay.test", name: "Desk", code: "482913", ...(marked ? { admission: 1 as const } : {}) };
+    // the PC's owner added it to the account already (its own page, or `ovis add`), under its relay key
+    if (owned) {
+      const publicKey = Array.from(identity.publicKey, (byte) => byte.toString(16).padStart(2, "0")).join("");
+      const put = await fake.fetch(new Request(`${ACCOUNT_SERVICE}/v1/pcs/${serverId}`, { method: "PUT", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ label: "Desk", public_key: publicKey, relay: "wss://relay.test" }) }));
+      assert.ok(put.ok, `${size.width}: the owner lists the PC`);
+    }
     log.length = 0;
     sockets.length = 0;
+    quiet.length = 0;
     await page.goto(encodeOffer(offer, APP), { waitUntil: "domcontentloaded" });
-    await page.getByRole("heading", { name: "Add Desk to your account?", exact: true }).waitFor();
+    await page.getByRole("heading", { name: owned ? "Pair with Desk?" : "Add Desk to your account?", exact: true }).waitFor();
     await shot(page, `${size.width}-${name}-confirm`);
-    await page.getByRole("button", { name: "Add and pair", exact: true }).click();
+    await page.getByRole("button", { name: owned ? "Pair" : "Add and pair", exact: true }).click();
     await page.waitForFunction(() => document.querySelector("main[data-relay-state]") !== null && document.querySelector('main[data-relay-state="connecting"], main[data-relay-state="confirm"]') === null);
     return serverId;
   };
 
   // a plain code: no admission is posted, and the pairing goes on to the relay, as before
-  const before = fake.admissions().length;
-  quiet.length = 0;
+  const before = admissionsHeld();
   await add(false, "plain");
   assert.ok(!log.some((line) => line.startsWith("POST /v1/admissions")), `${size.width}: a plain code posts no admission (${log.join(", ")})`);
   assert.ok(sockets.length > 0, `${size.width}: a plain code's pairing goes on to the relay`);
-  assert.equal(fake.admissions().length, before, `${size.width}: the account holds no new admission`);
+  assert.equal(admissionsHeld(), before, `${size.width}: the account holds no new admission`);
 
-  // a marked code: the PC listed, the admission taken, and only then the relay
-  const listed = await add(true, "marked");
+  // a marked code of a PC the account does not list: the mark changes nothing, and nothing is written before the relay
+  const unlisted = await add(true, "marked-unlisted");
+  assert.ok(!log.some((line) => line.startsWith("POST /v1/admissions") || line.startsWith("PUT /v1/pcs/")), `${size.width}: a marked code of a PC the account does not list writes nothing (${log.join(", ")})`);
+  assert.ok(!fake.pcs(ACCOUNT).some((pc) => pc.server_id === unlisted), `${size.width}: the account still does not list that PC`);
+  assert.ok(sockets.length > 0, `${size.width}: that pairing went on to the relay as an unmarked one does`);
+
+  // a marked code of a PC its owner listed: the admission taken, and only then the relay
+  const before2 = admissionsHeld();
+  await add(true, "marked", true);
   const calls = log.filter((line) => line !== "GET /v1/pcs");
-  assert.deepEqual(calls.slice(0, 2), [`PUT /v1/pcs/${listed}`, "POST /v1/admissions"], `${size.width}: a marked code lists the PC, then posts the admission (${calls.join(", ")})`);
-  assert.ok(fake.pcs(ACCOUNT).some((pc) => pc.server_id === listed), `${size.width}: the account lists the PC`);
+  assert.deepEqual(calls.slice(0, 1), ["POST /v1/admissions"], `${size.width}: a marked code posts the admission first, and lists nothing (${calls.join(", ")})`);
   assert.ok(sockets.length > 0, `${size.width}: the marked code's pairing went on to the relay`);
-  assert.equal(sockets[0], before + 1, `${size.width}: the admission was taken before the first relay connection opened`);
+  assert.equal(sockets[0], before2 + 1, `${size.width}: the admission was taken before the first relay connection opened`);
   assert.deepEqual(quiet, [true], `${size.width}: the marked code's admission asked to be quiet`);
 
   // a marked code whose admission the account service refuses: it stops before the relay, and says why
   refuse.admissions = true;
-  await add(true, "refused");
+  await add(true, "refused", true);
   await page.locator('main[data-relay-state="account-busy"]').waitFor();
   assert.deepEqual(sockets, [], `${size.width}: a refused admission opens no relay connection, so the code was not used`);
   await shot(page, `${size.width}-refused`);
@@ -245,7 +260,7 @@ try {
     await shellAt(browser, `http://127.0.0.1:${site.port}`, size);
     await pcPageAt(browser, origin, size);
   }
-  console.log("PASS relay first link: at 390 and 1440 a plain code pairs as before with no admission; a marked code lists the PC and has the admission taken before the relay, or stops with why; a PC's relay tab draws its QR code and lists the PC from the code's offer beside it, touching no pairing window");
+  console.log("PASS relay first link: at 390 and 1440 a plain code pairs as before with no admission; a marked code writes nothing for a PC the account does not list, and for one its owner listed has the admission taken before the relay, or stops with why; a PC's relay tab draws its QR code and lists the PC beside it for the account named for it, touching no pairing window");
 } catch (error) {
   code = 1;
   console.error("FAIL relay first link:", error);

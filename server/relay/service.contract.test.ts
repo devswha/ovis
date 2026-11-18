@@ -365,18 +365,20 @@ it("ends the relay offer's code, and a typed code, with the paired device that a
   }
 });
 
-it("makes the relay tab's QR code only once an account was named for the PC, and says in its state whether one is", async () => {
+it("makes the relay tab's QR code only once an account was named for the PC, and says in its state whether one is, and which", async () => {
   const f = await fixture();
   await f.start();
   const devices = f.app.context.services.devices;
   const ask = (noAccountOnly: boolean) => fetch(`${f.base}/api/relay/offer`, { method: "POST",
     headers: { origin: f.base, "x-herdr-update": "1", ...(noAccountOnly ? { "x-ovis-no-account-only": "1" } : {}) } });
   const named = async () => (await (await f.request()).json() as RelayStatus).account_named;
+  const which = async () => (await (await f.request()).json() as RelayStatus).named_account;
   // a code another place shows as digits is pending
   const pending = devices.startPairing().code;
   let started = 0;
   devices.onPairingStarted(() => { started++; });
   expect(await named()).toBe(false);
+  expect(await which()).toBeNull();
   const refused = await ask(true);
   expect([refused.status, (await refused.json() as { error: { code: string } }).error.code]).toEqual([409, "no_account_named"]);
   // no code was started for it, and the one pending is as it was: an offer asked for without the header carries it
@@ -388,6 +390,7 @@ it("makes the relay tab's QR code only once an account was named for the PC, and
     headers: { origin: f.base, "x-herdr-machine": "1", "content-type": "application/json" }, body: JSON.stringify({ account: "acct_1" }) });
   expect(naming.status).toBe(204);
   expect(await named()).toBe(true);
+  expect(await which()).toBe("acct_1");
   const offered = await ask(true);
   expect(offered.status).toBe(200);
   // the QR code gets a code of its own, started for it

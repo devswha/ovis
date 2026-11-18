@@ -224,10 +224,11 @@ export function sameSignIn(a: AccountSession, b: AccountSession): boolean {
 }
 
 /** `POST /v1/token`: a code, a refresh token or a native Apple token for a session; `bearer` redeems a linking sign-in. */
-export async function requestToken(service: string, grant: Record<string, string>, options: { fetch?: Fetch; now?: () => number; bearer?: string } = {}): Promise<AccountSession> {
+export async function requestToken(service: string, grant: Record<string, string>, options: { fetch?: Fetch; now?: () => number; bearer?: string; signal?: AbortSignal } = {}): Promise<AccountSession> {
   const now = options.now ?? Date.now;
   const response = await (options.fetch ?? fetch)(new URL("/v1/token", service), {
     method: "POST", headers: { "content-type": "application/json", ...(options.bearer === undefined ? {} : { authorization: `Bearer ${options.bearer}` }) }, body: JSON.stringify(grant),
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
   });
   if (!response.ok) throw await failure(response);
   return sessionOf(await response.json(), service, now());
@@ -469,10 +470,10 @@ export class AccountService {
   }
 
   /** One refresh of `from`; its answer is stored only if `from` is still the stored session. */
-  private async refreshed(from: AccountSession): Promise<AccountSession> {
+  private async refreshed(from: AccountSession, signal?: AbortSignal): Promise<AccountSession> {
     let next: AccountSession;
     try {
-      next = await requestToken(from.service, { grant_type: "refresh_token", refresh_token: from.refresh_token }, { fetch: this.fetch, now: this.now });
+      next = await requestToken(from.service, { grant_type: "refresh_token", refresh_token: from.refresh_token }, { fetch: this.fetch, now: this.now, ...(signal === undefined ? {} : { signal }) });
     } catch (error) {
       if (error instanceof AccountServiceError && (error.status === 400 || error.status === 401)) return this.signedOut(from);
       throw error;
@@ -488,8 +489,11 @@ export class AccountService {
     return carried;
   }
 
-  /** A session whose access token is good, refreshing once between tabs; `stale` is a token the service just refused. */
-  private async fresh(stale?: string): Promise<AccountSession> {
+  /**
+   * A session whose access token is good, refreshing once between tabs; `stale` is a token the service just refused.
+   * `signal` ends a refresh too, so a call's bound holds while its token is renewed.
+   */
+  private async fresh(stale?: string, signal?: AbortSignal): Promise<AccountSession> {
     // bound to a sign-in that is no longer the stored one: the stored one is someone else's to use or end
     const foreign = (session: AccountSession | undefined): boolean => this.options.signIn !== undefined && (session === undefined || !sameSignIn(session, this.options.signIn));
     const session = await this.session();
@@ -502,7 +506,7 @@ export class AccountService {
       if (current === undefined) return this.signedOut();
       // another tab refreshed while this one waited: its tokens are the ones to use
       if (current.access_token !== (stale ?? session.access_token)) return current;
-      return this.refreshed(current);
+      return this.refreshed(current, signal);
     });
   }
 
@@ -510,7 +514,7 @@ export class AccountService {
   private async call(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<unknown> {
     let stale: string | undefined;
     for (const retry of [false, true]) {
-      const session = await this.fresh(stale);
+      const session = await this.fresh(stale, signal);
       const response = await this.fetch(new URL(path, session.service), {
         method,
         headers: { authorization: `Bearer ${session.access_token}`, ...(body === undefined ? {} : { "content-type": "application/json" }) },

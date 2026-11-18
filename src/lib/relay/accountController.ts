@@ -20,7 +20,7 @@ import { DEVICES_CHANGED_EVENT } from "../useRelay.ts";
 import { indexedDeviceStore, type SavedDevice, type EnrollmentState, type RelayDevice, type RelayDeviceStore } from "./device.ts";
 import { offerOf } from "./shellState.ts";
 import type { AccountView, EnrollmentCompletion } from "./shellState.ts";
-import { AdmissionRefusedError, refusalOf } from "./firstLink.ts";
+import { AdmissionRefusedError, firstLinkRefusal, refusalOf } from "./firstLink.ts";
 import type { RelayShellMount } from "./shell.tsx";
 import { openRelayTransport, type RelayTransport } from "./transport.ts";
 
@@ -31,7 +31,7 @@ const DIRECTORY_REFRESH_MS = 60_000;
 export const ADMISSION_WAIT_MS = 8_000;
 /** A row's links in all, the first included, and the longest wait between two after a 503. */
 const LINK_SENDS = 5;
-const LINK_RETRY_MAX_MS = 15_000;
+export const LINK_RETRY_MAX_MS = 15_000;
 /**
  * `consent`: whose account the pairing was confirmed for. `settled`: told once, when nothing more of this enrollment
  * ends or renews the session it was given (its link and renewal are done, or it stopped before them).
@@ -358,37 +358,45 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     // a code that carries the mark: its PC takes the device only once the account service holds its admission, so the
     // admission is posted, and answered, before the pairing; a failure stops here, where nothing has reached the PC and
     // the code keeps its uses. Only a new PC's code carries the mark, so its admission asks to be taken quietly; the
-    // account service decides whether it is
+    // account service decides whether it is. Nothing signs the mark: it counts only for a PC the account already lists
+    // under this very key (its owner added it on its own page, or ran `ovis add`). For any other PC the code pairs as an
+    // unmarked one would, and nothing is written to the account on the strength of the QR code alone
     if (offer.code !== undefined && offer.admission === 1) {
       if (session === undefined || key === undefined) throw new AdmissionRefusedError("sign-in");
       // whatever this device saved for the PC: a marked code's PAIR always makes a new row there, whose link the PC
       // checks with the account service
       const directory = account.forSignIn(session);
       // each step ends at its bound or at the person's Cancel, the request itself and not only the wait for it: a slow
-      // service then lists nothing and rings nobody after the person was told
+      // service then rings nobody after the person was told
       const bounded = (): AbortSignal => AbortSignal.any([signal, AbortSignal.timeout(ADMISSION_WAIT_MS)]);
+      const publicKey = Array.from(importPublicKey(offer.server_public_key), (byte) => byte.toString(16).padStart(2, "0")).join("");
+      let listed: boolean;
       try {
-        const listing = bounded();
-        if (!(await directory.listPcs(listing)).some((pc) => pc.server_id === offer.server_id)) {
-          const publicKey = Array.from(importPublicKey(offer.server_public_key), (byte) => byte.toString(16).padStart(2, "0")).join("");
-          await directory.putPc(offer.server_id, { label: (offer.name ?? offer.server_id.slice(0, 8)).slice(0, 48), public_key: publicKey, relay: offer.relay }, listing);
-        }
+        listed = (await directory.listPcs(bounded())).some((pc) => pc.server_id === offer.server_id && pc.public_key === publicKey);
       } catch (error) {
         // the sign-in the person said yes under is no longer the stored one: nothing more goes out, and the question is
         // asked again (shell.tsx)
         if (error instanceof SignedOutError) throw new ConsentChangedError();
-        console.warn("Ovis: this PC could not be listed in the account before pairing", error instanceof AccountServiceError ? error.code : error instanceof Error ? error.name : error);
-        throw new AdmissionRefusedError("listing");
+        console.warn("Ovis: the account's PCs could not be read before pairing", error instanceof AccountServiceError ? error.code : error instanceof Error ? error.name : error);
+        throw new AdmissionRefusedError("unanswered");
       }
-      try {
-        await directory.postAdmission(offer.server_id, label.slice(0, 48), key.public_spki, deviceOs(navigator.userAgent, navigator.maxTouchPoints ?? 0), bounded(), { quiet: true });
-      } catch (error) {
-        if (error instanceof SignedOutError) throw new ConsentChangedError();
-        console.warn("Ovis: the account service did not take the admission", error instanceof AccountServiceError ? error.code : error instanceof Error ? error.name : error);
-        if (!(error instanceof AccountServiceError)) throw new AdmissionRefusedError("unanswered");
-        throw new AdmissionRefusedError(error.code === "unknown_pc" ? "unlisted" : error.status === 429 ? "busy" : error.status >= 500 ? "unanswered" : "refused");
+      // another tab signed out or in to another account while the list was read: nothing goes out under the old one
+      const read = await account.session();
+      if (read === undefined || !sameSignIn(read, session)) throw new ConsentChangedError();
+      if (listed) {
+        try {
+          await directory.postAdmission(offer.server_id, label.slice(0, 48), key.public_spki, deviceOs(navigator.userAgent, navigator.maxTouchPoints ?? 0), bounded(), { quiet: true });
+        } catch (error) {
+          if (error instanceof SignedOutError) throw new ConsentChangedError();
+          console.warn("Ovis: the account service did not take the admission", error instanceof AccountServiceError ? error.code : error instanceof Error ? error.name : error);
+          if (!(error instanceof AccountServiceError)) throw new AdmissionRefusedError("unanswered");
+          throw new AdmissionRefusedError(error.code === "unknown_pc" ? "unlisted" : error.status === 429 ? "busy" : error.status >= 500 ? "unanswered" : "refused");
+        }
+        // another tab signed out or in to another account while the post was out: no PAIR goes under the old one
+        const now = await account.session();
+        if (now === undefined || !sameSignIn(now, session)) throw new ConsentChangedError();
+        vouched.set(offer.server_id, key.public_spki);
       }
-      vouched.set(offer.server_id, key.public_spki);
     } else if (key && session !== undefined && offer.code === undefined && (await store.get(offer.server_id))?.device_id == null) {
       // any other offer pairs as it does without the mark: a code's posts nothing, a join without one posts as before
       // (an ordinary admission, never a quiet one) and is paired with the PC alone when the post fails
@@ -493,16 +501,26 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
         // a PC that could not ask the account service in time keeps the row: the same link goes again after the wait it
         // named, on this session, and nothing is paired again
         const unlinked = device;
+        // only a marked pairing, or a PC that named its wait, sends the link again: any other link is answered once, as before
+        const marked = posted !== undefined;
         const sendLink = async (sent: number): Promise<RelayDevice> => {
           try { return await linkThisDevice({ fetch, device: unlinked, key, account: session.account, store: enrollmentStore }); } catch (error) {
-            if (!(error instanceof AccountPcError && error.code === "account_unavailable") || sent >= LINK_SENDS) throw error;
+            if (!(error instanceof AccountPcError && error.code === "account_unavailable" && (marked || error.retryAfterMs !== null)) || sent >= LINK_SENDS) throw error;
             // fixed wait: the time the PC named before it asks the account service again (retry-after), bounded
             await wait(Math.min(error.retryAfterMs ?? 3_000, LINK_RETRY_MAX_MS));
+            // the same sign-in, and no leave of this key begun meanwhile, or the link goes no more
+            const current = await accountStore.get("session"), leaving = await accountStore.get("leaving");
+            if (current === undefined || !sameSignIn(current, session) || Object.values(leaving ?? {}).includes(key.public_spki)) throw new DOMException("The sign-in changed while the link waited", "AbortError");
             return sendLink(sent + 1);
           }
         };
-        try { device = await sendLink(1); }
-        finally {
+        try { device = await sendLink(1); } catch (error) {
+          // a marked pairing's link the PC turned away, ending its new row: the code ended, the account did not confirm
+          // the device, or, on a PC that was in no account, the link named another account than the one named for it.
+          // Any other refusal, and every refusal of an unmarked pairing, goes as before: the device keeps what it paired
+          if (marked && error instanceof AccountPcError && firstLinkRefusal(error.code, status.account)) throw new AccountPcError(error.status, error.code, error.retryAfterMs, true);
+          throw error;
+        } finally {
           // settled: the pairing itself (pending_key) names a link whose answer was lost
           await accountStore.update("linking", (current) => {
             const { [link]: _settled, ...rest } = current ?? {};

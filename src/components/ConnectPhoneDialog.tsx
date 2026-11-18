@@ -558,7 +558,11 @@ export function AccountQr({ relay, phone, active, signedIn, accountId = null, pc
   const before = useRef<AccountQrBaseline | null>(null);
   /** bumped by every press and every take-down: an answer to an older one changes nothing */
   const run = useRef(0);
-  /** the account this tab showed when Show the QR code was pressed: its codes' PC is listed there or nowhere */
+  /**
+   * the account this tab showed when Show the QR code was pressed, when the PC was named for that same account: its
+   * codes' PC is listed there or nowhere. A PC named for another account (or a server that does not say) is listed by
+   * no tab: the device that scans a marked code lists it itself
+   */
   const pressedAs = useRef<string | null>(null);
   /** the last take-down's requests: the next press waits for them, so it never ends the code it is about to get */
   const ending = useRef<Promise<boolean>>(Promise.resolve(true));
@@ -619,7 +623,7 @@ export function AccountQr({ relay, phone, active, signedIn, accountId = null, pc
 
   const show = async () => {
     const mine = ++run.current;
-    pressedAs.current = signedIn ? accountId : null;
+    pressedAs.current = signedIn && accountId !== null && relay.status?.named_account === accountId ? accountId : null;
     setError(null);
     setNote(null);
     setView({ kind: "starting" });

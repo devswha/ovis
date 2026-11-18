@@ -18,7 +18,8 @@ export type PcFetch = (input: string, init?: RequestInit) => Promise<Response>;
 
 /** The PC refused an account request; `code` is its error code, never its words; `retryAfterMs`: the wait its `retry-after` named. */
 export class AccountPcError extends Error {
-  constructor(readonly status: number, readonly code: string, readonly retryAfterMs: number | null = null) {
+  /** `firstLink`: the PC turned a marked pairing's first link away, and ended its row (firstLinkRefusal) */
+  constructor(readonly status: number, readonly code: string, readonly retryAfterMs: number | null = null, readonly firstLink = false) {
     super(`The PC answered ${status} (${code})`);
     this.name = "AccountPcError";
   }

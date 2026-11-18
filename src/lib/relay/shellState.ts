@@ -63,7 +63,7 @@ export type RelayFailure = "pc-offline" | "pc-unresponsive" | "relay-unreachable
    * a code that carries the mark stopped before the pairing, so it was not used: no sign-in, the PC could not be listed
    * in the account, or the account service did not take the admission (firstLink.ts AdmissionRefusedError)
    */
-  | "sign-in-first" | "account-list-failed" | "account-unlisted" | "account-busy" | "admission-unanswered" | "admission-failed"
+  | "sign-in-first" | "account-unlisted" | "account-busy" | "admission-unanswered" | "admission-failed"
   /** after the pairing, this device's account key changed and the account service did not take the new one: no link was sent */
   | "new-key-unvouched"
   /** the PC refused this device's first link: its code ended or ran out, the code is for another account, or the account service did not vouch for this device */
