@@ -603,8 +603,9 @@ export class RelayService {
    * for this PC, and the answer says so; `noAccountOnly` is not asked with it. The machine profile makes no offer
    * without it (MachineCodeForAccountError), whoever calls, and the code pending stays as it was; routes.ts answers
    * that before the relay's state.
-   * `pairing`: the id of the code pending to carry, else a fresh one (`new`: a fresh one), for every offer but the
-   * relay tab's (DeviceStore.pairingForAccount). The answer names the code it carries by its id (`pairing.id`).
+   * `pairing`: the id of the code pending to carry (`new`: a fresh one), for every offer but the relay tab's
+   * (DeviceStore.pairingForAccount): an id no longer pending starts no code (PairingGoneError), and the one pending
+   * stays as it was. The answer names the code it carries by its id (`pairing.id`).
    */
   offer(by: string | null = null, options: { noAccountOnly?: boolean; account?: string; pairing?: string } = {}): { url: string; expires_at: string; pairing: { id: string } } & Partial<AccountPairing> {
     if (!this.enabled || !this.identity || !this.services || this.blocked) throw new Error("Start the relay before pairing.");

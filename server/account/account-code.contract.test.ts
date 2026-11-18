@@ -224,6 +224,25 @@ test("an offer for the same account gets the same code; one for another account,
   expect(codeOf(await forAccount(f, "acct_owner"))).not.toBe(tab);
 });
 
+test("an offer that names a code another code replaced since starts none: the code pending and the device that waits under it stay", async () => {
+  const f = await pc();
+  const mine = f.devices.startAccountPairing("acct_owner").pairing.id;
+  // another run makes its code after this one, and a device pairs with it and waits to link
+  const theirs = f.devices.startAccountPairing("acct_owner");
+  const waiting = await signedInWith(f, theirs.code);
+  const offer = (headers: Record<string, string>) => f.local("/api/relay/offer", { method: "POST", headers: { "x-herdr-update": "1", ...headers } });
+  for (const headers of [{ "x-ovis-expect-account": "acct_owner", "x-ovis-pairing": mine }, { "x-ovis-pairing": mine }] as Record<string, string>[]) {
+    const refused = await offer(headers);
+    expect([refused.status, refused.body.error?.code]).toEqual([409, "pairing_gone"]);
+  }
+  expect(f.devices.activePairing()?.code).toBe(theirs.code);
+  expect(await state(f, theirs.pairing.id)).toMatchObject({ state: "live" });
+  expect((await ask(waiting.session, "/api/devices")).body.error?.code).toBe("link_required");
+  // the device that waited links with the other run's code
+  expect((await sendLink(waiting.session, await linkRecord(waiting.id, "acct_owner", waiting.key))).status).toBe(200);
+  expect(await f.status()).toMatchObject({ account: "acct_owner", members: 1 });
+});
+
 test("a device that loses drive access while its read of a code is on its way reads nothing", async () => {
   const f = await pc();
   const paired = (label: string) => {

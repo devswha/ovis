@@ -287,18 +287,21 @@ An offer other than the relay tab's can also say which code it is to carry, with
 x-ovis-pairing: <pairing.id> | new
 ```
 
-With an id it carries that code while it is the one pending and the offer could carry it, and
-starts a fresh code otherwise; with `new` it always starts a fresh code. So a command that made a
-code to type shows that same code as its QR code, or a code of its own, never one that another
-command or a screen made. Any other value is refused 400 `invalid_pairing`.
+With an id it carries that code while it is the one pending and the offer can carry it;
+otherwise it is refused 409 `pairing_gone`, starts no code and leaves the one pending as it was.
+With `new` it always starts a fresh code. So a command that made a code to type shows that same
+code as its QR code or none, and never shows or replaces a code that another command or a screen
+made. Any other value is refused 400 `invalid_pairing`.
 
 `POST /api/devices/pair/cancel` takes `{ "id": "<pairing.id>" }` beside `{ "code" }`: it ends the
 code pending only when that is the code named (by both, when both are given), and answers
-`cancelled: false` otherwise. A body with neither ends whatever code is pending, as before.
+`cancelled: false` otherwise. A body with neither is kept for legacy compatibility only, for
+callers from before both: it ends whatever code is pending, whoever made it.
 
 The refusals, in this order: 409 `relay_off` and `relay_offline` as ever; 400 `invalid_account`
 when the header names no account id; 409 `in_account` when the PC is in an account; then 409
-`code_unavailable` for a typed code on a relay that takes none. A device whose call waited (on
+`code_unavailable` for a typed code on a relay that takes none, and 409 `pairing_gone` for an
+offer whose `x-ovis-pairing` id is no longer the code pending. A device whose call waited (on
 the relay, for a typed code) and that was removed meanwhile is refused 401 `unauthorized`, and one
 made a device that only watches is refused 403 `read_only`. A refused call starts no code and
 leaves the one pending as it was.

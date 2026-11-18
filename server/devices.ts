@@ -90,6 +90,17 @@ export class PcInAccountError extends Error {
   }
 }
 
+/**
+ * An offer named the code it is to carry by its id (`x-ovis-pairing`), and that code is no longer the one pending, or
+ * not one the offer can carry: no code is started, and the one pending stays as it was (pairingForAccount).
+ */
+export class PairingGoneError extends Error {
+  readonly code = "pairing_gone";
+  constructor() {
+    super("The code this offer names is no longer the one pending on this PC; no new code was made.");
+  }
+}
+
 /** Canonical base64url SPKI containing a public P-256 key, never private key material. */
 function isRelayPublicKey(value: unknown): value is string {
   if (typeof value !== "string" || value.length > 256 || !/^[A-Za-z0-9_-]+$/.test(value)) return false;
@@ -639,8 +650,9 @@ export class DeviceStore {
   /**
    * The code of an offer asked for with `x-ovis-expect-account: <account>` (docs/account.md, "A code made for an
    * account"): the code pending when that was made for the same account, else a fresh one (startAccountPairing).
-   * `want`: the id of the code pending to carry, which a fresh one replaces when it is no longer pending; any other
-   * value (`new`) asks for a fresh one. `by` as in startPairing.
+   * `want`: the id of the code pending to carry; `new` asks for a fresh one. An id that names no code this offer can
+   * carry starts none (PairingGoneError): a fresh code would replace the one pending, which another run may have made
+   * since, with the devices that wait under it. `by` as in startPairing.
    */
   pairingForAccount(account: string, by: string | null = null, now = Date.now(), want?: string): PairingCode & AccountPairing {
     if (by !== null) this.assertHolder(by);
@@ -651,6 +663,8 @@ export class DeviceStore {
       if (by !== null) pending.holders.add(by);
       return { ...active, expect_account: account, pairing: { id: pending.id } };
     }
+    // a PC in an account says so first (startAccountPairing)
+    if (want !== undefined && want !== "new" && this.account() === null) throw new PairingGoneError();
     return this.startAccountPairing(account, by, now);
   }
 
@@ -698,6 +712,7 @@ export class DeviceStore {
   pairingForOffer(by: string | null = null, now = Date.now(), want?: string): PairingCode {
     const active = this.activePairing(now);
     if (active !== null && this.pending?.noAccountOnly !== true && (want === undefined || want === this.pending?.id)) return active;
+    if (want !== undefined && want !== "new") throw new PairingGoneError();
     return this.startPairing(now, { remote: false, startedBy: null, memberRequired: false, by });
   }
 
@@ -1608,7 +1623,7 @@ export async function handleDeviceRequest(request: Request, pathname: string, st
       return jsonResponse({ error: { code: "account_required", message: "End a pairing on this PC, or from a device linked to your account" } }, 403);
     }
     // `{ code }` names the pairing the caller showed, `{ id }` the one it was given (`pairing.id`, ovis add and
-    // link --code); with neither, whatever is pending ends
+    // link --code); with neither, whatever is pending ends (legacy compatibility, for callers from before both)
     const text = await request.text();
     let body: unknown = {};
     try { if (text.trim() !== "") body = JSON.parse(text); } catch { return badRequest("invalid_json", "request body must be JSON"); }

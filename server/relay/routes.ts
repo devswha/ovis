@@ -1,4 +1,4 @@
-import { DeviceGoneError, DeviceReadOnlyError, PcInAccountError } from "../devices.ts";
+import { DeviceGoneError, DeviceReadOnlyError, PairingGoneError, PcInAccountError } from "../devices.ts";
 import { MachineCodeForAccountError } from "../machine-profile.ts";
 import { errorResponse, jsonResponse, readJsonObject, setRequestRoute } from "../http.ts";
 import type { ServerContext } from "../dispatch.ts";
@@ -77,7 +77,8 @@ export async function handleRelayRequest(request: Request, pathname: string, con
         // account into the account named for it, so a PC that is in one makes none (409 in_account), and neither
         // does one that no account was named for (409 no_account_named)
         if (account !== null && !ACCOUNT_ID.test(account)) return invalidAccount();
-        // the code the caller made and wants this offer to carry (its `pairing.id`), else a fresh one; `new`: a fresh one
+        // the code the caller made and wants this offer to carry (its `pairing.id`; 409 pairing_gone once it is no longer
+        // pending, and nothing is started), or `new`: a fresh one
         const want = request.headers.get("x-ovis-pairing");
         if (want !== null && !/^(new|[0-9a-f]{32})$/.test(want)) return fail("invalid_pairing", "x-ovis-pairing names no pairing.", 400);
         const carry = want === null ? {} : { pairing: want };
@@ -154,6 +155,8 @@ export async function handleRelayRequest(request: Request, pathname: string, con
     if (error instanceof DeviceReadOnlyError) return fail(error.code, error.message, 403);
     // the PC joined an account since the page read it: the page asks nothing more and says how a device is added there
     if (error instanceof PcInAccountError) return fail(error.code, error.message, 409);
+    // the code an offer named is no longer pending: none is started in its place, and the one pending stays
+    if (error instanceof PairingGoneError) return fail(error.code, error.message, 409);
     // no account was named for this PC: its page asks for the sign-in first, and for this code only once one is named
     if (error instanceof NoAccountNamedError) return fail(error.code, error.message, 409);
     // a machine makes a code for an account only: its command line says how a device is added there
