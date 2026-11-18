@@ -4230,10 +4230,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   it has begun nothing yet (its greeting) is decided on the same live screen. Such an answer is
   marked `screen`, and the chat re-reads it on terminal output, so a switch made in the terminal
   shows once the agent draws it. An existing Antigravity conversation is marked `screen` the same
-  way, including when the row cannot be read, so the next draw can fill or change the pill. A name on the screen that the
-  agent's own naming does not turn into one id draws no pill (no catalog is looked up), except
-  Antigravity's status-row name, which is drawn as written, nor does a
-  screen that states no model, and an agent's default model never stands in for the session's.
+  way, including when the row cannot be read, so the next draw can fill or change the pill. A name
+  on the screen that the agent's own naming does not turn into one id draws no pill (no catalog is
+  looked up), nor does a screen that states no model, and an agent's default model never stands in
+  for the session's. Antigravity's status-row name is the exception: it is drawn as written.
 - The model is drawn by name only where its id is one `modelLabel` (`src/lib/modelName.ts`) can
   name for certain, from the vendor's own regular naming and matched whole:
   `claude-<family>-<major>[-<minor>]`, also behind `anthropic/`, is `<Family> <major>.<minor>`
