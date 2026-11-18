@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { ArrowLeft, Check, ChevronRight, CircleAlert, CircleCheck, CircleDot, CircleX, Eye, FolderGit2, Layers3, GitPullRequestDraft, ListFilter, RefreshCw, Search, X } from "lucide-react";
+import { ArrowLeft, Check, ChevronRight, CircleCheck, CircleDot, CircleX, FolderGit2, Layers3, GitPullRequest, GitPullRequestDraft, ListFilter, RefreshCw, Search, X } from "lucide-react";
 
 import { RowMenu } from "../../components/RowMenu.tsx";
 
@@ -8,10 +8,11 @@ import type { WorktreeOpened } from "../../../shared/protocol.ts";
 import { ApiError, getJson } from "../../lib/api.ts";
 import { useT } from "../../lib/i18n.ts";
 import { useSettings } from "../../lib/settings.ts";
-import { githubGroups, githubSearched, githubStatus, loadGithubRepo, saveGithubRepo, useKeptScroll } from "./github.ts";
+import { githubGroups, githubSearched, loadGithubRepo, saveGithubRepo, useKeptScroll } from "./github.ts";
 import { ago } from "./GithubConversation.tsx";
 import { GithubPullPage, keepGithubPage } from "./GithubPull.tsx";
 import { setPullLinkOpener } from "./pullLinks.ts";
+import { pullRequestWords } from "./pullRequestWords.ts";
 import { closePlace, onPlaceLeft, setPlace, usePlace } from "../inbox/place.ts";
 import "./GithubInbox.css";
 
@@ -120,11 +121,10 @@ let searched = "";
 const FOLDED_KEY = "ovis:fork-github-folded";
 const loadFolded = (): ReadonlySet<string> => { try { return new Set(JSON.parse(window.localStorage.getItem(FOLDED_KEY) ?? "[]") as string[]); } catch { return new Set(); } };
 
-/** A row's state as one small mark; its words are its name. Problems first, as githubStatus orders them. */
-const statusMarks = {
-  "Checks failing": [CircleX, "failing"], "Changes requested": [CircleAlert, "failing"], "Review requested": [Eye, "dim"],
-  Draft: [GitPullRequestDraft, "dim"], "Checks running": [CircleDot, "pending"], Approved: [CircleCheck, "passing"], Ready: [Check, "passing"],
-} as const;
+/** A row's CI as one small mark at its end; its words are its name. No checks, no mark. */
+const checkMarks = { passing: [CircleCheck, "passing"], failing: [CircleX, "failing"], pending: [CircleDot, "pending"] } as const;
+/** The review, a word under the title only when it says something: approved, or changes asked for. */
+const reviewTones = { approved: "passing", changes_requested: "failing" } as const;
 
 export function GithubInbox({ wide, watching, onOpened }: ViewProps) {
   const t = useT();
@@ -173,21 +173,23 @@ export function GithubInbox({ wide, watching, onOpened }: ViewProps) {
   const review = githubSearched(groups.review, query);
   const yours = githubSearched(groups.yours, query);
   const team = githubSearched(groups.team, query);
-  const statuses = { "Checks failing": t("Checks failing"), "Changes requested": t("Changes requested"), "Review requested": t("Review requested"), Draft: t("Draft"), "Checks running": t("Checks running"), Approved: t("Approved"), Ready: t("Ready") };
+  const words = pullRequestWords(t);
 
-  const group = (id: string, label: string, rows: GithubPull[], requested: boolean) => rows.length > 0 && <section className="fork-github-group" aria-label={label}>
+  const group = (id: string, label: string, rows: GithubPull[]) => rows.length > 0 && <section className="fork-github-group" aria-label={label}>
     <h3><button type="button" className="fork-github-group-head" aria-expanded={!folded.has(id)} onClick={() => fold(id)}>
       <ChevronRight aria-hidden="true" /><span>{label}</span><span className="fork-github-group-count">{rows.length}</span>
     </button></h3>
     {!folded.has(id) && <ul className="fork-github-list">{rows.map((pr) => {
-      const status = githubStatus(pr, false);
-      // in its own section a review asked of you needs no mark saying so
-      const [Mark, tone] = requested && status === "Review requested" && !pr.updated_since_review ? [null, ""] : statusMarks[status];
+      const checks = pr.checks === "none" ? null : checkMarks[pr.checks];
+      const CheckMark = checks?.[0] ?? Check;
+      const verdict = pr.review === "approved" || pr.review === "changes_requested" ? pr.review : null;
+      const State = pr.draft ? GitPullRequestDraft : GitPullRequest;
       return <li key={pr.url} className={`fork-github-row${open?.url === pr.url ? " is-current" : ""}`}>
         <button type="button" className="fork-github-summary" aria-current={open?.url === pr.url ? "true" : undefined} title={pr.title} onClick={() => openPull(pr, !wide)}>
+          <span className={`fork-github-row-state is-${pr.draft ? "dim" : "passing"}`} role="img" aria-label={pr.draft ? t("Draft") : t("Ready")} title={pr.draft ? t("Draft") : t("Ready")}><State aria-hidden="true" /></span>
           <span className="fork-github-row-title" dir="auto">{pr.title}</span>
-          {Mark !== null && <span className={`fork-github-row-mark is-${tone}`} role="img" aria-label={statuses[status]} title={statuses[status]}><Mark aria-hidden="true" /></span>}
-          <span className="fork-github-row-sub">{pr.stack && <span className="fork-github-row-stack" title={t("Stack")}><Layers3 aria-hidden="true" />{pr.stack.position}/{pr.stack.size}</span>}<span title={pr.repository}>{pr.repository.split("/").pop()} #{pr.number}</span>{pr.author && <> · {pr.author}</>} · {ago(pr.updated_at)}{pr.updated_since_review && <> · <span className="fork-github-row-updated" title={t("New commits since your review")}>{t("New commits")}</span></>}</span>
+          {checks !== null && <span className={`fork-github-row-mark is-${checks[1]}`} role="img" aria-label={words.checks[pr.checks] ?? ""} title={words.checks[pr.checks] ?? ""}><CheckMark aria-hidden="true" /></span>}
+          <span className="fork-github-row-sub">{verdict !== null && <><span className={`fork-github-row-review is-${reviewTones[verdict]}`}>{words.reviews[verdict]}</span> · </>}{pr.stack && <span className="fork-github-row-stack" title={t("Stack")}><Layers3 aria-hidden="true" />{pr.stack.position}/{pr.stack.size}</span>}<span title={pr.repository}>{pr.repository.split("/").pop()} #{pr.number}</span>{pr.author && <> · {pr.author}</>} · {ago(pr.updated_at)}{pr.updated_since_review && <> · <span className="fork-github-row-updated" title={t("New commits since your review")}>{t("New commits")}</span></>}</span>
         </button>
       </li>;
     })}</ul>}
@@ -233,7 +235,7 @@ export function GithubInbox({ wide, watching, onOpened }: ViewProps) {
       {error === null && (listing?.failed?.length ?? 0) > 0 && <p className="fork-github-note" role="status">{t("Could not read {accounts}", { accounts: listing!.failed!.join(", ") })}</p>}
       {error !== null && listing !== null && <p className="fork-github-note" role="alert">{errors[error] ?? errors.gh_failed}</p>}
       {listing === null ? loading || error === null ? <p className="inbox-empty" role="status">{t("Reading pull requests…")}</p> : <p className="inbox-empty" role="alert">{errors[error] ?? errors.gh_failed}</p>
-        : shown > 0 ? <>{group("review", t("Review requested"), review, true)}{group("yours", t("Yours"), yours, false)}{group("team", t("Team"), team, false)}</>
+        : shown > 0 ? <>{group("review", t("Review requested"), review)}{group("yours", t("Yours"), yours)}{group("team", t("Team"), team)}</>
         : <p className="inbox-empty" role="status">{query.trim() !== "" ? t("No pull requests match") : t("Nothing needs you")}</p>}
     </div>
     {!wide && <div className="inbox-foot">

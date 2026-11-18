@@ -125,10 +125,11 @@
   list-style: none;
 }
 
-/* a row: the title, up to two lines, with its state's mark at the end; where and when under it */
+/* a row: its state (open or draft), the title up to two lines, and its CI's mark at the end; where and when under
+   the title */
 .fork-github-summary {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: start;
   column-gap: var(--space-3);
   row-gap: var(--space-1);
@@ -179,7 +180,7 @@
 
 /* the agent inbox's row sizes: its name's and its words', a step smaller on a wide screen (InboxList.css) */
 .fork-github-row-sub {
-  grid-column: 1 / -1;
+  grid-column: 2 / -1;
   color: var(--text-dim);
   font-size: var(--fs-row-sub);
   line-height: var(--lh-base);
@@ -188,12 +189,14 @@
 .mode-inbox.is-wide .fork-github-row-title { font-size: var(--fs-md); }
 .mode-inbox.is-wide .fork-github-row-sub { font-size: var(--fs-sm); }
 
+.fork-github-row-state,
 .fork-github-row-mark {
   display: inline-flex;
   /* level with the title's first line */
   padding-top: 0.1em;
 }
 
+.fork-github-row-state svg,
 .fork-github-row-mark svg {
   width: var(--icon-size-sm);
   height: var(--icon-size-sm);
@@ -203,6 +206,11 @@
 .fork-github-row-mark.is-failing { color: var(--status-blocked); }
 .fork-github-row-mark.is-pending { color: var(--status-working); }
 .fork-github-row-mark.is-dim { color: var(--text-dim); }
+.fork-github-row-state.is-passing { color: var(--status-done); }
+.fork-github-row-state.is-dim { color: var(--text-dim); }
+/* the review, only when it says something */
+.fork-github-row-review.is-passing { color: var(--status-done); }
+.fork-github-row-review.is-failing { color: var(--status-blocked); }
 /* a PR reviewed by you that got new commits since */
 .fork-github-row-updated { color: var(--status-working); }
 
