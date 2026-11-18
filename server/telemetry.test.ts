@@ -756,7 +756,7 @@ describe("daily active message", () => {
       telemetry.tally("prompt_answers");
       expect(savedFile(stateDir).active[0].usage.prompt_answers).toBe(0);
       expect(errors.mock.calls.some(([line]) => String(line).includes("telemetry.lock"))).toBe(true);
-      // the off does not wait for it: marked, and what was not sent deleted
+      // the off does not wait for it to be let go: marked, and what was not sent deleted
       telemetry.change({ enabled: false });
       expect(existsSync(join(stateDir, "telemetry-off"))).toBe(true);
       expect(savedFile(stateDir)).toMatchObject({ enabled: false, active: [] });

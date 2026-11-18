@@ -34,7 +34,7 @@ const FILE = "telemetry.json";
  */
 const OFF_FILE = "telemetry-off";
 const LOCK_FILE = "telemetry.lock";
-/** how long a server waits for another's lock before it skips its write (an off never waits: it goes without the lock) */
+/** how long a server waits for another's lock before it skips its write (an off is not skipped: it is marked before this wait, and goes without the lock after it) */
 const LOCK_WAIT_MS = 200;
 const LOCK_STALE_MS = 5_000;
 /** a section holds the lock for well under a millisecond: one held this long, by anyone, was left behind */

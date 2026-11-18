@@ -237,8 +237,9 @@ export class TailnetIdentitySource {
       return;
     }
     const sole = readSoleLogin(status);
-    // a daemon that is not Running says nothing about whose PC this is: keep the login a Running one
-    // named, and leave it unconfirmed so a login request reads again (`loginIdentity`)
+    // a daemon that is not Running proves nothing about whose PC this is: the login a Running one named is
+    // kept, else the one this status names is used; either stays unconfirmed, so a login request reads again
+    // (`loginIdentity`)
     const running = parseStatus(status)?.BackendState === "Running";
     const kept = !running && this.cache !== null && (this.cache.owner !== null || this.cache.tagged) ? this.cache : null;
     const owner = kept ? kept.owner : parseTailscaleOwner(status);

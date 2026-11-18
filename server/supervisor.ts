@@ -237,8 +237,9 @@ export async function runSupervisor(root = ROOT) {
   async function shutdown(code: number) {
     if (stopping) return;
     stopping = true; updater.stop(); rustHostInstall.abort();
-    // the try's group is gone before this supervisor lets go: one that ignores SIGTERM is killed
-    // past the grace, which an exit now would have dropped with it.
+    // waited for, so that one of the try's group that ignores SIGTERM is still killed past the grace,
+    // which an exit now would have dropped with it; past RUST_HOST_STOP_MS this lets go all the same,
+    // and a process of the try may still run
     await Promise.all([stopChild(), rustHostTry && boundedStop(rustHostTry.done, rustHostTry.directory)]);
     lock.release();
     process.exit(code);

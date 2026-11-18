@@ -542,7 +542,7 @@ function merge(active: string, sibling: string, now: Date, stamp: string): strin
       const reason = `Cannot write ${join(dir, RECORD)}: ${error instanceof Error ? error.message : String(error)}`;
       console.error(reason);
       // without it the next merge compares with an older one, and would bring back a device revoked
-      // until then: this run changes no device, so it cannot revoke one
+      // until then: blocked, the device store changes nothing while this server runs, so none is revoked
       if (dir === active) blocked ??= `${reason}. Fix its permissions, then restart the server. External access without a token or trusted Tailscale login remains blocked.`;
     }
   }

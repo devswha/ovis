@@ -295,7 +295,8 @@ export function moveService(options: MoveServiceOptions): MoveService {
       const current = await plan();
       if (wait !== generation || status.state !== "waiting") return;
       if (current.ready) {
-        // only what was shown moves: a pane, tab or conversation that is new or changed asks again
+        // only what was shown moves: a pane, tab or conversation that is new or changed asks again, except
+        // that a pane shown busy or needing the person may since hold any conversation of its own agent, or a shell
         if (confirmed && !sameShape(confirmed, current)) { status = { state: "rolled_back", reason: "plan_changed", left: [] }; release(); return; }
         await go(current);
         return;
