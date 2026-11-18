@@ -1,0 +1,317 @@
+import { afterEach, describe, expect, it } from "bun:test";
+import { tuiEnv } from "../../scripts/plugin-tui.ts";
+import { HcConnection } from "../../server/herdr-core/connection.ts";
+import type { CoreChange } from "../../server/herdr-core/core-model.ts";
+import { FakeHcCore } from "../../server/herdr-core/core.fake.ts";
+import { PANE_NAME_LABEL, SPACE_LABEL, TAB_LABEL, TAB_NAME_LABEL, WORKSPACE_NAME_LABEL } from "../../server/herdr-core/snapshot.ts";
+import type { AgentStatus } from "../../shared/herdr-api.generated.ts";
+import { Run } from "../testing/run.ts";
+import { NOTICE_SHOW_MS } from "./deadlines.ts";
+import { alertsOf, look, type LookState } from "./look.ts";
+
+/** the injected clock moves; only the socket's own turns are real */
+const TEST_MS = 120_000;
+const FOCUS_IN = "\x1b[I";
+const FOCUS_OUT = "\x1b[O";
+/** the label every Herdr client reads as the last turn a person looked at */
+const SEEN = "herdr.seen";
+
+const runs: Run[] = [];
+afterEach(async () => {
+  for (const run of runs.splice(0)) await run.close();
+});
+
+/**
+ * A core with one tab split in two agents, `t1` (named one) and `t2` (named two), each reporting idle at turn 0. `seen`
+ * gives each a `herdr.seen` label to start with (none: no label); `first` the state t1 reports before the screen comes.
+ */
+function twoAgents(seen: string | null = "0", first = "idle"): FakeHcCore {
+  const core = new FakeHcCore();
+  for (const [name, state] of [["one", first], ["two", "idle"]] as const) {
+    const labels: Record<string, string> = { [SPACE_LABEL]: "w", [WORKSPACE_NAME_LABEL]: "work", [TAB_LABEL]: "t", [TAB_NAME_LABEL]: "tab", [PANE_NAME_LABEL]: name };
+    if (seen !== null) labels[SEEN] = seen;
+    const { address } = core.spawn({ labels });
+    core.setPaint(address, { body: `${name}\r\n` });
+    core.reportStatus(address, { state, app: "claude" });
+  }
+  return core;
+}
+
+async function started(core: FakeHcCore, live = true): Promise<Run> {
+  const run = await Run.start({ core, cols: 120, rows: 40 });
+  runs.push(run);
+  if (live) {
+    await run.live();
+    await run.advance(1);
+  }
+  return run;
+}
+
+/** Every `herdr.seen` write the core was asked for, in order: the terminal and the value. */
+function seenWrites(run: Run, line?: number): { terminal: unknown; seen: unknown }[] {
+  return run.core.calls()
+    .filter((call) => call.method === "terminal.label" && (line === undefined || call.line === line))
+    .map((call) => ({ terminal: call.params["terminal"], seen: (call.params["labels"] as Record<string, unknown>)[SEEN] }));
+}
+
+/** The agent in `terminal` works, then rests: its turn ends (the core raises the turn and tells it). */
+async function endTurn(run: Run, terminal: string): Promise<void> {
+  run.core.reportStatus(terminal, { state: "working", app: "claude" });
+  run.core.reportStatus(terminal, { state: "idle", app: "claude" });
+  await run.advance(20);
+}
+
+async function hostFocus(run: Run, focus: string): Promise<void> {
+  run.type(focus);
+  await run.advance(20);
+}
+
+const select = async (run: Run, id: string) => {
+  run.loop.dispatch({ type: "select", target: { kind: "pane", id }, at: run.clock.current });
+  await run.advance(20);
+};
+
+const alertNotices = (run: Run) => run.loop.model().notices.filter((notice) => notice.code.startsWith("agent_")).map((notice) => [notice.code, notice.data["agent"], notice.calm]);
+
+describe("the look rule", () => {
+  const LOOKING: LookState = { hostFocused: true, inputAfterTurn: false, pane: "t1", live: true, drawn: true, overlay: false, online: true };
+  const table: [name: string, change: Partial<LookState>, looked: string | null][] = [
+    ["a focused host, the focused pane live, drawn, nothing over it, online", {}, "t1"],
+    ["the host unfocused", { hostFocused: false }, null],
+    ["the host unfocused, input after the turn notwithstanding", { hostFocused: false, inputAfterTurn: true }, null],
+    ["no focus reports and no input after the turn", { hostFocused: null }, null],
+    ["no focus reports and input after the turn", { hostFocused: null, inputAfterTurn: true }, "t1"],
+    ["no pane", { pane: null }, null],
+    ["the first paint not complete", { live: false }, null],
+    ["not drawn in the last frame", { drawn: false }, null],
+    ["an overlay open", { overlay: true }, null],
+    ["the link offline", { online: false }, null],
+  ];
+  for (const [name, change, looked] of table) it(name, () => expect(look({ ...LOOKING, ...change })).toBe(looked));
+});
+
+describe("the alert rule", () => {
+  const status = (terminal: string, shown: AgentStatus): CoreChange => ({ type: "status", terminal, status: null, shown, agent: "claude" });
+  const before = (shown: Record<string, AgentStatus>) => (terminal: string) => shown[terminal];
+  it("into blocked is Needs you, from any event and on the pane looked at too; staying blocked is none", () => {
+    expect(alertsOf("status", [status("t1", "blocked"), status("t2", "blocked")], before({ t1: "working", t2: "blocked" }), "t1")).toEqual([{ terminal: "t1", kind: "blocked" }]);
+  });
+  it("done is Done only on the turn event, never for the pane looked at, never when it was done already", () => {
+    const changes = [status("t1", "done"), status("t2", "done"), status("t3", "done")];
+    const was = before({ t1: "working", t2: "working", t3: "done" });
+    expect(alertsOf("turn", changes, was, "t1")).toEqual([{ terminal: "t2", kind: "done" }]);
+    expect(alertsOf("labels", changes, was, null)).toEqual([]);
+  });
+  it("a terminal told twice in one event is compared with what the first record said", () => {
+    expect(alertsOf("status", [status("t1", "blocked"), status("t1", "blocked")], before({ t1: "idle" }), null)).toEqual([{ terminal: "t1", kind: "blocked" }]);
+    expect(alertsOf("updated", [{ type: "updated", terminal: "t1" }, { type: "layout" }], before({ t1: "idle" }), null)).toEqual([]);
+  });
+});
+
+describe("read state through herdr.seen (UB Q7)", () => {
+  it("seen when looked at", async () => {
+    const run = await started(twoAgents());
+    await hostFocus(run, FOCUS_IN);
+    // the look began on t1, whose label already holds its turn 0
+    expect(seenWrites(run)).toEqual([]);
+    await endTurn(run, "t1");
+    expect(seenWrites(run)).toEqual([{ terminal: "t1", seen: "1" }]);
+    expect(run.core.terminal("t1").labels[SEEN]).toBe("1");
+    // the other pane of the split is shown too, but not looked at: its turn is not marked
+    await endTurn(run, "t2");
+    expect(seenWrites(run)).toEqual([{ terminal: "t1", seen: "1" }]);
+  }, TEST_MS);
+
+  it("seen not otherwise", async () => {
+    // the host unfocused: nothing; its focus back: one write
+    const unfocused = await started(twoAgents());
+    await hostFocus(unfocused, FOCUS_IN);
+    await hostFocus(unfocused, FOCUS_OUT);
+    await endTurn(unfocused, "t1");
+    expect(seenWrites(unfocused)).toEqual([]);
+    await hostFocus(unfocused, FOCUS_IN);
+    expect(seenWrites(unfocused)).toEqual([{ terminal: "t1", seen: "1" }]);
+
+    // another pane focused
+    const other = await started(twoAgents());
+    await hostFocus(other, FOCUS_IN);
+    await select(other, "t2");
+    await endTurn(other, "t1");
+    expect(seenWrites(other)).toEqual([]);
+
+    // an overlay open over the panes
+    const covered = await started(twoAgents());
+    await hostFocus(covered, FOCUS_IN);
+    await covered.keys("ctrl+b,?");
+    expect(covered.loop.report().mode.overlays).toEqual(["help"]);
+    await endTurn(covered, "t1");
+    expect(seenWrites(covered)).toEqual([]);
+
+    // the first paint not complete: the pane is not Live yet, so nothing; once it is drawn Live, it comes into view
+    const painting = await started(twoAgents(), false);
+    painting.type(FOCUS_IN);
+    painting.core.reportStatus("t1", { state: "working", app: "claude" });
+    painting.core.reportStatus("t1", { state: "idle", app: "claude" });
+    await painting.settle();
+    expect(painting.loop.panes.view("t1")?.state.kind).not.toBe("Live");
+    expect(seenWrites(painting)).toEqual([]);
+    await painting.live();
+    await painting.advance(20);
+    expect(seenWrites(painting)).toEqual([{ terminal: "t1", seen: "1" }]);
+
+    // the link offline: a turn ends meanwhile and nothing is written; the line back, the pane comes into view again
+    const offline = await started(twoAgents());
+    await hostFocus(offline, FOCUS_IN);
+    await offline.cutLine();
+    await offline.advance(1_000);
+    expect(offline.loop.link.state.kind).toBe("Offline");
+    offline.core.reportStatus("t1", { state: "working", app: "claude" });
+    offline.core.reportStatus("t1", { state: "idle", app: "claude" });
+    await offline.advance(1_000);
+    expect(seenWrites(offline)).toEqual([]);
+    await offline.listen();
+    await offline.advance(6_000);
+    await offline.live();
+    await offline.advance(20);
+    expect(seenWrites(offline)).toEqual([{ terminal: "t1", seen: "1" }]);
+  }, TEST_MS);
+
+  it("seen once per turn", async () => {
+    const run = await started(twoAgents());
+    await hostFocus(run, FOCUS_IN);
+    run.core.reportStatus("t1", { state: "working", app: "claude" });
+    for (const progress of [10, 20, 30, 40]) run.core.reportStatus("t1", { state: "working", app: "claude", progress });
+    await run.advance(20);
+    expect(seenWrites(run)).toEqual([]);
+    run.core.reportStatus("t1", { state: "idle", app: "claude" });
+    await run.advance(20);
+    expect(seenWrites(run)).toEqual([{ terminal: "t1", seen: "1" }]);
+    await endTurn(run, "t1");
+    expect(seenWrites(run)).toEqual([{ terminal: "t1", seen: "1" }, { terminal: "t1", seen: "2" }]);
+  }, TEST_MS);
+
+  it("unread stands", async () => {
+    const run = await started(twoAgents());
+    await hostFocus(run, FOCUS_IN);
+    await endTurn(run, "t1");
+    const line = run.core.calls().find((call) => call.method === "terminal.label")!.line;
+    // another client marks it unread while the pane stays in front: the screen writes nothing
+    const otherClient = new HcConnection(() => run.core.transport());
+    await otherClient.call("terminal.label", { terminal: "t1", labels: { [SEEN]: "0" } });
+    otherClient.close();
+    await run.advance(1_000);
+    expect(seenWrites(run, line)).toEqual([{ terminal: "t1", seen: "1" }]);
+    expect(run.core.terminal("t1").labels[SEEN]).toBe("0");
+    // focus away and back: the pane comes into view again, one write
+    await select(run, "t2");
+    await select(run, "t1");
+    expect(seenWrites(run, line)).toEqual([{ terminal: "t1", seen: "1" }, { terminal: "t1", seen: "1" }]);
+  }, TEST_MS);
+
+  it("seen only raises", async () => {
+    const run = await started(twoAgents("5"));
+    await hostFocus(run, FOCUS_IN);
+    await endTurn(run, "t1");
+    await select(run, "t2");
+    await select(run, "t1");
+    expect(seenWrites(run)).toEqual([]);
+    expect(run.core.terminal("t1").labels[SEEN]).toBe("5");
+  }, TEST_MS);
+
+  it("seen joins", async () => {
+    const run = await started(twoAgents(null));
+    await endTurn(run, "t1");
+    expect(seenWrites(run)).toEqual([]);
+    await hostFocus(run, FOCUS_IN);
+    expect(seenWrites(run)).toEqual([{ terminal: "t1", seen: "1" }]);
+  }, TEST_MS);
+
+  it("no focus reports", async () => {
+    const run = await started(twoAgents());
+    await endTurn(run, "t1");
+    await run.advance(1_000);
+    expect(run.loop.model().host.focused).toBe(null);
+    expect(seenWrites(run)).toEqual([]);
+    await run.keys("x");
+    await run.advance(20);
+    expect(seenWrites(run)).toEqual([{ terminal: "t1", seen: "1" }]);
+    // the next turn: no input after it yet, so nothing until the next key
+    await endTurn(run, "t1");
+    expect(seenWrites(run)).toEqual([{ terminal: "t1", seen: "1" }]);
+    await run.keys("y");
+    await run.advance(20);
+    expect(seenWrites(run)).toEqual([{ terminal: "t1", seen: "1" }, { terminal: "t1", seen: "2" }]);
+  }, TEST_MS);
+
+  it("mark unread", async () => {
+    const run = await started(twoAgents());
+    await hostFocus(run, FOCUS_IN);
+    await endTurn(run, "t1");
+    await select(run, "t2");
+    await run.keys("ctrl+b,a");
+    const list = run.loop.model().overlays.at(-1)!;
+    expect(list.kind).toBe("agents");
+    const rows = list.kind === "agents" ? list.agents : [];
+    expect([...rows].sort()).toEqual(["t1", "t2"]);
+    // t2 is at turn 0: nothing to mark unread
+    for (let at = 0; at < rows.indexOf("t2"); at++) await run.keys("down");
+    await run.keys("u");
+    await run.advance(20);
+    expect(seenWrites(run)).toEqual([{ terminal: "t1", seen: "1" }]);
+    // t1 at turn 1: herdr.seen 0, which the list's close (a look on t2) leaves standing
+    await run.keys(rows.indexOf("t1") > rows.indexOf("t2") ? "down" : "up");
+    await run.keys("u");
+    await run.advance(20);
+    // once below the turn it is unread already: a second u writes nothing
+    await run.keys("u");
+    await run.advance(20);
+    await run.keys("esc");
+    await run.advance(20);
+    expect(seenWrites(run)).toEqual([{ terminal: "t1", seen: "1" }, { terminal: "t1", seen: "0" }]);
+    expect(run.core.terminal("t1").labels[SEEN]).toBe("0");
+    expect(run.loop.report().actions).toContain("unread");
+  }, TEST_MS);
+
+  it("core only", async () => {
+    // the launcher hands the screen no Ovis server token or address (scripts/plugin-tui.ts tuiEnv)
+    expect(tuiEnv({ TERM: "xterm", OVIS_TOKEN: "exported", OVIS_URL: "http://127.0.0.1:9", HC_SOCKET: "/s/hc.sock" })).toEqual({ TERM: "xterm", HC_SOCKET: "/s/hc.sock" });
+    // with no Ovis server at all, the read state reaches every client through the core alone, on the screen's own line
+    const run = await started(twoAgents());
+    await hostFocus(run, FOCUS_IN);
+    await endTurn(run, "t1");
+    const lines = new Set(run.core.calls().map((call) => call.line));
+    expect(lines.size).toBe(1);
+    expect(seenWrites(run)).toEqual([{ terminal: "t1", seen: "1" }]);
+  }, TEST_MS);
+
+  it("alerts", async () => {
+    // a first snapshot with a blocked agent alerts nothing
+    const run = await started(twoAgents("0", "blocked"));
+    await hostFocus(run, FOCUS_IN);
+    expect(alertNotices(run)).toEqual([]);
+    // a finish in a pane not looked at alerts once; none for the pane being looked at
+    await endTurn(run, "t2");
+    expect(alertNotices(run)).toEqual([["agent_done", "two", true]]);
+    await endTurn(run, "t1");
+    expect(alertNotices(run)).toEqual([["agent_done", "two", true]]);
+    // into blocked
+    run.core.reportStatus("t2", { state: "blocked", app: "claude" });
+    await run.advance(20);
+    expect(alertNotices(run)).toEqual([["agent_done", "two", true], ["agent_blocked", "two", true]]);
+    expect(run.grid().some((row) => row.includes("! Needs you: two"))).toBe(true);
+    expect(run.grid().some((row) => row.includes("* Done: two"))).toBe(true);
+    // a reconnect sets the baseline again: what changed while the line was down alerts nothing
+    await run.advance(NOTICE_SHOW_MS + 1);
+    expect(alertNotices(run)).toEqual([]);
+    await run.cutLine();
+    await run.advance(1_000);
+    run.core.reportStatus("t2", { state: "working", app: "claude" });
+    run.core.reportStatus("t2", { state: "idle", app: "claude" });
+    run.core.reportStatus("t1", { state: "blocked", app: "claude" });
+    await run.listen();
+    await run.advance(6_000);
+    await run.live();
+    expect(run.loop.link.state.kind).toBe("Online");
+    expect(alertNotices(run)).toEqual([]);
+  }, TEST_MS);
+});

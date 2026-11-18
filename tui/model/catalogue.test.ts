@@ -9,6 +9,8 @@ const WORLD: World = {
     { id: "w1", name: "one", tabs: [{ id: "t1", name: "a", panes: [{ id: "p1", name: "" }, { id: "p2", name: "" }] }, { id: "t2", name: "b", panes: [{ id: "p3", name: "" }] }] },
     { id: "w2", name: "two", tabs: [{ id: "t3", name: "c", panes: [{ id: "p4", name: "" }] }] },
   ],
+  agents: ["p1", "p3", "p4"],
+  waiting: ["p4"],
 };
 
 describe("the action catalogue", () => {

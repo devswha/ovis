@@ -234,6 +234,7 @@ describe("overlay close keys", () => {
       confirm: after(idle, prefix(), key("D")),
       goto: after(idle, prefix(), text("g")),
       menu: after(idle, prefix(), named("ENTER")),
+      agents: after(idle, prefix(), text("a")),
     };
     for (const [kind, entry] of Object.entries(OVERLAYS)) {
       const state = open[kind as keyof typeof OVERLAYS];

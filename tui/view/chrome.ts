@@ -23,6 +23,7 @@ import { chosenAt, type Place } from "../model/picker.ts";
 import type { ModelState } from "../model/reduce.ts";
 import { STRINGS } from "../strings.ts";
 import { TUI_THEMES, type TuiColorRole, type TuiThemeMode } from "../theme.generated.ts";
+import { agentLines } from "./agents.ts";
 import type { Rect, Regions, SplitCells } from "./geometry.ts";
 import { hostLayout, type LaidCell } from "./host-layout.ts";
 import type { ShownLink } from "./link-view.ts";
@@ -147,7 +148,9 @@ function part<T>(key: string, rect: Rect, look: string, data: T, draw: (canvas: 
 }
 
 interface WorkspaceLine { readonly id: string; readonly label: string; readonly status: KnownStatus; readonly name: string; readonly selected: boolean }
-interface AgentLine { readonly id: string; readonly helper: boolean; readonly status: KnownStatus; readonly text: string; readonly selected: boolean }
+type SidebarAgentLine =
+  | { readonly kind: "section"; readonly status: KnownStatus; readonly text: string }
+  | { readonly kind: "agent"; readonly id: string; readonly helper: boolean; readonly status: KnownStatus; readonly text: string; readonly selected: boolean };
 
 /** The first index of a window of `size` items over `count` that keeps `focus` in its middle. */
 function windowStart(count: number, size: number, focus: number): number {
@@ -166,24 +169,22 @@ function sidebarPart(input: ChromeInput, colors: Colors, look: string): Part {
     { ...group, label: `${group.number}:` },
     ...group.children.map((child) => ({ ...child, label: `${STRINGS.worktreeMark}${child.number}:` })),
   ]).map((row): WorkspaceLine => ({ id: row.id, label: row.label, status: row.status, name: row.name, selected: row.id === activeWorkspace }));
-  const agentRows = world.agents.length > 0 ? Math.min(world.agents.length + 1, Math.max(2, Math.floor(left / 2))) : 2;
-  const workspaceRows = Math.max(1, left - agentRows);
+  const agents = agentLines(world.agents).map((line): SidebarAgentLine => line.kind === "section"
+    ? { kind: "section", status: line.group, text: STRINGS.agentSection(STATE_LOOK[line.group].word, line.count) }
+    : { kind: "agent", id: line.id, helper: line.helper, status: line.status, text: line.text, selected: line.id === focusedPane });
+  const agentHeight = agents.length > 0 ? Math.min(agents.length + 1, Math.max(2, Math.floor(left / 2))) : 2;
+  const workspaceRows = Math.max(1, left - agentHeight);
   const wsStart = windowStart(workspaces.length, workspaceRows, Math.max(0, workspaces.findIndex((line) => line.selected)));
   const shownWorkspaces = workspaces.slice(wsStart, wsStart + workspaceRows);
   const agentsLeft = Math.max(0, left - Math.max(1, shownWorkspaces.length) - 1);
-  const agents = world.agents.map((agent): AgentLine => {
-    const where = agent.folder ? ` ${agent.folder === "/" ? "/" : `/${agent.folder}`}` : "";
-    const what = agent.agent && agent.agent !== agent.name ? ` ${agent.agent}` : "";
-    return { id: agent.paneId, helper: agent.helper, status: knownStatus(agent.status), text: `${agent.name}${where}${what}`, selected: agent.paneId === focusedPane };
-  });
-  const agentStart = windowStart(agents.length, agentsLeft, Math.max(0, agents.findIndex((line) => line.selected)));
+  const agentStart = windowStart(agents.length, agentsLeft, Math.max(0, agents.findIndex((line) => line.kind === "agent" && line.selected)));
   const data = {
     header: STRINGS.sessionHeader(session),
     appOwned: !world.ownsLayout,
     workspaces: shownWorkspaces,
     agents: agents.slice(agentStart, agentStart + agentsLeft),
   };
-  return part("sidebar", rect, look, data, (canvas, { header, appOwned, workspaces: lines, agents: agentLines }) => {
+  return part("sidebar", rect, look, data, (canvas, { header, appOwned, workspaces: lines, agents: agentRows }) => {
     if (rect.width <= 0 || rect.height <= 0) return;
     const base = canvas.style({ fg: colors.text, bg: colors.bgPanel });
     const dim = canvas.style({ fg: colors.textDim, bg: colors.bgPanel });
@@ -229,22 +230,23 @@ function sidebarPart(input: ChromeInput, colors: Colors, look: string): Part {
     }
     if (row >= bottom) return;
     printFit(canvas, rect.x, row++, STRINGS.agentsSection, width, section);
-    if (agentLines.length === 0 && row < bottom) printFit(canvas, rect.x, row, ` ${STRINGS.noAgents}`, width, dim, true);
-    for (const line of agentLines) {
+    if (agentRows.length === 0 && row < bottom) printFit(canvas, rect.x, row, ` ${STRINGS.noAgents}`, width, dim, true);
+    for (const line of agentRows) {
       if (row >= bottom) return;
+      const state = STATE_LOOK[line.status];
+      if (line.kind === "section") {
+        // the state's word heads its section, so a row shows its state by its glyph alone
+        printFit(canvas, rect.x + 1, row++, line.text, width - 1, canvas.style({ fg: colors[state.role], bg: colors.bgPanel, flags: STYLE_BOLD }), true);
+        continue;
+      }
       const bg = line.selected ? colors.bgHover : colors.bgPanel;
       const style = canvas.style({ fg: line.selected ? colors.textStrong : colors.text, bg, flags: line.selected ? STYLE_BOLD : 0 });
       fillSpan(canvas, rect.x, row, width, style);
-      const state = STATE_LOOK[line.status];
       const mark = canvas.style({ fg: colors[state.role], bg, flags: STYLE_BOLD });
       const end = rect.x + width;
       let col = printFit(canvas, rect.x, row, line.helper ? ` ${STRINGS.helperMark}` : " ", 2, canvas.style({ fg: colors.textDim, bg }));
       col = printFit(canvas, col, row, `${state.glyph} `, 2, mark);
-      const word = state.word ? ` ${state.word}` : "";
-      const wordWidth = measure(word).width;
-      const room = Math.max(0, end - col);
-      col = printFit(canvas, col, row, line.text, room > wordWidth + 4 ? room - wordWidth : room, style, true);
-      if (word && end - col >= wordWidth) printFit(canvas, end - wordWidth, row, word, wordWidth, mark);
+      printFit(canvas, col, row, line.text, Math.max(0, end - col), style, true);
       canvas.hit({ x: rect.x, y: row, width, height: 1 }, `agent:${line.id}`);
       row++;
     }
@@ -594,9 +596,13 @@ function fieldOverlay(key: string, rect: Rect, title: string, hint: string, fiel
   return { overlay, input: { col: rect.x + 2 + view.cursor, row: rect.y + 1 } };
 }
 
+/** An alert about an agent (tui/model/look.ts) shows the glyph of the state it tells of. */
+const ALERT_GLYPHS: Readonly<Record<string, string>> = { agent_blocked: STRINGS.glyphBlocked, agent_done: STRINGS.glyphDone };
+
 function toastPart(width: number, height: number, state: ModelState, colors: Colors): Part | null {
   if (state.notices.length === 0 || width < 16 || height < 3) return null;
-  const lines = state.notices.slice(-3).map((notice) => `${notice.calm ? STRINGS.glyphIdle : STRINGS.glyphBlocked} ${STRINGS.noticeText(notice.code, notice.data)}`);
+  const glyph = (notice: ModelState["notices"][number]) => ALERT_GLYPHS[notice.code] ?? (notice.calm ? STRINGS.glyphIdle : STRINGS.glyphBlocked);
+  const lines = state.notices.slice(-3).map((notice) => `${glyph(notice)} ${STRINGS.noticeText(notice.code, notice.data)}`);
   const toastWidth = Math.min(width, Math.max(20, Math.max(...lines.map((line) => measure(line).width)) + 4));
   const toastHeight = Math.min(height, lines.length + 2);
   const rect: Rect = { x: width - toastWidth, y: Math.min(1, height - toastHeight), width: toastWidth, height: toastHeight };
@@ -695,6 +701,8 @@ function buildOverlays(width: number, height: number, state: ModelState, world: 
     }
     case "menu":
       return { overlays: [...overlays, menuPart(width, height, top, state, world, colors)], input: "overlay" };
+    case "agents":
+      return { overlays: [...overlays, agentListPart(width, height, top, world, colors)], input: "overlay" };
   }
 }
 
@@ -744,6 +752,53 @@ function pickerPart(width: number, height: number, picker: Extract<Overlay, { ki
     },
   };
   return { overlay, input: field.input };
+}
+
+/**
+ * The full-screen agent list: every agent in its section, numbered as the digit keys go to them, the workspace each is
+ * in at the right, a window of rows around the cursor. A row is a click target that goes to that agent.
+ */
+function agentListPart(width: number, height: number, list: Extract<Overlay, { kind: "agents" }>, world: CoreView, colors: Colors): Part {
+  const rect: Rect = { x: 0, y: 0, width, height };
+  const lines = agentLines(world.agents);
+  const cursor = list.agents[list.cursor];
+  return {
+    key: "overlay:agents", rect, version: 0,
+    draw(canvas) {
+      const inner = overlayFrame(canvas, rect, STRINGS.agentListTitle, OVERLAYS.agents.closeKeys, colors);
+      if (inner.width <= 0 || inner.height <= 0) return;
+      const dim = canvas.style({ fg: colors.textDim, bg: colors.bgElevated });
+      printFit(canvas, inner.x + 1, inner.y, STRINGS.agentListHint, Math.max(0, inner.width - 2), dim, true);
+      const rows = inner.height - 1;
+      if (lines.length === 0 && rows > 0) printFit(canvas, inner.x + 1, inner.y + 1, STRINGS.noAgents, Math.max(0, inner.width - 2), dim, true);
+      const start = windowStart(lines.length, rows, Math.max(0, lines.findIndex((line) => line.kind === "agent" && line.id === cursor)));
+      lines.slice(start, start + rows).forEach((line, at) => {
+        const y = inner.y + 1 + at;
+        const end = inner.x + inner.width;
+        if (line.kind === "section") {
+          const look = STATE_LOOK[line.group];
+          printFit(canvas, inner.x + 1, y, STRINGS.agentSection(look.word, line.count), Math.max(0, inner.width - 2), canvas.style({ fg: colors[look.role], bg: colors.bgElevated, flags: STYLE_BOLD }), true);
+          return;
+        }
+        const chosen = line.id === cursor;
+        const bg = chosen ? colors.bgHover : colors.bgElevated;
+        const text = canvas.style({ fg: chosen ? colors.textStrong : colors.text, bg, flags: chosen ? STYLE_BOLD : 0 });
+        fillSpan(canvas, inner.x, y, inner.width, text);
+        const look = STATE_LOOK[line.status];
+        let col = printFit(canvas, inner.x, y, chosen ? ">" : " ", 1, canvas.style({ fg: colors.accent, bg, flags: STYLE_BOLD }));
+        col = printFit(canvas, col, y, `${String(line.number).padStart(2)} `, end - col, canvas.style({ fg: colors.accent, bg, flags: STYLE_BOLD }));
+        col = printFit(canvas, col, y, line.helper ? `${STRINGS.helperMark} ` : "  ", end - col, canvas.style({ fg: colors.textDim, bg }));
+        col = printFit(canvas, col, y, `${look.glyph} `, end - col, canvas.style({ fg: colors[look.role], bg, flags: STYLE_BOLD }));
+        const place = line.workspace === "" ? "" : ` ${line.workspace}`;
+        const placeWidth = measure(place).width;
+        const room = end - col > placeWidth + 8 ? end - col - placeWidth : end - col;
+        col = printFit(canvas, col, y, line.text, room, text, true);
+        if (place && end - col >= placeWidth) printFit(canvas, end - placeWidth, y, place, placeWidth, canvas.style({ fg: colors.textDim, bg }));
+        // the pointer chooses an overlay's entry by `menu:<index>` (tui/view/mouse.ts); this list's entries are its rows
+        canvas.hit({ x: inner.x, y, width: inner.width, height: 1 }, `menu:${line.number - 1}`);
+      });
+    },
+  };
 }
 
 /** One menu entry as drawn: its key (blank for none), what it is, and its state mark for a place that has one. */

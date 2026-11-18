@@ -66,8 +66,8 @@ export function labelled(entries: readonly MenuEntry[], char: string): number {
   return char === "" ? -1 : entries.findIndex((entry) => entry.label === char);
 }
 
-/** The cursor after an arrow key (wrapping round), or null for any other key. */
-export function movedCursor(entries: readonly MenuEntry[], cursor: number, event: KeyInput): number | null {
+/** The cursor over a list of `entries` after an arrow key (wrapping round), or null for any other key. */
+export function movedCursor(entries: readonly unknown[], cursor: number, event: KeyInput): number | null {
   if (Object.keys(event.mods).length > 0 || entries.length === 0) return null;
   const step = event.key === "ARROW_DOWN" ? 1 : event.key === "ARROW_UP" ? -1 : 0;
   return step === 0 ? null : ((cursor + step) % entries.length + entries.length) % entries.length;

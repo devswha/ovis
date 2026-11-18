@@ -13,11 +13,13 @@
 
 import type { HcTransport, HelloInfo } from "../server/herdr-core/connection.ts";
 import { editLayout } from "../server/herdr-core/layout-ops.ts";
+import { SeenMarker } from "../server/herdr-core/seen-label.ts";
 import type { ScreenRange } from "./emulator/index.ts";
 import { DividerWrites } from "./core/divider.ts";
 import { LayoutWrites } from "./core/layout.ts";
 import { type CoreLink, type LinkNotice, type LinkState, openLink } from "./core/link.ts";
 import { createPanes, type PaneInput, type PaneNotice, type Panes, type PaneView } from "./core/pane.ts";
+import { SeenWrites } from "./core/seen.ts";
 import { CoreWorld, focusDirection, paneToward } from "./core/world.ts";
 import { errorCode } from "./crash.ts";
 import { effectBytes, osc52 } from "./host/effects.ts";
@@ -30,6 +32,7 @@ import { LINK_UNKNOWN, paneLive, shownLink, type ShownLink } from "./view/link-v
 import { type Deadlines, earliest, FRAME_PASS_MS, HOLD_RELEASE_MS, PASS_CREDIT_BYTES, PASTE_ABANDON_MS, QUIT_BOUND_MS, STYLE_TABLE_LIMIT, CRASH_ACTIONS_KEPT } from "./model/deadlines.ts";
 import type { Effect } from "./model/effects.ts";
 import { focused } from "./model/focus.ts";
+import { alertsOf } from "./model/look.ts";
 import { initialState, type ModelEvent, type ModelState, reduce } from "./model/reduce.ts";
 import { PaneGrid } from "./view/grid.ts";
 import { type PaneLook, Pointer, type PointerAct, type PointerScene, rowsAboveBottom } from "./view/mouse.ts";
@@ -133,6 +136,8 @@ export function startLoop(options: LoopOptions): Loop {
   /** the last frame's hit map and pane scenes: what the mouse lands on */
   let hits: HitMap | null = null;
   const drawn = new Map<string, PaneScene>();
+  /** the panes of the last frame the host took */
+  let painted: ReadonlySet<string> = new Set();
   let shownKey = "";
   let paneFocus: string | null = null;
   let hello: HelloInfo | null = null;
@@ -186,13 +191,17 @@ export function startLoop(options: LoopOptions): Loop {
   const link = openLink({
     socket: options.socket,
     now: () => clock.now(),
-    model: world.model,
+    // the core model tells the marker each terminal's turn and labels, so a look another client wrote counts as written
+    model: { ...world.model, observeSeen: (address, turn, labels) => marker.observe(address, turn, labels) },
     notify: (notice) => {
       guard(() => onLinkNotice(notice));
       arm();
     },
     ...(options.connect ? { connect: options.connect } : {}),
   });
+
+  const marker = new SeenMarker(link);
+  const seen = new SeenWrites(marker, (error) => act(`seen_failed:${errorCode(error)}`));
 
   const panes = createPanes({
     link,
@@ -237,6 +246,7 @@ export function startLoop(options: LoopOptions): Loop {
         told(notice.state);
       }
       shown = shownLink(shown, notice.state);
+      look();
       if (notice.state.kind === "Online") {
         const epoch = notice.state.epoch;
         void link.hello().then((info) => {
@@ -251,7 +261,20 @@ export function startLoop(options: LoopOptions): Loop {
       owePass();
       return;
     }
+    if (notice.type !== "event") {
+      if (world.notice(notice)) worldChanged();
+      readCore();
+      return;
+    }
+    const before = world.view();
+    const alerts = alertsOf(notice.event.type, notice.changes, (terminal) => before.panes.get(terminal)?.status, seen.current);
     if (world.notice(notice)) worldChanged();
+    const after = world.view();
+    for (const alert of alerts) {
+      const agent = after.agents.find((row) => row.paneId === alert.terminal)?.name ?? alert.terminal;
+      dispatch({ type: "notice", code: alert.kind === "blocked" ? "agent_blocked" : "agent_done", data: { agent }, calm: true, at: clock.now() });
+    }
+    if (notice.event.type === "turn" && notice.event.terminal !== undefined) seen.turn(notice.event.terminal);
     readCore();
   }
 
@@ -284,6 +307,7 @@ export function startLoop(options: LoopOptions): Loop {
       const bytes = effectBytes(notice.effect, notice.terminal === paneFocus);
       if (bytes && !host.write(bytes)) painter?.invalidate();
     }
+    look();
     owePass();
   }
 
@@ -336,6 +360,19 @@ export function startLoop(options: LoopOptions): Loop {
     });
   }
 
+  /** What the screen shows now, told to the read state: a person looking at a pane marks its turn read. */
+  function look(): void {
+    const pane = focused(state.world, state.focus).pane?.id ?? null;
+    seen.update({
+      hostFocused: state.host.focused,
+      pane,
+      live: pane !== null && panes.view(pane)?.state.kind === "Live",
+      drawn: pane !== null && painted.has(pane),
+      overlay: state.overlays.length > 0,
+      online: link.state.kind === "Online",
+    });
+  }
+
   /** One event through the state core, and its effects performed in order, now. */
   function dispatch(event: ModelEvent): void {
     const before = state;
@@ -346,6 +383,7 @@ export function startLoop(options: LoopOptions): Loop {
       const unsaved = options.views?.keep(state) ?? null;
       if (unsaved !== null) dispatch({ type: "notice", code: "view_unsaved", data: { reason: unsaved }, at: clock.now() });
       reshow();
+      look();
       owePass();
     }
   }
@@ -371,13 +409,17 @@ export function startLoop(options: LoopOptions): Loop {
           holdUntil(writing);
           return;
         }
-        // the agent list comes with a later row of the plan: one notice per press, never silence
+        // an action no module performs yet: one notice per press, never silence
         dispatch({ type: "notice", code: "not_built", data: { action: effect.action }, at: clock.now() });
         return;
       }
       case "input":
         // the rest of a text run, behind the action before it: it meets the focus and mode that action left
         userInput(effect.event);
+        return;
+      case "unread":
+        act("unread");
+        seen.unread(effect.pane);
         return;
       case "quit":
         act("quit");
@@ -512,6 +554,7 @@ export function startLoop(options: LoopOptions): Loop {
       // the rest of a read that detached goes nowhere, as a later read would not
       if (closing) break;
       act(`read:${event.type}`);
+      seen.input(event);
       if (event.type === "reply") {
         if (event.kind === "scheme") host.refreshDisplay();
         else panes.displayReply(event);
@@ -608,6 +651,8 @@ export function startLoop(options: LoopOptions): Loop {
       taken = host.write(frame.bytes);
     }
     painter.taken(taken);
+    painted = taken ? new Set(drawn.keys()) : new Set();
+    look();
     if (ended || !taken) return;
     // credit after the write was taken: the focused pane first, then the others (the pane machine credits a covered pane nothing)
     let budget = PASS_CREDIT_BYTES;

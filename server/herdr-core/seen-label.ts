@@ -19,7 +19,26 @@ export class SeenMarker {
   }
 
   mark(address: string, again = false): Promise<void> {
-    const run = (this.turns.get(address) ?? Promise.resolve()).then(() => this.write(address, again));
+    return this.queue(address, () => this.write(address, again));
+  }
+
+  /**
+   * "Mark unread", the one write that lowers `herdr.seen`: one below the terminal's turn, so its last turn shows as done
+   * again on every client. Nothing at turn 0, nor when the label is already below the turn.
+   */
+  unread(address: string): Promise<void> {
+    return this.queue(address, async () => {
+      const record = await this.hc.call("terminal.get", { terminal: address });
+      const turn = record.turn ?? 0;
+      const seen = seenTurnOf(record.labels);
+      if (record.state !== "live" || turn <= 0 || (seen !== null && seen < turn)) return;
+      await this.hc.call("terminal.label", { terminal: address, labels: { [SEEN_LABEL]: String(turn - 1) } });
+    });
+  }
+
+  /** One terminal's writes, in the order they were asked for. */
+  private queue(address: string, work: () => Promise<void>): Promise<void> {
+    const run = (this.turns.get(address) ?? Promise.resolve()).then(work);
     const settled = run.catch(() => {});
     this.turns.set(address, settled);
     void settled.then(() => { if (this.turns.get(address) === settled) this.turns.delete(address); });

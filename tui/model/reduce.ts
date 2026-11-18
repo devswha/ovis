@@ -16,7 +16,7 @@ import type { Effect, KeyInput, MouseInput, OverlayChoice, PaneInput, PasteInput
 import { EMPTY_WORLD, exists, type Focus, focused, focusOn, NO_FOCUS, nextFocus, type PaneNode, type Target, type World } from "./focus.ts";
 import { boundIn, buildKeymap, charChords, isPrefix, type KeyAction, type Keymap, keyChords, unlockChords } from "./keymap.ts";
 import { keptCursor, menuEntries } from "./menu.ts";
-import { field, menuChoice, type Overlay, type OverlayAnswer, overlayInput, type OverlayInput, overlayTarget, pickerChoice } from "./overlays.ts";
+import { agentChoice, field, menuChoice, type Overlay, type OverlayAnswer, overlayInput, type OverlayInput, overlayTarget, pickerChoice } from "./overlays.ts";
 import { pickerPlaces, placeKey } from "./picker.ts";
 import { restoredFocus, type SavedView, type ViewProblem } from "./view-file.ts";
 
@@ -167,6 +167,7 @@ export function reduce(state: ModelState, event: ModelEvent): Step {
       const top = acc.s.overlays.at(-1);
       if (top?.kind === "menu") answerOverlay(acc, menuChoice(top, event.entry), event.at);
       else if (top?.kind === "goto") answerOverlay(acc, pickerChoice(top, event.entry), event.at);
+      else if (top?.kind === "agents") answerOverlay(acc, agentChoice(top, event.entry), event.at);
       break;
     }
     case "restore":
@@ -437,16 +438,21 @@ function applyWorld(acc: Acc, world: World, at: number): void {
   refreshMenus(acc);
 }
 
-/** An open menu or picker lists what exists now: the menu's cursor kept on its entry, the picker's choice while it exists. */
+/** An open menu, picker or agent list lists what exists now: the menu's cursor kept on its entry, the agent list's on its agent, the picker's choice while it exists. */
 function refreshMenus(acc: Acc): void {
   const { world, focus, overlays } = acc.s;
-  if (!overlays.some((overlay) => overlay.kind === "menu" || overlay.kind === "goto")) return;
+  if (!overlays.some((overlay) => overlay.kind === "menu" || overlay.kind === "goto" || overlay.kind === "agents")) return;
   acc.s = {
     ...acc.s,
     overlays: overlays.map((overlay) => {
       if (overlay.kind === "goto") {
         const places = pickerPlaces(world);
         return { ...overlay, places, chosen: places.some((place) => placeKey(place) === overlay.chosen) ? overlay.chosen : null };
+      }
+      if (overlay.kind === "agents") {
+        const agents = world.agents ?? [];
+        const same = agents.indexOf(overlay.agents[overlay.cursor] ?? "");
+        return { ...overlay, agents, cursor: same >= 0 ? same : Math.max(0, Math.min(overlay.cursor, agents.length - 1)) };
       }
       if (overlay.kind !== "menu") return overlay;
       const entries = menuEntries(world, focus);
@@ -521,6 +527,9 @@ function runLocal(acc: Acc, action: Exclude<KeyAction, HerdrAction>, index: numb
       return;
     case "menu":
       acc.s = { ...s, overlays: [...s.overlays, { kind: "menu", entries: menuEntries(s.world, s.focus), cursor: 0 }] };
+      return;
+    case "agents":
+      acc.s = { ...s, overlays: [...s.overlays, { kind: "agents", agents: s.world.agents ?? [], cursor: 0 }] };
       return;
     case "navigate_workspace_up":
     case "navigate_workspace_down": {
@@ -685,12 +694,30 @@ function runHerdr(acc: Acc, action: HerdrAction, index: number | null, at: numbe
       moveFocus(acc, s.focus.previous === null ? undefined : { kind: "pane", id: s.focus.previous });
       return;
     case "new_workspace":
-    case "open_notification_target":
-    case "previous_agent":
-    case "next_agent":
-    case "focus_agent":
       acc.effects.push({ type: "run", action, target: null, index, name: null });
       return;
+    case "open_notification_target": {
+      // the next agent that needs the user, after the one shown, round; from any other pane the first
+      const waiting = s.world.waiting ?? [];
+      if (waiting.length === 0) notice(acc, "nothing_waiting", {}, at, true);
+      else moveFocus(acc, { kind: "pane", id: waiting[(waiting.indexOf(shown.pane?.id ?? "") + 1) % waiting.length]! });
+      return;
+    }
+    case "previous_agent":
+    case "next_agent": {
+      const agents = s.world.agents ?? [];
+      const step = action === "next_agent" ? 1 : -1;
+      const here = agents.indexOf(shown.pane?.id ?? "");
+      // from a pane that runs no agent: the first agent going down the list, the last going up
+      const next = here < 0 ? (step > 0 ? 0 : agents.length - 1) : (here + step + agents.length) % agents.length;
+      moveFocus(acc, target(agents[next] === undefined ? undefined : { id: agents[next]! }, "pane"));
+      return;
+    }
+    case "focus_agent": {
+      const pane = index === null ? undefined : s.world.agents?.[index - 1];
+      moveFocus(acc, target(pane === undefined ? undefined : { id: pane }, "pane"));
+      return;
+    }
     case "move_tab_previous":
     case "move_tab_next":
       runOn(target(shown.tab, "tab"));

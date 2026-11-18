@@ -1,0 +1,63 @@
+/**
+ * The screen's read state: `herdr.seen` raised on the terminal a person looks at, through the shared SeenMarker
+ * (server/herdr-core/seen-label.ts) on the screen's own line, so every Herdr client (the browser, the phone, the Herdr
+ * app) counts that turn as read. Who looks at what is `look` (tui/model/look.ts); this keeps what it needs between two
+ * looks: the last look, and whether input came after each terminal's last turn.
+ */
+import type { SeenMarker } from "../../server/herdr-core/seen-label.ts";
+import { look, type LookState } from "../model/look.ts";
+
+/** The facts of a look the caller gathers; whether input came after the pane's turn is kept here. */
+export type LookFacts = Omit<LookState, "inputAfterTurn">;
+
+/** What a person does: a probe's reply, a focus report or an unknown sequence comes from the host terminal alone. */
+const BY_A_PERSON: ReadonlySet<string> = new Set(["key", "text", "paste", "mouse"]);
+
+export class SeenWrites {
+  private facts: LookFacts | null = null;
+  private looked: string | null = null;
+  /** input events read so far, and how many had been read when each terminal's last turn ended */
+  private inputs = 0;
+  private readonly turnsAt = new Map<string, number>();
+
+  /** `failed` hears a write that did not get through (its line ended): it is not tried again */
+  constructor(private readonly marker: Pick<SeenMarker, "mark" | "unread">, private readonly failed: (error: unknown) => void) {}
+
+  get current(): string | null {
+    return this.looked;
+  }
+
+  /** What the screen shows changed: a look that begins (a new pane, or the same one back in view) writes, even for a turn written before. */
+  update(facts: LookFacts): void {
+    this.facts = facts;
+    this.again();
+  }
+
+  /** An input event was read: a key, text, a paste or a click proves a person on a host that never reports focus. */
+  input(event: { readonly type: string }): void {
+    if (!BY_A_PERSON.has(event.type)) return;
+    this.inputs++;
+    this.again();
+  }
+
+  /** A turn of `terminal` ended: the pane still looked at writes once for it. */
+  turn(terminal: string): void {
+    this.turnsAt.set(terminal, this.inputs);
+    const before = this.looked;
+    this.again();
+    if (before === terminal && this.looked === terminal) this.marker.mark(terminal, false).catch(this.failed);
+  }
+
+  /** "Mark unread" on `terminal`: its last turn shows as done again, on every client. */
+  unread(terminal: string): void {
+    this.marker.unread(terminal).catch(this.failed);
+  }
+
+  private again(): void {
+    const facts = this.facts;
+    const now = facts === null ? null : look({ ...facts, inputAfterTurn: facts.pane !== null && this.inputs > (this.turnsAt.get(facts.pane) ?? 0) });
+    const begins = now !== null && now !== this.looked;
+    this.looked = now;
+    if (begins) this.marker.mark(now, true).catch(this.failed);
+  }
+}

@@ -10,7 +10,7 @@ import type { CoreChange } from "../../server/herdr-core/core-model.ts";
 import type { LayoutNode, PaneDirection } from "../../server/herdr-core/layout-doc.ts";
 import { neighbour, OVIS_LAYOUT_DOC } from "../../server/herdr-core/layout-doc.ts";
 import { buildSnapshot, coreHost, type FirstTurn, type HcTerminal, isRecord, LAYOUT_DOC } from "../../server/herdr-core/snapshot.ts";
-import { groupAgentRows, type KnownStatus, rollupStatus, stateSeqs } from "../../shared/attention.ts";
+import { type AgentGroup, groupAgentRows, knownStatus, type KnownStatus, rollupStatus } from "../../shared/attention.ts";
 import type { AgentStatus, PaneLayoutSnapshot } from "../../shared/herdr-api.generated.ts";
 import { folderName } from "../../shared/pane-title.ts";
 import { worktreeGroups } from "../../shared/worktree-groups.ts";
@@ -30,7 +30,7 @@ interface PaneSummary {
   readonly parentId?: string;
 }
 
-/** One row of the sidebar's Agents section, ordered by shared/attention.ts. */
+/** One row of the agent lists (the sidebar's Agents section, the full-screen list), ordered by shared/attention.ts. */
 interface AgentRowView {
   readonly paneId: string;
   readonly name: string;
@@ -39,6 +39,10 @@ interface AgentRowView {
   readonly status: AgentStatus;
   /** a helper agent started by another agent row */
   readonly helper: boolean;
+  /** the section the row stands in: its family's most urgent state (a blocked helper brings its agent up) */
+  readonly group: AgentGroup;
+  /** the name of the workspace the agent's pane is in */
+  readonly workspace: string;
 }
 
 interface WorkspaceRowView { readonly id: string; readonly name: string; readonly number: number; readonly status: KnownStatus }
@@ -92,8 +96,18 @@ function byAddress(terminals: readonly unknown[]): Map<string, Record<string, un
   return records;
 }
 
-function buildAgents(snapshot: ReturnType<typeof buildSnapshot>, panes: ReadonlyMap<string, PaneSummary>): AgentRowView[] {
-  const seqs = stateSeqs(snapshot);
+/**
+ * The panes that need the user, in the order one key jumps through them: the blocked rows, then the done rows, each the
+ * longest in that state first (`since`: when the screen saw a row's state begin; a tie keeps the list's order).
+ */
+export function jumpOrder(rows: readonly Pick<AgentRowView, "paneId" | "status">[], since: ReadonlyMap<string, number>): string[] {
+  const inState = (state: KnownStatus) => rows.filter((row) => knownStatus(row.status) === state).sort((a, b) => (since.get(a.paneId) ?? 0) - (since.get(b.paneId) ?? 0));
+  return [...inState("blocked"), ...inState("done")].map((row) => row.paneId);
+}
+
+function buildAgents(snapshot: ReturnType<typeof buildSnapshot>, panes: ReadonlyMap<string, PaneSummary>, seqs: ReadonlyMap<string, number>): AgentRowView[] {
+  const workspaces = new Map(snapshot.workspaces.map((workspace) => [workspace.workspace_id, workspace.label]));
+  const workspaceOf = new Map(snapshot.panes.map((pane) => [pane.pane_id, workspaces.get(pane.workspace_id) ?? ""]));
   interface Row {
     machine: { id: string };
     entry: { pane: { pane_id: string; parent_pane_id?: string; agent_status: AgentStatus } };
@@ -116,13 +130,15 @@ function buildAgents(snapshot: ReturnType<typeof buildSnapshot>, panes: Readonly
     status: (row) => row.summary.status,
     name: (row) => row.summary.label || row.summary.agent || row.id,
     seqs: () => seqs,
-  }).flatMap(({ rows: groupRows }) => groupRows.map(({ id, summary }): AgentRowView => ({
+  }).flatMap(({ group, rows: groupRows }) => groupRows.map(({ id, summary }): AgentRowView => ({
     paneId: id,
     name: summary.label || summary.title || summary.agent || id,
     agent: summary.agent ?? "",
     folder: summary.folder,
     status: summary.status,
     helper: summary.parentId !== undefined && agentIds.has(summary.parentId),
+    group,
+    workspace: workspaceOf.get(id) ?? "",
   })));
 }
 
@@ -169,6 +185,9 @@ export class CoreWorld {
   /** what the shared core model last told of a terminal's state, newer than its record until the next read */
   private readonly told = new Map<string, { shown: AgentStatus; agent: string | null; at: number }>();
   private tellings = 0;
+  /** the screen's own recency (UB Q7: each client keeps its own): when it saw each terminal's shown state begin */
+  private readonly since = new Map<string, { status: AgentStatus; at: number }>();
+  private changes = 0;
   private wanted = false;
   private reading: CoreRead | null = null;
   private shown: CoreView = EMPTY;
@@ -288,7 +307,14 @@ export class CoreWorld {
       number: workspace.number,
       status: rollupStatus(snapshot.panes.filter((pane) => pane.workspace_id === workspace.workspace_id).map((pane) => panes.get(pane.pane_id)?.status)),
     });
-    const agents = buildAgents(snapshot, panes);
+    for (const address of this.since.keys()) if (!panes.has(address)) this.since.delete(address);
+    for (const [address, { status }] of panes) {
+      const was = this.since.get(address);
+      // a state seen first (every one of the first snapshot) dates from now; a change, from one step later
+      if (was?.status !== status) this.since.set(address, { status, at: was === undefined ? this.changes : ++this.changes });
+    }
+    const since = new Map([...this.since].map(([address, { at }]) => [address, at]));
+    const agents = buildAgents(snapshot, panes, since);
     this.shown = {
       tabs,
       panes,
@@ -315,6 +341,7 @@ export class CoreWorld {
           }),
         })),
         agents: agents.map((agent) => agent.paneId),
+        waiting: jumpOrder(agents, since),
       },
     };
     return this.shown;

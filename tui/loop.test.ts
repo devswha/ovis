@@ -754,6 +754,25 @@ const RESTING: [state: string, enter: () => Promise<Resting>][] = [
     expect([run.loop.report().mode.overlays, run.loop.model().overlays.at(-1)]).toEqual([["menu"], expect.objectContaining({ cursor: 2 })]);
     return { run };
   }],
+  ["the full-screen agent list open", async () => {
+    const run = await start({ fixture: demo });
+    await run.live();
+    await run.advance(1);
+    await run.keys("ctrl+b,a");
+    expect(run.loop.report().mode.overlays).toEqual(["agents"]);
+    return { run };
+  }],
+  ["a pane looked at, its finished turn marked seen", async () => {
+    const run = await start({ core: oneTab(2) });
+    await run.live();
+    await run.advance(1);
+    run.type("\x1b[I");
+    run.core.reportStatus("t1", { state: "working", app: "claude" });
+    run.core.reportStatus("t1", { state: "idle", app: "claude" });
+    await run.advance(20);
+    expect(run.core.calls().filter((call) => call.method === "terminal.label").map((call) => call.params["labels"])).toEqual([{ "herdr.seen": "1" }]);
+    return { run };
+  }],
   ["a view kept by an earlier run restored", async () => {
     const folder = mkdtempSync(join(process.env["TMPDIR"] || tmpdir(), "loop-view-"));
     const core = new FakeHcCore();

@@ -11,8 +11,11 @@ export interface PaneNode { readonly id: string; readonly name: string; readonly
 /** `zoomed`: the pane the tab's zoom shows alone (the layout document's, shared with the browser); none when not zoomed */
 export interface TabNode { readonly id: string; readonly name: string; readonly panes: readonly PaneNode[]; readonly zoomed?: string }
 export interface WorkspaceNode { readonly id: string; readonly name: string; readonly tabs: readonly TabNode[] }
-/** `agents`: the panes that run an agent, in the sidebar's order (shared/attention.ts); none when not told */
-export interface World { readonly workspaces: readonly WorkspaceNode[]; readonly agents?: readonly string[] }
+/**
+ * `agents`: the panes that run an agent, in the sidebar's order (shared/attention.ts); `waiting`: those that need the
+ * user, in the order the jump to the next one takes them (tui/core/world.ts `jumpOrder`). None when not told.
+ */
+export interface World { readonly workspaces: readonly WorkspaceNode[]; readonly agents?: readonly string[]; readonly waiting?: readonly string[] }
 
 export const EMPTY_WORLD: World = { workspaces: [] };
 
