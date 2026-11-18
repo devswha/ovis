@@ -153,7 +153,7 @@ describe("the queue's turn gate (#4118)", () => {
     expect(d.typed).toEqual(["paste:X", "Enter", "Escape", "paste:Y", "Enter"]);
     expect(d.rows()).toEqual(["Z queued"]);
     await d.turnSeen();
-    expect(d.typed.slice(-2)).toEqual(["paste:Z", "Enter"]);
+    expect(d.typed).toEqual(["paste:X", "Enter", "Escape", "paste:Y", "Enter", "paste:Z", "Enter"]);
   });
 
   it("C control: without the second Send now, the interruption's idle types nothing", async () => {
@@ -397,6 +397,16 @@ describe("the queue's turn gate (#4118)", () => {
     pending.observe("p", "working", pending.mark("p"));
     pending.baseline("p", "idle", 1);
     expect(pending.next("p")).toBeNull();
+  });
+
+  it("leaves the pane's status alone for a reconcile's baseline asked before a reading already taken", () => {
+    let clock = 0;
+    const pending = new PendingInputs<string, null>(() => {}, () => clock, 10);
+    pending.status("p", "idle");
+    clock = 2;
+    pending.observe("p", "working", pending.mark("p"));
+    pending.baseline("p", "idle", 1);
+    expect(pending.current("p")).toBe("working");
   });
 
   it("ends a Send now's wait without holding the queue when no turn of its own starts after the ready that came right behind it", () => {

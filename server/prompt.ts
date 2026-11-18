@@ -1996,11 +1996,17 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         const customEditorReady = async (draft: string): Promise<boolean> => {
           const deadline = Date.now() + SETTLE_MS;
           if (responder === "pi-ask-question" || responder === "pi-questionnaire-question") {
-            const reading = readKnownPrompt(body.pane_id, pane, agent, options.codexHome, panes, options.openCodeStateDir);
-            const read = await Promise.race([reading, Bun.sleep(Math.max(0, deadline - Date.now())).then(() => null)]);
-            const shown = read?.prompt ? parsedByPublicPrompt.get(read.prompt) ?? null : null;
-            return !!read && !read.inputUnverified && asks() && !request.signal.aborted && Date.now() < deadline
-              && inlineEditorMatches(shown, read.screen ?? "", draft);
+            while (asks() && !request.signal.aborted && Date.now() < deadline) {
+              const reading = readKnownPrompt(body.pane_id, pane, agent, options.codexHome, panes, options.openCodeStateDir);
+              const read = await Promise.race([reading, Bun.sleep(Math.max(0, deadline - Date.now())).then(() => null)]);
+              if (!read || read.inputUnverified || !asks() || request.signal.aborted || Date.now() >= deadline) return false;
+              const shown = read.prompt ? parsedByPublicPrompt.get(read.prompt) ?? null : null;
+              if (inlineEditorMatches(shown, read.screen ?? "", draft)) return true;
+              // the same editor, still empty: the paste has not been drawn yet
+              if (draft === "" || !inlineEditorMatches(shown, read.screen ?? "", "")) return false;
+              await Bun.sleep(50);
+            }
+            return false;
           }
           if (responder === "letta-model") {
             // Letta's picker, its search as the keys so far left it (the line drops trailing spaces): a closed

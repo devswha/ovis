@@ -344,9 +344,10 @@ export class PendingInputs<Owner, Lease> {
    */
   baseline(paneId: string, status: AgentStatus, askedAt: number): void {
     const since = this.gates.get(paneId)?.since;
-    // asked before a reading already taken, it is older than that reading too
-    if (since === undefined || askedAt > Math.max(since, this.readAt.get(paneId) ?? -Infinity)) this.observe(paneId, status, this.mark(paneId), this.statuses.has(paneId));
-    else this.statuses.set(paneId, status);
+    const read = this.readAt.get(paneId) ?? -Infinity;
+    // asked before a reading already taken, it is older than that reading and tells nothing, not even the status
+    if (askedAt > read && (since === undefined || askedAt > since)) this.observe(paneId, status, this.mark(paneId), this.statuses.has(paneId));
+    else if (askedAt > read) this.statuses.set(paneId, status);
     // a submit's read under way across it is older than this status, as across an event
     this.events.set(paneId, this.mark(paneId) + 1);
   }
