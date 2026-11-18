@@ -4993,7 +4993,7 @@ ${omoRule}
     expect(gjcCustomEditorMatches(gjcCustomScreen(1, "", `${body}Changed details\nWhich scope?`), expected, "")).toBe(false);
   });
 
-  test("sends a GJC Other answer only after its own inline editor opens and contains the pasted draft", async () => {
+  test.each(["editor stays open", "editor closes during the look"])("GJC submits a pasted draft only if the %s", async (state) => {
     await withPane("gjc", "blocked", gjcCustomScreen(), async (pane) => {
       let at = 0;
       let opened = false;
@@ -5005,8 +5005,32 @@ ${omoRule}
       };
       const prompt = (await card())!;
       expect(prompt.custom_option_index).toBe(1);
-      expect(await answer(prompt.id, { custom_text: "/scope 읽기 전용" })).toEqual({ status: 200, code: undefined });
-      expect(pane.sent).toEqual(["down", "enter", "text:\u001b[200~/scope 읽기 전용\u001b[201~", "enter"]);
+      const closes = state === "editor closes during the look";
+      const text = "text:\u001b[200~/scope 읽기 전용\u001b[201~";
+      const beforeKey = async () => { if (closes && pane.sent.at(-1) === text) pane.screen = "Ready\n\n❯ unsent draft"; };
+      expect(await answer(prompt.id, { custom_text: "/scope 읽기 전용" }, { beforeKey })).toEqual(closes
+        ? { status: 409, code: "prompt_changed" } : { status: 200, code: undefined });
+      expect(pane.sent).toEqual(["down", "enter", text, ...(closes ? [] : ["enter"])]);
+    });
+  });
+
+  test.each(["editor stays open", "editor closes during the look"])("Antigravity submits a write-in only if the %s", async (state) => {
+    const initial = readFileSync(new URL("./fixtures/agy-1.5.6-ask.txt", import.meta.url), "utf8");
+    const selected = initial.replace("> 1. (Recommended) hello.txt", "  1. (Recommended) hello.txt").replace("  3. Write-in...", "> 3. Write-in...");
+    const editor = (text: string) => selected.replace(/  ↑\/↓ Navigate[\s\S]*$/, `  Your answer:\n  > ${text}\n\nenter Submit · esc Back\n`);
+    await withPane("agy", "blocked", initial, async (pane) => {
+      const prompt = (await card())!;
+      pane.onSent = (sent) => {
+        if (sent === "down") pane.screen = pane.sent.length === 1
+          ? initial.replace("> 1. (Recommended) hello.txt", "  1. (Recommended) hello.txt").replace("  2. bye.txt", "> 2. bye.txt") : selected;
+        if (sent === "enter" && pane.sent.length === 3) pane.screen = editor("");
+        if (sent === "text:notes.txt") pane.screen = editor("notes.txt");
+      };
+      const closes = state === "editor closes during the look";
+      const beforeKey = async () => { if (closes && pane.sent.at(-1) === "text:notes.txt") pane.screen = "❯ unsent draft"; };
+      expect(await answer(prompt.id, { custom_text: "notes.txt" }, { beforeKey })).toEqual(closes
+        ? { status: 409, code: "prompt_changed" } : { status: 200, code: undefined });
+      expect(pane.sent).toEqual(["down", "down", "enter", "text:notes.txt", ...(closes ? [] : ["enter"])]);
     });
   });
 
@@ -5325,6 +5349,50 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
       expect([result, pane.sent]).toEqual(status === 200
         ? [{ status: 200, code: undefined }, ["text:card words", "enter"]]
         : [{ status: 409, code: "prompt_changed" }, ["text:card words"]]);
+    });
+  });
+
+  test.each(editorCases)("bare Claude question verifies typed Enter when %s", async (_, change, status) => {
+    const initial = readFileSync(new URL("./fixtures/claude-question-words-2.1.311-120.txt", import.meta.url), "utf8")
+      .replace(/^ ☐ Fix\n/m, "").replace("❯ 1. Patch", "  1. Patch").replace("  3. Type something.", "❯ 3. Type something.");
+    await withPane("claude", "blocked", initial, async (pane) => {
+      const prompt = (await card())!;
+      pane.onSent = (sent) => {
+        if (sent === "text:card words") pane.screen = change(initial.replace("Type something.", "card words"));
+        if (sent === "enter") pane.screen = "❯";
+      };
+      const result = await answer(prompt.id, { custom_text: "card words" });
+      expect([result, pane.sent]).toEqual(status === 200
+        ? [{ status: 200, code: undefined }, ["text:card words", "enter"]]
+        : [{ status: 409, code: "prompt_changed" }, ["text:card words"]]);
+    });
+  });
+
+  test.each(editorCases)("Claude multi-select verifies typed Down and Enter when %s", async (_, change, status) => {
+    await withPane("claude", "blocked", claudeFruitQuestion("Other"), async (pane) => {
+      const prompt = (await card())!;
+      pane.onSent = (sent) => {
+        if (sent === "text:card words") pane.screen = change(claudeFruitQuestion("Other", "card words"));
+        if (sent === "down" && pane.screen.includes("card words")) pane.screen = change(claudeFruitQuestion("Submit", "card words"));
+        if (sent === "enter") pane.screen = "❯";
+      };
+      const result = await answer(prompt.id, { custom_text: "card words" });
+      expect([result, pane.sent]).toEqual(status === 200
+        ? [{ status: 200, code: undefined }, ["text:card words", "down", "enter"]]
+        : [{ status: 409, code: "prompt_changed" }, ["text:card words"]]);
+    });
+  });
+
+  test("Claude multi-select sends no Enter when the question closes during the look after Down", async () => {
+    await withPane("claude", "blocked", claudeFruitQuestion("Other"), async (pane) => {
+      const prompt = (await card())!;
+      pane.onSent = (sent) => {
+        if (sent === "text:Kiwi") pane.screen = claudeFruitQuestion("Other", "Kiwi");
+        if (sent === "down") pane.screen = claudeFruitQuestion("Submit", "Kiwi");
+      };
+      const beforeKey = async () => { if (pane.sent.at(-1) === "down") pane.screen = "❯ an unsent composer draft"; };
+      expect(await answer(prompt.id, { custom_text: "Kiwi" }, { beforeKey })).toEqual({ status: 409, code: "prompt_changed" });
+      expect(pane.sent).toEqual(["text:Kiwi", "down"]);
     });
   });
 
@@ -7345,34 +7413,37 @@ describe("Claude Code 2.1.29x approvals and questions", () => {
 
 // Claude Code 2.1.296's multiple choice, captured in #752: a ticked row is drawn [✔], and the
 // unnumbered Submit row between the typed answer and "Chat about this" takes the cursor too
-describe("Claude's multiple choice answered with its own text", () => {
-  // Claude Code 2.1.301: typing into "Type something" ticks that row, and Enter on Submit, under
-  // it, takes the answer to the next question or the review (→ there moves the text's cursor)
-  const screen = (at: "Manzana" | "Submit", typed = false) => [
+function claudeFruitQuestion(at: "Manzana" | "Other" | "Submit", draft = ""): string {
+  return [
     "←  ☐ Frutas  ✔ Submit  →",
     "¿Qué frutas?",
     `${at === "Manzana" ? "❯" : " "} 1. [ ] Manzana`,
     "         Manzana",
     "  2. [ ] Pera",
     "         Pera",
-    typed ? "  3. [✔] Kiwi" : "  3. [ ] Type something",
+    `${at === "Other" ? "❯" : " "} 3. ${draft ? `[✔] ${draft}` : "[ ] Type something"}`,
     `${at === "Submit" ? "❯" : " "}    Submit`,
     "─".repeat(119),
     "  4. Chat about this",
     "Enter to select · ↑/↓ to navigate · Esc to cancel",
   ].join("\n");
+}
+
+describe("Claude's multiple choice answered with its own text", () => {
+  // Claude Code 2.1.301: typing into "Type something" ticks that row, and Enter on Submit, under
+  // it, takes the answer to the next question or the review (→ there moves the text's cursor)
 
   test("offers the typed answer, and types it in its row before Enter on Submit", () => {
-    const prompt = parseInteractivePrompt("claude", screen("Manzana"))!;
+    const prompt = parseInteractivePrompt("claude", claudeFruitQuestion("Manzana"))!;
     expect(prompt).toMatchObject({ multi_select: true, custom_option_index: 2 });
     expect(labels(prompt)).toEqual(["Manzana", "Pera"]);
     expect(answerKeys(prompt, { custom_text: "Kiwi" })).toEqual([{ keys: ["down"] }, { keys: ["down"] }, { text: "Kiwi" }, { keys: ["down"] }, { keys: ["enter"] }]);
-    expect(answerKeys(parseInteractivePrompt("claude", screen("Submit"))!, { custom_text: "Kiwi" })).toEqual([{ keys: ["up"] }, { text: "Kiwi" }, { keys: ["down"] }, { keys: ["enter"] }]);
+    expect(answerKeys(parseInteractivePrompt("claude", claudeFruitQuestion("Submit"))!, { custom_text: "Kiwi" })).toEqual([{ keys: ["up"] }, { text: "Kiwi" }, { keys: ["down"] }, { keys: ["enter"] }]);
     expect(answerKeys(prompt, { option_indices: [1] })).toEqual([{ keys: ["down"] }, { keys: ["enter"] }, { keys: ["right"] }]);
   });
 
   test("empties a draft already typed into the row first", () => {
-    const prompt = parseInteractivePrompt("claude", screen("Manzana", true))!;
+    const prompt = parseInteractivePrompt("claude", claudeFruitQuestion("Manzana", "Kiwi"))!;
     expect(prompt).toMatchObject({ multi_select: true, custom_option_index: 2 });
     expect(answerKeys(prompt, { custom_text: "Uva" })).toEqual([{ keys: ["down"] }, { keys: ["down"] }, { keys: ["ctrl+k"] }, { keys: ["ctrl+u"] }, { text: "Uva" }, { keys: ["down"] }, { keys: ["enter"] }]);
   });

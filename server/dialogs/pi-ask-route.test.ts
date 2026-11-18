@@ -130,13 +130,15 @@ test("Pi ask answer route refuses a question replaced during navigation", async 
   });
 }, 4_000);
 
-test("Pi ask answer route writes a custom answer only after focusing the inline input", async () => {
+test.each(["editor stays open", "editor closes during the look"])("Pi ask submits typed text only if the %s", async state => {
   await withPane(fixtures.single, async pane => {
     const card = await pane.card();
     let moves = 0;
     pane.onSent = key => { if (key === "down") pane.screen = ++moves === 1 ? fixtures["single-second"] : fixtures["single-custom-empty"]; };
-    expect(await pane.answer(card.id, { custom_text: "typed answer" })).toBe(200);
-    expect(pane.sent).toEqual(["down", "down", "ctrl+u", "text:typed answer", "enter"]);
+    const closes = state === "editor closes during the look";
+    const beforeKey = async () => { if (closes && pane.sent.at(-1) === "text:typed answer") pane.screen = "> unsent draft"; };
+    expect(await pane.answer(card.id, { custom_text: "typed answer" }, undefined, { beforeKey })).toBe(closes ? 409 : 200);
+    expect(pane.sent).toEqual(["down", "down", "ctrl+u", "text:typed answer", ...(closes ? [] : ["enter"])]);
   });
 });
 

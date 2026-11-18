@@ -154,7 +154,7 @@ export type ParsedPrompt = InteractivePrompt & {
   rejectWithEscapeIndex: number | null;
   optionSteps?: AnswerStep[][];
   customSteps?: (text: string, choices?: number[]) => AnswerStep[];
-  customEditorMatches?: (answer: TypedEditorAnswer) => boolean;
+  customEditorMatches?: (answer: TypedEditorAnswer, cursor: "editor" | "submit") => boolean;
   multiSteps?: (choices: number[]) => AnswerStep[];
   rowKey?: AnswerStep | null;
 };

@@ -221,12 +221,10 @@ function parseClaudeQuestion(screen: string): ParsedPrompt | null {
   if (!sequentialRows(rows) || rows.filter((row) => row.selected).length !== (onSubmit ? 0 : 1)) return null;
   const chatIndex = rows.findIndex((row) => row.label === "Chat about this");
   let customIndex = rows.findIndex((row) => /^Type something\.?$/i.test(row.label));
-  // typed into, the row shows the draft instead of "Type something.", with the cursor on it or
-  // not (2.1.295): in Claude's own form, where the question is named by its chip or tabs and a
-  // rule parts that row from "Chat about this", it is still the typed answer's
+  // Typed into, the row shows the draft instead of "Type something." (2.1.295).
+  // The rule before "Chat about this" identifies the custom row even without a chip or tabs.
   const drafted = customIndex < 0 && !preview && chatIndex > 1
-    && lines.slice(rows[chatIndex - 1]!.lineIndex + 1, rows[chatIndex]!.lineIndex).some((line) => isDivider(line))
-    && (claudeTabs(lines, rows[0]!.lineIndex) !== null || claudeChip(lines, rows[0]!.lineIndex) !== null);
+    && lines.slice(rows[chatIndex - 1]!.lineIndex + 1, rows[chatIndex]!.lineIndex).some((line) => isDivider(line));
   if (drafted) customIndex = chatIndex - 1;
   if (preview) {
     // its notes are no answer of their own: no typed-answer row, the options are the menu
@@ -280,9 +278,10 @@ function parseClaudeQuestion(screen: string): ParsedPrompt | null {
   const editor = rows[customIndex];
   return {
     ...parsed,
-    ...(editor && drafted && (multiSelect ? onSubmit && editor.checked : editor.selected) ? {
-      customEditorMatches: ({ prompt, text }) => {
-        if (parsed.id !== prompt.id || parsed.claudeTabs?.index !== prompt.claudeTabs?.index
+    ...(editor && drafted && (!multiSelect || editor.checked) ? {
+      customEditorMatches: ({ prompt, text }, cursor) => {
+        if ((multiSelect && cursor === "submit" ? !onSubmit : !editor.selected)
+          || parsed.id !== prompt.id || parsed.claudeTabs?.index !== prompt.claudeTabs?.index
           || parsed.claudeTabs?.identity !== prompt.claudeTabs?.identity
           || parsed.checkedOptionIndices.join() !== prompt.checkedOptionIndices.join()) return false;
         const first = raw[editor.lineIndex]?.match(/^(\s*(?:[›>❯]\s*)?\d+\. (?:\[[ xX✓✔]\] )?)(.*)$/u);
@@ -290,7 +289,7 @@ function parseClaudeQuestion(screen: string): ParsedPrompt | null {
         const indent = " ".repeat(Bun.stringWidth(first[1] ?? ""));
         const rest = raw.slice(editor.lineIndex + 1, rows[chatIndex]?.lineIndex);
         const divider = findLastIndex(rest, (line) => /^─{3,}\s*$/.test(line));
-        const submit = onSubmit ? findLastIndex(rest, (line) => /^[›>❯]\s*Submit$/.test(cleanLine(line))) : divider;
+        const submit = multiSelect ? findLastIndex(rest, (line) => /^(?:[›>❯]\s*)?Submit$/.test(cleanLine(line))) : divider;
         if (divider < 0 || submit < 0) return false;
         const wrappedRows = rest.slice(0, Math.min(divider, submit));
         return wrappedRows.every((line) => line.startsWith(indent))
