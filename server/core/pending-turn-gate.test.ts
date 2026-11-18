@@ -100,6 +100,7 @@ describe("the queue's turn gate (#4118)", () => {
     await d.sendNow("X");
     await d.settled();
     expect(d.typed).toEqual(["paste:X", "Enter"]);
+    expect(d.delivery.pending.current("p")).toBe("idle");
     // herdr still reads idle (X's turn has begun, herdr has not said so); the user queues Z
     await d.queue("Z");
     await d.settled();
@@ -180,6 +181,21 @@ describe("the queue's turn gate (#4118)", () => {
     // the turn ends and the queue types X; herdr has not read X's turn yet
     d.now.status = "idle";
     d.event("idle");
+    await d.settled();
+    expect(d.typed).toEqual(["paste:X", "Enter"]);
+    await d.queue("Y");
+    await d.settled();
+    expect(d.typed).toEqual(["paste:X", "Enter"]);
+    expect(d.rows()).toEqual(["Y queued"]);
+    await d.turnSeen();
+    expect(d.typed).toEqual(["paste:X", "Enter", "paste:Y", "Enter"]);
+  });
+
+  it("E': a message sent to the queue right behind one the queue typed at once on a pane at rest waits behind its turn", async () => {
+    const d = pane();
+    d.now.status = "idle";
+    d.event("idle");
+    await d.queue("X");
     await d.settled();
     expect(d.typed).toEqual(["paste:X", "Enter"]);
     await d.queue("Y");
@@ -337,4 +353,129 @@ describe("the queue's turn gate (#4118)", () => {
     expect(pending.next("p")).toBe(y);
     expect(y.message.state).toBe("queued");
   });
+});
+
+// herdr's status subscription lost or replaced: what the collector reads back from its snapshot is a snapshot, and one asked for
+// before the queue's Enter says nothing of that Enter's turn. The real collector and status hub, with herdr's channels faked.
+const reconnectPane = "w1:p1";
+const shownAt = (status: string, agent: string | null = "pi") => ({ pane_id: reconnectPane, workspace_id: "w1", tab_id: "w1:t1", agent, agent_status: status, cwd: root }) as HerdrPane;
+
+function reconnectQueue(now: () => number) {
+  const pending = new PendingInputs<string, null>(() => {}, now, 10);
+  const identity = { agent: "pi", terminalId: reconnectPane, session: null };
+  const first = pending.enqueue("a", reconnectPane, 1, "X", null, identity);
+  const followup = pending.enqueue("a", reconnectPane, 2, "Y", null, identity);
+  const enter = () => {
+    expect(pending.next(reconnectPane)).toBe(first);
+    expect(pending.claim(first, true)).toBe(true);
+    pending.committing(first);
+    pending.settle(first);
+  };
+  return { pending, followup, enter };
+}
+
+it("a resync after lost events takes a snapshot asked for before the Enter as no start of its turn (#4118)", async () => {
+  let clock = Date.now();
+  const { pending, enter } = reconnectQueue(() => clock);
+  const status = hub(undefined, pending);
+  let panes = [shownAt("idle")];
+  let held: Promise<void> | undefined;
+  const asked = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const resynced = Promise.withResolvers<void>();
+  type Callbacks = Parameters<StatusCollectorDeps["subscribe"]>[1];
+  let statusCallbacks: Callbacks | undefined;
+  let subscriptions = 0;
+  const collector = originalCollector({ ...handlers, onResync: (read: readonly HerdrPane[], newer: ReadonlySet<string>, askedAt: number) => {
+    handlers.onResync(read, newer, askedAt);
+    resynced.resolve();
+  } } as never, {
+    reconnectMinMs: 5, reconnectMaxMs: 40, backstopMs: 60_000, debounceMs: 5, snapshotRetryMs: 5, replaySettleMs: 5,
+    subscribe: (subs, callbacks) => {
+      if (subs.some(sub => sub.type === "pane.agent_status_changed")) {
+        statusCallbacks = callbacks;
+        if (++subscriptions === 2) {
+          panes = [shownAt("working")];
+          held = release.promise;
+        }
+        queueMicrotask(() => callbacks.onStarted?.());
+      }
+      return { close() {} };
+    },
+    snapshot: async () => {
+      const read = { panes: structuredClone(panes) };
+      if (held) { asked.resolve(); await held; }
+      return read;
+    },
+  });
+  try {
+    status.herdrSays(shownAt("idle"));
+    await collector.ready;
+    statusCallbacks!.onClose?.();
+    await asked.promise;
+    expect(subscriptions).toBe(2);
+    clock = Date.now() + 1;
+    panes = [shownAt("idle")];
+    enter();
+    held = undefined;
+    release.resolve();
+    await resynced.promise;
+    expect(pending.next(reconnectPane)).toBeNull();
+    statusCallbacks!.onEvent({ event: "pane.agent_status_changed", data: { pane_id: reconnectPane, agent: "pi", agent_status: "idle" } });
+    expect(pending.next(reconnectPane)).toBeNull();
+  } finally { release.resolve(); collector.stop(); }
+});
+
+it("a replay when the subscription is replaced takes a status read before the Enter as no start of its turn (#4118)", async () => {
+  let clock = Date.now();
+  const { pending, enter } = reconnectQueue(() => clock);
+  const status = hub(undefined, pending);
+  let panes = [shownAt("idle")];
+  let held: Promise<void> | undefined;
+  const asked = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const replaced = Promise.withResolvers<void>();
+  const replayed: string[] = [];
+  type Callbacks = Parameters<StatusCollectorDeps["subscribe"]>[1];
+  let statusCallbacks: Callbacks | undefined;
+  let subscriptions = 0;
+  const collector = originalCollector({ ...handlers, onStatus: (...args: Parameters<typeof handlers.onStatus>) => {
+    const [id, phase, , replay] = args;
+    handlers.onStatus(...args);
+    if (replay) replayed.push(`${id}:${phase}`);
+  } } as never, {
+    backstopMs: 60_000, debounceMs: 1, replaySettleMs: 1,
+    subscribe: (subs, callbacks) => {
+      if (subs.some(sub => sub.type === "pane.agent_status_changed")) {
+        statusCallbacks = callbacks;
+        if (++subscriptions === 1) queueMicrotask(() => callbacks.onStarted?.());
+        else replaced.resolve();
+      } else queueMicrotask(() => callbacks.onStarted?.());
+      return { close() {} };
+    },
+    snapshot: async () => {
+      const read = { panes: structuredClone(panes) };
+      if (held) { asked.resolve(); await held; }
+      return read;
+    },
+  });
+  try {
+    status.herdrSays(shownAt("idle"));
+    await collector.ready;
+    panes = [shownAt("working"), { ...shownAt("idle"), pane_id: "w1:p2" }];
+    held = release.promise;
+    collector.refresh();
+    await asked.promise;
+    clock = Date.now() + 1;
+    enter();
+    held = undefined;
+    release.resolve();
+    await replaced.promise;
+    expect(replayed).toEqual([`${reconnectPane}:working`]);
+    expect(pending.next(reconnectPane)).toBeNull();
+    panes = [shownAt("idle"), panes[1]!];
+    statusCallbacks!.onStarted?.();
+    statusCallbacks!.onEvent({ event: "pane.agent_status_changed", data: { pane_id: reconnectPane, agent: "pi", agent_status: "idle" } });
+    expect(pending.next(reconnectPane)).toBeNull();
+  } finally { release.resolve(); collector.stop(); }
 });

@@ -278,6 +278,18 @@ export class PendingInputs<Owner, Lease> {
     this.gates.set(item.paneId, gate);
   }
 
+  /**
+   * A message sent to the queue and typed at once, with no row of its own (the pane read at rest and nothing waited): its
+   * Enter's turn is waited for as a queued message's is, so the next one sent to the queue goes behind it.
+   */
+  typedAtOnce(paneId: string, steeringWorkingTurn: boolean): void {
+    if (this.gates.get(paneId)?.committed) return;
+    const now = this.now();
+    this.gates.set(paneId, steeringWorkingTurn
+      ? { by: "", committed: true, sawWorking: true, completed: false, deadline: null, joined: now + this.startTimeoutMs, since: now }
+      : { by: "", committed: true, sawWorking: false, completed: false, deadline: now + this.startTimeoutMs, since: now });
+  }
+
   settle(item: PendingRecord<Owner, Lease>, fault?: Fault, uncertain = false, retryWhenReady = false): void {
     if (this.records.get(item.message.id) !== item || !item.inFlight) return;
     item.inFlight = false;

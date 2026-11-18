@@ -1386,7 +1386,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
               // Queued, it never clears a stopped send Claude put back in its box, as the drain does not (#2546).
               if (message.delivery === "queue" && !pending.waiting(message.pane_id) && !typedWhileOmpStarted(message.pane_id)) {
                 const sendingAt = new Date().toISOString();
-                const typed = await dispatchPendingText(client, message.pane_id, text, lease!, context.identity, false, arrivedAt, undefined, false, message.id, agentOnly, true);
+                const typed = await dispatchPendingText(client, message.pane_id, text, lease!, context.identity, false, arrivedAt,
+                  (working) => pending.typedAtOnce(message.pane_id, working), false, message.id, agentOnly, true);
                 if (typed.ok || typed.code !== "pending_wait") return typed.ok ? { ...typed, sending_at: sendingAt } : typed;
                 waited = true;
               }

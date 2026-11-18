@@ -54,13 +54,14 @@ const SNAPSHOT_RETRY_MS = 5_000;
 const REPLAY_SETTLE_MS = 150;
 
 export interface StatusCollectorHandlers {
-  onStatus: (paneId: string, status: AgentStatus, agent: string | null, replay?: { before: AgentStatus; agent: string | null }) => void;
+  /** `replay.askedAt`: when the snapshot the replayed status was read from was asked for (`Date.now()`) */
+  onStatus: (paneId: string, status: AgentStatus, agent: string | null, replay?: { before: AgentStatus; agent: string | null; askedAt?: number }) => void;
   /**
    * `newer`: panes with an event or an exit since the snapshot was asked for, whose reading here is older than that.
    * `askedAt`: when it was asked for (`Date.now()`).
    */
   onBaseline: (panes: readonly HerdrPane[], newer: ReadonlySet<string>, askedAt: number) => void;
-  onResync?: (panes: readonly HerdrPane[], newer: ReadonlySet<string>) => void;
+  onResync?: (panes: readonly HerdrPane[], newer: ReadonlySet<string>, askedAt: number) => void;
   onReconciled?: (panes: readonly HerdrPane[]) => void;
   onPaneEnded: (paneId: string) => void;
   /**
@@ -364,7 +365,7 @@ export function startStatusCollector(handlers: StatusCollectorHandlers, override
       const resynced = resync !== null && resync === statusGeneration && statusSubscription !== null;
       if (resynced) {
         recovering = false;
-        handlers.onResync?.(snapshot.panes, newer);
+        handlers.onResync?.(snapshot.panes, newer, askedTime);
         for (const pane of snapshot.panes) if (!newer.has(pane.pane_id)) displayAgents.set(pane.pane_id, pane.display_agent ?? null);
         handlers.onStructureChange();
       }
@@ -402,7 +403,7 @@ export function startStatusCollector(handlers: StatusCollectorHandlers, override
           if (newerThan(pane.pane_id, askedAt) || before === undefined || before.status === pane.agent_status) continue;
           const agent = pane.agent ?? null;
           heard.set(pane.pane_id, { status: pane.agent_status, agent });
-          handlers.onStatus(pane.pane_id, pane.agent_status, agent, { before: before.status, agent: before.agent });
+          handlers.onStatus(pane.pane_id, pane.agent_status, agent, { before: before.status, agent: before.agent, askedAt: askedTime });
         }
       }
       handlers.onReconciled?.(snapshot.panes.filter((pane) => !newerThan(pane.pane_id, askedAt)));
