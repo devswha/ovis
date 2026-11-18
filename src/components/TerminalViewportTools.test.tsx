@@ -254,13 +254,16 @@ describe("history scrolls by every wheel line while the view's own writes are sl
 
   async function mount(herdr: ReturnType<typeof fakeHerdr>) {
     spyOn(machineContext, "useMachineApi").mockReturnValue(herdr.api as unknown as ReturnType<typeof machineContext.useMachineApi>);
-    const written: (() => void)[] = [], resized: (() => void)[] = [];
+    const written: (() => void)[] = [], resized: (() => void)[] = [], wheeled: (() => void)[] = [];
     const listener = () => ({ dispose() {} });
     // the grid and its layer have a size, so the Jump to bottom button is drawn
     const rect = { left: 0, top: 0, right: 800, bottom: 600, width: 800, height: 600 };
     const screen = { getBoundingClientRect: () => rect };
     const terminal = {
-      element: { getClientRects: () => [rect], querySelector: () => screen, parentElement: null, addEventListener() {}, removeEventListener() {}, dispatchEvent: () => true },
+      element: {
+        getClientRects: () => [rect], querySelector: () => screen, parentElement: null, dispatchEvent: () => true,
+        addEventListener(type: string, callback: () => void) { if (type === "wheel") wheeled.push(callback); }, removeEventListener() {},
+      },
       cols: 80, rows: 24,
       buffer: { active: { viewportY: 0, baseY: 0, getLine: () => undefined } },
       onWriteParsed: (callback: () => void) => { written.push(callback); return { dispose() {} }; },
@@ -290,6 +293,8 @@ describe("history scrolls by every wheel line while the view's own writes are sl
       /** moves the clock to `ms` after mounting, running the poll timers due on the way */
       at,
       wheel: (lines: number) => act(async () => { lineScroll.current!(lines); }),
+      /** the same through the terminal's wheel event, as the browser sends it: the view also marks a gesture */
+      wheelEvent: (lines: number) => act(async () => { for (const callback of wheeled) callback(); lineScroll.current!(lines); }),
       page: (direction: -1 | 1) => act(async () => { pageScroll.current!(direction); }),
       jumpToBottom: () => act(async () => { renderer!.root.findByProps({ "aria-label": "Jump to bottom" }).props.onClick(); }),
       /** a chunk of output parsed, as herdr's repaint of a moved view arrives */
@@ -500,6 +505,52 @@ describe("history scrolls by every wheel line while the view's own writes are sl
     await view.answerAll(3000);
     // Then: the first write's lines are not applied again: 3 + 23 + 3
     expect(herdr.offset).toBe(29);
+  });
+
+  it("applies held lines before a later line the other way, each clamped at the top, as the wheel turned", async () => {
+    const herdr = fakeHerdr(100);
+    herdr.set({ offset: 92 });
+    const view = await mount(herdr);
+    await view.answerReads();
+    // Given: two writes up to 98, and two lines up held on stale metrics meanwhile
+    await view.at(10); await view.wheelEvent(3); await view.output();
+    await view.at(100); await view.wheelEvent(3);
+    await view.at(310); await view.wheelEvent(3);
+    await view.at(320); await view.wheelEvent(3);
+    await view.at(350); await view.answerWrite(); await view.output();
+    await view.at(400); await view.answerWrite(); await view.output();
+    // When: a line down on fresh metrics
+    await view.at(450); await view.wheelEvent(-3);
+    await view.at(1400); await view.answerWrite(); await view.output();
+    await view.answerAll(2600);
+    // Then: up to the top (100) with the held lines, then 3 down; main lost the held lines and ended at 95
+    expect(herdr.targets).toEqual([95, 98, 97]);
+    expect(herdr.offset).toBe(97);
+  });
+
+  it("gives a page key to the program when main does, after a wheel whose held lines reached the bottom", async () => {
+    const herdr = fakeHerdr(100);
+    herdr.set({ offset: 20 });
+    const view = await mount(herdr);
+    await view.answerReads();
+    // Given: a wheel down whose held lines take the view to the bottom (main lost them and stayed at 11)
+    await view.at(10); await view.wheelEvent(-3); await view.output();
+    await view.at(100); await view.wheelEvent(-3);
+    for (const ms of [310, 320, 330, 340]) { await view.at(ms); await view.wheelEvent(-3); }
+    await view.at(350); await view.answerWrite(); await view.output();
+    await view.at(400); await view.answerWrite(); await view.output();
+    await view.at(450); await view.wheelEvent(-3);
+    await view.at(900); await view.output();
+    await view.at(1400); await view.answerWrite(); await view.output();
+    expect(herdr.targets).toEqual([17, 14, 0]);
+    // When: the program enters its alternate screen and PageUp is pressed
+    await view.at(1650); await view.answerReads();
+    await view.at(1700); await view.output();
+    await view.at(1800); herdr.enterAlternateScreen(); await view.output();
+    await view.at(2000); await view.answerReads();
+    await view.at(2050); await view.page(-1);
+    // Then: the poll kept main's pace, so the metrics are fresh and the key goes to the program at once, as on main
+    expect(view.programKeys).toEqual(["-1@2050"]);
   });
 
   /** one order of the merge review: herdr's state at mount, then timed steps, each at its ms after mounting */

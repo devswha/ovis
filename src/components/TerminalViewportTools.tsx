@@ -234,12 +234,18 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
       const metrics = scrollRef.current;
       const stale = !fresh && metricsOutput !== outputVersion && Date.now() - metricsAt > SCROLL_POLL_BUSY_MS;
       if (validScroll(metrics) && !stale) {
-        // lines held on stale metrics go out with a line these metrics are fresh enough for: the read that would release
-        // them waits while the wheel's own writes run back to back, past the hold. Behind a held page they still wait for
-        // that read, which hands the page out first.
+        // lines held on stale metrics go out with a line these metrics are fresh enough for, in the order asked (clamped
+        // first, as a wheel past the top would be): the read that would release them waits while the wheel's own writes
+        // run back to back, past the hold. The hold stays, empty, so the poll and that read (and its write) come as they
+        // would have: page keys keep their timing. Behind a held page the lines still wait for that read, which hands the
+        // page out first.
         let held = 0;
-        if (heldLines && !heldPage) { held = Date.now() - heldLines.at < HELD_PAGE_MS ? heldLines.lines : 0; heldLines = null; }
-        writeRef.current((previewRef.current ?? metrics.offset_from_bottom) + held + lines);
+        if (heldLines && !heldPage) {
+          if (Date.now() - heldLines.at < HELD_PAGE_MS) held = heldLines.lines;
+          heldLines = { lines: 0, at: heldLines.at };
+        }
+        const from = previewRef.current ?? metrics.offset_from_bottom;
+        writeRef.current((held ? Math.max(0, Math.min(metrics.max_offset_from_bottom, from + held)) : from) + lines);
       } else {
         heldLines = { lines: (heldLines && Date.now() - heldLines.at < HELD_PAGE_MS ? heldLines.lines : 0) + lines, at: Date.now() };
         dirty = true; idle = 0; schedule(0);
