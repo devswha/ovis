@@ -5,7 +5,7 @@ import "./RelayPanel.css";
 
 import { copyText } from "../lib/clipboard.ts";
 import { ApiError, cancelRelayCode, endPairing, requestRelayCode, requestRelayLink, requestRelayOffer, startPairing, type RelayCode, type RelayOffer } from "../lib/api.ts";
-import { useT } from "../lib/i18n.ts";
+import { t, useT } from "../lib/i18n.ts";
 import { callNative, hasNativePlugin } from "../lib/nativeApp.ts";
 import { announcePairingCode, PAIRING_CODE_EVENT, QR_CODE_ENDED_CHANNEL, tellOtherWindowsQrCodeEnded, type AnnouncedCode, type RelayState } from "../lib/useRelay.ts";
 import type { RelayStatus } from "../../shared/protocol.ts";
@@ -17,7 +17,10 @@ import { QrCode } from "./QrCode.tsx";
 import { CompactPair } from "./CompactPair.tsx";
 import { SettingsRow, Toggle } from "./SettingsControls.tsx";
 
-export const failureText = (error: unknown): string => error instanceof ApiError ? error.detail : error instanceof Error ? error.message : String(error);
+export const failureText = (error: unknown): string => error instanceof ApiError
+  // a machine pairs no device by a code that names no account
+  ? error.code === "machine_profile" ? t("This machine pairs new devices only through your Ovis account. On the machine, run ovis add and scan its QR code with a device that is signed in.") : error.detail
+  : error instanceof Error ? error.message : String(error);
 
 export function statusText(t: ReturnType<typeof useT>, status: RelayStatus): string {
   if (status.blocked === "serve_only") return t("Blocked: OVIS_TAILSCALE_SERVE_ONLY says tailscale serve is the only way in. Unset it on this PC and restart the app.");
@@ -128,7 +131,7 @@ function announceFromRelay(code: AnnouncedCode): void {
  * place started; New code ends that code and asks again. `onInAccount`: the PC refused the offer for its account: it is
  * in one by now, or none is named for it.
  */
-export function RelayPairing({ phone = false, compact = false, qrOnly = false, onInAccount }: { phone?: boolean; compact?: boolean; qrOnly?: boolean; onInAccount?: () => void }) {
+export function RelayPairing({ phone = false, compact = false, qrOnly = false, onInAccount, onOffer }: { phone?: boolean; compact?: boolean; qrOnly?: boolean; onInAccount?: () => void; onOffer?: (offer: RelayOffer) => void }) {
   const t = useT();
   const [offer, setOffer] = useState<RelayOffer | null>(null);
   const [left, setLeft] = useState("");
@@ -149,6 +152,8 @@ export function RelayPairing({ phone = false, compact = false, qrOnly = false, o
   const again = () => setGeneration((value) => value + 1);
   const refused = useRef(onInAccount);
   refused.current = onInAccount;
+  const drawn = useRef(onOffer);
+  drawn.current = onOffer;
   // a six-digit code started anywhere else ends the typed code on the PC (server/relay/pair-code.ts): its words go too
   const [typedReset, setTypedReset] = useState(0);
   const [typedId, setTypedId] = useState<string | null>(null);
@@ -174,6 +179,7 @@ export function RelayPairing({ phone = false, compact = false, qrOnly = false, o
         return;
       }
       setOffer(next);
+      drawn.current?.(next);
       setState("live");
       // the server made this offer's code, maybe with no New code pressed: the page watches it like any other
       // (the Devices group re-reads its list while a code is out and closes the dialog once the phone is in)

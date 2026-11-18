@@ -7,6 +7,8 @@ import { exportPublicKey, generateKeyPair } from "../../shared/relay-e2ee.ts";
 import { decodeOffer, encodeOffer } from "../../shared/relay-offer.ts";
 import type { PairedDevice, RelayStatus } from "../../shared/protocol.ts";
 import { SettingsProvider } from "../lib/settings.ts";
+import { indexedAccountStore } from "../lib/account/store.ts";
+import { fakeIndexedDB } from "../lib/indexedDB.fake.ts";
 import type { RelayState } from "../lib/useRelay.ts";
 import type { Machine } from "../../shared/machines.ts";
 import type { AddPcPreset } from "../lib/actions.ts";
@@ -587,6 +589,8 @@ describe("the relay tab's QR code behind a press", () => {
   let offerMarks: (string | null)[];
   /** the PC's own answer to POST /api/relay/offer, when it is not an offer */
   let offerAnswer: (() => Response | Promise<Response>) | null;
+  /** "refused": the account service refuses to list this PC (PUT /v1/pcs/:id); "silent": it never answers its list */
+  let listing: "ok" | "refused" | "silent";
 
   const device = (extra: Partial<PairedDevice>): PairedDevice => ({ id: "a", label: "Laptop · Chrome", role: "drive", created_at: "2026-10-01T00:00:00Z", last_seen_at: null, current: false, ...extra });
   const phoneDevice = (extra: Partial<PairedDevice> = {}) => device({ id: "b", label: "iPhone · Safari", created_at: "2026-11-10T00:00:00Z", via_relay: true, ...extra });
@@ -609,7 +613,10 @@ describe("the relay tab's QR code behind a press", () => {
     removable = true;
     offerMarks = [];
     offerAnswer = null;
-    for (const key of ["window", "document", "navigator", "getComputedStyle", "HTMLElement", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    listing = "ok";
+    for (const key of ["window", "document", "navigator", "indexedDB", "getComputedStyle", "HTMLElement", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    // the page's own sign-in, which a signed-in tab lists this PC under before its QR code
+    Object.defineProperty(globalThis, "indexedDB", { configurable: true, value: fakeIndexedDB().factory });
     Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
     Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
     // the confirmation's focus trap asks what an element is
@@ -664,9 +671,12 @@ describe("the relay tab's QR code behind a press", () => {
         return Response.json({ ok: true, cancelled });
       }
       if (path === "/api/devices/revoke-all") { devices = []; pcAccount = null; return Response.json({ revoked: 2 }); }
+      if (path === "/v1/pcs") return listing === "silent" ? new Promise<Response>(() => {}) : Response.json({ pcs: [] });
+      if (path === `/v1/pcs/${SERVER_ID}` && init?.method === "PUT") return listing === "ok" ? Response.json({}) : Response.json({ error: { code: "unavailable" } }, { status: 503 });
       return Response.json({ error: { code: "not_found", message: "no" } }, { status: 404 });
     };
     spyOn(globalThis, "fetch").mockImplementation(Object.assign(fetch, { preconnect: globalThis.fetch.preconnect }));
+    return indexedAccountStore.set("session", { service: SERVICE.service, account: ACCOUNT_ID, provider: "github", access_token: "access", refresh_token: "refresh", expires_at: Date.now() + 365 * 86_400_000 });
   });
 
   afterEach(async () => {
@@ -730,6 +740,50 @@ describe("the relay tab's QR code behind a press", () => {
       expect(text(section())).not.toContain("7K3QD-M2XHA");
       expect(section().findAll((node) => node.props["aria-label"] === "Code to type")).toHaveLength(0);
       expect(buttons()).toEqual(["New code"]);
+    });
+  }
+
+  // a signed-in tab lists this PC in the account it shows, as `ovis add` does. Its QR code is
+  // a plain code (no mark), so the listing runs beside the code and never holds it up; the PC's relay key comes
+  // from the QR code's own offer, so no pairing window of the PC (another flow may hold it) is opened or closed for it
+  it("signed in, lists this PC in the account the tab shows from the QR code's offer, and touches no pairing window", async () => {
+    await mount({ signedIn: true });
+    await press("Show the QR code");
+    expect(qrCodes()).toHaveLength(1);
+    expect(requests.indexOf(`/v1/pcs/${SERVER_ID}`)).toBeGreaterThan(requests.indexOf("/api/relay/offer"));
+    expect(requests.filter((path) => path.startsWith("/api/relay/link"))).toEqual([]);
+  });
+
+  // the account is fixed at the press: another tab that switches accounts before the offer
+  // comes makes the tab list nothing, not the PC in the account it shows by then
+  it("signed in, lists nothing when the account changed between the press and the QR code's offer", async () => {
+    const other = "acct_other_000000000000";
+    const offerGate = Promise.withResolvers<void>();
+    offerAnswer = async () => { await offerGate.promise; return Response.json({ url: OFFER_URL, expires_at: new Date(Date.now() + 600_000).toISOString() }); };
+    await mount({ signedIn: true });
+    await press("Show the QR code");
+    await indexedAccountStore.set("session", { service: SERVICE.service, account: other, provider: "github", access_token: "other", refresh_token: "other", expires_at: Date.now() + 86_400_000 });
+    await update({ signedIn: true, accountId: other });
+    offerGate.resolve();
+    await flush();
+    expect(qrCodes()).toHaveLength(1);
+    expect(requests).not.toContain(`/v1/pcs/${SERVER_ID}`);
+  });
+
+  for (const [what, setup] of [
+    ["the account service refuses the listing", () => { listing = "refused"; }],
+    ["the account service never answers", () => { listing = "silent"; }],
+    ["another tab stored another account's sign-in since the tab was drawn", () => indexedAccountStore.set("session", { service: SERVICE.service, account: "acct_other_000000000000", provider: "github", access_token: "other", refresh_token: "other", expires_at: Date.now() + 86_400_000 })],
+  ] as const) {
+    it(`signed in, shows the QR code all the same when ${what}`, async () => {
+      await setup();
+      await mount({ signedIn: true });
+      await press("Show the QR code");
+      expect(qrCodes()).toHaveLength(1);
+      expect(ended).toEqual([]);
+      expect(section().findAllByProps({ role: "alert" })).toHaveLength(0);
+      // nothing is written to an account the tab did not show
+      if (what.startsWith("another")) expect(requests).not.toContain(`/v1/pcs/${SERVER_ID}`);
     });
   }
 

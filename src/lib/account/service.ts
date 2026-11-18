@@ -297,16 +297,16 @@ export class AccountService {
     return new AccountService({ ...this.options, signIn: session });
   }
 
-  async listPcs(): Promise<DirectoryPc[]> {
-    const body = await this.call("GET", "/v1/pcs");
+  async listPcs(signal?: AbortSignal): Promise<DirectoryPc[]> {
+    const body = await this.call("GET", "/v1/pcs", undefined, signal);
     const pcs = isRecord(body) && Array.isArray(body.pcs) ? body.pcs : null;
     if (pcs === null) throw new AccountServiceError(502, "invalid_answer", "The account service sent no PC list");
     return pcs.map(parsePc).filter((pc): pc is DirectoryPc => pc !== null);
   }
 
   /** Lists a PC in the account's directory, with its relay key and relay so a new device can compare digits with it. */
-  async putPc(serverId: string, entry: { label: string; public_key: string; relay: string }): Promise<void> {
-    await this.call("PUT", `/v1/pcs/${serverId}`, entry);
+  async putPc(serverId: string, entry: { label: string; public_key: string; relay: string }, signal?: AbortSignal): Promise<void> {
+    await this.call("PUT", `/v1/pcs/${serverId}`, entry, signal);
   }
 
   /** Takes a PC out of the account's directory (it rings nobody and admits nothing either way). */
@@ -317,9 +317,12 @@ export class AccountService {
   /**
    * Says this signed-in device waits at that PC with its account key: the account's other devices
    * hear of it, and the PC takes a comparison that asks to join the account for 10 minutes.
+   * `quiet`: asks the account service to take it without telling the other devices. The service decides: it honours
+   * the ask only for a sign-in made in an app itself, and takes any other as an ordinary admission; a service that
+   * does not know the field ignores it.
    */
-  async postAdmission(serverId: string, label: string, key: string, os: AccountOs | null = null): Promise<void> {
-    await this.call("POST", "/v1/admissions", { server_id: serverId, label, key, ...(os === null ? {} : { os }) });
+  async postAdmission(serverId: string, label: string, key: string, os: AccountOs | null = null, signal?: AbortSignal, { quiet = false }: { quiet?: boolean } = {}): Promise<void> {
+    await this.call("POST", "/v1/admissions", { server_id: serverId, label, key, ...(os === null ? {} : { os }), ...(quiet ? { quiet: true } : {}) }, signal);
   }
 
   /**
@@ -503,7 +506,8 @@ export class AccountService {
     });
   }
 
-  private async call(method: string, path: string, body?: unknown): Promise<unknown> {
+  /** `signal`: ends the request itself, not only the wait for it (a post given up must not land later). */
+  private async call(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<unknown> {
     let stale: string | undefined;
     for (const retry of [false, true]) {
       const session = await this.fresh(stale);
@@ -511,6 +515,7 @@ export class AccountService {
         method,
         headers: { authorization: `Bearer ${session.access_token}`, ...(body === undefined ? {} : { "content-type": "application/json" }) },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        ...(signal === undefined ? {} : { signal }),
       });
       if (response.status === 401 && !retry) { stale = session.access_token; continue; }
       if (response.status === 401) return this.signedOut(session);

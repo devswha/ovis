@@ -17,12 +17,13 @@ import { onLazyChunkFailure } from "../lazyChunk.ts";
 import { setTransport } from "../transport.ts";
 import { takeEntryUrl } from "./boot.ts";
 import { nativeDirectSocket, nativeDirectTailnet } from "./directSocket.ts";
-import { enrollmentOf, indexedDeviceStore, indexedPendingPush, ServerIdentityChangedError } from "./device.ts";
+import { enrollmentOf, indexedDeviceStore, indexedPendingPush, ServerIdentityChangedError, type RelayDevice } from "./device.ts";
 import { failureOf, forgedOffer, forgetsDevice, iosBrowserTab, keyMismatch, offerOf, pairsAgainWithoutKey, shellEntry, sheetContext, keepSheetContext, typedJoin, keepTypedJoin, dashboardHash, keepConfirmedPc, takeConfirmedPc, keepDeviceOnlyPc, deviceOnlyPc, keepConfirmedSignIn, confirmedSignIn } from "./shellState.ts";
 import type { Attempt, RelayShellMount, RelayShellState, SheetJoin } from "./shellState.ts";
 import { openRelayTransport, type RelayTransport } from "./transport.ts";
 import { offerFromCode, TypedCodeError } from "./pairCode.ts";
 import { ConsentChangedError, createAccountController } from "./accountController.ts";
+import { refusalOf } from "./firstLink.ts";
 import { createPcSweep } from "./pcSweep.ts";
 import { createUpdateFlow, loadObservedVersions, observedVersions, reloadPage, freshShellNext, forgetSavedPc } from "./updateFlow.ts";
 export type { RelayShellMount } from "./shellState.ts";
@@ -50,6 +51,11 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   let comparison: { name: string | null; digits: string; matched: () => void; typed: boolean } | null = null;
   let challenge = 0, checked = false;
   const enrolling = new Set<RelayTransport>();
+  // a first link each PC refused, by its id, until a failure screen for that PC says it (linkRefused)
+  const refusedLinks = new Map<string, unknown>();
+  // a saved pairing that pairs again from a marked code, whose record that PAIR replaces: kept until the new row's link
+  // passes, so a refused link leaves the device the record of the row the PC kept
+  const olderPairings = new Map<string, RelayDevice>();
   const directSocket = nativeDirectSocket();
   const directTailnet = directSocket ? nativeDirectTailnet() : undefined;
   const findByCode = mount.findByCode ?? offerFromCode;
@@ -194,12 +200,16 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       await connect({ ...attempt, refreshed: true });
       return;
     }
-    let failure = failureOf(error, { code: attempt.code, paired: attempt.paired, compared: attempt.compared === true, codeless: attempt.codeless === true });
+    // a first link this PC refused (linkRefused): its words say more than the end of the session that may follow it
+    const refused = refusedLinks.get(attempt.offer.server_id);
+    if (refused !== undefined && reopenOlder(attempt)) { refusedLinks.delete(attempt.offer.server_id); return; }
+    let failure = refusalOf(error) ?? failureOf(error, { code: attempt.code, paired: attempt.paired, compared: attempt.compared === true, codeless: attempt.codeless === true });
     if (failure === "revoked") {
       const saved = await store.get(attempt.offer.server_id);
       if (last !== attempt) return;
-      // a link whose answer was lost: the PC may hold the account key now, so that key is tried once before anything is forgotten
-      if (saved?.pending_key && !attempt.retriedPending) {
+      // a link whose answer was lost: the PC may hold the account key now, so that key is tried once before anything is
+      // forgotten; a link the PC refused never gave it that key
+      if (refused === undefined && saved?.pending_key && !attempt.retriedPending) {
         const { pending_key: pending, ...rest } = saved;
         await store.update(saved.server_id, () => ({ ...rest, private_key: pending.private_key, public_spki: pending.public_spki }));
         if (last !== attempt) return;
@@ -208,16 +218,21 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       }
       if (saved?.introduced_at !== undefined && Date.now() - saved.introduced_at < INTRODUCED_GRACE_MS) failure = "not-added-yet";
     }
+    // forgotten only once the PC ended the pairing (its session ended, or a sign-in was refused): a refused link alone
+    // leaves the row the PC kept, and the device keeps its key for it
     if (forgetsDevice(failure)) await store.remove(attempt.offer.server_id).catch(() => undefined);
     if (last !== attempt) return;
+    refusedLinks.delete(attempt.offer.server_id);
     const mismatch = error instanceof ServerIdentityChangedError && error.saved !== undefined && error.offered !== undefined
       ? keyMismatch(attempt.offer.server_id, [{ key: error.saved, from: "saved" }, { key: error.offered, from: "link" }]) : null;
-    show({ kind: "failed", failure, name: attempt.offer.name ?? null, detail: null, server_id: attempt.offer.server_id, ...(mismatch ? { mismatch } : {}) });
+    show({ kind: "failed", failure: (refused === undefined ? null : refusalOf(refused)) ?? failure, name: attempt.offer.name ?? null, detail: null, server_id: attempt.offer.server_id, ...(mismatch ? { mismatch } : {}) });
   };
 
   const connect = async (attempt: Attempt): Promise<void> => {
     // digits shown on an earlier try say nothing about how this one fails
     attempt.compared = false;
+    // nor does a link refused before a new pairing
+    if (!attempt.paired) refusedLinks.delete(attempt.offer.server_id);
     last = attempt;
     opening?.abort();
     const controller = new AbortController();
@@ -227,6 +242,11 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     try {
       const prepared = await account.prepare(attempt.offer, controller.signal, consentOf(attempt));
       attempt.accountEnrollment = prepared.accountKey !== undefined;
+      if (!attempt.paired) {
+        const saved = attempt.offer.code !== undefined && attempt.offer.admission === 1 ? await store.get(attempt.offer.server_id) : undefined;
+        if (saved?.device_id != null) olderPairings.set(attempt.offer.server_id, saved);
+        else olderPairings.delete(attempt.offer.server_id);
+      }
       opened = await open(attempt.offer, {
         store, label, signal: controller.signal,
         ...prepared,
@@ -291,14 +311,47 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     last = { ...attempt, fresh: false };
   };
   const openPc = (): void => { if (app === null && shown?.kind === "ready" && transport && last) enterApp(transport, last); };
+  /**
+   * A first link the PC refused (refusalOf): its new row there is gone. Kept for the failure screen, which says why
+   * instead of the session's end that follows; while the pairing's own connecting screen is up, that screen comes now,
+   * and the app is not opened over the row. True when the refusal was one of those.
+   */
+  const linkRefused = (opened: RelayTransport, attempt: Attempt, error: unknown): boolean => {
+    if (attempt.fresh !== true || refusalOf(error) === null) return false;
+    refusedLinks.set(attempt.offer.server_id, error);
+    if (app === null && last === attempt && transport === opened && shown?.kind === "connecting") {
+      transport = null;
+      if (reopenOlder(attempt)) refusedLinks.delete(attempt.offer.server_id);
+      else void failed(error, attempt);
+    }
+    return true;
+  };
+  /**
+   * The record of a saved pairing that paired again from a marked code and whose new link was refused: saved again, and
+   * the PC opened with it, as it was before the scan. False when there is none.
+   */
+  const reopenOlder = (attempt: Attempt): boolean => {
+    const older = olderPairings.get(attempt.offer.server_id);
+    if (older === undefined) return false;
+    olderPairings.delete(attempt.offer.server_id);
+    // a Cancel or another link meanwhile owns the screen; a store that cannot keep the record says why
+    void store.update(older.server_id, () => older).then(
+      () => { if (last === attempt) void connect({ offer: offerOf(older), code: false, paired: true, accountEnrollment: attempt.accountEnrollment === true, ...(attempt.signIn ? { signIn: attempt.signIn } : {}) }); },
+      (error: unknown) => failed(error, attempt),
+    );
+    return true;
+  };
   /** `settled`: told once nothing more of the enrollment ends or renews the session (accountController.ts, EnrollOptions). */
   const enroll = (opened: RelayTransport, attempt: Attempt, settled?: () => void): void => {
     // the confirm said this device gets a key of its own: a sign-in stored since then adds nothing to its account here
     if (attempt.accountless) return;
     enrolling.add(opened);
     void account.enroll(opened, attempt.offer.server_id, attempt.fresh === true, attempt.fresh === true && attempt.introducible === true, { consent: consentOf(attempt), ...(settled ? { settled } : {}) }).then((enrollment) => {
+      // the new row's link passed (or none was needed): the record it replaced is no longer kept
+      olderPairings.delete(attempt.offer.server_id);
       if (app === null && last === attempt && shown?.kind === "ready") show({ ...shown, enrollment });
     }, (error: unknown) => {
+      if (linkRefused(opened, attempt, error)) return;
       console.warn("Ovis: this PC did not join the account yet", error instanceof Error ? error.name : error);
       if (app === null && last === attempt && shown?.kind === "ready") show({ ...shown, enrollment: "failed" });
     }).finally(() => { enrolling.delete(opened); if (transport !== opened) opened.close(); });

@@ -20,12 +20,18 @@ import { DEVICES_CHANGED_EVENT } from "../useRelay.ts";
 import { indexedDeviceStore, type SavedDevice, type EnrollmentState, type RelayDevice, type RelayDeviceStore } from "./device.ts";
 import { offerOf } from "./shellState.ts";
 import type { AccountView, EnrollmentCompletion } from "./shellState.ts";
+import { AdmissionRefusedError, refusalOf } from "./firstLink.ts";
 import type { RelayShellMount } from "./shell.tsx";
 import { openRelayTransport, type RelayTransport } from "./transport.ts";
 
 const INTRODUCTION_WAIT_MS = 60_000;
 const INTRODUCTION_POLL_MS = 3_000;
 const DIRECTORY_REFRESH_MS = 60_000;
+/** How long a pairing waits for the account service to answer its admission: one that never answers must not hold it. */
+export const ADMISSION_WAIT_MS = 8_000;
+/** A row's links in all, the first included, and the longest wait between two after a 503. */
+const LINK_SENDS = 5;
+const LINK_RETRY_MAX_MS = 15_000;
 /**
  * `consent`: whose account the pairing was confirmed for. `settled`: told once, when nothing more of this enrollment
  * ends or renews the session it was given (its link and renewal are done, or it stopped before them).
@@ -67,6 +73,9 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   // enrollments still running, with their PC: leaving the account cancels each, and waits for none
   const running = new Map<Promise<unknown>, string>();
   const cancelEnrollment = (id: string): void => { forgotten.set(id, (forgotten.get(id) ?? 0) + 1); };
+  // the account key a pairing's admission named, by PC: a link that would name another (a leave in another tab replaced
+  // the stored key meanwhile) posts that key first, once
+  const vouched = new Map<string, string>();
   let accountView: AccountView | null = accountService === null ? null : { kind: "signed-out", error: null };
   let directory: readonly DirectoryPc[] = [];
   // whom `directory` was last read for, so a failed read can age its rows again without reading it
@@ -345,10 +354,47 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     const key = session !== undefined ? await accountStore.key() : undefined;
     signal.throwIfAborted();
     let intent: "pc" | "account" = "pc";
-    if (key && offer.code === undefined && (await store.get(offer.server_id))?.device_id == null) {
+    vouched.delete(offer.server_id);
+    // a code that carries the mark: its PC takes the device only once the account service holds its admission, so the
+    // admission is posted, and answered, before the pairing; a failure stops here, where nothing has reached the PC and
+    // the code keeps its uses. Only a new PC's code carries the mark, so its admission asks to be taken quietly; the
+    // account service decides whether it is
+    if (offer.code !== undefined && offer.admission === 1) {
+      if (session === undefined || key === undefined) throw new AdmissionRefusedError("sign-in");
+      // whatever this device saved for the PC: a marked code's PAIR always makes a new row there, whose link the PC
+      // checks with the account service
+      const directory = account.forSignIn(session);
+      // each step ends at its bound or at the person's Cancel, the request itself and not only the wait for it: a slow
+      // service then lists nothing and rings nobody after the person was told
+      const bounded = (): AbortSignal => AbortSignal.any([signal, AbortSignal.timeout(ADMISSION_WAIT_MS)]);
+      try {
+        const listing = bounded();
+        if (!(await directory.listPcs(listing)).some((pc) => pc.server_id === offer.server_id)) {
+          const publicKey = Array.from(importPublicKey(offer.server_public_key), (byte) => byte.toString(16).padStart(2, "0")).join("");
+          await directory.putPc(offer.server_id, { label: (offer.name ?? offer.server_id.slice(0, 8)).slice(0, 48), public_key: publicKey, relay: offer.relay }, listing);
+        }
+      } catch (error) {
+        // the sign-in the person said yes under is no longer the stored one: nothing more goes out, and the question is
+        // asked again (shell.tsx)
+        if (error instanceof SignedOutError) throw new ConsentChangedError();
+        console.warn("Ovis: this PC could not be listed in the account before pairing", error instanceof AccountServiceError ? error.code : error instanceof Error ? error.name : error);
+        throw new AdmissionRefusedError("listing");
+      }
+      try {
+        await directory.postAdmission(offer.server_id, label.slice(0, 48), key.public_spki, deviceOs(navigator.userAgent, navigator.maxTouchPoints ?? 0), bounded(), { quiet: true });
+      } catch (error) {
+        if (error instanceof SignedOutError) throw new ConsentChangedError();
+        console.warn("Ovis: the account service did not take the admission", error instanceof AccountServiceError ? error.code : error instanceof Error ? error.name : error);
+        if (!(error instanceof AccountServiceError)) throw new AdmissionRefusedError("unanswered");
+        throw new AdmissionRefusedError(error.code === "unknown_pc" ? "unlisted" : error.status === 429 ? "busy" : error.status >= 500 ? "unanswered" : "refused");
+      }
+      vouched.set(offer.server_id, key.public_spki);
+    } else if (key && session !== undefined && offer.code === undefined && (await store.get(offer.server_id))?.device_id == null) {
+      // any other offer pairs as it does without the mark: a code's posts nothing, a join without one posts as before
+      // (an ordinary admission, never a quiet one) and is paired with the PC alone when the post fails
       signal.throwIfAborted();
       // announced by the sign-in read above: one stored meanwhile is refused, and this PC is paired alone
-      try { await account.forSignIn(session!).postAdmission(offer.server_id, label.slice(0, 48), key.public_spki, deviceOs(navigator.userAgent, navigator.maxTouchPoints ?? 0)); intent = "account"; }
+      try { await account.forSignIn(session).postAdmission(offer.server_id, label.slice(0, 48), key.public_spki, deviceOs(navigator.userAgent, navigator.maxTouchPoints ?? 0)); intent = "account"; }
       catch (error) { console.warn("Ovis: the account service did not take the join; pairing this PC only", error instanceof Error ? error.name : error); }
     }
     signal.throwIfAborted();
@@ -363,7 +409,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     let told = false;
     const settled = (): void => { if (told) return; told = true; options.settled?.(); };
     const done = enrollOwned(opened, serverId, fresh, introducible, { ...options, settled });
-    void done.then(settled, settled);
+    // a link the PC refused leaves the session to whoever says why (shell.tsx), rather than opening the app over it
+    void done.then(settled, (error: unknown) => { if (refusalOf(error) === null) settled(); });
     running.set(done, serverId);
     void done.then(() => running.delete(done), () => running.delete(done));
     return done;
@@ -406,6 +453,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     let admitted: number | undefined;
     try {
       const key = await accountStore.key();
+      const posted = vouched.get(serverId);
+      vouched.delete(serverId);
       let device = await store.get(serverId);
       if (device === undefined || device.device_id === null) return "local";
       if (fresh) own = await open(offerOf(device), { store: enrollmentStore, label });
@@ -422,6 +471,16 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       // gets this client's enrollment: the account's removals first, read from its other PCs
       if (linking && (status.account === null || status.enrolling === true)) await planEnroll(accountStore, serverId, session.account);
       if (linking) {
+        // the admission named another key than this link does: the key it names now is posted first, once. A post that
+        // fails sends no link, which the PC would refuse and spend a use on
+        if (posted !== undefined && posted !== key.public_spki) {
+          try {
+            await account.forSignIn(session).postAdmission(serverId, label.slice(0, 48), key.public_spki, deviceOs(navigator.userAgent, navigator.maxTouchPoints ?? 0), AbortSignal.timeout(ADMISSION_WAIT_MS), { quiet: true });
+          } catch (error) {
+            console.warn("Ovis: the account service did not take the admission of the new key", error instanceof AccountServiceError ? error.code : error instanceof Error ? error.name : error);
+            throw new AdmissionRefusedError("new-key");
+          }
+        }
         // in one transaction with a leave's mark (leave.ts): a link recorded here is in that leave's snapshot, and
         // none goes out once a leave of this key has begun, in any tab, or for a sign-in that has ended
         const link = newRecordId();
@@ -431,7 +490,18 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
           return recorded ? { ...current, linking: { ...current.linking, [link]: serverId } } : current;
         });
         if (!recorded) throw new DOMException("This device is leaving the account", "AbortError");
-        try { device = await linkThisDevice({ fetch, device, key, account: session.account, store: enrollmentStore }); }
+        // a PC that could not ask the account service in time keeps the row: the same link goes again after the wait it
+        // named, on this session, and nothing is paired again
+        const unlinked = device;
+        const sendLink = async (sent: number): Promise<RelayDevice> => {
+          try { return await linkThisDevice({ fetch, device: unlinked, key, account: session.account, store: enrollmentStore }); } catch (error) {
+            if (!(error instanceof AccountPcError && error.code === "account_unavailable") || sent >= LINK_SENDS) throw error;
+            // fixed wait: the time the PC named before it asks the account service again (retry-after), bounded
+            await wait(Math.min(error.retryAfterMs ?? 3_000, LINK_RETRY_MAX_MS));
+            return sendLink(sent + 1);
+          }
+        };
+        try { device = await sendLink(1); }
         finally {
           // settled: the pairing itself (pending_key) names a link whose answer was lost
           await accountStore.update("linking", (current) => {

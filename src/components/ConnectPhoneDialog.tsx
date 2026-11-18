@@ -7,10 +7,13 @@ import "./DevicesPanel.css";
 
 import type { Machine } from "../../shared/machines.ts";
 import type { AddPcPreset } from "../lib/actions.ts";
-import type { AccountSession } from "../lib/account/store.ts";
+import { indexedAccountStore, type AccountSession } from "../lib/account/store.ts";
 import { pcAccountStatus } from "../lib/account/join.ts";
+import { listOfferedPc } from "../lib/account/addThisPc.ts";
+import { decodeOffer } from "../../shared/relay-offer.ts";
+import { AccountService } from "../lib/account/service.ts";
 import { ACCOUNT_QR_ALONE_MS, ACCOUNT_QR_POLL_MS, ACCOUNT_QR_WATCH_EVENT, accountQrFindings, accountQrNoticeWaiting, accountQrPending, addedBy, holdAccountQrNotice, resetAccountQrWatch, stopAccountQrWatch, takeAccountQrNotice, watchEndedAccountQr, type AccountQrBaseline, type AccountQrStray } from "../lib/accountQrWatch.ts";
-import { ApiError, endPairing, fetchDevices, findSshCandidates, findTailnetPcs, requestRelayOffer, revokeAllDevices, revokeDevice, startPairing, type SshCandidate } from "../lib/api.ts";
+import { ApiError, endPairing, fetchDevices, findSshCandidates, findTailnetPcs, requestRelayOffer, revokeAllDevices, revokeDevice, startPairing, type RelayOffer, type SshCandidate } from "../lib/api.ts";
 import { apiFetch } from "../lib/api-request-id.ts";
 import { copyText } from "../lib/clipboard.ts";
 import { useT } from "../lib/i18n.ts";
@@ -555,6 +558,8 @@ export function AccountQr({ relay, phone, active, signedIn, accountId = null, pc
   const before = useRef<AccountQrBaseline | null>(null);
   /** bumped by every press and every take-down: an answer to an older one changes nothing */
   const run = useRef(0);
+  /** the account this tab showed when Show the QR code was pressed: its codes' PC is listed there or nowhere */
+  const pressedAs = useRef<string | null>(null);
   /** the last take-down's requests: the next press waits for them, so it never ends the code it is about to get */
   const ending = useRef<Promise<boolean>>(Promise.resolve(true));
   const showButton = useRef<HTMLButtonElement>(null);
@@ -614,6 +619,7 @@ export function AccountQr({ relay, phone, active, signedIn, accountId = null, pc
 
   const show = async () => {
     const mine = ++run.current;
+    pressedAs.current = signedIn ? accountId : null;
     setError(null);
     setNote(null);
     setView({ kind: "starting" });
@@ -767,6 +773,22 @@ export function AccountQr({ relay, phone, active, signedIn, accountId = null, pc
   }, [watching, takeDown, look]);
 
   const { reread } = relay;
+  /**
+   * Signed in, the PC a QR code names is listed in the account this view shows, beside the code and never before it:
+   * the code is a plain one (no mark), which a scanning device pairs with whether the PC is
+   * listed or not, so an account service that is slow or down holds no pairing up. Best-effort, and only a PC the
+   * account does not list yet is written (listOfferedPc). The account is the one the tab showed at the press: when the
+   * stored sign-in is another one by the time the offer comes (another tab switched), nothing is listed anywhere.
+   */
+  const listBeside = useCallback((offer: RelayOffer): void => {
+    const named = decodeOffer(offer.url);
+    const as = pressedAs.current;
+    if (as === null || named === null) return;
+    listOfferedPc(new AccountService({ store: indexedAccountStore }), named, as).catch((reason: unknown) => {
+      console.warn("Ovis: this PC was not listed in the account", reason instanceof Error ? reason.name : reason);
+    });
+  }, []);
+
   /**
    * The PC refused the QR code's code for its account: it joined one after the press read it, or none is named for
    * it. Looked at now and not at the next round, so the QR code gives way to which account at once. A look that does
@@ -950,7 +972,7 @@ export function AccountQr({ relay, phone, active, signedIn, accountId = null, pc
           {relayControls}
           {needsAccount ? <p className="settings-hint">{t("Sign in above first; then this PC can show its QR code.")}</p> : relayState}
         </>
-      ) : shown ? <RelayRoute relay={relay} readOnly={false} phone={phone} compact qrOnly onInAccount={refusedForAccount} /> : unnamed ? (
+      ) : shown ? <RelayRoute relay={relay} readOnly={false} phone={phone} compact qrOnly onInAccount={refusedForAccount} onOffer={listBeside} /> : unnamed ? (
         <p className="settings-hint">{signedIn ? t("Add this PC to your account first; then it can show its QR code.") : t("Sign in above first; then this PC can show its QR code.")}</p>
       ) : (
         <div className="phone-actions">
@@ -974,12 +996,14 @@ export function AccountQr({ relay, phone, active, signedIn, accountId = null, pc
  * On a phone, online, the phone pairs itself through its own offer in one tap, and the offer for
  * another device is a link to send, its QR code behind Show QR code.
  */
-export function RelayRoute({ relay, readOnly, phone = false, pairHere = false, sameName = null, compact = false, qrOnly = false, onInAccount }: {
+export function RelayRoute({ relay, readOnly, phone = false, pairHere = false, sameName = null, compact = false, qrOnly = false, onInAccount, onOffer }: {
   relay: RelayState;
   /** the QR code alone: no code to type is made (RelayPairing `qrOnly`) */
   qrOnly?: boolean;
   /** the PC refused that QR code's code: it is in an account by now, or none is named for it (RelayPairing `onInAccount`) */
   onInAccount?: () => void;
+  /** told of each QR code's offer as it is drawn (RelayPairing `onOffer`) */
+  onOffer?: (offer: RelayOffer) => void;
   /** Add a connection: no state line (the switch above says it), the QR code beside the code to type, no reset (More settings has it) */
   compact?: boolean;
   readOnly: boolean;
@@ -1026,7 +1050,7 @@ export function RelayRoute({ relay, readOnly, phone = false, pairHere = false, s
         </div>
       )}
       {error !== null && <p className="settings-hint relay-error" role="alert">{error}</p>}
-      {status.phase === "online" && !readOnly && <RelayPairing phone={phone} compact={compact} qrOnly={qrOnly} onInAccount={onInAccount} />}
+      {status.phase === "online" && !readOnly && <RelayPairing phone={phone} compact={compact} qrOnly={qrOnly} onInAccount={onInAccount} {...(onOffer ? { onOffer } : {})} />}
       {/* a serve-only install refuses the reset too; an unreadable identity is what the reset mends */}
       {!compact && !readOnly && status.blocked !== "serve_only" && (
         <div className="phone-actions connect-phone-reset">

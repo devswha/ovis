@@ -252,4 +252,5 @@ export const DEVICES_JA: Record<string, string> = {
   "Allow notifications in your browser settings, then try again.": "ブラウザーの設定で通知を許可してから、もう一度お試しください。",
   "Allow notifications for Ovis in the phone's Settings, then try again.": "スマートフォンの設定で Ovis の通知を許可してから、もう一度お試しください。",
   "Could not send the test notification. Try again.": "テスト通知を送信できませんでした。もう一度お試しください。",
+  "This machine pairs new devices only through your Ovis account. On the machine, run ovis add and scan its QR code with a device that is signed in.": "このマシンは Ovis アカウントを通してのみ新しいデバイスをペアリングします。マシンで ovis add を実行し、サインイン済みのデバイスでその QR コードをスキャンしてください。",
 };

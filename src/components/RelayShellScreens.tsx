@@ -111,11 +111,14 @@ function PairConfirm({ state, pc, onPair, onCancel }: { state: Extract<RelayShel
   const t = useT();
   const checking = state.account === "checking";
   const said = checking ? state.pressed : state.account ?? "own";
+  // a code its PC pins (the mark) has the account vouch for this device first, which may tell the account's other
+  // devices and counts toward its limit on adds; no other pairing posts anything
+  const cost = state.offer.code !== undefined && state.offer.admission === 1 ? <> {t("Your Ovis account checks this device first. Your other devices may be told, and the add counts toward your account's limit.")}</> : null;
   return (
     <>
       <h1 className="relay-shell-title">{said === "unlisted" ? t("Add {name} to your account?", { name: pc }) : t("Pair with {name}?", { name: pc })}</h1>
-      {said === "unlisted" && <p className="relay-shell-copy">{t("Pairing adds this PC to your Ovis account, so every device of your account can open it. Pair only with a PC you are setting up yourself.")}</p>}
-      {said === "listed" && <p className="relay-shell-copy">{t("This device joins {name} with your account's key. The PC lists it under Settings → Devices and PCs, where it can be removed.", { name: pc })}</p>}
+      {said === "unlisted" && <p className="relay-shell-copy">{t("Pairing adds this PC to your Ovis account, so every device of your account can open it. Pair only with a PC you are setting up yourself.")}{cost}</p>}
+      {said === "listed" && <p className="relay-shell-copy">{t("This device joins {name} with your account's key. The PC lists it under Settings → Devices and PCs, where it can be removed.", { name: pc })}{cost}</p>}
       {said === "own" && <p className="relay-shell-copy">{t("This device gets a key of its own for {name}. The PC lists it under Settings → Devices and PCs, where it can be removed.", { name: pc })}</p>}
       {said === "unlisted" && <p className="relay-shell-code-id"><KeyId id={state.offer.server_id} label={t("ID of the PC this link names")} /></p>}
       {/* a device whose confirm spoke of no account is told of none */}

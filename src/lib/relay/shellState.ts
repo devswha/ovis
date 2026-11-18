@@ -58,7 +58,16 @@ export type RelayFailure = "pc-offline" | "pc-unresponsive" | "relay-unreachable
   /** the relay closed a pairing device 4403: the PC's relay pass allows no new device sessions (account limits) */
   | "new-devices-refused"
   /** a PC an introduction named just now refused this device: its mailbox has not brought the add yet */
-  | "not-added-yet";
+  | "not-added-yet"
+  /**
+   * a code that carries the mark stopped before the pairing, so it was not used: no sign-in, the PC could not be listed
+   * in the account, or the account service did not take the admission (firstLink.ts AdmissionRefusedError)
+   */
+  | "sign-in-first" | "account-list-failed" | "account-unlisted" | "account-busy" | "admission-unanswered" | "admission-failed"
+  /** after the pairing, this device's account key changed and the account service did not take the new one: no link was sent */
+  | "new-key-unvouched"
+  /** the PC refused this device's first link: its code ended or ran out, the code is for another account, or the account service did not vouch for this device */
+  | "link-required" | "account-mismatch" | "unverified-device";
 
 /**
  * Where a PC below MIN_SERVER_VERSION is in its update (skew.ts): its update status being read, an
@@ -187,7 +196,7 @@ export function pairsAgainWithoutKey(error: unknown, attempt: { code: boolean; p
     && error instanceof MuxProtocolError && error.code === "auth_failed";
 }
 
-/** The failures after which the saved key is no good: the PC removed this phone, or never admitted it. */
+/** The failures after which the saved key is no good: the PC removed this phone, or never admitted it. A refused link alone is none of them. */
 export function forgetsDevice(failure: RelayFailure): boolean {
   return failure === "revoked";
 }
