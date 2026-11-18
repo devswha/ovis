@@ -46,8 +46,8 @@ export function RailWorkspaces({ onExit }: { onExit(): void }) {
 }
 
 /**
- * The rail's inbox button (InboxRail.tsx wraps it), then the fork's places after it: Pull requests while it is on,
- * and under Navigation → Rail Notes too. The inbox button's own press and focus still run. Beside the workspaces
+ * The rail's inbox button (InboxRail.tsx wraps it), then the fork's places after it: Pull requests and Notes, each
+ * while it is on. The inbox button's own press and focus still run. Beside the workspaces
  * sidebar no place of these is current, and each enters the inbox on its own.
  */
 export function ForkRailPlaces({ children }: { children: ReactElement<{ "aria-current"?: "page"; onClick?: MouseEventHandler<HTMLButtonElement> }> }) {
@@ -56,12 +56,12 @@ export function ForkRailPlaces({ children }: { children: ReactElement<{ "aria-cu
   const enter = useRailEnter();
   const place = usePlace();
   const t = useT();
-  if (!settings.pullRequests && !rail) return children;
+  if (!settings.pullRequests && !settings.notes && !rail) return children;
   const current = enter === null ? place : null;
   const open = (next: "github" | "notes") => () => { setPlace(next); enter?.(); };
   return <>
     {cloneElement(children, { "aria-current": current === "inbox" ? "page" : undefined, onClick: (event) => { setPlace("inbox"); children.props.onClick?.(event); } })}
     {settings.pullRequests && <RailPlace label={t("Pull requests")} icon={GitPullRequest} current={current === "github"} onClick={open("github")} />}
-    {rail && settings.notes && <RailPlace label={t("Notes")} icon={Notebook} current={current === "notes"} onClick={open("notes")} />}
+    {settings.notes && <RailPlace label={t("Notes")} icon={Notebook} current={current === "notes"} onClick={open("notes")} />}
   </>;
 }

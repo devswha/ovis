@@ -41,8 +41,8 @@ afterEach(async () => {
 const DETAIL = "/api/fork/github/pull?";
 const detailUnread = () => Response.json({ error: { code: "gh_failed", message: "Unread" } }, { status: 409 });
 const button = (name: string) => renderer!.root.findAllByType("button").find((node) => node.props["aria-label"] === name || node.findAll((child) => child.children.includes(name)).length > 0)!;
-async function rail(enabled: boolean) {
-  records.set("ovis:settings", JSON.stringify({ pullRequests: enabled }));
+async function rail(enabled: boolean, notes = false) {
+  records.set("ovis:settings", JSON.stringify({ pullRequests: enabled, notes }));
   await act(async () => { renderer = create(<SettingsProvider><ForkRailPlaces><button aria-current="page">Inbox</button></ForkRailPlaces></SettingsProvider>); });
 }
 
@@ -183,6 +183,13 @@ test("rail is opt-in, switches current place, and Inbox switches back", async ()
   expect(button("Inbox").props["aria-current"]).toBeUndefined();
   await act(async () => button("Inbox").props.onClick());
   expect(button("Inbox").props["aria-current"]).toBe("page");
+});
+
+test("under Default navigation the inbox's rail has Notes under Pull requests", async () => {
+  await rail(true, true);
+  const labels = renderer!.root.findAllByType("button").map((node) => node.props["aria-label"] ?? "Inbox");
+  expect(labels).toEqual(["Inbox", "Pull requests", "Notes"]);
+  await act(async () => renderer?.unmount());
 });
 
 test("loads once, opens the page beside the list, and refreshes without redirecting", async () => {

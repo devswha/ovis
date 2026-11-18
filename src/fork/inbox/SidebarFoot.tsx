@@ -34,15 +34,14 @@ function FootPlaces({ current, onPlace, waiting = null }: { current: Place; onPl
 }
 
 /**
- * The workspaces sidebar's foot (App.tsx wraps upstream's inbox row): with Pull requests, Notes or Navigation →
- * Footer, the places as icons on the gear's row instead of the row. Under Navigation → Rail the rail has them, and
- * the foot keeps the gear and the meters. Otherwise upstream's inbox row stays.
+ * The workspaces sidebar's foot (App.tsx wraps upstream's inbox row): under Navigation → Footer, the places as icons
+ * on the gear's row instead of the row. Under Navigation → Rail the rail has them, and the foot keeps the gear and
+ * the meters. Under Default upstream's inbox row stays the one way in, and the inbox's rail has the other places.
  */
 export function ForkSidebarFoot({ children }: { children: ReactElement<{ onOpen(): void }> }) {
-  const { settings } = useSettings();
   const navigation = useNavigation();
   if (navigation === "rail") return null;
-  if (!settings.pullRequests && !settings.notes && navigation !== "footer") return children;
+  if (navigation !== "footer") return children;
   const enter = children.props.onOpen;
   return <FootPlaces current="workspaces" onPlace={(place) => {
     if (place === "workspaces") return;
