@@ -7,6 +7,7 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { decodeOffer } from "../../shared/relay-offer.ts";
 import { PAIRING_LINK_MS, PAIRING_USES } from "../devices.ts";
+import { handleRelayRequest } from "../relay/routes.ts";
 import { TestClock } from "../relay/test-helpers.ts";
 import { ask, ended, linkRecord, memberRow, pair, pairingPc, phone, sendLink, setUpFor, signedInWith, signIn, type Answer, type Pc } from "./pairing.test-helpers.ts";
 
@@ -101,6 +102,39 @@ test("its devices wait as the relay tab's do: one that has not linked in time go
   expect(await f.listed()).toEqual([]);
 });
 
+for (const between of ["nothing", "a read of the code", "a pairing that came too late"] as const) {
+  test(`a device that paired before its code ran out still links in its own ${PAIRING_LINK_MS / 1000} seconds, with ${between} in between`, async () => {
+    const f = await pc();
+    const offer = await forAccount(f, "acct_owner");
+    const owner = await signedInWith(f, codeOf(offer));
+    spyOn(Date, "now").mockReturnValue(Date.parse(String(offer.body.expires_at)) + 1);
+    try {
+      if (between === "a read of the code") expect(await state(f, idOf(offer))).toMatchObject({ state: "live" });
+      // the code pairs no new device once its ten minutes are over
+      if (between === "a pairing that came too late") expect(await pair(f, codeOf(offer), await phone())).toMatchObject({ error: "auth_failed" });
+      f.clock.advance(PAIRING_LINK_MS - 1);
+      expect((await sendLink(owner.session, await linkRecord(owner.id, "acct_owner", owner.key))).status).toBe(200);
+      expect(await f.status()).toMatchObject({ account: "acct_owner", members: 1 });
+      expect(await state(f, idOf(offer))).toMatchObject({ state: "ended", ended: { why: "joined" }, joined: { device_id: owner.id } });
+    } finally { (Date.now as unknown as { mockRestore(): void }).mockRestore(); }
+  });
+}
+
+test("a code whose ten minutes are over ends expired once the last device that paired with it in time has had its seconds", async () => {
+  const f = await pc();
+  const offer = await forAccount(f, "acct_owner");
+  const late = await signedInWith(f, codeOf(offer));
+  spyOn(Date, "now").mockReturnValue(Date.parse(String(offer.body.expires_at)) + 1);
+  try {
+    expect(await state(f, idOf(offer))).toMatchObject({ state: "live" });
+    f.clock.advance(PAIRING_LINK_MS);
+    expect([await ended(late.session), await ended(late.pairing)]).toEqual(["auth_revoked", "auth_revoked"]);
+    expect(await state(f, idOf(offer))).toMatchObject({ state: "ended", ended: { why: "expired" } });
+    expect("joined" in await state(f, idOf(offer))).toBe(false);
+    expect(f.devices.activePairing()).toBeNull();
+  } finally { (Date.now as unknown as { mockRestore(): void }).mockRestore(); }
+});
+
 test("a PC in an account makes no code for an account, on the offer and on the typed code, and the code pending stays", async () => {
   const f = await pc({ rows: [(await memberRow("acct_1")).row] });
   const pending = f.devices.startPairing().code;
@@ -148,6 +182,37 @@ test("an offer for the same account gets the same code; one for another account,
   expect(await state(f, idOf(owner))).toMatchObject({ state: "ended", ended: { why: "replaced" } });
   // and with the relay tab's code pending, an offer for an account starts its own
   expect(codeOf(await forAccount(f, "acct_owner"))).not.toBe(tab);
+});
+
+test("a device that loses drive access while its read of a code is on its way reads nothing", async () => {
+  const f = await pc();
+  const paired = (label: string) => {
+    const made = f.devices.pair(f.devices.startPairing().code, label, "drive")!;
+    f.devices.match(made.token);
+    return made.device.id;
+  };
+  const [laptop, tablet, phone] = [paired("Laptop"), paired("Tablet"), paired("Phone")];
+  const id = f.devices.pairingForAccount("acct_owner").pairing.id;
+  const base = `http://127.0.0.1:${f.app.port}`;
+  /** The read as `caller` sends it, its body held back until `finish`: the request is past every check made before its body is read. */
+  const read = (caller: string) => {
+    let finish = () => {};
+    const body = new ReadableStream<Uint8Array>({ start(controller) {
+      finish = () => { controller.enqueue(new TextEncoder().encode(JSON.stringify({ id }))); controller.close(); };
+    } });
+    const answer = handleRelayRequest(new Request(`${base}/api/relay/offer/keep`, { method: "POST", headers: { origin: base, "x-herdr-update": "1", "content-type": "application/json" }, body }),
+      "/api/relay/offer/keep", f.app.context, caller);
+    return { finish, answer: answer.then(async (response) => [response.status, await response.json()]) };
+  };
+  const kept = read(phone);
+  const revoked = read(laptop);
+  const demoted = read(tablet);
+  f.devices.revoke(laptop);
+  f.devices.update(tablet, { role: "watch" });
+  for (const call of [kept, revoked, demoted]) call.finish();
+  expect(await kept.answer).toEqual([200, expect.objectContaining({ state: "live", id })]);
+  expect(await revoked.answer).toEqual([401, { error: { code: "unauthorized", message: "this device is no longer paired" } }]);
+  expect(await demoted.answer).toEqual([403, { error: { code: "read_only", message: "this device can only watch" } }]);
 });
 
 test("the read of a code by its id: unknown ids, a body with none, and a code that was cancelled, revoked, guessed or ran out of time", async () => {

@@ -77,6 +77,11 @@ export async function handleRelayRequest(request: Request, pathname: string, con
         const body = await readJsonObject(request);
         if (body instanceof Response) return body;
         if (typeof body.id !== "string") return fail("invalid_body", "Send the pairing's id.", 400);
+        // the device that asks may have been removed, or made one that only watches, while its body was on its way
+        if (caller !== null && !context.services.devices.canDrive(caller)) {
+          if (!context.services.devices.has(caller)) throw new DeviceGoneError();
+          return fail("read_only", "this device can only watch", 403);
+        }
         return reply(context.services.devices.accountPairingState(body.id));
       }
       case "/api/relay/code": {

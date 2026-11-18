@@ -291,14 +291,16 @@ every other answer is 200:
 { "state": "unknown" }
 ```
 
-`live`: it is the code pending. `unknown`: this PC knows no such code; it keeps the eight that
-ended last, in memory. `ended.why` is one of:
+`live`: it is the code pending. Once its ten minutes are over it pairs no new device, but a device
+that paired with it in time still has its own 30 seconds to link, and the code reads `live` until
+that device has linked or its time is over. `unknown`: this PC knows no such code; it keeps the
+eight that ended last, in memory. `ended.why` is one of:
 
 | `why` | when |
 |---|---|
 | `joined` | the PC joined an account; `joined` names the device when it was one of this code's |
 | `overused` | its five pairings are spent and no device waits under it |
-| `expired` | its ten minutes are over |
+| `expired` | its ten minutes are over, and no device that paired with it in time waits to link |
 | `replaced` | another code was made |
 | `cancelled` | it was taken back (`POST /api/devices/pair/cancel`), or ended otherwise |
 | `revoked` | a device that held it was revoked, or every device was (**Revoke all**) |

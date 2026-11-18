@@ -660,13 +660,14 @@ export class DeviceStore {
 
   /**
    * Whether the code made for an account that `id` names is still the pending one, and how it ended. A code whose ten
-   * minutes are over has ended at this read, whether or not anything used it since.
+   * minutes are over pairs no new device, and stays the pending one only while a device that paired with it in time
+   * may still link (expirePending): with none, it has ended at this read, whether or not anything used it since.
    */
   accountPairingState(id: string, now = Date.now()): AccountPairingState {
     const pending = this.pending;
     if (pending?.named?.id === id) {
-      if (now <= pending.expires) return { state: "live", id, expect_account: pending.named.account, expires_at: new Date(pending.expires).toISOString() };
-      this.voidPending("expired");
+      if (now > pending.expires) this.expirePending();
+      if (this.pending === pending) return { state: "live", id, expect_account: pending.named.account, expires_at: new Date(pending.expires).toISOString() };
     }
     return this.endedAccountCodes.find((ended) => ended.id === id) ?? { state: "unknown" };
   }
@@ -737,9 +738,21 @@ export class DeviceStore {
   }
 
   /**
+   * The code pending is past its ten minutes: it pairs no new device. It goes now, unless devices that paired with it
+   * in time still wait to link: each keeps its own PAIRING_LINK_MS, and the code goes with the last of them
+   * (dropProvisional), or when one links.
+   */
+  private expirePending(): void {
+    const waiting = this.pending?.waiting;
+    // a row whose time is over goes at this look (provisional)
+    if (waiting) for (const id of [...waiting.rows.keys()]) this.provisional(id);
+    if (this.pending !== null && (this.pending.waiting?.rows.size ?? 0) === 0) this.voidPending("expired");
+  }
+
+  /**
    * A row that waits to link goes: its sessions end `auth_revoked`, and a later sign-in with its id fails. Nothing
    * was written for it, so nothing is unwritten and no tombstone is left. Its use stays spent; a code with no use
-   * left and no row waiting ends at once.
+   * left, or past its ten minutes (expirePending), ends as the last row that waited under it goes.
    */
   private dropProvisional(waiting: WaitingRows, row: ProvisionalRow): void {
     if (!waiting.rows.delete(row.id)) return;
@@ -747,7 +760,9 @@ export class DeviceStore {
     const listeners = this.revocations.get(row.id);
     this.revocations.delete(row.id);
     for (const close of listeners ?? []) close(true);
-    if (this.pending?.waiting === waiting && waiting.usesLeft === 0 && waiting.rows.size === 0) this.endPairing(undefined, "overused");
+    if (this.pending?.waiting !== waiting || waiting.rows.size > 0) return;
+    if (waiting.usesLeft === 0) this.endPairing(undefined, "overused");
+    else if (Date.now() > this.pending.expires) this.endPairing(undefined, "expired");
   }
 
   /**
@@ -894,7 +909,9 @@ export class DeviceStore {
    */
   private checkPairingCode(code: string, now: number, lan = false): boolean {
     const pending = this.pending;
-    if (pending === null || now > pending.expires) { this.voidPending("expired"); return false; }
+    if (pending === null) return false;
+    // the devices that paired with it in time still have their own time to link (expirePending)
+    if (now > pending.expires) { this.expirePending(); return false; }
     // made for a PC in no account, and the PC is in one: it ended as the PC joined (endNoAccountCode), and pairs nobody
     if (pending.noAccountOnly === true && this.account() !== null) { this.endPairing(undefined, "joined"); return false; }
     if (lan) {
