@@ -46,7 +46,7 @@ bun .claude/skills/verify-turn-gate/check.ts
 ```
 
 Since #4118 the main runs ask with every order the fixed findings put back, and take from ten minutes
-(`gate-two-pages`) to over half an hour (`turns-claude`, `turns-codex`, `turns-ahead`, tens of millions of states)
+(`gate-two-pages`) to over half an hour (`turns-claude`, near eighteen million states; `turns-codex` and `turns-ahead` ask with two messages, as three ran past fifty million and out of memory)
 on a loaded P620: start them side by side, one `check.ts <run>` each, on a quiet machine. It prints one line per run. It is back where it should be when
 every line starts with `ok` and it exits 0:
 

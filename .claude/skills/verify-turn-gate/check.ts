@@ -19,11 +19,11 @@ export const CONFIGS: Config[] = [
   { ...described, free: true, rest: "done", name: "gate-two-pages", agent: "codex", messages: 2, owners: ["a", "b"], blocks: 0, gone: true, moves: true, holds: true, rules: gate, expect: "holds" },
   // with the agent and herdr described
   { ...described, name: "turns-claude", agent: "claude", messages: 3, owners: ["a"], blocks: 1, gone: true, moves: false, holds: true, rules: all, expect: "holds" },
-  { ...described, rest: "done", name: "turns-codex", agent: "codex", messages: 3, owners: ["a"], blocks: 1, gone: true, moves: false, holds: true, rules: all, expect: "holds" },
+  { ...described, rest: "done", name: "turns-codex", agent: "codex", messages: 2, owners: ["a"], blocks: 1, gone: true, moves: false, holds: true, rules: all, expect: "holds" },
   { ...described, name: "turns-moved", agent: "codex", messages: 2, owners: ["a", "b"], blocks: 0, gone: false, moves: true, holds: true, rules: all, expect: "holds" },
   // a snapshot ahead of status events that shows the status the queue already has can open the queue early, yet no Enter
   // of the queue's follows into the turn
-  { ...described, overtake: true, rest: "done", name: "turns-ahead", agent: "codex", messages: 3, owners: ["a"], blocks: 1, gone: false, moves: false, holds: false, rules: turn, expect: "holds" },
+  { ...described, overtake: true, rest: "done", name: "turns-ahead", agent: "codex", messages: 2, owners: ["a"], blocks: 1, gone: false, moves: false, holds: false, rules: turn, expect: "holds" },
   // each rule can fail: a broken copy of the class
   broken("claim-replaces-wait", "QueueWaitsForTurnEvidence", { free: true }),
   broken("sent-ends-wait", "QueueWaitsForTurnEvidence", { free: true }),
