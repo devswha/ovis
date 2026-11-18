@@ -31,7 +31,7 @@ md.validateLink = () => true;
 md.normalizeLink = (url) => url;
 md.normalizeLinkText = (url) => url;
 md.block.ruler.before("fence", "math_block", mathBlock, { alt: ["paragraph", "reference", "blockquote", "list"] });
-md.block.ruler.at("html_block", htmlBlock, { alt: ["paragraph", "reference", "blockquote"] });
+md.block.ruler.before("html_block", "html_reader", htmlBlock, { alt: ["paragraph", "reference", "blockquote"] });
 md.inline.ruler.before("escape", "math_inline", mathInline);
 
 export function parsePreviewMarkdown(source: string): MarkdownBlock[] {
@@ -45,8 +45,9 @@ function lineText(state: StateBlock, line: number): string {
 
 /**
  * The HTML blocks shared/markdownHtml.ts reads, where it says they start and end (a README's
- * `<p align="center"><img ...></p>` or `<a ...><img ...></a>` line, a comment up to its `-->`), in
- * place of CommonMark's seven kinds, which leave a line of badges as raw markup.
+ * `<p align="center"><img ...></p>` or `<a ...><img ...></a>` line, a comment up to its `-->`),
+ * before CommonMark's own HTML blocks, which would leave a line of badges as raw markup. What only
+ * CommonMark takes for HTML (a `<pre>` up to its `</pre>`) stays its written text.
  */
 function htmlBlock(state: StateBlock, startLine: number, endLine: number, silent: boolean): boolean {
   if (state.sCount[startLine]! - state.blkIndent >= 4) return false;
@@ -59,7 +60,7 @@ function htmlBlock(state: StateBlock, startLine: number, endLine: number, silent
   } else {
     while (next < endLine && state.sCount[next]! >= state.blkIndent && !state.isEmpty(next)) next += 1;
   }
-  const token = state.push("html_block", "", 0);
+  const token = state.push("html_reader", "", 0);
   token.content = state.getLines(startLine, next, state.blkIndent, false);
   token.map = [startLine, next];
   state.line = next;
@@ -128,7 +129,7 @@ function mathInline(state: StateInline, silent: boolean): boolean {
     if (found.close < pos + 3) found.close = nextIndex(src, /\\\)/g, pos + 3);
     if (found.lineBreak < pos + 2) found.lineBreak = nextIndex(src, /[\n\r\u2028\u2029]/g, pos + 2);
     const end = found.close;
-    if (end === Infinity || found.lineBreak < end) return false;
+    if (end + 2 > state.posMax || found.lineBreak < end) return false;
     value = src.slice(pos + 2, end);
     length = end + 2 - pos;
   } else if (src[pos] === "$") {
@@ -136,13 +137,16 @@ function mathInline(state: StateInline, silent: boolean): boolean {
     const pattern = /\$(?:[^\s$\\`]|[^\s$`][^\n\r\u2028\u2029$`]*[^\s$\\`])\$(?![A-Za-z0-9_${#@*(`])/y;
     pattern.lastIndex = pos;
     const match = pattern.exec(src);
-    if (match === null || /^\$\d[\d.,]*\s+\p{L}/u.test(match[0])) return false;
+    if (match === null || pos + match[0].length > state.posMax || /^\$\d[\d.,]*\s+\p{L}/u.test(match[0])) return false;
     value = match[0].slice(1, -1);
     length = match[0].length;
     dollar = true;
   } else {
     return false;
   }
+  // skipped over only while a link's words are looked for: a formula there ends with them, as in
+  // chat, so `[\( x](a.md) \(y\)` is a link and a formula, not one formula
+  if (silent && value.includes("]")) return false;
   if (!silent) {
     const token = state.push("math_inline", "math", 0);
     token.content = value;
@@ -198,10 +202,12 @@ function readBlocks(tokens: Token[], cursor: { at: number }, closing: string | n
       case "hr":
         blocks.push({ type: "hr" });
         break;
-      case "html_block": {
+      case "html_reader":
         blocks.push(...parseHtmlBlock([token.content.replace(/\n+$/, "").trimStart()], 0).blocks);
         break;
-      }
+      case "html_block":
+        blocks.push({ type: "paragraph", lines: token.content.replace(/\n+$/, "").split("\n").map((line) => [{ type: "text", value: line }]) });
+        break;
     }
   }
   return blocks;
@@ -231,8 +237,8 @@ function readList(tokens: Token[], cursor: { at: number }, open: Token): ListBlo
 
 function taskItem(content: InlineNode[]): ListItem {
   const head = content[0];
-  const task = head?.type === "text" ? /^\[([ xX])\](?:\s+|$)/.exec(head.value) : null;
-  if (head?.type !== "text" || task === null) return { content };
+  const task = head?.type === "text" ? /^\[([ xX])\](\s+|$)/.exec(head.value) : null;
+  if (head?.type !== "text" || task === null || (task[2] === "" && content.length > 1)) return { content };
   const value = head.value.slice(task[0].length);
   return { content: value === "" ? content.slice(1) : [{ type: "text", value }, ...content.slice(1)], checked: task[1] !== " " };
 }
@@ -270,17 +276,32 @@ function inlineLines(tokens: Token[]): InlineNode[][] {
   const push = (...nodes: InlineNode[]): void => {
     const into = holders.at(-1)?.children ?? lines.at(-1)!;
     for (const node of nodes) {
+      if (node.type === "text" && node.value === "") continue;
       const last = into.at(-1);
       if (node.type === "text" && last?.type === "text") into[into.length - 1] = { type: "text", value: last.value + node.value };
       else into.push(node);
     }
   };
+  const close = (): void => {
+    const holder = holders.pop()!;
+    if (holder.children.length === 0) return;
+    if (holder.kind !== "link") push({ type: holder.kind, children: holder.children });
+    else if (!holder.auto) push(...linkNode(holder.href, holder.title, holder.children));
+    else {
+      const address = autoLinkAddress(holder.children);
+      push(...(address === null ? holder.children : linkNode(address, null, holder.children)));
+    }
+  };
   for (const token of tokens) {
     switch (token.type) {
-      case "softbreak": case "hardbreak":
-        if (holders.length === 0) lines.push([]);
-        else push({ type: "text", value: " " });
+      case "softbreak": case "hardbreak": {
+        // a line break inside emphasis or a link keeps its line: both halves keep the marks
+        const reopened = holders.map((holder) => ({ ...holder, children: [] }));
+        while (holders.length > 0) close();
+        lines.push([]);
+        holders.push(...reopened);
         break;
+      }
       case "code_inline":
         push({ type: "code", value: token.content });
         break;
@@ -293,21 +314,15 @@ function inlineLines(tokens: Token[]): InlineNode[][] {
       case "link_open":
         holders.push({ kind: "link", href: token.attrGet("href") ?? "", title: token.attrGet("title"), auto: token.markup === "linkify", children: [] });
         break;
-      case "strong_close": case "em_close": case "s_close": case "link_close": {
-        const holder = holders.pop();
-        if (holder === undefined) break;
-        if (holder.kind !== "link") push({ type: holder.kind, children: holder.children });
-        else if (!holder.auto) push(...linkNode(holder.href, holder.title, holder.children));
-        else {
-          const address = autoLinkAddress(holder.children);
-          push(...(address === null ? holder.children : linkNode(address, null, holder.children)));
-        }
+      case "strong_close": case "em_close": case "s_close": case "link_close":
+        if (holders.length > 0) close();
         break;
-      }
       case "image": {
         const src = token.attrGet("src") ?? "";
-        const label = inlineLines(token.children ?? []);
-        push({ type: "image", alt: token.content, src, fallback: [{ type: "text", value: "!" }, ...linkNode(src, token.attrGet("title"), joinLines(label))] });
+        const label = joinLines(inlineLines(token.children ?? []));
+        // inside a link, a picture that fails to load shows its words in that link, never a link of its own
+        const fallback = holders.some((holder) => holder.kind === "link") ? label : linkNode(src, token.attrGet("title"), label);
+        push({ type: "image", alt: token.content, src, fallback: [{ type: "text", value: "!" }, ...fallback] });
         break;
       }
       default:
@@ -328,6 +343,6 @@ function linkNode(address: string, title: string | null, children: InlineNode[])
 function autoLinkAddress(children: InlineNode[]): string | null {
   const shown = children.length === 1 && children[0]!.type === "text" ? children[0]!.value : null;
   if (shown === null) return null;
-  if (/^www\./i.test(shown)) return `https://${shown}`;
+  if (/^www\./i.test(shown)) return webLikeHref(shown);
   return /^(?:https?:\/\/|file:\/\/\/)/i.test(shown) ? shown : null;
 }

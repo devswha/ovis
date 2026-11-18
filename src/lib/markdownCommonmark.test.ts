@@ -81,6 +81,38 @@ describe("parsePreviewMarkdown", () => {
     ]);
   });
 
+  it("keeps what only CommonMark takes for HTML as its written text, reading no definition in it", () => {
+    expect(parsePreviewMarkdown("<pre>\n\n[docs]: a.md\n\n</pre>\n\n[docs]")).toEqual([
+      { type: "paragraph", lines: ["<pre>", "", "[docs]: a.md", "", "</pre>"].map((value) => [{ type: "text", value }]) },
+      { type: "paragraph", lines: [[{ type: "text", value: "[docs]" }]] },
+    ]);
+  });
+
+  it("draws a linked picture's fallback inside its link, never as a second link", () => {
+    expect(parsePreviewMarkdown("[![Badge][b]][d]\n\n[b]: https://a.dev/b.svg\n[d]: https://a.dev/docs")).toEqual([
+      { type: "paragraph", lines: [[{ type: "link", href: "https://a.dev/docs", children: [
+        { type: "image", alt: "Badge", src: "https://a.dev/b.svg", fallback: [{ type: "text", value: "!" }, { type: "text", value: "Badge" }] },
+      ] }]] },
+    ]);
+  });
+
+  it("keeps a line break inside emphasis or a link", () => {
+    expect(parsePreviewMarkdown("**one  \ntwo** [a\nb](https://a.dev)")).toEqual([
+      { type: "paragraph", lines: [
+        [{ type: "strong", children: [{ type: "text", value: "one" }] }],
+        [{ type: "strong", children: [{ type: "text", value: "two" }] }, { type: "text", value: " " }, { type: "link", href: "https://a.dev", children: [{ type: "text", value: "a" }] }],
+        [{ type: "link", href: "https://a.dev", children: [{ type: "text", value: "b" }] }],
+      ] },
+    ]);
+  });
+
+  it("ends a formula at a link's words, and reads no task box without a space after it", () => {
+    expect(parsePreviewMarkdown("[\\(a](x.md) \\(b\\)\n\n- [x]**axis**")).toEqual([
+      { type: "paragraph", lines: [[{ type: "file", path: "x.md", children: [{ type: "text", value: "(a" }] }, { type: "text", value: " " }, { type: "math", value: "b" }]] },
+      { type: "list", ordered: false, items: [{ content: [{ type: "text", value: "[x]" }, { type: "strong", children: [{ type: "text", value: "axis" }] }] }] },
+    ]);
+  });
+
   it("reads formulas as the chat does", () => {
     expect(parsePreviewMarkdown("$$\nx^2\n$$\n\n\\[y\\]\n\nIt costs $5 and $6, $a$ and \\(b\\).")).toEqual([
       { type: "math", value: "x^2", dollar: true },
