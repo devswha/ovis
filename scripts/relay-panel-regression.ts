@@ -422,6 +422,8 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
       const body = await response.json() as { auth: Record<string, unknown> };
       await route.fulfill({ response, json: { ...body, auth: { ...body.auth, via: "portal", role: "drive" } } });
     });
+    // a drain that fails too must not hide what the checks found: both errors are reported then
+    let failure: { error: unknown } | undefined;
     try {
       const visitorMutations: string[] = [];
       await visitor.route("**/api/relay/**", (route) => {
@@ -444,9 +446,16 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
       assert.equal(await seen.sheet.getByRole("img").count(), 0, "a Portal visitor is shown no pairing offer");
       assert.equal(await seen.relayGroup.count(), 0, "a Portal visitor's More settings has no relay group");
       assert.deepEqual(visitorMutations, [], "a Portal visitor never requests an owner-only relay mutation");
-    } finally {
-      await drainVisitorHealth();
+    } catch (error) {
+      failure = { error };
     }
+    try {
+      await drainVisitorHealth();
+    } catch (drainError) {
+      if (failure === undefined) throw drainError;
+      throw new AggregateError([failure.error, drainError], "the Portal visitor's checks failed, and so did draining its health route");
+    }
+    if (failure !== undefined) throw failure.error;
     await visitorContext.close();
 
     await ui.openMore();
