@@ -105,7 +105,9 @@ async function checkPhoneRow(browser: Browser, origin: string, first: string, se
         .map((node) => node.getBoundingClientRect()).filter((rect) => rect.width > 0 && (rect.width < 44 || rect.height < 44)).length);
       assert.equal(small, 0, `${label}: every tab, the ⋯ and the + are touch targets`);
       await activeTabInView(page, label);
-      // the split tab shows one pane at a time: a tap on it, open, lists its panes
+      // the split tab shows one pane at a time: it says which of its panes is open, and a tap on it, open, lists them
+      assert.match((await page.locator('.pane-slot .tab-strip [role="tab"][aria-selected="true"] .tab-strip-position [aria-hidden="true"]').textContent()) ?? "", /^[12]\/2$/,
+        `${label}: the open split tab says which of its two panes is open`);
       await page.locator('.pane-slot .tab-strip [role="tab"][aria-selected="true"]').tap();
       const paneMenu = page.getByRole("dialog", { name: "Tab 1", exact: true });
       await paneMenu.waitFor();

@@ -2973,9 +2973,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   second list). There a tap on the open split tab opens that menu, in the row and in the header
   alike, and the open split tab is that pane: it wears the pane's agent mark (none for a shell) and
   its name (the pane's agent or first-message name, else its title), unless someone named the tab,
-  whose name stays; in the row under the header that name is cut with an ellipsis at
-  `min(var(--tab-max-w), 40vw)`, so what follows it and the row's `+` stay in view. The tab's menus
-  and the tab sheet keep the tab's own name and mark. herdr's TUI, which
+  whose name stays, and its place among them (`1/2`, heard as "Pane 1 of 2") follows its name, in the
+  row as in the header; in the row under the header that name is cut with an ellipsis at
+  `min(var(--tab-max-w), 40vw)`, so its place, its `⋯` and the row's `+` stay in view. The tab's
+  menus and the tab sheet keep the tab's own name and mark. herdr's TUI, which
   draws every pane of a split, needs none of this; the Codex and Claude phone apps open their thread
   list from a tap on the title, which the tap follows.
   Only at these narrow widths does it omit Split and Zoom pane; Unzoom pane stays available whenever the tab is zoomed.

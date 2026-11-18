@@ -671,7 +671,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
                   {agent ? <span className="tab-strip-agent" aria-hidden="true"><AgentMark agent={agent} size={14} /></span>
                     : (browserTabs || phoneRow) && <span className="tab-strip-agent is-shell" aria-hidden="true"><Terminal /></span>}
                   <span className="tab-strip-label">{shownName}</span>
-                  {phoneRow && active && own.length > 1 && (() => {
+                  {(phoneRow || soloPanes) && active && own.length > 1 && (() => {
                     const index = own.findIndex((pane) => pane.pane_id === selectedPane.pane_id) + 1;
                     return <span className="tab-strip-position"><span aria-hidden="true">{index}/{own.length}</span><span className="visually-hidden">{", "}{t("Pane {index} of {count}", { index, count: own.length })}</span></span>;
                   })()}
