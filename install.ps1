@@ -243,7 +243,7 @@ function Expand-Client([string]$Archive, [string]$Into) {
     if (Get-ChildItem -LiteralPath $Into -Recurse -Force | Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint }) { throw 'ovis-dist.tar.gz unpacked a link' }
     if (-not (Test-Path -LiteralPath (Join-Path $Into 'index.html'))) { throw 'ovis-dist.tar.gz holds no index.html' }
 }
-# One install at a time in $ovisHome: .install.lock, a folder New-Item makes or refuses (atomic), holding this
+# One install at a time in $ovisHome: .install.lock, a folder whose pid file, created only where none is, holds this
 # process's id.
 # With three or more installs started at the same instant a narrow race remains (a follow-up).
 function Enter-InstallLock([string]$Lock, [int]$WaitSeconds = 600) {
@@ -294,8 +294,8 @@ function Install-OvisBinary([string]$Version) {
     try { Install-OvisBinaryLocked $Version } finally { Exit-InstallLock $lock }
 }
 # Nothing in bin changes before the manifest's signature (by $releasePublicKey), its version, and the size and
-# SHA-256 of the binary and the client archive have been checked; then the old bin is moved aside and the checked
-# release moved in.
+# SHA-256 of the binary and the client archive have been checked, except that a missing bin is first taken back
+# from the newest bin.old-* a stopped run left; then the old bin is moved aside and the checked release moved in.
 function Install-OvisBinaryLocked([string]$Version) {
     $at = "$(Get-ReleasesBase)/v$Version"
     $bin = Join-Path $ovisHome 'bin'

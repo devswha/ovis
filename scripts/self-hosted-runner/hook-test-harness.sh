@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Test harness of job-started.sh (scripts/self-hosted-runner.test.ts): the only place a test starts the hook,
 # which may kill, and only after one of two guards has passed: before that it starts no hook and no parent of one
-# (the container guard runs stat, and its orphan check one bash that reads a FIFO).
+# (the container guard runs stat and readlink, and its orphan check one bash that reads a FIFO).
 #   namespace: PID 1 of a PID namespace of its own, started as
 #     unshare --user --map-root-user --pid --fork --mount-proc --kill-child bash hook-test-harness.sh <token> ...
 #     It is PID 1, PID 1 of /proc carries the run's <token> (so /proc is this namespace's), and no other

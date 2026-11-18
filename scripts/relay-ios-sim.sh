@@ -12,7 +12,7 @@
 # eamac: a fresh clone in /tmp from a git bundle of HEAD (nothing is pushed), the app built with
 # OVIS_APP_URL naming this run's shell and signed to run locally (CODE_SIGN_IDENTITY=-: an unsigned
 # build cannot store the relay device key, WebKit's IndexedDB put of a CryptoKey fails with
-# DataCloneError), its own new Simulator, and WebDriverAgent built in that clone.
+# DataCloneError), its own new Simulator, and WebDriverAgent built beside that clone.
 #
 # Everything is undone on exit: the Simulator deleted, the /tmp clone removed, the serve entries
 # turned off (and checked gone), the tunnel and the local servers stopped.

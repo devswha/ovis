@@ -175,8 +175,8 @@ for port in $(seq 41737 41770); do SLOT_FILES+=("$port"); done
 if [ "$BUILD" = 1 ] || ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   docker build ${CGROUP_PARENT:+--cgroup-parent "$CGROUP_PARENT"} -t "$IMAGE" "$SCRIPT_DIR"
 fi
-# A CPU list docker cannot give fails every container, and every slot would then ask for a token every
-# few seconds: refuse it now, with one throwaway container, before anything starts.
+# A CPU list or cgroup parent docker cannot use fails every container, and every slot would then ask for
+# a token every few seconds: refuse it now, with one throwaway container, before anything starts.
 if [ "${#PLACE_ARGS[@]}" -gt 0 ] && ! docker run --rm "${PLACE_ARGS[@]}" --network none --entrypoint true "$IMAGE" >/dev/null 2>&1; then
   echo "${PLACE_ARGS[*]}: docker cannot start a container there" >&2
   exit 2
@@ -647,7 +647,8 @@ slot_loop() {
       continue
     fi
     delay=30
-    # No docker socket, no host mount but the read-only caches, no privileges. tini is already the entrypoint.
+    # No docker socket, no host mount but the read-only caches and the slot's build cache outbox, no privileges.
+    # tini is already the entrypoint.
     # No core dumps: with the host's relative core_pattern ("core") a crash writes one into the
     # checkout, which scripts/check.ts then counts as a source change of the run.
     # The token goes in on stdin (entrypoint.sh), so it is never in the container's environment.

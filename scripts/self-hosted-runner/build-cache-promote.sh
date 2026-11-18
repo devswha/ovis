@@ -4,7 +4,7 @@
 # slot's outbox, `<key>.tar` and then `<key>.claim` (its GITHUB_RUN_ID and GITHUB_RUN_ATTEMPT). This
 # runs on the host, as the launcher's user, and takes a build only when GitHub says the slot is
 # running a job of that run and the run is trusted: a push to the default branch, or a pull request
-# from this repository that --writer opened and pushed. Every other outbox file is deleted.
+# from this repository that --build-cache-writer opened and pushed. Every other outbox file is deleted.
 #
 # A slot runs one job per container, under the same runner name each time, and GitHub answers for
 # the job the slot runs when it answers. So a claim is its container's: it is taken in only while the

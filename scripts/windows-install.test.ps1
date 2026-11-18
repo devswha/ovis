@@ -92,8 +92,8 @@ function bun {
         $keptVersion = if (Test-Path -LiteralPath $keptJson) { (Get-Content -Raw -LiteralPath $keptJson | ConvertFrom-Json).version }
         $toSource = $marked -or -not (Test-Path -LiteralPath (Join-Path $serverDir 'bin\ovis-server.exe')) -or $keptVersion -ne '1.2.3'
         if ($args[-1] -eq 'stop') {
-            # a kept binary of this version that fails its check (signature, executable or client), the release out of reach
-            # ($state.releaseDown): no binary can be had, so the stop goes to the sources
+            # a kept binary of this version that fails its check ($state.badBinary: signature, executable or client), with no
+            # release to fetch it again (out of reach, or a folder without it): no binary can be had, so the stop goes to the sources
             if ($state.badBinary) { $toSource = $true }
             if (($env:OVIS_FROM_SOURCE -eq '1' -or $toSource) -and -not (Test-Path -LiteralPath (Join-Path $root 'node_modules\all-installed'))) { $global:LASTEXITCODE = 1; return }
             $handDir = Join-Path $env:USERPROFILE '.local\state\ovis'

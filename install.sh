@@ -562,7 +562,7 @@ discard_typed() {
   return "$typed_discarded"
 }
 
-# It signs in and asks y/N, so it runs only with someone to answer: at a terminal that shows what it
+# It signs in and asks questions, so it runs only with someone to answer: at a terminal that shows what it
 # prints and can be read from (under `curl | sh` stdin is the script, so the answers come from /dev/tty
 # itself), and never under OVIS_NO_OPEN, which an install run for someone else sets (the app's own SSH
 # installer), and only in the terminal's foreground: the add reads its answer there, and a background
@@ -881,7 +881,7 @@ take() {
 }
 
 # The release's Rust PTY host into $stage/bin, only the one the signed ovis-server.json names (its SHA-256 and size
-# there, never another file's word for it), run once here; the record beside it is what the server checks before it
+# there, never another file's word for it), tried here; the record beside it is what the server checks before it
 # runs it (server/pty/host.ts). Without one that runs, terminals are mirrored: nothing here fails the install.
 binary_pty_host() {
   case "$platform" in
@@ -911,8 +911,8 @@ binary_pty_host() {
   printf '{"sha256":"%s","version":"%s"}\n' "$pty_sha" "$version" >"$stage/bin/ovis-pty-sidecar.json"
 }
 
-# One install at a time in OVIS_HOME: $OVIS_HOME/.install.lock, made by mkdir (atomic) and holding this
-# shell's pid. Released on every exit, a signal's included; only kill -9 leaves it, stale.
+# One install at a time in OVIS_HOME: $OVIS_HOME/.install.lock, a folder whose pid file, created only where none is,
+# holds this shell's pid. Released on every exit, a signal's included; only kill -9 leaves it, stale.
 install_lock() {
   lock="$OVIS_HOME/.install.lock"
   mkdir -p "$OVIS_HOME"
@@ -1243,9 +1243,9 @@ ref_not_moved() {
   say "${ref_not_moved_at}OVIS_REF does not move an installed Ovis (INSTALL.md, Update)"
 }
 
-# Ovis on herdr-core, without herdr or its plugin: its own checkout in APP_DIR, built with herdr-plugin.toml's
-# [[build]] steps as herdr builds the plugin (the Rust PTY host aside: herdr-core's terminals need none),
-# its settings, its service, and a start now.
+# Ovis on herdr-core, without herdr or its plugin: its own checkout in APP_DIR, built from source after
+# herdr-plugin.toml's pre-flight step, as scripts/plugin-launch.ts builds sources (the Rust PTY host aside:
+# herdr-core's terminals need none), its settings, its service, and a start now.
 install_core() {
   if [ -d "$APP_DIR/.git" ]; then
     say "already installed in $APP_DIR, on herdr-core; Settings → Updates keeps it current"
