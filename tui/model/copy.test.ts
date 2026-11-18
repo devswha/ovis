@@ -1,6 +1,7 @@
 import { afterEach, expect, it } from "bun:test";
 import { FRAME_DATA } from "../../server/herdr-core/connection.ts";
 import { place } from "../testing/fixtures/fixture.ts";
+import { Stage } from "../testing/pane-harness.ts";
 import { Run } from "../testing/run.ts";
 
 const runs: Run[] = [];
@@ -13,14 +14,18 @@ const HISTORY = Array.from({ length: 32 }, (_, row) => {
   if (row === 14) return "Middle needle";
   if (row === 29) return "Recent needle";
   if (row === 30) return "upper words";
-  if (row === 31) return "alpha beta gamma";
+  if (row === 31) return "alpha beta gambit";
   return `row-${row}`;
 }).join("\r\n") + "\r";
 
-async function start(paint = HISTORY): Promise<Run> {
+async function start(paint = HISTORY, other?: string): Promise<Run> {
   const run = await Run.start({
-    cols: 60, rows: 14,
-    fixture: { build(core) { place(core, { space: "work", spaceName: "work", tab: "one", tabName: "one" }, paint); } },
+    cols: other === undefined ? 60 : 120, rows: 14,
+    fixture: { build(core) {
+      const where = { space: "work", spaceName: "work", tab: "one", tabName: "one" };
+      place(core, where, paint);
+      if (other !== undefined) place(core, where, other);
+    } },
   });
   runs.push(run);
   await run.live();
@@ -42,10 +47,10 @@ it.each([
   ["w", "w", "b"],
   ["b", "w,w,b", "b"],
   ["0", "w,0", "a"],
-  ["$", "l,$", "a"],
+  ["$", "l,$", "t"],
   ["g", "g", "O"],
   ["G", "g,G", "a"],
-  ["ctrl+u", "ctrl+u,l,l,l,l", "2"],
+  ["ctrl+u", "ctrl+u,l,l,l,l,l", "6"],
   ["ctrl+d", "ctrl+u,ctrl+d", "a"],
   ["arrows", "up,right,down,left", "a"],
 ])("key table: %s", async (_key, keys, text) => {
@@ -111,12 +116,20 @@ it.each([
   expect(clips(run)).toEqual([target]);
 });
 
-it("resize cancels copy without sending its input to the replacement", async () => {
+it("resize cancels copy and restores the viewport before the replacement attach", async () => {
   const run = await start();
   await run.keys("g,v,l");
+  await run.advance(10);
+  const current = run.loop.panes.view("t1")?.emulator;
   run.host.resize(61, 14);
-  await run.live();
+  await run.advance(20);
+  expect(run.loop.panes.view("t1")?.emulator).toBe(current);
+  expect(run.grid()[11]?.slice(1, 18)).toBe("alpha beta gambit");
   expect(run.loop.model().mode.name).toBe("terminal");
+  await run.advance(180);
+  await run.live();
+  expect(run.loop.panes.view("t1")?.emulator).not.toBe(current);
+  expect(run.grid()[11]?.slice(1, 18)).toBe("alpha beta gambit");
   expect(clips(run)).toEqual([]);
 });
 
@@ -133,13 +146,19 @@ it("output invalidates a displayed hint before its label can copy stale text", a
 
 it("Escape leaves the search prompt and restores the original viewport", async () => {
   const run = await start();
-  await run.keys("g,/,que,backspace");
+  await run.keys("g,/,que");
   await run.advance(10);
-  expect(run.grid()[13]?.slice(0, 10)).toBe(" COPY  /qu");
   expect(run.grid()[2]?.slice(1, 11)).toBe("Old needle");
   await run.keys("esc");
   await run.advance(160);
-  expect(run.grid()[11]?.slice(1, 17)).toBe("alpha beta gamma");
+  expect(run.grid()[11]?.slice(1, 18)).toBe("alpha beta gambit");
+});
+
+it("Backspace removes the final grapheme before searching", async () => {
+  const run = await start();
+  await run.keys("g,/,Recent needle😀,backspace,enter");
+  await run.advance(10);
+  expect(run.grid().map((row) => row.slice(1, 14))).toContain("Recent needle");
 });
 
 it("a missing or empty query does not move history", async () => {
@@ -153,14 +172,180 @@ it("a missing or empty query does not move history", async () => {
   expect(run.grid()[13]?.slice(7, 15)).not.toBe("No match");
 });
 
-it("an alternate screen change drops the previous buffer's selection", async () => {
+it("an alternate screen change restores the main buffer to the bottom on return", async () => {
   const run = await start();
   await run.keys("g,v,l");
   run.core.program("t1").output("\x1b[?1049h\x1b[HALT\r");
   await run.advance(10);
   expect(run.loop.model().mode.name).toBe("terminal");
   expect(run.grid()[2]?.slice(1, 4)).toBe("ALT");
+  run.core.program("t1").output("\x1b[?1049l");
+  await run.advance(10);
+  expect(run.grid()[11]?.slice(1, 18)).toBe("alpha beta gambit");
   expect(clips(run)).toEqual([]);
+});
+
+it("an alternate screen round trip restores a nonzero entry offset", async () => {
+  const run = await start();
+  await run.keys("q,wheelup@4:4");
+  await run.advance(10);
+  const first = run.grid()[2]?.slice(1, 7);
+  expect(first).not.toBe("row-22");
+  await run.keys("ctrl+b,[,g");
+  await run.advance(10);
+  const program = run.core.program("t1");
+  program.output("\x1b[?1049hALT");
+  await run.advance(10);
+  program.output("\x1b[?1049l");
+  await run.advance(10);
+  expect(run.grid()[2]?.slice(1, 7)).toBe(first);
+});
+
+it("program exit cancels copy and restores the last picture to the entry offset", async () => {
+  const run = await start();
+  await run.keys("g,V");
+  run.core.program("t1").exit(0);
+  await run.advance(20);
+  expect(run.loop.model().mode.name).toBe("terminal");
+  expect(run.grid()[11]?.slice(1, 18)).toBe("alpha beta gambit");
+});
+
+it("output clears an active selection before yank", async () => {
+  const run = await start("before\r");
+  await run.keys("V");
+  run.core.program("t1").output("after\r");
+  await run.advance(10);
+  await run.keys("y");
+  expect(run.loop.model().mode.name).toBe("copy");
+  expect(clips(run)).toEqual([]);
+});
+
+const WRAPPED_URL = `https://example.org/${"seg/".repeat(12)}tail/file.ts:12`;
+
+it.each([
+  ["URL", WRAPPED_URL, "1ttps"],
+  ["path", `./${"directory/".repeat(5)}abcde한글/파일.ts:12`, "1/dir"],
+  ["hash", " ".repeat(45) + "0123456789abcdef".repeat(4), "11234"],
+])("a fully visible wrapped %s has one label and copies whole", async (_kind, line, label) => {
+  const run = await start(`${line}\r\nhttps://next.test/a\r`);
+  await run.keys("f");
+  await run.advance(10);
+  expect(run.grid()[2]?.slice(line.length - line.trimStart().length + 1, line.length - line.trimStart().length + 6)).toBe(label);
+  expect(run.grid()[4]?.slice(1, 6)).toBe("2ttps");
+  await run.keys("1");
+  expect(clips(run)).toEqual([line.trimStart()]);
+});
+
+it("a wrapped target whose first row is above the viewport has no hint", async () => {
+  const run = await start(`${WRAPPED_URL} https://same.test/a\r\nhttps://next.test/a\r\n${"padding\r\n".repeat(7)}last\r`);
+  await run.keys("f");
+  await run.advance(10);
+  expect(run.grid()[2]?.slice(1, 9)).toBe("g/seg/se");
+  expect(run.grid()[2]).toContain(" https://same.test/a ");
+  expect(run.grid()[3]?.slice(1, 6)).toBe("1ttps");
+  await run.keys("1");
+  expect(clips(run)).toEqual(["https://next.test/a"]);
+});
+
+it("a target ending at the last terminal column is not offered", async () => {
+  const url = "https://example.org/";
+  const run = await start(`${url}${"a".repeat(58 - url.length)}\r\n\r\nhttps://next.test/a\r`);
+  await run.keys("f");
+  await run.advance(10);
+  expect(run.grid()[2]?.slice(1, 6)).toBe("https");
+  await run.keys("1");
+  expect(clips(run)).toEqual(["https://next.test/a"]);
+});
+
+it("hard breaks in an attach replay do not turn a wrapped URL fragment into a hint", async () => {
+  const broken = [WRAPPED_URL.slice(0, 58), WRAPPED_URL.slice(58)];
+  const run = await start(`${broken.join("\r\n")} https://next.test/a\r`);
+  await run.keys("f");
+  await run.advance(10);
+  expect(run.grid()[3]?.slice(1, 9)).toBe("g/seg/se");
+  await run.keys("1");
+  expect(clips(run)).toEqual(["https://next.test/a"]);
+});
+
+it("replay fragments starting with a wide letter also get no hint", async () => {
+  const run = await start(`./${"directory/".repeat(5)}abcde\r\n한글/파일.ts https://next.test/a\r`);
+  await run.keys("f");
+  await run.advance(10);
+  expect(run.grid()[3]?.slice(1, 3)).toBe("한글");
+  await run.keys("1");
+  expect(clips(run)).toEqual(["https://next.test/a"]);
+});
+
+it("a hint scan draws only the first nine of twelve targets", async () => {
+  const run = await start(Array.from({ length: 6 }, (_, i) => `https://a.test/${2 * i} https://b.test/${2 * i + 1}`).join("\r\n"));
+  await run.keys("f");
+  await run.advance(10);
+  const labels = run.grid().slice(2, 8).flatMap((row) => [...row.matchAll(/(\d+)ttps:/g)].map((at) => at[1]));
+  expect(labels).toEqual(["1", "2", "3", "4", "5", "6", "7", "8", "9"]);
+  expect(run.grid()[6]).toContain(" https://b.test/9 ");
+  expect(run.grid()[7]).toContain("|https://a.test/10 https://b.test/11 ");
+});
+
+it("a target cut by a narrower viewer has no hint", async () => {
+  const run = await start(`${" ".repeat(46)}https://example.org/hidden\r\nhttps://next.test/a\r`);
+  const rival = new Stage(run.core).rival();
+  try {
+    await run.keys("q");
+    await rival.attach("t1", 80, 10);
+    await run.advance(300);
+    await run.live();
+    expect(run.loop.panes.view("t1")?.actual).toEqual({ cols: 80, rows: 10 });
+    await run.keys("ctrl+b,[,f");
+    await run.advance(10);
+    expect(run.grid()[2]?.slice(47, 52)).toBe("https");
+    expect(run.grid()[3]?.slice(1, 6)).toBe("1ttps");
+    await run.keys("1");
+    expect(clips(run)).toEqual(["https://next.test/a"]);
+  } finally {
+    await rival.detach();
+    rival.close();
+  }
+});
+
+it("copy consumes a click on the other pane", async () => {
+  const run = await start("first\r", "second\r");
+  await run.keys("click@100:4");
+  expect(run.loop.model().mode.name).toBe("copy");
+  await run.keys("q,Z");
+  expect(run.core.program("t1").receivedHex()).toBe("5a");
+  expect(run.core.program("t2").receivedHex()).toBe("");
+});
+
+it("copy blocks an external menu action", async () => {
+  const run = await start();
+  const menu = () => run.loop.dispatch({ type: "action", action: "menu", at: run.clock.current });
+  menu();
+  expect(run.loop.model().overlays).toEqual([]);
+  await run.keys("q");
+  menu();
+  expect(run.loop.model().overlays.at(-1)?.kind).toBe("menu");
+});
+
+it("an explicit focus move ends copy and sends the next key to the new pane", async () => {
+  const run = await start(HISTORY, "second\r");
+  await run.keys("g,V");
+  run.loop.dispatch({ type: "select", target: { kind: "pane", id: "t2" }, at: run.clock.current });
+  await run.keys("y");
+  expect(run.loop.model().mode.name).toBe("terminal");
+  expect(clips(run)).toEqual([]);
+  expect(run.core.program("t1").receivedHex()).toBe("");
+  expect(run.core.program("t2").receivedHex()).toBe("79");
+});
+
+it.each([
+  ["balanced", "https://en.wikipedia.org/wiki/Foo_(bar)", "https://en.wikipedia.org/wiki/Foo_(bar)"],
+  ["outer punctuation", "(see https://example.org/a)", "https://example.org/a"],
+])("copy hints keep only URL parentheses that belong to the target: %s", async (_kind, line, target) => {
+  const run = await start(line);
+  await run.keys("f");
+  await run.advance(10);
+  await run.keys("1");
+  expect(clips(run)).toEqual([target]);
 });
 
 it("hint labels skip malformed schemes and copy extensionless paths literally", async () => {

@@ -1,11 +1,14 @@
 import { fileUriPath } from "../../shared/fileUri.ts";
 import { addressSpans, isWebLink, terminalPathMatches } from "../../shared/terminal-links.ts";
+import type { Emulator, ScreenRange } from "../emulator/index.ts";
+import type { Grid } from "./grid.ts";
 import type { PaneScene } from "./paint.ts";
 
 type Token = { readonly index: number; readonly text: string };
 const HASH = /(?:^|[^-\p{L}\p{N}_])([0-9a-f]{7,64})(?![-\p{L}\p{N}_])/giu;
 // Explicit paths also name extensionless files and directories, which the browser's opener does not detect.
 const EXPLICIT = /(?:^|[\s("'`])((?:~\/|\.\.?\/|\/)[\p{L}\p{N}\p{M}_@+-]+(?:\/[\p{L}\p{N}\p{M}_@+.-]+)*\/?)(?![\p{L}\p{N}\p{M}_@+./:-])/gu;
+const ADDRESS_TRAILER = /[),.;:!?'"`>]+$/;
 
 function tokens(text: string): Token[] {
   const spans = addressSpans(text);
@@ -13,7 +16,20 @@ function tokens(text: string): Token[] {
     const token = text.slice(start, end);
     const scheme = /[a-z][a-z0-9+.-]*:\/\//i.exec(token);
     if (!scheme) return [];
-    const uri = token.slice(scheme.index).replace(/[),.;:!?'"`>]+$/, "");
+    const candidate = token.slice(scheme.index);
+    const trailer = ADDRESS_TRAILER.exec(candidate);
+    let uriEnd = trailer?.index ?? candidate.length;
+    if (trailer?.[0].includes(")")) {
+      let open = 0;
+      for (let i = 0; i < candidate.length; i++) {
+        if (candidate[i] === "(") open++;
+        if (candidate[i] === ")" && open > 0) {
+          open--;
+          if (i >= uriEnd) uriEnd = i + 1;
+        }
+      }
+    }
+    const uri = candidate.slice(0, uriEnd);
     return (isWebLink(uri) && uri.length > scheme[0].length) || fileUriPath(uri) !== null
       ? [{ index: start + scheme.index, text: uri }] : [];
   });
@@ -34,33 +50,78 @@ export interface CopyHint {
   readonly text: string;
 }
 
-/** Number only whole tokens in the drawn clip, using the actual cells to position labels after wide text. */
-export function visibleCopyHints(scene: PaneScene): CopyHint[] {
+/** Map the engine's unwrapped text back onto the painted cells. */
+function lineCells(grid: Grid, line: ScreenRange, top: number, text: string): number[] {
+  const cells: number[] = [];
+  for (let y = line.start.y; y <= line.end.y; y++) {
+    const left = y === line.start.y ? line.start.x : 0;
+    const right = y === line.end.y ? line.end.x + 1 : grid.cols;
+    for (let x = left; x < right; x++) {
+      const i = (y - top) * grid.cols + x;
+      if (grid.width[i] === 0) continue;
+      const cell = grid.text[i] ?? " ";
+      if (!text.startsWith(cell, cells.length)) {
+        // The formatter omits the empty last cell before a wide glyph that wraps early.
+        if (cell === " " && x === grid.cols - 1 && y < line.end.y) continue;
+        return [];
+      }
+      for (let at = 0; at < cell.length; at++) cells.push(i);
+    }
+  }
+  return cells.length === text.length ? cells : [];
+}
+
+/** Number only whole tokens in the drawn clip, using Ghostty's logical line bounds and text. */
+export function visibleCopyHints(scene: PaneScene, emulator: Emulator, top: number): CopyHint[] {
   const { grid } = scene.grid;
   const { col, row } = scene.view ?? { col: 0, row: 0 };
+  const bottom = Math.min(grid.rows, row + scene.rect.height);
+  const right = col + scene.rect.width;
   const hints: CopyHint[] = [];
-  for (let y = row; y < Math.min(grid.rows, row + scene.rect.height); y++) {
-    let text = "";
-    const cells: number[] = [];
-    for (let x = 0; x < grid.cols; x++) {
-      const i = y * grid.cols + x;
-      if (grid.width[i] === 0) continue;
-      const value = grid.text[i] || " ";
-      text += value;
-      for (let at = 0; at < value.length; at++) cells.push(x);
+  for (let y = top + row; y < top + bottom;) {
+    const bounds = emulator.lineAt({ x: 0, y });
+    const line = bounds.ok ? bounds.value : null;
+    y = Math.max(y, line?.end.y ?? y) + 1;
+    // A vertically cut logical line cannot be mapped completely to the drawn cells.
+    if (!line || line.start.y < top + row || line.end.y >= top + bottom) continue;
+    const formatted = emulator.textOf(line);
+    if (!formatted.ok) continue;
+    const text = formatted.value;
+    const cells = lineCells(grid, line, top, text);
+    const found = tokens(text);
+    // hc's first paint serializes wraps as hard breaks. Do not offer the leading fragment
+    // of a line abutting a full row, even though Ghostty sees two separate logical lines.
+    let head = 0;
+    if (line.start.x === 0 && line.start.y > 0 && found.length > 0) {
+      const edge = { x: grid.cols - 1, y: line.start.y - 1 };
+      // A wide first glyph can also have wrapped one cell before the right margin.
+      const early = grid.cols > 1 && grid.width[cells[0] ?? -1] === 2;
+      const previous = emulator.textOf({ start: { ...edge, x: edge.x - Number(early) }, end: edge });
+      if (previous.ok && previous.value.trim()) {
+        const space = text.search(/\s/);
+        head = space < 0 ? text.length : space;
+      }
     }
     let end = -1;
-    for (const token of tokens(text)) {
-      const x = cells[token.index], last = cells[token.index + token.text.length - 1];
-      if (x === undefined || last === undefined || x < col || token.index < end) continue;
-      const lastWidth = grid.width[y * grid.cols + last] === 2 ? 2 : 1;
-      if (last + lastWidth > col + scene.rect.width) continue;
-      // No token touches an ambiguous physical row edge in a wrapped or clipped line.
-      if (last + lastWidth === grid.cols) continue;
-      end = token.index + token.text.length;
+    for (const token of found) {
+      const next = token.index + token.text.length;
+      const first = cells[token.index], last = cells[next - 1];
+      if (first === undefined || last === undefined || token.index < end || token.index < head) continue;
+      // At a logical line's right edge there is no visible delimiter after the token.
+      if (Math.floor(last / grid.cols) === line.end.y - top) {
+        const after = (last % grid.cols) + (grid.width[last] ?? 0);
+        const early = after === grid.cols - 1 && grid.text[Math.floor(last / grid.cols) * grid.cols + after] === " "
+          && grid.width[(line.end.y + 1 - top) * grid.cols] === 2;
+        if (after === grid.cols || early) continue;
+      }
+      if (cells.slice(token.index, next).some((i) => i % grid.cols < col || i % grid.cols + (grid.width[i] ?? 0) > right)) continue;
+      end = next;
       hints.push({
-        col: scene.rect.x + x - col, row: scene.rect.y + y - row, digit: hints.length + 1, text: token.text,
-        width: grid.width[y * grid.cols + x] === 2 ? 2 : 1,
+        col: scene.rect.x + first % grid.cols - col,
+        row: scene.rect.y + Math.floor(first / grid.cols) - row,
+        digit: hints.length + 1,
+        text: token.text,
+        width: grid.width[first] === 2 ? 2 : 1,
       });
       if (hints.length === 9) return hints;
     }

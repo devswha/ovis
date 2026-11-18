@@ -38,23 +38,31 @@ function range(s: Session): ScreenRange | null {
 /** Coordinates refer to one emulator generation and buffer. Only its current viewport is rendered. */
 export class CopyView {
   private session: Session | null = null;
+  /** An inactive main screen keeps its viewport, but Ghostty can scroll only the active screen. */
+  private readonly mainOffsets = new WeakMap<Emulator, number>();
 
   retain(pane: string | null): void {
     const s = this.session;
     if (!s || s.pane === pane) return;
     this.session = null;
-    if (value(s.emulator.modes())?.altScreen === s.alt) {
-      if (s.searchFresh) s.emulator.search("");
-      s.emulator.scrollFromBottom(s.original);
-    }
+    const modes = value(s.emulator.modes());
+    if (s.searchFresh) s.emulator.search("");
+    if (modes?.altScreen === s.alt) s.emulator.scrollFromBottom(s.original);
+    else if (!s.alt && modes?.altScreen) this.mainOffsets.set(s.emulator, s.original);
   }
 
   /** Drops stale screen coordinates on data, even if pruning left the history with the same row count. */
   changed(notice: PaneNotice, panes: Panes): boolean {
-    const s = this.session;
-    if (!s || notice.terminal !== s.pane) return false;
     if (notice.type !== "state" && notice.type !== "output" && notice.type !== "gone") return false;
     const view = panes.view(notice.terminal);
+    const emulator = view?.emulator;
+    const original = emulator ? this.mainOffsets.get(emulator) : undefined;
+    if (emulator && original !== undefined && value(emulator.modes())?.altScreen === false) {
+      this.mainOffsets.delete(emulator);
+      emulator.scrollFromBottom(original);
+    }
+    const s = this.session;
+    if (!s || notice.terminal !== s.pane) return false;
     if (notice.type === "gone" || view?.state.kind !== "Live" || view.gen !== s.gen || view.emulator !== s.emulator
       || view.covered || value(s.emulator.modes())?.altScreen !== s.alt) return true;
     if (notice.type === "output") {
@@ -177,7 +185,7 @@ export class CopyView {
     const pane = { ...scene, view, ...(selected === null ? {} : {
       selection: { start: { x: selected.start.x, y: selected.start.y - s.top }, end: { x: selected.end.x, y: selected.end.y - s.top } },
     }) };
-    if (s.hints === "scan") s.hints = visibleCopyHints(pane);
+    if (s.hints === "scan") s.hints = visibleCopyHints(pane, s.emulator, s.top);
     return {
       pane, hints: s.hints ?? [], input: holds(scene.rect, point.col, point.row) ? point : "overlay",
       noMatch: s.noMatch,
