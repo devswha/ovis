@@ -26,8 +26,6 @@ export function statusText(t: ReturnType<typeof useT>, status: RelayStatus): str
   if (status.blocked === "serve_only") return t("Blocked: OVIS_TAILSCALE_SERVE_ONLY says tailscale serve is the only way in. Unset it on this PC and restart the app.");
   if (status.blocked === "identity_unreadable") return t("Blocked: this PC's relay identity cannot be read. Reset it under More settings in Devices and PCs to use the relay again.");
   const pass = status.pass;
-  // Ovis's relay asks for an account (docs/relay.md, "Relay pass"): refused, or soon
-  // only once the relay actually refused this PC for its pass: any other relay error keeps its own text
   if (pass?.refused && status.phase === "error" && pass.state !== "ok") return pass.state === "not_listed"
     ? t("Add this PC to your Ovis account to use the Ovis relay, or connect over the same Wi-Fi or Tailscale.")
     : pass.state === "limit"
@@ -35,7 +33,6 @@ export function statusText(t: ReturnType<typeof useT>, status: RelayStatus): str
     : pass.state === "unavailable"
       ? t("Cannot reach the Ovis account service for a relay pass. Retrying.")
       : t("The Ovis relay needs an Ovis account. Sign in, or connect over the same Wi-Fi or Tailscale.");
-  // a pass renewed on the open control socket is not answered: once this PC holds one, the notice is stale
   if (pass && status.phase === "online" && pass.state !== "ok" && pass.relay !== null && pass.relay !== "ok" && pass.enforce_at !== null) {
     return t("Online. Sign in to keep using the Ovis relay after {date}. Same Wi-Fi, Tailscale and your own relay keep working without an account.", { date: new Date(pass.enforce_at).toLocaleDateString() });
   }
@@ -49,10 +46,8 @@ export function statusText(t: ReturnType<typeof useT>, status: RelayStatus): str
 }
 
 /**
- * Pairs the phone this page runs on through the relay: its own offer opens here, as its QR code
- * would on a phone that scanned it. In the app it opens as one more PC of the app's list
- * (HerdrShell.open, labelled with the offer's name); in a browser this tab goes to the hosted
- * shell, which pairs the phone and keeps its key there.
+ * In the app it opens as one more PC of the app's list (HerdrShell.open, labelled with the offer's
+ * name); in a browser this tab goes to the hosted shell, which pairs the phone and keeps its key there.
  */
 export async function openOwnOffer(url: string): Promise<void> {
   if (hasNativePlugin("HerdrShell")) {
@@ -94,7 +89,6 @@ export function RelayDirectRow({ relay, readOnly }: { relay: RelayState; readOnl
   );
 }
 
-// a code announced by a relay QR (announceFromRelay), not by the Devices group
 let relayAnnouncing = false;
 
 /**
@@ -137,14 +131,10 @@ export function RelayPairing({ phone = false, compact = false, qrOnly = false, o
   const [left, setLeft] = useState("");
   const [state, setState] = useState<"minting" | "live" | "expired" | "failed">("minting");
   const [failure, setFailure] = useState<string | null>(null);
-  // the effect below asks for an offer once per value
   const [generation, setGeneration] = useState(0);
-  // this panel's own announcement must not make it ask twice
   const announcing = useRef(false);
-  // the code on screen, and an ask for the offer that is not announced (another relay QR's code)
   const shown = useRef<string | null>(null);
   const quiet = useRef(false);
-  // the code another relay QR code last announced
   const heard = useRef<string | null>(null);
   // how often the relay tab's code was announced to this QR code, which is not the relay tab's: each time took it
   // down, and an offer asked for at one count and answered at another was overtaken by the relay tab's code
@@ -160,7 +150,6 @@ export function RelayPairing({ phone = false, compact = false, qrOnly = false, o
   const dropTyped = () => setTypedReset((value) => value + 1);
 
   useEffect(() => {
-    // compact: the code to type is asked for first and asks for the offer once it is in (CompactRelay's onMinted).
     // Asked for together, a new six-digit code the offer starts ends the code being minted on the PC.
     if (compact && !qrOnly && generation === 0) return;
     let cancelled = false;
@@ -181,11 +170,7 @@ export function RelayPairing({ phone = false, compact = false, qrOnly = false, o
       setOffer(next);
       drawn.current?.(next);
       setState("live");
-      // the server made this offer's code, maybe with no New code pressed: the page watches it like any other
-      // (the Devices group re-reads its list while a code is out and closes the dialog once the phone is in)
       const code = decodeOffer(next.url)?.code;
-      // qrOnly: the PC gives this QR code a code of its own, so the code another relay QR code announced is not the
-      // one it got, and the others are told this one (they then ask for the offer again, and get the same)
       const differs = qrOnly && code !== heard.current;
       shown.current = code ?? null;
       if (code !== undefined && (!silent || differs)) {
@@ -196,8 +181,6 @@ export function RelayPairing({ phone = false, compact = false, qrOnly = false, o
       // nobody waits for it, or it was overtaken, as above: nothing to show
       if (cancelled || asked !== taken.current) return;
       setOffer(null);
-      // the PC makes no code for its account's sake (it joined one meanwhile, or none is named for it): no refusal to
-      // read and no New code, which would be refused again: the tab says what stands in the QR code's place
       if (reason instanceof ApiError && (reason.code === "in_account" || reason.code === "no_account_named") && refused.current !== undefined) {
         refused.current();
         return;
@@ -267,7 +250,6 @@ export function RelayPairing({ phone = false, compact = false, qrOnly = false, o
         setOffer(null);
         // a code that ran out while shown is replaced by itself; one that arrived already expired
         // (the PC's clock and this one apart) is not, or the asking would never end
-        // compact: CompactRelay renews both, the code to type first and then this offer, so the two never race
         if (wasLive) { if (!compact || qrOnly) again(); } else setState("expired");
         return;
       }
@@ -325,7 +307,6 @@ export function RelayPairing({ phone = false, compact = false, qrOnly = false, o
       {state === "failed" && failure !== null && <p className="settings-hint relay-error" role="alert">{failure}</p>}
     </div>
   );
-  // Connect a device: the QR code and the code to type side by side, one Refresh for both
   if (compact) return <CompactRelay qr={offer?.url ?? null} qrExpires={offer?.expires_at ?? null} failure={state === "failed" ? failure : null} reset={typedReset} onMinted={again} />;
   const countdown = (
     <>
@@ -345,7 +326,6 @@ export function RelayPairing({ phone = false, compact = false, qrOnly = false, o
     </div>
   );
   const newCode = <button type="button" className="btn" disabled={state === "minting"} onClick={() => void renew()}><RefreshCw aria-hidden="true" />{t("New code")}</button>;
-  // on the phone itself: the link to send to the other device, and its QR code only once asked for
   if (phone) return (
     <div className="relay-pairing-phone" role="status">
       <p className="settings-label">{t("Connect another device")}</p>
@@ -395,7 +375,6 @@ function CompactRelay({ qr, qrExpires, failure, reset, onMinted }: { qr: string 
   const [code, setCode] = useState<RelayCode | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // the latest ask: an answer to an older one is not shown
   const request = useRef(0);
   const mint = async () => {
     const mine = ++request.current;
@@ -410,12 +389,10 @@ function CompactRelay({ qr, qrExpires, failure, reset, onMinted }: { qr: string 
     } finally {
       if (mine === request.current) {
         setBusy(false);
-        // the offer after the code, whether it came or not (an older server mints none): its QR code still pairs
         onMinted();
       }
     }
   };
-  // once as it opens: the effect's own run, not a render
   const opened = useRef(false);
   useEffect(() => {
     if (opened.current) return;
@@ -430,9 +407,6 @@ function CompactRelay({ qr, qrExpires, failure, reset, onMinted }: { qr: string 
     setCode(null);
     setBusy(false);
   }, [reset]);
-  // the code and the offer carry the one pending pairing, so they run out together (server/relay/service.ts): the
-  // code's expiry renews both. Without a code (an older server mints none) the offer's expiry does, so the QR
-  // code still renews; it is read only then, since the offer shown at a renewal is the old one for a moment.
   const deadline = code !== null ? code.expires_at : qrExpires;
   useEffect(() => {
     if (deadline === null) return;
@@ -455,15 +429,12 @@ function CompactRelay({ qr, qrExpires, failure, reset, onMinted }: { qr: string 
 }
 
 /**
- * No camera, no way to send a link: a code to type on the other device (Pair with a code at
- * app.ovis.sh), shown as GitHub's device sign-in shows its code. It starts a new six-digit code,
- * so the QR code above is asked for again (`onMinted`). The other device then shows this PC's ID
- * to compare with the one below.
+ * It starts a new six-digit code, so the QR code above is asked for again (`onMinted`). The other
+ * device then shows this PC's ID to compare with the one below.
  */
 function TypedCode({ reset, onMinted }: { reset: number; onMinted: (code: RelayCode) => void }) {
   const t = useT();
   const [code, setCode] = useState<RelayCode | null>(null);
-  // the latest Show or Hide: an answer to an older one is not shown
   const request = useRef(0);
   // one Show or Hide at a time: their requests could reach the PC out of order
   const [busy, setBusy] = useState(false);
@@ -534,7 +505,6 @@ function TypedCode({ reset, onMinted }: { reset: number; onMinted: (code: RelayC
 function CodelessLink() {
   const t = useT();
   const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
-  // the link to select once drawn, unless focus moved on while the copy was refused (the user is elsewhere, as copyText leaves it)
   const [link, setLink] = useState<{ url: string; select: boolean } | null>(null);
   const linkRef = useRef<HTMLElement | null>(null);
   useEffect(() => {

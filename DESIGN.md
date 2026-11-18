@@ -1468,7 +1468,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   (a shell's glyph) and name, the open one a pill capped at 7rem so the next tab's mark shows beside
   it and the row reads as tabs, not a title, a split tab's open pane (`1/2`, heard as "Pane 1 of 2", the
   digits hidden from the tab's name) after its name, and the open tab always scrolled into view. A tap
-  opens a tab where it was left; a press held 450ms (moving no more than 8px) opens that tab's menu, as
+  opens a tab where it was left, and a tap on the open split tab lists its panes (its menu, as below); a press held 450ms (moving no more than 8px) opens that tab's menu, as
   a long press does a phone's list row, and the click lifting it opens no tab; Android's own long-press
   `contextmenu` opens the same menu once, and a press still held when the PC or workspace changes opens
   nothing. No `+` or `⋯` is drawn
@@ -1772,13 +1772,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   way, whole or not at all. On a touch screen the row is one line too, as the setting promises: its
   mark, its title and its time, in a `--touch-target` row. It draws no place there (a screen reader
   still hears it, and the row's `⋯` sheet says it whole); the one-line row gives the title what
-  the place took, and loses the place from sight. Two lines draws the row as the
-  roster did before it was one line, on an agent row's height and type: the title of the pane the
-  row opens, and under it in `--text-dim` `--fs-xs` the place, "workspace · folder" with no name
-  said twice (`taskRowLines`, lib/paneName.ts). A shell titled by its folder leads with the
-  workspace instead; a linked worktree is placed by its branch, then its own workspace name. The
-  folder, the mark, the status cell, the menu and the fold count stay where they are, and the menu
-  and rename still act on the workspace. The choice is shared with the other browsers of the server
+  the place took, and loses the place from sight. Two lines draws a workspace row on an agent row's
+  height and type, led by the workspace's name as herdr's own sidebar always titles a space, and
+  under it in `--text-dim` `--fs-xs` what the pane the row opens is on: "pane title · branch ·
+  folder" with no name said twice and no title that is only `~` (a shell at its home folder) (`unsaidLine`, lib/paneName.ts), the branch only for a linked
+  worktree whose name is neither its branch nor made from it (`feature-api` for `feature/api`). The folder, the mark, the status cell, the menu and the
+  fold count stay where they are, and the menu and rename act on the workspace. The choice is shared with the other browsers of the server
   and applies at once.
 - An agent row is titled by what its agent is on, on One line and Two lines alike: the label the
   user gave the pane, else (on One line) a tab the user named, else the agent's or the pane's own
@@ -2968,7 +2967,17 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   two-character name (탭 1) is still a finger's target with the `⋯` a target of its own beside it; a desktop with a mouse draws the same `⋯` on the selected tab, hidden in its place
   until the strip is hovered or the tab has keyboard focus (Menu / popover). Shift+F10 or the menu key opens the full tab menu from a focused tab.
   Pane actions are not tab actions. Up to 768px, where a split tab shows one pane at a time, the
-  tab's menu lists the tab's panes first, the open one marked current, over a hairline.
+  tab's menu lists the tab's panes first, the open one marked current, over a hairline, each pane
+  once (the pane's own actions, which carry the panes where the row counts as hidden, add no
+  second list). There a tap on the open split tab opens that menu, in the row and in the header
+  alike, and the open split tab is that pane: it wears the pane's agent mark (none for a shell) and
+  its name (the pane's agent or first-message name, else its title), unless someone named the tab,
+  whose name stays, and its place among them (`1/2`, heard as "Pane 1 of 2") follows its name, in the
+  row as in the header; in the row under the header that name is cut with an ellipsis at
+  `min(var(--tab-max-w), 40vw)`, so its place, its `⋯` and the row's `+` stay in view. The tab's
+  menus and the tab sheet keep the tab's own name and mark. herdr's TUI, which
+  draws every pane of a split, needs none of this; the Codex and Claude phone apps open their thread
+  list from a tap on the title, which the tap follows.
   Only at these narrow widths does it omit Split and Zoom pane; Unzoom pane stays available whenever the tab is zoomed.
 - A tab herdr still names by its number ("Tab 2"), which a CLI that sets only its own title leaves
   alike, shows a few words of the first message its agent was given, about 24 columns (a wide
@@ -3767,12 +3776,17 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   verb (Read, Edited, Wrote, Ran; `lib/toolVerbs.ts`, by exact tool id) is in the interface face,
   `--fs-sm`, `--text-dim`; the object is mono `--fs-xs`. A tool the table does not know, a call
   with no object, or a call summed up by something other than its own command or path (omp's
-  `intent`: `bash Checking ports`) keeps its id in mono `--text` in the verb's place. A failed row
+  `intent`: `bash Checking ports`) keeps its id in mono `--text` in the verb's place; an MCP tool's
+  id (`mcp__claude_ai_HomeAssistant__get_entity_state`) reads as its server and tool, as Claude
+  Code splits it, without a claude.ai connector's or a plugin's prefix (`HomeAssistant
+  get_entity_state`; `lib/toolVerbs.ts`), and so do a picture's preview bar and viewer caption. A
+  failed row
   turns the verb or id `--status-blocked` and adds the word "failed": after the object under a
   verb (`▸ Ran pnpm test [failed]`), after the id otherwise.
 - A row expands to the typed input (command, diff, file, checklist, raw) and an Output pane. Under
-  a verb the tool's own id (`exec`, `Bash`, `apply_patch`) is the first line of that detail
-  (`.work-row-tool`, mono, dim) and the row's title.
+  a verb, or under an MCP tool's server and tool, the tool's own id (`exec`, `Bash`,
+  `apply_patch`, `mcp__claude_ai_HomeAssistant__get_entity_state`) is the first line of that
+  detail (`.work-row-tool`, mono, dim) and the row's title.
 - A file the detail names (`.chat-tool-file`: an edit's or a read's file, each file of a patch,
   a sent file) reads from the pane's folder as the file browser does, with the folder's name
   first: `/work/app/src/a.ts` in a pane on `/work/app` is `app/src/a.ts`. Only a folder herdr
@@ -4206,8 +4220,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - Before a session's first message no transcript names its model, so the pill takes it from the
   agent's own screen (`server/start-screen.ts`), as the Codex and Claude apps show the model in
   their composers before anything is sent: Claude Code's model under its title, and the live
-  status line of Codex and gjc. omp waits for its transcript to record the model: resolving its
-  screen's catalog names would require `omp models`, whose discovery can refresh OAuth tokens.
+  status line of Codex, gjc and Antigravity. Antigravity's ledger never records the model, so the
+  same status row is read after the conversation exists: the display name and the effort word on
+  the right (`Gemini 3.8 Flash · high`, or `auto · Gemini 4 Hydrogen · medium` with a mode word in
+  front). That name is kept as written. It is not a catalog id. omp waits for its transcript to
+  record the model: resolving its screen's catalog names would require `omp models`, whose
+  discovery can refresh OAuth tokens.
   The bridge never runs that command or infers an omp model from its status line or directory.
   Codex is read only from the live footer beneath its composer; an answer quoting the /model
   picker or a draft cannot supply a model, and while a popup hides the footer the model is unknown.
@@ -4220,9 +4238,11 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   reports no session, so its terminal-output fallback carries the status line's model, and whether
   it has begun nothing yet (its greeting) is decided on the same live screen. Such an answer is
   marked `screen`, and the chat re-reads it on terminal output, so a switch made in the terminal
-  shows once the agent draws it. A name on the screen that the
-  agent's own naming does not turn into one id draws no pill (no catalog is looked up), nor does a
-  screen that states no model, and an agent's default model never stands in for the session's.
+  shows once the agent draws it. An existing Antigravity conversation is marked `screen` the same
+  way, including when the row cannot be read, so the next draw can fill or change the pill. A name
+  on the screen that the agent's own naming does not turn into one id draws no pill (no catalog is
+  looked up), nor does a screen that states no model, and an agent's default model never stands in
+  for the session's. Antigravity's status-row name is the exception: it is drawn as written.
 - The model is drawn by name only where its id is one `modelLabel` (`src/lib/modelName.ts`) can
   name for certain, from the vendor's own regular naming and matched whole:
   `claude-<family>-<major>[-<minor>]`, also behind `anthropic/`, is `<Family> <major>.<minor>`
@@ -5893,8 +5913,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   Open it to try again." on a `paired` or `unchecked` row where **Open** retries setup, or "Account
   setup is incomplete." otherwise, and a dim subline for a fresh Add countdown "new · {n} min
   left", "Update Ovis on it", or this device's check result after **Check now**; on a phone row a
-  closed Add window also shows "Join · a device of your account connected to it approves", which is the
-  state word's `title` in the table), **Relay** (how this device reaches a paired PC right now and
+  closed Add window also shows "Join · approve on a connected device of your account, or type the
+  number the PC shows", which is the state word's `title` in the table), **Relay** (how this device
+  reaches a paired PC right now and
   the measured round trip: "Same network · 4 ms", "Tailscale · 18 ms", the answering relay host as
   a mono chip followed by " · 62 ms", or "Checking…" / "No answer" / "Not checked", or the assigned
   host as a mono chip for a PC it isn't paired with), **Last seen**, and the one action its state
@@ -5926,21 +5947,24 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   phase in `data-add-pc-phase`: `start`, `confirm`, `connecting`, `compare` (six digits to type
   or match), `wrong` (a wrong number, with Try again), `approving`, `ready` and `failed`. **Add**
   types the six digits the new PC shows, then approves on that PC; **Join** asks through the
-  account, shows this device's digits, and an account member approves on another device. Pressing
+  account, shows this device's digits, and a device of the account connected to the PC, or the PC
+  itself when it shows the request, approves; a typed comparison whose PC shows no number offers
+  **Ask to join**, which carries the same request on as a join. Pressing
   **Add this PC** or **Ask to join** in the sheet records the consent once (`keepConfirmedPc`) and
   starts pairing at once on `/s/<id>/` (`start` -> `connecting` -> `compare`) without a second
   "Pair with {name}?" step; "Pair with {name}?" with **Pair** remains only for pairing links and QR
   codes opened from outside the dashboard (or when `sessionStorage` is blocked). **Add a
   PC** with no PC says how one is added ("On the PC, open Settings → Devices and PCs → Account, sign
-  in, then choose Add this PC to my account. It then shows here with Add.") and leads to the QR and code
+  in, then choose Add this PC to my account. It then shows here.") and leads to the QR and code
   modal sheet (`PairQrDialog`, over the scrimmed inert dashboard), whose QR and code screens name
   only the current path ("On the PC, open Settings → Devices and PCs → Add a connection → Ovis relay
   and scan the QR code." and "On the PC, open Settings → Devices and PCs → Add a connection → Ovis
   relay and type the code it shows."). The sheet drives the
   shell's existing join, Pair, match and Cancel; failure stays in the sheet, in words of the sheet's
   own flow where the cause differs from a pairing link's (a new PC that is no longer waiting says
-  to keep its Account screen open; a join nobody approved says to open the PC on a device that
-  already uses it, or to pair with a QR or code), each with **Try again**, and in the shell's own
+  to keep its Account screen open; a join nobody approved says to approve it on a device of the
+  account connected to the PC, or on the PC itself if it shows the request, or to pair with a QR
+  or code), each with **Try again**, and in the shell's own
   words otherwise, except a new identity, which keeps the shell's screen with its ids and Forget. Ready shows
   at once when local pairing finishes ("{name} is ready to open on this device." with **Open PC**),
   without waiting on account enrollment. While account enrollment runs (`enrollment: "pending"`),

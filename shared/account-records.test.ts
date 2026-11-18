@@ -24,7 +24,6 @@ const unsigned: { [K in AccountRecord["kind"]]: Extract<UnsignedAccountRecord, {
   link: { v: 1, kind: "link", account: "acct_1", key: signer.spki, server_id: "0123456789abcdef0123456789abcdef", device_id: "0123456789abcdef", old_key: other.spki, issued_at: issued, id: newRecordId(), signer: signer.spki },
 };
 
-/** Another valid value for each field, so a mutation still parses and only the signature can refuse it. */
 const alternatives: Record<string, string> = {
   account: "acct_2", key: third.spki, label: "Windows app", role: "watch", server_id: "f".repeat(32),
   device_id: "f".repeat(16), old_key: third.spki, issued_at: "2026-11-05T01:02:03.457Z", id: newRecordId(), signer: third.spki,

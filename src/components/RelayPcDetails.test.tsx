@@ -4,6 +4,7 @@ import * as ReactDom from "react-dom";
 import { renderToStaticMarkup } from "react-dom/server";
 import { create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 
+import { translate } from "../lib/i18n.ts";
 import { dashboardModel, type DashboardPc } from "../lib/relay/dashboard.ts";
 import type { PcStatus } from "../lib/relay/pcStatus.ts";
 import { SettingsProvider } from "../lib/settings.ts";
@@ -11,6 +12,9 @@ import { SettingsProvider } from "../lib/settings.ts";
 await mock.module("react-dom", () => ({ ...ReactDom, createPortal: (node: ReactNode) => node }));
 const { RelayPcDetails } = await import("./RelayPcDetails.tsx");
 import type { RelayPcDetailsProps } from "./RelayPcDetails.tsx";
+import { askToJoinReason } from "./relayPcState.tsx";
+
+const joinReason = askToJoinReason({ added_at: new Date(0).toISOString(), join: { server_public_key: "k", relay: "wss://relay.ovis.sh" } }, (key, vars) => translate("en", key, vars))!;
 
 const NOW = Date.parse("2026-11-08T12:00:00Z");
 const GLOBAL = "wss://relay.ovis.sh";
@@ -145,19 +149,15 @@ describe("RelayPcDetails", () => {
     expect(html).toContain('data-pc-details="0123456789abcdef0123456789abcdef"');
     expect(html).toContain("Home server");
     expect(html).toContain("Offline");
-    // the State field says the state alone: no "Account directory" line under it
     expect(html).not.toContain("Account directory");
     expect(/<dt>State<\/dt><dd>([\s\S]*?)<\/dd>/.exec(html)?.[1]).toBe('<span class="relay-pc-details-value">Offline</span>');
     expect(html).toContain("relay.ovis.sh");
     expect(html).toContain('dateTime="2026-11-08T10:00:00.000Z"');
     expect(html).toContain("This device: no answer");
-    // Grouped KeyId in mono
     expect(html).toContain("0123");
     expect(html).toContain("cdef");
-    // Observed version and observation time
     expect(html).toContain("0.5.0");
     expect(html).toContain('dateTime="2026-11-08T11:30:00.000Z"');
-    // Paired PC offers Open and Forget
     expect(html).toContain(`href="/s/${SERVER_ID}/"`);
     expect(html).toContain("Forget this PC");
   });
@@ -181,10 +181,8 @@ describe("RelayPcDetails", () => {
     expect(html).toContain("Spare desktop");
     expect(html).toContain("Not checked");
     expect(html).toContain("—");
-    // Unpaired PC has no Open link and no Forget button
     expect(html).not.toContain(`href="/s/${SERVER_ID}/"`);
     expect(html).not.toContain("Forget this PC");
-    // Instead offers Join
     expect(html).toContain("Join");
   });
 
@@ -204,13 +202,11 @@ describe("RelayPcDetails", () => {
     const dialog = rootOf(renderer).find((n) => n.props.role === "alertdialog");
     expect(textOf(dialog)).toContain("Forget this PC?");
 
-    // Cancel closes the confirmation without forgetting
     const cancelBtn = dialog.find((n) => n.type === "button" && textOf(n) === "Cancel");
     await act(async () => { cancelBtn.props.onClick(); });
     expect(forgotten).toEqual([]);
     expect(rootOf(renderer).findAll((n) => n.props.role === "alertdialog")).toHaveLength(0);
 
-    // Re-open and confirm Forget
     await act(async () => { forgetBtn.props.onClick(); });
     const dialog2 = rootOf(renderer).find((n) => n.props.role === "alertdialog");
     const confirmBtn = dialog2.find((n) => n.type === "button" && textOf(n) === "Forget");
@@ -271,23 +267,37 @@ describe("RelayPcDetails", () => {
     expect(text(routeOf(renderHtml({ pc: makeRow({ state: "needs-approval", paired: false, linked: false }), onClose: none })))).toBe("—");
   });
 
+  it("offers Join at once, never a number to type, for a PC new in the account that already came by the account service; one never seen keeps Add", async () => {
+    const added = new Date(NOW - 2 * 60_000).toISOString();
+    const listed = (seen: string | null) => makeRow({ state: "needs-approval", paired: false, linked: false, added_at: added, last_seen_at: seen, join: { server_public_key: "k", relay: GLOBAL } });
+    const opened: ("new" | "join")[] = [];
+    const buttonOf = (label: string) => rootOf(renderer).findAll((n) => n.type === "button" && n.children.includes(label));
+
+    await mount({ pc: listed(new Date(NOW - 30_000).toISOString()), now: NOW, onClose: none, onOpenSheet: (_pc, mode) => { opened.push(mode); } });
+    expect(buttonOf("Add")).toHaveLength(0);
+    await act(async () => { buttonOf("Join")[0]?.props.onClick(); });
+
+    await act(async () => { renderer?.unmount(); });
+    await mount({ pc: listed(null), now: NOW, onClose: none, onOpenSheet: (_pc, mode) => { opened.push(mode); } });
+    expect(textOf(rootOf(renderer))).toContain("Home server is new in your account. Choose Add.");
+    await act(async () => { buttonOf("Add")[0]?.props.onClick(); });
+    expect(opened).toEqual(["join", "new"]);
+  });
+
   it("names the specific state the table names, Needs approval or Needs update, never the Needs you group word", () => {
     const stateOf = (html: string) => /<dt>State<\/dt><dd><span class="relay-pc-details-value">([^<]+)<\/span>/.exec(html)?.[1];
     const approval = renderHtml({ pc: makeRow({ state: "needs-approval", paired: false, linked: false, join: { server_public_key: "k", relay: GLOBAL } }), onClose: none, onOpenSheet: none });
     expect(stateOf(approval)).toBe("Needs approval");
-    // a listed PC past its ten minutes says how this device gets in, in the table's and the overview's words
-    expect(approval).toContain("Join · a device of your account connected to it approves");
+    expect(/<small class="relay-pc-details-sub" data-reason="join">([^<]*)<\/small>/.exec(approval)?.[1]).toBe(joinReason);
     expect(approval).not.toContain("Add window closed");
     const update = renderHtml({ pc: makeRow({ state: "needs-update" }), onClose: none });
     expect(stateOf(update)).toBe("Needs update");
     expect(update).toContain("Update Ovis on it");
     expect(approval + update).not.toContain("Needs you");
-    // a PC the account does not list reads by this device's check, as the table does: Answers / No answer, and Needs update when it is outdated even though it answered
     const unlisted = (status: PcStatus, over: Partial<DashboardPc> = {}) => renderHtml({ pc: makeRow({ state: "paired", listed: false, linked: false, last_seen_at: null, ...over }, status), onClose: none });
     expect(stateOf(unlisted({ kind: "answered", route: "lan", rttMs: 9 }))).toBe("Answers");
     expect(stateOf(unlisted({ kind: "offline", reason: "pc" }))).toBe("No answer");
     expect(stateOf(unlisted({ kind: "answered", route: "lan", rttMs: 9 }, { state: "needs-update" }))).toBe("Needs update");
-    // a live answer from this device beats the directory's stale Offline: Ready, with the answer in Route and This device
     const reached = renderHtml({ pc: makeRow({}, { kind: "answered", route: "relay", relay: GLOBAL, rttMs: 42 }), onClose: none });
     expect(stateOf(reached)).toBe("Ready");
     expect(reached).toContain('<svg class="status-dot" data-state="ready"');

@@ -73,7 +73,7 @@ async function contextAt(browser: Browser, size: (typeof WIDTHS)[number], log: s
     }
     const body = request.postDataBuffer();
     if (request.method() === "POST" && new URL(request.url()).pathname === "/v1/admissions" && body !== null) quiet.push((JSON.parse(body.toString()) as { quiet?: unknown }).quiet === true);
-    const answer = await fake.fetch(new Request(request.url(), { method: request.method(), headers: request.headers(), ...(body === null ? {} : { body }) }));
+    const answer = await fake.fetch(new Request(request.url(), { method: request.method(), headers: request.headers(), ...(body === null ? {} : { body: new Uint8Array(body) }) }));
     log.push(`${request.method()} ${new URL(request.url()).pathname}`);
     return route.fulfill({ status: answer.status, headers: { ...Object.fromEntries(answer.headers), ...cors }, body: Buffer.from(await answer.arrayBuffer()) });
   });

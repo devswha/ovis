@@ -1,8 +1,6 @@
 import type { PortalSignIn } from "./portal.ts";
 
-/** How a request got in, when it did. */
 export type AccessVia = "local" | "tailscale" | "device" | "token" | "open" | "portal" | "relay";
-/** Why a request did not. */
 export type AccessRefusal = "other_user" | "pairing_required" | "token_required";
 /** What a paired device may do: drive (type, answer, manage) or only watch. */
 export type DeviceRole = "drive" | "watch";

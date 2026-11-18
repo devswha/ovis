@@ -1,14 +1,13 @@
 /**
  * A relay client's side of a connection to a PC: Noise NK to its key, then Ovis Mux v1 admission with a device key
- * (docs/relay.md). The hosted app uses it (src/lib/relay/channel.ts), and so does a PC's server for a PC it added
- * through the relay (server/relay-pc.ts).
+ * (docs/relay.md).
  */
 import { channelBinding, openClientSecureChannel } from "./relay-e2ee.ts";
 import { fromBase64Url, PAIR_APPROVAL_MS, pairCommitment, pairDigits, randomPairNonce, toBase64Url } from "./relay-pair-sas.ts";
 import type { SecureChannel, Transport } from "./relay-e2ee.ts";
 import { ACCOUNT_FEATURE, decodeFrame, DIRECT_CARRIER, DIRECT_TAILNET, FrameType, isDirectCarrier, isTailnetCarrier, LARGE_WS_MESSAGES, LIMITS_V1, MuxProtocolError, PAIR_INTENT_ACCOUNT, PAIR_INTENT_PC, PAIR_INTENT_VOUCHED, PAIR_SAS_FEATURE, RELAY_HINTS, RELAY_PROTOCOL, SERVER_TIME_HEADER } from "./relay-mux.ts";
 import { hintedRelay } from "./relay-regions.ts";
-import { MuxEngine } from "./relay-mux-engine.ts";
+import { MuxEngine, MUX_SETUP_MS } from "./relay-mux-engine.ts";
 import type { MuxOptions, SessionFrame } from "./relay-mux-engine.ts";
 import { isWssOrigin, SERVER_ID_PATTERN } from "./relay-offer.ts";
 import type { RelayOffer } from "./relay-offer.ts";
@@ -25,10 +24,6 @@ export class UnsafeRelayDestinationError extends Error {
   }
 }
 
-/**
- * The relay never answered: the socket failed, closed, or stayed silent past ASSIGNMENT_MS before
- * the relay assigned this connection. The PC's state is unknown.
- */
 export class RelayUnreachableError extends Error {
   readonly code = "relay_unreachable";
   constructor(readonly closeCode: number | null, readonly silent = false) {
@@ -52,10 +47,6 @@ export class RelayNewSessionsRefusedError extends Error {
   }
 }
 
-/**
- * The PC answered the relay (its handshake began) but did not finish admitting this device within
- * ADMISSION_MS: it is online, and something on it stalled. Neither the relay nor an offline PC.
- */
 export class RelayAdmissionTimeoutError extends Error {
   readonly code = "admission_timeout";
   constructor(readonly phase: "handshake" | "welcome" | "auth") {
@@ -64,11 +55,6 @@ export class RelayAdmissionTimeoutError extends Error {
   }
 }
 
-/**
- * The relay assigned the connection and held it PC_ANSWER_MS, and no PC came for it: the PC is not
- * on the relay (stopped, restarting, or offline). The relay would have handed the connection to a
- * PC that came back meanwhile, so the attempt itself was the wait.
- */
 export class RelayPcOfflineError extends MuxProtocolError {
   constructor() {
     super("timeout", "The PC did not answer through the relay");
@@ -79,12 +65,10 @@ export class RelayPcOfflineError extends MuxProtocolError {
 /** WebSocket.OPEN, so an injected socket need not be a WebSocket */
 const OPEN = 1;
 
-/** How long the relay may take to assign the connection: past it the relay is unreachable. */
 export const ASSIGNMENT_MS = 10_000;
-/** How long the PC may take to answer once the relay has assigned the connection: past it the PC is offline. */
 export const PC_ANSWER_MS = 15_000;
-/** How long the PC may take to finish admission once it has answered; the mux's own setup timer (relay-mux-engine.ts) agrees. */
-export const ADMISSION_MS = 10_000;
+export const ADMISSION_MS = MUX_SETUP_MS;
+const PAIR_APPROVAL_GRACE_MS = 5_000;
 
 export interface RelaySocket {
   binaryType: BinaryType;
@@ -102,11 +86,8 @@ export interface RelayChannelOptions {
   readonly label?: string;
   readonly signal?: AbortSignal;
   readonly onClose?: (error: Error) => void;
-  /** how long the relay may hold the connection for the PC before it is called offline; PC_ANSWER_MS by default */
   readonly pcAnswerMs?: number;
-  /** The relay to connect through when it is not the offer's own (a fallback); the device keeps the offer's. */
   readonly carrier?: string;
-  /** each request's deadline (MuxOptions.requestTimeoutMs); 60 s by default */
   readonly requestTimeoutMs?: MuxOptions["requestTimeoutMs"];
   /**
    * A new device with no pairing code pairs by comparing digits (shared/relay-pair-sas.ts): this
@@ -145,21 +126,17 @@ export interface RelayChannel {
   readonly connectionId: string;
   readonly sessionId: string;
   readonly role: "drive" | "watch";
-  /** what the PC's WELCOME said of itself, for the version policy (skew.ts) */
   readonly server: RelayServerInfo;
   /**
    * False once the relay socket has left OPEN, possibly with no close event yet: a socket closed
    * under the page waits for the relay's answer to its close, and a browser drops what is sent meanwhile.
    */
   readonly carrierOpen: boolean;
-  /** the PC's direct carriers as AUTH_OK named them, when this client offered DIRECT_CARRIER; else none */
   readonly directCarriers?: readonly string[];
-  /** the direct carrier this channel came through, or undefined through the relay */
   readonly direct?: string;
   close(): void;
 }
 
-/** A direct carrier was asked for where it cannot be used: not one, or a pairing (which happens through the relay only). */
 export class DirectCarrierUnusableError extends Error {
   readonly code = "direct_unusable";
   constructor() {
@@ -170,7 +147,6 @@ export class DirectCarrierUnusableError extends Error {
 export interface RelayServerInfo {
   readonly version: string;
   readonly relayProtocol: number;
-  /** what the PC selected of what this client offered; `account` says it has /api/account/* */
   readonly features?: readonly string[];
 }
 
@@ -197,13 +173,11 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
   socket.binaryType = "arraybuffer";
   return new Promise<RelayChannel>((resolve, reject) => {
     let phase: "assigned" | "handshake" | "welcome" | "pair" | "auth" | "ready" | "closed" = "assigned";
-    // a device with neither a code nor a saved admission pairs by comparing digits, when the PC selects it
     const comparing = offer.code === undefined && device.device_id === null && options.compare !== undefined;
     // an older PC selects none of these; a comparison names what it asks for, so the PC's prompt can say it
     const offered: readonly string[] = comparing
       ? [ACCOUNT_FEATURE, PAIR_SAS_FEATURE, options.intent === "account" ? PAIR_INTENT_ACCOUNT : options.intent === "vouched" ? PAIR_INTENT_VOUCHED : PAIR_INTENT_PC]
       : [ACCOUNT_FEATURE];
-    // answered in AUTH_OK, never selected in WELCOME, like RELAY_HINTS
     const hinted: readonly string[] = [RELAY_HINTS, ...options.offerDirect ? [DIRECT_CARRIER, ...options.offerTailnet ? [DIRECT_TAILNET] : []] : []];
     let phoneNonce: Uint8Array | undefined;
     let binding: Uint8Array | undefined;
@@ -215,7 +189,6 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
     let connectionId = "";
     const limits = { ...LIMITS_V1 };
     let welcome: Uint8Array | undefined;
-    /** a provisional WELCOME a phone comparing digits passed over, counted with the setup frames at admission */
     let passed: Uint8Array | undefined;
     /** the nonce of a provisional WELCOME this phone signed in on, and the PC's answer to HELLO that may follow it */
     let provisionalNonce: string | undefined;
@@ -236,10 +209,6 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
       else reject(error);
     };
     const aborted = (): void => stop(new DOMException("Relay connection aborted", "AbortError"));
-    // One deadline at a time, re-armed as the setup moves on, so a stall names the side that stalled:
-    // the relay before it assigns the connection, the PC before its first frame, and the PC's
-    // admission after that. The PC's handshake answer (its first frame, which may be text or
-    // bytes) is what tells it apart from an offline one; frames before admission all come from it.
     let deadline = setTimeout(() => stop(new RelayUnreachableError(null, true)), ASSIGNMENT_MS);
     let heardPc = false;
     const expect = (ms: number, failure: () => Error): void => {
@@ -274,7 +243,6 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
         return;
       }
       if (phase === "welcome" && frame.type === FrameType.WELCOME) {
-        // sent before the PC read HELLO, so it cannot select comparing digits: the WELCOME answering HELLO follows
         if (comparing && frame.payload.provisional && !passed) { passed = bytes; return; }
         // before any credential: a PC of another relay generation is an update, not a pairing
         if (frame.payload.relay_protocol !== RELAY_PROTOCOL) throw new MuxProtocolError("unsupported_version", `The PC speaks relay protocol ${frame.payload.relay_protocol}`);
@@ -292,9 +260,8 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
           if (!binding) throw new MuxProtocolError("internal_error", "The relay channel has no binding");
           phoneNonce = randomPairNonce();
           phase = "pair";
-          // both people now have PAIR_APPROVAL_MS; the PC ends the comparison first, and says why
-          expect(PAIR_APPROVAL_MS + 5_000, () => new RelayAdmissionTimeoutError("auth"));
-          mux?.extendSetup(PAIR_APPROVAL_MS + 5_000);
+          expect(PAIR_APPROVAL_MS + PAIR_APPROVAL_GRACE_MS, () => new RelayAdmissionTimeoutError("auth"));
+          mux?.extendSetup(PAIR_APPROVAL_MS + PAIR_APPROVAL_GRACE_MS);
           await send({ type: FrameType.PAIR_REQUEST, flags: 0, stream_id: 0,
             payload: { label: device.label, public_key: device.public_spki, commitment: toBase64Url(pairCommitment(binding, device.public_spki, phoneNonce)) } });
         } else if (offer.code !== undefined) {
@@ -348,12 +315,9 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
         // the PC's answer to the relay-hints this phone offered in HELLO, inside the Noise channel the
         // PC authenticated: the relay cannot have written these
         return { ...kept, device_id: frame.payload.device_id, relay: hintedRelay(kept.relay, frame.payload.relays),
-          // the same channel: a PC that names none now (turned off, or no network) leaves none to try
           ...(options.offerDirect ? { direct: frame.payload.direct ?? [] } : {}) };
       });
       if (options.signal?.aborted || !secure?.isOpen() || !mux || !welcome) return;
-      // Defer setup accounting until admission: receive() automatically emits RECEIVED.
-      // Outgoing HELLO/AUTH already used the mux ledger, so inbound receipts are safe.
       if (passed) mux.receive(passed);
       mux.receive(welcome);
       if (answered) mux.receive(answered);
@@ -429,7 +393,6 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
           clock: { now: () => performance.now(), setTimeout: (callback, ms) => {
             const timer = setTimeout(() => {
               if (phase === "ready") callback();
-              // the mux exists only once the PC answered: its setup timer firing is the PC's admission stalling
               else stop(new RelayAdmissionTimeoutError(phase === "auth" ? "auth" : "welcome"));
             }, ms);
             return () => clearTimeout(timer);
@@ -463,10 +426,6 @@ export async function probeDirect(offer: RelayOffer, direct: string, socketFor: 
  */
 export type PcProbe = { readonly kind: "answered"; readonly ms: number } | { readonly kind: "silent" } | { readonly kind: "unreachable" };
 
-/**
- * probeDirect's check, on one of the PC's direct carriers or through a relay (`wss://`, the PC named by
- * the offer's server_id): the PC holds no session for it either way, as it is closed before HELLO.
- */
 export function probePc(offer: RelayOffer, via: { readonly direct: string } | { readonly relay: string }, socketFor: (url: string) => RelaySocket, ms: number, signal?: AbortSignal): Promise<PcProbe> {
   const unreachable: PcProbe = { kind: "unreachable" };
   if (signal?.aborted) return Promise.resolve(unreachable);
@@ -483,7 +442,6 @@ export function probePc(offer: RelayOffer, via: { readonly direct: string } | { 
     socket.binaryType = "arraybuffer";
     let secure: SecureChannel | undefined;
     let settled = false;
-    /** when the carrier assigned the connection: from then on, only the PC can answer */
     let assignedAt: number | undefined;
     const settle = (answer: PcProbe): void => {
       if (settled) return;
@@ -496,7 +454,6 @@ export function probePc(offer: RelayOffer, via: { readonly direct: string } | { 
       socket.close(4000, "probe done");
       resolve(answer);
     };
-    // past the carrier's assignment, a probe that ends without the PC's answer met a silent PC
     const failed = (): void => settle(assignedAt === undefined ? unreachable : { kind: "silent" });
     const timer = setTimeout(failed, ms);
     const aborted = (): void => settle(unreachable);
@@ -531,11 +488,6 @@ export function probePc(offer: RelayOffer, via: { readonly direct: string } | { 
   });
 }
 
-/**
- * A PC's direct carriers in the order to try them: same-network addresses first, then Tailscale ones, each kind in
- * the order the PC named them, except that `worked` (the carrier that last carried the channel) leads its kind.
- * The relay always comes after all of them.
- */
 export function orderDirectRoutes(carriers: readonly string[], worked?: string): string[] {
   const rank = (carrier: string): number => isTailnetCarrier(carrier) ? 1 : 0;
   return carriers.map((carrier, index) => ({ carrier, index }))
@@ -547,7 +499,6 @@ export function orderDirectRoutes(carriers: readonly string[], worked?: string):
  * Opens through `first` (the offer's own relay by default) and, when the offer names one of Ovis's
  * regional relays and that attempt failed before the PC answered (so no pairing code was spent),
  * through the other of the offer's relay and the global one, which such a PC is always linked to.
- * The device keeps the offer's relay either way; the result names the relay that carried the channel.
  */
 export async function openRelayChannelWithFallback<O extends { readonly carrier?: string }>(
   offer: RelayOffer, options: O, open: (offer: RelayOffer, options: O) => Promise<RelayChannel>, first = offer.relay,
