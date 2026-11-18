@@ -199,9 +199,6 @@ export function compactBranch(branch: string | null): string | null {
   return branch.replace(BRANCH_KIND, "") || branch;
 }
 
-function cwdBasename(cwd: string | null | undefined): string {
-  return cwd ? folderName(cwd) : "unknown directory";
-}
 
 interface InlineError {
   workspaceId?: string;
@@ -794,9 +791,10 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
     // a checkout that waits or has finished must not hide behind the fold
     const statusPanes = collapsed ? [...panes, ...children.flatMap((child) => roster.filter((candidate) => candidate.workspace_id === child.workspace_id))] : panes;
     // Two lines lead with the workspace's name, as herdr's sidebar does, and say under it what the pane it opens is on;
-    // a shell's "~" (its home folder) names nothing
+    // a shell's "~" (its home folder) names nothing, nor does the pane id a pane without a title falls back to
     const shownPaneTitle = displayPaneTitle(pane);
-    const place = twoLine ? unsaidLine(rowTitle, [pane.label?.trim() || !isHomeTitle(shownPaneTitle) ? shownPaneTitle : null, secondaryBranch, cwdBasename(pane.cwd)]) : null;
+    const saysPane = shownPaneTitle !== pane.pane_id && (Boolean(pane.label?.trim()) || !isHomeTitle(shownPaneTitle));
+    const place = twoLine ? unsaidLine(rowTitle, [saysPane ? shownPaneTitle : null, secondaryBranch, pane.cwd ? folderName(pane.cwd) : null]) : null;
     const foldedCount = (collapsed ? children.filter((child) => !roster.some((candidate) => candidate.workspace_id === child.workspace_id && candidate.pane_id === selectedPaneId)).length : 0)
       + (agentsAway ? allWorkers.length : 0);
     const editingWorkspace = editingWorkspaceId === workspace.workspace_id;
