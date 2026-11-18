@@ -336,6 +336,53 @@ describe("the queue's turn gate (#4118)", () => {
     expect(pending.next("p")).toBe(z);
   });
 
+  it("takes a Send now's read at work after a Codex restart's ready as the restarted turn it joins, and waits for that turn's end", () => {
+    let clock = 0;
+    const pending = new PendingInputs<string, null>(() => {}, () => clock, 10);
+    const identity = { agent: "codex", terminalId: "p", session: null };
+    pending.status("p", "working");
+    const x = pending.enqueue("a", "p", 1, "X", null, identity);
+    const y = pending.enqueue("a", "p", 2, "Y", null, identity);
+    const z = pending.enqueue("a", "p", 3, "Z", null, identity);
+    expect(pending.claim(x, false)).toBe(true);
+    pending.committing(x, true, true);
+    pending.settle(x);
+    pending.status("p", "idle");
+    expect(pending.claim(y, false)).toBe(true);
+    // read at work after that ready, with no status since
+    pending.committing(y, true, false, pending.mark("p"));
+    pending.settle(y);
+    clock = 10;
+    expect(pending.expire()).toEqual([]);
+    expect(z.message.state).toBe("queued");
+    pending.status("p", "working");
+    pending.status("p", "idle");
+    expect(pending.next("p")).toBe(z);
+  });
+
+  it("takes a Send now's read at work made before a Codex restart's ready as the turn Escape ended, not the restarted one", () => {
+    let clock = 0;
+    const pending = new PendingInputs<string, null>(() => {}, () => clock, 10);
+    const identity = { agent: "codex", terminalId: "p", session: null };
+    pending.status("p", "working");
+    const x = pending.enqueue("a", "p", 1, "X", null, identity);
+    const y = pending.enqueue("a", "p", 2, "Y", null, identity);
+    pending.enqueue("a", "p", 3, "Z", null, identity);
+    expect(pending.claim(x, false)).toBe(true);
+    pending.committing(x, true, true);
+    pending.settle(x);
+    expect(pending.claim(y, false)).toBe(true);
+    // Y's read at work begins; the interruption's ready comes before its Enter
+    const readMark = pending.mark("p");
+    pending.status("p", "idle");
+    pending.committing(y, true, false, readMark);
+    pending.settle(y);
+    // a ready well after Y's Enter, the restarted turn never seen
+    clock = 11;
+    pending.status("p", "idle");
+    expect(pending.next("p")).toBeNull();
+  });
+
   it("ends a Send now's wait without holding the queue when no turn of its own starts after the ready that came right behind it", () => {
     let clock = 0;
     const pending = new PendingInputs<string, null>(() => {}, () => clock, 10);

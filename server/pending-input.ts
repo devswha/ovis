@@ -261,12 +261,16 @@ export class PendingInputs<Owner, Lease> {
     return true;
   }
 
-  committing(item: PendingRecord<Owner, Lease>, steeringWorkingTurn = false, restartingWorkingTurn = false): void {
+  /** `readMark`: `mark()` as the caller's last read before this Enter began; no status came since it when it still is */
+  committing(item: PendingRecord<Owner, Lease>, steeringWorkingTurn = false, restartingWorkingTurn = false, readMark?: number): void {
     if (this.records.get(item.message.id) !== item || !item.inFlight) return;
     const by = item.message.id, now = this.now();
     const earlier = this.gates.get(item.paneId);
-    // an earlier Send now's Codex restart not yet seen to start keeps its wait: a working read before it is the turn Escape ends
-    const restarting = earlier?.committed && !earlier.completed && earlier.by !== by && earlier.restart !== undefined ? earlier : undefined;
+    // an earlier Send now's Codex restart not yet seen to start keeps its wait: a working read before it is the turn Escape ends.
+    // A steering read at work made after its ready was seen (no status came since it) is the restarted turn itself, which this
+    // Enter joins
+    const joinsRestart = steeringWorkingTurn && earlier?.restart === "working" && readMark === this.mark(item.paneId);
+    const restarting = earlier?.committed && !earlier.completed && earlier.by !== by && earlier.restart !== undefined && !joinsRestart ? earlier : undefined;
     let gate: TurnGate;
     if (restartingWorkingTurn) gate = { by, committed: true, sawWorking: false, completed: false, deadline: now + this.startTimeoutMs, restart: "interruption", since: now };
     // its own start timeout: the earlier one's, maybe passed already, would end this Enter's wait before its turn could show.
