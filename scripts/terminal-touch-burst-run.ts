@@ -184,7 +184,10 @@ export async function runTouchBurst(part: "application" | "history"): Promise<vo
   let receivedReports = 0;
   // The attach stream sends screen diffs, where unchanged marker characters can be omitted.
   // Use a private byte stream with one byte per complete wheel report, independent of rendering.
-  const receiptListener = part === "history" ? Bun.listen({
+  let receiptListener: Bun.TCPSocketListener<undefined> | undefined;
+try {
+  // bound inside the cleanup scope, so a listen that throws still removes the temporary directory
+  receiptListener = part === "history" ? Bun.listen({
     hostname: "127.0.0.1", port: 0,
     socket: {
       data(_socket, chunk) {
@@ -192,7 +195,6 @@ export async function runTouchBurst(part: "application" | "history"): Promise<vo
       },
     },
   }) : undefined;
-try {
   const program = join(state, "wheel-app.mjs");
   const log = join(state, "input.bin");
   writeFileSync(program, `
