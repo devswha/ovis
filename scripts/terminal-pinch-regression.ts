@@ -26,17 +26,11 @@ export async function checkTerminalPinch(browser: Browser, origin: string, paneI
   await context.addInitScript(({ paneId }) => {
     if (!localStorage.getItem("ovis:settings")) localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" }));
     localStorage.setItem(`ovis:view:${paneId}`, "terminal");
-    const touchWindow = window as Window & { wheels_: number; wheelModes_: number[]; remaining_: number[]; lastMove_: { at: number; y: number } | null; touchEnds_: number };
+    const touchWindow = window as Window & { wheels_: number; wheelModes_: number[]; remaining_: number[]; touchEnds_: number };
     touchWindow.wheels_ = 0;
     touchWindow.wheelModes_ = [];
     touchWindow.remaining_ = [];
-    touchWindow.lastMove_ = null;
     touchWindow.touchEnds_ = 0;
-    document.addEventListener("touchstart", () => { touchWindow.lastMove_ = null; }, { capture: true });
-    document.addEventListener("touchmove", (event) => {
-      const finger = event.touches[0];
-      if (event.touches.length === 1 && finger) touchWindow.lastMove_ = { at: event.timeStamp, y: finger.clientY };
-    }, { capture: true });
     document.addEventListener("touchend", (event) => {
       touchWindow.touchEnds_++;
       touchWindow.remaining_ = Array.from(event.touches, (touch) => touch.identifier);
@@ -115,18 +109,20 @@ export async function checkTerminalPinch(browser: Browser, origin: string, paneI
 
     const swipe = async (distance: number, moves: number): Promise<number> => {
       const before = await probe();
-      await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: cx, y: cy - distance / 2, id: 1 }] });
+      // Glide uses the input events' timestamps. Encode a stopped finger at
+      // lift even if Chromium coalesces or omits a move in a short swipe.
+      const lift = Date.now() / 1000;
+      const moved = lift - FLING_STOPPED_MS * 2 / 1000;
+      const started = moved - 0.016;
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: cx, y: cy - distance / 2, id: 1 }], timestamp: started });
       for (let step = 1; step <= moves; step++) {
-        await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: cx, y: cy - distance / 2 + distance * step / moves, id: 1 }] });
+        await cdp.send("Input.dispatchTouchEvent", {
+          type: "touchMove",
+          touchPoints: [{ x: cx, y: cy - distance / 2 + distance * step / moves, id: 1 }],
+          timestamp: started + (moved - started) * step / moves,
+        });
       }
-      // the finger holds still before it lifts, so the swipe ends where it is: a lift while it moves fast
-      // would glide on (lib/touchFling.ts), which terminal-touch-burst-run.ts measures apart
-      const end = cy + distance / 2;
-      await page.waitForFunction(([y, still]) => {
-        const last = (window as Window & { lastMove_?: { at: number; y: number } | null }).lastMove_;
-        return last != null && Math.abs(last.y - y) < 1 && performance.now() - last.at > still;
-      }, [end, FLING_STOPPED_MS] as const, { timeout: 10_000 });
-      await release();
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [], timestamp: lift });
       await page.waitForFunction((count) => (window as Window & { touchEnds_: number }).touchEnds_ > count
         && !document.querySelector("[data-touch-fling]"), before.touchEnds, { timeout: 10_000 });
       // Lift can enqueue the partial wheel. Bound the drain by the number of

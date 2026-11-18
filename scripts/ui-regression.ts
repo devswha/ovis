@@ -882,7 +882,6 @@ try {
     assert.equal(await alertsState(page), "On in the app");
     assert.equal(await alertsOffMarked(page), false, "alerts that are on leave the More button unmarked");
     await context.grantPermissions(["notifications"], { origin });
-    await page.waitForFunction(() => Notification.permission === "granted");
     await runMoreItem(page, "Alerts");
     await until(async () => await alertsState(page) !== "On in the app", "the item's tap takes the permission");
     assert.match(await alertsState(page), /^On[ ,]/);
@@ -1480,7 +1479,9 @@ try {
     const dialog = page.getByRole("dialog", { name: /^New workspace/ });
     await dialog.getByLabel(/^Directory/).fill("~");
     await dialog.getByRole("button", { name: "Browse", exact: true }).click();
-    await dialog.locator(".dir-browser-item").first().waitFor();
+    // A runner's home may have no visible subfolders. Wait for the resolved home itself.
+    await dialog.locator('.dir-browser[aria-busy="false"] .dir-browser-path[title]:not([title=""])')
+      .getByText("~", { exact: true }).waitFor();
     assert.equal(await dialog.getByLabel(/^Directory/).inputValue(), "~", "Browse keeps the home-relative form");
     await dialog.getByRole("button", { name: "Browse", exact: true }).click();
     await dialog.getByLabel(/^Directory/).fill(root);
