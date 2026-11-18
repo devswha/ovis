@@ -25,14 +25,15 @@ export function isContextClear(value: unknown, source: string): boolean {
  * A note herdr-core (hc) typed into the agent, as the whole prompt: a child terminal's report
  * (`<hc from="t7 review">…</hc>`, sourced `peer:t7 review`) or hc's own word on a child that cannot
  * report (`<hc>t3 exited (signal 1). Read: hc read t3</hc>`, sourced `hc`). Nobody typed it here.
- * hc types the notes it has at once as one paste, a line each, so a prompt may be several. A report may
- * quote a note: the tags inside one must pair up, and anything but space between notes makes them none.
+ * hc types its own notes on several children at once as one paste, a line each, and a report on its own;
+ * it types a body as it is, so a note may quote one (the tags inside pair up). A prompt of several notes
+ * where one names a sender is none: a report can close its note and open another under any name.
  */
 export function hcNotes(text: string): Extract<ConversationPart, { kind: "notice" }>[] | null {
   const notes: Extract<ConversationPart, { kind: "notice" }>[] = [];
   let depth = 0, open = 0, attributes = "", after = 0;
-  for (const tag of text.matchAll(/<(\/?)hc(?=[\s>])([^>]*)>/g)) {
-    if (tag[1]) {
+  for (const tag of text.matchAll(/<hc(\s[^<>]*)?>|<\/hc\s*>/g)) {
+    if (tag[0][1] === "/") {
       if (--depth < 0) return null;
       if (depth > 0) continue;
       const body = text.slice(open, tag.index).trim();
@@ -43,19 +44,20 @@ export function hcNotes(text: string): Extract<ConversationPart, { kind: "notice
     } else {
       if (depth++ > 0) continue;
       if (text.slice(after, tag.index).trim() !== "") return null;
-      attributes = tag[2]!;
+      attributes = tag[1] ?? "";
       open = tag.index + tag[0].length;
     }
   }
-  return depth === 0 && notes.length > 0 && text.slice(after).trim() === "" ? notes : null;
+  if (depth !== 0 || notes.length === 0 || text.slice(after).trim() !== "") return null;
+  return notes.length === 1 || notes.every((note) => note.source === "hc") ? notes : null;
 }
 
-/** Every agent's turns with each prompt that is only hc notes (hcNotes) as those notices. */
+/** Every agent's turns with each prompt that is only hc notes (hcNotes) as those notices, a turn each. */
 export function withHcNotes(turns: ConversationTurn[]): ConversationTurn[] {
-  return turns.map((turn) => {
+  return turns.flatMap((turn) => {
     const only = turn.role === "user" && turn.parts.length === 1 ? turn.parts[0] : undefined;
     const notes = only?.kind === "text" ? hcNotes(only.text) : null;
-    return notes === null ? turn : { ...turn, parts: notes };
+    return notes === null ? [turn] : notes.map((note) => ({ ...turn, parts: [note] }));
   });
 }
 

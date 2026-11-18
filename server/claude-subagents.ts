@@ -287,7 +287,8 @@ function prompted(entry: Row): boolean {
   if (entry["type"] !== "user" || entry["isMeta"] === true || entry["isCompactSummary"] === true || entry["isSidechain"] === true) return false;
   const content = row(entry["message"])?.["content"];
   const textOnly = !Array.isArray(content) || content.every((block) => row(block)?.["type"] === "text");
-  if (textOnly && hcNotes(unwrapPastes(blocksIn(entry).join(""))) !== null) return false;
+  const text = textOnly ? blocksIn(entry).join("\n") : "";
+  if (text.includes("<hc") && hcNotes(text.includes("<pasted_content") ? unwrapPastes(text) : text) !== null) return false;
   if (Array.isArray(content) && content.some((block) => row(block)?.["type"] === "tool_result")) return false;
   const origin = entry["origin"];
   const kind = typeof origin === "string" ? origin : row(origin)?.["kind"];
