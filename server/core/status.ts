@@ -690,16 +690,18 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       broadcastAll(paneStatus(paneId, "idle"));
       push.onStatus(paneId, alertStatus("idle", waits.waiting(paneId))).catch(logPushError);
     },
-    onBaseline: (panes) => {
+    onBaseline: (panes, newer = new Set()) => {
       const projected = panes.map((pane) => ({ ...pane, agent_status: restingClaude(pane.pane_id, pane.agent, pane.agent_status) }));
       for (const pane of projected) if (pane.agent === "claude" || pane.agent === "opencode" || isTaskAgent(pane.agent)) waits.seed(pane.pane_id, pane.agent_status);
       push.seed(projected.map((pane) => ({ ...pane, agent_status: alertStatus(pane.agent_status, waits.waiting(pane.pane_id)) })));
       for (const pane of projected) {
+        // herdr told the pane's status after this snapshot was read: the queue has the newer reading
+        if (newer.has(pane.pane_id)) continue;
         // A fast mirrored client may queue before the collector's first baseline. A
         // known ready baseline can schedule a fresh guarded check even when the tracker
         // still remembers working; an unknown baseline never supplies that permission.
         const status = pane.agent_status === "idle" || pane.agent_status === "done" ? pane.agent_status : completions.current(pane.pane_id) ?? pane.agent_status;
-        pending.status(pane.pane_id, queueStatus(pane.pane_id, status)); drainPending(pane.pane_id);
+        pending.baseline(pane.pane_id, queueStatus(pane.pane_id, status)); drainPending(pane.pane_id);
       }
     },
     onReconciled: (panes) => {

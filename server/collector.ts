@@ -55,7 +55,8 @@ const REPLAY_SETTLE_MS = 150;
 
 export interface StatusCollectorHandlers {
   onStatus: (paneId: string, status: AgentStatus, agent: string | null, replay?: { before: AgentStatus; agent: string | null }) => void;
-  onBaseline: (panes: readonly HerdrPane[]) => void;
+  /** `newer`: panes with an event or an exit since the snapshot was asked for, whose reading here is older than that */
+  onBaseline: (panes: readonly HerdrPane[], newer: ReadonlySet<string>) => void;
   onResync?: (panes: readonly HerdrPane[], newer: ReadonlySet<string>) => void;
   onReconciled?: (panes: readonly HerdrPane[]) => void;
   onPaneEnded: (paneId: string) => void;
@@ -351,14 +352,14 @@ export function startStatusCollector(handlers: StatusCollectorHandlers, override
     try {
       const snapshot = await deps.snapshot();
       if (stopped) return;
-      handlers.onBaseline(snapshot.panes);
+      // an exit since the snapshot was asked for is newer than it too. A focus is not: work that
+      // ended during a loss is still to be settled, or it would read as going on for good
+      const newer = new Set([...lastEventOf, ...actedOn].filter(([, seq]) => seq > askedAt).map(([paneId]) => paneId));
+      handlers.onBaseline(snapshot.panes, newer);
       for (const pane of snapshot.panes) if (!displayAgents.has(pane.pane_id)) displayAgents.set(pane.pane_id, pane.display_agent ?? null);
       const resynced = resync !== null && resync === statusGeneration && statusSubscription !== null;
       if (resynced) {
         recovering = false;
-        // an exit since the snapshot was asked for is newer than it too. A focus is not: work that
-        // ended during the loss is still to be settled, or it would read as going on for good
-        const newer = new Set([...lastEventOf, ...actedOn].filter(([, seq]) => seq > askedAt).map(([paneId]) => paneId));
         handlers.onResync?.(snapshot.panes, newer);
         for (const pane of snapshot.panes) if (!newer.has(pane.pane_id)) displayAgents.set(pane.pane_id, pane.display_agent ?? null);
         handlers.onStructureChange();

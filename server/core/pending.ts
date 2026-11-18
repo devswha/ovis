@@ -703,7 +703,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       const receiptText = piTracked ? piReceiptText(context.identity, text) : undefined;
       const piTemplate = piTracked && piListsTemplate(context.pane, text);
       if ((automatic || (queued && waitedForOmp)) && (context.working || queueHeld(paneId, false))) {
-        pending.observe(paneId, "working", mark);
+        pending.observe(paneId, "working", mark, context.pane.agent_status === "working");
         throw new HerdrError("pending_wait", "The agent is working again; this message still waits for its next turn");
       }
       // a draft typed in the terminal is the user's: the paste would join it and the Enter send both (#609).
@@ -727,7 +727,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       if (Date.now() - arrivedAt > (options.submitDeadlineMs ?? SUBMIT_DEADLINE_MS)) throw new HerdrError("submit_timeout", "The pending message waited too long; nothing was typed");
       authorizePending(owner, paneId, lease);
       if ((automatic || queued) && queueHeld(paneId, true)) {
-        pending.observe(paneId, "working", mark);
+        pending.observe(paneId, "working", mark, false);
         throw new HerdrError("pending_wait", "The agent is working again; this message still waits for its next turn");
       }
       const allowed = (): boolean => {
@@ -777,6 +777,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
         }
         throw error;
       };
+      let enterMark = pending.mark(paneId);
       let beforeEnter = await pendingContext(owner, paneId, lease, identity, true, agentOnly).catch(enterRefused);
       if (automatic && (beforeEnter.working || queueHeld(paneId, false))) enterRefused(new HerdrError("pending_wait", "The agent started another turn before this queued message could be committed"));
       authorizePending(owner, paneId, lease);
@@ -784,6 +785,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       const beforeCapturePid = beforeEnter.identity.processPid;
       const piAnchor = piTracked ? await preparePiReceipt(paneId, beforeEnter.identity).catch(() => null) : undefined;
       if (piAnchor !== undefined) {
+        enterMark = pending.mark(paneId);
         beforeEnter = await pendingContext(owner, paneId, lease, identity, true, agentOnly).catch(enterRefused);
         if (automatic && (beforeEnter.working || queueHeld(paneId, false))) enterRefused(new HerdrError("pending_wait", "The agent started another turn before this queued message could be committed"));
         await stillInFront(paneId, beforeCapturePid, identity, agentOnly).catch(enterRefused);
@@ -801,6 +803,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       if (resumed()) refuseResumed();
       authorizePending(owner, paneId, lease);
       const steering = !automatic && beforeEnter.working;
+      // the last read before the Enter may be ahead of herdr's events: those still on their way say nothing of its turn
+      pending.observe(paneId, beforeEnter.pane.agent_status, enterMark);
       committing(steering);
       // Claude Code queues what Enter commits during a turn; Ctrl+Enter sends it now (#737). herdr
       // encodes the key as the pane asked, and as a plain CR for a program that asked for nothing.
@@ -864,7 +868,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       const fault = error instanceof HerdrError && error.code === "submit_changed" ? pendingFault(error, options.herdrFailure)
         : wrote ? { code: "submit_changed", message: "Pending-message delivery could not be confirmed. Check the terminal before sending again." } : pendingFault(error, options.herdrFailure);
       const unannounced = !wrote && error instanceof CodexOwnScreenRefusal;
-      if (automatic && !wrote && fault.code === "agent_blocked" && !unannounced) pending.observe(paneId, "blocked", mark);
+      if (automatic && !wrote && fault.code === "agent_blocked" && !unannounced) pending.observe(paneId, "blocked", mark, false);
       if (queued && !wrote && error instanceof InputDraftError && error.identity) return { ok: false, ...fault, refusal: { draft: error.draft, box: error.box, identity: error.identity } };
       return { ok: false, ...fault, ...(unannounced ? { unannounced } : {}) };
     } finally { piCapacity.release(piReservation); }
@@ -1391,7 +1395,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
                 waited = true;
               }
             }
-            if (!waited) pending.observe(message.pane_id, held && !context.working ? "working" : context.pane.agent_status, mark);
+            const told = held && !context.working;
+            if (!waited) pending.observe(message.pane_id, told ? "working" : context.pane.agent_status, mark, !told);
             // hold: kept for the owner's Send now, never sent by the turn's end
             const item = pending.enqueue(client, message.pane_id, message.id, text, lease!, context.identity, message.delivery === "hold", agentOnly);
             if (typedWhileOmpStarted(message.pane_id)) pending.holdQueued(message.pane_id, TYPED_WHILE_WAITING);
