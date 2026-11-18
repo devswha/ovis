@@ -1,11 +1,13 @@
 import type { Machine } from "../../shared/machines.ts";
 import { isBackgroundRole, ROLE_TOKEN } from "../../shared/pane-tokens.ts";
-import { sidebarAgents, type SidebarAgent } from "./sidebarAgents.ts";
+import { nestHelpers, sidebarAgents, type SidebarAgent } from "../../shared/agent-roster.ts";
 import type { AgentStatus } from "../../shared/protocol.ts";
 import { activityOrder } from "./sidebarOrder.ts";
 import { knownStatus } from "./status.ts";
 import { sidebarPinKey, splitPinnedRows } from "./sidebarPins.ts";
 import { nestRows } from "../../shared/attention.ts";
+
+export { nestHelpers } from "../../shared/agent-roster.ts";
 
 export { AGENT_GROUPS, agentGroup, groupAgentRows, type AgentGroup, type AgentGroupOptions } from "../../shared/attention.ts";
 
@@ -15,14 +17,6 @@ export interface AgentRosterOptions {
   byActivity: boolean;
   seqs(machineId: string): ReadonlyMap<string, number>;
   pinned: readonly string[];
-}
-
-/**
- * A PC's rows with each helper right under the agent that started it (herdr-core's `parent_pane_id`),
- * after that agent's earlier helpers.
- */
-export function nestHelpers(entries: readonly SidebarAgent[]): SidebarAgent[] {
-  return nestRows(entries, (entry) => entry.pane.pane_id, (entry) => entry.pane.parent_pane_id);
 }
 
 export function agentRoster(machines: readonly Machine[], options: AgentRosterOptions): { pinned: AgentRow[]; rest: AgentRow[] } {
