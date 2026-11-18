@@ -370,7 +370,7 @@ it is off, and wait until it is online.
     with **The code no longer works:** and why; one this PC no longer knows (it restarted) is said
     to be dead, and the next comes when it would have run out. An Ovis from before codes made for
     an account answers with no account: its code admits whoever holds it, so the command says so
-    once, before its first code, and keeps what it did before: once a device paired, through the
+    on the screen of each QR code it draws (once, before its first code, with `--print`), and keeps what it did before: once a device paired, through the
     relay or with the six digits at this PC's own address, no code is shown again. Where the relay takes no typed
     code (any relay but Ovis's own), nothing starts a new pairing for the QR code, so the command
     first ends whatever pairing code is pending on this PC (one from Settings or `pair`, which

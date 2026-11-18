@@ -3000,6 +3000,23 @@ describe("ovis link, on the PC itself", () => {
     expect(joined.text).not.toContain("Asking again");
     expect(joined.cancels).toEqual([{ code: "100001" }]);
     expect(joined.offers).toEqual(["100001"]);
+    // the PC joined an account between the code to type and the QR code: the offer made none, and only the code
+    // this command showed is taken back, never whichever pairing is pending by then
+    let at: { account: string | null; devices: Row[] } | null = null;
+    const between = await scanning({
+      tied: TIED,
+      step: (state) => { at = state; },
+      refuse: (path, codes) => {
+        if (path !== "/api/relay/offer" || codes !== 1) return undefined;
+        at!.account = "acct_1";
+        at!.devices = [OLD, MEMBER];
+        return Response.json({ error: { code: "in_account", message: "This PC is in an Ovis account." } }, { status: 409 });
+      },
+    });
+    expect(between.code).toBe(0);
+    expect(between.text).not.toContain("Asking again");
+    expect(between.offers).toEqual(["100001"]);
+    expect(between.cancels).toEqual([{ code: "100001" }]);
     const invalid = await scanning({ tied: TIED, refuse: (path) => path === "/api/relay/code" ? Response.json({ error: { code: "invalid_account", message: "x-ovis-expect-account names no account id." } }, { status: 400 }) : undefined });
     expect(invalid.code).toBe(1);
     expect(invalid.out.at(-1)).toBe("Could not link this PC: The Ovis on this PC did not take the id of the account you signed in to (acct_1) for its code (/api/relay/code: x-ovis-expect-account names no account id.)\n");
@@ -3013,8 +3030,18 @@ describe("ovis link, on the PC itself", () => {
     expect(text).not.toContain("ABCD-EFGH-J1");
   });
 
-  it("at an Ovis from before codes made for an account, says so once before its first code, and reads no code by an id", async () => {
-    const { out, text, calls, paths, offers } = await scanning();
+  it("at an Ovis from before codes made for an account, says so on the screen of each QR code it draws", async () => {
+    const { out, offers } = await scanning();
+    expect(offers).toEqual(["100001", "100002", "100003"]);
+    const cards = out.filter((part) => part.includes("Scan this QR code"));
+    expect(cards.length).toBe(3);
+    for (const card of cards) expect(card).toContain(OLDER.trimEnd());
+    // nothing of it is said on the screen the QR code's screen covers
+    expect(out.filter((part) => part.includes(OLDER.trimEnd()) && !cards.includes(part))).toEqual([]);
+  });
+
+  it("at an Ovis from before codes made for an account, --print says so once before its first code, and reads no code by an id", async () => {
+    const { out, text, calls, paths, offers } = await scanning({ args: ["--print"] });
     expect(offers).toEqual(["100001", "100002", "100003"]);
     expect(times(text, OLDER)).toBe(1);
     expect(out.indexOf(OLDER)).toBeLessThan(out.findIndex((part) => part.includes("Scan this QR code")));

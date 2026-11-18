@@ -181,6 +181,9 @@ const CODE_ENDED: Readonly<Record<string, string>> = {
   guessed: "a wrong code was typed for it five times.",
 };
 
+/** What `add` says of a code from an Ovis that makes its codes for no account: on its QR code's screen, or once with --print. */
+const OLDER_PC = "The Ovis on this PC is older than this command: its code is not made for your account, so a device of any account, or of none, that reads it can pair. Update it in Settings → Updates on this PC to have the code made for your account.";
+
 /** What a machine profile answers a code with: it takes devices through its account (`machine_profile`), not by a code. */
 const onMachine = (error: unknown): boolean => error instanceof LocalError && error.code === "machine_profile";
 
@@ -933,7 +936,7 @@ interface Joining {
  * and the PC ends the code itself once it is in the account: so a device that shows in the list did not come by that
  * code, and ends nothing. The code's id tells, at every look, whether it is still the pending one; one that ended
  * otherwise ends the run, which says why. An Ovis from before this makes a code for whoever holds it: the command says
- * so once, and keeps what follows.
+ * so on each QR code's screen (once with --print), and keeps what follows.
  *
  * The code admits whoever holds it, through the relay or at this PC's own address, so every device that came since
  * the first code is one it let in. One whose row names the account that signed in here is taken as that account's:
@@ -973,7 +976,8 @@ async function addByQr(options: LinkOptions, api: Api, joining: Joining): Promis
   let live = false;
   let shown: string | null = null;
   // this PC makes its codes for the account that signed in (`ForAccount`), and the id of the one out; `lost`: the id of
-  // one this PC no longer knew, which was said. `older`: an Ovis from before that, said once
+  // one this PC no longer knew, which was said. `older`: an Ovis from before that, said once with --print (each of
+  // its QR codes says it on its own screen otherwise)
   let tied = false;
   let pinned: string | null = null;
   let lost: string | null = null;
@@ -994,7 +998,7 @@ async function addByQr(options: LinkOptions, api: Api, joining: Joining): Promis
     const left = remaining(Math.max(0, card.until - now()));
     const code = qr(card.url).replace(/\n+$/, "").split("\n");
     const width = Math.max(...code.map((row) => row.length));
-    const head = ["Scan this QR code with a device that is signed in to this Ovis account. It adds this PC to the account; there is no number to type.", ""];
+    const head = ["Scan this QR code with a device that is signed in to this Ovis account. It adds this PC to the account; there is no number to type.", ...!tied && !joining.plain ? [OLDER_PC] : [], ""];
     const tail = [
       ...card.typed !== null
         ? [`Code to type: ${card.typed}   (works once, expires in ${left})`, `Or, on that device, open ${appHost(options, card.url)}, choose Pair with a code and type it.`]
@@ -1064,7 +1068,12 @@ async function addByQr(options: LinkOptions, api: Api, joining: Joining): Promis
     }
     let offer: { url: string; expires_at: string } & ForAccount;
     try { offer = await api<{ url: string; expires_at: string } & ForAccount>("POST", "/api/relay/offer", forAccount); } catch (error) {
-      throw error instanceof LocalError ? refusal(error) : error;
+      if (!(error instanceof LocalError)) throw error;
+      // the offer started nothing, so nothing of this round is known to take back: only the code shown before is, if
+      // one still is. A code to type made this round is made for the account, was never shown, and ends by itself
+      // as this PC joins an account or as it runs out
+      if (NO_CODE_STARTED.has(error.code)) ({ live, shown } = was);
+      throw refusal(error);
     }
     const decoded = decodeOffer(offer.url);
     if (decoded === null) throw new LocalError("The relay's pairing link did not parse.");
@@ -1084,9 +1093,9 @@ async function addByQr(options: LinkOptions, api: Api, joining: Joining): Promis
       typed = null;
       refused = "it ended as the QR code was made";
     }
-    if (!tied && !older) {
+    if (!tied && !older && joining.plain) {
       older = true;
-      say("The Ovis on this PC is older than this command: its code is not made for your account, so a device of any account, or of none, that reads it can pair. Update it in Settings → Updates on this PC to have the code made for your account.\n");
+      say(`${OLDER_PC}\n`);
     }
     card = { url: offer.url, typed: typed?.code ?? null, refused, serverId: typed?.server_id ?? decoded.server_id, until: Math.min(typed === null ? Infinity : Date.parse(typed.expires_at), Date.parse(offer.expires_at)) };
     draw();
