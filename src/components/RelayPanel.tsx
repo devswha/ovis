@@ -19,7 +19,7 @@ import { SettingsRow, Toggle } from "./SettingsControls.tsx";
 
 export const failureText = (error: unknown): string => error instanceof ApiError
   // a machine pairs no device by a code that names no account
-  ? error.code === "machine_profile" ? t("This machine pairs new devices only through your Ovis account. On the machine, run ovis add and scan its QR code with a device that is signed in.") : error.detail
+  ? error.code === "machine_profile" ? t("Run ovis add on this machine, then scan its QR code with a signed-in device.") : error.detail
   : error instanceof Error ? error.message : String(error);
 
 export function statusText(t: ReturnType<typeof useT>, status: RelayStatus): string {

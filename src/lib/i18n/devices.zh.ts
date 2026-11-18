@@ -252,5 +252,5 @@ export const DEVICES_ZH: Record<string, string> = {
   "Allow notifications in your browser settings, then try again.": "请在浏览器设置中允许通知，然后重试。",
   "Allow notifications for Ovis in the phone's Settings, then try again.": "请在手机的设置中允许 Ovis 的通知，然后重试。",
   "Could not send the test notification. Try again.": "无法发送测试通知。请重试。",
-  "This machine pairs new devices only through your Ovis account. On the machine, run ovis add and scan its QR code with a device that is signed in.": "这台机器只通过你的 Ovis 账号配对新设备。请在这台机器上运行 ovis add，并用已登录的设备扫描它的二维码。",
+  "Run ovis add on this machine, then scan its QR code with a signed-in device.": "请在这台机器上运行 ovis add，然后用已登录的设备扫描它的二维码。",
 };

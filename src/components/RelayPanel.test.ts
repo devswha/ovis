@@ -30,6 +30,6 @@ test("the relay row says when Ovis's relay needs an account, and nothing new oth
 
 test("a machine's refusal to make a pairing code is said in words, and any other refusal keeps the server's own", () => {
   // a machine makes no code that names no account
-  expect(failureText(new ApiError("/api/relay/offer", 409, "machine profile", "machine_profile"))).toStartWith("This machine pairs new devices only through your Ovis account.");
+  expect(failureText(new ApiError("/api/relay/offer", 409, "machine profile", "machine_profile"))).toBe("Run ovis add on this machine, then scan its QR code with a signed-in device.");
   expect(failureText(new ApiError("/api/relay/offer", 409, "This PC is already in an Ovis account.", "in_account"))).toBe("This PC is already in an Ovis account.");
 });

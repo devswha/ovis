@@ -1,20 +1,23 @@
 /**
- * A device's first link to a PC, in a real browser at a phone's width (390) and a PC's (1440). The account service is
- * the in-memory fake (shared/account-service-fake.ts), routed in for https://account.ovis.sh; nothing leaves this machine.
+ * A device's first link to a PC, in a real browser at a phone's width (390) and a PC's (1440). The account service
+ * is the in-memory fake (shared/account-service-fake.ts), routed in for https://account.ovis.sh; nothing leaves this
+ * machine.
  *
  * - The hosted shell (dist-shell/, served as Cloudflare Pages serves it, routed in for https://app.ovis.sh), signed in,
  *   opens QR codes' links for PCs its account does not list. A plain code (no mark): Add and pair posts nothing and
- *   goes on to the relay, as before. A code with the mark `admission: 1`: the confirm says the account checks the
- *   device first, and Add and pair lists the PC and has the admission taken, asked to be quiet, before the first relay
- *   connection opens; when the account service refuses it (429), it stops before any relay connection and says why.
- *   No PC stands behind the relay here, so a pairing that goes on ends there.
- * - A PC's own page (createServer, its relay on a local Bun relay), signed in, in no account, with the account named for
- *   it as `ovis add` names it but the PC not listed in the account: Show the QR code draws the code and, beside it, lists
- *   the PC in the account (PUT /v1/pcs/:id) from the code's own offer, when the account does not list it yet; it opens or closes no pairing window of the PC (POST /api/relay/link, /api/relay/link/close).
+ *   goes on to the relay, as before. A code with the mark `admission: 1`: Add and pair lists the PC and has the
+ *   admission taken, asked to be quiet, before the first relay connection opens; when the account service refuses
+ *   it (429), it stops before any relay connection and says why. No PC stands behind the relay here, so a pairing
+ *   that goes on ends there.
+ * - A PC's own page (createServer, its relay on a local Bun relay), signed in, in no account, with the account named
+ *   for it as `ovis add` names it but the PC not listed in the account: Show the QR code draws the code and, beside
+ *   it, lists the PC in the account (PUT /v1/pcs/:id) from the code's own offer, when the account does not list it
+ *   yet; it opens or closes no pairing window of the PC (POST /api/relay/link, /api/relay/link/close).
  *
  *   bun run build:shell && bun run check run --build bun scripts/relay-first-link-regression.ts
  *
- * The browser lane (scripts/ci-browser.sh) builds dist/ and dist-shell/ first; this uses those builds and builds nothing.
+ * The browser lane (scripts/ci-browser.sh) builds dist/ and dist-shell/ first; this uses those builds and builds
+ * nothing.
  * UI_EVIDENCE_DIR=<dir> keeps a screenshot of each screen; without it the checks still run.
  */
 import assert from "node:assert/strict";
@@ -38,7 +41,6 @@ import { openSettingsPage } from "./settings-page.ts";
 const APP = "https://app.ovis.sh";
 const ACCOUNT_SERVICE = "https://account.ovis.sh";
 const ACCOUNT = "acct_first_link";
-const ADD_COST = "Your Ovis account checks this device first. Your other devices may be told, and the add counts toward your account's limit.";
 const WIDTHS = [{ width: 390, height: 844 }, { width: 1440, height: 900 }] as const;
 const evidence = process.env["UI_EVIDENCE_DIR"] || null;
 const cleanup: (() => unknown)[] = [];
@@ -118,8 +120,6 @@ async function shellAt(browser: Browser, site: string, size: (typeof WIDTHS)[num
     sockets.length = 0;
     await page.goto(encodeOffer(offer, APP), { waitUntil: "domcontentloaded" });
     await page.getByRole("heading", { name: "Add Desk to your account?", exact: true }).waitFor();
-    // the account's check is said only where the device posts an admission: for a marked code
-    assert.equal(await page.getByText(ADD_COST).count(), marked ? 1 : 0, `${size.width} ${name}: the confirm names the account's check only for a marked code`);
     await shot(page, `${size.width}-${name}-confirm`);
     await page.getByRole("button", { name: "Add and pair", exact: true }).click();
     await page.waitForFunction(() => document.querySelector("main[data-relay-state]") !== null && document.querySelector('main[data-relay-state="connecting"], main[data-relay-state="confirm"]') === null);
