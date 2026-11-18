@@ -408,12 +408,12 @@ try {
     assert.ok((await s.page.locator(".xterm-selection div").count()) > 0, "the selection is still up when the plain drag starts");
     // The press reaches the program only from this pane's grid with its mouse mode on, and only while the pane
     // takes input: a mouse report the pane cannot take now is dropped without a word (useTerminalMount sendTyped).
-    await until(() => s.ready(), "the pane takes input before the plain drag");
+    // both hold together right before the press: readiness checked first could drop while the hit test waits
     let under = "";
-    await until(async () => (under = await s.page.evaluate(({ x, y }) => {
+    await until(async () => (under = s.ready() ? await s.page.evaluate(({ x, y }) => {
       const at = document.elementFromPoint(x, y);
       return at?.closest(".pane-frame.is-current .xterm.enable-mouse-events") ? "" : at ? `${at.tagName.toLowerCase()}.${[...at.classList].join(".")}` : "nothing";
-    }, to)) === "", () => `the plain drag's press lands on this pane's grid (found ${under})`);
+    }, to) : "a pane that does not take input") === "", () => `the plain drag's press lands on this pane's grid while it takes input (found ${under})`);
     await dragFromHere(to, from);
     await until(() => drag.test(got += s.received()), () => `a plain drag after a selection received (read ${JSON.stringify(got)})`);
     await until(async () => (await s.page.locator(".xterm-selection div").count()) === 0, "the earlier selection is cleared");
