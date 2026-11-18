@@ -49,10 +49,19 @@ async function pressReaches(s: Session, point: { x: number; y: number }, what: s
   // A report the pane cannot take is dropped by sendTyped. Check readiness and the hit target in
   // the same poll right before pressing: the pane can stop taking input while the hit test waits.
   let under = "";
-  await until(async () => (under = s.ready() ? await s.page.evaluate(({ x, y }) => {
-    const at = document.elementFromPoint(x, y);
-    return at?.closest(".pane-frame.is-current .xterm.enable-mouse-events") ? "" : at ? `${at.tagName.toLowerCase()}.${[...at.classList].join(".")}` : "nothing";
-  }, point) : "a pane that does not take input") === "", () => `${what} lands on this pane's grid while it takes input (found ${under})`);
+  await until(async () => {
+    if (!s.ready()) {
+      under = "a pane that does not take input";
+      return false;
+    }
+    under = await s.page.evaluate(({ x, y }) => {
+      const at = document.elementFromPoint(x, y);
+      return at?.closest(".pane-frame.is-current .xterm.enable-mouse-events") ? "" : at ? `${at.tagName.toLowerCase()}.${[...at.classList].join(".")}` : "nothing";
+    }, point);
+    // readiness can drop while the hit test is pending: accept the poll only if it still holds
+    if (under === "" && !s.ready()) under = "a pane that stopped taking input";
+    return under === "";
+  }, () => `${what} lands on this pane's grid while it takes input (found ${under})`);
 }
 
 const MARK = "z";
