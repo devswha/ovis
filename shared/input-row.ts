@@ -202,13 +202,15 @@ const POWERLINE_RULE = /^ [↑↓─]─{9,}$/;
 /**
  * pi with the pi-powerline-footer extension (0.22.0): its status bar sits above the editor, whose two borders
  * are the screen's last rows. Its first row starts ` > ` (` $ ` in bash mode), the others `   `; nothing in it but
- * the prompt is an empty box. Anything drawn under the lower border (an autocomplete list, a widget) fails safe.
+ * the prompt is an empty box. Under the lower border only the extension's last-prompt row (` ↳ `, drawn once a
+ * prompt was sent) is taken; anything else there (an autocomplete list, another widget) fails safe.
  * The editor has no placeholder; its cursor draws the character under it inverse, which is still typed text.
  */
 const piPowerlineInputRow: InputRowRecognizer = (screen, typed) => {
   const rows = filled(screen);
   const text = (index: number): string => screen.rows[index]!.text;
-  const lower = rows.at(-1);
+  const last = rows.at(-1);
+  const lower = last !== undefined && /^ ↳ /.test(text(last)) ? rows.at(-2) : last;
   if (lower === undefined || !POWERLINE_RULE.test(text(lower))) return "gone";
   const upper = rows.filter((index) => index < lower && POWERLINE_RULE.test(text(index))).at(-1);
   if (upper === undefined || lower - upper < 2) return "gone";
