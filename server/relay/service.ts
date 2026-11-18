@@ -315,10 +315,9 @@ export class RelayService {
     // asked again only when the account a pass is asked under changed (a PC's members' account wins), or none is held
     const before = this.passAccount(), named = this.savedRelayAccount();
     writePrivateState(this.relayAccountPath(), { account });
-    // the relay tab's QR code takes a device into the account named for this PC (records.ts applyLink): once another
-    // takes the place of the one named, that code and the rows that wait under it end, so none is taken into an account
-    // its holder was not shown. With none read before (none named, or the saved one unreadable) nothing ends here: the
-    // code is held to the account it was made under all the same (records.ts look)
+    // a device that waits under the relay tab's QR code is taken only into the account named when that code was made,
+    // and only while that account is the one named (records.ts look); naming another in place of the one read here also
+    // ends that code and its rows at once
     if (named !== null && named !== account) this.services?.devices.endNoAccountPairing();
     // the same account named again asks only when the last answer was that it does not list this PC, which the
     // add-me screen's relisting can change; a refusal for the account's limit keeps its scheduled retry
@@ -636,12 +635,14 @@ export class RelayService {
     if (!this.enabled || !this.identity || !this.services || this.blocked) throw new Error("Start the relay before pairing.");
     if (options.account === undefined && this.services.options.profile === "machine") throw new MachineCodeForAccountError();
     const devices = this.services.devices;
+    // read once: the account that allows the relay tab's code, binds it (pairingForNoAccount) and is named in the answer
+    const saved = options.noAccountOnly ? this.savedRelayAccount() : null;
     // a PC that is in an account says so itself (pairingForNoAccount)
-    if (options.noAccountOnly && devices.account() === null && this.savedRelayAccount() === null) throw new NoAccountNamedError();
+    if (options.noAccountOnly && devices.account() === null && saved === null) throw new NoAccountNamedError();
     // a PC in an account says so itself (pairingForAccount, pairingForNoAccount)
     if ((options.account !== undefined || options.noAccountOnly) && devices.account() === null && this.services.accountMailbox.serviceOff()) throw new AccountServiceOffError();
     const { code, expires_at, ...named } = options.account !== undefined ? devices.pairingForAccount(options.account, by, Date.now(), options.pairing)
-      : options.noAccountOnly ? devices.pairingForNoAccount(by, Date.now(), this.savedRelayAccount() ?? undefined) : devices.pairingForOffer(by, Date.now(), options.pairing);
+      : options.noAccountOnly ? devices.pairingForNoAccount(by, Date.now(), saved ?? undefined) : devices.pairingForOffer(by, Date.now(), options.pairing);
     const id = devices.pairingId()!;
     // before the code leaves this PC: a device revoked by now is handed none (DeviceGoneError)
     if (by !== null) devices.holdPairing(by);
@@ -649,7 +650,7 @@ export class RelayService {
       url: encodeOffer({ v: 1, server_id: this.identity.server_id, server_public_key: this.identity.public_key,
         relay: this.advertised, code, ...offerName(), ...this.admissionMark(code) }, this.app),
       expires_at, pairing: { id }, ...named,
-      ...(options.noAccountOnly ? { account: this.savedRelayAccount() } : {}),
+      ...(options.noAccountOnly ? { account: saved } : {}),
     };
   }
 

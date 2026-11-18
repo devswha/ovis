@@ -226,8 +226,9 @@ function look(store: DeviceStore, link: LinkRecord, deviceId: string, arrival: L
   // it paired with, by the account id its own signed link names, until it links or goes, also once that code's ten
   // minutes are over
   const codeFor = waits ? store.waitingFor(deviceId) : account === null && arrival.pinned !== null ? store.pinnedFor(arrival.pinned) : null;
-  // A row that waits under the relay tab's code is held to the account named when that code was made, whatever is
-  // named now, and only while no other is named: no change of naming, seen by the setter or not, carries it elsewhere
+  // A row that waits under the relay tab's code is held to the account named when that code was made, and only while
+  // that account is the one named now: no change of naming, seen by the setter or not, carries it elsewhere, and a
+  // name that cannot be read is none
   const issuedUnder = waits && account === null ? store.issuedUnder(deviceId) : null;
   const named = rules.setUpFor?.() ?? null;
   const expected = account === null ? codeFor ?? issuedUnder ?? named : null;
@@ -237,7 +238,7 @@ function look(store: DeviceStore, link: LinkRecord, deviceId: string, arrival: L
   }
   // A row that waits to link is taken into the account this PC was set up for and into no other: with none named it
   // is refused the same way, and goes at once
-  if (waits && expected === null) {
+  if (waits && (expected === null || (issuedUnder !== null && named === null))) {
     store.turnAway(deviceId, "account_mismatch", link.account);
     return { refused: "account_mismatch", message: SET_UP_FOR_NO_ACCOUNT };
   }

@@ -34,7 +34,7 @@ import { FakeAccountService } from "../../shared/account-service-fake.ts";
 import { newRecordId, signAccountRecord } from "../../shared/account-records.ts";
 import { herdrRpc, workspaceClose, workspaceCreate } from "../herdr/client.ts";
 import { MachineCodeForAccountError } from "../machine-profile.ts";
-import { ended, linkRecord, pairingPc, sendLink, setUpFor, signedInWith, vouchFor, type Pc } from "../account/pairing.test-helpers.ts";
+import { ask, ended, linkRecord, pairingPc, sendLink, setUpFor, signedInWith, vouchFor, type Pc } from "../account/pairing.test-helpers.ts";
 
 const cleanup: (() => void | Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -459,11 +459,13 @@ async function linkHeldOnApproval(account: string) {
   const vouch = mailbox.vouch;
   const asked = Promise.withResolvers<{ answer: Promise<unknown> }>();
   mailbox.vouch = (...args) => { mailbox.vouch = vouch; const answer = vouch.apply(mailbox, args); asked.resolve({ answer }); return answer; };
+  let revoked = false;
+  f.devices.onRevoke(device.id, () => { revoked = true; });
   holding = true;
   void sendLink(device.session, await linkRecord(device.id, account, device.key)).catch(() => undefined);
   await held.promise;
   expect(f.devices.provisionalStands(device.id)).toBe(true);
-  return { f, code, pairing, device, release: () => release.resolve(), judged: async () => { await (await asked.promise).answer; } };
+  return { f, code, pairing, device, revoked: () => revoked, release: () => release.resolve(), judged: async () => { await (await asked.promise).answer; } };
 }
 
 /** Nothing of the link was written: the PC has no member, and nothing is on disk. */
@@ -473,13 +475,16 @@ async function noMember(f: Pc): Promise<void> {
 }
 
 it("ends the relay tab's QR code, and the rows that wait to link under it, when another account is named for the PC", async () => {
-  const { f, pairing, device, release, judged } = await linkHeldOnApproval("acct_a");
-  // the same account named again (the add-me screen repeats it) changes nothing
+  const { f, code, pairing, device, revoked, release, judged } = await linkHeldOnApproval("acct_a");
+  // the same account named again (the add-me screen repeats it) changes nothing: the row's session stays open, and the
+  // code still pairs
   await setUpFor(f, "acct_a");
-  expect([f.devices.pairingId(), f.devices.provisionalStands(device.id)]).toEqual([pairing, true]);
+  expect([f.devices.pairingId(), f.devices.provisionalStands(device.id), revoked()]).toEqual([pairing, true, false]);
+  expect((await ask(device.session, "/api/account/status")).status).toBe(200);
+  expect((await signedInWith(f, code)).role).toBe("watch");
   // a device that paired under the code made while acct_a was named is never taken into acct_b
   await setUpFor(f, "acct_b");
-  expect([f.devices.activePairing(), f.devices.provisionalStands(device.id)]).toEqual([null, false]);
+  expect([f.devices.activePairing(), f.devices.provisionalStands(device.id), revoked()]).toEqual([null, false, true]);
   // acct_a's approval, answered only now, writes no member, and the row's sessions end with its link
   release();
   await judged();
@@ -492,9 +497,9 @@ it("ends the relay tab's QR code, and the rows that wait to link under it, when 
 });
 
 it("ends the code pending, and the rows that wait to link under it, when it resets the relay identity", async () => {
-  const { f, device, release, judged } = await linkHeldOnApproval("acct_a");
+  const { f, device, revoked, release, judged } = await linkHeldOnApproval("acct_a");
   await f.app.context.services.relay.resetIdentity();
-  expect([f.devices.activePairing(), f.devices.provisionalStands(device.id)]).toEqual([null, false]);
+  expect([f.devices.activePairing(), f.devices.provisionalStands(device.id), revoked()]).toEqual([null, false, true]);
   // an approval asked under the old identity, answered only now, writes no member
   release();
   await judged();
@@ -523,6 +528,28 @@ it("holds the relay tab's code to the account it was made under when another is 
   expect([intoA.status, intoA.body.error?.code]).toEqual([409, "account_mismatch"]);
   expect([f.devices.provisionalStands(toB.id), f.devices.provisionalStands(toA.id)]).toEqual([false, false]);
   await noMember(f);
+});
+
+it("takes no row of the relay tab's code into the account it was made under while the saved name cannot be read, before the approval", async () => {
+  const f = await pairingPc();
+  cleanup.push(() => f.close());
+  await setUpFor(f, "acct_a");
+  const device = await signedInWith(f, await f.tabCode());
+  loseSavedAccount(f);
+  await vouchFor(f, "acct_a", device.key);
+  const refused = await sendLink(device.session, await linkRecord(device.id, "acct_a", device.key));
+  expect([refused.status, refused.body.error?.code]).toEqual([409, "account_mismatch"]);
+  expect(f.devices.provisionalStands(device.id)).toBe(false);
+  await noMember(f);
+});
+
+it("takes no row of the relay tab's code into the account it was made under when the saved name cannot be read by the time the approval comes", async () => {
+  const { f, device, release, judged } = await linkHeldOnApproval("acct_a");
+  loseSavedAccount(f);
+  release();
+  await judged();
+  await noMember(f);
+  expect(f.devices.provisionalStands(device.id)).toBe(false);
 });
 
 it("refuses after the approval too when another is named, past a saved account that could not be read, while the approval is out", async () => {

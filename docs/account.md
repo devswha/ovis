@@ -508,7 +508,7 @@ keeps what it had; the code is not ended, so the device of the named account sti
 Naming another account in place of the one named ends the relay tab's code and every device that
 waits under it, so a waiting device scans the code shown after it. That code is also held to the
 account named when it was made: a device that waits under it is taken into that account only, and
-not while another is named, whatever the PC read as named before.
+only while that account is the one named (a name that cannot be read is none).
 A device that waits to link is taken into no other account, so with none named it is refused the
 same way, and the relay tab's QR code is made only once one is named
 ([Who may admit a device](#who-may-admit-a-device)).
@@ -1267,8 +1267,7 @@ with "continue only if you started this on your own PC".
   key ([The account's word](#the-accounts-word)). Without one, a device that already drives a PC in
   no account can still link it into an account it names, on its own word: `ovis status` lists such
   members ([How a device joined](#how-a-device-joined)), and every admission is announced on every
-  device connected to the PC; that link changes only the membership and the relay key of a device
-  paired before (a link may move its row to a new key), and is not announced as a new pairing.
+  device connected to the PC; that link is not announced as a new pairing.
 - **A PC the directory names under a familiar name.** Whoever holds a sign-in to the account can
   list a PC of their own in the directory (device-code phishing, [Who is asking](#who-is-asking)). **Add** on
   its row in the relay tab pairs A with that PC, whose owner approves it there: A's machine list then
