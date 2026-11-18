@@ -84,7 +84,7 @@ async function open(name: string, before: string, probeBeforeAttach = false, hol
     localStorage.setItem("ovis:sidebar-filter-shown", "true");
     const qa = window as unknown as {
       terminalArrowSentByPage: number;
-      delayedTerminalOutput: { pending: () => number; queryDelivered: () => number; release: () => void; hold: () => void; releaseOnKeyDown: (key: string) => void };
+      delayedTerminalOutput: { pending: () => number; held: () => string; queryDelivered: () => number; release: () => void; hold: () => void; releaseOnKeyDown: (key: string) => void };
     };
     qa.terminalArrowSentByPage = 0;
     const send = WebSocket.prototype.send;
@@ -103,9 +103,11 @@ async function open(name: string, before: string, probeBeforeAttach = false, hol
       let holding = holdOutput;
       let queryDelivered = 0;
       const queued: Array<() => void> = [];
-      const release = () => { holding = false; for (const deliver of queued.splice(0)) deliver(); };
+      let held = "";
+      const release = () => { holding = false; held = ""; for (const deliver of queued.splice(0)) deliver(); };
       qa.delayedTerminalOutput = {
         pending: () => queued.length,
+        held: () => held,
         queryDelivered: () => queryDelivered,
         release,
         hold: () => { holding = true; },
@@ -140,7 +142,10 @@ async function open(name: string, before: string, probeBeforeAttach = false, hol
             else listener.handleEvent(delivered);
           };
           const queryOnly = /^(?:\x1b\[\?1004h)?\x1b\]10;\?\x1b\\\x1b\]11;\?\x1b\\\x1b\]12;\?\x1b\\\x1b\[16t\x1b\[c$/.test(message.data ?? "");
-          if (holding && message.type === "pty-data" && message.pane_id === pane && !queryOnly) queued.push(invoke);
+          if (holding && message.type === "pty-data" && message.pane_id === pane && !queryOnly) {
+            queued.push(invoke);
+            held += message.data ?? "";
+          }
           else {
             if (holding && message.type === "pty-data" && message.pane_id === pane && queryOnly) {
               queryDelivered++;
@@ -320,7 +325,7 @@ async function arrowBehindOutput(): Promise<void> {
     const kill = Bun.spawn(["pkill", `-${name}`, "-f", s.log], { stderr: "pipe" });
     assert.equal(await kill.exited, 0, `pkill -${name}: ${await new Response(kill.stderr).text()}`);
   };
-  type Delayed = { delayedTerminalOutput: { pending: () => number; hold: () => void; releaseOnKeyDown: (key: string) => void } };
+  type Delayed = { delayedTerminalOutput: { held: () => string; hold: () => void; releaseOnKeyDown: (key: string) => void } };
   let got = "";
   // a person typed: hc's quiet period for a named key runs from here
   await s.page.keyboard.press("a");
@@ -329,7 +334,7 @@ async function arrowBehindOutput(): Promise<void> {
   await until(() => s.page.locator(".xterm-screen").evaluate((screen) => screen.textContent?.includes("CURSOR KEYS APPLICATION") === true), "arrow behind output: xterm parsed application cursor keys");
   await s.page.evaluate(() => (window as unknown as Delayed).delayedTerminalOutput.hold());
   await signal("USR2");
-  await until(async () => (await s.page.evaluate(() => (window as unknown as Delayed).delayedTerminalOutput.pending())) > 0, "arrow behind output: the output leaving application cursor keys is held from xterm");
+  await until(async () => (await s.page.evaluate(() => (window as unknown as Delayed).delayedTerminalOutput.held())).includes("\x1b[?1l"), "arrow behind output: the output leaving application cursor keys is held from xterm");
   await s.page.evaluate(() => (window as unknown as Delayed).delayedTerminalOutput.releaseOnKeyDown("ArrowUp"));
   const before = s.frames.length;
   const pressed = performance.now();
@@ -338,7 +343,7 @@ async function arrowBehindOutput(): Promise<void> {
   await until(() => (got += s.received()).length >= 3, () => `arrow behind output: ArrowUp received (read ${JSON.stringify(got)})`);
   const took = performance.now() - pressed;
   await frameFence(s, "arrow behind output");
-  assert.deepEqual(s.frames.slice(before).filter((frame) => frame.pane_id === s.pane && !frame.automatic).map((frame) => frame.type), ["input"], "arrow behind output: typed, not a named key");
+  assert.deepEqual(s.frames.slice(before).filter((frame) => frame.pane_id === s.pane && !frame.automatic).map((frame) => [frame.type, frame.text]), [["input", "\x1bOA"]], "arrow behind output: typed as xterm encoded it, in the application mode it still believed in, not a named key");
   assert(took < NO_QUIET_WAIT_MS, `arrow behind output: ArrowUp took ${took.toFixed(0)} ms: exceeded the end-to-end latency budget`);
   assert.equal(got, "\x1b[A", "arrow behind output: the program reads the arrow in the normal cursor mode it is in now");
 }
