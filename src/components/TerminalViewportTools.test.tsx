@@ -507,25 +507,42 @@ describe("history scrolls by every wheel line while the view's own writes are sl
     expect(herdr.offset).toBe(29);
   });
 
-  it("applies held lines before a later line the other way, each clamped at the top, as the wheel turned", async () => {
+  it("leaves held lines that would pass the top to the read, which knows how far the history has grown, as main", async () => {
     const herdr = fakeHerdr(100);
-    herdr.set({ offset: 92 });
+    herdr.set({ offset: 93 });
     const view = await mount(herdr);
     await view.answerReads();
-    // Given: two writes up to 98, and two lines up held on stale metrics meanwhile
+    // Given: writes up to 99 and 5 lines held on stale metrics, past the top of 100 those metrics know
+    await view.at(10); await view.wheelEvent(3); await view.output();
+    await view.at(100); await view.wheelEvent(3);
+    await view.at(310); await view.wheelEvent(5);
+    await view.at(350); await view.answerWrite(); await view.output();
+    await view.at(400); await view.answerWrite(); await view.output();
+    // When: the history grows to 120, and a line more on fresh metrics
+    await view.at(425); herdr.set({ max: 120 }); await view.output();
+    await view.at(450); await view.wheelEvent(3);
+    await view.at(500); await view.answerWrite(); await view.output();
+    await view.answerAll(2500);
+    // Then: the read with the grown history applies the held lines: 105, as on main
+    expect(herdr.offset).toBe(105);
+  });
+
+  it("leaves held lines that would pass the top to the read, so a PageDown in between lands as on main", async () => {
+    const herdr = fakeHerdr(100);
+    herdr.set({ offset: 91 });
+    const view = await mount(herdr);
+    await view.answerReads();
     await view.at(10); await view.wheelEvent(3); await view.output();
     await view.at(100); await view.wheelEvent(3);
     await view.at(310); await view.wheelEvent(3);
-    await view.at(320); await view.wheelEvent(3);
     await view.at(350); await view.answerWrite(); await view.output();
     await view.at(400); await view.answerWrite(); await view.output();
-    // When: a line down on fresh metrics
-    await view.at(450); await view.wheelEvent(-3);
-    await view.at(1400); await view.answerWrite(); await view.output();
-    await view.answerAll(2600);
-    // Then: up to the top (100) with the held lines, then 3 down; main lost the held lines and ended at 95
-    expect(herdr.targets).toEqual([95, 98, 97]);
-    expect(herdr.offset).toBe(97);
+    await view.at(450); await view.wheelEvent(3); await view.output();
+    await view.at(720); await view.page(1);
+    await view.at(750); await view.answerWrite();
+    await view.answerAll(2500);
+    // the top (100), the page down (77), then the held line: 80, as on main
+    expect(herdr.offset).toBe(80);
   });
 
   it("gives a page key to the program when main does, after a wheel whose held lines reached the bottom", async () => {

@@ -234,18 +234,19 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
       const metrics = scrollRef.current;
       const stale = !fresh && metricsOutput !== outputVersion && Date.now() - metricsAt > SCROLL_POLL_BUSY_MS;
       if (validScroll(metrics) && !stale) {
-        // lines held on stale metrics go out with a line these metrics are fresh enough for, in the order asked (clamped
-        // first, as a wheel past the top would be): the read that would release them waits while the wheel's own writes
-        // run back to back, past the hold. The hold stays, empty, so the poll and that read (and its write) come as they
-        // would have: page keys keep their timing. Behind a held page the lines still wait for that read, which hands the
-        // page out first.
+        // lines held on stale metrics go out with a line these metrics are fresh enough for: the read that would release
+        // them waits while the wheel's own writes run back to back, past the hold. The hold stays, empty, so the poll and
+        // that read (and its write) come as they would have: page keys keep their timing. They wait for that read as
+        // before behind a held page, which it hands out first, and past the top these metrics know: the history may have
+        // grown since. At the bottom they stop, as the wheel would have.
+        const from = previewRef.current ?? metrics.offset_from_bottom;
+        const top = metrics.max_offset_from_bottom;
         let held = 0;
-        if (heldLines && !heldPage) {
-          if (Date.now() - heldLines.at < HELD_PAGE_MS) held = heldLines.lines;
+        if (heldLines && !heldPage && Date.now() - heldLines.at < HELD_PAGE_MS && from + heldLines.lines <= top && from + heldLines.lines + lines <= top) {
+          held = heldLines.lines;
           heldLines = { lines: 0, at: heldLines.at };
         }
-        const from = previewRef.current ?? metrics.offset_from_bottom;
-        writeRef.current((held ? Math.max(0, Math.min(metrics.max_offset_from_bottom, from + held)) : from) + lines);
+        writeRef.current((held ? Math.max(0, from + held) : from) + lines);
       } else {
         heldLines = { lines: (heldLines && Date.now() - heldLines.at < HELD_PAGE_MS ? heldLines.lines : 0) + lines, at: Date.now() };
         dirty = true; idle = 0; schedule(0);
