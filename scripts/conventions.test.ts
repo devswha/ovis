@@ -276,18 +276,31 @@ describe("the demo app's file server", () => {
   const OWN_SERVER: Record<string, string> = {
     "scripts/boot-loading-demo-regression.ts": "sends the page's CSP header",
     "scripts/chat-tool-paths-demo-regression.ts": "answers /pane/conversation and /pane/commands",
+    "scripts/cliproxy-settings-regression.ts": "passes /api to a real server",
+    "scripts/design-gate-qa.ts": "serves the root icons and manifest beside the app",
+    "scripts/diff-find-demo-regression.ts": "serves /icons/ beside the app",
+    "scripts/diff-line-notes-demo-regression.ts": "serves /icons/ beside the app",
     "scripts/droplet-demo-regression.ts": "rewrites the CSS safe-area inset",
     "scripts/film/capture.ts": "serves the built site, not the demo app",
+    "scripts/film/render.ts": "serves the film's stage page and footage",
+    "scripts/install-state-demo-regression.ts": "answers manifest.webmanifest with its own body",
     "scripts/old-safari-demo-regression.ts": "sends the page's CSP header",
+    "scripts/pages-static.ts": "serves the built Pages site as GitHub Pages does",
+    "scripts/pane-mute-demo-run.ts": "answers /fixture/preferences",
     "scripts/phone-glass-header-demo-regression.ts": "rewrites the CSS safe-area inset",
+    "scripts/prompt-card-timing-demo-regression.ts": "also serves paths outside /app/",
+    "scripts/repo-diff-browser-qa.ts": "serves /icons/ beside the app",
     "scripts/settings-pages-demo-regression.ts": "serves two builds side by side",
     "scripts/settings-palette-search-demo-regression.ts": "serves two builds side by side",
     "scripts/settings-rows-demo-regression.ts": "serves two builds side by side",
     "scripts/setup-dialog-demo-regression.ts": "serves /icons/ beside the app",
     "scripts/setup-row-demo-regression.ts": "serves /icons/ beside the app",
     "scripts/theme-first-paint-demo-regression.ts": "sends the page's CSP header and refuses /api",
+    "scripts/usage-account-management-regression.ts": "passes /api to a real server",
   };
-  const servers = files("scripts/**/*.ts").filter((file) => file !== "scripts/demo-server.ts" && file !== "scripts/conventions.test.ts" && read(file).includes("decodeURIComponent(path.slice("));
+  const servesFiles = (code: string): boolean =>
+    /\bBun\.serve\s*\(/.test(code) && /\bdecodeURIComponent\s*\(/.test(code) && /\bBun\.file\s*\(/.test(code);
+  const servers = files("scripts/**/*.{ts,tsx,mjs,js}").filter((file) => file !== "scripts/demo-server.ts" && file !== "scripts/conventions.test.ts" && servesFiles(stripComments(read(file))));
 
   it("is serveDemo from scripts/demo-server.ts", () => {
     fail(servers.filter((file) => !(file in OWN_SERVER)),
@@ -296,7 +309,13 @@ describe("the demo app's file server", () => {
 
   it("lists only scripts that still serve the files themselves", () => {
     fail(Object.keys(OWN_SERVER).filter((file) => !servers.includes(file)),
-      "These scripts no longer serve the demo app themselves: take them out of OWN_SERVER in scripts/conventions.test.ts.");
+      "These scripts no longer serve files themselves: take them out of OWN_SERVER in scripts/conventions.test.ts.");
+  });
+
+  it("tells a server of files from one that only answers requests, whatever the spelling", () => {
+    expect(servesFiles("Bun.serve( { async fetch(req) { const p = new URL(req.url).pathname; const name = decodeURIComponent( p.slice(base.length)); return new Response(Bun.file( join(root, name))); } })")).toBe(true);
+    expect(servesFiles("const server = serveDemo(app, { prefix: \"/\" });")).toBe(false);
+    expect(servesFiles("Bun.serve({ fetch: () => Response.json({ turns: [] }) }); const pane = decodeURIComponent(id);")).toBe(false);
   });
 });
 
