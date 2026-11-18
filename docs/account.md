@@ -518,7 +518,8 @@ link: its row is written then, as a drive member. A key this PC removed itself (
 with. A key an account removed stays out: that link is refused `tombstoned`, as is a link that
 would move the device to a removed key, nothing is written and the removal stands. A key removed
 while the device waits takes the device with it. Such a device sends five links; the next is
-answered `403 link_required`, and it is gone.
+answered `403 link_required`, and it is gone. A link it sent while it waited that is judged after
+another of its links made it a member is answered `403 link_required` and changes nothing.
 
 `POST /api/account/records` `{ "records": [<record>, …] }`: at most 32. Applies each in order and
 answers every outcome, never failing the whole batch for one record:

@@ -8,7 +8,7 @@ import { afterEach, expect, setSystemTime, test } from "bun:test";
 import { decodeOffer } from "../../shared/relay-offer.ts";
 import { PAIRING_LINK_MS } from "../devices.ts";
 import { bounded, TestClock } from "../relay/test-helpers.ts";
-import { VOUCH_READ_GAP_MS, VOUCH_READ_MS, VOUCH_RETRY_MAX_MS } from "./mailbox.ts";
+import { VOUCH_READ_GAP_MS, VOUCH_READ_MS } from "./mailbox.ts";
 import { ask, ended, linkRecord, memberRow, nextAsk, pairingPc, phone, sendLink, setUpFor, signedInWith, untilNextRead, vouchFor, type Answer, type Pc } from "./pairing.test-helpers.ts";
 
 const pcs: Pc[] = [];
@@ -442,12 +442,61 @@ test("a 429 that names a wait longer than a minute holds the account service's r
   const device = await signedInWith(f, code);
   service.set((request) => new URL(request.url).pathname === "/v1/pc/mailbox" ? tooMany("999999999") : undefined);
   const held = await sendLink(device.session, await linkRecord(device.id, "acct_owner", device.key));
-  expect([...refusal(held), held.headers.get("retry-after")]).toEqual([503, "account_unavailable", String(VOUCH_RETRY_MAX_MS / 1000)]);
-  expect(f.app.context.services.accountMailbox.serviceRetryMs()).toBe(VOUCH_RETRY_MAX_MS);
+  expect([...refusal(held), held.headers.get("retry-after")]).toEqual([503, "account_unavailable", "60"]);
+  expect(f.app.context.services.accountMailbox.serviceRetryMs()).toBe(60_000);
   service.set(undefined);
+  // 49 seconds on, no read may start within a link's 10 seconds: answered at once, with no call
+  f.clock.advance(49_000);
+  const early = await signedInWith(f, code);
+  const answered = await sendLink(early.session, await linkRecord(early.id, "acct_owner", early.key));
+  expect([...refusal(answered), answered.headers.get("retry-after")]).toEqual([503, "account_unavailable", "11"]);
+  expect(service.count("/v1/pc/challenge")).toBe(1);
+  // at the minute the service is asked again
+  f.clock.advance(11_000);
   const key = await phone();
   await vouchFor(f, "acct_owner", key);
   const owner = await signedInWith(f, code, key);
   expect((await sendLink(owner.session, await linkRecord(owner.id, "acct_owner", key))).status).toBe(200);
   expect(service.count("/v1/pc/challenge")).toBe(2);
+});
+
+test("two links of one waiting device judged by one read: the first makes it a member, and the second, judged as a waiting device's, changes nothing", async () => {
+  const f = await pc();
+  const code = codeOf(await forAccount(f, "acct_owner"));
+  const [key, other] = [await phone(), await phone()];
+  await vouchFor(f, "acct_owner", key, { quiet: true });
+  await vouchFor(f, "acct_owner", other, { quiet: true });
+  const stranger = await signedInWith(f, code);
+  expect(refusal(await sendLink(stranger.session, await linkRecord(stranger.id, "acct_owner", stranger.key)))).toEqual([403, "unverified_device"]);
+  const device = await signedInWith(f, code, key);
+  const links: Promise<Answer>[] = [];
+  for (const to of [key, other]) {
+    const asked = nextAsk(f);
+    links.push(sendLink(device.session, await linkRecord(device.id, "acct_owner", key, to)));
+    await asked;
+  }
+  f.clock.advance(VOUCH_READ_GAP_MS);
+  const answers = await bounded(Promise.all(links));
+  expect(answers.map(refusal)).toEqual([[200, undefined], [403, "link_required"]]);
+  expect(f.stored().map((row) => [row.id, row.relay_public_key])).toEqual([[device.id, key.spki]]);
+});
+
+test("a link that waits for the account's word after the code's ten minutes still joins when the code is read meanwhile", async () => {
+  const service = serviceCalls();
+  const f = await pc({ accountFetch: service.fetch });
+  const made = Date.now();
+  const offer = await forAccount(f, "acct_owner");
+  const key = await phone();
+  codeAt(made, 500);
+  await vouchFor(f, "acct_owner", key);
+  const device = await signedInWith(f, codeOf(offer), key);
+  codeAt(made, -500);
+  const hold = holdMailbox(service, f);
+  const linking = sendLink(device.session, await linkRecord(device.id, "acct_owner", key));
+  await hold.reached;
+  // what `ovis add` does while it waits: it reads its code
+  expect(await state(f, idOf(offer))).toMatchObject({ state: "live", waiting: [{ id: device.id, link: "asked" }] });
+  hold.release();
+  expect((await bounded(linking)).status).toBe(200);
+  expect(await f.status()).toMatchObject({ account: "acct_owner", members: 1 });
 });

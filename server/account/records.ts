@@ -203,7 +203,9 @@ function look(store: DeviceStore, link: LinkRecord, deviceId: string, arrival: L
   // What the row is now, after the wait above. One that waited to link when its link arrived and has gone since
   // (its time ran out, its code ended) is gone: its link is never judged as a device's
   const waits = arrival.provisional && store.provisionalStands(deviceId);
-  if (arrival.provisional && !waits && !store.has(deviceId)) return { refused: "link_required" };
+  // also when another link of the same row made it a member meanwhile: this one was judged as a waiting row's, so it
+  // never changes that member
+  if (arrival.provisional && !waits) return { refused: "link_required" };
   const account = store.account();
   if (account !== null && account !== link.account) return { refused: "account_mismatch" };
   // A device that already drives this PC is held to the code made for a PC in no account that lived when its link
