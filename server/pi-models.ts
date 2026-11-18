@@ -202,16 +202,19 @@ const CATALOGS: { name: string; parse: (p: unknown) => Catalog | null }[] = [
 ];
 
 /**
- * The catalogs as they are now: a window resolved under another version may be another number. A
- * catalog that cannot be stat'ed (a link loop, no permission) counts as absent, as readCatalog reads it.
+ * A catalog file as it is now: a window resolved under another version may be another number. ctime
+ * is in it because a chmod that makes the file readable again changes nothing else. A catalog that
+ * cannot be stat'ed (a link loop, no permission) counts as absent, as readCatalog reads it.
  */
+export function catalogVersion(path: string): string {
+  try {
+    const stat = statSync(path);
+    return `${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}`;
+  } catch { return "-"; }
+}
+
 export function piCatalogVersion(agentDir = piAgentDir()): string {
-  return CATALOGS.map(({ name }) => {
-    try {
-      const stat = statSync(join(agentDir, name));
-      return `${stat.mtimeMs}:${stat.size}`;
-    } catch { return "-"; }
-  }).join("|");
+  return CATALOGS.map(({ name }) => catalogVersion(join(agentDir, name))).join("|");
 }
 
 /**

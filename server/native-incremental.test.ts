@@ -3,6 +3,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ConversationTurn } from "../shared/protocol.ts";
+import * as cmd from "./cmd.ts";
 import { forgetTranscriptState, HistoryChanged, liveTurnCacheUsage, transcriptPage } from "./conversation.ts";
 
 const SOURCES = ["omp-transcript", "omo-transcript", "gjc-transcript", "claude-transcript"] as const;
@@ -238,6 +239,33 @@ test("pi-transcript: a live task's context window follows an edited catalog and 
   expect(warm).toEqual({ used: 50_000, window: 1_000_000 });
   forgetTranscriptState();
   expect(read()).toEqual(warm);
+});
+
+test("cmd-transcript: a live task's context window follows an edited Command Code catalog, and an unchanged one keeps the live parse", () => {
+  const home = mkdtempSync(join(tmpdir(), "herdr-native-incremental-home-"));
+  roots.push(home);
+  const catalogPath = join(home, "commandcode-models.json");
+  const located = spyOn(cmd, "cmdModelCatalogPath").mockReturnValue(catalogPath);
+  try {
+    const catalog = (window: number, at: number) => {
+      writeFileSync(catalogPath, JSON.stringify({ version: 2, models: [{ id: "cat-jam", contextWindow: window }] }));
+      utimesSync(catalogPath, at, at);
+    };
+    catalog(100_000, 1_700_000_000);
+    const record = tree();
+    const path = fixture(record(prompt("cmd-transcript", "Start")) + record({ type: "message", message: { role: "assistant", model: "cat-jam", usage: { totalTokens: 50_000 }, content: [{ type: "text", text: "Working" }] } }));
+    expect(transcriptPage("cmd-transcript", path).metadata.context).toEqual({ used: 50_000, window: 100_000 });
+    appendFileSync(path, record(call("cmd-transcript", "one")));
+    expect(parses(() => expect(transcriptPage("cmd-transcript", path).metadata.context).toEqual({ used: 50_000, window: 100_000 }))).toBeLessThan(10);
+    catalog(200_000, 1_700_000_100);
+    appendFileSync(path, record(result("cmd-transcript", "one", "done")));
+    const warm = transcriptPage("cmd-transcript", path);
+    expect(warm.metadata.context).toEqual({ used: 50_000, window: 200_000 });
+    forgetTranscriptState();
+    expect(transcriptPage("cmd-transcript", path).metadata).toEqual(warm.metadata);
+  } finally {
+    located.mockRestore();
+  }
 });
 
 test.skipIf(process.platform === "win32")("pi-transcript: a catalog that is a link loop counts as absent, and the others still answer", () => {

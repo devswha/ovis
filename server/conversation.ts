@@ -53,7 +53,7 @@ import { processAlive, processStartedAtAsync } from "./process-start.ts";
 import { ompBlobStore, ompHeldOpen, ompPaneRoute, ompRouteOwns, ompRouteStore, ompRouteTranscript } from "./omp.ts";
 import { forgetOpencodeRead, forgetOpencodeState, OPENCODE_IMAGE_REF, opencodeConversation, opencodeDatabasePath, opencodeFreshSession, opencodeImage, opencodeReadKey, opencodeSessionId, opencodeToolOutput } from "./opencode.ts";
 import { piTranscriptPath, unwrittenSession } from "./pi.ts";
-import { cmdTranscriptPath } from "./cmd.ts";
+import { cmdModelCatalogPath, cmdTranscriptPath } from "./cmd.ts";
 import { defaultDevinDbPath, DevinHistoryUnavailable, devinConversation, forgetDevinState } from "./devin.ts";
 import { forgetGrokState, GROK_IMAGE_REF, grokImage, grokProjection, grokToolOutput, parseGrokTranscript, GrokUnavailable } from "./grok.ts";
 import { resolveGrokStore } from "./grok-store.ts";
@@ -72,7 +72,7 @@ import { COPILOT_IMAGE_REF, copilotImage, copilotOffsetOutput, copilotOutput, co
 import { copilotApiTranscript, copilotExplicitResume, copilotHandoffSession, copilotProcessSession, copilotTranscriptFile, copilotUnwrittenSession, openCopilotFile, readCopilotProcessSession } from "./copilot-store.ts";
 import { forgetCopilotForeground, readCopilotForeground } from "./copilot-foreground.ts";
 import { claudeSetting, type MetadataFold, parseConversationMetadata } from "./conversation-metadata.ts";
-import { piCatalogVersion } from "./pi-models.ts";
+import { catalogVersion, piCatalogVersion } from "./pi-models.ts";
 import { answerVersion, bindFile, boundSteps, checkBoundFile, ConversationNotStarted, ConversationReadPending, ConversationUnavailable, copilotRecoverable, type FileIdentity, openBound, readBound, type ConversationPage, HistoryChanged, type RecognizedConversation, type StreamSource, TRANSCRIPT_WINDOW_BYTES } from "./conversation-shared.ts";
 import { forgetHermesTranscriptState, hermesConversationPage, hermesToolOutput, hermesTranscriptForPane } from "./hermes.ts";
 
@@ -883,7 +883,7 @@ interface SettledTurns {
   observedEnd: number;
   fold: MetadataFold;
   piAgentDir?: string | null;
-  /** the version of that dir's catalogs the windows were resolved in (pi only) */
+  /** the version of the catalogs the windows were resolved in (pi's agent dir, Command Code's catalog) */
   catalogs?: string;
 }
 const settledTurns = new Map<string, SettledTurns>();
@@ -1204,7 +1204,8 @@ function metadataHead(path: string, stream: TranscriptStream, source: Recognized
 function liveTurns(path: string, stream: TranscriptStream, source: RecognizedConversation["source"], start: number, starts: number[], piAgentDir?: string | null): { turns: ConversationTurn[]; metadata: ConversationMetadata } {
   const last = Math.max(start, starts[starts.length - 1] ?? start);
   const key = `${path}\0${start}`;
-  const catalogs = source === "pi-transcript" && piAgentDir !== null ? piCatalogVersion(piAgentDir) : undefined;
+  const catalogs = source === "pi-transcript" && piAgentDir !== null ? piCatalogVersion(piAgentDir)
+    : source === "cmd-transcript" ? catalogVersion(cmdModelCatalogPath()) : undefined;
   let settled = settledTurns.get(key);
   if (!settled || settled.id !== stream.id || settled.end > last || bytesBefore(stream, settled.end) !== settled.tail || settled.piAgentDir !== piAgentDir || settled.catalogs !== catalogs) {
     const head = start > stream.floor ? metadataHead(path, stream, source, start) : "";
