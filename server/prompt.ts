@@ -27,7 +27,8 @@ import { LETTA_SEARCH_MAX, lettaPick, lettaSearchShown } from "./dialogs/letta.t
 import { agyCustomEditorMatches, agySameQuestion, parseAgyQuestion } from "./dialogs/agy.ts";
 import { dshFreeTextRow, dshTypedText } from "./dialogs/dsh.ts";
 import { sameText } from "./dialogs/omo.ts";
-import { OMP_REVIEW_HINT_RE, OMP_TABS_HINT_RE } from "./dialogs/omp.ts";
+import { OMP_REVIEW_HINT_RE, OMP_TABS_HINT_RE, ompCustomEditorMatches } from "./dialogs/omp.ts";
+import { openCodeV1CustomEditorMatches } from "./dialogs/opencode.ts";
 import { INVISIBLE_CHAR_RE } from "./dialogs/claude.ts";
 import { parsePiDialog } from "./dialogs/pi.ts";
 import { pendingPiQuestionnaires } from "./pi-questionnaire.ts";
@@ -897,7 +898,7 @@ async function readKnownPrompt(
    * for a key's verifying read: once every other look of this read is done, the screen is read again as it was
    * read before and parsed with what this read found; a card the screen no longer draws so authorizes no key
    */
-  settle = false,
+  settle: boolean | "editor" = false,
   ompBindings = ompLookups,
 ): Promise<{ prompt: InteractivePrompt | null; screen?: string; stale?: boolean; inputUnverified?: true; suppressFallback?: true;
   settled?: InteractivePrompt }> {
@@ -1061,6 +1062,8 @@ async function readKnownPrompt(
   const claudeTabs = agent === "claude" && /^\s*\u2190\s+[\u2610\u2612\u2611\u2714].*\u2192\s*$/m.test(screen);
   let inputUnverified: true | undefined;
   const ompTabs = agent === "omp" && (OMP_TABS_HINT_RE.test(screen) || OMP_REVIEW_HINT_RE.test(screen));
+  const plain = (value: string): string => value.replace(ANSI_RE, "").replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, "")
+    .split(/\r?\n/).map(line => line.trimEnd()).join("\n").trimEnd();
   if (piTabs || claudeTabs || ompTabs) {
     // Detection text has no styles. Background or neutral-vs-dim/green text identifies
     // the active tab, not answered boxes: verify the viewport before authorizing moves.
@@ -1069,10 +1072,8 @@ async function readKnownPrompt(
     const colors = await paneRead({ paneId, source: "visible", format: "ansi", timeoutMs: SUGGESTION_READ_MS }).then(read => read.text, () => null);
     const scrollAfter = await paneScrollInfo(paneId).catch(() => null);
     screen = await liveScreen(paneId);
-    const text = (value: string): string => value.replace(ANSI_RE, "").replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, "")
-      .split(/\r?\n/).map(line => line.trimEnd()).join("\n").trimEnd();
     if (colors !== null && viewportShowsLive(scrollBefore, scrollAfter, colors, before, screen)
-      && text(colors) === text(screen)) screen = colors;
+      && plain(colors) === plain(screen)) screen = colors;
     // Plain-text labels remain readable, but authorize no input.
     else if (piTabs) inputUnverified = true;
   }
@@ -1167,16 +1168,24 @@ async function readKnownPrompt(
   }
   const count = agent === "codex" && prompt === null ? queuedQuestionCount(screen) : 0;
   let settled: InteractivePrompt | undefined;
-  if (settle && prompt) {
+  if (settle && (prompt || settle === "editor")) {
     const styled = screen.includes("\u001b[");
     const drawn = await (styled
       ? paneRead({ paneId, source: "visible", format: "ansi", timeoutMs: SUGGESTION_READ_MS }).then(read => read.text)
       : liveScreen(paneId)).catch(() => null);
-    const again = drawn === null ? null : parseDrawn(drawn);
-    const now = again ? rebind(again) : null;
-    const at = (card: InteractivePrompt): number | undefined => card.steps?.findIndex(step => step.current);
-    if (!now || now.id !== prompt.id || at(now) !== at(prompt)) inputUnverified = true;
-    else settled = now;
+    // Typing can change the card's ID or replace the menu with its editor. Compare the editor
+    // on this last screen, after the other lookups, using the same parser context as the read.
+    if (settle === "editor") {
+      if (styled && drawn !== null && plain(drawn) !== plain(await liveScreen(paneId))) return { prompt: null, inputUnverified: true };
+      return { prompt: drawn === null ? null : parseDrawn(drawn), screen: drawn ?? undefined, inputUnverified };
+    }
+    if (prompt) {
+      const again = drawn === null ? null : parseDrawn(drawn);
+      const now = again ? rebind(again) : null;
+      const at = (card: InteractivePrompt): number | undefined => card.steps?.findIndex(step => step.current);
+      if (!now || now.id !== prompt.id || at(now) !== at(prompt)) inputUnverified = true;
+      else settled = now;
+    }
   }
   if (count === 0 || !pane.cwd) return { prompt, screen, inputUnverified, ...(settled ? { settled } : {}) };
   let rollout = queueRollouts.get(paneId);
@@ -1451,14 +1460,14 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         if (ompCall !== undefined && !(await ompCallStillOpen(paneId, pane.cwd ?? "", ompCall, signal))) throw new OmpCallChanged();
       };
       const verifyThenSend = async <T>(look: AbortSignal, guardUntil: number | null, readUntil: number,
-        same: (shown: ParsedPrompt | null, screen: string, settled: ParsedPrompt | null) => boolean, write: () => T, screenOnly = false): Promise<T> => {
+        same: (shown: ParsedPrompt | null, screen: string, settled: ParsedPrompt | null) => boolean, write: () => T, screenOnly: boolean | "editor" = false): Promise<T> => {
         const guarding = guardKey(body.pane_id, agent, look);
         guarding.catch(() => undefined);
         const guarded = guardUntil === null ? await guarding.then(() => true)
           : await Promise.race([guarding.then(() => true), Bun.sleep(Math.max(0, guardUntil - Date.now())).then(() => false)]);
         if (!guarded) throw new KeyRefused();
         const reading = readKnownPrompt(body.pane_id, pane, agent, options.codexHome, panes, options.openCodeStateDir, openCodeState,
-          AbortSignal.timeout(Math.max(1, readUntil - Date.now())), true, !screenOnly);
+          AbortSignal.timeout(Math.max(1, readUntil - Date.now())), true, screenOnly === "editor" ? "editor" : !screenOnly);
         reading.catch(() => undefined);
         const read = await Promise.race([reading, Bun.sleep(Math.max(0, readUntil - Date.now())).then(() => null)]);
         const shown = read?.prompt ? parsedByPublicPrompt.get(read.prompt) ?? null : null;
@@ -1466,12 +1475,13 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         // a stale read (an OpenCode lookup another session overtook) authorizes nothing: it is refused before any
         // comparison, as an empty screen could make the same generic card as the one the answer was read for
         if (read?.stale) throw new KeyRefused();
-        const readsLive = read?.screen === undefined && screenOnly && parsedPrompt?.responder.startsWith("fallback") === true;
+        const readsLive = read?.screen === undefined && screenOnly === true && parsedPrompt?.responder.startsWith("fallback") === true;
         const screen = read?.screen ?? (read && readsLive
           ? await Promise.race([liveScreen(body.pane_id).catch(() => null), Bun.sleep(Math.max(0, readUntil - Date.now())).then(() => null)])
           : null);
         if (readsLive && request.signal.aborted) throw new KeyRefused();
-        if (!read || read.inputUnverified || Date.now() > readUntil || !same(shown, screen ?? "", settled)) throw new KeyRefused();
+        if (!read || read.inputUnverified || (screenOnly === "editor" && (!screen || read.suppressFallback))
+          || Date.now() > readUntil || !same(shown, screen ?? "", settled)) throw new KeyRefused();
         // pi's select and confirm compare by the dialog drawn, which pi leaves on the screen when it ends, and a
         // dialog moved off its first row has no card to compare: pi must still hold the pane after this read too
         if ((parsedPrompt?.responder === "pi-question" || parsedPrompt?.responder === "pi-confirm") && !(await piOwnsInput(body.pane_id))) throw new KeyRefused();
@@ -1843,6 +1853,10 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         const responder = parsed.responder;
         const reader = registry.readerFor(responder);
         const interaction = body.custom_text === undefined ? reader?.interaction?.(parsed) : undefined;
+        const editorAnswer = body.custom_text !== undefined && (responder === "claude-question" || responder === "omp-question"
+          || responder === "omo-question" || responder === "omo-review" || responder === "hermes-question"
+          || responder === "hermes-input" || responder === "opencode-v1-question")
+          ? { prompt: parsed, text: body.custom_text.trim() } : undefined;
         // where the moves sent so far leave the cursor (↑ stops at the first row: omoWalk)
         let cursor = parsed.selectedIndex;
         // Claude's unnumbered rows and pi's models are read with no number to aim at: looked at
@@ -1928,12 +1942,20 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
           const guardUntil = agent === "pi" ? null : Date.now() + SETTLE_MS;
           const lettaTyping = committed && responder === "letta-model" && body.custom_text !== undefined;
           const dshEnter = committed && responder === "dsh-question" && customTyped;
-          if (!committed || togglesInPlace() || lettaTyping || dshEnter) {
+          const typedEnter = customTyped && step.keys?.length === 1 && step.keys[0] === KEY.enter ? editorAnswer : undefined;
+          if (!committed || togglesInPlace() || lettaTyping || dshEnter || typedEnter) {
             const onCursor = !move && (step.keys?.every((key) => key === KEY.enter || key === KEY.space) ?? false);
             const { written } = await verifyThenSend(look, guardUntil, Date.now() + SETTLE_MS,
-              (shown, screen, settled) => lettaTyping ? lettaSearchShown(shown, parsed, lettaSearch)
-                : sameQuestion(shown, screen, onCursor, settled), () => ({ written: write() }),
-              interaction !== undefined || responder === "pi-question" || responder === "pi-confirm" || responder.startsWith("fallback"));
+              (shown, screen, settled) => {
+                if (typedEnter) {
+                  if (!asks() || request.signal.aborted) return false;
+                  if (responder === "omp-question") return ompCustomEditorMatches(screen, typedEnter);
+                  if (responder === "opencode-v1-question") return openCodeV1CustomEditorMatches(screen, typedEnter);
+                  return shown?.agent === parsed.agent && shown.customEditorMatches?.(typedEnter) === true;
+                }
+                return lettaTyping ? lettaSearchShown(shown, parsed, lettaSearch) : sameQuestion(shown, screen, onCursor, settled);
+              }, () => ({ written: write() }),
+              typedEnter ? "editor" : interaction !== undefined || responder === "pi-question" || responder === "pi-confirm" || responder.startsWith("fallback"));
             await written;
           } else {
             const guarding = guardKey(body.pane_id, agent, look);

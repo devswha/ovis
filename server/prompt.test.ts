@@ -4662,6 +4662,9 @@ ${omoRule}
 /tmp/work • main
 (😺 OmO Native)
 `;
+  const omoTypingScreen = (screen: string, text = "") => screen
+    .replace(/^.*Type your own answer\.\.\.$/m, () => `   Type your own answer...\n Your answer (enter to save, ↑↓ back to options, esc to discard)\n> ${text}`)
+    .replace(/^ ↑↓ move .* esc cancel$/m, " enter save and next  ↑↓ back to options  tab next question  esc discard");
   const omoCall = (id: string, options: { label: string }[] | undefined = [{ label: "First" }, { label: "Second" }]) => JSON.stringify({ type: "message", message: { role: "assistant", stopReason: "toolUse", content: [{ type: "toolCall", id, name: "ask_user_question", arguments: { waitForAnswer: false, questions: [{ header: "QA", question: "Which one?", ...(options ? { options } : {}) }] } }] } }) + "\n";
 
   // These route fixtures use /proc to read an inert child's isolated agent directory.
@@ -4844,6 +4847,8 @@ ${heldRule}
       pane.onSent = (sent) => {
         if (sent === "alt+up" || sent === "backspace") pane.screen = omoFormScreen(at);
         if (sent === "down") pane.screen = omoFormScreen(++at);
+        if (sent === "enter") pane.screen = pane.sent.at(-2)?.startsWith("text:") ? "Working…" : omoTypingScreen(omoFormScreen(at));
+        if (sent.startsWith("text:")) pane.screen = omoTypingScreen(omoFormScreen(at), sent.slice(5));
       };
       const prompt = (await card())!;
       expect(await answer(prompt.id, { custom_text: "2 please" })).toEqual({ status: 200, code: undefined });
@@ -4944,7 +4949,12 @@ ${omoRule}
       const prompt = (await card())!;
       expect(prompt.options).toEqual([]);
       expect(prompt.custom_option_index).toBe(0);
-      pane.onSent = (sent) => { if (sent === "alt+up" || sent === "backspace") pane.screen = omoFormScreen(0, "Which one?", []); };
+      const form = omoFormScreen(0, "Which one?", []);
+      pane.onSent = (sent) => {
+        if (sent === "alt+up" || sent === "backspace") pane.screen = form;
+        if (sent === "enter") pane.screen = pane.sent.at(-2)?.startsWith("text:") ? "Working…" : omoTypingScreen(form);
+        if (sent.startsWith("text:")) pane.screen = omoTypingScreen(form, sent.slice(5));
+      };
       expect((await answer(prompt.id, { custom_text: "my answer" })).status).toBe(200);
       expect(pane.sent).toEqual(["alt+up", "backspace", "enter", "text:my answer", "enter"]);
     });
@@ -5250,9 +5260,82 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
 `;
   const DATASETS = ["LM-O", "YCB-V", "Type something."];
 
+  const editorCases = [
+    ["the typed answer is unchanged", (screen: string) => screen, 200],
+    ["words were added to the editor", (screen: string) => screen.replace("card words", "card words AND MINE"), 409],
+    ["the question closed", () => "❯ an unsent composer draft", 409],
+  ] as const;
+
+  describe.each(["q1", "review"] as const)("OmO %s editor", (part) => {
+    const recorded = (name: string) => readFileSync(new URL(`./fixtures/question-steps-omo-5.1.51-${name}.txt`, import.meta.url), "utf8");
+    const initial = recorded(part);
+    const editing = part === "q1" ? recorded("q1-typing").replace("> x\n", ">\n") : initial;
+    test.each(editorCases)("verifies typed Enter when %s", async (_, change, status) => {
+      await withPane("omo", "blocked", initial, async (pane) => {
+        const prompt = (await card())!;
+        const open = part === "q1" ? ["backspace", "down", "down", "enter"] : [];
+        pane.onSent = (sent) => {
+          if (sent === "enter" && pane.sent.length === open.length) pane.screen = editing;
+          if (sent === "text:card words") pane.screen = change(editing.replace(/^>$/m, "> card words"));
+          if (sent === "enter" && pane.sent.length > open.length) pane.screen = "❯";
+        };
+        const result = await answer(prompt.id, { custom_text: "card words" });
+        expect([result, pane.sent]).toEqual(status === 200
+          ? [{ status: 200, code: undefined }, [...open, "text:card words", "enter"]]
+          : [{ status: 409, code: "prompt_changed" }, [...open, "text:card words"]]);
+      });
+    });
+  });
+
+  const openCodeWrapped = "a".repeat(108);
+  const openCodeEditorCases = [
+    ...editorCases.map(([name, change, status]) => [name, change, status, "card words"] as const),
+    ["the editor wraps at a dropped space", (screen: string) => screen.replace(`${openCodeWrapped} words`, `${openCodeWrapped} \n  ┃     words`), 200, `${openCodeWrapped} words`],
+    ["a wrap splits a word", (screen: string) => screen.replace(`${openCodeWrapped}words`, `${openCodeWrapped}\n  ┃     words`), 200, `${openCodeWrapped}words`],
+    ["the textarea shows only its placeholder", (screen: string) => screen, 409, "Type your own answer"],
+    ["a different question shows the same typed answer", (screen: string) => screen.replace("Which color do you prefer?", "Which color should I avoid?"), 409, "card words"],
+  ] as const;
+
+  test.each(openCodeEditorCases)("OpenCode v1 verifies typed Enter when %s", async (_, change, status, text) => {
+    const initial = readFileSync(new URL("./fixtures/opencode-question-1.2.27-single-wide.txt", import.meta.url), "utf8");
+    // OpenCode's question.tsx draws the textarea under the last option, indented like a description.
+    const editor = (text: string) => initial.replace("┃  3. Type your own answer\n", `┃  3. Type your own answer\n  ┃     ${text}\n`);
+    await withPane("opencode", "blocked", initial, async (pane) => {
+      const prompt = (await card())!;
+      pane.onSent = (sent) => {
+        if (sent === "text:3") pane.screen = editor("Type your own answer");
+        if (sent === `text:${text}`) pane.screen = change(editor(sent.slice(5)));
+      };
+      const result = await answer(prompt.id, { custom_text: text });
+      const sent = ["text:3", `text:${text}`];
+      expect([result, pane.sent]).toEqual(status === 200
+        ? [{ status: 200, code: undefined }, [...sent, "enter"]]
+        : [{ status: 409, code: "prompt_changed" }, sent]);
+    });
+  });
+
+  test.each(editorCases)("Claude verifies typed Enter when %s", async (_, change, status) => {
+    await withPane("claude", "blocked", QUESTION(DATASETS, 2), async (pane) => {
+      const prompt = (await card())!;
+      pane.onSent = (sent) => {
+        if (sent === "text:card words") pane.screen = change(QUESTION([...DATASETS.slice(0, 2), "card words"], 2));
+        if (sent === "enter") pane.screen = "❯";
+      };
+      const result = await answer(prompt.id, { custom_text: "card words" });
+      expect([result, pane.sent]).toEqual(status === 200
+        ? [{ status: 200, code: undefined }, ["text:card words", "enter"]]
+        : [{ status: 409, code: "prompt_changed" }, ["text:card words"]]);
+    });
+  });
+
   test("types a custom answer only into the question it was written for", async () => {
     await withPane("claude", "blocked", QUESTION(DATASETS, 0), async (pane) => {
-      moving(pane, DATASETS, (at) => QUESTION(DATASETS, at));
+      let at = 0;
+      pane.onSent = (sent) => {
+        if (sent === "down") pane.screen = QUESTION(DATASETS, ++at);
+        if (sent.startsWith("text:")) pane.screen = QUESTION([...DATASETS.slice(0, 2), sent.slice(5)], at);
+        if (sent === "enter") pane.screen = "❯";
+      };
       const prompt = (await card())!;
       expect(await answer(prompt.id, { custom_text: "the internal set" })).toEqual({ status: 200, code: undefined });
       expect(pane.sent).toEqual(["down", "down", "text:the internal set", "enter"]);
@@ -5364,16 +5447,28 @@ ${rows.map((row, index) => `│${index === at ? "❯" : " "} ○ ${row}`).join("
 `;
   const TARGETS = ["Jetson Orin", "RK3588", "Other (type your own)"];
 
-  test("types omp's custom answer into the row its Enter opens", async () => {
+  test.each(editorCases)("omp verifies typed Enter when %s", async (_, change, status) => {
+    // omp's Ask opens a HookEditor panel titled "Custom answer: <question>".
+    const editor = (text: string) => [
+      "╭─ Custom answer: Which target? ──────────────────────────────╮",
+      `│ > ${`${text}▏`.padEnd(57)} │`,
+      "│ ⏎ or Ctrl+Q submit  ⎋ cancel  Ctrl+G external editor         │",
+      "│                                                             │",
+      "╰─────────────────────────────────────────────────────────────╯",
+    ].join("\n");
     await withPane("omp", "blocked", OMP(TARGETS, 0), async (pane) => {
       let at = 0;
       pane.onSent = (sent) => {
-        if (sent === "down") at += 1;
-        pane.screen = sent === "enter" ? "Other:\n> \n" : sent.startsWith("text:") ? `Other:\n> ${sent.slice(5)}\n` : OMP(TARGETS, at);
+        if (sent === "down") pane.screen = OMP(TARGETS, ++at);
+        if (sent === "enter" && pane.sent.length === 3) pane.screen = editor("");
+        if (sent === "text:card words") pane.screen = change(editor(sent.slice(5)));
       };
       const prompt = (await card())!;
-      expect(await answer(prompt.id, { custom_text: "an x86 box" })).toEqual({ status: 200, code: undefined });
-      expect(pane.sent).toEqual(["down", "down", "enter", "text:an x86 box", "enter"]);
+      const result = await answer(prompt.id, { custom_text: "card words" });
+      const sent = ["down", "down", "enter", "text:card words"];
+      expect([result, pane.sent]).toEqual(status === 200
+        ? [{ status: 200, code: undefined }, [...sent, "enter"]]
+        : [{ status: 409, code: "prompt_changed" }, sent]);
     });
   });
 
@@ -5559,27 +5654,28 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
     });
   });
 
-  test("after its first key that is not a move, an answer sends the rest of its keys unseen", async () => {
-    const cases: { agent: string; status: string; screen: string; choice: Parameters<typeof answer>[1] }[] = [
-      { agent: "claude", status: "blocked", screen: QUESTION(DATASETS, 2), choice: { custom_text: "the internal set" } },
+  test("a redraw after the first committing key still lets the answer send its remaining unguarded steps", async () => {
+    const cases: { agent: string; status: string; screen: string; choice: Parameters<typeof answer>[1]; verifiesEditor?: true }[] = [
+      { agent: "claude", status: "blocked", screen: QUESTION(DATASETS, 2), choice: { custom_text: "the internal set" }, verifiesEditor: true },
       { agent: "claude", status: "blocked", screen: CHECKS(KINDS, 0), choice: { option_indices: [0, 1] } },
       { agent: "pi", status: "idle", screen: input("Branch name?"), choice: { custom_text: "fix/answers" } },
-      { agent: "omp", status: "blocked", screen: OMP(TARGETS, 2), choice: { custom_text: "an x86 box" } },
+      { agent: "omp", status: "blocked", screen: OMP(TARGETS, 2), choice: { custom_text: "an x86 box" }, verifiesEditor: true },
     ];
-    for (const { agent, status, screen, choice } of cases) {
+    for (const { agent, status, screen, choice, verifiesEditor } of cases) {
       await withPane(agent, status, screen, async (pane) => {
         const keys = answerKeys(parseInteractivePrompt(agent, screen)!, choice).flatMap((step) => step.keys ?? [`text:${step.text}`]);
         expect(keys.length).toBeGreaterThan(1);
         const prompt = (await card())!;
         pane.onSent = () => { pane.screen = "Working…\n"; };
-        expect(await answer(prompt.id, choice)).toEqual({ status: 200, code: undefined });
-        expect(pane.sent).toEqual(keys);
+        const result = await answer(prompt.id, choice);
+        expect(result).toEqual(verifiesEditor ? { status: 409, code: "prompt_changed" } : { status: 200, code: undefined });
+        expect(pane.sent).toEqual(verifiesEditor ? keys.slice(0, -1) : keys);
       });
     }
   });
 
   test("sends no more of omp's answer once omp is stopped behind its shell under it", async () => {
-    // the custom answer's Enter opens omp's editor, and the text and its Enter go unseen: only the check before each key holds them
+    // The first Enter opens omp's editor. The foreground check must stop the text before the final screen check.
     await withPane("omp", "blocked", OMP(TARGETS, 2), async (pane) => {
       const prompt = (await card())!;
       pane.onSent = () => { pane.ompStopped = true; };
@@ -5972,6 +6068,25 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
 
   describe("Hermes's question, changed in the terminal between the last look and a key", () => {
     const hermes = (question: string, at: number, ticked: number[] = [], multi = false) => `\n ask 1 question\n ▸ ${question}\n${["Red", "Blue", "Green"].map((row, index) => `   ${at === index ? "▸" : " "} ${multi ? (ticked.includes(index) ? "[x] " : "[ ] ") : ""}${index + 1}. ${row}`).join("\n")}\n   ${at === 3 ? "▸" : " "} 4. Other (type your answer)\n 0/1 answered · ${multi ? "Space toggle · " : ""}↑/↓ select · Enter confirm and continue · Tab/Shift+Tab switch question · Esc/Ctrl+C cancel\n ─ (⌐■_■) deliberating…  · 10s │ opus 5.5\n`;
+
+    test.each(editorCases)("Hermes verifies typed Enter when %s", async (_, change, status) => {
+      const initial = hermes("Pick a colour", 0);
+      const editor = (text: string) => initial.replace(/^ {3,}.*\n/gm, "").replace(" 0/1 answered", `   > ${text}\n 0/1 answered`);
+      await withPane("hermes", "blocked", initial, async (pane) => {
+        let at = 0;
+        const prompt = (await card())!;
+        pane.onSent = (sent) => {
+          if (sent === "down") pane.screen = hermes("Pick a colour", ++at);
+          if (sent === "enter") pane.screen = editor("");
+          if (sent === "text:card words") pane.screen = change(editor(sent.slice(5)));
+        };
+        const result = await answer(prompt.id, { custom_text: "card words" });
+        const sent = ["down", "down", "down", "enter", "ctrl+k", "ctrl+u", "text:card words"];
+        expect([result, pane.sent]).toEqual(status === 200
+          ? [{ status: 200, code: undefined }, [...sent, "enter"]]
+          : [{ status: 409, code: "prompt_changed" }, sent]);
+      });
+    });
 
     for (const [moveOn, read] of [[2, "the read before Enter"], [3, "the settling read before Enter"]] as const) {
       test(`an arrow pressed in the terminal by ${read}: no Enter on the row it moved to`, async () => {
