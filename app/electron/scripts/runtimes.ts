@@ -38,7 +38,7 @@ export const BUN: Record<Target, Pinned & { folder: string }> = {
 /** Bun's license, which its release archives do not carry */
 export const BUN_LICENSE: Pinned = {
   url: `https://raw.githubusercontent.com/oven-sh/bun/bun-v${BUN_VERSION}/LICENSE.md`,
-  sha256: "b9caf52728691b4057e371232c221a132883198be2f3d2ddf92c90404c984b1a",
+  sha256: "362fe32c954ec829240bd7429c53d705eef08c6bfa45ffc2d02005f857cba4dd",
 };
 
 export function hostTarget(platform: string = process.platform, arch: string = process.arch): Target {
