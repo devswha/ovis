@@ -177,17 +177,17 @@ describe("ovis link, on the PC itself", () => {
 
   it("--code takes the pairing code back on an error too, not only on Ctrl+C", async () => {
     const pc = identity();
-    let cancelled = 0;
-    const local = localPc((request, path) => {
+    const cancelled: unknown[] = [];
+    const local = localPc(async (request, path) => {
       if (path === "/api/relay" && request.method === "GET") return Response.json({ phase: "online", blocked: null });
-      if (path === "/api/relay/code") return Response.json({ code: "ABCD-EFGH-JK", expires_at: new Date(Date.now() + 600_000).toISOString(), server_id: pc.server_id });
+      if (path === "/api/relay/code") return Response.json({ code: "ABCD-EFGH-JK", expires_at: new Date(Date.now() + 600_000).toISOString(), server_id: pc.server_id, pairing: { id: "p1" } });
       if (path === "/api/relay/offer") return Response.json({ url: "https://app.ovis.sh/s/x/#offer=garbage" });
-      if (path === "/api/devices/pair/cancel") { cancelled++; return Response.json({ ok: true }); }
+      if (path === "/api/devices/pair/cancel") { cancelled.push(await request.json()); return Response.json({ ok: true }); }
       return undefined;
     });
     const out: string[] = [];
     expect(await link(["--code"], { origin: ORIGIN, headers: {}, fetch: local.fetch, out: (text) => out.push(text), signal: new AbortController().signal, lines: answers(), accountService: SERVICE })).toBe(1);
-    expect(cancelled).toBe(1);
+    expect(cancelled).toEqual([{ id: "p1" }]);
   });
 
   it("--code takes back the pairing a renewal started when it fails before its QR code came", async () => {
@@ -197,17 +197,17 @@ describe("ovis link, on the PC itself", () => {
     const cancels: unknown[] = [];
     const local = localPc(async (request, path) => {
       if (path === "/api/relay" && request.method === "GET") return Response.json({ phase: "online", blocked: null });
-      if (path === "/api/relay/code") return Response.json({ code: "ABCD-EFGH-JK", expires_at: new Date(time.now() + 600_000).toISOString(), server_id: pc.server_id });
+      if (path === "/api/relay/code") return Response.json({ code: "ABCD-EFGH-JK", expires_at: new Date(time.now() + 600_000).toISOString(), server_id: pc.server_id, pairing: { id: `p${offers + 1}` } });
       if (path === "/api/relay/offer") {
         if (++offers === 2) return Response.json({ error: { code: "internal_error", message: "internal error (x)" } }, { status: 500 });
-        return Response.json({ url: encodeOffer({ v: 1, server_id: pc.server_id, server_public_key: pc.public_key, relay: RELAY, code: "111111" }, "https://app.ovis.sh"), expires_at: new Date(time.now() + 600_000).toISOString() });
+        return Response.json({ url: encodeOffer({ v: 1, server_id: pc.server_id, server_public_key: pc.public_key, relay: RELAY, code: "111111" }, "https://app.ovis.sh"), expires_at: new Date(time.now() + 600_000).toISOString(), pairing: { id: request.headers.get("x-ovis-pairing") } });
       }
       if (path === "/api/devices/pair/cancel") { cancels.push(await request.json()); return Response.json({ ok: true }); }
       return undefined;
     });
     expect(await link(["--code"], { origin: ORIGIN, headers: {}, fetch: local.fetch, out: () => undefined, signal: new AbortController().signal, now: time.now, wait: time.wait, lines: answers(), accountService: SERVICE })).toBe(1);
-    // not the first round's 111111: the renewal's /api/relay/code started a pairing whose code never came back
-    expect(cancels).toEqual([{}]);
+    // not the first round's 111111: the renewal's /api/relay/code started a pairing whose QR code never came, by its id
+    expect(cancels).toEqual([{ id: "p2" }]);
   });
 
   it("--code turns the relay on first when it is off, and waits until it is online to ask for a code", async () => {
@@ -1688,7 +1688,7 @@ describe("ovis link, on the PC itself", () => {
      * account"): its answers repeat that account, or `expect`'s, and name the code `p<n>` (the typed code's id
      * `typedId`'s); `read` answers the read of a code by its id, live by default. Unset: an Ovis from before that.
      */
-    tied?: { expect?: { code?: string; offer?: string }; typedId?: string; read?: (id: string, looks: number) => Record<string, unknown> };
+    tied?: { expect?: { code?: string; offer?: string }; typedId?: string; read?: (id: string, looks: number) => Record<string, unknown> | undefined };
   } = {}) {
     const pc = identity();
     const time = clock();
@@ -1709,6 +1709,8 @@ describe("ovis link, on the PC itself", () => {
     // the look each code was taken back at, and the ids its code was read by
     const cancelledAt: number[] = [];
     const reads: unknown[] = [];
+    // when each code's ten minutes end, by its id
+    const until = new Map<string, number>();
     const revoked: string[] = [];
     // the accounts this PC was told to ask its relay pass under
     const named: unknown[] = [];
@@ -1735,12 +1737,15 @@ describe("ovis link, on the PC itself", () => {
         began ??= time.now();
         offers.push(String(100001 + offers.length));
         renewedAt.push(time.now() - began);
+        // as the PC reads it: live until its ten minutes are over (no device waits under it here)
+        until.set(`p${offers.length}`, time.now() + 600_000);
         return Response.json({ url: encodeOffer({ v: 1, server_id: pc.server_id, server_public_key: pc.public_key, relay: RELAY, code: offers.at(-1)! }, options.settings?.["OVIS_RELAY_APP_URL"] ?? "https://app.ovis.sh"), expires_at: new Date(time.now() + 600_000).toISOString(), ...forAccount(request, tied?.expect?.offer, `p${offers.length}`) });
       }
       if (path === "/api/relay/offer/keep" && tied !== undefined) {
         const { id } = await request.json() as { id: string };
         reads.push(id);
-        return Response.json(tied.read?.(id, looks) ?? { state: "live", id, expect_account: "acct_1", expires_at: new Date(time.now() + 600_000).toISOString() });
+        return Response.json(tied.read?.(id, looks) ?? (time.now() <= (until.get(id) ?? Infinity) ? { state: "live", id, expect_account: "acct_1", expires_at: new Date(until.get(id) ?? time.now()).toISOString() }
+          : { state: "ended", id, expect_account: "acct_1", ended: { why: "expired", at: new Date(time.now()).toISOString() } }));
       }
       if (path === "/api/devices/pair/cancel") { cancels.push(await request.json()); cancelledAt.push(looks); return options.cancel?.() ?? Response.json({ ok: true, cancelled: true }); }
       if (path.startsWith("/api/devices/") && request.method === "DELETE") {
@@ -2576,16 +2581,17 @@ describe("ovis link, on the PC itself", () => {
   });
 
   it("ends a code pending from elsewhere before its QR code when the relay takes no typed code, so the QR code carries digits of its own", async () => {
-    const { code, text, cancels, paths } = await scanning({
+    const { code, text, cancels, offers, paths } = await scanning({
       refuse: (path) => path === "/api/relay/code" ? Response.json({ error: { code: "code_unavailable", message: "Pairing with a typed code works through Ovis's relay only; scan the QR code instead." } }, { status: 409 }) : undefined,
       step: (state, looks) => { if (looks === 1) { state.account = "acct_1"; state.devices = [OLD, MEMBER]; } },
     });
     expect(code).toBe(0);
     expect(text).toContain("No code to type this time");
-    // what was pending (from Settings or ovis pair, which showed its six digits) went before the offer; the code the
-    // QR code carried is then taken back by its own digits
-    expect(cancels).toEqual([{}, { code: "100001" }]);
-    const order = ["POST /api/relay/code", "POST /api/devices/pair/cancel", "POST /api/relay/offer"].map((call) => paths.indexOf(call));
+    // what the first offer carried (pending from Settings or ovis pair, which showed its six digits) went by its six
+    // digits, and a second offer carries a code of its own, which is then taken back by its own digits
+    expect(cancels).toEqual([{ code: "100001" }, { code: "100002" }]);
+    expect(offers).toEqual(["100001", "100002"]);
+    const order = ["POST /api/relay/code", "POST /api/relay/offer", "POST /api/devices/pair/cancel"].map((call) => paths.indexOf(call));
     expect(order).toEqual([...order].sort((a, b) => a - b));
   });
 
@@ -2911,7 +2917,7 @@ describe("ovis link, on the PC itself", () => {
 
   // a PC that makes its codes for the account the command names (docs/account.md, "A code made for an account")
   const TIED = {};
-  const OLDER = "The Ovis on this PC is older than this command: its code is not made for your account, so a device of any account, or of none, that reads it can pair. Update it in Settings → Updates on this PC to have the code made for your account.\n";
+  const OLDER = "The Ovis on this PC is older than this command, so its code is not tied to the account you signed in to: keep it to yourself. Update it in Settings → Updates on this PC to tie its codes to your account.\n";
   const UNKNOWN = "The Ovis on this PC no longer knows the code shown (it restarted), so that code does not work. A new one comes when it would have run out.\n";
   const RELAY_DOWN = "This PC's Ovis relay is off or not online just now, so it gave no code. Asking again…\n";
   /** The account each call to `path` named for its code. */
@@ -2930,16 +2936,17 @@ describe("ovis link, on the PC itself", () => {
     // at each look while the code was out, and no more once this PC was in the account
     expect(reads).toEqual(["p1", "p1", "p1"]);
     expect(offers).toEqual(["100001"]);
-    expect(cancels).toEqual([{ code: "100001" }]);
+    expect(cancels).toEqual([{ code: "100001", id: "p1" }]);
   });
 
   it("takes no code that this PC made for another account than the one that signed in: the code goes back, and the run fails naming both", async () => {
     for (const expect_account of [{ code: "acct_9", offer: "acct_9" }, { code: "acct_9" }, { offer: "acct_9" }]) {
       const { code, out, cancels, offers } = await scanning({ tied: { expect: expect_account } });
       expect([expect_account, code]).toEqual([expect_account, 1]);
-      expect(out.at(-1)).toBe("Could not link this PC: The Ovis on this PC made its code for another Ovis account (acct_9) than the one you signed in to (acct_1), so it was taken back. Run ovis add again.\n");
+      // what became of the code is said on its own line, before
+      expect(out.slice(-2)).toEqual(["The code and the QR code no longer work.\n", "Could not link this PC: The Ovis on this PC made its code for another Ovis account (acct_9) than the one you signed in to (acct_1). Run ovis add again.\n"]);
       expect(out.some((text) => text.includes("Scan this QR code"))).toBe(false);
-      expect(cancels).toEqual([{ code: "100001" }]);
+      expect(cancels).toEqual([{ code: "100001", id: "p1" }]);
       expect(offers).toEqual(["100001"]);
     }
   });
@@ -2959,7 +2966,7 @@ describe("ovis link, on the PC itself", () => {
     // an older Ovis's code admits whoever holds it: it goes the moment a device shows
     expect(endedAt(older)).toBeGreaterThan(-1);
     expect(endedAt(older)).toBeLessThan(removedAt(older));
-    expect([tied.cancels, older.cancels]).toEqual([[{ code: "100001" }], [{ code: "100001" }]]);
+    expect([tied.cancels, older.cancels]).toEqual([[{ code: "100001", id: "p1" }], [{ code: "100001" }]]);
   });
 
   it("says when its code ended on this PC, and why, and stops: nothing is taken back that is not out", async () => {
@@ -2981,13 +2988,13 @@ describe("ovis link, on the PC itself", () => {
   });
 
   it("goes on when its code ran out or this PC joined with it, and says once when this PC no longer knows it", async () => {
-    const expired = await scanning({ tied: { read: (id) => id === "p1" ? endedBy("expired")(id) : live(id) } });
+    const expired = await scanning({ tied: { read: (id) => id === "p1" ? endedBy("expired")(id) : undefined } });
     expect(expired.offers).toEqual(["100001", "100002", "100003"]);
     expect(expired.text).not.toContain("no longer works:");
     const joined = await scanning({ tied: { read: endedBy("joined") }, step: (state, looks) => { if (looks === 4) { state.account = "acct_1"; state.devices = [OLD, MEMBER]; } } });
     expect(joined.code).toBe(0);
     expect(joined.text).not.toContain("no longer works:");
-    const unknown = await scanning({ tied: { read: (id) => id === "p1" ? { state: "unknown" } : live(id) } });
+    const unknown = await scanning({ tied: { read: (id) => id === "p1" ? { state: "unknown" } : undefined } });
     expect(times(unknown.text, UNKNOWN)).toBe(1);
     expect(unknown.offers).toEqual(["100001", "100002", "100003"]);
   });
@@ -3014,10 +3021,10 @@ describe("ovis link, on the PC itself", () => {
     });
     expect(joined.code).toBe(0);
     expect(joined.text).not.toContain("Asking again");
-    expect(joined.cancels).toEqual([{ code: "100001" }]);
+    expect(joined.cancels).toEqual([{ code: "100001", id: "p1" }]);
     expect(joined.offers).toEqual(["100001"]);
-    // the PC joined an account between the code to type and the QR code: the offer made none, and only the code
-    // this command showed is taken back, never whichever pairing is pending by then
+    // the PC joined an account between the code to type and the QR code: the offer made none, and only the code to
+    // type this command made last is taken back, by its id, never whichever pairing is pending by then
     let at: { account: string | null; devices: Row[] } | null = null;
     const between = await scanning({
       tied: TIED,
@@ -3032,7 +3039,7 @@ describe("ovis link, on the PC itself", () => {
     expect(between.code).toBe(0);
     expect(between.text).not.toContain("Asking again");
     expect(between.offers).toEqual(["100001"]);
-    expect(between.cancels).toEqual([{ code: "100001" }]);
+    expect(between.cancels).toEqual([{ id: "p2" }]);
     const invalid = await scanning({ tied: TIED, refuse: (path) => path === "/api/relay/code" ? Response.json({ error: { code: "invalid_account", message: "x-ovis-expect-account names no account id." } }, { status: 400 }) : undefined });
     expect(invalid.code).toBe(1);
     expect(invalid.out.at(-1)).toBe("Could not link this PC: The Ovis on this PC did not take the id of the account you signed in to (acct_1) for its code (/api/relay/code: x-ovis-expect-account names no account id.)\n");
@@ -3044,6 +3051,27 @@ describe("ovis link, on the PC itself", () => {
     const { text } = await scanning({ tied: { typedId: "p0" }, step: joins });
     expect(text).toContain("No code to type this time (it ended as the QR code was made). The QR code expires in 10:00.");
     expect(text).not.toContain("ABCD-EFGH-J1");
+  });
+
+  it("takes back by its id the code to type it made when its QR code was refused, and ends no other code", async () => {
+    const { code, cancels, offers } = await scanning({
+      tied: TIED,
+      refuse: (path) => path === "/api/relay/offer" ? Response.json({ error: { code: "relay_offline", message: "The relay is not reachable." } }, { status: 409 }) : undefined,
+    });
+    expect(code).toBe(1);
+    expect(offers).toEqual([]);
+    expect(cancels).toEqual([{ id: "p1" }]);
+  });
+
+  it("makes no new code while its code still holds a device that paired with it in time, and renews it once that device's time is over", async () => {
+    let at = 0;
+    const { renewedAt, offers } = await scanning({
+      // past its ten minutes the PC still reads the code live while that device may link, here until 10:40
+      tied: { read: (id) => id === "p1" && at <= 640_000 ? live(id) : undefined },
+      step: (_state, _looks, elapsed) => { at = elapsed; },
+    });
+    expect(offers).toEqual(["100001", "100002", "100003"]);
+    expect(renewedAt[1]).toBeGreaterThan(640_000);
   });
 
   it("at an Ovis from before codes made for an account, says so on the screen of each QR code it draws", async () => {

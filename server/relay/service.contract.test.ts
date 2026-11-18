@@ -1119,8 +1119,8 @@ it("a typed code made for an account: its answer names the account and the code,
   const f = await fixture(false, { pairCodeRelay: "wss://pair.test" });
   await f.start();
   const ask = (path: string, account?: string) => fetch(`${f.base}/api/relay${path}`, { method: "POST", headers: { origin: f.base, "x-herdr-update": "1", ...(account ? { "x-ovis-expect-account": account } : {}) } });
-  // without the header the answer is what it always was
-  expect(Object.keys(await mintCode(f)).sort()).toEqual(["code", "expires_at", "server_id"]);
+  // without the header the answer is what it always was, and names its code by its id
+  expect(Object.keys(await mintCode(f)).sort()).toEqual(["code", "expires_at", "pairing", "server_id"]);
   const minted = await (await ask("/code", "acct_owner")).json() as { code: string; expect_account: string; pairing: { id: string } };
   expect(minted.expect_account).toBe("acct_owner");
   const devices = f.app.context.services.devices;

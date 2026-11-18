@@ -210,9 +210,9 @@ test("an offer for the same account gets the same code; one for another account,
   expect(codeOf(another)).not.toBe(codeOf(first));
   expect(idOf(another)).not.toBe(idOf(first));
   expect(await state(f, idOf(first))).toMatchObject({ state: "ended", expect_account: "acct_owner", ended: { why: "replaced" } });
-  // an offer without the header answers what it always did, and carries a code of its own
+  // an offer without the header answers what it always did and names its code by its id, and carries a code of its own
   const plain = await f.local("/api/relay/offer", { method: "POST", headers: { "x-herdr-update": "1" } });
-  expect(Object.keys(plain.body).sort()).toEqual(["expires_at", "url"]);
+  expect(Object.keys(plain.body).sort()).toEqual(["expires_at", "pairing", "url"]);
   expect(codeOf(plain)).not.toBe(codeOf(another));
   expect(await state(f, idOf(another))).toMatchObject({ state: "ended", ended: { why: "replaced" } });
   // the relay tab's code is the account named for the PC's, never the code made for one account

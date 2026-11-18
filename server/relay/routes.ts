@@ -77,7 +77,11 @@ export async function handleRelayRequest(request: Request, pathname: string, con
         // account into the account named for it, so a PC that is in one makes none (409 in_account), and neither
         // does one that no account was named for (409 no_account_named)
         if (account !== null && !ACCOUNT_ID.test(account)) return invalidAccount();
-        return reply(service.offer(caller, account !== null ? { account } : { noAccountOnly: request.headers.get("x-ovis-no-account-only") === "1" }));
+        // the code the caller made and wants this offer to carry (its `pairing.id`), else a fresh one; `new`: a fresh one
+        const want = request.headers.get("x-ovis-pairing");
+        if (want !== null && !/^(new|[0-9a-f]{32})$/.test(want)) return fail("invalid_pairing", "x-ovis-pairing names no pairing.", 400);
+        const carry = want === null ? {} : { pairing: want };
+        return reply(service.offer(caller, account !== null ? { account, ...carry } : { noAccountOnly: request.headers.get("x-ovis-no-account-only") === "1", ...carry }));
       case "/api/relay/offer/keep": {
         setRequestRoute("/api/relay/offer/keep");
         // whatever the relay's state: a code made for an account is read by the id its answer gave

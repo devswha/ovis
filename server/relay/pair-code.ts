@@ -98,8 +98,9 @@ export class RelayPairCodes {
 
   /**
    * A new code, replacing any code still showing. It starts a fresh six-digit code (the QR code then
-   * shows the same one) and resolves once the relay holds its nameplate. `account`: that six-digit code is made for
-   * it (DeviceStore.startAccountPairing), and the answer says so.
+   * shows the same one) and resolves once the relay holds its nameplate. The answer names that six-digit code by its
+   * id (`pairing.id`). `account`: that six-digit code is made for it (DeviceStore.startAccountPairing), and the answer
+   * says so.
    */
   async mint(by: string | null = null, account?: string): Promise<{ code: string; expires_at: string } & Partial<AccountPairing>> {
     this.cancel();
@@ -130,7 +131,7 @@ export class RelayPairCodes {
       // is checked again here, after the wait on the relay: one removed or made one that only watches meanwhile gets
       // no code (DeviceGoneError, DeviceReadOnlyError), and the nameplate is let go
       try {
-        pairing = account === undefined ? devices.startPairing(Date.now(), { remote: false, startedBy: null, memberRequired: false, by })
+        pairing = account === undefined ? { ...devices.startPairing(Date.now(), { remote: false, startedBy: null, memberRequired: false, by }), pairing: { id: devices.pairingId()! } }
           : devices.startAccountPairing(account, by);
       }
       catch (error) { this.finish(current); throw error; }

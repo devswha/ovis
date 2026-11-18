@@ -24,9 +24,10 @@ const OWNER = "acct_owner";
 /**
  * `ovis add` run against a fresh PC, signed in to OWNER, until its QR code is on the screen. `look()` lets it take
  * one more look at the PC and waits until it waits again; `die()` makes the PC unreachable for it from then on, as
- * for a command killed outright, whose code nobody takes back.
+ * for a command killed outright, whose code nobody takes back. `typed`: what happens on the PC once its code to type
+ * was answered, before the command asks for its QR code.
  */
-async function adding() {
+async function adding(typed?: (pc: Pc) => void) {
   const made = await pairingPc();
   pcs.push(made);
   const clock = new TestClock();
@@ -49,6 +50,7 @@ async function adding() {
     if (path === "/api/relay" && request.method === "GET") return Response.json({ phase: "online", blocked: null });
     if (path === "/api/relay/offer" || path === "/api/relay/code") named.push(request.headers.get("x-ovis-expect-account"));
     const response = await globalThis.fetch(request);
+    if (path === "/api/relay/code") typed?.(made);
     if (path === "/api/relay/offer" && response.ok) code = decodeOffer((await response.clone().json() as { url: string }).url)?.code ?? null;
     return response;
   };
@@ -146,4 +148,22 @@ test("a code ovis add left behind, killed before it could take it back, still ad
   const owner = await signedInWith(add.pc, add.code);
   expect((await sendLink(owner.session, await linkRecord(owner.id, OWNER, owner.key))).status).toBe(200);
   expect(await add.pc.status()).toMatchObject({ account: OWNER, members: 1 });
+});
+
+test("ovis add shows a code of its own when another run made a code for the same account between its code to type and its QR code, and takes back only its own", async () => {
+  let other: { code: string; pairing: { id: string } } | null = null;
+  const add = await adding((pc) => { other ??= pc.devices.startAccountPairing(OWNER); });
+  // the QR code carries a code this run asked for, which replaced the other run's
+  expect(add.code).not.toBe(other!.code);
+  expect(add.pc.devices.accountPairingState(other!.pairing.id)).toMatchObject({ state: "ended", ended: { why: "replaced" } });
+  expect(add.pc.devices.activePairing()?.code).toBe(add.code);
+  // the other run takes back its own code by its id as it ends: this run's code stays
+  const theirs = await add.pc.local("/api/devices/pair/cancel", { method: "POST", headers: { "x-herdr-machine": "1" }, body: { id: other!.pairing.id } });
+  expect([theirs.status, theirs.body.cancelled]).toEqual([200, false]);
+  expect(add.pc.devices.activePairing()?.code).toBe(add.code);
+  add.stop.abort();
+  expect(await bounded(add.run)).toBe(1);
+  // its own code went back by its id: nothing is pending
+  expect(add.text()).toContain("The code and the QR code no longer work.");
+  expect(add.pc.devices.activePairing()).toBeNull();
 });

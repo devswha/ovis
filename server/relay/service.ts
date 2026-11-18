@@ -603,21 +603,24 @@ export class RelayService {
    * for this PC, and the answer says so; `noAccountOnly` is not asked with it. The machine profile makes no offer
    * without it (MachineCodeForAccountError), whoever calls, and the code pending stays as it was; routes.ts answers
    * that before the relay's state.
+   * `pairing`: the id of the code pending to carry, else a fresh one (`new`: a fresh one), for every offer but the
+   * relay tab's (DeviceStore.pairingForAccount). The answer names the code it carries by its id (`pairing.id`).
    */
-  offer(by: string | null = null, options: { noAccountOnly?: boolean; account?: string } = {}): { url: string; expires_at: string } & Partial<AccountPairing> {
+  offer(by: string | null = null, options: { noAccountOnly?: boolean; account?: string; pairing?: string } = {}): { url: string; expires_at: string; pairing: { id: string } } & Partial<AccountPairing> {
     if (!this.enabled || !this.identity || !this.services || this.blocked) throw new Error("Start the relay before pairing.");
     if (options.account === undefined && this.services.options.profile === "machine") throw new MachineCodeForAccountError();
     const devices = this.services.devices;
     // a PC that is in an account says so itself (pairingForNoAccount)
     if (options.noAccountOnly && devices.account() === null && this.savedRelayAccount() === null) throw new NoAccountNamedError();
-    const { code, expires_at, ...named } = options.account !== undefined ? devices.pairingForAccount(options.account, by)
-      : options.noAccountOnly ? devices.pairingForNoAccount(by) : devices.pairingForOffer(by);
+    const { code, expires_at, ...named } = options.account !== undefined ? devices.pairingForAccount(options.account, by, Date.now(), options.pairing)
+      : options.noAccountOnly ? devices.pairingForNoAccount(by) : devices.pairingForOffer(by, Date.now(), options.pairing);
+    const id = devices.pairingId()!;
     // before the code leaves this PC: a device revoked by now is handed none (DeviceGoneError)
     if (by !== null) devices.holdPairing(by);
     return {
       url: encodeOffer({ v: 1, server_id: this.identity.server_id, server_public_key: this.identity.public_key,
         relay: this.advertised, code, ...offerName() }, this.app),
-      expires_at, ...named,
+      expires_at, pairing: { id }, ...named,
     };
   }
 

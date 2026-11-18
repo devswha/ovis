@@ -337,7 +337,7 @@ it is off, and wait until it is online.
   (`x-ovis-expect-account` on both calls, [A code made for an account](account.md#a-code-made-for-an-account)):
   a device signed in to another account, or to none, pairs with it but gets nothing of this PC.
   Its link into another account is refused and it goes at once, one that does not link goes after
-  30 seconds, and the code stays for your own device. The command takes the code only when this
+  30 seconds, and the code stays usable for your own device while it has time and pairings left. The command takes the code only when this
   PC's answer repeats the account that signed in; an answer that names another account makes it
   take the code back and fail. Whoever holds the code can still pair with this PC
   ([Who may admit a device](account.md#who-may-admit-a-device)), so the command guards it:
@@ -353,13 +353,17 @@ it is off, and wait until it is online.
     by then. That screen keeps nothing that scrolled off it: in a window too small for the QR
     code the command says so and shows the code to type, and draws the QR code when the window
     grew.
-  - When the run ends, the code is taken back (`POST /api/devices/pair/cancel` with the six
-    digits its QR code carried, as `link --code` does), before anything is written to a terminal
+  - When the run ends, the code it made is taken back (`POST /api/devices/pair/cancel` with the
+    code's id and the six digits its QR code carried, as `link --code` does; a code to type whose
+    QR code never came, by its id alone; a code it cannot tell is its own stays), before anything
+    is written to a terminal
     that may be gone: on success, on Ctrl+C, a SIGTERM, the terminal closing (SIGHUP), an output
     that takes no more writes, an error and the 30 minutes. Only a process that is killed
     outright (SIGKILL, a crash, the PC losing power) leaves its code to run out by itself, within
     its ten minutes. A new code comes as one runs out, three codes at most, about 30 minutes;
-    then the command stops. A code is made only after a look at this PC's account and devices
+    then the command stops. While this PC still reads the code as live past its ten minutes, a
+    device that paired with it in time may still be linking: no new code comes and the run does
+    not stop until it has linked or its time is over. A code is made only after a look at this PC's account and devices
     that was answered and found this PC in no account. A device that pairs with a code made for
     the account is in no list until it linked itself into that account, and this PC then ends
     the code itself: a device that shows in the list did not come by it, ends nothing, and is
@@ -371,10 +375,12 @@ it is off, and wait until it is online.
     to be dead, and the next comes when it would have run out. An Ovis from before codes made for
     an account answers with no account: its code admits whoever holds it, so the command says so
     on the screen of each QR code it draws (once, before its first code, with `--print`), and keeps what it did before: once a device paired, through the
-    relay or with the six digits at this PC's own address, no code is shown again. Where the relay takes no typed
-    code (any relay but Ovis's own), nothing starts a new pairing for the QR code, so the command
-    first ends whatever pairing code is pending on this PC (one from Settings or `pair`, which
-    showed its six digits): the QR code never carries digits that were shown elsewhere.
+    relay or with the six digits at this PC's own address, no code is shown again. The command
+    asks for its QR code with `x-ovis-pairing`: the code to type it just made, else a fresh one,
+    so the QR code never carries a code made elsewhere (in Settings, by `pair`, or by another
+    run). An Ovis from before that carries the code pending: where the relay took no typed code
+    (any relay but Ovis's own), the command ends that code by its six digits and asks again, so
+    the QR code carries digits of its own.
   - It says what the code let in. It ends well only once this PC is in the account that signed in
     and that account's other devices are in: **This PC is in your account (the start of its id),
     added by (the device)**. The device named is the member of that account that linked itself
@@ -516,11 +522,14 @@ it is off, and wait until it is online.
 - **`link --code`** prints what **Connect a device** shows: the code to type at app.ovis.sh
   (**Pair with a code**), the relay pairing link as a QR code drawn in the terminal, and this PC's
   ID for the other device to compare. Both renew when they run out. When the relay mints no typed
-  code (a relay that is not Ovis's own, or one that refuses it), it says why and shows the QR code
-  alone, as Settings does. Ctrl+C, SIGTERM, SIGHUP (the terminal closing), or any error, takes both
-  back (`POST /api/devices/pair/cancel` with `{ "code" }`, the six-digit code it showed, which ends
-  that pending code and the typed code bound to it; a pairing started since, in Settings or on
-  another device, stays). Redeeming them follows the usual admission rules. A PC that runs the
+  code (a relay that is not Ovis's own, or one that refuses it), it says why and shows a QR code
+  of its own alone. Its QR code carries its own code to type, else a fresh code (`x-ovis-pairing`,
+  [A code made for an account](account.md#a-code-made-for-an-account)). Ctrl+C, SIGTERM, SIGHUP
+  (the terminal closing), or any error, takes back what it made (`POST /api/devices/pair/cancel`
+  with `{ "code", "id" }`, the six-digit code it showed and its id, or the id of a code to type whose
+  QR code never came, which ends that code and the typed code bound to it; a pairing started
+  since, in Settings or on another device, stays, and a code it cannot tell is its own is left
+  alone). Redeeming them follows the usual admission rules. A PC that runs the
   machine profile makes no such code (409 `machine_profile`): it takes devices through its Ovis
   account, so `link --code` says so, points to `add`, and has nothing to take back.
 

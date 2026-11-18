@@ -274,11 +274,27 @@ POST /api/relay/offer -> { "url": "https://app.ovis.sh/s/<server_id>/#offer=…"
 ```
 
 `expect_account` repeats the account the call named; a PC from before this answers with neither
-field, and a call without the header gets today's code and today's answer. `POST /api/relay/code`
+field, and a call without the header gets today's code. `pairing.id` names the code in every
+answer of both calls, with the header or without. `POST /api/relay/code`
 with the header makes a new code, as it does without. `POST /api/relay/offer` with the header
 carries the code pending when that was made for the same account (the typed code's, say), with
 the same `pairing.id`; otherwise it starts a code of its own. An offer without the header, the
 relay tab's offer included, never carries such a code: it starts its own, which replaces it.
+
+An offer other than the relay tab's can also say which code it is to carry, with the header
+
+```
+x-ovis-pairing: <pairing.id> | new
+```
+
+With an id it carries that code while it is the one pending and the offer could carry it, and
+starts a fresh code otherwise; with `new` it always starts a fresh code. So a command that made a
+code to type shows that same code as its QR code, or a code of its own, never one that another
+command or a screen made. Any other value is refused 400 `invalid_pairing`.
+
+`POST /api/devices/pair/cancel` takes `{ "id": "<pairing.id>" }` beside `{ "code" }`: it ends the
+code pending only when that is the code named (by both, when both are given), and answers
+`cancelled: false` otherwise. A body with neither ends whatever code is pending, as before.
 
 The refusals, in this order: 409 `relay_off` and `relay_offline` as ever; 400 `invalid_account`
 when the header names no account id; 409 `in_account` when the PC is in an account; then 409

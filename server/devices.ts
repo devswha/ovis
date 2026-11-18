@@ -368,11 +368,12 @@ export class DeviceStore {
    * `open`: started by a request the open LAN alone let in (access.ts `via: "open"`), so it ends when the gate closes;
    * `noAccountOnly`: made to put this PC in an account (pairingForNoAccount), so it ends when the PC is in one;
    * `waiting`: what such a code holds, the devices that paired with it through the relay and have not linked;
+   * `id`: names the code to a caller that ends or reads it (endPairing, accountPairingState);
    * `named`: such a code made for one account (startAccountPairing), whose waiting devices are taken into it alone;
    * `expires`: the wall-clock end of its ten minutes, which its `expires_at` shows; `deadline`: the same end on the
    * store's clock, which only moves forward; `over`: set the first time either says its ten minutes are over (codeOver)
    */
-  private pending: { code: string; expires: number; deadline: number; over?: true; attempts: number; lanAttempts?: number; remote: boolean; startedBy: string | null; memberRequired: boolean; open?: boolean; noAccountOnly?: boolean; holders: Set<string>; waiting?: WaitingRows; named?: { readonly id: string; readonly account: string } } | null = null;
+  private pending: { code: string; id: string; expires: number; deadline: number; over?: true; attempts: number; lanAttempts?: number; remote: boolean; startedBy: string | null; memberRequired: boolean; open?: boolean; noAccountOnly?: boolean; holders: Set<string>; waiting?: WaitingRows; named?: { readonly account: string } } | null = null;
   /** How the latest codes made for an account ended, newest last: ENDED_ACCOUNT_CODES at most, in memory only. */
   private endedAccountCodes: Extract<AccountPairingState, { state: "ended" }>[] = [];
   /** What a row that waits to link, and the redemption of a code, is bounded on (useClock). */
@@ -604,9 +605,9 @@ export class DeviceStore {
     // the code this one replaces takes the rows that waited under it along
     this.voidPending("replaced");
     this.pending = {
-      code, expires: now + CODE_TTL_MS, deadline: this.clock.now() + CODE_TTL_MS, attempts: 0, ...how, holders: new Set([by, how.startedBy].filter((id): id is string => id !== null)),
+      code, id: randomBytes(16).toString("hex"), expires: now + CODE_TTL_MS, deadline: this.clock.now() + CODE_TTL_MS, attempts: 0, ...how, holders: new Set([by, how.startedBy].filter((id): id is string => id !== null)),
       ...(how.noAccountOnly === true ? { waiting: { usesLeft: PAIRING_USES, rows: new Map<string, ProvisionalRow>() } } : {}),
-      ...(how.noAccountOnly === true && account !== undefined ? { named: { id: randomBytes(16).toString("hex"), account } } : {}),
+      ...(how.noAccountOnly === true && account !== undefined ? { named: { account } } : {}),
     };
     const started = { code, expires_at: new Date(this.pending.expires).toISOString() };
     for (const listener of this.codeStarts) listener();
@@ -638,16 +639,17 @@ export class DeviceStore {
   /**
    * The code of an offer asked for with `x-ovis-expect-account: <account>` (docs/account.md, "A code made for an
    * account"): the code pending when that was made for the same account, else a fresh one (startAccountPairing).
-   * `by` as in startPairing.
+   * `want`: the id of the code pending to carry, which a fresh one replaces when it is no longer pending; any other
+   * value (`new`) asks for a fresh one. `by` as in startPairing.
    */
-  pairingForAccount(account: string, by: string | null = null, now = Date.now()): PairingCode & AccountPairing {
+  pairingForAccount(account: string, by: string | null = null, now = Date.now(), want?: string): PairingCode & AccountPairing {
     if (by !== null) this.assertHolder(by);
     // a code made for an account ends when the PC joins one (endNoAccountCode): one still pending is for a PC in none
     const active = this.activePairing(now);
-    const named = this.pending?.named;
-    if (active !== null && named?.account === account) {
-      if (by !== null) this.pending?.holders.add(by);
-      return { ...active, expect_account: named.account, pairing: { id: named.id } };
+    const pending = this.pending;
+    if (active !== null && pending?.named?.account === account && (want === undefined || want === pending.id)) {
+      if (by !== null) pending.holders.add(by);
+      return { ...active, expect_account: account, pairing: { id: pending.id } };
     }
     return this.startAccountPairing(account, by, now);
   }
@@ -662,7 +664,7 @@ export class DeviceStore {
   startAccountPairing(account: string, by: string | null = null, now = Date.now()): PairingCode & AccountPairing {
     if (this.account() !== null) throw new PcInAccountError();
     const started = this.startPairing(now, { remote: false, startedBy: null, memberRequired: false, noAccountOnly: true, by, account });
-    return { ...started, expect_account: account, pairing: { id: this.pending!.named!.id } };
+    return { ...started, expect_account: account, pairing: { id: this.pending!.id } };
   }
 
   /**
@@ -680,7 +682,7 @@ export class DeviceStore {
    */
   accountPairingState(id: string, now = Date.now()): AccountPairingState {
     const pending = this.pending;
-    if (pending?.named?.id === id) {
+    if (pending?.named !== undefined && pending.id === id) {
       if (this.codeOver(pending, now)) this.expirePending();
       if (this.pending === pending) return { state: "live", id, expect_account: pending.named.account, expires_at: new Date(pending.expires).toISOString() };
     }
@@ -691,11 +693,11 @@ export class DeviceStore {
    * The code of every other relay offer (POST /api/relay/offer without `x-ovis-no-account-only`): the code pending,
    * else a fresh one. Never the code made for a PC in no account (pairingForNoAccount): the device that pairs with
    * that one waits to link, and this offer is for a device that is paired at once. With that code pending a fresh
-   * one is started, which replaces it as every new code does. `by` as in startPairing.
+   * one is started, which replaces it as every new code does. `want` as in pairingForAccount, `by` as in startPairing.
    */
-  pairingForOffer(by: string | null = null, now = Date.now()): PairingCode {
+  pairingForOffer(by: string | null = null, now = Date.now(), want?: string): PairingCode {
     const active = this.activePairing(now);
-    if (active !== null && this.pending?.noAccountOnly !== true) return active;
+    if (active !== null && this.pending?.noAccountOnly !== true && (want === undefined || want === this.pending?.id)) return active;
     return this.startPairing(now, { remote: false, startedBy: null, memberRequired: false, by });
   }
 
@@ -738,13 +740,20 @@ export class DeviceStore {
     return pending.over === true;
   }
 
+  /** The id of the code pending (endPairing, accountPairingState); null when none is. */
+  pairingId(): string | null {
+    return this.pending?.id ?? null;
+  }
+
   /**
    * Takes the pending six-digit code back, and the typed relay code bound to it: nothing it was shown as pairs any more.
-   * With `code`, only when that is the code pending, so a caller never ends a pairing started after its own; false when it did not.
-   * `why`: what a code made for an account is remembered to have ended by.
+   * With `match`, only when its `code` and its `id`, each that is given, are the pending code's, so a caller never ends
+   * a pairing started after its own; false when it did not. `why`: what a code made for an account is remembered to
+   * have ended by.
    */
-  endPairing(code?: string, why: AccountPairingEnd = "cancelled"): boolean {
-    if (code !== undefined && (this.pending === null || !same(code, this.pending.code))) return false;
+  endPairing(match?: { readonly code?: string; readonly id?: string }, why: AccountPairingEnd = "cancelled"): boolean {
+    const pending = this.pending;
+    if (match !== undefined && (pending === null || (match.code !== undefined && !same(match.code, pending.code)) || (match.id !== undefined && match.id !== pending.id))) return false;
     this.voidPending(why);
     for (const listener of this.codeStarts) listener();
     return true;
@@ -765,11 +774,12 @@ export class DeviceStore {
    */
   private voidPending(why: AccountPairingEnd = "cancelled"): void {
     const waiting = this.pending?.waiting;
+    const id = this.pending?.id;
     const named = this.pending?.named;
     this.pending = null;
-    if (named) {
+    if (named && id !== undefined) {
       const joined = why === "joined" ? waiting?.joined : undefined;
-      this.endedAccountCodes = [...this.endedAccountCodes, { state: "ended" as const, id: named.id, expect_account: named.account, ended: { why, at: new Date().toISOString() }, ...(joined ? { joined } : {}) }]
+      this.endedAccountCodes = [...this.endedAccountCodes, { state: "ended" as const, id, expect_account: named.account, ended: { why, at: new Date().toISOString() }, ...(joined ? { joined } : {}) }]
         .slice(-ENDED_ACCOUNT_CODES);
     }
     if (waiting) for (const row of [...waiting.rows.values()]) this.dropProvisional(waiting, row);
@@ -1597,13 +1607,17 @@ export async function handleDeviceRequest(request: Request, pathname: string, st
     if (access.level === "full" && access.via === "relay" && store.account() !== null && !(access.device && store.isAccountApproverSession(access.device.id, relayKey ?? ""))) {
       return jsonResponse({ error: { code: "account_required", message: "End a pairing on this PC, or from a device linked to your account" } }, 403);
     }
-    // `{ code }` names the pairing the caller showed (link --code); without it, whatever is pending ends
+    // `{ code }` names the pairing the caller showed, `{ id }` the one it was given (`pairing.id`, ovis add and
+    // link --code); with neither, whatever is pending ends
     const text = await request.text();
     let body: unknown = {};
     try { if (text.trim() !== "") body = JSON.parse(text); } catch { return badRequest("invalid_json", "request body must be JSON"); }
-    const code = isJsonObject(body) ? body["code"] : undefined;
-    if (!isJsonObject(body) || (code !== undefined && (typeof code !== "string" || !/^\d{6}$/.test(code)))) return badRequest("invalid_body", "code must be the six-digit pairing code");
-    return jsonResponse({ ok: true, cancelled: store.endPairing(code) }, 200, { "cache-control": "no-store" });
+    if (!isJsonObject(body)) return badRequest("invalid_body", "code must be the six-digit pairing code");
+    const { code, id } = body;
+    if (code !== undefined && (typeof code !== "string" || !/^\d{6}$/.test(code))) return badRequest("invalid_body", "code must be the six-digit pairing code");
+    if (id !== undefined && (typeof id !== "string" || !/^[0-9a-f]{32}$/.test(id))) return badRequest("invalid_body", "id must be the pairing's id");
+    const match = code === undefined && id === undefined ? undefined : { ...code !== undefined ? { code } : {}, ...id !== undefined ? { id } : {} };
+    return jsonResponse({ ok: true, cancelled: store.endPairing(match) }, 200, { "cache-control": "no-store" });
   }
   if (pathname === "/api/devices/revoke-all") {
     setRequestRoute("/api/devices/revoke-all");
