@@ -93,6 +93,7 @@ export interface Emulator {
   setScrollback(lines: number): EmulatorResult<void>;
   scrollFromBottom(rowsAboveBottom: number): EmulatorResult<void>;
   history(): EmulatorResult<EngineHistory>;
+  rowContinues(y: number): EmulatorResult<boolean | null>;
   textOf(range: ScreenRange): EmulatorResult<string>;
   wordAt(point: ScreenPoint): EmulatorResult<ScreenRange | null>;
   lineAt(point: ScreenPoint): EmulatorResult<ScreenRange | null>;

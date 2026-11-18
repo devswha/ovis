@@ -41,6 +41,8 @@ export interface GhosttyExports {
   ghostty_terminal_scroll_viewport(terminal: number, behavior: number): void;
   ghostty_terminal_grid_ref(terminal: number, point: number, outRef: number): number;
   ghostty_terminal_point_from_grid_ref(terminal: number, ref: number, tag: number, outCoordinate: number): number;
+  ghostty_grid_ref_row(ref: number, outRow: number): number;
+  ghostty_row_get(row: bigint, key: number, out: number): number;
   ghostty_terminal_select_word(terminal: number, options: number, outSelection: number): number;
   ghostty_terminal_select_line(terminal: number, options: number, outSelection: number): number;
   ghostty_terminal_selection_format_alloc(terminal: number, allocator: number, options: number, outPtr: number, outLen: number): number;
@@ -101,6 +103,7 @@ export const ENGINE_FUNCTIONS: Record<Exclude<keyof GhosttyExports, "memory" | "
   ghostty_wasm_take_opaque: true, ghostty_free: true, ghostty_terminal_new: true, ghostty_terminal_free: true, ghostty_terminal_reset: true,
   ghostty_terminal_resize: true, ghostty_terminal_set: true, ghostty_terminal_get: true, ghostty_terminal_vt_write: true,
   ghostty_terminal_scroll_viewport: true, ghostty_terminal_grid_ref: true, ghostty_terminal_point_from_grid_ref: true,
+  ghostty_grid_ref_row: true, ghostty_row_get: true,
   ghostty_terminal_select_word: true, ghostty_terminal_select_line: true, ghostty_terminal_selection_format_alloc: true,
   ghostty_render_state_new: true, ghostty_render_state_free: true,
   ghostty_render_state_update: true, ghostty_render_state_get: true, ghostty_render_state_clean: true,
@@ -147,6 +150,7 @@ export const ENGINE_ENUMS = {
   GhosttyMouseEncoderOption: ["SIZE"],
   GhosttyClipboardLocation: ["STANDARD", "SELECTION", "PRIMARY"],
   GhosttyPointTag: ["SCREEN"],
+  GhosttyRowData: ["WRAP_CONTINUATION"],
   GhosttyFormatterFormat: ["PLAIN"],
   GhosttySearchOption: ["NEEDLE", "SELECT_NEXT", "SELECT_PREV"],
   GhosttySearchData: ["MATCHES", "SELECTED_MATCH"],
@@ -1315,6 +1319,18 @@ export class GhosttyEngine {
   private rangeOf(selection: number): ScreenRange {
     const s = this.f.GhosttySelection;
     return { start: this.screenPoint(selection + s.start), end: this.screenPoint(selection + s.end) };
+  }
+
+  /** Whether a kept row continues a soft wrap, even if the preceding row has been pruned. */
+  rowContinues(y: number): boolean | null {
+    return this.guard(() => {
+      const ref = this.scratch + AT.refStart, row = this.scratch + AT.refEnd;
+      if (!this.gridRef({ x: 0, y }, ref)) return null;
+      this.check(this.x.ghostty_grid_ref_row(ref, row), "grid_ref_row");
+      const raw = this.view().getBigUint64(row, true);
+      this.check(this.x.ghostty_row_get(raw, this.e.GhosttyRowData.WRAP_CONTINUATION, this.scratch), "row wrap continuation");
+      return this.view().getUint8(this.scratch) !== 0;
+    });
   }
 
   /** the text of a range, a soft-wrapped line joined, each row's trailing blanks dropped, rows ended by "\n" */

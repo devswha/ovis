@@ -202,6 +202,7 @@ class GhosttyEmulator implements Emulator {
   setScrollback: Emulator["setScrollback"] = (lines) => this.call((engine) => engine.setScrollback(lines));
   scrollFromBottom: Emulator["scrollFromBottom"] = (rows) => this.call((engine) => engine.scrollFromBottom(rows));
   history: Emulator["history"] = () => this.call((engine) => engine.history());
+  rowContinues: Emulator["rowContinues"] = (y) => this.call((engine) => engine.rowContinues(y));
   textOf: Emulator["textOf"] = (range) => this.call((engine) => engine.textOf(range));
   wordAt: Emulator["wordAt"] = (point) => this.call((engine) => engine.wordAt(point));
   lineAt: Emulator["lineAt"] = (point) => this.call((engine) => engine.lineAt(point));
