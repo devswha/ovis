@@ -170,7 +170,7 @@ const CODE_ENDED: Readonly<Record<string, string>> = {
 };
 
 /** What `add` says of a code from an Ovis that makes its codes for no account: on its QR code's screen, or once with --print. */
-const OLDER_PC = "The Ovis on this PC is older than this command, so its code is not tied to the account you signed in to: keep it to yourself. Update it in Settings → Updates on this PC to tie its codes to your account.";
+const OLDER_PC = "The Ovis on this PC is older than this command. Update it in Settings → Updates on this PC before you pair a new device.";
 
 /**
  * What a run takes back of the code it made (endCode): the code's id (`pairing.id`) and the six digits its QR code

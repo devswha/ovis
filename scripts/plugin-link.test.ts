@@ -2684,7 +2684,7 @@ describe("ovis link, on the PC itself", () => {
 
   // a PC that makes its codes for the account the command names (docs/account.md, "A code made for an account")
   const TIED = {};
-  const OLDER = "The Ovis on this PC is older than this command, so its code is not tied to the account you signed in to: keep it to yourself. Update it in Settings → Updates on this PC to tie its codes to your account.\n";
+  const OLDER = "The Ovis on this PC is older than this command. Update it in Settings → Updates on this PC before you pair a new device.";
   const UNKNOWN = "The Ovis on this PC no longer knows the code shown (it restarted), so that code does not work. A new one comes when it would have run out.\n";
   const RELAY_DOWN = "This PC's Ovis relay is off or not online just now, so it gave no code. Asking again…\n";
   /** The account each call to `path` named for its code. */
