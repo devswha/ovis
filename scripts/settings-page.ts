@@ -13,14 +13,10 @@ export async function sheetRisen(page: Page, selector = ".settings-dialog"): Pro
  * Presses a control in Settings once the press can reach it. A settings row the pointer rests on shows its help
  * sentence, which can lie over a control outside that row (a long one in Korean or Japanese, on Back to settings or
  * a button below); a pointer going to the control leaves the row, which hides the sentence, so the pointer goes
- * there first and the press waits until the control is what the pointer is on.
+ * there first; the click then re-finds the control and retries its hit test until nothing lies over it.
  */
-export async function pressInSettings(page: Page, control: Locator): Promise<void> {
+export async function pressInSettings(control: Locator): Promise<void> {
   await control.hover({ force: true });
-  await page.waitForFunction((element) => {
-    const box = element.getBoundingClientRect();
-    return element.contains(document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2));
-  }, await control.elementHandle());
   await control.click();
 }
 
@@ -29,8 +25,8 @@ export async function openSettingsPage(page: Page, name: string, backName = "Bac
   await dialog.waitFor();
   await sheetRisen(page);
   const tab = dialog.getByRole("tab", { name, exact: true });
-  if (await tab.count() === 0) await pressInSettings(page, dialog.getByRole("button", { name: backName, exact: true }));
-  await pressInSettings(page, tab);
+  if (await tab.count() === 0) await pressInSettings(dialog.getByRole("button", { name: backName, exact: true }));
+  await pressInSettings(tab);
   const panel = dialog.getByRole("tabpanel", { name, exact: true });
   await panel.waitFor();
   await openSettingsFolds(page);
