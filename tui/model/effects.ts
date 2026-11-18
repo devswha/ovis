@@ -35,6 +35,8 @@ export interface RunEffect {
   readonly seen?: readonly Seen[];
   /** a pane moved to another workspace: that workspace */
   readonly to?: string;
+  /** For zoom_follow, the tab whose existing shared zoom must follow the target pane. */
+  readonly zoomTab?: string;
 }
 
 export interface UnreadEffect { readonly type: "unread"; readonly pane: string }

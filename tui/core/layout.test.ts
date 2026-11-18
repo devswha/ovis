@@ -28,7 +28,7 @@ function twoWorkspaces(): FakeHcCore {
 /** The screen's layout writes on a line of its own to `core`, and what they answered. */
 function screen(core: FakeHcCore, folder?: string, hc: Pick<HcConnection, "call" | "hello"> = new HcConnection(() => core.transport())) {
   const answers: LayoutAnswer[] = [];
-  const writes = new LayoutWrites({ hc, model: new CoreWorld().model, folder, answer: (answer) => answers.push(answer) });
+  const writes = new LayoutWrites({ hc, model: new CoreWorld().model, folder, refreshLayout: async () => true, answer: (answer) => answers.push(answer) });
   const run = (action: RunEffect["action"], target: Target | null = null, more: Partial<RunEffect> = {}) => writes.run({ type: "run", action, target, index: null, name: null, ...more });
   const notices = (): Record<string, unknown>[] => answers.flatMap((answer) => answer.type === "notice" ? [{ code: answer.code, ...answer.data, ...(answer.calm ? { calm: true } : {}) }] : []);
   return { answers, writes, run, notices };

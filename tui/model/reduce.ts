@@ -75,6 +75,8 @@ export type ScreenEvent =
   | { readonly type: "notice"; readonly code: string; readonly data?: Readonly<Record<string, string | number>>; readonly calm?: boolean; readonly at: number }
   /** focus the target once the world shows it (outside tab `away`): what a layout write made or moved; any other focus move drops it */
   | { readonly type: "follow"; readonly target: Target; readonly away: string | null; readonly at: number }
+  /** The shared zoom write settled; `current` means the link delivered the current document. */
+  | { readonly type: "zoom_settled"; readonly current: boolean; readonly at: number }
   /** the top overlay's entry `entry` was clicked: the menu, or the picker, chooses it as Enter on it would */
   | { readonly type: "choose"; readonly entry: number; readonly at: number }
   /** the view an earlier run kept for this core (null: none), or why its file was not read */
@@ -491,7 +493,7 @@ function focusTo(acc: Acc, focus: Focus): void {
   acc.s = { ...acc.s, focus, following: null };
   const { tab, pane } = focused(acc.s.world, focus);
   if (pane === null || tab?.zoomed === undefined || tab.zoomed === pane.id || acc.s.host.cols <= NARROW_COLUMNS) return;
-  acc.effects.push({ type: "run", action: "zoom_follow", target: { kind: "pane", id: pane.id }, index: null, name: null });
+  acc.effects.push({ type: "run", action: "zoom_follow", target: { kind: "pane", id: pane.id }, zoomTab: tab.id, index: null, name: null });
 }
 
 function setMode(acc: Acc, mode: ModeState): void {

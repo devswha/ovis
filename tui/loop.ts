@@ -228,10 +228,9 @@ export function startLoop(options: LoopOptions): Loop {
     hc: link,
     model: world.model,
     folder: options.cwd,
+    refreshLayout: () => link.refreshLayout(),
     answer: (answer) => {
-      guard(() => dispatch(answer.type === "notice"
-        ? { type: "notice", code: answer.code, data: answer.data, ...(answer.calm ? { calm: true } : {}), at: clock.now() }
-        : { type: "follow", target: answer.target, away: answer.away, at: clock.now() }));
+      guard(() => dispatch({ ...answer, at: clock.now() }));
       arm();
     },
   });

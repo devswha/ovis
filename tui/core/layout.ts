@@ -3,7 +3,7 @@
  * tab's zoom following the focus to a pane it covered,
  * performed through the shared layout operations the server performs the browser's with (server/herdr-core/layout-ops.ts).
  * Every rule of the layout lives there; this module holds only the screen's policy on top:
- * - one write in flight: an action chosen while one is under way is dropped with a notice, never queued;
+ * - one write in flight: ordinary actions chosen while one is under way are refused; the model coalesces focus moves;
  * - nothing is sent again: an answer that never came (the line ended, a timeout) is reported as unknown, and the
  *   world shows what the core holds once the line is back;
  * - nothing is drawn ahead: the picture changes only when the core's documents and terminals say so;
@@ -13,7 +13,7 @@
 import type { HcConnection } from "../../server/herdr-core/connection.ts";
 import { HcError } from "../../server/herdr-core/connection.ts";
 import { AdapterError } from "../../server/herdr-core/errors.ts";
-import { foreignLayout, OVIS_LAYOUT_DOC, type PaneDirection, type SplitDirection } from "../../server/herdr-core/layout-doc.ts";
+import { foreignLayout, leaves, OVIS_LAYOUT_DOC, type PaneDirection, type SplitDirection } from "../../server/herdr-core/layout-doc.ts";
 import { type CloseTarget, layoutCalls, LayoutStore, type LayoutView, newLayoutId, ownsLayout, readCore, RESIZE_STEP, resizeEdit, swapEdit, TERMINAL_COLOUR, zoomEdit } from "../../server/herdr-core/layout-ops.ts";
 import { type CoreHost, type FirstTurn, LAYOUT_DOC, OTHER_WORKSPACE_ID } from "../../server/herdr-core/snapshot.ts";
 import { errorCode } from "../crash.ts";
@@ -24,7 +24,8 @@ import { keepsPlace } from "./world.ts";
 /** What a layout write tells the screen: a notice (`calm` when it reports how things are, not a failure), or a pane to focus once shown. */
 export type LayoutAnswer =
   | { readonly type: "notice"; readonly code: string; readonly data: Readonly<Record<string, string>>; readonly calm?: true }
-  | { readonly type: "follow"; readonly target: Target; readonly away: string | null };
+  | { readonly type: "follow"; readonly target: Target; readonly away: string | null }
+  | { readonly type: "zoom_settled"; readonly current: boolean };
 
 interface LayoutWritesOptions {
   /** the core's line (the screen's link) */
@@ -33,12 +34,18 @@ interface LayoutWritesOptions {
   model: { readonly firstTurn: FirstTurn; readonly host: CoreHost };
   /** the folder the screen was opened in: a new workspace starts there */
   folder: string | undefined;
+  /** Publish the authoritative document before the model settles a zoom intent. */
+  refreshLayout: () => Promise<boolean>;
   answer: (answer: LayoutAnswer) => void;
 }
 
 const SPLITS: Readonly<Record<string, SplitDirection>> = { split_vertical: "right", split_horizontal: "down" };
 const SWAPS: Readonly<Record<string, PaneDirection>> = { swap_pane_left: "left", swap_pane_down: "down", swap_pane_up: "up", swap_pane_right: "right" };
 const RESIZES: Readonly<Record<string, PaneDirection>> = { resize_pane_left: "left", resize_pane_down: "down", resize_pane_up: "up", resize_pane_right: "right" };
+
+function unknownWrite(error: unknown): boolean {
+  return error instanceof HcError && (error.kind === "closed" || error.kind === "offline" || error.kind === "timeout");
+}
 
 /** The core read afresh: the snapshot as the screen shows it, when the core made each terminal, and those whose program already ended. */
 interface Fresh { readonly view: LayoutView; readonly created: ReadonlyMap<string, number>; readonly finished: ReadonlySet<string> }
@@ -84,12 +91,28 @@ export class LayoutWrites {
     if (work === null) return null;
     if (this.busy) {
       this.notice("layout_busy", { action: effect.action });
+      if (effect.action === "zoom_follow") this.options.answer({ type: "zoom_settled", current: false });
       return Promise.resolve();
     }
     this.busy = true;
-    return work().catch((error: unknown) => this.refused(effect.action, error)).finally(() => {
+    return this.perform(effect.action, work);
+  }
+
+  private async perform(action: string, work: () => Promise<void>): Promise<void> {
+    let current = false;
+    try {
+      let known = true;
+      try {
+        await work();
+      } catch (error: unknown) {
+        known = !unknownWrite(error);
+        await this.refused(action, error);
+      }
+      if (action === "zoom_follow" && known) current = await this.options.refreshLayout();
+    } finally {
       this.busy = false;
-    });
+      if (action === "zoom_follow") this.options.answer({ type: "zoom_settled", current });
+    }
   }
 
   private work(effect: RunEffect): (() => Promise<void>) | null {
@@ -110,8 +133,17 @@ export class LayoutWrites {
     if (action === "rename_tab") return () => store.rename({ tab: id, name: effect.name ?? "" });
     if (action === "rename_pane") return () => store.rename({ pane: id, name: effect.name || null });
     if (action === "zoom") return async () => this.unchanged(action, await store.edit(zoomEdit(id, "toggle")));
-    // the zoom already on that pane is where the focus wants it: nothing to say
-    if (action === "zoom_follow") return async () => { await store.edit(zoomEdit(id, "on")); };
+    if (action === "zoom_follow" && effect.zoomTab !== undefined) {
+      return async () => {
+        await store.edit((layout) => {
+          const tab = layout.workspaces.flatMap((workspace) => workspace.tabs).find((candidate) => candidate.id === effect.zoomTab);
+          // A different writer may have unzoomed this tab or moved the target while the intent waited.
+          return tab && tab.zoomed !== null && leaves(tab.root).includes(id)
+            ? zoomEdit(id, "on")(layout)
+            : { layout: null, reason: "stale" };
+        });
+      };
+    }
     if (Object.hasOwn(SWAPS, action)) return async () => this.unchanged(action, await store.edit(swapEdit(id, null, SWAPS[action]!)));
     if (Object.hasOwn(RESIZES, action)) return async () => this.unchanged(action, await store.edit(resizeEdit(id, RESIZES[action]!, RESIZE_STEP)));
     if (action === "move_tab_previous" || action === "move_tab_next") {
@@ -164,7 +196,7 @@ export class LayoutWrites {
   }
 
   private notice(code: string, data: Readonly<Record<string, string>>, calm = false): void {
-    this.options.answer({ type: "notice", code, data, ...(calm ? { calm: true } : {}) });
+    this.options.answer({ type: "notice", code, data, ...(calm || data.action === "zoom_follow" ? { calm: true } : {}) });
   }
 
   /** An edit that changed nothing says why, calmly: the precondition was gone on the document as it is now. */
@@ -182,7 +214,7 @@ export class LayoutWrites {
     }
     if (error instanceof HcError && error.kind === "conflict") this.notice("layout_conflict", { action }, true);
     // the line ended or the answer never came: what happened is unknown, and nothing is sent again
-    else if (error instanceof HcError && (error.kind === "closed" || error.kind === "offline" || error.kind === "timeout")) this.notice("layout_unknown", { action });
+    else if (unknownWrite(error)) this.notice("layout_unknown", { action });
     else this.notice("layout_refused", { action, reason: errorCode(error) });
   }
 
