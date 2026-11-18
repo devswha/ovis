@@ -673,6 +673,38 @@ describe("revoking a device that holds a pairing code", () => {
 
 // The relay tab's QR code (POST /api/relay/offer with x-ovis-no-account-only): whoever scans it signed in becomes the
 // PC's first account member, so it is for a PC in no account only.
+describe("how a device a code started through the relay let in joined its account", () => {
+  it("on its own word when the code's starter was no account member, and with no mark when a member started the code", async () => {
+    const stateDir = mkdtempSync(join(dir, "joined-by-starter-"));
+    const store = new DeviceStore(stateDir);
+    const start = async (device: { id: string; label: string; role: "drive" | "watch" }, key: string) => {
+      const started = await handleDeviceRequest(new Request("http://127.0.0.1/api/devices/pair/start", { method: "POST", headers: { origin: "http://127.0.0.1", "x-herdr-machine": "1" } }),
+        "/api/devices/pair/start", store, { level: "full", via: "relay", role: "drive", device }, key);
+      expect(started.status).toBe(200);
+      return (await started.json() as { code: string }).code;
+    };
+    const paired = async (code: string, label: string) => {
+      const keys = await relayKeys();
+      return { device: store.pairRelay(code, label, keys.publicKeySpki)!.device, key: keys.publicKeySpki };
+    };
+    const stored = (id: string) => { const registry = readDeviceRegistry(join(stateDir, "devices.json")); return registry.kind === "ok" ? registry.devices.find((d) => d.id === id) : undefined; };
+    // on a PC in no account any driving relay device may start a code: its starter is named, and approves nothing
+    const starter = await paired(store.startPairing().code, "Starter");
+    const joined = await paired(await start(starter.device, starter.key), "Joined");
+    expect(stored(joined.device.id)).toMatchObject({ added_by: starter.device.id });
+    expect(stored(joined.device.id)).not.toHaveProperty("member_approved");
+    store.linkAccountKey(joined.device.id, joined.key, joined.key, "acct_1");
+    expect(stored(joined.device.id)?.joined_by).toBe("word");
+    expect(store.accountRows()).toEqual({ members: 1, unlinked: [starter.device.id], own_word: [joined.device.id] });
+    // a code a member starts is that member's approval: the device it lets in links with no mark
+    const added = await paired(await start(joined.device, joined.key), "Added");
+    expect(stored(added.device.id)).toMatchObject({ added_by: joined.device.id, member_approved: true });
+    store.linkAccountKey(added.device.id, added.key, added.key, "acct_1");
+    expect(stored(added.device.id)).not.toHaveProperty("joined_by");
+    expect(store.accountRows()).toEqual({ members: 2, unlinked: [starter.device.id], own_word: [joined.device.id] });
+  });
+});
+
 describe("a pairing code made only for a PC in no account", () => {
   const paired = async (store: DeviceStore, label: string) => {
     const key = (await relayKeys()).publicKeySpki;

@@ -1284,19 +1284,6 @@ function accountDevicesOf(body: unknown): AccountDevices | null {
     ? { unlinked: groups["unlinked"], own_word: groups["own_word"] } : null;
 }
 
-/**
- * The groups `status` prints, from the app's own answer (appHealth). Over TCP that is asked without the token, as the
- * port may hold another program: once it is the app's and did not let the command in, it is asked again with it.
- */
-async function accountDevices(answer: { readonly devices: AccountDevices | null; readonly authenticated: boolean }): Promise<AccountDevices | null> {
-  const token = env["OVIS_TOKEN"] ?? "";
-  if (answer.devices !== null || answer.authenticated || token === "" || serverDoor() !== null) return answer.devices;
-  try {
-    const response = await serverFetch("/api/health", { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(1500) });
-    return response.ok ? accountDevicesOf(await response.json()) : null;
-  } catch { return null; }
-}
-
 /** One group's line: each device by its name, with no control character, and its id. */
 const deviceLine = (title: string, devices: readonly ShownDevice[]): string =>
   `${title}: ${devices.length === 0 ? "none" : devices.map((device) => `${device.label.replace(/[\u0000-\u001f\u007f-\u009f]/g, "")} (${device.id})`).join(", ")}\n`;
@@ -1308,10 +1295,15 @@ async function status(): Promise<number> {
   process.stdout.write(`${answer !== null ? "running" : "down"} ${origin}${pid === null ? "" : ` (pid ${pid})`}\n`);
   // a machine profile that runs while its engine does not answer (appHealth)
   if (typeof answer?.engineDown === "string") process.stdout.write(`engine: down${answer.engineDown === "" ? "" : ` (${answer.engineDown})`}\n`);
-  const devices = answer === null ? null : await accountDevices(answer);
+  // the groups of the app's own answer, which carries no token: on a machine profile's owner socket, or over TCP when
+  // the app lets the command in without one. Nothing proves which program holds a TCP port, so no token goes there
+  const devices = answer?.devices ?? null;
   if (devices !== null) {
-    process.stdout.write(deviceLine("devices outside the account", devices.unlinked));
+    // relay rows only: a browser paired on the PC's own address is outside the account too, and listed in Settings → Devices
+    process.stdout.write(deviceLine("relay devices outside the account", devices.unlinked));
     process.stdout.write(deviceLine("devices that joined the account on their own word", devices.own_word));
+  } else if (answer?.authenticated === false) {
+    process.stdout.write("account devices: not shown, as Ovis lets this command in only with a token, which status does not send over TCP\n");
   }
   const version = runningVersion();
   if (version !== null) process.stdout.write(`version: ${version}\n`);

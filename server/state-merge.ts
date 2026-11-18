@@ -31,7 +31,7 @@ import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, realpathSync, rmSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { MAX_PREFERENCES_BYTES, sharedPreferencesBody, type PreferencesChange } from "../shared/preferences.ts";
-import { readDeviceRegistry, type StoredDevice } from "./devices.ts";
+import { readDeviceRegistry, VOUCHED, type StoredDevice } from "./devices.ts";
 import { preparePrivateState, publishPrivateState, writePrivateState } from "./private-state.ts";
 import { normalizeEndpoint, PUSH_EXTRA_KEYS } from "./push.ts";
 import { readStateId, STATE_ID_FILE, writeStateId } from "./preferences.ts";
@@ -136,9 +136,14 @@ export function mergeRegistries(own: Registry | null, other: Registry | null,
     // a link done in the other dir moved the row to the account key (docs/account.md); an older copy must not undo it
     // the later link wins: an unlinked copy, or one linked earlier, takes the other's account key
     const takes = twin.account !== undefined && (device.account === undefined || (twin.linked_at ?? "") > (device.linked_at ?? ""));
-    // how the row joined goes with the account it takes: the other copy's mark, or none when that copy has none
+    // how the row joined goes with the account it takes. Where both copies are in that account, the mark is merged
+    // apart from the key: a link on the device's own word is kept whichever copy holds it, as no later link undoes it,
+    // and otherwise the kept copy's mark, or the other's when it has none
     const { joined_by: own, ...rest } = device;
-    const joinedBy = takes ? twin.joined_by : own;
+    const keptMark = takes ? twin.joined_by : own;
+    const otherMark = takes ? own : twin.joined_by;
+    const ownWord = (mark: StoredDevice["joined_by"]) => mark !== undefined && !VOUCHED.has(mark);
+    const joinedBy = device.account !== undefined && device.account === twin.account ? [keptMark, otherMark].find(ownWord) ?? keptMark ?? otherMark : keptMark;
     devices.push({
       ...rest,
       ...(joinedBy === undefined ? {} : { joined_by: joinedBy }),

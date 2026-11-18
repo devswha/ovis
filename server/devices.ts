@@ -139,10 +139,15 @@ export interface StoredDevice {
   /** the signed `add` that let this row in, as received: /api/account/status lists it for a client to hand on */
   account_add?: unknown;
   /**
+   * true when an account member approved the pairing that made the row (a remote approval, or a code a member started):
+   * `added_by` names that member. Absent when `added_by` names a starter that was no member then, and on every other row.
+   */
+  member_approved?: true;
+  /**
    * how a `link` made the row a member (docs/account.md, "How a device joined"): set once, by the link that took it from
    * no account into one, and kept by every later link. Absent on a row that became a member before this was recorded,
-   * and on one an account member's signature or approval stands behind (`added_by`). A value this PC does not know is
-   * kept as it is and counts as `word`.
+   * and on one an account member's signature (`add`) or approval (`member_approved`) stands behind. A value this PC does
+   * not know is kept as it is and counts as `word`.
    */
   joined_by?: JoinedBy;
 }
@@ -153,7 +158,7 @@ export interface StoredDevice {
  */
 export type JoinedBy = "code" | "service" | "word";
 /** The marks of a member something other than the device itself vouched for: every other mark is its own word. */
-const VOUCHED: ReadonlySet<unknown> = new Set<JoinedBy>(["code", "service"]);
+export const VOUCHED: ReadonlySet<unknown> = new Set<JoinedBy>(["code", "service"]);
 
 /**
  * The three ways relay pairing failures are counted (docs/account.md, "Who may admit a device"): codes
@@ -1164,6 +1169,8 @@ export class DeviceStore {
       // PAIR authenticates this relay session too, so the device is seen as it pairs.
       created_at: new Date(now).toISOString(), last_seen_at: new Date(now).toISOString(),
       ...(addedBy === undefined ? {} : { added_by: addedBy }),
+      // what a later link reads to tell a member's approval from a code a device outside the account started
+      ...(addedBy !== undefined && this.isAccountApprover(addedBy) ? { member_approved: true as const } : {}),
     };
     this.enroll(device, now, [], codeSpent);
     return { device: { id: device.id, label: device.label, role: device.role } };
@@ -1502,8 +1509,9 @@ export class DeviceStore {
     if (!device) return this.promote(deviceId, { oldKey, key, account }, sessionId);
     // once moved, moved: a later link that keeps the key does not make it the key paired here
     const moved = key !== oldKey || device.link_moved_key === true;
-    // the link that takes a row from no account into one, with no member behind it, is on the device's own word
-    const ownWord = device.account === undefined && device.added_by === undefined;
+    // the link that takes a row from no account into one, with no member's approval behind it, is on the device's own
+    // word: a code started by a device outside the account names its starter in `added_by`, and approves nothing
+    const ownWord = device.account === undefined && device.member_approved !== true;
     const updated: StoredDevice = { ...device, relay_public_key: key, account, linked_at: new Date().toISOString(), link_moved_key: moved, ...(ownWord ? { joined_by: "word" as const } : {}) };
     const next = this.devices.map((d) => d === device ? updated : d);
     this.save(next);

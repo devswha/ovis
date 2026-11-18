@@ -82,20 +82,29 @@ The PC records on a row how a `link` made it a member: `joined_by` in `devices.j
 |---|---|
 | `code` | the row paired with a code made for a PC in no account (the relay tab's QR code, or [a code made for an account](#a-code-made-for-an-account)) and linked into the account that code held it to |
 | `service` | the account service vouched for the row's key (kept for that check; nothing writes it yet) |
-| `word` | any other link that takes a row from no account into one, with no member behind it: a device that already drove this PC named the account itself (paired with a plain code, or approved by its digits on this PC) |
+| `word` | any other link that takes a row from no account into one, with no member behind it: a device that already drove this PC named the account itself (paired with a plain code, approved by its digits on this PC, or let in by a code a device outside the account started through the relay) |
 
 The mark is set once, by the link that takes the row into its account, and a later link of the
-row keeps it, whatever key or account it names. A restart keeps it, and when two state folders
-are merged a row that takes its account from its other copy takes that copy's mark, or none. A
-row that became a member before this has none, and neither has one an account member's `add` or
-approval let in (`added_by` says whose word stands behind it): neither is listed. A value the PC
+row keeps it, whatever key or account it names. A restart keeps it. When two state folders are
+merged, a row that takes another account from its other copy takes that copy's mark, or none;
+where both copies are in the same account, the key is chosen as before and the mark apart from
+it: `word` (or a value the PC does not know) on either copy is kept, and otherwise the kept
+copy's mark, or the other's. A row that became a member before this has none, and neither has one
+an account member's `add` or approval let in: neither is listed. An approval is a remote one, or
+a code a member started through the relay (`member_approved` on the row, with the member in
+`added_by`); a code a device outside the account started names its starter in `added_by` and
+approves nothing. A value the PC
 does not know is kept as it is and counts as `word`. Nothing changes who gets in: the mark only
 shows the owner which members joined on their own word.
 
 [`GET /api/account/status`](#pc-api) lists them under `own_word`, beside `unlinked`: a row is in
 one of the two at most, so a device that links on its own word moves from `unlinked` to
 `own_word` and stays there until it is removed. The PC's own `GET /api/health` tells its driving
-owner both groups with their names (`account_devices`), and `ovis status` prints them.
+owner both groups with their names (`account_devices`), and `ovis status` prints them when the
+answer it gets without a token carries them: on a machine profile's owner socket, or over TCP when
+the app lets the command in without one. It sends no token over TCP for them, and otherwise says
+the groups are not shown. Its first line counts relay devices only: a browser paired on the PC's
+own address is outside the account too, and **Settings → Devices** lists it.
 
 ## Records
 

@@ -775,7 +775,7 @@ describe("the devices status lists apart", () => {
     writeFileSync(join(configDir, ".env"), `PORT=${server.port}\n`);
     return { server, asked, env: { HOST: "127.0.0.1", HERDR_PLUGIN_CONFIG_DIR: configDir, OVIS_STATE_DIR: join(scratch, "app-state"), OVIS_TOKEN: "" } };
   }
-  const lines = (out: string) => out.split("\n").filter((line) => line.startsWith("devices "));
+  const lines = (out: string) => out.split("\n").filter((line) => /^(relay )?devices /.test(line));
 
   it("are the two groups of the owner's health answer, each device by its name with no control character, and its id", async () => {
     const pc = answering(() => ({ ...APP_HEALTH, account_devices: GROUPS }));
@@ -783,7 +783,7 @@ describe("the devices status lists apart", () => {
       const result = await run("status", pc.env);
       expect(result.exitCode, result.err).toBe(0);
       expect(lines(result.out)).toEqual([
-        "devices outside the account: Old phone (6a1f0c9e2b7d4a10)",
+        "relay devices outside the account: Old phone (6a1f0c9e2b7d4a10)",
         "devices that joined the account on their own word: Tab]0;letlet (0d4c1b7a9e2f3c58), Laptop (1e5d2c8b0a3f4d69)",
       ]);
       expect(pc.asked).toEqual([null]);
@@ -793,7 +793,7 @@ describe("the devices status lists apart", () => {
   it("say none for an empty group, and are not printed by a server that sends none", async () => {
     const empty = answering(() => ({ ...APP_HEALTH, account_devices: { unlinked: [], own_word: [] } }));
     try {
-      expect(lines((await run("status", empty.env)).out)).toEqual(["devices outside the account: none", "devices that joined the account on their own word: none"]);
+      expect(lines((await run("status", empty.env)).out)).toEqual(["relay devices outside the account: none", "devices that joined the account on their own word: none"]);
     } finally { await empty.server.stop(true); }
     const older = answering(() => APP_HEALTH);
     try {
@@ -805,21 +805,30 @@ describe("the devices status lists apart", () => {
     } finally { await older.server.stop(true); }
   });
 
-  it("are asked again with the token once the app's answer did not let the command in, and never sent to another program", async () => {
-    const pc = answering((authorization) => authorization === "Bearer the-token" ? { ...APP_HEALTH, account_devices: GROUPS }
-      : { ...APP_HEALTH, auth: { required: true, authenticated: false } });
-    try {
-      const result = await run("status", { ...pc.env, OVIS_TOKEN: "the-token" });
-      expect(lines(result.out)).toHaveLength(2);
-      expect(pc.asked).toEqual([null, "Bearer the-token"]);
-      expect(result.out).not.toContain("the-token");
-    } finally { await pc.server.stop(true); }
-    const stranger = answering(() => ({ ok: true }));
-    try {
-      const result = await run("status", { ...stranger.env, OVIS_TOKEN: "the-token" });
-      expect(result.out.split("\n")[0]).toBe(`down http://127.0.0.1:${stranger.server.port}`);
-      expect(stranger.asked).toEqual([null]);
-    } finally { await stranger.server.stop(true); }
+  it("are never asked for with the token over TCP: the app's answer that did not let the command in is the one request, and status says so", async () => {
+    // fetch is replaced inside the command, so nothing listens: its first answer is the app's and lets nothing in, and
+    // whatever answers the same address next would be handed the token (an earlier status asked again with it)
+    writeFileSync(join(configDir, ".env"), "PORT=9\n");
+    const asked = join(scratch, "asked");
+    const plugin = JSON.stringify(join(ROOT, "scripts", "plugin.ts"));
+    const answers = [{ ...APP_HEALTH, auth: { required: true, authenticated: false } }, { ...APP_HEALTH, account_devices: GROUPS }];
+    const child = Bun.spawn([process.execPath, "-e", `import { appendFileSync } from "node:fs";
+const answers = ${JSON.stringify(answers)};
+globalThis.fetch = async (input, init) => {
+  const request = new Request(input, init);
+  appendFileSync(${JSON.stringify(asked)}, \`\${new URL(request.url).pathname} \${request.headers.get("authorization") ?? "none"}\\n\`);
+  return Response.json(answers.shift() ?? answers.at(-1));
+};
+process.argv = [process.execPath, ${plugin}, "status"];
+const { runPlugin } = await import(${plugin});
+await runPlugin();`], { cwd: ROOT, stdout: "pipe", stderr: "pipe", env: launchEnv({ HOST: "127.0.0.1", HERDR_PLUGIN_CONFIG_DIR: configDir, OVIS_STATE_DIR: join(scratch, "app-state"), OVIS_TOKEN: "the-token" }) });
+    const [out, err, exitCode] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    expect(exitCode, err).toBe(0);
+    expect(readFileSync(asked, "utf8")).toBe("/api/health none\n");
+    expect(out.split("\n")[0]).toBe("running http://127.0.0.1:9");
+    expect(lines(out)).toEqual([]);
+    expect(out).toContain("account devices: not shown");
+    expect(out).not.toContain("the-token");
   });
 });
 
