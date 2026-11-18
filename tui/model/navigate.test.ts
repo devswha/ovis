@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { FRAME_FACTS, FRAME_FOCUS, FRAME_RESIZE } from "../../server/herdr-core/connection.ts";
+import { FRAME_DATA, FRAME_FACTS, FRAME_FOCUS, FRAME_RESIZE } from "../../server/herdr-core/connection.ts";
 import { FakeHcCore } from "../../server/herdr-core/core.fake.ts";
-import { OVIS_LAYOUT_DOC } from "../../server/herdr-core/layout-doc.ts";
+import { type OvisLayout, OVIS_LAYOUT_DOC } from "../../server/herdr-core/layout-doc.ts";
 import { place } from "../testing/fixtures/fixture.ts";
 import { Run } from "../testing/run.ts";
 import type { Effect, TextInput } from "./effects.ts";
@@ -26,6 +26,14 @@ const WORLD: World = {
     { id: "w2", name: "two", tabs: [{ id: "t3", name: "c", panes: [{ id: "p4", name: "" }] }] },
   ],
 };
+
+function withZoom(zoomed: string): World {
+  return {
+    workspaces: WORLD.workspaces.map((workspace) => ({
+      ...workspace, tabs: workspace.tabs.map((tab) => tab.id === "t1" ? { ...tab, zoomed } : tab),
+    })),
+  };
+}
 
 /** The screen on `world` at `cols` columns, in navigate mode. */
 function navigating(keys: unknown = undefined, world: World = WORLD, cols = 120): ModelState {
@@ -84,7 +92,7 @@ describe("navigate mode", () => {
 
     // herdr's next and previous workspace (unset by default) repeat too once the config binds them after the prefix
     const bound = navigating({ next_workspace: "prefix+]", previous_workspace: "prefix+[", next_tab: "prefix+m" });
-    expect(outcome(bound, [text("]")])).toEqual({ mode: "navigate", preview: "w1", shown: "w2/t3/p4", run: [] });
+    expect(outcome(bound, [text("]")])).toEqual({ mode: "navigate", preview: "w2", shown: "w2/t3/p4", run: [] });
     expect(outcome(bound, [text("["), text("[")])).toEqual({ mode: "navigate", preview: "w1", shown: "w1/t1/p1", run: [] });
     // a key the screen fixes keeps it in navigate mode (m moves the pane); after the prefix it still runs next_tab
     expect(outcome(bound, [text("m")]).run).toEqual(["navigate_move_pane:p1>w1"]);
@@ -102,6 +110,16 @@ describe("navigate mode", () => {
     expect(chordId({ ctrl: false, alt: false, shift: false, meta: false, hyper: false, key: "n" })).toBe("00000:n");
   });
 
+  it("Enter commits either configured workspace move and a later arrow still previews", () => {
+    const start = navigating({ next_workspace: "prefix+]", previous_workspace: "prefix+[" });
+    for (const move of ["]", "["]) {
+      expect(outcome(start, [text(move), key("ENTER")])).toEqual({
+        mode: "terminal", preview: null, shown: "w2/t3/p4", run: [],
+      });
+      expect(outcome(start, [text(move), key("ARROW_DOWN"), key("ENTER")]).shown).toBe("w1/t1/p1");
+    }
+  });
+
   it("works while a pane is zoomed: a focus move onto a covered pane moves the shared zoom there, except on a narrow screen", () => {
     const zoomed: World = { workspaces: [{ ...WORLD.workspaces[0]!, tabs: [{ ...WORLD.workspaces[0]!.tabs[0]!, zoomed: "p1" }, WORLD.workspaces[0]!.tabs[1]!] }, WORLD.workspaces[1]!] };
     const wide = navigating(undefined, zoomed);
@@ -113,6 +131,27 @@ describe("navigate mode", () => {
     // the zoom moved by someone else: the focus follows it, so the pane focused is the pane shown
     const moved: World = { ...zoomed, workspaces: [{ ...zoomed.workspaces[0]!, tabs: [{ ...zoomed.workspaces[0]!.tabs[0]!, zoomed: "p2" }, zoomed.workspaces[0]!.tabs[1]!] }, zoomed.workspaces[1]!] };
     expect(outcome(wide, [{ type: "world", world: moved, at: AT }])).toEqual({ mode: "navigate", preview: "w1", shown: "w1/t1/p2", run: [] });
+  });
+
+  it("the zoom follows focus at 65 columns but the 64-column view stays local", () => {
+    for (const [cols, writes] of [[64, []], [65, ["zoom_follow:p2"]]] as const) {
+      expect(outcome(navigating(undefined, withZoom("p1"), cols), [key("TAB")])).toEqual({
+        mode: "navigate", preview: "w1", shown: "w1/t1/p2", run: [...writes],
+      });
+    }
+  });
+
+  it("a zoom naming a pane in a different tab does not move focus", () => {
+    const start = navigating(undefined, withZoom("p2"));
+    const changed = { type: "world", world: withZoom("p3"), at: AT } as const;
+    expect(outcome(start, [changed]).shown).toBe("w1/t1/p2");
+  });
+
+  it("selecting the pane already shown by zoom needs no write", () => {
+    const select = { type: "select", target: { kind: "pane", id: "p2" }, at: AT } as const;
+    expect(outcome(navigating(undefined, withZoom("p2")), [select])).toEqual({
+      mode: "navigate", preview: "w1", shown: "w1/t1/p2", run: [],
+    });
   });
 });
 
@@ -187,6 +226,107 @@ describe("navigate mode on screen", () => {
     expect(run.loop.model().notices).toEqual([]);
   }, TEST_MS);
 
+  it("the second of two rapid moves wins in a zoomed tab without a busy notice", async () => {
+    const run = await start(twoWorkspaces("t1"));
+    await run.keys("ctrl+b,w");
+    run.forget();
+    run.type("l");
+    run.clock.current += 1;
+    run.type("l");
+    await run.settle();
+    expect(sharedZoom(run)).toEqual(["t3", "t3"]);
+    expect(zoomWrites(run)).toEqual(["t2", "t3"]);
+    expect(run.loop.model().notices).toEqual([]);
+  }, TEST_MS);
+
+  it("only the latest queued zoom is written even if it returns to the original pane", async () => {
+    const run = await start(twoWorkspaces("t1"));
+    await run.keys("ctrl+b,w");
+    run.forget();
+    run.type("l");
+    run.type("l");
+    run.type("h");
+    run.type("h");
+    await run.settle();
+    expect(sharedZoom(run)).toEqual(["t1", "t1"]);
+    expect(zoomWrites(run)).toEqual(["t2", "t1"]);
+    expect(run.loop.model().notices).toEqual([]);
+  }, TEST_MS);
+
+  it("two moves in one terminal read use successive neighbours", async () => {
+    const run = await start(twoWorkspaces("t1"));
+    await run.keys("ctrl+b,w");
+    run.forget();
+    run.type("ll");
+    await run.settle();
+    expect(sharedZoom(run)).toEqual(["t3", "t3"]);
+  }, TEST_MS);
+
+  it("a zoom conflict does not discard a distinct newer move", async () => {
+    const run = await start(twoWorkspaces("t1"));
+    await run.keys("ctrl+b,w");
+    run.forget();
+    run.core.conflictNext(2);
+    run.type("l");
+    run.type("l");
+    await run.settle();
+    expect(sharedZoom(run)).toEqual(["t3", "t3"]);
+    expect(zoomWrites(run)).toEqual(["t2", "t2", "t3"]);
+    expect(run.loop.model().notices.map(({ code, calm }) => [code, calm])).toEqual([["layout_conflict", true]]);
+  }, TEST_MS);
+
+  it("leaving for a narrow view cancels an unsent zoom even if the view widens again", async () => {
+    const run = await start(twoWorkspaces("t1"));
+    await run.keys("ctrl+b,w");
+    run.forget();
+    run.type("l");
+    run.type("l");
+    run.host.resize(64, 40);
+    run.host.resize(120, 40);
+    await run.settle();
+    expect(zoomWrites(run)).toEqual(["t2"]);
+  }, TEST_MS);
+
+  it("committing a workspace preview cancels the unsent zoom in the old tab", async () => {
+    const run = await start(twoWorkspaces("t1"));
+    await run.keys("ctrl+b,w,down");
+    run.forget();
+    run.type("ll");
+    run.type("\r");
+    await run.settle();
+    expect(zoomWrites(run)).toEqual(["t2"]);
+    expect(run.loop.model().focus.workspace).toBe("v");
+  }, TEST_MS);
+
+  it("a lost line never replays its queued zoom after reconnect", async () => {
+    const run = await start(twoWorkspaces("t1"));
+    await run.keys("ctrl+b,w");
+    run.forget();
+    run.type("ll");
+    await run.cutLine();
+    await run.settle();
+    expect(run.loop.link.state.kind).toBe("Offline");
+    await run.listen();
+    await run.advance(1_000);
+    expect(run.loop.link.state.kind).toBe("Online");
+    expect(zoomWrites(run)).toEqual([]);
+    expect(sharedZoom(run)).toEqual(["t1", "t1"]);
+  }, TEST_MS);
+
+  it("two zoom conflicts restore focus to the visible pane and input reaches it", async () => {
+    const run = await start(twoWorkspaces("t1"));
+    await run.keys("ctrl+b,w");
+    run.core.conflictNext(2);
+    await run.keys("l");
+    expect(sharedZoom(run)).toEqual(["t1", "t1"]);
+    expect(run.loop.model().notices.map(({ code, calm }) => [code, calm])).toEqual([["layout_conflict", true]]);
+    await run.keys("esc");
+    await run.advance(200);
+    await run.keys("x");
+    expect(run.core.sentOn("t1", { kinds: [FRAME_DATA] })).toEqual(["DATA 78"]);
+    expect(run.core.sentOn("t2", { kinds: [FRAME_DATA] })).toEqual([]);
+  }, TEST_MS);
+
   it("on a narrow screen a focus move in a zoomed tab writes no layout", async () => {
     const run = await start(twoWorkspaces("t1"), 45);
     await run.keys("ctrl+b,w,tab,tab");
@@ -194,3 +334,14 @@ describe("navigate mode on screen", () => {
     expect([run.loop.model().focus.panes["t"], run.core.calls().filter((call) => call.method === "doc.set").length]).toEqual(["t3", 0]);
   }, TEST_MS);
 });
+
+function sharedZoom(run: Run): readonly (string | null | undefined)[] {
+  const doc = run.core.docs.get(OVIS_LAYOUT_DOC)?.value as OvisLayout;
+  return [run.loop.model().focus.panes["t"], doc.workspaces[0]?.tabs[0]?.zoomed];
+}
+
+function zoomWrites(run: Run): (string | null | undefined)[] {
+  return run.core.calls().flatMap((call) => call.method === "doc.set"
+    ? [(call.params.value as OvisLayout).workspaces[0]?.tabs[0]?.zoomed]
+    : []);
+}

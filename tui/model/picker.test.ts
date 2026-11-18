@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { agents } from "../testing/fixtures/agents.ts";
 import { demo } from "../testing/fixtures/demo.ts";
+import { place } from "../testing/fixtures/fixture.ts";
 import { Run } from "../testing/run.ts";
 import type { World } from "./focus.ts";
 import { type Place, pickerMatches, pickerPlaces } from "./picker.ts";
@@ -61,6 +63,15 @@ describe("the picker's filter", () => {
       { kind: "agent", id: "p1", text: "claude ovis/main" },
     ]);
   });
+
+  it("matches canonically equivalent Hangul in the query and the place name", () => {
+    expect(ranked("\u1112\u1161\u11ab", ["한글", "\u1112\u1161\u11ab글", "글말"])).toEqual(["한글", "\u1112\u1161\u11ab글"]);
+    expect(ranked("한", ["\u1112\u1161\u11ab글"])).toEqual(["\u1112\u1161\u11ab글"]);
+  });
+
+  it("keeps the earliest start when two equally compact subsequences end together", () => {
+    expect(ranked("ab", ["xayb", "axayb"])).toEqual(["axayb", "xayb"]);
+  });
 });
 
 const key = (name: string, mods: Record<string, boolean> = {}): ModelEvent => ({ type: "key", key: name, mods, action: "press", at: AT });
@@ -98,6 +109,23 @@ describe("the picker overlay", () => {
   it("Esc closes it and nothing else happens", () => {
     const step = reduce(after(open, text("lo")), key("ESCAPE"));
     expect([step.state.overlays, step.state.focus, step.effects]).toEqual([[], open.focus, []]);
+  });
+
+  it("refreshes an open picker when places arrive or leave without losing a surviving choice", () => {
+    const chosen = after(open, text("o"), key("ARROW_DOWN"), key("ARROW_DOWN"));
+    const added = { ...world, workspaces: [{ id: "w0", name: "o", tabs: [] }, ...world.workspaces] };
+    const refreshed = after(chosen, { type: "world", world: added, at: AT });
+    expect(after(refreshed, key("ENTER")).focus.tabs["w1"]).toBe("t2");
+    const gone = { ...added, workspaces: added.workspaces.map((workspace) => ({
+      ...workspace, tabs: workspace.tabs.filter((tab) => tab.id !== "t2"),
+    })) };
+    expect(after(refreshed, { type: "world", world: gone, at: AT }, key("ENTER")).focus.workspace).toBe("w0");
+  });
+
+  it("arrows wrap from first to last and last to first", () => {
+    const last = after(open, key("ARROW_UP"));
+    expect(after(last, key("ENTER")).focus.workspace).toBe("w2");
+    expect(after(last, key("ARROW_DOWN"), key("ENTER")).focus.workspace).toBe("w1");
   });
 });
 
@@ -147,5 +175,44 @@ describe("the picker on screen", () => {
     await run.keys("esc");
     await run.advance(200);
     expect(run.loop.model().overlays).toEqual([]);
+  }, TEST_MS);
+
+  it("clicking a matching picker row jumps to the pane it names", async () => {
+    const run = await Run.start({ fixture: demo, cols: 45, rows: 20 });
+    runs.push(run);
+    await run.live();
+    await run.keys("ctrl+b,g,o");
+    await run.advance(10);
+    expect(run.grid()[8]).toBe("| · tab ovis/logs                           |");
+    run.type("\x1b[<0;12;9M");
+    await run.settle();
+    expect([run.loop.model().overlays, run.loop.model().focus.tabs["w-ovis"]]).toEqual([[], "t-logs"]);
+  }, TEST_MS);
+
+  it("the picker scrolls the chosen row into the visible window", async () => {
+    const run = await Run.start({
+      cols: 45, rows: 20,
+      fixture: { build(core) {
+        for (const id of ["0", "1", "2", "3", "4", "5"]) {
+          place(core, { space: `ws${id}`, spaceName: `place${id}`, tab: `t${id}`, tabName: "shell" }, "ready\r\n");
+        }
+      } },
+    });
+    runs.push(run);
+    await run.live();
+    await run.keys("ctrl+b,g,up");
+    await run.advance(10);
+    expect(run.grid()[15]).toBe("|>· tab place5/shell                        |");
+    await run.keys("enter");
+    expect(run.loop.model().focus.workspace).toBe("ws5");
+  }, TEST_MS);
+
+  it("picker agent text comes from the core's agent name rather than its pane label", async () => {
+    const run = await Run.start({ fixture: agents, cols: 45, rows: 20 });
+    runs.push(run);
+    await run.live();
+    await run.keys("ctrl+b,g,c,l");
+    await run.advance(10);
+    expect(run.grid()[6]).toBe("|>! agent claude agents/agents              |");
   }, TEST_MS);
 });

@@ -646,6 +646,29 @@ const RESTING: [state: string, enter: () => Promise<Resting>][] = [
     expect([run.loop.model().mode.name, run.loop.model().world.workspaces[0]?.tabs[0]?.zoomed]).toEqual(["navigate", "t2"]);
     return { run };
   }],
+  ["navigate mode after coalescing two zoom moves", async () => {
+    const run = await start({ core: oneTab(3, true) });
+    await run.live();
+    await run.keys("ctrl+b,w");
+    run.type("ll");
+    await run.settle();
+    await run.live();
+    expect([run.loop.model().mode.name, run.loop.model().focus.panes["t"], run.loop.model().world.workspaces[0]?.tabs[0]?.zoomed])
+      .toEqual(["navigate", "t3", "t3"]);
+    return { run };
+  }],
+  ["navigate mode after a zoom conflict notice expires", async () => {
+    const run = await start({ core: oneTab(3, true) });
+    await run.live();
+    await run.keys("ctrl+b,w");
+    run.core.conflictNext(2);
+    await run.keys("l");
+    expect(run.loop.model().notices.map(({ code }) => code)).toEqual(["layout_conflict"]);
+    await run.advance(NOTICE_SHOW_MS + 1);
+    expect([run.loop.model().mode.name, run.loop.model().focus.panes["t"], run.loop.model().notices])
+      .toEqual(["navigate", "t1", []]);
+    return { run };
+  }],
   ["the picker open with a query typed", async () => {
     const run = await start({ fixture: demo });
     await run.live();

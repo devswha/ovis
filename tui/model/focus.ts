@@ -87,6 +87,11 @@ export function focusOn(world: World, focus: Focus, target: Target): Focus | nul
   };
 }
 
+/** A zoom can only show a pane the tab still holds. */
+export function shownZoom(tab: TabNode | null | undefined): string | undefined {
+  return tab === null || tab === undefined ? undefined : find(tab.panes, tab.zoomed)?.id;
+}
+
 /** Herdr's directional focus actions and the side each looks to. */
 const FOCUS_DIRECTIONS: Readonly<Record<string, PaneDirection>> = { focus_pane_left: "left", focus_pane_right: "right", focus_pane_up: "up", focus_pane_down: "down" };
 
@@ -115,9 +120,9 @@ function pick<T extends { readonly id: string }>(before: readonly T[] | undefine
  * gives way to the previous pane when it is alive in that tab, else the next pane in tree order, else the
  * tab's first; the same for a closed tab (the tab holding the previous pane) and a closed workspace. A tab whose shared
  * zoom moved to another pane (someone else zoomed it) shows that pane, so the pane focused is the pane shown. Every
- * remembered tab and pane exists in `after`.
+ * remembered tab and pane exists in `after`. The tab with a local zoom move in flight keeps that focus intent.
  */
-export function nextFocus(before: World, after: World, focus: Focus): Focus {
+export function nextFocus(before: World, after: World, focus: Focus, movingZoom?: string): Focus {
   const previousPath = focus.previous === null ? null : pathOf(after, { kind: "pane", id: focus.previous });
   const oldWorkspaces = new Map(before.workspaces.map((workspace) => [workspace.id, workspace]));
   const oldTabs = new Map(before.workspaces.flatMap((workspace) => workspace.tabs).map((tab) => [tab.id, tab]));
@@ -127,8 +132,8 @@ export function nextFocus(before: World, after: World, focus: Focus): Focus {
     const tab = pick(oldWorkspaces.get(workspace.id)?.tabs, workspace.tabs, own(focus.tabs, workspace.id), previousPath?.workspace.id === workspace.id ? previousPath.tab?.id : undefined);
     if (tab !== undefined) tabs.push([workspace.id, tab]);
     for (const node of workspace.tabs) {
-      const zoomMoved = node.zoomed !== undefined && node.zoomed !== oldTabs.get(node.id)?.zoomed && find(node.panes, node.zoomed) !== undefined;
-      const pane = zoomMoved ? node.zoomed : pick(oldTabs.get(node.id)?.panes, node.panes, own(focus.panes, node.id), previousPath?.tab?.id === node.id ? previousPath.pane?.id : undefined);
+      const zoom = node.id !== movingZoom && node.zoomed !== oldTabs.get(node.id)?.zoomed ? shownZoom(node) : undefined;
+      const pane = zoom ?? pick(oldTabs.get(node.id)?.panes, node.panes, own(focus.panes, node.id), previousPath?.tab?.id === node.id ? previousPath.pane?.id : undefined);
       if (pane !== undefined) panes.push([node.id, pane]);
     }
   }

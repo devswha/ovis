@@ -12,7 +12,7 @@ import type { InputEvent } from "../input/decode.ts";
 import { CATALOGUE_BY_ID } from "./catalogue.ts";
 import { clearDeadline, type Deadlines, NO_DEADLINES, NOTICE_SHOW_MS, NOTICES_KEPT, setDeadline } from "./deadlines.ts";
 import type { Effect, KeyInput, MouseInput, OverlayChoice, PaneInput, PasteInput, Seen, TextInput } from "./effects.ts";
-import { EMPTY_WORLD, exists, type Focus, focusDirection, focused, focusOn, NO_FOCUS, nextFocus, type PaneNode, paneToward, type Target, type World } from "./focus.ts";
+import { EMPTY_WORLD, exists, type Focus, focusDirection, focused, focusOn, NO_FOCUS, nextFocus, type PaneNode, paneToward, shownZoom, type Target, type World } from "./focus.ts";
 import { boundIn, buildKeymap, charChords, isPrefix, type KeyAction, type Keymap, keyChords, unlockChords } from "./keymap.ts";
 import { keptCursor, menuEntries } from "./menu.ts";
 import { agentChoice, field, menuChoice, type Overlay, type OverlayAnswer, overlayInput, type OverlayInput, overlayTarget, pickerChoice } from "./overlays.ts";
@@ -36,6 +36,8 @@ export interface Notice { readonly id: number; readonly code: string; readonly d
 /** What focus waits to move to once the world shows it: a new pane, or a moved one once it is no longer in tab `away`. */
 export interface Following { readonly target: Target; readonly away: string | null }
 
+interface ZoomTarget { readonly tab: string; readonly pane: string }
+
 export interface ModelState {
   readonly mode: ModeState;
   readonly locked: boolean;
@@ -52,6 +54,8 @@ export interface ModelState {
   readonly host: { readonly cols: number; readonly rows: number; readonly focused: boolean | null };
   readonly sidebarCollapsed: boolean;
   readonly following: Following | null;
+  /** One shared zoom write in flight and just the latest unsent focus move. */
+  readonly zoomMove: { readonly sent: ZoomTarget; readonly pending: ZoomTarget | null } | null;
   /** the view kept from an earlier run, waiting for a world with something in it */
   readonly restoring: SavedView | null;
 }
@@ -92,7 +96,7 @@ export interface Step { readonly state: ModelState; readonly effects: readonly E
 export function initialState(keys: unknown): ModelState {
   return {
     mode: { name: "terminal" }, locked: false, armed: false, overlays: [], world: EMPTY_WORLD, focus: NO_FOCUS, keymap: buildKeymap(keys),
-    notices: [], nextNotice: 0, deadlines: NO_DEADLINES, host: { cols: 0, rows: 0, focused: null }, sidebarCollapsed: false, following: null, restoring: null,
+    notices: [], nextNotice: 0, deadlines: NO_DEADLINES, host: { cols: 0, rows: 0, focused: null }, sidebarCollapsed: false, following: null, restoring: null, zoomMove: null,
   };
 }
 
@@ -119,7 +123,11 @@ export function reduce(state: ModelState, event: ModelEvent): Step {
       const cols = Math.trunc(event.cols);
       const rows = Math.trunc(event.rows);
       // a size that is not a whole number of cells above zero (infinite, NaN, negative) is no size: it is ignored
-      if (Number.isFinite(cols) && Number.isFinite(rows) && cols > 0 && rows > 0) acc.s = { ...acc.s, host: { ...acc.s.host, cols, rows } };
+      if (Number.isFinite(cols) && Number.isFinite(rows) && cols > 0 && rows > 0) {
+        const { zoomMove } = acc.s;
+        acc.s = { ...acc.s, host: { ...acc.s.host, cols, rows },
+          zoomMove: cols <= NARROW_COLUMNS && zoomMove ? { ...zoomMove, pending: null } : zoomMove };
+      }
       break;
     }
     case "key":
@@ -164,6 +172,9 @@ export function reduce(state: ModelState, event: ModelEvent): Step {
     case "follow":
       acc.s = { ...acc.s, following: { target: event.target, away: event.away } };
       follow(acc);
+      break;
+    case "zoom_settled":
+      settleZoom(acc, event.current);
       break;
     case "choose": {
       const top = acc.s.overlays.at(-1);
@@ -425,7 +436,9 @@ function reload(acc: Acc, keys: unknown, at: number): void {
 
 function applyWorld(acc: Acc, world: World, at: number): void {
   const s = acc.s;
-  const focus = nextFocus(s.world, world, s.focus);
+  // The document may show the earlier write while the user is already moving from a newer pane.
+  const moving = s.host.cols > NARROW_COLUMNS ? s.zoomMove?.pending ?? s.zoomMove?.sent : undefined;
+  const focus = nextFocus(s.world, world, s.focus, moving?.tab);
   const gone = s.overlays.filter((overlay) => {
     const target = overlayTarget(overlay);
     return target !== null && !exists(world, target);
@@ -433,7 +446,12 @@ function applyWorld(acc: Acc, world: World, at: number): void {
   const mode: ModeState = s.mode.name === "navigate" && (s.mode.preview === null || !exists(world, { kind: "workspace", id: s.mode.preview }))
     ? { name: "navigate", preview: focus.workspace }
     : s.mode;
-  acc.s = { ...s, world, focus, mode, overlays: s.overlays.filter((overlay) => !gone.includes(overlay)) };
+  const shown = focused(world, focus);
+  const pending = s.zoomMove?.pending;
+  const zoomMove = s.zoomMove && pending && (shown.tab?.id !== pending.tab || shown.pane?.id !== pending.pane || shownZoom(shown.tab) === undefined)
+    ? { ...s.zoomMove, pending: null }
+    : s.zoomMove;
+  acc.s = { ...s, world, focus, mode, zoomMove, overlays: s.overlays.filter((overlay) => !gone.includes(overlay)) };
   for (const overlay of gone) notice(acc, "target_gone", { overlay: overlay.kind }, at);
   restore(acc, at);
   follow(acc);
@@ -490,10 +508,45 @@ function select(acc: Acc, target: Target, at: number): void {
  * narrow screen: it shows the focused pane alone itself and writes no layout.
  */
 function focusTo(acc: Acc, focus: Focus): void {
-  acc.s = { ...acc.s, focus, following: null };
-  const { tab, pane } = focused(acc.s.world, focus);
-  if (pane === null || tab?.zoomed === undefined || tab.zoomed === pane.id || acc.s.host.cols <= NARROW_COLUMNS) return;
-  acc.effects.push({ type: "run", action: "zoom_follow", target: { kind: "pane", id: pane.id }, zoomTab: tab.id, index: null, name: null });
+  const s = acc.s;
+  const { tab, pane } = focused(s.world, focus);
+  const zoom = shownZoom(tab);
+  const sent = s.zoomMove?.sent;
+  const wanted = tab && pane && zoom !== undefined && s.host.cols > NARROW_COLUMNS && (zoom !== pane.id || sent?.tab === tab.id)
+    ? { tab: tab.id, pane: pane.id } : null;
+  acc.s = { ...s, focus, following: null };
+  if (s.zoomMove) {
+    const pending = wanted?.pane === s.zoomMove.sent.pane && wanted.tab === s.zoomMove.sent.tab ? null : wanted;
+    acc.s = { ...acc.s, zoomMove: { ...s.zoomMove, pending } };
+  } else if (wanted) writeZoom(acc, wanted);
+}
+
+function writeZoom(acc: Acc, sent: ZoomTarget): void {
+  acc.s = { ...acc.s, zoomMove: { sent, pending: null } };
+  acc.effects.push({ type: "run", action: "zoom_follow", target: { kind: "pane", id: sent.pane }, zoomTab: sent.tab, index: null, name: null });
+}
+
+function settleZoom(acc: Acc, current: boolean): void {
+  const { zoomMove, focus, world, host } = acc.s;
+  if (!zoomMove) return;
+  acc.s = { ...acc.s, zoomMove: null };
+  if (host.cols <= NARROW_COLUMNS) return;
+
+  const { sent, pending } = zoomMove;
+  const { tab, pane } = focused(world, focus);
+  const zoom = shownZoom(tab);
+  const next = current && pending && tab?.id === pending.tab && pane?.id === pending.pane && zoom !== undefined && zoom !== pending.pane
+    ? pending : null;
+  const panes = { ...focus.panes };
+  for (const workspace of world.workspaces) for (const node of workspace.tabs) {
+    if ((node.id === sent.tab || node.id === pending?.tab) && node.id !== next?.tab) {
+      const zoom = shownZoom(node);
+      if (zoom !== undefined) panes[node.id] = zoom;
+    }
+  }
+  const previous = tab && panes[tab.id] === focus.previous ? null : focus.previous;
+  acc.s = { ...acc.s, focus: { ...focus, panes, previous } };
+  if (next) writeZoom(acc, next);
 }
 
 function setMode(acc: Acc, mode: ModeState): void {
@@ -677,6 +730,7 @@ function runHerdr(acc: Acc, action: HerdrAction, index: number | null, at: numbe
     case "previous_workspace":
     case "next_workspace":
       moveFocus(acc, target(around(s.world.workspaces, shown.workspace?.id, action === "next_workspace" ? 1 : -1), "workspace"));
+      if (s.mode.name === "navigate") setMode(acc, { name: "navigate", preview: acc.s.focus.workspace });
       return;
     case "previous_tab":
     case "next_tab":
