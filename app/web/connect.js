@@ -1,7 +1,11 @@
+// The connect screen: the app's first page until a PC is chosen. Opening a PC goes through the
+// native HerdrShell plugin, which makes the PC's address the WebView's first page: navigating
+// there from this page would cost every launch about 1.5 s (docs/native-app.md, Spike results).
 import { ACCOUNT_SIGN_IN, APP_ORIGIN, localize, openFailure, parseAddress, publicHttp, relayLink, shell, t } from "./shell.js";
 
 localize();
 
+// only iOS opens a plain http PC slower (docs/native-app.md, The app); Android shows no such delay
 if (window.Capacitor?.getPlatform?.() !== "ios") document.querySelector(".hint")?.remove();
 
 const form = document.getElementById("connect");
@@ -31,6 +35,7 @@ function stopPending() {
   showStatus("");
   if (android) void shell("cancelOpen");
 }
+/** PCs that loaded before (an origin, or a relay PC's scope), and the public http address the user was just warned about. */
 let savedOrigins = [];
 let warned = "";
 
@@ -54,6 +59,7 @@ async function open(text) {
   stopPending();
   const url = parseAddress(text);
   if (url === null) { error.textContent = t("That is not an http or https address.", "http 또는 https 주소가 아닙니다."); input.focus(); return; }
+  // a PC paired over the Ovis relay opens at its scope on the app's origin, saved under that scope
   const relay = relayLink(url);
   if (relay?.error) { error.textContent = relayErrors[relay.error](); input.focus(); return; }
   if (relay) {
@@ -70,6 +76,8 @@ async function open(text) {
     );
     return;
   }
+  // the Android app first asks the address whether it is Ovis (PCStore.check), for up to 20 s:
+  // until it answers the screen says what it opens, with Cancel. The iOS app opens it at once.
   error.textContent = "";
   const mine = ++attempt;
   showStatus(t(`Opening ${url.host}…`, `${url.host} 여는 중…`));
@@ -137,6 +145,8 @@ async function load() {
 
 void load();
 
+// a PC's link on the app's origin tapped outside the app (a message, the camera reading the PC's QR
+// code), which Android hands to the app (MainActivity's app link): opened as a scanned QR code is
 async function openAppLink() {
   if (window.Capacitor?.getPlatform?.() !== "android") return;
   const { url } = await shell("takeLink");

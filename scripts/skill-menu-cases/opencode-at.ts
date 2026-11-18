@@ -25,7 +25,6 @@ export const expect = async ({ page, width, scheme, box, menu, scenario, clear, 
     await menu.locator(".menu-item").first().waitFor();
     assert.deepEqual(await rowLabels(), ["@docs-release", "@pdf-tools"]);
     assert.equal(await page.getByRole("listbox", { name: "Skills and files", exact: true }).count(), 1);
-    // the pane's files follow, under their own heading
     await menu.locator(".menu-item").nth(2).waitFor();
     assert.deepEqual(await menu.locator(".menu-heading").allTextContents(), ["Skills", "Files"]);
     assert.deepEqual((await rowLabels()).slice(0, 2), ["@docs-release", "@pdf-tools"]);

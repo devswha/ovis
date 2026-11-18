@@ -43,6 +43,9 @@ describe("the frontend build", () => {
 });
 
 describe("what the browser loads", () => {
+  // src/ and site/ are bundled for the browser, and shared/ is loaded there and by the server both.
+  // An import that leads out of them (server/, relay/, scripts/, app/ …) puts code written for Bun
+  // or Node into that bundle, where the environment it reads is not there.
   const MAY_IMPORT: Readonly<Record<string, readonly string[]>> = { src: ["shared"], site: ["src", "shared"], shared: [] };
   const leadsTo = (file: string, specifier: string): string => posix.normalize(posix.join(posix.dirname(file), specifier)).replace(/\/.*$/, "");
   const crossings = Object.keys(MAY_IMPORT).flatMap((own) =>
@@ -186,6 +189,7 @@ describe("fixed sleeps", () => {
 
 describe("the tools typecheck", () => {
   const ROOTS = ["scripts", "integrations", "site", "app/scripts"];
+  /** The tracked .ts/.tsx files under the roots of the checkout at `cwd` that are hidden or in a hidden folder; `-z`, since git quotes a name with non-ASCII bytes. */
   const hiddenSources = (cwd: string): string[] =>
     gitIn(cwd, "ls-files", "-z", ...ROOTS).stdout.split("\0").filter((file) => /\.tsx?$/.test(file) && /(^|\/)\./.test(file));
   const config = JSON.parse(read("tsconfig.tools.json")) as { extends?: unknown; include?: unknown; exclude?: unknown; files?: unknown; compilerOptions?: unknown };
@@ -268,7 +272,57 @@ describe("the tools typecheck", () => {
   });
 });
 
+describe("the demo app's file server", () => {
+  const OWN_SERVER: Record<string, string> = {
+    "scripts/boot-loading-demo-regression.ts": "sends the page's CSP header",
+    "scripts/chat-tool-paths-demo-regression.ts": "answers /pane/conversation and /pane/commands",
+    "scripts/cliproxy-settings-regression.ts": "passes /api to a real server",
+    "scripts/design-gate-qa.ts": "serves the root icons and manifest beside the app",
+    "scripts/diff-find-demo-regression.ts": "serves /icons/ beside the app",
+    "scripts/diff-line-notes-demo-regression.ts": "serves /icons/ beside the app",
+    "scripts/droplet-demo-regression.ts": "rewrites the CSS safe-area inset",
+    "scripts/film/capture.ts": "serves the built site, not the demo app",
+    "scripts/film/render.ts": "serves the film's stage page and footage",
+    "scripts/install-state-demo-regression.ts": "answers manifest.webmanifest with its own body",
+    "scripts/old-safari-demo-regression.ts": "sends the page's CSP header",
+    "scripts/pages-static.ts": "serves the built Pages site as GitHub Pages does",
+    "scripts/pane-mute-demo-run.ts": "answers /fixture/preferences",
+    "scripts/phone-glass-header-demo-regression.ts": "rewrites the CSS safe-area inset",
+    "scripts/prompt-card-timing-demo-regression.ts": "also serves paths outside /app/",
+    "scripts/repo-diff-browser-qa.ts": "serves /icons/ beside the app",
+    "scripts/settings-pages-demo-regression.ts": "serves two builds side by side",
+    "scripts/settings-palette-search-demo-regression.ts": "serves two builds side by side",
+    "scripts/settings-rows-demo-regression.ts": "serves two builds side by side",
+    "scripts/setup-dialog-demo-regression.ts": "serves /icons/ beside the app",
+    "scripts/setup-row-demo-regression.ts": "serves /icons/ beside the app",
+    "scripts/theme-first-paint-demo-regression.ts": "sends the page's CSP header and refuses /api",
+    "scripts/usage-account-management-regression.ts": "passes /api to a real server",
+  };
+  const servesFiles = (code: string): boolean =>
+    /\bBun\.serve\s*\(/.test(code) && /\bdecodeURIComponent\s*\(/.test(code) && /\bBun\.file\s*\(/.test(code);
+  const servers = files("scripts/**/*.{ts,tsx,mjs,js}").filter((file) => file !== "scripts/demo-server.ts" && file !== "scripts/conventions.test.ts" && servesFiles(stripComments(read(file))));
+
+  it("is serveDemo from scripts/demo-server.ts", () => {
+    fail(servers.filter((file) => !(file in OWN_SERVER)),
+      "Serve the demo app with serveDemo(dir) from scripts/demo-server.ts (serveDemo(dir, { prefix }) for another path) instead of a Bun.serve of your own: a copy is one more to fix when the server changes. If a script needs something serveDemo does not do, add it to serveDemo as an option. OWN_SERVER in scripts/conventions.test.ts only holds the scripts that had their own before it existed.");
+  });
+
+  it("lists only scripts that still serve the files themselves", () => {
+    fail(Object.keys(OWN_SERVER).filter((file) => !servers.includes(file)),
+      "These scripts no longer serve files themselves: take them out of OWN_SERVER in scripts/conventions.test.ts.");
+  });
+
+  it("tells a server of files from one that only answers requests, whatever the spelling", () => {
+    expect(servesFiles("Bun.serve( { async fetch(req) { const p = new URL(req.url).pathname; const name = decodeURIComponent( p.slice(base.length)); return new Response(Bun.file( join(root, name))); } })")).toBe(true);
+    expect(servesFiles("const server = serveDemo(app, { prefix: \"/\" });")).toBe(false);
+    expect(servesFiles("Bun.serve({ fetch: () => Response.json({ turns: [] }) }); const pane = decodeURIComponent(id);")).toBe(false);
+  });
+});
+
 describe("demo transport", () => {
+  // Every push to main redeploys the browser demo, whose server is site/demo/transport.ts: an
+  // endpoint or WS frame it does not answer is a 404 or a dropped frame there (AGENTS.md,
+  // Changing a contract).
   const demo = stripComments(read("site/demo/transport.ts"));
   const exact = new Set([...demo.matchAll(/["'](\/api\/[^"'?]*)["']/g)].map((match) => match[1]!));
   const prefixes = [...demo.matchAll(/\.startsWith\(\s*["'](\/api\/[^"']+)["']\s*\)/g)].map((match) => match[1]!).filter((prefix) => prefix !== "/api/");
@@ -426,6 +480,7 @@ describe("raw NUL bytes", () => {
     expect(scanned).toBeGreaterThan(1000);
   });
 
+  /** A throwaway repository holding `tracked` in its index and `untracked` beside it; `run` gets its root and a git environment that cannot reach another repository. */
   const withRepo = (tracked: Record<string, string | Uint8Array>, untracked: Record<string, string | Uint8Array>, run: (root: string, env: Record<string, string | undefined>) => void) => {
     const dir = mkdtempSync(join(tmpdir(), "tracked-text-"));
     const root = join(dir, "repo");

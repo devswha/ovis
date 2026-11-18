@@ -2,6 +2,12 @@ import Capacitor
 import Foundation
 import WebKit
 
+/// The PC's direct carriers for the hosted shell (src/lib/relay/directSocket.ts; docs/relay.md, "Direct on
+/// the same network"): a page on https cannot open plain `ws://`. Only the main frame of the app's own
+/// origin (DirectCallGate) may call it, only `ws://<private or Tailscale IPv4>:<port>/v1/ws?v=1` opens, at most two at
+/// once. Frames go to the page in order as `{ id, kind, data }` (binary as base64); a socket whose messages
+/// the page has not acknowledged pass 4 MiB or 16,384 is closed with 1009. Noise inside the channel proves
+/// the PC: the address is only a hint.
 @objc(OvisDirectPlugin)
 public class OvisDirectPlugin: CAPPlugin, CAPBridgedPlugin {
     public let identifier = "OvisDirectPlugin"
@@ -36,6 +42,7 @@ public class OvisDirectPlugin: CAPPlugin, CAPBridgedPlugin {
         sessionMade = true
         let configuration = URLSessionConfiguration.ephemeral
         configuration.waitsForConnectivity = false
+        // the relay channel keeps itself alive and the page gives up on a carrier that does not answer
         configuration.timeoutIntervalForRequest = 24 * 3600
         let delegates = OperationQueue()
         delegates.underlyingQueue = queue
@@ -43,6 +50,8 @@ public class OvisDirectPlugin: CAPPlugin, CAPBridgedPlugin {
         return URLSession(configuration: configuration, delegate: SessionEvents(plugin: self), delegateQueue: delegates)
     }()
 
+    /// `text` when it is exactly a direct carrier's channel address: a private IPv4 address in plain
+    /// dotted form (10/8, 172.16/12, 192.168/16, 169.254/16, or Tailscale's 100.64/10), a port, `/v1/ws?v=1`.
     static func carrierURL(_ text: String) -> URL? {
         let parts = text.split(separator: "/", omittingEmptySubsequences: false)
         guard text.hasPrefix("ws://"), text.hasSuffix("/v1/ws?v=1"), parts.count == 5 else { return nil }
@@ -59,6 +68,7 @@ public class OvisDirectPlugin: CAPPlugin, CAPBridgedPlugin {
         return URL(string: text)
     }
 
+    /// Only a call DirectCallGate let through: from the main frame of the app's own origin.
     private func allowed(_ call: CAPPluginCall) -> Bool {
         guard DirectCallGate.take(call.callbackId) else {
             call.reject("OvisDirect answers only the app's own page", "not_allowed")
@@ -67,6 +77,7 @@ public class OvisDirectPlugin: CAPPlugin, CAPBridgedPlugin {
         return true
     }
 
+    /// What this build opens beyond the home network: the page offers the PC's Tailscale address only when it says so.
     @objc func features(_ call: CAPPluginCall) {
         guard allowed(call) else { return }
         call.resolve(["tailnet": true])
@@ -125,6 +136,7 @@ public class OvisDirectPlugin: CAPPlugin, CAPBridgedPlugin {
             }
             socket.pendingSends += 1
             socket.pendingBytes += size
+            // a failed send ends the socket, which its receive reports; completions come on this queue
             socket.task.send(message) { _ in
                 socket.pendingSends -= 1
                 socket.pendingBytes -= size
@@ -222,6 +234,7 @@ public class OvisDirectPlugin: CAPPlugin, CAPBridgedPlugin {
         finish(id, code: code, reason: reason, error: error)
     }
 
+    /// A new page in the web view: the old page's sockets would hold both places and nobody reads them.
     public override func load() {
         pageObserver = NotificationCenter.default.addObserver(forName: .ovisPageCommitted, object: nil, queue: nil) { [weak self] _ in
             DirectCallGate.clear()
@@ -232,6 +245,8 @@ public class OvisDirectPlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
+    /// The bridge let go of the plugin (another PC opened, say) without a new page: its sockets end now, and the
+    /// session, which holds its delegate until invalidated, goes with them.
     deinit {
         if let pageObserver { NotificationCenter.default.removeObserver(pageObserver) }
         if sessionMade { session.invalidateAndCancel() }
@@ -242,6 +257,7 @@ extension Notification.Name {
     static let ovisPageCommitted = Notification.Name("sh.ovis.pageCommitted")
 }
 
+/// The session's callbacks, on the plugin's queue; held weakly, as the session holds its delegate.
 private final class SessionEvents: NSObject, URLSessionWebSocketDelegate {
     weak var plugin: OvisDirectPlugin?
     init(plugin: OvisDirectPlugin) { self.plugin = plugin }
@@ -250,6 +266,7 @@ private final class SessionEvents: NSObject, URLSessionWebSocketDelegate {
         plugin?.finish(task: webSocketTask, code: closeCode.rawValue, reason: reason.flatMap { String(data: $0, encoding: .utf8) } ?? "", error: false)
     }
 
+    /// A carrier is the address the page named and nothing else: a redirect of the upgrade fails it.
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
         completionHandler(nil)
@@ -274,13 +291,16 @@ final class DirectCallGate: NSObject, WKScriptMessageHandler {
 
     private init(inner: WKScriptMessageHandler) { self.inner = inner }
 
+    /// Puts the gate in front of Capacitor's "bridge" handler; before the first page loads.
     static func install(on handler: WebViewDelegationHandler) {
         handler.contentController.removeScriptMessageHandler(forName: "bridge")
         handler.contentController.add(DirectCallGate(inner: handler), name: "bridge")
     }
 
+    /// The plugin's own methods, each of which takes its approval (OvisDirectPlugin.allowed).
     static let ownMethods: Set<String> = ["open", "send", "close", "ack", "features"]
 
+    /// A new page: approvals left by the old one are dropped.
     static func clear() {
         lock.lock()
         approved.removeAll()

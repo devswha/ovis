@@ -119,7 +119,6 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       const undecided = results.some((result) => result.outcome === "refused" && result.code === "account_unavailable");
       if (last !== false && !undecided && linker) {
         holds.endEnrolling();
-        // adds the barrier held back now pass every gate in their turn
         await mailbox.settle();
       }
       return reply({ results });

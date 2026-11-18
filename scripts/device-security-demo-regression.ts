@@ -7,7 +7,10 @@ import { chromium, type BrowserContext, type Locator, type Page } from "playwrig
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 import { KO } from "../src/lib/i18n.ko.ts";
+import { serveDemo } from "./demo-server.ts";
 
+// The demo pairs no real device and holds no credential; `?demo_devices=` picks its states (site/demo/transport.ts).
+// All files and HTTP traffic stay in this disposable, loopback-only app; no herdr session is opened.
 const app = mkdtempSync(join(tmpdir(), "herdr-device-security-demo-"));
 const evidence = process.env.UI_EVIDENCE_DIR || "";
 const NOTICE = '[data-testid="device-paired-notice"]';
@@ -222,18 +225,7 @@ try {
   writeFileSync(index, html.replace(/<script type="module"/, '<script src="./demo-transport.js"></script>\n    <script type="module"'));
   if (evidence) mkdirSync(evidence, { recursive: true });
 
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    const prefix = "/herdr-web-ui/demo/app/";
-    if (!path.startsWith(prefix)) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice(prefix.length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return (await body.exists()) ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  const server = serveDemo(app);
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     try {
@@ -523,6 +515,7 @@ try {
             await press(dialog.getByRole("button", { name: label("Revoke all"), exact: true }));
             const failure = dialog.locator(".confirm-error");
             await failure.waitFor();
+            // what did not happen, and what to do next, with the server's log reference and no file name or machine words
             assert.equal(await failure.innerText(), label("Nothing was revoked: the PC could not save the change. Try again; if it keeps failing, look up {reference} in the server's log on the PC.").replace("{reference}", "d3m0f41l0001"));
             assert.doesNotMatch(await failure.innerText(), /devices\.json|internal error/, "no file name or machine words");
             assert.equal(await dialog.isVisible(), true, "a refused write keeps the question open");
@@ -537,6 +530,7 @@ try {
             await page.close();
           }
 
+          // a device that only watches: the words, and no working button
           {
             const { page, errors } = await open(context, server.port, "&demo_devices=watch");
             errorsOf.push(errors);

@@ -1,3 +1,7 @@
+/**
+ * A device that only watches (`?demo_devices=watch`) gets no Add another agent…, no Install and no
+ * Open setup guide: an install types into a terminal on the PC, which it may not do.
+ */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -6,6 +10,7 @@ import { chromium, type Browser, type Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { serveDemo } from "./demo-server.ts";
 
 const app = mkdtempSync(join(tmpdir(), "ovis-agent-entry-"));
 const evidence = process.env["UI_EVIDENCE_DIR"] ? join(process.env["UI_EVIDENCE_DIR"], "agent-entry-points") : null;
@@ -20,17 +25,7 @@ try {
   await buildDemoApp(app);
   const index = join(app, "index.html");
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    <script type="module"`));
-  server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith("/herdr-web-ui/demo/app/")) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice("/herdr-web-ui/demo/app/".length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return (await body.exists()) ? new Response(body) : new Response("not found", { status: 404 });
-  } });
+  server = serveDemo(app);
   const root = `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/?pane=${encodeURIComponent(panes.api)}`;
   browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
   for (const width of [1280, 390] as const) {
@@ -129,6 +124,8 @@ try {
           console.log(`PASS New worktree's picker ends with ${ADD_ROW} (${at})`);
         }
 
+        // a device that turns into a watching one (its pairing changed) loses what was already open:
+        // the next health answer says role "watch" (site/demo/transport.ts demoSecurity)
         const becomeWatching = () => page.evaluate(() => { sessionStorage.setItem("ovis:demo-security", "watch"); document.dispatchEvent(new Event("visibilitychange")); });
         const driveAgain = () => page.evaluate(() => sessionStorage.removeItem("ovis:demo-security"));
         await page.goto(`${base}&settings=agents`);
@@ -155,6 +152,7 @@ try {
         await page.keyboard.press("Escape");
         await driveAgain();
         if (width === 1280) {
+          // New worktree is not offered to a watching device: an open one closes
           await page.goto(base);
           const row = page.locator(`.workspace-group[data-workspace="${panes.api.split(":")[0]}"] > .workspace-header .workspace-select`);
           const bounds = (await row.boundingBox())!;
@@ -172,6 +170,7 @@ try {
         }
         console.log(`PASS turning into a watching device takes away the tiles to install, Open setup guide, the Add another agent… panel${width === 1280 ? " and New worktree" : ""} (${at})`);
 
+        // a device that only watches may not type into the PC's terminal: no install anywhere
         await page.goto(`${root}&demo_devices=watch&new=workspace`);
         const watched = page.getByRole("dialog", { name: /^New workspace · / });
         await watched.waitFor();
