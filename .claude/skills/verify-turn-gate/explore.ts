@@ -81,8 +81,11 @@ export interface Config {
   rules: Rule[];
   /** a patched copy of the class: see VARIANTS */
   variant?: string;
-  /** a step the path to the break must take: the run is about that order, not any other that breaks the rule */
-  via?: string;
+  /**
+   * steps the path to the break must take, in this order: the run is about that order, not any other that breaks the
+   * rule. The search goes on past a break whose path lacks them
+   */
+  via?: string[];
   expect: "holds" | Rule;
 }
 
@@ -136,7 +139,7 @@ export async function loadClass(variant?: string): Promise<InstClass> {
   if (source.split(edit.find).length !== 2) throw new Error(`variant ${variant}: its text is not in server/pending-input.ts exactly once. The code changed: bring the variant up to date (SKILL.md, "When you change the covered code on purpose")`);
   if (scratch === null) { mkdirSync(tmpdir(), { recursive: true }); scratch = mkdtempSync(join(tmpdir(), "verify-turn-gate-")); }
   const file = join(scratch, `${variant}.ts`);
-  writeFileSync(file, source.replace(edit.find, edit.put).replaceAll("from \"../shared/", `from "${join(ROOT, "shared")}/`));
+  writeFileSync(file, source.replace(edit.find, edit.put).replace(/from "\.\.\/shared\/([^"]*)"/g, (_all, rest: string) => `from ${JSON.stringify(join(ROOT, "shared", rest))}`));
   return ((await import(file)) as { PendingInputs: InstClass }).PendingInputs;
 }
 
@@ -153,20 +156,22 @@ interface Task {
   mark: number; fresh: boolean;
   /** a clientSnapshot is being read; `over` is the status of an event applied during the read, which wins (CompletionTracker.readSnapshot) */
   reading: boolean; over: St | null; ctx: St | null;
-  /** when that read was made, on the count of World.seq */
-  at: number;
+  /** when that read was made, on the count of World.seq: for a status an event supplied, when herdr read that status */
+  at: number; overAt: number;
   /** its connection's lease or its pane is gone: the next check refuses */
   lost: boolean;
   hold: boolean; steering: boolean; statusAtRead: string;
 }
 interface World {
+  /** how many of the run's `via` steps the path has taken */
+  via: number;
   c: { records: { id: string; o: string; p: string; f: boolean; s: string; rq: number; mv: boolean }[]; statuses: [string, St][]; events: [string, number][]; gates: [string, Gate][] };
   /** what the agent does: its turn (`base`: one this queue did not start), and Enters that wait in its own queue */
   turn: null | "base" | "queue"; aq: string[]; blocked: boolean;
   /** herdr's reading of it, and the status events sent and not yet applied: each with when it was read and the pane id it names */
   h: St; q: { s: St; at: number; p: string }[];
   /** a reconcile's snapshot, read and not yet told to the queue as its baseline */
-  base: null | { s: St; at: number }; baselines: number;
+  base: null | { s: St; at: number; p: string }; baselines: number;
   /** counts the readings of the agent and the commits, so that which came first can be told */
   seq: number;
   pane: string; gone: boolean; moved: boolean;
@@ -185,7 +190,7 @@ const F = (code: string): Fault => ({ code, message: code });
 
 class Violation extends Error { constructor(readonly rule: Rule, readonly why: string) { super(why); } }
 
-export interface Result { config: Config; states: number; ms: number; broken: null | { rule: Rule; why: string; steps: { label: string; after: string }[] } }
+export interface Result { config: Config; states: number; ms: number; /** breaks whose path lacked the `via` steps */ passed: number; broken: null | { rule: Rule; why: string; steps: { label: string; after: string }[] } }
 
 export async function explore(config: Config, limit = 5_000_000): Promise<Result> {
   const started = performance.now();
@@ -224,13 +229,13 @@ export async function explore(config: Config, limit = 5_000_000): Promise<Result
     }
     for (const pane of [...inst.events.keys()].sort()) if ((inst.events.get(pane) ?? 0) > 0) events.push([pane, 1]);
     // readings and commits keep their order, not their numbers
-    const times = [...new Set([...w.q.map((event) => event.at), ...(w.base ? [w.base.at] : []), ...w.waits.flatMap((wait) => [wait.since, wait.last]), ...w.tasks.map((task) => task.at)])]
+    const times = [...new Set([...w.q.map((event) => event.at), ...(w.base ? [w.base.at] : []), ...w.waits.flatMap((wait) => [wait.since, wait.last]), ...w.tasks.flatMap((task) => [task.at, task.overAt])])]
       .filter((time) => time > 0).sort((a, b) => a - b);
     const rank = (time: number): number => (time <= 0 ? 0 : times.indexOf(time) + 1);
     for (const event of w.q) event.at = rank(event.at);
     if (w.base) w.base.at = rank(w.base.at);
     for (const wait of w.waits) { wait.since = rank(wait.since); wait.last = rank(wait.last); }
-    for (const task of w.tasks) task.at = rank(task.at);
+    for (const task of w.tasks) { task.at = rank(task.at); task.overAt = rank(task.overAt); }
     w.seq = times.length;
     w.c = {
       records: [...inst.records.values()].map((r) => ({ id: r.message.id, o: r.owner, p: r.paneId, f: r.inFlight, s: r.message.state, rq: r.message.request_id, mv: inst.movedInFlight.has(r) })),
@@ -311,13 +316,13 @@ export async function explore(config: Config, limit = 5_000_000): Promise<Result
     // and so is every status event herdr has sent, unless the run lets events come late
     const told = config.free || config.lateEvents || w0.q.length === 0;
     const fresh = (kind: Task["kind"], id: string, owner: string, pc: string, lane: string): Task =>
-      ({ lane, kind, id, owner, pc, mark: 0, fresh: false, reading: false, over: null, ctx: null, at: 0, lost: false, hold: false, steering: false, statusAtRead: "" });
+      ({ lane, kind, id, owner, pc, mark: 0, fresh: false, reading: false, over: null, ctx: null, at: 0, overAt: 0, lost: false, hold: false, steering: false, statusAtRead: "" });
 
     // a status event names its pane: one sent for the id a pane had before it moved is applied to that id
     const applied = (w: World, inst: Inst, status: St, at: number, pane: string, tracked = true): void => {
       inst.status(pane, status);
       if (pane === w.pane) evidence(w, status, at);
-      for (const task of w.tasks) if (task.lane === pane) { task.fresh = false; if (task.reading && tracked) task.over = status; }
+      for (const task of w.tasks) if (task.lane === pane) { task.fresh = false; if (task.reading && tracked) { task.over = status; task.overAt = at; } }
     };
     if (config.free) for (const status of STATUSES) out.push([`status event applied: ${status}`, (w, inst) => applied(w, inst, status, 0, w.pane)]);
     // ---- the agent and herdr (described, not Ovis code) ----
@@ -333,14 +338,14 @@ export async function explore(config: Config, limit = 5_000_000): Promise<Result
         if (statusOf(w0) !== w0.h && w0.q.length < 4) out.push([`herdr reads the agent ${statusOf(w0)}`, (w) => { w.h = statusOf(w); w.q.push({ s: w.h, at: ++w.seq, p: w.pane }); }]);
         // collector.ts reconcile: a snapshot is read, and whatever came meanwhile, status.ts onBaseline tells the queue a
         // ready reading of it. (One that reads the agent at work re-tells what the tracker last recorded: not described.)
-        if (config.baseline && w0.base === null && w0.baselines < 1) out.push([`a reconcile reads the pane ${w0.h}`, (w) => { w.base = { s: w.h, at: ++w.seq }; w.baselines++; }]);
+        if (config.baseline && w0.base === null && w0.baselines < 1) out.push([`a reconcile reads the pane ${w0.h}`, (w) => { w.base = { s: w.h, at: ++w.seq, p: w.pane }; w.baselines++; }]);
       }
       // server/core/status.ts reportStatus: pending.status(paneId, ...), then drainPending
       if (w0.q.length > 0) out.push([`status event applied: ${w0.q[0]!.s}`, (w, inst) => { const event = w.q.shift()!; applied(w, inst, event.s, event.at, event.p); }]);
       if (w0.base !== null) out.push([`the reconcile's reading is told to the queue as its baseline: ${w0.base.s}`, (w, inst) => {
         const base = w.base!;
         w.base = null;
-        if (resting(base.s)) applied(w, inst, base.s, base.at, w.pane, false);
+        if (resting(base.s)) applied(w, inst, base.s, base.at, base.p, false);
       }]);
     }
 
@@ -368,8 +373,10 @@ export async function explore(config: Config, limit = 5_000_000): Promise<Result
     }]);
     // server-core.ts: pending.expire() every 100 ms. A wait whose start timeout passed ends once no send is on its way,
     // and only then: with no time passed since a commit the timer changes nothing
+    // The class has one gate, the latest commit's: an earlier Enter's timeout ends nothing once a later one was committed
     const timedOut = (w: World, inst: Inst): void => {
-      if (w.waits.some((wait) => wait.late && wait.need.includes("W")) && !inFlight(inst, w.pane)) handOver(w, inst);
+      const latest = w.waits.at(-1);
+      if (latest?.late && latest.need.includes("W") && !inFlight(inst, w.pane)) handOver(w, inst);
     };
     if (inst0.gates.size > 0) out.push(["the 100 ms timer runs expire(), no time has passed", (w, inst) => { inst.expire(); timedOut(w, inst); }]);
     if ([...inst0.gates.values()].some((gate) => gate.deadline !== null && gate.deadline > 0) || w0.waits.some((wait) => wait.timed)) {
@@ -414,7 +421,10 @@ export async function explore(config: Config, limit = 5_000_000): Promise<Result
           taskSteps({ ...t0, ctx: status, reading: false, over: null }, (label, run) => add(`${typist} has read the pane ${status}; ${label}`, (w, inst, task) => { task.ctx = status; task.reading = false; task.over = null; return run(w, inst, task); }));
         }
         // status.ts clientSnapshot: herdr's answer, or the status of an event applied during the read
-        else if (config.overtake || w0.q.length === 0) add(`${typist} has read the pane ${t0.over ?? w0.h}`, (w, _inst, task) => { task.ctx = task.over ?? w.h; task.reading = false; task.over = null; task.at = ++w.seq; });
+        else if (config.overtake || w0.q.length === 0) add(`${typist} has read the pane ${t0.over ?? w0.h}`, (w, _inst, task) => {
+          task.at = task.over !== null ? task.overAt : ++w.seq;
+          task.ctx = task.over ?? w.h; task.reading = false; task.over = null; task.overAt = 0;
+        });
         return;
       }
       if (t0.kind === "submit" && t0.pc === "read") {
@@ -515,7 +525,9 @@ export async function explore(config: Config, limit = 5_000_000): Promise<Result
           committed(w, task, steering ? "steer" : "start");
           task.pc = "committed";
         };
-        const named = `committing (${steering ? "steering a turn at work" : "a turn to start"})`;
+        // named apart, for a run to ask for: the commit that takes the place of a Codex restart's gate
+        const overRestart = steering && w0.waits.some((wait) => wait.restart && wait.need.includes("W"));
+        const named = `committing (${steering ? `steering a turn at work${overRestart ? ", over a restart not yet seen to start" : ""}` : "a turn to start"})`;
         if (config.slowEnter) add(named, commit);
         else {
           for (const [label, inQueue] of landings(steering)) add(`${named}; ${label}`, (w, inst, task) => { commit(w, inst, task); enterLands(w, task, inQueue); task.pc = "entered"; });
@@ -579,9 +591,10 @@ export async function explore(config: Config, limit = 5_000_000): Promise<Result
   };
 
   // ---- search -----------------------------------------------------------------------------------------------
-  const init: World = { c: { records: [], statuses: [], events: [], gates: [] }, turn: "base", aq: [], blocked: false, h: config.rest, q: [], base: null, baselines: 0, seq: 0, pane: "p", gone: false, moved: false, tasks: [], used: 0, others: 0, blocks: 0, waits: [] };
+  const init: World = { c: { records: [], statuses: [], events: [], gates: [] }, via: 0, turn: "base", aq: [], blocked: false, h: config.rest, q: [], base: null, baselines: 0, seq: 0, pane: "p", gone: false, moved: false, tasks: [], used: 0, others: 0, blocks: 0, waits: [] };
   const take = async (from: string, step: Step): Promise<World> => {
     const next = JSON.parse(from) as World;
+    next.via = taken(next.via, step[0]);
     const inst = restore(next.c);
     const waited = step[1](next, inst, step[2] === undefined ? (null as unknown as Task) : next.tasks[step[2]]!);
     if (waited) await waited;
@@ -592,6 +605,9 @@ export async function explore(config: Config, limit = 5_000_000): Promise<Result
     save(inst, next);
     return next;
   };
+  const needles = config.via ?? [];
+  const taken = (count: number, label: string): number => (count < needles.length && label.includes(needles[count]!) ? count + 1 : count);
+  let passed = 0;
   const stepsOf = (from: string): Step[] => { const w = JSON.parse(from) as World; return steps(w, restore(w.c)); };
   // a state is known by a 64-bit hash of its text; the queue keeps the text until the state has been expanded
   const seen = new Set<number | bigint>();
@@ -622,6 +638,7 @@ export async function explore(config: Config, limit = 5_000_000): Promise<Result
       try { next = await take(from, step); }
       catch (error) {
         if (!(error instanceof Violation)) throw error;
+        if (taken((JSON.parse(from) as World).via, step[0]) < needles.length) { passed++; continue; }
         const labels: string[] = [step[0]];
         for (let up = at; parent[up]! >= 0; up = parent[up]!) labels.unshift(via[up]!);
         const path: { label: string; after: string }[] = [];
@@ -645,5 +662,5 @@ export async function explore(config: Config, limit = 5_000_000): Promise<Result
     }
   }
   if (kinds) for (const [kind, count] of [...kinds].sort(([a], [b]) => a.localeCompare(b))) console.error(`${String(count).padStart(9)}  ${kind}`);
-  return { config, states: parent.length, ms: Math.round(performance.now() - started), broken };
+  return { config, states: parent.length, ms: Math.round(performance.now() - started), passed, broken };
 }

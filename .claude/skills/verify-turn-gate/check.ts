@@ -32,11 +32,11 @@ export const CONFIGS: Config[] = [
   broken("observe-ignores-mark", "QueueWaitsForTurnEvidence", { free: true }),
   broken("ready-without-working", "NoAutomaticEnterIntoQueuedTurn"),
   // what the code does today: see SKILL.md, "What it has found"
-  { ...small, name: "finding-send-now-as-turn-ends", agent: "claude", steerPastEnd: true, rules: turn, expect: "NoAutomaticEnterIntoQueuedTurn", via: "committing (steering a turn at work); its Enter lands: the agent is at rest" },
+  { ...small, name: "finding-send-now-as-turn-ends", agent: "claude", steerPastEnd: true, rules: turn, expect: "NoAutomaticEnterIntoQueuedTurn", via: ["committing (steering a turn at work); its Enter lands: the agent is at rest"] },
   { ...small, name: "finding-late-status-events", agent: "claude", overtake: true, lateEvents: true, rules: turn, expect: "NoAutomaticEnterIntoQueuedTurn" },
-  { ...small, free: true, name: "finding-second-send-now-in-restart", agent: "codex", sendNowDuringRestart: true, rules: gate, expect: "QueueWaitsForTurnEvidence", via: "the panel shows it: committing (restarting the turn)" },
-  { ...small, name: "finding-older-ready-baseline", agent: "claude", baseline: true, rules: gate, expect: "QueueWaitsForTurnEvidence", via: "the reconcile's reading is told to the queue as its baseline" },
-  { ...small, name: "finding-queue-send-typed-at-once", agent: "claude", atOnce: true, rules: turn, expect: "NoAutomaticEnterIntoQueuedTurn", via: "typed at once" },
+  { ...small, free: true, name: "finding-second-send-now-in-restart", agent: "codex", sendNowDuringRestart: true, rules: gate, expect: "QueueWaitsForTurnEvidence", via: ["committing (steering a turn at work, over a restart not yet seen to start)"] },
+  { ...small, name: "finding-older-ready-baseline", agent: "claude", baseline: true, rules: gate, expect: "QueueWaitsForTurnEvidence", via: ["the reconcile's reading is told to the queue as its baseline"] },
+  { ...small, name: "finding-queue-send-typed-at-once", agent: "claude", atOnce: true, rules: turn, expect: "NoAutomaticEnterIntoQueuedTurn", via: ["typed at once"] },
   // what status evidence cannot tell: see SKILL.md, "What the check assumes"
   { ...small, name: "limit-slow-enter", agent: "claude", slowEnter: true, rules: turn, expect: "NoAutomaticEnterIntoQueuedTurn" },
   { ...small, name: "limit-own-queue", agent: "claude", ownQueue: true, rules: turn, expect: "NoAutomaticEnterIntoQueuedTurn" },
@@ -59,12 +59,11 @@ try {
   for (const config of runs) {
     const result = await explore(config);
     const said = result.broken ? result.broken.rule : "holds";
-    const took = !config.via || result.broken?.steps.some((step) => step.label.includes(config.via!)) === true;
-    const ok = said === config.expect && took;
+    const ok = said === config.expect;
     if (!ok) wrong++;
     if (only || !ok) print(result);
     else console.log(`ok    ${config.name}: ${said === "holds" ? "every rule holds" : `${said} breaks, as it must`} (${result.states} states, ${(result.ms / 1000).toFixed(1)} s)`);
-    if (!ok) console.log(`  WRONG: this run must say "${config.expect}"${config.via ? `, by a path with the step "${config.via}"` : ""}`);
+    if (!ok) console.log(`  WRONG: this run must say "${config.expect}"${config.via ? `, by a path with the steps ${config.via.map((step) => `"${step}"`).join(", then ")} (${result.passed} breaks without them were passed over)` : ""}`);
   }
 } finally { cleanup(); }
 process.exit(wrong === 0 ? 0 : 1);

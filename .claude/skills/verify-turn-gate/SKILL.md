@@ -60,8 +60,9 @@ every line starts with `ok` and it exits 0:
 `bun .claude/skills/verify-turn-gate/check.ts <run>` runs one of them and, when a rule breaks,
 prints the shortest path to the break: each step in plain words, and after it the agent, herdr's
 reading, the queue's status, the gate and the rows. A line that says `WRONG` is a run that did not
-say what it must, with its path. A `finding-*` run can name a step its path must take (`via` in
-`check.ts`), so that another order breaking the same rule does not pass for it.
+say what it must, with its path. A `finding-*` run can name steps its path must take, in order
+(`via` in `check.ts`), so that another order breaking the same rule does not pass for it: the
+search goes on past a break without them, and the run is `WRONG` only when no break takes them.
 
 The `broken-*` runs write a patched copy of `server/pending-input.ts` to the temp folder and
 delete it. On this PC give the command a `TMPDIR` under `~/.cache/ovis-tmp/`, as AGENTS.md says of
@@ -125,8 +126,14 @@ When a run that must hold breaks, go through its path step by step:
    `PendingInputs`, its `handlers`, and `originalCollector` to run the real collector on a faked
    subscription and snapshot.
 
-A path the real code follows is a bug: report it with the path, and leave the rule and the check
-as they are. A path it cannot follow is a wrong check: correct the step, then run everything again.
+The replay must end in what the broken rule names, not only take the path's steps: `next(pane)`
+gives a message for `QueueWaitsForTurnEvidence`, and the queue's Enter is typed for
+`NoAutomaticEnterIntoQueuedTurn`. An early offer is not a typed key (the baseline finding below
+is the first without the second), so report which of the two the code did.
+
+A path the real code follows to that end is a bug: report it with the path, and leave the rule and
+the check as they are. A path it cannot follow, or one whose steps it takes without that end, is a
+wrong check: correct the step, then run everything again.
 
 ## When you change the covered code on purpose
 
@@ -142,10 +149,13 @@ as they are. A path it cannot follow is a wrong check: correct the step, then ru
 4. If your change fixes a finding, its `finding-*` run stops breaking and the check says `WRONG`.
    Move what that run puts back (`lateEvents`, `steerPastEnd`, `sendNowDuringRestart`, `baseline`
    or `atOnce` in `check.ts`) into `described`, so the main runs ask the rules with it, and delete
-   the run and its paragraph below.
+   the run and its paragraph below. Then run the whole check again: the main runs now ask more
+   than they did in step 2.
 5. Update the coverage record, then run `covered.sh --record` and commit `covered.blobs` with your
    change: that moves the sync commit. Do it only after you have read the covered functions as
    they are now and confirmed that the steps describe them, never to make `covered.sh` quiet.
+   `--record` reads the files as they are in the working tree, so commit those same versions: on
+   the clean tree after the commit, `covered.sh` must say that no covered file changed.
 
 Never weaken a rule, the rule's record or a bound to make a run pass. When the product should
 behave differently, say so to the maintainer first.

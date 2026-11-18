@@ -4,7 +4,7 @@
 # covered.sh --record  writes covered.blobs from the files as they are now. Run it only after
 #                      confirming that the check describes them.
 # covered.blobs holds each covered file's git blob id. A squash merge keeps blob ids, so the sync
-# commit is whichever commit last changed that file.
+# commit is whichever commit last changed covered.blobs itself.
 here=$(cd "$(dirname "$0")" && pwd)
 top=$(git -C "$here" rev-parse --show-toplevel) || exit 2
 cd "$top" || exit 2
