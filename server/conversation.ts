@@ -2334,6 +2334,9 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
   // so a pane that moved to another conversation during the read is refused, not given its model.
   const agyScreen = resolved.source === "agy-transcript" ? await screenMetadata("agy-transcript") : null;
   if (resolved.agy && !sameAgyStore(resolved.agy, await resolveAgyStore(snapshot.panes.find((pane) => pane.pane_id === paneId)!))) throw new ConversationUnavailable("no_session_path");
+  // The screen read waits on herdr. A pane closed or bound to another session meanwhile has not
+  // this conversation, nor the model its screen shows now, and nothing is recorded for it.
+  if (agyScreen !== null && (!live() || rebound(paneId, transcript))) throw new ConversationUnavailable("no_session_id");
   if (identity !== null) { writtenSessions.add(`${resolved.source}\0${identity}`); rememberPaneSession(paneId, `${resolved.source}\0${identity}`); }
   if (resolved.source === "claude-transcript" && identity !== null && answer.metadata.context) {
     const window = readStatuslineContext(userHome(), identity, answer.metadata.model, resolved.path);
@@ -2375,10 +2378,7 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
     return bindCopilotAnswer(answer, prefix);
   }
   if (agyScreen !== null) {
-    // The screen read waits on herdr. A pane closed or bound to another session meanwhile has not
-    // this conversation, and not a model read from the screen it shows now. Enrich the response,
-    // never the shared page.
-    if (!live() || rebound(paneId, transcript)) throw new ConversationUnavailable("no_session_id");
+    // Enrich the response, never the shared page.
     return {
       ...answer,
       screen: true,
