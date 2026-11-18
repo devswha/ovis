@@ -1,70 +1,71 @@
+import { join } from "node:path";
 import type { Page } from "playwright-core";
-import { screenGrid, SYNC_END, SYNC_START } from "../server/core/terminal-process.ts";
-import type { ClientMessage, ServerMessage } from "../shared/protocol.ts";
+import type { ClientMessage } from "../shared/protocol.ts";
+import { buildDemoApp } from "./demo-build.ts";
 
 type Grid = { readonly cols: number; readonly rows: number };
-type Flow = NonNullable<Extract<ServerMessage, { type: "pty-data" }>["flow"]>;
+type Frame = Grid & { readonly pane: string; readonly replay: boolean };
+type Witness = { attach: number; requested: Grid | null; parsed: Frame | null };
 
-/** Wait for a whole screen at the driving attach's grid, acknowledged by xterm after parsing. */
-export function terminalGrid(page: Page, pane: string) {
-  let requested: Grid | null = null;
-  let pending: Flow | undefined;
-  let buffer = "";
-  let stream: string | undefined;
-  let waiter: { live: boolean; accept: (grid: Grid) => void } | undefined;
-  page.on("websocket", socket => {
-    socket.on("framesent", ({ payload }) => {
-      if (!waiter) return;
-      const message: ClientMessage = JSON.parse(String(payload));
-      if (!("pane_id" in message) || message.pane_id !== pane) return;
-      if ((message.type === "attach" && !message.keep_size) ||
-        (message.type === "resize" && requested && (message.cols !== requested.cols || message.rows !== requested.rows))) {
-        requested = { cols: message.cols, rows: message.rows };
-        buffer = "";
-        pending = undefined;
-      } else if (message.type === "pty-ack" && requested && pending?.stream_id === message.stream_id && pending.offset <= message.offset) {
-        waiter.accept(requested);
-      }
-    });
-    socket.on("framereceived", ({ payload }) => {
-      if (!waiter || !requested) return;
-      const message: ServerMessage = JSON.parse(String(payload));
-      if (message.type !== "pty-data" || message.pane_id !== pane || !message.flow || (waiter.live && message.replay)) return;
-      if (stream !== message.flow.stream_id) {
-        stream = message.flow.stream_id;
-        buffer = "";
-        pending = undefined;
-      }
-      buffer += message.data;
-      for (;;) {
-        const start = buffer.indexOf(SYNC_START);
-        if (start < 0) {
-          buffer = buffer.slice(1 - SYNC_START.length);
-          return;
+declare global {
+  interface Window { terminalGridWitness?: Witness }
+}
+
+/** Serve the existing hook-enabled client against the real bridge, without the demo transport. */
+export async function gridTestServer(root: string) {
+  await buildDemoApp(join(root, "dist"));
+  process.env["OVIS_ASSETS"] = root;
+  const [{ createServer }, { UsageService }] = await Promise.all([
+    import("../server/index.ts"), import("../server/usage.ts"),
+  ]);
+  return createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: join(root, "state"),
+    tailscaleOwner: null, usage: new UsageService(undefined, []) });
+}
+
+/** Observe the requested grid and the browser's post-parse witness, without reading PTY bytes. */
+export async function terminalGrid(page: Page, pane: string) {
+  await page.addInitScript(pane => {
+    const witness: Witness = { attach: 0, requested: null, parsed: null };
+    window.terminalGridWitness = witness;
+    const send = WebSocket.prototype.send;
+    WebSocket.prototype.send = function (data) {
+      if (typeof data === "string") {
+        const message: ClientMessage = JSON.parse(data);
+        if ("pane_id" in message && message.pane_id === pane) {
+          if (message.type === "attach" || message.type === "detach") {
+            witness.requested = message.type === "attach" && !message.keep_size ? { cols: message.cols, rows: message.rows } : null;
+            witness.parsed = null;
+            if (witness.requested) witness.attach++;
+          } else if (message.type === "resize" && witness.requested &&
+            (message.cols !== witness.requested.cols || message.rows !== witness.requested.rows)) {
+            witness.requested = { cols: message.cols, rows: message.rows };
+            witness.parsed = null;
+          }
         }
-        const end = buffer.indexOf(SYNC_END, start + SYNC_START.length);
-        if (end < 0) {
-          buffer = buffer.slice(start);
-          return;
-        }
-        const grid = screenGrid(buffer.slice(start + SYNC_START.length, end));
-        if (grid) pending = grid.cols === requested.cols && grid.rows === requested.rows ? message.flow : undefined;
-        buffer = buffer.slice(end + SYNC_END.length);
       }
+      send.call(this, data);
+    };
+    document.addEventListener("ovis:test-terminal-frame", (event: Event) => {
+      if (!(event instanceof CustomEvent)) return;
+      const frame: Frame = event.detail;
+      if (frame.pane === pane && frame.cols === witness.requested?.cols && frame.rows === witness.requested.rows) witness.parsed = frame;
     });
-  });
-  return async (timeout: number, live = false): Promise<Grid> => {
-    const committed = Promise.withResolvers<Grid>();
-    requested = null;
-    pending = undefined;
-    buffer = "";
-    const timer = setTimeout(() => committed.reject(new Error(`pane ${pane} did not parse a whole ${requested?.cols}x${requested?.rows} screen after attach`)), timeout);
-    waiter = { live, accept: committed.resolve };
+  }, pane);
+  let after = 0;
+  return async (timeout: number, allowReplay = false): Promise<Grid> => {
+    const ready = await page.waitForFunction(({ after, allowReplay }) => {
+      const witness = window.terminalGridWitness;
+      if (!witness || witness.attach <= after || !witness.parsed || (!allowReplay && witness.parsed.replay)) return null;
+      const { cols, rows } = witness.parsed;
+      return { attach: witness.attach, grid: { cols, rows } };
+    }, { after, allowReplay }, { timeout });
     try {
-      return await committed.promise;
+      const receipt = await ready.jsonValue();
+      if (!receipt) throw new Error(`pane ${pane} did not parse a complete frame at the requested grid`);
+      after = receipt.attach;
+      return receipt.grid;
     } finally {
-      clearTimeout(timer);
-      waiter = undefined;
+      await ready.dispose();
     }
   };
 }

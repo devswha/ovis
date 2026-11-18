@@ -10,12 +10,10 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium } from "playwright-core";
-import { createServer } from "../server/index.ts";
-import { UsageService } from "../server/usage.ts";
 import { herdrRpc, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
 import { chromePath } from "./chrome-path.ts";
 import { shownRow, shownRows } from "./shown-rows.ts";
-import { terminalGrid } from "./terminal-grid.ts";
+import { gridTestServer, terminalGrid } from "./terminal-grid.ts";
 
 const MARK_COLUMN = 100;
 const ROWS = [
@@ -29,7 +27,7 @@ const state = mkdtempSync(join(tmpdir(), "terminal-cjk-punctuation-"));
 const evidence = process.env["CHECK_BROWSER_EVIDENCE_DIR"] || state;
 mkdirSync(evidence, { recursive: true });
 const workspaces: string[] = [];
-let server: ReturnType<typeof createServer> | undefined;
+let server: Awaited<ReturnType<typeof gridTestServer>> | undefined;
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
@@ -42,8 +40,7 @@ setInterval(() => {}, 1 << 30);
   const made = await workspaceCreate({ cwd: state, label: "ovis-test-cjk-punctuation" });
   workspaces.push(made.workspace.workspace_id);
   const pane = made.root_pane.pane_id;
-  server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: join(state, "server"),
-    tailscaleOwner: null, usage: new UsageService(undefined, []) });
+  server = await gridTestServer(state);
   browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
   // a Chinese page, as the report's: under zh every fullwidth mark is trimmed, not only ，（）
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "zh-CN" });
@@ -55,7 +52,8 @@ setInterval(() => {}, 1 << 30);
   const errors: string[] = [];
   page.on("pageerror", error => errors.push(error.message));
   // Draw after herdr has taken the browser's grid, so column 100 and the marker fit.
-  const [grid] = await Promise.all([terminalGrid(page, pane)(10_000),
+  const waitForGrid = await terminalGrid(page, pane);
+  const [grid] = await Promise.all([waitForGrid(10_000),
     page.goto(`http://127.0.0.1:${server.port}/?pane=${encodeURIComponent(pane)}`)]);
   assert.ok(grid.cols >= MARK_COLUMN + `|MARK${ROWS.length - 1}`.length - 1);
   await page.locator(".conn-live").waitFor();
