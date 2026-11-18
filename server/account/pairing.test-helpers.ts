@@ -4,19 +4,21 @@
  * is connecting and nothing leaves this process. Its owner's calls go over HTTP as the app's own controls do;
  * devices come through the relay's test harness (server/relay/test-helpers.ts).
  */
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { exportAccountKey, newRecordId, signAccountRecord } from "../../shared/account-records.ts";
 import { FakeAccountService } from "../../shared/account-service-fake.ts";
+import { importPublicKey } from "../../shared/relay-e2ee.ts";
 import type { HttpRequest } from "../../shared/relay-mux-engine.ts";
 import type { SessionError } from "../../shared/relay-mux.ts";
 import { decodeOffer } from "../../shared/relay-offer.ts";
 import { readDeviceRegistry } from "../devices.ts";
 import { createServer } from "../index.ts";
 import { RelayService } from "../relay/service.ts";
-import { bounded, relayConnection } from "../relay/test-helpers.ts";
+import { bounded, relayConnection, TestClock } from "../relay/test-helpers.ts";
 
 /** The relay id the harness's sessions sign in to (relayConnection), which a link names. */
 export const SERVER_ID = "0123456789abcdef0123456789abcdef";
@@ -60,14 +62,19 @@ export async function memberRow(account: string) {
   return { row, key };
 }
 
-export async function pairingPc(options: { rows?: readonly { created_at: string }[] } = {}) {
+/**
+ * `accountFetch`: what the PC's calls to the account service reach, given the test account service; that service
+ * itself by default. `accountService`: OVIS_ACCOUNT_SERVICE_URL's value (`off` turns it off).
+ */
+export async function pairingPc(options: { rows?: readonly { created_at: string }[]; accountFetch?: (request: Request, service: FakeAccountService) => Promise<Response>; accountService?: string } = {}) {
   const stateDir = mkdtempSync(join(tmpdir(), "ovis-pairing-"));
   const first = options.rows?.[0];
   if (first) writeFileSync(join(stateDir, "devices.json"), JSON.stringify({ gate_closed_at: first.created_at, devices: options.rows }), { mode: 0o600 });
   const account = new FakeAccountService();
+  const accountFetch = options.accountFetch;
   const service = new RelayService({ stateDir, relay: "wss://relay.test", connect: () => idleSocket() });
   const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", tailscaleOwner: null, sidecar: false, relay: service,
-    accountService: { url: "https://account.test", fetch: account.fetch } });
+    accountService: { url: options.accountService ?? "https://account.test", fetch: accountFetch ? (request) => accountFetch(request, account) : account.fetch } });
   const base = `http://127.0.0.1:${app.port}`;
   const closes: (() => void)[] = [];
   /** A call from this PC itself: its own origin, and no credential. */
@@ -90,7 +97,7 @@ export async function pairingPc(options: { rows?: readonly { created_at: string 
   const started = await relayControl("/api/relay/start");
   if (started.status !== 200) throw new Error(`The relay did not start: ${JSON.stringify(started.body)}`);
   return {
-    stateDir, app, closes, local,
+    stateDir, app, closes, local, account,
     devices: app.context.services.devices,
     /** The code of the relay tab's QR code: POST /api/relay/offer with `x-ovis-no-account-only`, on a PC an account was named for (setUpFor). */
     tabCode: () => offered({ "x-ovis-no-account-only": "1" }),
@@ -124,6 +131,45 @@ export async function pairingPc(options: { rows?: readonly { created_at: string 
 export async function setUpFor(pc: Pc, account: string): Promise<void> {
   const named = await pc.local("/api/account/relay-account", { method: "POST", headers: { "x-herdr-machine": "1" }, body: { account } });
   if (named.status !== 204) throw new Error(`The account was not named: ${named.status} ${JSON.stringify(named.body)}`);
+}
+
+/**
+ * What an app signed in to `account` does before it pairs with a code whose offer carries the mark: it lists the PC in
+ * its account and posts an admission for `device`'s key at it, quiet or ringing (docs/account.md, "The account's word").
+ * `server`: the PC it names, this one by default. On a PC whose clock a test moves by hand, that clock is moved on to
+ * when the PC may next read the account service, so a link sent after this is judged at once.
+ */
+export async function vouchFor(pc: Pc, account: string, device: Phone, options: { quiet?: boolean; server?: { server_id: string; public_key: string } } = {}): Promise<void> {
+  const identity = options.server ?? pc.app.context.services.relay.currentIdentity();
+  if (!identity) throw new Error("The PC has no relay identity");
+  const token = pc.account.issueToken(account);
+  const call = (path: string, method: string, body: unknown) =>
+    pc.account.fetch(new Request(`https://account.test${path}`, { method, headers: { authorization: `Bearer ${token}` }, body: JSON.stringify(body) }));
+  const listed = await call(`/v1/pcs/${identity.server_id}`, "PUT", { label: "PC", public_key: bytesToHex(importPublicKey(identity.public_key)), relay: "wss://relay.ovis.sh" });
+  if (!listed.ok) throw new Error(`The PC was not listed: ${listed.status} ${await listed.text()}`);
+  const posted = await call("/v1/admissions", "POST", { server_id: identity.server_id, label: "Phone", key: device.spki, ...(options.quiet === undefined ? {} : { quiet: options.quiet }) });
+  if (!posted.ok) throw new Error(`The admission was refused: ${posted.status} ${await posted.text()}`);
+  untilNextRead(pc);
+}
+
+/** On a PC whose clock a test moves by hand: moves it on to when the PC may next read the account service. */
+export function untilNextRead(pc: Pc): void {
+  const clock = pc.devices.waitClock();
+  if (clock instanceof TestClock) clock.advance(pc.app.context.services.accountMailbox.serviceRetryMs());
+}
+
+/** Resolves when the PC next asks the account service about a link's key: that link is waiting for its word. */
+export function nextAsk(pc: Pc): Promise<void> {
+  const mailbox = pc.app.context.services.accountMailbox;
+  const vouch = mailbox.vouch;
+  return bounded(new Promise<void>((resolve) => {
+    mailbox.vouch = (...args) => {
+      mailbox.vouch = vouch;
+      const answer = vouch.apply(mailbox, args);
+      resolve();
+      return answer;
+    };
+  }));
 }
 
 /**

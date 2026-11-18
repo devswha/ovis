@@ -9,7 +9,7 @@ import { decodeOffer } from "../../shared/relay-offer.ts";
 import { CODE_TTL_MS, PAIRING_LINK_MS, PAIRING_USES } from "../devices.ts";
 import { handleRelayRequest } from "../relay/routes.ts";
 import { TestClock } from "../relay/test-helpers.ts";
-import { ask, ended, linkRecord, memberRow, pair, pairingPc, phone, sendLink, setUpFor, signedInWith, signIn, type Answer, type Pc } from "./pairing.test-helpers.ts";
+import { ask, ended, linkRecord, memberRow, pair, pairingPc, phone, sendLink, setUpFor, signedInWith, signIn, vouchFor, type Answer, type Pc } from "./pairing.test-helpers.ts";
 
 const pcs: Pc[] = [];
 afterEach(async () => {
@@ -47,7 +47,7 @@ test("a code made for an account: its answer repeats the account and names it; a
   expect(offer.body.expect_account).toBe("acct_owner");
   expect(idOf(offer)).toMatch(/^[0-9a-f]{32}$/);
   const code = codeOf(offer);
-  expect(await state(f, idOf(offer))).toEqual({ state: "live", id: idOf(offer), expect_account: "acct_owner", expires_at: offer.body.expires_at });
+  expect(await state(f, idOf(offer))).toEqual({ state: "live", id: idOf(offer), expect_account: "acct_owner", expires_at: offer.body.expires_at, waiting: [], turned_away: [], service_retry_ms: 0 });
   // the device that pairs with it waits to link: no device of the PC, and it may not use the PC
   const other = await signedInWith(f, code);
   expect(other.role).toBe("watch");
@@ -64,6 +64,7 @@ test("a code made for an account: its answer repeats the account and names it; a
   expect(f.devices.activePairing()?.code).toBe(code);
   expect(await state(f, idOf(offer))).toMatchObject({ state: "live" });
   const owner = await signedInWith(f, code);
+  await vouchFor(f, "acct_owner", owner.key);
   expect((await sendLink(owner.session, await linkRecord(owner.id, "acct_owner", owner.key))).status).toBe(200);
   expect(await f.status()).toMatchObject({ account: "acct_owner", members: 1 });
   expect(f.stored().map((device) => [device.id, device.account])).toEqual([[owner.id, "acct_owner"]]);
@@ -79,6 +80,7 @@ test("a code made for an account takes its devices into that account alone, what
   expect([refused.status, refused.body.error?.code]).toEqual([409, "account_mismatch"]);
   expect(await f.status()).toMatchObject({ account: null, members: 0 });
   const owner = await signedInWith(f, code);
+  await vouchFor(f, "acct_owner", owner.key);
   expect((await sendLink(owner.session, await linkRecord(owner.id, "acct_owner", owner.key))).status).toBe(200);
   expect(await f.status()).toMatchObject({ account: "acct_owner", members: 1 });
 });
@@ -238,7 +240,8 @@ test("an offer that names a code another code replaced since starts none: the co
   expect(f.devices.activePairing()?.code).toBe(theirs.code);
   expect(await state(f, theirs.pairing.id)).toMatchObject({ state: "live" });
   expect((await ask(waiting.session, "/api/devices")).body.error?.code).toBe("link_required");
-  // the device that waited links with the other run's code
+  // the device that waited links with the other run's code, on its account's word (docs/account.md, "The account's word")
+  await vouchFor(f, "acct_owner", waiting.key);
   expect((await sendLink(waiting.session, await linkRecord(waiting.id, "acct_owner", waiting.key))).status).toBe(200);
   expect(await f.status()).toMatchObject({ account: "acct_owner", members: 1 });
 });

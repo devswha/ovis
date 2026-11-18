@@ -34,7 +34,11 @@ are ([Ovis Mux v1](relay.md#ovis-mux-v1)).
    the account service handed it.
 7. **The account service can hide records, never forge them.** It stores the PC directory
    (`server_id`, a name, the PC's relay public key and the relay it is reached through; no account
-   or device keys), a mailbox of signed records per PC, and admission requests.
+   or device keys), a mailbox of signed records per PC, and admission requests. One thing it can
+   do with them: while a code made to put a PC in an account lives, its word on a device's key
+   lets that device in ([The account's word](#the-accounts-word)). So an admission it makes up, or
+   one any sign-in of the account posts, together with that live code, gives the PC its first
+   member. Without the code neither gets anything.
 8. **Tailscale is not membership.** A PC found on your Tailscale is added over SSH (Add a connection →
    SSH, [remote-pcs.md](remote-pcs.md)), and one an older Ovis added through the relay with a code that
    PC handed over to your own Tailscale login is a paired device of that PC. Neither is an account member by itself: membership comes only from the
@@ -80,8 +84,8 @@ The PC records on a row how a `link` made it a member: `joined_by` in `devices.j
 
 | value | when |
 |---|---|
-| `code` | the row paired with a code made for a PC in no account (the relay tab's QR code, or [a code made for an account](#a-code-made-for-an-account)) and linked into the account that code held it to |
-| `service` | the account service vouched for the row's key (kept for that check; nothing writes it yet) |
+| `code` | the row paired with a code made for a PC in no account (the relay tab's QR code, or [a code made for an account](#a-code-made-for-an-account)) and linked into the account that code held it to, on a PC from before [the account's word](#the-accounts-word) was asked |
+| `service` | the row linked while such a code lived, and the account service vouched for its key ([The account's word](#the-accounts-word)) |
 | `word` | any other link that takes a row from no account into one, with no member behind it: a device that already drove this PC named the account itself (paired with a plain code, approved by its digits on this PC, or let in by a code a device outside the account started through the relay) |
 
 The mark is set once, by the link that takes the row into its account, and a later link of the
@@ -349,8 +353,11 @@ one that only watches, while its read was on its way is refused 401 `unauthorize
 answers 200:
 
 ```json
-{ "state": "live", "id": "…", "expect_account": "acct_1", "expires_at": "…" }
-{ "state": "ended", "id": "…", "expect_account": "acct_1", "ended": { "why": "joined", "at": "…" }, "joined": { "device_id": "…", "label": "…" } }
+{ "state": "live", "id": "…", "expect_account": "acct_1", "expires_at": "…",
+  "waiting": [{ "id": "…", "label": "…", "link": "asked" }],
+  "turned_away": [{ "n": 1, "id": "…", "label": "…", "why": "account_mismatch", "link": "sent", "account": "acct_9" }],
+  "service_retry_ms": 0 }
+{ "state": "ended", "id": "…", "expect_account": "acct_1", "ended": { "why": "joined", "at": "…" }, "joined": { "device_id": "…", "label": "…" }, "turned_away": [] }
 { "state": "unknown" }
 ```
 
@@ -359,7 +366,14 @@ also counted on a clock that only moves forward, and once either clock says they
 stay over, so changing the PC's clock gives the code no time back), but a device
 that paired with it in time still has its own 30 seconds to link, and the code reads `live` until
 that device has linked or its time is over. `unknown`: this PC knows no such code; it keeps the
-eight that ended last, in memory. `ended.why` is one of:
+eight that ended last, in memory. `waiting` lists the devices that paired with it and have not
+linked yet, with what their last link did: `not_sent`, `sent` (answered at once), `asked` (it waits
+for the account service) or `service_unreachable` (the service did not answer for it).
+`turned_away` is the code's whole history, oldest first: every device of it that went without
+becoming a member, numbered from 1, with `why` (`account_mismatch` with the `account` its link
+named, `unverified`, `link_timeout`, `link_refused` after five links, `code_ended`, `removed`) and
+the `link` it had last. `service_retry_ms` says how long until this PC may ask the account service
+again, 0 when it may now. `ended.why` is one of:
 
 | `why` | when |
 |---|---|
@@ -372,6 +386,49 @@ eight that ended last, in memory. `ended.why` is one of:
 | `guessed` | five wrong codes |
 
 A `label` is the device's own word, and no proof of whose device it is.
+
+### The account's word
+
+While a code made to put this PC in an account lives (the relay tab's QR code, or a code made for
+an account), a link into an account passes only when that account vouched for the device: the
+account service holds an admission at most 10 minutes old, by its own clock, for the link's `key`
+at this PC, posted by a sign-in of the account the code is for (`POST /v1/admissions`). It is asked
+about the key the device holds once linked, not the one it paired with. This holds for every link
+made while such a code lives, from a device that already drove this PC too, and such a link is held
+to that code's account as well (409 `account_mismatch` otherwise).
+
+- **The mark.** The offer of such a code carries `"admission": 1`, in the QR link and in the offer
+  a typed code delivers; no other offer does. An app that knows it posts the device's admission
+  first and pairs only once the post was answered. An app from before posts nothing: its link is
+  refused as below, and it joins after it loads the app again and scans once more.
+- **How the PC asks.** With its relay key, as for its mailbox: `POST /v1/pc/challenge`, then
+  `POST /v1/pc/mailbox` naming that account with `ack: null`. It needs no member for it, and it
+  reads, applies and acknowledges no record. Both calls have 5 seconds together. One read at a time,
+  at least 10 seconds apart, and a link is judged by a read that started after it arrived. So a
+  link waits 15 seconds at most, and a flood of links does not make the PC call the service more.
+- **Which admissions count.** The ordinary ones (`admissions`, which ring the account's other
+  devices) count for every such link. The quiet ones (`quiet_admissions`, which ring nobody and
+  which only an app's own sign-in can post) count only for the PC's first member, linked by a
+  device that paired with that code. A device that already drove the PC, and a device that joins
+  by comparing digits ([Joining through the account](#who-may-admit-a-device)), count the ordinary
+  ones only.
+- **Not vouched for:** 403 `unverified_device`. A device that waits to link goes at once, and its
+  pairing stays spent; a device that already drove the PC keeps what it had. The code is not
+  ended, so the account's own device still pairs with it.
+- **No answer, or 429:** 503 `account_unavailable` with `retry-after` in seconds: when this PC may
+  ask again. The device and the code stay, and the device sends the same link again after that
+  time. A 429 that names a wait holds every read back that long; a link that no read can judge
+  within its 15 seconds is answered at once, without a call. A 429 with no wait counts as the
+  usual 10 seconds.
+- **A code that ended or changed meanwhile:** a device that already drove the PC gets 409
+  `pairing_ended` when the code alive as its link arrived is not the one alive when it is
+  judged; nothing changes for it.
+- **No account service.** A PC whose account service is turned off (`OVIS_ACCOUNT_SERVICE_URL=off`)
+  makes no such code: the offer and the typed code with `x-ovis-expect-account`, and the relay
+  tab's offer, answer 409 `account_service_off` and start nothing.
+
+The row such a link writes is marked `service` ([How a device joined](#how-a-device-joined)).
+While the account service is away no device joins this way; `ovis add --approve` still adds one.
 
 ## Negotiation
 
@@ -1193,15 +1250,13 @@ with "continue only if you started this on your own PC".
   holds for a sign-in made in a browser on a PC's own address: that page's script is the PC's, so a
   compromised PC can use the sign-in kept there. Its account key is linked to no PC (a browser
   paired with a code holds a cookie), so its signatures admit nobody.
-- **A device that names an account it does not hold.** An account's first member on a PC links
-  itself: its `link` is signed by the device's own key and names the account (rule 4), and the
-  account service holds no device keys to check that against (rule 7). So `ovis add`, which takes
-  a device whose row names the signed-in account as that account's, cannot tell the owner's phone
-  from a changed client that pairs with the code and names that account's id. The id is no
-  secret on the PC: a device with drive access can read it there. Such a device is not asked
-  about, and the command ends well, naming it as the device that added the PC. What still shows
-  it: every admission is announced on every device connected to the PC, and the command prints
-  the device's name.
+- **A device that names an account it does not hold, with no code alive.** An account's first
+  member on a PC links itself: its `link` is signed by the device's own key and names the account
+  (rule 4). While a code made to put the PC in an account lives, the account must vouch for that
+  key ([The account's word](#the-accounts-word)). Without one, a device that already drives a PC in
+  no account can still link it into an account it names, on its own word: `ovis status` lists such
+  members ([How a device joined](#how-a-device-joined)), and every admission is announced on every
+  device connected to the PC.
 - **A PC the directory names under a familiar name.** Whoever holds a sign-in to the account can
   list a PC of their own in the directory (device-code phishing, [Who is asking](#who-is-asking)). **Add** on
   its row in the relay tab pairs A with that PC, whose owner approves it there: A's machine list then

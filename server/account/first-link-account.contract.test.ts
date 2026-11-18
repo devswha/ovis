@@ -6,7 +6,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { ask, ended, linkRecord, memberRow, pairingPc, sendLink, setUpFor, signedInWith, signIn, type Pc } from "./pairing.test-helpers.ts";
+import { ask, ended, linkRecord, memberRow, pairingPc, sendLink, setUpFor, signedInWith, signIn, vouchFor, type Pc } from "./pairing.test-helpers.ts";
 
 const pcs: Pc[] = [];
 afterEach(async () => { for (const pc of pcs.splice(0)) await pc.close(); });
@@ -36,6 +36,7 @@ test("on a PC set up for an account, a waiting device whose link names another a
   // the same code: the device of the account the PC is for pairs and links
   expect(f.devices.activePairing()?.code).toBe(code);
   const owner = await signedInWith(f, code);
+  await vouchFor(f, "acct_owner", owner.key);
   expect((await sendLink(owner.session, await linkRecord(owner.id, "acct_owner", owner.key))).status).toBe(200);
   expect(await f.status()).toMatchObject({ account: "acct_owner", members: 1 });
   expect(f.stored().map((device) => [device.id, device.account])).toEqual([[owner.id, "acct_owner"]]);
@@ -66,6 +67,7 @@ test("a PC set up for an account its owner no longer uses says what to run on it
   // `ovis add`, run again by an owner signed in to the account in use, names it
   await setUpFor(f, "acct_now");
   const again = await signedInWith(f, code, first.key);
+  await vouchFor(f, "acct_now", first.key);
   expect((await sendLink(again.session, await linkRecord(again.id, "acct_now", first.key))).status).toBe(200);
   expect(await f.status()).toMatchObject({ account: "acct_now", members: 1 });
 });
@@ -86,6 +88,7 @@ test("on a PC that no account was named for, a device that waits to link is take
   // once the account is named, a device that pairs with the same code and names that account joins
   await setUpFor(f, "acct_1");
   const owner = await signedInWith(f, code);
+  await vouchFor(f, "acct_1", owner.key);
   expect((await sendLink(owner.session, await linkRecord(owner.id, "acct_1", owner.key))).status).toBe(200);
   expect(await f.status()).toMatchObject({ account: "acct_1", members: 1 });
 });

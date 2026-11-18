@@ -3,7 +3,7 @@ import { MachineCodeForAccountError } from "../machine-profile.ts";
 import { errorResponse, jsonResponse, readJsonObject, setRequestRoute } from "../http.ts";
 import type { ServerContext } from "../dispatch.ts";
 import { updateRequestAllowed } from "../update-api.ts";
-import { ACCOUNT_ID, NoAccountNamedError } from "./service.ts";
+import { ACCOUNT_ID, AccountServiceOffError, NoAccountNamedError } from "./service.ts";
 
 /**
  * Drive authority and the outer origin gate are shared with Portal in dispatch.ts. `caller`: the paired device
@@ -94,7 +94,8 @@ export async function handleRelayRequest(request: Request, pathname: string, con
           if (!context.services.devices.has(caller)) throw new DeviceGoneError();
           return fail("read_only", "this device can only watch", 403);
         }
-        return reply(context.services.devices.accountPairingState(body.id));
+        const state = context.services.devices.accountPairingState(body.id);
+        return reply(state.state === "live" ? { ...state, service_retry_ms: context.services.accountMailbox.serviceRetryMs() } : state);
       }
       case "/api/relay/code": {
         setRequestRoute("/api/relay/code");
@@ -159,6 +160,8 @@ export async function handleRelayRequest(request: Request, pathname: string, con
     if (error instanceof PairingGoneError) return fail(error.code, error.message, 409);
     // no account was named for this PC: its page asks for the sign-in first, and for this code only once one is named
     if (error instanceof NoAccountNamedError) return fail(error.code, error.message, 409);
+    // such a code lets a device in only on its account's word, which a PC with no account service cannot ask for
+    if (error instanceof AccountServiceOffError) return fail(error.code, error.message, 409);
     // a machine makes a code for an account only: its command line says how a device is added there
     if (error instanceof MachineCodeForAccountError) return fail(error.code, error.message, 409);
     return errorResponse(error);

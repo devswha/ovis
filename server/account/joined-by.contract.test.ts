@@ -10,7 +10,7 @@ import { decodeOffer } from "../../shared/relay-offer.ts";
 import { DeviceStore } from "../devices.ts";
 import * as herdr from "../herdr/client.ts";
 import { TestClock } from "../relay/test-helpers.ts";
-import { ask, linkRecord, memberRow, pairingPc, phone, sendLink, SERVER_ID, setUpFor, signedInWith, signIn, type Pc, type Phone } from "./pairing.test-helpers.ts";
+import { ask, linkRecord, memberRow, pairingPc, phone, sendLink, SERVER_ID, setUpFor, signedInWith, signIn, vouchFor, type Pc, type Phone } from "./pairing.test-helpers.ts";
 
 const pcs: Pc[] = [];
 afterEach(async () => {
@@ -45,17 +45,18 @@ async function linked(session: Parameters<typeof sendLink>[0], id: string, accou
   if (answer.status !== 200) throw new Error(`The link was refused: ${answer.status} ${JSON.stringify(answer.body)}`);
 }
 
-test("a device that paired with a code made for an account and linked into it joined by that code: it is not listed, and a later link that moves its key and a restart keep that", async () => {
+test("a device that paired with a code made for an account and linked into it on that account's word is marked so: it is not listed, and a later link that moves its key and a restart keep that", async () => {
   const f = await pc();
   const owner = await signedInWith(f, await codeFor(f, "acct_1"));
+  await vouchFor(f, "acct_1", owner.key);
   await linked(owner.session, owner.id, "acct_1", owner.key);
-  expect(marks(f)).toEqual({ [owner.id]: "code" });
+  expect(marks(f)).toEqual({ [owner.id]: "service" });
   expect(await f.status()).toMatchObject({ account: "acct_1", members: 1, unlinked: [], own_word: [] });
   // a member reads the same list through the relay
   expect((await ask(owner.session, "/api/account/status")).body).toMatchObject({ account: "acct_1", own_word: [] });
   const moved = await phone();
   await linked(owner.session, owner.id, "acct_1", owner.key, moved);
-  expect(f.stored()).toEqual([expect.objectContaining({ id: owner.id, relay_public_key: moved.spki, joined_by: "code" })]);
+  expect(f.stored()).toEqual([expect.objectContaining({ id: owner.id, relay_public_key: moved.spki, joined_by: "service" })]);
   expect(afterRestart(f)).toEqual({ members: 1, unlinked: [], own_word: [] });
 });
 
@@ -63,8 +64,9 @@ test("the relay tab's code on a PC an account was named for marks the device it 
   const f = await pc();
   await setUpFor(f, "acct_1");
   const owner = await signedInWith(f, await f.tabCode());
+  await vouchFor(f, "acct_1", owner.key);
   await linked(owner.session, owner.id, "acct_1", owner.key);
-  expect(marks(f)).toEqual({ [owner.id]: "code" });
+  expect(marks(f)).toEqual({ [owner.id]: "service" });
   expect(await f.status()).toMatchObject({ account: "acct_1", own_word: [] });
 });
 
@@ -84,21 +86,23 @@ test("a relay device outside the account that links into the account the PC is i
   const f = await pc();
   const device = await driving(f);
   const owner = await signedInWith(f, await codeFor(f, "acct_1"));
+  await vouchFor(f, "acct_1", owner.key);
   await linked(owner.session, owner.id, "acct_1", owner.key);
   // the PC is in the account, and the device from before drives on outside it
   expect(await f.status()).toMatchObject({ account: "acct_1", members: 1, unlinked: [device.id], own_word: [] });
   await linked(device.session, device.id, "acct_1", device.key);
-  expect(marks(f)).toEqual({ [device.id]: "word", [owner.id]: "code" });
+  expect(marks(f)).toEqual({ [device.id]: "word", [owner.id]: "service" });
   expect(await f.status()).toMatchObject({ account: "acct_1", members: 2, unlinked: [], own_word: [device.id] });
 });
 
-test("a device that already drives links on its own word while a code made for that account is pending, which then ends", async () => {
+test("a device that already drives links while a code made for that account is pending on that account's word, is marked so, and the code then ends", async () => {
   const f = await pc();
   const device = await driving(f);
   await codeFor(f, "acct_1");
+  await vouchFor(f, "acct_1", device.key);
   await linked(device.session, device.id, "acct_1", device.key);
-  expect(marks(f)).toEqual({ [device.id]: "word" });
-  expect(await f.status()).toMatchObject({ account: "acct_1", own_word: [device.id] });
+  expect(marks(f)).toEqual({ [device.id]: "service" });
+  expect(await f.status()).toMatchObject({ account: "acct_1", own_word: [] });
   expect(f.devices.activePairing()).toBeNull();
 });
 

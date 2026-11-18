@@ -10,7 +10,7 @@ import { afterEach, expect, test } from "bun:test";
 import { decodeOffer } from "../shared/relay-offer.ts";
 import { FakeAccountService } from "../shared/account-service-fake.ts";
 import { PAIRING_LINK_MS } from "../server/devices.ts";
-import { ask, ended, linkRecord, pairingPc, sendLink, signedInWith, type Pc } from "../server/account/pairing.test-helpers.ts";
+import { ask, ended, linkRecord, pairingPc, phone, sendLink, signedInWith, vouchFor, type Pc } from "../server/account/pairing.test-helpers.ts";
 import { bounded, TestClock } from "../server/relay/test-helpers.ts";
 import { link } from "./plugin-link.ts";
 
@@ -117,8 +117,10 @@ test("the code ovis add shows is made for the account that signed in: a device s
   expect(await add.pc.listed()).toEqual([]);
   expect(await add.pc.status()).toMatchObject({ account: null, members: 0 });
   expect(add.pc.devices.activePairing()?.code).toBe(add.code);
-  // the device of the account that signed in joins with the same code, and the command ends on it
-  const owner = await signedInWith(add.pc, add.code);
+  // the device of the account that signed in, which its account vouched for, joins with the same code, and the command ends on it
+  const key = await phone();
+  await vouchFor(add.pc, OWNER, key);
+  const owner = await signedInWith(add.pc, add.code, key);
   expect((await sendLink(owner.session, await linkRecord(owner.id, OWNER, owner.key))).status).toBe(200);
   await add.look();
   expect(await add.pc.status()).toMatchObject({ account: OWNER, members: 1 });
@@ -144,8 +146,10 @@ test("a code ovis add left behind, killed before it could take it back, still ad
   expect((await sendLink(stranger.session, await linkRecord(stranger.id, "acct_other", stranger.key))).body.error?.code).toBe("account_mismatch");
   expect(await add.pc.listed()).toEqual([]);
   expect(await add.pc.status()).toMatchObject({ account: null, members: 0 });
-  // what it still lets in is a device of the account that signed in
-  const owner = await signedInWith(add.pc, add.code);
+  // what it still lets in is a device of the account that signed in, which its account vouched for
+  const key = await phone();
+  await vouchFor(add.pc, OWNER, key);
+  const owner = await signedInWith(add.pc, add.code, key);
   expect((await sendLink(owner.session, await linkRecord(owner.id, OWNER, owner.key))).status).toBe(200);
   expect(await add.pc.status()).toMatchObject({ account: OWNER, members: 1 });
 });

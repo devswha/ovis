@@ -7,7 +7,7 @@ import { afterEach, expect, test } from "bun:test";
 import type { RelayDevice, RelayDeviceStore } from "../../shared/relay-device.ts";
 import { linkThisDevice, needsLink, pcAccountStatus } from "../../src/lib/account/join.ts";
 import { handleRequest } from "../dispatch.ts";
-import { ask, ended, linkRecord, memberRow, pair, pairingPc, phone, sendLink, SERVER_ID, setUpFor, signedInWith, type Link, type Pc } from "./pairing.test-helpers.ts";
+import { ask, ended, linkRecord, memberRow, pair, pairingPc, phone, sendLink, SERVER_ID, setUpFor, signedInWith, vouchFor, type Link, type Pc } from "./pairing.test-helpers.ts";
 
 const pcs: Pc[] = [];
 afterEach(async () => { for (const pc of pcs.splice(0)) await pc.close(); });
@@ -66,6 +66,8 @@ test("a signed-in app joins a PC set up for its account through the relay tab's 
     return handleRequest(request, context);
   };
   const key = await phone();
+  // the app's account vouched for its key before it paired
+  await vouchFor(f, "acct_1", key);
   const row = await signedInWith(f, await f.tabCode(), key, { dispatch });
   const saved = new SavedPairings();
   const device = await saved.update(SERVER_ID, () => ({ server_id: SERVER_ID, server_public_key: "", relay: "wss://relay.test", device_id: row.id, private_key: key.keys.privateKey, public_spki: key.spki, label: "Phone" }));

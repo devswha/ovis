@@ -16,7 +16,7 @@ import { handleRequest } from "../dispatch.ts";
 import { privateStateFs } from "../private-state.ts";
 import { LEAVING_MS } from "../relay/session.ts";
 import { bounded, deferred, TestClock } from "../relay/test-helpers.ts";
-import { ask, ended, linkRecord, pair, pairingPc, phone, sendLink, setUpFor, signedInWith, signIn, type Answer, type Pc, type Phone } from "./pairing.test-helpers.ts";
+import { ask, ended, linkRecord, nextAsk, pair, pairingPc, phone, sendLink, setUpFor, signedInWith, signIn, untilNextRead, vouchFor, type Answer, type Pc, type Phone } from "./pairing.test-helpers.ts";
 
 const pcs: Pc[] = [];
 afterEach(async () => {
@@ -161,6 +161,7 @@ test("the link of a waiting device is taken only from a session that signed in w
   const refused = await sendLink(row.pairing, await linkRecord(row.id, "acct_1", row.key));
   expect([refused.status, refused.body.error?.code]).toEqual([403, "link_not_owner"]);
   expect((await f.status()).account).toBeNull();
+  await vouchFor(f, "acct_1", row.key);
   expect((await sendLink(row.session, await linkRecord(row.id, "acct_1", row.key))).status).toBe(200);
   expect(await f.status()).toMatchObject({ account: "acct_1", members: 1 });
 });
@@ -204,6 +205,7 @@ test("a waiting device whose connection dropped signs in again a second before i
   f.clock.advance(PAIRING_LINK_MS - 1_000);
   const session = await signIn(f, made.id, key);
   if ("error" in session) throw new Error(`The sign-in was refused: ${session.error}`);
+  await vouchFor(f, "acct_1", key);
   expect((await sendLink(session.link, await linkRecord(made.id, "acct_1", key))).status).toBe(200);
   // a member from here on: the time it had as a waiting device takes nothing from it when it has passed
   f.clock.advance(2_000);
@@ -249,6 +251,7 @@ test("the link of a waiting device makes it a member, announced once; the code e
   f.devices.onPaired((event) => { announced.push(event); });
   const other = await signedInWith(f, code);
   const row = await signedInWith(f, code);
+  await vouchFor(f, "acct_1", row.key);
   expect((await sendLink(row.session, await linkRecord(row.id, "acct_1", row.key))).status).toBe(200);
   expect(announced.map((event) => event.device_id)).toEqual([row.id]);
   expect(f.stored()).toEqual([expect.objectContaining({ id: row.id, role: "drive", account: "acct_1", relay_public_key: row.key.spki })]);
@@ -318,11 +321,15 @@ test("a device whose key this PC removed earlier joins again through the code; a
   expect([...(await f.status()).blocked ?? []].sort()).toEqual([back.spki, gone.spki].sort());
   const code = await f.tabCode();
   const mover = await signedInWith(f, code);
+  // the account vouches for both keys: what keeps the removed one out is this PC's own removal
+  await vouchFor(f, "acct_1", gone);
+  await vouchFor(f, "acct_1", back);
   const refused = await sendLink(mover.session, await linkRecord(mover.id, "acct_1", mover.key, gone));
   expect([refused.status, refused.body.error?.code]).toEqual([409, "tombstoned"]);
   expect((await ask(mover.session, "/api/account/status")).status).toBe(200);
   // the removed device itself pairs with the code and links with the key it paired with: this PC's own code lets it back in
   const row = await signedInWith(f, code, back);
+  untilNextRead(f);
   expect((await sendLink(row.session, await linkRecord(row.id, "acct_1", back))).status).toBe(200);
   expect(await f.status()).toMatchObject({ account: "acct_1", members: 1, blocked: [gone.spki] });
 });
@@ -386,6 +393,8 @@ test("a key an account removed stays out when its device pairs with the relay ta
   // what the PC's earlier member left on disk: no row, and the barrier of its own first link
   const before = [f.stored(), barrier(f)];
   expect(before).toEqual([[], { by: member.id, confirmed: true }]);
+  // the account vouches for the key: what keeps it out is the account's own removal
+  await vouchFor(f, "acct_1", key);
   const refused = await sendLink(row.session, await linkRecord(row.id, "acct_1", key));
   expect([refused.status, refused.body.error?.code]).toEqual([409, "tombstoned"]);
   // asked of the device list itself, as a link that passed its checks asks: it writes no row for that key either
@@ -430,6 +439,7 @@ test("a waiting device whose link is refused, or whose time runs out, leaves no 
   expect(barrier(f)).toBeNull();
   // the owner's device pairs with the same code and links: the barrier is its own, and its enrollment ends the wait
   const owner = await signedInWith(f, code);
+  await vouchFor(f, "acct_1", owner.key);
   expect((await sendLink(owner.session, await linkRecord(owner.id, "acct_1", owner.key))).status).toBe(200);
   expect(barrier(f)).toEqual({ by: owner.id, confirmed: true });
   const laptop = await phone();
@@ -442,6 +452,7 @@ test("a waiting device whose link is refused, or whose time runs out, leaves no 
 test("the barrier of a waiting device's link is on disk before its row, and is taken back when the row cannot be written: the device waits on, and the same link then joins", async () => {
   const f = await pc();
   const row = await signedInWith(f, await f.tabCode());
+  await vouchFor(f, "acct_1", row.key);
   const record = await linkRecord(row.id, "acct_1", row.key);
   // what the barrier holds at the moment the row's write is refused is what a stop at that moment would have left
   let atRowWrite: unknown;
@@ -451,6 +462,7 @@ test("the barrier of a waiting device's link is on disk before its row, and is t
   expect([unwritten.status, unwritten.body.error?.code]).toEqual([500, "internal_error"]);
   expect(atRowWrite).toEqual({ by: row.id });
   expect([barrier(f), f.stored()]).toEqual([null, []]);
+  untilNextRead(f);
   expect((await sendLink(row.session, record)).status).toBe(200);
   expect([barrier(f), await f.status()]).toEqual([{ by: row.id, confirmed: true }, expect.objectContaining({ account: "acct_1", members: 1, enrolling: true })]);
 });
@@ -460,6 +472,8 @@ test("a waiting device's link whose row cannot be written leaves the barrier of 
   // a device that drives the PC by a code started there sends its first link: its barrier is written as the link arrives
   const paired = await signedInWith(f, await f.startedCode());
   const waits = await signedInWith(f, await f.tabCode());
+  await vouchFor(f, "acct_1", paired.key);
+  await vouchFor(f, "acct_1", waits.key);
   const check = holdRecordCheck();
   const first = sendLink(paired.session, await linkRecord(paired.id, "acct_1", paired.key));
   await bounded(check.reached);
@@ -470,7 +484,11 @@ test("a waiting device's link whose row cannot be written leaves the barrier of 
   writable();
   expect([unwritten.status, unwritten.body.error?.code]).toEqual([500, "internal_error"]);
   expect(barrier(f)).toEqual({ by: paired.id });
+  // the first link then waits for a read of the account service of its own
+  const asked = nextAsk(f);
   check.release();
+  await asked;
+  untilNextRead(f);
   expect((await first).status).toBe(200);
   expect(barrier(f)).toEqual({ by: paired.id, confirmed: true });
 });

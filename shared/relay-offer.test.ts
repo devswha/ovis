@@ -57,4 +57,12 @@ describe("relay offer", () => {
     expect(() => decodeOffer(`${APP}/#offer=${payload}`)).toThrow();
     expect(decodeOffer(urlWith(payload))?.server_id).toBe(SERVER_ID);
   });
+
+  it("keeps the mark that the PC asks its account about the device, refuses any other value, and reads past a field it does not know", () => {
+    const marked = offer({ code: "012345", admission: 1 });
+    expect(decodeOffer(encodeOffer(marked, APP))).toEqual(marked);
+    for (const admission of [0, 2, "1", true]) expect(() => decodeOffer(urlWith(b64url({ ...offer(), admission })))).toThrow("Invalid offer admission");
+    const plain = offer({ code: "012345" });
+    expect(decodeOffer(urlWith(b64url({ ...plain, later: "x" })))).toEqual(plain);
+  });
 });

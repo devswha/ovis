@@ -3,7 +3,7 @@
  * admit a device"): it is redeemed through the relay only.
  */
 import { afterEach, expect, test } from "bun:test";
-import { linkRecord, pairingPc, sendLink, setUpFor, signedInWith, type Answer, type Pc } from "./pairing.test-helpers.ts";
+import { linkRecord, pairingPc, sendLink, setUpFor, signedInWith, vouchFor, type Answer, type Pc } from "./pairing.test-helpers.ts";
 
 const pcs: Pc[] = [];
 afterEach(async () => { for (const pc of pcs.splice(0)) await pc.close(); });
@@ -35,6 +35,7 @@ test("the relay tab's code pairs nobody at this PC's own address and no try ther
   expect(f.devices.activePairing()?.code).toBe(code);
   // through the relay it pairs a device that waits to link, and whose link then makes it this PC's first member
   const device = await signedInWith(f, code);
+  await vouchFor(f, "acct_1", device.key);
   expect(device.role).toBe("watch");
   expect((await sendLink(device.session, await linkRecord(device.id, "acct_1", device.key))).status).toBe(200);
   expect(await f.status()).toMatchObject({ account: "acct_1", members: 1, unlinked: [] });

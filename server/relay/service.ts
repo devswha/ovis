@@ -40,6 +40,17 @@ export class NoAccountNamedError extends Error {
   }
 }
 
+/**
+ * The account service is turned off on this PC (OVIS_ACCOUNT_SERVICE_URL=off), so no code is made that puts it in an
+ * account: a device that pairs with one is let in only on its account's word (server/account/records.ts applyLink).
+ */
+export class AccountServiceOffError extends Error {
+  readonly code = "account_service_off";
+  constructor() {
+    super("This PC's Ovis account service is turned off, so it cannot be added to an account with a QR code. Pair a device with `ovis pair` instead.");
+  }
+}
+
 export interface RelayServiceOptions {
   readonly stateDir: string;
   readonly relay?: string;
@@ -566,7 +577,12 @@ export class RelayService {
     // the phone lists the PC under the name Ovis shows for it (server/machines.ts), not its scope URL
     const name = hostname().slice(0, 64);
     return { v: 1, server_id: this.identity!.server_id, server_public_key: this.identity!.public_key,
-      relay: this.advertised, code, ...(name ? { name } : {}) };
+      relay: this.advertised, code, ...(name ? { name } : {}), ...this.admissionMark(code) };
+  }
+
+  /** The mark of an offer whose code lets a device in only on its account's word (shared/relay-offer.ts `admission`). */
+  private admissionMark(code: string): { admission?: 1 } {
+    return this.services?.devices.isPinnedCode(code) ? { admission: 1 } : {};
   }
 
   /**
@@ -579,6 +595,7 @@ export class RelayService {
     if (!this.enabled || !this.identity || !this.services || this.blocked) throw new Error("Start the relay before pairing.");
     if (account === undefined && this.services.options.profile === "machine") throw new MachineCodeForAccountError();
     if (account !== undefined && this.services.devices.account() !== null) throw new PcInAccountError();
+    if (account !== undefined && this.services.accountMailbox.serviceOff()) throw new AccountServiceOffError();
     const relay = this.options.pairCodeRelay ?? (this.relay === GLOBAL_RELAY ? GLOBAL_RELAY : null);
     if (relay === null) return null;
     // the typed code's host carries a pass as the links do: only one its own service's passes go to this relay
@@ -613,6 +630,8 @@ export class RelayService {
     const devices = this.services.devices;
     // a PC that is in an account says so itself (pairingForNoAccount)
     if (options.noAccountOnly && devices.account() === null && this.savedRelayAccount() === null) throw new NoAccountNamedError();
+    // a PC in an account says so itself (pairingForAccount, pairingForNoAccount)
+    if ((options.account !== undefined || options.noAccountOnly) && devices.account() === null && this.services.accountMailbox.serviceOff()) throw new AccountServiceOffError();
     const { code, expires_at, ...named } = options.account !== undefined ? devices.pairingForAccount(options.account, by, Date.now(), options.pairing)
       : options.noAccountOnly ? devices.pairingForNoAccount(by) : devices.pairingForOffer(by, Date.now(), options.pairing);
     const id = devices.pairingId()!;
@@ -620,7 +639,7 @@ export class RelayService {
     if (by !== null) devices.holdPairing(by);
     return {
       url: encodeOffer({ v: 1, server_id: this.identity.server_id, server_public_key: this.identity.public_key,
-        relay: this.advertised, code, ...offerName() }, this.app),
+        relay: this.advertised, code, ...offerName(), ...this.admissionMark(code) }, this.app),
       expires_at, pairing: { id }, ...named,
     };
   }

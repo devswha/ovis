@@ -4,7 +4,8 @@ import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { startBunRelay } from "../../relay/bun.ts";
 import { Room } from "../../relay/core.ts";
-import { openClientSecureChannel } from "../../shared/relay-e2ee.ts";
+import { bytesToHex } from "@noble/hashes/utils.js";
+import { importPublicKey, openClientSecureChannel } from "../../shared/relay-e2ee.ts";
 import type { Transport } from "../../shared/relay-e2ee.ts";
 import { decodeOffer, validateOffer } from "../../shared/relay-offer.ts";
 import { normalizePairCode, PairCodeExpiredError, PairCodeGuest, splitPairCode } from "../../shared/relay-pair-code.ts";
@@ -1128,6 +1129,8 @@ it("a typed code made for an account: its answer names the account and the code,
   expect([decodeOffer(offered.url)?.code, offered.pairing.id]).toEqual([devices.activePairing()!.code, minted.pairing.id]);
   const typed = validateOffer(JSON.parse((await typeCode(f, minted.code)).offer!));
   expect(typed.code).toBe(devices.activePairing()!.code);
+  // the offer the typed code delivers carries the mark, as the QR code's does
+  expect([typed.admission, decodeOffer(offered.url)?.admission]).toEqual([1, 1]);
   const paired = await client(f, typed);
   expect(devices.list(null)).toEqual([]);
   expect((await paired.http("/api/health")).status).toBe(403);
@@ -1162,6 +1165,7 @@ async function machineFixture(appOptions: NonNullable<Parameters<typeof createSe
   const options = { profile: "machine" as const, accountService: { url: "https://account.test", fetch: account.fetch }, ...appOptions };
   const f = await fixture(false, { accountService: "https://account.test", accountFetch: account.fetch, ...relayOptions }, options);
   return Object.assign(f, {
+    account,
     async offer(): Promise<RelayOffer> {
       const identity = loadRelayIdentity(f.stateDir);
       return { v: 1, server_id: identity.server_id, server_public_key: identity.public_key, relay: `wss://127.0.0.1:${f.localRelay.port}`,
@@ -1254,6 +1258,12 @@ it("machine profile takes a device in with a code made for its account: the devi
   expect(devices.list(null)).toEqual([]);
   const session = await client(f, offer, false, paired.device);
   const key = Buffer.from(await crypto.subtle.exportKey("spki", paired.device.keys.publicKey)).toString("base64url");
+  // the device's account vouches for its key first, as an app does for an offer with the mark
+  expect(offer.admission).toBe(1);
+  const token = f.account.issueToken("acct_owner");
+  const accountCall = (path: string, method: string, body: unknown) => f.account.fetch(new Request(`https://account.test${path}`, { method, headers: { authorization: `Bearer ${token}` }, body: JSON.stringify(body) }));
+  expect((await accountCall(`/v1/pcs/${offer.server_id}`, "PUT", { label: "Machine", public_key: bytesToHex(importPublicKey(offer.server_public_key)), relay: "wss://relay.ovis.sh" })).status).toBe(200);
+  expect((await accountCall("/v1/admissions", "POST", { server_id: offer.server_id, label: "Phone", key })).status).toBe(200);
   const record = await signAccountRecord({ v: 1, kind: "link", account: "acct_owner", key, server_id: offer.server_id, device_id: paired.device.id,
     old_key: key, issued_at: new Date().toISOString(), id: newRecordId(), signer: key }, paired.device.keys.privateKey);
   const linked = await session.http("/api/account/link", { method: "POST", headers: [["content-type", "application/json"], ["x-herdr-machine", "1"]], body: "stream" },
