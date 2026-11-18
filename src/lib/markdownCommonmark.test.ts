@@ -113,6 +113,16 @@ describe("parsePreviewMarkdown", () => {
     ]);
   });
 
+  it.each([
+    ["quotes", `${"> ".repeat(200)}deepest\nand on`],
+    ["lists", `${"- ".repeat(200)}deepest\nand on`],
+    ["quotes in lists", `${"- > ".repeat(100)}deepest\nand on`],
+  ])("keeps the words of %s nested past its limit", (_, text) => {
+    const drawn = JSON.stringify(parsePreviewMarkdown(text));
+    expect(drawn).toContain("deepest");
+    expect(drawn).toContain("and on");
+  });
+
   it("reads formulas as the chat does", () => {
     expect(parsePreviewMarkdown("$$\nx^2\n$$\n\n\\[y\\]\n\nIt costs $5 and $6, $a$ and \\(b\\).")).toEqual([
       { type: "math", value: "x^2", dollar: true },

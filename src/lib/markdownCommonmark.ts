@@ -30,6 +30,7 @@ md.linkify.add("file:", { validate: (text: string, pos: number) => {
 md.validateLink = () => true;
 md.normalizeLink = (url) => url;
 md.normalizeLinkText = (url) => url;
+md.block.ruler.before("table", "too_deep", tooDeep);
 md.block.ruler.before("fence", "math_block", mathBlock, { alt: ["paragraph", "reference", "blockquote", "list"] });
 md.block.ruler.before("html_block", "html_reader", htmlBlock, { alt: ["paragraph", "reference", "blockquote"] });
 md.inline.ruler.before("escape", "math_inline", mathInline);
@@ -37,6 +38,25 @@ md.inline.ruler.before("escape", "math_inline", mathInline);
 export function parsePreviewMarkdown(source: string): MarkdownBlock[] {
   const env: Env = { unclosedMath: {}, found: null };
   return readBlocks(md.parse(source, env), { at: 0 }, null);
+}
+
+/**
+ * Quotes and lists nested this deep (the chat's 32 quotes inside one) keep the rest of their lines
+ * as written text: past its own limit markdown-it drops what is left of the file.
+ */
+const MAX_LEVEL = 33;
+
+function tooDeep(state: StateBlock, startLine: number, endLine: number, silent: boolean): boolean {
+  if (state.level < MAX_LEVEL) return false;
+  if (silent) return true;
+  let next = startLine;
+  const lines: string[] = [];
+  while (next < endLine && !state.isEmpty(next) && (next === startLine || state.sCount[next]! >= state.blkIndent)) lines.push(lineText(state, next++));
+  const token = state.push("too_deep", "", 0);
+  token.content = lines.join("\n");
+  token.map = [startLine, next];
+  state.line = next;
+  return true;
 }
 
 function lineText(state: StateBlock, line: number): string {
@@ -205,7 +225,7 @@ function readBlocks(tokens: Token[], cursor: { at: number }, closing: string | n
       case "html_reader":
         blocks.push(...parseHtmlBlock([token.content.replace(/\n+$/, "").trimStart()], 0).blocks);
         break;
-      case "html_block":
+      case "html_block": case "too_deep":
         blocks.push({ type: "paragraph", lines: token.content.replace(/\n+$/, "").split("\n").map((line) => [{ type: "text", value: line }]) });
         break;
     }
