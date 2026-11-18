@@ -29,7 +29,7 @@ import { bindCommandProcess, claudeHeldIsGrey, codexQuestionsCollapsed, isClaude
 import { agentPickerWaits, registry } from "../dialogs/registry.ts";
 import { codexOwnScreenOpen, CODEX_OWN_SCREEN_MESSAGE } from "../dialogs/codex.ts";
 import { secretPrompt } from "../../shared/secret-prompt.ts";
-import { PendingInputs, samePendingIdentity, type PendingIdentity, type PendingRecord } from "../pending-input.ts";
+import { PendingInputs, samePendingIdentity, type FirstMessageAsk, type PendingIdentity, type PendingRecord } from "../pending-input.ts";
 import { NO_AGENT_MESSAGE, PASTED_NOT_SENT_MESSAGE, submitNotTyped } from "../../shared/submit-outcome.ts";
 import { processStartedAtAsync } from "../process-start.ts";
 import { agentProcessInFront } from "../agent-process.ts";
@@ -50,6 +50,10 @@ type PendingLease = { sighting: TerminalSighting; authority: object };
 export type FirstMessageOwner = { readonly firstMessages: true };
 export const FIRST_MESSAGE_OWNER: FirstMessageOwner = { firstMessages: true };
 export type PendingOwner = Client | FirstMessageOwner;
+type Asked = FirstMessageAsk & { page: Client | undefined; paneId: string | null; left: boolean; fault: { code: string; message: string } | null;
+  /** what happened to a pane before the request knew which pane is its own (herdr may tell of the pane before it answers the create) */
+  early: Map<string, { left: boolean; fault: { code: string; message: string } | null }> };
+const PANE_GONE = "pane_not_found";
 const isClient = (owner: PendingOwner): owner is Client => owner !== FIRST_MESSAGE_OWNER;
 const withoutEscapes = (screen: string): string => screen.replace(/\u001b\[[0-?]*[ -/]*[@-~]/gu, "");
 /** a first message's lease is the delivering connection's, taken at each attempt: none is kept on the record */
@@ -181,6 +185,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
   /** the page connection that sent each first message: the only one that types it on its own */
   const requesters = new WeakMap<PendingItem, Client>();
   const requested = new WeakMap<Client, Set<PendingItem>>();
+  /** the first messages asked for and not listed yet: nothing is there to hold when their page leaves or their pane's terminal restarts, so each remembers it */
+  const asking = new Set<Asked>();
   const present = (client: Client): boolean => clients.has(client) && !connectionOf(client).closing;
   const pendingDrains = new Set<string>();
   const pendingRequests = new WeakMap<Client, PendingRequestBook<SubmitReply>>();
@@ -399,6 +405,11 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
    * the pane's other messages go at their turn. One on its way settles held, not retried.
    */
   function holdRequested(client: Client, paneId?: string): void {
+    for (const ask of asking) {
+      if (ask.page !== client) continue;
+      if (paneId === undefined || ask.paneId === paneId) ask.left = true;
+      else if (ask.paneId === null) ask.early.set(paneId, { fault: null, ...ask.early.get(paneId), left: true });
+    }
     const items = requested.get(client);
     if (!items) return;
     for (const item of [...items]) {
@@ -410,6 +421,14 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     }
   }
   function holdPendingPane(paneId: string, fault: { code: string; message: string }): void {
+    for (const ask of asking) {
+      // a pane that ended stays ended, whatever its terminal reports after
+      if (ask.paneId === paneId) ask.fault = ask.fault?.code === PANE_GONE ? ask.fault : fault;
+      else if (ask.paneId === null) {
+        const before = ask.early.get(paneId);
+        ask.early.set(paneId, { left: before?.left === true, fault: before?.fault?.code === PANE_GONE ? before.fault : fault });
+      }
+    }
     for (const owner of clients) pendingAuthorities.get(owner)?.delete(paneId);
     pending.holdPane(paneId, fault);
     // A typed Pi receipt is never re-sent. Losing its exact terminal only stops automatic
@@ -658,11 +677,15 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
         }
       } else if (context.identity.agent === "omp") {
         try {
-          const waited = await untilOmpReported(paneId, context.pane, () => {
+          const inTime = (): void => {
             authorizePending(owner, paneId, lease);
             if (row.withdrawn?.()) throw new HerdrError("pending_discarded", "This message was discarded while it waited for omp; nothing was typed");
             if (Date.now() - arrivedAt > (options.submitDeadlineMs ?? SUBMIT_DEADLINE_MS)) throw new HerdrError("submit_timeout", "The pending message waited too long; nothing was typed");
-          }, options, { strict: true, waiting: () => { waitedForOmp = true; row.waiting?.(true); } });
+          };
+          const waited = await untilOmpReported(paneId, context.pane, inTime, options, { strict: true, waiting: () => { waitedForOmp = true; row.waiting?.(true); } });
+          // the wait's last look at the process is awaited after its last check, and returns the same pane when the
+          // start ran out before the first poll: nothing below would ask again before the message is queued or typed
+          inTime();
           endsOmpStart = waited.agent_session?.source === "herdr:omp" || !typedSinceStart(paneId);
           if (waited !== context.pane) {
             mark = pending.mark(paneId);
@@ -864,10 +887,14 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     const requester = requesters.get(item);
     const unattended = automatic && !isClient(item.owner) && (requester === undefined || !present(requester));
     const retryable = (["pending_wait", "agent_blocked"].includes(code) && reply.unannounced !== true) || (!isClient(item.owner) && FIRST_MESSAGE_RETRY_CODES.has(code));
-    const fault = reply.ok ? undefined : unattended && retryable ? FIRST_MESSAGE_UNATTENDED : { code: reply.code!, message: reply.message! };
+    const retry = automatic && retryable && !unattended;
+    // a connection's message that lost its lease on its way (PendingInputs.hold marked it) and was then only put off is held
+    // with that reason: queued again, its row would say it still waits for the agent's turn
+    const left = retry && isClient(item.owner) && item.message.state === "uncertain" ? item.message.error : undefined;
+    const fault = reply.ok ? undefined : left ?? (unattended && retryable ? FIRST_MESSAGE_UNATTENDED : { code: reply.code!, message: reply.message! });
     // a paste left in the input line (#511) is uncertain like a delivery not confirmed: the pane's queue stops behind it, and
     // only the user copies or discards it
-    pending.settle(item, fault, reply.code === "submit_changed" || reply.code === "pasted_not_sent", automatic && retryable && !unattended);
+    pending.settle(item, fault, reply.code === "submit_changed" || reply.code === "pasted_not_sent", retry && left === undefined);
     // The messages queued behind one held for a screen of Codex's own are held with it, in the same step: tried one
     // by one, a later one would be typed ahead of it if the screen closed between two tries.
     if (automatic && reply.unannounced === true && fault !== undefined) pending.holdPane(item.paneId, fault);
@@ -1014,15 +1041,42 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     });
   }
   /**
+   * A create request's first message, taken when the request comes: its page is looked up now, and from now on a page
+   * that leaves the pane, may no longer type or closes, and a pane whose terminal restarts, get the message listed held
+   * (holdRequested, holdPendingPane). Without it the minute a launch may take would go unseen: queueFirstMessage runs after it.
+   */
+  function askFirstMessage(requester: string | null): FirstMessageAsk {
+    const ask: Asked = {
+      page: requester === null ? undefined : [...clients].find((client) => client.data.connectionId === requester && present(client)),
+      paneId: null, left: false, fault: null, early: new Map(),
+      at: (paneId) => {
+        if (ask.paneId !== null) return;
+        ask.paneId = paneId;
+        const before = ask.early.get(paneId);
+        ask.early.clear();
+        if (before?.left) ask.left = true;
+        if (before?.fault) ask.fault = before.fault;
+      },
+      end: () => { asking.delete(ask); },
+    };
+    asking.add(ask);
+    return ask;
+  }
+  /**
    * A create request's first message for the pane's agent, queued as the request's own send: typed once
    * the agent is ready through `requester`, the id of the page connection that sent the request, while it
    * has the pane attached (drainPending), and listed to every connection attached to the pane. Without a
    * connection of that id it is held from the start. Refused as a submit frame's text would be.
+   * `requester` may be the request as askFirstMessage took it: then what happened since the request came counts too.
    */
-  async function queueFirstMessage(paneId: string, raw: string, kind: string, requester: string | null = null, launchedPid: number | null = null): Promise<PendingMessage> {
+  async function queueFirstMessage(paneId: string, raw: string, kind: string, requester: string | null | FirstMessageAsk = null, launchedPid: number | null = null): Promise<PendingMessage> {
     const text = pendingText(raw);
-    const page = requester === null ? undefined : [...clients].find((client) => client.data.connectionId === requester && present(client));
+    const ask = typeof requester === "object" && requester !== null ? requester as Asked : askFirstMessage(requester) as Asked;
+    ask.at(paneId);
+    const page = ask.page;
+    const ended = (): void => { if (ask.fault?.code === PANE_GONE) throw new HerdrError(ask.fault.code, ask.fault.message); };
     const message = await serialize(paneId, async () => {
+      ended();
       // bound to the terminal and the kind launched there, and to the process the launch left in front when
       // it runs that kind's program: a replacement of the same kind is not what the message was sent to. Right
       // after a launch herdr may name no agent yet, and what is in front may be a child the agent runs as it
@@ -1033,20 +1087,23 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
         : identity.processPid !== null && identity.processPid !== undefined && identity.processPid !== shellPid
           && runsAgentProgram(processes?.foreground_processes?.find((entry) => entry.pid === identity.processPid) ?? {}, kind)
           ? { processPid: identity.processPid, processBirth: identity.processBirth } : {};
+      // after the last await: a pane that ended during any of them has nothing left to discard this message later
+      ended();
       const sessions = identity.agent === kind
         ? { session: identity.session, omoSession: identity.omoSession ?? null, claudeSession: identity.claudeSession ?? null } : { session: null };
+      const attended = page !== undefined && present(page) && !ask.left;
       const item = pending.enqueue(FIRST_MESSAGE_OWNER, paneId, nextFirstRequestId--, text, null,
-        { agent: kind, terminalId: pane.terminal_id, ...sessions, ...launchedProcess });
+        { agent: kind, terminalId: pane.terminal_id, ...sessions, ...launchedProcess }, false, false, attended ? ask.fault ?? undefined : FIRST_MESSAGE_UNATTENDED);
       launchBound.add(item);
       if (kind === "omp" && !ompStarts.has(paneId)) ompStarts.set(paneId, { typed: typedCount(paneId), until: Date.now() + (options.ompStartupMs ?? OMP_STARTUP_MS) });
       learn(item, identity, shellPid, processes, held);
-      if (page === undefined || !present(page)) pending.holdItem(item, FIRST_MESSAGE_UNATTENDED);
-      else {
+      // asked again: the first listing above is a send, and a page whose socket it closes has left by now
+      if (attended && present(page) && !ask.left) {
         requesters.set(item, page);
         requested.set(page, (requested.get(page) ?? new Set()).add(item));
-      }
+      } else if (attended) pending.holdItem(item, FIRST_MESSAGE_UNATTENDED);
       return item.message;
-    });
+    }).finally(() => ask.end());
     drainPending(paneId);
     return { ...message };
   }
@@ -1357,6 +1414,10 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
         }
         let sendingAt: string | undefined;
         let behind: PendingMessage | undefined;
+        // taken as the frame comes, for a message that is queued after all (below): a lease taken in the lane would be a
+        // new one for a page that left the pane and came back while its frame waited there
+        const arrived = message.typed !== true && message.resend_id === undefined && message.clear_draft === undefined && message.send_anyway !== true
+          ? (() => { try { return pendingLease(client, message.pane_id); } catch { return null; } })() : null;
         const dispatch = async () => {
           if (attachments.get(message.pane_id)?.held) throw new HerdrError("attach_held", ATTACH_HELD_MESSAGE);
           // A chat message sent at once while the pane's queue waits for its omp to take input (a new workspace's first
@@ -1365,7 +1426,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
           // and held, as what waited was.
           if (message.typed !== true && message.resend_id === undefined && message.clear_draft === undefined && message.send_anyway !== true
             && ((ompWaits.has(message.pane_id) && pending.waiting(message.pane_id)) || typedWhileOmpStarted(message.pane_id))) {
-            const lease = pendingLease(client, message.pane_id);
+            const lease = arrived ?? pendingLease(client, message.pane_id);
             const context = await pendingContext(client, message.pane_id, lease);
             behind = pending.enqueue(client, message.pane_id, message.id, pendingText(message.text), lease, context.identity, false, agentOnly).message;
             if (typedWhileOmpStarted(message.pane_id)) pending.holdQueued(message.pane_id, TYPED_WHILE_WAITING);
@@ -1529,5 +1590,5 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     },
   };
 
-  return { pending, holdPending, holdPendingPane, movePendingPane, drainPending, pendingFrames, queueFirstMessage, attached, closeConnection, reconcilePiDeliveries };
+  return { pending, holdPending, holdPendingPane, movePendingPane, drainPending, pendingFrames, queueFirstMessage, askFirstMessage, attached, closeConnection, reconcilePiDeliveries };
 }
