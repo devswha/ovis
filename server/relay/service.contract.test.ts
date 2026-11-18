@@ -501,6 +501,41 @@ it("ends the code pending, and the rows that wait to link under it, when it rese
   await noMember(f);
 });
 
+/** The saved account can no longer be read, as after a lost or damaged state file: the next naming reads as a first one. */
+const loseSavedAccount = (f: Pc): void => { writeFileSync(join(f.stateDir, "relay", "account.json"), "{"); };
+
+it("holds the relay tab's code to the account it was made under when another is named after the saved one could not be read", async () => {
+  const f = await pairingPc();
+  cleanup.push(() => f.close());
+  await setUpFor(f, "acct_a");
+  const code = await f.tabCode();
+  const toB = await signedInWith(f, code), toA = await signedInWith(f, code);
+  loseSavedAccount(f);
+  await setUpFor(f, "acct_b");
+  // the code and its rows are still there: what keeps them out of acct_b is the account the code was made under
+  expect([f.devices.provisionalStands(toB.id), f.devices.provisionalStands(toA.id)]).toEqual([true, true]);
+  await vouchFor(f, "acct_b", toB.key);
+  const intoB = await sendLink(toB.session, await linkRecord(toB.id, "acct_b", toB.key));
+  expect([intoB.status, intoB.body.error?.code]).toEqual([409, "account_mismatch"]);
+  // nor is a row taken into acct_a while acct_b is named
+  await vouchFor(f, "acct_a", toA.key);
+  const intoA = await sendLink(toA.session, await linkRecord(toA.id, "acct_a", toA.key));
+  expect([intoA.status, intoA.body.error?.code]).toEqual([409, "account_mismatch"]);
+  expect([f.devices.provisionalStands(toB.id), f.devices.provisionalStands(toA.id)]).toEqual([false, false]);
+  await noMember(f);
+});
+
+it("refuses after the approval too when another is named, past a saved account that could not be read, while the approval is out", async () => {
+  const { f, device, release, judged } = await linkHeldOnApproval("acct_a");
+  loseSavedAccount(f);
+  await setUpFor(f, "acct_b");
+  expect(f.devices.provisionalStands(device.id)).toBe(true);
+  release();
+  await judged();
+  await noMember(f);
+  expect(f.devices.provisionalStands(device.id)).toBe(false);
+});
+
 it("names the PC in the relay offer as Ovis lists it", async () => {
   const f = await fixture();
   await f.start();

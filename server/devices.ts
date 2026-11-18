@@ -417,7 +417,7 @@ export class DeviceStore {
    * `expires`: the wall-clock end of its ten minutes, which its `expires_at` shows; `deadline`: the same end on the
    * store's clock, which only moves forward; `over`: set the first time either says its ten minutes are over (codeOver)
    */
-  private pending: { code: string; id: string; expires: number; deadline: number; over?: true; attempts: number; lanAttempts?: number; remote: boolean; startedBy: string | null; approvedIn?: string; memberRequired: boolean; open?: boolean; noAccountOnly?: boolean; holders: Set<string>; waiting?: WaitingRows; named?: { readonly account: string } } | null = null;
+  private pending: { code: string; id: string; expires: number; deadline: number; over?: true; attempts: number; lanAttempts?: number; remote: boolean; startedBy: string | null; approvedIn?: string; memberRequired: boolean; open?: boolean; noAccountOnly?: boolean; holders: Set<string>; waiting?: WaitingRows; named?: { readonly account: string }; issuedUnder?: string } | null = null;
   /** How the latest codes made for an account ended, newest last: ENDED_ACCOUNT_CODES at most, in memory only. */
   private endedAccountCodes: Extract<AccountPairingState, { state: "ended" }>[] = [];
   /** What a row that waits to link, and the redemption of a code, is bounded on (useClock). */
@@ -636,9 +636,9 @@ export class DeviceStore {
    * (null for this PC itself), which holds it from then on. One that is paired no more by now, or may only watch by
    * now, starts nothing (assertHolder), and the code pending stays as it was.
    */
-  startPairing(now = Date.now(), from: { remote: boolean; startedBy: string | null; memberRequired: boolean; open?: boolean; noAccountOnly?: boolean; by?: string | null; account?: string } = { remote: false, startedBy: null, memberRequired: false }): PairingCode {
+  startPairing(now = Date.now(), from: { remote: boolean; startedBy: string | null; memberRequired: boolean; open?: boolean; noAccountOnly?: boolean; by?: string | null; account?: string; issuedUnder?: string } = { remote: false, startedBy: null, memberRequired: false }): PairingCode {
     this.assertWritable();
-    const { by = null, account, ...how } = from;
+    const { by = null, account, issuedUnder, ...how } = from;
     if (by !== null) this.assertHolder(by);
     if (how.startedBy !== null && !this.has(how.startedBy)) throw new DeviceGoneError();
     this.pruneUnconfirmedFirstPairs(now);
@@ -655,6 +655,7 @@ export class DeviceStore {
       holders: new Set([by, how.startedBy].filter((id): id is string => id !== null)),
       ...(how.noAccountOnly === true ? { waiting: { usesLeft: PAIRING_USES, rows: new Map<string, ProvisionalRow>(), turnedAway: [] } } : {}),
       ...(how.noAccountOnly === true && account !== undefined ? { named: { account } } : {}),
+      ...(how.noAccountOnly === true && issuedUnder !== undefined ? { issuedUnder } : {}),
     };
     const started = { code, expires_at: new Date(this.pending.expires).toISOString() };
     for (const listener of this.codeStarts) listener();
@@ -669,18 +670,28 @@ export class DeviceStore {
    * was made the same way, else a fresh one: never a code another place started, which may be on a screen as digits.
    * A device that pairs with it through the relay is no device yet: it waits to link (pairProvisional), and the
    * code takes PAIRING_USES such pairings. No other offer carries it (pairingForOffer), and it is redeemed through
-   * the relay only (pair). `by` as in startPairing.
+   * the relay only (pair). `by` as in startPairing. `issuedUnder`: the account named for this PC as the code is made
+   * (RelayService.offer); a device that waits under the code is taken into that account only (issuedUnder), and a code
+   * pending that was made under another is not carried on: a fresh one replaces it.
    */
-  pairingForNoAccount(by: string | null = null, now = Date.now()): PairingCode {
+  pairingForNoAccount(by: string | null = null, now = Date.now(), issuedUnder?: string): PairingCode {
     if (by !== null) this.assertHolder(by);
     if (this.account() !== null) throw new PcInAccountError();
     const active = this.activePairing(now);
     // never a code made for one account: the device that pairs with this one is taken into the account named for the PC
-    if (active !== null && this.pending?.noAccountOnly === true && this.pending.named === undefined) {
+    if (active !== null && this.pending?.noAccountOnly === true && this.pending.named === undefined && this.pending.issuedUnder === issuedUnder) {
       if (by !== null) this.pending.holders.add(by);
       return active;
     }
-    return this.startPairing(now, { remote: false, startedBy: null, memberRequired: false, noAccountOnly: true, by });
+    return this.startPairing(now, { remote: false, startedBy: null, memberRequired: false, noAccountOnly: true, by, ...(issuedUnder === undefined ? {} : { issuedUnder }) });
+  }
+
+  /**
+   * The account named for this PC when the relay tab's code that the row `id` waits under was made (pairingForNoAccount),
+   * whatever is named now: its link is taken into that account only. Null for a row that does not wait under such a code.
+   */
+  issuedUnder(id: string): string | null {
+    return this.pending?.waiting?.rows.has(id) === true && this.pending.named === undefined ? this.pending.issuedUnder ?? null : null;
   }
 
   /**

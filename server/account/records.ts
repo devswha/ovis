@@ -226,8 +226,12 @@ function look(store: DeviceStore, link: LinkRecord, deviceId: string, arrival: L
   // it paired with, by the account id its own signed link names, until it links or goes, also once that code's ten
   // minutes are over
   const codeFor = waits ? store.waitingFor(deviceId) : account === null && arrival.pinned !== null ? store.pinnedFor(arrival.pinned) : null;
-  const expected = account === null ? codeFor ?? rules.setUpFor?.() ?? null : null;
-  if (expected !== null && expected !== link.account) {
+  // A row that waits under the relay tab's code is held to the account named when that code was made, whatever is
+  // named now, and only while no other is named: no change of naming, seen by the setter or not, carries it elsewhere
+  const issuedUnder = waits && account === null ? store.issuedUnder(deviceId) : null;
+  const named = rules.setUpFor?.() ?? null;
+  const expected = account === null ? codeFor ?? issuedUnder ?? named : null;
+  if ((expected !== null && expected !== link.account) || (issuedUnder !== null && named !== null && named !== issuedUnder)) {
     if (waits) store.turnAway(deviceId, "account_mismatch", link.account);
     return { refused: "account_mismatch", message: codeFor !== null ? CODE_FOR_ANOTHER_ACCOUNT : waits ? SET_UP_FOR_ANOTHER_ACCOUNT_WAITING : SET_UP_FOR_ANOTHER_ACCOUNT };
   }

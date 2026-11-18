@@ -317,7 +317,8 @@ export class RelayService {
     writePrivateState(this.relayAccountPath(), { account });
     // the relay tab's QR code takes a device into the account named for this PC (records.ts applyLink): once another
     // takes the place of the one named, that code and the rows that wait under it end, so none is taken into an account
-    // its holder was not shown. A first naming ends nothing: no code was made for an account before it
+    // its holder was not shown. With none read before (none named, or the saved one unreadable) nothing ends here: the
+    // code is held to the account it was made under all the same (records.ts look)
     if (named !== null && named !== account) this.services?.devices.endNoAccountPairing();
     // the same account named again asks only when the last answer was that it does not list this PC, which the
     // add-me screen's relisting can change; a refusal for the account's limit keeps its scheduled retry
@@ -640,7 +641,7 @@ export class RelayService {
     // a PC in an account says so itself (pairingForAccount, pairingForNoAccount)
     if ((options.account !== undefined || options.noAccountOnly) && devices.account() === null && this.services.accountMailbox.serviceOff()) throw new AccountServiceOffError();
     const { code, expires_at, ...named } = options.account !== undefined ? devices.pairingForAccount(options.account, by, Date.now(), options.pairing)
-      : options.noAccountOnly ? devices.pairingForNoAccount(by) : devices.pairingForOffer(by, Date.now(), options.pairing);
+      : options.noAccountOnly ? devices.pairingForNoAccount(by, Date.now(), this.savedRelayAccount() ?? undefined) : devices.pairingForOffer(by, Date.now(), options.pairing);
     const id = devices.pairingId()!;
     // before the code leaves this PC: a device revoked by now is handed none (DeviceGoneError)
     if (by !== null) devices.holdPairing(by);
