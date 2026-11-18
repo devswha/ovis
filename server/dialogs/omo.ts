@@ -114,9 +114,11 @@ function omoAnsweredCount(lines: string[], from: number, to: number): number | n
   return match ? Number(match[1]) : null;
 }
 
-/** The `>` marks the first row only; the form's Submit line ends the field. */
-function omoEditorRows(lines: string[], field: number, hint: number): string[] {
+/** The `>` marks the first row only; the form's Submit line ends the field, or a review's notice (`! …`) above it. */
+export function omoEditorRows(lines: string[], field: number, hint: number): string[] {
   const submit = findLastIndex(lines.slice(field + 1, hint), (line) => /^\s*Submit \(\d+\/\d+ answered\)/.test(line));
+  const notice = lines.slice(field + 1, field + 1 + Math.max(submit, 0)).findIndex((line) => /^\s*! /.test(line));
+  if (submit >= 0 && notice >= 0) return [lines[field]?.replace(/^\s*> ?/, "") ?? "", ...lines.slice(field + 1, field + 1 + notice)];
   if (submit < 0) return [];
   const first = lines[field]?.replace(/^\s*> ?/, "") ?? "";
   return [first, ...lines.slice(field + 1, field + 1 + submit)];

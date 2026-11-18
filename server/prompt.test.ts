@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { omoEditorRows } from "./dialogs/omo.ts";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
@@ -2069,6 +2070,9 @@ ${rows}
     const noticed = typed("> 급해요\n ! 1 answer was changed\n Submit");
     expect(noticed?.body).toBe("1 answer was changed\nComment: 급해요");
     expect(noticed?.own_text?.body).toEqual({ key: "{notice}\nComment: {comment}", vars: { notice: "1 answer was changed", comment: "급해요" } });
+    // the typed comment's re-read before its Enter takes the field alone, not the notice below it
+    expect(omoEditorRows([" > 급해요", " ! 1 answer was changed", " Submit (2/2 answered)", " enter submit"], 0, 3)).toEqual(["급해요"]);
+    expect(omoEditorRows([" > 급해요", " 계속", " Submit (2/2 answered)", " enter submit"], 0, 3)).toEqual(["급해요", " 계속"]);
   });
 
   test("joins what a narrow pane wraps, the tab bar, the hint and words cut at the edge", () => {
