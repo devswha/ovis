@@ -277,6 +277,27 @@ describe("the queue's turn gate (#4118)", () => {
     expect(pending.next("p")).toBeNull();
   });
 
+  it("gives a Send now over a Codex restart whose start timeout passed a start timeout of its own", () => {
+    let clock = 0;
+    const pending = new PendingInputs<string, null>(() => {}, () => clock, 10);
+    const identity = { agent: "codex", terminalId: "p", session: null };
+    pending.status("p", "working");
+    const x = pending.enqueue("a", "p", 1, "X", null, identity);
+    const y = pending.enqueue("a", "p", 2, "Y", null, identity);
+    expect(pending.claim(x, false)).toBe(true);
+    pending.committing(x, true, true);
+    clock = 10;
+    expect(pending.expire()).toEqual([]);
+    pending.settle(x);
+    expect(pending.claim(y, false)).toBe(true);
+    pending.committing(y);
+    pending.settle(y);
+    expect(pending.expire()).toEqual([]);
+    pending.enqueue("a", "p", 3, "Z", null, identity);
+    pending.status("p", "idle");
+    expect(pending.next("p")).toBeNull();
+  });
+
   it("ends a Send now's wait without holding the queue when no turn of its own starts after the ready that came right behind it", () => {
     let clock = 0;
     const pending = new PendingInputs<string, null>(() => {}, () => clock, 10);

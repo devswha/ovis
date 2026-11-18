@@ -269,7 +269,8 @@ export class PendingInputs<Owner, Lease> {
     const restarting = earlier?.committed && !earlier.completed && earlier.by !== by && earlier.restart !== undefined ? earlier : undefined;
     let gate: TurnGate;
     if (restartingWorkingTurn) gate = { by, committed: true, sawWorking: false, completed: false, deadline: now + this.startTimeoutMs, restart: "interruption", since: now };
-    else if (restarting) gate = { ...restarting, by, since: now };
+    // its own start timeout: the earlier one's, maybe passed already, would end this Enter's wait before its turn could show
+    else if (restarting) gate = { ...restarting, by, since: now, deadline: now + this.startTimeoutMs };
     else if (steeringWorkingTurn) gate = { by, committed: true, sawWorking: true, completed: false, deadline: null, joined: now + this.startTimeoutMs, since: now };
     else gate = { by, committed: true, sawWorking: false, completed: false, deadline: now + this.startTimeoutMs, since: now };
     this.gates.set(item.paneId, gate);
