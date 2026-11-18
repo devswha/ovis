@@ -11,9 +11,10 @@ import { useNavigation } from "./Rail.tsx";
 type Place = "workspaces" | InboxPlace;
 
 /**
- * The app's places as icons at the end of a sidebar foot's gear row (GithubInbox.css lays the row out): the
- * workspaces, the agent inbox, Pull requests and Notes, the one shown marked. The same row ends both the workspaces
- * sidebar and the agent inbox's column, so the two read as one sidebar.
+ * The app's places as icons at the end of a sidebar foot's gear row (GithubInbox.css lays the row out): under
+ * Navigation → Footer the workspaces, the agent inbox, Pull requests and Notes, the one shown marked, and the same row
+ * ends both the workspaces sidebar and the agent inbox's column, so the two read as one sidebar. Under Default only
+ * the inbox, where upstream's inbox row was: the inbox's rail has the rest.
  */
 function FootPlaces({ current, onPlace, waiting = null }: { current: Place; onPlace(place: Place): void; waiting?: InboxRailProps["waiting"] }) {
   const { settings } = useSettings();
@@ -28,20 +29,18 @@ function FootPlaces({ current, onPlace, waiting = null }: { current: Place; onPl
     </button>}
     {footer && place("workspaces", t("Workspace list"), FolderTree)}
     {place("inbox", t("Agent inbox"), Inbox)}
-    {settings.pullRequests && place("github", t("Pull requests"), GitPullRequest)}
-    {settings.notes && place("notes", t("Notes"), Notebook)}
+    {footer && settings.pullRequests && place("github", t("Pull requests"), GitPullRequest)}
+    {footer && settings.notes && place("notes", t("Notes"), Notebook)}
   </div>;
 }
 
 /**
- * The workspaces sidebar's foot (App.tsx wraps upstream's inbox row): under Navigation → Footer, the places as icons
- * on the gear's row instead of the row. Under Navigation → Rail the rail has them, and the foot keeps the gear and
- * the meters. Under Default upstream's inbox row stays the one way in, and the inbox's rail has the other places.
+ * The workspaces sidebar's foot (App.tsx wraps upstream's inbox row): the places as icons on the gear's row instead
+ * of the row (Default: the inbox alone). Under Navigation → Rail the rail has them, and the foot keeps the gear and
+ * the meters.
  */
 export function ForkSidebarFoot({ children }: { children: ReactElement<{ onOpen(): void }> }) {
-  const navigation = useNavigation();
-  if (navigation === "rail") return null;
-  if (navigation !== "footer") return children;
+  if (useNavigation() === "rail") return null;
   const enter = children.props.onOpen;
   return <FootPlaces current="workspaces" onPlace={(place) => {
     if (place === "workspaces") return;
