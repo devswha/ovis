@@ -70,6 +70,11 @@ export function demoGithubPull(workspaces: WorkspaceInfo[], repository: string, 
         comments: [{ author: "mira", at, body: "Cap the wait: after eight tries this waits over a minute." }] }],
     }],
     files: [{ path: "src/retry.ts", additions: 4, deletions: 2, change: "modified" }],
+    // the demo's one stacked pull request: #142 sits on #140, which lands on main
+    ...(number === 142 ? { stack: { base: "main", pulls: [
+      { number: 140, title: "Split the export into chunks", url: "https://github.com/demo/checkout-api/pull/140", state: "open" as const, draft: false },
+      { number: 142, title: row.title, url: row.url, state: "open" as const, draft: false },
+    ] } } : {}),
   };
 }
 

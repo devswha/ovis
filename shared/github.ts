@@ -62,6 +62,16 @@ export interface GithubPullDetail {
   conversation: GithubEntry[];
   /** the changed files, as GitHub lists them (the first 100) */
   files: { path: string; additions: number; deletions: number; change: "added" | "deleted" | "renamed" | "copied" | "modified" }[];
+  /** the stack it is part of, when it is one: merging it merges the open ones below it too */
+  stack?: GithubStack;
+}
+
+/** A chain of pull requests, each on the branch of the one below it, that lands on `base` together. */
+export interface GithubStack {
+  /** the branch the whole stack merges into */
+  base: string;
+  /** bottom (closest to the base) first */
+  pulls: { number: number; title: string; url: string; state: "open" | "closed" | "merged"; draft: boolean }[];
 }
 
 export type GithubEntry =

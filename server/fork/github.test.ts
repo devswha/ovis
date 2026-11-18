@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { SessionSnapshot } from "../../shared/protocol.ts";
-import { createGithubFilesReader, createGithubReader, githubActionArgs, githubQuery, githubWorkspaces, handleGithubFiles, handleGithubPulls, mergeGithubPulls, parseGithubPulls } from "./github.ts";
+import { createGithubFilesReader, createGithubReader, githubActionArgs, githubQuery, handleGithubAction, parseGithubPull, githubWorkspaces, handleGithubFiles, handleGithubPulls, mergeGithubPulls, parseGithubPulls } from "./github.ts";
 
 const pr = (number: number, repository = "owner/repo") => ({ number, title: `PR ${number}`, url: `https://github.com/${repository}/pull/${number}`, repository: { nameWithOwner: repository }, headRefName: "feature", updatedAt: `2026-01-${number.toString().padStart(2, "0")}T00:00:00Z`, author: { login: "me" }, reviewDecision: "APPROVED", commits: { nodes: [{ commit: { statusCheckRollup: { state: "FAILURE", contexts: { nodes: [{ status: "COMPLETED", conclusion: "FAILURE" }] } } } }] } });
 const fixture = () => JSON.stringify({ data: { viewer: { login: "me" }, review: { nodes: [pr(1), pr(3)] }, yours: { nodes: [pr(2), pr(3)] }, reviewed: { nodes: [] } } });
@@ -263,4 +263,35 @@ test("reports missing gh, signed out, rate limited, and generic errors without l
     const read = createGithubReader(async (args) => result !== null && args[1] === "status" ? ok(signedIn("me")) : result !== null && args[1] === "token" ? ok("t\n") : result);
     await expect(read()).rejects.toMatchObject({ code });
   }
+});
+
+test("reads a stacked pull request's stack, bottom first, and none for a pull request on its own", () => {
+  const page = (stack: unknown) => JSON.stringify({ data: { viewer: { login: "me" }, repository: { viewerPermission: "WRITE", pullRequest: {
+    number: 32, title: "Top", url: "https://github.com/o/r/pull/32", state: "OPEN", headRefName: "top", baseRefName: "bottom", stack } } } });
+  const entry = (position: number, number: number, state: string) => ({ position, pullRequest: { number, title: `PR ${number}`, url: `https://github.com/o/r/pull/${number}`, state, isDraft: false } });
+  expect(parseGithubPull(page({ baseRefName: "main", entries: { nodes: [entry(2, 32, "OPEN"), entry(1, 30, "MERGED")] } }), "o/r").stack).toEqual({
+    base: "main", pulls: [{ number: 30, title: "PR 30", url: "https://github.com/o/r/pull/30", state: "merged", draft: false }, { number: 32, title: "PR 32", url: "https://github.com/o/r/pull/32", state: "open", draft: false }],
+  });
+  expect(parseGithubPull(page(null), "o/r").stack).toBeUndefined();
+});
+
+test("merges through the asynchronous endpoint and follows the request to GitHub's answer", async () => {
+  const merge = (answers: object[]) => {
+    const calls: string[] = [];
+    const run = async (args: string[]) => {
+      if (args[1] === "token") return ok("token\n");
+      calls.push(args.join(" "));
+      return ok(JSON.stringify(answers.shift()));
+    };
+    const request = new Request("http://x/api/fork/github/pull/action", { method: "POST", body: JSON.stringify({ repo: "o/r", number: 32, account: "me", action: "merge", method: "squash", sha: "a".repeat(40) }) });
+    return { calls, response: handleGithubAction(request, false, run, async () => {}) };
+  };
+  const merged = merge([{ status: "pending", details: { uuid: "u-1" } }, { status: "pending", details: { uuid: "u-1" } }, { status: "merged", details: { sha: "b" } }]);
+  expect((await merged.response).status).toBe(200);
+  expect(merged.calls[0]).toContain("-X PUT repos/o/r/pulls/32/merge-async -f merge_method=squash");
+  expect(merged.calls.slice(1)).toEqual(["api --hostname github.com repos/o/r/pulls/32/merge-async/u-1", "api --hostname github.com repos/o/r/pulls/32/merge-async/u-1"]);
+  const failed = merge([{ status: "pending", details: { uuid: "u-2" } }, { status: "failed", details: { message: "Required status check is failing" } }]);
+  const response = await failed.response;
+  expect(response.status).toBe(409);
+  expect(await response.json()).toMatchObject({ error: { code: "gh_refused" } });
 });

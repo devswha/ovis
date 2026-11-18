@@ -8,7 +8,7 @@ import type { GithubCheck, GithubPull, GithubPullDetail } from "../../../shared/
 import type { WorktreeOpened } from "../../../shared/protocol.ts";
 import { ApiError, createWorktree, fetchPullRequestBranch, getJson, listWorktrees, openWorktree } from "../../lib/api.ts";
 import { useT, type Translate } from "../../lib/i18n.ts";
-import { closeGithubPull, refreshGithubListing } from "./GithubInbox.tsx";
+import { closeGithubPull, openGithubSibling, refreshGithubListing } from "./GithubInbox.tsx";
 import { GithubClose, GithubMerge, GithubReply } from "./GithubActions.tsx";
 import { ago, GithubConversation, type JumpToLine } from "./GithubConversation.tsx";
 import { GithubCloneDialog } from "./GithubClone.tsx";
@@ -16,7 +16,7 @@ import { GithubFiles, type FilesJump } from "./GithubFiles.tsx";
 import { useKeptScroll } from "./github.ts";
 import "./GithubPull.css";
 
-function stateOf(detail: GithubPullDetail, t: Translate) {
+function stateOf(detail: Pick<GithubPullDetail, "state" | "draft">, t: Translate) {
   if (detail.state === "merged") return { icon: GitMerge, label: t("Merged"), tone: "merged" };
   if (detail.state === "closed") return { icon: GitPullRequestClosed, label: t("Closed"), tone: "closed" };
   if (detail.draft) return { icon: GitPullRequestDraft, label: t("Draft"), tone: "draft" };
@@ -75,6 +75,21 @@ function ChecksBox({ checks }: { checks: GithubCheck[] }) {
       return <li key={`${check.name}:${index}`}>{check.url ? <a href={check.url} target="_blank" rel="noreferrer noopener">{inner}</a> : <span>{inner}</span>}</li>;
     })}</ul>}
   </div>;
+}
+
+/** The stack it is part of, top first as GitHub draws it, down to the branch they all land on; another one opens here. */
+function StackBox({ detail }: { detail: GithubPullDetail }) {
+  const t = useT();
+  if (!detail.stack) return null;
+  return <section className="fork-github-stack" aria-label={t("Stack")}>
+    <ol>{[...detail.stack.pulls].reverse().map((entry) => {
+      const state = stateOf(entry, t);
+      const inner = <><state.icon className={`is-${state.tone}`} aria-label={state.label} /><span className="fork-github-pull-dim">#{entry.number}</span><span className="fork-github-stack-title" dir="auto">{entry.title}</span></>;
+      return <li key={entry.number}>{entry.number === detail.number ? <span aria-current="page">{inner}</span>
+        : <button type="button" onClick={() => openGithubSibling(detail.repository, entry.number, entry.url)}>{inner}</button>}</li>;
+    })}
+    <li><span className="fork-github-pull-dim"><GitBranch aria-hidden="true" /><code>{detail.stack.base}</code></span></li></ol>
+  </section>;
 }
 
 /** A tab's name with its count, when there is one. */
@@ -186,6 +201,7 @@ export function GithubPullPage({ pull, wide, watching, onOpened }: { pull: Githu
             <li><FileDiff aria-hidden="true" />{t("{count} files", { count: detail.changed_files })} <span className="is-added">+{detail.additions}</span> <span className="is-removed">−{detail.deletions}</span></li>
             <li><GitBranch aria-hidden="true" /><code>{detail.head}</code></li>
           </ul>
+          <StackBox detail={detail} />
           {detail.labels.length > 0 && <ul className="fork-github-labels">{detail.labels.map((label) => <li key={label.name} style={{ ["--label" as string]: `#${label.color}` }}>{label.name}</li>)}</ul>}
           <section className="fork-github-status" aria-label={t("Reviews")}>
             {detail.reviewers.length === 0 ? <p className="fork-github-pull-dim fork-github-reviews-none">{t("No review yet")}</p>

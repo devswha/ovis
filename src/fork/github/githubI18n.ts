@@ -1,5 +1,6 @@
 /** The GitHub section's pull request page, clone dialog and actions: each key in Korean, Japanese and Chinese. */
 const STRINGS: Record<string, [ko: string, ja: string, zh: string]> = {
+  "Also merges {list} below it": ["아래의 {list}도 함께 병합합니다", "下の {list} も一緒にマージします", "也会合并下面的 {list}"],
   "And {count} more files": ["그 밖에 파일 {count}개", "ほか {count} 個のファイル", "另有 {count} 个文件"],
   "Behind {base}": ["{base}보다 뒤처짐", "{base} より遅れています", "落后于 {base}"],
   "Checking whether it can merge…": ["병합할 수 있는지 확인하는 중…", "マージできるか確認しています…", "正在检查能否合并…"],
@@ -45,6 +46,7 @@ const STRINGS: Record<string, [ko: string, ja: string, zh: string]> = {
   "Show in Files": ["파일에서 보기", "ファイルで表示", "在文件中显示"],
   "Some checks are not passing": ["통과하지 못한 검사가 있습니다", "通っていないチェックがあります", "有检查未通过"],
   "Someone": ["누군가", "誰か", "某人"],
+  "Stack": ["스택", "スタック", "堆栈"],
   "Something else is in this folder. Choose another.": ["이 폴더에는 다른 것이 있습니다. 다른 폴더를 고르세요.", "このフォルダーには別のものがあります。別のフォルダーを選んでください。", "此文件夹中已有其他内容。请选择其他文件夹。"],
   "This device only watches": ["이 기기는 보기만 합니다", "このデバイスは見るだけです", "此设备只能查看"],
   "Updated {when}": ["{when} 업데이트", "{when}に更新", "{when}更新"],

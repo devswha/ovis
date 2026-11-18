@@ -66,6 +66,11 @@ async function linkedPull(repository: string, number: number, url: string): Prom
   return row;
 }
 
+/** Another pull request opened from a page (one of its stack's), in its place: Back still returns to the list. */
+export function openGithubSibling(repository: string, number: number, url: string): void {
+  void linkedPull(repository, number, url).then((row) => openPull(row, false), () => window.open(url, "_blank", "noopener,noreferrer"));
+}
+
 /** A chat's link opens its pull request: wide, in the inbox's Pull requests; on a phone, over the chat, Back returning to it. */
 function openLinked(enter: () => void, inMode: boolean) {
   return (repository: string, number: number, url: string): void => {

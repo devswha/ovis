@@ -48,6 +48,9 @@ export function GithubMerge({ pull, detail, watching, onDone }: { pull: GithubPu
   const words: Record<Method, string> = { squash: t("Squash and merge"), merge: t("Merge"), rebase: t("Rebase and merge") };
   // GitHub cannot merge a conflict; anything else (protection an admin may bypass) is GitHub's to refuse in its own words
   const blocked = detail.merge === "conflicts";
+  // a stacked pull request merges with the open ones below it
+  const stacked = detail.stack?.pulls ?? [];
+  const below = stacked.slice(0, stacked.findIndex((entry) => entry.number === detail.number)).filter((entry) => entry.state === "open");
   const press = async (): Promise<void> => {
     if (!armed) { setArmed(true); setError(null); return; }
     setArmed(false); setBusy(true);
@@ -65,6 +68,7 @@ export function GithubMerge({ pull, detail, watching, onDone }: { pull: GithubPu
     </div>
     {menu !== null && <RowMenu anchor={menu} title={t("Merge method")} choice onClose={() => setMenu(null)}
       items={methods.map((entry) => ({ id: entry, label: words[entry], icon: methodIcons[entry], checked: entry === method, run: () => { setMethod(entry); setArmed(false); try { localStorage.setItem(METHOD_KEY, entry); } catch { /* private mode */ } } }))} />}
+    {below.length > 0 && <p className="fork-github-pull-dim">{t("Also merges {list} below it", { list: below.map((entry) => `#${entry.number}`).join(", ") })}</p>}
     {error !== null && <p className="fork-github-pull-error" role="alert">{error}</p>}
   </div>;
 }
