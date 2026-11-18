@@ -34,6 +34,7 @@ import { FakeAccountService } from "../../shared/account-service-fake.ts";
 import { newRecordId, signAccountRecord } from "../../shared/account-records.ts";
 import { herdrRpc, workspaceClose, workspaceCreate } from "../herdr/client.ts";
 import { MachineCodeForAccountError } from "../machine-profile.ts";
+import { ended, linkRecord, pairingPc, sendLink, setUpFor, signedInWith, vouchFor, type Pc } from "../account/pairing.test-helpers.ts";
 
 const cleanup: (() => void | Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -436,43 +437,68 @@ it("makes the relay tab's QR code only for a PC in no account, and takes it back
   expect(await codeOf(await ask(false))).toMatch(/^\d{6}$/);
 });
 
-/** A device paired with the relay tab's QR code made for `account`: a row that waits to link, and whether its sessions were ended. */
-async function waitingUnderTabCode(f: Awaited<ReturnType<typeof fixture>>, account: string) {
-  const devices = f.app.context.services.devices;
-  expect(f.service.setRelayAccount(account)).toBe(true);
-  const code = decodeOffer(f.service.offer(null, { noAccountOnly: true }).url)!.code!;
-  const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
-  const row = devices.pairRelay(code, "Phone", Buffer.from(await crypto.subtle.exportKey("spki", keys.publicKey)).toString("base64url"))!.device;
-  let ended = false;
-  devices.onRevoke(row.id, () => { ended = true; });
-  expect([devices.activePairing()?.code, devices.provisionalStands(row.id)]).toEqual([code, true]);
-  return { code, row, ended: () => ended };
+/**
+ * A device that paired with the relay tab's QR code made for `account` and sent its link, vouched for by that account,
+ * whose approval the account service is still reading: the read is held open until `release`. `judged` settles once
+ * the link was judged on that approval (the link awaited the same answer first).
+ */
+async function linkHeldOnApproval(account: string) {
+  let holding = false;
+  const held = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  const f = await pairingPc({ accountFetch: async (request, service) => {
+    if (holding && new URL(request.url).pathname === "/v1/pc/mailbox") { held.resolve(); await release.promise; }
+    return service.fetch(request);
+  } });
+  cleanup.push(() => f.close());
+  await setUpFor(f, account);
+  const code = await f.tabCode();
+  const pairing = f.devices.pairingId();
+  const device = await signedInWith(f, code);
+  await vouchFor(f, account, device.key);
+  const mailbox = f.app.context.services.accountMailbox;
+  const vouch = mailbox.vouch;
+  const asked = Promise.withResolvers<{ answer: Promise<unknown> }>();
+  mailbox.vouch = (...args) => { mailbox.vouch = vouch; const answer = vouch.apply(mailbox, args); asked.resolve({ answer }); return answer; };
+  holding = true;
+  void sendLink(device.session, await linkRecord(device.id, account, device.key)).catch(() => undefined);
+  await held.promise;
+  expect(f.devices.provisionalStands(device.id)).toBe(true);
+  return { f, code, pairing, device, release: () => release.resolve(), judged: async () => { await (await asked.promise).answer; } };
+}
+
+/** Nothing of the link was written: the PC has no member, and nothing is on disk. */
+async function noMember(f: Pc): Promise<void> {
+  expect(await f.status()).toMatchObject({ account: null, members: 0 });
+  expect(f.stored()).toEqual([]);
 }
 
 it("ends the relay tab's QR code, and the rows that wait to link under it, when another account is named for the PC", async () => {
-  const f = await fixture();
-  await f.start();
-  const devices = f.app.context.services.devices;
-  const { code, row, ended } = await waitingUnderTabCode(f, "acct_a");
+  const { f, pairing, device, release, judged } = await linkHeldOnApproval("acct_a");
   // the same account named again (the add-me screen repeats it) changes nothing
-  expect(f.service.setRelayAccount("acct_a")).toBe(true);
-  expect([devices.activePairing()?.code, devices.provisionalStands(row.id), ended()]).toEqual([code, true, false]);
+  await setUpFor(f, "acct_a");
+  expect([f.devices.pairingId(), f.devices.provisionalStands(device.id)]).toEqual([pairing, true]);
   // a device that paired under the code made while acct_a was named is never taken into acct_b
-  expect(f.service.setRelayAccount("acct_b")).toBe(true);
-  expect([devices.activePairing(), devices.provisionalStands(row.id), ended()]).toEqual([null, false, true]);
+  await setUpFor(f, "acct_b");
+  expect([f.devices.activePairing(), f.devices.provisionalStands(device.id)]).toEqual([null, false]);
+  // acct_a's approval, answered only now, writes no member, and the row's sessions end with its link
+  release();
+  await judged();
+  await noMember(f);
+  expect(await ended(device.session)).toBe("auth_revoked");
   // the QR code asked for again is a new one, for the account named now
-  const again = f.service.offer(null, { noAccountOnly: true });
-  expect([again.account, decodeOffer(again.url)?.code === code]).toEqual(["acct_b", false]);
+  const again = await f.local("/api/relay/offer", { method: "POST", headers: { "x-herdr-update": "1", "x-ovis-no-account-only": "1" } });
+  expect(again.body.account).toBe("acct_b");
+  expect((again.body.pairing as { id: string }).id).not.toBe(pairing);
 });
 
 it("ends the code pending, and the rows that wait to link under it, when it resets the relay identity", async () => {
-  const f = await fixture();
-  await f.start();
-  const devices = f.app.context.services.devices;
-  const { row, ended } = await waitingUnderTabCode(f, "acct_a");
-  await f.service.resetIdentity();
-  // an approval asked under the old identity has no row left to write a member for
-  expect([devices.activePairing(), devices.provisionalStands(row.id), ended()]).toEqual([null, false, true]);
+  const { f, device, release, judged } = await linkHeldOnApproval("acct_a");
+  await f.app.context.services.relay.resetIdentity();
+  expect([f.devices.activePairing(), f.devices.provisionalStands(device.id)]).toEqual([null, false]);
+  // an approval asked under the old identity, answered only now, writes no member
+  release();
+  await judged();
+  await noMember(f);
 });
 
 it("names the PC in the relay offer as Ovis lists it", async () => {

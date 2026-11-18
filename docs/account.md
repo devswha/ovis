@@ -1265,8 +1265,8 @@ with "continue only if you started this on your own PC".
   key ([The account's word](#the-accounts-word)). Without one, a device that already drives a PC in
   no account can still link it into an account it names, on its own word: `ovis status` lists such
   members ([How a device joined](#how-a-device-joined)), and every admission is announced on every
-  device connected to the PC; that link only changes the membership of a device paired before, and
-  is not announced as a new pairing.
+  device connected to the PC; that link changes only the membership and the relay key of a device
+  paired before (a link may move its row to a new key), and is not announced as a new pairing.
 - **A PC the directory names under a familiar name.** Whoever holds a sign-in to the account can
   list a PC of their own in the directory (device-code phishing, [Who is asking](#who-is-asking)). **Add** on
   its row in the relay tab pairs A with that PC, whose owner approves it there: A's machine list then

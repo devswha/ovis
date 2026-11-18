@@ -138,7 +138,7 @@ describe("the admission before a first link", () => {
     const admissionGate = Promise.withResolvers<void>();
     let listed = options.listed === true;
     let postSignal: AbortSignal | undefined;
-    let apps = 0, opens = 0, linked = false;
+    let apps = 0, opens = 0, linked = false, directoryReads = 0;
     // the row the PC ended, by its device id: a sign-in with that row is refused, one with another row is not
     let ended: string | null | undefined;
     const fatal: ((error: Error) => void)[] = [];
@@ -203,6 +203,7 @@ describe("the admission before a first link", () => {
           return answer;
         }
         if (path !== "/v1/admissions" || init?.method !== "POST") {
+          directoryReads++; changed();
           return Response.json({ pcs: listed ? [listedPc] : [] });
         }
         events.push(`admission ${bearer}`);
@@ -250,7 +251,7 @@ describe("the admission before a first link", () => {
     /** every session the attempt opened is closed: it is over, and nothing more of it reaches the PC */
     const over = (): Promise<void> => until(() => opened.length > 0 && opened.every((transport) => transport.closed));
     const enrollment = async (): Promise<string | undefined> => ((await store.get(offer.server_id)) as SavedDevice | undefined)?.account_enrollment?.state;
-    return { current, press, switchAccount, armed, over, enrollment, readHeld: readHeld.promise, releaseRead: () => readRelease.resolve(), secondPostHeld: secondPostHeld.promise, releaseSecondPost: () => secondPostRelease.resolve(), events, pcEvents, posted, quiet, sent, failure, endRow, admissionGate, store, offer, apps: () => apps, opens: () => opens, postSignal: () => postSignal };
+    return { current, press, switchAccount, armed, over, enrollment, directoryReads: () => directoryReads, readHeld: readHeld.promise, releaseRead: () => readRelease.resolve(), secondPostHeld: secondPostHeld.promise, releaseSecondPost: () => secondPostRelease.resolve(), events, pcEvents, posted, quiet, sent, failure, endRow, admissionGate, store, offer, apps: () => apps, opens: () => opens, postSignal: () => postSignal };
   }
 
   for (const [what, options, expected] of [
@@ -453,7 +454,9 @@ describe("the admission before a first link", () => {
       if (what === "names a wait") {
         await run.armed(1_000, 1);
         jest.advanceTimersByTime(1_000);
-        await until(() => run.sent.length === 2);
+        // the enrollment settles after the second link: no third one follows
+        await until(async () => await run.enrollment() !== "pending");
+        expect([await run.enrollment(), run.sent.length]).toEqual(["complete", 2]);
       } else {
         // the one link is answered, and the enrollment ends with it
         await until(async () => await run.enrollment() === "failed");
@@ -509,13 +512,16 @@ describe("the admission before a first link", () => {
   });
 
   it("with the mark, lists nothing and posts nothing while Add and pair is not pressed", async () => {
-    // the confirm is drawn with its reads done: only a press goes on from it
     const run = await pairing({ mark: true, hold: true });
     run.admissionGate.resolve();
-    expect(run.current().state.kind).toBe("confirm");
-    expect(run.events.filter((event) => event.startsWith("list") || event.startsWith("admission"))).toEqual([]);
-    expect(run.posted).toEqual([]);
-    expect(run.opens()).toBe(0);
+    // the work before the confirm is done: the directory was read, and the confirm drawn from it
+    await until(() => run.directoryReads() > 0 && run.current().state.kind === "confirm" && (run.current().state as { account?: string }).account !== "checking");
+    // no request is sent before the press: none to the account service but that read, none to the PC
+    expect([run.events, run.posted, run.opens()]).toEqual([[], [], 0]);
+    // the press is what sends them
+    run.press();
+    await until(() => run.posted.length === 1);
+    expect(run.events.slice(0, 3)).toEqual(["pressed", "list Bearer access-acct-test", "admission Bearer access-acct-test"]);
   });
 
   // another tab signs out of, or into another account than, the one the confirm named while the post is out: no PAIR
