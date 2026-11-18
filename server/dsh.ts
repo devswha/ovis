@@ -91,7 +91,6 @@ function explicitResume(argv: readonly unknown[], environ: readonly string[]): b
     || environ.some((word) => /^DSH_TUI_RESUME_SESSION=\S/.test(word));
 }
 
-/** Reset process history between independent fixture sessions. */
 export function forgetDshProcesses(): void { boundProcesses.clear(); }
 
 /** A held lock binds the foreground process to its session; modification times do not. */
@@ -297,14 +296,12 @@ export function projectDsh(text: string, identity: string, expectedSession?: str
       outputs.set(ref, output); trimOutput(tool, output, ref);
       tool.error = message.isError === true; tool.state = tool.error ? "error" : "ok";
     } else if (row.type === "turn/end") {
-      // a turn that failed before any reply (a provider error) still says so
       if (!assistant && data?.reason?.kind !== "completed" && turns.at(-1)?.role === "user") ensureAssistant(row);
       if (assistant) {
         const ts = time(row); if (ts) assistant.end_ts = ts;
         if (data?.reason?.kind === "completed") {
           const part = [...assistant.parts].reverse().find((p) => p.kind === "text"); if (part?.kind === "text") part.phase = "final_answer";
         } else if (data?.reason?.kind === "error" && typeof data.reason.error?.message === "string" && data.reason.error.message.trim() !== "") {
-          // the provider's own words (a usage limit, no balance): the failed request every reader shows
           assistant.parts.push({ kind: "text", text: `Error: ${data.reason.error.message}`, failed: true });
         } else assistant.parts.push({ kind: "notice", source: "dsh-turn-end", text: `Turn ended: ${typeof data?.reason?.kind === "string" ? data.reason.kind : "unknown"}` });
       }

@@ -1,6 +1,7 @@
 // A character cluster holding an East Asian Wide or Fullwidth character (Hangul, CJK, kana,
-// fullwidth forms) or an emoji shown as emoji takes two terminal columns; one of only combining
-// marks and zero-width characters takes none.
+// fullwidth forms) or an emoji shown as emoji by default (Emoji_Presentation) counts two terminal
+// columns; one that only U+FE0F makes an emoji (U+2600 U+FE0F, a sun) counts one. One of only
+// combining marks and zero-width characters takes none.
 const WIDE = /[\u1100-\u115f\u2329\u232a\u2e80-\u303e\u3041-\u33ff\u3400-\u4dbf\u4e00-\u9fff\ua000-\ua4cf\ua960-\ua97f\uac00-\ud7a3\uf900-\ufaff\ufe10-\ufe19\ufe30-\ufe6f\uff00-\uff60\uffe0-\uffe6\u{20000}-\u{2fffd}\u{30000}-\u{3fffd}\p{Emoji_Presentation}]/u;
 const ZERO_WIDTH = /^[\p{Mn}\p{Me}\u200b-\u200f\ufe00-\ufe0f]+$/u;
 let graphemes: Intl.Segmenter | undefined;
@@ -96,13 +97,10 @@ export function secretPrompt(screen: string, columns = Infinity, set: PromptSet 
     // herdr's screen-diff stream does not preserve xterm's soft-wrap flags. Only
     // continue a row that reached the right edge (a final space can be trimmed).
     const previous = lines.pop()?.trimEnd();
-    // Rows are measured in columns, as the terminal fills them.
     const width = previous ? displayWidth(previous) : 0;
     if (!previous || width < columns - 1 || width > columns) return null;
     // Pad to the edge as xterm reads a wrapped row (an empty last cell, as a wide character that
-    // did not fit leaves, reads as a space), so the browser and the server agree on the prompt. No
-    // trim of the joined text: a wrapped row's leading space is part of the prompt (the candidate
-    // is trimmed).
+    // did not fit leaves, reads as a space), so the browser and the server agree on the prompt.
     line = previous + " ".repeat(columns - width) + line;
   }
 }
@@ -119,6 +117,9 @@ const KEY_SHAPES = [
   /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
 ];
 
+const AWS_SECRET_KEY_LENGTH = 40;
+const DIGITLESS_KEY_LENGTH = 40;
+
 /**
  * Whether text holds what looks like an API key or token (#2523): a vendor's shape, or a long run
  * mixing upper and lower case letters (and `_`) with digits, or 40 characters long without them. A `/` is
@@ -129,7 +130,7 @@ const KEY_SHAPES = [
 export function looksLikeKey(text: string): boolean {
   if (KEY_SHAPES.some((shape) => shape.test(text))) return true;
   return (text.match(/[A-Za-z0-9/+_]{24,}/g) ?? []).some((run) => /[a-z]/.test(run) && /[A-Z]/.test(run) && !/[a-z]{8}/.test(run)
-    && (!run.includes("/") || run.length === 40) && (/\d/.test(run) || run.length >= 40));
+    && (!run.includes("/") || run.length === AWS_SECRET_KEY_LENGTH) && (/\d/.test(run) || run.length >= DIGITLESS_KEY_LENGTH));
 }
 
 /** The first set that reads `prompt` as a prompt: what a server must read for a `secret` sent at it to be taken. */
@@ -138,9 +139,7 @@ export function promptSet(prompt: string): PromptSet {
 }
 
 /**
- * Whether the cursor is on the last line of the screen that holds text, which is where a prompt asks. `lines` are
- * the screen's lines, a wrapped row joined to the line above it, and `starts` each line's first screen row. A
- * program that has read its answer prints a line break and works on (git signing in, ssh-add reading its key,
+ * A program that has read its answer prints a line break and works on (git signing in, ssh-add reading its key,
  * sudo running a quiet command) with its prompt still the last text: it asks no more then, and an answer sent
  * again would wait in the terminal for whatever reads next, a shell for instance.
  *

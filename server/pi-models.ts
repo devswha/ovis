@@ -130,19 +130,13 @@ export function readRegularText(path: string): string | null {
     const buffer = Buffer.alloc(Math.min(stat.size, MAX_CATALOG_BYTES) + 1);
     let length = 0;
     for (let count = 1; count > 0 && length < buffer.length; length += count) count = readSync(fd, buffer, length, buffer.length - length, null);
-    // a file that grew past its stat since is read again once its signature moves
     return length > stat.size ? null : buffer.subarray(0, length).toString("utf8");
   } catch { return null; }
   finally { if (fd !== undefined) closeSync(fd); }
 }
 
-/**
- * Each catalog file read once per change: a conversation is re-read on every poll, so the files
- * are only stat'ed there, and read and parsed again when their mtime or size moves.
- */
 const cache = new Map<string, { signature: string; byProvider: Catalog | null }>();
 
-/** A catalog file's models by provider, or null when the file is absent or not a catalog. */
 function readCatalog(path: string, parseCatalog: (parsed: unknown) => Catalog | null): Catalog | null {
   let signature: string;
   try {
@@ -220,10 +214,8 @@ export function piContextWindow(model: string, provider: string | null, agentDir
     const byId = provider === null ? undefined : catalog.get(provider);
     if (byId === undefined) continue;
     if (byId.has(model)) return byId.get(model) ?? null;
-    // provider present but model absent here: a later catalog may still list it
   }
   return null;
 }
 
-/** The cache is process-wide; tests point it at another directory. */
 export function forgetPiModels(): void { cache.clear(); }

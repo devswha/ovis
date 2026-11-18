@@ -1,11 +1,9 @@
 /**
- * The account service API (docs/account.md, "Account service API") in memory, for tests of the PC
- * and the apps. Not a service: no provider behind sign-in, no push, no persistence. `signInAs` says who
- * the next sign-in is, `appleIdToken` stands in for Apple's, and `issueToken` skips sign-in altogether. It checks what the real service must check (record shape and signature, the
- * caller's directory, server proof with the `account` role), so tests fail where a PC or app relies
- * on something the service would refuse.
+ * It checks what the real service must check (record shape and signature, the caller's directory,
+ * server proof with the `account` role), so tests fail where a PC or app relies on something the
+ * service would refuse.
  */
-import { ACCOUNT_RECORDS_MAX, AccountRecordError, isAccountKey, readAccountRecord, type AccountRecord } from "./account-records.ts";
+import { ACCOUNT_RECORDS_MAX, AccountRecordError, isAccountKeyEncoding, readAccountRecord, type AccountRecord } from "./account-records.ts";
 import { accountOsOf, type AccountOs, type AccountPlace } from "./account-asker.ts";
 import { isWssOrigin } from "./relay-offer.ts";
 import { deriveServerId, proofKey, serverChallenge, verifyServerProof } from "./relay-server-proof.ts";
@@ -13,17 +11,14 @@ import { deriveServerId, proofKey, serverChallenge, verifyServerProof } from "./
 export const CHALLENGE_TTL_MS = 60_000;
 export const MAILBOX_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const MAILBOX_PAGE = 100;
-/** Records one account may hold for one PC at once; past it, `/v1/records` answers 429 `mailbox_full`. */
 export const MAILBOX_MAX = 1000;
 export const ACCESS_TOKEN_TTL_S = 3600;
-/** PCs one account may list; past it, a new PC answers 409 `directory_full`. */
 export const DIRECTORY_MAX = 100;
 export const LIMIT_WINDOW_MS = 10 * 60_000;
 export const ADMISSIONS_PER_WINDOW = 10;
 export const ACCOUNT_REQUESTS_PER_WINDOW = 600;
 export const DEVICE_CODE_TTL_S = 900;
 export const DEVICE_POLL_S = 5;
-/** What every push ring says; which device or PC it is about, the app learns from its PCs. */
 export const ACCOUNT_RING = { pane_id: null, title: "Ovis", body: "Your Ovis account has news", tag: "ovis-account" } as const;
 
 export interface FakeRing { account: string; endpoint: string; payload: typeof ACCOUNT_RING }
@@ -31,7 +26,6 @@ export const SIGNIN_CODE_TTL_MS = 60_000;
 
 export type SignInProvider = "github" | "google" | "apple";
 const SIGN_IN_PROVIDERS: readonly string[] = ["github", "google", "apple"];
-/** The providers with a device flow, and the page each one's code is typed at. */
 const DEVICE_PAGES: Readonly<Record<string, string>> = { github: "https://github.com/login/device", google: "https://www.google.com/device" };
 export const LINK_TOKEN_TTL_S = 600;
 /** How recent a sign-in must be to add or remove a sign-in method. */
@@ -80,7 +74,6 @@ export class FakeAccountService {
   private readonly appleTokens = new Map<string, { account: string; nonce: string }>();
   private readonly signIns = new Map<SignInProvider, string>();
   private readonly deviceSignIns = new Map<string, { provider: SignInProvider; userCode: string; account: string | null; denied: boolean; interval: number; nextPoll: number; expires: number; challenge: string | null; page?: boolean; requester?: { label: string | null; os: AccountOs | null } }>();
-  /** by account: its sign-in methods, one per provider */
   private readonly identityList = new Map<string, Map<SignInProvider, { added_at: string }>>();
   private readonly linkTokens = new Map<string, { account: string; family: string; provider: SignInProvider; expires: number }>();
   /** by refresh family: when that sign-in was made (a refresh keeps it), for what needs a recent one */
@@ -94,22 +87,18 @@ export class FakeAccountService {
   private readonly challenges = new Map<string, { server_id: string; expected: string; expires: number }>();
   private readonly admissionList: FakeAdmission[] = [];
   private readonly accountLimits = new Map<string, Record<string, unknown>>();
-  /** accounts whose subscription still renews: their delete is refused */
   private readonly subscribed = new Set<string>();
   private readonly deletedAccounts = new Set<string>();
   /** sign-ins made with a device code or on the link page, refreshes included: they cannot delete the account */
   private readonly deviceFamilies = new Set<string>();
   /** Where the service sees every request come from (Cloudflare's `request.cf`); unknown unless a test says. */
   requestPlace: AccountPlace = { country: null, city: null };
-  /** False acts as an account service from before "Who is asking", whose link page start refuses `label` and `os`. */
-  linkPageTakesRequester = true;
+  linkPageAcceptsLabelAndOs = true;
   private seq = 0;
-  /** Every request the fake answered, oldest first: `METHOD /path`. */
   readonly requests: string[] = [];
 
   constructor(private readonly now: () => number = Date.now) {}
 
-  /** A bearer token for `account`, as if its owner had just signed in. */
   issueToken(account: string): string {
     const token = randomHex(32);
     const family = randomHex(16);
@@ -118,34 +107,26 @@ export class FakeAccountService {
     return token;
   }
 
-  /** Sets the limits `GET /v1/account/limits` answers for `account`. */
   setLimits(account: string, limits: Record<string, unknown> | null): void {
     if (limits === null) this.accountLimits.delete(account);
     else this.accountLimits.set(account, limits);
   }
 
-  /** Who the next sign-in with `provider` turns out to be; unset, `acct_<provider>`. */
   signInAs(provider: SignInProvider, account: string): void { this.signIns.set(provider, account); }
 
-  /** The account has a subscription that still renews (`false`: cancelled, or none). */
   subscribe(account: string, renews = true): void { if (renews) this.subscribed.add(account); else this.subscribed.delete(account); }
 
-  /** Whether `DELETE /v1/account` erased that account. */
   deleted(account: string): boolean { return this.deletedAccounts.has(account); }
 
-  /** What `GET /v1/providers` answers: the sign-ins this service is set up for. */
-  offer(providers: SignInProvider[], device: SignInProvider[]): void { this.offered = { providers, device }; }
+  offerSignIns(providers: SignInProvider[], device: SignInProvider[]): void { this.offered = { providers, device }; }
 
-  /** Says the service has the link page (`device_page`), finishing `/v1/signin/ovis/device` with these sign-ins. */
   offerLinkPage(providers: SignInProvider[]): void { this.offered = { ...this.offered, device_page: providers }; }
 
-  /** What the PC that started the link page sign-in showing `userCode` said it is; undefined for no such sign-in. */
   linkRequester(userCode: string): { label: string | null; os: AccountOs | null } | undefined {
     for (const entry of this.deviceSignIns.values()) if (entry.page && entry.userCode === userCode) return entry.requester;
     return undefined;
   }
 
-  /** The person typed `userCode` on the link page and confirmed a sign-in with `provider`. */
   approveOnLinkPage(userCode: string, account: string, provider: SignInProvider): void {
     // one approval, as the service: an approved request's code names nothing any more
     for (const entry of this.deviceSignIns.values()) {
@@ -167,7 +148,6 @@ export class FakeAccountService {
     return token;
   }
 
-  /** The person typed `userCode` at GitHub and approved (or refused) the device sign-in. */
   approveDevice(userCode: string, account: string): void {
     for (const entry of this.deviceSignIns.values()) if (entry.userCode === userCode) entry.account = account;
   }
@@ -176,16 +156,13 @@ export class FakeAccountService {
     for (const entry of this.deviceSignIns.values()) if (entry.userCode === userCode) entry.denied = true;
   }
 
-  /** Every push the fake would have sent, oldest first. */
   rings(): readonly FakeRing[] { return this.ringList; }
 
-  /** Rings every other signed-in device of `account` that subscribed. */
   private ring(account: string, family: string): void {
     for (const [owner, push] of this.pushes) if (push.account === account && owner !== family) this.ringList.push({ account, endpoint: push.endpoint, payload: ACCOUNT_RING });
   }
 
-  /** Counts one more of `key` in its 10-minute window; false past `max`. */
-  private spend(key: string, max: number): boolean {
+  private withinRateLimit(key: string, max: number): boolean {
     const now = this.now();
     const counter = this.counters.get(key);
     if (!counter || now - counter.start >= LIMIT_WINDOW_MS) { this.counters.set(key, { start: now, count: 1 }); return true; }
@@ -297,7 +274,6 @@ export class FakeAccountService {
     }
   }
 
-  /** Everything kept under `account` goes, at once: the provider that signed in to it then signs in to none. */
   private erase(account: string): void {
     for (const held of [...this.tokens.values()]) if (held.account === account) this.revokeFamily(held.family);
     for (const [token, refresh] of this.refreshTokens) if (refresh.account === account) { this.revokedFamilies.add(refresh.family); this.refreshTokens.delete(token); }
@@ -323,19 +299,16 @@ export class FakeAccountService {
 
   admissions(): readonly FakeAdmission[] { return this.admissionList; }
 
-  /** What a PC would still get from `account`'s mailbox for it, for assertions; the service hiding a record is `drop`. */
   mailbox(serverId: string, account: string): AccountRecord[] {
     this.expire();
     return (this.mailboxes.get(box(serverId, account)) ?? []).map(({ record }) => record);
   }
 
-  /** A misbehaving service: removes queued records it should have delivered. */
-  drop(serverId: string, account: string, predicate: (record: AccountRecord) => boolean): void {
+  dropQueuedRecords(serverId: string, account: string, predicate: (record: AccountRecord) => boolean): void {
     const key = box(serverId, account);
     this.mailboxes.set(key, (this.mailboxes.get(key) ?? []).filter(({ record }) => !predicate(record)));
   }
 
-  /** Answers like the service: pass it as the PC's or app's `fetch`. */
   readonly fetch = async (input: Request | string | URL, init?: RequestInit): Promise<Response> => {
     const request = input instanceof Request ? input : new Request(input, init);
     const url = new URL(request.url);
@@ -351,7 +324,7 @@ export class FakeAccountService {
         const label = body.label;
         if (body.code_challenge_method !== "S256" || typeof body.code_challenge !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(body.code_challenge)
           || (label !== undefined && (typeof label !== "string" || label.length < 1 || label.length > 48 || /[\p{Cc}\p{Cs}]/u.test(label)))
-          || Object.keys(body).some((name) => !["code_challenge", "code_challenge_method", ...(this.linkPageTakesRequester ? ["label", "os"] : [])].includes(name))) {
+          || Object.keys(body).some((name) => !["code_challenge", "code_challenge_method", ...(this.linkPageAcceptsLabelAndOs ? ["label", "os"] : [])].includes(name))) {
           return problem(400, "invalid_request", "Start a sign-in on the link page with an S256 code_challenge, and a label of 1-48 characters if any");
         }
         const deviceCode = randomHex(32);
@@ -393,7 +366,7 @@ export class FakeAccountService {
     const session = bearer === undefined ? undefined : this.tokens.get(bearer);
     if (session === undefined || this.now() >= session.expires || this.revokedFamilies.has(session.family)) return problem(401, "unauthorized", "Sign in again");
     const account = session.account;
-    if (!this.spend(`requests:${account}`, ACCOUNT_REQUESTS_PER_WINDOW)) return problem(429, "rate_limited", "Too many requests; try again later");
+    if (!this.withinRateLimit(`requests:${account}`, ACCOUNT_REQUESTS_PER_WINDOW)) return problem(429, "rate_limited", "Too many requests; try again later");
     if (path === "/v1/signout" && request.method === "POST") {
       this.revokeFamily(session.family);
       return new Response(null, { status: 204 });
@@ -402,7 +375,6 @@ export class FakeAccountService {
       const body = await request.json() as { endpoint?: unknown; keys?: { p256dh?: unknown; auth?: unknown } };
       if (typeof body.endpoint !== "string" || !URL.canParse(body.endpoint) || typeof body.keys?.p256dh !== "string" || !/^[A-Za-z0-9_-]{87}$/.test(body.keys.p256dh)
         || typeof body.keys.auth !== "string" || !/^[A-Za-z0-9_-]{22}$/.test(body.keys.auth)) return problem(400, "invalid_endpoint", "Send the subscription's endpoint and keys");
-      // one subscription per signed-in device: a new one replaces it
       this.pushes.set(session.family, { account, endpoint: body.endpoint });
       return new Response(null, { status: 204 });
     }
@@ -498,8 +470,8 @@ export class FakeAccountService {
     if (path === "/v1/admissions" && request.method === "POST") {
       const body = await request.json() as { server_id?: unknown; label?: unknown; key?: unknown; os?: unknown };
       if (typeof body.server_id !== "string" || !directory.has(body.server_id) || typeof body.label !== "string") return problem(400, "unknown_pc", "List PCs of this account only");
-      if (!isAccountKey(body.key)) return problem(400, "invalid_key", "Name the waiting device's account key");
-      if (!this.spend(`admissions:${account}`, ADMISSIONS_PER_WINDOW)) return problem(429, "too_many_admissions", "Too many requests; try again later");
+      if (!isAccountKeyEncoding(body.key)) return problem(400, "invalid_key", "Name the waiting device's account key");
+      if (!this.withinRateLimit(`admissions:${account}`, ADMISSIONS_PER_WINDOW)) return problem(429, "too_many_admissions", "Too many requests; try again later");
       const admission = { id: randomHex(16), server_id: body.server_id, account, label: body.label, key: body.key, at: this.iso(), os: accountOsOf(body.os), ...this.requestPlace };
       this.admissionList.push(admission);
       this.ring(account, session.family);
@@ -535,7 +507,6 @@ export class FakeAccountService {
       // only the account the PC says it belongs to learns that it came by
       const entry = this.directories.get(body.account)?.get(challenge.server_id);
       if (entry) entry.last_seen_at = this.iso();
-      // the account's admissions for this PC in the last ten minutes, every pull until they age out
       const admissions = this.admissionList
         .filter((a) => a.server_id === challenge.server_id && a.account === body.account && this.now() - Date.parse(a.at) < ADMISSION_TTL_MS)
         .map(({ key, label, at }) => ({ key, label, at }));

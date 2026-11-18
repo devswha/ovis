@@ -26,7 +26,6 @@ export class MachineProfileError extends Error {}
 export function ownerSocketPath(stateDir: string): string { return join(stateDir, "serve.sock"); }
 /** The longest socket path served: a longer one Bun would listen on, while curl's --unix-socket cannot reach it. */
 const SOCKET_PATH_MAX = 100;
-/** Read the selection without invoking runtime discovery, hc, a login shell or any core connection. */
 export function machineEngine(stateDir: string, port: number): string {
   const named = process.env["OVIS_RUNTIME"];
   if (named) return named;
@@ -39,7 +38,6 @@ export function machineEngine(stateDir: string, port: number): string {
   return "herdr";
 }
 
-/** A path as the system resolves it (links, `..`, a trailing slash, relative to the working folder), also where its last parts do not exist yet. */
 function canonical(path: string): string {
   try { return realpathSync(path); }
   catch (error) {
@@ -107,7 +105,6 @@ export function claimServerState(told: string | undefined) {
     if (holder !== null) throw new MachineProfileError(`An Ovis already runs on this state folder (${holder}), so no second server was started; ${own}`);
   }
   const marker = join(stateDir, MARKER);
-  // `serve.own` alone is what a start killed between its hold and its mark leaves; a holder of it refuses at the hold
   const look = () => {
     const entries = readdirSync(stateDir).filter((name) => name !== "serve.own");
     const marked = entries.includes(MARKER) && markedByProfile(marker);
@@ -116,13 +113,11 @@ export function claimServerState(told: string | undefined) {
   const foreign = (found: ReturnType<typeof look>) => new MachineProfileError(found.wrongMarker
     ? `The state folder's ${marker} is not the machine profile's own, so no server was started; name an empty folder or the profile's own with OVIS_STATE_DIR`
     : `The state folder ${stateDir} holds files that are not the machine profile's and no ${MARKER}, so no server was started; name an empty folder or the profile's own with OVIS_STATE_DIR`);
-  // first before the hold: a refused start writes nothing into the folder, not even serve.own
   const first = look();
   if (first.foreign) throw foreign(first);
   const running = "Another server already owns this Ovis state directory, so no second server was started";
   const hold = join(stateDir, "serve.own");
   const cannotHold = (error: unknown) => new MachineProfileError(`The machine profile cannot hold its state folder, so no server was started (${error instanceof Error ? error.message : String(error)})`);
-  // made by this start only when it creates the file itself, at once: one another server made meanwhile is not its
   let made = false;
   try {
     closeSync(openSync(hold, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600));
@@ -151,13 +146,11 @@ export function claimServerState(told: string | undefined) {
     starting: "Another server is claiming this Ovis state directory, so no second server was started",
   }, {}, { wait: false });
   const socket = ownerSocketPath(stateDir);
-  // a socket file a killed server left: nothing listens there, and this process holds the folder now
   rmSync(socket, { force: true });
   // `door`: this lease's server takes its local owner on `socket` alone, and answers only liveness on TCP
   return { stateDir, socket, release: lease.release, listening: (port: number, hostname: string) => lease.amend((lock) => writePrivateState(join(lock, "http.json"), { port, hostname, socket, door: 1 })) };
 }
 
-/** The herdr this server runs, and where that came from: OVIS_HERDR_BIN, or the PATH. */
 export function machineHerdrBinary(): string {
   const named = process.env["OVIS_HERDR_BIN"];
   if (named) return `herdr binary: ${named} (from OVIS_HERDR_BIN)`;
@@ -169,10 +162,8 @@ export function machineHerdrBinary(): string {
  * one, for the owner: the folder of this path that another account could change, and how (its mode, owner or group).
  */
 const unsafeSocket = (reason: string | null | undefined) => `The selected herdr socket cannot be used safely by this account${reason ? `: ${reason}` : ""}`;
-/** Why the classic engine is down as machineSocket last found (null once a session is pinned), and where the pinned socket must stay. */
 let engineRefusal: string | null = null;
 let pinnedPlace: HerdrSocketPlace | null = null;
-/** Discovery again while no session was selected and none or several ran; the next health check runs it. */
 let rediscovery: (() => Promise<string | null>) | null = null;
 let rediscovering: Promise<void> | null = null;
 
@@ -185,7 +176,6 @@ export async function machineSocket(stateDir: string, engine: string): Promise<s
   return engineRefusal;
 }
 
-/** Why the engine is down for health: while no session was selected, discovery runs again first and pins the one session it finds. */
 export async function machineSocketRefusal(): Promise<string | null> {
   if (rediscovery) await (rediscovering ??= rediscovery().then((found) => { engineRefusal = found; }).finally(() => { rediscovering = null; }));
   return engineRefusal;
@@ -209,7 +199,6 @@ async function discovered(unavailable: string): Promise<string | null> {
   const refusal = found.length === 1 ? await pinned(found[0]!.socket_path, unavailable)
     : found.length > 1 ? "Several herdr sessions are running; select one with HERDR_REMOTE_SOCKET"
       : refused !== null ? unsafeSocket(refused) : "herdr is not running for the selected session";
-  // looked for again until one session is pinned, also when the one found was refused
   rediscovery = refusal === null ? null : () => discovered(unavailable);
   return refusal;
 }
@@ -241,7 +230,6 @@ export async function machineHealth(engine: string, refusal: string | null = eng
   return { machine_profile: { engine, runtime_down: reason !== null, reason }, ...(herdr ? { herdr } : {}) };
 }
 
-/** What a herdr read that failed answers on the profile while its health gives no reason, and its code for an error of herdr's own. */
 const READ_FAILED = "herdr did not answer this request";
 const READ_FAILED_CODE = "herdr_error";
 
@@ -258,10 +246,8 @@ const KEPT_HERDR_CODES: ReadonlySet<string> = new Set(["pane_not_found", "stale_
  * `zoomed_tab` and `unchanged` (the bridge's own answers for a move).
  */
 const KEPT_LAYOUT_REASONS: ReadonlySet<string> = new Set(["same_pane", "cross_tab", "not_found", "no_neighbor", "zoomed_tab", "unchanged"]);
-/** A layout answer's reason on the profile: kept (KEPT_LAYOUT_REASONS), else READ_FAILED_CODE. */
 export const machineLayoutReason = (reason: string): string => KEPT_LAYOUT_REASONS.has(reason) ? reason : READ_FAILED_CODE;
 
-/** The profile's words for a pane herdr could not restore after it restarted: its `restore_error`, and an attach's error. */
 const NOT_RESTORED = "herdr could not restore this pane after it restarted";
 
 /**
