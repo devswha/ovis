@@ -21,9 +21,20 @@ const NEWER_ID = "34".repeat(8);
 // a newer pairing of the same PC that another tab saved
 const REPLACED_ID = "56".repeat(8);
 
+let waiting: (() => void)[] = [];
+/** Told by every fake of a pairing when what it holds changes: a render, a request, a store write, a timer armed, a session closed. */
+const changed = (): void => { for (const wake of waiting.splice(0)) wake(); };
+/**
+ * Settles once `holds`, looked at again at each change a fake tells of. The work between them signs, which settles on
+ * no turn of this thread, so no count of turns bounds it: the test's own timeout does, which no faked clock holds.
+ */
 async function until(holds: () => boolean | Promise<boolean>): Promise<void> {
-  for (let turn = 0; turn < 10_000; turn++) { if (await holds()) return; await new Promise<void>((resolve) => setImmediate(resolve)); }
-  throw new Error("The pairing did not reach the expected state");
+  for (;;) {
+    // asked for before the look, so a change while an async look runs wakes the next one
+    const next = new Promise<void>((resolve) => { waiting.push(resolve); });
+    if (await holds()) return;
+    await next;
+  }
 }
 
 // A device stops before pairing only for a code that
@@ -33,8 +44,9 @@ async function until(holds: () => boolean | Promise<boolean>): Promise<void> {
 describe("the admission before a first link", () => {
   let browser: ReturnType<typeof createShellTestPage>;
   const transports: RelayTransport[] = [];
+  const setTimer = globalThis.setTimeout;
   beforeEach(() => { browser = createShellTestPage(); browser.setVisibility("hidden"); });
-  afterEach(() => { jest.useRealTimers(); for (const transport of transports.splice(0)) transport.close(); setTransport(nativeTransport); browser.dispose(); });
+  afterEach(() => { globalThis.setTimeout = setTimer; jest.useRealTimers(); for (const transport of transports.splice(0)) transport.close(); setTransport(nativeTransport); browser.dispose(); waiting = []; });
 
   interface Options {
     /** the offer carries `admission: 1` (a code whose PC checks new devices with the account service) */
@@ -105,8 +117,8 @@ describe("the admission before a first link", () => {
         return devices.get(id);
       },
       list: async () => [...devices.values()],
-      remove: async (id) => { replaceFirst(id); devices.delete(id); },
-      removeRow: async (id, row) => { replaceFirst(id); if (devices.get(id)?.device_id !== row) return false; devices.delete(id); return true; },
+      remove: async (id) => { replaceFirst(id); devices.delete(id); changed(); },
+      removeRow: async (id, row) => { replaceFirst(id); if (devices.get(id)?.device_id !== row) return false; devices.delete(id); changed(); return true; },
       update: async (id, change) => {
         // the write that would put the older record back: another tab's Forget, or newer pairing, commits just before it
         if ((options.forgetAtRestore || options.replaceAtRestore) && devices.get(id)?.device_id === NEWER_ID) {
@@ -114,7 +126,7 @@ describe("the admission before a first link", () => {
           try { next = change(devices.get(id)); } catch { next = undefined; }
           if (next?.device_id === OLDER_ID) { if (options.forgetAtRestore) devices.delete(id); else devices.set(id, newer); }
         }
-        const device = change(devices.get(id)); devices.set(id, device); return device;
+        const device = change(devices.get(id)); devices.set(id, device); changed(); return device;
       },
     };
     // what reached the account service and the PC, in order, with the keys each admission and link named
@@ -130,10 +142,22 @@ describe("the admission before a first link", () => {
     // the row the PC ended, by its device id: a sign-in with that row is refused, one with another row is not
     let ended: string | null | undefined;
     const fatal: ((error: Error) => void)[] = [];
+    // every wait armed, with how many links had been sent by then: a test moves a faked clock only past one it saw armed
+    const timers: { readonly ms: number; readonly links: number }[] = [];
+    globalThis.setTimeout = ((...timer: Parameters<typeof setTimeout>) => {
+      timers.push({ ms: timer[1] ?? 0, links: sent.length }); changed();
+      return setTimer(...timer);
+    }) as typeof setTimeout;
+    const opened: Admitted[] = [];
     class Admitted extends RelayTransport {
+      closed = false;
+      override close() { this.closed = true; super.close(); changed(); }
       override get server() { return { version: "1.0.0", relayProtocol: RELAY_PROTOCOL, features: [ACCOUNT_FEATURE] }; }
       override async renew() {}
       override async fetch(path: string, init?: RequestInit) {
+        try { return this.answer(path, init); } finally { changed(); }
+      }
+      answer(path: string, init?: RequestInit) {
         switch (path) {
           case "/api/account/status": return Response.json({ account: linked || options.pcIn ? "acct-test" : null, unlinked: options.pcIn && !linked ? [NEWER_ID, OLDER_ID] : [], removals: [], enrolling: !linked && !options.pcIn });
           case "/api/account/link": {
@@ -154,7 +178,7 @@ describe("the admission before a first link", () => {
     let props: RelayShellProps | undefined;
     const render = (node: ReactNode): void => {
       if (!isValidElement<{ readonly children?: ReactNode }>(node)) throw new TypeError("Missing shell element");
-      if (node.type === RelayShell && isValidElement<RelayShellProps>(node)) { props = node.props; return; }
+      if (node.type === RelayShell && isValidElement<RelayShellProps>(node)) { props = node.props; changed(); return; }
       render(node.props.children);
     };
     const current = (): RelayShellProps => { if (!props) throw new TypeError("Shell not rendered"); return props; };
@@ -175,6 +199,7 @@ describe("the admission before a first link", () => {
           events.push(`list ${bearer}`);
           const answer = options.listing?.() ?? Response.json({});
           if (answer.ok) listed = true;
+          changed();
           return answer;
         }
         if (path !== "/v1/admissions" || init?.method !== "POST") {
@@ -185,6 +210,7 @@ describe("the admission before a first link", () => {
         posted.push(body.key);
         quiet.push(body.quiet === true);
         postSignal = init.signal ?? undefined;
+        changed();
         if (options.neverAnswers === "admission") return hung();
         if (options.holdSecondPost && posted.length === 2) { secondPostHeld.resolve(); await secondPostRelease.promise; }
         await admissionGate.promise;
@@ -193,9 +219,10 @@ describe("the admission before a first link", () => {
         events.push(answer.ok ? "admission answered" : "admission refused");
         if (options.keyChanges && posted.length === 1) await accountStore.clear(() => true);
         if (options.switchAfterAdmission && answer.ok) await accountStore.set("session", sessionOf("acct-other"));
+        changed();
         return answer;
       },
-      createRoot: () => ({ render, unmount() {} }), renderApp: () => { apps++; return { render() {}, unmount() {} }; },
+      createRoot: () => ({ render, unmount() {} }), renderApp: () => { apps++; changed(); return { render() {}, unmount() {} }; },
       pendingPush: { get: async () => undefined, clear: async () => {} }, navigate() {}, checkPc: async () => ({ kind: "offline", reason: "relay" }),
       // a pairing (the offer carries the code) saves a new row's record for this device in place of any, as PAIR does;
       // a sign-in with what is saved is refused once the PC ended the row
@@ -205,7 +232,7 @@ describe("the admission before a first link", () => {
         else if (ended !== undefined && devices.get(offer.server_id)?.device_id === ended) throw new MuxProtocolError("auth_failed", "the PC ended this row");
         else devices.set(offer.server_id, devices.get(offer.server_id) ?? older);
         if (transportOptions.onFatal) fatal.push(transportOptions.onFatal);
-        const opened = new Admitted(offer); transports.push(opened); return opened;
+        const transport = new Admitted(offer); transports.push(transport); opened.push(transport); changed(); return transport;
       },
     });
     const press = (): void => { events.push("pressed"); current().onPair(); };
@@ -218,7 +245,12 @@ describe("the admission before a first link", () => {
     /** the PC ends the row: every session of it ends `auth_revoked`, and a later sign-in with it is refused */
     const endRow = (): void => { ended = devices.get(offer.server_id)?.device_id; for (const end of fatal.splice(0)) end(new MuxProtocolError("auth_revoked", "the PC ended this row")); };
     const switchAccount = (): Promise<void> => accountStore.set("session", sessionOf("acct-other"));
-    return { current, press, switchAccount, readHeld: readHeld.promise, releaseRead: () => readRelease.resolve(), secondPostHeld: secondPostHeld.promise, releaseSecondPost: () => secondPostRelease.resolve(), events, pcEvents, posted, quiet, sent, failure, endRow, admissionGate, store, offer, apps: () => apps, opens: () => opens, postSignal: () => postSignal };
+    /** a wait of `ms` armed after the `links`th link: the faked clock is moved past it only once it is */
+    const armed = (ms: number, links: number): Promise<void> => until(() => sent.length === links && timers.some((timer) => timer.ms === ms && timer.links === links));
+    /** every session the attempt opened is closed: it is over, and nothing more of it reaches the PC */
+    const over = (): Promise<void> => until(() => opened.length > 0 && opened.every((transport) => transport.closed));
+    const enrollment = async (): Promise<string | undefined> => ((await store.get(offer.server_id)) as SavedDevice | undefined)?.account_enrollment?.state;
+    return { current, press, switchAccount, armed, over, enrollment, readHeld: readHeld.promise, releaseRead: () => readRelease.resolve(), secondPostHeld: secondPostHeld.promise, releaseSecondPost: () => secondPostRelease.resolve(), events, pcEvents, posted, quiet, sent, failure, endRow, admissionGate, store, offer, apps: () => apps, opens: () => opens, postSignal: () => postSignal };
   }
 
   for (const [what, options, expected] of [
@@ -324,15 +356,13 @@ describe("the admission before a first link", () => {
   });
 
   it("sends the same link again on the same session after the wait a 503 account_unavailable named, and pairs once", async () => {
-    const run = await pairing({ mark: true, listed: true, links: [() => Response.json({ error: { code: "account_unavailable" } }, { status: 503, headers: { "retry-after": "3" } }), () => Response.json({})] });
+    const run = await pairing({ mark: true, listed: true, hold: true, links: [() => Response.json({ error: { code: "account_unavailable" } }, { status: 503, headers: { "retry-after": "3" } }), () => Response.json({})] });
     jest.useFakeTimers();
+    run.press();
     run.admissionGate.resolve();
-    for (let turn = 0; run.sent.length < 1 && turn < 5_000; turn++) await crypto.subtle.digest("SHA-256", new Uint8Array(1));
-    for (let turn = 0; run.sent.length < 2 && turn < 5_000; turn++) {
-      jest.advanceTimersByTime(1_000);
-      await crypto.subtle.digest("SHA-256", new Uint8Array(1));
-    }
-    expect(run.sent).toHaveLength(2);
+    await run.armed(3_000, 1);
+    jest.advanceTimersByTime(3_000);
+    await until(() => run.sent.length === 2);
     expect(run.pcEvents().filter((event) => event === "pair")).toHaveLength(1);
   });
 
@@ -373,18 +403,16 @@ describe("the admission before a first link", () => {
   }
 
   // a hung account service holds a marked pairing no longer than its bound, and nothing reaches the PC
-  const turn = () => crypto.subtle.digest("SHA-256", new Uint8Array(1));
   for (const [hung, failure, options] of [["admission", "admission-unanswered", { listed: true }]] as const) {
     it(`with the mark, stops at the bound when the account service never answers the ${hung}, and sends no PAIR`, async () => {
       const run = await pairing({ mark: true, hold: true, neverAnswers: hung, ...options });
       jest.useFakeTimers();
       run.press();
-      const asked = (): boolean => run.posted.length === 1;
-      for (let step = 0; !asked() && step < 5_000; step++) await turn();
-      expect(asked()).toBe(true);
+      // the post's bound is armed with the post itself
+      await until(() => run.posted.length === 1);
       expect(run.current().state.kind).toBe("connecting");
       jest.advanceTimersByTime(ADMISSION_WAIT_MS);
-      for (let step = 0; run.current().state.kind !== "failed" && step < 5_000; step++) await turn();
+      await until(() => run.current().state.kind === "failed");
       expect(run.failure()).toBe(failure);
       expect(run.opens()).toBe(0);
     });
@@ -396,13 +424,12 @@ describe("the admission before a first link", () => {
     jest.useFakeTimers();
     run.press();
     run.admissionGate.resolve();
-    let state: string | undefined;
-    for (let step = 0; state !== "failed" && step < 20_000; step++) {
-      if (step % 4 === 3) jest.advanceTimersByTime(1_000);
-      await turn();
-      state = ((await run.store.get(run.offer.server_id)) as SavedDevice | undefined)?.account_enrollment?.state;
+    // the PC named no wait: each link but the last waits three seconds before the next
+    for (let links = 1; links < 5; links++) {
+      await run.armed(3_000, links);
+      jest.advanceTimersByTime(3_000);
     }
-    expect(state).toBe("failed");
+    await until(async () => await run.enrollment() === "failed");
     expect(run.sent).toHaveLength(5);
     expect(run.pcEvents().filter((event) => event === "pair")).toHaveLength(1);
   });
@@ -412,22 +439,26 @@ describe("the admission before a first link", () => {
     jest.useFakeTimers();
     run.press();
     run.admissionGate.resolve();
-    for (let step = 0; run.sent.length < 1 && step < 5_000; step++) await turn();
-    expect(run.sent).toHaveLength(1);
+    await run.armed(LINK_RETRY_MAX_MS, 1);
     jest.advanceTimersByTime(LINK_RETRY_MAX_MS);
-    for (let step = 0; run.sent.length < 2 && step < 5_000; step++) await turn();
-    expect(run.sent).toHaveLength(2);
+    await until(() => run.sent.length === 2);
   });
 
   // without the mark a link goes as before: once, unless the PC named a wait
-  for (const [what, headers, expected] of [["names no wait", {}, 1], ["names a wait", { "retry-after": "1" }, 2]] as const) {
+  for (const [what, headers] of [["names no wait", {}], ["names a wait", { "retry-after": "1" }]] as const) {
     it(`without the mark, sends the link again only when the PC ${what}`, async () => {
       const run = await pairing({ hold: true, links: [() => Response.json({ error: { code: "account_unavailable" } }, { status: 503, headers }), () => Response.json({})] });
       jest.useFakeTimers();
       run.press();
-      for (let step = 0; run.sent.length < 1 && step < 5_000; step++) await turn();
-      for (let step = 0; step < 400; step++) { if (step % 4 === 3) jest.advanceTimersByTime(1_000); await turn(); }
-      expect(run.sent).toHaveLength(expected);
+      if (what === "names a wait") {
+        await run.armed(1_000, 1);
+        jest.advanceTimersByTime(1_000);
+        await until(() => run.sent.length === 2);
+      } else {
+        // the one link is answered, and the enrollment ends with it
+        await until(async () => await run.enrollment() === "failed");
+        expect(run.sent).toHaveLength(1);
+      }
     });
   }
 
@@ -478,9 +509,9 @@ describe("the admission before a first link", () => {
   });
 
   it("with the mark, lists nothing and posts nothing while Add and pair is not pressed", async () => {
+    // the confirm is drawn with its reads done: only a press goes on from it
     const run = await pairing({ mark: true, hold: true });
     run.admissionGate.resolve();
-    for (let step = 0; step < 400; step++) await turn();
     expect(run.current().state.kind).toBe("confirm");
     expect(run.events.filter((event) => event.startsWith("list") || event.startsWith("admission"))).toEqual([]);
     expect(run.posted).toEqual([]);
@@ -500,11 +531,11 @@ describe("the admission before a first link", () => {
     jest.useFakeTimers();
     run.press();
     run.admissionGate.resolve();
-    for (let step = 0; run.sent.length < 1 && step < 5_000; step++) await turn();
-    expect(run.sent).toHaveLength(1);
+    await run.armed(2_000, 1);
     await run.switchAccount();
-    jest.advanceTimersByTime(LINK_RETRY_MAX_MS);
-    for (let step = 0; step < 400; step++) await turn();
+    jest.advanceTimersByTime(2_000);
+    // the wait over, the sign-in is read again and the enrollment ends
+    await until(async () => await run.enrollment() === "failed");
     expect(run.sent).toHaveLength(1);
   });
 
@@ -512,8 +543,8 @@ describe("the admission before a first link", () => {
   it("keeps a Forget that another tab makes as a marked re-pair's refusal is handled, and writes no older record over it", async () => {
     const run = await pairing({ mark: true, saved: true, listed: true, forgetAtRestore: true, links: [() => Response.json({ error: { code: "unverified_device" } }, { status: 403 })] });
     run.admissionGate.resolve();
-    await until(() => run.sent.length === 1);
-    for (let step = 0; step < 400; step++) await turn();
+    // the refusal is handled, and said
+    await until(() => run.current().state.kind === "failed");
     // the older record was not written back over the Forget
     expect(await run.store.get(run.offer.server_id)).toBeUndefined();
   });
@@ -544,7 +575,7 @@ describe("the admission before a first link", () => {
       await run.readHeld;
       run.current().onCancel();
       run.releaseRead();
-      for (let step = 0; step < 400; step++) await turn();
+      await run.over();
       expect(run.sent).toEqual([]);
       expect(run.apps()).toBe(0);
     });
@@ -555,15 +586,14 @@ describe("the admission before a first link", () => {
     jest.useFakeTimers();
     run.press();
     run.admissionGate.resolve();
-    for (let step = 0; run.sent.length < 1 && step < 5_000; step++) await turn();
-    expect(run.sent).toHaveLength(1);
-    const before = ((await run.store.get(run.offer.server_id)) as SavedDevice | undefined)?.account_enrollment?.state;
+    await run.armed(2_000, 1);
+    const before = await run.enrollment();
     run.current().onCancel();
     jest.advanceTimersByTime(LINK_RETRY_MAX_MS);
-    for (let step = 0; step < 400; step++) await turn();
+    await run.over();
     expect(run.sent).toHaveLength(1);
     expect(run.apps()).toBe(0);
-    expect(((await run.store.get(run.offer.server_id)) as SavedDevice | undefined)?.account_enrollment?.state).toBe(before);
+    expect(await run.enrollment()).toBe(before);
   });
 
   // a refused first link forgets only the refused row's own record: a newer pairing another tab saved meanwhile stands
@@ -589,7 +619,7 @@ describe("the admission before a first link", () => {
     run.current().onCancel();
     expect(run.postSignal()?.aborted).toBe(true);
     run.releaseSecondPost();
-    for (let step = 0; step < 400; step++) await turn();
+    await run.over();
     expect(run.sent).toEqual([]);
     expect(run.apps()).toBe(0);
   });
