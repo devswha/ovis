@@ -483,12 +483,12 @@ try {
       if (!touch) {
         await send(page, "/doctor");
         await expectPeek(false, "/doctor");
-        await page.locator(`.pane-select[data-pane="${panes.api}"]`).click({ noWaitAfter: true });
+        await page.locator(`.pane-select[data-pane="${panes.api}"]`).click();
         await page.waitForURL((url) => url.searchParams.get("pane") === panes.api);
         await page.locator(`.terminal-stack[data-pane-owner="${panes.api}"]`).waitFor();
         assert.equal(await page.locator(".terminal-stack.is-peek").count(), 0, "a peek never follows to another pane");
         assert.equal(await hint(page).count(), 0);
-        await page.locator(`.pane-select[data-pane="${owner}"]`).click({ noWaitAfter: true });
+        await page.locator(`.pane-select[data-pane="${owner}"]`).click();
         await page.waitForURL((url) => url.searchParams.get("pane") === owner);
         await chat(page).locator(".composer").waitFor();
         assert.equal(await peek(page).count(), 0);

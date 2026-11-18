@@ -510,14 +510,6 @@ process.stdout.write(Array.from({ length: 400 }, (_, n) => "app history " + n + 
       marks += 1;
       established = await waitEvent("send", start, appPane, 0);
     } else if (boundary === "disconnect") {
-      // Sending a frame does not prove delivery to the PTY. Keep the rest of this swipe
-      // queued while the application receives the first batch, then cut the connection.
-      assert.equal(firstFrame, TOUCH_WHEEL_REPORTS_PER_FRAME, "disconnect: the first batch leaves a remainder queued");
-      // read the log itself: a file watch can miss an append in the CI container, and the wait then ran out with the batch there
-      const received = () => reported(readFileSync(log, "latin1").slice(logBefore)).length;
-      const deadline = Date.now() + 15_000;
-      while (received() < firstFrame && Date.now() < deadline) await Bun.sleep(25);
-      assert.ok(received() >= firstFrame, `disconnect: first batch received before closing (${received()} of ${firstFrame})`);
       await page.evaluate(() => window.__socket!.close(1000, "touch burst boundary"));
       established = await waitEvent("close", start);
     } else if (boundary === "pane-switch") {

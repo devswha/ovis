@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chromium, type Browser, type Page } from "playwright-core";
+import { chromium, type Browser, type Page, type Route } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
@@ -23,8 +23,11 @@ const DAY = 86_400_000;
 async function openWithClock(page: Page, url: string): Promise<void> {
   // Install the clock in the committed document. If boot reads the clock at epoch zero,
   // the app clamps the persisted timestamps to zero before the clock reaches the present.
+  // the hold is on the demo build's transport script (scripts/demo-build.ts); if that file is renamed, it must fail here
   const { promise, resolve } = Promise.withResolvers<void>();
-  await page.route("**/demo-transport.js", async (route) => { await promise; await route.continue(); });
+  let held = false;
+  const hold = async (route: Route): Promise<void> => { held = true; await promise; await route.continue(); };
+  await page.route("**/demo-transport.js", hold);
   try {
     await page.goto(url, { waitUntil: "commit" });
     await page.clock.install();
@@ -33,6 +36,8 @@ async function openWithClock(page: Page, url: string): Promise<void> {
     resolve();
   }
   await page.waitForLoadState("load");
+  await page.unroute("**/demo-transport.js", hold);
+  assert.ok(held, "the demo's transport script was held until the clock was installed");
 }
 
 async function run(browser: Browser, origin: string, width: number, theme: "light" | "dark"): Promise<void> {
