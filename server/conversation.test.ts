@@ -1953,11 +1953,16 @@ describe("transcript pages", () => {
       { type: "user", timestamp: "2026-11-17T03:06:00.000Z", origin: human, permissionMode: "bypassPermissions", message: { role: "user", content: "<hc>t3m exited</hc> why this format?" } },
     ].map((entry) => JSON.stringify(entry)).join("\n")}\n`);
     // any agent's prompt that is only a note, as a codex worker's task from its lead
-    const codex: ConversationTurn[] = [{ role: "user", ts: null, parts: [{ kind: "text", text: "<hc from=\"t45 lead\" reach=\"hc send t45 when done or stuck\">\nReview x.rs\n</hc>" }] }];
+    const codex: ConversationTurn[] = [
+      { role: "user", ts: null, parts: [{ kind: "text", text: "<hc from=\"t45 lead\" reach=\"hc send t45 when done or stuck\">\nReview x.rs\n</hc>" }] },
+      // a report that quotes a note is still one note; two notes with words between them are not
+      { role: "user", ts: null, parts: [{ kind: "text", text: "<hc from=\"t7 review\">The prompt was <hc>hello</hc></hc>" }] },
+      { role: "user", ts: null, parts: [{ kind: "text", text: "<hc>a</hc> and <hc>b</hc>" }] },
+    ];
     const turns = withHcNotes([...transcriptPage("claude-transcript", path).turns, ...codex]);
     expect(turns.map((turn) => turn.parts.map((part) => part.kind === "notice" ? `${part.source}|${part.text}` : part.kind === "text" ? part.text : part.kind).join(" "))).toEqual([
       "hc|t3m hub-repair-hc exited (signal 1). Read: hc read t3m", "reading t3m", "peer:t2q try2-cmd|done: /tmp/x.md", "noted", "<hc>t3m exited</hc> why this format?",
-      "peer:t45 lead|Review x.rs",
+      "peer:t45 lead|Review x.rs", "peer:t7 review|The prompt was <hc>hello</hc>", "<hc>a</hc> and <hc>b</hc>",
     ]);
   });
 

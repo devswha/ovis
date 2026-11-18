@@ -25,11 +25,18 @@ export function isContextClear(value: unknown, source: string): boolean {
  * A note herdr-core (hc) typed into the agent, as the whole prompt: a child terminal's report
  * (`<hc from="t7 review">…</hc>`, sourced `peer:t7 review`) or hc's own word on a child that cannot
  * report (`<hc>t3 exited (signal 1). Read: hc read t3</hc>`, sourced `hc`). Nobody typed it here.
+ * A report may quote a note: the tags inside must pair up, so two notes with words between them are none.
  */
 export function hcNote(text: string): Extract<ConversationPart, { kind: "notice" }> | null {
-  const match = /^\s*<hc\b([^>]*)>((?:(?!<\/?hc\b)[\s\S])*)<\/hc>\s*$/.exec(text);
+  const match = /^\s*<hc\b([^>]*)>([\s\S]*)<\/hc>\s*$/.exec(text);
   const body = match?.[2]?.trim();
   if (!match || !body) return null;
+  let depth = 0;
+  for (const [, close] of body.matchAll(/<(\/?)hc\b[^>]*>/g)) {
+    depth += close ? -1 : 1;
+    if (depth < 0) return null;
+  }
+  if (depth !== 0) return null;
   const from = /\bfrom="([^"]*)"/.exec(match[1] ?? "")?.[1]?.trim();
   return { kind: "notice", text: body, source: from ? `peer:${from}` : "hc" };
 }

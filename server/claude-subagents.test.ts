@@ -2887,6 +2887,9 @@ describe("claudeSubagents, background commands", () => {
     // nor an hc note typed in for a child terminal, which Claude records as the person's
     s.parent({ type: "user", timestamp: at(35), origin: { kind: "human" }, permissionMode: "bypassPermissions", message: { role: "user", content: '<hc from="t79 worker">Green commit, moving on.</hc>' } });
     expect(claudeSubagentState(s.path, true, NOW)).toMatchObject({ running: 4, turnRunning: 1 });
+    // a prompt the person gave with a picture is theirs, whatever its text
+    s.parent({ type: "user", timestamp: at(36), origin: { kind: "human" }, permissionMode: "bypassPermissions", message: { role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: "" } }, { type: "text", text: "<hc>hello</hc>" }] } });
+    expect(claudeSubagentState(s.path, true, NOW)).toMatchObject({ running: 4, turnRunning: 0 });
   });
 
   it("tells the pane's running count and what of it is the turn's when either changes", async () => {

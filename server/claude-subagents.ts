@@ -283,8 +283,9 @@ export function commandTerminals(line: string, session: string): CommandEnd[] {
  */
 function prompted(entry: Row): boolean {
   if (entry["type"] !== "user" || entry["isMeta"] === true || entry["isCompactSummary"] === true || entry["isSidechain"] === true) return false;
-  if (hcNote(blocksIn(entry).join("")) !== null) return false;
   const content = row(entry["message"])?.["content"];
+  const textOnly = !Array.isArray(content) || content.every((block) => row(block)?.["type"] === "text");
+  if (textOnly && hcNote(blocksIn(entry).join("")) !== null) return false;
   if (Array.isArray(content) && content.some((block) => row(block)?.["type"] === "tool_result")) return false;
   const origin = entry["origin"];
   const kind = typeof origin === "string" ? origin : row(origin)?.["kind"];
