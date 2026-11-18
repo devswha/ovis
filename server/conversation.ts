@@ -33,7 +33,7 @@ import { open as openHandle, readdir, readFile, type FileHandle } from "node:fs/
 import { readStatuslineContext } from "./statusline.ts";
 import { transcriptReader, type TranscriptFile } from "./transcript-reader.ts";
 import nodePath, { basename, dirname, relative, sep, type PlatformPath } from "node:path";
-import { isDshProcess, resolveDshTranscript, dshConversation, dshToolOutput, type DshTranscript } from "./dsh.ts";
+import { isDshProcess, jobDsh, resolveDshTranscript, dshConversation, dshToolOutput, type DshTranscript } from "./dsh.ts";
 import { isKiroChatProcess, resolveKiroTranscript, kiroConversation, kiroToolOutput, type KiroTranscript } from "./kiro.ts";
 import { authorizedTranscript } from "./transcript-store.ts";
 
@@ -43,7 +43,7 @@ import { resolveAgent } from "./pane-context.ts";
 import { codexFreshSession, codexHistorySegments, createCodexTranscriptParser, type HistorySegment, codexOutputText, codexTranscriptPath, defaultCodexHome, forgetAllCodexState, forgetCodexStateFor, paneCodexHomePlaced, paneCodexProcess, parseCodexTranscript, readRange } from "./codex.ts";
 import { awaited, CODEX_IMAGE_REF, CODEX_TOOL_IMAGE_REF, codexOutputPicture, codexTranscriptImage, DataUrlPictureScan, finish, finishAsync, forgetOmpBlobTypes, InlinePictureScan, MAX_IMAGE_BYTES, ompBlobAnchor, ompBlobDigest, ompBlobPictureSteps, type Steps } from "./codex-images.ts";
 import { type Held, heldOpenPlatform, openHeldDirectory } from "./held-open.ts";
-import { AmbiguousClaudeStore, claudeAttachSession, claudeProcessSession, claudeTranscriptFile, darwinProcess, defaultClaudeConfigDir, forgetClaudeSessionFile, forgetClaudeSessions, isClaudeProcess, jobClaude, processClaudeConfigDir, windowsShellClaude } from "./claude-store.ts";
+import { AmbiguousClaudeStore, claudeAttachSession, claudeProcessSession, claudeTranscriptFile, darwinProcess, defaultClaudeConfigDir, forgetClaudeSessionFile, forgetClaudeSessions, hintedClaudeConfigDir, isClaudeProcess, jobClaude, processClaudeConfigDir, windowsShellClaude } from "./claude-store.ts";
 import { coreSocket } from "./herdr-core/discovery.ts";
 import { coreSocketPath } from "./herdr-core/runtime.ts";
 import { capabilities } from "./runtime/capabilities.ts";
@@ -75,7 +75,7 @@ import { claudeSetting, parseConversationMetadata } from "./conversation-metadat
 import { answerVersion, bindFile, boundSteps, checkBoundFile, ConversationNotStarted, ConversationReadPending, ConversationUnavailable, copilotRecoverable, type FileIdentity, openBound, readBound, type ConversationPage, HistoryChanged, type RecognizedConversation, type StreamSource, TRANSCRIPT_WINDOW_BYTES } from "./conversation-shared.ts";
 import { forgetHermesTranscriptState, hermesConversationPage, hermesToolOutput, hermesTranscriptForPane } from "./hermes.ts";
 
-import { createOmpTranscriptParser, isContextClear, MAX_TURNS, omoTaskResults, parseOmpTranscript, PI_IMAGE_REF, PI_PROMPT_IMAGE_REF, piImageBlock, piMessage, piNotice, piPromptImages, piResults, type TranscriptParser } from "./transcript-records.ts";
+import { createOmpTranscriptParser, isContextClear, MAX_TURNS, omoTaskResults, parseOmpTranscript, PI_IMAGE_REF, PI_PROMPT_IMAGE_REF, piImageBlock, piMessage, piNotice, piPromptImages, piResults, type TranscriptParser, withHcNotes } from "./transcript-records.ts";
 import { skillPromptMessage } from "./skill-activity.ts";
 import { CLAUDE_IMAGE_REF, claudeImageType, claudeResultText, createClaudeTranscriptParser, entryHostToolResults, isHostHandoff, parseClaudeTranscript, type TranscriptEntry } from "./claude-transcript.ts";
 import { forgetSubagents, lineNotifications, subagentDetails, type SubagentDetail } from "./claude-subagents.ts";
@@ -1602,11 +1602,16 @@ async function claudeTranscriptPath(paneId: string, cwds: readonly (string | nul
   const info = await herdrRpc<{ agent: { agent_session?: { value?: unknown } } }>("agent.get", { target: paneId });
   let session = info.agent.agent_session?.value;
   const home = userHome();
-  const processes = await claudeProcesses(paneId, known);
+  const facts: KnownProcesses = known !== undefined ? known
+    : await herdrRpc<{ process_info?: ProcessInfo }>("pane.process_info", { pane_id: paneId }).then((answer) => answer.process_info ?? null, () => null);
+  const processes = await claudeProcesses(paneId, facts);
   const only = processes.length === 1 ? processes[0] : undefined;
   let processDir: string | null = null;
   try {
-    processDir = only ? await processClaudeConfigDir(only.pid, only.argv ?? [only.argv0 ?? only.name ?? ""], home) : null;
+    // no Claude in the whole job herdr names: a wrapper's hint may name its store, and the session is then only the
+    // one reported (#3931). herdr-core names the leader alone, and an empty jobClaude may be two Claudes: no hint there
+    processDir = only ? await processClaudeConfigDir(only.pid, only.argv ?? [only.argv0 ?? only.name ?? ""], home)
+      : processes.length === 0 && capabilities().foreground === "job" ? await hintedClaudeConfigDir(facts?.foreground_processes ?? []) : null;
   } catch (error) {
     // two stores claim the process: ~/.claude would be a guess, maybe another account's session (#586)
     if (error instanceof AmbiguousClaudeStore) throw new ConversationUnavailable("no_session_id");
@@ -1881,6 +1886,18 @@ export type NativeTranscript =
   | { source: "devin-transcript"; path: string; session: string; cwd: string; binding?: string };
 
 /**
+ * The pane's foreground processes the dsh reader looks at: herdr names every process of the job, herdr-core
+ * only its first, so there the dsh processes below it in the job join it (#3939), as for Claude (#3009).
+ */
+async function dshForeground(known: KnownProcesses): Promise<{ foreground_processes?: { pid?: number; argv?: unknown }[] } | null | undefined> {
+  const front = known?.foreground_processes ?? [];
+  const leader = front[0];
+  if (capabilities().foreground !== "leader" || leader === undefined || typeof leader.pid !== "number") return known;
+  if (front.some((entry) => Array.isArray(entry.argv) && isDshProcess(entry.argv))) return known;
+  return { foreground_processes: [...front, ...await jobDsh(leader.pid)] };
+}
+
+/**
  * herdr's agent label follows the pane's foreground processes, so an omo pane reads as `pi` while it waits and
  * as `claude` while its claude-sdk child runs (live-verified 2026-09-21) — the
  * label alone cannot route omo. Its process tree takes precedence over the child
@@ -1923,7 +1940,7 @@ async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: strin
   // session headers name the one they run in
   const sessionCwd = typeof pane.foreground_cwd === "string" && pane.foreground_cwd.length > 0 ? pane.foreground_cwd : cwd;
   try {
-    if (agent === "dsh" || agent === "dsh-tui") return { source: "dsh-transcript", ...await resolveDshTranscript(known) };
+    if (agent === "dsh" || agent === "dsh-tui") return { source: "dsh-transcript", ...await resolveDshTranscript(await dshForeground(known)) };
     if (agent === "kiro") return { source: "kiro-transcript", ...await resolveKiroTranscript(known) };
     if (agent === "copilot") return { source: "copilot-transcript", ...await copilotTranscriptPath(pane, panes ?? [pane]) };
     if (agent === "grok") {
@@ -2089,8 +2106,13 @@ async function bottomViewport(paneId: string): Promise<string> {
   return after?.offset_from_bottom === 0 && after.max_offset_from_bottom === before.max_offset_from_bottom ? text : "";
 }
 
-/** Read-only, same-user files only. */
-export async function paneConversation(paneId: string, codexHome?: string, page: ConversationPage = {}, devinDbPath?: string, opencodeDb?: string, hermesHome?: string, grokHome?: string, museData?: string): Promise<RecognizedConversation> {
+/** Read-only, same-user files only. The notes hc typed into the pane read as notices (withHcNotes). */
+export async function paneConversation(...args: Parameters<typeof readPaneConversation>): Promise<RecognizedConversation> {
+  const conversation = await readPaneConversation(...args);
+  return { ...conversation, turns: withHcNotes(conversation.turns) };
+}
+
+async function readPaneConversation(paneId: string, codexHome?: string, page: ConversationPage = {}, devinDbPath?: string, opencodeDb?: string, hermesHome?: string, grokHome?: string, museData?: string): Promise<RecognizedConversation> {
   const socket = herdrSocketPath();
   const snapshot = await sessionSnapshot();
   let resolved: NativeTranscript;
@@ -2104,11 +2126,13 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
     startScreenMetadata(source, await bottomViewport(paneId));
   const notBegun = async (source: RecognizedConversation["source"], id: string, read?: ConversationMetadata, fromScreen = false): Promise<RecognizedConversation> => {
     const screen = fromScreen || readsStartScreen(source);
-    const metadata = read ?? (screen ? await screenMetadata(source) : { model: null, reasoning_effort: null });
+    // agy's greeting names a model only from the frame its unused session was proven on (passed in
+    // as `read`): a later frame can already show another conversation, or another agy's.
+    const metadata = read ?? (screen && source !== "agy-transcript" ? await screenMetadata(source) : { model: null, reasoning_effort: null });
     return { source, turns: [], metadata, ...(screen ? { screen: true as const } : {}), cursor: null, history_id: id, version: answerVersion(id, `${metadata.model}\0${metadata.reasoning_effort}`) };
   };
 
-  const onNotStarted = (error: ConversationNotStarted): Promise<RecognizedConversation> => {
+  const onNotStarted = async (error: ConversationNotStarted): Promise<RecognizedConversation> => {
     if (writtenSessions.has(`${error.source}\0${error.identity}`)) throw new ConversationUnavailable("transcript_missing");
     if (page.before !== undefined || page.since !== undefined || page.from !== undefined) throw new HistoryChanged();
     // Claude writes its file with the first message, so at work with none it has no turn yet: a
@@ -2147,8 +2171,10 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
         if (screen.model !== null) throw new ConversationUnavailable(error.message, screen);
       }
       if (pane.agent === "agy" && error.message === "no_session_path" && page.before === undefined && page.since === undefined && page.from === undefined && pane.agent_status !== "working" && pane.agent_status !== "blocked") {
-        const fresh = await agyFreshSession(pane, await bottomViewport(paneId));
-        if (fresh !== null) return await notBegun("agy-transcript", fresh);
+        // the model comes from the frame proven to be the unused start screen, not a later read
+        const text = await bottomViewport(paneId);
+        const fresh = await agyFreshSession(pane, text);
+        if (fresh !== null) return await notBegun("agy-transcript", fresh, startScreenMetadata("agy-transcript", text));
       }
       // an OpenCode at its home screen, which herdr reports no session for until the first prompt (#3600)
       if (pane.agent === "opencode" && pane.agent_session == null && error.message === "no_session_id" && page.before === undefined && page.since === undefined && page.from === undefined && pane.agent_status !== "working" && pane.agent_status !== "blocked") {
@@ -2323,7 +2349,16 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
     try { revision = grokProjection(resolved.path, statSync(resolved.path)).revision; } catch {}
     if (revision === null || revision === "0") throw new ConversationUnavailable("transcript_missing");
   }
+  // The ledger never records the selected model. The live status row does, and a switch there
+  // writes no turn, so the answer is marked screen and the chat re-reads it on terminal output.
+  // A scroll or a failed read leaves the name unknown rather than one from an older frame, and is
+  // still marked screen so the next draw can fill it. The row is read before the store check below,
+  // so a pane that moved to another conversation during the read is refused, not given its model.
+  const agyScreen = resolved.source === "agy-transcript" ? await screenMetadata("agy-transcript") : null;
   if (resolved.agy && !sameAgyStore(resolved.agy, await resolveAgyStore(snapshot.panes.find((pane) => pane.pane_id === paneId)!))) throw new ConversationUnavailable("no_session_path");
+  // The screen read waits on herdr. A pane closed or bound to another session meanwhile has not
+  // this conversation, nor the model its screen shows now, and nothing is recorded for it.
+  if (agyScreen !== null && (!live() || rebound(paneId, transcript))) throw new ConversationUnavailable("no_session_id");
   if (identity !== null) { writtenSessions.add(`${resolved.source}\0${identity}`); rememberPaneSession(paneId, `${resolved.source}\0${identity}`); }
   if (resolved.source === "claude-transcript" && identity !== null && answer.metadata.context) {
     const window = readStatuslineContext(userHome(), identity, answer.metadata.model, resolved.path);
@@ -2363,6 +2398,15 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
     if (current.path !== resolved.path || current.binding !== resolved.binding
       || copilotHistoryIdentity(resolved.path) !== history) throw new HistoryChanged();
     return bindCopilotAnswer(answer, prefix);
+  }
+  if (agyScreen !== null) {
+    // Enrich the response, never the shared page.
+    return {
+      ...answer,
+      screen: true,
+      metadata: { ...answer.metadata, ...agyScreen },
+      version: answerVersion(answer.version, `${agyScreen.model}\0${agyScreen.reasoning_effort}`),
+    };
   }
   return answer;
 }

@@ -1,5 +1,5 @@
 import { expect, it } from "bun:test";
-import { codexThreadTitle, folderName, shortPathTitle, tabTitle, taskTitle, stripPaneChrome, unsaidLine } from "./paneName.ts";
+import { codexThreadTitle, folderName, isHomeTitle, shortPathTitle, tabTitle, taskTitle, stripPaneChrome, unsaidLine } from "./paneName.ts";
 
 it("shows a path title as its last folder, and leaves any other title alone", () => {
   expect(shortPathTitle("/tmp/audit-oDjsU2/lms-backend")).toBe("lms-backend");
@@ -30,6 +30,20 @@ it("titles a pane by its own title, and by its workspace when an unlabelled titl
   expect(taskTitle({ paneTitle: "Idempotent payments", labelled: false, folder: "api", workspace: "checkout-api" })).toBe("Idempotent payments");
   expect(taskTitle({ paneTitle: "api", labelled: false, folder: "api", workspace: "checkout-api" })).toBe("checkout-api");
   expect(taskTitle({ paneTitle: "api", labelled: true, folder: "api", workspace: "checkout-api" })).toBe("api");
+  // a shell at home titles itself "~", which names no project; a pane the user named "~" keeps it
+  expect(taskTitle({ paneTitle: "~", labelled: false, folder: "haemin", workspace: "checkout-api" })).toBe("checkout-api");
+  expect(taskTitle({ paneTitle: "~/", labelled: false, folder: "haemin", workspace: "checkout-api" })).toBe("checkout-api");
+  expect(taskTitle({ paneTitle: "~", labelled: true, folder: "haemin", workspace: "checkout-api" })).toBe("~");
+});
+
+it("tells a home folder title from a path or a name that starts with a tilde", () => {
+  expect(isHomeTitle("~")).toBe(true);
+  expect(isHomeTitle(" ~ ")).toBe(true);
+  expect(isHomeTitle("~/")).toBe(true);
+  expect(isHomeTitle("~\\")).toBe(true);
+  expect(isHomeTitle("~/dev/api")).toBe(false);
+  expect(isHomeTitle("~tilde-name")).toBe(false);
+  expect(isHomeTitle("vim ~")).toBe(false);
 });
 
 it("keeps the thread of a Codex title and drops the project folder Codex adds after it", () => {

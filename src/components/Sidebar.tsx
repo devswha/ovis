@@ -19,7 +19,7 @@ import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { RowMenu, type RowMenuItem } from "./RowMenu.tsx";
 import { WorktreeDialog, type WorktreeDialogMode } from "./WorktreeDialog.tsx";
 import { focusWorkspaceListToggle } from "../lib/focus.ts";
-import { folderName, shortPathTitle, stripPaneChrome, tabTitle, unsaidLine } from "../lib/paneName.ts";
+import { folderName, isHomeTitle, shortPathTitle, stripPaneChrome, tabTitle, unsaidLine } from "../lib/paneName.ts";
 import { useT } from "../lib/i18n.ts";
 import { contextLeftPercent, formatTokens } from "../lib/compose.ts";
 import { userErrorMessage } from "../lib/userError.ts";
@@ -793,8 +793,10 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
     // a folded group's parent stands for its worktrees too, as herdr's collapsed parent does:
     // a checkout that waits or has finished must not hide behind the fold
     const statusPanes = collapsed ? [...panes, ...children.flatMap((child) => roster.filter((candidate) => candidate.workspace_id === child.workspace_id))] : panes;
-    // Two lines lead with the workspace's name, as herdr's sidebar does, and say under it what the pane it opens is on
-    const place = twoLine ? unsaidLine(rowTitle, [displayPaneTitle(pane), secondaryBranch, cwdBasename(pane.cwd)]) : null;
+    // Two lines lead with the workspace's name, as herdr's sidebar does, and say under it what the pane it opens is on;
+    // a shell's "~" (its home folder) names nothing
+    const shownPaneTitle = displayPaneTitle(pane);
+    const place = twoLine ? unsaidLine(rowTitle, [pane.label?.trim() || !isHomeTitle(shownPaneTitle) ? shownPaneTitle : null, secondaryBranch, cwdBasename(pane.cwd)]) : null;
     const foldedCount = (collapsed ? children.filter((child) => !roster.some((candidate) => candidate.workspace_id === child.workspace_id && candidate.pane_id === selectedPaneId)).length : 0)
       + (agentsAway ? allWorkers.length : 0);
     const editingWorkspace = editingWorkspaceId === workspace.workspace_id;

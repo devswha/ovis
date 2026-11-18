@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { chromium } from "playwright-core";
 import type { Page } from "playwright-core";
 import { createServer } from "../server/index.ts";
-import { HerdrError, herdrRpc, sessionSnapshot, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
+import { HerdrError, herdrRpc, paneSendKeys, paneSendText, sessionSnapshot, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
 import { UsageService } from "../server/usage.ts";
 import { contextMenuKey } from "./context-menu-key.ts";
 
@@ -243,6 +243,18 @@ try {
     "a two-line row leads with the workspace's name and says its pane's title first beneath it");
   assert.ok(!(await page.locator(`${otherWorkspace} .workspace-place`).textContent())?.split(" · ").includes(other.label),
     "the line under the workspace's name does not say that name again");
+  // A shell at its home folder titles its terminal "~" (bash's `user@host: ~`), which names no
+  // project: the line under the workspace's name leaves it out, as it leaves out a title that is its folder.
+  const loneWorkspace = workspaceSelector(lone.workspaceId);
+  await paneSendText(lone.paneId, "printf '\\033]2;~\\007'");
+  await paneSendKeys(lone.paneId, ["Enter"]);
+  // the row's tooltip ends with the pane's own title: wait until "~" has reached this browser
+  await page.waitForFunction((selector) => document.querySelector(selector)?.getAttribute("title")?.split(" — ").includes("~") === true,
+    `${loneWorkspace} .workspace-select`);
+  assert.equal(await page.locator(`${loneWorkspace} .workspace-name`).textContent(), lone.label,
+    "a shell titled ~ leads its two-line row with the workspace name");
+  assert.equal(await page.locator(loneWorkspace).evaluate((row) => row.querySelector(".workspace-place")?.textContent?.split(" · ").includes("~") ?? false), false,
+    "the line under it does not say ~");
   for (const width of [1280, 768, 375]) {
     await page.setViewportSize({ width, height: 900 });
     if (await page.locator(".drawer-toggle").isVisible()

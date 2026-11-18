@@ -8,7 +8,15 @@ export function tabTitle(title: string, agent: string | null | undefined): strin
   return rest ? `${mark}${rest}` : "";
 }
 
-/** what a pane is on: its own title, or its workspace when a title nobody gave it only names the pane's folder */
+/**
+ * A shell at its home folder titles its terminal "~" (bash's `user@host: ~`): the home folder written
+ * out, which names no project. It says as little as a title that is the pane's folder does.
+ */
+export function isHomeTitle(title: string): boolean {
+  return /^~[\\/]?$/.test(title.trim());
+}
+
+/** what a pane is on: its own title, or its workspace when a title nobody gave it only names the pane's folder or home */
 export function taskTitle({ paneTitle, labelled, folder, workspace }: {
   paneTitle: string;
   labelled: boolean;
@@ -16,7 +24,7 @@ export function taskTitle({ paneTitle, labelled, folder, workspace }: {
   /** the workspace's name: its label, which herdr makes from the branch until its owner names it */
   workspace: string;
 }): string {
-  return !labelled && paneTitle === folder ? workspace : paneTitle;
+  return !labelled && (paneTitle === folder || isHomeTitle(paneTitle)) ? workspace : paneTitle;
 }
 
 export function unsaidLine(title: string, parts: readonly (string | null | undefined)[]): string {
