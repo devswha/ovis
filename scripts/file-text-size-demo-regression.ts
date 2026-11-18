@@ -144,7 +144,7 @@ try {
               if (shown.length === 0) return false;
               const top = Math.min(...shown.map((row) => Number(row.dataset["line"])));
               return near === undefined || Math.abs(top - near) <= 3 ? top : false;
-            }, near)).jsonValue() as number;
+            }, near, { timeout: 10_000 })).jsonValue() as number;
             await page.evaluate((height) => { document.querySelector<HTMLElement>(".virtual-source-scroll")!.scrollTop = 1499 * height; }, big.host);
             const before = await topLine();
             assert.ok(before > 1400 && before < 1600, `${width}px: scrolled to the middle (${before})`);

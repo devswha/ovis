@@ -34,24 +34,6 @@ const layout = (page: Page) => page.evaluate(() => {
   return { height: view.clientHeight, scrollTop: view.scrollTop, composer: document.querySelector(".composer")!.getBoundingClientRect().top };
 });
 
-// clearing a selection lets the virtual timeline take its scroll back, which can still be moving a few frames later
-// on a loaded runner: the layout to compare with is the one that holds across two frames
-const settledLayout = (page: Page) => page.evaluate(async (timeout) => {
-  const read = () => {
-    const view = document.querySelector<HTMLElement>(".chat-view")!;
-    return { height: view.clientHeight, scrollTop: view.scrollTop, composer: document.querySelector(".composer")!.getBoundingClientRect().top };
-  };
-  const deadline = performance.now() + timeout;
-  let previous = JSON.stringify(read());
-  while (performance.now() < deadline) {
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-    const now = read();
-    if (JSON.stringify(now) === previous) return now;
-    previous = JSON.stringify(now);
-  }
-  throw new Error(`the chat kept moving after the selection was cleared: ${previous}`);
-}, WAIT.timeout);
-
 const selectRange = (page: Page, phrase: string, mouse: boolean, fromAsk?: string) => page.evaluate(async ({ words, ask, drag, timeout }) => {
   const textNodes = (root: Node): Text[] => { const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT); const nodes: Text[] = []; for (let node = walker.nextNode(); node; node = walker.nextNode()) nodes.push(node as Text); return nodes; };
   const find = (nodes: Text[], target: string): [Text, number, Text, number] => {
@@ -66,6 +48,7 @@ const selectRange = (page: Page, phrase: string, mouse: boolean, fromAsk?: strin
   // Clearing a selection releases the virtual timeline's scroll anchor. Use the range
   // only once the current reply's endpoints are hittable and stop moving across renders.
   while (performance.now() < deadline) {
+    let current = "";
     const turn = [...document.querySelectorAll(".chat-turn-agent")].find((node) => node.textContent?.includes("Show a conflict banner"));
     const start = ask === undefined ? turn : [...document.querySelectorAll(".chat-turn-user")].find((node) => node.textContent?.includes(ask));
     if (turn && start) {
@@ -85,11 +68,13 @@ const selectRange = (page: Page, phrase: string, mouse: boolean, fromAsk?: strin
       if (first && last) {
         const point = { x0: first.left + 1, y0: first.top + first.height / 2, x1: last.right - 1, y1: last.top + last.height / 2 };
         const hit = start.contains(document.elementFromPoint(point.x0, point.y0)) && turn.contains(document.elementFromPoint(point.x1, point.y1));
-        const layout = JSON.stringify(point);
-        if (hit && layout === previous) return point;
-        previous = hit ? layout : "";
+        if (hit) {
+          current = JSON.stringify(point);
+          if (current === previous) return point;
+        }
       }
     }
+    previous = current;
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
   }
   throw new Error(`the range for "${words}" did not settle inside the reply`);
@@ -211,9 +196,16 @@ try {
           await select(page, "backfill it from", !shape.mobile, true);
           assert.ok((await page.evaluate(() => getSelection()?.toString() ?? "")).includes("backfill it from"), `${label}: the crossing selection holds`);
           assert.equal(await page.locator(".reply-comment-offer").count(), 0, `${label}: no Comment across a user message`);
+          await page.locator('.chat-view[data-chat-pinned]:not([data-chat-pinned="0"])').waitFor({ state: "attached", ...WAIT });
           await page.evaluate(() => getSelection()?.removeAllRanges());
-
-          const before = await settledLayout(page);
+          await page.waitForFunction(() => {
+            const view = document.querySelector<HTMLElement>('.chat-view[data-chat-pinned="0"]');
+            const transcript = view?.querySelector<HTMLElement>(".chat-transcript-virtual");
+            // The list can temporarily pad the transcript past its real end.
+            return view !== null && transcript?.style.paddingBottom === ""
+              && Math.abs(view.scrollHeight - view.clientHeight - view.scrollTop) <= 1;
+          }, undefined, WAIT);
+          const before = await layout(page);
           await select(page, FIRST.quote, !shape.mobile);
           await page.locator(".reply-comment-offer").waitFor(WAIT);
           await frames(page);

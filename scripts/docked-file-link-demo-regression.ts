@@ -34,9 +34,10 @@ const server = await (async () => {
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>${FILES_SCRIPT}\n    <script type="module"`));
   return serveDemo(app);
 })();
-const draftServer = serveDemo(app);
+let draftServer: ReturnType<typeof serveDemo> | undefined;
 
 try {
+  draftServer = serveDemo(app);
   const draftPath = "doc/draft-ietf-httpapi-idempotency-key-header.html";
   const draftUrl = new URL(`${DEMO_PREFIX}${draftPath}`, draftServer.url).href;
   mkdirSync(join(app, "doc"));
@@ -239,7 +240,7 @@ try {
     assert.deepEqual(errors, []);
   } finally { await browser.close(); }
 } finally {
-  await draftServer.stop(true);
+  await draftServer?.stop(true);
   await server.stop(true);
   rmSync(app, { recursive: true, force: true });
 }
