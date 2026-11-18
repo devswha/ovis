@@ -221,7 +221,10 @@ Fast checks, Integration tests and both Browser regression jobs each run `bun ru
 commit: about 60 CPU seconds apiece on the P620. `run.sh --build-cache DIR --build-cache-writer LOGIN`
 lets the first of them build it and the others restore its `dist/` in a fraction of a second
 (`scripts/build-cache.ts`). Point it at RAM (`/dev/shm/ovis-build-cache`); `--build-cache-mb`
-(default 2048, about 50 builds) bounds it, least recently used first. Measured (four builds of one
+(default 2048, about 50 builds) bounds it, least recently used first. Under SELinux the launcher labels
+the cache and the outboxes `container_file_t` (new files keep their directory's label), or runs without
+the cache when it cannot; on such a host a directory on disk under a `container_file_t` rule serves as
+well as `/dev/shm`, read through the page cache. Measured (four builds of one
 commit, as one run's jobs do): 246-266 CPU s without it, 53-70 CPU s with it; four started at once
 build once.
 

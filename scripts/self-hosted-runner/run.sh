@@ -262,7 +262,13 @@ if [ -n "$BUILD_CACHE" ]; then
       if BUILD_CACHE_ROOT="$(umask 022 && mkdir -p "$BUILD_CACHE/$REPO/entries" "$BUILD_CACHE/$REPO/used" && cd "$BUILD_CACHE/$REPO" && pwd -P)" &&
         BUILD_CACHE_OUTBOXES="$(umask 022 && mkdir -p "$outboxes" && cd "$outboxes" && pwd -P)" &&
         docker volume create --driver local --opt type=tmpfs --opt device=tmpfs --opt o=size=16m,mode=1777 "$BUILD_CACHE_LOCKS" >/dev/null; then
-        :
+        # Under SELinux a container reads and writes only what is labelled container_file_t, and a new file
+        # takes its directory's label: without this, no job could hand in a build or read the cache.
+        if command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled &&
+          ! chcon -R -t container_file_t "$BUILD_CACHE_ROOT" "$BUILD_CACHE_OUTBOXES"; then
+          echo "[build-cache] cannot label $BUILD_CACHE_ROOT and its outboxes container_file_t for SELinux: running without it" >&2
+          BUILD_CACHE_ROOT=""
+        fi
       else
         echo "[build-cache] cannot use $BUILD_CACHE/$REPO, its outboxes or the $BUILD_CACHE_LOCKS volume: running without it" >&2
         BUILD_CACHE_ROOT=""
