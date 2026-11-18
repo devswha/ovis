@@ -1,5 +1,5 @@
 import { expect, it } from "bun:test";
-import { codexThreadTitle, folderName, placeLine, shortPathTitle, tabTitle, taskRowLines, stripPaneChrome, unsaidLine } from "./paneName.ts";
+import { codexThreadTitle, folderName, shortPathTitle, tabTitle, taskTitle, stripPaneChrome, unsaidLine } from "./paneName.ts";
 
 it("shows a path title as its last folder, and leaves any other title alone", () => {
   expect(shortPathTitle("/tmp/audit-oDjsU2/lms-backend")).toBe("lms-backend");
@@ -14,12 +14,6 @@ it("shows a path title as its last folder, and leaves any other title alone", ()
   expect(shortPathTitle("~tilde-name")).toBe("~tilde-name");
 });
 
-it("says a workspace and its folder once when they are the same", () => {
-  expect(placeLine("lms-backend", "lms-backend")).toBe("lms-backend");
-  expect(placeLine("api", "server")).toBe("api · server");
-  expect(placeLine("api", "")).toBe("api");
-});
-
 it("finds the folder of a Windows path as of a POSIX one", () => {
   expect(folderName("C:\\work\\api")).toBe("api");
   expect(folderName("C:\\work\\api\\")).toBe("api");
@@ -30,25 +24,12 @@ it("finds the folder of a Windows path as of a POSIX one", () => {
   expect(folderName("/home/haemin/dev/api/")).toBe("api");
   expect(folderName("/")).toBe("/");
   expect(folderName("/repo/branch ")).toBe("branch ");
-  expect(placeLine("api", folderName("C:\\work\\api"))).toBe("api");
-  expect(placeLine("api", folderName("C:\\work\\server"))).toBe("api · server");
 });
 
-it("draws a two-line row as the pane's title over its place, without repeating a name", () => {
-  expect(taskRowLines({ paneTitle: "Idempotent payments", labelled: false, folder: "api", workspace: "checkout-api" }))
-    .toEqual({ title: "Idempotent payments", place: "checkout-api · api" });
-  expect(taskRowLines({ paneTitle: "Guard the export button", labelled: false, folder: "web-dashboard", workspace: "web-dashboard" }))
-    .toEqual({ title: "Guard the export button", place: "web-dashboard" });
-  expect(taskRowLines({ paneTitle: "api", labelled: false, folder: "api", workspace: "checkout-api" }))
-    .toEqual({ title: "checkout-api", place: "api" });
-  expect(taskRowLines({ paneTitle: "release", labelled: false, folder: "release", workspace: "release" }))
-    .toEqual({ title: "release", place: "" });
-  expect(taskRowLines({ paneTitle: "api", labelled: true, folder: "api", workspace: "checkout-api" }))
-    .toEqual({ title: "api", place: "checkout-api" });
-  expect(taskRowLines({ paneTitle: "session-list", labelled: false, folder: "fix-session-list", workspace: "Hotfix", alias: "fix/session-list" }))
-    .toEqual({ title: "session-list", place: "Hotfix · fix/session-list · fix-session-list" });
-  expect(taskRowLines({ paneTitle: "Hotfix", labelled: true, folder: "fix-payment", workspace: "Hotfix", alias: "fix/payment" }))
-    .toEqual({ title: "Hotfix", place: "fix/payment · fix-payment" });
+it("titles a pane by its own title, and by its workspace when an unlabelled title only names its folder", () => {
+  expect(taskTitle({ paneTitle: "Idempotent payments", labelled: false, folder: "api", workspace: "checkout-api" })).toBe("Idempotent payments");
+  expect(taskTitle({ paneTitle: "api", labelled: false, folder: "api", workspace: "checkout-api" })).toBe("checkout-api");
+  expect(taskTitle({ paneTitle: "api", labelled: true, folder: "api", workspace: "checkout-api" })).toBe("api");
 });
 
 it("keeps the thread of a Codex title and drops the project folder Codex adds after it", () => {

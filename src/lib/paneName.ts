@@ -8,18 +8,15 @@ export function tabTitle(title: string, agent: string | null | undefined): strin
   return rest ? `${mark}${rest}` : "";
 }
 
-export function taskRowLines({ paneTitle, labelled, folder, workspace, alias }: {
+/** what a pane is on: its own title, or its workspace when a title nobody gave it only names the pane's folder */
+export function taskTitle({ paneTitle, labelled, folder, workspace }: {
   paneTitle: string;
   labelled: boolean;
   folder: string;
-  /** the workspace's row name: its label, which herdr makes from the branch until its owner names it */
+  /** the workspace's name: its label, which herdr makes from the branch until its owner names it */
   workspace: string;
-  alias?: string | null;
-}): { title: string; place: string } {
-  const title = !labelled && paneTitle === folder ? workspace : paneTitle;
-  const where = [workspace === title ? "" : workspace, alias && alias !== title && alias !== workspace ? alias : ""].filter(Boolean).join(" · ");
-  const said = folder === title || folder === workspace || folder === alias;
-  return { title, place: placeLine(where, said ? "" : folder) };
+}): string {
+  return !labelled && paneTitle === folder ? workspace : paneTitle;
 }
 
 export function unsaidLine(title: string, parts: readonly (string | null | undefined)[]): string {
@@ -31,8 +28,4 @@ export function unsaidLine(title: string, parts: readonly (string | null | undef
     line.push(part);
   }
   return line.join(" · ");
-}
-
-export function placeLine(workspace: string, folder: string): string {
-  return !folder || folder === workspace ? workspace : !workspace ? folder : `${workspace} · ${folder}`;
 }
