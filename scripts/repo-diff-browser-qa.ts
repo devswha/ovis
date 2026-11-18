@@ -11,6 +11,7 @@ import { build as viteBuild } from "vite";
 import { repoDiffResponse } from "../server/repo-diff.ts";
 import { serveStatic } from "../server/static.ts";
 import { buildDemoApp } from "./demo-build.ts";
+import { startRendererTiming } from "./repo-diff-task-timing.ts";
 import { KO as KO_TEXT } from "../src/lib/i18n.ko.ts";
 
 process.env["GIT_CONFIG_GLOBAL"] = "/dev/null";
@@ -696,9 +697,11 @@ try {
     await context.grantPermissions(["clipboard-read", "clipboard-write"]);
     await context.addInitScript((theme) => {
       if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme }));
-      const record = window as unknown as { longTasks: number[] };
-      record.longTasks = [];
-      new PerformanceObserver((list) => { for (const entry of list.getEntries()) record.longTasks.push(entry.duration); }).observe({ type: "longtask" });
+      const tasks: { start: number; elapsed: number }[] = [];
+      Reflect.set(window, "repoDiffLongTasks", tasks);
+      new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) tasks.push({ start: entry.startTime, elapsed: entry.duration });
+      }).observe({ type: "longtask" });
     }, theme);
     const page = await context.newPage();
     page.setDefaultTimeout(15_000);
@@ -729,6 +732,8 @@ try {
     await shot(page, `list-${width}-${theme}`);
 
     const before = await page.evaluate(() => history.length);
+    const taskStart = await page.evaluate(() => performance.now());
+    const stopTiming = await startRendererTiming(page);
     await openChange(page, "src/big.ts");
     assert.equal(await page.evaluate(() => history.length), phone ? before : before + 1, `${label}: the diff is a history entry`);
     await page.getByRole("dialog", { name: "Changes to big.ts", exact: true }).waitFor();
@@ -791,7 +796,13 @@ try {
     assert.equal(tints.additionNumber, tints.inserted, `${label}: an added row's number is the inserted token: ${JSON.stringify(tints)}`);
     assert.equal(tints.deletionNumber, tints.deleted, `${label}: a removed row's number is the deleted token: ${JSON.stringify(tints)}`);
     assert.ok(tints.additionRow !== tints.contextRow && tints.deletionRow !== tints.contextRow && tints.additionRow !== tints.deletionRow, `${label}: added and removed rows are each tinted: ${JSON.stringify(tints)}`);
-    assert.ok((await page.evaluate(() => (window as unknown as { longTasks: number[] }).longTasks)).every((task) => task < 1_000), `${label}: no long task of a second`);
+    const cpuMs = await stopTiming();
+    const elapsedMs = await page.evaluate((start) => {
+      const tasks: { start: number; elapsed: number }[] = Reflect.get(window, "repoDiffLongTasks");
+      return Math.max(0, ...tasks.filter((task) => task.start >= start).map((task) => task.elapsed));
+    }, taskStart);
+    assert.ok(cpuMs > 0 && cpuMs < 1_000, `${label}: opening and scrolling the big diff uses less than one second of renderer CPU (${cpuMs.toFixed(1)} ms; longest task ${elapsedMs} ms elapsed)`);
+    console.log(`${label}: renderer CPU ${cpuMs.toFixed(1)} ms, longest task ${elapsedMs} ms elapsed`);
     assert.deepEqual(errors, [], `${label}: no errors while opening the big diff`);
     console.log(`PASS ${label}: a 10 000-line diff as a bounded window of rows at the top, the middle and the end (rows ${top.rows}/${middle.rows}/${end.rows}), in the app's palette`);
 
