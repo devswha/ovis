@@ -12,8 +12,6 @@ import { callNative, hasNativePlugin, nativeAlerts, PUSH_PLUGIN } from "./native
  *
  * The phone app's web view has no Notification either: there the permission is the app's, asked
  * through its push plugin (lib/nativeApp.ts), and the app shows the server's pushes itself.
- *
- * The transition policy is shared with the server (shared/notify-policy.ts).
  */
 
 export { alertPcAllowed, alertStatus, alertsAllow, paneAlertsMuted, shouldNotifyStatus } from "../../shared/notify-policy.ts";
@@ -77,7 +75,7 @@ async function show(paneId: string, title: string, body: string, onClick?: () =>
   if (await forkAlert(paneId, title, body, machineId, workspaceId)) return;
   if (typeof globalThis.Notification === "undefined") return;
   if (globalThis.Notification.permission !== "granted") return;
-  if (typeof document !== "undefined" && !document.hidden) return; // visible tab: the UI already shows it
+  if (typeof document !== "undefined" && !document.hidden) return;
   const tag = paneNotificationTag(paneId, machineId);
   const alertId = crypto.randomUUID();
   const options: NotificationOptions = { body, tag, data: { pane_id: paneId, machine_id: machineId, ...(workspaceId ? { workspace_id: workspaceId } : {}), alert_id: alertId }, icon: forkNotificationIcon(machineId, paneId) };
@@ -107,7 +105,6 @@ async function show(paneId: string, title: string, body: string, onClick?: () =>
       onClick?.();
     });
   } catch {
-    /* no way to show it here: the sidebar badge still carries the change */
   }
 }
 
@@ -116,10 +113,6 @@ export function pageNotifications(): boolean {
   return !hasNativePlugin(PUSH_PLUGIN) && typeof globalThis.Notification !== "undefined";
 }
 
-/**
- * One alert on this device now, through the page as its own alerts come (`show`), visible tab or not: the setup
- * guide's Send test. False when the browser has no notifications, they are not allowed, or none could be shown.
- */
 export async function showTestNotification(title: string, body: string): Promise<boolean> {
   if (typeof globalThis.Notification === "undefined" || globalThis.Notification.permission !== "granted") return false;
   const options: NotificationOptions = { body, tag: "ovis-test", icon: "/icons/icon-192.png?v=sheep1" };
@@ -133,7 +126,6 @@ export async function showTestNotification(title: string, body: string): Promise
   }
 }
 
-/** `workspaceId`: the pane's workspace, as the server's push names it (server/push.ts), so a tap after the pane ends opens it. */
 export function showPaneStatusNotification(paneId: string, title: string, status: AgentStatus, onClick?: () => void, machineId = "local", workspaceId?: string): Promise<void> {
   return show(paneId, title, statusNotificationBody(status), onClick, machineId, workspaceId);
 }

@@ -8,3 +8,5 @@ jobs:
   upstream:
     name: Upstream full suite
     uses: ./.github/workflows/ci.yml
+    with:
+      hosted_only: true

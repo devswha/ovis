@@ -228,10 +228,10 @@
   border-top: var(--hairline) solid var(--border);
 }
 
-/* the place shown, as the inbox rail marks it (InboxRail.css) and the sidebar its open row: a tonal fill and a
-   heavier, stronger glyph, hover adding nothing. The glyph's own color is set on it (Sidebar.css), so it is set here. */
+/* the place shown, as the fork's rail marks it (Rail.css): a heavier, stronger glyph alone, with no fill and hover
+   adding nothing; a press still shows. The glyph's own color is set on it (Sidebar.css), so it is set here. */
 .fork-github-foot > [aria-current="page"],
-.fork-github-foot > [aria-current="page"]:hover:not(:disabled) { background: var(--side-selected); }
+.fork-github-foot > [aria-current="page"]:hover:not(:disabled):not(:active) { background: transparent; }
 .fork-github-foot > [aria-current="page"] svg { color: var(--text-strong); stroke-width: 2.5; }
 
 /* the agents that wait: the app's own waiting pill on the glyph's top end corner */

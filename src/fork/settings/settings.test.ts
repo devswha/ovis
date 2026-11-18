@@ -45,6 +45,19 @@ describe("fork settings compatibility", () => {
     expect(loadSettings().keyBarItems).toEqual(migrateKeyBarItems(extras));
   });
 
+  it("carries the Inbox footer switch over to Navigation", () => {
+    expect(loadSettings().navigation).toBe("upstream");
+    records.set("ovis:settings", JSON.stringify({ speechVoice: "af_heart" }));
+    expect(loadSettings().navigation).toBe("footer");
+    records.set("ovis:fork-settings", JSON.stringify({ inboxFooter: false }));
+    expect(loadSettings().navigation).toBe("upstream");
+    records.set("ovis:fork-settings", JSON.stringify({ inboxFooter: false, navigation: "rail" }));
+    expect(loadSettings().navigation).toBe("rail");
+    records.delete("ovis:fork-settings");
+    records.set("ovis:settings", JSON.stringify({ language: "en", inboxFooter: true }));
+    expect(loadSettings().navigation).toBe("footer");
+  });
+
   it("carries a saved Composer extras choice over to Pi model picker", () => {
     records.set("ovis:settings", JSON.stringify({ language: "en", composerExtras: false }));
     expect(loadSettings().piModelPicker).toBe(false);
