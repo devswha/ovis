@@ -18,7 +18,7 @@ const centerOf = async (page: Page, id: string) => {
   assert.ok(box, `row ${id} is on screen`);
   return { x: Math.round(box.x + box.width / 2), y: Math.round(box.y + box.height / 2) };
 };
-const touch = (cdp: CDPSession, type: "touchStart" | "touchMove" | "touchEnd", point?: { x: number; y: number }) =>
+const touch = (cdp: CDPSession, type: "touchStart" | "touchMove" | "touchEnd" | "touchCancel", point?: { x: number; y: number }) =>
   cdp.send("Input.dispatchTouchEvent", { type, touchPoints: point ? [{ x: point.x, y: point.y }] : [] });
 
 async function stroke(page: Page, cdp: CDPSession, from: { x: number; y: number }, to: { x: number; y: number }, holdMs: number, during?: () => Promise<void>): Promise<void> {
@@ -702,7 +702,7 @@ try {
       await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
       const reads = await page.evaluate(() => (window as unknown as { __rowBoxReads: number }).__rowBoxReads);
       assert.ok(reads > 0 && reads <= rowCount, `a burst of 8 touchmoves measures the rows once per frame: ${reads} reads for ${rowCount} rows`);
-      await touch(cdp, "touchEnd");
+      await touch(cdp, "touchCancel");
       console.log("PASS a burst of touchmoves measures the rows once per frame, not once per event");
 
       // The phone's explicit menu has the same workspace scope as desktop right-click.
