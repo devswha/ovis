@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { EventEmitter, once } from "node:events";
 import type { Browser } from "playwright-core";
 import { chromePath } from "./chrome-path.ts";
-import { resetImeInput, selectImePane } from "./terminal-ime-ready.ts";
+import { IME_INITIAL_ATTACH_TIMEOUT, resetImeInput, selectImePane, waitForImeTerminal } from "./terminal-ime-ready.ts";
 
 export async function checkSafariIme(browser: Browser, origin: string, pane: string, otherPane: string): Promise<void> {
   const context = await browser.newContext({
@@ -148,6 +148,7 @@ export async function checkSafariIme(browser: Browser, origin: string, pane: str
   }, data);
   try {
     await page.goto(`${origin}/?pane=${encodeURIComponent(pane)}`, { waitUntil: "domcontentloaded" });
+    await waitForImeTerminal(page, pane, IME_INITIAL_ATTACH_TIMEOUT);
     await reset();
     await input.press("a"); await input.press("b"); await input.press("c");
     await syllable(["ㅎ", "하", "한"]);

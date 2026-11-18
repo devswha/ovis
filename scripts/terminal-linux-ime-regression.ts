@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { EventEmitter, once } from "node:events";
 import type { Browser } from "playwright-core";
 import { chromePath } from "./chrome-path.ts";
-import { resetImeInput } from "./terminal-ime-ready.ts";
+import { IME_INITIAL_ATTACH_TIMEOUT, resetImeInput, waitForImeTerminal } from "./terminal-ime-ready.ts";
 
 export async function checkLinuxIme(browser: Browser, origin: string, pane: string): Promise<void> {
   const context = await browser.newContext({
@@ -71,6 +71,7 @@ export async function checkLinuxIme(browser: Browser, origin: string, pane: stri
 
   try {
     await page.goto(`${origin}/?pane=${encodeURIComponent(pane)}`, { waitUntil: "domcontentloaded" });
+    await waitForImeTerminal(page, pane, IME_INITIAL_ATTACH_TIMEOUT);
     await reset(); await pick("2", "Digit2", 50, "地");
     await check("地", "a digit that picks a candidate sends the candidate, not the digit");
 
