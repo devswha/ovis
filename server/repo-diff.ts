@@ -349,7 +349,10 @@ export async function repoDiffFiles(cwd: string, params: URLSearchParams, option
   };
 }
 
-/** What an untracked path is on disk, without following a link out of the repository. */
+/**
+ * What an untracked path is on disk. Only its last component is checked for a link (lstat, before
+ * the open): a directory above it that is a link is followed, out of the repository too.
+ */
 function untrackedKind(path: string, maxBytes: number): "text" | "binary" | "too_large" | "unsupported" {
   let fd: number | null = null;
   try {

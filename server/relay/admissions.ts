@@ -20,7 +20,8 @@ export class SignedInSessions {
   private readonly entries = new Set<{ readonly deviceId: string; order: number; chosen: boolean; readonly close: () => void; readonly line?: SessionLine }>();
 
   /**
-   * at most `max` at once, and `perDevice` chosen for one device key, whose oldest gives way; at most `perDeviceCandidates`
+   * `max` at once, past which only a device at its `perDevice` share gets in, up to `perDeviceCandidates` over;
+   * `perDevice` chosen for one device key, whose oldest gives way; at most `perDeviceCandidates`
    * not chosen yet for one device key (an app races its carriers: two direct ones and the relay)
    */
   constructor(private readonly max = 8, private readonly perDevice = 4, private readonly perDeviceCandidates = 3) {}

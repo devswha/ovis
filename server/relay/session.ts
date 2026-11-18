@@ -380,13 +380,13 @@ export class RelaySession {
       if (error instanceof PairingRateLimitedError) { this.close("auth_failed"); return; }
       throw error;
     }
-    // pairRelayApproved counted a refused key itself
+    // pairRelayApproved counted a refused key itself; one admitNewDevice turned away is not counted
     this.endPairing(true);
     if (this.refused) return;
     this.enter(device);
   }
 
-  /** Once per comparison: one that made no device counts against relay pairing (server/devices.ts). */
+  /** Once per comparison: one that made no device counts against relay pairing (server/devices.ts), unless admitNewDevice refused it. */
   private endPairing(counted: boolean): void {
     const sas = this.sas;
     if (!sas || sas.ended) return;

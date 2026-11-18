@@ -9,7 +9,6 @@ const KiB = 1024;
 const MiB = 1024 * KiB;
 export const REMOTE_LIMITS = {
   bridgeIdentity: 64 * KiB,
-  /** a bridge's error answer, read only for its code */
   bridgeError: 8 * KiB,
   health: 64 * KiB,
   ownUpdates: 64 * KiB,

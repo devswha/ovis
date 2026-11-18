@@ -117,10 +117,12 @@ async function foregroundPids(paneId: string): Promise<number[]> {
  * tool call. "active": a form pi-ask reported open, or an ask_user call still open on pi's live
  * branch (a pi-ask that sends no started event still has its call there). "inactive": the
  * extension answered with neither, from pi's live state (a /tree move that writes nothing leaves
- * the session file behind it). "absent": no extension serves the pane's pi, or pi could not say
- * which calls are open: the session file decides. "unknown" (the pane's processes
- * unreadable, a socket that is not this user's alone, a read that failed or answers for another
- * pid) is never room for keys. Every candidate socket is asked: more than one is no reason to stop.
+ * the session file behind it), also when it does not say which calls are open. "absent": no
+ * bridge directory, or none holds a socket for a pid in front: no extension serves the pane's pi.
+ * "unknown" (with a bridge directory: the pane's processes unreadable, a socket that is not this
+ * user's alone, a read that failed or answers for another pid, other pids in front after the
+ * reads) is never room for keys. Active wins, then unknown, then inactive. Every candidate socket
+ * is asked: more than one is no reason to stop.
  */
 export type PiAskActivity = "active" | "inactive" | "absent" | "unknown";
 export async function piAskActivity(paneId: string, signal?: AbortSignal): Promise<PiAskActivity> {

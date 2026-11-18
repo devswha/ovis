@@ -117,7 +117,8 @@ export async function runMove(stateDir: string, port: number, id: string, plan: 
       step("ending_agents", index, agents.length);
       const verdict = pane.verdict;
       const now = await source.pane(pane.pane_id);
-      // checked again right before the keys: an agent that took work since is never typed into
+      // checked again before the keys: an agent that took work since the plan is not typed into, but
+      // one that takes it after this read (during the input check) still is
       if (!now || now.agent !== verdict.agent || (now.status !== "idle" && now.status !== "done") || source.holdsPending(pane.pane_id)) throw new MoveAbort("agent_busy");
       // the conversation shown is the one ended: one switched to since would be reopened as the wrong one
       if (verdict.kind === "resume" && now.session !== verdict.session_id) throw new MoveAbort("plan_changed");

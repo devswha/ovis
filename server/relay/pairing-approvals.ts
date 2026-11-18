@@ -206,7 +206,10 @@ export class RelayPairingApprovals {
   /** Whether a comparison taken now is this PC's own to decide: asked while its add-me screen waited. */
   localOnlyOpen(now = this.now()): boolean { return now < this.localOnlyUntil; }
 
-  /** Outside the window a comparison is refused before any prompt, so nobody the owner did not invite can raise one. */
+  /**
+   * Outside the window a comparison is refused before any prompt, so nobody the owner did not invite can raise one;
+   * only a join the account service holds a fresh admission for is taken then, for account members alone (session.ts accountJoin).
+   */
   windowOpen(now = this.now()): boolean { return now < this.windowUntil; }
 
   /** `left_ms` is counted on each telling, so a window whose clock differs from this PC's still counts down right. */

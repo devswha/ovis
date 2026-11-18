@@ -1223,9 +1223,9 @@ async function closeQueue(paneId: string, answered: string): Promise<void> {
 
 /**
  * Opens Codex's collapsed queue on its first question and returns that question, only
- * if it is the one the card showed (title and options). Another one stays open, so the
- * chat's next read shows the question actually waiting (a skip can leave the rollout's
- * guess behind); a queue that does not open is left alone.
+ * if it is the one the card showed (title and options). Another one is kept in `queueFronts`,
+ * so the chat's next read shows the question actually waiting (a skip can leave the rollout's
+ * guess behind), and the queue is closed again.
  */
 async function openQueuedQuestion(paneId: string, queued: ParsedPrompt, givenUp: () => boolean = () => false, opens: (open: boolean) => void = () => undefined): Promise<InteractivePrompt | null> {
   if (queuedQuestionCount(await liveScreen(paneId)) === 0 || givenUp()) return null;
