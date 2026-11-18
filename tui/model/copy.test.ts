@@ -244,18 +244,74 @@ it("output clears an active selection before yank", async () => {
 });
 
 const WRAPPED_URL = `https://example.org/${"seg/".repeat(12)}tail/file.ts:12`;
+const LONG_URL = `https://example.org/${"seg/".repeat(27)}end.html`;
+const WRAPPED_PATH = `./${"directory-name/".repeat(4)}src/components/Widget.tsx:120:8`;
+const WRAPPED_HASH = " ".repeat(45) + "0123456789abcdef".repeat(4);
+const WRAP_CUTS = [
+  ["URL", [WRAPPED_URL.slice(0, 58)], "g/seg/seg/tail/file.ts:12"],
+  ["URL over 3 rows", [LONG_URL.slice(0, 58), LONG_URL.slice(58, 116)], "seg/seg/seg/end.html"],
+  ["path", [WRAPPED_PATH.slice(0, 58)], "ame/src/components/Widget.tsx:120:8"],
+  ["Korean path", [`./${"디렉터리/".repeat(6)}디`], "렉터리/소스/위젯.tsx:120:8"],
+  ["hash", [WRAPPED_HASH.slice(0, 58)], "def0123456789abcdef0123456789abcdef0123456789abcdef"],
+] as const;
 
-it.each([
-  ["URL", WRAPPED_URL, "g/seg/seg/tail/file.ts:12"],
-  ["path", `./${"directory-name/".repeat(4)}src/components/Widget.tsx:120:8`, "ame/src/components/Widget.tsx:120:8"],
-  ["hash", " ".repeat(45) + "0123456789abcdef".repeat(4), "def0123456789abcdef0123456789abcdef0123456789abcdef"],
-])("a pruned wrapped %s has no hint on the oldest kept row", async (_kind, line, tail) => {
+it.each(WRAP_CUTS)("a pruned wrapped %s has no hint on the oldest kept row", async (_kind, head, tail) => {
+  const run = await start();
+  await run.keys("q");
+  const line = head.join("") + tail;
+  // Clear the old screen and history, then let Ghostty lay out the live bytes.
+  run.core.program("t1").output(Buffer.from(`\x1bcone\r\n${(`${line}\r\n`).repeat(2999)}${line}\r`));
+  await run.advance(20);
+  await run.keys("ctrl+b,[,g,f");
+  await run.advance(10);
+  expect(run.grid()[2]?.slice(1, 1 + tail.length)).toBe(tail);
+  await run.keys("1");
+  expect(clips(run)).toEqual([line.trimStart()]);
+  expect(data(run)).toEqual([]);
+});
+
+it.each(WRAP_CUTS)("a pruned replay of %s has no hint on its oldest tail", async (_kind, head, tail) => {
+  // A real replay hard-breaks each physical row. Repeating the record makes
+  // the engine drop earlier pages, so there is no preceding row to inspect.
+  const line = [...head, tail].join("\r\n");
   const run = await start("one\r\n" + (`${line}\r\n`).repeat(2999) + line + "\r");
   await run.keys("g,f");
   await run.advance(10);
   expect(run.grid()[2]?.slice(1, 1 + tail.length)).toBe(tail);
   await run.keys("1");
-  expect(clips(run)).toEqual([line.trimStart()]);
+  expect(clips(run)).toEqual([]);
+  expect(data(run)).toEqual([]);
+});
+
+it.each([
+  ["a URL scheme", "https://whole.test/a", "1ttps://whole.test/a", "https://whole.test/a"],
+  ["a file scheme", "file:///docs/guide.md", "1ile:///docs/guide.md", "file:///docs/guide.md"],
+  ["a dot root", "./docs/guide.md", "1/docs/guide.md", "./docs/guide.md"],
+  ["a parent root", "../docs/guide.md", "1./docs/guide.md", "../docs/guide.md"],
+  ["a home root", "~/docs/guide.md", "1/docs/guide.md", "~/docs/guide.md"],
+  ["an explicitly spaced hash", " c0ffee42", " 10ffee42", "c0ffee42"],
+  ["an explicitly spaced absolute path", " /docs/guide.md", " 1docs/guide.md", "/docs/guide.md"],
+  ["a token after a clipped one", "tail/file.ts c0ffee42", "tail/file.ts 10ffee42", "c0ffee42"],
+  ["a token after a slash-leading tail", "/tail/file.ts c0ffee42", "/tail/file.ts 10ffee42", "c0ffee42"],
+  ["a token after punctuation inside a tail", "(c0ffee42) /whole.md", "(c0ffee42) 1whole.md", "/whole.md"],
+  ["a token after a scheme within the first field", "(https://cut.test/a) c0ffee42", "(https://cut.test/a) 10ffee42", "c0ffee42"],
+])("oldest row can prove %s", async (_kind, line, drawn, target) => {
+  const run = await start(`${line}\r\n${"padding\r\n".repeat(14)}end\r`);
+  await run.keys("g,f");
+  await run.advance(10);
+  expect(run.grid()[2]?.slice(1, 1 + drawn.length)).toBe(drawn);
+  await run.keys("1");
+  expect(clips(run)).toEqual([target]);
+});
+
+it("an oldest-row scheme reaching the margin does not prove a complete target", async () => {
+  const url = "https://example.org/" + "a".repeat(38);
+  const run = await start(`${url}\r\n\r\n${"padding\r\n".repeat(14)}end\r`);
+  await run.keys("g,f");
+  await run.advance(10);
+  expect(run.grid()[2]?.slice(1, 59)).toBe(url);
+  await run.keys("1");
+  expect(clips(run)).toEqual([]);
 });
 
 it("an intact wrapped URL at the history limit can still be copied", async () => {

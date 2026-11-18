@@ -84,7 +84,8 @@ export function visibleCopyHints(scene: PaneScene, emulator: Emulator, top: numb
     y = Math.max(y, line?.end.y ?? y) + 1;
     // A vertically cut logical line cannot be mapped completely to the drawn cells.
     if (!line || line.start.y < top + row || line.end.y >= top + bottom) continue;
-    if (line.start.y === 0) {
+    const oldest = line.start.y === 0;
+    if (oldest) {
       // The first kept row can be a continuation even though lineAt has no earlier row to return.
       const continues = emulator.rowContinues(0);
       if (!continues.ok || continues.value !== false) continue;
@@ -94,24 +95,29 @@ export function visibleCopyHints(scene: PaneScene, emulator: Emulator, top: numb
     const text = formatted.value;
     const cells = lineCells(grid, line, top, text);
     const found = tokens(text);
-    // hc's first paint serializes wraps as hard breaks. Do not offer the leading fragment
-    // of a line abutting a full row, even though Ghostty sees two separate logical lines.
-    let head = 0;
-    if (line.start.x === 0 && line.start.y > 0 && found.length > 0) {
+    // hc serializes wraps as hard breaks. The oldest row has no preceding row
+    // to disprove a cut. Ghostty excludes leading blanks from lineAt, so a
+    // line starting past column zero already has a separator.
+    let possibleCut = oldest && line.start.x === 0;
+    if (!oldest && line.start.x === 0 && found.length > 0) {
       const edge = { x: grid.cols - 1, y: line.start.y - 1 };
       // A wide first glyph can also have wrapped one cell before the right margin.
       const early = grid.cols > 1 && grid.width[cells[0] ?? -1] === 2;
       const previous = emulator.textOf({ start: { ...edge, x: edge.x - Number(early) }, end: edge });
-      if (previous.ok && previous.value.trim()) {
-        const space = text.search(/\s/);
-        head = space < 0 ? text.length : space;
-      }
+      possibleCut = previous.ok && previous.value.trim() !== "";
     }
+    const space = possibleCut ? text.search(/\s/) : 0;
+    const head = space < 0 ? text.length : space;
     let end = -1;
     for (const token of found) {
       const next = token.index + token.text.length;
       const first = cells[token.index], last = cells[next - 1];
-      if (first === undefined || last === undefined || token.index < end || token.index < head) continue;
+      if (first === undefined || last === undefined || token.index < end) continue;
+      if (token.index < head) {
+        // At the oldest left margin, require a scheme or a spelled-out path
+        // root. A bare slash could still be a separator within a cut token.
+        if (!oldest || token.index !== 0 || !(isWebLink(token.text) || fileUriPath(token.text) !== null || /^(?:~|\.\.?)\//.test(token.text))) continue;
+      }
       // At a logical line's right edge there is no visible delimiter after the token.
       if (Math.floor(last / grid.cols) === line.end.y - top) {
         const after = (last % grid.cols) + (grid.width[last] ?? 0);
