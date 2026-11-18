@@ -639,6 +639,15 @@ try {
     try {
       const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, locale: "en-US" });
       await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" })));
+      // count the per-row reads boxes() makes, so a burst of touchmoves can be shown to measure once per frame
+      await context.addInitScript(() => {
+        const original = Element.prototype.getBoundingClientRect;
+        (window as unknown as { __rowBoxReads: number }).__rowBoxReads = 0;
+        Element.prototype.getBoundingClientRect = function (this: Element) {
+          if (this.matches?.(".workspace-group[data-workspace]")) (window as unknown as { __rowBoxReads: number }).__rowBoxReads += 1;
+          return original.call(this);
+        };
+      });
       const page = await context.newPage();
       const errors: string[] = [];
       page.on("pageerror", (error) => errors.push(error.message));
@@ -677,6 +686,26 @@ try {
       assert.equal(await page.locator('button[aria-controls="workspace-drawer"]').getAttribute("aria-expanded"), "true", "the drag left the drawer open");
       console.log("PASS a long press lifts a workspace row on a touch screen, and a drag drops it where the line shows");
 
+      // A burst of touchmoves in one task: one boxes() measurement per frame, not one per event.
+      const burstFrom = await centerOf(page, before[0]!);
+      await touch(cdp, "touchStart", burstFrom);
+      await page.locator(".workspace.is-lifted").waitFor({ timeout: 5_000 });
+      const rowCount = await page.locator(".machine-workspaces .workspace-group[data-workspace]").count();
+      await page.evaluate(() => { (window as unknown as { __rowBoxReads: number }).__rowBoxReads = 0; });
+      await page.evaluate(({ x, y }) => {
+        const target = document.elementFromPoint(x, y) ?? document.body;
+        const touch = new Touch({ identifier: 1, target, clientX: x, clientY: y, pageX: x, pageY: y, screenX: x, screenY: y });
+        for (let i = 0; i < 8; i += 1) {
+          target.dispatchEvent(new TouchEvent("touchmove", { bubbles: true, cancelable: true, touches: [touch], targetTouches: [touch], changedTouches: [touch] }));
+        }
+      }, { x: burstFrom.x, y: burstFrom.y + 40 });
+      await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+      const reads = await page.evaluate(() => (window as unknown as { __rowBoxReads: number }).__rowBoxReads);
+      assert.ok(reads > 0 && reads <= rowCount, `a burst of 8 touchmoves measures the rows once per frame: ${reads} reads for ${rowCount} rows`);
+      await touch(cdp, "touchEnd");
+      console.log("PASS a burst of touchmoves measures the rows once per frame, not once per event");
+
+      // The phone's explicit menu has the same workspace scope as desktop right-click.
       const moved = before[0]!;
       const movedRow = page.locator(`.workspace-group[data-workspace="${moved}"]`);
       await movedRow.locator(".row-menu-toggle").click();

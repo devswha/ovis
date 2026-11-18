@@ -91,18 +91,23 @@ export function watchTouchReorder(root: HTMLElement, handlers: TouchReorderHandl
     }
   };
 
-  const edgeScroll = (): void => {
+  /** One frame of a drag: scroll the list if the finger is at an edge, then place the row. */
+  const dragFrame = (): void => {
     if (lift === null) return;
     lift.frame = 0;
+    let scrolled = false;
     const scroller = lift.scroller;
-    if (scroller === null) return;
-    const box = scroller.getBoundingClientRect();
-    const step = edgeScrollStep(lift.y, box.top, box.bottom);
-    if (step === 0) return;
-    const before = scroller.scrollTop;
-    scroller.scrollTop = before + step;
-    if (scroller.scrollTop !== before) place();
-    lift.frame = window.requestAnimationFrame(edgeScroll);
+    if (scroller !== null) {
+      const box = scroller.getBoundingClientRect();
+      const step = edgeScrollStep(lift.y, box.top, box.bottom);
+      if (step !== 0) {
+        const before = scroller.scrollTop;
+        scroller.scrollTop = before + step;
+        scrolled = scroller.scrollTop !== before;
+      }
+    }
+    place();
+    if (scrolled) lift.frame = window.requestAnimationFrame(dragFrame);
   };
 
   const pickUp = (): void => {
@@ -157,8 +162,7 @@ export function watchTouchReorder(root: HTMLElement, handlers: TouchReorderHandl
     event.preventDefault();
     event.stopImmediatePropagation();
     lift.y = touch.clientY;
-    place();
-    if (lift.frame === 0) lift.frame = window.requestAnimationFrame(edgeScroll);
+    if (lift.frame === 0) lift.frame = window.requestAnimationFrame(dragFrame);
   };
 
   const onEnd = (event: TouchEvent): void => {
