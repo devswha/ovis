@@ -4,6 +4,10 @@ import OvisPushCore
 import UIKit
 import UserNotifications
 
+/// The endpoint is the relay's for this phone's APNs token, one
+/// per PC, as the relay pins each endpoint to the PC's key; the token itself stays at the relay.
+/// The keys are the phone's (OvisPushCore), shared with the extension that decrypts
+/// (OvisNotifications).
 @objc(OvisPushPlugin)
 public class OvisPushPlugin: CAPPlugin, CAPBridgedPlugin, NotificationHandlerProtocol {
     public let identifier = "OvisPushPlugin"
@@ -222,6 +226,7 @@ public class OvisPushPlugin: CAPPlugin, CAPBridgedPlugin, NotificationHandlerPro
         guard let url = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision") else {
             return "production"
         }
+        // The signed provisioning envelope contains one XML plist with its entitlements.
         let data = try Data(contentsOf: url)
         guard let start = data.range(of: Data("<?xml".utf8)),
               let end = data.range(of: Data("</plist>".utf8)),

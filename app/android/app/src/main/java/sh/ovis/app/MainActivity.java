@@ -72,14 +72,26 @@ public class MainActivity extends BridgeActivity {
 
     private boolean pageShown;
 
+    /**
+     * Whether the address being opened led to something in front of the PC, such as a sign-in page:
+     * until a page of the PC loads, main-frame navigations (the sign-in's pages, its identity
+     * provider's, the way back to the PC) stay in the WebView, so the sign-in's cookie lands in the
+     * WebView's store, which onPause flushes, rather than in the browser's.
+     */
     private volatile boolean signingIn;
 
+    /** The origin the sign-in is on, so each of its steps is judged against the one before (PCStore.refusedHop). */
     private volatile String signInAt;
 
     private Integer barColor;
 
     private View openingView;
 
+    /**
+     * Looks at the open once a second while the cover is up (watchOpening): gives up on a PC from
+     * which nothing arrived in ANSWER_SECONDS, where Chromium alone waits about two minutes, and
+     * tells a slow or stalled link on the cover.
+     */
     private final Handler answerTimer = new Handler(Looper.getMainLooper());
 
     private OpeningWatch watch;
@@ -98,6 +110,13 @@ public class MainActivity extends BridgeActivity {
 
     private static final long PAGE_POLL_MS = 200;
 
+    /**
+     * Asked of the PC's page each second while the cover is up: whether the client is up (its root
+     * no longer holds index.html's loading spinner; null when the page has no root, so it is not
+     * the client), and the sum of the sizes of the page and the files it starts with, from a HEAD of
+     * each (0 when any of them gives no Content-Length, as a proxy that streams compressed files
+     * does; -1 until they answer).
+     */
     private static final String PAGE_SCRIPT =
         "(() => {" +
         "  const root = document.getElementById('root');" +
@@ -117,10 +136,16 @@ public class MainActivity extends BridgeActivity {
     private String openingLabel;
     private String openingHost;
 
+    /** Whether the app gave up on the first page: the load it dropped may still report its end. */
     private boolean gaveUp;
 
     private boolean checked;
 
+    /**
+     * Takes Back for the page while the entry behind the one shown is a page of the same place
+     * (syncBack): the page closes what is open, or shows the pane before. While it is off, Back is
+     * the system's: it leaves the app, and draws its own way out (predictive back).
+     */
     private final OnBackPressedCallback pageBack = new OnBackPressedCallback(false) {
         @Override
         public void handleOnBackPressed() {
@@ -227,6 +252,8 @@ public class MainActivity extends BridgeActivity {
                 new BridgeWebViewClient(bridge) {
                     @Override
                     public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                        // error.html on a WebView without HerdrErrorPage (no WEB_MESSAGE_LISTENER)
+                        // asks by navigating to one of these app addresses instead
                         Uri url = request.getUrl();
                         if (
                             request.isForMainFrame() &&
@@ -326,6 +353,8 @@ public class MainActivity extends BridgeActivity {
 
                     @Override
                     public void onReceivedHttpError(WebView view, WebResourceRequest request, WebResourceResponse response) {
+                        // a PC that answers but not with Ovis, such as tailscale serve's 502 while Ovis
+                        // is stopped there
                         if (request.isForMainFrame()) {
                             pageFailed = true;
                             String reason = response.getReasonPhrase();
@@ -348,6 +377,10 @@ public class MainActivity extends BridgeActivity {
 
                     @Override
                     public void onPageCommitVisible(WebView webView, String url) {
+                        // the main frame's first page is on screen, before its pictures or scripts finish:
+                        // the PC's, a sign-in's or the error page. The PC's own page keeps the cover, with
+                        // its bar, until the client is up (watchOpening): until then it shows only its
+                        // loading spinner, for minutes on a slow link
                         pageShown = true;
                         if (url == null || !PCStore.belongs(url, pc)) hideOpening();
                         else answerTimer.post(MainActivity.this::pollPage);
@@ -356,6 +389,7 @@ public class MainActivity extends BridgeActivity {
                     @Override
                     public void onPageLoaded(WebView webView) {
                         // Chromium reports a page that failed as loaded too, before the error page;
+                        // only a page of this very PC (its scheme, host and port, and its scope for a relay PC) counts
                         String url = webView.getUrl();
                         if (pageFailed || url == null || !PCStore.belongs(url, pc)) return;
                         signingIn = false;
@@ -371,6 +405,11 @@ public class MainActivity extends BridgeActivity {
         }
     }
 
+    /**
+     * Keeps the PC `pc`, whose page `url` has loaded, unless it is not Ovis: a web server that is not
+     * Ovis would otherwise be saved and opened at every start, with no Change PC and Back closing the
+     * app.
+     */
     private void keepIfOvis(String pc, String url) {
         if (PCStore.scoped(pc)) {
             PCStore.remember(this, pc);
@@ -591,6 +630,11 @@ public class MainActivity extends BridgeActivity {
         super.onDestroy();
     }
 
+    /**
+     * Gives Back to the page or to the system, by where the WebView's history stands: the page's while
+     * the page shown and the entry behind it are pages of `place`, the PC or the app's own origin
+     * (PCStore.pageTakesBack). Told before the next Back, so the system knows which way out to draw.
+     */
     private void syncBack(String place) {
         WebView view = bridge.getWebView();
         WebBackForwardList entries = view.copyBackForwardList();
@@ -657,6 +701,10 @@ public class MainActivity extends BridgeActivity {
         });
     }
 
+    /**
+     * The color behind the system bars (the strip Capacitor leaves when the page does not draw under
+     * them) and icons that stand out on it, light or dark.
+     */
     private void paintBars(int color) {
         barColor = color;
         Window window = getWindow();
@@ -682,6 +730,18 @@ public class MainActivity extends BridgeActivity {
         CookieManager.getInstance().flush();
     }
 
+    /**
+     * A redirect of the address being opened to another origin, held back: when that origin answers as
+     * Ovis it becomes the PC and opens as the first page, with the bridge (http to https, an IP address
+     * to the PC's name, another port). Anything else is taken for a sign-in in front of the PC (an
+     * authenticating proxy such as Cloudflare Access): it loads without the bridge and is never saved
+     * or made the PC, and the way back to the PC stays in the WebView (signingIn). The address's own
+     * page would get the bridge too, so the place it leads to gets nothing more. Once the first page shows,
+     * Capacitor decides on redirects again: one could then come from a link to a page that is not the
+     * PC's (another port on its host), which must not choose the PC. A way that goes over public plain
+     * http, or from https to http, does not switch on its own: the connect screen warns before a
+     * public http address.
+     */
     private void followRedirect(String from, String target) {
         boolean tooMany = PCStore.redirects >= PCStore.MAX_REDIRECTS;
         new Thread(() -> {
@@ -714,6 +774,11 @@ public class MainActivity extends BridgeActivity {
         }, "ovis-redirect").start();
     }
 
+    /**
+     * Whether the sign-in's next step, to `url`, is refused: over public plain http, or from https to
+     * http (PCStore.refusedHop). The way back to the PC itself is never refused, as the user chose its
+     * address.
+     */
     private boolean refuseSignInStep(String url, String pc) {
         if (PCStore.belongs(url, pc)) return false;
         String insecure = PCStore.refusedHop(signInAt, url, null, null);
@@ -734,6 +799,11 @@ public class MainActivity extends BridgeActivity {
         super.onNewIntent(intent);
     }
 
+    /**
+     * A link to pair from waits for the connect screen (PCStore.link); a view of a PC (a file, a pane)
+     * opens that PC at that view when the app has it saved, as the browser would have; for any other
+     * PC the app has nothing to show.
+     */
     private boolean openAppLink(String link) {
         if (PCStore.pairingLink(link)) {
             PCStore.link = link;
@@ -763,6 +833,12 @@ public class MainActivity extends BridgeActivity {
         return fresh && !fromRecents ? link : null;
     }
 
+    /**
+     * False, leaving the open page alone, for any other intent, an alert that names no saved PC, one the
+     * system hands back with the activity restored or started from Recents, which was opened before,
+     * and one without this app's proof (AlertProof): this activity is exported, and
+     * another app's alert is a bare launch, which switches nothing and keeps a pairing link waiting.
+     */
     private boolean openAlert(Intent intent, boolean fresh) {
         if (intent == null || !OvisMessagingService.ACTION_OPEN_ALERT.equals(intent.getAction())) return false;
         boolean own;
@@ -794,6 +870,7 @@ public class MainActivity extends BridgeActivity {
         );
         if (alert == null) return false;
         if (alert.selection != null) {
+            // as public/sw.js posts it to the open window, through a page event a page on plain http hears too
             view.evaluateJavascript(PCStore.selectionScript(alert.selection), null);
             return false;
         }

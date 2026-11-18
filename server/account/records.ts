@@ -46,14 +46,12 @@ function apply(store: DeviceStore, record: AccountRecord, serverId: string | nul
   if (!store.acceptsRelayKey(record.key)) return refused("record_invalid");
   if (store.isTombstoned(record.key)) return refused("tombstoned");
   if (store.hasKey(record.key)) {
-    // kept on the row this signer's approval made here, so a client can hand it to a PC it enrolls later
     store.keepAccountAdd(record, signer.id);
     return { id: record.id, outcome: "unchanged" };
   }
   if (gates?.enrolling()) return refused("enrolling");
   // a key this PC holds back, or a signer it holds back (a remove for it waits here): the add waits for that to settle
   if (gates?.held(record.key) || gates?.removing?.(record.signer)) return refused("removal_pending");
-  // the new row's id is derived from this PC's relay id (docs/account.md), so without one there is no row to make
   if (serverId === null) return refused("account_unavailable");
   const id = accountDeviceId(serverId, record.key);
   if (store.has(id)) return refused("record_invalid");
@@ -79,7 +77,6 @@ function withUndecided(gates: AddGates | undefined, undecided: ReadonlySet<strin
   return { enrolling: () => gates?.enrolling() ?? false, held: (key) => undecided.has(key) || (gates?.held(key) ?? false), removing: (key) => undecided.has(key) || (gates?.removing?.(key) ?? false) };
 }
 
-/** Every record of a batch, in order; one refusal never fails the rest. At most ACCOUNT_RECORDS_MAX. */
 export async function applyAccountRecords(store: DeviceStore, values: readonly unknown[], serverId: string | null, now = Date.now(), gates?: AddGates, wait?: (record: unknown) => boolean): Promise<RecordOutcome[]> {
   if (values.length > ACCOUNT_RECORDS_MAX) throw new RangeError(`At most ${ACCOUNT_RECORDS_MAX} records at once`);
   const outcomes: RecordOutcome[] = [];
