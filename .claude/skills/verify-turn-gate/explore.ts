@@ -19,7 +19,7 @@ interface Rec { owner: string; paneId: string; lease: null; identity: object; in
 interface Gate { by: string; committed: boolean; sawWorking: boolean; completed: boolean; deadline: number | null; restart?: "interruption" | "working"; joined?: number; lenient?: true; since?: number }
 /** The class under test, with the fields the explorer saves and puts back between steps. */
 interface Inst {
-  records: Map<string, Rec>; statuses: Map<string, St>; events: Map<string, number>; gates: Map<string, Gate>; ahead: Map<string, { status: St; at: number }[]>;
+  records: Map<string, Rec>; statuses: Map<string, St>; events: Map<string, number>; gates: Map<string, Gate>; ahead: Map<string, { status: St; at: number; blind?: true }[]>;
   movedInFlight: WeakSet<Rec>; closed: Map<string, number>; resends: Map<string, Resend>;
   enqueue(owner: string, paneId: string, requestId: number, text: string, lease: null, identity: object, held?: boolean): Rec;
   next(paneId: string): Rec | null;
@@ -169,7 +169,7 @@ interface Task {
 interface World {
   /** how many of the run's `via` steps the path has taken */
   via: number;
-  c: { records: { id: string; o: string; p: string; f: boolean; s: string; rq: number; mv: boolean }[]; statuses: [string, St][]; events: [string, number][]; gates: [string, Gate][]; ahead: [string, { status: St; age: number }[]][] };
+  c: { records: { id: string; o: string; p: string; f: boolean; s: string; rq: number; mv: boolean }[]; statuses: [string, St][]; events: [string, number][]; gates: [string, Gate][]; ahead: [string, { status: St; age: number; blind?: true }[]][] };
   /** what the agent does: its turn (`base`: one this queue did not start), and Enters that wait in its own queue */
   turn: null | "base" | "queue"; aq: string[]; blocked: boolean;
   /** herdr's reading of it, and the status events sent and not yet applied: each with when it was read and the pane id it names */
@@ -218,7 +218,7 @@ export async function explore(config: Config, limit = 60_000_000): Promise<Resul
     for (const [pane, status] of c.statuses) inst.statuses.set(pane, status);
     for (const [pane, count] of c.events) inst.events.set(pane, count);
     for (const [pane, gate] of c.gates) inst.gates.set(pane, { ...gate });
-    for (const [pane, list] of c.ahead) inst.ahead.set(pane, list.map((reading) => ({ status: reading.status, at: -reading.age })));
+    for (const [pane, list] of c.ahead) inst.ahead.set(pane, list.map((reading) => ({ status: reading.status, at: -reading.age, ...(reading.blind ? { blind: true as const } : {}) })));
     return inst;
   };
   /** The fields that decide what the class does next. Clock values and event counts are kept only as far as they compare. */
@@ -257,7 +257,7 @@ export async function explore(config: Config, limit = 60_000_000): Promise<Resul
         ...(gate.since !== undefined ? { since: 0 } : {}),
       }]),
       // a reading ahead of herdr's events counts until the start timeout: its age is kept as far as that goes
-      ahead: [...inst.ahead].sort(([a], [b]) => a.localeCompare(b)).map(([pane, list]) => [pane, list.map((reading) => ({ status: reading.status, age: Math.min(TIMEOUT, clock - reading.at) }))]),
+      ahead: [...inst.ahead].sort(([a], [b]) => a.localeCompare(b)).map(([pane, list]) => [pane, list.map((reading) => ({ status: reading.status, age: Math.min(TIMEOUT, clock - reading.at), ...(reading.blind ? { blind: true as const } : {}) }))]),
     };
   };
 

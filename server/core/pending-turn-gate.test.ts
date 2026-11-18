@@ -399,6 +399,27 @@ describe("the queue's turn gate (#4118)", () => {
     expect(pending.next("p")).toBeNull();
   });
 
+  it("owes no event for a status read before the first baseline that the baseline shows herdr already held", () => {
+    let clock = 0;
+    const pending = new PendingInputs<string, null>(() => {}, () => clock, 10);
+    const identity = { agent: "claude", terminalId: "p", session: null };
+    // a send to the queue reads the agent at work before the collector's first baseline; that baseline was asked before it
+    clock = 2;
+    pending.observe("p", "working", pending.mark("p"));
+    const x = pending.enqueue("a", "p", 1, "X", null, identity);
+    const y = pending.enqueue("a", "p", 2, "Y", null, identity);
+    pending.baseline("p", "working", 1);
+    // the turn at work ends: the queue types X, and herdr reads X's turn start and end
+    pending.status("p", "idle");
+    expect(pending.next("p")).toBe(x);
+    expect(pending.claim(x, true)).toBe(true);
+    pending.committing(x);
+    pending.settle(x);
+    pending.status("p", "working");
+    pending.status("p", "idle");
+    expect(pending.next("p")).toBe(y);
+  });
+
   it("leaves the pane's status alone for a reconcile's baseline asked before a reading already taken", () => {
     let clock = 0;
     const pending = new PendingInputs<string, null>(() => {}, () => clock, 10);

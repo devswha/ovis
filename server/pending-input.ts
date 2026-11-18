@@ -79,7 +79,8 @@ export class PendingInputs<Owner, Lease> {
   private readonly events = new Map<string, number>();
   private readonly gates = new Map<string, TurnGate>();
   /** statuses a snapshot showed ahead of herdr's events, with when: the event that tells each is older than that snapshot */
-  private readonly ahead = new Map<string, { status: AgentStatus; at: number }[]>();
+  /** `blind`: read while the pane had no status yet, before the collector's first baseline could tell one */
+  private readonly ahead = new Map<string, { status: AgentStatus; at: number; blind?: true }[]>();
   /** when a status of the pane was last taken, from an event or a read */
   private readonly readAt = new Map<string, number>();
   private readonly waits = new Map<string, NonNullable<PendingMessage["waiting"]>>();
@@ -345,6 +346,11 @@ export class PendingInputs<Owner, Lease> {
   baseline(paneId: string, status: AgentStatus, askedAt: number): void {
     const since = this.gates.get(paneId)?.since;
     const read = this.readAt.get(paneId) ?? -Infinity;
+    // herdr held this status before the subscription: a reading of it taken blind is owed no event
+    const owed = this.unexpired(paneId);
+    if (owed[0]?.blind && kind(owed[0].status) === kind(status)) {
+      if (owed.length === 1) this.ahead.delete(paneId); else this.ahead.set(paneId, owed.slice(1));
+    }
     // asked before a reading already taken, it is older than that reading and tells nothing, not even the status
     if (askedAt > read && (since === undefined || askedAt > since)) this.observe(paneId, status, this.mark(paneId), this.statuses.has(paneId));
     else if (askedAt > read) this.statuses.set(paneId, status);
@@ -371,12 +377,13 @@ export class PendingInputs<Owner, Lease> {
     // ahead of what herdr's events told so far (nothing yet, too: an earlier turn's events may still be on their way)
     // herdr's events trail its snapshots by a change or two: the oldest readings go first
     if (herdrReading && kind(status) !== kind(this.statuses.get(paneId))) {
-      this.ahead.set(paneId, [...this.unexpired(paneId), { status, at: this.now() }].slice(-MAX_READINGS_AHEAD));
+      const blind = this.statuses.has(paneId) ? {} : { blind: true as const };
+      this.ahead.set(paneId, [...this.unexpired(paneId), { status, at: this.now(), ...blind }].slice(-MAX_READINGS_AHEAD));
     }
     this.apply(paneId, status);
   }
 
-  private unexpired(paneId: string): { status: AgentStatus; at: number }[] {
+  private unexpired(paneId: string): { status: AgentStatus; at: number; blind?: true }[] {
     return (this.ahead.get(paneId) ?? []).filter((reading) => this.now() - reading.at < this.startTimeoutMs);
   }
 
