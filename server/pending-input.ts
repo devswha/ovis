@@ -315,14 +315,17 @@ export class PendingInputs<Owner, Lease> {
   }
 
   /**
-   * A reconcile's snapshot (status.ts onBaseline) of a pane with no event since it was asked for, at `askedAt`: one asked for
-   * before the Enter whose turn is awaited may be older than that turn, and is only the pane's status.
+   * A reconcile's snapshot (status.ts onBaseline) of a pane with no event since it was asked for, at `askedAt`. A snapshot, not
+   * an event: asked for after the Enter whose turn is awaited it is read as a submit's read is (`observe`), and leaves alone
+   * the readings that still wait for herdr's older events; asked for before it, it may be older than that turn, and is only
+   * the pane's status.
    */
   baseline(paneId: string, status: AgentStatus, askedAt: number): void {
     const since = this.gates.get(paneId)?.since;
-    if (since === undefined || askedAt > since) { this.status(paneId, status); return; }
+    if (since === undefined || askedAt > since) this.observe(paneId, status, this.mark(paneId), this.statuses.has(paneId));
+    else this.statuses.set(paneId, status);
+    // a submit's read under way across it is older than this status, as across an event
     this.events.set(paneId, this.mark(paneId) + 1);
-    this.statuses.set(paneId, status);
   }
 
   /**
