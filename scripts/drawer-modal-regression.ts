@@ -124,9 +124,9 @@ try {
     await openPane(page);
     await page.evaluate((limit) => {
       window.toggleClicks = [];
+      const first = 1_000;
       document.addEventListener("click", (event) => {
         if (!(event.target instanceof Element) || !event.target.closest("#drawer-toggle")) return;
-        const first = window.toggleClicks[0] ?? event.timeStamp;
         // Keep the taps real; fix the timestamps seen by the guard independently of browser load.
         const at = first + ([0, limit - 1, limit][window.toggleClicks.length] ?? limit);
         Object.defineProperty(event, "timeStamp", { value: at });

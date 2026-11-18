@@ -317,8 +317,10 @@ try {
       assert.equal(e.puts.length, 5, "a second Retry and a new edit start no parallel send");
       const first = hold;
       hold = Promise.withResolvers<void>();
+      onWay = Promise.withResolvers<void>();
       first.resolve();
       assert.equal((await nextPut(e)).status(), 200);
+      await advanceUntil([e.page], reached(onWay.promise, "retry-confirms-latest follow-up", saveState));
       assert.equal(await alert.count(), 1, "the status stays while the newer edit is unconfirmed");
       hold.resolve();
       hold = null;

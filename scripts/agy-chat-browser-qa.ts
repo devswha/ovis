@@ -52,7 +52,8 @@ try {
   await page.addInitScript(id => localStorage.setItem(`ovis:view:${id}`, "chat"), pane);
   await page.goto(`http://127.0.0.1:${server.port}/?pane=${encodeURIComponent(pane)}`);
   const log = page.locator(`.pane-frame[data-layout-pane="${pane}"]`).getByRole("log");
-  await log.and(page.locator('[data-conversation-source="agy-transcript"]')).waitFor();
+  const nativeLog = log.and(page.locator('[data-conversation-source="agy-transcript"]'));
+  await nativeLog.waitFor();
   const activity = log.locator(".chat-activity");
   for (const viewport of [{ width: 1100, height: 800 }, { width: 390, height: 844 }]) {
     await page.setViewportSize(viewport);
@@ -89,6 +90,7 @@ try {
   await activity.waitFor({ state: "detached" });
   await removedPrompt.waitFor({ state: "detached" });
   assert.equal(await removedPrompt.count(), 0);
+  await nativeLog.getByText("Fictional task at width 390", { exact: true }).waitFor();
   db.exec("DROP TABLE steps");
   await log.locator(".chat-unavailable-reason").getByText(/couldn't find or read the file .* keeps this conversation in/u).waitFor();
   assert.equal(await log.getByText("Antigravity chat is unavailable. Open Terminal to see activity and tool calls.", { exact: true }).count(), 0);

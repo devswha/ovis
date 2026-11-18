@@ -732,10 +732,25 @@ try {
     await shot(page, `list-${width}-${theme}`);
 
     const before = await page.evaluate(() => history.length);
-    const taskStart = await page.evaluate(() => performance.now());
     const stopTiming = await startRendererTiming(page);
+    const taskStart = await page.evaluate(() => performance.now());
     await openChange(page, "src/big.ts");
+    await waitRows(page);
+    await scrollDiff(page, "middle");
+    await rowReached(page, Math.floor(BIG_LINES / 2) - 1000, `${label} middle`);
+    await scrollDiff(page, "end");
+    await rowReached(page, BIG_LINES - 1, `${label} end`);
+    const [cpuMs, taskEnd] = await Promise.all([stopTiming(), page.evaluate(() => performance.now())]);
+    const elapsedMs = await page.evaluate(([start, end]) => {
+      const tasks: { start: number; elapsed: number }[] = Reflect.get(window, "repoDiffLongTasks");
+      return Math.max(0, ...tasks.filter((task) => task.start >= start && task.start < end).map((task) => task.elapsed));
+    }, [taskStart, taskEnd] as const);
+    assert.ok(cpuMs > 0 && cpuMs < 1_000, `${label}: opening and scrolling the big diff uses less than one second of renderer CPU (${cpuMs.toFixed(1)} ms; longest task ${elapsedMs} ms elapsed)`);
+    console.log(`${label}: renderer CPU ${cpuMs.toFixed(1)} ms, longest task ${elapsedMs} ms elapsed`);
+
     assert.equal(await page.evaluate(() => history.length), phone ? before : before + 1, `${label}: the diff is a history entry`);
+    await closeDiff(page);
+    await openChange(page, "src/big.ts");
     await page.getByRole("dialog", { name: "Changes to big.ts", exact: true }).waitFor();
     await waitRows(page);
     const top = await mounted(page);
@@ -796,13 +811,6 @@ try {
     assert.equal(tints.additionNumber, tints.inserted, `${label}: an added row's number is the inserted token: ${JSON.stringify(tints)}`);
     assert.equal(tints.deletionNumber, tints.deleted, `${label}: a removed row's number is the deleted token: ${JSON.stringify(tints)}`);
     assert.ok(tints.additionRow !== tints.contextRow && tints.deletionRow !== tints.contextRow && tints.additionRow !== tints.deletionRow, `${label}: added and removed rows are each tinted: ${JSON.stringify(tints)}`);
-    const cpuMs = await stopTiming();
-    const elapsedMs = await page.evaluate((start) => {
-      const tasks: { start: number; elapsed: number }[] = Reflect.get(window, "repoDiffLongTasks");
-      return Math.max(0, ...tasks.filter((task) => task.start >= start).map((task) => task.elapsed));
-    }, taskStart);
-    assert.ok(cpuMs > 0 && cpuMs < 1_000, `${label}: opening and scrolling the big diff uses less than one second of renderer CPU (${cpuMs.toFixed(1)} ms; longest task ${elapsedMs} ms elapsed)`);
-    console.log(`${label}: renderer CPU ${cpuMs.toFixed(1)} ms, longest task ${elapsedMs} ms elapsed`);
     assert.deepEqual(errors, [], `${label}: no errors while opening the big diff`);
     console.log(`PASS ${label}: a 10 000-line diff as a bounded window of rows at the top, the middle and the end (rows ${top.rows}/${middle.rows}/${end.rows}), in the app's palette`);
 
