@@ -12,23 +12,16 @@ export interface QuarantineEntry {
 export const QUARANTINE_MAX_DAYS = 30;
 
 export const QUARANTINE: Readonly<Record<string, QuarantineEntry>> = {
-  "scripts/agent-lock-demo-regression.ts": { until: "2026-12-18", issue: 4026 },
   "scripts/agent-skill-menu-demo-regression.ts": { until: "2026-12-18", issue: 4026 },
   "scripts/application-paging-regression.ts": { until: "2026-12-18", issue: 4026 },
-  "scripts/chat-history-browser-qa.ts": { until: "2026-12-18", issue: 4026 },
   "scripts/chat-virtual-browser-qa.ts": { until: "2026-12-18", issue: 4026 },
   "scripts/file-viewer-regression.ts": { until: "2026-12-18", issue: 4026 },
   "scripts/gjc-status-browser-regression.ts": { until: "2026-12-18", issue: 4026 },
   "scripts/omo-question-wheel-regression.ts": { until: "2026-12-18", issue: 4026 },
-  "scripts/pane-mute-captures-demo-regression.ts": { until: "2026-12-18", issue: 4026 },
   "scripts/pane-mute-demo-regression.ts": { until: "2026-12-18", issue: 4131 },
   "scripts/phone-worktree-sheet-regression.ts": { until: "2026-12-18", issue: 4026 },
-  "scripts/prompt-dock-demo-regression.ts": { until: "2026-12-18", issue: 4026 },
   "scripts/relay-dashboard-browser-qa.ts": { until: "2026-12-18", issue: 4026 },
-  "scripts/render-crash-demo-regression.ts": { until: "2026-12-18", issue: 4026 },
-  "scripts/settings-pages-demo-regression.ts": { until: "2026-12-18", issue: 4026 },
-  "scripts/setup-dialog-demo-regression.ts": { until: "2026-12-18", issue: 4026 },
-  "scripts/sidebar-filter-demo-regression.ts": { until: "2026-12-18", issue: 4026 },
   "scripts/terminal-cjk-punctuation-regression.ts": { until: "2026-12-18", issue: 4026 },
   "scripts/terminal-switch-resize-regression.ts": { until: "2026-12-18", issue: 4026 },
+  "scripts/terminal-touch-burst-history-regression.ts": { until: "2026-12-18", issue: 4174 },
 };
