@@ -226,11 +226,17 @@ export function usePreferencesSync(enabled: boolean): PreferencesSync {
     const kept = stored.current;
     const startedOver = kept !== null && (remote.revision < kept.revision || (kept.stateId !== undefined && remote.state_id !== undefined && remote.state_id !== kept.stateId));
     if (!loadedRef.current && startedOver) base.current = { ...base.current, pins: null };
+    const judged = latest.current.settings;
     const taken = takePreferences(base.current, latest.current, remote, inFlight.current, readOnly.current, refused.current);
     base.current = !loadedRef.current && remote.pins === undefined ? { ...taken.base, pins: null } : taken.base;
     saveSharedPins(base.current.pins === null ? null : { pins: [...base.current.pins], revision: remote.revision, ...(remote.state_id === undefined ? {} : { stateId: remote.state_id }) });
     latest.current = { settings: sanitizeSettings({ ...latest.current.settings, ...taken.patch }), pins: taken.pins ?? latest.current.pins, muted: taken.muted === undefined ? latest.current.muted : taken.muted, tabLabels: taken.tabLabels ?? latest.current.tabLabels };
-    if (Object.keys(taken.patch).length > 0) update(taken.patch);
+    // latest.current is the last render's: an edit made since (an import, a pick) waits for its render, and the
+    // document's value must not land over it; that edit then goes as the next change
+    if (Object.keys(taken.patch).length > 0) update((current) => Object.fromEntries(Object.entries(taken.patch).filter(([key, value]) => {
+      const now = current[key as keyof Settings];
+      return same(now, judged[key as keyof Settings]) || same(now, value);
+    })));
     if (taken.pins !== null) setSidebarPins(taken.pins);
     if (taken.muted !== undefined) setPaneMutes(taken.muted);
     if (taken.tabLabels !== null) setTabLabels(taken.tabLabels);

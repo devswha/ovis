@@ -384,6 +384,32 @@ describe("preferences sync real send path", () => {
     expect(revisions).toEqual([1, 2]);
   });
 
+  it("keeps an edit whose page has not drawn it yet when the answer to the save on its way lands", async () => {
+    const gate = Promise.withResolvers<void>();
+    releaseAnswer = () => gate.promise;
+    const client = await open();
+    await act(async () => { client.update({ darkTheme: "tokyo-night" }); });
+    await windows();
+    // the answer is taken in once its pins are stored; React draws nothing before this act ends
+    const absorbed = Promise.withResolvers<void>();
+    const storage = window.localStorage;
+    const { setItem, removeItem } = storage;
+    const told = (key: string): void => { if (key === "ovis:sidebar-pins-shared") absorbed.resolve(); };
+    storage.setItem = (key, value) => { setItem(key, value); told(key); };
+    storage.removeItem = (key) => { removeItem(key); told(key); };
+    await act(async () => {
+      client.update({ darkTheme: "gruvbox" });
+      gate.resolve();
+      await absorbed.promise;
+    });
+    storage.setItem = setItem;
+    storage.removeItem = removeItem;
+    releaseAnswer = undefined;
+    expect(client.settings.darkTheme).toBe("gruvbox");
+    await send();
+    expect(store.get().settings.darkTheme).toBe("gruvbox");
+  });
+
   it("says in plain words that the server cannot save, and clears it once the retried change lands", async () => {
     const client = await open();
     expect(client.saveError).toBeNull();
