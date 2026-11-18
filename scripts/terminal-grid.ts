@@ -1,10 +1,10 @@
 import { join } from "node:path";
 import type { Page } from "playwright-core";
-import type { ClientMessage } from "../shared/protocol.ts";
+import type { ClientMessage, ServerMessage } from "../shared/protocol.ts";
 import { buildDemoApp } from "./demo-build.ts";
 
 type Grid = { readonly cols: number; readonly rows: number };
-type Frame = Grid & { readonly pane: string; readonly replay: boolean };
+type Frame = Grid & { readonly pane: string; readonly replay: boolean; readonly stream: string };
 type Witness = { attach: number; requested: Grid | null; parsed: Frame | null };
 
 declare global {
@@ -27,16 +27,46 @@ export async function terminalGrid(page: Page, pane: string) {
   await page.addInitScript(pane => {
     const witness: Witness = { attach: 0, requested: null, parsed: null };
     window.terminalGridWitness = witness;
+    let connection: WebSocket | null = null;
+    let stream: string | null = null;
+    let detachFence: number | null = null;
+    let nextFence = -1; // The app's ping IDs are positive.
+    const receive = (event: MessageEvent) => {
+      if (event.currentTarget !== connection || typeof event.data !== "string") return;
+      const message: ServerMessage = JSON.parse(event.data);
+      if (message.type === "pong" && message.id === detachFence) detachFence = null;
+      if (detachFence === null && witness.requested && stream === null
+        && message.type === "pty-data" && message.pane_id === pane && message.flow) {
+        stream = message.flow.stream_id;
+      }
+    };
     const send = WebSocket.prototype.send;
     WebSocket.prototype.send = function (data) {
       if (typeof data === "string") {
         const message: ClientMessage = JSON.parse(data);
         if ("pane_id" in message && message.pane_id === pane) {
-          if (message.type === "attach" || message.type === "detach") {
-            witness.requested = message.type === "attach" && !message.keep_size ? { cols: message.cols, rows: message.rows } : null;
+          if (message.type === "attach") {
+            if (connection !== this) {
+              connection?.removeEventListener("message", receive, true);
+              connection = this;
+              stream = null;
+              detachFence = null;
+              connection.addEventListener("message", receive, true);
+            }
+            witness.requested = !message.keep_size ? { cols: message.cols, rows: message.rows } : null;
             witness.parsed = null;
             if (witness.requested) witness.attach++;
-          } else if (message.type === "resize" && witness.requested &&
+          } else if (message.type === "detach" && this === connection) {
+            witness.requested = null;
+            witness.parsed = null;
+            stream = null;
+            detachFence = nextFence--;
+            // The bridge removes the old output subscription on detach. Its pong is ordered
+            // after any old output already on this socket and before the next attach's output.
+            send.call(this, data);
+            send.call(this, JSON.stringify({ type: "ping", id: detachFence }));
+            return;
+          } else if (message.type === "resize" && this === connection && witness.requested &&
             (message.cols !== witness.requested.cols || message.rows !== witness.requested.rows)) {
             witness.requested = { cols: message.cols, rows: message.rows };
             witness.parsed = null;
@@ -48,7 +78,8 @@ export async function terminalGrid(page: Page, pane: string) {
     document.addEventListener("ovis:test-terminal-frame", (event: Event) => {
       if (!(event instanceof CustomEvent)) return;
       const frame: Frame = event.detail;
-      if (frame.pane === pane && frame.cols === witness.requested?.cols && frame.rows === witness.requested.rows) witness.parsed = frame;
+      if (frame.pane === pane && frame.stream === stream
+        && frame.cols === witness.requested?.cols && frame.rows === witness.requested.rows) witness.parsed = frame;
     });
   }, pane);
   let after = 0;

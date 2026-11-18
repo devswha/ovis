@@ -1391,10 +1391,10 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
             term.options.disableStdin = observeRef.current || heldRef.current;
             if (frameGateRef.current.settle(stamp, lifetime === outputLifetime && recoveringPane !== owner && gridMatches())) {
               onInputRowFrameRef.current();
-              if (typeof __HERDR_TEST_HOOKS__ === "boolean" && __HERDR_TEST_HOOKS__ && stamp.synchronized) {
+              if (typeof __HERDR_TEST_HOOKS__ === "boolean" && __HERDR_TEST_HOOKS__ && stamp.synchronized && message.flow) {
                 // The write callback has parsed the complete synchronized update in this xterm grid.
                 host.dispatchEvent(new CustomEvent("ovis:test-terminal-frame", { bubbles: true,
-                  detail: { pane: owner, cols: term.cols, rows: term.rows, replay: message.replay === true } }));
+                  detail: { pane: owner, cols: term.cols, rows: term.rows, replay: message.replay === true, stream: message.flow.stream_id } }));
               }
             }
           }, false, acknowledge, { pane: owner, generation, lifetime });
