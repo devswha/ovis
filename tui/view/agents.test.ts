@@ -6,6 +6,7 @@ import type { Machine } from "../../shared/machines.ts";
 import { agentRoster, groupAgentRows as browserGroups } from "../../src/lib/agentRoster.ts";
 import { CoreWorld, jumpOrder, keepsPlace } from "../core/world.ts";
 import { focused } from "../model/focus.ts";
+import { pickerPlaces } from "../model/picker.ts";
 import { initialState, type ModelEvent, type ModelState, reduce } from "../model/reduce.ts";
 import { agents } from "../testing/fixtures/agents.ts";
 import { Run } from "../testing/run.ts";
@@ -217,6 +218,8 @@ describe("the agent list in the browser's order", () => {
   it("one agent blocked beside a family whose helper is blocked: the family where its agent stands, as in the browser", () => {
     const view = worldOf([term("t1", "lead", "idle"), term("t2", "other", "blocked"), term("t3", "helper", "blocked", { parent: "t1" })]).view();
     expect(view.world.agents).toEqual(["t1", "t3", "t2"]);
+    // the picker's agent places are the same rows, in the same order: one source for both
+    expect(pickerPlaces(view.world).filter((place) => place.kind === "agent").map((place) => place.id)).toEqual(view.agents.map((agent) => agent.paneId));
   });
 });
 

@@ -7,6 +7,7 @@ import { OVIS_LAYOUT_DOC } from "../../server/herdr-core/layout-doc.ts";
 import { PANE_NAME_LABEL, SPACE_LABEL, TAB_LABEL, TAB_NAME_LABEL, WORKSPACE_NAME_LABEL } from "../../server/herdr-core/snapshot.ts";
 import type { AgentStatus } from "../../shared/herdr-api.generated.ts";
 import { Run } from "../testing/run.ts";
+import { focused } from "./focus.ts";
 import { NOTICE_SHOW_MS } from "./deadlines.ts";
 import { alertsOf, look, type LookState } from "./look.ts";
 
@@ -342,24 +343,21 @@ describe("read state through herdr.seen (UB Q7)", () => {
     expect(seenWrites(run)).toEqual([{ terminal: "t1", seen: "1" }]);
   }, TEST_MS);
 
-  it("a pane another client's zoom covers is not drawn, so not looked at: its turn is not marked", async () => {
+  it("another client's zoom: the look follows the focus to the zoomed pane, and the covered pane's turn is not marked", async () => {
     const run = await started(twoAgents());
     await hostFocus(run, FOCUS_IN);
     await select(run, "t2");
     await endTurn(run, "t2");
     expect(seenWrites(run)).toEqual([{ terminal: "t2", seen: "1" }]);
-    // another client zooms t1: t2 stays focused here, attached and covered
+    // another client zooms t1: the focus follows the shared zoom (row 35), t2 stays attached and covered
     const otherClient = new HcConnection(() => run.core.transport());
     const doc = (zoomed: string | null) => ({ schema: 1, workspaces: [{ id: "w", tabs: [{ id: "t", root: { split: "right", ratio: 0.5, first: { leaf: "t1" }, second: { leaf: "t2" } }, zoomed }] }] });
-    const { version } = await otherClient.call("doc.set", { name: OVIS_LAYOUT_DOC, value: doc("t1"), version: run.core.docs.get(OVIS_LAYOUT_DOC)?.version ?? 0 });
-    await run.advance(100);
-    expect(run.loop.panes.view("t2")?.covered).toBe(true);
-    await endTurn(run, "t2");
-    expect(seenWrites(run)).toEqual([{ terminal: "t2", seen: "1" }]);
-    // the zoom ends: t2 is drawn again and comes into view
-    await otherClient.call("doc.set", { name: OVIS_LAYOUT_DOC, value: doc(null), version });
+    await otherClient.call("doc.set", { name: OVIS_LAYOUT_DOC, value: doc("t1"), version: run.core.docs.get(OVIS_LAYOUT_DOC)?.version ?? 0 });
     otherClient.close();
     await run.advance(1_000);
-    expect(seenWrites(run)).toEqual([{ terminal: "t2", seen: "1" }, { terminal: "t2", seen: "2" }]);
+    expect([run.loop.panes.view("t2")?.covered, focused(run.loop.model().world, run.loop.model().focus).pane?.id]).toEqual([true, "t1"]);
+    await endTurn(run, "t2");
+    await endTurn(run, "t1");
+    expect(seenWrites(run)).toEqual([{ terminal: "t2", seen: "1" }, { terminal: "t1", seen: "1" }]);
   }, TEST_MS);
 });
