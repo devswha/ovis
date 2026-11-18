@@ -95,16 +95,13 @@ try {
       await page.evaluate(() => { (window as unknown as { pressClicks: unknown[] }).pressClicks.length = 0; });
     };
 
-    // Bring the link into view as a reader. Jump to latest confirms the next layout won't move it
-    // back under the composer before the test presses it.
+    // Jump to latest confirms that scrolling the link into view left the end. The next layout
+    // can then keep the link where the reader is about to press it.
     const inView = async ({ chatFrame }: Opened, link: Locator) => {
       const away = chatFrame.locator(".chat-virtual-jump");
       const deadline = Date.now() + 10_000;
       for (;;) {
-        await link.evaluate((element) => {
-          element.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -1 }));
-          element.scrollIntoView({ block: "center" });
-        });
+        await link.scrollIntoViewIfNeeded();
         await away.waitFor({ timeout: 250 }).catch(() => {});
         const rests = (await away.isVisible()) && await link.evaluate((element) => {
           const box = element.getBoundingClientRect();

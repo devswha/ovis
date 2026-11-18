@@ -2067,11 +2067,7 @@ try {
           await addressIs(page, { app: "inbox", pane: BLOCKED }, "a row opens its thread");
           await composer.fill(draftY);
           await page.waitForFunction((selector) => { const node = document.querySelector(selector); return node !== null && node.scrollHeight - node.clientHeight > 100; }, thread, { timeout: 15_000 });
-          await page.locator(thread).evaluate((node) => {
-            const top = Math.round((node.scrollHeight - node.clientHeight) / 2);
-            node.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: top - node.scrollTop }));
-            node.scrollTop = top;
-          });
+          await page.locator(thread).evaluate((node) => { node.scrollTop = Math.round((node.scrollHeight - node.clientHeight) / 2); });
           await frames(page);
           const threadTop = await scrollOf(thread);
           await page.locator(".inbox-filter-toggle").click();

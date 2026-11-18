@@ -159,24 +159,17 @@ async function reveal(page: Page, text: string) {
   let last: unknown = null;
   while (Date.now() < deadline) {
     const found = await page.locator(".chat-view").evaluate((node, { text, target }) => {
-      const view = node.getBoundingClientRect();
-      const wheelUp = () => node.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -1 }));
       const hit = [...node.querySelectorAll("p")].find((p) => p.textContent === text);
-      if (hit) {
-        const box = hit.getBoundingClientRect();
-        if (box.top + box.bottom < view.top + view.bottom) wheelUp();
-        hit.scrollIntoView({ block: "center" });
-        return true;
-      }
+      if (hit) { hit.scrollIntoView({ block: "center" }); return true; }
+      const view = node.getBoundingClientRect();
       const shown = [...node.querySelectorAll("p")].filter((p) => {
         const box = p.getBoundingClientRect();
         return box.bottom > view.top && box.top < view.bottom;
       }).map((p) => Number(/ROW-(-?\d+)$/.exec(p.textContent ?? "")?.[1])).filter(Number.isFinite);
-      if (!shown.length) { wheelUp(); node.scrollTop -= node.clientHeight / 2; return false; }
+      if (!shown.length) { node.scrollTop -= node.clientHeight / 2; return false; }
       const low = Math.min(...shown), high = Math.max(...shown);
       const rowHeight = node.clientHeight / Math.max(1, high - low + 1);
       const rows = target < low ? target - low : target - high;
-      if (rows < 0) wheelUp();
       node.scrollTop = Math.max(0, node.scrollTop + Math.sign(rows) * Math.max(rowHeight, Math.abs(rows) * rowHeight * 0.7));
       return { low, high, top: node.scrollTop };
     }, { text, target });
@@ -629,7 +622,8 @@ try {
     }
     console.log(`PASS ${width} ${theme}: a grown last row is followed; a row above folding or growing then keeps following, as does a fold at the end; an upward wheel stops it`);
 
-    // List corrections can move up in small steps without changing the transcript's height.
+    // A screen reader or Firefox scrollbar can scroll without delivering input to ChatView.
+    // On an unchanged transcript, even small steps stop following once they pass 48 px (#1902).
     await page.locator(".chat-view").evaluate(async (node) => {
       const delivered = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       for (const step of [30, 30]) {
@@ -638,12 +632,15 @@ try {
         await delivered();
       }
     });
+    await page.getByRole("button", { name: "Jump to latest" }).waitFor();
     revision++;
     await update(page);
     await page.getByText(`REVISION-${revision}`, { exact: true }).waitFor();
-    assert.equal(await page.locator(".chat-virtual-jump").count(), 0, "upward steps without input keep following");
+    assert.equal(await page.getByRole("button", { name: "New messages" }).count(), 1, "small steps without input past the allowance stop following");
+    assert.ok((await metrics(page)).bottom > 48, "output leaves the reader where the steps took them");
+    await page.getByRole("button", { name: "New messages" }).click();
     await settleBottom(page);
-    console.log(`PASS ${width} ${theme}: small upward steps without input keep following`);
+    console.log(`PASS ${width} ${theme}: small upward steps without input past the layout allowance stop following (#1902)`);
 
     const height = width === 390 ? 844 : 900;
     await page.evaluate((height) => window.chatQa.resize(height - 180), height);
@@ -714,10 +711,7 @@ try {
       const timer = setTimeout(() => { olderEvents.removeEventListener("requested", received); reject(new Error("Older request missing")); }, 10_000);
       olderEvents.addEventListener("requested", received, { once: true });
     });
-    await page.locator(".chat-view").evaluate((node) => {
-      node.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -node.scrollTop }));
-      node.scrollTop = 0;
-    });
+    await page.locator(".chat-view").evaluate((node) => { node.scrollTop = 0; });
     await requested;
     await page.getByText("local E1 ROW-0", { exact: true }).waitFor();
     const beforePrepend = await metrics(page);
