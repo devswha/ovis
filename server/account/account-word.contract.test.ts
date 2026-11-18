@@ -9,7 +9,7 @@ import { decodeOffer } from "../../shared/relay-offer.ts";
 import { PAIRING_LINK_MS } from "../devices.ts";
 import { bounded, TestClock } from "../relay/test-helpers.ts";
 import { VOUCH_READ_GAP_MS, VOUCH_READ_MS } from "./mailbox.ts";
-import { ask, ended, linkRecord, memberRow, nextAsk, pairingPc, phone, sendLink, setUpFor, signedInWith, untilNextRead, vouchFor, type Answer, type Pc } from "./pairing.test-helpers.ts";
+import { ask, ended, linkRecord, memberRow, nextAsk, pair, pairingPc, phone, sendLink, setUpFor, signedInWith, untilNextRead, vouchFor, type Answer, type Pc } from "./pairing.test-helpers.ts";
 
 const pcs: Pc[] = [];
 afterEach(async () => {
@@ -499,4 +499,21 @@ test("a link that waits for the account's word after the code's ten minutes stil
   hold.release();
   expect((await bounded(linking)).status).toBe(200);
   expect(await f.status()).toMatchObject({ account: "acct_owner", members: 1 });
+});
+
+test("past a code's ten minutes, while a device that paired with it in time still waits, a device that already drives the PC is still held to the code's account and its word, and the code pairs no new device", async () => {
+  const service = serviceCalls();
+  const f = await pc({ accountFetch: service.fetch });
+  const made = Date.now();
+  const older = await signedInWith(f, await f.offerCode());
+  const offer = await forAccount(f, "acct_1");
+  const owner = await signedInWith(f, codeOf(offer));
+  codeAt(made, -500);
+  expect(await state(f, idOf(offer))).toMatchObject({ state: "live", waiting: [{ id: owner.id }] });
+  expect(await pair(f, codeOf(offer), await phone())).toMatchObject({ error: "auth_failed" });
+  expect(refusal(await sendLink(older.session, await linkRecord(older.id, "acct_2", older.key)))).toEqual([409, "account_mismatch"]);
+  expect(refusal(await sendLink(older.session, await linkRecord(older.id, "acct_1", older.key)))).toEqual([403, "unverified_device"]);
+  expect(service.count("/v1/pc/mailbox")).toBe(1);
+  expect(await f.status()).toMatchObject({ account: null, members: 0, unlinked: [older.id] });
+  expect(await state(f, idOf(offer))).toMatchObject({ state: "live", waiting: [{ id: owner.id }] });
 });

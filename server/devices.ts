@@ -727,13 +727,15 @@ export class DeviceStore {
   }
 
   /**
-   * The code made for a PC in no account that is alive now (pairingForNoAccount, startAccountPairing): the code pending,
-   * its ten minutes not over, and the PC still in no account. Null for none. What it returns names that code and no
-   * later one, so a link holds it from its arrival to its write (LinkArrival).
+   * The code made for a PC in no account that is alive now (pairingForNoAccount, startAccountPairing): the code pending
+   * and the PC still in no account, within its ten minutes or, past them, while a device that paired with it in time
+   * still waits to link (expirePending; it pairs no new device then). Null for none. What it returns names that code
+   * and no later one, so a link holds it from its arrival to its write (LinkArrival).
    */
   pinnedCode(now = Date.now()): object | null {
+    if (this.pending?.noAccountOnly === true && this.codeOver(this.pending, now)) this.expirePending();
     const pending = this.pending;
-    return pending?.noAccountOnly === true && !this.codeOver(pending, now) && this.account() === null ? pending : null;
+    return pending?.noAccountOnly === true && this.account() === null && (!this.codeOver(pending, now) || (pending.waiting?.rows.size ?? 0) > 0) ? pending : null;
   }
 
   /** The account a code from pinnedCode was made for (startAccountPairing); null for the relay tab's code, or a code no longer pending. */

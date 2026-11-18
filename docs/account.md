@@ -394,7 +394,8 @@ an account), a link into an account passes only when that account vouched for th
 account service holds an admission at most 10 minutes old, by its own clock, for the link's `key`
 at this PC, posted by a sign-in of the account the code is for (`POST /v1/admissions`). It is asked
 about the key the device holds once linked, not the one it paired with. This holds for every link
-made while such a code lives, from a device that already drove this PC too, and such a link is held
+made while such a code lives (past its ten minutes too, while a device that paired with it in time
+still waits to link), from a device that already drove this PC too, and such a link is held
 to that code's account as well (409 `account_mismatch` otherwise). A device that paired with such a code is held to
 it until it links or goes, also once the code's ten minutes are over: its link is judged against the
 account service and held to the account the code was made for.
