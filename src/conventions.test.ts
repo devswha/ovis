@@ -14,6 +14,31 @@ function declarationValues(css: string): string[] {
   return values;
 }
 
+function selectors(css: string): string[] {
+  const preludes = [...css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^;{}]*)\{/g)].map(([, prelude]) => prelude!.trim()).filter((prelude) => !prelude.startsWith("@"));
+  return preludes.flatMap((prelude) => splitTopLevel(prelude, /,/)).map((selector) => selector.replace(/\s+/g, " ").trim());
+}
+
+function splitTopLevel(text: string, separator: RegExp): string[] {
+  const parts = [""];
+  let depth = 0;
+  for (const char of text) {
+    if (char === "(") depth += 1;
+    if (char === ")") depth -= 1;
+    if (depth === 0 && separator.test(char)) parts.push("");
+    else parts[parts.length - 1] += char;
+  }
+  return parts.filter((part) => part.trim() !== "");
+}
+
+/** The last compound of a selector has a class, an id or a tag to match on, outside :not() and :has(). */
+function subjectNamesElements(selector: string): boolean {
+  let subject = splitTopLevel(selector, /[\s>+~]/).at(-1) ?? "";
+  const unwrap = (_: string, name: string, list: string): string => ["is", "where"].includes(name) ? ` ${list}` : "";
+  for (let before = ""; before !== subject;) [before, subject] = [subject, subject.replace(/::?([\w-]+)\(([^()]*)\)/g, unwrap)];
+  return /[.#][\w-]|(?:^|[\s,])[a-z]/i.test(subject.replace(/::?[\w-]+/g, ""));
+}
+
 /** The CSS named colors (CSS Color 4), which match in any case like the rest of CSS. */
 const NAMED_COLORS = "aliceblue antiquewhite aqua aquamarine azure beige bisque black blanchedalmond blue blueviolet brown burlywood cadetblue chartreuse chocolate coral cornflowerblue cornsilk crimson cyan darkblue darkcyan darkgoldenrod darkgray darkgreen darkgrey darkkhaki darkmagenta darkolivegreen darkorange darkorchid darkred darksalmon darkseagreen darkslateblue darkslategray darkslategrey darkturquoise darkviolet deeppink deepskyblue dimgray dimgrey dodgerblue firebrick floralwhite forestgreen fuchsia gainsboro ghostwhite gold goldenrod gray green greenyellow grey honeydew hotpink indianred indigo ivory khaki lavender lavenderblush lawngreen lemonchiffon lightblue lightcoral lightcyan lightgoldenrodyellow lightgray lightgreen lightgrey lightpink lightsalmon lightseagreen lightskyblue lightslategray lightslategrey lightsteelblue lightyellow lime limegreen linen magenta maroon mediumaquamarine mediumblue mediumorchid mediumpurple mediumseagreen mediumslateblue mediumspringgreen mediumturquoise mediumvioletred midnightblue mintcream mistyrose moccasin navajowhite navy oldlace olive olivedrab orange orangered orchid palegoldenrod palegreen paleturquoise palevioletred papayawhip peachpuff peru pink plum powderblue purple rebeccapurple red rosybrown royalblue saddlebrown salmon sandybrown seagreen seashell sienna silver skyblue slateblue slategray slategrey snow springgreen steelblue tan teal thistle tomato turquoise violet wheat white whitesmoke yellow yellowgreen".split(" ");
 const COLOR_LITERAL = new RegExp(String.raw`#[0-9a-f]{3,8}\b|\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\(|(?<![\w-])(?:${NAMED_COLORS.join("|")})(?![\w-])`, "i");
@@ -38,6 +63,21 @@ describe("component CSS", () => {
       ];
     });
     fail(offenders, "Component CSS takes colors from the tokens in src/styles.css (var(--…), or color-mix() of tokens) and wins by order at the same specificity, never by !important. Add a token to src/styles.css (both themes) and DESIGN.md if none fits.");
+  });
+
+  // Blink restyles the whole subtree under a `:has()` anchor (the pane's, with the terminal in it)
+  // on any change below it when some `:has()` rule's subject has nothing to match on (#3921).
+  it("gives every :has() rule a subject with a class, an id or a tag", () => {
+    const offenders = scan("src/**/*.css").flatMap((file) =>
+      selectors(read(file)).filter((selector) => selector.includes(":has(") && !subjectNamesElements(selector)).map((selector) => `${file}: ${selector}`));
+    fail(offenders, "A :has() rule whose subject is only `*`, :not(…) or other pseudo-classes makes Blink restyle every element under each :has() anchor on any DOM change, the terminal's rows included. Name the subject's class or tag (`> :is(.a, .b)`), or move the condition into a class the component sets.");
+  });
+
+  it("finds the subject of a :has() rule", () => {
+    expect(selectors("/* .a:has(b) > * {} */ .a:has(> .b) > :not(.c), .d > button { x: y } @media (width < 1px) { .e:has(.f) { x: y } }"))
+      .toEqual([".a:has(> .b) > :not(.c)", ".d > button", ".e:has(.f)"]);
+    expect([".a:has(> .b) > :not(.c)", ".a:has(.b) > *", ".a:has(.b) :is(:hover)", ".a:has(.b)>::before", ".a:has(.b) > :not(:is(.c))"].filter(subjectNamesElements)).toEqual([]);
+    expect([".a:has(.b) > button", ".a:has(.b) > :not(.c).d", ".a:not(:has(.b)) .c", ".a:has(> .b)", "#a:has(.b) > :is(.c, .d)", ".a:has(.b) > :where(li)"].filter((selector) => !subjectNamesElements(selector))).toEqual([]);
   });
 
   it("reads declaration values, not selectors or comments", () => {
