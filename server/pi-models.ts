@@ -142,7 +142,8 @@ function readCatalog(path: string, parseCatalog: (parsed: unknown) => Catalog | 
   try {
     const stat = statSync(path);
     if (!stat.isFile()) return null;
-    signature = `${stat.mtimeMs}:${stat.size}`;
+    // as catalogVersion reads it, so the chat's live cache and this one see the same edits
+    signature = `${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}`;
   } catch { return null; }
   const cached = cache.get(path);
   if (cached !== undefined && cached.signature === signature) return cached.byProvider;

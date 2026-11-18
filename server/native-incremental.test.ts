@@ -253,7 +253,10 @@ test("cmd-transcript: a live task's context window follows an edited Command Cod
     };
     catalog(100_000, 1_700_000_000);
     const record = tree();
-    const path = fixture(record(prompt("cmd-transcript", "Start")) + record({ type: "message", message: { role: "assistant", model: "cat-jam", usage: { totalTokens: 50_000 }, content: [{ type: "text", text: "Working" }] } }));
+    // a live task long enough that a full reparse could not stay under the parse bound below
+    const work = Array.from({ length: 30 }, (_, i) => [call("cmd-transcript", `work-${i}`), result("cmd-transcript", `work-${i}`, `output ${i}`)]).flat();
+    const path = fixture([prompt("cmd-transcript", "Start"), ...work].map(entry => record(entry)).join("")
+      + record({ type: "message", message: { role: "assistant", model: "cat-jam", usage: { totalTokens: 50_000 }, content: [{ type: "text", text: "Working" }] } }));
     expect(transcriptPage("cmd-transcript", path).metadata.context).toEqual({ used: 50_000, window: 100_000 });
     appendFileSync(path, record(call("cmd-transcript", "one")));
     expect(parses(() => expect(transcriptPage("cmd-transcript", path).metadata.context).toEqual({ used: 50_000, window: 100_000 }))).toBeLessThan(10);
