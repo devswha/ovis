@@ -349,16 +349,16 @@ it is off, and wait until it is online.
     screen (most do) then shows the code no more, in its window or its scrollback. Where there is
     none, or the output is kept elsewhere, the drawing stays: GNU screen without `altscreen on`,
     the Linux console, a session recorded by `script` or asciinema, tmux `pipe-pane`, a
-    terminal's own log. What stays there is a code that was taken back by then, unless the command
-    said that was not confirmed: then it works until it runs out. That screen keeps nothing that scrolled off it: in a window too small for the QR
+    terminal's own log. Treat the code that stays there as live until the command confirms it was
+    taken back, or until it runs out. That screen keeps nothing that scrolled off it: in a window too small for the QR
     code the command says so and shows the code to type, and draws the QR code when the window
     grew.
   - When the run ends, the command asks this PC to take back the code it made (`POST
     /api/devices/pair/cancel` with the code's id and the six digits its QR code carried, as `link
-    --code` does; a code to type whose QR code never came, by its id alone; a code it cannot tell
-    is its own stays), and says what came of it: taken back; already ended (`cancelled: false`:
-    another code replaced it, say); or not confirmed (this PC did not answer), in which case the
-    code works until it runs out. It asks before anything is written to a terminal
+    --code` does; a code to type whose QR code never came, by its id alone), and says what came of
+    it: taken back; already ended (`cancelled: false`: another code replaced it, say); or not
+    confirmed (this PC did not answer). Treat the code as live until the command says it was taken
+    back, or until it runs out. It asks before anything is written to a terminal
     that may be gone: on success, on Ctrl+C, a SIGTERM, the terminal closing (SIGHUP), an output
     that takes no more writes, an error and the 30 minutes. Only a process that is killed
     outright (SIGKILL, a crash, the PC losing power) leaves its code to run out by itself, within
@@ -374,15 +374,15 @@ it is off, and wait until it is online.
     this PC, it was taken back there, a device that held it was revoked, five devices paired with
     it and none joined the account, or a wrong code was typed for it five times) ends the run
     with **The code no longer works:** and why; one this PC no longer knows (it restarted) is said
-    to be dead, and the next comes when it would have run out. An Ovis from before codes made for
-    an account answers with no account: its code admits whoever holds it, so the command says so
-    on the screen of each QR code it draws (once, before its first code, with `--print`), and keeps what it did before: once a device paired, through the
-    relay or with the six digits at this PC's own address, no code is shown again. The command
+    to be dead, and the next comes when it would have run out. When this PC runs an older Ovis, the
+    command says so on the screen of each QR code it draws (once, before its first code, with
+    `--print`), and once a device paired, through the relay or with the six digits at this PC's
+    own address, no code is shown again. Update Ovis on that PC in Settings → Updates before you
+    pair. The command
     asks for its QR code with `x-ovis-pairing`: the code to type it just made, else a fresh one.
     It shows only a QR code that this PC's answer names as that code; when another code was made
     since (in Settings, by `pair`, or by another run), it shows none, leaves that code as it is
-    and says to run it again. An older Ovis on this PC does not take that header: keep its code to
-    yourself, and update Ovis on that PC in Settings → Updates.
+    and says to run it again.
   - It says what the code let in. It ends well only once this PC is in the account that signed in
     and that account's other devices are in: **This PC is in your account (the start of its id),
     added by (the device)**. The device named is the member of that account that linked itself
@@ -530,8 +530,7 @@ it is off, and wait until it is online.
   (the terminal closing), or any error, takes back what it made (`POST /api/devices/pair/cancel`
   with `{ "code", "id" }`, the six-digit code it showed and its id, or the id of a code to type whose
   QR code never came, which ends that code and the typed code bound to it; a pairing started
-  since, in Settings or on another device, stays, and a code it cannot tell is its own is left
-  alone). Redeeming them follows the usual admission rules. A PC that runs the
+  since, in Settings or on another device, stays). Redeeming them follows the usual admission rules. A PC that runs the
   machine profile makes no such code (409 `machine_profile`): it takes devices through its Ovis
   account, so `link --code` says so, points to `add`, and has nothing to take back.
 

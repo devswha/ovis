@@ -99,7 +99,7 @@ async function signsIn(f: Pc, id: string, key: Phone): Promise<string> {
   return "error" in session ? session.error : session.role;
 }
 
-test("a device that pairs with the relay tab's code is no device of the PC: its role is watch, it is in no list and on no disk, and nothing is announced", async () => {
+test("a device that pairs with the relay tab's code is no device of the PC: its role is watch, and it is in no list and on no disk", async () => {
   const f = await pc();
   const code = await f.tabCode();
   const announced: DevicePairedEvent[] = [];

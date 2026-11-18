@@ -297,7 +297,7 @@ export class AccountService {
   /**
    * Says this signed-in device waits at that PC with its account key: the account's other devices
    * hear of it, and the PC takes a comparison that asks to join the account for 10 minutes.
-   * `quiet`: asks the account service to take it without telling the other devices. The service decides: it honours
+   * `quiet`: asks the account service to take it as a quiet admission. The service decides: it honours
    * the ask only for a sign-in made in an app itself, and takes any other as an ordinary admission; a service that
    * does not know the field ignores it.
    */

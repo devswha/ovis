@@ -239,7 +239,7 @@ export class AccountMailbox {
    * acknowledges nothing), with VOUCH_READ_MS for both; one at a time, and VOUCH_READ_GAP_MS apart, so a flood of
    * links calls the service no more often. A 429 that names a later time starts no read before it, and a link that no
    * read can start for within VOUCH_READ_GAP_MS is answered at once (`unavailable`). So a link waits 15 seconds at most. The service's
-   * ordinary admissions count, and its quiet ones (`quiet_admissions`, which ring nobody) only for `firstLink`: a
+   * ordinary admissions count, and its quiet ones (`quiet_admissions`) only for `firstLink`: a
    * device that paired with that code and links as this PC's first member. Never throws.
    */
   vouch(account: string, key: string, firstLink: boolean): Promise<Vouch> {

@@ -34,11 +34,9 @@ are ([Ovis Mux v1](relay.md#ovis-mux-v1)).
    the account service handed it.
 7. **The account service can hide records, never forge them.** It stores the PC directory
    (`server_id`, a name, the PC's relay public key and the relay it is reached through; no account
-   or device keys), a mailbox of signed records per PC, and admission requests. One thing it can
-   do with them: while a code made to put a PC in an account lives, its word on a device's key
-   lets that device in ([The account's word](#the-accounts-word)). So an admission it makes up, or
-   one any sign-in of the account posts, together with that live code, gives the PC its first
-   member. Without the code neither gets anything.
+   or device keys), a mailbox of signed records per PC, and admission requests. First-link
+   admission trusts it: while a code made to put a PC in an account lives, its word on a device's
+   key lets that device in ([The account's word](#the-accounts-word)).
 8. **Tailscale is not membership.** A PC found on your Tailscale is added over SSH (Add a connection →
    SSH, [remote-pcs.md](remote-pcs.md)), and one an older Ovis added through the relay with a code that
    PC handed over to your own Tailscale login is a paired device of that PC. Neither is an account member by itself: membership comes only from the
@@ -336,8 +334,7 @@ made. Any other value is refused 400 `invalid_pairing`.
 
 `POST /api/devices/pair/cancel` takes `{ "id": "<pairing.id>" }` beside `{ "code" }`: it ends the
 code pending only when that is the code named (by both, when both are given), and answers
-`cancelled: false` otherwise. A body with neither is kept for legacy compatibility only, for
-callers from before both: it ends whatever code is pending, whoever made it.
+`cancelled: false` otherwise. A caller that names its own pairing ends that pairing and no other.
 
 The refusals, in this order: 409 `relay_off` and `relay_offline` as ever; 400 `invalid_account`
 when the header names no account id; 409 `in_account` when the PC is in an account; then 409
@@ -347,13 +344,11 @@ the relay, for a typed code) and that was removed meanwhile is refused 401 `unau
 made a device that only watches is refused 403 `read_only`. A refused call starts no code and
 leaves the one pending as it was.
 
-`POST /api/relay/offer/keep` `{ "id": "<pairing.id>" }` (the same callers and guard) reads such a
-code by its id, whatever the relay's state. Any caller the route takes may read any code whose
-id it has: this PC itself, or a device with drive access on a direct connection, whether or not
-it made the code. A body without an `id` answers 400 `invalid_body`; a device removed, or made
-one that only watches, while its read was on its way is refused 401 `unauthorized` or 403
-`read_only`, and the guard's own refusals stand. A valid read from a caller the route takes
-answers 200:
+`POST /api/relay/offer/keep` `{ "id": "<pairing.id>" }` (the same callers and guard) answers the
+status of the code with that id, whatever the relay's state. A body without an `id` answers 400
+`invalid_body`; a device removed, or made one that only watches, while its request was on its way
+is refused 401 `unauthorized` or 403 `read_only`, and the guard's own refusals stand. A valid
+request answers 200:
 
 ```json
 { "state": "live", "id": "…", "expect_account": "acct_1", "expires_at": "…",
@@ -412,9 +407,8 @@ account service and held to the account the code was made for.
   reads, applies and acknowledges no record. Both calls have 5 seconds together. One read at a time,
   at least 10 seconds apart, and a link is judged by a read that started after it arrived. So a
   link waits 15 seconds at most, and a flood of links does not make the PC call the service more.
-- **Which admissions count.** The ordinary ones (`admissions`, which ring the account's other
-  devices) count for every such link. The quiet ones (`quiet_admissions`, which ring nobody and
-  which only an app's own sign-in can post) count only for the PC's first member, linked by a
+- **Which admissions count.** The ordinary ones (`admissions`) count for every such link. The
+  quiet ones (`quiet_admissions`, which only an app's own sign-in can post) count only for the PC's first member, linked by a
   device that paired with that code. A device that already drove the PC, and a device that joins
   by comparing digits ([Joining through the account](#who-may-admit-a-device)), count the ordinary
   ones only.
@@ -1261,13 +1255,12 @@ with "continue only if you started this on your own PC".
   holds for a sign-in made in a browser on a PC's own address: that page's script is the PC's, so a
   compromised PC can use the sign-in kept there. Its account key is linked to no PC (a browser
   paired with a code holds a cookie), so its signatures admit nobody.
-- **A device that names an account it does not hold, with no code alive.** An account's first
-  member on a PC links itself: its `link` is signed by the device's own key and names the account
-  (rule 4). While a code made to put the PC in an account lives, the account must vouch for that
-  key ([The account's word](#the-accounts-word)). Without one, a device that already drives a PC in
-  no account can still link it into an account it names, on its own word: `ovis status` lists such
-  members ([How a device joined](#how-a-device-joined)), and every admission is announced on every
-  device connected to the PC; that link is not announced as a new pairing.
+- **A device that names an account it does not hold.** An account's first member on a PC links
+  itself: its `link` is signed by the device's own key and names the account (rule 4). While a
+  code made to put the PC in an account lives, the account must vouch for that key
+  ([The account's word](#the-accounts-word)). `ovis status` lists the members that joined on their
+  own word ([How a device joined](#how-a-device-joined)): review them there, and revoke any device
+  you don't recognize.
 - **A PC the directory names under a familiar name.** Whoever holds a sign-in to the account can
   list a PC of their own in the directory (device-code phishing, [Who is asking](#who-is-asking)). **Add** on
   its row in the relay tab pairs A with that PC, whose owner approves it there: A's machine list then

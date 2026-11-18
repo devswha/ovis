@@ -16,7 +16,7 @@ export const ACCESS_TOKEN_TTL_S = 3600;
 export const DIRECTORY_MAX = 100;
 export const LIMIT_WINDOW_MS = 10 * 60_000;
 export const ADMISSIONS_PER_WINDOW = 10;
-/** Quiet admissions one account may post in a window: a count of their own, apart from the rings. */
+/** Quiet admissions one account may post in a window: a count of their own, apart from the ordinary ones. */
 export const QUIET_ADMISSIONS_PER_WINDOW = 60;
 export const ACCOUNT_REQUESTS_PER_WINDOW = 600;
 export const DEVICE_CODE_TTL_S = 900;
@@ -88,7 +88,7 @@ export class FakeAccountService {
   private readonly mailboxes = new Map<string, Mail[]>();
   private readonly challenges = new Map<string, { server_id: string; expected: string; expires: number }>();
   private readonly admissionList: FakeAdmission[] = [];
-  /** admissions that ring nobody: only an app's own sign-in posts one, and only a PC the account lists reads them */
+  /** quiet admissions: only an app's own sign-in posts one, and only a PC the account lists reads them */
   private readonly quietList: FakeAdmission[] = [];
   private readonly accountLimits = new Map<string, Record<string, unknown>>();
   private readonly subscribed = new Set<string>();
@@ -478,7 +478,7 @@ export class FakeAccountService {
       if (body.quiet !== undefined && typeof body.quiet !== "boolean") return problem(400, "invalid_request", "quiet is true or false");
       if (typeof body.server_id !== "string" || !directory.has(body.server_id) || typeof body.label !== "string") return problem(400, "unknown_pc", "List PCs of this account only");
       if (!isAccountKeyEncoding(body.key)) return problem(400, "invalid_key", "Name the waiting device's account key");
-      // quiet only for an app's own sign-in: one a typed device code opened gets the ringing kind
+      // quiet only for an app's own sign-in: one a typed device code opened gets the ordinary kind
       const quiet = body.quiet === true && !this.deviceFamilies.has(session.family);
       if (!this.withinRateLimit(quiet ? `quiet_admissions:${account}` : `admissions:${account}`, quiet ? QUIET_ADMISSIONS_PER_WINDOW : ADMISSIONS_PER_WINDOW)) return problem(429, "too_many_admissions", "Too many requests; try again later");
       const admission = { id: randomHex(16), server_id: body.server_id, account, label: body.label, key: body.key, at: this.iso(), os: accountOsOf(body.os), ...this.requestPlace };

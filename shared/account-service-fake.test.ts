@@ -137,7 +137,7 @@ describe("the fake account service", () => {
     expect(((await pull(service, machine, null)).body as { admissions?: unknown[] }).admissions).toEqual([]);
   });
 
-  test("a quiet admission rings nobody, is listed to no device, and reaches the PC in a field of its own while the account lists it", async () => {
+  test("a quiet admission is kept apart from the ordinary ones and reaches the PC in a field of its own while the account lists it", async () => {
     const service = new FakeAccountService();
     const [mine, phone] = [service.issueToken("acct_1"), service.issueToken("acct_1")];
     await service.fetch(new Request(`${BASE}/v1/push`, { method: "PUT", body: JSON.stringify({ endpoint: "https://push.test/1", keys: { p256dh: "B".repeat(87), auth: "A".repeat(22) } }), headers: { authorization: `Bearer ${phone}` } }));

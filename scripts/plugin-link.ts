@@ -736,7 +736,7 @@ async function linkWithCode(options: LinkOptions, api: Api): Promise<number> {
  * Takes back what --code made, however it ends (Ctrl+C, an error): the six-digit code the QR code
  * carries, and with it the typed code bound to it. With a signal of its own, since Ctrl+C aborted the
  * command's. `mine` names the pairing it made, so one started since (in Settings, on another device)
- * stays. An Ovis from before /api/devices/pair/cancel can take back the typed code only.
+ * stays.
  */
 async function takeBack(api: Api, out: (text: string) => void, mine: Mine): Promise<void> {
   const ended = await endCode(api, mine);
@@ -868,8 +868,8 @@ interface Joining {
  * no list until it linked itself into that account (one of another account, or signed in to none, is turned away),
  * and the PC ends the code itself once it is in the account: so a device that shows in the list did not come by that
  * code, and ends nothing. The code's id tells, at every look, whether it is still the pending one; one that ended
- * otherwise ends the run, which says why. An Ovis from before this makes a code for whoever holds it: the command says
- * so on each QR code's screen (once with --print), and keeps what follows.
+ * otherwise ends the run, which says why. With an older Ovis on this PC the command says so on each QR code's screen
+ * (once with --print), and keeps what follows.
  *
  * The code admits whoever holds it, through the relay or at this PC's own address, so every device that came since
  * the first code is one it let in. One whose row names the account that signed in here is taken as that account's:
@@ -1004,14 +1004,13 @@ async function addByQr(options: LinkOptions, api: Api, joining: Joining): Promis
     const decoded = decodeOffer(offer.url);
     if (decoded === null) throw new LocalError("The relay's pairing link did not parse.");
     // The QR code's code is shown and taken back only when the PC's answer names it as the code asked for: this round's
-    // typed code, or with none a fresh one. Any other is left as it is. An Ovis from before ids names none and ignores
-    // the header: its code is shown with OLDER_PC, and taken back by its six digits
+    // typed code, or with none a fresh one. Any other is left as it is. An older Ovis names none: its code is shown
+    // with OLDER_PC, and taken back by its six digits
     const own = offer.pairing === undefined ? made === undefined : made === undefined || offer.pairing.id === made;
     if (!own) throw new LocalError(`This PC's QR code carries a code made elsewhere (in Settings, by ${cli(options)} pair, or by another run): it is not shown, and is left as it is. Run ${cli(options)} add again.`);
     mine = mineOf(decoded.code, offer.pairing?.id) ?? mine;
     offered = true;
-    // the QR code's code is the one the PC made for the account that signed in, or, from an Ovis before that, a code
-    // for whoever holds it
+    // the QR code's code is the one the PC made for the account that signed in, or one from an older Ovis
     tied = offer.expect_account !== undefined;
     for (const answer of [offer, typed]) {
       if (answer?.expect_account !== undefined && answer.expect_account !== joining.signedIn) {

@@ -2730,7 +2730,7 @@ describe("ovis link, on the PC itself", () => {
     expect(removedAt(tied)).toBeGreaterThan(-1);
     expect(endedAt(tied)).toBeGreaterThan(removedAt(tied));
     expect(tied.reads.length).toBeGreaterThan(1);
-    // an older Ovis's code admits whoever holds it: it goes the moment a device shows
+    // at an older Ovis, the code goes the moment a device shows
     expect(endedAt(older)).toBeGreaterThan(-1);
     expect(endedAt(older)).toBeLessThan(removedAt(older));
     expect([tied.cancels, older.cancels]).toEqual([[{ code: "100001", id: "p1" }], [{ code: "100001" }]]);
