@@ -52,7 +52,7 @@ beforeEach(() => {
   resize = () => {};
   const storage = { getItem: () => null, setItem() {}, removeItem() {}, key: () => null, length: 0 };
   const listen = { addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events) };
-  const style = { setProperty() {}, removeProperty() {}, getPropertyValue: () => "" };
+  const style = { lineHeight: "20px", setProperty() {}, removeProperty() {}, getPropertyValue: () => "" };
   const values: Record<string, unknown> = {
     IS_REACT_ACT_ENVIRONMENT: true,
     Node: Scroller, Element: Scroller, HTMLElement: Scroller, HTMLDivElement: Scroller,
@@ -170,3 +170,36 @@ test("a late virtual list correction keeps following, but an upward wheel leaves
   expect(renderer.root.findAllByProps({ "aria-label": "Jump to latest" })).toHaveLength(1);
   expect(scroller.scrollTop).toBe(1181);
 });
+
+test.each(["from the bottom", "clamped at the history start"] as const)(
+  "pane PageUp %s leaves the reader away through a list measurement",
+  async (start) => {
+    await loadChatTimeline();
+    fetchSpy.mockImplementation(Object.assign(async () => Response.json({ source: "grok-transcript", turns: [] }),
+      { preconnect: globalThis.fetch.preconnect }));
+    const pageScroll: { current: ((direction: -1 | 1) => void) | null } = { current: null };
+    scroller.scrollTop = scroller.scrollHeight;
+    await act(async () => {
+      renderer = create(createElement(SettingsProvider, null, createElement(ChatView, {
+        paneId: `page-up-${start}`, pageScroll, refreshKey: 0, connected: true, ended: false, agent: null, agentStatus: "idle",
+      })), { createNodeMock: ({ props }) => typeof props === "object" && props !== null && "className" in props && props.className === "chat-view chat-view-virtual" ? scroller : new Scroller() });
+    });
+    if (renderer === undefined || pageScroll.current === null) throw new Error("Chat paging did not mount");
+    const list = renderer.root.findByType(LegendList);
+    act(() => { list.props.onScroll(); });
+    expect(scroller.scrollTop).toBe(1242);
+
+    act(() => {
+      // PageUp can arrive at the top before the browser delivers the scroll that got there.
+      if (start === "clamped at the history start") scroller.scrollTop = 0;
+      pageScroll.current?.(-1);
+    });
+    const paged = start === "from the bottom" ? 504 : 0;
+    expect(scroller.scrollTop).toBe(paged);
+    expect(renderer.root.findAllByProps({ "aria-label": "Jump to latest" })).toHaveLength(1);
+
+    await act(async () => { list.props.onItemSizeChanged(); });
+    expect(scroller.scrollTop).toBe(paged);
+    expect(renderer.root.findAllByProps({ "aria-label": "Jump to latest" })).toHaveLength(1);
+  },
+);
