@@ -1,5 +1,6 @@
 /**
- * The screen's layout writes: herdr's create, close, rename, split, zoom, resize, swap, move and reorder actions,
+ * The screen's layout writes: herdr's create, close, rename, split, zoom, resize, swap, move and reorder actions, and a
+ * tab's zoom following the focus to a pane it covered,
  * performed through the shared layout operations the server performs the browser's with (server/herdr-core/layout-ops.ts).
  * Every rule of the layout lives there; this module holds only the screen's policy on top:
  * - one write in flight: an action chosen while one is under way is dropped with a notice, never queued;
@@ -109,6 +110,8 @@ export class LayoutWrites {
     if (action === "rename_tab") return () => store.rename({ tab: id, name: effect.name ?? "" });
     if (action === "rename_pane") return () => store.rename({ pane: id, name: effect.name || null });
     if (action === "zoom") return async () => this.unchanged(action, await store.edit(zoomEdit(id, "toggle")));
+    // the zoom already on that pane is where the focus wants it: nothing to say
+    if (action === "zoom_follow") return async () => { await store.edit(zoomEdit(id, "on")); };
     if (Object.hasOwn(SWAPS, action)) return async () => this.unchanged(action, await store.edit(swapEdit(id, null, SWAPS[action]!)));
     if (Object.hasOwn(RESIZES, action)) return async () => this.unchanged(action, await store.edit(resizeEdit(id, RESIZES[action]!, RESIZE_STEP)));
     if (action === "move_tab_previous" || action === "move_tab_next") {
