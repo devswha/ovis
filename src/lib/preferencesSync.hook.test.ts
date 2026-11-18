@@ -362,6 +362,37 @@ describe("preferences sync real send path", () => {
     expect(bodies).toEqual([]);
   });
 
+  it.each([["drawn", true], ["not drawn yet", false]] as const)("sends and carries an edit made just before the page goes, %s", async (_name, drawn) => {
+    const on = !DEFAULT_SETTINGS.showUsage;
+    const client = await open();
+    await act(async () => { client.update({ darkTheme: "gruvbox" }); });
+    if (drawn) await act(async () => { client.update({ showUsage: on }); });
+
+    await act(async () => {
+      if (!drawn) client.update({ showUsage: on });
+      pageEvents.dispatchEvent(new Event("pagehide"));
+    });
+
+    expect(bodies.map((body) => [body.settings.darkTheme, body.settings.showUsage])).toEqual([["gruvbox", on]]);
+    expect(JSON.parse(window.sessionStorage.getItem("ovis:preferences-unsent")!).settings).toMatchObject({ darkTheme: "gruvbox", showUsage: on });
+  });
+
+  it.each([["drawn", true], ["not drawn yet", false]] as const)("a pick taken back as its send wait ends, %s, is not sent", async (_name, drawn) => {
+    store.set({ settings: { darkTheme: "tokyo-night" } });
+    const client = await open();
+    await act(async () => { client.update({ darkTheme: "gruvbox" }); });
+    if (drawn) await act(async () => { client.update({ darkTheme: "tokyo-night" }); });
+
+    await act(async () => {
+      if (!drawn) client.update({ darkTheme: "tokyo-night" });
+      jest.advanceTimersByTime(600);
+    });
+
+    await windows(3);
+    expect(bodies).toEqual([]);
+    expect(store.get().revision).toBe(1);
+  });
+
   it("sends a new dark choice once and another client takes it (i)", async () => {
     const a = await open();
     const b = await open();
@@ -470,6 +501,7 @@ describe("preferences sync real send path", () => {
     clients.push(a);
 
     await act(async () => { a.receive(store.get()); });
+    expect([a.settings.darkTheme, b.settings.darkTheme]).toEqual(["catppuccin", "gruvbox"]);
     await windows(3);
 
     expect(store.get().settings.darkTheme).toBe("gruvbox");
@@ -580,6 +612,128 @@ describe("preferences sync real send path", () => {
     expect(client.settings.darkTheme).toBe("catppuccin");
     await windows(3);
     expect(sent).toEqual([]);
+  });
+
+  /** A page that goes with `edit` unsent, its request on the way out lost, and comes back in the same tab: the reloaded page's first document waits for `first`. */
+  async function reloadCarrying(edit: Partial<Settings>, boot: object = DEFAULT_SETTINGS): Promise<{ reloaded: Client; first: () => Promise<void> }> {
+    const client = await open(boot);
+    await act(async () => { client.update(edit); });
+    refusing = () => Promise.reject(new TypeError("Failed to fetch"));
+    await act(async () => { pageEvents.dispatchEvent(new Event("pagehide")); });
+    await act(async () => { renderers.pop()!.unmount(); });
+    clients.length = 0;
+    refusing = null;
+    const gate = Promise.withResolvers<void>();
+    releaseGet = () => gate.promise;
+    const reloaded = await open(JSON.parse(records.get("ovis:settings")!), true);
+    const first = async (): Promise<void> => {
+      const absorbed = nextAbsorbed();
+      gate.resolve();
+      await absorbed;
+      releaseGet = undefined;
+    };
+    return { reloaded, first };
+  }
+  /** each step drawn before the next, or all of them before React draws once: the two must end the same */
+  async function inOrder(drawn: boolean, steps: (() => void | Promise<void>)[]): Promise<void> {
+    if (drawn) for (const step of steps) await act(async () => { await step(); });
+    else await act(async () => { for (const step of steps) await step(); });
+  }
+  const orders = [["each drawn before the next", true], ["all before one render", false]] as const;
+
+  it.each(orders)("a reloaded page keeps a return to its carried change when another browser's save follows a first document that lacks the setting, %s", async (_name, drawn) => {
+    store.set({ settings: { showThinking: true } });
+    const { reloaded, first } = await reloadCarrying({ darkTheme: "tokyo-night" });
+    await act(async () => { reloaded.update({ darkTheme: "gruvbox" }); });
+
+    await inOrder(drawn, [
+      () => reloaded.update({ darkTheme: "tokyo-night" }),
+      first,
+      () => { store.set({ settings: { darkTheme: "catppuccin" } }); },
+    ]);
+
+    expect(reloaded.settings.darkTheme).toBe("tokyo-night");
+    await windows(3);
+    expect(sent.map((body) => body.settings.darkTheme)).toEqual(["tokyo-night"]);
+    expect(store.get().settings.darkTheme).toBe("tokyo-night");
+  });
+
+  it.each(orders)("a reloaded page that returns to its carried change only after its first document gives way to another browser's save, %s", async (_name, drawn) => {
+    store.set({ settings: { showThinking: true } });
+    const { reloaded, first } = await reloadCarrying({ darkTheme: "tokyo-night" });
+
+    await inOrder(drawn, [
+      () => reloaded.update({ darkTheme: "gruvbox" }),
+      first,
+      () => reloaded.update({ darkTheme: "tokyo-night" }),
+      () => { store.set({ settings: { darkTheme: "catppuccin" } }); },
+    ]);
+
+    expect(reloaded.settings.darkTheme).toBe("catppuccin");
+    await windows(3);
+    expect(sent).toEqual([]);
+    expect(store.get().settings.darkTheme).toBe("catppuccin");
+  });
+
+  it.each(orders)("a reloaded page whose carried change another browser saved as it was sends nothing, and takes the save after that, %s", async (_name, drawn) => {
+    store.set({ settings: { showThinking: true } });
+    const { reloaded, first } = await reloadCarrying({ darkTheme: "tokyo-night" });
+    await act(async () => { reloaded.update({ darkTheme: "gruvbox" }); });
+
+    await inOrder(drawn, [
+      () => reloaded.update({ darkTheme: "tokyo-night" }),
+      first,
+      () => { store.set({ settings: { darkTheme: "tokyo-night" } }); },
+    ]);
+    await act(async () => { store.set({ settings: { darkTheme: "catppuccin" } }); });
+
+    expect(reloaded.settings.darkTheme).toBe("catppuccin");
+    await windows(3);
+    expect(sent).toEqual([]);
+    expect(store.get().settings.darkTheme).toBe("catppuccin");
+  });
+
+  it.each(orders)("a reloaded page keeps a return to its carried change through three documents and an edit between them, %s", async (_name, drawn) => {
+    const on = !DEFAULT_SETTINGS.showUsage;
+    store.set({ settings: { showThinking: true } });
+    const { reloaded, first } = await reloadCarrying({ darkTheme: "tokyo-night" });
+    await act(async () => { reloaded.update({ darkTheme: "gruvbox" }); });
+
+    await inOrder(drawn, [
+      () => reloaded.update({ darkTheme: "tokyo-night" }),
+      first,
+      () => reloaded.update({ showUsage: on }),
+      () => { store.set({ settings: { showThinking: false } }); },
+      () => { store.set({ settings: { darkTheme: "catppuccin" } }); },
+    ]);
+
+    expect([reloaded.settings.darkTheme, reloaded.settings.showThinking, reloaded.settings.showUsage]).toEqual(["tokyo-night", false, on]);
+    await windows(3);
+    expect(sent.map((body) => [body.settings.darkTheme, body.settings.showUsage])).toEqual([["tokyo-night", on]]);
+    expect(store.get().settings).toMatchObject({ darkTheme: "tokyo-night", showUsage: on, showThinking: false });
+  });
+
+  it.each(orders)("a reloaded page whose first document holds no settings sends its carried change again after a return to it, %s", async (_name, drawn) => {
+    const { reloaded, first } = await reloadCarrying({ darkTheme: "tokyo-night" });
+    await act(async () => { reloaded.update({ darkTheme: "gruvbox" }); });
+
+    await inOrder(drawn, [() => reloaded.update({ darkTheme: "tokyo-night" }), first]);
+
+    expect(reloaded.settings.darkTheme).toBe("tokyo-night");
+    await windows(3);
+    expect(sent.map((body) => body.settings.darkTheme)).toEqual(["tokyo-night"]);
+    expect(store.get().settings.darkTheme).toBe("tokyo-night");
+  });
+
+  it.each(orders)("a reloaded page that left its carried theme mode sends the mode alone when its first document holds only an old palette, %s", async (_name, drawn) => {
+    store.set({ settings: { palette: "catppuccin" } });
+    const { reloaded, first } = await reloadCarrying({ theme: "light" }, { ...DEFAULT_SETTINGS, theme: "system", darkTheme: "catppuccin", lightTheme: "tokyo-night" });
+
+    await inOrder(drawn, [() => reloaded.update({ theme: "system" }), first]);
+
+    await windows(3);
+    expect(sent.map((body) => body.settings)).toEqual([{ theme: "system" }]);
+    expect(store.get().settings).toEqual({ theme: "system", palette: "catppuccin" });
   });
 
   it("keeps pins and a mute this tab has not drawn yet when another browser's document lands, and sends them", async () => {
@@ -995,6 +1149,157 @@ describe("preferences sync real send path", () => {
     await windows(3);
     expect(bodies).toHaveLength(1);
     expect(store.get().settings.darkTheme).toBe("catppuccin");
+    expect(client.saveError).toBeNull();
+  });
+
+  it.each([["drawn", true], ["not drawn yet", false]] as const)("a refused pick about to go again gives way to a newer save, %s, that lands as its wait ends", async (_name, drawn) => {
+    store.set({ settings: { darkTheme: "tokyo-night" } });
+    const client = await open();
+    refuse = unwritable();
+    await act(async () => { client.update({ darkTheme: "gruvbox" }); });
+    await send();
+    await act(async () => { jest.advanceTimersByTime(5_000); });
+    if (drawn) await act(async () => { store.set({ settings: { darkTheme: "catppuccin" } }); });
+
+    await act(async () => {
+      if (!drawn) store.set({ settings: { darkTheme: "catppuccin" } });
+      jest.advanceTimersByTime(600);
+    });
+
+    await longWait();
+    expect([client.settings.darkTheme, store.get().settings.darkTheme, bodies.length]).toEqual(["catppuccin", "catppuccin", 1]);
+  });
+
+  it.each([["held behind the refused save", true], ["after the refusal", false]] as const)("a refused mute gives way to the list another browser saved since, %s", async (_name, heldBehind) => {
+    store.set({ settings: {}, muted_panes: [] });
+    const client = await open();
+    const elsewhere = (): void => { store.set({ settings: {}, muted_panes: ["w1:p2"] }); };
+    if (heldBehind) {
+      const gate = heldRefusal();
+      await act(async () => { setPaneMutes(["w1:p1"]); });
+      await windows();
+      await act(async () => { elsewhere(); });
+      const absorbed = nextAbsorbed();
+      await act(async () => { gate.resolve(); await absorbed; });
+      refusing = null;
+    } else {
+      refuse = unwritable();
+      await act(async () => { setPaneMutes(["w1:p1"]); });
+      await send();
+      await act(async () => { elsewhere(); });
+    }
+
+    expect([currentPaneMutes(), client.saveError]).toEqual([["w1:p2"], null]);
+    await longWait();
+    expect([bodies.map((body) => body.muted_panes), store.get().muted_panes]).toEqual([[["w1:p1"]], ["w1:p2"]]);
+  });
+
+  it.each([["drawn", true], ["not drawn yet", false]] as const)("a return to a refused pick, %s when the refusal lands, still gives way to a newer save and is not sent again", async (_name, drawn) => {
+    store.set({ settings: { darkTheme: "tokyo-night" }, pins: [] });
+    const client = await open();
+    const gate = heldRefusal();
+    await act(async () => { client.update({ darkTheme: "gruvbox" }); });
+    await windows();
+    expect(bodies).toHaveLength(1);
+    await act(async () => { client.update({ darkTheme: "tokyo-night" }); });
+    // held behind the save: it changes no setting
+    await act(async () => { store.set({ settings: {}, pins: ["local:w1:p1"] }); });
+
+    if (drawn) await act(async () => { client.update({ darkTheme: "gruvbox" }); });
+    const absorbed = nextAbsorbed();
+    await act(async () => {
+      if (!drawn) client.update({ darkTheme: "gruvbox" });
+      gate.resolve();
+      await absorbed;
+    });
+    refusing = null;
+    expect([client.settings.darkTheme, client.saveError !== null]).toEqual(["gruvbox", true]);
+
+    await act(async () => { store.set({ settings: { darkTheme: "catppuccin" } }); });
+    await longWait();
+    expect([client.settings.darkTheme, store.get().settings.darkTheme, bodies.length]).toEqual(["catppuccin", "catppuccin", 1]);
+  });
+
+  it.each([["drawn", true], ["not drawn yet", false]] as const)("a refused pick taken back, %s, and then picked again is a new edit: it shows no save error and goes over a save another browser makes next", async (_name, drawn) => {
+    store.set({ settings: { darkTheme: "tokyo-night" } });
+    const client = await open();
+    refuse = unwritable();
+    await act(async () => { client.update({ darkTheme: "gruvbox" }); });
+    await send();
+    expect(client.saveError).not.toBeNull();
+
+    if (drawn) await act(async () => { client.update({ darkTheme: "tokyo-night" }); });
+    await act(async () => {
+      if (!drawn) client.update({ darkTheme: "tokyo-night" });
+      client.update({ darkTheme: "gruvbox" });
+    });
+    expect(client.saveError).toBeNull();
+
+    await act(async () => { store.set({ settings: { darkTheme: "catppuccin" } }); });
+    await longWait();
+    expect([client.settings.darkTheme, store.get().settings.darkTheme]).toEqual(["gruvbox", "gruvbox"]);
+  });
+
+  it.each([["drawn", true], ["not drawn yet", false]] as const)("a refused pick that gives way to a newer save, %s, leaves no save error over the edit made next", async (_name, drawn) => {
+    store.set({ settings: { darkTheme: "tokyo-night" } });
+    const client = await open();
+    refuse = unwritable();
+    await act(async () => { client.update({ darkTheme: "gruvbox" }); });
+    await send();
+    expect(client.saveError).not.toBeNull();
+
+    if (drawn) await act(async () => { store.set({ settings: { darkTheme: "catppuccin" } }); });
+    await act(async () => {
+      if (!drawn) store.set({ settings: { darkTheme: "catppuccin" } });
+      client.update({ darkTheme: "kanagawa" });
+    });
+    expect(client.saveError).toBeNull();
+
+    await longWait();
+    expect([client.settings.darkTheme, store.get().settings.darkTheme, bodies.length]).toEqual(["kanagawa", "kanagawa", 2]);
+  });
+
+  it.each([["drawn", true], ["not drawn yet", false]] as const)("a pick made again after its refused save gave way to a newer save held behind it, that refusal %s, is sent", async (_name, drawn) => {
+    store.set({ settings: { darkTheme: "tokyo-night" } });
+    const client = await open();
+    const gate = heldRefusal();
+    await act(async () => { client.update({ darkTheme: "gruvbox" }); });
+    await windows();
+    await act(async () => { store.set({ settings: { darkTheme: "catppuccin" } }); });
+
+    const absorbed = nextAbsorbed();
+    if (drawn) await act(async () => { gate.resolve(); await absorbed; });
+    await act(async () => {
+      if (!drawn) { gate.resolve(); await absorbed; }
+      client.update({ darkTheme: "gruvbox" });
+    });
+    refusing = null;
+
+    await longWait();
+    expect([client.settings.darkTheme, store.get().settings.darkTheme, bodies.length]).toEqual(["gruvbox", "gruvbox", 2]);
+  });
+
+  it.each([["drawn", true], ["not drawn yet", false]] as const)("a refused pick taken back leaves no save error when a newer save was held behind it and another change, %s, lands with the refusal", async (_name, drawn) => {
+    store.set({ settings: { darkTheme: "tokyo-night" }, pins: [] });
+    const client = await open();
+    const gate = heldRefusal();
+    await act(async () => { client.update({ darkTheme: "gruvbox" }); });
+    await windows();
+    expect(bodies).toHaveLength(1);
+    await act(async () => { client.update({ darkTheme: "tokyo-night" }); });
+    await act(async () => { store.set({ settings: { darkTheme: "catppuccin" } }); });
+
+    if (drawn) await act(async () => { client.update({ density: "compact" }); });
+    const absorbed = nextAbsorbed();
+    await act(async () => {
+      if (!drawn) client.update({ density: "compact" });
+      gate.resolve();
+      await absorbed;
+    });
+    refusing = null;
+
+    await longWait();
+    expect([client.settings.darkTheme, client.settings.density, store.get().settings.darkTheme, bodies.length]).toEqual(["catppuccin", "compact", "catppuccin", 1]);
     expect(client.saveError).toBeNull();
   });
 
