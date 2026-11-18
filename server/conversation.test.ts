@@ -1958,11 +1958,14 @@ describe("transcript pages", () => {
       // a report that quotes a note is still one note; two notes with words between them are not
       { role: "user", ts: null, parts: [{ kind: "text", text: "<hc from=\"t7 review\">The prompt was <hc>hello</hc></hc>" }] },
       { role: "user", ts: null, parts: [{ kind: "text", text: "<hc>a</hc> and <hc>b</hc>" }] },
+      // hc types the notes it has at once as one paste, a line each
+      { role: "user", ts: null, parts: [{ kind: "text", text: "<hc>t3 exited (signal 1)</hc>\n<hc from=\"t4 docs\">done</hc>" }] },
     ];
     const turns = withHcNotes([...transcriptPage("claude-transcript", path).turns, ...codex]);
     expect(turns.map((turn) => turn.parts.map((part) => part.kind === "notice" ? `${part.source}|${part.text}` : part.kind === "text" ? part.text : part.kind).join(" "))).toEqual([
       "hc|t3m hub-repair-hc exited (signal 1). Read: hc read t3m", "reading t3m", "peer:t2q try2-cmd|done: /tmp/x.md", "noted", "<hc>t3m exited</hc> why this format?",
       "peer:t45 lead|Review x.rs", "peer:t7 review|The prompt was <hc>hello</hc>", "<hc>a</hc> and <hc>b</hc>",
+      "hc|t3 exited (signal 1) peer:t4 docs|done",
     ]);
   });
 

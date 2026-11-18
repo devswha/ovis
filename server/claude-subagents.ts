@@ -2,7 +2,8 @@ import { closeSync, constants, type Dir, fstatSync, lstatSync, opendirSync, open
 import { basename, dirname, join, sep } from "node:path";
 import { commandHistory, resetCommandHistory, sameHistory, vouchedEnds, watchCommandHistory, type CommandEnd, type HistoryEvidence, type HistoryVersion } from "./claude-command-history.ts";
 import type { HerdrPane, OmoTask, PaneBackgroundAgentDetail } from "../shared/protocol.ts";
-import { hcNote } from "./transcript-records.ts";
+import { unwrapPastes } from "./claude-transcript.ts";
+import { hcNotes } from "./transcript-records.ts";
 
 /**
  * Claude keeps, beside the session's
@@ -278,14 +279,14 @@ export function commandTerminals(line: string, session: string): CommandEnd[] {
  * another session, an interruption and Claude Code's own records are not: Claude Code 2.1.2xx
  * marks the person's prompts with `origin` `human`, and older versions with a permission mode,
  * which the others lack. A prompt typed while a turn works is handed to that turn on the way
- * (a `queued_command` attachment): the same turn. An hc note (hcNote) is typed into the terminal,
+ * (a `queued_command` attachment): the same turn. An hc note (hcNotes) is typed into the terminal,
  * so Claude records it as `human`, but it is another session's message.
  */
 function prompted(entry: Row): boolean {
   if (entry["type"] !== "user" || entry["isMeta"] === true || entry["isCompactSummary"] === true || entry["isSidechain"] === true) return false;
   const content = row(entry["message"])?.["content"];
   const textOnly = !Array.isArray(content) || content.every((block) => row(block)?.["type"] === "text");
-  if (textOnly && hcNote(blocksIn(entry).join("")) !== null) return false;
+  if (textOnly && hcNotes(unwrapPastes(blocksIn(entry).join(""))) !== null) return false;
   if (Array.isArray(content) && content.some((block) => row(block)?.["type"] === "tool_result")) return false;
   const origin = entry["origin"];
   const kind = typeof origin === "string" ? origin : row(origin)?.["kind"];

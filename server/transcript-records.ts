@@ -25,28 +25,37 @@ export function isContextClear(value: unknown, source: string): boolean {
  * A note herdr-core (hc) typed into the agent, as the whole prompt: a child terminal's report
  * (`<hc from="t7 review">…</hc>`, sourced `peer:t7 review`) or hc's own word on a child that cannot
  * report (`<hc>t3 exited (signal 1). Read: hc read t3</hc>`, sourced `hc`). Nobody typed it here.
- * A report may quote a note: the tags inside must pair up, so two notes with words between them are none.
+ * hc types the notes it has at once as one paste, a line each, so a prompt may be several. A report may
+ * quote a note: the tags inside one must pair up, and anything but space between notes makes them none.
  */
-export function hcNote(text: string): Extract<ConversationPart, { kind: "notice" }> | null {
-  const match = /^\s*<hc\b([^>]*)>([\s\S]*)<\/hc>\s*$/.exec(text);
-  const body = match?.[2]?.trim();
-  if (!match || !body) return null;
-  let depth = 0;
-  for (const [, close] of body.matchAll(/<(\/?)hc\b[^>]*>/g)) {
-    depth += close ? -1 : 1;
-    if (depth < 0) return null;
+export function hcNotes(text: string): Extract<ConversationPart, { kind: "notice" }>[] | null {
+  const notes: Extract<ConversationPart, { kind: "notice" }>[] = [];
+  let depth = 0, open = 0, attributes = "", after = 0;
+  for (const tag of text.matchAll(/<(\/?)hc(?=[\s>])([^>]*)>/g)) {
+    if (tag[1]) {
+      if (--depth < 0) return null;
+      if (depth > 0) continue;
+      const body = text.slice(open, tag.index).trim();
+      if (body === "") return null;
+      const from = /(?:^|\s)from="([^"]*)"/.exec(attributes)?.[1]?.trim();
+      notes.push({ kind: "notice", text: body, source: from ? `peer:${from}` : "hc" });
+      after = tag.index + tag[0].length;
+    } else {
+      if (depth++ > 0) continue;
+      if (text.slice(after, tag.index).trim() !== "") return null;
+      attributes = tag[2]!;
+      open = tag.index + tag[0].length;
+    }
   }
-  if (depth !== 0) return null;
-  const from = /\bfrom="([^"]*)"/.exec(match[1] ?? "")?.[1]?.trim();
-  return { kind: "notice", text: body, source: from ? `peer:${from}` : "hc" };
+  return depth === 0 && notes.length > 0 && text.slice(after).trim() === "" ? notes : null;
 }
 
-/** Every agent's turns with each prompt that is only an hc note (hcNote) as that notice. */
+/** Every agent's turns with each prompt that is only hc notes (hcNotes) as those notices. */
 export function withHcNotes(turns: ConversationTurn[]): ConversationTurn[] {
   return turns.map((turn) => {
     const only = turn.role === "user" && turn.parts.length === 1 ? turn.parts[0] : undefined;
-    const note = only?.kind === "text" ? hcNote(only.text) : null;
-    return note === null ? turn : { ...turn, parts: [note] };
+    const notes = only?.kind === "text" ? hcNotes(only.text) : null;
+    return notes === null ? turn : { ...turn, parts: notes };
   });
 }
 
