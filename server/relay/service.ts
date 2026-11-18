@@ -316,8 +316,9 @@ export class RelayService {
     const before = this.passAccount(), named = this.savedRelayAccount();
     writePrivateState(this.relayAccountPath(), { account });
     // the relay tab's QR code takes a device into the account named for this PC (records.ts applyLink): once another
-    // is named, that code and the rows that wait under it end, so none is taken into an account its holder was not shown
-    if (named !== account) this.services?.devices.endNoAccountPairing();
+    // takes the place of the one named, that code and the rows that wait under it end, so none is taken into an account
+    // its holder was not shown. A first naming ends nothing: no code was made for an account before it
+    if (named !== null && named !== account) this.services?.devices.endNoAccountPairing();
     // the same account named again asks only when the last answer was that it does not list this PC, which the
     // add-me screen's relisting can change; a refusal for the account's limit keeps its scheduled retry
     const unlisted = this.passKeeper?.current() === null && this.passKeeper.refusal === "not_listed";

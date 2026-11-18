@@ -206,8 +206,8 @@ One rule for every way in: a pairing code, comparing digits, and joining through
   else a fresh one, never a code another place started (which may be on a screen as digits). That
   code ends when the PC gets its first member, however it does (a `link` over any pairing, the
   one a sign-in on the PC opens included): left pending, it would admit one more device after the
-  PC joined. It also ends, with every device that waits to link under it, when another account is
-  named for the PC, and on **Reset relay identity**. An offer asked for without the header is what it was, on any PC: the first-run
+  PC joined. It also ends, with every device that waits to link under it, when another account
+  takes the place of the one named for the PC, and on **Reset relay identity**. An offer asked for without the header is what it was, on any PC: the first-run
   guide's QR code, the relay tab where the page has no account, a phone's **Use the relay** and
   `bun scripts/plugin.ts pair` keep it, without those guards, and a signed-in device that redeems
   such a code on a PC in no account links itself the same way. It never carries the code of an
