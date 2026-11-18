@@ -3967,28 +3967,40 @@ describe("Agy native ledger through shared paging", () => {
     const rpc = spyOn(herdr, "herdrRpc").mockImplementation(async (method: string) => (method === "pane.get"
       ? { pane: { ...pane, scroll: { offset_from_bottom: 0, max_offset_from_bottom: 10, viewport_rows: 40 } } }
       : { process_info: { foreground_processes: [] } }) as never);
-    let during: "show" | "forget" | "rebind" = "show";
+    let during: "show" | "forget" | "rebind" | "switch" = "show";
     const read = spyOn(herdr, "paneRead").mockImplementation(async () => {
       if (during === "forget") forgetPaneTranscriptState(pane.pane_id);
       if (during === "rebind") {
         store.mockResolvedValue({ root, session: "other", path: other, pid: 3, started: "other" });
         await paneTranscript(pane.pane_id);
       }
+      if (during === "switch") {
+        store.mockResolvedValue({ root, session: "other", path: other, pid: 3, started: "other" });
+        return { text: " ? for shortcuts   Gemini 4 Hydrogen \u00b7 medium\n" } as never;
+      }
       return { text: footer } as never;
     });
-    const refused = async () => {
+    const refused = async (message: string, model: string) => {
       const error = await paneConversation(pane.pane_id).catch((caught: unknown) => caught);
-      expect(error).toMatchObject({ name: "ConversationUnavailable", message: "no_session_id" });
-      expect(JSON.stringify(error)).not.toContain("Gemini 3.8 Flash");
+      expect(error).toMatchObject({ name: "ConversationUnavailable", message });
+      expect(JSON.stringify(error)).not.toContain(model);
+    };
+    const reset = () => {
+      forgetTranscriptState();
+      store.mockResolvedValue({ root, session, path, pid: 2, started: "test" });
     };
     try {
       expect((await paneConversation(pane.pane_id)).metadata).toMatchObject({ model: "Gemini 3.8 Flash", reasoning_effort: "high" });
       during = "forget";
-      await refused();
-      forgetTranscriptState();
-      store.mockResolvedValue({ root, session, path, pid: 2, started: "test" });
+      await refused("no_session_id", "Gemini 3.8 Flash");
+      reset();
       during = "rebind";
-      await refused();
+      await refused("no_session_path", "Gemini 3.8 Flash");
+      // agy's store moved the pane to another conversation during the read, and nothing else
+      // resolved the pane meanwhile: the old turns never go out with the new model
+      reset();
+      during = "switch";
+      await refused("no_session_path", "Gemini 4 Hydrogen");
     } finally { snapshot.mockRestore(); store.mockRestore(); rpc.mockRestore(); read.mockRestore(); }
   });
   it("retries a transient mid-turn catalog race and answers 503 ConversationReadPending instead of dropping chat", async () => {

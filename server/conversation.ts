@@ -2323,6 +2323,12 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
     try { revision = grokProjection(resolved.path, statSync(resolved.path)).revision; } catch {}
     if (revision === null || revision === "0") throw new ConversationUnavailable("transcript_missing");
   }
+  // The ledger never records the selected model. The live status row does, and a switch there
+  // writes no turn, so the answer is marked screen and the chat re-reads it on terminal output.
+  // A scroll or a failed read leaves the name unknown rather than one from an older frame, and is
+  // still marked screen so the next draw can fill it. The row is read before the store check below,
+  // so a pane that moved to another conversation during the read is refused, not given its model.
+  const agyScreen = resolved.source === "agy-transcript" ? await screenMetadata("agy-transcript") : null;
   if (resolved.agy && !sameAgyStore(resolved.agy, await resolveAgyStore(snapshot.panes.find((pane) => pane.pane_id === paneId)!))) throw new ConversationUnavailable("no_session_path");
   if (identity !== null) { writtenSessions.add(`${resolved.source}\0${identity}`); rememberPaneSession(paneId, `${resolved.source}\0${identity}`); }
   if (resolved.source === "claude-transcript" && identity !== null && answer.metadata.context) {
@@ -2364,20 +2370,16 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
       || copilotHistoryIdentity(resolved.path) !== history) throw new HistoryChanged();
     return bindCopilotAnswer(answer, prefix);
   }
-  if (resolved.source === "agy-transcript") {
-    // The ledger never records the selected model. The live status row does, and a switch there
-    // writes no turn, so the answer is marked screen and the chat re-reads it on terminal output.
-    // A scroll or a failed read leaves the name unknown rather than one from an older frame, and is
-    // still marked screen so the next draw can fill it. Enrich the response, never the shared page.
-    const screen = await screenMetadata("agy-transcript");
+  if (agyScreen !== null) {
     // The screen read waits on herdr. A pane closed or bound to another session meanwhile has not
-    // this conversation, and not a model read from the screen it shows now.
+    // this conversation, and not a model read from the screen it shows now. Enrich the response,
+    // never the shared page.
     if (!live() || rebound(paneId, transcript)) throw new ConversationUnavailable("no_session_id");
     return {
       ...answer,
       screen: true,
-      metadata: { ...answer.metadata, ...screen },
-      version: answerVersion(answer.version, `${screen.model}\0${screen.reasoning_effort}`),
+      metadata: { ...answer.metadata, ...agyScreen },
+      version: answerVersion(answer.version, `${agyScreen.model}\0${agyScreen.reasoning_effort}`),
     };
   }
   return answer;
