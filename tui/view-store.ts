@@ -5,14 +5,14 @@
  * writer wins.
  */
 import { createHash, randomUUID } from "node:crypto";
-import { chmodSync, closeSync, fstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, constants, fstatSync, mkdirSync, openSync, readSync, renameSync, rmSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { errorCode } from "./crash.ts";
 import type { ModelState } from "./model/reduce.ts";
 import { readView, type SavedView, VIEW_FILE_MAX_BYTES, type ViewProblem, viewText } from "./model/view-file.ts";
 
 /** The file's name for a core id: the id itself when it is a plain word, else its hash (an id never names a path). */
-export function viewFileName(core: string): string {
+function viewFileName(core: string): string {
   const plain = /^[A-Za-z0-9_-]{1,64}$/.test(core) ? core : createHash("sha256").update(core).digest("hex").slice(0, 32);
   return `view-${plain}.json`;
 }
@@ -32,10 +32,14 @@ export class ViewStore {
     this.last = null;
     let text: string;
     try {
-      const fd = openSync(path, "r");
+      // without waiting: a FIFO (or a link to one, or to a device) in the file's place must not hold the screen at start
+      const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
       try {
-        if (fstatSync(fd).size > VIEW_FILE_MAX_BYTES) return { view: null, problem: "too_large" };
-        text = readFileSync(fd, "utf8");
+        const stat = fstatSync(fd);
+        if (!stat.isFile()) return { view: null, problem: "not_a_file" };
+        if (stat.size > VIEW_FILE_MAX_BYTES) return { view: null, problem: "too_large" };
+        const bytes = Buffer.alloc(stat.size);
+        text = bytes.subarray(0, readSync(fd, bytes, 0, stat.size, 0)).toString("utf8");
       } finally {
         closeSync(fd);
       }

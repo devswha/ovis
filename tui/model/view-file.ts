@@ -7,8 +7,8 @@
  */
 import { type Focus, focused, nextFocus, type World } from "./focus.ts";
 
-export const VIEW_FILE_VERSION = 1;
-/** A larger file is not read: this screen never writes one (a few dozen bytes per terminal). */
+const VIEW_FILE_VERSION = 1;
+/** A larger file is not read (tui/view-store.ts checks its size before reading): this screen never writes one (a few dozen bytes per terminal). */
 export const VIEW_FILE_MAX_BYTES = 1024 * 1024;
 /** The longest id kept: hc's ids are far shorter. */
 const ID_MAX_CHARS = 256;
@@ -46,12 +46,14 @@ const isPane = (value: unknown): value is { id: string; created?: number } =>
 const isTab = (value: unknown): value is { id: string; panes: { id: string; created?: number }[] } => isRecord(value) && isId(value["id"]) && listOf(value["panes"], isPane);
 const isWorkspace = (value: unknown): value is FileShape["world"][number] => isRecord(value) && isId(value["id"]) && listOf(value["tabs"], isTab);
 
-/** Why a file holds no view this screen can use: `unreadable`, `too_large`, `not_json`, `version` (another version's) or `shape`. */
-export type ViewProblem = "unreadable" | "too_large" | "not_json" | "version" | "shape";
+/**
+ * Why a file holds no view this screen can use: `unreadable`, `not_a_file` (a FIFO, a device, a folder), `too_large`,
+ * `not_json`, `version` (another version's) or `shape`.
+ */
+export type ViewProblem = "unreadable" | "not_a_file" | "too_large" | "not_json" | "version" | "shape";
 
 /** The view in a file's text, or the problem that makes it none. */
 export function readView(text: string): { view: SavedView } | { problem: ViewProblem } {
-  if (text.length > VIEW_FILE_MAX_BYTES) return { problem: "too_large" };
   let data: unknown;
   try {
     data = JSON.parse(text);

@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FakeHcCore } from "../../server/herdr-core/core.fake.ts";
 import { demo } from "../testing/fixtures/demo.ts";
 import { Run } from "../testing/run.ts";
-import { ViewStore, viewFileName } from "../view-store.ts";
+import { ViewStore } from "../view-store.ts";
 import { type Focus, nextFocus, type World } from "./focus.ts";
 import { initialState, type ModelState, reduce } from "./reduce.ts";
 import { readView, restoredFocus, VIEW_FILE_MAX_BYTES, type ViewProblem, viewText } from "./view-file.ts";
@@ -73,7 +73,6 @@ describe("what the view file holds", () => {
       ["an id of 257 characters", JSON.stringify({ ...valid, focus: { ...valid.focus, previous: "x".repeat(257) } }), "shape"],
       ["a pane without an id", JSON.stringify({ ...valid, world: [{ id: "w1", tabs: [{ id: "t1", panes: [{ created: 1 }] }] }] }), "shape"],
       ["a created time that is no number", JSON.stringify({ ...valid, world: [{ id: "w1", tabs: [{ id: "t1", panes: [{ id: "p1", created: "1" }] }] }] }), "shape"],
-      ["too large", " ".repeat(VIEW_FILE_MAX_BYTES + 1), "too_large"],
     ];
     for (const [name, text, problem] of table) expect({ name, read: readView(text) }).toEqual({ name, read: { problem } });
   });
@@ -126,9 +125,29 @@ describe("reopening the same place", () => {
 
 describe("the file on disk", () => {
   it("one file per core id, named by the id when it is a plain word and by its hash otherwise", () => {
-    expect(viewFileName("c0ffee-01_A")).toBe("view-c0ffee-01_A.json");
-    expect(viewFileName("../../etc/passwd")).toMatch(/^view-[0-9a-f]{32}\.json$/);
-    expect(viewFileName("x".repeat(65))).toMatch(/^view-[0-9a-f]{32}\.json$/);
+    const named = (core: string): string[] => {
+      const folder = scratch();
+      const store = new ViewStore(folder);
+      store.open(core);
+      store.keep(stateOf(WORLD, AT_P2));
+      return readdirSync(folder);
+    };
+    expect(named("c0ffee-01_A")).toEqual(["view-c0ffee-01_A.json"]);
+    for (const core of ["../../etc/passwd", "x".repeat(65), "한글"]) expect({ core, files: named(core).map((file) => /^view-[0-9a-f]{32}\.json$/.test(file)) }).toEqual({ core, files: [true] });
+  });
+
+  it("the view is read once per core id: the same core again reads nothing, another core reads its own file", () => {
+    const folder = scratch();
+    const [writer, reader] = [new ViewStore(folder), new ViewStore(folder)];
+    for (const core of ["core1", "core2"]) {
+      writer.open(core);
+      writer.keep(stateOf(WORLD, core === "core1" ? AT_P2 : { ...AT_P2, workspace: "w2" }));
+    }
+    expect(reader.open("core1").view?.focus.workspace).toBe("w1");
+    writer.open("core1");
+    writer.keep(stateOf(WORLD, { ...AT_P2, panes: { ...AT_P2.panes, t1: "p1" } }));
+    expect(reader.open("core1")).toEqual({ view: null, problem: null });
+    expect(reader.open("core2").view?.focus.workspace).toBe("w2");
   });
 
   it("written by rename: the file 0600 in a 0700 folder, nothing else left there", () => {
@@ -179,11 +198,22 @@ describe("the file on disk", () => {
 
   it("a corrupt or oversized file is no view and says why; a missing one is no problem", () => {
     const folder = scratch();
-    writeFileSync(join(folder, viewFileName("bad")), "{\"v\":1,\"focus\":");
-    writeFileSync(join(folder, viewFileName("big")), " ".repeat(VIEW_FILE_MAX_BYTES + 1));
+    writeFileSync(join(folder, "view-bad.json"), "{\"v\":1,\"focus\":");
+    writeFileSync(join(folder, "view-big.json"), " ".repeat(VIEW_FILE_MAX_BYTES + 1));
+    writeFileSync(join(folder, "view-edge.json"), `${viewText(WORLD, AT_P2)!}${" ".repeat(VIEW_FILE_MAX_BYTES - viewText(WORLD, AT_P2)!.length)}`);
     expect(new ViewStore(folder).open("bad")).toEqual({ view: null, problem: "not_json" });
     expect(new ViewStore(folder).open("big")).toEqual({ view: null, problem: "too_large" });
+    expect(new ViewStore(folder).open("edge").view?.focus).toEqual(AT_P2);
     expect(new ViewStore(folder).open("none")).toEqual({ view: null, problem: null });
+  });
+
+  it("a FIFO, a link to /dev/zero or a folder in the file's place is refused at once and never read", async () => {
+    const folder = scratch();
+    const made = Bun.spawn(["mkfifo", join(folder, "view-fifo.json")], { env: { PATH: "/usr/bin:/bin" } });
+    expect(await made.exited).toBe(0);
+    symlinkSync("/dev/zero", join(folder, "view-zero.json"));
+    mkdirSync(join(folder, "view-folder.json"));
+    for (const core of ["fifo", "zero", "folder"]) expect({ core, read: new ViewStore(folder).open(core) }).toEqual({ core, read: { view: null, problem: "not_a_file" } });
   });
 
   it("a write that fails is told once, by its code", () => {
@@ -232,6 +262,18 @@ describe("a rerun of the screen on the same core", () => {
     expect(again.loop.model().focus.panes["t-main"]).toBe("t2");
     expect(again.loop.panes.views().map((view) => view.terminal)).toEqual(["t2"]);
     expect(again.loop.model().notices).toEqual([]);
+  }, TEST_MS);
+
+  it("a state folder that cannot be written: the screen says view_unread and view_unsaved, and works on", async () => {
+    const folder = join(scratch(), "file");
+    writeFileSync(folder, "not a folder");
+    const core = new FakeHcCore();
+    demo.build(core);
+    const run = await first(core, folder);
+    await run.keys("ctrl+b,n");
+    await run.advance(1);
+    expect(run.loop.model().focus.tabs["w-ovis"]).toBe("t-logs");
+    expect(run.loop.model().notices.map((notice) => [notice.code, notice.data])).toEqual([["view_unread", { reason: "unreadable" }], ["view_unsaved", { reason: "EEXIST" }]]);
   }, TEST_MS);
 
   it("the saved pane gone on the core: the screen opens on the next one and says so", async () => {
