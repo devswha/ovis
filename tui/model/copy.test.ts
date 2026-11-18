@@ -165,11 +165,21 @@ it("a missing or empty query does not move history", async () => {
   const run = await start();
   await run.keys("g,/,not-in-this-history,enter,n");
   await run.advance(10);
-  expect(run.grid()[13]?.slice(7, 15)).toBe("No match");
+  expect(run.loop.report().mode.notice).toBe("copy_no_match");
   await run.keys("/,enter,N");
   await run.advance(10);
   expect(run.grid()[2]?.slice(1, 11)).toBe("Old needle");
-  expect(run.grid()[13]?.slice(7, 15)).not.toBe("No match");
+  expect(run.loop.report().mode.notice).toBeUndefined();
+});
+
+it("the search cursor follows the rendered prompt and query", async () => {
+  const run = await start();
+  await run.keys("/,한abc");
+  await run.advance(10);
+  const bar = run.grid()[13];
+  expect(bar).toEndWith("/한abc");
+  const cursor = [...run.host.output().matchAll(/\x1b\[(\d+);(\d+)H/g)].at(-1);
+  expect(cursor?.slice(1)).toEqual(["14", String(Bun.stringWidth(bar ?? "") + 1)]);
 });
 
 it("an alternate screen change restores the main buffer to the bottom on return", async () => {
@@ -201,6 +211,19 @@ it("an alternate screen round trip restores a nonzero entry offset", async () =>
   expect(run.grid()[2]?.slice(1, 7)).toBe(first);
 });
 
+it("leaving copy on the same buffer restores a nonzero entry offset", async () => {
+  const run = await start();
+  await run.keys("q,wheelup@4:4");
+  await run.advance(10);
+  expect(run.grid()[2]?.slice(1, 7)).toBe("row-19");
+  await run.keys("ctrl+b,[,g");
+  await run.advance(10);
+  expect(run.grid()[2]?.slice(1, 11)).toBe("Old needle");
+  await run.keys("q");
+  await run.advance(10);
+  expect(run.grid()[2]?.slice(1, 7)).toBe("row-19");
+});
+
 it("program exit cancels copy and restores the last picture to the entry offset", async () => {
   const run = await start();
   await run.keys("g,V");
@@ -221,6 +244,28 @@ it("output clears an active selection before yank", async () => {
 });
 
 const WRAPPED_URL = `https://example.org/${"seg/".repeat(12)}tail/file.ts:12`;
+
+it.each([
+  ["URL", WRAPPED_URL, "g/seg/seg/tail/file.ts:12"],
+  ["path", `./${"directory-name/".repeat(4)}src/components/Widget.tsx:120:8`, "ame/src/components/Widget.tsx:120:8"],
+  ["hash", " ".repeat(45) + "0123456789abcdef".repeat(4), "def0123456789abcdef0123456789abcdef0123456789abcdef"],
+])("a pruned wrapped %s has no hint on the oldest kept row", async (_kind, line, tail) => {
+  const run = await start("one\r\n" + (`${line}\r\n`).repeat(2999) + line + "\r");
+  await run.keys("g,f");
+  await run.advance(10);
+  expect(run.grid()[2]?.slice(1, 1 + tail.length)).toBe(tail);
+  await run.keys("1");
+  expect(clips(run)).toEqual([line.trimStart()]);
+});
+
+it("an intact wrapped URL at the history limit can still be copied", async () => {
+  const run = await start((`${WRAPPED_URL}\r\n`).repeat(2999) + WRAPPED_URL + "\r");
+  await run.keys("g,f");
+  await run.advance(10);
+  expect(run.grid()[2]?.slice(1, 6)).toBe("1ttps");
+  await run.keys("1");
+  expect(clips(run)).toEqual([WRAPPED_URL]);
+});
 
 it.each([
   ["URL", WRAPPED_URL, "1ttps"],
@@ -301,6 +346,27 @@ it("a target cut by a narrower viewer has no hint", async () => {
     expect(run.grid()[3]?.slice(1, 6)).toBe("1ttps");
     await run.keys("1");
     expect(clips(run)).toEqual(["https://next.test/a"]);
+  } finally {
+    await rival.detach();
+    rival.close();
+  }
+});
+
+it("a wrapped target cut below a taller viewer's visible clip has no hint", async () => {
+  const run = await start(`https://next.test/a\r\n${"padding\r\n".repeat(8)}${WRAPPED_URL}\r\nTAIL\r`);
+  const rival = new Stage(run.core).rival();
+  try {
+    await run.keys("q");
+    await rival.attach("t1", 58, 20);
+    await run.advance(300);
+    await run.live();
+    expect(run.loop.panes.view("t1")?.actual).toEqual({ cols: 58, rows: 20 });
+    await run.keys("ctrl+b,[,g,f");
+    await run.advance(10);
+    expect(run.grid()[2]?.slice(1, 6)).toBe("1ttps");
+    expect(run.grid()[11]?.slice(1, 6)).toBe("https");
+    await run.keys("2");
+    expect(clips(run)).toEqual([]);
   } finally {
     await rival.detach();
     rival.close();

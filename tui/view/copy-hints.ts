@@ -84,6 +84,11 @@ export function visibleCopyHints(scene: PaneScene, emulator: Emulator, top: numb
     y = Math.max(y, line?.end.y ?? y) + 1;
     // A vertically cut logical line cannot be mapped completely to the drawn cells.
     if (!line || line.start.y < top + row || line.end.y >= top + bottom) continue;
+    if (line.start.y === 0) {
+      // The first kept row can be a continuation even though lineAt has no earlier row to return.
+      const continues = emulator.rowContinues(0);
+      if (!continues.ok || continues.value !== false) continue;
+    }
     const formatted = emulator.textOf(line);
     if (!formatted.ok) continue;
     const text = formatted.value;

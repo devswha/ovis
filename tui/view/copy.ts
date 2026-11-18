@@ -21,7 +21,7 @@ interface Session {
   query: string;
   match: ScreenRange | null;
   searchFresh: boolean;
-  noMatch: boolean;
+  searchNotice: "copy_no_match" | null;
   hints: "scan" | readonly CopyHint[] | null;
 }
 
@@ -73,7 +73,7 @@ export class CopyView {
       s.selection = null;
       s.match = null;
       s.searchFresh = false;
-      s.noMatch = false;
+      s.searchNotice = null;
       s.hints = null;
     }
     return false;
@@ -96,7 +96,7 @@ export class CopyView {
       this.session = {
         pane, emulator, gen: view.gen, ...size, original, alt: modes.altScreen,
         point: { x: clamp(col, Math.min(size.cols, scene.rect.width)), y: clamp(history.viewportTop + row, history.total) },
-        top: history.viewportTop, selection: null, match: null, query: "", searchFresh: false, noMatch: false, hints: null,
+        top: history.viewportTop, selection: null, match: null, query: "", searchFresh: false, searchNotice: null, hints: null,
       };
       return { close: false };
     }
@@ -162,7 +162,7 @@ export class CopyView {
       s.match = null;
       const found = value(s.emulator.search(s.query));
       s.searchFresh = found !== null;
-      s.noMatch = s.query !== "" && found?.length === 0;
+      s.searchNotice = s.query !== "" && found?.length === 0 ? "copy_no_match" : null;
       if (!found?.length) return;
     }
     if (s.query === "") return;
@@ -171,7 +171,11 @@ export class CopyView {
     s.top = value(s.emulator.history())?.viewportTop ?? s.top;
   }
 
-  draw(scene: PaneScene): { pane: PaneScene; hints: readonly CopyHint[]; input: Scene["input"]; noMatch: boolean } | null {
+  searchNotice(): Session["searchNotice"] {
+    return this.session?.searchNotice ?? null;
+  }
+
+  draw(scene: PaneScene): { pane: PaneScene; hints: readonly CopyHint[]; input: Scene["input"]; searchNotice: Session["searchNotice"] } | null {
     const s = this.session;
     if (!s || s.pane !== scene.id) return null;
     const gridRow = s.point.y - s.top;
@@ -188,7 +192,7 @@ export class CopyView {
     if (s.hints === "scan") s.hints = visibleCopyHints(pane, s.emulator, s.top);
     return {
       pane, hints: s.hints ?? [], input: holds(scene.rect, point.col, point.row) ? point : "overlay",
-      noMatch: s.noMatch,
+      searchNotice: s.searchNotice,
     };
   }
 }

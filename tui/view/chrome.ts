@@ -506,6 +506,9 @@ const MODE_LABELS = {
   copy: STRINGS.modeCopy,
   terminal: STRINGS.modeTerminal,
 } as const;
+const modeBadge = (mode: keyof typeof MODE_LABELS) => ` ${MODE_LABELS[mode]} `;
+const COPY_QUERY_PROMPT = " /";
+const COPY_QUERY_START = measure(modeBadge("copy") + COPY_QUERY_PROMPT).width;
 
 function modeBarPart(input: ChromeInput, colors: Colors, look: string): Part {
   const { regions, state, link } = input;
@@ -518,17 +521,17 @@ function modeBarPart(input: ChromeInput, colors: Colors, look: string): Part {
     unreachable: state.keymap.notes.filter((note) => note.code === "prefix_unreachable" || note.code === "detach_unreachable").map((note) => note.code),
     hints: bar.hints.map((hint) => ({ keys: hint.keys.join("/"), label: actionLabel(hint.action) })),
     query: state.mode.name === "copy" && state.mode.phase === "query"
-      ? fieldView(state.mode.field, Math.max(1, rect.width - 8)) : null,
-    missing: input.copying?.noMatch ?? false,
+      ? fieldView(state.mode.field, Math.max(1, rect.width - COPY_QUERY_START)) : null,
+    queryNotice: input.copying?.searchNotice ?? null,
     hintsEmpty: state.mode.name === "copy" && state.mode.phase === "hints" && input.copying?.hints.length === 0,
     notice: latest && link.online && bar.mode !== "copy" ? ` ${latest.calm ? "" : `${STRINGS.errorBadge}: `}${STRINGS.noticeText(latest.code, latest.data)} ` : null,
   };
-  return part("mode", rect, look, data, (canvas, { mode, offline, unreachable, hints, query, missing, hintsEmpty, notice }) => {
+  return part("mode", rect, look, data, (canvas, { mode, offline, unreachable, hints, query, queryNotice, hintsEmpty, notice }) => {
     if (rect.width <= 0 || rect.height <= 0) return;
     canvas.fill(canvas.style({ fg: colors.text, bg: colors.bgPanel }));
     const row = rect.y;
     const right = rect.x + rect.width;
-    const badge = ` ${MODE_LABELS[mode]} `;
+    const badge = modeBadge(mode);
     const terminal = mode === "terminal";
     const badgeBg = mode === "prefix" ? colors.accent : mode === "locked" ? colors.statusBlocked : terminal ? colors.bgElevated : colors.statusWorking;
     let col = printFit(canvas, rect.x, row, badge, rect.width, canvas.style({ fg: terminal ? colors.textStrong : colors.primaryText, bg: badgeBg, flags: STYLE_BOLD }));
@@ -537,10 +540,10 @@ function modeBarPart(input: ChromeInput, colors: Colors, look: string): Part {
     const keyStyle = canvas.style({ fg: colors.accent, bg: colors.bgPanel, flags: STYLE_BOLD });
     const labelStyle = canvas.style({ fg: colors.textDim, bg: colors.bgPanel });
     if (query !== null) {
-      printFit(canvas, col, row, ` /${query.text}`, right - col, keyStyle);
+      printFit(canvas, col, row, COPY_QUERY_PROMPT + query.text, right - col, keyStyle);
       return;
     }
-    if (missing || hintsEmpty) col = printFit(canvas, col, row, ` ${missing ? STRINGS.copyNoMatch : STRINGS.copyNoHints}`, right - col, labelStyle);
+    if (queryNotice !== null || hintsEmpty) col = printFit(canvas, col, row, ` ${queryNotice === null ? STRINGS.copyNoHints : STRINGS.noticeText(queryNotice, {})}`, right - col, labelStyle);
     // a hint is drawn whole or not at all, so the keys shown are never a cut-off key
     for (const hint of hints) {
       if (col + measure(` ${hint.keys} ${hint.label}`).width > right) break;
@@ -897,8 +900,8 @@ export function buildChrome(input: ChromeInput): BuiltChrome {
   const mode = input.state.mode;
   if (mode.name === "copy" && mode.phase === "query") {
     const rect = input.regions.modeBar;
-    const cursor = fieldView(mode.field, Math.max(1, rect.width - 8)).cursor;
-    return { parts, overlays, input: rect.height > 0 ? { col: Math.min(rect.width - 1, 8 + cursor), row: rect.y } : "overlay" };
+    const cursor = fieldView(mode.field, Math.max(1, rect.width - COPY_QUERY_START)).cursor;
+    return { parts, overlays, input: rect.height > 0 ? { col: Math.min(rect.width - 1, COPY_QUERY_START + cursor), row: rect.y } : "overlay" };
   }
   return { parts, overlays, input: sceneInput ?? copying.input };
 }

@@ -93,7 +93,7 @@ export interface LoopReport {
   actions: string[];
   hc: { version: string; features: string[] } | null;
   size: { cols: number; rows: number };
-  mode: { name: string; locked: boolean; armed: boolean; overlays: string[] };
+  mode: { name: string; locked: boolean; armed: boolean; overlays: string[]; notice?: NonNullable<ReturnType<CopyView["searchNotice"]>> };
   /** the stable code of the error giving the terminal back at quit failed with, or null */
   leaveError: string | null;
   /** the core link's state as data: what the chrome shows (Offline and its code, NoCore, Incompatible) */
@@ -933,6 +933,7 @@ export function startLoop(options: LoopOptions): Loop {
     report: () => {
       const first = earliest(deadlines());
       const due = first ? [...deadlines()].filter(([, at]) => at === first.at).map(([name]) => name) : [];
+      const notice = copyView.searchNotice();
       return {
         due: timer ? due : [],
         passes,
@@ -941,7 +942,7 @@ export function startLoop(options: LoopOptions): Loop {
         leaveError,
         hc: hello ? { version: hello.version, features: [...hello.features] } : null,
         size: entered ? host.size() : { cols: 0, rows: 0 },
-        mode: { name: state.mode.name, locked: state.locked, armed: state.armed, overlays: state.overlays.map((overlay) => overlay.kind) },
+        mode: { name: state.mode.name, locked: state.locked, armed: state.armed, overlays: state.overlays.map((overlay) => overlay.kind), ...(notice === null ? {} : { notice }) },
         link: { kind: link.state.kind, code: "code" in link.state ? link.state.code : null },
       };
     },

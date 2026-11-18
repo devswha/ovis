@@ -46,7 +46,6 @@ export const STRINGS = {
   modeNavigate: "NAVIGATE",
   modeResize: "RESIZE",
   modeCopy: "COPY",
-  copyNoMatch: "No match",
   copyNoHints: "No hints",
   modeLocked: "LOCKED",
   errorBadge: "ERROR",
@@ -223,6 +222,8 @@ export const STRINGS = {
         return `input_refused: pane is ${data["reason"] ?? "not ready"}`;
       case "copy_unavailable":
         return "Copy mode needs a live pane";
+      case "copy_no_match":
+        return "No match";
       case "copied":
         return "Copied";
       case "copy_refused":
