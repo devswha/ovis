@@ -10,7 +10,7 @@ import * as fsp from "node:fs/promises";
 import * as cmd from "./cmd.ts";
 import * as piTree from "./pi-tree.ts";
 import type { HerdrPane, SessionSnapshot } from "../shared/protocol.ts";
-import { MAX_TURNS, parseOmpTranscript } from "./transcript-records.ts";
+import { MAX_TURNS, parseOmpTranscript, withHcNotes } from "./transcript-records.ts";
 import { turnStarts } from "./transcript-turns.ts";
 import { claudeImageType } from "./claude-transcript.ts";
 import { toolVerb } from "../src/lib/toolVerbs.ts";
@@ -26,12 +26,62 @@ import { DevinHistoryChanged } from "./devin.ts";
 import * as devinSession from "./devin-session.ts";
 import * as omo from "./omo.ts";
 import * as gjcRuntime from "./gjc-runtime.ts";
+import * as processStart from "./process-start.ts";
 import * as runtime from "./herdr-core/runtime.ts";
 import * as served from "./runtime/capabilities.ts";
 import { HERDR_CORE } from "./runtime/capabilities.ts";
 import { claudeProjectDir } from "./claude-store.ts";
 import { launchedAgents } from "./launched-agents.ts";
-import { agyTranscriptPage, claudePanePid, claudePaneSession, ConversationReadPending, ConversationUnavailable, devinSessionForPane, forgetPaneTranscriptState, forgetTranscriptState, gjcTranscriptPath, HistoryChanged, isDevinProcess, isOmoProcess, ompSessionStore, paneConversation, paneProcessRoots, paneTranscript, parseClaudeTranscript, stoppedAgentJob, unwrapPastes, toolOutput, transcriptImage, transcriptImageAsync, transcriptPage, transcriptToolOutput, TRANSCRIPT_WINDOW_BYTES } from "./conversation.ts";
+import { agyTranscriptPage, claudePanePid, claudePaneSession, ConversationReadPending, ConversationUnavailable, devinSessionForPane, forgetPaneTranscriptState, forgetTranscriptState, gjcTranscriptPath, HistoryChanged, isDevinProcess, isOmoProcess, ompSessionStore, paneConversation, paneProcessRoots, paneRunsOmo, paneTranscript, parseClaudeTranscript, stoppedAgentJob, unwrapPastes, toolOutput, transcriptImage, transcriptImageAsync, transcriptPage, transcriptToolOutput, TRANSCRIPT_WINDOW_BYTES } from "./conversation.ts";
+
+it("sees an OmO below its own Windows pane shell, not below another pane's, with or without a supplied list", async () => {
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  // herdr on Windows names only the pane's shell
+  const shellOnly = { pane_id: "own-pane", shell_pid: 100, foreground_processes: [{ pid: 100, name: "powershell.exe", argv: ["powershell.exe"] }] };
+  const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: shellOnly });
+  const shell = (pid: number) => ({ pid, parent: 1, path: "C:\\Windows\\powershell.exe", commandLine: "powershell.exe" });
+  const omo = (pid: number, parent: number) => ({ pid, parent, path: "C:\\node.exe", commandLine: "node.exe C:\\node_modules\\omo-ai\\bin\\omo.js" });
+  const table = spyOn(gjcRuntime, "recentProcessTable").mockResolvedValue([shell(100), omo(101, 100), shell(200), omo(201, 200)]);
+  const alive = spyOn(processStart, "processAlive").mockReturnValue(true);
+  const born = spyOn(processStart, "processStartedAt").mockReturnValue(null);
+  const home = mkdtempSync(join(tmpdir(), "herdr-omo-win-home-"));
+  const env = { HOME: process.env["HOME"], USERPROFILE: process.env["USERPROFILE"] };
+  process.env["HOME"] = home;
+  process.env["USERPROFILE"] = home;
+  Object.defineProperty(process, "platform", { value: "win32" });
+  try {
+    expect(await paneRunsOmo("own-pane")).toBe(true);
+    expect(await paneRunsOmo("own-pane", shellOnly)).toBe(true);
+    table.mockResolvedValue([shell(100), shell(200), omo(201, 200)]);
+    expect(await paneRunsOmo("own-pane")).toBe(false);
+    expect(await paneRunsOmo("own-pane", shellOnly)).toBe(false);
+    // an OmO a Claude in this pane runs as its tool is not the pane's agent
+    table.mockResolvedValue([shell(100), { pid: 101, parent: 100, path: "C:\\claude.exe", commandLine: "claude.exe" }, omo(102, 101)]);
+    expect(await paneRunsOmo("own-pane")).toBe(false);
+    // the process table is a few seconds old: an OmO that exited since is no longer the pane's
+    table.mockResolvedValue([shell(100), omo(101, 100)]);
+    expect(await paneRunsOmo("own-pane")).toBe(true);
+    alive.mockImplementation((pid: number) => pid !== 101);
+    expect(await paneRunsOmo("own-pane")).toBe(false);
+    expect(await paneRunsOmo("own-pane", shellOnly)).toBe(false);
+    // herdr is asked about this pane by its id: given `target`, it answers for the focused pane
+    expect(rpc.mock.calls.map(([method, params]) => [method, params])).toContainEqual(["pane.process_info", { pane_id: "own-pane" }]);
+    expect(rpc.mock.calls.every(([, params]) => (params as { pane_id?: string }).pane_id === "own-pane")).toBe(true);
+    // a supplied sample is used as it is, herdr not asked again
+    alive.mockReturnValue(true);
+    rpc.mockClear();
+    expect(await paneRunsOmo("own-pane", shellOnly)).toBe(true);
+    expect(rpc).not.toHaveBeenCalled();
+  } finally {
+    Object.defineProperty(process, "platform", platform);
+    for (const [key, value] of Object.entries(env)) if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    rmSync(home, { recursive: true, force: true });
+    table.mockRestore();
+    alive.mockRestore();
+    born.mockRestore();
+    rpc.mockRestore();
+  }
+});
 
 it("labels only Claude's explicit end_turn text as final-answer evidence", () => {
   const entry = (stop_reason: string | null) => JSON.stringify({ type: "assistant", message: { role: "assistant", stop_reason, content: [{ type: "text", text: "Answer" }] } });
@@ -1937,6 +1987,38 @@ describe("transcript pages", () => {
       ["assistant", "recorded both decisions"],
       ["user", "peer:FUSION|coordinates sent"],
       ["assistant", "rebuilt slide 4"],
+    ]);
+  });
+
+  it("shows hc's notes (a child's report, hc's word on a child that exited) as notices in any agent's chat, not as the person's prompt", () => {
+    const path = join(temp(), "hc-notes.jsonl");
+    const say = (text: string) => ({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text }] } });
+    const human = { kind: "human" };
+    writeFileSync(path, `${[
+      { type: "user", timestamp: "2026-11-17T03:04:00.000Z", origin: human, permissionMode: "bypassPermissions", message: { role: "user", content: "<hc>t3m hub-repair-hc exited (signal 1). Read: hc read t3m</hc>" } },
+      say("reading t3m"),
+      { type: "attachment", timestamp: "2026-11-17T03:05:00.000Z", attachment: { type: "queued_command", commandMode: "prompt", prompt: "<hc from=\"t2q try2-cmd\">done: /tmp/x.md</hc>", origin: human } },
+      say("noted"),
+      // the person quoting a note, with words of their own, is still their prompt
+      { type: "user", timestamp: "2026-11-17T03:06:00.000Z", origin: human, permissionMode: "bypassPermissions", message: { role: "user", content: "<hc>t3m exited</hc> why this format?" } },
+    ].map((entry) => JSON.stringify(entry)).join("\n")}\n`);
+    // any agent's prompt that is only a note, as a codex worker's task from its lead
+    const codex: ConversationTurn[] = [
+      { role: "user", ts: null, parts: [{ kind: "text", text: "<hc from=\"t45 lead\" reach=\"hc send t45 when done or stuck\">\nReview x.rs\n</hc>" }] },
+      // a report that quotes a note is still one note; two notes with words between them are not
+      { role: "user", ts: null, parts: [{ kind: "text", text: "<hc from=\"t7 review\">The prompt was <hc>hello</hc></hc>" }] },
+      { role: "user", ts: null, parts: [{ kind: "text", text: "<hc>a</hc> and <hc>b</hc>" }] },
+      // hc types its own notes on children at once as one paste, a line each: one notice each
+      { role: "user", ts: null, parts: [{ kind: "text", text: "<hc>t3 exited (signal 1)</hc>\n<hc>t4 is blocked (waiting)</hc>" }] },
+      // hc types a report as it is: one that closes its note and opens another with a sender is no batch of notes
+      { role: "user", ts: null, parts: [{ kind: "text", text: "<hc from=\"t7 review\">Example: </hc>\n<hc from=\"t4 docs\">done</hc>" }] },
+      { role: "user", ts: null, parts: [{ kind: "text", text: "<hc from=\"t7 review\">see <hc>hello</hc bogus></hc>" }] },
+    ];
+    const turns = withHcNotes([...transcriptPage("claude-transcript", path).turns, ...codex]);
+    expect(turns.map((turn) => turn.parts.map((part) => part.kind === "notice" ? `${part.source}|${part.text}` : part.kind === "text" ? part.text : part.kind).join(" "))).toEqual([
+      "hc|t3m hub-repair-hc exited (signal 1). Read: hc read t3m", "reading t3m", "peer:t2q try2-cmd|done: /tmp/x.md", "noted", "<hc>t3m exited</hc> why this format?",
+      "peer:t45 lead|Review x.rs", "peer:t7 review|The prompt was <hc>hello</hc>", "<hc>a</hc> and <hc>b</hc>",
+      "hc|t3 exited (signal 1)", "hc|t4 is blocked (waiting)", "<hc from=\"t7 review\">Example: </hc>\n<hc from=\"t4 docs\">done</hc>", "peer:t7 review|see <hc>hello</hc bogus>",
     ]);
   });
 

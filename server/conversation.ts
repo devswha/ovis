@@ -47,13 +47,13 @@ import { AmbiguousClaudeStore, claudeAttachSession, claudeProcessSession, claude
 import { coreSocket } from "./herdr-core/discovery.ts";
 import { coreSocketPath } from "./herdr-core/runtime.ts";
 import { capabilities } from "./runtime/capabilities.ts";
-import { forgetGjcPane, forgetGjcState, gjcPidUnderShell, gjcTranscriptFileForPane, isGjcProcess, storeRelative } from "./gjc-runtime.ts";
-import { isOmoProcess, omoProcessIdentity, omoSessionForPane, processEnviron } from "./omo.ts";
+import { forgetGjcPane, forgetGjcState, gjcPidUnderShell, gjcTranscriptFileForPane, isGjcProcess, recentProcessTable, storeRelative } from "./gjc-runtime.ts";
+import { isOmoProcess, omoProcessIdentity, omoSessionForPane, processEnviron, processInfo as omoPaneProcessInfo, withOmoDescendants, type ProcessInfo as OmoProcessInfo } from "./omo.ts";
 import { processAlive, processStartedAtAsync } from "./process-start.ts";
 import { ompBlobStore, ompHeldOpen, ompPaneRoute, ompRouteOwns, ompRouteStore, ompRouteTranscript } from "./omp.ts";
 import { forgetOpencodeRead, forgetOpencodeState, OPENCODE_IMAGE_REF, opencodeConversation, opencodeDatabasePath, opencodeFreshSession, opencodeImage, opencodeReadKey, opencodeSessionId, opencodeToolOutput } from "./opencode.ts";
 import { piTranscriptPath, unwrittenSession } from "./pi.ts";
-import { cmdTranscriptPath } from "./cmd.ts";
+import { cmdModelCatalogPath, cmdTranscriptPath } from "./cmd.ts";
 import { defaultDevinDbPath, DevinHistoryUnavailable, devinConversation, forgetDevinState } from "./devin.ts";
 import { forgetGrokState, GROK_IMAGE_REF, grokImage, grokProjection, grokToolOutput, parseGrokTranscript, GrokUnavailable } from "./grok.ts";
 import { resolveGrokStore } from "./grok-store.ts";
@@ -71,11 +71,12 @@ import { forgetAllPiIndexes, forgetPiIndex, piAbandonedTurns, piBranchRecords, p
 import { COPILOT_IMAGE_REF, copilotImage, copilotOffsetOutput, copilotOutput, copilotRootRecord, parseCopilotTranscript } from "./copilot.ts";
 import { copilotApiTranscript, copilotExplicitResume, copilotHandoffSession, copilotProcessSession, copilotTranscriptFile, copilotUnwrittenSession, openCopilotFile, readCopilotProcessSession } from "./copilot-store.ts";
 import { forgetCopilotForeground, readCopilotForeground } from "./copilot-foreground.ts";
-import { claudeSetting, parseConversationMetadata } from "./conversation-metadata.ts";
+import { claudeSetting, type MetadataFold, parseConversationMetadata } from "./conversation-metadata.ts";
+import { catalogVersion, piCatalogVersion } from "./pi-models.ts";
 import { answerVersion, bindFile, boundSteps, checkBoundFile, ConversationNotStarted, ConversationReadPending, ConversationUnavailable, copilotRecoverable, type FileIdentity, openBound, readBound, type ConversationPage, HistoryChanged, type RecognizedConversation, type StreamSource, TRANSCRIPT_WINDOW_BYTES } from "./conversation-shared.ts";
 import { forgetHermesTranscriptState, hermesConversationPage, hermesToolOutput, hermesTranscriptForPane } from "./hermes.ts";
 
-import { createOmpTranscriptParser, isContextClear, MAX_TURNS, omoTaskResults, parseOmpTranscript, PI_IMAGE_REF, PI_PROMPT_IMAGE_REF, piImageBlock, piMessage, piNotice, piPromptImages, piResults, type TranscriptParser } from "./transcript-records.ts";
+import { createOmpTranscriptParser, isContextClear, MAX_TURNS, omoTaskResults, parseOmpTranscript, PI_IMAGE_REF, PI_PROMPT_IMAGE_REF, piImageBlock, piMessage, piNotice, piPromptImages, piResults, type TranscriptParser, withHcNotes } from "./transcript-records.ts";
 import { skillPromptMessage } from "./skill-activity.ts";
 import { CLAUDE_IMAGE_REF, claudeImageType, claudeResultText, createClaudeTranscriptParser, entryHostToolResults, isHostHandoff, parseClaudeTranscript, type TranscriptEntry } from "./claude-transcript.ts";
 import { forgetSubagents, lineNotifications, subagentDetails, type SubagentDetail } from "./claude-subagents.ts";
@@ -880,7 +881,10 @@ interface SettledTurns {
   noticed: Set<string>;
   inherited: Map<string, string>;
   observedEnd: number;
+  fold: MetadataFold;
   piAgentDir?: string | null;
+  /** the version of the catalogs the windows were resolved in (pi's agent dir, Command Code's catalog) */
+  catalogs?: string;
 }
 const settledTurns = new Map<string, SettledTurns>();
 
@@ -1076,7 +1080,9 @@ function turnBlobs(stream: TranscriptStream, source: StreamSource): string | nul
   return source === "omp-transcript" && live !== undefined ? ompBlobStore(live) : null;
 }
 
-type IncrementalSource = "codex-transcript" | "omp-transcript" | "omo-transcript" | "gjc-transcript" | "claude-transcript";
+const INCREMENTAL_SOURCES = ["codex-transcript", "omp-transcript", "omo-transcript", "gjc-transcript", "claude-transcript", "pi-transcript", "cmd-transcript"] as const;
+type IncrementalSource = typeof INCREMENTAL_SOURCES[number];
+const incremental = (source: RecognizedConversation["source"]): source is IncrementalSource => (INCREMENTAL_SOURCES as readonly string[]).includes(source);
 
 interface LiveTranscriptTurn {
   source: IncrementalSource;
@@ -1089,17 +1095,22 @@ interface LiveTranscriptTurn {
   contentHash?: string;
   parser: TranscriptParser;
   metadata: ConversationMetadata;
+  fold: MetadataFold;
+  /** the catalogs a pi window was looked up in: another dir, or an edited catalog, answers another window */
+  piAgentDir?: string | null;
+  catalogs?: string;
   subagents?: { ids: Set<string>; details: Map<string, SubagentDetail> };
 }
 const liveTranscriptTurns = new Map<string, LiveTranscriptTurn>();
 const LIVE_TURN_ENTRIES = 8;
 const LIVE_TURN_BYTES = 2 * TRANSCRIPT_WINDOW_BYTES;
-const liveTurnBudget = (source: IncrementalSource) => source === "omo-transcript" || source === "gjc-transcript" ? "omo-gjc" : "codex-omp-claude";
+const liveTurnBudget = (source: IncrementalSource) => source === "omo-transcript" || source === "gjc-transcript" ? "omo-gjc"
+  : source === "pi-transcript" || source === "cmd-transcript" ? "pi-cmd" : "codex-omp-claude";
 
 function incrementalLiveTurn(path: string, stream: TranscriptStream, source: IncrementalSource, start: number, before: SettledTurns): { turns: ConversationTurn[]; metadata: ConversationMetadata } {
   let cached = liveTranscriptTurns.get(path);
   if (cached && (cached.source !== source || cached.id !== stream.id || cached.start !== start
-    || cached.pageStart !== before.start || cached.prefixBoundary !== before.tail || cached.scanned > stream.length
+    || cached.pageStart !== before.start || cached.prefixBoundary !== before.tail || cached.piAgentDir !== before.piAgentDir || cached.catalogs !== before.catalogs || cached.scanned > stream.length
     || bytesBefore(stream, cached.scanned) !== cached.boundary)) cached = undefined;
 
   let details: Map<string, SubagentDetail> | undefined;
@@ -1131,7 +1142,7 @@ function incrementalLiveTurn(path: string, stream: TranscriptStream, source: Inc
       : source === "claude-transcript" ? createClaudeTranscriptParser({ subagents: subagents!.details, noticed: new Set(before.noticed) })
       : createOmpTranscriptParser(ompReading(source, path, new Map(before.taskTitles)));
     cached = { source, id: stream.id, start, pageStart: before.start, prefixBoundary: before.tail, scanned: start,
-      boundary: bytesBefore(stream, start), parser, metadata: before.metadata, subagents };
+      boundary: bytesBefore(stream, start), parser, metadata: before.metadata, fold: { ...before.fold }, piAgentDir: before.piAgentDir, catalogs: before.catalogs, subagents };
   }
   const bytes = currentBytes ? currentBytes.subarray(cached.scanned - start) : readStream(stream, cached.scanned, stream.length);
   const complete = bytes.lastIndexOf(0x0a) + 1;
@@ -1149,7 +1160,7 @@ function incrementalLiveTurn(path: string, stream: TranscriptStream, source: Inc
   }
   if (complete > 0) {
     cached.parser.write(text);
-    cached.metadata = parseConversationMetadata(text, source, cached.metadata);
+    cached.metadata = parseConversationMetadata(text, source, cached.metadata, cached.piAgentDir, cached.fold);
     cached.scanned += complete;
     cached.boundary = bytesBefore(stream, cached.scanned);
   }
@@ -1165,7 +1176,7 @@ function incrementalLiveTurn(path: string, stream: TranscriptStream, source: Inc
     entries -= 1;
     retained -= turn.scanned - turn.start;
   }
-  return { turns: cached.parser.snapshot(tail), metadata: parseConversationMetadata(tail, source, cached.metadata) };
+  return { turns: cached.parser.snapshot(tail), metadata: parseConversationMetadata(tail, source, cached.metadata, cached.piAgentDir, { ...cached.fold }) };
 }
 
 function metadataHead(path: string, stream: TranscriptStream, source: RecognizedConversation["source"], start: number): string {
@@ -1193,8 +1204,10 @@ function metadataHead(path: string, stream: TranscriptStream, source: Recognized
 function liveTurns(path: string, stream: TranscriptStream, source: RecognizedConversation["source"], start: number, starts: number[], piAgentDir?: string | null): { turns: ConversationTurn[]; metadata: ConversationMetadata } {
   const last = Math.max(start, starts[starts.length - 1] ?? start);
   const key = `${path}\0${start}`;
+  const catalogs = source === "pi-transcript" && piAgentDir !== null ? piCatalogVersion(piAgentDir)
+    : source === "cmd-transcript" ? catalogVersion(cmdModelCatalogPath()) : undefined;
   let settled = settledTurns.get(key);
-  if (!settled || settled.id !== stream.id || settled.end > last || bytesBefore(stream, settled.end) !== settled.tail || settled.piAgentDir !== piAgentDir) {
+  if (!settled || settled.id !== stream.id || settled.end > last || bytesBefore(stream, settled.end) !== settled.tail || settled.piAgentDir !== piAgentDir || settled.catalogs !== catalogs) {
     const head = start > stream.floor ? metadataHead(path, stream, source, start) : "";
     let kept: SettledTurns | undefined;
     for (const [other, page] of settledTurns) {
@@ -1206,21 +1219,23 @@ function liveTurns(path: string, stream: TranscriptStream, source: RecognizedCon
       const to = Math.min(start, kept.observedEnd);
       if (to > from) parseTurns(source, path, readStream(stream, from, to).toString("utf8"), inherited, undefined, from);
     }
+    const fold: MetadataFold = { piProvider: null };
     settled = { source, id: stream.id, start, end: start, turns: [], metadata: parseConversationMetadata(`${head}
-`, source, undefined, piAgentDir), tail: bytesBefore(stream, start), taskTitles: new Map(inherited), noticed: new Set(), inherited, observedEnd: stream.length, piAgentDir };
+`, source, undefined, piAgentDir, fold), tail: bytesBefore(stream, start), taskTitles: new Map(inherited), noticed: new Set(), inherited, observedEnd: stream.length, piAgentDir, catalogs, fold };
   }
   if (settled.end < last) {
     const text = readStream(stream, settled.end, last).toString("utf8");
-    settled = { ...settled, end: last, turns: [...settled.turns, ...parseTurns(source, path, text, settled.taskTitles, settled.noticed, settled.end)], metadata: parseConversationMetadata(text, source, settled.metadata, piAgentDir), tail: bytesBefore(stream, last) };
+    const fold = { ...settled.fold };
+    settled = { ...settled, end: last, turns: [...settled.turns, ...parseTurns(source, path, text, settled.taskTitles, settled.noticed, settled.end)], metadata: parseConversationMetadata(text, source, settled.metadata, piAgentDir, fold), tail: bytesBefore(stream, last), fold };
   }
   settled.observedEnd = stream.length;
   rememberPage(settledTurns, key, settled, 8);
-  if (source === "codex-transcript" || source === "omp-transcript" || source === "omo-transcript" || source === "gjc-transcript" || source === "claude-transcript") {
+  if (incremental(source)) {
     const live = incrementalLiveTurn(path, stream, source, last, settled);
     return { turns: [...settled.turns, ...live.turns], metadata: live.metadata };
   }
   const text = readStream(stream, last, stream.length).toString("utf8");
-  return { turns: [...settled.turns, ...parseTurns(source, path, text, new Map(settled.taskTitles), new Set(settled.noticed), last)], metadata: parseConversationMetadata(text, source, settled.metadata, piAgentDir) };
+  return { turns: [...settled.turns, ...parseTurns(source, path, text, new Map(settled.taskTitles), new Set(settled.noticed), last)], metadata: parseConversationMetadata(text, source, settled.metadata, piAgentDir, { ...settled.fold }) };
 }
 
 /** Retention diagnostics only: counts/budget adherence, never transcript contents. */
@@ -1233,7 +1248,7 @@ export function piPageCacheUsage(): { pages: number; settled: number; withinBudg
 /** Retention diagnostics only: the live tasks folded between reads, by path, never their contents. */
 export function liveTurnCacheUsage(): { paths: string[]; withinBudget: boolean } {
   const turns = [...liveTranscriptTurns.values()];
-  const withinBudget = (["codex-omp-claude", "omo-gjc"] as const).every((name) => {
+  const withinBudget = (["codex-omp-claude", "omo-gjc", "pi-cmd"] as const).every((name) => {
     const budget = turns.filter((turn) => liveTurnBudget(turn.source) === name);
     return budget.length <= LIVE_TURN_ENTRIES && budget.reduce((sum, turn) => sum + turn.scanned - turn.start, 0) <= LIVE_TURN_BYTES;
   });
@@ -1346,10 +1361,10 @@ type KnownProcesses = ProcessInfo | null | undefined;
 export async function paneRunsOmo(paneId: string, known?: KnownProcesses): Promise<boolean> {
   // pane.process_info wants `pane_id`; given `target` herdr answers for the
   // FOCUSED pane instead of erroring (live-verified 2026-09-21).
-  const info = known !== undefined ? { process_info: known ?? undefined } : await herdrRpc<{ process_info?: { foreground_processes?: { pid?: unknown; argv?: unknown; cwd?: unknown }[] } }>(
-    "pane.process_info",
-    { pane_id: paneId },
-  ).catch(() => null);
+  // on Windows herdr names only the pane's shell, in a supplied list too: the OmO below it is added (withOmoDescendants)
+  const supplied = known === undefined ? undefined : { process_info: known ?? undefined } as OmoProcessInfo;
+  const info: { process_info?: { foreground_processes?: { pid?: unknown; argv?: unknown; cwd?: unknown }[] } } | null = supplied === undefined ? await omoPaneProcessInfo(paneId)
+    : process.platform === "win32" && typeof known?.shell_pid === "number" ? withOmoDescendants(supplied, await recentProcessTable(), processAlive) : supplied;
   const home = userHome();
   return (info?.process_info?.foreground_processes ?? []).some((process) =>
     omoProcessIdentity({
@@ -2106,8 +2121,13 @@ async function bottomViewport(paneId: string): Promise<string> {
   return after?.offset_from_bottom === 0 && after.max_offset_from_bottom === before.max_offset_from_bottom ? text : "";
 }
 
-/** Read-only, same-user files only. */
-export async function paneConversation(paneId: string, codexHome?: string, page: ConversationPage = {}, devinDbPath?: string, opencodeDb?: string, hermesHome?: string, grokHome?: string, museData?: string): Promise<RecognizedConversation> {
+/** Read-only, same-user files only. The notes hc typed into the pane read as notices (withHcNotes). */
+export async function paneConversation(...args: Parameters<typeof readPaneConversation>): Promise<RecognizedConversation> {
+  const conversation = await readPaneConversation(...args);
+  return { ...conversation, turns: withHcNotes(conversation.turns) };
+}
+
+async function readPaneConversation(paneId: string, codexHome?: string, page: ConversationPage = {}, devinDbPath?: string, opencodeDb?: string, hermesHome?: string, grokHome?: string, museData?: string): Promise<RecognizedConversation> {
   const socket = herdrSocketPath();
   const snapshot = await sessionSnapshot();
   let resolved: NativeTranscript;
