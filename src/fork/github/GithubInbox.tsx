@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { ArrowLeft, Check, ChevronRight, CircleAlert, CircleCheck, CircleDot, CircleX, Eye, FolderGit2, GitPullRequestDraft, ListFilter, RefreshCw, Search, X } from "lucide-react";
+import { ArrowLeft, Check, ChevronRight, CircleAlert, CircleCheck, CircleDot, CircleX, Eye, FolderGit2, Layers3, GitPullRequestDraft, ListFilter, RefreshCw, Search, X } from "lucide-react";
 
 import { RowMenu } from "../../components/RowMenu.tsx";
 
@@ -187,7 +187,7 @@ export function GithubInbox({ wide, watching, onOpened }: ViewProps) {
         <button type="button" className="fork-github-summary" aria-current={open?.url === pr.url ? "true" : undefined} title={pr.title} onClick={() => openPull(pr, !wide)}>
           <span className="fork-github-row-title" dir="auto">{pr.title}</span>
           {Mark !== null && <span className={`fork-github-row-mark is-${tone}`} role="img" aria-label={statuses[status]} title={statuses[status]}><Mark aria-hidden="true" /></span>}
-          <span className="fork-github-row-sub"><span title={pr.repository}>{pr.repository.split("/").pop()} #{pr.number}</span>{pr.author && <> · {pr.author}</>} · {ago(pr.updated_at)}{pr.updated_since_review && <> · <span className="fork-github-row-updated" title={t("New commits since your review")}>{t("New commits")}</span></>}</span>
+          <span className="fork-github-row-sub">{pr.stack && <span className="fork-github-row-stack" title={t("Stack")}><Layers3 aria-hidden="true" />{pr.stack.position}/{pr.stack.size}</span>}<span title={pr.repository}>{pr.repository.split("/").pop()} #{pr.number}</span>{pr.author && <> · {pr.author}</>} · {ago(pr.updated_at)}{pr.updated_since_review && <> · <span className="fork-github-row-updated" title={t("New commits since your review")}>{t("New commits")}</span></>}</span>
         </button>
       </li>;
     })}</ul>}

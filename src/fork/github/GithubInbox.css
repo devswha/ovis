@@ -250,3 +250,7 @@
 
 /* the status bar says who waits where it shows, as in the workspaces view: the foot then leaves it to the bar */
 .app:has(.status-bar) .fork-github-foot > .fork-foot-waiting { display: none; }
+
+/* a stacked pull request's place in its stack, 1 at the bottom: the sub line's one colored word */
+.fork-github-row-stack { display: inline-flex; align-items: center; gap: 2px; margin-inline-end: var(--space-1-5); color: var(--accent); font-variant-numeric: tabular-nums; }
+.fork-github-row-stack svg { width: 1em; height: 1em; flex: none; }
