@@ -9,6 +9,7 @@ import type { KeyInput, OverlayChoice, PasteInput, RunEffect, Seen, TextInput } 
 import type { Target } from "./focus.ts";
 import { charChords, chordId, keyChords } from "./keymap.ts";
 import { chooseEntry, labelled, type MenuEntry, movedCursor } from "./menu.ts";
+import { chosenAt, type Place, placeKey, pickerMatches, placeTarget } from "./picker.ts";
 
 /** A one-line text field of graphemes. `fresh`: still the suggested text, replaced by the first character typed. */
 export interface Field { readonly graphemes: readonly string[]; readonly cursor: number; readonly fresh: boolean; readonly original: string }
@@ -20,7 +21,8 @@ export type Overlay =
   | { readonly kind: "text"; readonly purpose: TextPurpose; readonly target: Target; readonly field: Field }
   /** `seen`: the terminals the close ends, as the screen showed them when the dialog opened */
   | { readonly kind: "confirm"; readonly purpose: "close_workspace"; readonly target: Target; readonly seen: readonly Seen[] }
-  | { readonly kind: "goto"; readonly field: Field }
+  /** the picker: the places it filters, and the chosen one's identity (`placeKey`; null: the best match) */
+  | { readonly kind: "goto"; readonly field: Field; readonly places: readonly Place[]; readonly chosen: string | null }
   /** `cursor`: the index of the entry Enter chooses */
   | { readonly kind: "menu"; readonly entries: readonly MenuEntry[]; readonly cursor: number };
 
@@ -131,6 +133,41 @@ function fieldInput<O extends Extract<Overlay, { field: Field }>>(overlay: O, in
 
 const run = (action: RunEffect["action"], target: Target | null, name: string | null): RunEffect => ({ type: "run", action, target, index: null, name });
 
+type Picker = Extract<Overlay, { kind: "goto" }>;
+
+/** The picker's matches for what is typed now, best first. */
+export function pickerList(overlay: Picker): Place[] {
+  return pickerMatches(overlay.places, overlay.field.graphemes.join(""));
+}
+
+/** The picker's answer to choosing its match `at`: closed, with focus moving there; kept open when there is no such match. */
+export function pickerChoice(overlay: Picker, at: number): OverlayAnswer {
+  const place = pickerList(overlay)[at];
+  return place === undefined ? { overlay, effects: [] } : { overlay: null, effects: [], choice: { kind: "select", target: placeTarget(place) } };
+}
+
+/** How far up or down the picker's arrows (and ctrl+p, ctrl+n) move its choice; 0 for any other key. */
+function pickerStep(event: KeyInput): number {
+  const plain = Object.keys(event.mods).length === 0;
+  const ctrl = Boolean(event.mods.ctrl) && !event.mods.alt && !event.mods.super && !event.mods.shift;
+  if ((plain && event.key === "ARROW_DOWN") || (ctrl && event.key === "N")) return 1;
+  if ((plain && event.key === "ARROW_UP") || (ctrl && event.key === "P")) return -1;
+  return 0;
+}
+
+/** The picker's answer to one input: Enter jumps to the chosen match; the arrows move the choice; typing filters anew. */
+function pickerInput(overlay: Picker, input: OverlayInput): OverlayAnswer {
+  const matches = pickerList(overlay);
+  const at = chosenAt(matches, overlay.chosen);
+  if (isEnter(input)) return pickerChoice(overlay, at);
+  const step = input.kind === "key" ? pickerStep(input.event) : 0;
+  if (step !== 0) return at < 0 ? { overlay, effects: [] } : { overlay: { ...overlay, chosen: placeKey(matches[(at + step + matches.length) % matches.length]!) }, effects: [] };
+  const answer = fieldInput(overlay, input, () => ({ overlay, effects: [] }));
+  const typed = answer.overlay !== null && answer.overlay.kind === "goto" ? answer.overlay : overlay;
+  const changed = typed.field.graphemes.join("") !== overlay.field.graphemes.join("");
+  return { overlay: changed ? { ...typed, chosen: null } : typed, effects: [] };
+}
+
 /** The menu's answer to choosing entry `at`: the cursor moved there and kept open, or closed with the choice. */
 export function menuChoice(overlay: Extract<Overlay, { kind: "menu" }>, at: number): OverlayAnswer {
   const chosen = chooseEntry(overlay.entries, at);
@@ -164,7 +201,7 @@ export const OVERLAYS: { readonly [K in Overlay["kind"]]: OverlayEntry<Extract<O
   goto: {
     closeKeys: ["esc"],
     target: () => null,
-    input: (overlay, input) => fieldInput(overlay, input, (query) => ({ overlay: null, effects: [run("goto", null, query)] })),
+    input: pickerInput,
   },
   menu: {
     closeKeys: ["esc"],

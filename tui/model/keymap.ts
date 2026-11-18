@@ -119,6 +119,12 @@ const FALLBACK_PREFIXES = ["ctrl+b", "ctrl+a", "ctrl+]", "ctrl+\\"] as const;
 /** detach when none of its keys can fire: herdr's default, then the next one no binding after the prefix and no prefix holds. */
 const FALLBACK_DETACH = ["prefix+q", "prefix+ctrl+q", "prefix+alt+q"] as const;
 
+/**
+ * herdr's tab and workspace moves that repeat in navigate mode without the prefix: the keys that run them after the prefix
+ * (or directly) run them there too, so a user steps through tabs as they step through panes.
+ */
+const NAVIGATE_REPEATS = ["next_tab", "previous_tab", "next_workspace", "previous_workspace"] as const satisfies readonly HerdrAction[];
+
 /** The keys that always leave an armed prefix (and navigate mode). */
 const CANCEL_KEYS = ["esc", "ctrl+["] as const;
 
@@ -371,6 +377,12 @@ export function buildKeymap(keys: unknown): Keymap {
       if (got !== null) bindings.push(got);
     }
     rows.push({ action: name, default: entries[0]!.default, mode: "navigate", source: "herdr", bindings });
+  }
+  // after the fixed keys and herdr's navigate keys, which keep a key both want (it still runs the move after the prefix)
+  for (const action of NAVIGATE_REPEATS) {
+    const unprefixed = (text: string) => text.replace(/^prefix\+/, "");
+    const bindings = held.get(action)!.flatMap((binding) => kept({ ...binding, text: unprefixed(binding.text), prefixed: false }, claim(modeKeys.navigate, action)) ?? []);
+    rows.push({ action, default: unprefixed(resolved.actions.find((entry) => entry.action === action)!.default), mode: "navigate", source: "herdr", bindings });
   }
   for (const { action, mode, keys: texts } of FIXED) {
     if (rows.some((row) => row.action === action && row.mode === mode)) continue;

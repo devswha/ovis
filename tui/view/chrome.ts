@@ -18,7 +18,8 @@ import { focused } from "../model/focus.ts";
 import { helpRows, modeBar, shownRefusals } from "../model/hints.ts";
 import type { KeymapNote } from "../model/keymap.ts";
 import type { MenuEntry } from "../model/menu.ts";
-import { type Field, type Overlay, OVERLAYS } from "../model/overlays.ts";
+import { type Field, type Overlay, OVERLAYS, pickerList } from "../model/overlays.ts";
+import { chosenAt, type Place } from "../model/picker.ts";
 import type { ModelState } from "../model/reduce.ts";
 import { STRINGS } from "../strings.ts";
 import { TUI_THEMES, type TuiColorRole, type TuiThemeMode } from "../theme.generated.ts";
@@ -689,12 +690,60 @@ function buildOverlays(width: number, height: number, state: ModelState, world: 
       return { overlays: [...overlays, confirm], input: "overlay" };
     }
     case "goto": {
-      const field = fieldOverlay("overlay:goto", centred(width, height, 64, 14), STRINGS.gotoTitle, STRINGS.gotoPromptHint, top.field, closeKeys, colors);
-      return { overlays: [...overlays, field.overlay], input: field.input };
+      const picker = pickerPart(width, height, top, world, closeKeys, colors);
+      return { overlays: [...overlays, picker.overlay], input: picker.input };
     }
     case "menu":
       return { overlays: [...overlays, menuPart(width, height, top, state, world, colors)], input: "overlay" };
   }
+}
+
+/** A place's state, as the sidebar marks it: a workspace's and a tab's roll-up, an agent's own. */
+function placeStatus(place: Place, world: CoreView): KnownStatus {
+  if (place.kind === "workspace") return knownStatus(world.workspaceGroups.flatMap((group) => [group, ...group.children]).find((row) => row.id === place.id)?.status);
+  if (place.kind === "tab") return knownStatus(world.tabStatuses.get(place.id));
+  return knownStatus(world.panes.get(place.id)?.status);
+}
+
+/**
+ * The picker: the text field on its first row, then the matches best first, a window of them around the chosen one; each
+ * row its state mark, what it is and its text, and a click target that chooses it (`menu:<index>`, as the menu's rows).
+ */
+function pickerPart(width: number, height: number, picker: Extract<Overlay, { kind: "goto" }>, world: CoreView, closeKeys: readonly string[], colors: Colors): { overlay: Part; input: Scene["input"] } {
+  const field = fieldOverlay("overlay:goto", centred(width, height, 64, 14), STRINGS.gotoTitle, STRINGS.gotoPromptHint, picker.field, closeKeys, colors);
+  const { rect } = field.overlay;
+  const matches = pickerList(picker);
+  const chosen = chosenAt(matches, picker.chosen);
+  const lines = matches.map((place) => ({ kind: STRINGS.menuPlaces[place.kind], text: place.text, status: placeStatus(place, world) }));
+  const overlay: Part = {
+    ...field.overlay,
+    draw(canvas) {
+      field.overlay.draw(canvas);
+      const inner = { x: rect.x + 1, y: rect.y + 3, width: Math.max(0, rect.width - 2), height: Math.max(0, rect.height - 4) };
+      if (inner.width <= 0 || inner.height <= 0) return;
+      const end = inner.x + inner.width;
+      if (lines.length === 0) {
+        printFit(canvas, inner.x + 1, inner.y, STRINGS.pickerNoMatch, Math.max(0, inner.width - 2), canvas.style({ fg: colors.textDim, bg: colors.bgElevated }), true);
+        return;
+      }
+      const start = windowStart(lines.length, inner.height, chosen);
+      lines.slice(start, start + inner.height).forEach((line, at) => {
+        const index = start + at;
+        const y = inner.y + at;
+        const picked = index === chosen;
+        const bg = picked ? colors.bgHover : colors.bgElevated;
+        const text = canvas.style({ fg: picked ? colors.textStrong : colors.text, bg, flags: picked ? STYLE_BOLD : 0 });
+        fillSpan(canvas, inner.x, y, inner.width, text);
+        let col = printFit(canvas, inner.x, y, picked ? ">" : " ", 1, canvas.style({ fg: colors.accent, bg, flags: STYLE_BOLD }));
+        const look = STATE_LOOK[line.status];
+        col = printFit(canvas, col, y, `${look.glyph} `, end - col, canvas.style({ fg: colors[look.role], bg, flags: STYLE_BOLD }));
+        col = printFit(canvas, col, y, `${line.kind} `, end - col, canvas.style({ fg: colors.textDim, bg }));
+        printFit(canvas, col, y, line.text, end - col, text, true);
+        canvas.hit({ x: inner.x, y, width: inner.width, height: 1 }, `menu:${index}`);
+      });
+    },
+  };
+  return { overlay, input: field.input };
 }
 
 /** One menu entry as drawn: its key (blank for none), what it is, and its state mark for a place that has one. */

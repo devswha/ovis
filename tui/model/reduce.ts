@@ -9,13 +9,15 @@
  */
 import type { HerdrAction } from "../../shared/herdr-keys.ts";
 import type { InputEvent } from "../input/decode.ts";
+import { NARROW_COLUMNS } from "../view/geometry.ts";
 import { CATALOGUE_BY_ID } from "./catalogue.ts";
 import { clearDeadline, type Deadlines, NO_DEADLINES, NOTICE_SHOW_MS, NOTICES_KEPT, setDeadline } from "./deadlines.ts";
 import type { Effect, KeyInput, MouseInput, OverlayChoice, PaneInput, PasteInput, Seen, TextInput } from "./effects.ts";
 import { EMPTY_WORLD, exists, type Focus, focused, focusOn, NO_FOCUS, nextFocus, type PaneNode, type Target, type World } from "./focus.ts";
 import { boundIn, buildKeymap, charChords, isPrefix, type KeyAction, type Keymap, keyChords, unlockChords } from "./keymap.ts";
 import { keptCursor, menuEntries } from "./menu.ts";
-import { field, menuChoice, type Overlay, type OverlayAnswer, overlayInput, type OverlayInput, overlayTarget } from "./overlays.ts";
+import { field, menuChoice, type Overlay, type OverlayAnswer, overlayInput, type OverlayInput, overlayTarget, pickerChoice } from "./overlays.ts";
+import { pickerPlaces, placeKey } from "./picker.ts";
 import { restoredFocus, type SavedView, type ViewProblem } from "./view-file.ts";
 
 export type ModeState =
@@ -73,7 +75,7 @@ export type ScreenEvent =
   | { readonly type: "notice"; readonly code: string; readonly data?: Readonly<Record<string, string | number>>; readonly calm?: boolean; readonly at: number }
   /** focus the target once the world shows it (outside tab `away`): what a layout write made or moved; any other focus move drops it */
   | { readonly type: "follow"; readonly target: Target; readonly away: string | null; readonly at: number }
-  /** the top overlay's entry `entry` was clicked: the menu chooses it as Enter on it would */
+  /** the top overlay's entry `entry` was clicked: the menu, or the picker, chooses it as Enter on it would */
   | { readonly type: "choose"; readonly entry: number; readonly at: number }
   /** the view an earlier run kept for this core (null: none), or why its file was not read */
   | { readonly type: "restore"; readonly view: SavedView | null; readonly problem: ViewProblem | null; readonly at: number };
@@ -164,6 +166,7 @@ export function reduce(state: ModelState, event: ModelEvent): Step {
     case "choose": {
       const top = acc.s.overlays.at(-1);
       if (top?.kind === "menu") answerOverlay(acc, menuChoice(top, event.entry), event.at);
+      else if (top?.kind === "goto") answerOverlay(acc, pickerChoice(top, event.entry), event.at);
       break;
     }
     case "restore":
@@ -434,13 +437,17 @@ function applyWorld(acc: Acc, world: World, at: number): void {
   refreshMenus(acc);
 }
 
-/** An open menu lists what exists now, its cursor kept on the entry it was on. */
+/** An open menu or picker lists what exists now: the menu's cursor kept on its entry, the picker's choice while it exists. */
 function refreshMenus(acc: Acc): void {
   const { world, focus, overlays } = acc.s;
-  if (!overlays.some((overlay) => overlay.kind === "menu")) return;
+  if (!overlays.some((overlay) => overlay.kind === "menu" || overlay.kind === "goto")) return;
   acc.s = {
     ...acc.s,
     overlays: overlays.map((overlay) => {
+      if (overlay.kind === "goto") {
+        const places = pickerPlaces(world);
+        return { ...overlay, places, chosen: places.some((place) => placeKey(place) === overlay.chosen) ? overlay.chosen : null };
+      }
       if (overlay.kind !== "menu") return overlay;
       const entries = menuEntries(world, focus);
       return { ...overlay, entries, cursor: keptCursor(overlay.entries, overlay.cursor, entries) };
@@ -466,7 +473,19 @@ function follow(acc: Acc): void {
 function select(acc: Acc, target: Target, at: number): void {
   const focus = focusOn(acc.s.world, acc.s.focus, target);
   if (focus === null) notice(acc, "target_gone", { [target.kind]: target.id }, at);
-  else acc.s = { ...acc.s, focus, following: null };
+  else focusTo(acc, focus);
+}
+
+/**
+ * Focus moved by the user. In a tab whose shared zoom covers the pane now shown, the zoom follows it with one layout write
+ * (herdr: a zoomed tab shows its focused pane), so the keys that move focus keep working while a pane is zoomed. Not on a
+ * narrow screen: it shows the focused pane alone itself and writes no layout.
+ */
+function focusTo(acc: Acc, focus: Focus): void {
+  acc.s = { ...acc.s, focus, following: null };
+  const { tab, pane } = focused(acc.s.world, focus);
+  if (pane === null || tab?.zoomed === undefined || tab.zoomed === pane.id || acc.s.host.cols <= NARROW_COLUMNS) return;
+  acc.effects.push({ type: "run", action: "zoom_follow", target: { kind: "pane", id: pane.id }, index: null, name: null });
 }
 
 function setMode(acc: Acc, mode: ModeState): void {
@@ -476,7 +495,7 @@ function setMode(acc: Acc, mode: ModeState): void {
 function moveFocus(acc: Acc, target: Target | undefined): void {
   if (target === undefined) return;
   const focus = focusOn(acc.s.world, acc.s.focus, target);
-  if (focus !== null) acc.s = { ...acc.s, focus, following: null };
+  if (focus !== null) focusTo(acc, focus);
 }
 
 /** The item `step` places from `id` in `list`, wrapping round. */
@@ -593,7 +612,7 @@ function runHerdr(acc: Acc, action: HerdrAction, index: number | null, at: numbe
       pushOverlay({ kind: "help" });
       return;
     case "goto":
-      pushOverlay({ kind: "goto", field: field("") });
+      pushOverlay({ kind: "goto", field: field(""), places: pickerPlaces(s.world), chosen: null });
       return;
     case "workspace_picker":
       setMode(acc, { name: "navigate", preview: shown.workspace?.id ?? null });

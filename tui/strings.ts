@@ -84,6 +84,7 @@ export const STRINGS = {
   confirmCloseWorkspace: (name: string): string => `Close workspace ${name}? [y/N]`,
   gotoTitle: "Go to",
   gotoPromptHint: "Type to filter · Enter to jump",
+  pickerNoMatch: "No matches",
   menuTitle: "Menu",
   /** at the right of the narrow screen's header, which opens the menu */
   menuMark: "[menu]",

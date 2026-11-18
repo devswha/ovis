@@ -300,14 +300,19 @@ export class CoreWorld {
         workspaces: snapshot.workspaces.map((workspace) => ({
           id: workspace.workspace_id,
           name: workspace.label,
-          tabs: snapshot.tabs.filter((tab) => tab.workspace_id === workspace.workspace_id).map((tab) => ({
-            id: tab.tab_id,
-            name: tab.label,
-            panes: (order.get(tab.tab_id) ?? []).map((id) => {
-              const created = this.records.get(id)?.["created_ms"];
-              return { id, name: panes.get(id)?.label ?? "", ...(typeof created === "number" ? { created } : {}) };
-            }),
-          })),
+          tabs: snapshot.tabs.filter((tab) => tab.workspace_id === workspace.workspace_id).map((tab) => {
+            const zoomed = tabs.get(tab.tab_id)?.zoomed ?? null;
+            return {
+              id: tab.tab_id,
+              name: tab.label,
+              panes: (order.get(tab.tab_id) ?? []).map((id) => {
+                const created = this.records.get(id)?.["created_ms"];
+                const agent = panes.get(id)?.agent ?? null;
+                return { id, name: panes.get(id)?.label ?? "", ...(typeof created === "number" ? { created } : {}), ...(agent ? { agent } : {}) };
+              }),
+              ...(zoomed === null ? {} : { zoomed }),
+            };
+          }),
         })),
         agents: agents.map((agent) => agent.paneId),
       },

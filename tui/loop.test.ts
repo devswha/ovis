@@ -638,6 +638,21 @@ const RESTING: [state: string, enter: () => Promise<Resting>][] = [
     expect(run.loop.model().mode.name).toBe("navigate");
     return { run };
   }],
+  ["navigate mode in a zoomed tab, the zoom moved after the focus", async () => {
+    const run = await start({ core: oneTab(3, true) });
+    await run.live();
+    await run.keys("ctrl+b,w,l");
+    await run.live();
+    expect([run.loop.model().mode.name, run.loop.model().world.workspaces[0]?.tabs[0]?.zoomed]).toEqual(["navigate", "t2"]);
+    return { run };
+  }],
+  ["the picker open with a query typed", async () => {
+    const run = await start({ fixture: demo });
+    await run.live();
+    await run.keys("ctrl+b,g,o");
+    expect(run.loop.model().overlays.map((overlay) => overlay.kind)).toEqual(["goto"]);
+    return { run };
+  }],
   ["resize mode", async () => {
     const run = await start({ fixture: demo });
     await run.live();

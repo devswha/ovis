@@ -3,9 +3,13 @@
  * Focus is the screen's own: herdr-core has none, and it is never written anywhere shared.
  */
 
-/** `created`: when the core made the pane's terminal (its `created_ms`), so a later terminal at the same address is told apart */
-export interface PaneNode { readonly id: string; readonly name: string; readonly created?: number }
-export interface TabNode { readonly id: string; readonly name: string; readonly panes: readonly PaneNode[] }
+/**
+ * `created`: when the core made the pane's terminal (its `created_ms`), so a later terminal at the same address is told apart;
+ * `agent`: the name of the agent it runs, when it runs one
+ */
+export interface PaneNode { readonly id: string; readonly name: string; readonly created?: number; readonly agent?: string }
+/** `zoomed`: the pane the tab's zoom shows alone (the layout document's, shared with the browser); none when not zoomed */
+export interface TabNode { readonly id: string; readonly name: string; readonly panes: readonly PaneNode[]; readonly zoomed?: string }
 export interface WorkspaceNode { readonly id: string; readonly name: string; readonly tabs: readonly TabNode[] }
 /** `agents`: the panes that run an agent, in the sidebar's order (shared/attention.ts); none when not told */
 export interface World { readonly workspaces: readonly WorkspaceNode[]; readonly agents?: readonly string[] }
@@ -93,7 +97,8 @@ function pick<T extends { readonly id: string }>(before: readonly T[] | undefine
 /**
  * The focus after the world changed from `before` to `after`: what is still there stays; a closed pane
  * gives way to the previous pane when it is alive in that tab, else the next pane in tree order, else the
- * tab's first; the same for a closed tab (the tab holding the previous pane) and a closed workspace. Every
+ * tab's first; the same for a closed tab (the tab holding the previous pane) and a closed workspace. A tab whose shared
+ * zoom moved to another pane (someone else zoomed it) shows that pane, so the pane focused is the pane shown. Every
  * remembered tab and pane exists in `after`.
  */
 export function nextFocus(before: World, after: World, focus: Focus): Focus {
@@ -106,7 +111,8 @@ export function nextFocus(before: World, after: World, focus: Focus): Focus {
     const tab = pick(oldWorkspaces.get(workspace.id)?.tabs, workspace.tabs, own(focus.tabs, workspace.id), previousPath?.workspace.id === workspace.id ? previousPath.tab?.id : undefined);
     if (tab !== undefined) tabs.push([workspace.id, tab]);
     for (const node of workspace.tabs) {
-      const pane = pick(oldTabs.get(node.id)?.panes, node.panes, own(focus.panes, node.id), previousPath?.tab?.id === node.id ? previousPath.pane?.id : undefined);
+      const zoomMoved = node.zoomed !== undefined && node.zoomed !== oldTabs.get(node.id)?.zoomed && find(node.panes, node.zoomed) !== undefined;
+      const pane = zoomMoved ? node.zoomed : pick(oldTabs.get(node.id)?.panes, node.panes, own(focus.panes, node.id), previousPath?.tab?.id === node.id ? previousPath.pane?.id : undefined);
       if (pane !== undefined) panes.push([node.id, pane]);
     }
   }
