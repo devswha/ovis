@@ -159,6 +159,31 @@ class LocalError extends Error {
 /** The PC's own server gave no answer at all (it is down, restarting, or hung): not a refusal, which is a LocalError. */
 class AwayError extends Error {}
 
+/**
+ * What `add` reads of a code it asked for for the account that signed in (`x-ovis-expect-account`; docs/account.md,
+ * "A code made for an account"): the account the PC made it for, and the code's id. An Ovis from before that answers
+ * neither field.
+ */
+interface ForAccount { readonly expect_account?: string; readonly pairing?: { readonly id: string } }
+
+/**
+ * The refusals of a code that start none and leave the code pending as it was: the relay is off or not online, this PC
+ * is in an account by now, or it did not take the account's id.
+ */
+const NO_CODE_STARTED: ReadonlySet<string> = new Set(["relay_off", "relay_offline", "in_account", "invalid_account"]);
+
+/** Why a code made for the account that signed in ended before it ran out (POST /api/relay/offer/keep, `ended.why`), as `add` says it. */
+const CODE_ENDED: Readonly<Record<string, string>> = {
+  replaced: "another pairing code was made on this PC, which replaced it.",
+  cancelled: "it was taken back on this PC.",
+  revoked: "a device that held it was revoked on this PC.",
+  overused: "five devices paired with it, and none of them joined your account.",
+  guessed: "a wrong code was typed for it five times.",
+};
+
+/** What a machine profile answers a code with: it takes devices through its account (`machine_profile`), not by a code. */
+const onMachine = (error: unknown): boolean => error instanceof LocalError && error.code === "machine_profile";
+
 /** One call to the PC's own API; its error text when it refuses. */
 function localApi(options: LinkOptions) {
   const fetchImpl = options.fetch ?? fetch;
@@ -712,6 +737,8 @@ async function linkWithCode(options: LinkOptions, api: Api): Promise<number> {
   let asked = false;
   // the six-digit code the QR code last carried: only that pairing is taken back, not one started since
   let shown: string | null = null;
+  // a machine profile made no code: there is nothing to take back
+  let machine = false;
   try {
     for (;;) {
       asked = true;
@@ -721,11 +748,19 @@ async function linkWithCode(options: LinkOptions, api: Api): Promise<number> {
       // the offer comes whether the code did or not, since its QR code still pairs
       let code: { code: string; expires_at: string; server_id: string } | null = null;
       let refused = "";
-      try { code = await api<{ code: string; expires_at: string; server_id: string }>("POST", "/api/relay/code"); } catch (error) {
-        if (!(error instanceof LocalError)) throw error;
-        refused = error.message;
+      let offer: { url: string; expires_at: string };
+      try {
+        try { code = await api<{ code: string; expires_at: string; server_id: string }>("POST", "/api/relay/code"); } catch (error) {
+          if (!(error instanceof LocalError) || onMachine(error)) throw error;
+          refused = error.message;
+        }
+        offer = await api<{ url: string; expires_at: string }>("POST", "/api/relay/offer");
+      } catch (error) {
+        if (!onMachine(error)) throw error;
+        machine = true;
+        out(`This PC runs the machine profile, which takes devices through its Ovis account, not with a code. Run ${cli(options)} add to add this machine to your Ovis account; every device of that account can then use it.\n`);
+        return 1;
       }
-      const offer = await api<{ url: string; expires_at: string }>("POST", "/api/relay/offer");
       const decoded = decodeOffer(offer.url);
       if (decoded === null) throw new LocalError("The relay's pairing link did not parse.");
       shown = decoded.code ?? null;
@@ -747,7 +782,7 @@ async function linkWithCode(options: LinkOptions, api: Api): Promise<number> {
   } catch (error) {
     if (!signal.aborted) throw error;
   } finally {
-    if (asked) await takeBack(api, out, shown);
+    if (asked && !machine) await takeBack(api, out, shown);
   }
   return 0;
 }
@@ -892,6 +927,14 @@ interface Joining {
  * the run ends; three codes at most; and never shown again once a device paired. It ends well only once this PC is
  * in the account that signed in, with that account's other devices in, and names the device that added it.
  *
+ * The code is asked for for the account that signed in (`x-ovis-expect-account`; docs/account.md, "A code made for an
+ * account"), and is taken only when the PC's answer repeats that account. A device that pairs with such a code is in
+ * no list until it linked itself into that account (one of another account, or signed in to none, is turned away),
+ * and the PC ends the code itself once it is in the account: so a device that shows in the list did not come by that
+ * code, and ends nothing. The code's id tells, at every look, whether it is still the pending one; one that ended
+ * otherwise ends the run, which says why. An Ovis from before this makes a code for whoever holds it: the command says
+ * so once, and keeps what follows.
+ *
  * The code admits whoever holds it, through the relay or at this PC's own address, so every device that came since
  * the first code is one it let in. One whose row names the account that signed in here is taken as that account's:
  * it is not asked about. That is the device's own word, not a proof: the first member of an account on a PC links
@@ -929,6 +972,13 @@ async function addByQr(options: LinkOptions, api: Api, joining: Joining): Promis
   // a code is out that was not taken back yet; `shown` is the six digits its QR code carries (linkWithCode)
   let live = false;
   let shown: string | null = null;
+  // this PC makes its codes for the account that signed in (`ForAccount`), and the id of the one out; `lost`: the id of
+  // one this PC no longer knew, which was said. `older`: an Ovis from before that, said once
+  let tied = false;
+  let pinned: string | null = null;
+  let lost: string | null = null;
+  let older = false;
+  const forAccount = { headers: { "x-ovis-expect-account": joining.signedIn } };
   let card: { readonly url: string; readonly typed: string | null; readonly refused: string; readonly serverId: string; readonly until: number } | null = null;
   // on the terminal's other screen, and the size it was last drawn for
   let screen = false;
@@ -987,26 +1037,57 @@ async function addByQr(options: LinkOptions, api: Api, joining: Joining): Promis
   };
   /** The code back from the PC, then off the screen: once a device got in (`used`), or however the run ends. */
   const end = async (used: boolean): Promise<void> => leave(await retract(), used);
+  /** A refusal that started no code (NO_CODE_STARTED), in a sentence of its own when this command sent what was refused. */
+  const refusal = (error: LocalError): LocalError => error.code !== "invalid_account" ? error
+    : new LocalError(`The Ovis on this PC did not take the id of the account you signed in to (${shortId(joining.signedIn)}) for its code (${error.message})`, error.status, error.code);
   const mint = async (): Promise<void> => {
+    const was = { live, shown };
     minted++;
     live = true;
     // until this round's offer names its code, the pending pairing is the one this round asks for
     shown = null;
-    let typed: { code: string; expires_at: string; server_id: string } | null = null;
+    pinned = null;
+    let typed: ({ code: string; expires_at: string; server_id: string } & ForAccount) | null = null;
     let refused = "";
-    try { typed = await api<{ code: string; expires_at: string; server_id: string }>("POST", "/api/relay/code"); } catch (error) {
+    try { typed = await api<{ code: string; expires_at: string; server_id: string } & ForAccount>("POST", "/api/relay/code", forAccount); } catch (error) {
       if (!(error instanceof LocalError)) throw error;
+      // nothing was started, and the code pending stays as it was: neither taken back here nor counted as this round's
+      if (NO_CODE_STARTED.has(error.code)) {
+        ({ live, shown } = was);
+        throw refusal(error);
+      }
       refused = error.message;
       // No typed code, so no new pairing either: the offer would carry whatever six digits are pending, which
       // Settings or `ovis pair` showed as digits to type. That pairing ends first, so the QR code carries digits of
       // its own. An Ovis from before this route keeps the pending one
       await api("POST", "/api/devices/pair/cancel").catch((failure: unknown) => { if (!(failure instanceof LocalError)) throw failure; });
     }
-    const offer = await api<{ url: string; expires_at: string }>("POST", "/api/relay/offer");
+    let offer: { url: string; expires_at: string } & ForAccount;
+    try { offer = await api<{ url: string; expires_at: string } & ForAccount>("POST", "/api/relay/offer", forAccount); } catch (error) {
+      throw error instanceof LocalError ? refusal(error) : error;
+    }
     const decoded = decodeOffer(offer.url);
     if (decoded === null) throw new LocalError("The relay's pairing link did not parse.");
     shown = decoded.code ?? null;
     offered = true;
+    // the QR code's code is the one the PC made for the account that signed in, or, from an Ovis before that, a code
+    // for whoever holds it
+    tied = offer.expect_account !== undefined;
+    for (const made of [offer, typed]) {
+      if (made?.expect_account !== undefined && made.expect_account !== joining.signedIn) {
+        throw new LocalError(`The Ovis on this PC made its code for another Ovis account (${shortId(made.expect_account)}) than the one you signed in to (${shortId(joining.signedIn)}), so it was taken back. Run ${cli(options)} add again.`);
+      }
+    }
+    pinned = offer.pairing?.id ?? null;
+    // a typed code that is not the QR code's own (the offer started a code of its own) works no more: it is not shown
+    if (typed !== null && tied && typed.pairing?.id !== pinned) {
+      typed = null;
+      refused = "it ended as the QR code was made";
+    }
+    if (!tied && !older) {
+      older = true;
+      say("The Ovis on this PC is older than this command: its code is not made for your account, so a device of any account, or of none, that reads it can pair. Update it in Settings → Updates on this PC to have the code made for your account.\n");
+    }
     card = { url: offer.url, typed: typed?.code ?? null, refused, serverId: typed?.server_id ?? decoded.server_id, until: Math.min(typed === null ? Infinity : Date.parse(typed.expires_at), Date.parse(offer.expires_at)) };
     draw();
   };
@@ -1109,9 +1190,9 @@ async function addByQr(options: LinkOptions, api: Api, joining: Joining): Promis
   // devices were removed on the person's answer with this PC in no account: what the run ends with once a look
   // taken after that removal still finds it in none
   let parting: string | null = null;
-  // the PC's own server did not answer the last look, or gave no code
+  // the PC's own server did not answer the last look, or gave no code: its relay is not online, or it is away
   let away = false;
-  let codeless = false;
+  let codeless: "relay" | "away" | null = null;
   // A question left the screen unanswered (other devices to ask about, this PC joined an account, or the device became
   // a member). The terminal hands a line over only when Enter is pressed: what was typed at that question and not
   // sent comes with the next Enter, under whatever is asked by then. So the next line handed over answers nothing,
@@ -1172,10 +1253,26 @@ async function addByQr(options: LinkOptions, api: Api, joining: Joining): Promis
         if (keys !== null && keys.failed !== undefined) throw keys.failed;
         account = joined.account;
         const fresh = list.filter((device) => !known.has(device.id));
-        // whoever came since the first code got in with it, through the relay or at this PC's own address
-        if (fresh.length > 0 || account !== null) {
+        // whoever came since the first code got in with it, through the relay or at this PC's own address. Not by a code
+        // made for the account that signed in: a device that pairs with it is in no list until this PC is in that account
+        if ((fresh.length > 0 && !tied) || account !== null) {
           over = true;
           await end(true);
+        }
+        // whether the code made for the account that signed in is still the pending one; it ends by itself as this PC
+        // joins an account, and runs out as the card says. Ended otherwise, no device may come by it any more
+        if (!over && live && pinned !== null) {
+          const id = pinned;
+          const read = await api<{ state: string; ended?: { why?: string } }>("POST", "/api/relay/offer/keep", { body: { id } });
+          const why = read.ended?.why ?? "";
+          if (read.state === "ended" && why !== "joined" && why !== "expired") {
+            live = false;
+            return await stop(`The code no longer works: ${CODE_ENDED[why] ?? "it ended on this PC."} Run ${cli(options)} add again.`);
+          }
+          if (read.state === "unknown" && lost !== id) {
+            lost = id;
+            say("The Ovis on this PC no longer knows the code shown (it restarted), so that code does not work. A new one comes when it would have run out.\n");
+          }
         }
         for (const device of fresh) {
           if (seen.has(device.id)) continue;
@@ -1348,16 +1445,22 @@ async function addByQr(options: LinkOptions, api: Api, joining: Joining): Promis
         if (minted >= MAX_CODES) return await stop(`Stopped after ${Math.max(1, Math.round((now() - startedAt) / 60_000))} minutes. Run ${cli(options)} add again.`);
         try {
           await mint();
-          codeless = false;
+          codeless = null;
         } catch (error) {
           // a server that is restarting, or whose relay is not back online yet (409), gives a code in a moment: asked
           // again with the next look, as one of the same three codes
           if (signal.aborted || !(error instanceof AwayError || (error instanceof LocalError && error.status === 409))) throw error;
           minted--;
-          away = true;
-          if (!codeless) {
-            codeless = true;
-            say("The Ovis on this PC gave no code just now (is it restarting?). Asking again…\n");
+          // this PC joined an account meanwhile (`in_account`): the next look finds it there, and asks for no code
+          if (!(error instanceof LocalError && error.code === "in_account")) {
+            away = true;
+            const why = error instanceof LocalError && (error.code === "relay_off" || error.code === "relay_offline") ? "relay" : "away";
+            if (codeless !== why) {
+              codeless = why;
+              say(why === "relay"
+                ? "This PC's Ovis relay is off or not online just now, so it gave no code. Asking again…\n"
+                : "The Ovis on this PC gave no code just now (is it restarting?). Asking again…\n");
+            }
           }
         }
       }
