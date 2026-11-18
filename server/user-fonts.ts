@@ -77,7 +77,7 @@ export async function handleUserFontsRequest(request: Request, pathname: string,
     const font = fonts.find((candidate) => candidate.file === file);
     const missing = () => jsonResponse({ error: { code: "not_found", message: "no such font" } }, 404);
     if (!font) return missing();
-    // opened without following a link and checked again as opened: a link swapped in after the listing is refused
+    // where the platform has O_NOFOLLOW, a link swapped in after the listing is refused by the open itself
     const handle = await open(join(dir, font.file), constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)).catch((error: NodeJS.ErrnoException) => {
       if (error.code === "ELOOP" || error.code === "ENOENT") return null;
       throw error;

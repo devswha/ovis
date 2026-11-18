@@ -241,8 +241,8 @@ export class UsageLoginService {
         const code = isJsonObject(body) && typeof body["code"] === "string" ? body["code"].trim() : null;
         if (code === null || !SIGN_IN_CODE.test(code)) return badRequest("invalid_code", "Paste the code the sign-in page showed, as it is");
         if (login.ended) return gone();
-        // typed only while the CLI asks for it; nothing is awaited from this check to the write, so two codes
-        // arriving at once are typed one after the other only if the CLI asks again in between
+        // typed only while the CLI's last output asks for it; a write leaves that output as it was, so a second
+        // code checked before the CLI's answer to the first has arrived is typed too
         if (!loginPrompt(login.provider, screenText(login.output)).wants_code) return conflictResponse("code_not_wanted", "The sign-in is not asking for a code now.");
         if (!login.proc.write(`${code}\r`)) return gone();
         return new Response(null, { status: 204 });
