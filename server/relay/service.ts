@@ -248,7 +248,7 @@ export class RelayService {
   status(): RelayStatus {
     return { phase: this.phase, relay: this.advertised, app: this.app,
       sessions: (this.link?.sessions ?? 0) + (this.regionalLink?.sessions ?? 0) + (this.directCarrier?.sessions ?? 0),
-      blocked: this.blocked, error: this.error, error_code: this.exactErrorCode(), account_named: this.savedRelayAccount() !== null, named_account: this.savedRelayAccount(),
+      blocked: this.blocked, error: this.error, error_code: this.exactErrorCode(), account_named: this.savedRelayAccount() !== null,
       ...(this.options.direct ? { direct: { on: this.directEnabled(), carriers: this.directCarrier?.advertised(true) ?? [] } } : {}),
       ...(this.passKeeper ? { pass: { state: this.passState(this.passKeeper), relay: this.passNotice?.state ?? null, enforce_at: this.passNotice?.enforce_at ?? null, refused: this.passRefused,
         // a relay that refuses this PC for its pass enforces them, whatever it last said in a `sync`
@@ -623,8 +623,11 @@ export class RelayService {
    * `pairing`: the id of the code pending to carry (`new`: a fresh one), for every offer but the relay tab's
    * (DeviceStore.pairingForAccount): an id no longer pending starts no code (PairingGoneError), and the one pending
    * stays as it was. The answer names the code it carries by its id (`pairing.id`).
+   * The answer to an offer asked for with `noAccountOnly` also names, as `account`, the account named for this PC as its
+   * code was made, the one a device that pairs with it is taken into (the relay tab lists the PC there, and only there,
+   * beside the QR code).
    */
-  offer(by: string | null = null, options: { noAccountOnly?: boolean; account?: string; pairing?: string } = {}): { url: string; expires_at: string; pairing: { id: string } } & Partial<AccountPairing> {
+  offer(by: string | null = null, options: { noAccountOnly?: boolean; account?: string; pairing?: string } = {}): { url: string; expires_at: string; pairing: { id: string }; account?: string | null } & Partial<AccountPairing> {
     if (!this.enabled || !this.identity || !this.services || this.blocked) throw new Error("Start the relay before pairing.");
     if (options.account === undefined && this.services.options.profile === "machine") throw new MachineCodeForAccountError();
     const devices = this.services.devices;
@@ -641,6 +644,7 @@ export class RelayService {
       url: encodeOffer({ v: 1, server_id: this.identity.server_id, server_public_key: this.identity.public_key,
         relay: this.advertised, code, ...offerName(), ...this.admissionMark(code) }, this.app),
       expires_at, pairing: { id }, ...named,
+      ...(options.noAccountOnly ? { account: this.savedRelayAccount() } : {}),
     };
   }
 

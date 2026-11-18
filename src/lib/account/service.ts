@@ -224,11 +224,10 @@ export function sameSignIn(a: AccountSession, b: AccountSession): boolean {
 }
 
 /** `POST /v1/token`: a code, a refresh token or a native Apple token for a session; `bearer` redeems a linking sign-in. */
-export async function requestToken(service: string, grant: Record<string, string>, options: { fetch?: Fetch; now?: () => number; bearer?: string; signal?: AbortSignal } = {}): Promise<AccountSession> {
+export async function requestToken(service: string, grant: Record<string, string>, options: { fetch?: Fetch; now?: () => number; bearer?: string } = {}): Promise<AccountSession> {
   const now = options.now ?? Date.now;
   const response = await (options.fetch ?? fetch)(new URL("/v1/token", service), {
     method: "POST", headers: { "content-type": "application/json", ...(options.bearer === undefined ? {} : { authorization: `Bearer ${options.bearer}` }) }, body: JSON.stringify(grant),
-    ...(options.signal === undefined ? {} : { signal: options.signal }),
   });
   if (!response.ok) throw await failure(response);
   return sessionOf(await response.json(), service, now());
@@ -470,10 +469,10 @@ export class AccountService {
   }
 
   /** One refresh of `from`; its answer is stored only if `from` is still the stored session. */
-  private async refreshed(from: AccountSession, signal?: AbortSignal): Promise<AccountSession> {
+  private async refreshed(from: AccountSession): Promise<AccountSession> {
     let next: AccountSession;
     try {
-      next = await requestToken(from.service, { grant_type: "refresh_token", refresh_token: from.refresh_token }, { fetch: this.fetch, now: this.now, ...(signal === undefined ? {} : { signal }) });
+      next = await requestToken(from.service, { grant_type: "refresh_token", refresh_token: from.refresh_token }, { fetch: this.fetch, now: this.now });
     } catch (error) {
       if (error instanceof AccountServiceError && (error.status === 400 || error.status === 401)) return this.signedOut(from);
       throw error;
@@ -491,22 +490,36 @@ export class AccountService {
 
   /**
    * A session whose access token is good, refreshing once between tabs; `stale` is a token the service just refused.
-   * `signal` ends a refresh too, so a call's bound holds while its token is renewed.
+   * `signal` bounds this caller's wait, the wait for the lock included: work not begun by then is skipped, and a
+   * refresh already sent finishes, so the token it rotated is kept for the next call.
    */
   private async fresh(stale?: string, signal?: AbortSignal): Promise<AccountSession> {
+    signal?.throwIfAborted();
     // bound to a sign-in that is no longer the stored one: the stored one is someone else's to use or end
     const foreign = (session: AccountSession | undefined): boolean => this.options.signIn !== undefined && (session === undefined || !sameSignIn(session, this.options.signIn));
     const session = await this.session();
     if (foreign(session)) throw new SignedOutError();
     if (session === undefined) return this.signedOut();
     if (stale === undefined && session.expires_at - REFRESH_EARLY_MS > this.now()) return session;
-    return this.lock(async () => {
+    return this.locked(async () => {
       const current = await this.session();
       if (foreign(current)) throw new SignedOutError();
       if (current === undefined) return this.signedOut();
       // another tab refreshed while this one waited: its tokens are the ones to use
       if (current.access_token !== (stale ?? session.access_token)) return current;
-      return this.refreshed(current, signal);
+      return this.refreshed(current);
+    }, signal);
+  }
+
+  /** The lock between tabs, with `signal` bounding the wait for it: work that was not begun by then never begins. */
+  private locked<T>(work: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    if (signal === undefined) return this.lock(work);
+    signal.throwIfAborted();
+    const run = this.lock(async () => { signal.throwIfAborted(); return work(); });
+    return new Promise<T>((resolve, reject) => {
+      const stop = (): void => reject(signal.reason);
+      signal.addEventListener("abort", stop, { once: true });
+      run.then(resolve, reject).finally(() => signal.removeEventListener("abort", stop));
     });
   }
 

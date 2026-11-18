@@ -589,6 +589,8 @@ describe("the relay tab's QR code behind a press", () => {
   let offerMarks: (string | null)[];
   /** the PC's own answer to POST /api/relay/offer, when it is not an offer */
   let offerAnswer: (() => Response | Promise<Response>) | null;
+  // the account the PC says it made the relay tab's code for, in the offer's own answer (absent: an older server)
+  let offerAccount: string | null | undefined;
   /** "refused": the account service refuses to list this PC (PUT /v1/pcs/:id); "silent": it never answers its list */
   let listing: "ok" | "refused" | "silent";
 
@@ -613,6 +615,7 @@ describe("the relay tab's QR code behind a press", () => {
     removable = true;
     offerMarks = [];
     offerAnswer = null;
+    offerAccount = undefined;
     listing = "ok";
     for (const key of ["window", "document", "navigator", "indexedDB", "getComputedStyle", "HTMLElement", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     // the page's own sign-in, which a signed-in tab lists this PC under before its QR code
@@ -661,7 +664,7 @@ describe("the relay tab's QR code behind a press", () => {
       if (path === "/api/relay/code") return Response.json({ code: "7K3QD-M2XHA", expires_at, server_id: SERVER_ID });
       if (path === "/api/relay/offer") {
         offerMarks.push(new Headers(input instanceof Request ? input.headers : init?.headers).get("x-ovis-no-account-only"));
-        return offerAnswer?.() ?? Response.json({ url: OFFER_URL, expires_at });
+        return offerAnswer?.() ?? Response.json({ url: OFFER_URL, expires_at, ...(offerAccount === undefined ? {} : { account: offerAccount }) });
       }
       if (path === "/api/relay/code/cancel") return Response.json({ ok: true });
       if (path === "/api/devices/pair/cancel" && endsPairings) {
@@ -746,35 +749,50 @@ describe("the relay tab's QR code behind a press", () => {
   // a signed-in tab lists this PC in the account it shows, as `ovis add` does. Its QR code is
   // a plain code (no mark), so the listing runs beside the code and never holds it up; the PC's relay key comes
   // from the QR code's own offer, so no pairing window of the PC (another flow may hold it) is opened or closed for it
-  const namedForMine = () => relayState({ ...ONLINE, account_named: true, named_account: ACCOUNT_ID });
   it("signed in, lists this PC in the account the tab shows from the QR code's offer, and touches no pairing window", async () => {
-    await mount({ signedIn: true, relay: namedForMine() });
+    offerAccount = ACCOUNT_ID;
+    await mount({ signedIn: true });
     await press("Show the QR code");
     expect(qrCodes()).toHaveLength(1);
     expect(requests.indexOf(`/v1/pcs/${SERVER_ID}`)).toBeGreaterThan(requests.indexOf("/api/relay/offer"));
     expect(requests.filter((path) => path.startsWith("/api/relay/link"))).toEqual([]);
   });
 
-  // the PC was named for another account, or its server does not say which: no tab lists it in the account it shows
-  for (const [what, status] of [
-    ["named for another account", { account_named: true, named_account: "acct_other_000000000000" }],
-    ["on a server that does not say which account is named", { account_named: true }],
+  // the PC made its code for another account (it was named for another one by the time the offer was asked for), or
+  // its server does not say which: no tab lists it in the account it shows
+  for (const [what, account] of [
+    ["that made its code for another account", "acct_other_000000000000"],
+    ["that names no account in its offer", null],
+    ["on a server that does not say which account its code is for", undefined],
   ] as const) {
     it(`signed in, lists nothing beside the QR code of a PC ${what}`, async () => {
-      await mount({ signedIn: true, relay: relayState({ ...ONLINE, ...status }) });
+      offerAccount = account;
+      await mount({ signedIn: true });
       await press("Show the QR code");
       expect(qrCodes()).toHaveLength(1);
       expect(requests).not.toContain(`/v1/pcs/${SERVER_ID}`);
     });
   }
 
+  // the tab's last read of the relay said the PC was named for this account; the PC was named for another one before it
+  // made the code, and its offer says so: nothing is listed
+  it("signed in, lists nothing when the PC was named for another account between the tab's last read and the offer", async () => {
+    offerAccount = "acct_other_000000000000";
+    // the relay state the tab read last named this tab's account (a server that still says which, as one briefly did)
+    const stale = { ...ONLINE, account_named: true, named_account: ACCOUNT_ID } as RelayStatus;
+    await mount({ signedIn: true, relay: relayState(stale) });
+    await press("Show the QR code");
+    expect(qrCodes()).toHaveLength(1);
+    expect(requests).not.toContain(`/v1/pcs/${SERVER_ID}`);
+  });
+
   // the account is fixed at the press: another tab that switches accounts before the offer
   // comes makes the tab list nothing, not the PC in the account it shows by then
   it("signed in, lists nothing when the account changed between the press and the QR code's offer", async () => {
     const other = "acct_other_000000000000";
     const offerGate = Promise.withResolvers<void>();
-    offerAnswer = async () => { await offerGate.promise; return Response.json({ url: OFFER_URL, expires_at: new Date(Date.now() + 600_000).toISOString() }); };
-    await mount({ signedIn: true, relay: namedForMine() });
+    offerAnswer = async () => { await offerGate.promise; return Response.json({ url: OFFER_URL, expires_at: new Date(Date.now() + 600_000).toISOString(), account: ACCOUNT_ID }); };
+    await mount({ signedIn: true });
     await press("Show the QR code");
     await indexedAccountStore.set("session", { service: SERVICE.service, account: other, provider: "github", access_token: "other", refresh_token: "other", expires_at: Date.now() + 86_400_000 });
     await update({ signedIn: true, accountId: other });
@@ -791,7 +809,8 @@ describe("the relay tab's QR code behind a press", () => {
   ] as const) {
     it(`signed in, shows the QR code all the same when ${what}`, async () => {
       await setup();
-      await mount({ signedIn: true, relay: namedForMine() });
+      offerAccount = ACCOUNT_ID;
+      await mount({ signedIn: true });
       await press("Show the QR code");
       expect(qrCodes()).toHaveLength(1);
       expect(ended).toEqual([]);

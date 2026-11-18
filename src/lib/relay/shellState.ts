@@ -1,7 +1,7 @@
 import type { Root } from "react-dom/client";
 import type { PendingPushStore } from "../push.ts";
 import type { AccountStore } from "../account/store.ts";
-import type { EnrollmentState, RelayDeviceStore } from "./device.ts";
+import type { EnrollmentState, ShellDeviceStore } from "./device.ts";
 import type { openRelayTransport } from "./transport.ts";
 import type { checkPc } from "./pcStatus.ts";
 import type { offerFromCode } from "./pairCode.ts";
@@ -215,7 +215,7 @@ export interface RelayShellMount {
   renderApp: () => Root;
   /** draws the shell's screens on the container: react-dom's root by default; tests hand in their own */
   createRoot?: (container: HTMLElement) => Root;
-  store?: RelayDeviceStore;
+  store?: ShellDeviceStore;
   pendingPush?: PendingPushStore;
   open?: typeof openRelayTransport;
   navigate?: (path: string) => void;
@@ -264,6 +264,11 @@ export interface Attempt {
   retryEnrollment?: boolean;
   /** this attempt already tried the key of a link whose answer was lost */
   retriedPending?: boolean;
+  /**
+   * the PC's row this attempt's pairing is, as the saved record named it when the attempt opened: only that record is
+   * forgotten or replaced for it, so a Forget or a newer pairing made since (another tab) stands. null: none was saved
+   */
+  row?: string | null;
 }
 
 

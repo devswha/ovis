@@ -5,11 +5,11 @@
  *
  * - The hosted shell (dist-shell/, served as Cloudflare Pages serves it, routed in for https://app.ovis.sh), signed in,
  *   opens QR codes' links for PCs its account does not list. A plain code (no mark): Add and pair posts nothing and
- *   goes on to the relay, as before. A code with the mark `admission: 1` of a PC the account does not list: the same,
- *   with nothing written. Of a PC its owner listed: Pair has the admission taken, asked to be quiet, before the first
- *   relay connection opens; when the account service refuses it (429), it stops before any relay connection and says
- *   why. No PC stands behind the relay here, so a pairing
- *   that goes on ends there.
+ *   goes on to the relay, as before. A code with the mark `admission: 1` always has its admission posted: for a PC the
+ *   account does not list it is refused, and nothing else is written. Of a PC its owner listed: Pair has the admission
+ *   taken, asked to be quiet, before the first relay connection opens; when the account service refuses it (429), it
+ *   stops before any relay connection and says why. No PC stands behind the relay here, so a pairing that goes on
+ *   ends there.
  * - A PC's own page (createServer, its relay on a local Bun relay), signed in, in no account, with the account named
  *   for it as `ovis add` names it but the PC not listed in the account: Show the QR code draws the code and, beside
  *   it, lists the PC in the account (PUT /v1/pcs/:id) from the code's own offer, when the account does not list it
@@ -143,11 +143,14 @@ async function shellAt(browser: Browser, site: string, size: (typeof WIDTHS)[num
   assert.ok(sockets.length > 0, `${size.width}: a plain code's pairing goes on to the relay`);
   assert.equal(admissionsHeld(), before, `${size.width}: the account holds no new admission`);
 
-  // a marked code of a PC the account does not list: the mark changes nothing, and nothing is written before the relay
+  // a marked code of a PC the account does not list: the admission is posted all the same, the account service refuses
+  // it, and the pairing stops before the relay with nothing else written
   const unlisted = await add(true, "marked-unlisted");
-  assert.ok(!log.some((line) => line.startsWith("POST /v1/admissions") || line.startsWith("PUT /v1/pcs/")), `${size.width}: a marked code of a PC the account does not list writes nothing (${log.join(", ")})`);
+  await page.locator('main[data-relay-state="account-unlisted"]').waitFor();
+  assert.ok(log.includes("POST /v1/admissions"), `${size.width}: a marked code posts its admission whatever the account lists (${log.join(", ")})`);
+  assert.ok(!log.some((line) => line.startsWith("PUT /v1/pcs/")), `${size.width}: and writes nothing else to the account (${log.join(", ")})`);
   assert.ok(!fake.pcs(ACCOUNT).some((pc) => pc.server_id === unlisted), `${size.width}: the account still does not list that PC`);
-  assert.ok(sockets.length > 0, `${size.width}: that pairing went on to the relay as an unmarked one does`);
+  assert.deepEqual(sockets, [], `${size.width}: that pairing opened no relay connection`);
 
   // a marked code of a PC its owner listed: the admission taken, and only then the relay
   const before2 = admissionsHeld();
@@ -260,7 +263,7 @@ try {
     await shellAt(browser, `http://127.0.0.1:${site.port}`, size);
     await pcPageAt(browser, origin, size);
   }
-  console.log("PASS relay first link: at 390 and 1440 a plain code pairs as before with no admission; a marked code writes nothing for a PC the account does not list, and for one its owner listed has the admission taken before the relay, or stops with why; a PC's relay tab draws its QR code and lists the PC beside it for the account named for it, touching no pairing window");
+  console.log("PASS relay first link: at 390 and 1440 a plain code pairs as before with no admission; a marked code always posts its admission, stops before the relay for a PC the account does not list, and for one its owner listed has the admission taken before the relay, or stops with why; a PC's relay tab draws its QR code and lists the PC beside it for the account named for it, touching no pairing window");
 } catch (error) {
   code = 1;
   console.error("FAIL relay first link:", error);

@@ -216,10 +216,10 @@ One rule for every way in: a pairing code, comparing digits, and joining through
   into the account named for the PC ([`relay-account`](#pc-api): its signed-in owner added it on
   its own page, or ran `ovis add`), and into no other. So a PC with none named makes no such code:
   the offer with the header answers `409 no_account_named`, starting no code and leaving the one
-  pending as it was. `GET /api/relay` says whether one is named (`account_named`) and which
-  (`named_account`), and the relay tab, where its button would be, says what names one
-  ([Adding a PC](#adding-a-pc), "By QR code"). A signed-in tab lists the PC in its own account
-  beside the QR code only when that is the account named for the PC.
+  pending as it was. `GET /api/relay` says whether one is named (`account_named`), and the relay
+  tab, where its button would be, says what names one ([Adding a PC](#adding-a-pc), "By QR code").
+  The offer's answer names the account its code was made for (`account`), and a signed-in tab
+  lists the PC in its own account beside the QR code only when that is the account.
   A device that waits to link on a PC with none named is refused `409 account_mismatch` and goes
   at once.
 - **A device that pairs with that QR code's code waits to link.** The code of an offer asked for

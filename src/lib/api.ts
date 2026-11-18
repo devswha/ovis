@@ -309,6 +309,8 @@ export function fetchRelay(): Promise<RelayStatus> {
 export interface RelayOffer {
   readonly url: string;
   readonly expires_at: string;
+  /** asked for with `x-ovis-no-account-only`: the account named for the PC as it made this code. Absent from an older server */
+  readonly account?: string | null;
 }
 
 /**

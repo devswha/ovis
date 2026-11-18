@@ -558,11 +558,7 @@ export function AccountQr({ relay, phone, active, signedIn, accountId = null, pc
   const before = useRef<AccountQrBaseline | null>(null);
   /** bumped by every press and every take-down: an answer to an older one changes nothing */
   const run = useRef(0);
-  /**
-   * the account this tab showed when Show the QR code was pressed, when the PC was named for that same account: its
-   * codes' PC is listed there or nowhere. A PC named for another account (or a server that does not say) is listed by
-   * no tab: the device that scans a marked code lists it itself
-   */
+  /** the account this tab showed when Show the QR code was pressed: its codes' PC is listed there or nowhere */
   const pressedAs = useRef<string | null>(null);
   /** the last take-down's requests: the next press waits for them, so it never ends the code it is about to get */
   const ending = useRef<Promise<boolean>>(Promise.resolve(true));
@@ -623,7 +619,7 @@ export function AccountQr({ relay, phone, active, signedIn, accountId = null, pc
 
   const show = async () => {
     const mine = ++run.current;
-    pressedAs.current = signedIn && accountId !== null && relay.status?.named_account === accountId ? accountId : null;
+    pressedAs.current = signedIn ? accountId : null;
     setError(null);
     setNote(null);
     setView({ kind: "starting" });
@@ -781,13 +777,15 @@ export function AccountQr({ relay, phone, active, signedIn, accountId = null, pc
    * Signed in, the PC a QR code names is listed in the account this view shows, beside the code and never before it:
    * the code is a plain one (no mark), which a scanning device pairs with whether the PC is
    * listed or not, so an account service that is slow or down holds no pairing up. Best-effort, and only a PC the
-   * account does not list yet is written (listOfferedPc). The account is the one the tab showed at the press: when the
-   * stored sign-in is another one by the time the offer comes (another tab switched), nothing is listed anywhere.
+   * account does not list yet is written (listOfferedPc). The account is the one the tab showed at the press, and only
+   * when the PC says, in the very answer that carries this code, that it made the code for that account: a PC named
+   * for another account by now, or a server that does not say, is listed nowhere. When the stored sign-in is another
+   * one by the time the offer comes (another tab switched), nothing is listed anywhere either.
    */
   const listBeside = useCallback((offer: RelayOffer): void => {
     const named = decodeOffer(offer.url);
     const as = pressedAs.current;
-    if (as === null || named === null) return;
+    if (as === null || named === null || offer.account !== as) return;
     listOfferedPc(new AccountService({ store: indexedAccountStore }), named, as).catch((reason: unknown) => {
       console.warn("Ovis: this PC was not listed in the account", reason instanceof Error ? reason.name : reason);
     });
