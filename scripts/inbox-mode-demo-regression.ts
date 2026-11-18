@@ -20,6 +20,7 @@ declare global {
       rosters: number;
       readonly rosterOpen: boolean;
       readonly pendingFits: number;
+      historyPending(paneId: string): boolean;
       publish(): Promise<void>;
       /** sets a pane's state as herdr would: its pane-status event, then the roster */
       set(paneId: string, status: AgentStatus, finish?: number): Promise<void>;
@@ -81,9 +82,16 @@ function installInboxFixture(resizeSettleMs: number): void {
   let rosterDropped = false;
   let rosterFails = new URLSearchParams(location.search).get("inbox_fail") === "roster";
   let rosterHeld: (() => void)[] | null = null;
+  const historyReads = new Set<{ paneId: string | null }>();
   const fetchDemo = window.fetch;
   window.fetch = Object.assign(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+    if (url.pathname === "/api/pane/conversation") {
+      const read = { paneId: url.searchParams.get("pane_id") };
+      historyReads.add(read);
+      try { return await fetchDemo(input, init); }
+      finally { historyReads.delete(read); }
+    }
     if (url.pathname === "/api/machines") window.inboxFixture.rosterReads++;
     if (url.pathname === "/api/machines" && rosterHeld !== null) await new Promise<void>((go) => rosterHeld!.push(go));
     if (rosterFails && url.pathname === "/api/machines") return Response.json({ error: { code: "internal", message: "The roster could not be read" } }, { status: 500 });
@@ -181,6 +189,7 @@ function installInboxFixture(resizeSettleMs: number): void {
     rosters: 0,
     get rosterOpen() { return opened.size > 0; },
     get pendingFits() { return pendingFits.size; },
+    historyPending(paneId) { return [...historyReads].some((read) => read.paneId === paneId); },
     resizes: [],
     frames: [],
     async publish() {
@@ -194,6 +203,7 @@ function installInboxFixture(resizeSettleMs: number): void {
       await this.publish();
     },
     dropRoster() {
+      // Until restored, the fake stream ignores every message and open, including send() from set() and publish().
       rosterDropped = true;
       for (const source of opened) { Object.assign(source, { readyState: 0 }); source.onerror?.(new Event("error")); }
       opened.clear();
@@ -768,6 +778,7 @@ try {
           await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: 4, y: 420 }] });
           for (let x = 24; x <= 304; x += 40) await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: 422 }] });
           await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+          await frames(page);
           assert.equal(await page.locator("#workspace-drawer, .scrim.is-open").count(), 0, "a swipe from the edge opens no drawer in the mode");
           await page.locator(".mode-inbox").waitFor();
           pass(13, "the open drawer's head is the Ovis mark, named Open agent inbox, which opens the list, and its foot has no row for it; in the mode a swipe from the left edge opens no drawer");
@@ -1227,7 +1238,8 @@ try {
           await page.locator(".inbox-rail .inbox-rail-exit").click();
           await page.locator(".mode-inbox").waitFor({ state: "detached" });
           await page.locator(".app-header.is-zoned").waitFor();
-          await page.waitForFunction(({ before, other }) => window.inboxFixture.frames.slice(before).some((frame) => frame.type === "resize" && frame.pane === other), { before, other }, { timeout: 5_000 }).catch(() => {});
+          const resized = await page.waitForFunction(({ before, other }) => window.inboxFixture.frames.slice(before).some((frame) => frame.type === "resize" && frame.pane === other), { before, other }, { timeout: 5_000 }).then(() => true, () => false);
+          assert.ok(resized, `Back to Ovis makes the tab's other pane (${other}) ask for its grid again`);
           await terminalSettled(page);
           const sent = (await page.evaluate((count) => window.inboxFixture.frames.slice(count), before)).filter((frame) => frame.pane === other);
           assert.deepEqual(sent, [{ type: "resize", pane: other, cols: held!.cols, rows: held!.rows }], `leaving, the tab's other pane asks once for the grid it held before the mode (${held!.cols} by ${held!.rows})`);
@@ -1414,7 +1426,10 @@ try {
             await page.locator("#inbox-back").waitFor();
             const inThread = (coarse: boolean) => coarse ? document.activeElement?.id === "inbox-back" : document.activeElement?.classList.contains("composer-text") === true;
             const landed = await page.waitForFunction(inThread, touch, { timeout: 5_000 }).then(() => true, () => false);
-            await page.locator(".chat-frame[data-pane-content]").waitFor({ state: "attached", timeout: 5_000 });
+            // Let the inbox's focus frame and its nested Back fallback run even if the composer
+            // focused first, then drain the resize fits queued by the thread layout.
+            await frames(page);
+            await terminalSettled(page);
             const at = await page.evaluate(() => `${document.activeElement?.tagName.toLowerCase()}#${document.activeElement?.id}.${document.activeElement?.className}`);
             assert.ok(landed && await page.evaluate(inThread, touch), `the focus is on ${touch ? "the thread's Back" : "the composer"} and stays: it is on ${at}`);
             console.log(`PASS entered from the classic app at ${viewport.width} under a ${pointer} pointer, Enter on the row of the pane classic showed puts the focus on ${touch ? "the thread's Back" : "the composer"}`);
@@ -1482,7 +1497,15 @@ try {
               if (pane !== WORKING) continue;
               opened += 1;
               const reached = await atEnd();
-               await page.locator(".chat-frame[data-pane-content]").waitFor({ state: "attached", timeout: 5_000 });
+              // Give the thread's layout and effects a turn. Same-pane reopens can keep their
+              // history with no new fetch, so wait for a loaded scroller and no pending read.
+              await frames(page);
+              await page.waitForFunction(({ selector, paneId }) => {
+                const chat = document.querySelector(`${selector}[data-conversation-source="claude-transcript"]`);
+                return chat !== null && chat.clientHeight > 0 && !window.inboxFixture.historyPending(paneId);
+              }, { selector: view, paneId: pane }, { timeout: 5_000 });
+              // Let the returned history render and the timeline handle its resize and scroll events.
+              await frames(page);
               const shown = await transcript();
               assert.ok(reached && shown !== null && shown.short <= 1 && shown.controls.length === 0, `opened by ${act} (${opened}), the thread's transcript is at its end with no Jump to latest: ${JSON.stringify(shown)}`);
             }
