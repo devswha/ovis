@@ -18,7 +18,6 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-/** The two state dirs of one install: `active` is the one the server runs on. */
 function install(): { root: string; active: string; sibling: string } {
   const root = mkdtempSync(join(tmpdir(), "ovis-state-merge-"));
   roots.push(root);
@@ -35,7 +34,6 @@ const device = (id: string, created = "2026-10-25T05:20:00.000Z"): StoredDevice 
 const writeDevices = (dir: string, devices: StoredDevice[], gate: string | null = devices[0]?.created_at ?? null) =>
   writeFileSync(join(dir, "devices.json"), JSON.stringify({ gate_closed_at: gate, devices }), { mode: 0o600 });
 const registry = (dir: string) => JSON.parse(readFileSync(join(dir, "devices.json"), "utf8")) as { gate_closed_at: string | null; devices: StoredDevice[] };
-/** Runs a merge in a process that ends (77), as a crash or a power loss would, right before or after a rename onto `at`. */
 async function crashAt(root: string, active: string, sibling: string, at: string, when: "before" | "after"): Promise<number> {
   const script = join(root, `crash-${when}.ts`);
   writeFileSync(script, `
@@ -98,7 +96,6 @@ describe("paired devices of the install's other state dir", () => {
         expect(devicesBlocked).not.toBeNull();
         expect(new DeviceStore(active, devicesBlocked).gated).toBe(true);
       } finally { said.mockRestore(); }
-      // and for a release before this one, on disk
       expect(new DeviceStore(active).gated).toBe(true);
     }
   });
@@ -115,7 +112,6 @@ describe("paired devices of the install's other state dir", () => {
     writeDevices(active, [device("a")]);
     writeDevices(sibling, [device("b")]);
     mergeSiblingState(active, sibling, at(0));
-    // revoked here and paired here; revoked there and paired there, by a release reading that dir
     writeDevices(active, [device("b"), device("d")], registry(active).gate_closed_at);
     writeDevices(sibling, [device("a"), device("c")], registry(sibling).gate_closed_at);
     mergeSiblingState(active, sibling, at(1));
@@ -220,7 +216,6 @@ describe("paired devices of the install's other state dir", () => {
   it("keep the gate closed by a placeholder in the other dir, whatever this dir holds", () => {
     for (const mine of [null, { gate_closed_at: null, devices: [] }]) {
       const { active, sibling } = install();
-      // written where a failed merge closed the gate, before the install switched dirs
       writeJson(join(sibling, "devices.json"), { gate_closed_at: "2026-10-25T05:19:00.000Z", devices: [], placeholder: true });
       if (mine) writeJson(join(active, "devices.json"), mine);
       expect(mergeSiblingState(active, sibling, at(0)).devicesBlocked).toBeNull();
@@ -251,7 +246,6 @@ describe("paired devices of the install's other state dir", () => {
     const { root, active, sibling } = install();
     writeDevices(active, [device("a")]);
     writeDevices(sibling, [device("b")]);
-    // a process that ends the moment the second registry is in place, as a crash or a power loss would
     const script = join(root, "crash.ts");
     writeFileSync(script, `
       import { privateStateFs } from ${JSON.stringify(join(import.meta.dir, "private-state.ts"))};
@@ -263,7 +257,6 @@ describe("paired devices of the install's other state dir", () => {
     const child = Bun.spawn([process.execPath, script], { stdout: "ignore", stderr: "ignore" });
     expect(await child.exited).toBe(77);
     expect(ids(sibling)).toEqual(["a", "b"]);
-    // a release before this one, on the active dir, revokes b
     expect(new DeviceStore(active).revoke(device("b").id)).toBe(true);
     mergeSiblingState(active, sibling, at(1));
     expect(ids(active)).toEqual(["a"]);
@@ -292,7 +285,6 @@ describe("paired devices of the install's other state dir", () => {
 
   it("stay revoked when the merge crashed after publishing, and the revocation left the registry's first bytes", async () => {
     const { root, active, sibling } = install();
-    // written as the store writes them, so revoking the device the merge brought gives back the same bytes
     writePrivateState(join(active, "devices.json"), { gate_closed_at: "2026-10-25T05:20:00.000Z", devices: [device("a")] });
     writePrivateState(join(sibling, "devices.json"), { gate_closed_at: "2026-10-25T05:20:00.000Z", devices: [device("b")] });
     const original = readFileSync(join(active, "devices.json"), "utf8");
@@ -309,12 +301,10 @@ describe("paired devices of the install's other state dir", () => {
     writePrivateState(join(active, "devices.json"), { gate_closed_at: "2026-10-25T05:20:00.000Z", devices: [device("a")] });
     writePrivateState(join(sibling, "devices.json"), { gate_closed_at: "2026-10-25T05:20:00.000Z", devices: [device("b")] });
     expect(await crashAt(root, active, sibling, join(active, "devices.json"), "before")).toBe(77);
-    // its last-seen save changes the bytes, though this dir never got the merge
     expect(new DeviceStore(active).match("token-a")?.id).toBe(device("a").id);
     mergeSiblingState(active, sibling, at(1));
     expect(ids(active)).toEqual(["a", "b"]);
     expect(ids(sibling)).toEqual(["a", "b"]);
-    // the prepared files the crash left are gone once the merge is recorded
     expect(readdirSync(active).filter((name) => name.endsWith(".tmp"))).toEqual([]);
     expect(readdirSync(sibling).filter((name) => name.endsWith(".tmp"))).toEqual([]);
   });
@@ -339,7 +329,6 @@ describe("paired devices of the install's other state dir", () => {
   });
 
   it("keep the old dir gated for older launchers when it could not be linked", () => {
-    // the old name still holds only the bridge registry: a launcher from before the fix starts on it
     const { active: legacy, sibling: next } = install();
     mkdirSync(join(legacy, "bridges"));
     writeDevices(next, [device("a")]);
@@ -351,7 +340,6 @@ describe("paired devices of the install's other state dir", () => {
   it("fail closed on disk too, for a release before this one, when they cannot be merged", () => {
     const { active, sibling } = install();
     writeDevices(sibling, [device("b")]);
-    // valid JSON, of the wrong shape inside: the record of this very pair of dirs
     const dirs = [realpathSync(active), realpathSync(sibling)].sort();
     writeJson(join(active, "state-merge.json"), { version: 1, seq: 1, at: "2026", dirs, devices: [], preferences: { [realpathSync(sibling)]: { settings: null, muted_panes: [] } }, push: {} });
     writeJson(join(sibling, "preferences.json"), { revision: 1, settings: { language: "ko" } });
@@ -382,7 +370,6 @@ describe("paired devices of the install's other state dir", () => {
         const store = new DeviceStore(active, devicesBlocked);
         expect(store.gated).toBe(true);
         expect(() => store.startPairing()).toThrow();
-        // the devices it holds still get in
         expect(store.match("token-a")?.id).toBe(device("a").id);
       } finally { said.mockRestore(); }
     }
@@ -415,7 +402,6 @@ describe("shared preferences of the install's other state dir", () => {
     writeJson(join(sibling, "preferences.json"), { revision: 1, settings: { language: "en", sidebarRows: "two", theme: "dark" } }, at(0));
     writeJson(join(sibling, "muted-panes.json"), { muted_panes: ["local:p1"] });
     mergeSiblingState(active, sibling, at(1));
-    // there: language and theme changed, p1 unmuted; here, later: sidebarRows and theme changed
     for (const dir of [active, sibling]) utimesSync(join(dir, "muted-panes.json"), at(1), at(1));
     writeJson(join(sibling, "preferences.json"), { revision: 2, settings: { language: "ko", sidebarRows: "two", theme: "light" } }, at(2));
     writeJson(join(sibling, "muted-panes.json"), { muted_panes: [] }, at(2));
@@ -442,7 +428,6 @@ describe("shared preferences of the install's other state dir", () => {
     mergeSiblingState(active, sibling, at(0));
     writeJson(join(active, "preferences.json"), { revision: 2, settings: { language: "ko" } });
     writeJson(join(active, "muted-panes.json"), { muted_panes: [] });
-    // a dir where the temporary file goes: the other dir's preferences cannot be replaced
     const blocker = join(sibling, `preferences.json.${process.pid}.tmp`);
     mkdirSync(blocker);
     const said = spyOn(console, "error").mockImplementation(() => {});
@@ -460,13 +445,11 @@ describe("shared preferences of the install's other state dir", () => {
     mergeSiblingState(active, sibling, at(0));
     writeJson(join(sibling, "preferences.json"), { revision: 2, settings: { language: "ko" } }, at(1));
     writeJson(join(active, "muted-panes.json"), { muted_panes: ["local:p"] });
-    // this dir takes "ko" in; the other dir's mutes cannot be replaced
     const blocker = join(sibling, `muted-panes.json.${process.pid}.tmp`);
     mkdirSync(blocker);
     const said = spyOn(console, "error").mockImplementation(() => {});
     try { mergeSiblingState(active, sibling, at(2)); } finally { said.mockRestore(); rmSync(blocker, { recursive: true }); }
     expect(new PreferenceStore(active).get().settings).toEqual({ language: "ko" });
-    // the user sets it back here, later
     writeJson(join(active, "preferences.json"), { revision: 3, settings: { language: "en" } }, at(3));
     mergeSiblingState(active, sibling, at(4));
     for (const dir of [active, sibling]) expect(new PreferenceStore(dir).get()).toMatchObject({ settings: { language: "en" }, muted_panes: ["local:p"] });
@@ -564,7 +547,6 @@ describe("push subscriptions of the install's other state dir", () => {
     writeJson(join(sibling, "push-subscriptions.json"), [{ ...fake.subscription, endpoint: legacy, device_id: null }]);
     mergeSiblingState(active, sibling, at(0));
     createPushService({ stateDir: active, loopbackHttp: true }).unsubscribe(legacy);
-    // the other dir writes its list again, for a subscription of its own
     createPushService({ stateDir: sibling, loopbackHttp: true }).subscribe({ ...fake.subscription, endpoint: `${fake.subscription.endpoint}-other` }, undefined, null);
     mergeSiblingState(active, sibling, at(1));
     const held = JSON.parse(readFileSync(join(active, "push-subscriptions.json"), "utf8")) as { endpoint: string }[];
@@ -654,7 +636,6 @@ describe("the install's other state dir", () => {
     expect(siblingStateDir(legacy, env)).toBe(next);
     expect(siblingStateDir(next, env)).toBe(legacy);
     expect(siblingStateDir(join(root, "custom"), env)).toBeNull();
-    // the config dir behind a link, named by its real path as a supervisor started from it finds it
     const linked = join(root, "linked-config");
     symlinkSync(root, linked);
     expect(realpathSync(siblingStateDir(realpathSync(legacy), { XDG_CONFIG_HOME: linked })!)).toBe(realpathSync(next));

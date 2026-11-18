@@ -5,13 +5,13 @@ import type { Machine, MachineEvent } from "../../shared/machines.ts";
 import type { MachineSessionRegistry } from "./machineSession.ts";
 import type { ServerMessage } from "../../shared/protocol.ts";
 import { getTransport, setTransport, type EventSourceLike } from "./transport.ts";
-import { useRosterEvents, useRosterLoader } from "./useMachineRoster.ts";
+import { sameData, useRosterEvents, useRosterLoader } from "./useMachineRoster.ts";
+import { expandMachineEvent, wireMachineEvent } from "../../shared/compact-agents.ts";
 
 const local = (state: Machine["state"] = "connected"): Machine => ({ id: "local", name: "This PC", kind: "local", enabled: true, state, error: null, snapshot: null });
 const noop = () => {};
-/** what the loader says of the stream, as the inbox mode's list says it */
 let said: string | null = null;
-// The real loader and event hooks, with a tab's visibility and interval clock driven without sleeps.
+let shown: Machine[] = [];
 describe("roster and health polling beside the event stream", () => {
   const saved = new Map<string, PropertyDescriptor | undefined>();
   const transport = getTransport();
@@ -24,7 +24,6 @@ describe("roster and health polling beside the event stream", () => {
   let next: number;
   let timers: Map<number, { at: number; every: number; run(): void }>;
   let reads: string[];
-  // The local terminal socket: it offers no machine events unless a test says so, so SSE carries them.
   let socketEvents: boolean | undefined;
   let socketListeners: Set<(message: ServerMessage) => void>;
   let disconnectListeners: Set<() => void>;
@@ -34,23 +33,23 @@ describe("roster and health polling beside the event stream", () => {
     onDisconnect(listener: () => void) { disconnectListeners.add(listener); return () => { disconnectListeners.delete(listener); }; },
   };
   const machineSessions = { get: () => ({ socket }), closeAll: noop } as unknown as MachineSessionRegistry;
-  // what the server answers: health and this PC's state in a roster read
   let healthUp: boolean;
   let readState: Machine["state"];
   function Probe() {
     const lockedRef = useRef(locked); lockedRef.current = locked;
     const refetchTimer = useRef<number | null>(null);
-    // as App's: the last health read's outcome
     const [healthFailing, setHealthFailing] = useState(false);
     const loadHealth = useCallback(async () => {
       await getTransport().fetch("/api/health?scope=bridge");
       setHealthFailing(!(await getTransport().fetch("/api/health")).ok);
     }, []);
-    const loader = useRosterLoader({ locked, healthFailing, lockedRef, refetchTimer, loadHealth, rosterIn: noop, setMachines: noop, setMachineRosterLoaded: noop, setError: noop, setLocked: noop });
+    const [machines, setMachines] = useState<Machine[]>([]);
+    const machinesRef = useRef(machines); machinesRef.current = machines; shown = machines;
+    const loader = useRosterLoader({ locked, healthFailing, lockedRef, refetchTimer, loadHealth, rosterIn: noop, setMachines, setMachineRosterLoaded: noop, setError: noop, setLocked: noop });
     said = loader.rosterConnection;
     useRosterEvents({
       ...loader, locked, machineSessions, onPaneMoved: noop, receivePreferencesRef: { current: noop }, onRoster: noop,
-      setMachines: noop, rosterIn: noop, setMachineRosterLoaded: noop, machinesRef: { current: [] }, setRemotePairings: noop, setRemovedNotices: noop,
+      setMachines, rosterIn: noop, setMachineRosterLoaded: noop, machinesRef, setRemotePairings: noop, setRemovedNotices: noop,
       onPaneStatus: noop, onPaneExited: noop, followFocusRef: { current: false },
       selectionRef: { current: { machineId: "local", paneId: null, generation: 0 } },
       splitShownRef: { current: false }, splitRef: { current: null }, pendingLink: { current: null },
@@ -70,6 +69,8 @@ describe("roster and health polling beside the event stream", () => {
       location: { hash: "" },
       setInterval(run: () => void, every: number) { const id = next++; timers.set(id, { at: now + every, every, run }); return id; },
       clearInterval(id: number) { timers.delete(id); },
+      setTimeout(run: () => void, ms: number) { const id = next++; timers.set(id, { at: now + ms, every: 0, run }); return id; },
+      clearTimeout(id: number) { timers.delete(id); },
     } });
     Object.defineProperty(globalThis, "document", { configurable: true, value: {
       get visibilityState() { return visibility; },
@@ -78,11 +79,11 @@ describe("roster and health polling beside the event stream", () => {
     source = { readyState: 0, onopen: null, onmessage: null, onerror: null, addEventListener: noop, close: noop };
     setTransport({ ...transport, openEventSource: () => source, async fetch(input) {
       const path = String(input); reads.push(path);
-      if (path === "/api/machines") return Response.json({ machines: [local(readState)] });
+      if (path === "/api/machines?compact_agents=1" || path === "/api/machines") return Response.json({ machines: [local(readState)] });
       return path === "/api/health" && !healthUp ? Response.json({ error: { code: "down" } }, { status: 500 }) : Response.json({ ok: true });
     } });
     await act(async () => { renderer = create(createElement(Probe)); });
-    reads.length = 0; // opening reads are not part of the steady-state minute
+    reads.length = 0;
   });
   afterEach(async () => {
     await act(async () => { renderer?.unmount(); });
@@ -100,7 +101,8 @@ describe("roster and health polling beside the event stream", () => {
       const due = [...timers.entries()].filter(([, timer]) => timer.at <= end).sort((a, b) => a[1].at - b[1].at)[0];
       if (!due) break;
       now = due[1].at;
-      due[1].at += due[1].every;
+      if (due[1].every === 0) timers.delete(due[0]);
+      else due[1].at += due[1].every;
       await act(async () => { due[1].run(); });
     }
     now = end;
@@ -119,7 +121,126 @@ describe("roster and health polling beside the event stream", () => {
     });
   }
   async function healthyStream() { await stream("opened"); await stream([local()]); }
-  const counts = () => ["/api/machines", "/api/health", "/api/health?scope=bridge"].map((path) => reads.filter((read) => read === path).length);
+  const counts = () => ["/api/machines?compact_agents=1", "/api/health", "/api/health?scope=bridge"].map((path) => reads.filter((read) => read === path).length);
+
+  it("reads the roster in full, once, after a pushed compact snapshot that cannot be read", async () => {
+    await stream("opened");
+    const unreadable = { ...local(), snapshot: { version: "test", protocol: 22, workspaces: [], tabs: [], layouts: [], panes: [], agent_refs: [{ pane_id: "gone" }] } };
+    await act(async () => { source.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ type: "machines", machines: [unreadable] }) })); });
+    await act(async () => { source.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ type: "machines", machines: [unreadable] }) })); });
+    expect(reads).not.toContain("/api/machines");
+    await advance(500);
+    expect(reads.filter((read) => read === "/api/machines")).toHaveLength(1);
+  });
+
+  it("shows the full read's snapshot for a PC whose compact ones cannot be read, while such events come every 100 ms for 5 s", async () => {
+    const remote = (version: string): Machine => ({ id: "remote", name: "Away", kind: "ssh", enabled: true, state: "connected", error: null,
+      snapshot: { version, protocol: 22, workspaces: [], tabs: [], layouts: [], panes: [], agents: [] } });
+    const fullReads: { promise: Promise<void>; resolve: () => void }[] = [];
+    setTransport({ ...transport, openEventSource: () => source, async fetch(input) {
+      const path = String(input); reads.push(path);
+      if (path === "/api/machines") {
+        const answer = Promise.withResolvers<void>();
+        fullReads.push(answer);
+        await answer.promise;
+        return Response.json({ machines: [local(), remote("full read")] });
+      }
+      if (path === "/api/machines?compact_agents=1") return Response.json({ machines: [local(), remote("polled")] });
+      return Response.json({ ok: true });
+    } });
+    await stream("opened");
+    await stream([local(), remote("pushed")]);
+    const remoteShown = () => shown.find((machine) => machine.id === "remote")?.snapshot?.version;
+    expect(remoteShown()).toBe("pushed");
+    const unreadable = { ...remote("pushed"), snapshot: { version: "unreadable", protocol: 22, workspaces: [], tabs: [], layouts: [], panes: [], agent_refs: [{ pane_id: "gone" }] } };
+    for (let at = 0; at < 5_000; at += 100) {
+      const out = fullReads.splice(0);
+      await act(async () => { source.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ type: "machines", machines: [local(), unreadable] }) })); });
+      await act(async () => { for (const read of out) read.resolve(); });
+      await advance(100);
+    }
+    expect(reads).not.toContain("/api/machines?compact_agents=1");
+    expect(reads.filter((read) => read === "/api/machines").length).toBeGreaterThan(0);
+    expect(remoteShown()).toBe("full read");
+  });
+
+  function recoveryFixture() {
+    const remote = (version: string, status: "idle" | "working" = "idle") => ({ id: "remote", name: "Away", kind: "ssh", enabled: true, state: "connected", error: null,
+      snapshot: { version, protocol: 22, workspaces: [], tabs: [], layouts: [], agents: [],
+        panes: [{ pane_id: "r1", terminal_id: "t1", workspace_id: "w", tab_id: "w:t", focused: false, revision: 1, agent_status: status }] } }) as Machine;
+    const fullReads: { promise: Promise<void>; resolve: () => void }[] = [];
+    const answer = { machine: remote("full read") };
+    setTransport({ ...transport, openEventSource: () => source, async fetch(input) {
+      const path = String(input); reads.push(path);
+      if (path === "/api/machines") {
+        const gate = Promise.withResolvers<void>();
+        fullReads.push(gate);
+        await gate.promise;
+        return Response.json({ machines: [local(), answer.machine] });
+      }
+      return Response.json(path === "/api/machines?compact_agents=1" ? { machines: [local(), remote("polled")] } : { ok: true });
+    } });
+    const unreadable = { ...remote("pushed"), snapshot: { version: "unreadable", protocol: 22, workspaces: [], tabs: [], layouts: [], panes: [], agent_refs: [{ pane_id: "gone" }] } } as unknown as Machine;
+    const shownRemote = () => shown.find((machine) => machine.id === "remote")?.snapshot;
+    return { remote, fullReads, answer, unreadable, shownRemote };
+  }
+
+  it("keeps a newer readable roster for a PC over the full read that was out when it came", async () => {
+    const { remote, fullReads, unreadable, shownRemote } = recoveryFixture();
+    await stream("opened");
+    await stream([local(), remote("pushed")]);
+    await stream([local(), unreadable]);
+    await advance(500);
+    expect(fullReads).toHaveLength(1);
+    await stream([local(), remote("newer")]);
+    await stream([local(), unreadable]);
+    expect(shownRemote()?.version).toBe("newer");
+    await act(async () => { fullReads[0]!.resolve(); });
+    expect(shownRemote()?.version).toBe("newer");
+  });
+
+  it("keeps a pane status that came while a PC's full read was out, and reads that PC in full again", async () => {
+    const { remote, fullReads, answer, unreadable, shownRemote } = recoveryFixture();
+    await stream("opened");
+    await stream([local(), remote("pushed")]);
+    await stream([local(), unreadable]);
+    await advance(500);
+    expect(fullReads).toHaveLength(1);
+    await act(async () => { source.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ type: "machine-message", machine_id: "remote",
+      message: { type: "pane-status", pane_id: "r1", agent_status: "working", finish_epoch: "e", finish_id: 1 } }) })); });
+    expect(shownRemote()?.panes[0]?.agent_status).toBe("working");
+    await act(async () => { fullReads[0]!.resolve(); });
+    expect(shownRemote()?.panes[0]?.agent_status).toBe("working");
+    await advance(500);
+    expect(fullReads).toHaveLength(2);
+    answer.machine = remote("read again", "working");
+    await act(async () => { fullReads[1]!.resolve(); });
+    expect(shownRemote()?.version).toBe("read again");
+  });
+
+  it("ends a PC's recovery when a pane status comes during every full read: the third is shown, the newest status on top", async () => {
+    const { remote, fullReads, answer, unreadable, shownRemote } = recoveryFixture();
+    const status = (agent_status: string, finish_id: number) => act(async () => {
+      source.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ type: "machine-message", machine_id: "remote",
+        message: { type: "pane-status", pane_id: "r1", agent_status, finish_epoch: "e", finish_id } }) }));
+    });
+    await stream("opened");
+    await stream([local(), remote("pushed")]);
+    await stream([local(), unreadable]);
+    for (const [index, agentStatus] of ["working", "blocked", "done"].entries()) {
+      await advance(500);
+      expect(fullReads).toHaveLength(index + 1);
+      await status(agentStatus, index + 1);
+      answer.machine = remote(`read ${index + 1}`);
+      await act(async () => { fullReads[index]!.resolve(); });
+    }
+    expect(shownRemote()?.version).toBe("read 3");
+    expect(shownRemote()?.panes[0]?.agent_status).toBe("done");
+    await status("idle", 4);
+    await advance(5_000);
+    expect(fullReads).toHaveLength(3);
+    expect(shownRemote()?.panes[0]?.agent_status).toBe("idle");
+  });
 
   it("reduces an idle minute from 36 GETs to 6 only after an open stream pushes a connected local PC", async () => {
     await advance(60_000);
@@ -155,7 +276,7 @@ describe("roster and health polling beside the event stream", () => {
       expect(counts()).toEqual([1, 1, 1]);
       await advance(5_000);
       expect(counts()).toEqual([2, 2, 2]);
-      await stream("opened"); // a reopen alone cannot reuse a roster from the lost stream
+      await stream("opened");
       if (failure === "lost" || failure === "closed") {
         await advance(5_000);
         expect(counts()).toEqual([3, 3, 3]);
@@ -221,18 +342,16 @@ describe("roster and health polling beside the event stream", () => {
     await advance(5_000);
     expect(counts()).toEqual([2, 2, 2]);
     readState = "connected";
-    await advance(30_000); // a read alone never slows it again: that waits for a pushed roster
+    await advance(30_000);
     expect(counts()).toEqual([8, 8, 8]);
   });
 
   it("says Reconnecting while the stream that feeds the roster is lost after it was had, and Connected when it is back", async () => {
-    // a stream not yet had is no reconnect, nor its first opening
     expect(said).toBeNull();
     await healthyStream();
     expect(said).toBeNull();
     await stream("lost");
     expect(said).toBe("reconnecting");
-    // the rosters a reconnecting stream still hands over say nothing of it
     await stream([local()]);
     expect(said).toBe("reconnecting");
     await stream("opened");
@@ -243,7 +362,6 @@ describe("roster and health polling beside the event stream", () => {
     socketEvents = true;
     await onSocket({ type: "features", features: ["machine-events"] } as ServerMessage);
     expect(said).toBeNull();
-    // a lost socket says nothing of its events until it reconnects
     socketEvents = undefined;
     await onSocket("disconnect");
     expect(said).toBe("reconnecting");
@@ -286,5 +404,19 @@ describe("roster and health polling beside the event stream", () => {
     reads.length = 0;
     await advance(60_000);
     expect(reads).toEqual([]);
+  });
+});
+
+describe("sameData", () => {
+  it("takes a roster restored from compact rows, its keys in another order, for the full roster it equals", () => {
+    const pane = { pane_id: "w1:p1", terminal_id: "terminal", workspace_id: "w1", tab_id: "w1:t1", focused: true, revision: 1,
+      agent: "codex", agent_status: "working" as const, cwd: "/work/project/with/a/long/path", terminal_title: "An agent working on the project" };
+    const machines: Machine[] = [{ ...local(), snapshot: { version: "test", protocol: 22, workspaces: [], tabs: [], layouts: [], panes: [pane], agents: [{ ...pane, state_change_seq: 3 }] } }];
+    const event = expandMachineEvent(JSON.parse(JSON.stringify(wireMachineEvent({ type: "machines", machines }, true))));
+    const restored = event.type === "machines" ? event.machines : [];
+    expect(JSON.stringify(restored)).not.toBe(JSON.stringify(machines));
+    expect(sameData(machines, restored)).toBe(true);
+    restored[0]!.snapshot!.agents[0]!.state_change_seq = 4;
+    expect(sameData(machines, restored)).toBe(false);
   });
 });

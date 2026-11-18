@@ -18,20 +18,14 @@ afterEach(() => { mock.restore(); setSystemTime(); });
 
 const PROMPT = "Enter passphrase for key '/tmp/key': ";
 
-/**
- * A queued message to an idle gjc pane (pid 41001), drained. `after` runs once the catalog the paste is prepared with
- * was read, the last await before the final checks of the paste; `afterPaste` once the paste was written. Both may
- * replace what the pane shows or runs, as another process or a prompt can between a check and herdr's write.
- */
-async function drain({ after = () => {}, afterPaste = () => {}, mode = "gjc", tabRace = "none", screen = "", beforeDrain = () => {}, afterDrain, behind = 0, boxCheck = false }: { after?: (pane: Pane) => void; afterPaste?: (pane: Pane) => void; mode?: Mode; tabRace?: "none" | "birth" | "masked" | "live"; screen?: string;
-  /** skill mode: run GJC's box check (composer.ts freeAgentInput) on `screen`, its viewport read answered with `screen` too */ boxCheck?: boolean;
-  /** once the message is queued (or held), before the agent's turn ends and the queue is drained (or before its Send now) */ beforeDrain?: (pane: Pane) => void;
-  /** after that drain; `turn` is one more turn of the agent, ended, and the drain its end brings */ afterDrain?: (pane: Pane, turn: () => Promise<void>) => Promise<void>;
-  /** how many more messages are queued behind the first */ behind?: number }) {
+async function drain({ after = () => {}, afterPaste = () => {}, mode = "gjc", tabRace = "none", screen = "", beforeDrain = () => {}, afterDrain, behind = 0, boxCheck = false, herdrStatus = "idle" }: { after?: (pane: Pane) => void; afterPaste?: (pane: Pane) => void; mode?: Mode; tabRace?: "none" | "birth" | "masked" | "live"; screen?: string;
+  boxCheck?: boolean;
+  beforeDrain?: (pane: Pane) => void;
+  afterDrain?: (pane: Pane, turn: () => Promise<void>) => Promise<void>;
+  behind?: number;
+  herdrStatus?: string }) {
   spyOn(pi, "piTranscriptPath").mockResolvedValue(null);
   if (mode === "claude") { spyOn(claude, "claudeForegroundSession").mockResolvedValue("session-a"); spyOn(composer, "freeClaudeBox").mockResolvedValue(undefined as never); }
-  // the skill mode's pane runs gjc, whose box the send now reads first (composer.ts freeAgentInput): these tests count the
-  // skill key's own screen reads, so that check is left out here (agent-input-send.test.ts covers it)
   if (mode === "skill" && !boxCheck) spyOn(composer, "freeAgentInput").mockResolvedValue(undefined);
   if (mode === "skill") { spyOn(prompt, "prepareCommandSend").mockReturnValue({} as never); spyOn(prompt, "bindCommandProcess").mockImplementation(() => {}); spyOn(opencode, "startOpenCodeWatch").mockReturnValue(null); }
   const shown: Pane = { birth: 1_000 as number | null, screen, foreground: [{ pid: 41001, name: "gjc", argv: ["gjc"] }] };
@@ -40,19 +34,15 @@ async function drain({ after = () => {}, afterPaste = () => {}, mode = "gjc", ta
     shown.onProcessRead?.();
     return { pane_id: "p", shell_pid: 41000, foreground_processes: shown.foreground };
   });
-  // OpenCode's autocomplete with the skill's row selected, as the skill key's own screen reads see it; `tabRace` changes
-  // the pane during the read right before its Tab
   let visible = 0;
   const selected = readFileSync(join(import.meta.dir, "../fixtures/opencode-autocomplete-2.0.32-ansi-first-selected.ansi"), "utf8");
   spyOn(client, "paneRead").mockImplementation(async (options) => {
-    // the box check's viewport read comes before any of the skill key's (`boxCheck`)
     if (mode !== "skill" || options.source !== "visible" || (boxCheck && visible++ === 0)) {
       const text = shown.screen;
       shown.onScreenRead?.();
       return { text } as Awaited<ReturnType<typeof client.paneRead>>;
     }
     if (++visible === 2 && tabRace === "birth") shown.birth = 5_000;
-    // the visible viewport, scrolled, still shows the row while the live screen has a masked prompt
     if (visible === 2 && tabRace === "live") shown.screen = PROMPT;
     return { text: tabRace === "masked" && visible >= 2 ? `${selected}\n${PROMPT}` : selected } as Awaited<ReturnType<typeof client.paneRead>>;
   });
@@ -66,7 +56,6 @@ async function drain({ after = () => {}, afterPaste = () => {}, mode = "gjc", ta
   spyOn(client, "paneSendText").mockImplementation(async () => { writes.push("paste"); afterPaste(shown); });
   spyOn(client, "paneSendKeys").mockImplementation(async (_pane: string, keys: string[]) => {
     writes.push(keys.join("+"));
-    // Codex shows the steered message waiting after its Enter; a masked prompt comes up during the steering's process check
     if (mode === "codex" && keys[0] === "Enter") {
       shown.screen = "• Working (2s • esc to interrupt)\n• Messages to be submitted after next tool call (press esc to interrupt and send immediately)\n  ↳ FOLLOWUP\n› Ask Codex to do anything\n  gpt-6.1 default · /workspace\n";
       let reads = 0;
@@ -93,7 +82,6 @@ async function drain({ after = () => {}, afterPaste = () => {}, mode = "gjc", ta
   const text = mode === "skill" ? "@effect" : "FOLLOWUP";
   await delivery.pendingFrames.submit(owner, { type: "submit", id: 1, pane_id: "p", text, payload: text, delivery: mode === "codex" ? "hold" : "queue" });
   if (mode === "codex") {
-    // a held message's Send now steers the working agent
     const held = frames.flatMap((frame) => frame.type === "submit-result" && frame.pending ? [frame.pending] : [])[0]!;
     beforeDrain(shown);
     await delivery.pendingFrames["pending-action"](owner, { type: "pending-action", id: 2, pane_id: "p", pending_id: held.id, action: "steer" });
@@ -102,7 +90,7 @@ async function drain({ after = () => {}, afterPaste = () => {}, mode = "gjc", ta
   if (mode === "missing") shown.foreground = [];
   for (let more = 1; more <= behind; more++) await delivery.pendingFrames.submit(owner, { type: "submit", id: 10 + more, pane_id: "p", text: `${text} ${more}`, payload: `${text} ${more}`, delivery: "queue" });
   beforeDrain(shown);
-  pane.agent_status = "idle";
+  pane.agent_status = herdrStatus;
   delivery.pending.status("p", "idle");
   delivery.drainPending("p");
   for (let lane = 0; lane < 3; lane++) await serialize("p", () => {});
@@ -114,13 +102,10 @@ async function drain({ after = () => {}, afterPaste = () => {}, mode = "gjc", ta
   });
   return writes;
 }
-/** the frames the last drain's connection was sent, and the pending messages its last list holds: state and reason */
 let told: ServerMessage[] = [];
 const listed = (): Array<[string, string | undefined, string | undefined]> => told.flatMap((frame) => frame.type === "pending-messages" ? [frame.messages] : []).at(-1)
   ?.map((message) => [message.state, message.error?.code, message.error?.message]) ?? [];
-/** `codex-queued`: a message queued to a Codex pane and drained once it is idle (`codex` is a held one's Send now) */
 type Mode = "gjc" | "claude" | "pi" | "codex" | "codex-queued" | "devin-queued" | "skill" | "missing";
-/** `onScreenRead`: as a read of the live screen is answered, after its text was taken */
 interface Pane { birth: number | null; screen: string; foreground: Array<{ pid: number; name: string; argv: string[] }>; onProcessRead?: () => void; onScreenRead?: () => void }
 
 it("holds a queued message rather than pasting it over text typed in GJC's box (composer.ts freeAgentInput)", async () => {
@@ -148,12 +133,10 @@ it("withholds the Enter from another process that took the agent's PID after the
 });
 
 it("types nothing into a masked prompt that appears during the last process check before the paste", async () => {
-  // the next process read is the last check's: the prompt comes up while it is answered
   expect(await drain({ after: (pane) => { pane.onProcessRead = () => { pane.screen = PROMPT; }; } })).toEqual([]);
 });
 
 it("withholds the Enter from a masked prompt that appears during the last process check before it", async () => {
-  // the check before Enter reads the screen, then the process: the prompt comes up at the last process read
   expect(await drain({ afterPaste: (pane) => { let reads = 0; pane.onProcessRead = () => { if (++reads >= 3) pane.screen = PROMPT; }; } })).toEqual(["paste"]);
 });
 
@@ -177,9 +160,9 @@ it("sends no steering Escape into a masked prompt that comes up during the steer
   expect(await drain({ mode: "codex" })).toEqual(["paste", "Enter"]);
 });
 
-// One drain per test: its mocks wrap what they replace, and are taken down after each test.
 const CODEX_COMPOSER = "› Ask Codex to do anything\n  GPT-6-Astra default fast · main · Context 100% left\n  ← for agents · ? for shortcuts\n";
-// /rename's field, the theme list and the /diff pager, as Codex 0.163 draws them: none is a card the chat can answer
+// Codex's update menu, as its start draws it: "Update now" runs npm under Codex's own process
+const CODEX_UPDATE_MENU = "  Update available · 0.167.0 → 0.167.2\n  Release notes: https://github.com/openai/codex/releases/latest\n\n› 1. Update now (runs `npm install -g @openai/codex`)\n  2. Skip\n  3. Skip until next version\n\n  enter continue · esc skip\n";
 const CODEX_OWN_SCREENS = {
   "/rename's field": "  Name thread\n› Type a name and press Enter\n  enter submit · esc back\n",
   "the theme list": "  catppuccin-macchiato\n› catppuccin-mocha (current)\n↓\n  enter select · esc back\n",
@@ -194,14 +177,12 @@ const HELD_FOR_SCREEN: ReturnType<typeof listed> = [["held", "agent_blocked", "C
 
 for (const [name, screen] of Object.entries(CODEX_OWN_SCREENS)) {
   it(`types no queued message into ${name} when the turn ends with it up, and holds the message with that reason`, async () => {
-    // queued over the composer while Codex works: the screen is up when the turn ends, which herdr reports as Codex at rest
     expect(await drain({ mode: "codex-queued", screen: CODEX_COMPOSER, beforeDrain: (pane) => { pane.screen = screen; } })).toEqual([]);
     expect(listed()).toEqual(HELD_FOR_SCREEN);
   });
 }
 
 it("does not send a queued message refused by one of Codex's own screens by itself later: nothing tells that the screen closed", async () => {
-  // the screen is closed, and the agent's next turn ends over the composer: the message still waits for its Send now
   expect(await drain({ mode: "codex-queued", screen: CODEX_COMPOSER, beforeDrain: (pane) => { pane.screen = CODEX_OWN_SCREENS["/rename's field"]; },
     afterDrain: async (pane, turn) => { pane.screen = CODEX_COMPOSER; await turn(); } })).toEqual([]);
   expect(listed()).toEqual(HELD_FOR_SCREEN);
@@ -212,17 +193,14 @@ it("holds every message queued behind the one refused by one of Codex's own scre
   expect(listed()).toEqual([...HELD_FOR_SCREEN, ...HELD_FOR_SCREEN, ...HELD_FOR_SCREEN]);
 });
 
-// a command's approval as Codex asks it: a card the chat reads, with a footer of its own, which herdr reports blocked
 const CODEX_APPROVAL = "Would you like to run the following command?\n\n$ rm -rf junk\n\n› 1. Yes, proceed (y)\n  2. No, and tell Codex what to do differently (esc)\n\nPress enter to confirm or esc to cancel\n";
 
 it("queues a message again when the turn ends on a prompt Codex asks, which herdr reports: its end drains the queue", async () => {
-  // herdr's word for the prompt may come a moment after the screen: the pane still reads at rest here
   expect(await drain({ mode: "codex-queued", screen: CODEX_COMPOSER, beforeDrain: (pane) => { pane.screen = CODEX_APPROVAL; },
     afterDrain: async (pane, turn) => { expect(listed()).toEqual([["queued", undefined, undefined]]); pane.screen = CODEX_COMPOSER; await turn(); } })).toEqual(["paste", "Enter"]);
 });
 
 it("queues a message again when such a prompt comes up during the last checks before the paste", async () => {
-  // `after` runs in every try: the prompt comes up in the first one only
   let asked = false;
   expect(await drain({ mode: "codex-queued", screen: CODEX_COMPOSER, after: (pane) => { if (!asked) pane.screen = CODEX_APPROVAL; asked = true; },
     afterDrain: async (pane, turn) => { expect(listed()).toEqual([["queued", undefined, undefined]]); pane.screen = CODEX_COMPOSER; await turn(); } })).toEqual(["paste", "Enter"]);
@@ -236,15 +214,40 @@ it("holds a message when the turn ends on the folder question while herdr report
   expect(listed()).toEqual(HELD_FOR_SCREEN);
 });
 
+it("holds a message when the turn ends on Codex's update menu, so that nothing is typed while the chosen install runs", async () => {
+  // "Update now" is chosen: Codex leaves its screen and runs npm as its child, so its process stays in front while herdr reports idle
+  expect(await drain({ mode: "codex-queued", screen: CODEX_COMPOSER, beforeDrain: (pane) => { pane.screen = CODEX_UPDATE_MENU; },
+    afterDrain: async (pane, turn) => { pane.screen = "$ npm install -g @openai/codex\nadded 1 package in 4s\n"; await turn(); } })).toEqual([]);
+  expect(listed()).toEqual(HELD_FOR_SCREEN);
+});
+
+it("holds a message when the update menu comes up during the last checks before the paste, where herdr's status is not read", async () => {
+  let asked = false;
+  expect(await drain({ mode: "codex-queued", screen: CODEX_COMPOSER, after: (pane) => { if (!asked) pane.screen = CODEX_UPDATE_MENU; asked = true; },
+    afterDrain: async (pane, turn) => { pane.screen = CODEX_COMPOSER; await turn(); } })).toEqual([]);
+  expect(listed()).toEqual(HELD_FOR_SCREEN);
+});
+
+it("holds a message when herdr reports the update menu as blocked", async () => {
+  expect(await drain({ mode: "codex-queued", screen: CODEX_COMPOSER, herdrStatus: "blocked", beforeDrain: (pane) => { pane.screen = CODEX_UPDATE_MENU; },
+    afterDrain: async (pane, turn) => { pane.screen = CODEX_COMPOSER; await turn(); } })).toEqual([]);
+  expect(listed()).toEqual(HELD_FOR_SCREEN);
+});
+
+it("holds a message when the older \"Press enter to continue\" menu is up while herdr reports Codex at rest", async () => {
+  const older = "  Update available \u00b7 0.162.0 \u2192 0.163.0\n\n\u203a 1. Update now (runs `npm install -g @openai/codex`)\n  2. Skip\n  3. Skip until next version\n\n  Press enter to continue\n";
+  expect(await drain({ mode: "codex-queued", screen: CODEX_COMPOSER, beforeDrain: (pane) => { pane.screen = older; },
+    afterDrain: async (pane, turn) => { pane.screen = CODEX_COMPOSER; await turn(); } })).toEqual([]);
+  expect(listed()).toEqual(HELD_FOR_SCREEN);
+});
+
 it("types none of the queued messages when the screen closes between two of them: all are held in one step, in their order", async () => {
-  // the first try reads the theme list; the user closes it as that read is answered, so the next try would find the composer
   expect(await drain({ mode: "codex-queued", screen: CODEX_COMPOSER, behind: 2,
     beforeDrain: (pane) => { pane.screen = CODEX_OWN_SCREENS["the theme list"]; pane.onScreenRead = () => { pane.screen = CODEX_COMPOSER; }; } })).toEqual([]);
   expect(listed()).toEqual([...HELD_FOR_SCREEN, ...HELD_FOR_SCREEN, ...HELD_FOR_SCREEN]);
 });
 
 it("answers a held message's Send now over one of Codex's own screens with the refusal alone, none of the drain's own notes", async () => {
-  // the screen opens during the Send now's own checks, so the refusal comes from the send itself
   expect(await drain({ mode: "codex", screen: CODEX_COMPOSER, after: (pane) => { pane.screen = CODEX_OWN_SCREENS["/rename's field"]; } })).toEqual([]);
   const answer = told.find((frame) => frame.type === "pending-result");
   expect(answer).toMatchObject({ ok: false, code: "agent_blocked", message: "Codex has one of its own screens open in the terminal; close it there, then send" });
@@ -293,7 +296,6 @@ it("still checks the process a queued Codex message was for after that screen re
 });
 
 it("types no queued Codex message into a process that took the agent's PID while the last screen read was answered", async () => {
-  // the next screen read is the last one before the paste: the composer is what it shows, and the PID is another's as it returns
   expect(await drain({ mode: "codex-queued", screen: CODEX_COMPOSER, after: (pane) => { pane.onScreenRead = () => { pane.birth = 5_000; }; } })).toEqual([]);
 });
 
@@ -375,11 +377,9 @@ it("keeps a first message waiting, not held, while its launched agent's start re
   birth = 5_000;
   delivery.drainPending("p");
   for (let lane = 0; lane < 3; lane++) await serialize("p", () => {});
-  // a start read as another one is still a replacement
   expect(codes().at(-1)).toBe("pending_target_changed");
 });
 
 it("types nothing once the message's deadline passed during the last reads before the paste", async () => {
-  // the last process check before the paste runs past the deadline
   expect(await drain({ after: (pane) => { pane.onProcessRead = () => { setSystemTime(new Date(Date.now() + 60_000)); }; } })).toEqual([]);
 });

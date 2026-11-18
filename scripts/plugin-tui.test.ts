@@ -8,10 +8,6 @@ import { findTui, lookupMessage, runTui, tuiEnv, tuiPaths, WINDOWS_MESSAGE, type
 const ROOT = join(import.meta.dir, "..");
 let scratch: string;
 
-/**
- * A stand-in for ovis-tui: writes its arguments, OVIS_URL and OVIS_TOKEN (or that it has none) to
- * STANDIN_RECORD, then, as told, says "ready" and waits for a line, ends by a signal, or exits with a code.
- */
 const STANDIN = `#!/bin/sh
 {
   for arg in "$@"; do printf 'arg:%s\\n' "$arg"; done
@@ -98,7 +94,7 @@ describe("runTui", () => {
       where: { root: join(scratch, "root"), home: scratch },
       settings: { OVIS_TUI_BIN: join(scratch, "ovis-tui"), OVIS_TOKEN: "secret" },
       err: (text) => said.push(text),
-      on: () => undefined,
+      on: () => () => undefined,
       ...extra,
       caller: { PATH: process.env["PATH"], STANDIN_RECORD: join(scratch, "record"), ...extra.caller },
       said,
@@ -135,6 +131,42 @@ describe("runTui", () => {
     expect(record()).toBeNull();
   });
 
+  function watched(): { readonly seen: string[]; readonly handlers: Map<string, () => void>; readonly on: TuiOptions["on"]; [Symbol.dispose]: () => void } {
+    const seen: string[] = [];
+    const handlers = new Map<string, () => void>();
+    const spawn = Bun.spawn;
+    Bun.spawn = ((...args: Parameters<typeof spawn>) => { seen.push("spawn"); return spawn(...args); }) as typeof spawn;
+    return {
+      seen, handlers,
+      on: (signal, handler) => { seen.push(signal); handlers.set(signal, handler); return () => { seen.push(`off ${signal}`); }; },
+      [Symbol.dispose]: () => { Bun.spawn = spawn; },
+    };
+  }
+
+  it.skipIf(process.platform === "win32")("listens for SIGTERM and SIGHUP before the program starts, passes them on, and stops listening once it ended", async () => {
+    const program = join(scratch, "ovis-tui");
+    writeFileSync(program, "#!/bin/sh\nwhile :; do sleep 0.05; done\n");
+    chmodSync(program, 0o755);
+    using signals = watched();
+    const ran = runTui([], options({ on: signals.on }));
+    expect(signals.seen).toEqual(["SIGINT", "SIGTERM", "SIGHUP", "spawn"]);
+    signals.handlers.get("SIGTERM")!();
+    expect(await ran).toBe(128 + 15);
+    expect(signals.seen.slice(4).sort()).toEqual(["off SIGHUP", "off SIGINT", "off SIGTERM"]);
+  });
+
+  it("stops listening when the program cannot be started, and a signal after it finds nothing to pass on", async () => {
+    const program = join(scratch, "ovis-tui");
+    writeFileSync(program, "not a program\n");
+    chmodSync(program, 0o644);
+    using signals = watched();
+    const run = options({ on: signals.on });
+    expect(await runTui([], run)).toBe(1);
+    expect(run.said.join("")).toContain(`could not run ${program}`);
+    expect(signals.seen.filter((event) => event.startsWith("off ")).sort()).toEqual(["off SIGHUP", "off SIGINT", "off SIGTERM"]);
+    for (const handler of signals.handlers.values()) expect(handler).not.toThrow();
+  });
+
   it("runs nothing on Windows", async () => {
     standIn(join(scratch, "ovis-tui"));
     const run = options({ platform: "win32" });
@@ -145,7 +177,6 @@ describe("runTui", () => {
 });
 
 describe("ovis tui", () => {
-  /** `bun scripts/plugin.ts tui …` with this test's own home, state, config and install root. */
   function launch(args: string[], extra: Record<string, string> = {}) {
     const env: Record<string, string | undefined> = { ...process.env };
     for (const key of ["PORT", "HOST", "OVIS_URL", "OVIS_TOKEN", "OVIS_TUI_BIN", "OVIS_STATE_DIR", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "HERDR_SOCKET", "HC_SESSION", "HC_SOCKET"]) delete env[key];
@@ -160,7 +191,6 @@ describe("ovis tui", () => {
     return Bun.spawn([process.execPath, "scripts/plugin.ts", "tui", ...args], { cwd: ROOT, env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
   }
 
-  /** A port that answers nothing, counting every connection made to it. */
   function listener() {
     const seen = { connections: 0 };
     const socket = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { open: () => { seen.connections += 1; }, data: () => undefined } });

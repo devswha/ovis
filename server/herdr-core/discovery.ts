@@ -45,7 +45,7 @@ export interface FindHcOptions {
 }
 
 /** a slow or interactive shell profile, or a hanging binary, must not hold the server up */
-const PROBE_TIMEOUT_MS = 3_000;
+export const PROBE_TIMEOUT_MS = 3_000;
 /** the hc the desktop app ships may be slow to answer its first --version (a fresh copy, a busy start) */
 export const BUNDLED_PROBE_TIMEOUT_MS = 10_000;
 /** how long output is still read after the probe exits: what it left behind holding stdout is not waited on */
@@ -339,6 +339,7 @@ export function aclReader(options: { platform?: NodeJS.Platform; getfacl?: strin
     }
     if (getfacl === undefined) getfacl = Bun.which("getfacl", { PATH: SYSTEM_PATH.join(delimiter) });
     if (getfacl === null) {
+      // `ls -ld` marks a path that has an ACL with a `+` after its mode
       const listing = read(["/bin/ls", "-ld", "--", path]);
       return listing === null || /^\S{10}\+/.test(listing);
     }

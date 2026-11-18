@@ -163,7 +163,7 @@ export const SETTINGS_JA: Record<string, string> = {
   "Show above the message box|quick replies switch": "入力欄の上に表示",
   "Ovis relay|relay switch": "Ovis リレー",
   "Restore defaults": "デフォルトに戻す",
-  "Ovis sends anonymous usage counts to improve it.": "Ovis は改善のために匿名の利用集計を送信します。",
+  "Button use and other anonymous usage counts are sent to improve Ovis.": "Ovis は改善のために、ボタンの使用などの匿名の利用集計を送信します。",
   "Couldn't turn the counts off. Open Settings to use the switch.": "集計をオフにできませんでした。設定のスイッチを使ってください。",
   "Turn off": "オフにする",
   "What each field means": "各項目の説明",
@@ -171,8 +171,9 @@ export const SETTINGS_JA: Record<string, string> = {
   "Anonymous usage counts": "匿名の利用集計",
   "Turned off on this PC by OVIS_TELEMETRY=0, DO_NOT_TRACK or a CI environment.": "この PC では OVIS_TELEMETRY=0、DO_NOT_TRACK または CI 環境によりオフになっています。",
   "Send anonymous usage counts": "匿名の利用集計を送る",
-  "Once on install and once per update, with the last browser's app settings, and once a day you open the app, with the kinds of coding agents running in herdr (such as claude or codex), the kinds of screen the app was opened on, how they reached this PC, and how many prompt answers were sent and alerts delivered and tapped. Custom fonts, shortcuts and replies are reported only as customization flags or counts, never their text. Account identifiers, terminal content and files are excluded. The receiver stores the country, not the IP address.": "インストール時に 1 回、更新ごとに 1 回、最後に使用したブラウザーのアプリ設定とともに送信し、アプリを開いた日に 1 回、herdr で動いているコーディングエージェントの種類（claude や codex など）、アプリを開いた画面の種類、その画面がこの PC に届いた経路、送信したプロンプトへの回答数、届いた通知とタップされた通知の数とともに送信します。カスタムフォント、ショートカット、返信は、テキストではなくカスタマイズの有無や数としてのみ報告します。アカウント識別子、ターミナルの内容、ファイルは含みません。受信側は IP アドレスではなく国のみを保存します。",
+  "Once on install and once per update, with the last browser's app settings, and once a day you open the app, with the kinds of coding agents running in herdr (such as claude or codex), the kinds of screen the app was opened on, how they reached this PC, and how many prompt answers were sent and alerts delivered and tapped. After each day, how often the app's buttons were used that day (chat sends, the composer's buttons, the agent inbox, and switches between chat and terminal by kind of agent and how) and, for a few actions, whether a button, a menu, a shortcut or the command palette was used, each count only as a rough range, with the list of which of these controls were shown, on narrow and wide screens apart, never what was typed, which pane or what time of day. Custom fonts, shortcuts and replies are reported only as customization flags or counts, never their text. Account identifiers, terminal content and files are excluded. The receiver stores the country, not the IP address.": "インストール時に 1 回、更新ごとに 1 回、最後に使用したブラウザーのアプリ設定とともに送信し、アプリを開いた日に 1 回、herdr で動いているコーディングエージェントの種類（claude や codex など）、アプリを開いた画面の種類、その画面がこの PC に届いた経路、送信したプロンプトへの回答数、届いた通知とタップされた通知の数とともに送信します。1 日が終わると、その日にアプリのボタンをどれだけ使ったか（チャットの送信、入力欄のボタン、エージェント受信箱、エージェントの種類と操作方法ごとのチャットとターミナルの切り替え）と、いくつかの操作をボタン・メニュー・ショートカット・コマンドパレットのどれで行ったかを回数ごとにおおよその範囲だけで送り、これらのコントロールのどれが表示されたかを名前の一覧で送ります。狭い画面と広い画面に分けて送り、入力した内容、どのペインか、何時かは送りません。カスタムフォント、ショートカット、返信は、テキストではなくカスタマイズの有無や数としてのみ報告します。アカウント識別子、ターミナルの内容、ファイルは含みません。受信側は IP アドレスではなく国のみを保存します。",
   "Once a day you open the app:": "アプリを開いた日に 1 回:",
+  "After a day has ended:": "1 日が終わった後:",
   "The receiver adds the country this message comes from (two letters, such as KR). It does not store the address.": "受信側が、このメッセージの送信元の国（KR のような 2 文字）を付け加えます。アドレスは保存しません。",
   "This version has already been counted. The next event is sent after an update.": "このバージョンは集計済みです。次の送信は更新の後です。",
   "Settings can't be shown.": "設定を表示できません。",
@@ -240,7 +241,6 @@ export const SETTINGS_JA: Record<string, string> = {
   "agents hooks claude codex install": "エージェント フック claude codex インストール",
   "onboarding first run getting started welcome": "オンボーディング 初回 はじめに ようこそ",
   "Agent integrations": "エージェント連携",
-  // the hosted relay shell's rows (lib/relay/shell.tsx)
   "This page shows one PC. The front page lists every PC this phone is paired with.": "このページは1台のPCを表示します。トップページにこのスマホとペアリング済みのすべてのPCが並びます。",
   "Deletes this phone's key for this PC. Pairing again takes a new QR code from the PC.": "このPC用のこのスマホのキーを削除します。再度ペアリングするにはPCの新しいQRコードが必要です。",
 
@@ -287,6 +287,5 @@ export const SETTINGS_JA: Record<string, string> = {
   "Reopen files on return": "戻ったときにファイルを再表示",
   "Remove PC {name}": "PC {name} を削除",
 
-  // Settings → Alerts → Also send to, when the server could not say what it holds (design pass G-111)
   "Could not read this PC's alert destination ({error}). Close Settings and open it again.": "この PC の外部通知の設定を読み取れませんでした（{error}）。設定を閉じてもう一度開いてください。",
 };

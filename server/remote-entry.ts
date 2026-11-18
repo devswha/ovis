@@ -1,5 +1,3 @@
-// The bundle is launched only through SSH. Keep it alive after the tunnel closes;
-// herdr owns the terminal processes and no disconnect should terminate their work.
 import "./adopt-legacy-env.ts";
 import { createServer } from "./index.ts";
 import { ROOT } from "./entries.ts";
@@ -78,9 +76,9 @@ try {
     try {
       const file = lstatSync(path);
       if (file.isFile() && (uid === undefined || file.uid === uid) && file.mtimeMs < cutoff) rmSync(path);
-    } catch { /* gone, inaccessible, or another start already removed it */ }
+    } catch {}
   }
-} catch { /* housekeeping must not block starting the bridge */ }
+} catch {}
 const report = (code: "herdr_sessions_found" | "herdr_session_gone", sessions: Awaited<ReturnType<typeof discoverHerdrSessions>>, refusal?: string) => {
   const result = JSON.stringify({ code, sessions });
   const resultPath = process.env["HERDR_REMOTE_RESULT"];
@@ -95,7 +93,6 @@ if (chosenSocket) {
   if (status === "gone") return report("herdr_session_gone", (await discoverHerdrSessions()).filter((found) => found.socket_path !== chosenSocket));
 }
 if (windows) rmSync(windowsStartupStatus(dirname(descriptor), session), { force: true });
-// the lock records its owner's birth: a PID that now belongs to another process does not block this start
 const lock = acquireOwnerDirectory(descriptor + ".lock", { running: "Another bridge is starting; retry shortly", starting: "Another bridge is starting; retry shortly" });
 try {
   let existing = false;
@@ -147,6 +144,7 @@ try {
   const info = await bridgeIdentity();
   if (info.herdr.protocol < 22) throw new Error("herdr 0.9+ is required; update it explicitly before connecting");
   const token = randomBytes(32).toString("hex");
+  // a folder a machine profile marked is its own: createServer refuses it (server/profile-marker.ts)
   // started over SSH with a bare PATH: omo and gjc are often only on the login shell's
   const server = createServer({ port: 0, hostname: "127.0.0.1", token, machines: false, bridgeOnly: true, stateDir: descriptor + ".state", shellAgents: new ShellAgentLocator(), agentDetector: new AgentDetector({ locate: catalogLocator({ probe: defaultLoginProbe() }) }) });
   const registration = registerBridge(server.port, token);

@@ -1,14 +1,10 @@
-/**
- * The pane routes: what the browser reads from a pane (its screen, scroll, selection, commands,
- * files and native conversation) and what it does to one (type, rename, close, split, zoom, swap,
- * move beside another, resize, clear, focus, paste an image). Each answers from herdr alone, so none needs the
- * server's own state. The dispatcher in index.ts runs the access gate first.
- */
+/** The dispatcher in index.ts runs the access gate first. */
 import type { AgentRenameRequest, PaneDirection, PaneMoved, PaneResized, PaneSplit, PaneSwapped, PaneZoomed, ReadFormat, ReadSource } from "../shared/protocol.ts";
 import { mergeCatalogSources } from "./catalog-sources.ts";
 import { rememberPaneCommands, scanPaneCommands } from "./commands.ts";
 import { paneDocuments, paneFiles } from "./files.ts";
-import { badRequest, conflictResponse, errorResponse, isCount, isJsonObject, jsonResponse, readJsonObject, requestIdContext, setRequestRoute } from "./http.ts";
+import { FILE_POLICY } from "./file-view.ts";
+import { badRequest, conflictResponse, errorResponse, isCount, isJsonObject, jsonResponse, layoutResponse, readJsonObject, requestFault, requestIdContext, setRequestRoute, wordedHeaders } from "./http.ts";
 import { conversationImage, ConversationReadPending, ConversationUnavailable, forgetPaneTranscriptState, HistoryChanged, paneConversation, paneProcessRoots, paneTranscript, toolOutput, type ConversationPage } from "./conversation.ts";
 import { copilotRecoverable, unavailableReason } from "./conversation-shared.ts";
 import { MAX_SEARCH_QUERY, searchPattern, type ConversationSearchResponse } from "../shared/conversation-search.ts";
@@ -28,48 +24,26 @@ import { ConversationDiagnostics } from "./conversation-diagnostics.ts";
 
 const conversationDiagnostics = new ConversationDiagnostics();
 
-/**
- * A pane's summary read still running, by pane, and when it began: a later request for the pane waits on it while it
- * is younger than PANE_SUMMARY_DEADLINE_MS; an older one, begun perhaps under another state of the pane, is left to
- * finish by itself and a new read takes its place. A read a request stopped waiting for that settles with no request
- * waiting on it keeps its result (`settledAt`) for PANE_SUMMARY_KEEP_MS, handed to the next request for the pane and
- * then dropped; any other read is dropped when it settles.
- */
 interface SummaryReadEntry {
   read: Promise<PaneSummary | null | undefined>;
   startedAt: number;
-  /** the requests waiting on it now, and whether one stopped waiting */
   waiting: number;
   leftBehind: boolean;
   settledAt?: number;
 }
 const summaryReads = new Map<string, SummaryReadEntry>();
 
-/** The agents whose chat herdr's integration alone binds, by the session it reports (opencode.ts, grok-store.ts). */
 const INTEGRATION_BOUND = new Set(["opencode", "grok"]);
-/**
- * The agents a conversation reader exists for (conversation.ts resolveTranscript): a pane of one that is not read
- * (a label that does not match its process, a Devin pane with no matching session) is no "Ovis can't read it yet".
- */
 const READ_AGENTS = new Set(["claude", "codex", "pi", "omp", "omo", "gjc", "dsh", "dsh-tui", "kiro", "copilot", "grok", "agy", "muse", "letta", "kimi", "kimi-code", "devin", "opencode", "hermes", "cmd"]);
-/** each look on a chat's fallback poll is short (the chat's read gives up at 15 s), and the list read again only now and then */
 const LOOK_MS = 2000;
 const INTEGRATION_LIST_TTL_MS = 30_000;
 let integrations: { at: number; list: Promise<Awaited<ReturnType<typeof integrationList>>> } | null = null;
 
-/**
- * The reason told for a pane, where the pane's agent changes it: `no_reader` only for an agent no reader exists for;
- * `no_integration` for `not_found` in a pane of an agent whose session only herdr's integration reports, with none
- * reported and that integration not installed (then none ever is, and installing it is what the user can do). A
- * failed look says nothing more: no reason rather than a wrong one, or the plainer one.
- */
 async function paneReason(paneId: string, reason: ReturnType<typeof unavailableReason>): Promise<ReturnType<typeof unavailableReason>> {
   if (reason !== "not_found" && reason !== "no_reader" && reason !== "unreadable") return reason;
   try {
     const pane = await paneGet(paneId, undefined, LOOK_MS);
     const agent = typeof pane.agent === "string" ? pane.agent : null;
-    // Copilot's reader says what it waits out and what the user can change itself (recovery, hint): a page read
-    // that failed once may answer at the next poll, where a reason line would come and go
     if (agent === "copilot") return undefined;
     if (reason === "unreadable") return reason;
     if (reason === "no_reader") return agent === null || READ_AGENTS.has(agent) ? undefined : reason;
@@ -84,7 +58,6 @@ async function paneReason(paneId: string, reason: ReturnType<typeof unavailableR
   }
 }
 
-/** the native stores createServer was given; unset, each reader finds its own */
 export type PaneStores = { codexHome?: string; grokHome?: string; museData?: string; opencodeDb?: string; devinDbPath?: string; hermesHome?: string; openCodeStateDir?: string };
 
 /** the sides herdr's pane.swap and pane.resize take, and a move's side of its target; anything else is refused before the RPC, which would answer invalid_request */
@@ -95,8 +68,6 @@ const READ_FORMATS = new Set<ReadFormat>(["ansi", "text"]);
 /** pane.read's `lines` is a uint32 */
 const UINT32_MAX = 4294967295;
 
-/** The answer for a pane route, or null when the path is not one. */
-/** `prompts=` from the chat's history-page setting; a junk value is no value. */
 function pagePromptsOf(raw: string | null): number | undefined {
   if (raw === null) return undefined;
   const parsed = Number(raw);
@@ -127,7 +98,6 @@ export async function handlePaneRequest(request: Request, url: URL, pathname: st
     if (payload instanceof Response) return payload;
     if (typeof payload.pane_id !== "string" || payload.pane_id.length === 0) return badRequest("missing_pane_id", "pane_id is required");
     if (payload.name !== null && typeof payload.name !== "string") return badRequest("invalid_name", "name must be a string, or null to clear it");
-    // the rule and the uniqueness are herdr's: its refusal comes back as it is
     try {
       await agentRename(payload.pane_id, payload.name);
       return jsonResponse({ ok: true });
@@ -136,9 +106,7 @@ export async function handlePaneRequest(request: Request, url: URL, pathname: st
     }
   }
 
-  // The commands an agent would offer in a folder before any pane runs it (the new workspace and
-  // tab dialogs list its skills): the same rows GET /api/pane/commands gives a pane, read from the
-  // bridge's own tables and a scan of the folder and home. No process exists, so nothing is asked
+  // No process exists, so nothing is asked
   // of an agent binary (the catalog's convention), no process roots refine the scan, and no row is
   // verified against a running version.
   if (pathname === "/api/agent/commands") {
@@ -158,7 +126,6 @@ export async function handlePaneRequest(request: Request, url: URL, pathname: st
   }
 
   if (pathname === "/api/pane/commands" || pathname === "/api/pane/files") {
-    // the commands scan's wait counts from here, its herdr lookups included (`scanPaneCommands`)
     const began = performance.now();
     setRequestRoute(pathname);
     if (request.method !== "GET") return badRequest("method_not_allowed", "use GET");
@@ -169,7 +136,6 @@ export async function handlePaneRequest(request: Request, url: URL, pathname: st
       if (pathname === "/api/pane/commands") {
         const roots = await paneProcessRoots(paneId, context.agent);
         const { agent } = resolveAgent(context.pane, roots);
-        // the version comes from the store this pane's own transcript names; none resolved leaves it unverified
         const store = agent === "claude" || agent === "codex" || agent === "opencode"
           ? await paneTranscript(paneId, options.codexHome, undefined, options.devinDbPath, options.opencodeDb, options.hermesHome, options.grokHome, options.museData).then(versionSourceOf, () => null)
           : null;
@@ -220,8 +186,6 @@ export async function handlePaneRequest(request: Request, url: URL, pathname: st
       return badRequest("invalid_lines", "lines must be an integer from 0 to 4294967295 in decimal digits");
     }
     const lines = linesRaw === null ? undefined : Number(linesRaw);
-    // herdr knows these enums and has its own answer for a wrong one, but a read this
-    // route never meant to make is refused here rather than sent on as a guess
     const source = url.searchParams.get("source") ?? "visible";
     if (!READ_SOURCES.has(source)) return badRequest("invalid_source", `source must be one of ${[...READ_SOURCES].join(", ")}`);
     const format = url.searchParams.get("format") ?? "text";
@@ -258,7 +222,10 @@ export async function handlePaneRequest(request: Request, url: URL, pathname: st
         ...(payload.content_revision !== undefined ? { content_revision: payload.content_revision } : {}),
       }));
     } catch (error) {
-      if (error instanceof HerdrError && error.code === "stale_content") return conflictResponse(error.code, error.message);
+      if (error instanceof HerdrError && error.code === "stale_content") {
+        const { code, message } = requestFault(error, "stale_content");
+        return conflictResponse(code, message, wordedHeaders());
+      }
       return errorResponse(error);
     }
   }
@@ -319,7 +286,6 @@ export async function handlePaneRequest(request: Request, url: URL, pathname: st
     } catch (error) {
       if (error instanceof HistoryChanged || error instanceof DevinHistoryChanged) return jsonResponse({ error: { code: "history_changed", message: error.message } }, 409);
       if (error instanceof ConversationReadPending) return jsonResponse({ error: { code: "conversation_read_pending", message: error.message } }, 503, { "cache-control": "no-store" });
-      // the chat shows the terminal's scrollback there: no message of its own to search
       if (error instanceof ConversationUnavailable) return jsonResponse({ matches: [], cursor: null } satisfies ConversationSearchResponse, 200, { "cache-control": "no-store" });
       return errorResponse(error);
     }
@@ -352,7 +318,7 @@ export async function handlePaneRequest(request: Request, url: URL, pathname: st
       // Claude and pi embed immutable bytes, and omp, Grok and Copilot name a picture by its digest; Codex files and
       // OpenCode tool-image ordinals can change, and a Codex tool's picture (`codex-tool:`) loads with its row.
       const cacheControl = ref.startsWith("codex-") || ref.startsWith("opencode:") ? "private, no-store" : "private, max-age=86400, immutable";
-      return new Response(image.bytes, { headers: { "content-type": image.mediaType, "cache-control": cacheControl, "x-content-type-options": "nosniff" } });
+      return new Response(image.bytes, { headers: { "content-type": image.mediaType, "cache-control": cacheControl, "x-content-type-options": "nosniff", "content-security-policy": FILE_POLICY } });
     } catch (error) {
       return errorResponse(error);
     }
@@ -367,14 +333,9 @@ export async function handlePaneRequest(request: Request, url: URL, pathname: st
     // no prototype: a pane id such as `__proto__` is a key like any other
     const summaries: PaneSummaries["summaries"] = Object.create(null);
     const deadline = Date.now() + PANE_SUMMARY_DEADLINE_MS;
-    // the asker going away ends the wait at once
     let leave = (): void => {};
     const gone = new Promise<"gone">((resolve) => { leave = () => resolve("gone"); });
     if (request.signal.aborted) leave(); else request.signal.addEventListener("abort", leave, { once: true });
-    // one pane after another, each given at most PANE_SUMMARY_PANE_MS of what is left: a pane read no faster is left out
-    // (its read goes on, for a request soon after to take up) and the next pane read, until the request's time is used up;
-    // a pane with no conversation to read is null; one whose read failed for now (undefined) is left out, for the client
-    // to ask again; neither is the list's failure
     for (const [paneId, entry] of summaryReads) if (entry.settledAt !== undefined && Date.now() - entry.settledAt >= PANE_SUMMARY_KEEP_MS) summaryReads.delete(paneId);
     try {
       for (const paneId of paneIds) {
@@ -383,17 +344,14 @@ export async function handlePaneRequest(request: Request, url: URL, pathname: st
         const running = summaryReads.get(paneId);
         let entry: SummaryReadEntry;
         if (running?.settledAt !== undefined) {
-          // a kept result is handed over once
           summaryReads.delete(paneId);
           entry = running;
         } else if (running !== undefined && Date.now() - running.startedAt < PANE_SUMMARY_DEADLINE_MS) entry = running;
         else {
           const started: SummaryReadEntry = {
             read: paneConversation(paneId, options.codexHome, { prompts: 1 }, options.devinDbPath, options.opencodeDb, options.hermesHome, options.grokHome, options.museData)
-              // a summary that throws while it is made is left out, as a read that failed for now is
               .then((conversation) => summaryOf(conversation.turns))
               .catch((error: unknown) => error instanceof ConversationUnavailable ? null : undefined)
-              // a read replaced by a newer one leaves its successor in place; one left behind with nobody waiting is kept
               .finally(() => {
                 if (summaryReads.get(paneId) !== started) return;
                 if (started.leftBehind && started.waiting === 0) started.settledAt = Date.now();
@@ -441,11 +399,7 @@ export async function handlePaneRequest(request: Request, url: URL, pathname: st
       const answer = screenContext === null ? conversation
         : { ...conversation, metadata: { ...(conversation.metadata ?? { model: null, reasoning_effort: null }), context: screenContext } };
       // no-store keeps the browser's own cache out of it, so the chat sees the 304.
-      // weak: the same answer goes out gzipped or plain (compress.ts), which are not the same bytes
-      // the screen's figure is not in `version`, so it is named here: a changed percent is a new answer
       const etag = `W/"${version}${screenContext === null ? "" : `-ctx${screenContext.used}:${screenContext.window}`}"`;
-      // the turns' times are on this PC's clock, which the browser's can run ahead of (src/lib/sentWaiting.ts):
-      // an unchanged answer says it too, so an idle chat's bound stays as fresh as its last read
       const serverTime = new Date().toISOString();
       const headers = { etag, "cache-control": "no-store", "x-server-time": serverTime };
       if (request.headers.get("if-none-match")?.replace(/^W\//, "") === etag.slice(2)) return new Response(null, { status: 304, headers });
@@ -456,9 +410,6 @@ export async function handlePaneRequest(request: Request, url: URL, pathname: st
         conversationDiagnostics.unavailable(paneId, error, requestIdContext.getStore()?.id);
         return jsonResponse({ error: { code: "conversation_read_pending", message: error.message } }, 503, { "cache-control": "no-store" });
       }
-      // an unrecognized pane is not an error: the client falls back to the
-      // scrollback transcript, exactly like chatmux's terminal fallback. Its metadata is only
-      // ever what the agent's own status line states
       if (error instanceof ConversationUnavailable) {
         conversationDiagnostics.unavailable(paneId, error, requestIdContext.getStore()?.id);
         const recovery = page.history_id !== undefined && copilotRecoverable(error.diagnostic) ? { recovery: "waiting" } : {};
@@ -505,7 +456,6 @@ export async function handlePaneRequest(request: Request, url: URL, pathname: st
       // herdr emits pane.closed -> the collector broadcasts session-changed, so
       // every client refetches and the pane leaves sidebars on its own
       await paneClose(payload.pane_id);
-      // the pane is gone: whatever its chat parsed is released with it (server/conversation.ts)
       forgetPaneTranscriptState(payload.pane_id);
       return jsonResponse({ ok: true });
     } catch (error) {
@@ -539,7 +489,7 @@ export async function handlePaneRequest(request: Request, url: URL, pathname: st
     if (!isPaneDirection(payload.side)) return badRequest("invalid_side", "side must be left, right, up or down");
     try {
       const move = await paneMoveBeside(payload.pane_id, payload.target_pane_id, payload.side);
-      return jsonResponse({ ok: true, changed: move.changed, reason: move.reason } satisfies PaneMoved);
+      return layoutResponse({ ok: true, changed: move.changed, reason: move.reason } satisfies PaneMoved);
     } catch (error) {
       return errorResponse(error);
     }
@@ -572,7 +522,7 @@ export async function handlePaneRequest(request: Request, url: URL, pathname: st
       if (pathname === "/api/pane/zoom") {
         if (payload.mode !== undefined && payload.mode !== "toggle" && payload.mode !== "on" && payload.mode !== "off") return badRequest("invalid_mode", "mode must be toggle, on or off");
         const zoom = await paneZoom(paneId, payload.mode ?? "toggle");
-        return jsonResponse({ ok: true, zoomed: zoom.zoomed, changed: zoom.changed, reason: zoom.reason } satisfies PaneZoomed);
+        return layoutResponse({ ok: true, zoomed: zoom.zoomed, changed: zoom.changed, reason: zoom.reason } satisfies PaneZoomed);
       }
       if (pathname === "/api/pane/clear") {
         await paneClear(paneId);
@@ -586,7 +536,7 @@ export async function handlePaneRequest(request: Request, url: URL, pathname: st
         const swap = typeof payload.target_pane_id === "string"
           ? await paneSwapWith(paneId, payload.target_pane_id)
           : await paneSwap(paneId, payload.direction as PaneDirection);
-        return jsonResponse({ ok: true, changed: swap.changed, reason: swap.reason, target_pane_id: swap.target_pane_id } satisfies PaneSwapped);
+        return layoutResponse({ ok: true, changed: swap.changed, reason: swap.reason, target_pane_id: swap.target_pane_id } satisfies PaneSwapped);
       }
       if (!isPaneDirection(payload.direction)) return badRequest("invalid_direction", "direction must be left, right, up or down");
       // a share of the split the border belongs to, as herdr counts it, and no more than the
@@ -595,7 +545,7 @@ export async function handlePaneRequest(request: Request, url: URL, pathname: st
         return badRequest("invalid_amount", "amount must be a number above 0 and at most 0.5");
       }
       const resize = await paneResize(paneId, payload.direction, payload.amount);
-      return jsonResponse({ ok: true, changed: resize.changed, reason: resize.reason } satisfies PaneResized);
+      return layoutResponse({ ok: true, changed: resize.changed, reason: resize.reason } satisfies PaneResized);
     } catch (error) {
       return errorResponse(error);
     }

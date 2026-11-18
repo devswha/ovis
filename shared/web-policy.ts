@@ -1,8 +1,5 @@
-/**
- * The headers and policies the hosted shell's build (scripts/shell-build.ts) and the PC's own
- * server (server/static.ts, server/file-view.ts) both send, so the frontend build reads nothing
- * from server/. The two server files re-export what they used to define.
- */
+export const DEFAULT_ACCOUNT_SERVICE = "https://account.ovis.sh";
+export const accountServiceOff = (value: string): boolean => value.trim().toLowerCase() === "off";
 
 /** The hosted shell's Pages `_headers` (scripts/shell-build.ts) caches by the same rules. */
 export const IMMUTABLE_CACHE = "public, max-age=31536000, immutable";
@@ -10,8 +7,9 @@ export const REVALIDATE = "no-cache";
 
 /**
  * The app's own Content-Security-Policy, sent with the shell and every static file. The file
- * viewer's own answers (`/api/fs/*`, a PDF in a frame, images in an <img>) do not pass through
- * here: `fileResponse` (file-view.ts) sends them its own, stricter `sandbox; default-src 'none'`.
+ * viewer's own answers (`/api/fs/*`) do not pass through here: `fileResponse` (file-view.ts) sends
+ * them its own, stricter `sandbox; default-src 'none'`, except a PDF, which gets no policy at all
+ * (the browser's PDF viewer refuses a sandboxed document).
  * Every directive is here for a reason, and none of them is a guess:
  *
  * - `default-src 'self'`: the fallback for anything not named below. Nothing is fetched
@@ -85,7 +83,7 @@ export const CSP_DIRECTIVES = [
  */
 const SHELL_SOURCES: Record<string, string> = {
   // the account service the shell signs in to (docs/account.md); a self-hosted one is not added yet
-  "connect-src": "'self' wss: https://account.ovis.sh",
+  "connect-src": `'self' wss: ${DEFAULT_ACCOUNT_SERVICE}`,
   "media-src": "'self' blob:",
   "frame-src": "'self' blob:",
 };
@@ -104,15 +102,12 @@ export function shellContentSecurityPolicy(connect: readonly string[] = []): str
   }).join("; ");
 }
 
-/** The account service when OVIS_ACCOUNT_SERVICE_URL is unset; `OVIS_ACCOUNT_SERVICE_URL=off` names none. */
-export const DEFAULT_ACCOUNT_SERVICE = "https://account.ovis.sh";
-
 /**
  * The account service the PC's own pages sign in to: OVIS_ACCOUNT_SERVICE_URL's origin when it is
  * https, account.ovis.sh when it is unset, and none when it is `off` or not https.
  */
 export function accountServiceOrigin(value = process.env["OVIS_ACCOUNT_SERVICE_URL"] ?? DEFAULT_ACCOUNT_SERVICE): string | null {
-  if (!value) return null;
+  if (!value || accountServiceOff(value)) return null;
   try {
     const url = new URL(value);
     return url.protocol === "https:" && /^[a-z0-9.-]+(?::[0-9]+)?$/i.test(url.host) ? url.origin : null;
@@ -123,9 +118,7 @@ export function accountServiceOrigin(value = process.env["OVIS_ACCOUNT_SERVICE_U
  * An HTML page drawn as a page (the report or chart an agent wrote): its own script runs, but in
  * a sandbox without `allow-same-origin`, so it has no origin, no cookie and no storage of this
  * app's, and with no `connect-src` it cannot fetch, open a socket or beacon anything, here or
- * anywhere. It may load pictures, styles, fonts and scripts from https (a page made with a chart
- * library from a CDN draws as it does in any browser), but nothing from this server: an image
- * that loads or fails would tell it which of this PC's files exist. Only this app may frame it.
+ * anywhere. Only this app may frame it.
  * What it takes from its own folder (a screenshot beside the report, its stylesheet and script)
  * is put into the page before it is sent (`pageWithLocalFiles`), so it still asks for nothing.
  * The one exception is a video or sound too large to put into it, which plays from
