@@ -35,6 +35,7 @@ import { focused } from "./model/focus.ts";
 import { alertsOf } from "./model/look.ts";
 import { initialState, type ModelEvent, type ModelState, reduce } from "./model/reduce.ts";
 import { PaneGrid } from "./view/grid.ts";
+import { CopyView } from "./view/copy.ts";
 import { type PaneLook, Pointer, type PointerAct, type PointerScene, rowsAboveBottom } from "./view/mouse.ts";
 import { type HitMap, Painter, type PaneScene } from "./view/paint.ts";
 import { layOut, paneScene, type ScreenShape } from "./view/screen.ts";
@@ -133,6 +134,7 @@ export function startLoop(options: LoopOptions): Loop {
   let grids = new Map<string, { emulator: unknown; grid: PaneGrid }>();
   let shape: ScreenShape | null = null;
   const pointer = new Pointer();
+  const copyView = new CopyView();
   /** the last frame's hit map and pane scenes: what the mouse lands on */
   let hits: HitMap | null = null;
   const drawn = new Map<string, PaneScene>();
@@ -297,6 +299,7 @@ export function startLoop(options: LoopOptions): Loop {
   }
 
   function onPaneNotice(notice: PaneNotice): void {
+    if (copyView.changed(notice, panes)) dispatch({ type: "copy_closed", pane: notice.terminal });
     if (notice.type === "hold") {
       if (notice.held) holds.set(notice.terminal, clock.now());
       else holds.delete(notice.terminal);
@@ -456,6 +459,7 @@ export function startLoop(options: LoopOptions): Loop {
     const step = reduce(state, event);
     state = step.state;
     for (const effect of step.effects) perform(effect);
+    copyView.retain(state.mode.name === "copy" ? state.mode.pane : null);
     if (state !== before) {
       const unsaved = options.views?.keep(state) ?? null;
       if (unsaved !== null) dispatch({ type: "notice", code: "view_unsaved", data: { reason: unsaved }, at: clock.now() });
@@ -468,6 +472,14 @@ export function startLoop(options: LoopOptions): Loop {
 
   function perform(effect: Effect): void {
     switch (effect.type) {
+      case "copy": {
+        const answer = copyView.run(effect, panes.view(effect.pane), drawn.get(effect.pane));
+        if (answer.text !== undefined) writeCopy(answer.text);
+        if (answer.close) dispatch({ type: "copy_closed", pane: effect.pane });
+        if (answer.unavailable) dispatch({ type: "notice", code: "copy_unavailable", at: clock.now() });
+        owePass();
+        return;
+      }
       case "pane":
         for (const step of pointer.typed(effect.pane, lookOf(effect.pane))) performPointer(step);
         toPane(effect.pane, effect.input);
@@ -563,8 +575,11 @@ export function startLoop(options: LoopOptions): Loop {
   /** The selected text to the host's clipboard as OSC 52, with a notice: `copied`, or `copy_refused` over the size cap. */
   function copy(pane: string, range: ScreenRange): void {
     const text = panes.view(pane)?.emulator?.textOf(range);
-    if (!text?.ok) return;
-    const data = new TextEncoder().encode(text.value);
+    if (text?.ok) writeCopy(text.value);
+  }
+
+  function writeCopy(text: string): void {
+    const data = new TextEncoder().encode(text);
     const write = osc52(data);
     if (!write.ok) {
       if (write.code !== "empty") dispatch({ type: "notice", code: "copy_refused", data: { reason: write.code, bytes: data.length }, at: clock.now() });
@@ -576,7 +591,7 @@ export function startLoop(options: LoopOptions): Loop {
       painter?.invalidate();
       return;
     }
-    dispatch({ type: "notice", code: "copied", data: { bytes: data.length }, at: clock.now() });
+    dispatch({ type: "notice", code: "copied", data: { bytes: data.length }, calm: true, at: clock.now() });
   }
 
   /** What the pointer reads of a shown pane as the last frame drew it; null for a pane not drawn or with no picture. */
@@ -682,6 +697,7 @@ export function startLoop(options: LoopOptions): Loop {
     // the style table only grows: past its limit the painter and every grid are made anew
     if (painter.styles.get(STYLE_TABLE_LIMIT) !== undefined) rebuildPainter();
     const scenes: PaneScene[] = [];
+    let copying: ReturnType<CopyView["draw"]> = null;
     const copied = new Set<string>();
     drawn.clear();
     for (const spot of shape.spots) {
@@ -704,7 +720,9 @@ export function startLoop(options: LoopOptions): Loop {
       drawn.set(spot.pane, scene);
       const look = lookOf(spot.pane, view, scene);
       const selection = pointer.shown(spot.pane, paneFocus, look);
-      scenes.push({ ...scene, scrolledBack: look !== null && rowsAboveBottom(look) > 0, ...(selection ? { selection } : {}) });
+      const copy = copyView.draw(scene);
+      if (copy) copying = copy;
+      scenes.push({ ...(copy?.pane ?? scene), scrolledBack: look !== null && rowsAboveBottom(look) > 0, ...(!copy && selection ? { selection } : {}) });
     }
     const size = host.size();
     const paneViews = new Map(panes.views().map((v) => [v.terminal, v]));
@@ -720,6 +738,7 @@ export function startLoop(options: LoopOptions): Loop {
       cwd,
       theme,
       colors: host.colorDepth,
+      copying,
     });
     const frame = painter.paint({
       width: size.cols, height: size.rows, parts: chrome.parts,

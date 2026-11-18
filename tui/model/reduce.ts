@@ -10,6 +10,8 @@
 import type { HerdrAction } from "../../shared/herdr-keys.ts";
 import type { InputEvent } from "../input/decode.ts";
 import { CATALOGUE_BY_ID } from "./catalogue.ts";
+import type { CopyAction } from "./copy-keys.ts";
+import { copyAction, copyInput, type CopyMode, isCopyAction } from "./copy.ts";
 import { clearDeadline, type Deadlines, NO_DEADLINES, NOTICE_SHOW_MS, NOTICES_KEPT, setDeadline } from "./deadlines.ts";
 import type { Effect, KeyInput, MouseInput, OverlayChoice, PaneInput, PasteInput, Seen, TextInput } from "./effects.ts";
 import { EMPTY_WORLD, exists, type Focus, focusDirection, focused, focusOn, NO_FOCUS, nextFocus, type PaneNode, paneToward, shownZoom, type Target, type World } from "./focus.ts";
@@ -25,7 +27,7 @@ export type ModeState =
   /** `preview`: the workspace navigate mode points at, moved locally until Enter */
   | { readonly name: "navigate"; readonly preview: string | null }
   | { readonly name: "resize" }
-  | { readonly name: "copy" };
+  | CopyMode;
 
 /**
  * A notice on screen: `code` is the stable value tests and code read; `data` its details; it leaves at `until`.
@@ -62,6 +64,7 @@ export interface ModelState {
 
 /** Events that do not come from host input: the loop and the other modules send them. */
 export type ScreenEvent =
+  | { readonly type: "copy_closed"; readonly pane: string }
   | { readonly type: "resize"; readonly cols: number; readonly rows: number; readonly at: number }
   /** what exists now; focus, overlays and the navigate preview follow */
   | { readonly type: "world"; readonly world: World; readonly at: number }
@@ -124,9 +127,11 @@ export function reduce(state: ModelState, event: ModelEvent): Step {
       const rows = Math.trunc(event.rows);
       // a size that is not a whole number of cells above zero (infinite, NaN, negative) is no size: it is ignored
       if (Number.isFinite(cols) && Number.isFinite(rows) && cols > 0 && rows > 0) {
+        const resized = state.host.cols !== cols || state.host.rows !== rows;
         const { zoomMove } = acc.s;
         acc.s = { ...acc.s, host: { ...acc.s.host, cols, rows },
           zoomMove: cols <= NARROW_COLUMNS && zoomMove ? { ...zoomMove, pending: null } : zoomMove };
+        if (resized && state.mode.name === "copy") setMode(acc, { name: "terminal" });
       }
       break;
     }
@@ -158,7 +163,10 @@ export function reduce(state: ModelState, event: ModelEvent): Step {
       break;
     case "action":
       if (acc.s.locked && event.action !== "lock") notice(acc, "locked", { action: event.action }, event.at);
-      else runAction(acc, event.action, event.index ?? null, event.at);
+      else if (acc.s.mode.name !== "copy" || event.action === "detach" || isCopyAction(event.action)) runAction(acc, event.action, event.index ?? null, event.at);
+      break;
+    case "copy_closed":
+      if (state.mode.name === "copy" && state.mode.pane === event.pane) setMode(acc, { name: "terminal" });
       break;
     case "select":
       select(acc, event.target, event.at);
@@ -194,6 +202,7 @@ export function reduce(state: ModelState, event: ModelEvent): Step {
       // an event of a kind the model does not know changes nothing
       break;
   }
+  if (acc.s.mode.name === "copy" && focused(acc.s.world, acc.s.focus).pane?.id !== acc.s.mode.pane) setMode(acc, { name: "terminal" });
   return { state: acc.s, effects: acc.effects, levels: acc.levels };
 }
 
@@ -221,6 +230,10 @@ function ladder(acc: Acc, unit: Unit): void {
   }
   if (s.mode.name !== "terminal") {
     acc.levels.push(3);
+    if (s.mode.name === "copy") {
+      toCopy(acc, s.mode, unit.event);
+      return;
+    }
     const bound = boundIn(s.keymap.modeKeys[s.mode.name], chords);
     if (bound !== undefined) runAction(acc, bound.action, bound.index, at);
     return;
@@ -299,6 +312,16 @@ function ladderText(acc: Acc, event: TextInput): void {
     }
     if (s.mode.name !== "terminal") {
       acc.levels.push(3);
+      if (s.mode.name === "copy") {
+        if (s.mode.phase === "query") {
+          toCopy(acc, s.mode, run);
+          return;
+        }
+        toCopy(acc, s.mode, { ...run, text: first });
+        if (acc.s.mode.name !== "copy") return;
+        rest = after;
+        continue;
+      }
       const bound = boundIn(s.keymap.modeKeys[s.mode.name], charChords(first, false));
       const from = acc.effects.length;
       if (bound !== undefined) runAction(acc, bound.action, bound.index, event.at);
@@ -347,6 +370,15 @@ function handBack(acc: Acc, from: number, rest: string, at: number): boolean {
   return true;
 }
 
+function toCopy(acc: Acc, mode: CopyMode, input: PaneInput): void {
+  applyCopy(acc, mode, copyInput(mode, input, acc.s.keymap));
+}
+
+function applyCopy(acc: Acc, mode: CopyMode, next: ReturnType<typeof copyInput>): void {
+  if (next.mode !== mode) setMode(acc, next.mode ?? { name: "terminal" });
+  if (next.command) acc.effects.push({ type: "copy", pane: mode.pane, command: next.command });
+}
+
 /** Level 6: the focused pane gets this input, unless there is none or the key has no identity. */
 function toPane(acc: Acc, input: PaneInput): void {
   acc.levels.push(6);
@@ -382,6 +414,10 @@ function restore(acc: Acc, at: number): void {
 }
 
 function mouse(acc: Acc, event: MouseInput): void {
+  if (acc.s.mode.name === "copy") {
+    acc.levels.push(3);
+    return;
+  }
   if (event.action === "press") disarm(acc);
   const over = acc.s.overlays.length > 0 ? "overlay" : "screen";
   acc.levels.push(over === "overlay" ? 2 : 6);
@@ -571,7 +607,7 @@ const NAVIGATE_FOCUS: Readonly<Record<string, HerdrAction>> = {
 };
 
 /** The actions of the screen's own modes and its lock. */
-function runLocal(acc: Acc, action: Exclude<KeyAction, HerdrAction>, index: number | null, at: number): void {
+function runLocal(acc: Acc, action: Exclude<KeyAction, HerdrAction | CopyAction>, index: number | null, at: number): void {
   const s = acc.s;
   const shown = focused(s.world, s.focus);
   switch (action) {
@@ -632,7 +668,6 @@ function runLocal(acc: Acc, action: Exclude<KeyAction, HerdrAction>, index: numb
     }
     case "navigate_cancel":
     case "resize_leave":
-    case "copy_leave":
       setMode(acc, { name: "terminal" });
       return;
     default: {
@@ -653,8 +688,11 @@ function target<T extends { readonly id: string }>(node: T | undefined | null, k
 
 function runAction(acc: Acc, action: KeyAction, index: number | null, at: number): void {
   disarm(acc);
-  if (Object.hasOwn(CATALOGUE_BY_ID, action)) runHerdr(acc, action as HerdrAction, index, at);
-  else runLocal(acc, action as Exclude<KeyAction, HerdrAction>, index, at);
+  if (isCopyAction(action)) {
+    const { mode } = acc.s;
+    if (mode.name === "copy") applyCopy(acc, mode, copyAction(mode, action, index));
+  } else if (Object.hasOwn(CATALOGUE_BY_ID, action)) runHerdr(acc, action as HerdrAction, index, at);
+  else runLocal(acc, action as Exclude<KeyAction, HerdrAction | CopyAction>, index, at);
 }
 
 /** One of herdr's actions: a parity one shows a notice naming it; a built one gives its effect. */
@@ -683,7 +721,11 @@ function runHerdr(acc: Acc, action: HerdrAction, index: number | null, at: numbe
       return;
     case "copy_mode":
       if (shown.pane === null) notice(acc, "nothing_focused", { action }, at);
-      else setMode(acc, { name: "copy" });
+      else {
+        const pane = shown.pane.id;
+        setMode(acc, { name: "copy", pane, phase: "browse" });
+        acc.effects.push({ type: "copy", pane, command: { kind: "enter" } });
+      }
       return;
     case "resize_mode":
       if (shown.pane === null) notice(acc, "nothing_focused", { action }, at);

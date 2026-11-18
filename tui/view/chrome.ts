@@ -24,6 +24,7 @@ import type { ModelState } from "../model/reduce.ts";
 import { STRINGS } from "../strings.ts";
 import { TUI_THEMES, type TuiColorRole, type TuiThemeMode } from "../theme.generated.ts";
 import { agentLines } from "./agents.ts";
+import type { CopyView } from "./copy.ts";
 import type { Rect, Regions, SplitCells } from "./geometry.ts";
 import { hostLayout, type LaidCell } from "./host-layout.ts";
 import type { ShownLink } from "./link-view.ts";
@@ -122,6 +123,7 @@ const stateLook = (status: string | undefined) => STATE_LOOK[knownStatus(status)
 const actionLabel = (action: string): string => STRINGS.actions[action] ?? action.replaceAll("_", " ");
 
 interface ChromeInput {
+  copying?: ReturnType<CopyView["draw"]>;
   readonly regions: Regions;
   readonly spots: readonly PaneSpot[];
   readonly splits: readonly SplitCells[];
@@ -515,9 +517,13 @@ function modeBarPart(input: ChromeInput, colors: Colors, look: string): Part {
     offline: link.online ? null : STRINGS.offlineDetail(link.code),
     unreachable: state.keymap.notes.filter((note) => note.code === "prefix_unreachable" || note.code === "detach_unreachable").map((note) => note.code),
     hints: bar.hints.map((hint) => ({ keys: hint.keys.join("/"), label: actionLabel(hint.action) })),
-    notice: latest && link.online ? ` ${latest.calm ? "" : `${STRINGS.errorBadge}: `}${STRINGS.noticeText(latest.code, latest.data)} ` : null,
+    query: state.mode.name === "copy" && state.mode.phase === "query"
+      ? fieldView(state.mode.field, Math.max(1, rect.width - 8)) : null,
+    missing: input.copying?.noMatch ?? false,
+    hintsEmpty: state.mode.name === "copy" && state.mode.phase === "hints" && input.copying?.hints.length === 0,
+    notice: latest && link.online && bar.mode !== "copy" ? ` ${latest.calm ? "" : `${STRINGS.errorBadge}: `}${STRINGS.noticeText(latest.code, latest.data)} ` : null,
   };
-  return part("mode", rect, look, data, (canvas, { mode, offline, unreachable, hints, notice }) => {
+  return part("mode", rect, look, data, (canvas, { mode, offline, unreachable, hints, query, missing, hintsEmpty, notice }) => {
     if (rect.width <= 0 || rect.height <= 0) return;
     canvas.fill(canvas.style({ fg: colors.text, bg: colors.bgPanel }));
     const row = rect.y;
@@ -530,6 +536,11 @@ function modeBarPart(input: ChromeInput, colors: Colors, look: string): Part {
     for (const code of unreachable) col = printFit(canvas, col, row, ` [${code}] `, right - col, canvas.style({ fg: colors.dangerText, bg: colors.bgPanel, flags: STYLE_BOLD }), true);
     const keyStyle = canvas.style({ fg: colors.accent, bg: colors.bgPanel, flags: STYLE_BOLD });
     const labelStyle = canvas.style({ fg: colors.textDim, bg: colors.bgPanel });
+    if (query !== null) {
+      printFit(canvas, col, row, ` /${query.text}`, right - col, keyStyle);
+      return;
+    }
+    if (missing || hintsEmpty) col = printFit(canvas, col, row, ` ${missing ? STRINGS.copyNoMatch : STRINGS.copyNoHints}`, right - col, labelStyle);
     // a hint is drawn whole or not at all, so the keys shown are never a cut-off key
     for (const hint of hints) {
       if (col + measure(` ${hint.keys} ${hint.label}`).width > right) break;
@@ -667,7 +678,7 @@ function helpPart(width: number, height: number, state: ModelState, world: CoreV
 
 /** The overlays of one frame: the notice toast in the top right corner, and the overlay on top of the stack. */
 function buildOverlays(width: number, height: number, state: ModelState, world: CoreView, colors: Colors): { overlays: Part[]; input: Scene["input"] } {
-  const toast = toastPart(width, height, state, colors);
+  const toast = state.mode.name === "copy" ? null : toastPart(width, height, state, colors);
   const overlays: Part[] = toast ? [toast] : [];
   const top: Overlay | undefined = state.overlays.at(-1);
   if (!top) return { overlays, input: null };
@@ -873,5 +884,21 @@ export function buildChrome(input: ChromeInput): BuiltChrome {
   const look = `${theme}/${depth}`;
   const parts = [sidebarPart(input, colors, look), tabBarPart(input, colors, look), bordersPart(input, colors, look), modeBarPart(input, colors, look)];
   const { overlays, input: sceneInput } = buildOverlays(input.regions.screen.width, input.regions.screen.height, input.state, input.world, colors);
-  return { parts, overlays, input: sceneInput };
+  const copying = input.copying;
+  if (!copying) return { parts, overlays, input: sceneInput };
+  for (const hint of copying.hints) {
+    const rect = { x: hint.col, y: hint.row, width: hint.width, height: 1 };
+    overlays.unshift(part(`copy-hint:${hint.digit}`, rect, look, hint.digit, (canvas, digit) => {
+      const style = canvas.style({ fg: colors.primaryText, bg: colors.accent, flags: STYLE_BOLD });
+      canvas.fill(style);
+      canvas.put(rect.x, rect.y, String(digit), 1, style);
+    }));
+  }
+  const mode = input.state.mode;
+  if (mode.name === "copy" && mode.phase === "query") {
+    const rect = input.regions.modeBar;
+    const cursor = fieldView(mode.field, Math.max(1, rect.width - 8)).cursor;
+    return { parts, overlays, input: rect.height > 0 ? { col: Math.min(rect.width - 1, 8 + cursor), row: rect.y } : "overlay" };
+  }
+  return { parts, overlays, input: sceneInput ?? copying.input };
 }

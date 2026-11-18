@@ -727,6 +727,22 @@ const RESTING: [state: string, enter: () => Promise<Resting>][] = [
     expect(run.loop.model().mode.name).toBe("copy");
     return { run };
   }],
+  ...([
+    ["copy character selection", "v,l"],
+    ["copy line selection", "V"],
+    ["copy search prompt", "/,echo"],
+    ["copy search result", "/,echo,enter"],
+    ["copy search without a match", "/,not-in-the-fixture,enter"],
+    ["copy hints choosing a label", "f"],
+  ] as const).map(([name, keys]): [string, () => Promise<Resting>] => [name, async () => {
+    const run = await start({ fixture: demo });
+    await run.live();
+    run.core.program("t1").output("\r\nhttps://example.org/a\r");
+    await run.advance(16);
+    await run.keys(`ctrl+b,[,${keys}`);
+    expect(run.loop.model().mode.name).toBe("copy");
+    return { run };
+  }]),
   ["the sidebar collapsed", async () => {
     const run = await start({ fixture: demo });
     await run.live();
