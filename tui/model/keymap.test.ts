@@ -47,11 +47,11 @@ describe("the menu's key", () => {
 describe("the pane id's key", () => {
   it("prefix+i copies the focused pane's id as one copy effect and sends the pane nothing; a config binding on it is dropped with a fixed_key note", () => {
     const opened = typed(start(), "\x02", "i");
-    expect(opened.effects).toEqual([{ type: "copy", text: "p1" }]);
+    expect(opened.effects).toEqual([{ type: "clipboard", text: "p1" }]);
     const keymap = buildKeymap({ new_tab: "prefix+i" });
     expect(keymap.notes).toEqual([{ code: "fixed_key", action: "new_tab", binding: "prefix+i" }]);
     expect(keymap.rows.find((row) => row.action === "copy_pane_id")!.bindings.map((binding) => binding.text)).toEqual(["prefix+i"]);
-    expect(typed(start({ new_tab: "prefix+i" }), "\x02", "i").effects).toEqual([{ type: "copy", text: "p1" }]);
+    expect(typed(start({ new_tab: "prefix+i" }), "\x02", "i").effects).toEqual([{ type: "clipboard", text: "p1" }]);
   });
 
   it("with nothing focused it copies nothing and says so; with no prefix key at all the row is unbound", () => {

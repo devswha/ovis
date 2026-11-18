@@ -514,7 +514,7 @@ export function startLoop(options: LoopOptions): Loop {
         act("quit");
         quit();
         return;
-      case "copy":
+      case "clipboard":
         writeCopy(effect.text);
         return;
       case "reload_keys":

@@ -52,7 +52,7 @@ export type Effect =
   /** detach: close every channel, give the terminal back; no terminal is killed */
   | { readonly type: "quit" }
   /** `text` to the host's clipboard (OSC 52), with a notice that it was copied */
-  | { readonly type: "copy"; readonly text: string }
+  | { readonly type: "clipboard"; readonly text: string }
   /** read herdr's config again and answer with a `keys` event */
   | { readonly type: "reload_keys" }
   /** mark the pane's agent unread: its `herdr.seen` one below its turn (server/herdr-core/seen-label.ts `unread`) */
