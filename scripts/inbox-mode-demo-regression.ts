@@ -12,14 +12,14 @@ import type { AgentStatus } from "../shared/protocol.ts";
 import { SHEET_HISTORY_KEY } from "../src/lib/historyKeys.ts";
 import { KO } from "../src/lib/i18n.ko.ts";
 import { serveDemo } from "./demo-server.ts";
-import { RESIZE_SETTLE_MS } from "../src/lib/paneTerminalShared.ts";
+import { RELEASE_AFTER_MS, RESIZE_SETTLE_MS, VIEW_HOLD_MS } from "../src/lib/paneTerminalShared.ts";
 
 declare global {
   interface Window {
     inboxFixture: {
       rosters: number;
       readonly rosterOpen: boolean;
-      readonly pendingFits: number;
+      readonly pendingTerminalTimers: number;
       historyPending(paneId: string): boolean;
       publish(): Promise<void>;
       /** sets a pane's state as herdr would: its pane-status event, then the roster */
@@ -45,7 +45,7 @@ declare global {
 // Holds the demo's agents still, whatever its own timers do: Codex waits for an answer, Claude works
 // (the demo would finish it 4.5s in), the flaky-test agent is done and not looked at, the rest are idle.
 // Loaded after demo-transport.js and before the app; what it forces survives a reload.
-function installInboxFixture(resizeSettleMs: number): void {
+function installInboxFixture(resizeSettleMs: number, releaseAfterMs: number, viewHoldMs: number): void {
   const key = "inbox-mode-regression:forced";
   const stored = sessionStorage.getItem(key);
   const state: { epoch: string; forced: Record<string, { status: AgentStatus; finish: number }> } = stored ? JSON.parse(stored) : {
@@ -155,9 +155,8 @@ function installInboxFixture(resizeSettleMs: number): void {
   for (const name of ["CONNECTING", "OPEN", "CLOSING", "CLOSED"] as const) Object.defineProperty(Recorded, name, { value: DemoSocket[name] });
   window.WebSocket = Recorded;
 
-  // The terminal's ResizeObserver debounces its fit, including decisions to send nothing.
-  // Track those callbacks through execution or cancellation instead of waiting out the debounce.
-  const pendingFits = new Set<number>();
+  // Track fits, delayed releases, and queued view changes through execution or cancellation.
+  const pendingTerminalTimers = new Set<number>();
   let observingTerminal = false;
   const NativeObserver = window.ResizeObserver;
   window.ResizeObserver = class extends NativeObserver {
@@ -173,22 +172,23 @@ function installInboxFixture(resizeSettleMs: number): void {
   const setTimer = timers.setTimeout.bind(window);
   const clearTimer = timers.clearTimeout.bind(window);
   timers.setTimeout = (handler: TimerHandler, delay?: number, ...args: unknown[]) => {
-    if (!observingTerminal || delay !== resizeSettleMs || typeof handler !== "function") return setTimer(handler, delay, ...args);
-    const id = setTimer(() => {
-      pendingFits.delete(id);
-      handler(...args);
+    const tracked = (observingTerminal && delay === resizeSettleMs) || delay === releaseAfterMs || delay === viewHoldMs;
+    if (!tracked || typeof handler !== "function") return setTimer(handler, delay, ...args);
+    const id = setTimer(function (this: Window) {
+      pendingTerminalTimers.delete(id);
+      handler.apply(this, args);
     }, delay);
-    pendingFits.add(id);
+    pendingTerminalTimers.add(id);
     return id;
   };
   timers.clearTimeout = (id) => {
-    if (id !== undefined) pendingFits.delete(id);
+    if (id !== undefined) pendingTerminalTimers.delete(id);
     clearTimer(id);
   };
   window.inboxFixture = {
     rosters: 0,
     get rosterOpen() { return opened.size > 0; },
-    get pendingFits() { return pendingFits.size; },
+    get pendingTerminalTimers() { return pendingTerminalTimers.size; },
     historyPending(paneId) { return [...historyReads].some((read) => read.paneId === paneId); },
     resizes: [],
     frames: [],
@@ -294,12 +294,15 @@ async function terminalSettled(page: Page, attached?: number): Promise<void> {
       });
     }, attached, { timeout: 15_000 });
   }
-  // Deliver the current layout to the app's observers before looking for pending fits.
+  // Finish transitions before delivering the final layout to the app's resize observers.
+  await page.evaluate(() => Promise.allSettled(document.getAnimations()
+    .filter((animation) => animation.playState === "running" && Number.isFinite(animation.effect?.getComputedTiming().endTime))
+    .map((animation) => animation.finished)).then(() => undefined));
   await page.evaluate(() => new Promise<void>((resolve) => {
     const observer = new ResizeObserver(() => { observer.disconnect(); resolve(); });
     observer.observe(document.documentElement);
   }));
-  await page.waitForFunction(() => window.inboxFixture.pendingFits === 0, undefined, { timeout: 5_000 });
+  await page.waitForFunction(() => window.inboxFixture.pendingTerminalTimers === 0, undefined, { timeout: 5_000 });
 }
 const row = (page: Page, pane: string, machine = "local") => page.locator(`.mode-inbox .inbox-item[data-machine="${machine}"][data-pane="${pane}"] .inbox-row`);
 const near = (got: number, want: number, by: number, what: string): void => assert.ok(Math.abs(got - want) <= by, `${what}: ${got}, wanted ${want} within ${by}`);
@@ -460,7 +463,7 @@ async function withPage(browser: Browser, base: string, settings: Settings, path
 try {
   await buildDemoApp(app);
   const index = join(app, "index.html");
-  writeFileSync(join(app, "inbox-fixture.js"), `(${installInboxFixture.toString()})(${RESIZE_SETTLE_MS});`);
+  writeFileSync(join(app, "inbox-fixture.js"), `(${installInboxFixture.toString()})(${RESIZE_SETTLE_MS}, ${RELEASE_AFTER_MS}, ${VIEW_HOLD_MS});`);
   writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, '<script src="./demo-transport.js"></script>\n    <script src="./inbox-fixture.js"></script>\n    <script type="module"'));
   const server = serveDemo(app, { prefix: "/" });
   const base = `http://127.0.0.1:${server.port}`;
