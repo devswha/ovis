@@ -3,7 +3,7 @@ import type { TerminalColors } from "./themes.ts";
 import { type FontSettled, loadFontStack, measurableFontStack, monoFaceArrived, openingFontStack, terminalFontStack } from "./fontFamily.ts";
 import { modalOpen } from "./focus.ts";
 import { addServedFonts } from "./userFonts.ts";
-import { inUse } from "./paneTerminalShared.ts";
+import { inUse, keepsCoreGrid } from "./paneTerminalShared.ts";
 import { fitLineHeight } from "./terminalLineHeight.ts";
 import type { TerminalPeek } from "./terminalPeek.ts";
 import type { HerdrSocket } from "./ws.ts";
@@ -45,6 +45,8 @@ export interface TerminalRefitsDeps {
 
 export function useTerminalRefits(deps: TerminalRefitsDeps): void {
   const { activeRef, autoSelected, baseFontRef, pinchingRef, fontSettledRef, chatView, chatViewRef, coarseRef, findOpenRef, fitRef, fittedRef, fixedGridRef, follow, followCursorRef, keyboardHoldsRef, narrowFont, narrowFontFitted, observeRef, colors, covered, paneRef, peekRef, sharedGridRef, shown, sizesPty, socketRef, termRef, terminalFontFamily, terminalFontSize } = deps;
+  // a fit out of use sizes no pty: a herdr-core pty this page keeps at its own size stays drawn in its grid
+  const keptAway = (): boolean => !inUse() && keepsCoreGrid(socketRef.current, paneRef.current);
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
@@ -72,7 +74,7 @@ export function useTerminalRefits(deps: TerminalRefitsDeps): void {
       term.options.fontSize = size;
       term.options.fontFamily = family;
       fitLineHeight(term);
-      if (observeRef.current || fixedGridRef.current || chatViewRef.current || keyboardHoldsRef.current(true)) return;
+      if (observeRef.current || fixedGridRef.current || chatViewRef.current || keyboardHoldsRef.current(true) || keptAway()) return;
       try {
         fitRef.current?.fit();
         fittedRef.current();
@@ -96,7 +98,7 @@ export function useTerminalRefits(deps: TerminalRefitsDeps): void {
     if (narrowFontFitted.current === narrowFont) return;
     narrowFontFitted.current = narrowFont;
     const term = termRef.current;
-    if (!term || observeRef.current || fixedGridRef.current || chatViewRef.current || keyboardHoldsRef.current(false)) return;
+    if (!term || observeRef.current || fixedGridRef.current || chatViewRef.current || keyboardHoldsRef.current(false) || keptAway()) return;
     try {
       fitRef.current?.fit();
       fittedRef.current();
@@ -126,7 +128,7 @@ export function useTerminalRefits(deps: TerminalRefitsDeps): void {
       const shown = termRef.current;
       if (shown && !shown.hasSelection()) shown.scrollToBottom();
     };
-    if (observeRef.current || fixedGridRef.current) { landAtBottom(); return; }
+    if (observeRef.current || fixedGridRef.current || keptAway()) { landAtBottom(); return; }
     if (keyboardHoldsRef.current(true)) { landAtBottom(); return; }
     const term = termRef.current;
     try {
@@ -151,7 +153,7 @@ export function useTerminalRefits(deps: TerminalRefitsDeps): void {
     const pane = paneRef.current;
     if (!pane || observeRef.current || fixedGridRef.current || chatViewRef.current) return;
     if (!shown) { socketRef.current?.keepSize(pane); return; }
-    if (keyboardHoldsRef.current(true)) return;
+    if (keyboardHoldsRef.current(true) || keptAway()) return;
     const term = termRef.current;
     try {
       fitRef.current?.fit();
@@ -177,7 +179,7 @@ export function useTerminalRefits(deps: TerminalRefitsDeps): void {
     heldAtCover.current = false;
     if (!shown) { heldWhileHidden.current = held; return; }
     if (!held || !pane || observeRef.current || fixedGridRef.current || chatViewRef.current) return;
-    if (keyboardHoldsRef.current(true)) return;
+    if (keyboardHoldsRef.current(true) || keptAway()) return;
     const term = termRef.current;
     try {
       fitRef.current?.fit();
@@ -214,7 +216,7 @@ export function useTerminalRefits(deps: TerminalRefitsDeps): void {
       return;
     }
     followCursorRef.current();
-    if (chatViewRef.current || keyboardHoldsRef.current(true)) return;
+    if (chatViewRef.current || keyboardHoldsRef.current(true) || keptAway()) return;
     try {
       fitRef.current?.fit();
       fittedRef.current();

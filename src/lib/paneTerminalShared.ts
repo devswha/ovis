@@ -51,6 +51,13 @@ export function dropViewChange(change: () => void): void {
 // off at its split's edge
 export const inUse = (): boolean => document.visibilityState === "visible" && document.hasFocus();
 
+/**
+ * A herdr-core pane's stream is the program's own bytes, drawn for the pty's grid (`terminal-history`): a page attached
+ * without sizing the pty draws it in that grid, as an observer does, until it sizes the pty again.
+ */
+export const keepsCoreGrid = (socket: HerdrSocket | null, pane: string | null): boolean =>
+  pane !== null && socket !== null && socket.hasTerminalHistory() && socket.keepsSize(pane);
+
 export const connectedSockets = new WeakSet<HerdrSocket>();
 
 /** A character a terminal takes as a key (a line break reaches the program as Enter): never pasted inside a stored file's path. */

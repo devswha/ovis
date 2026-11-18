@@ -22,6 +22,7 @@ import { serveDemo } from "./demo-server.ts";
 interface Frame { type: string; pane_id?: string; cols?: number; rows?: number; keep_size?: boolean }
 interface GridFixture {
   sent: Frame[];
+  focused: number;
   geometry(cols: number, rows: number): void;
   draw(data: string): void;
 }
@@ -36,6 +37,7 @@ function installGridFixture(clearHistory: string): void {
   const own = (frame: Record<string, unknown>) => ({ ...frame, fixture: "grid" });
   const state: GridFixture = {
     sent: [],
+    focused: 0,
     geometry: (cols, rows) => { for (const socket of sockets) if (pane) socket.push(own({ type: "pane-geometry", pane_id: pane, cols, rows })); },
     draw: (data) => { for (const socket of sockets) if (pane) socket.push(own({ type: "pty-data", pane_id: pane, data })); },
   };
@@ -159,12 +161,16 @@ try {
           };
           await sizesAgain("back in focus", async () => { await page.evaluate(() => window.dispatchEvent(new Event("focus"))); });
 
-          await page.evaluate(() => window.dispatchEvent(new Event("blur")));
           await page.evaluate(({ cols, rows }) => window.gridFixture.geometry(cols, rows), other);
-          if (kind === "core") await gridIs(page, other.cols, other.rows, "core: away again, the page takes the pty's grid");
+          await settled(page);
+          await gridIs(page, own.cols, own.rows, `${kind}: a page that sizes the pty keeps its own grid when another device sizes it`);
+          await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+          if (kind === "core") await gridIs(page, other.cols, other.rows, "core: away, the page takes the grid it last heard of");
           const box = await page.locator(".pane-frame.is-current .pane-terminal").boundingBox();
           assert.ok(box);
+          await page.evaluate(() => { window.gridFixture.focused = 0; window.addEventListener("focus", () => { window.gridFixture.focused++; }); });
           await sizesAgain("a click in the terminal with no focus event", () => page.mouse.click(box.x + 20, box.y + 20));
+          assert.equal(await page.evaluate(() => window.gridFixture.focused), 0, `${kind}: the click came with no window focus event`);
           assert.deepEqual(errors, [], `${kind}: no page errors`);
           console.log(`PASS ${kind}: ${kind === "core" ? "a kept pty's grid is taken, then the page's own again" : "the page keeps its own grid"}`);
         } finally {
