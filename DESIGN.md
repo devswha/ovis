@@ -1776,7 +1776,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   height and type, led by the workspace's name as herdr's own sidebar always titles a space, and
   under it in `--text-dim` `--fs-xs` what the pane the row opens is on: "pane title · branch ·
   folder" with no name said twice (`unsaidLine`, lib/paneName.ts), the branch only for a linked
-  worktree whose name is not its branch. The folder, the mark, the status cell, the menu and the
+  worktree whose name is neither its branch nor made from it (`feature-api` for `feature/api`). The folder, the mark, the status cell, the menu and the
   fold count stay where they are, and the menu and rename act on the workspace. The choice is shared with the other browsers of the server
   and applies at once.
 - An agent row is titled by what its agent is on, on One line and Two lines alike: the label the

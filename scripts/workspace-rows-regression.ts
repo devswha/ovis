@@ -237,10 +237,12 @@ try {
   assert.equal((await sessionSnapshot()).panes.find((pane) => pane.pane_id === split.pane.pane_id)?.label, renamedSplit);
   assert.equal((await sessionSnapshot()).workspaces.find((workspace) => workspace.workspace_id === other.workspaceId)?.label, other.label,
     "renaming a pane leaves herdr's workspace name unchanged");
-  await page.waitForFunction(({ selector, title }) => document.querySelector(selector)?.textContent?.split(" · ").includes(title),
+  await page.waitForFunction(({ selector, title }) => document.querySelector(selector)?.textContent?.split(" · ")[0] === title,
     { selector: `${otherWorkspace} .workspace-place`, title: renamedSplit });
   assert.equal(await page.locator(`${otherWorkspace} .workspace-name`).textContent(), other.label,
-    "a two-line row leads with the workspace's name and says its pane's title beneath it");
+    "a two-line row leads with the workspace's name and says its pane's title first beneath it");
+  assert.ok(!(await page.locator(`${otherWorkspace} .workspace-place`).textContent())?.split(" · ").includes(other.label),
+    "the line under the workspace's name does not say that name again");
   for (const width of [1280, 768, 375]) {
     await page.setViewportSize({ width, height: 900 });
     if (await page.locator(".drawer-toggle").isVisible()
