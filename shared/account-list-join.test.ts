@@ -1,7 +1,7 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { JOIN_LINE_PREFIX, JOIN_SECRET_BYTES, JoinLineError, isServiceOrigin, readJoinLine, writeJoinLine, type JoinLineReason } from "./account-list-join.ts";
+import { JOIN_LINE_MAX_CHARS, JOIN_LINE_PREFIX, JoinLineError, isServiceOrigin, readJoinLine, writeJoinLine, type JoinLineReason } from "./account-list-join.ts";
 import { fromBase64Url, toBase64Url } from "./relay-pair-sas.ts";
 
 const P256 = { name: "ECDSA", namedCurve: "P-256" } as const;
@@ -35,14 +35,58 @@ async function refusal(line: string): Promise<JoinLineError | null> {
 }
 const importInvite = (extractable: boolean) => crypto.subtle.importKey("pkcs8", fromBase64Url(inviteKeys.pkcs8) as Uint8Array<ArrayBuffer>, P256, extractable, ["sign"]);
 const encode = (json: string) => `${JOIN_LINE_PREFIX}${toBase64Url(new TextEncoder().encode(json))}`;
+const lineWith = (secret: string, service = SERVICE) => encode(`{"v":1,"service":"${service}","list":"${LIST}","secret":"${secret}"}`);
+const secretOf = (line: string) => (JSON.parse(new TextDecoder().decode(fromBase64Url(line.slice(JOIN_LINE_PREFIX.length)))) as { secret: string }).secret;
+async function writerReason(run: () => Promise<unknown>): Promise<JoinLineReason | "none"> {
+  try {
+    await run();
+  } catch (error) {
+    if (error instanceof JoinLineError) return error.reason;
+    throw error;
+  }
+  return "none";
+}
+/** The same key in another legal PKCS8 form: RFC 5915 without the optional public point (67 bytes). */
+const withoutPoint = (pkcs8: Uint8Array) =>
+  Uint8Array.from([0x30, 0x41, 0x02, 0x01, 0x00, ...pkcs8.subarray(6, 27), 0x04, 0x27, 0x30, 0x25, 0x02, 0x01, 0x01, 0x04, 0x20, ...pkcs8.subarray(36, 68)]);
+/** A runtime whose PKCS8 export is that other form: the writer's line may not change with it. */
+function otherPkcs8Export() {
+  const original = crypto.subtle.exportKey.bind(crypto.subtle) as (format: KeyFormat, key: CryptoKey) => Promise<ArrayBuffer | JsonWebKey>;
+  return spyOn(crypto.subtle, "exportKey").mockImplementation((async (format: KeyFormat, key: CryptoKey) => {
+    const exported = await original(format, key);
+    return format === "pkcs8" ? withoutPoint(new Uint8Array(exported as ArrayBuffer)).buffer : exported;
+  }) as typeof crypto.subtle.exportKey);
+}
+
+/** All an error can show: its name, message, whole stack, cause, and every own field, enumerable or not. */
+function shownBy(error: Error): string {
+  const fields = Object.getOwnPropertyNames(error).map((name) => String((error as unknown as Record<string, unknown>)[name]));
+  return [error.name, error.message, String(error.stack ?? ""), String(error.cause ?? ""), JSON.stringify({ ...error }), ...fields].join("\n");
+}
+/** The line after its prefix, each secret the line holds (decoded from it) and each fixture key: an error may show no 12 characters of any. */
+function privateTexts(line: string, keys: Readonly<Record<string, KeyPair>> = {}): [string, string][] {
+  const payload = line.startsWith(JOIN_LINE_PREFIX) ? line.slice(JOIN_LINE_PREFIX.length) : line;
+  const decoded = Buffer.from(payload.slice(payload.lastIndexOf(":") + 1), "base64url").toString("utf8");
+  const secrets = [...decoded.matchAll(/"secret"\s*:\s*"([^"]*)"/g)].map((match, index): [string, string] => [`secret ${index}`, match[1] ?? ""]);
+  return [["payload", payload], ...secrets, ...Object.entries(keys).map(([name, pair]): [string, string] => [name, pair.pkcs8])];
+}
+/** Where an error shows 12 characters of a private text, every window tried one character apart; empty when it shows none. */
+function leaksOf(error: Error, texts: readonly [string, string][]): string[] {
+  const shown = shownBy(error);
+  const leaks: string[] = [];
+  for (const [name, text] of texts) {
+    for (let index = 0; index + 12 <= text.length; index++) if (shown.includes(text.slice(index, index + 12))) leaks.push(`${name} at ${index}`);
+  }
+  return leaks;
+}
 
 describe("the vectors of join/", () => {
-  test("names: one good line and the refusals the line format defines", () => {
-    const names = vectors.map((vector) => vector.name);
-    for (const name of ["join-line", "line-no-prefix", "line-prefix-version-2", "v-2", "line-padded", "line-outside-alphabet", "line-second-spelling",
-      "member-missing", "member-extra", "member-twice", "members-other-order", "json-white-space", "v-1-0", "v-string", "service-http", "service-path",
-      "service-trailing-slash", "service-default-port", "service-uppercase-host", "list-not-a-hash", "secret-not-base64url", "secret-139-bytes",
-      "secret-other-curve", "secret-no-public-key", "secret-other-point"]) expect(names).toContain(name);
+  test("names: exactly one good line and the refusals the line format defines, none missing", () => {
+    expect(vectors.map((vector) => vector.name)).toEqual(["join-line", "json-escape", "json-not-an-object", "json-not-utf8", "json-white-space",
+      "line-no-prefix", "line-outside-alphabet", "line-padded", "line-prefix-version-2", "line-second-spelling", "list-not-a-hash", "member-extra",
+      "member-missing", "member-twice", "members-other-order", "secret-139-bytes", "secret-no-public-key", "secret-not-base64url", "secret-other-curve",
+      "secret-other-point", "service-default-port", "service-http", "service-path", "service-trailing-slash", "service-uppercase-host", "v-1-0", "v-2",
+      "v-string"]);
     for (const vector of vectors) expect(Object.keys(vector.keys).every((name) => name.startsWith("TEST-ONLY-"))).toBe(true);
   });
 
@@ -60,11 +104,16 @@ describe("the vectors of join/", () => {
     });
   }
 
-  test("the good line is written again, byte for byte, from its key; its secret is Bun's own PKCS8 export of that key", async () => {
-    expect(await writeJoinLine(SERVICE, LIST, await importInvite(true))).toBe(good.line);
-    const exported = new Uint8Array(await crypto.subtle.exportKey("pkcs8", await importInvite(true)));
-    const json = JSON.parse(new TextDecoder().decode(fromBase64Url(good.line.slice(JOIN_LINE_PREFIX.length)))) as { secret: string };
-    expect(json.secret).toBe(toBase64Url(exported));
+  test("the good line is written again, byte for byte, from its key, whatever form the runtime exports PKCS8 in", async () => {
+    const key = await importInvite(true);
+    expect(await writeJoinLine(SERVICE, LIST, key)).toBe(good.line);
+    const exportKey = otherPkcs8Export();
+    try {
+      expect(new Uint8Array(await crypto.subtle.exportKey("pkcs8", key)).length).toBe(67);
+      expect(await writeJoinLine(SERVICE, LIST, key)).toBe(good.line);
+    } finally {
+      exportKey.mockRestore();
+    }
   });
 });
 
@@ -81,34 +130,31 @@ describe("writing a line", () => {
     expect(read.privateKey.extractable).toBe(false);
   });
 
-  test("the secret is the 138 bytes built from d, x and y, equal to Bun's PKCS8 export, for many keys", async () => {
-    for (let index = 0; index < 20; index++) {
-      const pair = await crypto.subtle.generateKey(P256, true, ["sign", "verify"]);
-      const line = await writeJoinLine(SERVICE, LIST, pair.privateKey);
-      const json = JSON.parse(new TextDecoder().decode(fromBase64Url(line.slice(JOIN_LINE_PREFIX.length)))) as { secret: string };
-      const exported = new Uint8Array(await crypto.subtle.exportKey("pkcs8", pair.privateKey));
-      expect(exported.length).toBe(JOIN_SECRET_BYTES);
-      expect(json.secret).toBe(toBase64Url(exported));
+  test("the secret is the good line's fixed bytes around d, x and y, for many keys, whatever form the runtime exports PKCS8 in", async () => {
+    const fixed = fromBase64Url(inviteKeys.pkcs8);
+    const exportKey = otherPkcs8Export();
+    try {
+      for (let index = 0; index < 20; index++) {
+        const pair = await crypto.subtle.generateKey(P256, true, ["sign", "verify"]);
+        const line = await writeJoinLine(SERVICE, LIST, pair.privateKey);
+        const jwk = await crypto.subtle.exportKey("jwk", pair.privateKey);
+        const part = (value: string | undefined) => [...fromBase64Url(value ?? "")];
+        const want = Uint8Array.from([...fixed.subarray(0, 36), ...part(jwk.d), ...fixed.subarray(68, 74), ...part(jwk.x), ...part(jwk.y)]);
+        expect(secretOf(line)).toBe(toBase64Url(want));
+      }
+    } finally {
+      exportKey.mockRestore();
     }
   });
 
   test("the writer refuses what no line may hold", async () => {
     const key = await importInvite(true);
-    const reasonOf = async (run: () => Promise<unknown>) => {
-      try {
-        await run();
-      } catch (error) {
-        if (error instanceof JoinLineError) return error.reason;
-        throw error;
-      }
-      return "none";
-    };
-    expect(await reasonOf(() => writeJoinLine("http://accounts.ovis.test", LIST, key))).toBe("service");
-    expect(await reasonOf(() => writeJoinLine(`${SERVICE}/`, LIST, key))).toBe("service");
-    expect(await reasonOf(() => writeJoinLine(SERVICE, LIST.slice(1), key))).toBe("list");
-    expect(await reasonOf(async () => writeJoinLine(SERVICE, LIST, await importInvite(false)))).toBe("secret");
+    expect(await writerReason(() => writeJoinLine("http://accounts.ovis.test", LIST, key))).toBe("service");
+    expect(await writerReason(() => writeJoinLine(`${SERVICE}/`, LIST, key))).toBe("service");
+    expect(await writerReason(() => writeJoinLine(SERVICE, LIST.slice(1), key))).toBe("list");
+    expect(await writerReason(async () => writeJoinLine(SERVICE, LIST, await importInvite(false)))).toBe("not_extractable");
     const p384 = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-384" }, true, ["sign"]);
-    expect(await reasonOf(() => writeJoinLine(SERVICE, LIST, p384.privateKey))).toBe("secret");
+    expect(await writerReason(() => writeJoinLine(SERVICE, LIST, p384.privateKey))).toBe("secret");
   });
 });
 
@@ -116,6 +162,7 @@ describe("reading a line: each way it can be wrong, with the smallest input", ()
   const cases: [string, string, JoinLineReason][] = [
     ["empty", "", "prefix"],
     ["the prefix alone", JOIN_LINE_PREFIX, "base64url"],
+    ["one character, which no base64url spelling has", `${JOIN_LINE_PREFIX}A`, "base64url"],
     ["a trailing newline", `${good.line}\n`, "base64url"],
     ["white space before", ` ${good.line}`, "prefix"],
     ["an empty object", encode("{}"), "members"],
@@ -155,6 +202,12 @@ describe("the secret's one form", () => {
       importKey.mockClear();
       expect((await refusal(fixedByteChanged))?.reason).toBe("secret");
       expect(importKey).not.toHaveBeenCalled();
+      // The same 138 bytes with another leading DER tag: a SET where the SEQUENCE is.
+      const tagChanged = fromBase64Url(inviteKeys.pkcs8);
+      tagChanged[0] = 0x31;
+      importKey.mockClear();
+      expect((await refusal(encode(`{"v":1,"service":"${SERVICE}","list":"${LIST}","secret":"${toBase64Url(tagChanged)}"}`)))?.reason).toBe("secret");
+      expect(importKey).not.toHaveBeenCalled();
     } finally {
       importKey.mockRestore();
     }
@@ -167,8 +220,7 @@ describe("the secret's one form", () => {
     // Such a runtime imports the private value alone: the same 32 bytes in RFC 5915 form, without the public point.
     const importKey = spyOn(crypto.subtle, "importKey").mockImplementation(((format: KeyFormat, data: BufferSource | JsonWebKey, algorithm: EcKeyImportParams, extractable: boolean, usages: KeyUsage[]) => {
       if (format !== "pkcs8" || !(data instanceof Uint8Array)) return original(format as "spki", data as BufferSource, algorithm, extractable, usages);
-      const alone = Uint8Array.from([0x30, 0x41, 0x02, 0x01, 0x00, ...data.subarray(6, 27), 0x04, 0x27, 0x30, 0x25, 0x02, 0x01, 0x01, 0x04, 0x20, ...data.subarray(36, 68)]);
-      return original("pkcs8", alone, algorithm, extractable, usages);
+      return original("pkcs8", withoutPoint(data), algorithm, extractable, usages);
     }) as typeof crypto.subtle.importKey);
     try {
       expect((await refusal(good.line))).toBeNull();
@@ -176,6 +228,93 @@ describe("the secret's one form", () => {
       expect(importKey).toHaveBeenCalled();
     } finally {
       importKey.mockRestore();
+    }
+  });
+});
+
+describe("a line's bounded length", () => {
+  // The longest service whose line fits: 12 + ceil(4 * (290 + 469) / 3) = 1024 characters.
+  const longest = `https://${"a".repeat(456)}.test`;
+
+  test("a multi-megabyte line is refused by its length, before any of it is decoded or parsed", async () => {
+    const json = `{"v":1,"service":"${SERVICE}","list":"${LIST}","secret":"${"A".repeat(4 * 1024 * 1024)}"}`;
+    const huge = `${JOIN_LINE_PREFIX}${Buffer.from(json).toString("base64url")}`;
+    const atob = spyOn(globalThis, "atob");
+    const parse = spyOn(JSON, "parse");
+    try {
+      expect((await refusal(huge))?.reason).toBe("length");
+      expect(atob).not.toHaveBeenCalled();
+      expect(parse).not.toHaveBeenCalled();
+    } finally {
+      atob.mockRestore();
+      parse.mockRestore();
+    }
+  });
+
+  test("the longest line is written and read; one character more is refused by the writer and by the reader", async () => {
+    const key = await importInvite(true);
+    const line = await writeJoinLine(longest, LIST, key);
+    expect(line.length).toBe(JOIN_LINE_MAX_CHARS);
+    expect((await readJoinLine(line)).service).toBe(longest);
+    const longer = `https://${"a".repeat(457)}.test`;
+    expect(await writerReason(() => writeJoinLine(longer, LIST, key))).toBe("length");
+    expect(lineWith(secretOf(good.line), longer).length).toBeGreaterThan(JOIN_LINE_MAX_CHARS);
+    expect((await refusal(lineWith(secretOf(good.line), longer)))?.reason).toBe("length");
+  });
+
+  test("a secret that is not 184 characters is refused before it is decoded", async () => {
+    const atob = spyOn(globalThis, "atob");
+    try {
+      const error = await refusal(lineWith(`${inviteKeys.pkcs8}AAAA`));
+      expect(error?.reason).toBe("secret");
+      expect(atob).toHaveBeenCalledTimes(1);
+    } finally {
+      atob.mockRestore();
+    }
+  });
+});
+
+describe("the secret's private value", () => {
+  const N = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n;
+  const withScalar = (d: bigint) => {
+    const secret = fromBase64Url(inviteKeys.pkcs8);
+    secret.set(Buffer.from(d.toString(16).padStart(64, "0"), "hex"), 36);
+    return toBase64Url(secret);
+  };
+
+  for (const [name, d] of [["0", 0n], ["n", N], ["n+1", N + 1n]] as const) {
+    test(`${name} is refused as out of range, before any runtime is asked to import it`, async () => {
+      const importKey = spyOn(crypto.subtle, "importKey");
+      try {
+        const line = lineWith(withScalar(d));
+        const error = await refusal(line);
+        expect(error?.reason).toBe("scalar");
+        expect(importKey).not.toHaveBeenCalled();
+        if (error) expect(leaksOf(error, privateTexts(line, good.keys))).toEqual([]);
+      } finally {
+        importKey.mockRestore();
+      }
+    });
+  }
+
+  test("n-1 is in range: it reaches the runtime, and is refused only because the point is not its own", async () => {
+    const importKey = spyOn(crypto.subtle, "importKey");
+    try {
+      expect((await refusal(lineWith(withScalar(N - 1n))))?.reason).toBe("secret");
+      expect(importKey).toHaveBeenCalled();
+    } finally {
+      importKey.mockRestore();
+    }
+  });
+
+  test("the writer refuses a key whose private value is out of range", async () => {
+    const key = await importInvite(true);
+    const jwk = await crypto.subtle.exportKey("jwk", key);
+    const exportKey = spyOn(crypto.subtle, "exportKey").mockImplementation((async (): Promise<JsonWebKey | ArrayBuffer> => ({ ...jwk, d: toBase64Url(new Uint8Array(32)) })) as typeof crypto.subtle.exportKey);
+    try {
+      expect(await writerReason(() => writeJoinLine(SERVICE, LIST, key))).toBe("scalar");
+    } finally {
+      exportKey.mockRestore();
     }
   });
 });
@@ -203,16 +342,52 @@ describe("a runtime without WebCrypto", () => {
   });
 });
 
+describe("WebCrypto's own faults are not refusals", () => {
+  const fault = (name: string) => new DOMException("injected by the test", name);
+  const caught = (run: () => Promise<unknown>) => run().then(() => null, (error: unknown) => error);
+
+  test("an OperationError from signing goes up as it came, with nothing of the line", async () => {
+    const thrown = fault("OperationError");
+    const sign = spyOn(crypto.subtle, "sign").mockImplementation(() => Promise.reject(thrown));
+    try {
+      expect(await caught(() => readJoinLine(good.line))).toBe(thrown);
+    } finally {
+      sign.mockRestore();
+    }
+    expect(leaksOf(thrown, privateTexts(good.line, good.keys))).toEqual([]);
+  });
+
+  test("a NotSupportedError from importing goes up as it came, with nothing of the line", async () => {
+    const thrown = fault("NotSupportedError");
+    const importKey = spyOn(crypto.subtle, "importKey").mockImplementation((() => Promise.reject(thrown)) as typeof crypto.subtle.importKey);
+    try {
+      expect(await caught(() => readJoinLine(good.line))).toBe(thrown);
+    } finally {
+      importKey.mockRestore();
+    }
+    expect(leaksOf(thrown, privateTexts(good.line, good.keys))).toEqual([]);
+  });
+
+  test("an OperationError from exporting goes up as it came, with nothing of the key", async () => {
+    const key = await importInvite(true);
+    const thrown = fault("OperationError");
+    const exportKey = spyOn(crypto.subtle, "exportKey").mockImplementation((() => Promise.reject(thrown)) as typeof crypto.subtle.exportKey);
+    try {
+      expect(await caught(() => writeJoinLine(SERVICE, LIST, key))).toBe(thrown);
+    } finally {
+      exportKey.mockRestore();
+    }
+    expect(leaksOf(thrown, privateTexts(good.line, good.keys))).toEqual([]);
+  });
+});
+
 describe("the secret never shows in a refusal", () => {
-  test("no refusal's message or fields hold the secret or any 12 characters of the line after its prefix", async () => {
+  test("no refusal's name, message, stack or fields hold any 12 characters of the line after its prefix, its secret or its keys", async () => {
     for (const vector of vectors) {
       if (!("stops" in vector.expect)) continue;
       const error = await refusal(vector.line);
       if (!error) throw new Error(`${vector.name} was not refused`);
-      const shown = `${error.message} ${JSON.stringify({ ...error })} ${String(error.stack ?? "").split("\n")[0]}`;
-      const payload = vector.line.startsWith(JOIN_LINE_PREFIX) ? vector.line.slice(JOIN_LINE_PREFIX.length) : vector.line;
-      for (const secretText of Object.values(vector.keys).map((pair) => pair.pkcs8)) expect(shown.includes(secretText.slice(0, 24))).toBe(false);
-      for (let index = 0; index + 12 <= payload.length; index += 6) expect(shown.includes(payload.slice(index, index + 12))).toBe(false);
+      expect({ vector: vector.name, leaks: leaksOf(error, privateTexts(vector.line, vector.keys)) }).toEqual({ vector: vector.name, leaks: [] });
       expect(Object.keys(error).sort()).toEqual(["code", "name", "reason"]);
       expect(error.cause).toBeUndefined();
     }
