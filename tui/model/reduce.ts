@@ -406,6 +406,7 @@ function answerOverlay(acc: Acc, answer: OverlayAnswer, at: number): void {
   const { overlays } = acc.s;
   acc.s = { ...acc.s, overlays: answer.overlay === null ? overlays.slice(0, -1) : [...overlays.slice(0, -1), answer.overlay] };
   acc.effects.push(...answer.effects);
+  if (answer.open !== undefined) acc.s = { ...acc.s, overlays: [...acc.s.overlays, answer.open] };
   if (answer.choice !== undefined) choose(acc, answer.choice, at);
 }
 
@@ -638,6 +639,9 @@ function runLocal(acc: Acc, action: Exclude<KeyAction, HerdrAction | CopyAction>
       return;
     case "agents":
       acc.s = { ...s, overlays: [...s.overlays, { kind: "agents", agents: s.world.agents ?? [], cursor: 0 }] };
+      return;
+    case "about":
+      acc.s = { ...s, overlays: [...s.overlays, { kind: "about" }] };
       return;
     case "copy_pane_id":
       if (shown.pane === null) notice(acc, "nothing_focused", { action }, at);

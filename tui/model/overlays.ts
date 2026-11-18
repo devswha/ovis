@@ -18,6 +18,8 @@ export type TextPurpose = "rename_workspace" | "rename_tab" | "rename_pane" | "n
 
 export type Overlay =
   | { readonly kind: "help" }
+  /** the five terms and the about line: opened from the help by `a`, or from the menu */
+  | { readonly kind: "about" }
   | { readonly kind: "text"; readonly purpose: TextPurpose; readonly target: Target; readonly field: Field }
   /** `seen`: the terminals the close ends, as the screen showed them when the dialog opened */
   | { readonly kind: "confirm"; readonly purpose: "close_workspace"; readonly target: Target; readonly seen: readonly Seen[] }
@@ -31,7 +33,13 @@ export type Overlay =
 export type OverlayInput = { readonly kind: "key"; readonly event: KeyInput } | { readonly kind: "text"; readonly event: TextInput } | { readonly kind: "paste"; readonly event: PasteInput };
 
 /** The overlay after the input (null: closed), what it asks of the caller, and what the reducer does once it closed. */
-export interface OverlayAnswer { readonly overlay: Overlay | null; readonly effects: readonly (RunEffect | UnreadEffect)[]; readonly choice?: OverlayChoice }
+export interface OverlayAnswer {
+  readonly overlay: Overlay | null;
+  readonly effects: readonly (RunEffect | UnreadEffect)[];
+  readonly choice?: OverlayChoice;
+  /** an overlay opened on top of this one */
+  readonly open?: Overlay;
+}
 
 interface OverlayEntry<O extends Overlay> {
   /** the keys that close it, in herdr's syntax, shown in its frame; never empty */
@@ -192,6 +200,13 @@ function typedChar(input: OverlayInput): string {
 export const OVERLAYS: { readonly [K in Overlay["kind"]]: OverlayEntry<Extract<Overlay, { kind: K }>> } = {
   help: {
     closeKeys: ["esc", "q", "?"],
+    target: () => null,
+    input: (overlay, input) => inputChords(input).some((chord) => chord.key === "a" && !chord.ctrl && !chord.alt && !chord.meta)
+      ? { overlay, effects: [], open: { kind: "about" } }
+      : { overlay, effects: [] },
+  },
+  about: {
+    closeKeys: ["esc", "q"],
     target: () => null,
     input: (overlay) => ({ overlay, effects: [] }),
   },

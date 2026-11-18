@@ -473,7 +473,11 @@ function bordersPart(input: ChromeInput, colors: Colors, look: string): Part {
       if (pane.idLabel !== null) {
         const width = measure(pane.idLabel).width;
         const taken = pane.banner ? measure(` ${pane.banner.text} `).width : 0;
-        if (room >= width + taken) printFit(canvas, outer.x + outer.width - 2 - width, outer.y + outer.height - 1, pane.idLabel, width, canvas.style({ fg: colors.accent, bg: colors.bg, flags: STYLE_BOLD }));
+        if (room >= width + taken) {
+          const at = outer.x + outer.width - 2 - width;
+          printFit(canvas, at, outer.y + outer.height - 1, pane.idLabel, width, canvas.style({ fg: colors.accent, bg: colors.bg, flags: STYLE_BOLD }));
+          canvas.hit({ x: at, y: outer.y + outer.height - 1, width, height: 1 }, "copy_pane_id");
+        }
       }
     }
     for (const { id, divider } of seams) canvas.hit(divider, id);
@@ -643,10 +647,7 @@ function toastPart(width: number, height: number, state: ModelState, colors: Col
   };
 }
 
-/** The glossary shows when this many key rows of the help still fit beside it; a small screen keeps its keys. */
-const GLOSSARY_MIN_KEY_ROWS = 10;
-
-function helpPart(width: number, height: number, state: ModelState, world: CoreView, about: string, colors: Colors): Part {
+function helpPart(width: number, height: number, state: ModelState, world: CoreView, colors: Colors): Part {
   const rect = centred(width, height, Math.max(44, width - 8), Math.max(12, height - 4));
   const refusals = shownRefusals(state.keymap);
   const notes = state.keymap.notes.map((note) => ({ text: noteText(note), unreachable: note.code === "prefix_unreachable" || note.code === "detach_unreachable" }));
@@ -674,18 +675,8 @@ function helpPart(width: number, height: number, state: ModelState, world: CoreV
         for (const refusal of refusals.shown) if (r < bottom) printFit(canvas, inner.x + 1, r++, STRINGS.refusalLine(refusal.code, refusal.action, refusal.binding, refusal.holder), room, note, true);
         if (refusals.more > 0 && r < bottom) printFit(canvas, inner.x + 1, r++, STRINGS.helpMoreRefusals(refusals.more), room, dim, true);
       }
-      printFit(canvas, rect.x + 2, rect.y + rect.height - 1, about, Math.max(0, rect.width - 4), canvas.style({ fg: colors.textDim, bg: colors.bgElevated }), true);
-      const glossary = bottom - r >= STRINGS.glossary.length + GLOSSARY_MIN_KEY_ROWS;
-      if (glossary) {
-        const termWidth = Math.max(...STRINGS.glossary.map((entry) => measure(entry.term).width));
-        const term = canvas.style({ fg: colors.accent, bg: colors.bgElevated, flags: STYLE_BOLD });
-        STRINGS.glossary.forEach((entry, at) => {
-          const y = bottom - STRINGS.glossary.length + at;
-          printFit(canvas, inner.x + 1, y, entry.term, termWidth, term);
-          printFit(canvas, inner.x + 2 + termWidth, y, entry.meaning, Math.max(0, inner.width - 3 - termWidth), textStyle, true);
-        });
-      }
-      const space = bottom - r - (glossary ? STRINGS.glossary.length : 0);
+      printFit(canvas, rect.x + 2, rect.y + rect.height - 1, STRINGS.helpAboutHint, Math.max(0, rect.width - 4), canvas.style({ fg: colors.textDim, bg: colors.bgElevated }), true);
+      const space = bottom - r;
       if (space <= 0) return;
       const two = inner.width >= 76 && rows.length > space;
       const columnWidth = two ? Math.floor((inner.width - 3) / 2) : Math.max(1, inner.width - 2);
@@ -694,11 +685,33 @@ function helpPart(width: number, height: number, state: ModelState, world: CoreV
       rows.forEach((row, at) => {
         const column = two ? Math.floor(at / space) : 0;
         const y = r + (two ? at % space : at);
-        if (column > 1 || y >= r + space) return;
+        if (column > 1 || y >= bottom) return;
         const x = inner.x + 1 + column * (columnWidth + 1);
         printFit(canvas, x, y, row.keys ?? STRINGS.helpUnset, keyWidth, row.keys === null ? dim : keyStyle, true);
         printFit(canvas, x + keyWidth + 1, y, row.text, Math.max(0, x + columnWidth - (x + keyWidth + 1)), row.parity ? dim : textStyle, true);
       });
+    },
+  };
+}
+
+/** The about page: the five terms, a blank row, then the about line. */
+function aboutPart(width: number, height: number, about: string, colors: Colors): Part {
+  const terms = STRINGS.glossary;
+  const rect = centred(width, height, 78, terms.length + 4);
+  return {
+    key: "overlay:about", rect, version: 0,
+    draw(canvas) {
+      const inner = overlayFrame(canvas, rect, STRINGS.aboutTitle, OVERLAYS.about.closeKeys, colors);
+      if (inner.width <= 0 || inner.height <= 0) return;
+      const termWidth = Math.max(...terms.map((entry) => measure(entry.term).width));
+      const term = canvas.style({ fg: colors.accent, bg: colors.bgElevated, flags: STYLE_BOLD });
+      const text = canvas.style({ fg: colors.text, bg: colors.bgElevated });
+      terms.forEach((entry, at) => {
+        if (at >= inner.height) return;
+        printFit(canvas, inner.x + 1, inner.y + at, entry.term, termWidth, term);
+        printFit(canvas, inner.x + 2 + termWidth, inner.y + at, entry.meaning, Math.max(0, inner.width - 3 - termWidth), text, true);
+      });
+      if (terms.length + 1 < inner.height) printFit(canvas, inner.x + 1, inner.y + terms.length + 1, about, Math.max(0, inner.width - 2), canvas.style({ fg: colors.textDim, bg: colors.bgElevated }), true);
     },
   };
 }
@@ -712,7 +725,9 @@ function buildOverlays(width: number, height: number, state: ModelState, world: 
   const closeKeys = OVERLAYS[top.kind].closeKeys;
   switch (top.kind) {
     case "help":
-      return { overlays: [...overlays, helpPart(width, height, state, world, about, colors)], input: "overlay" };
+      return { overlays: [...overlays, helpPart(width, height, state, world, colors)], input: "overlay" };
+    case "about":
+      return { overlays: [...overlays, aboutPart(width, height, about, colors)], input: "overlay" };
     case "text": {
       const title = top.purpose === "rename_workspace" ? STRINGS.textRenameWorkspace
         : top.purpose === "rename_tab" ? STRINGS.textRenameTab

@@ -14,7 +14,7 @@ export type Mode = "terminal" | "navigate" | "resize" | "copy";
 /** Actions only the screen's modes and its lock know. */
 /** Navigate mode's moves (herdr has no key for them): the workspace pointed at one place up or down, the focused pane into it. */
 export type MoveAction = "navigate_move_up" | "navigate_move_down" | "navigate_move_pane";
-export type LocalAction = "lock" | "menu" | "agents" | "copy_pane_id" | "navigate_focus" | "navigate_cancel" | "navigate_index" | "navigate_cycle_next" | "navigate_cycle_previous" | "resize_leave" | CopyAction | MoveAction;
+export type LocalAction = "lock" | "menu" | "agents" | "copy_pane_id" | "about" | "navigate_focus" | "navigate_cancel" | "navigate_index" | "navigate_cycle_next" | "navigate_cycle_previous" | "resize_leave" | CopyAction | MoveAction;
 export type KeyAction = HerdrAction | HerdrNavigateKey | LocalAction;
 
 export interface KeyRow {

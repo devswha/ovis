@@ -11,6 +11,7 @@
  * Time and the timer are the caller's (`LoopClock`), so a test runs it on an injected clock.
  */
 
+import { version } from "../package.json";
 import type { HcTransport, HelloInfo } from "../server/herdr-core/connection.ts";
 import { editLayout } from "../server/herdr-core/layout-ops.ts";
 import { SeenMarker } from "../server/herdr-core/seen-label.ts";
@@ -58,8 +59,6 @@ export interface LoopOptions {
   readKeys?: () => unknown;
   /** one attempt at the socket: the real socket transport unless a test wraps it */
   connect?: (path: string) => Promise<HcTransport>;
-  /** Ovis's own version, shown in the help's about line */
-  version: string;
   /** the hc session joined, shown in the header */
   session?: string;
   /** the folder the command was typed in, shown when the core has no workspaces */
@@ -749,7 +748,7 @@ export function startLoop(options: LoopOptions): Loop {
       link: shown,
       session,
       cwd,
-      ovis: options.version,
+      ovis: version,
       core: shown.online ? hello?.version ?? null : null,
       theme,
       colors: host.colorDepth,

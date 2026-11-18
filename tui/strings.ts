@@ -79,8 +79,11 @@ export const STRINGS = {
   helpUnset: "unset",
   helpCloseLabel: (keys: readonly string[]): string => `close: ${keys.join(" / ")}`,
   helpParityPrefix: "not built",
-  /** the help's bottom line: Ovis's version, the version herdr-core reported (null: no live line) and the hc session */
-  aboutLine: (ovis: string, core: string | null, session: string): string => ` Ovis ${ovis} · herdr-core ${core ?? "not connected"} · ${STRINGS.sessionHeader(session)} `,
+  /** the about page's line, the session first so a narrow screen cuts the version of herdr-core and not the name: the hc session, Ovis's version, the version herdr-core reported (null: no live line) */
+  aboutLine: (ovis: string, core: string | null, session: string): string => `${STRINGS.sessionHeader(session)} · Ovis ${ovis} · herdr-core ${core ?? "not connected"}`,
+  aboutTitle: "About",
+  /** on the help's bottom edge: the key that opens the about page */
+  helpAboutHint: " a: terms and about ",
   /** the five terms of CONTRIBUTING.md's terminology, as the screen uses them */
   glossary: [
     { term: "Pane", meaning: "a herdr terminal and the program in it" },
@@ -187,6 +190,7 @@ export const STRINGS = {
     menu: "menu",
     agents: "agents",
     copy_pane_id: "copy pane id",
+    about: "terms and about",
     navigate_workspace_up: "workspace ^",
     navigate_workspace_down: "workspace v",
     navigate_pane_left: "pane <",

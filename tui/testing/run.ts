@@ -117,7 +117,7 @@ export class Run {
     views: ViewStore | undefined,
   ) {
     this.nextBeat = HEARTBEAT_MS;
-    this.loop = startLoop({ host, clock, socket, version, keys: undefined, connect: (path) => this.connect(path), ...(views ? { views } : {}) });
+    this.loop = startLoop({ host, clock, socket, keys: undefined, connect: (path) => this.connect(path), ...(views ? { views } : {}) });
   }
 
   readonly loop: Loop;

@@ -337,7 +337,7 @@ describe("each part is drawn again exactly when what it shows changed", () => {
   });
 });
 
-describe("the focused pane's id, the glossary and the about line", () => {
+describe("the focused pane's id, the about page and the help's keys", () => {
   const help = (cols: number, rows: number, extra: Partial<Setup> = {}) => draw({ cols, rows, events: [{ type: "action", action: "help", at: 1 }], ...extra });
   const TERMS = ["Pane", "Tab", "Workspace", "PC", "Agent session"];
 
@@ -352,19 +352,28 @@ describe("the focused pane's id, the glossary and the about line", () => {
     expect(offline.rows.some((row) => row.includes(" id t"))).toBe(false);
   });
 
-  it("the glossary lists the five terms at the foot of the help; a small screen keeps its keys and draws no glossary", () => {
-    const large = help(120, 40);
-    expect(TERMS.map((term, at) => large.rows[32 + at]!.slice(6, 6 + term.length))).toEqual(TERMS);
-    expect(help(66, 12).rows.some((row) => TERMS.some((term) => row.slice(6).startsWith(term)) && row.includes("|"))).toBe(false);
+  const about = (cols: number, rows: number, extra: Partial<Setup> = {}) => draw({ cols, rows, events: [{ type: "action", action: "about", at: 1 }], ...extra });
+
+  it("the about page lists the five terms, a blank row, then the about line with the session first", () => {
+    const shot = about(120, 40);
+    expect(TERMS.map((term, at) => shot.rows[16 + at]!.slice(23, 23 + term.length))).toEqual(TERMS);
+    expect(shot.rows[21]!.slice(23, 70).trim()).toBe("");
+    expect(shot.rows[22]!.slice(23, 23 + 40)).toBe("hc:work · Ovis 9.9.9 · herdr-core 0.1.18");
+    expect(about(120, 40, { core: null, session: "other" }).rows[22]!.slice(23, 23 + 48)).toBe("hc:other · Ovis 9.9.9 · herdr-core not connected");
   });
 
-  it("the about line is the help frame's bottom edge at every size, with the versions it was handed", () => {
-    for (const [cols, rows, edge, x] of [[120, 40, 37, 6], [80, 24, 21, 6], [66, 12, 11, 6]] as const) {
-      const line = " Ovis 9.9.9 · herdr-core 0.1.18 · hc:work ";
-      expect({ cols, row: help(cols, rows).rows[edge]!.slice(x, x + [...line].length) }).toEqual({ cols, row: line });
-    }
-    const offline = " Ovis 9.9.9 · herdr-core not connected · hc:other ";
-    expect(help(120, 40, { core: null, session: "other" }).rows[37]!.slice(6, 6 + [...offline].length)).toBe(offline);
+  it("at 45 columns the about line is cut at its end, so the session and Ovis's version stay", () => {
+    expect(about(45, 30).rows[17]!.slice(2, 2 + 31)).toBe("hc:work · Ovis 9.9.9 · herdr-co");
+  });
+
+  it("the help keeps every key row it showed before the glossary: 68 at 120x40, 18 at 80x24, and the hint for the about page on its bottom edge", () => {
+    const shown = (shot: ReturnType<typeof draw>, rows: number[], columns: number[]) => rows.flatMap((y) => columns.map((x) => shot.rows[y]![x] ?? " ")).filter((char) => char !== " ").length;
+    const large = help(120, 40);
+    expect(shown(large, Array.from({ length: 34 }, (_, at) => 3 + at), [6, 60])).toBe(68);
+    expect(large.rows[37]!.slice(6, 6 + 20)).toBe(" a: terms and about ");
+    const small = help(80, 24);
+    expect(shown(small, Array.from({ length: 18 }, (_, at) => 3 + at), [6])).toBe(18);
+    expect(small.rows[21]!.slice(6, 6 + 20)).toBe(" a: terms and about ");
   });
 });
 

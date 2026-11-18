@@ -129,7 +129,7 @@ describe("the screen at widths 45, 60, 64 and 65: one terminal at 64 columns or 
     await run.keys("ctrl+b,enter,up");
     await run.advance(10);
     const grid = run.grid();
-    expect(grid[28]).toBe("|>U agents                          prefix+a|");
+    expect(grid[28]).toMatch(/^\|>\w lock +ctrl\+alt\+g\|$/);
     expect(grid.some((line) => line.includes("workspace 1:ovis"))).toBe(false);
   }, TEST_MS);
 });
@@ -154,7 +154,7 @@ describe("plain route: every built action of the catalogue is an entry of the me
 
   it("each built id is an entry, in the catalogue's order, then the agent list, each with a digit or letter of its own", () => {
     const actions = entries.flatMap((entry) => (entry.kind === "action" ? [entry] : []));
-    expect(actions.map((entry) => entry.action)).toEqual([...built, "agents"]);
+    expect(actions.map((entry) => entry.action)).toEqual([...built, "agents", "copy_pane_id", "about", "lock"]);
     for (const entry of actions) expect({ action: entry.action, label: /^[0-9A-Za-z]$/.test(entry.label) }).toEqual({ action: entry.action, label: true });
     const labels = entries.flatMap((entry) => (entry.label === null ? [] : [entry.label]));
     expect(new Set(labels).size).toBe(labels.length);

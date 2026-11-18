@@ -5,7 +5,7 @@ import type { HerdrAction } from "../../shared/herdr-keys.ts";
 import type { InputEvent } from "../input/decode.ts";
 import type { CopyCommand } from "./copy.ts";
 import type { Target } from "./focus.ts";
-import type { MoveAction } from "./keymap.ts";
+import type { KeyAction, MoveAction } from "./keymap.ts";
 
 export type KeyInput = Extract<InputEvent, { type: "key" }>;
 export type TextInput = Extract<InputEvent, { type: "text" }>;
@@ -15,7 +15,7 @@ export type MouseInput = Extract<InputEvent, { type: "mouse" }>;
 export type PaneInput = KeyInput | TextInput | PasteInput;
 
 /** What an overlay chose for the reducer to do once it closed: run an action, or focus a place. */
-export type OverlayChoice = { readonly kind: "action"; readonly action: HerdrAction | "agents" } | { readonly kind: "select"; readonly target: Target };
+export type OverlayChoice = { readonly kind: "action"; readonly action: KeyAction } | { readonly kind: "select"; readonly target: Target };
 
 /** A terminal as the screen showed it when an action was chosen: its address and when the core made it (null: not known). */
 export interface Seen { readonly id: string; readonly created: number | null }
