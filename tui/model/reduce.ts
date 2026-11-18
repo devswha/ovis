@@ -12,7 +12,7 @@ import type { InputEvent } from "../input/decode.ts";
 import { CATALOGUE_BY_ID } from "./catalogue.ts";
 import { clearDeadline, type Deadlines, NO_DEADLINES, NOTICE_SHOW_MS, NOTICES_KEPT, setDeadline } from "./deadlines.ts";
 import type { Effect, KeyInput, MouseInput, OverlayChoice, PaneInput, PasteInput, Seen, TextInput } from "./effects.ts";
-import { EMPTY_WORLD, exists, type Focus, focused, focusOn, NO_FOCUS, nextFocus, type PaneNode, type Target, type World } from "./focus.ts";
+import { EMPTY_WORLD, exists, type Focus, focusDirection, focused, focusOn, NO_FOCUS, nextFocus, type PaneNode, paneToward, type Target, type World } from "./focus.ts";
 import { boundIn, buildKeymap, charChords, isPrefix, type KeyAction, type Keymap, keyChords, unlockChords } from "./keymap.ts";
 import { keptCursor, menuEntries } from "./menu.ts";
 import { agentChoice, field, menuChoice, type Overlay, type OverlayAnswer, overlayInput, type OverlayInput, overlayTarget, pickerChoice } from "./overlays.ts";
@@ -725,7 +725,12 @@ function runHerdr(acc: Acc, action: HerdrAction, index: number | null, at: numbe
     case "focus_pane_left":
     case "focus_pane_down":
     case "focus_pane_up":
-    case "focus_pane_right":
+    case "focus_pane_right": {
+      const direction = focusDirection(action);
+      const neighbour = shown.pane && direction ? paneToward(shown.tab?.root, shown.pane.id, direction) : null;
+      if (neighbour !== null) moveFocus(acc, { kind: "pane", id: neighbour });
+      return;
+    }
     case "swap_pane_left":
     case "swap_pane_down":
     case "swap_pane_up":

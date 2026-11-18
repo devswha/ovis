@@ -19,7 +19,10 @@ const after = (state: ModelState, ...events: ModelEvent[]): ModelState => events
 
 const WORLD: World = {
   workspaces: [
-    { id: "w1", name: "one", tabs: [{ id: "t1", name: "a", panes: [{ id: "p1", name: "" }, { id: "p2", name: "" }] }, { id: "t2", name: "b", panes: [{ id: "p3", name: "" }] }] },
+    { id: "w1", name: "one", tabs: [{
+      id: "t1", name: "a", panes: [{ id: "p1", name: "" }, { id: "p2", name: "" }],
+      root: { split: "right", ratio: 0.5, first: { leaf: "p1" }, second: { leaf: "p2" } },
+    }, { id: "t2", name: "b", panes: [{ id: "p3", name: "" }] }] },
     { id: "w2", name: "two", tabs: [{ id: "t3", name: "c", panes: [{ id: "p4", name: "" }] }] },
   ],
 };
@@ -52,13 +55,13 @@ function outcome(state: ModelState, events: readonly ModelEvent[]) {
 describe("navigate mode", () => {
   it("the navigate key table: every key works without the prefix, and the moving keys keep the mode open so they repeat", () => {
     const table: [keys: string, events: ModelEvent[], expected: ReturnType<typeof outcome>][] = [
-      ["h", [text("h")], { mode: "navigate", preview: "w1", shown: "w1/t1/p1", run: ["focus_pane_left:p1"] }],
-      ["j", [text("j")], { mode: "navigate", preview: "w1", shown: "w1/t1/p1", run: ["focus_pane_down:p1"] }],
-      ["k", [text("k")], { mode: "navigate", preview: "w1", shown: "w1/t1/p1", run: ["focus_pane_up:p1"] }],
-      ["l", [text("l")], { mode: "navigate", preview: "w1", shown: "w1/t1/p1", run: ["focus_pane_right:p1"] }],
-      ["left", [key("ARROW_LEFT")], { mode: "navigate", preview: "w1", shown: "w1/t1/p1", run: ["focus_pane_left:p1"] }],
-      ["right", [key("ARROW_RIGHT")], { mode: "navigate", preview: "w1", shown: "w1/t1/p1", run: ["focus_pane_right:p1"] }],
-      ["l l l repeats", [text("l"), text("l"), text("l")], { mode: "navigate", preview: "w1", shown: "w1/t1/p1", run: ["focus_pane_right:p1", "focus_pane_right:p1", "focus_pane_right:p1"] }],
+      ["h from the right pane", [key("TAB"), text("h")], { mode: "navigate", preview: "w1", shown: "w1/t1/p1", run: [] }],
+      ["j: no pane below", [text("j")], { mode: "navigate", preview: "w1", shown: "w1/t1/p1", run: [] }],
+      ["k: no pane above", [text("k")], { mode: "navigate", preview: "w1", shown: "w1/t1/p1", run: [] }],
+      ["l", [text("l")], { mode: "navigate", preview: "w1", shown: "w1/t1/p2", run: [] }],
+      ["left from the right pane", [key("TAB"), key("ARROW_LEFT")], { mode: "navigate", preview: "w1", shown: "w1/t1/p1", run: [] }],
+      ["right", [key("ARROW_RIGHT")], { mode: "navigate", preview: "w1", shown: "w1/t1/p2", run: [] }],
+      ["l h l repeats", [text("lhl")], { mode: "navigate", preview: "w1", shown: "w1/t1/p2", run: [] }],
       ["n: next tab", [text("n")], { mode: "navigate", preview: "w1", shown: "w1/t2/p3", run: [] }],
       ["n n: next tab twice, round", [text("n"), text("n")], { mode: "navigate", preview: "w1", shown: "w1/t1/p1", run: [] }],
       ["p: previous tab, round", [text("p")], { mode: "navigate", preview: "w1", shown: "w1/t2/p3", run: [] }],
@@ -102,7 +105,7 @@ describe("navigate mode", () => {
   it("works while a pane is zoomed: a focus move onto a covered pane moves the shared zoom there, except on a narrow screen", () => {
     const zoomed: World = { workspaces: [{ ...WORLD.workspaces[0]!, tabs: [{ ...WORLD.workspaces[0]!.tabs[0]!, zoomed: "p1" }, WORLD.workspaces[0]!.tabs[1]!] }, WORLD.workspaces[1]!] };
     const wide = navigating(undefined, zoomed);
-    // the loop answers l with the neighbour on the tab's whole tree
+    expect(outcome(wide, [text("l")]).run).toEqual(["zoom_follow:p2"]);
     expect(outcome(wide, [{ type: "select", target: { kind: "pane", id: "p2" }, at: AT }])).toEqual({ mode: "navigate", preview: "w1", shown: "w1/t1/p2", run: ["zoom_follow:p2"] });
     expect(outcome(wide, [key("TAB")]).run).toEqual(["zoom_follow:p2"]);
     expect(outcome(wide, [text("n")]).run).toEqual([]);

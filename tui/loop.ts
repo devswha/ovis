@@ -20,7 +20,7 @@ import { LayoutWrites } from "./core/layout.ts";
 import { type CoreLink, type LinkNotice, type LinkState, openLink } from "./core/link.ts";
 import { createPanes, type PaneInput, type PaneNotice, type Panes, type PaneView } from "./core/pane.ts";
 import { SeenWrites } from "./core/seen.ts";
-import { CoreWorld, focusDirection, paneToward } from "./core/world.ts";
+import { CoreWorld } from "./core/world.ts";
 import { errorCode } from "./crash.ts";
 import { effectBytes, osc52 } from "./host/effects.ts";
 import type { Host, HostEnd } from "./host/index.ts";
@@ -396,14 +396,6 @@ export function startLoop(options: LoopOptions): Loop {
         return;
       case "run": {
         act(`run:${effect.action}`);
-        const direction = focusDirection(effect.action);
-        if (direction && effect.target?.kind === "pane") {
-          const tab = focused(state.world, state.focus).tab;
-          const shapeOf = tab ? world.view().tabs.get(tab.id) : undefined;
-          const toward = shapeOf ? paneToward(shapeOf, effect.target.id, direction) : null;
-          if (toward !== null) dispatch({ type: "select", target: { kind: "pane", id: toward }, at: clock.now() });
-          return;
-        }
         const writing = layout.run(effect);
         if (writing !== null) {
           holdUntil(writing);

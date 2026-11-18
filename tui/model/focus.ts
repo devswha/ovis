@@ -2,6 +2,7 @@
  * What exists (workspaces, their tabs, each tab's panes in tree order) and where this screen looks.
  * Focus is the screen's own: herdr-core has none, and it is never written anywhere shared.
  */
+import { type LayoutNode, neighbour, type PaneDirection } from "../../server/herdr-core/layout-doc.ts";
 
 /**
  * `created`: when the core made the pane's terminal (its `created_ms`), so a later terminal at the same address is told apart;
@@ -9,7 +10,7 @@
  */
 export interface PaneNode { readonly id: string; readonly name: string; readonly created?: number; readonly agent?: string }
 /** `zoomed`: the pane the tab's zoom shows alone (the layout document's, shared with the browser); none when not zoomed */
-export interface TabNode { readonly id: string; readonly name: string; readonly panes: readonly PaneNode[]; readonly zoomed?: string }
+export interface TabNode { readonly id: string; readonly name: string; readonly panes: readonly PaneNode[]; readonly root?: LayoutNode; readonly zoomed?: string }
 export interface WorkspaceNode { readonly id: string; readonly name: string; readonly tabs: readonly TabNode[] }
 /**
  * `agents`: the panes that run an agent, in the sidebar's order (shared/attention.ts); `waiting`: those that need the
@@ -84,6 +85,18 @@ export function focusOn(world: World, focus: Focus, target: Target): Focus | nul
     panes: tab === null || pane === null ? focus.panes : { ...focus.panes, [tab.id]: pane.id },
     previous: before !== null && pane !== null && pane.id !== before ? before : focus.previous,
   };
+}
+
+/** Herdr's directional focus actions and the side each looks to. */
+const FOCUS_DIRECTIONS: Readonly<Record<string, PaneDirection>> = { focus_pane_left: "left", focus_pane_right: "right", focus_pane_up: "up", focus_pane_down: "down" };
+
+export function focusDirection(action: string): PaneDirection | null {
+  return Object.hasOwn(FOCUS_DIRECTIONS, action) ? FOCUS_DIRECTIONS[action] ?? null : null;
+}
+
+/** The pane on that side in the whole tree, including panes covered by a zoom. */
+export function paneToward(root: LayoutNode | undefined, pane: string, direction: PaneDirection): string | null {
+  return root === undefined ? null : neighbour(root, pane, direction);
 }
 
 /** One of `after` for a focus that was `current`: it if it is still there, else `preferred`, else the next one in `before` that is still there, else the first. */

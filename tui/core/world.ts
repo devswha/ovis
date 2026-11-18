@@ -7,8 +7,7 @@
  */
 
 import type { CoreChange } from "../../server/herdr-core/core-model.ts";
-import type { LayoutNode, PaneDirection } from "../../server/herdr-core/layout-doc.ts";
-import { neighbour, OVIS_LAYOUT_DOC } from "../../server/herdr-core/layout-doc.ts";
+import { type LayoutNode, OVIS_LAYOUT_DOC } from "../../server/herdr-core/layout-doc.ts";
 import { buildSnapshot, coreHost, type FirstTurn, type HcTerminal, isRecord, LAYOUT_DOC } from "../../server/herdr-core/snapshot.ts";
 import { nestHelpers, sidebarAgents } from "../../shared/agent-roster.ts";
 import { type AgentGroup, groupAgentRows, knownStatus, type KnownStatus, rollupStatus } from "../../shared/attention.ts";
@@ -162,18 +161,6 @@ export function treeOf(layout: Pick<PaneLayoutSnapshot, "splits" | "panes">): La
     return { split: split.direction === "down" ? "down" : "right", ratio: split.ratio, first, second };
   };
   return leaves.length === 0 ? null : build("");
-}
-
-/** herdr's directional focus actions and the side each looks to; null for any other action. */
-const FOCUS_DIRECTIONS: Readonly<Record<string, PaneDirection>> = { focus_pane_left: "left", focus_pane_right: "right", focus_pane_up: "up", focus_pane_down: "down" };
-
-export function focusDirection(action: string): PaneDirection | null {
-  return Object.hasOwn(FOCUS_DIRECTIONS, action) ? FOCUS_DIRECTIONS[action]! : null;
-}
-
-/** The pane on that side of `pane` in the tab's tree (layout-doc.ts `neighbour`): the one sharing most of its edge; null at the edge. */
-export function paneToward(shape: TabShape, pane: string, direction: PaneDirection): string | null {
-  return neighbour(shape.root, pane, direction);
 }
 
 /** The terminals and documents the link told of, and what they show. */
@@ -333,7 +320,7 @@ export class CoreWorld {
           id: workspace.workspace_id,
           name: workspace.label,
           tabs: snapshot.tabs.filter((tab) => tab.workspace_id === workspace.workspace_id).map((tab) => {
-            const zoomed = tabs.get(tab.tab_id)?.zoomed ?? null;
+            const shape = tabs.get(tab.tab_id);
             return {
               id: tab.tab_id,
               name: tab.label,
@@ -342,7 +329,7 @@ export class CoreWorld {
                 const agent = panes.get(id)?.agent ?? null;
                 return { id, name: panes.get(id)?.label ?? "", ...(typeof created === "number" ? { created } : {}), ...(agent ? { agent } : {}) };
               }),
-              ...(zoomed === null ? {} : { zoomed }),
+              ...(shape ? { root: shape.root, ...(shape.zoomed === null ? {} : { zoomed: shape.zoomed }) } : {}),
             };
           }),
         })),

@@ -3,7 +3,8 @@ import { type LayoutNode, OVIS_LAYOUT_DOC, type PaneDirection, place } from "../
 import { coreModel, type HcEvent } from "../../server/herdr-core/core-model.ts";
 import { LAYOUT_DOC, PANE_NAME_LABEL, SPACE_LABEL, TAB_LABEL, TAB_NAME_LABEL, WORKSPACE_NAME_LABEL } from "../../server/herdr-core/snapshot.ts";
 import { WORKTREE_LABEL } from "../../server/herdr-core/worktrees.ts";
-import { CoreWorld, focusDirection, paneToward, treeOf } from "./world.ts";
+import { focusDirection, paneToward } from "../model/focus.ts";
+import { CoreWorld, treeOf } from "./world.ts";
 
 const leaf = (id: string): LayoutNode => ({ leaf: id });
 const right = (ratio: number, first: LayoutNode, second: LayoutNode): LayoutNode => ({ split: "right", ratio, first, second });
@@ -47,7 +48,7 @@ describe("the pane that lies that way (layout-doc.ts neighbour, on the tree the 
   ];
   for (const [name, root, from, direction, expected] of table) {
     it(name, () => {
-      expect(paneToward({ root, zoomed: null }, from, direction)).toBe(expected);
+      expect(paneToward(root, from, direction)).toBe(expected);
     });
   }
 });

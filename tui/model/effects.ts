@@ -20,9 +20,8 @@ export type OverlayChoice = { readonly kind: "action"; readonly action: HerdrAct
 export interface Seen { readonly id: string; readonly created: number | null }
 
 /**
- * An action the reducer cannot finish itself, for the caller to perform: a layout write, a jump through the
- * agent list, or a directional focus (the caller finds the neighbour on the drawn layout and answers with a
- * `select` event). `zoom_follow`: the zoom of the target pane's tab moves to it, because focus went to a pane
+ * An action the reducer cannot finish itself, for the caller to perform.
+ * `zoom_follow`: the zoom of the target pane's tab moves to it, because focus went to a pane
  * that tab's shared zoom covered.
  */
 export interface RunEffect {
