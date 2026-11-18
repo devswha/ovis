@@ -201,11 +201,16 @@ const CATALOGS: { name: string; parse: (p: unknown) => Catalog | null }[] = [
   { name: "models-store.json", parse: modelsStoreCatalog },
 ];
 
-/** The catalogs as they are now: a window resolved under another version may be another number. */
+/**
+ * The catalogs as they are now: a window resolved under another version may be another number. A
+ * catalog that cannot be stat'ed (a link loop, no permission) counts as absent, as readCatalog reads it.
+ */
 export function piCatalogVersion(agentDir = piAgentDir()): string {
   return CATALOGS.map(({ name }) => {
-    const stat = statSync(join(agentDir, name), { throwIfNoEntry: false });
-    return stat === undefined ? "-" : `${stat.mtimeMs}:${stat.size}`;
+    try {
+      const stat = statSync(join(agentDir, name));
+      return `${stat.mtimeMs}:${stat.size}`;
+    } catch { return "-"; }
   }).join("|");
 }
 

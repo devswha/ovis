@@ -71,7 +71,7 @@ import { forgetAllPiIndexes, forgetPiIndex, piAbandonedTurns, piBranchRecords, p
 import { COPILOT_IMAGE_REF, copilotImage, copilotOffsetOutput, copilotOutput, copilotRootRecord, parseCopilotTranscript } from "./copilot.ts";
 import { copilotApiTranscript, copilotExplicitResume, copilotHandoffSession, copilotProcessSession, copilotTranscriptFile, copilotUnwrittenSession, openCopilotFile, readCopilotProcessSession } from "./copilot-store.ts";
 import { forgetCopilotForeground, readCopilotForeground } from "./copilot-foreground.ts";
-import { claudeSetting, parseConversationMetadata } from "./conversation-metadata.ts";
+import { claudeSetting, type MetadataFold, parseConversationMetadata } from "./conversation-metadata.ts";
 import { piCatalogVersion } from "./pi-models.ts";
 import { answerVersion, bindFile, boundSteps, checkBoundFile, ConversationNotStarted, ConversationReadPending, ConversationUnavailable, copilotRecoverable, type FileIdentity, openBound, readBound, type ConversationPage, HistoryChanged, type RecognizedConversation, type StreamSource, TRANSCRIPT_WINDOW_BYTES } from "./conversation-shared.ts";
 import { forgetHermesTranscriptState, hermesConversationPage, hermesToolOutput, hermesTranscriptForPane } from "./hermes.ts";
@@ -881,6 +881,7 @@ interface SettledTurns {
   noticed: Set<string>;
   inherited: Map<string, string>;
   observedEnd: number;
+  fold: MetadataFold;
   piAgentDir?: string | null;
   /** the version of that dir's catalogs the windows were resolved in (pi only) */
   catalogs?: string;
@@ -1094,6 +1095,7 @@ interface LiveTranscriptTurn {
   contentHash?: string;
   parser: TranscriptParser;
   metadata: ConversationMetadata;
+  fold: MetadataFold;
   /** the catalogs a pi window was looked up in: another dir, or an edited catalog, answers another window */
   piAgentDir?: string | null;
   catalogs?: string;
@@ -1140,7 +1142,7 @@ function incrementalLiveTurn(path: string, stream: TranscriptStream, source: Inc
       : source === "claude-transcript" ? createClaudeTranscriptParser({ subagents: subagents!.details, noticed: new Set(before.noticed) })
       : createOmpTranscriptParser(ompReading(source, path, new Map(before.taskTitles)));
     cached = { source, id: stream.id, start, pageStart: before.start, prefixBoundary: before.tail, scanned: start,
-      boundary: bytesBefore(stream, start), parser, metadata: before.metadata, piAgentDir: before.piAgentDir, catalogs: before.catalogs, subagents };
+      boundary: bytesBefore(stream, start), parser, metadata: before.metadata, fold: { ...before.fold }, piAgentDir: before.piAgentDir, catalogs: before.catalogs, subagents };
   }
   const bytes = currentBytes ? currentBytes.subarray(cached.scanned - start) : readStream(stream, cached.scanned, stream.length);
   const complete = bytes.lastIndexOf(0x0a) + 1;
@@ -1158,7 +1160,7 @@ function incrementalLiveTurn(path: string, stream: TranscriptStream, source: Inc
   }
   if (complete > 0) {
     cached.parser.write(text);
-    cached.metadata = parseConversationMetadata(text, source, cached.metadata, cached.piAgentDir);
+    cached.metadata = parseConversationMetadata(text, source, cached.metadata, cached.piAgentDir, cached.fold);
     cached.scanned += complete;
     cached.boundary = bytesBefore(stream, cached.scanned);
   }
@@ -1174,7 +1176,7 @@ function incrementalLiveTurn(path: string, stream: TranscriptStream, source: Inc
     entries -= 1;
     retained -= turn.scanned - turn.start;
   }
-  return { turns: cached.parser.snapshot(tail), metadata: parseConversationMetadata(tail, source, cached.metadata, cached.piAgentDir) };
+  return { turns: cached.parser.snapshot(tail), metadata: parseConversationMetadata(tail, source, cached.metadata, cached.piAgentDir, { ...cached.fold }) };
 }
 
 function metadataHead(path: string, stream: TranscriptStream, source: RecognizedConversation["source"], start: number): string {
@@ -1216,12 +1218,14 @@ function liveTurns(path: string, stream: TranscriptStream, source: RecognizedCon
       const to = Math.min(start, kept.observedEnd);
       if (to > from) parseTurns(source, path, readStream(stream, from, to).toString("utf8"), inherited, undefined, from);
     }
+    const fold: MetadataFold = { piProvider: null };
     settled = { source, id: stream.id, start, end: start, turns: [], metadata: parseConversationMetadata(`${head}
-`, source, undefined, piAgentDir), tail: bytesBefore(stream, start), taskTitles: new Map(inherited), noticed: new Set(), inherited, observedEnd: stream.length, piAgentDir, catalogs };
+`, source, undefined, piAgentDir, fold), tail: bytesBefore(stream, start), taskTitles: new Map(inherited), noticed: new Set(), inherited, observedEnd: stream.length, piAgentDir, catalogs, fold };
   }
   if (settled.end < last) {
     const text = readStream(stream, settled.end, last).toString("utf8");
-    settled = { ...settled, end: last, turns: [...settled.turns, ...parseTurns(source, path, text, settled.taskTitles, settled.noticed, settled.end)], metadata: parseConversationMetadata(text, source, settled.metadata, piAgentDir), tail: bytesBefore(stream, last) };
+    const fold = { ...settled.fold };
+    settled = { ...settled, end: last, turns: [...settled.turns, ...parseTurns(source, path, text, settled.taskTitles, settled.noticed, settled.end)], metadata: parseConversationMetadata(text, source, settled.metadata, piAgentDir, fold), tail: bytesBefore(stream, last), fold };
   }
   settled.observedEnd = stream.length;
   rememberPage(settledTurns, key, settled, 8);
@@ -1230,7 +1234,7 @@ function liveTurns(path: string, stream: TranscriptStream, source: RecognizedCon
     return { turns: [...settled.turns, ...live.turns], metadata: live.metadata };
   }
   const text = readStream(stream, last, stream.length).toString("utf8");
-  return { turns: [...settled.turns, ...parseTurns(source, path, text, new Map(settled.taskTitles), new Set(settled.noticed), last)], metadata: parseConversationMetadata(text, source, settled.metadata, piAgentDir) };
+  return { turns: [...settled.turns, ...parseTurns(source, path, text, new Map(settled.taskTitles), new Set(settled.noticed), last)], metadata: parseConversationMetadata(text, source, settled.metadata, piAgentDir, { ...settled.fold }) };
 }
 
 /** Retention diagnostics only: counts/budget adherence, never transcript contents. */

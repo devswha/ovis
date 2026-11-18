@@ -85,8 +85,15 @@ export function claudeSetting(value: unknown): { model?: string; effort?: string
   return set;
 }
 
+/**
+ * What an omp-shaped fold knows past the metadata it returns: the provider the last record named,
+ * which an answer that names none still ran at (and which the pill no longer shows). A fold that
+ * continues another one is handed the same object, so it reads its text as one fold would.
+ */
+export interface MetadataFold { piProvider: string | null }
+
 /** Codex turn_context is a snapshot; omp/omo setting changes are separate events. */
-export function parseConversationMetadata(text: string, source: ConversationResponse["source"], before?: ConversationMetadata, piAgentDir?: string | null): ConversationMetadata {
+export function parseConversationMetadata(text: string, source: ConversationResponse["source"], before?: ConversationMetadata, piAgentDir?: string | null, fold?: MetadataFold): ConversationMetadata {
   const metadata: ConversationMetadata = before ? { ...before } : { model: null, reasoning_effort: null };
   // Agy's exported rows do not attest the selected model or reasoning effort.
   if (source === "agy-transcript") return metadata;
@@ -121,9 +128,8 @@ export function parseConversationMetadata(text: string, source: ConversationResp
   // Muse names its model, but no effort or context window; most of its lines are skipped unparsed
   if (source === "muse-transcript") return { ...metadata, model: museModel(text, metadata.model) };
   // pi states the provider on the same records that state usage, so the window is asked for
-  // from what this line says rather than remembered across sources; a fold that continues an
-  // earlier one starts from the provider that one named
-  let piProvider: string | null = metadata.provider ?? null;
+  // from what this line says rather than remembered across sources
+  let piProvider: string | null = fold?.piProvider ?? null;
   // the catalogs cannot change within one fold, so each model is looked up (and its files
   // stat'ed) once, not once per answer
   const piWindows = new Map<string, number | null>();
@@ -210,5 +216,6 @@ export function parseConversationMetadata(text: string, source: ConversationResp
       }
     }
   }
+  if (fold) fold.piProvider = piProvider;
   return metadata;
 }
