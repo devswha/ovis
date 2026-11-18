@@ -13,6 +13,9 @@ export type MouseInput = Extract<InputEvent, { type: "mouse" }>;
 /** What reaches a pane: the key, the text run (or what is left of it) or the paste, as read. */
 export type PaneInput = KeyInput | TextInput | PasteInput;
 
+/** What an overlay chose for the reducer to do once it closed: run an action, or focus a place. */
+export type OverlayChoice = { readonly kind: "action"; readonly action: HerdrAction } | { readonly kind: "select"; readonly target: Target };
+
 /** A terminal as the screen showed it when an action was chosen: its address and when the core made it (null: not known). */
 export interface Seen { readonly id: string; readonly created: number | null }
 

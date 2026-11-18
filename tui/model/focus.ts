@@ -7,7 +7,8 @@
 export interface PaneNode { readonly id: string; readonly name: string; readonly created?: number }
 export interface TabNode { readonly id: string; readonly name: string; readonly panes: readonly PaneNode[] }
 export interface WorkspaceNode { readonly id: string; readonly name: string; readonly tabs: readonly TabNode[] }
-export interface World { readonly workspaces: readonly WorkspaceNode[] }
+/** `agents`: the panes that run an agent, in the sidebar's order (shared/attention.ts); none when not told */
+export interface World { readonly workspaces: readonly WorkspaceNode[]; readonly agents?: readonly string[] }
 
 export const EMPTY_WORLD: World = { workspaces: [] };
 
