@@ -226,7 +226,8 @@ export function usePreferencesSync(enabled: boolean): PreferencesSync {
     const kept = stored.current;
     const startedOver = kept !== null && (remote.revision < kept.revision || (kept.stateId !== undefined && remote.state_id !== undefined && remote.state_id !== kept.stateId));
     if (!loadedRef.current && startedOver) base.current = { ...base.current, pins: null };
-    const local = latest.current;
+    // the stores already hold an edit this tab has not drawn yet; the settings' own edits are judged in update below
+    const local: Local = { settings: latest.current.settings, pins: currentSidebarPins(), muted: currentPaneMutes(), tabLabels: currentTabLabels() };
     const previous = base.current;
     const flying = inFlight.current;
     const force = readOnly.current;
@@ -385,11 +386,15 @@ export function usePreferencesSync(enabled: boolean): PreferencesSync {
         }
         setAttempt((count) => count + 1);
       }).catch((error: unknown) => {
+        const status = error instanceof ApiError ? error.status : null;
+        // before a document held behind this save is read: a device that cannot write takes it whole, and a
+        // refused value gives way to a newer one saved elsewhere
+        if (status === 403) readOnly.current = true;
+        else if (status !== 404) refused.current = body;
         settled();
-        if (error instanceof ApiError && error.status === 403) {
-          readOnly.current = true;
+        if (status === 403) {
           standDown();
-        } else if (error instanceof ApiError && error.status === 404) {
+        } else if (status === 404) {
           off.current = true;
           standDown();
         } else if (preferencesChange(base.current, latest.current) === null) {
@@ -397,7 +402,6 @@ export function usePreferencesSync(enabled: boolean): PreferencesSync {
         } else {
           const next = userErrorMessage(error);
           setSaveError((before) => before !== null && before.message === next.message && before.detail === next.detail ? before : next);
-          refused.current = body;
           failures.current += 1;
           if (userRetry.current && failures.current < PAUSE_AFTER) { setAttempt((count) => count + 1); return; }
           userRetry.current = false;

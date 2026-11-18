@@ -471,6 +471,49 @@ describe("preferences sync real send path", () => {
     expect([a.settings.darkTheme, b.settings.darkTheme]).toEqual(["gruvbox", "gruvbox"]);
   });
 
+  it("a reloaded page keeps an edit it has not drawn yet when the answer to the change it sent again lands", async () => {
+    const client = await open();
+    await act(async () => { client.update({ darkTheme: "tokyo-night" }); });
+    refusing = () => Promise.reject(new TypeError("Failed to fetch"));
+    await act(async () => { pageEvents.dispatchEvent(new Event("pagehide")); });
+    await act(async () => { renderers.pop()!.unmount(); });
+    clients.length = 0;
+    refusing = null;
+    const gate = Promise.withResolvers<void>();
+    releaseAnswer = () => gate.promise;
+    const reloaded = await open(JSON.parse(records.get("ovis:settings")!), true);
+    await windows();
+    expect(bodies.at(-1)?.settings).toMatchObject({ darkTheme: "tokyo-night" });
+
+    const absorbed = nextAbsorbed();
+    await act(async () => {
+      reloaded.update({ darkTheme: "gruvbox" });
+      gate.resolve();
+      await absorbed;
+    });
+    releaseAnswer = undefined;
+    expect(reloaded.settings.darkTheme).toBe("gruvbox");
+    await send();
+    expect(store.get().settings.darkTheme).toBe("gruvbox");
+  });
+
+  it("keeps pins and a mute this tab has not drawn yet when another browser's document lands, and sends them", async () => {
+    store.set({ settings: {}, pins: ["local:w1:p1"] });
+    const client = await open();
+    expect([currentSidebarPins(), currentPaneMutes()]).toEqual([["local:w1:p1"], []]);
+
+    await act(async () => {
+      setSidebarPins(["local:w1:p1", "local:w1:p2"]);
+      setPaneMutes(["w1:p1"]);
+      store.set({ settings: { showThinking: true } });
+    });
+
+    expect(client.settings.showThinking).toBe(true);
+    expect([currentSidebarPins(), currentPaneMutes()]).toEqual([["local:w1:p1", "local:w1:p2"], ["w1:p1"]]);
+    await send();
+    expect(store.get()).toMatchObject({ pins: ["local:w1:p1", "local:w1:p2"], muted_panes: ["w1:p1"], settings: { showThinking: true } });
+  });
+
   it("says in plain words that the server cannot save, and clears it once the retried change lands", async () => {
     const client = await open();
     expect(client.saveError).toBeNull();
@@ -827,6 +870,47 @@ describe("preferences sync real send path", () => {
     expect(client.settings.darkTheme).toBe("tokyo-night");
     await windows();
     expect(bodies).toHaveLength(1);
+  });
+
+  it("a device's first refusal as read-only takes a document held behind it over a pick not drawn yet", async () => {
+    const gate = Promise.withResolvers<void>();
+    refusing = () => gate.promise.then(() => Response.json({ error: { code: "forbidden" } }, { status: 403 }));
+    const client = await open();
+    await act(async () => { client.update({ showThinking: true }); });
+    await windows();
+    await act(async () => { store.set({ settings: { darkTheme: "tokyo-night" } }); });
+
+    const absorbed = nextAbsorbed();
+    await act(async () => {
+      client.update({ darkTheme: "gruvbox" });
+      gate.resolve();
+      await absorbed;
+    });
+    refusing = null;
+
+    expect(client.settings.darkTheme).toBe("tokyo-night");
+    await windows(3);
+    expect(bodies).toHaveLength(1);
+  });
+
+  it("a pick refused while another browser's newer value was held behind it gives way to that value, and is not sent again", async () => {
+    const gate = Promise.withResolvers<void>();
+    refusing = () => gate.promise.then(() => Response.json({ error: { code: "preferences_unwritable" } }, { status: 500 }));
+    const client = await open();
+    await act(async () => { client.update({ darkTheme: "gruvbox" }); });
+    await windows();
+    await act(async () => { store.set({ settings: { darkTheme: "catppuccin" } }); });
+
+    const absorbed = nextAbsorbed();
+    await act(async () => { gate.resolve(); await absorbed; });
+    refusing = null;
+
+    expect(client.settings.darkTheme).toBe("catppuccin");
+    await act(async () => { jest.advanceTimersByTime(5_000); });
+    await windows(3);
+    expect(bodies).toHaveLength(1);
+    expect(store.get().settings.darkTheme).toBe("catppuccin");
+    expect(client.saveError).toBeNull();
   });
 
   it("Retry never bypasses a watching device or an older server", async () => {
