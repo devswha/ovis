@@ -586,20 +586,20 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   ([#4025](https://github.com/devswha/ovis/pull/4025))
 - The app can also count, for the anonymous usage counts, how the agent inbox is used and, for new
   workspace, new tab, split, close pane, files, settings, the sidebar and the agent inbox, whether a
-  button, a menu, the shortcut or the command palette was used. Off until the notice that says so.
+  button, a menu, the shortcut or the command palette was used.
   ([#3908](https://github.com/devswha/ovis/pull/3908))
 - The app can count, for the anonymous usage counts, chat/terminal switches (by kind of agent and by
   where they were asked), chat sends and the composer's buttons, and the server can send a finished
-  day's counts once. It is off: nothing is counted until the notice that says so ships.
+  day's counts once, only after the notice that says so has been shown.
   ([#3896](https://github.com/devswha/ovis/pull/3896))
-- The button counts (still off) count an action only where it is taken and does something, once,
+- The button counts count an action only where it is taken and does something, once,
   under the way it was taken, and an action on a pane only on this PC's own panes; a count that fails never stops what was
   pressed. Files from More, the sidebar's Settings and New workspace, and a workspace menu's New tab
   are counted too, and an inbox search is counted as it is typed.
   ([#3910](https://github.com/devswha/ovis/pull/3910))
 - The telemetry receiver can take a finished day's button counts (`POST /v1/counts`) into a new
   `counts` table, up to 14 days late, dropping any counter name it does not know while keeping the
-  rest. No app sends them yet, and the notice and what the app says it sends are unchanged.
+  rest.
   ([#3891](https://github.com/devswha/ovis/pull/3891))
 - `scripts/telemetry-report.ts` reads the button counts too: per width, the share of installs that
   used each counter (with the installs it is a share of) and the middle install's day on the days it
