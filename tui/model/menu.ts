@@ -8,7 +8,7 @@
 import { CATALOGUE } from "./catalogue.ts";
 import type { KeyInput, OverlayChoice } from "./effects.ts";
 import { type Focus, focused, type World } from "./focus.ts";
-import type { KeyAction } from "./keymap.ts";
+import type { KeyAction, Mode, MoveAction } from "./keymap.ts";
 
 type PlaceKind = "workspace" | "tab" | "pane" | "agent";
 
@@ -20,14 +20,20 @@ export type MenuEntry =
 
 /** The keys of the first places, in order: digits, which every keyboard types and no input method composes. */
 const PLACE_LABELS = [..."1234567890"];
-/** The keys of the actions, in the catalogue's order: as many letters as herdr has actions. */
-const ACTION_LABELS = [..."abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"];
+/** The keys of the actions, in the menu's order: letters, then shifted digits (no input method composes either). */
+const ACTION_LABELS = [..."abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!@#$%^&*()"];
 
 /** The screen's own actions a key reaches that herdr has none for (the agent list has no key of its own when the config holds `prefix+a`): the menu lists them after herdr's, so a phone keyboard or an input method reaches them too. */
 const LOCAL_ACTIONS = ["agents", "copy_pane_id", "about", "lock"] as const satisfies readonly KeyAction[];
 
-/** The menu's entries for what exists now and where the screen looks. */
-export function menuEntries(world: World, focus: Focus): MenuEntry[] {
+/**
+ * What a mode's keys do that no plain arrow, digit or Enter reaches, so a menu opened in that mode (a click on the header)
+ * lists them: in navigate mode the three moves, `m` and shift+arrow, which a phone keyboard or an input method cannot type.
+ */
+const MODE_ACTIONS: Readonly<Partial<Record<Mode, readonly MoveAction[]>>> = { navigate: ["navigate_move_pane", "navigate_move_up", "navigate_move_down"] };
+
+/** The menu's entries for what exists now, where the screen looks and the mode it is in. */
+export function menuEntries(world: World, focus: Focus, mode: Mode): MenuEntry[] {
   const shown = focused(world, focus);
   const places: { kind: PlaceKind; id: string }[] = [
     ...world.workspaces.map(({ id }) => ({ kind: "workspace" as const, id })),
@@ -36,7 +42,7 @@ export function menuEntries(world: World, focus: Focus): MenuEntry[] {
     ...((shown.tab?.panes.length ?? 0) > 1 ? shown.tab!.panes.map(({ id }) => ({ kind: "pane" as const, id })) : []),
     ...(world.agents ?? []).map((id) => ({ kind: "agent" as const, id })),
   ];
-  const actions: KeyAction[] = [...CATALOGUE.filter((entry) => entry.status === "built").map(({ id }) => id), ...LOCAL_ACTIONS];
+  const actions: KeyAction[] = [...CATALOGUE.filter((entry) => entry.status === "built").map(({ id }) => id), ...LOCAL_ACTIONS, ...(MODE_ACTIONS[mode] ?? [])];
   return [
     ...places.map((place, at): MenuEntry => ({ ...place, label: PLACE_LABELS[at] ?? null })),
     ...actions.map((action, at): MenuEntry => ({ kind: "action", action, label: ACTION_LABELS[at]! })),

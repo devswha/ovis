@@ -134,7 +134,7 @@ interface ChromeInput {
   readonly session: string;
   /** the folder `ovis` was typed in, offered for a first workspace on an empty core */
   readonly cwd: string;
-  /** Ovis's version and the one herdr-core reported on the live line (null: none), for the help's about line */
+  /** Ovis's version and the one herdr-core reported on the live line (null: none), for the about page */
   readonly ovis: string;
   readonly core: string | null;
   readonly theme?: TuiThemeMode;
@@ -436,7 +436,7 @@ function bordersPart(input: ChromeInput, colors: Colors, look: string): Part {
       outer,
       bordered: outer.width !== inner.width && outer.height !== inner.height,
       focused: spot.pane === shown.pane?.id && link.online,
-      idLabel: spot.pane === shown.pane?.id && link.online ? STRINGS.paneIdLabel(spot.pane, keyText(state, "copy_pane_id")) : null,
+      idLabels: spot.pane === shown.pane?.id && link.online ? STRINGS.paneIdLabels(spot.pane, keyText(state, "copy_pane_id")) : null,
       title: ` ${name}${folder}${agent}${zoom}${word} `,
       banner: paneBanner(panes.get(spot.pane), link),
     };
@@ -459,6 +459,8 @@ function bordersPart(input: ChromeInput, colors: Colors, look: string): Part {
       canvas.hit(rect, "new_workspace");
       return;
     }
+    // a divider's cells first: the id on a border that is also a divider's row wins the tap
+    for (const { id, divider } of seams) canvas.hit(divider, id);
     for (const pane of drawn) {
       if (!pane.bordered) continue;
       const { outer } = pane;
@@ -469,18 +471,18 @@ function bordersPart(input: ChromeInput, colors: Colors, look: string): Part {
         const fg = pane.banner.tone === "error" ? colors.dangerText : pane.banner.tone === "warn" ? colors.notice : colors.textDim;
         printFit(canvas, outer.x + 2, outer.y + outer.height - 1, ` ${pane.banner.text} `, room, canvas.style({ fg, bg: colors.bgElevated, flags: STYLE_BOLD }), true);
       }
-      // the focused pane's id, at the right of its bottom border: whole, and only where the banner leaves it room
-      if (pane.idLabel !== null) {
-        const width = measure(pane.idLabel).width;
+      // the focused pane's id, at the right of its bottom border: the longest form the room leaves after its banner, whole
+      if (pane.idLabels !== null) {
         const taken = pane.banner ? measure(` ${pane.banner.text} `).width : 0;
-        if (room >= width + taken) {
+        const label = pane.idLabels.find((one) => room >= measure(one).width + taken);
+        if (label !== undefined) {
+          const width = measure(label).width;
           const at = outer.x + outer.width - 2 - width;
-          printFit(canvas, at, outer.y + outer.height - 1, pane.idLabel, width, canvas.style({ fg: colors.accent, bg: colors.bg, flags: STYLE_BOLD }));
+          printFit(canvas, at, outer.y + outer.height - 1, label, width, canvas.style({ fg: colors.accent, bg: colors.bg, flags: STYLE_BOLD }));
           canvas.hit({ x: at, y: outer.y + outer.height - 1, width, height: 1 }, "copy_pane_id");
         }
       }
     }
-    for (const { id, divider } of seams) canvas.hit(divider, id);
   });
 }
 
@@ -549,6 +551,8 @@ function modeBarPart(input: ChromeInput, colors: Colors, look: string): Part {
     const terminal = mode === "terminal";
     const badgeBg = mode === "prefix" ? colors.accent : mode === "locked" ? colors.statusBlocked : terminal ? colors.bgElevated : colors.statusWorking;
     let col = printFit(canvas, rect.x, row, badge, rect.width, canvas.style({ fg: terminal ? colors.textStrong : colors.primaryText, bg: badgeBg, flags: STYLE_BOLD }));
+    // a tap on the LOCKED badge unlocks: a keyboard that cannot type the unlock chord has no other way
+    if (mode === "locked") canvas.hit({ x: rect.x, y: row, width: Math.min(measure(badge).width, rect.width), height: 1 }, "lock");
     if (offline !== null) col = printFit(canvas, col, row, ` ${offline} `, right - col, canvas.style({ fg: colors.notice, bg: colors.bgPanel, flags: STYLE_BOLD }), true);
     for (const code of unreachable) col = printFit(canvas, col, row, ` [${code}] `, right - col, canvas.style({ fg: colors.dangerText, bg: colors.bgPanel, flags: STYLE_BOLD }), true);
     const keyStyle = canvas.style({ fg: colors.accent, bg: colors.bgPanel, flags: STYLE_BOLD });

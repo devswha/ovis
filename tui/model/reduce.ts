@@ -522,7 +522,7 @@ function refreshMenus(acc: Acc): void {
         return { ...overlay, agents, cursor: same >= 0 ? same : Math.max(0, Math.min(overlay.cursor, agents.length - 1)) };
       }
       if (overlay.kind !== "menu") return overlay;
-      const entries = menuEntries(world, focus);
+      const entries = menuEntries(world, focus, acc.s.mode.name);
       return { ...overlay, entries, cursor: keptCursor(overlay.entries, overlay.cursor, entries) };
     }),
   };
@@ -635,7 +635,7 @@ function runLocal(acc: Acc, action: Exclude<KeyAction, HerdrAction | CopyAction>
       }
       return;
     case "menu":
-      acc.s = { ...s, overlays: [...s.overlays, { kind: "menu", entries: menuEntries(s.world, s.focus), cursor: 0 }] };
+      acc.s = { ...s, overlays: [...s.overlays, { kind: "menu", entries: menuEntries(s.world, s.focus, s.mode.name), cursor: 0 }] };
       return;
     case "agents":
       acc.s = { ...s, overlays: [...s.overlays, { kind: "agents", agents: s.world.agents ?? [], cursor: 0 }] };

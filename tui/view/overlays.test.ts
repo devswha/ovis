@@ -24,6 +24,7 @@ async function start(core?: FakeHcCore, cols = 120, rows = 40): Promise<Run> {
 /** Each overlay kind, the action that opens it, the close control its frame shows and the keys that close it: written out here. */
 const KINDS = [
   { kind: "help", action: "help", control: "[close: esc / q / ?]", keys: ["esc", "q", "?"] },
+  { kind: "agents", action: "agents", control: "[close: esc / q]", keys: ["esc", "q"] },
   { kind: "about", action: "about", control: "[close: esc / q]", keys: ["esc", "q"] },
   { kind: "text", action: "rename_tab", control: "[close: esc]", keys: ["esc"] },
   { kind: "confirm", action: "close_workspace", control: "[close: esc / n]", keys: ["esc", "n"] },
@@ -61,12 +62,15 @@ describe("the overlays' close keys, the pane id copy and the about page", () => 
 
   it("a tap on the close control closes every overlay kind at 45 columns, with no call to the core and no focus change", async () => {
     const run = await start(undefined, 45, 30);
-    const calls = () => run.core.calls().map((call) => call.method).filter((method) => method !== "machine.list");
+    // the seen marker reads a terminal after any input (terminal.get); nothing else may be asked
+    const calls = () => run.core.calls().map((call) => call.method).filter((method) => method !== "machine.list" && method !== "terminal.get");
+    await run.keys("x");
+    await run.advance(200);
     const focus = JSON.stringify(run.loop.model().focus);
-    const before = calls();
     for (const { kind, action, control } of KINDS) {
       run.loop.dispatch({ type: "action", action, at: run.clock.current });
       await run.advance(20);
+      const before = calls();
       const row = run.grid().findIndex((line) => line.includes(control));
       expect({ kind, drawn: row >= 0 }).toEqual({ kind, drawn: true });
       await run.keys(`click@${run.grid()[row]!.indexOf(control) + 1}:${row}`);
@@ -131,6 +135,46 @@ describe("the overlays' close keys, the pane id copy and the about page", () => 
     await run.keys(menuLabel(run, "lock"));
     await run.advance(20);
     expect({ locked: run.loop.model().locked, open: run.loop.model().overlays.length }).toEqual({ locked: true, open: 0 });
+  }, TEST_MS);
+
+  it("a menu opened in navigate mode lists the three moves no phone keyboard types, each chosen by its own label; outside navigate mode it lists none", async () => {
+    const run = await start();
+    const entriesOf = () => (run.loop.model().overlays.at(-1) as { entries: readonly { kind: string; action?: string; label: string | null }[] }).entries;
+    const MOVES = ["navigate_move_up", "navigate_move_down", "navigate_move_pane"];
+    run.loop.dispatch({ type: "action", action: "menu", at: run.clock.current });
+    await run.advance(20);
+    expect(entriesOf().filter((entry) => MOVES.includes(entry.action ?? ""))).toEqual([]);
+    await run.keys("esc");
+    await run.advance(200);
+    await run.keys("ctrl+b,w");
+    await run.advance(20);
+    run.loop.dispatch({ type: "action", action: "menu", at: run.clock.current });
+    await run.advance(20);
+    const labels = entriesOf().flatMap((entry) => (entry.label === null ? [] : [entry.label]));
+    expect({ unique: new Set(labels).size === labels.length, actionsLabelled: entriesOf().every((entry) => entry.kind !== "action" || /^\S$/.test(entry.label ?? "")) }).toEqual({ unique: true, actionsLabelled: true });
+    expect(entriesOf().filter((entry) => MOVES.includes(entry.action ?? "")).map((entry) => entry.action).sort()).toEqual([...MOVES].sort());
+    for (const move of MOVES) {
+      const before = run.loop.report().actions.length;
+      await run.keys(menuLabel(run, move));
+      await run.advance(50);
+      expect({ move, ran: run.loop.report().actions.slice(before).includes(`run:${move}`), mode: run.loop.model().mode.name }).toEqual({ move, ran: true, mode: move === "navigate_move_pane" ? "terminal" : "navigate" });
+      if (move !== "navigate_move_pane") {
+        run.loop.dispatch({ type: "action", action: "menu", at: run.clock.current });
+        await run.advance(20);
+      }
+    }
+  }, TEST_MS);
+
+  it("a locked screen unlocks by a tap on its LOCKED badge when the chord cannot be typed", async () => {
+    const run = await start();
+    await run.keys("ctrl+b,enter");
+    await run.advance(20);
+    await run.keys(menuLabel(run, "lock"));
+    await run.advance(20);
+    expect(run.loop.model().locked).toBe(true);
+    await run.keys(`click@1:${run.grid().length - 1}`);
+    await run.advance(20);
+    expect(run.loop.model().locked).toBe(false);
   }, TEST_MS);
 
   it("the about page carries the versions the link reported: Ovis's own, herdr-core's from hello, and the session", async () => {

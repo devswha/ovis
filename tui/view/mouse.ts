@@ -48,7 +48,7 @@ export interface PointerScene {
 
 export type PointerAct =
   | { readonly kind: "select"; readonly target: Target }
-  | { readonly kind: "action"; readonly action: "toggle_sidebar" | "new_workspace" | "menu" | "copy_pane_id" }
+  | { readonly kind: "action"; readonly action: "toggle_sidebar" | "new_workspace" | "menu" | "copy_pane_id" | "lock" }
   /** the top overlay's entry with this index was clicked */
   | { readonly kind: "choose"; readonly entry: number }
   /** to the focused pane's program, in its grid's cells */
@@ -180,7 +180,7 @@ export class Pointer {
     const [kind, id] = splitId(hit.id);
     if (kind === "tab" || kind === "workspace") return [...dropped, { kind: "select", target: { kind, id } }];
     if (kind === "agent") return [...dropped, { kind: "select", target: { kind: "pane", id } }];
-    if (hit.id === "toggle_sidebar" || hit.id === "new_workspace" || hit.id === "menu" || hit.id === "copy_pane_id") return [...dropped, { kind: "action", action: hit.id }];
+    if (hit.id === "toggle_sidebar" || hit.id === "new_workspace" || hit.id === "menu" || hit.id === "copy_pane_id" || hit.id === "lock") return [...dropped, { kind: "action", action: hit.id }];
     const split = scene.splits.find((candidate) => candidate.id === hit.id);
     const path = split ? pathOf(split.id) : null;
     const name = split && path && scene.tab ? dividerAt(scene.tab.root, path) : null;

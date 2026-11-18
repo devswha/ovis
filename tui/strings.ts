@@ -59,8 +59,8 @@ export const STRINGS = {
   emptyCoreTitle: "No workspaces yet",
   emptyCoreOffer: (folder: string, key: string | null): string => `New workspace in ${folder}${key === null ? "" : ` (${key})`}`,
 
-  /** the focused pane's id on its bottom border; `key` is the text of the key that copies it (null: unbound) */
-  paneIdLabel: (id: string, key: string | null): string => ` id ${id}${key === null ? "" : ` (${key} copies)`} `,
+  /** the focused pane's id on its bottom border, the longest form first, the least useful part cut first; `key` is the text of the key that copies it (null: unbound) */
+  paneIdLabels: (id: string, key: string | null): readonly string[] => [...(key === null ? [] : [` id ${id} (${key} copies) `]), ` id ${id} `, ` ${id} `],
 
   // Pane states & border notices
   endedCode: (code: number | null): string => `ended (${code ?? "none"})`,

@@ -352,6 +352,34 @@ describe("the focused pane's id, the about page and the help's keys", () => {
     expect(offline.rows.some((row) => row.includes(" id t"))).toBe(false);
   });
 
+  const bottomEdge = (shot: Picture): string => shot.rows.filter((row) => /\+-/.test(row)).at(-1)!;
+
+  it("the id takes the longest form the room leaves: the whole label, then ` id t1 `, then ` t1 `", () => {
+    expect(bottomEdge(draw({ cols: 45, rows: 30 }))).toBe(`+${"-".repeat(17)} id t1 (prefix+i copies) -+`);
+    expect(bottomEdge(draw({ cols: 65, rows: 24 }))).toBe(`                       |+${"-".repeat(11)} id t1 -++${"-".repeat(18)}+`);
+    expect(bottomEdge(draw({ cols: 72, rows: 24 }))).toBe(`                       |+${"-".repeat(14)} id t1 -++${"-".repeat(22)}+`);
+    expect(bottomEdge(draw({ cols: 80, rows: 24 }))).toBe(`                       |+${"-".repeat(18)} id t1 -++${"-".repeat(26)}+`);
+    expect(bottomEdge(draw({ cols: 100, rows: 24 }))).toBe(`                       |+${"-".repeat(10)} id t1 (prefix+i copies) -++${"-".repeat(36)}+`);
+    const six = [1, 2, 3, 4, 5, 6].map((n) => term(`t${n}`, "w1", "work", "tab1", "tab", {}, `p${n}`));
+    expect(bottomEdge(draw({ cols: 80, rows: 24, terminals: six }))).toBe(`                       |+-- t1 -++${"-".repeat(7)}++${"-".repeat(8)}++${"-".repeat(7)}++${"-".repeat(8)}++${"-".repeat(7)}+`);
+  });
+
+  it("the id's cells win the tap over the divider on the border they share, and the cells beside it stay the divider's", () => {
+    const layout = { schema: 1, workspaces: [{ id: "w1", tabs: [{ id: "tab1", root: { split: "down", ratio: 0.5, first: { leaf: "t1" }, second: { leaf: "t2" } } }] }] };
+    const shot = draw({ cols: 120, rows: 40, terminals: [term("t1", "w1", "work", "tab1", "tab", {}, "one"), term("t2", "w1", "work", "tab1", "tab", {}, "two")], docs: { [OVIS_LAYOUT_DOC]: layout } });
+    const target = (col: number, row: number) => { const hit = shot.frame.hits.at(col, row); return hit && "part" in hit ? hit.id : hit ? `pane:${hit.pane}` : null; };
+    const label = " id t1 (prefix+i copies) ";
+    const row = shot.rows.findIndex((line) => line.includes(label));
+    const col = shot.rows[row]!.indexOf(label);
+    expect({ row: row > 1, label: target(col + label.length - 1, row), before: target(col - 1, row)?.startsWith("split_"), after: target(col + label.length, row)?.startsWith("split_") }).toEqual({ row: true, label: "copy_pane_id", before: true, after: true });
+  });
+
+  it("the LOCKED badge is a tap target that unlocks; no other mode's badge is", () => {
+    const owner = (shot: Picture) => { const hit = shot.frame.hits.at(1, 39); return hit && "part" in hit ? `${hit.part}/${hit.id}` : null; };
+    expect(owner(draw({ cols: 120, rows: 40, events: [{ type: "action", action: "lock", at: 1 }] }))).toBe("mode/lock");
+    expect(owner(draw({ cols: 120, rows: 40 }))).not.toBe("mode/lock");
+  });
+
   const about = (cols: number, rows: number, extra: Partial<Setup> = {}) => draw({ cols, rows, events: [{ type: "action", action: "about", at: 1 }], ...extra });
 
   it("the about page lists the five terms, a blank row, then the about line with the session first", () => {
