@@ -21,7 +21,7 @@ describe("how the row menu closes from outside it", () => {
   let frames: FrameRequestCallback[];
   let closes: number;
 
-  async function draw(phone: boolean, anchor = node(), point?: { x: number; y: number }): Promise<void> {
+  async function draw(phone: boolean, anchor = node(), { point, menuNode = node() }: { readonly point?: { x: number; y: number }; readonly menuNode?: HTMLElement } = {}): Promise<void> {
     for (const key of ["window", "document", "navigator", "getComputedStyle", "localStorage", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     events = new EventTarget();
     frames = [];
@@ -33,7 +33,7 @@ describe("how the row menu closes from outside it", () => {
     define("navigator", { languages: ["en-US"], platform: "Linux" });
     const on = { addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events) };
     define("window", { ...on, localStorage: storage, matchMedia: (query: string) => ({ matches: phone && query === SHEET_QUERY, addEventListener() {}, removeEventListener() {} }), innerWidth: phone ? 390 : 1280, innerHeight: 800, requestAnimationFrame: (run: FrameRequestCallback) => frames.push(run), cancelAnimationFrame() {}, setTimeout, clearTimeout });
-    define("document", { ...on, visibilityState: "visible", activeElement: null, body: { nodeType: 1, children: [], createNodeMock: node }, documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } }, querySelector: () => null });
+    define("document", { ...on, visibilityState: "visible", activeElement: null, body: { nodeType: 1, children: [], createNodeMock: () => menuNode }, documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } }, querySelector: () => null });
     define("getComputedStyle", (element: Element) => ({ overflowX: "visible", overflowY: element === anchor.parentElement ? "auto" : "visible", getPropertyValue: () => "" }));
     function OpenMenu() {
       const [open, setOpen] = useState(true);
@@ -52,6 +52,7 @@ describe("how the row menu closes from outside it", () => {
   });
   beforeEach(() => descriptors.clear());
 
+  const frame = () => act(async () => { for (const run of frames.splice(0)) run(0); });
   const scrim = () => renderer!.root.findByProps({ className: "modal-scrim" });
   const press = async (on: "scrim" | "sheet", then: "click" | "none"): Promise<void> => {
     const self = scrim();
@@ -99,9 +100,8 @@ describe("how the row menu closes from outside it", () => {
       parentElement: list,
       getBoundingClientRect: () => ({ top, left, bottom: top + 20, right: left + 120 }),
     });
-    await draw(false, row, { x: 240, y: 110 });
+    await draw(false, row, { point: { x: 240, y: 110 } });
     const menu = () => renderer?.root.findAllByProps({ role: "menu" }) ?? [];
-    const frame = () => act(async () => { for (const run of frames.splice(0)) run(0); });
     const scroll = (target: HTMLElement) => act(async () => {
       events.dispatchEvent(Object.defineProperty(new Event("scroll"), "target", { value: target }));
     });
@@ -123,5 +123,19 @@ describe("how the row menu closes from outside it", () => {
     await frame();
     expect(menu()).toHaveLength(0);
     expect(closes).toBe(1);
+  });
+
+  it("repositions an open desktop menu that grows near the bottom of the viewport", async () => {
+    const row = Object.assign(node(), {
+      getBoundingClientRect: () => ({ top: 600, bottom: 620, left: 212, right: 332 }),
+    });
+    const menuNode = Object.assign(node(), { offsetHeight: 250, clientHeight: 250, scrollHeight: 250 });
+    await draw(false, row, { menuNode });
+    const top = () => renderer?.root.findByProps({ role: "menu" }).props.style.top;
+    expect(top()).toBe(346);
+
+    Object.assign(menuNode, { offsetHeight: 500, clientHeight: 500, scrollHeight: 500 });
+    await frame();
+    expect(top()).toBe(96);
   });
 });

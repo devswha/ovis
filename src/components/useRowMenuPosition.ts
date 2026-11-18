@@ -33,6 +33,10 @@ export function useRowMenuPosition({ anchor, surface, point, align, sheet, onClo
     let last = origin;
     let width = window.innerWidth;
     let height = window.innerHeight;
+    // Measure the full height even when maxHeight keeps the menu's visible box from growing.
+    const fullMenuHeight = () => menu.scrollHeight + menu.offsetHeight - menu.clientHeight;
+    let menuWidth = menu.offsetWidth;
+    let menuHeight = fullMenuHeight();
 
     const position = (rect: DOMRect): void => {
       const safe = safeAreaInsets();
@@ -40,9 +44,6 @@ export function useRowMenuPosition({ anchor, surface, point, align, sheet, onClo
       const maxX = width - safe.right - EDGE;
       const minY = safe.top + EDGE;
       const maxY = height - safe.bottom - EDGE;
-      const menuWidth = menu.offsetWidth;
-      // Use the full height when deciding which side has room, even after maxHeight clips the menu.
-      const menuHeight = menu.scrollHeight + menu.offsetHeight - menu.clientHeight;
       if (point) {
         setPlace({
           left: Math.max(minX, Math.min(point.x + rect.left - origin.left, maxX - menuWidth)),
@@ -80,11 +81,16 @@ export function useRowMenuPosition({ anchor, surface, point, align, sheet, onClo
         }
       }
       if (left >= right || top >= bottom) { close(); return; }
+      const nextMenuWidth = menu.offsetWidth;
+      const nextMenuHeight = fullMenuHeight();
       if (rect.top !== last.top || rect.left !== last.left || rect.right !== last.right || rect.bottom !== last.bottom ||
-          width !== window.innerWidth || height !== window.innerHeight) {
+          width !== window.innerWidth || height !== window.innerHeight ||
+          menuWidth !== nextMenuWidth || menuHeight !== nextMenuHeight) {
         last = rect;
         width = window.innerWidth;
         height = window.innerHeight;
+        menuWidth = nextMenuWidth;
+        menuHeight = nextMenuHeight;
         position(rect);
       }
       frame = window.requestAnimationFrame(follow);
