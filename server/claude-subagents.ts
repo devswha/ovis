@@ -280,7 +280,8 @@ export function commandTerminals(line: string, session: string): CommandEnd[] {
  * marks the person's prompts with `origin` `human`, and older versions with a permission mode,
  * which the others lack. A prompt typed while a turn works is handed to that turn on the way
  * (a `queued_command` attachment): the same turn. An hc note (hcNotes) is typed into the terminal,
- * so Claude records it as `human`, but it is another session's message.
+ * so Claude records it as `human`, but it is another session's message: a text-only prompt that is only notes,
+ * once Claude's paste wrapper is taken off, as the chat reads it.
  */
 function prompted(entry: Row): boolean {
   if (entry["type"] !== "user" || entry["isMeta"] === true || entry["isCompactSummary"] === true || entry["isSidechain"] === true) return false;
