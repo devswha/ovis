@@ -138,7 +138,22 @@ export interface StoredDevice {
   link_moved_key?: boolean;
   /** the signed `add` that let this row in, as received: /api/account/status lists it for a client to hand on */
   account_add?: unknown;
+  /**
+   * how a `link` made the row a member (docs/account.md, "How a device joined"): set once, by the link that took it from
+   * no account into one, and kept by every later link. Absent on a row that became a member before this was recorded,
+   * and on one an account member's signature or approval stands behind (`added_by`). A value this PC does not know is
+   * kept as it is and counts as `word`.
+   */
+  joined_by?: JoinedBy;
 }
+
+/**
+ * `code`: the row paired with a code made for a PC in no account and linked into the account that code held it to;
+ * `service`: the account service vouched for its key (not written yet); `word`: any other link, on the device's own word.
+ */
+export type JoinedBy = "code" | "service" | "word";
+/** The marks of a member something other than the device itself vouched for: every other mark is its own word. */
+const VOUCHED: ReadonlySet<unknown> = new Set<JoinedBy>(["code", "service"]);
 
 /**
  * The three ways relay pairing failures are counted (docs/account.md, "Who may admit a device"): codes
@@ -918,7 +933,7 @@ export class DeviceStore {
       id: row.id, label: row.label, role: "drive", token_hash: hash(randomBytes(32).toString("hex")), relay_public_key: link.key,
       // made at this write, not at its pairing: a row that keeps a key this PC removed is newer than that removal,
       // so a stop before the tombstone is cleared leaves a row that the next start keeps (finishInterruptedWrites)
-      created_at: at, last_seen_at: at, account: link.account, linked_at: at, link_moved_key: link.key !== link.oldKey,
+      created_at: at, last_seen_at: at, account: link.account, linked_at: at, link_moved_key: link.key !== link.oldKey, joined_by: "code",
     };
     // no waiting row from here on: the end of its code, which this write brings, takes the rows that still wait
     waiting.rows.delete(row.id);
@@ -1346,11 +1361,24 @@ export class DeviceStore {
     return device ? { id: device.id, label: device.label, role: device.role } : null;
   }
 
-  /** Members, and the relay rows a member's removal does not reach. */
-  accountRows(): { members: number; unlinked: string[] } {
+  /** Members, the relay rows a member's removal does not reach, and the members that joined on their own word. */
+  accountRows(): { members: number; unlinked: string[]; own_word: string[] } {
+    const groups = this.accountGroups();
     return {
       members: this.devices.filter((d) => d.account !== undefined).length,
-      unlinked: this.devices.filter((d) => d.account === undefined && d.relay_public_key !== undefined).map((d) => d.id),
+      unlinked: groups.unlinked.map((d) => d.id), own_word: groups.own_word.map((d) => d.id),
+    };
+  }
+
+  /**
+   * The rows the owner is shown apart (/api/account/status, the owner's /api/health, `ovis status`): relay rows in no
+   * account, and members whose link was on their own word (`joined_by`). A row is in one of them at most.
+   */
+  accountGroups(): { unlinked: { id: string; label: string }[]; own_word: { id: string; label: string }[] } {
+    const shown = (d: StoredDevice) => ({ id: d.id, label: d.label });
+    return {
+      unlinked: this.devices.filter((d) => d.account === undefined && d.relay_public_key !== undefined).map(shown),
+      own_word: this.devices.filter((d) => d.account !== undefined && d.joined_by !== undefined && !VOUCHED.has(d.joined_by)).map(shown),
     };
   }
 
@@ -1474,7 +1502,9 @@ export class DeviceStore {
     if (!device) return this.promote(deviceId, { oldKey, key, account }, sessionId);
     // once moved, moved: a later link that keeps the key does not make it the key paired here
     const moved = key !== oldKey || device.link_moved_key === true;
-    const updated: StoredDevice = { ...device, relay_public_key: key, account, linked_at: new Date().toISOString(), link_moved_key: moved };
+    // the link that takes a row from no account into one, with no member behind it, is on the device's own word
+    const ownWord = device.account === undefined && device.added_by === undefined;
+    const updated: StoredDevice = { ...device, relay_public_key: key, account, linked_at: new Date().toISOString(), link_moved_key: moved, ...(ownWord ? { joined_by: "word" as const } : {}) };
     const next = this.devices.map((d) => d === device ? updated : d);
     this.save(next);
     this.devices = next;

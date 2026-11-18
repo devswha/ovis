@@ -38,7 +38,7 @@ async function pc() {
 }
 
 /** What a device that waits to link reads as its account status, whatever else the PC holds. */
-const waitingStatus = (id: string) => ({ account: null, members: 0, unlinked: [id], removals: [], adds: [], blocked: [], enrolling: false, blocked_all: false, mailbox: { last_pull_at: null, error: null } });
+const waitingStatus = (id: string) => ({ account: null, members: 0, unlinked: [id], own_word: [], removals: [], adds: [], blocked: [], enrolling: false, blocked_all: false, mailbox: { last_pull_at: null, error: null } });
 
 /** Every request of a session that reached a route, as `METHOD /path`: one the session refused never does. */
 function routed() {

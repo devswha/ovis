@@ -320,9 +320,10 @@ async function pairingParts(): Promise<{ qr: (text: string) => string; decodeOff
  * only: with no socket the plugin may take (ownerDoor), it is null and nothing is sent, since the profile answers its
  * TCP port with liveness only. There the answer also counts without `herdr` when it carries `machine_profile` with
  * `runtime_down` (server/machine-profile.ts machineHealth): the profile runs, and `engineDown` is its reason while its
- * engine does not answer ("" with none given). Over TCP `engineDown` is always null.
+ * engine does not answer ("" with none given). Over TCP `engineDown` is always null. `devices`: the groups the answer
+ * lists to its owner (accountDevicesOf); `authenticated`: whether the request got in.
  */
-async function appHealth(): Promise<{ readonly engineDown: string | null } | null> {
+async function appHealth(): Promise<{ readonly engineDown: string | null; readonly devices: AccountDevices | null; readonly authenticated: boolean } | null> {
   // the door the request goes to and the answer is judged by: decided once, and kept for the command once it passes
   const door = serverDoor();
   if (machineProfile && door === null) return null;
@@ -337,7 +338,10 @@ async function appHealth(): Promise<{ readonly engineDown: string | null } | nul
     const engine = typeof profile === "object" && profile !== null && typeof profile.runtime_down === "boolean" ? profile : null;
     if ((typeof body.herdr !== "object" || body.herdr === null) && engine === null) return null;
     commandDoor = door;
-    return { engineDown: engine?.runtime_down === true ? (typeof engine.reason === "string" ? engine.reason : "") : null };
+    return {
+      engineDown: engine?.runtime_down === true ? (typeof engine.reason === "string" ? engine.reason : "") : null,
+      devices: accountDevicesOf(body), authenticated: (body.auth as { authenticated: boolean }).authenticated,
+    };
   } catch {
     return null;
   }
@@ -1267,6 +1271,36 @@ function runningVersion(): string | null {
   } catch { return null; }
 }
 
+/** The devices an owner's health answer lists apart (server/devices.ts accountGroups). */
+interface AccountDevices { readonly unlinked: readonly ShownDevice[]; readonly own_word: readonly ShownDevice[] }
+interface ShownDevice { readonly id: string; readonly label: string }
+
+/** The `account_devices` of a health answer, in the shape this command reads; null without one (an older server, or a caller that is not its owner). */
+function accountDevicesOf(body: unknown): AccountDevices | null {
+  const groups = (body as { account_devices?: unknown } | null)?.account_devices as Record<string, unknown> | null | undefined;
+  const shown = (list: unknown): list is ShownDevice[] => Array.isArray(list)
+    && list.every((device) => typeof device?.id === "string" && typeof device.label === "string");
+  return typeof groups === "object" && groups !== null && shown(groups["unlinked"]) && shown(groups["own_word"])
+    ? { unlinked: groups["unlinked"], own_word: groups["own_word"] } : null;
+}
+
+/**
+ * The groups `status` prints, from the app's own answer (appHealth). Over TCP that is asked without the token, as the
+ * port may hold another program: once it is the app's and did not let the command in, it is asked again with it.
+ */
+async function accountDevices(answer: { readonly devices: AccountDevices | null; readonly authenticated: boolean }): Promise<AccountDevices | null> {
+  const token = env["OVIS_TOKEN"] ?? "";
+  if (answer.devices !== null || answer.authenticated || token === "" || serverDoor() !== null) return answer.devices;
+  try {
+    const response = await serverFetch("/api/health", { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(1500) });
+    return response.ok ? accountDevicesOf(await response.json()) : null;
+  } catch { return null; }
+}
+
+/** One group's line: each device by its name, with no control character, and its id. */
+const deviceLine = (title: string, devices: readonly ShownDevice[]): string =>
+  `${title}: ${devices.length === 0 ? "none" : devices.map((device) => `${device.label.replace(/[\u0000-\u001f\u007f-\u009f]/g, "")} (${device.id})`).join(", ")}\n`;
+
 /** Reporting "down" is not an action failure: herdr logs a nonzero exit as failed. */
 async function status(): Promise<number> {
   const pid = recordedPid();
@@ -1274,6 +1308,11 @@ async function status(): Promise<number> {
   process.stdout.write(`${answer !== null ? "running" : "down"} ${origin}${pid === null ? "" : ` (pid ${pid})`}\n`);
   // a machine profile that runs while its engine does not answer (appHealth)
   if (typeof answer?.engineDown === "string") process.stdout.write(`engine: down${answer.engineDown === "" ? "" : ` (${answer.engineDown})`}\n`);
+  const devices = answer === null ? null : await accountDevices(answer);
+  if (devices !== null) {
+    process.stdout.write(deviceLine("devices outside the account", devices.unlinked));
+    process.stdout.write(deviceLine("devices that joined the account on their own word", devices.own_word));
+  }
   const version = runningVersion();
   if (version !== null) process.stdout.write(`version: ${version}\n`);
   process.stdout.write(`config: ${CONFIG_FILES.length === 0 ? `none (settings go in ${join(CONFIG_DIR, "env")})` : CONFIG_FILES.join(", ")}\n`);

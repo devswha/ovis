@@ -762,6 +762,67 @@ describe("the state dir when run by hand", () => {
   });
 });
 
+describe("the devices status lists apart", () => {
+  const GROUPS = { unlinked: [{ id: "6a1f0c9e2b7d4a10", label: "Old phone" }], own_word: [{ id: "0d4c1b7a9e2f3c58", label: "Tab\u001b]0;let\u0007let" }, { id: "1e5d2c8b0a3f4d69", label: "Laptop" }] };
+  /** An Ovis on a port of its own whose health answer is `answer` for each request, by the request's authorization. */
+  function answering(answer: (authorization: string | null) => Record<string, unknown>) {
+    const asked: (string | null)[] = [];
+    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
+      if (new URL(request.url).pathname !== "/api/health") return new Response(null, { status: 404 });
+      asked.push(request.headers.get("authorization"));
+      return Response.json(answer(request.headers.get("authorization")));
+    } });
+    writeFileSync(join(configDir, ".env"), `PORT=${server.port}\n`);
+    return { server, asked, env: { HOST: "127.0.0.1", HERDR_PLUGIN_CONFIG_DIR: configDir, OVIS_STATE_DIR: join(scratch, "app-state"), OVIS_TOKEN: "" } };
+  }
+  const lines = (out: string) => out.split("\n").filter((line) => line.startsWith("devices "));
+
+  it("are the two groups of the owner's health answer, each device by its name with no control character, and its id", async () => {
+    const pc = answering(() => ({ ...APP_HEALTH, account_devices: GROUPS }));
+    try {
+      const result = await run("status", pc.env);
+      expect(result.exitCode, result.err).toBe(0);
+      expect(lines(result.out)).toEqual([
+        "devices outside the account: Old phone (6a1f0c9e2b7d4a10)",
+        "devices that joined the account on their own word: Tab]0;letlet (0d4c1b7a9e2f3c58), Laptop (1e5d2c8b0a3f4d69)",
+      ]);
+      expect(pc.asked).toEqual([null]);
+    } finally { await pc.server.stop(true); }
+  });
+
+  it("say none for an empty group, and are not printed by a server that sends none", async () => {
+    const empty = answering(() => ({ ...APP_HEALTH, account_devices: { unlinked: [], own_word: [] } }));
+    try {
+      expect(lines((await run("status", empty.env)).out)).toEqual(["devices outside the account: none", "devices that joined the account on their own word: none"]);
+    } finally { await empty.server.stop(true); }
+    const older = answering(() => APP_HEALTH);
+    try {
+      // it let the command in: nothing is asked again, with the token or without
+      const result = await run("status", { ...older.env, OVIS_TOKEN: "the-token" });
+      expect(result.out.split("\n")[0]).toBe(`running http://127.0.0.1:${older.server.port}`);
+      expect(lines(result.out)).toEqual([]);
+      expect(older.asked).toEqual([null]);
+    } finally { await older.server.stop(true); }
+  });
+
+  it("are asked again with the token once the app's answer did not let the command in, and never sent to another program", async () => {
+    const pc = answering((authorization) => authorization === "Bearer the-token" ? { ...APP_HEALTH, account_devices: GROUPS }
+      : { ...APP_HEALTH, auth: { required: true, authenticated: false } });
+    try {
+      const result = await run("status", { ...pc.env, OVIS_TOKEN: "the-token" });
+      expect(lines(result.out)).toHaveLength(2);
+      expect(pc.asked).toEqual([null, "Bearer the-token"]);
+      expect(result.out).not.toContain("the-token");
+    } finally { await pc.server.stop(true); }
+    const stranger = answering(() => ({ ok: true }));
+    try {
+      const result = await run("status", { ...stranger.env, OVIS_TOKEN: "the-token" });
+      expect(result.out.split("\n")[0]).toBe(`down http://127.0.0.1:${stranger.server.port}`);
+      expect(stranger.asked).toEqual([null]);
+    } finally { await stranger.server.stop(true); }
+  });
+});
+
 describe("add and login", () => {
   /** An Ovis on a port of its own whose PC is already in an account: `link` says so and ends. */
   function linkedPc() {

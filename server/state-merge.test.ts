@@ -9,7 +9,7 @@ import { PreferenceStore } from "./preferences.ts";
 import { privateStateFs, writePrivateState } from "./private-state.ts";
 import { startFakePushService, type FakePushService } from "./push.fake.ts";
 import { createPushService, PUSH_EXTRA_KEYS } from "./push.ts";
-import { mergeSiblingState, siblingStateDir } from "./state-merge.ts";
+import { mergeRegistries, mergeSiblingState, siblingStateDir } from "./state-merge.ts";
 
 const roots: string[] = [];
 const fakes: FakePushService[] = [];
@@ -386,6 +386,21 @@ describe("paired devices of the install's other state dir", () => {
         expect(store.match("token-a")?.id).toBe(device("a").id);
       } finally { said.mockRestore(); }
     }
+  });
+
+  it("carry how a row joined its account with the account it takes from its other copy, or none", () => {
+    const row = (more: Partial<StoredDevice>): StoredDevice => ({ id: "a".repeat(16), label: "Phone", role: "drive", token_hash: "t", relay_public_key: "k", created_at: "2026-11-15T00:00:00.000Z", last_seen_at: null, ...more });
+    const merged = (own: StoredDevice, other: StoredDevice) => mergeRegistries({ gate_closed_at: null, devices: [own] }, { gate_closed_at: null, devices: [other] }, { own: null, other: null }).devices[0];
+    // a copy in no account takes the other's account, with how the row joined there
+    expect(merged(row({}), row({ account: "acct_1", linked_at: "2026-11-15T01:00:00.000Z", joined_by: "word" }))).toMatchObject({ account: "acct_1", joined_by: "word" });
+    expect(merged(row({}), row({ account: "acct_1", linked_at: "2026-11-15T01:00:00.000Z", joined_by: "code" }))).toMatchObject({ account: "acct_1", joined_by: "code" });
+    // the later link wins, and its copy has no mark (an older server wrote it): none is kept
+    const none = merged(row({ account: "acct_1", linked_at: "2026-11-15T01:00:00.000Z", joined_by: "word" }), row({ account: "acct_1", relay_public_key: "k2", linked_at: "2026-11-15T02:00:00.000Z" }));
+    expect(none).toMatchObject({ account: "acct_1", relay_public_key: "k2" });
+    expect(none).not.toHaveProperty("joined_by");
+    // a copy that keeps its own account keeps its own mark
+    expect(merged(row({ account: "acct_1", linked_at: "2026-11-15T02:00:00.000Z", joined_by: "code" }), row({ account: "acct_1", linked_at: "2026-11-15T01:00:00.000Z", joined_by: "word" }))).toMatchObject({ joined_by: "code" });
+    expect(merged(row({ account: "acct_1", linked_at: "2026-11-15T02:00:00.000Z" }), row({}))).not.toHaveProperty("joined_by");
   });
 
   it("change nothing more when merged again with nothing new", () => {

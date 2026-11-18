@@ -133,16 +133,21 @@ export function mergeRegistries(own: Registry | null, other: Registry | null,
     }
     // the credential is chosen apart from the rest: whichever is kept, the role is never widened
     if (twin.token_hash !== device.token_hash) console.error(`Paired device ${device.id} has another credential in the other state dir; the one in use is kept`);
+    // a link done in the other dir moved the row to the account key (docs/account.md); an older copy must not undo it
+    // the later link wins: an unlinked copy, or one linked earlier, takes the other's account key
+    const takes = twin.account !== undefined && (device.account === undefined || (twin.linked_at ?? "") > (device.linked_at ?? ""));
+    // how the row joined goes with the account it takes: the other copy's mark, or none when that copy has none
+    const { joined_by: own, ...rest } = device;
+    const joinedBy = takes ? twin.joined_by : own;
     devices.push({
-      ...device,
+      ...rest,
+      ...(joinedBy === undefined ? {} : { joined_by: joinedBy }),
       role: device.role === "watch" || twin.role === "watch" ? "watch" : "drive",
       created_at: earliest([device.created_at, twin.created_at])!,
       last_seen_at: [device.last_seen_at, twin.last_seen_at].filter((seen): seen is string => seen !== null).sort().at(-1) ?? null,
       // the signed add behind the row, kept from either copy (/api/account/status lists it)
       ...(device.account_add === undefined && twin.account_add !== undefined ? { account_add: twin.account_add } : {}),
-      // a link done in the other dir moved the row to the account key (docs/account.md); an older copy must not undo it
-      // the later link wins: an unlinked copy, or one linked earlier, takes the other's account key
-      ...(twin.account !== undefined && (device.account === undefined || (twin.linked_at ?? "") > (device.linked_at ?? ""))
+      ...(takes
         ? { relay_public_key: twin.relay_public_key, account: twin.account, ...(twin.added_by === undefined ? {} : { added_by: twin.added_by }), ...(twin.linked_at === undefined ? {} : { linked_at: twin.linked_at }), ...(twin.link_moved_key === undefined ? {} : { link_moved_key: twin.link_moved_key }) } : {}),
     });
   }

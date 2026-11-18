@@ -36,7 +36,7 @@ export async function handleAccountRequest(request: Request, pathname: string, c
     // this one body, whatever else the PC holds: it names no account, and no mailbox is read for it (`fresh` is
     // ignored). The read is a moment the device's time is judged at
     if (!devices.provisionalStands(waiting)) return fail("link_required", "This device did not link itself into an account in time. Pair it again.", 403);
-    return reply({ account: null, members: 0, unlinked: [waiting], removals: [], adds: [], blocked: [], enrolling: false, blocked_all: false, mailbox: { last_pull_at: null, error: null } });
+    return reply({ account: null, members: 0, unlinked: [waiting], own_word: [], removals: [], adds: [], blocked: [], enrolling: false, blocked_all: false, mailbox: { last_pull_at: null, error: null } });
   }
   const ownLink = waiting !== null && pathname === "/api/account/link" && request.method === "POST";
   if (!ownLink && (access.level !== "full" || access.role !== "drive")) return fail("read_only", "this device can only watch", 403);

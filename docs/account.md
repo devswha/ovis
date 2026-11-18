@@ -74,6 +74,29 @@ as "not covered by account removal". The client links them on its next connectio
 with a code on the PC's own address holds a cookie, not a key: it cannot be linked, stays outside
 the account, and only **Revoke** on the PC removes it.
 
+### How a device joined
+
+The PC records on a row how a `link` made it a member: `joined_by` in `devices.json`.
+
+| value | when |
+|---|---|
+| `code` | the row paired with a code made for a PC in no account (the relay tab's QR code, or [a code made for an account](#a-code-made-for-an-account)) and linked into the account that code held it to |
+| `service` | the account service vouched for the row's key (kept for that check; nothing writes it yet) |
+| `word` | any other link that takes a row from no account into one, with no member behind it: a device that already drove this PC named the account itself (paired with a plain code, or approved by its digits on this PC) |
+
+The mark is set once, by the link that takes the row into its account, and a later link of the
+row keeps it, whatever key or account it names. A restart keeps it, and when two state folders
+are merged a row that takes its account from its other copy takes that copy's mark, or none. A
+row that became a member before this has none, and neither has one an account member's `add` or
+approval let in (`added_by` says whose word stands behind it): neither is listed. A value the PC
+does not know is kept as it is and counts as `word`. Nothing changes who gets in: the mark only
+shows the owner which members joined on their own word.
+
+[`GET /api/account/status`](#pc-api) lists them under `own_word`, beside `unlinked`: a row is in
+one of the two at most, so a device that links on its own word moves from `unlinked` to
+`own_word` and stays there until it is removed. The PC's own `GET /api/health` tells its driving
+owner both groups with their names (`account_devices`), and `ovis status` prints them.
+
 ## Records
 
 A record travels as JSON, with every field required and no other field allowed:
@@ -375,10 +398,11 @@ and nothing else.
 `GET /api/account/status`
 
 ```json
-{ "account": "acct_1" , "members": 3, "unlinked": ["6a1f0c9e2b7d4a10"], "removals": [<remove>, …], "adds": [<add>, …], "blocked": ["<key>", …], "enrolling": false, "mailbox": { "last_pull_at": "2026-11-05T01:02:03.000Z", "error": null } }
+{ "account": "acct_1" , "members": 3, "unlinked": ["6a1f0c9e2b7d4a10"], "own_word": ["0d4c1b7a9e2f3c58"], "removals": [<remove>, …], "adds": [<add>, …], "blocked": ["<key>", …], "enrolling": false, "mailbox": { "last_pull_at": "2026-11-05T01:02:03.000Z", "error": null } }
 ```
 
 `account` is `null` before the first member. `unlinked` lists relay rows that are not members.
+`own_word` lists the members that joined on their own word ([How a device joined](#how-a-device-joined)).
 `removals` lists the signed `remove`s behind this PC's tombstones for its account, as received (a
 Revoke on the PC has none). `adds` lists the signed `add`s behind its rows, as received: the one
 that made a row, or the approver's own for a row its remote approval made. `blocked` lists every key
