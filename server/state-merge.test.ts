@@ -396,8 +396,19 @@ describe("paired devices of the install's other state dir", () => {
     expect(merged(row({}), row({ account: "acct_1", linked_at: "2026-11-15T01:00:00.000Z", joined_by: "code" }))).toMatchObject({ account: "acct_1", joined_by: "code" });
     // a copy that keeps its own account and has no other copy in it keeps its own mark, or none
     expect(merged(row({ account: "acct_1", linked_at: "2026-11-15T02:00:00.000Z" }), row({}))).not.toHaveProperty("joined_by");
-    // a copy that takes another account takes that account's mark
-    expect(merged(row({ account: "acct_1", linked_at: "2026-11-15T01:00:00.000Z", joined_by: "word" }), row({ account: "acct_2", relay_public_key: "k2", linked_at: "2026-11-15T02:00:00.000Z", joined_by: "code" }))).toMatchObject({ account: "acct_2", joined_by: "code" });
+    // a copy that takes another account takes that account's vouched mark, unless the other copy's link was on its own word
+    expect(merged(row({ account: "acct_1", linked_at: "2026-11-15T01:00:00.000Z", joined_by: "code" }), row({ account: "acct_2", relay_public_key: "k2", linked_at: "2026-11-15T02:00:00.000Z", joined_by: "code" }))).toMatchObject({ account: "acct_2", joined_by: "code" });
+    expect(merged(row({ account: "acct_1", linked_at: "2026-11-15T01:00:00.000Z", joined_by: "word" }), row({ account: "acct_2", relay_public_key: "k2", linked_at: "2026-11-15T02:00:00.000Z", joined_by: "code" }))).toMatchObject({ account: "acct_2", joined_by: "word" });
+  });
+
+  it("keep a row's own-word join into one account when the later link, in its other copy, is into the account that approved it, in either order", () => {
+    const row = (more: Partial<StoredDevice>): StoredDevice => ({ id: "a".repeat(16), label: "Phone", role: "drive", token_hash: "t", relay_public_key: "k", created_at: "2026-11-15T00:00:00.000Z", last_seen_at: null, added_by: "b".repeat(16), member_approved_in: "acct_1", ...more });
+    const merged = (own: StoredDevice, other: StoredDevice) => mergeRegistries({ gate_closed_at: null, devices: [own] }, { gate_closed_at: null, devices: [other] }, { own: null, other: null }).devices[0];
+    // one copy linked on its own word into acct_2; the other linked later, with no mark, into acct_1, whose member approved it
+    const ownWord = row({ account: "acct_2", relay_public_key: "k2", linked_at: "2026-11-15T01:00:00.000Z", joined_by: "word" });
+    const approved = row({ account: "acct_1", relay_public_key: "k1", linked_at: "2026-11-15T02:00:00.000Z" });
+    expect(merged(ownWord, approved)).toMatchObject({ account: "acct_1", relay_public_key: "k1", joined_by: "word" });
+    expect(merged(approved, ownWord)).toMatchObject({ account: "acct_1", relay_public_key: "k1", joined_by: "word" });
   });
 
   it("keep a row's own-word join when both copies are in its account, in either order, whichever copy's key is kept", () => {

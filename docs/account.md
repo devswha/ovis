@@ -86,10 +86,10 @@ The PC records on a row how a `link` made it a member: `joined_by` in `devices.j
 
 The mark is set once, by the link that takes the row into its account, and a later link of the
 row keeps it, whatever key or account it names. A restart keeps it. When two state folders are
-merged, a row that takes another account from its other copy takes that copy's mark, or none;
-where both copies are in the same account, the key is chosen as before and the mark apart from
-it: `word` (or a value the PC does not know) on either copy is kept, and otherwise the kept
-copy's mark, or the other's. A row that became a member before this has none, and neither has one
+merged, the account and key are chosen as before and the mark apart from them: `word` (or a
+value the PC does not know) on either copy is kept, whichever account the row takes. Otherwise
+the row takes the mark of the copy whose account it takes, or, where both copies are in the same
+account, the other copy's when that one has none. A row that became a member before this has none, and neither has one
 an account member's `add` or approval let in: neither is listed. An approval is a remote one, or
 a code a member started through the relay while a member, and still a member when the code is
 used (`member_approved_in` on the row names that account, with the member in `added_by`). It

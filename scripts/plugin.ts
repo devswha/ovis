@@ -1284,9 +1284,11 @@ function accountDevicesOf(body: unknown): AccountDevices | null {
     ? { unlinked: groups["unlinked"], own_word: groups["own_word"] } : null;
 }
 
-/** One group's line: each device by its name, with no control character, and its id. */
-const deviceLine = (title: string, devices: readonly ShownDevice[]): string =>
-  `${title}: ${devices.length === 0 ? "none" : devices.map((device) => `${device.label.replace(/[\u0000-\u001f\u007f-\u009f]/g, "")} (${device.id})`).join(", ")}\n`;
+/** One group's line: each device by its name and its id, neither with a control character. */
+const deviceLine = (title: string, devices: readonly ShownDevice[]): string => {
+  const plain = (text: string) => text.replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
+  return `${title}: ${devices.length === 0 ? "none" : devices.map((device) => `${plain(device.label)} (${plain(device.id)})`).join(", ")}\n`;
+};
 
 /** Reporting "down" is not an action failure: herdr logs a nonzero exit as failed. */
 async function status(): Promise<number> {

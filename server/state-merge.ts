@@ -136,16 +136,16 @@ export function mergeRegistries(own: Registry | null, other: Registry | null,
     // a link done in the other dir moved the row to the account key (docs/account.md); an older copy must not undo it
     // the later link wins: an unlinked copy, or one linked earlier, takes the other's account key
     const takes = twin.account !== undefined && (device.account === undefined || (twin.linked_at ?? "") > (device.linked_at ?? ""));
-    // how the row joined goes with the account it takes. Where both copies are in that account, the mark is merged
-    // apart from the key: a link on the device's own word (any mark but a vouched one, `null` included) is kept
-    // whichever copy holds it, as no later link undoes it, and otherwise the kept copy's mark, or the other's when it
-    // has none. Only a missing mark is none
+    // how the row joined is merged apart from the account and key: a link on the device's own word (any mark but a
+    // vouched one, `null` included) is kept whichever copy holds it and whichever account the row takes, as no later
+    // link undoes it. Otherwise the kept copy's mark, or, where both copies are in that account, the other's when the
+    // kept one has none: a vouched mark goes with its own account only. Only a missing mark is none
     const { joined_by: own, ...rest } = device;
     const keptMark = takes ? twin.joined_by : own;
     const otherMark = takes ? own : twin.joined_by;
     const marks = [keptMark, otherMark].filter((mark) => mark !== undefined);
-    const joinedBy = device.account !== undefined && device.account === twin.account
-      ? marks[Math.max(0, marks.findIndex((mark) => !VOUCHED.has(mark)))] : keptMark;
+    const word = marks.findIndex((mark) => !VOUCHED.has(mark));
+    const joinedBy = word >= 0 ? marks[word] : device.account !== undefined && device.account === twin.account ? marks[0] : keptMark;
     devices.push({
       ...rest,
       ...(joinedBy === undefined ? {} : { joined_by: joinedBy }),

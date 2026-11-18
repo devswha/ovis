@@ -842,6 +842,15 @@ await runPlugin();`], { cwd: ROOT, stdout: "pipe", stderr: "pipe", env: launchEn
     expect(out).not.toContain("the-token");
   });
 
+  it("print a device's id with no control character, on its group's one line", async () => {
+    const groups = { unlinked: [{ id: "6a1f0c9e\n2b7d4a10", label: "Old phone" }], own_word: [{ id: "0d4c1b7a\u001b[2J9e2f3c58", label: "Tab" }] };
+    const { out } = await statusAnswering([{ ...APP_HEALTH, account_devices: groups }], "");
+    expect(lines(out)).toEqual([
+      "relay devices outside the account: Old phone (6a1f0c9e2b7d4a10)",
+      "devices that joined the account on their own word: Tab (0d4c1b7a[2J9e2f3c58)",
+    ]);
+  });
+
   it("name the token as the reason they are not shown only when the app asks for it", async () => {
     // a PC that wants this device paired, with no token set, and an open LAN that lets the command in but is not its owner
     for (const auth of [{ required: true, authenticated: false, reason: "pairing_required" }, { required: false, authenticated: true, via: "open", role: "drive" }]) {
